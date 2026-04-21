@@ -1,0 +1,24 @@
+# Godot-specific ignores
+.godot/
+*.import
+export_presets.godot
+
+# Build artifacts (Commented out to include Moonlight binaries for now)
+# bin/
+# *.so
+# *.dylib
+# *.dll
+# *.exe
+
+# Mono/C# ignores
+.mono/
+*.csproj
+*.sln
+*.obj
+
+# System/IDE ignores
+.DS_Store
+.vscode/
+*.swp
+*.tmp
+*.log
