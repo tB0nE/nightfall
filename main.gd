@@ -47,6 +47,8 @@ var grabbed_node: Node3D = null
 var grab_distance: float = 0.0
 var grab_offset: Vector3 = Vector3.ZERO
 
+var grabbed_bar: MeshInstance3D = null
+
 var pad_buttons: int = 0
 var pad_active: int = 0
 
@@ -62,8 +64,10 @@ func _ready():
 	OS.set_environment("CURL_CA_BUNDLE", "/system/etc/security/cacerts/")
 	OS.set_environment("SSL_CERT_FILE", "/system/etc/security/cacerts/")
 	_log("=== Ty-Streamer started ===")
-	# 0. Cap FPS to reduce GPU usage
 	Engine.max_fps = 60
+	
+	%ScreenGrabBar.material_override = %ScreenGrabBar.material_override.duplicate()
+	%MenuGrabBar.material_override = %MenuGrabBar.material_override.duplicate()
 	
 	# 1. Hide mouse cursor permanently for VR feel
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -184,6 +188,9 @@ func _process(delta):
 		
 		var still_clicking = right_hand.get_float("trigger") > 0.5 if is_xr_active else Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 		if not still_clicking:
+			if grabbed_bar:
+				_set_grab_bar_color(grabbed_bar, Color.WHITE)
+				grabbed_bar = null
 			grabbed_node = null
 
 func _switch_mode(new_mode: AppMode):
@@ -206,18 +213,19 @@ func _handle_pointer_interaction():
 	if not grabbed_node:
 		%ScreenGrabBar.visible = false
 		%MenuGrabBar.visible = false
+		if grabbed_bar:
+			_set_grab_bar_color(grabbed_bar, Color.WHITE)
+			grabbed_bar = null
 	
 	if active_raycast.is_colliding():
 		var collider = active_raycast.get_collider()
 		var parent = collider.get_parent()
 		
-		# Show grab bars
 		if parent == screen_mesh or parent == %ScreenGrabBar: %ScreenGrabBar.visible = true
 		if parent == ui_panel_3d or parent == %MenuGrabBar: %MenuGrabBar.visible = true
 		
 		var is_now_clicking = right_hand.get_float("trigger") > 0.5 if is_xr_active else Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 		
-		# 1. Interaction with 3D UI Menu
 		if parent == ui_panel_3d:
 			var hit_pos = active_raycast.get_collision_point()
 			var local_pos = ui_panel_3d.to_local(hit_pos)
@@ -239,7 +247,6 @@ func _handle_pointer_interaction():
 				was_clicking = false
 			return
 			
-		# 2. Interaction with Stream Screen (Click to Capture Mouse)
 		elif parent == screen_mesh and is_streaming:
 			var hit_pos = active_raycast.get_collision_point()
 			var local_pos = screen_mesh.to_local(hit_pos)
@@ -253,26 +260,43 @@ func _handle_pointer_interaction():
 			%StreamHitDot.size = Vector2(20, 20)
 			%StreamHitDot.color = Color(0, 1, 0)
 
-			if is_now_clicking and not was_clicking:
+			if is_xr_active:
 				moon.send_mouse_position_event(host_x, host_y, stream_viewport.size.x, stream_viewport.size.y)
-				suppress_input_frames = 3
-				_capture_stream_mouse()
-				was_clicking = true
-
+				if is_now_clicking and not was_clicking:
+					moon.send_mouse_button_event(7, MOUSE_BUTTON_LEFT)
+					was_clicking = true
+				elif not is_now_clicking and was_clicking:
+					moon.send_mouse_button_event(8, MOUSE_BUTTON_LEFT)
+					was_clicking = false
+			else:
+				if is_now_clicking and not was_clicking:
+					moon.send_mouse_position_event(host_x, host_y, stream_viewport.size.x, stream_viewport.size.y)
+					suppress_input_frames = 3
+					_capture_stream_mouse()
+					was_clicking = true
 			return
 
-		# 3. Interaction with Grab Bars
-		elif (parent == %ScreenGrabBar or parent == %MenuGrabBar) and is_now_clicking:
-			grabbed_node = parent.get_parent()
-			var grab_point = active_raycast.get_collision_point()
-			grab_distance = (grab_point - active_raycast.global_position).length()
-			grab_offset = grabbed_node.global_position - grab_point
+		elif parent == %ScreenGrabBar or parent == %MenuGrabBar:
+			if is_now_clicking and not grabbed_node:
+				grabbed_node = parent.get_parent()
+				grabbed_bar = parent
+				var grab_point = active_raycast.get_collision_point()
+				grab_distance = (grab_point - active_raycast.global_position).length()
+				grab_offset = grabbed_node.global_position - grab_point
+				_set_grab_bar_color(parent, Color(0.2, 0.5, 1.0))
+				was_clicking = true
+			elif not grabbed_node:
+				_set_grab_bar_color(parent, Color(0, 1, 0))
+			return
 
 	elif was_clicking:
 		was_clicking = false
 	
 	hit_dot.position = Vector2(-20, -20)
 	%StreamHitDot.position = Vector2(-30, -30)
+
+func _set_grab_bar_color(bar: MeshInstance3D, color: Color):
+	bar.material_override.albedo_color = color
 
 func _push_ui_click(pos: Vector2, pressed: bool):
 	var event = InputEventMouseButton.new()
