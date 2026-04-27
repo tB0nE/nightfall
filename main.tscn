@@ -267,7 +267,7 @@ environment = SubResource("Environment_1")
 unique_name_in_owner = true
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, -3)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -3)
 material_override = SubResource("ShaderMaterial_1")
 mesh = SubResource("QuadMesh_1")
 
@@ -292,7 +292,7 @@ shape = SubResource("BoxShape3D_GrabBar")
 
 [node name="UIPanel3D" type="MeshInstance3D" parent="."]
 unique_name_in_owner = true
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.4, -1.5)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, -1.5)
 material_override = SubResource("StandardMaterial3D_UI")
 mesh = SubResource("QuadMesh_UI")
 

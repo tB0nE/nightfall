@@ -111,6 +111,26 @@ func _ready():
 		get_viewport().use_xr = true
 		is_xr_active = true
 		stereo_mode = 1 # Default to 3D in headset
+		await get_tree().create_timer(0.5).timeout
+		var cam_pos = xr_camera.global_position
+		var cam_fwd = -xr_camera.global_transform.basis.z
+		var cam_right = xr_camera.global_transform.basis.x
+		screen_mesh.global_position = cam_pos + cam_fwd * 2.0
+		screen_mesh.global_position.y -= 0.2
+		var screen_to_cam = (cam_pos - screen_mesh.global_position).normalized()
+		screen_mesh.rotation = Vector3.ZERO
+		screen_mesh.rotation.y = atan2(screen_to_cam.x, screen_to_cam.z)
+		var ui_dir = (cam_fwd - cam_right).normalized()
+		ui_panel_3d.global_position = cam_pos + ui_dir * 1.8
+		ui_panel_3d.global_position.y -= 0.4
+		var ui_to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
+		ui_panel_3d.rotation = Vector3.ZERO
+		ui_panel_3d.rotation.y = atan2(ui_to_cam.x, ui_to_cam.z)
+		screen_mesh.visible = false
+		ui_panel_3d.visible = false
+		await get_tree().process_frame
+		screen_mesh.visible = true
+		ui_panel_3d.visible = true
 	else:
 		is_xr_active = false
 		stereo_mode = 0 # Default to 2D on desktop
