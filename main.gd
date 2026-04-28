@@ -540,10 +540,10 @@ func _on_pair_completed(success: bool, _msg: String):
 func start_stream(host_id: int, app_id: int):
 	_log("[STREAM] Starting stream host_id=%d app_id=%d" % [host_id, app_id])
 	stream_cfg = MoonlightStreamConfigurationResource.new()
-	stream_cfg.set_width(1280)
-	stream_cfg.set_height(720)
+	stream_cfg.set_width(1920)
+	stream_cfg.set_height(1080)
 	stream_cfg.set_fps(60)
-	stream_cfg.set_bitrate(10000)
+	stream_cfg.set_bitrate(20000)
 	stream_opts = MoonlightAdditionalStreamOptions.new()
 	stream_opts.set_disable_hw_acceleration(false)
 	stream_opts.set_disable_audio(false)
