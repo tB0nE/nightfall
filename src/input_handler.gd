@@ -78,9 +78,8 @@ func handle_input(event: InputEvent):
 			_send_controller(event.device)
 			return
 
-		if main.current_mode == 0: # STREAM mode
-			if event is InputEventKey:
-				main.moon.send_keyboard_event(event.keycode, 3 if event.pressed else 4, 0)
+		if event is InputEventKey:
+			main.moon.send_keyboard_event(event.keycode, 3 if event.pressed else 4, 0)
 
 func capture_stream_mouse():
 	main.mouse_captured_by_stream = true
@@ -93,7 +92,7 @@ func capture_stream_mouse():
 func release_stream_mouse():
 	main.mouse_captured_by_stream = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	main.ui_controller.update_mode_ui()
+	main.ui_controller.update_ui()
 	print("[MOUSE] Released - back to pointer mode.")
 
 func _send_controller(device: int):

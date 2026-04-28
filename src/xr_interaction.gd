@@ -96,16 +96,6 @@ func handle_pointer_interaction():
 	main.hit_dot.position = Vector2(-20, -20)
 	main.get_node("%StreamHitDot").position = Vector2(-30, -30)
 
-func handle_env_movement(delta: float):
-	var move_speed = 3.0
-	var move_dir = Vector3.ZERO
-	if Input.is_key_pressed(KEY_W): move_dir -= main.xr_origin.global_transform.basis.z
-	if Input.is_key_pressed(KEY_S): move_dir += main.xr_origin.global_transform.basis.z
-	if Input.is_key_pressed(KEY_A): move_dir -= main.xr_origin.global_transform.basis.x
-	if Input.is_key_pressed(KEY_D): move_dir += main.xr_origin.global_transform.basis.x
-	if move_dir != Vector3.ZERO:
-		main.xr_origin.global_translate(move_dir.normalized() * move_speed * delta)
-
 func handle_grab():
 	if not main.grabbed_node:
 		return

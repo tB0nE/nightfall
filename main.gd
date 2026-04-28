@@ -1,7 +1,5 @@
 extends Node3D
 
-enum AppMode { STREAM, ENV }
-
 @onready var moon = $MoonlightStream
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
@@ -24,7 +22,6 @@ enum AppMode { STREAM, ENV }
 var current_host_id: int = -1
 var is_streaming: bool = false
 var stereo_mode: int = 0
-var current_mode: AppMode = AppMode.STREAM
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var mouse_captured_by_stream: bool = false
@@ -110,8 +107,6 @@ func _ready():
 		audio_player.stop()
 	)
 
-	right_hand.button_pressed.connect(_on_controller_button_pressed)
-
 	var interface = XRServer.find_interface("OpenXR")
 	if interface and interface.is_initialized():
 		var render_size = interface.get_render_target_size()
@@ -151,7 +146,7 @@ func _ready():
 			%IPInput.text = saved_ip
 
 	stream_manager.bind_texture()
-	ui_controller.update_mode_ui()
+	ui_controller.update_ui()
 	ui_controller.update_stereo_shader()
 
 	Input.joy_connection_changed.connect(func(device, connected):
@@ -164,21 +159,13 @@ func _process(delta):
 	if Input.is_action_just_pressed("ui_focus_next"):
 		if mouse_captured_by_stream:
 			input_handler.release_stream_mouse()
-		else:
-			_switch_mode(AppMode.ENV if current_mode == AppMode.STREAM else AppMode.STREAM)
 
 	if Input.is_key_pressed(KEY_CTRL) and Input.is_key_pressed(KEY_ALT) and Input.is_key_pressed(KEY_SHIFT):
 		if mouse_captured_by_stream:
 			input_handler.release_stream_mouse()
-		elif current_mode != AppMode.STREAM:
-			_switch_mode(AppMode.STREAM)
 
 	if not mouse_captured_by_stream:
-		match current_mode:
-			AppMode.STREAM:
-				xr_interaction.handle_pointer_interaction()
-			AppMode.ENV:
-				xr_interaction.handle_env_movement(delta)
+		xr_interaction.handle_pointer_interaction()
 
 	auto_detect.process(delta)
 
@@ -201,16 +188,6 @@ func _process(delta):
 
 func _input(event):
 	input_handler.handle_input(event)
-
-func _switch_mode(new_mode: AppMode):
-	current_mode = new_mode
-	ui_controller.update_mode_ui()
-	print("Switched to Mode: ", AppMode.keys()[current_mode])
-
-func _on_controller_button_pressed(button_name: String):
-	match button_name:
-		"by_button": _switch_mode(AppMode.STREAM)
-		"ax_button": _switch_mode(AppMode.ENV)
 
 func _toggle_passthrough():
 	if not is_xr_active:
