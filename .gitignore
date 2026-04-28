@@ -26,9 +26,19 @@ bin/
 
 # Android build artifacts
 android/build/
+android/.gradle/
+android/.build_version
+android/config.gradle
+android/gradle/
+android/gradle.properties
+android/gradlew
+android/gradlew.bat
+android/libs/
+android/res/
+android/settings.gradle
+android/src/androidTestInstrumented/
+android/src/instrumented/
+android/src/main/AndroidManifest.xml
 *.apk
 *.idsig
 *.a
-android/libs/
-android/.gradle/
-android/src/instrumented/
