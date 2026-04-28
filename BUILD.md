@@ -11,13 +11,19 @@
 
 ## 1. Clone and Build the GDExtension
 
-The Moonlight GDExtension must be built from source. The `.so` binaries are not included in the repo due to size.
+The Moonlight GDExtension must be built from source. We maintain a fork with Quest hardware decoding patches:
 
 ```bash
-# Clone the moonlight-godot source (vcpkg branch)
-git clone -b vcpkg https://github.com/html5syt/Moonlight-Godot.git /tmp/moonlight-godot-src
+# Clone our fork (quest-hw-decode branch has all patches applied)
+git clone -b quest-hw-decode https://github.com/tB0nE/Moonlight-Godot.git /tmp/moonlight-godot-src
 cd /tmp/moonlight-godot-src
 ```
+
+The `quest-hw-decode` branch includes:
+- JNI handshake for passing JavaVM/Android context to FFmpeg
+- `ndk_codec=1` option forcing NDK MediaCodec path (HEVC hardware decode)
+- Skip incompatible low-delay flags for MediaCodec
+- Stats API (decoder name, frame counts, HW/SW status)
 
 ### Android (Quest) Build
 
@@ -71,17 +77,7 @@ cmake --build . --config Debug
 cp libmoonlight-godot.*.so <project-root>/addons/moonlight-godot/bin/linux/
 ```
 
-## 2. Custom C++ Modifications
-
-The following files in `/tmp/moonlight-godot-src/src/` are modified from upstream:
-
-- **`stream_core_main.cpp`** - JNI handshake (`initializeMoonlightJNI`, `setAndroidContext`), stats getter methods
-- **`stream_core_video.cpp`** - `ndk_codec=1` option for MediaCodec NDK path, stats counters
-- **`stream_core.h`** - Added `get_decoder_name()`, `get_video_width()`, `get_video_height()`, `get_decode_queue_size()`, `get_frames_decoded()`, `get_frames_dropped()`, `is_hw_decode()` declarations and `std::atomic<int>` counters
-
-These modifications must be applied to the source before building. See git history for the exact changes.
-
-## 3. Export the APK
+## 2. Export the APK
 
 ```bash
 # Clean the android build directory
@@ -100,7 +96,7 @@ JAVA_HOME=/path/to/jdk17 /path/to/godot --headless --path <project-root> \
   --export-debug "TyStreamerDev" <project-root>/Ty-Streamer.apk
 ```
 
-## 4. Deploy to Quest
+## 3. Deploy to Quest
 
 ```bash
 adb install -r Ty-Streamer.apk
@@ -108,6 +104,7 @@ adb install -r Ty-Streamer.apk
 
 ## Key Architecture Notes
 
+- **Fork**: `https://github.com/tB0nE/Moonlight-Godot` (branch: `quest-hw-decode`) — upstream is `html5syt/Moonlight-Godot`
 - **JNI Handshake**: `GodotApp.java` loads the GDExtension library in a static block and calls `initializeMoonlightJNI()` to pass the JavaVM to FFmpeg for MediaCodec. This must happen before Godot initializes.
 - **Android App Context**: `setAndroidContext()` passes the Android app context to FFmpeg via `av_jni_set_android_app_ctx()` with a JNI global reference.
 - **MediaCodec**: Uses NDK `AMediaCodec` API (not Java JNI wrapper) via `ndk_codec=1` FFmpeg option.
