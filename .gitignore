@@ -11,6 +11,9 @@ bin/
 *.dll
 *.exe
 
+# Plugins (install via Godot editor)
+addons/godotopenxrvendors/
+
 # Mono/C# ignores
 .mono/
 *.csproj

@@ -9,6 +9,10 @@
 - **Clang** (NDK-provided for Android, system for Linux)
 - **ADB** (for Quest deployment)
 
+## 0. Install Godot Plugins
+
+Open the project in the Godot editor and install the **GodotOpenXRVendors** plugin from the Asset Library (or enable it in Project → Install Plugins). This provides Meta Quest OpenXR vendor extensions.
+
 ## 1. Clone and Build the GDExtension
 
 The Moonlight GDExtension must be built from source. We maintain a fork with Quest hardware decoding patches:
