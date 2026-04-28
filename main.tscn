@@ -1,7 +1,7 @@
 [gd_scene load_steps=18 format=3 uid="uid://c8y7y6x5w4v3u"]
 
 [ext_resource type="Script" path="res://main.gd" id="1_main"]
-[ext_resource type="Shader" path="res://stereo_screen.gdshader" id="2_shader"]
+[ext_resource type="Shader" path="res://src/stereo_screen.gdshader" id="2_shader"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_1"]
 render_priority = 0
@@ -123,7 +123,7 @@ mouse_filter = 2
 
 [node name="Label" type="Label" parent="UIViewport/UIPanel/VBoxContainer"]
 layout_mode = 2
-text = "Ty-Streamer Menu"
+text = "Nightfall"
 horizontal_alignment = 1
 
 [node name="IPInput" type="LineEdit" parent="UIViewport/UIPanel/VBoxContainer"]

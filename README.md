@@ -1,34 +1,67 @@
-# 🚀 Ty-Streamer
+# Nightfall
 
-A Godot 4 XR application for streaming PC desktops via Moonlight with stereoscopic 3D support.
+A Godot 4 XR Moonlight streaming client for Meta Quest 3 with HEVC hardware decoding and stereoscopic 3D support.
 
-## 🛠 Project Status
-- [x] Milestone 1: Compile/load GDExtension in Godot.
-- [x] Milestone 2: 2D stream implementation logic.
-- [x] Milestone 3: OpenXR/WiVRn setup.
-- [x] Milestone 4: Stereo Shader for SBS games.
+## Project Status
+- [x] GDExtension compilation and loading
+- [x] Moonlight pairing and streaming
+- [x] OpenXR integration (Quest 3)
+- [x] HEVC hardware decoding via NDK MediaCodec
+- [x] Stereo SBS shader (2D / SBS Stretch / SBS Crop modes)
+- [x] SBS auto-detection
+- [x] XR pointer interaction with grab bars
+- [x] Gamepad/controller passthrough
+- [x] Mouse/keyboard passthrough with stream capture mode
+- [x] Numpad UI for IP entry and pairing
 
-## 🚀 How to Run
-
-### 1. Prerequisites
-- **WiVRn:** Ensure `wivrn-server` is running on your host.
-- **Sunshine:** Ensure Sunshine is running on your host PC and you know its IP address.
-
-### 2. Launching the App
-Since Godot is installed via Steam, use the following command to launch with XR enabled:
+## How to Run (Desktop)
 
 ```bash
 "/var/home/tyrone/.local/share/Steam/steamapps/common/Godot Engine/godot.x11.opt.tools.64" --xr-mode on --path .
 ```
 
-### 3. Pairing
-1. Open `res://main.gd`.
-2. Uncomment the `pair_and_start("YOUR_IP")` line in `_ready()` and replace with your Sunshine host IP.
-3. Run the app.
-4. Check the console for the PIN and enter it in the Sunshine web UI.
+## How to Build (Quest)
 
-## 📺 Controls
-- Input events (Keyboard, Mouse, Gamepad) are automatically forwarded to the remote host while streaming.
+See [BUILD.md](BUILD.md) for full build instructions including GDExtension compilation, APK export, and Quest deployment.
 
-## 🎨 Shader Details
-The `stereo_screen.gdshader` handles Side-By-Side (SBS) content by splitting the texture based on the `VIEW_INDEX` (Multiview). This allows you to play 3D games (via ReShade/SuperDepth3D) in true stereoscopic depth.
+## Pairing
+
+1. Launch the app on Quest
+2. Enter your Sunshine host IP using the numpad
+3. Press **Pair & Start Stream**
+4. Enter the displayed PIN in the Sunshine web UI
+5. The stream starts automatically after pairing
+
+The last used IP is saved and restored on next launch.
+
+## Controls
+
+### XR (Quest Headset)
+- **Hand raycasts** point at the stream screen and UI panel
+- **Trigger** clicks on UI elements or captures mouse to stream
+- **Grab bars** (green on hover, blue when grabbed) let you reposition screens
+- **Ctrl+Alt+Shift** releases captured mouse back to pointer mode
+- **B button** switches to Stream mode, **A button** to Env mode
+
+### Desktop
+- **Mouse** aims at screens (non-XR mode uses camera rotation)
+- **Left click** interacts with UI or captures mouse to stream
+- **Ctrl+Alt+Esc** releases captured mouse
+- **Tab** toggles between Stream and Env modes
+- **WASD** moves the XR origin in Env mode
+
+### Gamepad
+- All gamepad inputs (buttons, sticks, triggers) are forwarded to the remote host during streaming
+- Multi-controller support with Xbox button mapping
+
+## SBS Stereo Modes
+
+- **2D**: Standard display
+- **SBS Stretch**: Side-by-side content stretched to full screen
+- **SBS Crop**: Side-by-side content with letterbox bars cropped
+
+Toggle modes with the **SBS Mode** button. Enable **Auto-Detect** to automatically switch based on content analysis.
+
+## Shader
+
+`src/stereo_screen.gdshader` handles YUV→RGB conversion and SBS stereo splitting based on `VIEW_INDEX` (Multiview). This enables true stereoscopic 3D for games using ReShade/SuperDepth3D.

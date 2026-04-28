@@ -20,6 +20,9 @@ addons/godotopenxrvendors/
 *.sln
 *.obj
 
+# Secrets
+.env
+
 # System/IDE ignores
 .DS_Store
 .vscode/

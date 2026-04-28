@@ -1,4 +1,4 @@
-[gd_resource type="OpenXRActionMap" format=3 uid="uid://mya277lr8dk1"]
+[gd_resource type="OpenXRActionMap" format=3 uid="uid://iv3ta5mfplvk"]
 
 [sub_resource type="OpenXRAction" id="OpenXRAction_6ivru"]
 resource_name = "trigger"
