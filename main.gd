@@ -271,7 +271,7 @@ func _reposition_screen_and_ui():
 	var cam_pos = xr_camera.global_position
 	var cam_fwd = -xr_camera.global_transform.basis.z
 	var cam_right = xr_camera.global_transform.basis.x
-	screen_mesh.global_position = cam_pos + cam_fwd * 2.0
+	screen_mesh.global_position = cam_pos + cam_fwd * 2.0 + Vector3(0, 0.3, 0)
 	var screen_to_cam = (cam_pos - screen_mesh.global_position).normalized()
 	screen_mesh.rotation = Vector3.ZERO
 	screen_mesh.rotation.y = atan2(screen_to_cam.x, screen_to_cam.z)
@@ -304,14 +304,14 @@ func _create_corner_handles():
 		h_mesh.size = Vector3(0.15, 0.008, 0.008)
 		h_bar.mesh = h_mesh
 		h_bar.material_override = mat.duplicate()
-		h_bar.position = Vector3(-offsets[i].x * 0.075, 0, 0)
+		h_bar.position = Vector3(-offsets[i].x * 0.15, 0, 0)
 		var v_bar = MeshInstance3D.new()
 		v_bar.name = "VBar"
 		var v_mesh = BoxMesh.new()
 		v_mesh.size = Vector3(0.008, 0.15, 0.008)
 		v_bar.mesh = v_mesh
 		v_bar.material_override = mat.duplicate()
-		v_bar.position = Vector3(0, -offsets[i].y * 0.075, 0)
+		v_bar.position = Vector3(0, -offsets[i].y * 0.15, 0)
 		var area = Area3D.new()
 		area.collision_layer = 2
 		var shape = CollisionShape3D.new()
@@ -337,3 +337,4 @@ func update_corner_positions():
 	]
 	for i in range(4):
 		corner_handles[i].position = Vector3(offsets[i].x * (mesh_size.x + 0.08), offsets[i].y * (mesh_size.y + 0.08), 0)
+	%ScreenGrabBar.position.y = -mesh_size.y / 2.0 - 0.05

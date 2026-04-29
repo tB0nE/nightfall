@@ -155,26 +155,15 @@ func handle_corner_resize():
 	var hit_world = ray_origin + ray_dir * t
 
 	var local_hit = main.screen_mesh.to_local(hit_world)
-	var local_anchor = main.screen_mesh.to_local(main.corner_anchor_world)
-
-	var raw_w = absf(local_hit.x - local_anchor.x)
-	var raw_h = absf(local_hit.y - local_anchor.y)
 
 	var aspect = 16.0 / 9.0
+	var raw_w = absf(local_hit.x) * 2.0
 	var new_w = maxf(raw_w, 0.6)
 	var new_h = new_w / aspect
 	if new_h < 0.4:
 		new_h = 0.4
 		new_w = new_h * aspect
 
-	var sign_x = 1.0 if local_hit.x > local_anchor.x else -1.0
-	var sign_y = 1.0 if local_hit.y > local_anchor.y else -1.0
-	var new_center_local = Vector3(
-		local_anchor.x + sign_x * new_w / 2.0,
-		local_anchor.y + sign_y * new_h / 2.0,
-		0
-	)
-	main.screen_mesh.global_position = main.screen_mesh.to_global(new_center_local)
 	main.screen_mesh.mesh.size = Vector2(new_w, new_h)
 
 	var col_shape = main.screen_mesh.get_node("Area3D/CollisionShape3D")
