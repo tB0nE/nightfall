@@ -32,5 +32,5 @@ textures/vram_compression/import_etc2_astc=true
 
 openxr/enabled=true
 shaders/enabled=true
-openxr/extensions/passthrough_enabled=true
+openxr/extensions/meta/passthrough=true
 openxr/environment_blend_mode=2

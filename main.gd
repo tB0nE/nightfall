@@ -129,23 +129,19 @@ func _ready():
 	if interface and interface.is_initialized():
 		var render_size = interface.get_render_target_size()
 		_log("[XR] OpenXR render target: %dx%d" % [render_size.x, render_size.y])
-		_log("[XR] Interface caps: %d" % interface.get_capabilities())
-		_log("[XR] System info: %s" % str(interface.get_system_info()))
-		var fb_pt = Engine.get_singleton("OpenXRFbPassthroughExtension")
-		_log("[XR] OpenXRFbPassthroughExtension singleton: %s" % str(fb_pt))
-		if fb_pt:
-			_log("[XR] FB passthrough methods: %s" % str(fb_pt.get_method_list().map(func(m): return m.name).slice(0, 20)))
-			_log("[XR] is_passthrough_preferred: %s" % str(fb_pt.is_passthrough_preferred()))
-		_log("[XR] Blend modes on init: %s" % str(interface.get_supported_environment_blend_modes()))
-		var blend_ok = interface.set_environment_blend_mode(XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND)
-		_log("[XR] Set ALPHA_BLEND before use_xr: %s" % str(blend_ok))
-		get_viewport().size = render_size
+		_log("[XR] Blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
+
 		get_viewport().transparent_bg = true
+		world_env.environment.background_mode = Environment.BG_COLOR
+		world_env.environment.background_color = Color(0, 0, 0, 0)
+		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
+
+		get_viewport().size = render_size
 		get_viewport().use_xr = true
 		is_xr_active = true
 		stereo_mode = 1
-		world_env.environment.background_mode = Environment.BG_CLEAR_COLOR
-		get_viewport().transparent_bg = true
+		passthrough_enabled = true
+
 		await get_tree().create_timer(0.5).timeout
 		_reposition_screen_and_ui()
 		screen_mesh.visible = false
@@ -153,7 +149,6 @@ func _ready():
 		await get_tree().process_frame
 		screen_mesh.visible = true
 		ui_panel_3d.visible = true
-		_toggle_passthrough()
 	else:
 		is_xr_active = false
 		stereo_mode = 0
@@ -220,39 +215,22 @@ func _toggle_passthrough():
 	if not interface:
 		_log("[PT] No OpenXR interface")
 		return
-	_log("[PT] Interface class: %s" % interface.get_class())
-	_log("[PT] has start_passthrough: %s" % str(interface.has_method("start_passthrough")))
-	_log("[PT] has is_passthrough_supported: %s" % str(interface.has_method("is_passthrough_supported")))
 	if passthrough_enabled:
-		if interface.has_method("stop_passthrough"):
-			interface.stop_passthrough()
-		interface.set_environment_blend_mode(XRInterface.XR_ENV_BLEND_MODE_OPAQUE)
-		world_env.environment.background_mode = Environment.BG_COLOR
+		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
 		world_env.environment.background_color = Color(0, 0, 0, 1)
 		get_viewport().transparent_bg = false
 		passthrough_enabled = false
 		%PassthroughButton.text = "Passthrough: Off"
 		_log("[PT] Passthrough disabled")
 		return
-	var started = false
-	if interface.has_method("start_passthrough"):
-		started = interface.start_passthrough()
-		_log("[PT] start_passthrough result: %s" % str(started))
-	if not started:
-		started = interface.set_environment_blend_mode(XRInterface.XR_ENV_BLEND_MODE_ADDITIVE)
-		_log("[PT] set_environment_blend_mode ADDITIVE: %s" % str(started))
-	if not started:
-		started = interface.set_environment_blend_mode(XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND)
-		_log("[PT] set_environment_blend_mode ALPHA_BLEND: %s" % str(started))
-	if started:
-		world_env.environment.background_mode = Environment.BG_CLEAR_COLOR
-		get_viewport().transparent_bg = true
-		passthrough_enabled = true
-		%PassthroughButton.text = "Passthrough: On"
-		_log("[PT] Passthrough enabled via %s" % ("start_passthrough" if interface.is_passthrough_enabled() else "blend_mode"))
-	else:
-		_log("[PT] All methods failed")
-		_log("[PT] Supported blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
+	get_viewport().transparent_bg = true
+	world_env.environment.background_mode = Environment.BG_COLOR
+	world_env.environment.background_color = Color(0, 0, 0, 0)
+	interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
+	passthrough_enabled = true
+	%PassthroughButton.text = "Passthrough: On"
+	_log("[PT] Passthrough enabled via blend mode")
+	_log("[PT] Blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
 
 func _cycle_fps():
 	var rates = [60, 90, 120]

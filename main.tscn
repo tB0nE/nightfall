@@ -20,8 +20,8 @@ height = 5.0
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
+background_color = Color(0, 0, 0, 0)
 tonemap_mode = 2
-glow_enabled = true
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_1"]
 render_priority = 0
