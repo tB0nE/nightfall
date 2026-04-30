@@ -45,6 +45,9 @@ var stats_network_events: int = 0
 var passthrough_enabled: bool = false
 var stream_fps: int = 60
 var host_resolution: Vector2i = Vector2i(1920, 1080)
+var resolution_idx: int = -1
+var resolutions: Array = [Vector2i(-1, -1), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160)]
+var resolution_labels: Array = ["Auto", "1080p", "1440p", "4K"]
 
 var corner_handles: Array = []
 var grabbed_corner_idx: int = -1
@@ -55,6 +58,7 @@ var xr_interaction: XRInteraction
 var input_handler: InputHandler
 var ui_controller: UIController
 var auto_detect: AutoDetect
+var depth_estimator: DepthEstimatorModule
 
 var _log_lines: PackedStringArray = []
 
@@ -85,6 +89,8 @@ func _ready():
 	input_handler = InputHandler.new(self)
 	ui_controller = UIController.new(self)
 	auto_detect = AutoDetect.new(self)
+	depth_estimator = DepthEstimatorModule.new(self)
+	depth_estimator.setup()
 
 	%ScreenGrabBar.material_override = %ScreenGrabBar.material_override.duplicate()
 	%MenuGrabBar.material_override = %MenuGrabBar.material_override.duplicate()
@@ -98,6 +104,7 @@ func _ready():
 	%ExitButton.pressed.connect(func(): get_tree().quit())
 	%PassthroughButton.button_down.connect(func(): _toggle_passthrough())
 	%FPSButton.button_down.connect(func(): _cycle_fps())
+	%ResButton.button_down.connect(func(): _cycle_resolution())
 	%IPInput.gui_input.connect(func(e): ui_controller.on_ipinput_gui_input(e))
 	ui_controller.setup_numpad()
 
@@ -185,6 +192,9 @@ func _process(delta):
 
 	auto_detect.process(delta)
 
+	if depth_estimator:
+		depth_estimator.process(delta)
+
 	if is_streaming:
 		stats_frame_times.append(delta)
 		stats_timer += delta
@@ -239,6 +249,21 @@ func _cycle_fps():
 	%FPSButton.text = "Refresh: %dHz" % stream_fps
 	if is_streaming and current_host_id >= 0:
 		_log("[FPS] Restarting stream at %dHz" % stream_fps)
+		moon.stop_play_stream()
+		await get_tree().create_timer(0.5).timeout
+		stream_manager.start_stream(current_host_id, 881448767)
+
+func _cycle_resolution():
+	resolution_idx = (resolution_idx + 1) % resolutions.size()
+	if resolution_idx == 0:
+		resolution_idx = -1
+		host_resolution = Vector2i(1920, 1080)
+		%ResButton.text = "Res: Auto"
+	else:
+		host_resolution = resolutions[resolution_idx]
+		%ResButton.text = "Res: %s" % resolution_labels[resolution_idx]
+	if is_streaming and current_host_id >= 0:
+		_log("[RES] Restarting stream at %dx%d" % [host_resolution.x, host_resolution.y])
 		moon.stop_play_stream()
 		await get_tree().create_timer(0.5).timeout
 		stream_manager.start_stream(current_host_id, 881448767)

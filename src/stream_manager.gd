@@ -9,9 +9,9 @@ func _init(owner: Node3D):
 	main = owner
 
 func start_stream(host_id: int, app_id: int):
-	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d" % [host_id, app_id, main.host_resolution.x, main.host_resolution.y, main.stream_fps])
 	var w = main.host_resolution.x
 	var h = main.host_resolution.y
+	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d" % [host_id, app_id, w, h, main.stream_fps])
 	bitrate = 20000
 	if w >= 3840:
 		bitrate = 80000
@@ -44,7 +44,7 @@ func query_host_resolution(ip: String):
 	var err = http_request.request(url)
 	main._log("[RES] HTTP request error: %d (OK=%d)" % [err, OK])
 	await main.get_tree().create_timer(5.0).timeout
-	if main.host_resolution == Vector2i(1920, 1080):
+	if main.resolution_idx == -1 and main.host_resolution == Vector2i(1920, 1080):
 		main._log("[RES] HTTP failed, trying comp_mgr")
 		_try_comp_mgr_resolution()
 	main._log("[RES] Final resolution: %dx%d" % [main.host_resolution.x, main.host_resolution.y])
@@ -66,7 +66,8 @@ func _on_serverinfo_response(_result: int, code: int, _headers: PackedStringArra
 	main._log("[RES] serverinfo full XML: %s" % xml)
 	var display_data = _extract_display_info(xml)
 	if display_data != Vector2i.ZERO:
-		main.host_resolution = display_data
+		if main.resolution_idx == -1:
+			main.host_resolution = display_data
 		main._log("[RES] Detected host resolution: %dx%d" % [display_data.x, display_data.y])
 		main.get_node("%StatusLabel").text = "Host: %dx%d" % [display_data.x, display_data.y]
 	else:
@@ -168,6 +169,8 @@ func bind_texture():
 	var stream_tex = main.stream_viewport.get_texture()
 	main.screen_mesh.material_override.set_shader_parameter("main_texture", stream_tex)
 	main.detection_target.texture = stream_tex
+	if main.depth_estimator:
+		main.depth_estimator.bind_stream_texture()
 	var ui_tex = main.ui_viewport.get_texture()
 	main.ui_panel_3d.material_override.albedo_texture = ui_tex
 

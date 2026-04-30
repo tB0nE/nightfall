@@ -14,6 +14,7 @@ public class GodotApp extends GodotActivity {
 	public static native void setAndroidContext(Object context);
 
 	public static String jniResult = "NOT_RUN";
+	public static DepthEstimator depthEstimator;
 
 	static {
 		if (BuildConfig.FLAVOR.equals("mono")) {
@@ -48,11 +49,27 @@ public class GodotApp extends GodotActivity {
 		EdgeToEdge.enable(this);
 		super.onCreate(savedInstanceState);
 		setAndroidContext(getApplicationContext());
+		depthEstimator = new DepthEstimator();
+		depthEstimator.initialize(getApplicationContext());
+		Log.i("GODOT", "DepthEstimator initialized: " + depthEstimator.isInitialized());
 		try {
 			java.io.FileOutputStream fos = openFileOutput("jni_result.txt", MODE_PRIVATE);
 			fos.write(jniResult.getBytes());
 			fos.close();
 		} catch (Exception ignored) {}
+	}
+
+	public static void submitDepthFrame(byte[] pixels, int w, int h) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.submitFrame(pixels, w, h);
+		}
+	}
+
+	public static byte[] getLatestDepthMap() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getLatestDepth();
+		}
+		return null;
 	}
 
 	@Override

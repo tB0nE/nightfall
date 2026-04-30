@@ -176,6 +176,12 @@ layout_mode = 2
 focus_mode = 0
 text = "Refresh: 60Hz"
 
+[node name="ResButton" type="Button" parent="UIViewport/UIPanel/VBoxContainer" unique_id=2468101213]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+text = "Res: Auto"
+
 [node name="PinLabel" type="Label" parent="UIViewport/UIPanel/VBoxContainer" unique_id=1525647552]
 unique_name_in_owner = true
 visible = false
@@ -299,7 +305,7 @@ shape = SubResource("BoxShape3D_UI")
 
 [node name="MenuGrabBar" type="MeshInstance3D" parent="UIPanel3D" unique_id=115521509]
 unique_name_in_owner = true
-transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, 0, -0.15, 0)
+transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, 0, -0.35, 0)
 visible = false
 material_override = SubResource("StandardMaterial3D_GrabBar")
 mesh = SubResource("CylinderMesh_GrabBar")
