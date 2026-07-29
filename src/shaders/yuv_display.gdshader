@@ -16,9 +16,11 @@ uniform sampler2D depth_texture : hint_default_white, filter_linear, repeat_disa
 uniform float convergence = 0.5;
 uniform float balance_shift = 0.5;
 
+uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec2 tile_inset = vec2(0.002);
+
 vec3 yuv_to_rgb(vec2 uv) {
 	if (color_matrix_type == 3) {
-		// RGBA passthrough - data was converted from BGRA in C++
 		return texture(tex_y, uv).rgb;
 	}
 
@@ -74,7 +76,18 @@ vec3 yuv_to_rgb(vec2 uv) {
 	return rgb;
 }
 
+vec2 to_frame_uv(vec2 t) {
+	return uv_region.xy + clamp(t, tile_inset, vec2(1.0) - tile_inset) * uv_region.zw;
+}
+
+vec2 clamp_to_region(vec2 f) {
+	vec2 ts = (yuv_mode > 0) ? vec2(textureSize(tex_y, 0)) : vec2(textureSize(main_texture, 0));
+	vec2 guard = 0.5 / ts;
+	return clamp(f, uv_region.xy + guard, uv_region.xy + uv_region.zw - guard);
+}
+
 vec3 sample_stream(vec2 uv) {
+	uv = clamp_to_region(uv);
 	if (yuv_mode > 0) {
 		return yuv_to_rgb(uv);
 	}
@@ -121,21 +134,17 @@ vec3 filtered_stream(vec2 uv) {
 }
 
 void fragment() {
-	vec2 uv = clamp(UV, vec2(0.002), vec2(0.998));
+	vec2 tile_uv = UV;
 
 	if (stereo_mode == 1) {
-		if (eye_index == 1) {
-			uv = vec2(uv.x * 0.5, uv.y);
-		} else {
-			uv = vec2(uv.x * 0.5 + 0.5, uv.y);
-		}
+		tile_uv = (eye_index == 1) ? vec2(tile_uv.x * 0.5, tile_uv.y) : vec2(tile_uv.x * 0.5 + 0.5, tile_uv.y);
 	} else if (stereo_mode == 2) {
-		if (eye_index == 1) {
-			uv = vec2(uv.x * 0.5, uv.y * 0.5 + 0.25);
-		} else {
-			uv = vec2(uv.x * 0.5 + 0.5, uv.y * 0.5 + 0.25);
-		}
-	} else if (stereo_mode >= 3) {
+		tile_uv = (eye_index == 1) ? vec2(tile_uv.x * 0.5, tile_uv.y * 0.5 + 0.25) : vec2(tile_uv.x * 0.5 + 0.5, tile_uv.y * 0.5 + 0.25);
+	}
+
+	vec2 uv = to_frame_uv(tile_uv);
+
+	if (stereo_mode >= 3) {
 		vec2 depth_texel = 1.0 / vec2(textureSize(depth_texture, 0));
 		float parallax = 0.042;
 		float half_parallax = parallax * 0.5;
@@ -180,8 +189,8 @@ void fragment() {
 		vec3 col = filtered_stream(uv);
 		COLOR = vec4(col, 1.0);
 	} else if (yuv_mode > 0) {
-		COLOR = vec4(yuv_to_rgb(uv), 1.0);
+		COLOR = vec4(yuv_to_rgb(clamp_to_region(uv)), 1.0);
 	} else {
-		COLOR = texture(main_texture, uv);
+		COLOR = texture(main_texture, clamp_to_region(uv));
 	}
 }

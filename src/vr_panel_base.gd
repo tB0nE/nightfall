@@ -41,6 +41,7 @@ func _setup_mesh(mesh_name: String):
 	tex_mat.albedo_texture = viewport.get_texture()
 	mesh_instance.set_surface_override_material(0, tex_mat)
 	mesh_instance.extra_cull_margin = 10.0
+	mesh_instance.set_meta(&"nf_role", &"panel")
 	add_child(mesh_instance)
 
 func _setup_collision():
@@ -117,9 +118,9 @@ func _apply_border_active(border_panel: PanelContainer, active: bool, base_color
 		border_panel.add_theme_stylebox_override("panel", style)
 
 func _save_offset():
-	var scr_basis = main.screen_mesh.global_transform.basis.inverse()
-	_saved_offset = scr_basis * (global_position - main.screen_mesh.global_position)
-	_saved_rot_y = rotation.y - main.screen_mesh.global_rotation.y
+	var scr_basis = main.primary_screen.global_transform.basis.inverse()
+	_saved_offset = scr_basis * (global_position - main.primary_screen.global_position)
+	_saved_rot_y = rotation.y - main.primary_screen.global_rotation.y
 	_saved_rot_x = rotation.x
 	_has_saved_offset = true
 
@@ -130,8 +131,8 @@ func toggle():
 	var new_vis = not visible
 	if new_vis:
 		if _has_saved_offset:
-			global_position = main.screen_mesh.global_position + main.screen_mesh.global_transform.basis * _saved_offset
-			rotation.y = main.screen_mesh.global_rotation.y + _saved_rot_y
+			global_position = main.primary_screen.global_position + main.primary_screen.global_transform.basis * _saved_offset
+			rotation.y = main.primary_screen.global_rotation.y + _saved_rot_y
 			rotation.x = _saved_rot_x
 		else:
 			_place_default()

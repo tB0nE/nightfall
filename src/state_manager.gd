@@ -41,6 +41,17 @@ func save_host_state():
 	save.set_value(ip, "ai_3d_mode", main.ai_3d_mode)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
+	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
+	var placements := []
+	for s in main.screens:
+		placements.append({
+			"id": String(s.monitor_id),
+			"pos": [s.position.x, s.position.y, s.position.z],
+			"rot": [s.rotation.x, s.rotation.y, s.rotation.z],
+			"size": [s.mesh_size.x, s.mesh_size.y],
+			"curvature": s.curvature,
+		})
+	save.set_value(ip, "screen_placements", JSON.stringify(placements))
 	save.save("user://host_state.cfg")
 
 func load_host_state(ip: String):
@@ -86,6 +97,38 @@ func load_host_state(ip: String):
 		main.depth_estimator.set_enabled(main.settings_controller.get_stereo_mode() >= 3)
 	main.settings_controller.apply_stereo()
 
+	var layout_json = save.get_value(ip, "screen_layout", "")
+	var loaded_layout: ScreenLayout = null
+	if not layout_json.is_empty():
+		var parsed = JSON.parse_string(layout_json)
+		if parsed is Dictionary:
+			var candidate = ScreenLayout.from_dict(parsed)
+			if candidate.validate(candidate.frame_size) == "":
+				loaded_layout = candidate
+			else:
+				main._log("[LAYOUT] Saved layout failed validation, using single()")
+	if loaded_layout == null:
+		loaded_layout = ScreenLayout.single(main.layout.frame_size if main.layout else Vector2i(1920, 1080))
+	main.settings_controller.apply_screen_layout(loaded_layout)
+
+	var placements_json = save.get_value(ip, "screen_placements", "")
+	if not placements_json.is_empty():
+		var placements = JSON.parse_string(placements_json)
+		if placements is Array:
+			for entry in placements:
+				var mid = StringName(entry.get("id", ""))
+				for s in main.screens:
+					if s.monitor_id == mid:
+						var pos = entry.get("pos", [0, 0, 0])
+						var rot = entry.get("rot", [0, 0, 0])
+						var size = entry.get("size", [s.mesh_size.x, s.mesh_size.y])
+						s.position = Vector3(pos[0], pos[1], pos[2])
+						s.rotation = Vector3(rot[0], rot[1], rot[2])
+						s.mesh_size = Vector2(size[0], size[1])
+						s.curvature = entry.get("curvature", s.curvature)
+						s.apply_curvature()
+						break
+
 func sync_ui_to_settings():
 	if main.bezel_mesh:
 		main.bezel_mesh.visible = main.bezel_enabled and not main.comp.in_use
@@ -109,6 +152,7 @@ func sync_ui_to_settings():
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
+		main.ui_controller.update_monitor_tab()
 	if main.screen_manager:
 		main.screen_manager.update_bezel_size()
 	if main.settings_controller:

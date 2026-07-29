@@ -190,11 +190,28 @@ func resize_stream_viewport(w: int, h: int):
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
+	var new_frame = Vector2i(w, h)
+	if main.layout.frame_size != new_frame:
+		var old_aspect = float(main.layout.frame_size.x) / float(main.layout.frame_size.y) if main.layout.frame_size.y > 0 else 1.0
+		var new_aspect = float(w) / float(h) if h > 0 else 1.0
+		if absf(old_aspect - new_aspect) < 0.01:
+			var rescaled = main.layout.rescale_to(new_frame)
+			if rescaled.validate(new_frame) == "":
+				main.layout = rescaled
+				main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+			else:
+				main._log("[LAYOUT] Rescale produced an invalid layout, resetting to single()")
+				main.layout = ScreenLayout.single(new_frame)
+				main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+		else:
+			main._log("[LAYOUT] Stream aspect changed (%.3f -> %.3f), resetting display layout to single()" % [old_aspect, new_aspect])
+			main.layout = ScreenLayout.single(new_frame)
+			main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+			main._ui_status_label.text = "Display layout reset: stream resolution changed"
 	main.screen_manager.resize_screen_to_aspect(w, h)
-	if main._xr_render_width > 0 and main.screen_mesh.material_override is ShaderMaterial:
-		var scale = float(w) / float(main._xr_render_width)
-		main.screen_mesh.material_override.set_shader_parameter("blur_scale", scale)
-	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, float(w) / float(main._xr_render_width) if main._xr_render_width > 0 else 1.0])
+	if main.screen_mesh.material_override is ShaderMaterial:
+		main.screen_mesh.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(main.primary_screen))
+	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, main.get_blur_scale(main.primary_screen)])
 
 func on_pair_pressed():
 	var ip = main.get_node("%IPInput").text

@@ -1,0 +1,54 @@
+[gd_scene format=3 uid="uid://br6c5obrykci2"]
+
+[ext_resource type="Shader" path="res://src/shaders/stereo_screen.gdshader" id="1_shader"]
+[ext_resource type="Script" path="res://src/vr_screen.gd" id="2_vr_screen"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_1"]
+resource_local_to_scene = true
+render_priority = 0
+shader = ExtResource("1_shader")
+shader_parameter/stereo_mode = 0
+
+[sub_resource type="QuadMesh" id="QuadMesh_1"]
+size = Vector2(2.24, 1.26)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_Screen"]
+size = Vector3(2.24, 1.26, 0.01)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_GrabBar"]
+transparency = 1
+shading_mode = 0
+albedo_color = Color(1, 1, 1, 0.05)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_GrabBar"]
+top_radius = 0.01
+bottom_radius = 0.01
+height = 0.3
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_GrabBar"]
+size = Vector3(0.3, 0.1, 0.1)
+
+[node name="MeshInstance3D" type="MeshInstance3D"]
+script = ExtResource("2_vr_screen")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -3)
+material_override = SubResource("ShaderMaterial_1")
+mesh = SubResource("QuadMesh_1")
+
+[node name="Area3D" type="Area3D" parent="."]
+collision_layer = 2
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Area3D"]
+shape = SubResource("BoxShape3D_Screen")
+
+[node name="ScreenGrabBar" type="MeshInstance3D" parent="."]
+unique_name_in_owner = true
+transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, 0, -0.95, 0)
+visible = false
+material_override = SubResource("StandardMaterial3D_GrabBar")
+mesh = SubResource("CylinderMesh_GrabBar")
+
+[node name="Area3D" type="Area3D" parent="ScreenGrabBar"]
+collision_layer = 2
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="ScreenGrabBar/Area3D"]
+shape = SubResource("BoxShape3D_GrabBar")

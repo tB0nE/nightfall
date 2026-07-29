@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://c8y7y6x5w4v3u"]
 
 [ext_resource type="Script" uid="uid://dsug4py72iyy3" path="res://main.gd" id="1_main"]
-[ext_resource type="Shader" path="res://src/shaders/stereo_screen.gdshader" id="2_shader"]
+[ext_resource type="PackedScene" path="res://src/vr_screen.tscn" id="3_vr_screen_tscn"]
 
 [sub_resource type="PlaceholderTexture2D" id="PlaceholderTexture2D_1"]
 size = Vector2(8, 8)
@@ -13,6 +13,9 @@ transparency = 1
 render_priority = 127
 no_depth_test = true
 
+[sub_resource type="ViewportTexture" id="ViewportTexture_UI"]
+viewport_path = NodePath("UIViewport")
+
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_Laser"]
 radius = 0.0015
 height = 0.4
@@ -21,32 +24,6 @@ height = 0.4
 background_mode = 1
 background_color = Color(0, 0, 0, 0)
 tonemap_mode = 2
-
-[sub_resource type="ShaderMaterial" id="ShaderMaterial_1"]
-render_priority = 0
-shader = ExtResource("2_shader")
-shader_parameter/stereo_mode = 0
-
-[sub_resource type="QuadMesh" id="QuadMesh_1"]
-size = Vector2(2.24, 1.26)
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_Screen"]
-size = Vector3(2.24, 1.26, 0.01)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_GrabBar"]
-transparency = 1
-shading_mode = 0
-albedo_color = Color(1, 1, 1, 0.05)
-
-[sub_resource type="CylinderMesh" id="CylinderMesh_GrabBar"]
-top_radius = 0.01
-bottom_radius = 0.01
-height = 0.3
-
-[sub_resource type="BoxShape3D" id="BoxShape3D_GrabBar"]
-size = Vector3(0.3, 0.1, 0.1)
-
-[sub_resource type="ViewportTexture" id="ViewportTexture_UI"]
 viewport_path = NodePath("UIViewport")
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_UI"]
@@ -195,29 +172,7 @@ environment = SubResource("Environment_1")
 [node name="StreamAudioPlayer" type="AudioStreamPlayer" parent="." unique_id=2001644054]
 unique_name_in_owner = true
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1272066368]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -3)
-material_override = SubResource("ShaderMaterial_1")
-mesh = SubResource("QuadMesh_1")
-
-[node name="Area3D" type="Area3D" parent="MeshInstance3D" unique_id=309808789]
-collision_layer = 2
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D/Area3D" unique_id=796263493]
-shape = SubResource("BoxShape3D_Screen")
-
-[node name="ScreenGrabBar" type="MeshInstance3D" parent="MeshInstance3D" unique_id=604453482]
-unique_name_in_owner = true
-transform = Transform3D(-4.37114e-08, 1, 0, -1, -4.37114e-08, 0, 0, 0, 1, 0, -0.95, 0)
-visible = false
-material_override = SubResource("StandardMaterial3D_GrabBar")
-mesh = SubResource("CylinderMesh_GrabBar")
-
-[node name="Area3D" type="Area3D" parent="MeshInstance3D/ScreenGrabBar" unique_id=868386641]
-collision_layer = 2
-
-[node name="CollisionShape3D" type="CollisionShape3D" parent="MeshInstance3D/ScreenGrabBar/Area3D" unique_id=1904638166]
-shape = SubResource("BoxShape3D_GrabBar")
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." instance=ExtResource("3_vr_screen_tscn")]
 
 [node name="UIPanel3D" type="MeshInstance3D" parent="." unique_id=1883258044]
 unique_name_in_owner = true

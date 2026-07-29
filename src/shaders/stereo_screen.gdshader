@@ -17,6 +17,9 @@ uniform int color_matrix_type = 1;
 uniform int color_range = 0;
 uniform float blur_scale = 1.0;
 
+uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec2 tile_inset = vec2(0.002);
+
 vec3 yuv_to_rgb(vec2 uv) {
 	float y_raw = texture(tex_y, uv).r;
 	float u_raw = 0.5;
@@ -74,8 +77,18 @@ vec3 srgb_to_linear(vec3 c) {
 	return pow(c, vec3(2.2));
 }
 
+vec2 to_frame_uv(vec2 t) {
+	return uv_region.xy + clamp(t, tile_inset, vec2(1.0) - tile_inset) * uv_region.zw;
+}
+
+vec2 clamp_to_region(vec2 f) {
+	vec2 ts = (yuv_mode > 0) ? vec2(textureSize(tex_y, 0)) : vec2(textureSize(main_texture, 0));
+	vec2 guard = 0.5 / ts;
+	return clamp(f, uv_region.xy + guard, uv_region.xy + uv_region.zw - guard);
+}
+
 vec3 sample_stream(vec2 uv) {
-	uv = clamp(uv, vec2(0.0), vec2(1.0));
+	uv = clamp_to_region(uv);
 	if (yuv_mode > 0) {
 		return srgb_to_linear(yuv_to_rgb(uv));
 	}
@@ -102,74 +115,28 @@ vec3 cas_sharpen_stream(vec2 uv, float strength) {
 	return c + weight * (c - avg);
 }
 
-vec3 cas_sharpen_rgb(sampler2D tex, vec2 uv, float strength) {
-	vec2 texel = 1.0 / vec2(textureSize(tex, 0));
-
-	vec3 c = texture(tex, uv).rgb;
-	vec3 n = texture(tex, uv + vec2( 0.0, -texel.y)).rgb;
-	vec3 w = texture(tex, uv + vec2(-texel.x,  0.0)).rgb;
-	vec3 e = texture(tex, uv + vec2( texel.x,  0.0)).rgb;
-	vec3 s = texture(tex, uv + vec2( 0.0,  texel.y)).rgb;
-
-	vec3 mn = min(c, min(n, min(w, min(e, s))));
-	vec3 mx = max(c, max(n, max(w, max(e, s))));
-	vec3 range = mx - mn;
-
-	vec3 peak = max(mx, vec3(0.0001));
-	vec3 weight = vec3(strength) * clamp((peak - range) / peak, vec3(0.0), vec3(1.0));
-
-	vec3 avg = (n + w + e + s) * 0.25;
-	return c + weight * (c - avg);
-}
-
 vec3 filtered_stream(vec2 uv) {
-	if (yuv_mode > 0) {
-		vec2 texel = 1.0 / vec2(textureSize(tex_y, 0)) * blur_scale;
-		vec3 original = sample_stream(uv);
-
-		if (filter_mode == 0 && sharpen <= 0.0) {
-			return original;
-		}
-
-		if (filter_mode > 0) {
-		float s = float(filter_mode) * 4.0;
-			vec3 blurred = original * 4.0;
-			blurred += sample_stream(uv + vec2(-1.0, -1.0) * texel * s);
-			blurred += sample_stream(uv + vec2( 1.0, -1.0) * texel * s);
-			blurred += sample_stream(uv + vec2(-1.0,  1.0) * texel * s);
-			blurred += sample_stream(uv + vec2( 1.0,  1.0) * texel * s);
-			blurred += sample_stream(uv + vec2(-1.0,  0.0) * texel * s) * 2.0;
-			blurred += sample_stream(uv + vec2( 1.0,  0.0) * texel * s) * 2.0;
-			blurred += sample_stream(uv + vec2( 0.0, -1.0) * texel * s) * 2.0;
-			blurred += sample_stream(uv + vec2( 0.0,  1.0) * texel * s) * 2.0;
-			blurred /= 16.0;
-			if (sharpen > 0.0) {
-				return blurred + sharpen * (original - blurred);
-			}
-			return blurred;
-		}
-
-		return cas_sharpen_stream(uv, sharpen);
-	}
-
-	vec2 texel = 1.0 / vec2(textureSize(main_texture, 0)) * blur_scale;
-	vec3 original = texture(main_texture, uv).rgb;
+	vec3 original = sample_stream(uv);
 
 	if (filter_mode == 0 && sharpen <= 0.0) {
 		return original;
 	}
 
+	vec2 texel = (yuv_mode > 0)
+		? 1.0 / vec2(textureSize(tex_y, 0)) * blur_scale
+		: 1.0 / vec2(textureSize(main_texture, 0)) * blur_scale;
+
 	if (filter_mode > 0) {
 		float s = float(filter_mode) * 4.0;
 		vec3 blurred = original * 4.0;
-		blurred += texture(main_texture, uv + vec2(-1.0, -1.0) * texel * s).rgb;
-		blurred += texture(main_texture, uv + vec2( 1.0, -1.0) * texel * s).rgb;
-		blurred += texture(main_texture, uv + vec2(-1.0,  1.0) * texel * s).rgb;
-		blurred += texture(main_texture, uv + vec2( 1.0,  1.0) * texel * s).rgb;
-		blurred += texture(main_texture, uv + vec2(-1.0,  0.0) * texel * s).rgb * 2.0;
-		blurred += texture(main_texture, uv + vec2( 1.0,  0.0) * texel * s).rgb * 2.0;
-		blurred += texture(main_texture, uv + vec2( 0.0, -1.0) * texel * s).rgb * 2.0;
-		blurred += texture(main_texture, uv + vec2( 0.0,  1.0) * texel * s).rgb * 2.0;
+		blurred += sample_stream(uv + vec2(-1.0, -1.0) * texel * s);
+		blurred += sample_stream(uv + vec2( 1.0, -1.0) * texel * s);
+		blurred += sample_stream(uv + vec2(-1.0,  1.0) * texel * s);
+		blurred += sample_stream(uv + vec2( 1.0,  1.0) * texel * s);
+		blurred += sample_stream(uv + vec2(-1.0,  0.0) * texel * s) * 2.0;
+		blurred += sample_stream(uv + vec2( 1.0,  0.0) * texel * s) * 2.0;
+		blurred += sample_stream(uv + vec2( 0.0, -1.0) * texel * s) * 2.0;
+		blurred += sample_stream(uv + vec2( 0.0,  1.0) * texel * s) * 2.0;
 		blurred /= 16.0;
 		if (sharpen > 0.0) {
 			return blurred + sharpen * (original - blurred);
@@ -177,28 +144,26 @@ vec3 filtered_stream(vec2 uv) {
 		return blurred;
 	}
 
-	return cas_sharpen_rgb(main_texture, uv, sharpen);
+	return cas_sharpen_stream(uv, sharpen);
 }
 
 void fragment() {
-	vec2 uv = clamp(UV, vec2(0.002), vec2(0.998));
-	
-	if (stereo_mode == 0) {
-		ALBEDO = filtered_stream(uv);
-	} 
-	else if (stereo_mode == 1) {
-		if (int(VIEW_INDEX) == 0) {
-			ALBEDO = filtered_stream(vec2(uv.x * 0.5, uv.y));
-		} else {
-			ALBEDO = filtered_stream(vec2(uv.x * 0.5 + 0.5, uv.y));
-		}
+	vec2 tile_uv = UV;
+
+	if (stereo_mode == 1) {
+		tile_uv = (int(VIEW_INDEX) == 0)
+			? vec2(tile_uv.x * 0.5, tile_uv.y)
+			: vec2(tile_uv.x * 0.5 + 0.5, tile_uv.y);
+	} else if (stereo_mode == 2) {
+		tile_uv = (int(VIEW_INDEX) == 0)
+			? vec2(tile_uv.x * 0.5, tile_uv.y * 0.5 + 0.25)
+			: vec2(tile_uv.x * 0.5 + 0.5, tile_uv.y * 0.5 + 0.25);
 	}
-	else if (stereo_mode == 2) {
-		if (int(VIEW_INDEX) == 0) {
-			ALBEDO = filtered_stream(vec2(uv.x * 0.5, uv.y * 0.5 + 0.25));
-		} else {
-			ALBEDO = filtered_stream(vec2(uv.x * 0.5 + 0.5, uv.y * 0.5 + 0.25));
-		}
+
+	vec2 uv = to_frame_uv(tile_uv);
+
+	if (stereo_mode == 0 || stereo_mode == 1 || stereo_mode == 2) {
+		ALBEDO = filtered_stream(uv);
 	}
 	else if (stereo_mode == 3 || stereo_mode == 4) {
 		vec2 depth_texel = 1.0 / vec2(textureSize(depth_texture, 0));

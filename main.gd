@@ -107,8 +107,14 @@ var bg_names: Array = ["Starfield", "Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
 var bezel_enabled: bool = true
-var bezel_mesh: MeshInstance3D
-var curvature: int = 2
+var bezel_mesh: MeshInstance3D:
+	get: return primary_screen.bezel_mesh if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.bezel_mesh = v
+var curvature: int:
+	get: return primary_screen.curvature if primary_screen else 2
+	set(v):
+		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
 var smooth_mode: int = 0
 var sharpen_mode: int = 0
@@ -116,7 +122,10 @@ var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
-var _mesh_size: Vector2 = Vector2(2.24, 1.26)
+var _mesh_size: Vector2:
+	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
+	set(v):
+		if primary_screen: primary_screen.mesh_size = v
 var stream_fps: int = 60
 var _cached_filter_mode: int = -1
 var _cached_sharpen: float = -1.0
@@ -143,9 +152,17 @@ var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
-var corner_handles: Array = []
+var corner_handles: Array:
+	get: return primary_screen.corner_handles if primary_screen else []
+	set(v):
+		if primary_screen: primary_screen.corner_handles = v
 var grabbed_corner_idx: int = -1
+var grabbed_corner_screen: VRScreen = null
 var corner_anchor_world: Vector3 = Vector3.ZERO
+var screens: Array[VRScreen] = []
+var primary_screen: VRScreen = null
+var layout: ScreenLayout = null
+var _edit_monitor_idx: int = 0
 
 var stream_manager: StreamManager
 var xr_interaction: XRInteraction
@@ -163,48 +180,131 @@ var controller_mapper: ControllerMapper
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 
-var comp_cylinder: Node3D = null
-var _comp_cyl_center := Vector3.ZERO
-var _comp_cyl_radius := 0.0
-var _comp_cyl_central_angle := 0.0
 var comp_cursor: Node3D = null
 var comp_ui: Node3D = null
 var comp_kb: Node3D = null
 var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null
-var comp_layer: Node3D = null
-var comp_viewport: SubViewport = null
-var comp_yuv_rect: ColorRect = null
-var comp_bezel_rect: ColorRect = null
-var comp_shader_mat: ShaderMaterial = null
-var comp_cylinder_left: Node3D = null
-var comp_cylinder_right: Node3D = null
-var comp_viewport_left: SubViewport = null
-var comp_viewport_right: SubViewport = null
-var comp_yuv_rect_left: ColorRect = null
-var comp_yuv_rect_right: ColorRect = null
-var comp_bezel_rect_left: ColorRect = null
-var comp_bezel_rect_right: ColorRect = null
-var comp_shader_mat_left: ShaderMaterial = null
-var comp_shader_mat_right: ShaderMaterial = null
-var comp_stream_cursor: TextureRect = null
-var comp_stream_cursor_circle: ColorRect = null
-var comp_stream_cursor_left: TextureRect = null
-var comp_stream_cursor_circle_left: ColorRect = null
-var comp_stream_cursor_right: TextureRect = null
-var comp_stream_cursor_circle_right: ColorRect = null
-var _screen_mesh_original_mat: Material = null
+
+var comp_cylinder: Node3D:
+	get: return primary_screen.comp_cylinder if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder = v
+var _comp_cyl_center: Vector3:
+	get: return primary_screen._comp_cyl_center if primary_screen else Vector3.ZERO
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_center = v
+var _comp_cyl_radius: float:
+	get: return primary_screen._comp_cyl_radius if primary_screen else 0.0
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_radius = v
+var _comp_cyl_central_angle: float:
+	get: return primary_screen._comp_cyl_central_angle if primary_screen else 0.0
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_central_angle = v
+var comp_layer: Node3D:
+	get: return primary_screen.comp_layer if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_layer = v
+var comp_viewport: SubViewport:
+	get: return primary_screen.comp_viewport if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport = v
+var comp_yuv_rect: ColorRect:
+	get: return primary_screen.comp_yuv_rect if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect = v
+var comp_bezel_rect: ColorRect:
+	get: return primary_screen.comp_bezel_rect if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect = v
+var comp_shader_mat: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat = v
+var comp_cylinder_left: Node3D:
+	get: return primary_screen.comp_cylinder_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder_left = v
+var comp_cylinder_right: Node3D:
+	get: return primary_screen.comp_cylinder_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder_right = v
+var comp_viewport_left: SubViewport:
+	get: return primary_screen.comp_viewport_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport_left = v
+var comp_viewport_right: SubViewport:
+	get: return primary_screen.comp_viewport_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport_right = v
+var comp_yuv_rect_left: ColorRect:
+	get: return primary_screen.comp_yuv_rect_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect_left = v
+var comp_yuv_rect_right: ColorRect:
+	get: return primary_screen.comp_yuv_rect_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect_right = v
+var comp_bezel_rect_left: ColorRect:
+	get: return primary_screen.comp_bezel_rect_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect_left = v
+var comp_bezel_rect_right: ColorRect:
+	get: return primary_screen.comp_bezel_rect_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect_right = v
+var comp_shader_mat_left: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat_left = v
+var comp_shader_mat_right: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat_right = v
+var comp_stream_cursor: TextureRect:
+	get: return primary_screen.comp_stream_cursor if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor = v
+var comp_stream_cursor_circle: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle = v
+var comp_stream_cursor_left: TextureRect:
+	get: return primary_screen.comp_stream_cursor_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_left = v
+var comp_stream_cursor_circle_left: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle_left = v
+var comp_stream_cursor_right: TextureRect:
+	get: return primary_screen.comp_stream_cursor_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_right = v
+var comp_stream_cursor_circle_right: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle_right = v
+var _screen_mesh_original_mat: Material:
+	get: return primary_screen._original_mat if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen._original_mat = v
 
 var _log_lines: PackedStringArray = []
-var _ui_viewport_size := Vector2i(1200, 580)
-var _ui_mesh_size := Vector2(1.20, 0.58)
+var _ui_viewport_size := Vector2i(1200, 650)
+var _ui_mesh_size := Vector2(1.20, 0.65)
 var _ui_host_label: Label
 var _ui_status_label: Label
 var _ui_pt_btn: Button
 var _ui_bg_btn: Button
 var _ui_curve_btn: Button
 var _ui_bezel_btn: Button
+var _ui_mon_add_btn: Button
+var _ui_mon_remove_btn: Button
+var _ui_mon_enabled_btn: Button
+var _ui_mon_primary_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
@@ -274,7 +374,15 @@ func _restore_ui_material():
 func _restore_kb_material():
 	comp.restore_kb_material()
 
-var _comp_base_size := Vector2i(1920, 1080)
+var _comp_base_size: Vector2i:
+	get: return primary_screen.comp_base_size if primary_screen else Vector2i(1920, 1080)
+	set(v):
+		if primary_screen: primary_screen.comp_base_size = v
+
+func get_blur_scale(s: VRScreen) -> float:
+	if _xr_render_width <= 0:
+		return 1.0
+	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
 
 func _get_steady_hit(raw: Vector3) -> Vector3:
 	if pointer_steady == 0 or not is_xr_active:
@@ -293,64 +401,10 @@ func _get_steady_hit(raw: Vector3) -> Vector3:
 	return _steady_hit
 
 func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
-	if curvature == 0 or not comp_layer:
-		return -screen_mesh.global_transform.basis.z
-	var screen_forward = -screen_mesh.global_transform.basis.z
-	if _comp_cyl_radius < 0.01:
-		return screen_forward
-	var cyl_center = screen_mesh.global_position - screen_forward * _comp_cyl_radius
-	var to_hit = hit_point - cyl_center
-	to_hit.y = 0.0
-	if to_hit.length() < 0.001:
-		return screen_forward
-	return to_hit.normalized()
+	return primary_screen.get_cylinder_normal_at(hit_point)
 
 func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
-	var ms = _mesh_size
-	var local_pos = screen_mesh.to_local(hit_point)
-	var uv_x = 0.0
-	var uv_y = clampf((ms.y * 0.5 - local_pos.y) / ms.y, 0.0, 1.0)
-	if curvature == 0:
-		uv_x = clampf((local_pos.x + ms.x * 0.5) / ms.x, 0.0, 1.0)
-	elif comp and comp.in_use and _comp_cyl_radius > 0.01 and _comp_cyl_central_angle > 0.001:
-		var cam_pos = xr_camera.global_position
-		var ray_dir = (hit_point - cam_pos).normalized()
-		var screen_right = screen_mesh.global_transform.basis.x
-		var screen_forward = -screen_mesh.global_transform.basis.z
-		var screen_up = screen_mesh.global_transform.basis.y
-		var oc = cam_pos - _comp_cyl_center
-		var oc_right = oc.dot(screen_right)
-		var oc_fwd = oc.dot(screen_forward)
-		var d_right = ray_dir.dot(screen_right)
-		var d_fwd = ray_dir.dot(screen_forward)
-		var a = d_right * d_right + d_fwd * d_fwd
-		var b = 2.0 * (oc_right * d_right + oc_fwd * d_fwd)
-		var c = oc_right * oc_right + oc_fwd * oc_fwd - _comp_cyl_radius * _comp_cyl_radius
-		var disc = b * b - 4.0 * a * c
-		if disc < 0.0:
-			uv_x = 0.5
-		else:
-			var sqrt_disc = sqrt(disc)
-			var t1 = (-b - sqrt_disc) / (2.0 * a)
-			var t2 = (-b + sqrt_disc) / (2.0 * a)
-			var t = t1 if t1 > 0.001 else t2
-			if t > 0.0:
-				var hit_world = cam_pos + ray_dir * t
-				var hit_local = screen_mesh.to_local(hit_world)
-				uv_y = clampf((ms.y * 0.5 - hit_local.y) / ms.y, 0.0, 1.0)
-				var hit_cyl = hit_world - _comp_cyl_center
-				var hit_right = hit_cyl.dot(screen_right)
-				var hit_fwd = hit_cyl.dot(screen_forward)
-				var hit_angle = atan2(hit_right, hit_fwd)
-				uv_x = clampf((hit_angle + _comp_cyl_central_angle * 0.5) / _comp_cyl_central_angle, 0.0, 1.0)
-			else:
-				uv_x = 0.5
-	else:
-		var radius = 10.0 if curvature == 1 else 4.0
-		var total_angle = ms.x / radius
-		var chord = clampf(local_pos.x / radius, -1.0, 1.0)
-		uv_x = clampf((asin(chord) + total_angle * 0.5) / total_angle, 0.0, 1.0)
-	return Vector2(uv_x, uv_y)
+	return primary_screen.hit_point_to_uv(hit_point)
 
 func _show_stream_cursor(cursor: TextureRect, circle: ColorRect, cx: float, cy: float, cursor_px: int):
 	if cursor_mode == 0:
@@ -371,9 +425,10 @@ func _hide_stream_cursor(cursor: TextureRect, circle: ColorRect):
 	if circle: circle.visible = false
 
 func _hide_all_stream_cursors():
-	_hide_stream_cursor(comp_stream_cursor, comp_stream_cursor_circle)
-	_hide_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left)
-	_hide_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right)
+	for s in screens:
+		_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
+		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
+		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 
 func _update_cursor_layer():
 	if not comp_cursor or not comp.in_use:
@@ -387,34 +442,36 @@ func _update_cursor_layer():
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
 	var use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
 		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
 		var col = active_raycast.get_collider()
-		var par = col.get_parent() if col else null
-		on_screen = (par == screen_mesh)
+		var t = PointerTarget.resolve(col) if col else {"role": &""}
+		on_screen = (t.role == &"screen")
+		hovered_screen = t.screen if on_screen else null
 		use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
 			comp_cursor.visible = false
 			_hide_all_stream_cursors()
 		elif use_in_stream and on_screen:
-			var uv = _hit_point_to_uv(hit_point)
+			var uv = hovered_screen.hit_point_to_uv(hit_point)
 			var bezel_px = 8 if bezel_enabled else 0
-			var base_w = _comp_base_size.x
-			var base_h = _comp_base_size.y
+			var base_w = hovered_screen.comp_base_size.x
+			var base_h = hovered_screen.comp_base_size.y
 			var cursor_px = 48
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
 			comp_cursor.visible = false
-			_show_stream_cursor(comp_stream_cursor, comp_stream_cursor_circle, cx, cy, cursor_px)
-			if stereo > 0:
+			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
+			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
 				if stereo >= 3:
 					left_cx += 0.015 * base_w
-				_show_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
-				_show_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right, cx, cy, cursor_px)
+				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
+				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
 			else:
-				_hide_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left)
-				_hide_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right)
+				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
+				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
 		else:
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
@@ -654,6 +711,9 @@ func _ready():
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():
+		if "--nf-no-xr" in OS.get_cmdline_user_args():
+			_log("[XR] --nf-no-xr set, continuing without OpenXR for desktop testing")
+			return
 		_log("[XR] OpenXR not available - cannot run without VR runtime")
 		if not Engine.is_editor_hint():
 			get_tree().quit()
@@ -739,11 +799,17 @@ func _init_ui():
 	add_child(virtual_keyboard)
 	virtual_keyboard.build()
 
-	%ScreenGrabBar.material_override = %ScreenGrabBar.material_override.duplicate()
+	screen_mesh.setup(self, &"m0")
+	screens = [screen_mesh]
+	primary_screen = screen_mesh
+	layout = ScreenLayout.single(Vector2i(1920, 1080))
+	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
+	screen_mesh.grab_bar.material_override = screen_mesh.grab_bar.material_override.duplicate()
 	_mesh_size = screen_mesh.mesh.size
 	screen_manager.create_corner_handles()
 	screen_manager.create_bezel()
 	_create_contact_dot()
+	ui_panel_3d.set_meta(&"nf_role", &"panel")
 
 	ui_controller.build_ui()
 	welcome_screen.build_welcome_ui()
@@ -751,6 +817,94 @@ func _init_ui():
 	%IPInput.gui_input.connect(func(e): ui_controller.on_ipinput_gui_input(e))
 	ui_controller.setup_numpad()
 	ui_controller.refresh_ui_buttons()
+
+const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
+const MAX_SCREENS := 4
+
+func add_screen(monitor_id: StringName) -> VRScreen:
+	if screens.size() >= MAX_SCREENS:
+		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
+		return null
+	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
+	add_child(s)
+	s.setup(self, monitor_id)
+	s.mesh_size = primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
+	s.curvature = primary_screen.curvature if primary_screen else 2
+	if primary_screen:
+		var gap = 0.05
+		var rightmost = primary_screen
+		for existing in screens:
+			if existing.global_position.x > rightmost.global_position.x:
+				rightmost = existing
+		var right_edge = rightmost.global_position.x + rightmost.mesh_size.x * 0.5 + gap
+		var new_x = right_edge + s.mesh_size.x * 0.5
+		var new_z = primary_screen.global_position.z
+		if primary_screen.curvature > 0:
+			var radius = primary_screen.get_cylinder_radius()
+			var dx = new_x - primary_screen.global_position.x
+			var dz = radius - sqrt(max(radius * radius - dx * dx, 0.0))
+			new_z = primary_screen.global_position.z + dz
+		s.global_position = Vector3(new_x, primary_screen.global_position.y, new_z)
+	s.apply_curvature()
+	screen_manager.create_corner_handles_for(s)
+	screen_manager.create_bezel_for(s)
+	if comp.available:
+		comp.setup_screen(s, false)
+	screens.append(s)
+	_log("[SCREEN] Added screen %s (total=%d)" % [String(monitor_id), screens.size()])
+	if comp.available and comp.in_use and s.comp_cylinder:
+		s.comp_cylinder.visible = true
+		s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		s.comp_shader_mat.set_shader_parameter("stereo_mode", 0)
+		s.bezel_mesh.visible = false
+		comp.update_cylinder_params()
+		comp.update_bezel()
+	var layer_count = screens.size() + 5
+	_log("[COMP] screens=%d layers=%d" % [screens.size(), layer_count])
+	if comp.available and s.comp_cylinder and not s.comp_cylinder.is_natively_supported():
+		_log("[COMP] Screen %s cylinder not natively supported, falling back to mesh rendering for this screen" % String(monitor_id))
+	return s
+
+func remove_screen(monitor_id: StringName) -> void:
+	for i in range(screens.size()):
+		if screens[i].monitor_id == monitor_id:
+			var s = screens[i]
+			if s == primary_screen:
+				_log("[SCREEN] Refusing to remove the primary screen %s" % String(monitor_id))
+				return
+			screens.remove_at(i)
+			if comp.available:
+				if s.comp_cylinder:
+					s.comp_cylinder.set_layer_viewport(null)
+					s.comp_cylinder.set_layer_enabled(false)
+					xr_origin.remove_child(s.comp_cylinder)
+					s.comp_cylinder.queue_free()
+				if s.comp_cylinder_left:
+					s.comp_cylinder_left.set_layer_viewport(null)
+					s.comp_cylinder_left.set_layer_enabled(false)
+					xr_origin.remove_child(s.comp_cylinder_left)
+					s.comp_cylinder_left.queue_free()
+				if s.comp_cylinder_right:
+					s.comp_cylinder_right.set_layer_viewport(null)
+					s.comp_cylinder_right.set_layer_enabled(false)
+					xr_origin.remove_child(s.comp_cylinder_right)
+					s.comp_cylinder_right.queue_free()
+				if s.comp_viewport:
+					remove_child(s.comp_viewport)
+					s.comp_viewport.queue_free()
+				if s.comp_viewport_left:
+					remove_child(s.comp_viewport_left)
+					s.comp_viewport_left.queue_free()
+				if s.comp_viewport_right:
+					remove_child(s.comp_viewport_right)
+					s.comp_viewport_right.queue_free()
+			s.queue_free()
+			_log("[SCREEN] Removed screen %s (total=%d)" % [String(monitor_id), screens.size()])
+			if comp.available:
+				invalidate_yuv_cache()
+				bind_yuv_textures()
+			_update_cursor_layer()
+			return
 
 func _init_stream_backend():
 	if config_mgr and comp_mgr:
@@ -1165,7 +1319,7 @@ func _process_stats(delta):
 	if comp.in_use:
 		var cur_filter = smooth_mode
 		var cur_sharpen = float(sharpen_mode) * 0.5
-		var cur_blur_scale = float(host_resolution.x) / float(_xr_render_width) if _xr_render_width > 0 else 1.0
+		var cur_blur_scale = get_blur_scale(primary_screen)
 		if cur_filter != _cached_filter_mode or cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
 			_cached_filter_mode = cur_filter
 			_cached_sharpen = cur_sharpen
@@ -1248,16 +1402,37 @@ var _ui_saved_rot_y: float = 0.0
 var _ui_saved_rot_x: float = 0.0
 var _ui_has_saved_offset: bool = false
 
+func _anchor_to_primary(node: Node3D, offset: Vector3, rot_y: float, rot_x: float):
+	node.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
+	node.rotation.y = primary_screen.global_rotation.y + rot_y
+	node.rotation.x = rot_x
+
+func set_primary_screen(s: VRScreen) -> void:
+	if s == primary_screen or not screens.has(s):
+		return
+	var panels: Array = [ui_panel_3d]
+	if virtual_keyboard:
+		panels.append(virtual_keyboard)
+	var world_transforms := {}
+	for p in panels:
+		world_transforms[p] = p.global_transform
+	primary_screen = s
+	for p in panels:
+		p.global_transform = world_transforms[p]
+		if p == ui_panel_3d:
+			_save_ui_offset()
+		elif p.has_method("_save_offset"):
+			p._save_offset()
+	state_manager.save_state()
+
 func _set_ui_position():
 	if not is_xr_active:
 		return
 	if _ui_has_saved_offset:
-		ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * _ui_saved_offset
-		ui_panel_3d.rotation.y = screen_mesh.global_rotation.y + _ui_saved_rot_y
-		ui_panel_3d.rotation.x = _ui_saved_rot_x
+		_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 	else:
 		var offset = Vector3(-1.0, -0.5, 0.8)
-		ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * offset
+		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
 		var cam_pos = xr_camera.global_position
 		var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
 		ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
@@ -1265,9 +1440,9 @@ func _set_ui_position():
 		_save_ui_offset()
 
 func _save_ui_offset():
-	var scr_basis = screen_mesh.global_transform.basis.inverse()
-	_ui_saved_offset = scr_basis * (ui_panel_3d.global_position - screen_mesh.global_position)
-	_ui_saved_rot_y = ui_panel_3d.rotation.y - screen_mesh.global_rotation.y
+	var scr_basis = primary_screen.global_transform.basis.inverse()
+	_ui_saved_offset = scr_basis * (ui_panel_3d.global_position - primary_screen.global_position)
+	_ui_saved_rot_y = ui_panel_3d.rotation.y - primary_screen.global_rotation.y
 	_ui_saved_rot_x = ui_panel_3d.rotation.x
 	_ui_has_saved_offset = true
 
@@ -1278,12 +1453,10 @@ func _set_ui_visible(vis: bool):
 		area.process_mode = Node.PROCESS_MODE_INHERIT if vis else Node.PROCESS_MODE_DISABLED
 	if is_xr_active and vis:
 		if _ui_has_saved_offset:
-			ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * _ui_saved_offset
-			ui_panel_3d.rotation.y = screen_mesh.global_rotation.y + _ui_saved_rot_y
-			ui_panel_3d.rotation.x = _ui_saved_rot_x
+			_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 		else:
 			var offset = Vector3(-1.0, -0.5, 0.8)
-			ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * offset
+			ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
 			var cam_pos = xr_camera.global_position
 			var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
 			ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)

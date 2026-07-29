@@ -33,6 +33,8 @@ func cycle_sbs_mode():
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()
+	if main.sbs_mode > 0 and main.screens.size() > 1:
+		main._ui_status_label.text = "SBS applies to primary screen only"
 
 func cycle_ai_3d_mode():
 	if OS.get_name() != "Android":
@@ -203,18 +205,17 @@ func apply_filter():
 		return
 	var filter_val = main.smooth_mode
 	var sharp_val = float(main.sharpen_mode) * 0.5
-	var blur_scale_val = float(main.host_resolution.x) / float(main._xr_render_width) if main._xr_render_width > 0 else 1.0
 	var mat = main.screen_mesh.material_override
 	if mat and mat is ShaderMaterial:
 		mat.set_shader_parameter("filter_mode", filter_val)
 		mat.set_shader_parameter("sharpen", sharp_val)
-		mat.set_shader_parameter("blur_scale", blur_scale_val)
-	var comp_mats = [main.comp_shader_mat, main.comp_shader_mat_left, main.comp_shader_mat_right]
-	for cm in comp_mats:
-		if cm:
-			cm.set_shader_parameter("filter_mode", filter_val)
-			cm.set_shader_parameter("sharpen", sharp_val)
-			cm.set_shader_parameter("blur_scale", blur_scale_val)
+		mat.set_shader_parameter("blur_scale", main.get_blur_scale(main.primary_screen))
+	for s in main.screens:
+		for cm in main.comp.get_shader_mats(s):
+			if cm:
+				cm.set_shader_parameter("filter_mode", filter_val)
+				cm.set_shader_parameter("sharpen", sharp_val)
+				cm.set_shader_parameter("blur_scale", main.get_blur_scale(s))
 
 func apply_display_refresh_rate():
 	if not main.is_xr_active:
@@ -299,3 +300,91 @@ func toggle_hand_tracking():
 	main.tracking_mode = (main.tracking_mode + 1) % 2
 	main.state_manager.save_state()
 	main.state_manager.sync_ui_to_settings()
+
+func apply_screen_layout(new_layout: ScreenLayout):
+	var err = new_layout.validate(new_layout.frame_size)
+	if err != "":
+		main._log("[LAYOUT] Refusing invalid layout: %s" % err)
+		return
+	var wanted_ids: Array = []
+	for m in new_layout.enabled_monitors():
+		wanted_ids.append(m.id)
+	for s in main.screens.duplicate():
+		if not wanted_ids.has(s.monitor_id):
+			main.remove_screen(s.monitor_id)
+	var new_primary: VRScreen = null
+	for m in new_layout.enabled_monitors():
+		var existing: VRScreen = null
+		for s in main.screens:
+			if s.monitor_id == m.id:
+				existing = s
+				break
+		var s = existing if existing else main.add_screen(m.id)
+		if s == null:
+			continue
+		s.apply_monitor(m, new_layout.frame_size)
+		if m.is_primary:
+			new_primary = s
+	main.layout = new_layout
+	if new_primary and new_primary != main.primary_screen:
+		main.set_primary_screen(new_primary)
+	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
+	if main.comp.in_use and main.is_streaming:
+		main.comp.invalidate_yuv_cache()
+		main.comp.bind_yuv_textures()
+	main.ui_controller.update_monitor_tab()
+	main.state_manager.save_state()
+
+func add_monitor():
+	var frame = main.layout.frame_size
+	var count = main.layout.monitors.size()
+	if count >= 4:
+		return
+	var next_count = count + 1
+	var next_layout = ScreenLayout.split_h(frame, next_count) if next_count > 1 else ScreenLayout.single(frame)
+	apply_screen_layout(next_layout)
+
+func remove_monitor():
+	if main.layout.monitors.size() <= 1:
+		return
+	var frame = main.layout.frame_size
+	var count = main.layout.monitors.size()
+	if main._edit_monitor_idx >= count - 1:
+		main._edit_monitor_idx = count - 2
+	var next_layout = ScreenLayout.split_h(frame, count - 1) if (count - 1) > 1 else ScreenLayout.single(frame)
+	apply_screen_layout(next_layout)
+
+func select_monitor(idx: int):
+	if idx < 0 or idx >= main.layout.monitors.size():
+		return
+	main._edit_monitor_idx = idx
+	main.ui_controller.update_monitor_tab()
+
+func toggle_edit_monitor_enabled():
+	if main._edit_monitor_idx >= main.layout.monitors.size():
+		return
+	var m = main.layout.monitors[main._edit_monitor_idx]
+	if m.is_primary:
+		return
+	m.enabled = not m.enabled
+	if not m.enabled:
+		var still_has_primary = false
+		for mm in main.layout.monitors:
+			if mm.enabled and mm.is_primary:
+				still_has_primary = true
+		if not still_has_primary:
+			for mm in main.layout.monitors:
+				if mm.enabled:
+					mm.is_primary = true
+					break
+	apply_screen_layout(main.layout)
+
+func set_edit_monitor_primary():
+	if main._edit_monitor_idx >= main.layout.monitors.size():
+		return
+	var target = main.layout.monitors[main._edit_monitor_idx]
+	if not target.enabled:
+		return
+	for m in main.layout.monitors:
+		m.is_primary = (m == target)
+	apply_screen_layout(main.layout)

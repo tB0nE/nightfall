@@ -5,9 +5,12 @@ var main: Node3D
 var _tab_display: Control
 var _tab_stream: Control
 var _tab_control: Control
+var _tab_monitors: Control
 var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
+var _tab_btn_monitors: Button
+var _mon_icon_row: HBoxContainer
 var _current_tab: int = 0
 
 func _init(owner: Node3D):
@@ -52,9 +55,60 @@ func update_stereo_shader():
 
 func update_3d_btn_state():
 	if main._ui_3d_btn:
-		var disabled = main.sbs_mode > 0
+		var disabled = main.sbs_mode > 0 or main.screens.size() > 1
 		main._ui_3d_btn.disabled = disabled
 		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
+
+func update_monitor_tab():
+	if not _mon_icon_row or not main._ui_mon_remove_btn:
+		return
+	for c in _mon_icon_row.get_children():
+		_mon_icon_row.remove_child(c)
+		c.queue_free()
+	for i in main.layout.monitors.size():
+		var m = main.layout.monitors[i]
+		var btn = Button.new()
+		btn.text = "Monitor " + str(i + 1)
+		btn.focus_mode = Control.FOCUS_NONE
+		btn.add_theme_font_size_override("font_size", 26)
+		btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+		btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+		var bg = Color(1, 1, 1, 0.12) if i == main._edit_monitor_idx else Color(1, 1, 1, 0.04)
+		var style = StyleBoxFlat.new()
+		style.bg_color = bg
+		style.set_corner_radius_all(8)
+		btn.add_theme_stylebox_override("normal", style)
+		var hover = style.duplicate()
+		hover.bg_color = Color(1, 1, 1, 0.18)
+		btn.add_theme_stylebox_override("hover", hover)
+		btn.custom_minimum_size = Vector2(200, 60)
+		var idx = i
+		btn.button_down.connect(func(): main.settings_controller.select_monitor(idx))
+		_mon_icon_row.add_child(btn)
+	if main.layout.monitors.size() < 4:
+		var add_btn = Button.new()
+		add_btn.text = "+"
+		add_btn.focus_mode = Control.FOCUS_NONE
+		add_btn.add_theme_font_size_override("font_size", 26)
+		add_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+		add_btn.custom_minimum_size = Vector2(60, 60)
+		var add_style = StyleBoxFlat.new()
+		add_style.bg_color = Color(1, 1, 1, 0.06)
+		add_style.set_corner_radius_all(8)
+		add_btn.add_theme_stylebox_override("normal", add_style)
+		var add_hover = add_style.duplicate()
+		add_hover.bg_color = Color(1, 1, 1, 0.18)
+		add_btn.add_theme_stylebox_override("hover", add_hover)
+		add_btn.button_down.connect(func(): main.settings_controller.add_monitor())
+		_mon_icon_row.add_child(add_btn)
+	main._edit_monitor_idx = clampi(main._edit_monitor_idx, 0, main.layout.monitors.size() - 1)
+	var m = main.layout.monitors[main._edit_monitor_idx]
+	update_option_btn(main._ui_mon_enabled_btn, "On" if m.enabled else "Off")
+	update_option_btn(main._ui_mon_primary_btn, "Yes" if m.is_primary else "No")
+	update_option_btn(main._ui_mon_remove_btn, "Remove")
+	main._ui_mon_enabled_btn.disabled = m.is_primary
+	main._ui_mon_primary_btn.disabled = not m.enabled
+	main._ui_mon_remove_btn.disabled = main.layout.monitors.size() <= 1
 
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
@@ -65,6 +119,7 @@ func switch_tab(tab: int):
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
 	if _tab_control: _tab_control.visible = (tab == 2)
+	if _tab_monitors: _tab_monitors.visible = (tab == 3)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -81,10 +136,16 @@ func switch_tab(tab: int):
 		_tab_btn_control.add_theme_stylebox_override("normal", tab_active_style if tab == 2 else tab_inactive_style)
 		_tab_btn_control.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 2 else Color(1, 1, 1, 0.5))
+	if _tab_btn_monitors:
+		_tab_btn_monitors.add_theme_stylebox_override("normal", tab_active_style if tab == 3 else tab_inactive_style)
+		_tab_btn_monitors.add_theme_stylebox_override("hover", tab_active_style)
+		_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 3 else Color(1, 1, 1, 0.5))
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
-	# Refresh stored styles for dual-hover tracking
+	if tab == 3:
+		update_monitor_tab()
+
 	var ui_buttons = []
 	_collect_buttons(main.get_node("%UIRoot"), ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
@@ -317,6 +378,14 @@ func build_ui():
 	_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	tab_bar.add_child(_tab_btn_control)
 
+	_tab_btn_monitors = Button.new()
+	_tab_btn_monitors.text = "Monitors"
+	_tab_btn_monitors.focus_mode = Control.FOCUS_NONE
+	_tab_btn_monitors.custom_minimum_size = Vector2(160, 44)
+	_tab_btn_monitors.add_theme_font_size_override("font_size", 22)
+	_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	tab_bar.add_child(_tab_btn_monitors)
+
 	var tab_margin = Control.new()
 	tab_margin.custom_minimum_size = Vector2(0, 12)
 	tab_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -358,8 +427,6 @@ func build_ui():
 	disp_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_display.add_child(disp_row2)
 
-	main._ui_curve_btn = make_option_btn("Curve", "Flat")
-	disp_row2.add_child(main._ui_curve_btn)
 	main._ui_sharpen_btn = make_option_btn("Sharpen", "0%")
 	disp_row2.add_child(main._ui_sharpen_btn)
 	main._ui_render_btn = make_option_btn("Blur", "0%")
@@ -433,8 +500,6 @@ func build_ui():
 	control_row1.add_child(main._ui_cursor_btn)
 	main._ui_steady_btn = make_option_btn("Cursor Steady", "Low")
 	control_row1.add_child(main._ui_steady_btn)
-	main._ui_bezel_btn = make_option_btn("Bezel", "On")
-	control_row1.add_child(main._ui_bezel_btn)
 	main._ui_hand_tracking_btn = make_option_btn("Tracking", "Off")
 	control_row1.add_child(main._ui_hand_tracking_btn)
 
@@ -460,6 +525,66 @@ func build_ui():
 	control_row2.add_child(main._ui_btn_toggle_btn)
 	main._ui_primary_btn = make_option_btn("Primary Hand", "Right")
 	control_row2.add_child(main._ui_primary_btn)
+
+	_tab_monitors = VBoxContainer.new()
+	_tab_monitors.name = "TabMonitors"
+	_tab_monitors.add_theme_constant_override("separation", 0)
+	_tab_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.visible = false
+	vbox.add_child(_tab_monitors)
+
+	var mon_gap = Control.new()
+	mon_gap.custom_minimum_size = Vector2(0, 20)
+	mon_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap)
+
+	_mon_icon_row = HBoxContainer.new()
+	_mon_icon_row.name = "MonIconRow"
+	_mon_icon_row.add_theme_constant_override("separation", 8)
+	_mon_icon_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_mon_icon_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_mon_icon_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(_mon_icon_row)
+
+	var mon_gap2 = Control.new()
+	mon_gap2.custom_minimum_size = Vector2(0, 20)
+	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap2)
+
+	var mon_actions_row1 = HBoxContainer.new()
+	mon_actions_row1.name = "MonActionsRow1"
+	mon_actions_row1.add_theme_constant_override("separation", 12)
+	mon_actions_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	mon_actions_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	mon_actions_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_actions_row1)
+
+	main._ui_mon_enabled_btn = make_option_btn("Enabled", "On")
+	mon_actions_row1.add_child(main._ui_mon_enabled_btn)
+	main._ui_mon_primary_btn = make_option_btn("Primary", "Yes")
+	mon_actions_row1.add_child(main._ui_mon_primary_btn)
+	main._ui_mon_remove_btn = make_option_btn("Remove", "Remove")
+	mon_actions_row1.add_child(main._ui_mon_remove_btn)
+
+	var mon_gap3 = Control.new()
+	mon_gap3.custom_minimum_size = Vector2(0, 12)
+	mon_gap3.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap3)
+
+	var mon_actions_row2 = HBoxContainer.new()
+	mon_actions_row2.name = "MonActionsRow2"
+	mon_actions_row2.add_theme_constant_override("separation", 12)
+	mon_actions_row2.alignment = BoxContainer.ALIGNMENT_CENTER
+	mon_actions_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	mon_actions_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mon_actions_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_actions_row2)
+
+	main._ui_curve_btn = make_option_btn("Curve", "Flat")
+	mon_actions_row2.add_child(main._ui_curve_btn)
+	main._ui_bezel_btn = make_option_btn("Bezel", "On")
+	mon_actions_row2.add_child(main._ui_bezel_btn)
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -520,6 +645,9 @@ func build_ui():
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	main._ui_mon_remove_btn.button_down.connect(func(): main.settings_controller.remove_monitor())
+	main._ui_mon_enabled_btn.button_down.connect(func(): main.settings_controller.toggle_edit_monitor_enabled())
+	main._ui_mon_primary_btn.button_down.connect(func(): main.settings_controller.set_edit_monitor_primary())
 	main._ui_res_btn.button_down.connect(func(): main.settings_controller.cycle_resolution())
 	main._ui_fps_btn.button_down.connect(func(): main.settings_controller.cycle_fps())
 	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
@@ -538,6 +666,7 @@ func build_ui():
 	_tab_btn_display.button_down.connect(func(): switch_tab(0))
 	_tab_btn_stream.button_down.connect(func(): switch_tab(1))
 	_tab_btn_control.button_down.connect(func(): switch_tab(2))
+	_tab_btn_monitors.button_down.connect(func(): switch_tab(3))
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
