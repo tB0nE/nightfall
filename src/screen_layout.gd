@@ -98,6 +98,25 @@ static func split_h(frame: Vector2i, n: int) -> ScreenLayout:
 		l.monitors.append(m)
 	return l
 
+# Client-only placeholder layout: every monitor shows the whole frame (no real
+# cropping), just duplicated across N independently-placed VR screens. Used
+# until host-side compositing (real per-monitor tiling) exists; split_h()
+# above is the real-split path this will switch to later.
+static func replicate(frame: Vector2i, n: int) -> ScreenLayout:
+	var l := ScreenLayout.new()
+	l.frame_size = frame
+	l.desktop_bounds = Rect2i(0, 0, frame.x, frame.y)
+	for i in range(n):
+		var m := MonitorSpec.new()
+		m.id = StringName("m%d" % i)
+		m.label = "Display %d" % (i + 1)
+		m.enabled = true
+		m.is_primary = (i == 0)
+		m.frame_rect = Rect2i(0, 0, frame.x, frame.y)
+		m.desktop_rect = m.frame_rect
+		l.monitors.append(m)
+	return l
+
 func get_primary() -> MonitorSpec:
 	for m in monitors:
 		if m.is_primary and m.enabled:

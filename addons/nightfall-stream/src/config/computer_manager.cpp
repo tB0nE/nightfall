@@ -658,17 +658,58 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
             for (int i = 0; i < keys.size(); i++) {
                 response[keys[i]] = opts[keys[i]];
             }
+
+            String ip = ctx["ip"];
+            int port = ctx["port"];
+            _fetch_display_manifest(response, cb, ip, port);
+            return;
         } else {
+            // The server may explain exactly why (e.g. status_message="Cannot find
+            // requested application" as an XML attribute, not a nested element, for
+            // a 404). Surface that verbatim instead of the generic fallback message,
+            // so the caller doesn't mistake an unambiguous failure (wrong app id) for
+            // a stale-pairing symptom and tear down a perfectly good pairing over it.
+            String status_message = _extract_xml_attr(xml, "status_message");
+            if (status_message.is_empty()) {
+                status_message = _extract_xml_value(xml, "status_message");
+            }
+            NF_LOG("NightfallLaunch", "code=%d xml_len=%d status_message=[%s] raw_xml=[%s]", code, xml.length(), status_message.utf8().get_data(), xml.utf8().get_data());
             response["status"] = "error";
-            response["message"] = "Session URL not found in response. Game may be stuck.";
+            response["message"] = status_message.is_empty()
+                ? "Session URL not found in response. Game may be stuck."
+                : status_message;
             response["xml_debug"] = xml;
         }
     } else {
+        NF_LOG("NightfallLaunch", "non-200 code=%d error=[%s]", code, error.utf8().get_data());
         response["status"] = "error";
         response["message"] = "Launch/Resume failed (" + String::num_int64(code) + "): " + error;
     }
 
     cb.call(response);
+}
+
+// Best-effort: not every host supports this (only Polaris hosts with multi-monitor
+// capture enabled). Missing/failed/malformed responses just proceed without a
+// manifest - the client falls back to its own single/replicated layout.
+void NightfallComputerManager::_fetch_display_manifest(Dictionary response, Callable callback, String ip, int port) {
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_display_manifest_completed).bind(Variant(response), Variant(callback)));
+}
+
+void NightfallComputerManager::_on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback) {
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                response["manifest"] = data;
+            }
+        }
+    }
+    callback.call(response);
 }
 
 void NightfallComputerManager::stop_stream(int host_id, Callable callback) {
@@ -845,6 +886,19 @@ String NightfallComputerManager::_extract_xml_value(const String &xml, const Str
 	}
 	start += start_tag.length();
 	int end = xml.find(end_tag, start);
+	if (end == -1) return "";
+	return xml.substr(start, end - start);
+}
+
+// Some responses (e.g. Polaris's boost::property_tree <xmlattr> serialization)
+// put status_message on the root element as an attribute rather than a nested
+// tag, which _extract_xml_value() can't see.
+String NightfallComputerManager::_extract_xml_attr(const String &xml, const String &attr) {
+	String needle = attr + String("=\"");
+	int start = xml.find(needle);
+	if (start == -1) return "";
+	start += needle.length();
+	int end = xml.find("\"", start);
 	if (end == -1) return "";
 	return xml.substr(start, end - start);
 }

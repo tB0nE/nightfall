@@ -329,6 +329,8 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	if new_primary and new_primary != main.primary_screen:
 		main.set_primary_screen(new_primary)
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
+	if main.comp.available:
+		main.comp.update_cylinder_params()
 	if main.comp.in_use and main.is_streaming:
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()
@@ -341,7 +343,7 @@ func add_monitor():
 	if count >= 4:
 		return
 	var next_count = count + 1
-	var next_layout = ScreenLayout.split_h(frame, next_count) if next_count > 1 else ScreenLayout.single(frame)
+	var next_layout = ScreenLayout.replicate(frame, next_count) if next_count > 1 else ScreenLayout.single(frame)
 	apply_screen_layout(next_layout)
 
 func remove_monitor():
@@ -351,7 +353,7 @@ func remove_monitor():
 	var count = main.layout.monitors.size()
 	if main._edit_monitor_idx >= count - 1:
 		main._edit_monitor_idx = count - 2
-	var next_layout = ScreenLayout.split_h(frame, count - 1) if (count - 1) > 1 else ScreenLayout.single(frame)
+	var next_layout = ScreenLayout.replicate(frame, count - 1) if (count - 1) > 1 else ScreenLayout.single(frame)
 	apply_screen_layout(next_layout)
 
 func select_monitor(idx: int):

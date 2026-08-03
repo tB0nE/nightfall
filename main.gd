@@ -95,6 +95,8 @@ var grab_forward: Vector3 = Vector3.FORWARD
 var grab_start_hand_basis: Basis = Basis()
 var grab_start_node_basis: Basis = Basis()
 var grab_start_node_euler: Vector3 = Vector3.ZERO
+var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
+var grab_group_start_transforms: Dictionary = {}
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
@@ -293,8 +295,8 @@ var _screen_mesh_original_mat: Material:
 		if primary_screen: primary_screen._original_mat = v
 
 var _log_lines: PackedStringArray = []
-var _ui_viewport_size := Vector2i(1200, 650)
-var _ui_mesh_size := Vector2(1.20, 0.65)
+var _ui_viewport_size := Vector2i(1200, 580)
+var _ui_mesh_size := Vector2(1.20, 0.58)
 var _ui_host_label: Label
 var _ui_status_label: Label
 var _ui_pt_btn: Button
@@ -821,6 +823,33 @@ func _init_ui():
 const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
 const MAX_SCREENS := 4
 
+# Local-space offset (from mesh center) of a curved screen's left/right edge,
+# matching the vertex math in VRScreen.apply_curvature(): the edge sits at
+# chord half-width (not mesh_size.x * 0.5) and bows back in +Z.
+func _curve_edge_local_offset(mesh_w: float, radius: float, curvature: int, sign: float) -> Vector3:
+	if curvature == 0 or radius <= 0.0:
+		return Vector3(sign * mesh_w * 0.5, 0, 0)
+	var angle = mesh_w / radius
+	var half_w = sin(angle * 0.5) * radius
+	var edge_z = radius * (1.0 - cos(angle * 0.5))
+	return Vector3(sign * half_w, 0, edge_z)
+
+# Orients a screen to face the headset, using the same yaw convention as
+# handle_grab()'s atan2(cam.x-pos.x, cam.z-pos.z) (this mesh's front faces
+# local +Z, not -Z, so Node3D.look_at() is 180 degrees off and must not be
+# used here). with_pitch also tilts the screen down/up toward the headset,
+# for screens placed above/below primary's height.
+func _face_camera(node: Node3D, cam_pos: Vector3, with_pitch: bool) -> void:
+	var pos = node.global_position
+	node.rotation.y = atan2(cam_pos.x - pos.x, cam_pos.z - pos.z)
+	if with_pitch:
+		var to_cam = cam_pos - pos
+		var dist = to_cam.length()
+		node.rotation.x = -asin(clampf(to_cam.y / dist, -1.0, 1.0)) if dist > 0.001 else 0.0
+	else:
+		node.rotation.x = 0.0
+	node.rotation.z = 0.0
+
 func add_screen(monitor_id: StringName) -> VRScreen:
 	if screens.size() >= MAX_SCREENS:
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
@@ -832,24 +861,59 @@ func add_screen(monitor_id: StringName) -> VRScreen:
 	s.curvature = primary_screen.curvature if primary_screen else 2
 	if primary_screen:
 		var gap = 0.05
-		var rightmost = primary_screen
+		var eps = 0.05
+		var has_left = false
+		var has_right = false
 		for existing in screens:
-			if existing.global_position.x > rightmost.global_position.x:
-				rightmost = existing
-		var right_edge = rightmost.global_position.x + rightmost.mesh_size.x * 0.5 + gap
-		var new_x = right_edge + s.mesh_size.x * 0.5
-		var new_z = primary_screen.global_position.z
-		if primary_screen.curvature > 0:
-			var radius = primary_screen.get_cylinder_radius()
-			var dx = new_x - primary_screen.global_position.x
-			var dz = radius - sqrt(max(radius * radius - dx * dx, 0.0))
-			new_z = primary_screen.global_position.z + dz
-		s.global_position = Vector3(new_x, primary_screen.global_position.y, new_z)
-	s.apply_curvature()
+			if existing == primary_screen:
+				continue
+			if existing.global_position.x < primary_screen.global_position.x - eps:
+				has_left = true
+			elif existing.global_position.x > primary_screen.global_position.x + eps:
+				has_right = true
+		var slot = "above" if (has_left and has_right) else ("left" if has_right else "right")
+		var cam_pos = xr_camera.global_position
+		var new_radius = primary_screen.get_cylinder_radius() if primary_screen.curvature > 0 else 0.0
+		if slot == "above":
+			var ref_offset = Vector3(0, primary_screen.mesh_size.y * 0.5, 0)
+			var anchor = primary_screen.global_transform * ref_offset
+			anchor += primary_screen.global_transform.basis.y * gap
+			var near_offset = Vector3(0, -s.mesh_size.y * 0.5, 0)
+			s.global_position = anchor - near_offset
+			_face_camera(s, cam_pos, true)
+			var rotated_near_offset = s.global_transform.basis * near_offset
+			s.global_position = anchor - rotated_near_offset
+			_face_camera(s, cam_pos, true)
+		else:
+			var dir = -1.0 if slot == "left" else 1.0
+			var edge_screen = primary_screen
+			for existing in screens:
+				if existing == primary_screen:
+					continue
+				if dir > 0 and existing.global_position.x > edge_screen.global_position.x:
+					edge_screen = existing
+				elif dir < 0 and existing.global_position.x < edge_screen.global_position.x:
+					edge_screen = existing
+			var ref_radius = edge_screen.get_cylinder_radius() if edge_screen.curvature > 0 else 0.0
+			var ref_offset = _curve_edge_local_offset(edge_screen.mesh_size.x, ref_radius, edge_screen.curvature, dir)
+			var anchor = edge_screen.global_transform * ref_offset
+			anchor += edge_screen.global_transform.basis.x * dir * gap
+			var near_offset = _curve_edge_local_offset(s.mesh_size.x, new_radius, s.curvature, -dir)
+			s.global_position = anchor - near_offset
+			_face_camera(s, cam_pos, false)
+			var rotated_near_offset = s.global_transform.basis * near_offset
+			s.global_position = anchor - rotated_near_offset
+			_face_camera(s, cam_pos, false)
 	screen_manager.create_corner_handles_for(s)
 	screen_manager.create_bezel_for(s)
+	s.apply_curvature()
 	if comp.available:
 		comp.setup_screen(s, false)
+		if is_streaming and stream_viewport:
+			var stream_size = stream_viewport.size
+			if stream_size.x > 0 and stream_size.y > 0:
+				s.comp_viewport.size = stream_size
+				s.comp_base_size = stream_size
 	screens.append(s)
 	_log("[SCREEN] Added screen %s (total=%d)" % [String(monitor_id), screens.size()])
 	if comp.available and comp.in_use and s.comp_cylinder:
@@ -857,8 +921,12 @@ func add_screen(monitor_id: StringName) -> VRScreen:
 		s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		s.comp_shader_mat.set_shader_parameter("stereo_mode", 0)
 		s.bezel_mesh.visible = false
+		comp.make_screen_transparent()
 		comp.update_cylinder_params()
 		comp.update_bezel()
+	if comp.available and is_streaming:
+		comp.invalidate_yuv_cache()
+		_bind_yuv_textures()
 	var layer_count = screens.size() + 5
 	_log("[COMP] screens=%d layers=%d" % [screens.size(), layer_count])
 	if comp.available and s.comp_cylinder and not s.comp_cylinder.is_natively_supported():
@@ -875,16 +943,19 @@ func remove_screen(monitor_id: StringName) -> void:
 			screens.remove_at(i)
 			if comp.available:
 				if s.comp_cylinder:
+					s.comp_cylinder.visible = false
 					s.comp_cylinder.set_layer_viewport(null)
 					s.comp_cylinder.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder)
 					s.comp_cylinder.queue_free()
 				if s.comp_cylinder_left:
+					s.comp_cylinder_left.visible = false
 					s.comp_cylinder_left.set_layer_viewport(null)
 					s.comp_cylinder_left.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder_left)
 					s.comp_cylinder_left.queue_free()
 				if s.comp_cylinder_right:
+					s.comp_cylinder_right.visible = false
 					s.comp_cylinder_right.set_layer_viewport(null)
 					s.comp_cylinder_right.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder_right)
@@ -900,9 +971,9 @@ func remove_screen(monitor_id: StringName) -> void:
 					s.comp_viewport_right.queue_free()
 			s.queue_free()
 			_log("[SCREEN] Removed screen %s (total=%d)" % [String(monitor_id), screens.size()])
-			if comp.available:
-				invalidate_yuv_cache()
-				bind_yuv_textures()
+			if comp.available and is_streaming:
+				comp.invalidate_yuv_cache()
+				_bind_yuv_textures()
 			_update_cursor_layer()
 			return
 
@@ -1024,6 +1095,15 @@ func _init_post_xr():
 	ui_visible = false
 	_set_ui_visible(false)
 	_ui_has_saved_offset = false
+	# _reposition_screen_and_ui() (triggered from _process()) can race with the
+	# await above, so re-sync everything one last time now that load_state()/
+	# switch_to_comp_layer() have both definitely finished - the same fix a
+	# manual grab performs, just run automatically before the cover lifts.
+	for s in screens:
+		s.apply_curvature()
+	if comp.available:
+		comp.update_cylinder_params()
+	_debug_log_cyl("init_post_xr")
 	_startup_ready = true
 
 func _init_textures_and_ui():
@@ -1129,6 +1209,7 @@ func _process(delta):
 
 	if _startup_cover:
 		if _startup_ready and _startup_reposition == -1:
+			_debug_log_cyl("cover_removed")
 			_startup_cover.queue_free()
 			_startup_cover = null
 			_log("[COVER] Startup cover removed")
@@ -1196,6 +1277,10 @@ func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 		return true
 	return false
 
+const HAND_REST_THRESHOLD := 2.0
+var right_hand_resting: bool = false
+var left_hand_resting: bool = false
+
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
 		return
@@ -1209,11 +1294,25 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
-	var target_alpha = 1.0 if inactive_time < 2.0 else 0.02
+	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
 	var new_alpha = move_toward(_hand_alpha[side], target_alpha, delta * 2.0)
 	_set_hand_alpha(side, new_alpha)
+
+func _apply_hand_rest(side: String, resting: bool):
+	var was_resting = right_hand_resting if side == "right" else left_hand_resting
+	if resting == was_resting:
+		return
+	if side == "right":
+		right_hand_resting = resting
+		if hand_raycast: hand_raycast.enabled = not resting
+	else:
+		left_hand_resting = resting
+		if left_hand_raycast: left_hand_raycast.enabled = not resting
+	_log("[HAND] %s controller %s" % [side, "resting (disabled)" if resting else "picked up (re-enabled)"])
 
 func _process_hand_tracking(_delta):
 	var hands_active = get_is_hand_tracking() and get_hand_tracking_has_data()
@@ -1474,6 +1573,17 @@ func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	if left_hand:
 		left_hand.trigger_haptic_pulse("haptic", strength, 0.05)
 
+func _debug_log_cyl(tag: String):
+	var mesh_pos = screen_mesh.global_position if screen_mesh else Vector3.ZERO
+	var mesh_rot = screen_mesh.global_rotation if screen_mesh else Vector3.ZERO
+	var cam_pos = xr_camera.global_position if xr_camera else Vector3.ZERO
+	var cyl_pos = comp_cylinder.global_position if comp_cylinder else Vector3.ZERO
+	var cyl_rot = comp_cylinder.global_rotation if comp_cylinder else Vector3.ZERO
+	var cyl_vis = comp_cylinder.visible if comp_cylinder else false
+	_log("[CYLDBG:%s] cam=%s mesh_pos=%s mesh_rot=%s cyl_pos=%s cyl_rot=%s cyl_vis=%s cyl_radius=%.3f cyl_center=%s" % [
+		tag, str(cam_pos), str(mesh_pos), str(mesh_rot), str(cyl_pos), str(cyl_rot), str(cyl_vis), _comp_cyl_radius, str(_comp_cyl_center)
+	])
+
 func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	if not is_xr_active:
 		return
@@ -1485,9 +1595,11 @@ func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	screen_mesh.rotation = Vector3.ZERO
 	if use_cam_yaw:
 		screen_mesh.rotation.y = atan2(-cam_fwd.x, -cam_fwd.z)
-	if (comp_cylinder and comp_cylinder.visible) or (comp_cylinder_left and comp_cylinder_left.visible):
+	screen_mesh.apply_curvature()
+	if comp_cylinder or comp_cylinder_left:
 		_update_cylinder_params()
 	_log("[POS] Screen at %s, Cam at %s" % [str(screen_mesh.global_position), str(cam_pos)])
+	_debug_log_cyl("reposition")
 
 func _reset_positions():
 	if ui_visible:

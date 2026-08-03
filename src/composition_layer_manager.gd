@@ -66,6 +66,7 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_yuv_rect = _make_yuv_rect()
 	s.comp_shader_mat = ShaderMaterial.new()
 	s.comp_shader_mat.shader = load("res://src/shaders/yuv_display.gdshader")
+	s.comp_shader_mat.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 	s.comp_yuv_rect.material = s.comp_shader_mat
 	s.comp_bezel_rect.add_child(s.comp_yuv_rect)
 
@@ -112,6 +113,7 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_yuv_rect_left = _make_yuv_rect()
 	s.comp_shader_mat_left = ShaderMaterial.new()
 	s.comp_shader_mat_left.shader = load("res://src/shaders/yuv_display.gdshader")
+	s.comp_shader_mat_left.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 	s.comp_shader_mat_left.set_shader_parameter("eye_index", 1)
 	s.comp_yuv_rect_left.material = s.comp_shader_mat_left
 	s.comp_bezel_rect_left.add_child(s.comp_yuv_rect_left)
@@ -133,6 +135,7 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_yuv_rect_right = _make_yuv_rect()
 	s.comp_shader_mat_right = ShaderMaterial.new()
 	s.comp_shader_mat_right.shader = load("res://src/shaders/yuv_display.gdshader")
+	s.comp_shader_mat_right.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 	s.comp_shader_mat_right.set_shader_parameter("eye_index", 2)
 	s.comp_yuv_rect_right.material = s.comp_shader_mat_right
 	s.comp_bezel_rect_right.add_child(s.comp_yuv_rect_right)
@@ -377,7 +380,7 @@ func _update_cylinder_params_for(s: VRScreen):
 	s._comp_cyl_center = s.global_position - screen_forward * radius
 	var sort_order = clampi(int((10.0 - view_dist) * 10), 1, 100)
 	for cyl in [s.comp_cylinder, s.comp_cylinder_left, s.comp_cylinder_right]:
-		if cyl and cyl.visible:
+		if cyl:
 			cyl.set_sort_order(sort_order)
 			cyl.set_radius(radius)
 			cyl.set_central_angle(central_angle)

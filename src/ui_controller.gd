@@ -81,7 +81,8 @@ func update_monitor_tab():
 		var hover = style.duplicate()
 		hover.bg_color = Color(1, 1, 1, 0.18)
 		btn.add_theme_stylebox_override("hover", hover)
-		btn.custom_minimum_size = Vector2(200, 60)
+		btn.custom_minimum_size = Vector2(200, 132)
+		btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		var idx = i
 		btn.button_down.connect(func(): main.settings_controller.select_monitor(idx))
 		_mon_icon_row.add_child(btn)
@@ -91,7 +92,8 @@ func update_monitor_tab():
 		add_btn.focus_mode = Control.FOCUS_NONE
 		add_btn.add_theme_font_size_override("font_size", 26)
 		add_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		add_btn.custom_minimum_size = Vector2(60, 60)
+		add_btn.custom_minimum_size = Vector2(60, 132)
+		add_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		var add_style = StyleBoxFlat.new()
 		add_style.bg_color = Color(1, 1, 1, 0.06)
 		add_style.set_corner_radius_all(8)
@@ -427,6 +429,8 @@ func build_ui():
 	disp_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_display.add_child(disp_row2)
 
+	main._ui_curve_btn = make_option_btn("Curve", "Flat")
+	disp_row2.add_child(main._ui_curve_btn)
 	main._ui_sharpen_btn = make_option_btn("Sharpen", "0%")
 	disp_row2.add_child(main._ui_sharpen_btn)
 	main._ui_render_btn = make_option_btn("Blur", "0%")
@@ -500,6 +504,8 @@ func build_ui():
 	control_row1.add_child(main._ui_cursor_btn)
 	main._ui_steady_btn = make_option_btn("Cursor Steady", "Low")
 	control_row1.add_child(main._ui_steady_btn)
+	main._ui_bezel_btn = make_option_btn("Bezel", "On")
+	control_row1.add_child(main._ui_bezel_btn)
 	main._ui_hand_tracking_btn = make_option_btn("Tracking", "Off")
 	control_row1.add_child(main._ui_hand_tracking_btn)
 
@@ -533,16 +539,12 @@ func build_ui():
 	_tab_monitors.visible = false
 	vbox.add_child(_tab_monitors)
 
-	var mon_gap = Control.new()
-	mon_gap.custom_minimum_size = Vector2(0, 20)
-	mon_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap)
-
 	_mon_icon_row = HBoxContainer.new()
 	_mon_icon_row.name = "MonIconRow"
 	_mon_icon_row.add_theme_constant_override("separation", 8)
 	_mon_icon_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_mon_icon_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_mon_icon_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_mon_icon_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.add_child(_mon_icon_row)
 
@@ -566,25 +568,6 @@ func build_ui():
 	mon_actions_row1.add_child(main._ui_mon_primary_btn)
 	main._ui_mon_remove_btn = make_option_btn("Remove", "Remove")
 	mon_actions_row1.add_child(main._ui_mon_remove_btn)
-
-	var mon_gap3 = Control.new()
-	mon_gap3.custom_minimum_size = Vector2(0, 12)
-	mon_gap3.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap3)
-
-	var mon_actions_row2 = HBoxContainer.new()
-	mon_actions_row2.name = "MonActionsRow2"
-	mon_actions_row2.add_theme_constant_override("separation", 12)
-	mon_actions_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	mon_actions_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	mon_actions_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	mon_actions_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_actions_row2)
-
-	main._ui_curve_btn = make_option_btn("Curve", "Flat")
-	mon_actions_row2.add_child(main._ui_curve_btn)
-	main._ui_bezel_btn = make_option_btn("Bezel", "On")
-	mon_actions_row2.add_child(main._ui_bezel_btn)
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"

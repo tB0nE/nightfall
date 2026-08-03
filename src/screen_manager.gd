@@ -36,7 +36,10 @@ func toggle_bezel():
 
 func resize_screen_to_aspect(stream_w: int, stream_h: int):
 	for s in main.screens:
-		s.resize_to_aspect(stream_w, stream_h)
+		if s.monitor and s.monitor.frame_rect.size.y > 0:
+			s.resize_to_aspect(s.monitor.frame_rect.size.x, s.monitor.frame_rect.size.y)
+		else:
+			s.resize_to_aspect(stream_w, stream_h)
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
 

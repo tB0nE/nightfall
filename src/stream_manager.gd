@@ -156,6 +156,16 @@ func _on_v2_launch_response(response: Dictionary):
 		iv[3] = rikeyid & 0xFF
 		stream_config["remote_input_aes_iv"] = iv
 
+	var manifest = response.get("manifest", {})
+	if manifest is Dictionary and not manifest.is_empty():
+		var host_layout = ScreenLayout.from_dict(manifest)
+		var layout_err = host_layout.validate(host_layout.frame_size)
+		if layout_err == "":
+			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y])
+			main.settings_controller.apply_screen_layout(host_layout)
+		else:
+			main._log("[LAYOUT] Host manifest invalid, ignoring: %s" % layout_err)
+
 	var ip = response.get("ip", "")
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %dMbps)" % [w, h, fps, br])
@@ -180,37 +190,46 @@ func resize_stream_viewport(w: int, h: int):
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
 		_v2_yuv_rect.custom_minimum_size = Vector2(w, h)
-	if main.comp_viewport:
-		main.comp_viewport.size = Vector2i(w, h)
-	if main.comp_viewport_left:
-		main.comp_viewport_left.size = Vector2i(w, h)
-	if main.comp_viewport_right:
-		main.comp_viewport_right.size = Vector2i(w, h)
-	main._comp_base_size = Vector2i(w, h)
+	# comp_viewport/_left/_right/comp_base_size alias to the PRIMARY screen only;
+	# every screen's own composite viewport must track the actual decoded
+	# resolution too, or secondary screens stay stuck at their setup_screen()
+	# default (1920x1080) and look soft once the stream exceeds that.
+	for s in main.screens:
+		if s.comp_viewport:
+			s.comp_viewport.size = Vector2i(w, h)
+		if s.comp_viewport_left:
+			s.comp_viewport_left.size = Vector2i(w, h)
+		if s.comp_viewport_right:
+			s.comp_viewport_right.size = Vector2i(w, h)
+		s.comp_base_size = Vector2i(w, h)
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
 	var new_frame = Vector2i(w, h)
+	var layout_changed := false
 	if main.layout.frame_size != new_frame:
+		layout_changed = true
 		var old_aspect = float(main.layout.frame_size.x) / float(main.layout.frame_size.y) if main.layout.frame_size.y > 0 else 1.0
 		var new_aspect = float(w) / float(h) if h > 0 else 1.0
 		if absf(old_aspect - new_aspect) < 0.01:
 			var rescaled = main.layout.rescale_to(new_frame)
 			if rescaled.validate(new_frame) == "":
-				main.layout = rescaled
-				main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+				main.settings_controller.apply_screen_layout(rescaled)
 			else:
 				main._log("[LAYOUT] Rescale produced an invalid layout, resetting to single()")
-				main.layout = ScreenLayout.single(new_frame)
-				main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+				main.settings_controller.apply_screen_layout(ScreenLayout.single(new_frame))
 		else:
 			main._log("[LAYOUT] Stream aspect changed (%.3f -> %.3f), resetting display layout to single()" % [old_aspect, new_aspect])
-			main.layout = ScreenLayout.single(new_frame)
-			main.primary_screen.apply_monitor(main.layout.get_primary(), main.layout.frame_size)
+			main.settings_controller.apply_screen_layout(ScreenLayout.single(new_frame))
 			main._ui_status_label.text = "Display layout reset: stream resolution changed"
-	main.screen_manager.resize_screen_to_aspect(w, h)
-	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(main.primary_screen))
+	if not layout_changed:
+		main.screen_manager.resize_screen_to_aspect(w, h)
+	for s in main.screens:
+		if s.material_override is ShaderMaterial:
+			s.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(s))
+		for cm in main.comp.get_shader_mats(s):
+			if cm:
+				cm.set_shader_parameter("blur_scale", main.get_blur_scale(s))
 	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, main.get_blur_scale(main.primary_screen)])
 
 func on_pair_pressed():

@@ -58,18 +58,29 @@ var _comp_cyl_central_angle := 0.0
 
 @onready var grab_bar: MeshInstance3D = %ScreenGrabBar
 
+static var _placeholder_tex: ImageTexture = null
+
+static func placeholder_texture() -> ImageTexture:
+	if _placeholder_tex == null:
+		var img = Image.create(4, 4, false, Image.FORMAT_RGB8)
+		img.fill(Color(0.12, 0.12, 0.12))
+		_placeholder_tex = ImageTexture.create_from_image(img)
+	return _placeholder_tex
+
 func _ready() -> void:
 	set_meta(&"nf_role", &"screen")
 	grab_bar.set_meta(&"nf_role", &"grab_bar")
 	if material_override:
 		material_override = material_override.duplicate()
+		if material_override is ShaderMaterial:
+			material_override.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 
 func setup(p_main: Node3D, p_monitor_id: StringName = &"m0") -> void:
 	main = p_main
 	monitor_id = p_monitor_id
 
 func get_cylinder_radius() -> float:
-	if main.comp.in_use:
+	if main.comp and main.comp.in_use:
 		var cam_to_screen = global_position - main.xr_camera.global_position
 		var view_dist = cam_to_screen.length()
 		if view_dist < 0.5:

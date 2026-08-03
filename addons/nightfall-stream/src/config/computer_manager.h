@@ -87,8 +87,11 @@ private:
     void _on_launch_serverinfo_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary ctx);
     void _perform_launch_request(Dictionary ctx, String command);
     void _on_launch_request_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary ctx);
+    void _fetch_display_manifest(Dictionary response, Callable callback, String ip, int port);
+    void _on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback);
 
     String _extract_xml_value(const String &xml, const String &tag);
+    String _extract_xml_attr(const String &xml, const String &attr);
 
 protected:
     static void _bind_methods();

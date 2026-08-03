@@ -213,15 +213,15 @@ func handle_pointer_interaction():
 
 	for s in main.screens:
 		s.grab_bar.visible = true
-	for ch in main.corner_handles:
-		ch.visible = false
-		var ch_area = ch.get_node_or_null("Area3D")
-		if ch_area:
-			ch_area.monitoring = false
-			ch_area.monitorable = false
+		for ch in s.corner_handles:
+			ch.visible = false
+			var ch_area = ch.get_node_or_null("Area3D")
+			if ch_area:
+				ch_area.monitoring = false
+				ch_area.monitorable = false
 
-	if main.grabbed_corner_idx >= 0:
-		var gh = main.corner_handles[main.grabbed_corner_idx]
+	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		var gh = main.grabbed_corner_screen.corner_handles[main.grabbed_corner_idx]
 		gh.visible = true
 		var gh_area = gh.get_node_or_null("Area3D")
 		if gh_area:
@@ -234,16 +234,17 @@ func handle_pointer_interaction():
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.08))
 		if main.virtual_keyboard and main.virtual_keyboard.visible:
 			main.set_comp_grab_bar_color(main.virtual_keyboard.viewport, Color(1, 1, 1, 0.08))
-		for ch in main.corner_handles:
-			_set_corner_color(ch, Color.WHITE, 0.05)
+		for s in main.screens:
+			for ch in s.corner_handles:
+				_set_corner_color(ch, Color.WHITE, 0.05)
 	elif main.grabbed_node and main.grabbed_bar:
 		_set_grab_bar_color(main.grabbed_bar, Color.WHITE, 0.4)
 	elif main.grabbed_node == main.ui_panel_3d:
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.8))
 	elif main.grabbed_node == main.virtual_keyboard:
 		main.set_comp_grab_bar_color(main.virtual_keyboard.viewport, Color(1, 1, 1, 0.8))
-	elif main.grabbed_corner_idx >= 0:
-		_set_corner_color(main.corner_handles[main.grabbed_corner_idx], Color.WHITE, 0.4)
+	elif main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		_set_corner_color(main.grabbed_corner_screen.corner_handles[main.grabbed_corner_idx], Color.WHITE, 0.4)
 
 	var right_laser = main.get_node("%Laser")
 	var left_laser = null
@@ -535,6 +536,12 @@ func handle_pointer_interaction():
 					main.grab_start_hand_basis = active_raycast.global_transform.basis
 					main.grab_start_node_basis = main.grabbed_node.global_transform.basis
 					main.grab_start_node_euler = main.grabbed_node.rotation
+				main.grab_group_start_transforms.clear()
+				if main.grabbed_node == main.primary_screen:
+					main.grab_start_primary_transform = main.primary_screen.global_transform
+					for other in main.screens:
+						if other != main.primary_screen:
+							main.grab_group_start_transforms[other] = other.global_transform
 				_set_grab_bar_color(parent, Color.WHITE, 0.3)
 				main.was_clicking = true
 			return
@@ -733,8 +740,14 @@ func handle_grab():
 			euler.x = 0.0
 		main.grabbed_node.rotation = euler
 
+	if main.grabbed_node == main.primary_screen and not main.grab_group_start_transforms.is_empty():
+		var group_delta = main.grabbed_node.global_transform * main.grab_start_primary_transform.affine_inverse()
+		for other in main.grab_group_start_transforms:
+			other.global_transform = group_delta * main.grab_group_start_transforms[other]
+
 	if main.grabbed_node is VRScreen:
 		main.comp.update_cylinder_params()
+		main._debug_log_cyl("grab")
 
 	var still_clicking = _is_now_clicking()
 	if not still_clicking:
@@ -749,6 +762,7 @@ func handle_grab():
 		main.grab_start_hand_basis = Basis()
 		main.grab_start_node_basis = Basis()
 		main.grab_start_node_euler = Vector3.ZERO
+		main.grab_group_start_transforms.clear()
 		main.state_manager.save_state()
 
 func handle_corner_resize():
