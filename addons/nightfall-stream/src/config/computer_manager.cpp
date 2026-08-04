@@ -695,10 +695,10 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
 void NightfallComputerManager::_fetch_display_manifest(Dictionary response, Callable callback, String ip, int port) {
     String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
-            callable_mp(this, &NightfallComputerManager::_on_display_manifest_completed).bind(Variant(response), Variant(callback)));
+            callable_mp(this, &NightfallComputerManager::_on_display_manifest_completed).bind(Variant(response), Variant(callback), Variant(ip), Variant(port)));
 }
 
-void NightfallComputerManager::_on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback) {
+void NightfallComputerManager::_on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback, String ip, int port) {
     if (code == 200) {
         Ref<JSON> json;
         json.instantiate();
@@ -706,6 +706,34 @@ void NightfallComputerManager::_on_display_manifest_completed(int code, PackedBy
             Variant data = json->get_data();
             if (data.get_type() == Variant::DICTIONARY) {
                 response["manifest"] = data;
+            }
+        }
+    }
+    _fetch_session_status(response, callback, ip, port);
+}
+
+// Best-effort, same reasoning as _fetch_display_manifest: only Polaris hosts expose
+// this endpoint. Its "cursor_visible" field doubles as the capability probe for the
+// client's cursor toggle - a missing/malformed response just means the toggle stays
+// unavailable, matching how Sunshine/Apollo hosts (no such endpoint) behave today.
+void NightfallComputerManager::_fetch_session_status(Dictionary response, Callable callback, String ip, int port) {
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/status?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_session_status_completed).bind(Variant(response), Variant(callback)));
+}
+
+void NightfallComputerManager::_on_session_status_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback) {
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                Dictionary status = data;
+                if (status.has("cursor_visible")) {
+                    response["cursor_supported"] = true;
+                    response["cursor_visible"] = (bool)status["cursor_visible"];
+                }
             }
         }
     }
@@ -745,6 +773,59 @@ void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int po
     String url = "https://" + ip + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(), Callable());
     NF_LOG("NightfallPair", "cancel_host_stream: sent /cancel to %s:%d", ip.utf8().get_data(), port);
+}
+
+void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Callable callback) {
+    if (!config_manager.is_valid()) return;
+    Array hosts = config_manager->get_hosts();
+    String ip;
+    int port = 47984;
+    for (int i = 0; i < hosts.size(); i++) {
+        Dictionary host = hosts[i];
+        if ((int64_t)host["id"] == host_id) {
+            ip = host.get("localaddress", "");
+            port = host.get("https_port", 47984);
+        }
+    }
+
+    if (ip.is_empty()) {
+        NF_LOG("NightfallPair", "set_cursor_visible: host_id %d not found", host_id);
+        return;
+    }
+
+    Dictionary body_dict;
+    body_dict["visible"] = visible;
+    Ref<JSON> json;
+    json.instantiate();
+    String body_str = json->stringify(body_dict);
+
+    Dictionary headers;
+    headers["Content-Type"] = "application/json";
+
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/cursor?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "POST", body_str.to_utf8_buffer(), headers, _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_set_cursor_visible_completed).bind(Variant(callback)));
+}
+
+void NightfallComputerManager::_on_set_cursor_visible_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    if (!callback.is_valid()) return;
+    Dictionary response;
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                Dictionary status = data;
+                response["status"] = "success";
+                response["visible"] = status.get("visible", false);
+                callback.call(response);
+                return;
+            }
+        }
+    }
+    response["status"] = "error";
+    callback.call(response);
 }
 
 PackedByteArray NightfallComputerManager::_generate_random_bytes(int size) {
@@ -957,4 +1038,5 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("establish_stream", "host_id", "app_id", "options", "callback"), &NightfallComputerManager::establish_stream);
     ClassDB::bind_method(D_METHOD("stop_stream", "host_id", "callback"), &NightfallComputerManager::stop_stream);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
+    ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
 }

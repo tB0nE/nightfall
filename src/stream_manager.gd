@@ -166,6 +166,10 @@ func _on_v2_launch_response(response: Dictionary):
 		else:
 			main._log("[LAYOUT] Host manifest invalid, ignoring: %s" % layout_err)
 
+	main._host_cursor_toggle_supported = response.get("cursor_supported", false)
+	main.host_cursor_visible = response.get("cursor_visible", false)
+	main.ui_controller.update_host_cursor_btn_state()
+
 	var ip = response.get("ip", "")
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %dMbps)" % [w, h, fps, br])

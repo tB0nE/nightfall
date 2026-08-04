@@ -483,6 +483,8 @@ func build_ui():
 	stream_row2.add_child(main._ui_idle_btn)
 	main._ui_quick_start_btn = make_option_btn("Quick Start", "Off")
 	stream_row2.add_child(main._ui_quick_start_btn)
+	main._ui_host_cursor_btn = make_option_btn("Host Cursor", "Off")
+	stream_row2.add_child(main._ui_host_cursor_btn)
 
 	_tab_control = VBoxContainer.new()
 	_tab_control.name = "TabControl"
@@ -646,6 +648,7 @@ func build_ui():
 	main._ui_reconnect_btn.button_down.connect(func(): main.settings_controller.cycle_auto_reconnect())
 	main._ui_quick_start_btn.button_down.connect(func(): main.settings_controller.cycle_quick_start())
 	main._ui_idle_btn.button_down.connect(func(): main.settings_controller.cycle_idle_timeout())
+	main._ui_host_cursor_btn.button_down.connect(func(): main.settings_controller.toggle_host_cursor())
 	_tab_btn_display.button_down.connect(func(): switch_tab(0))
 	_tab_btn_stream.button_down.connect(func(): switch_tab(1))
 	_tab_btn_control.button_down.connect(func(): switch_tab(2))
@@ -653,6 +656,7 @@ func build_ui():
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
+	update_host_cursor_btn_state()
 	update_host_label()
 
 	var ui_buttons = []
@@ -717,6 +721,14 @@ func update_ctrl_type_btn():
 			var is_kbm = (main.controller_mapper.ctrl_type == 2)
 			main._ui_btn_toggle_btn.disabled = is_kbm
 			main._ui_btn_toggle_btn.modulate = Color(1, 1, 1, 0.3) if is_kbm else Color(1, 1, 1, 1)
+
+func update_host_cursor_btn_state():
+	if not main._ui_host_cursor_btn:
+		return
+	var supported = main._host_cursor_toggle_supported
+	main._ui_host_cursor_btn.disabled = not supported
+	main._ui_host_cursor_btn.modulate = Color(1, 1, 1, 0.3) if not supported else Color(1, 1, 1, 1)
+	update_option_btn(main._ui_host_cursor_btn, "On" if main.host_cursor_visible else "Off")
 
 func update_btn_toggle_btn():
 	if main._ui_btn_toggle_btn and main.controller_mapper:

@@ -56,6 +56,12 @@ var _connecting_ip: String = ""
 var _connect_timeout_pending: bool = false
 var _auto_connect: bool = false
 var quick_start_enabled: bool = false
+# Whether the host is drawing its own cursor into the captured frame (Polaris-only:
+# a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
+# Support is detected per-connection from the launch response, not guessed up front,
+# since a version-string heuristic already burned us once for microphone detection.
+var host_cursor_visible: bool = false
+var _host_cursor_toggle_supported: bool = false
 var _restarting_stream: bool = false
 var is_streaming: bool = false
 var sbs_mode: int = 0
@@ -317,6 +323,7 @@ var _ui_ctrl_type_btn: Button
 var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
+var _ui_host_cursor_btn: Button
 var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
 var _ui_ctrl_mode_btn: Button
@@ -637,7 +644,9 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 func _full_disconnect_cleanup(status_msg: String):
 	_connect_timeout_pending = false
 	_server_codec_support = {}
+	_host_cursor_toggle_supported = false
 	ui_controller.update_codec_btn()
+	ui_controller.update_host_cursor_btn_state()
 	ui_controller.set_status(status_msg)
 	ui_controller.set_disconnect_visible(false)
 	_log("[STREAM] Full disconnect: %s" % status_msg)

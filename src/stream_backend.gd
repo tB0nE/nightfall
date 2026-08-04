@@ -94,6 +94,11 @@ func cancel_host_stream(host_id: int):
 		return
 	cm.cancel_host_stream(host_id, ip, port)
 
+func set_cursor_visible(host_id: int, visible: bool, callback: Callable):
+	var cm = get_computer_manager()
+	if cm:
+		cm.set_cursor_visible(host_id, visible, callback)
+
 func is_streaming() -> bool:
 	if _v2:
 		return _v2.get_state() == 2

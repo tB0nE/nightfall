@@ -200,6 +200,16 @@ func cycle_idle_timeout():
 	main.idle_timeout_min = idle_values[idx]
 	_save_setting(main._ui_idle_btn, idle_labels[idx])
 
+func toggle_host_cursor():
+	if not main._host_cursor_toggle_supported or not main.is_streaming:
+		return
+	var target = not main.host_cursor_visible
+	main.stream_backend.set_cursor_visible(main.current_host_id, target, func(response: Dictionary):
+		if response.get("status", "") == "success":
+			main.host_cursor_visible = response.get("visible", target)
+			main.ui_controller.update_host_cursor_btn_state()
+	)
+
 func apply_filter():
 	if not main.is_xr_active:
 		return

@@ -88,7 +88,10 @@ private:
     void _perform_launch_request(Dictionary ctx, String command);
     void _on_launch_request_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary ctx);
     void _fetch_display_manifest(Dictionary response, Callable callback, String ip, int port);
-    void _on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback);
+    void _on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback, String ip, int port);
+    void _fetch_session_status(Dictionary response, Callable callback, String ip, int port);
+    void _on_session_status_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback);
+    void _on_set_cursor_visible_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
 
     String _extract_xml_value(const String &xml, const String &tag);
     String _extract_xml_attr(const String &xml, const String &attr);
@@ -116,6 +119,7 @@ public:
     void establish_stream(int host_id, int app_id, Dictionary options, Callable callback);
     void stop_stream(int host_id, Callable callback);
     void cancel_host_stream(int host_id, String ip, int port);
+    void set_cursor_visible(int host_id, bool visible, Callable callback);
 };
 
 } // namespace godot
