@@ -46,13 +46,28 @@ func start_stream(host_id: int, app_id: int):
 	# forces the server to letterbox/squeeze the real desktop into the wrong aspect).
 	# Non-Polaris hosts and any failure just return an empty dict, and we fall back to
 	# the legacy default exactly as before.
+	#
+	# Raced against a short local timer rather than awaited unconditionally: the whole
+	# connect flow (pairing check + app list + this + establish_stream) shares a single
+	# fixed client-side connect timeout (main.start_connect_timeout(), 10s), so a slow
+	# manifest response must not be able to eat into establish_stream's own budget and
+	# cause the entire connect attempt to time out for something that's meant to be
+	# best-effort.
+	var manifest_resolved = false
+	var proceed = func(manifest_resolution: Vector2i):
+		if manifest_resolved:
+			return
+		manifest_resolved = true
+		_continue_start_stream(host_id, app_id, manifest_resolution)
+
 	_b().fetch_display_manifest(host_id, func(manifest: Dictionary):
 		var manifest_resolution = Vector2i.ZERO
 		var fs = manifest.get("frame_size", [])
 		if fs is Array and fs.size() == 2 and int(fs[0]) > 0 and int(fs[1]) > 0:
 			manifest_resolution = Vector2i(int(fs[0]), int(fs[1]))
-		_continue_start_stream(host_id, app_id, manifest_resolution)
+		proceed.call(manifest_resolution)
 	)
+	main.get_tree().create_timer(1.5).timeout.connect(func(): proceed.call(Vector2i.ZERO))
 
 func _continue_start_stream(host_id: int, app_id: int, manifest_resolution: Vector2i):
 	var w = main.host_resolution.x
