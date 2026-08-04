@@ -128,6 +128,15 @@ func load_host_state(ip: String):
 						s.curvature = entry.get("curvature", s.curvature)
 						s.apply_curvature()
 						break
+		# The composition layer cylinder (the surface actually visible in the
+		# headset) is a separate node with its own world position/radius, only
+		# ever synced by an explicit update_cylinder_params() call - it does NOT
+		# follow along automatically just because a screen's mesh transform above
+		# was restored. Without this, the flat mesh (and its grab_bar child) jump
+		# to the saved position/rotation while the cylinder stays wherever the
+		# generic startup pass left it, until a manual grab forces a resync.
+		if main.comp:
+			main.comp.update_cylinder_params()
 
 func sync_ui_to_settings():
 	if main.bezel_mesh:
