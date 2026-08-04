@@ -547,10 +547,24 @@ func handle_pointer_interaction():
 			return
 
 	elif main.was_clicking:
-		if main.is_streaming:
-			main.stream_backend.send_mouse_button_event(8, 1)
-		main.was_clicking = false
-		_click_pending_release = false
+		# The raycast hit nothing at all this frame - could be the physical trigger/
+		# pinch actually releasing, or just the ray passing through the gap between
+		# two adjacent screens (or off the edge into empty space) mid-drag. Only treat
+		# it as a real release when the physical input itself let go; otherwise keep
+		# the click held server-side and simply skip sending a position update this
+		# frame. Once the ray lands on a screen again (this one or another), the
+		# t.role == &"screen" branch above resumes sending positions from wherever it
+		# is now - which is exactly "drag onto another screen" for free, since it maps
+		# through whichever screen is currently hit, not just the one the drag started on.
+		var mid_screen_drag = _pinch_start_screen != null and main.grabbed_node == null and main.grabbed_corner_idx < 0
+		if is_now_clicking and mid_screen_drag and main.is_streaming:
+			pass
+		else:
+			if main.is_streaming:
+				main.stream_backend.send_mouse_button_event(8, 1)
+			main.was_clicking = false
+			_click_pending_release = false
+			_pinch_start_screen = null
 
 func _update_on_screen_tracking():
 	_right_on_screen = _is_hand_on_screen("right")
