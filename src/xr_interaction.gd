@@ -503,6 +503,15 @@ func handle_pointer_interaction():
 					main.was_clicking = true
 			return
 
+		# A stream-content drag already in flight (e.g. dragging a window/icon
+		# toward another screen, kept alive across the gap by the fallback
+		# below) must not be hijacked into a corner-resize or grab-bar-move just
+		# because the ray happens to sweep over one of those hitboxes en route -
+		# the user is still holding the SAME click that started on a screen.
+		# Require a release (which clears _pinch_start_screen) before either
+		# gesture can start.
+		var mid_content_drag = main.was_clicking and _pinch_start_screen != null and not main.grabbed_node and main.grabbed_corner_idx < 0
+
 		if t.role == &"corner":
 			var corner_idx = t.corner_idx
 			parent.visible = true
@@ -510,7 +519,7 @@ func handle_pointer_interaction():
 			if p_area:
 				p_area.monitoring = true
 				p_area.monitorable = true
-			if is_now_clicking and main.grabbed_corner_idx < 0 and not main.grabbed_node:
+			if is_now_clicking and main.grabbed_corner_idx < 0 and not main.grabbed_node and not mid_content_drag:
 				main.grabbed_corner_idx = corner_idx
 				main.grabbed_corner_screen = t.screen
 				var opposite_idx = 3 - corner_idx
@@ -523,7 +532,7 @@ func handle_pointer_interaction():
 			return
 
 		elif t.role == &"grab_bar":
-			if is_now_clicking and not main.grabbed_node and main.grabbed_corner_idx < 0:
+			if is_now_clicking and not main.grabbed_node and main.grabbed_corner_idx < 0 and not mid_content_drag:
 				main.grabbed_node = parent.get_parent()
 				main.grabbed_bar = parent
 				var grab_point = active_raycast.get_collision_point()
