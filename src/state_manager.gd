@@ -137,6 +137,16 @@ func load_host_state(ip: String):
 		# generic startup pass left it, until a manual grab forces a resync.
 		if main.comp:
 			main.comp.update_cylinder_params()
+		# These placements describe how screens should look while actively
+		# streaming to this host, not the pre-connect welcome UI - but this runs
+		# during boot (_init_textures_and_ui(), called after _init_ui() already
+		# reset the welcome screen to a fixed 16:9), so a saved non-16:9 layout
+		# would otherwise squish the welcome screen the user sees before they've
+		# even connected. Re-assert the welcome layout now if we're not
+		# streaming; it'll be replaced by the host's real manifest/layout once a
+		# connection actually starts.
+		if not main.is_streaming and main.welcome_screen:
+			main.welcome_screen.show_welcome_screen(main._welcome_screen)
 
 func sync_ui_to_settings():
 	if main.bezel_mesh:

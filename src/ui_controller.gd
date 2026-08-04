@@ -460,6 +460,8 @@ func build_ui():
 	stream_row1.add_child(main._ui_fps_btn)
 	main._ui_bitrate_btn = make_option_btn("Bitrate", "Auto")
 	stream_row1.add_child(main._ui_bitrate_btn)
+	main._ui_host_cursor_btn = make_option_btn("Host Cursor", "Off")
+	stream_row1.add_child(main._ui_host_cursor_btn)
 
 	var stream_gap1 = Control.new()
 	stream_gap1.custom_minimum_size = Vector2(0, 20)
@@ -483,8 +485,6 @@ func build_ui():
 	stream_row2.add_child(main._ui_idle_btn)
 	main._ui_quick_start_btn = make_option_btn("Quick Start", "Off")
 	stream_row2.add_child(main._ui_quick_start_btn)
-	main._ui_host_cursor_btn = make_option_btn("Host Cursor", "Off")
-	stream_row2.add_child(main._ui_host_cursor_btn)
 
 	_tab_control = VBoxContainer.new()
 	_tab_control.name = "TabControl"
