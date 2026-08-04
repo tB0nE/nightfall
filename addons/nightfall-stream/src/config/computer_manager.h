@@ -92,6 +92,7 @@ private:
     void _fetch_session_status(Dictionary response, Callable callback, String ip, int port);
     void _on_session_status_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback);
     void _on_set_cursor_visible_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
+    void _on_prelaunch_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
 
     String _extract_xml_value(const String &xml, const String &tag);
     String _extract_xml_attr(const String &xml, const String &attr);
@@ -117,6 +118,7 @@ public:
     void get_app_cover(int host_id, int app_id, Callable callback);
 
     void establish_stream(int host_id, int app_id, Dictionary options, Callable callback);
+    void fetch_display_manifest(int host_id, Callable callback);
     void stop_stream(int host_id, Callable callback);
     void cancel_host_stream(int host_id, String ip, int port);
     void set_cursor_visible(int host_id, bool visible, Callable callback);

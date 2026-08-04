@@ -775,6 +775,53 @@ void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int po
     NF_LOG("NightfallPair", "cancel_host_stream: sent /cancel to %s:%d", ip.utf8().get_data(), port);
 }
 
+// Pre-launch, best-effort probe: lets the caller learn the real desktop composite size
+// (e.g. a wide multi-monitor frame) BEFORE requesting a stream resolution, instead of
+// discovering it only after already launching at a guessed/legacy default. Same endpoint
+// _fetch_display_manifest() polls post-launch; only Polaris X11 hosts populate it - a
+// missing/malformed response just means the caller keeps its own fallback resolution.
+void NightfallComputerManager::fetch_display_manifest(int host_id, Callable callback) {
+    if (!config_manager.is_valid()) {
+        callback.call(Dictionary());
+        return;
+    }
+    Array hosts = config_manager->get_hosts();
+    String ip;
+    int port = 47984;
+    for (int i = 0; i < hosts.size(); i++) {
+        Dictionary host = hosts[i];
+        if ((int64_t)host["id"] == host_id) {
+            ip = host.get("localaddress", "");
+            port = host.get("https_port", 47984);
+        }
+    }
+
+    if (ip.is_empty()) {
+        NF_LOG("NightfallPair", "fetch_display_manifest: host_id %d not found", host_id);
+        callback.call(Dictionary());
+        return;
+    }
+
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_prelaunch_manifest_completed).bind(Variant(callback)));
+}
+
+void NightfallComputerManager::_on_prelaunch_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                callback.call(data);
+                return;
+            }
+        }
+    }
+    callback.call(Dictionary());
+}
+
 void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Callable callback) {
     if (!config_manager.is_valid()) return;
     Array hosts = config_manager->get_hosts();
@@ -1039,4 +1086,5 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("stop_stream", "host_id", "callback"), &NightfallComputerManager::stop_stream);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback"), &NightfallComputerManager::fetch_display_manifest);
 }
