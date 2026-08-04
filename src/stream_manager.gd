@@ -20,7 +20,21 @@ func _is_local_host(ip: String) -> bool:
 			return true
 	return false
 
-func start_stream(host_id: int, app_id: int):
+# Set on the very first connect attempt of a session; cleared once a resolution-mismatch
+# retry has happened, so we never retry more than once even if the manifest still doesn't
+# match afterwards (e.g. a host that free-scales regardless of requested resolution).
+var _resolution_retry_done: bool = false
+var _last_requested_resolution: Vector2i = Vector2i.ZERO
+var _current_host_id: int = -1
+var _current_app_id: int = -1
+
+func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	_current_host_id = host_id
+	_current_app_id = app_id
+	# forced_resolution set means this call IS the one-shot correction retry itself -
+	# don't reset the guard there, or a host that never matches would loop forever.
+	if forced_resolution == Vector2i.ZERO:
+		_resolution_retry_done = false
 	var ip = ""
 	for h_host in _b().get_hosts():
 		if h_host.get("id") == host_id:
@@ -36,48 +50,15 @@ func start_stream(host_id: int, app_id: int):
 	else:
 		_b().set_local_capture_mode(false)
 
-	if local_capture_mode:
-		_continue_start_stream(host_id, app_id, Vector2i.ZERO)
-		return
-
-	# Best-effort: ask the host for its real desktop size (e.g. a wide multi-monitor
-	# composite) BEFORE requesting a stream resolution, instead of always requesting
-	# main.host_resolution and discovering the true size only after the fact (which
-	# forces the server to letterbox/squeeze the real desktop into the wrong aspect).
-	# Non-Polaris hosts and any failure just return an empty dict, and we fall back to
-	# the legacy default exactly as before.
-	#
-	# Raced against a short local timer rather than awaited unconditionally: the whole
-	# connect flow (pairing check + app list + this + establish_stream) shares a single
-	# fixed client-side connect timeout (main.start_connect_timeout(), 10s), so a slow
-	# manifest response must not be able to eat into establish_stream's own budget and
-	# cause the entire connect attempt to time out for something that's meant to be
-	# best-effort.
-	var manifest_resolved = false
-	var proceed = func(manifest_resolution: Vector2i):
-		if manifest_resolved:
-			return
-		manifest_resolved = true
-		_continue_start_stream(host_id, app_id, manifest_resolution)
-
-	_b().fetch_display_manifest(host_id, func(manifest: Dictionary):
-		var manifest_resolution = Vector2i.ZERO
-		var fs = manifest.get("frame_size", [])
-		if fs is Array and fs.size() == 2 and int(fs[0]) > 0 and int(fs[1]) > 0:
-			manifest_resolution = Vector2i(int(fs[0]), int(fs[1]))
-		proceed.call(manifest_resolution)
-	)
-	main.get_tree().create_timer(1.5).timeout.connect(func(): proceed.call(Vector2i.ZERO))
-
-func _continue_start_stream(host_id: int, app_id: int, manifest_resolution: Vector2i):
 	var w = main.host_resolution.x
 	var h = main.host_resolution.y
-	if manifest_resolution.x > 0 and manifest_resolution.y > 0:
-		w = manifest_resolution.x
-		h = manifest_resolution.y
-		main._log("[STREAM] Using host manifest resolution %dx%d (default was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
+	if forced_resolution.x > 0 and forced_resolution.y > 0:
+		w = forced_resolution.x
+		h = forced_resolution.y
+		main._log("[STREAM] Reconnecting with corrected resolution %dx%d (was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
 	elif main.double_h:
 		w *= 2
+	_last_requested_resolution = Vector2i(w, h)
 
 	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.stream_fps, str(local_capture_mode)])
 	if main.bitrate_idx >= 0:

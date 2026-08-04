@@ -603,6 +603,34 @@ func _on_stream_started():
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
 	stream_backend.send_controller_arrival(0, 1, 1, all_btn_flags, 0x01|0x02)
 
+	# The host's real desktop can be a very different shape than the resolution we
+	# requested before knowing anything about it (e.g. a wide multi-monitor composite
+	# requested at a default 16:9) - the host then has to letterbox/squeeze it to fit.
+	# Reconnect once with the manifest's real size instead, so the *next* launch
+	# requests the right shape from the start. Only ever once per session, so a host
+	# that free-scales regardless of requested resolution can't loop us forever.
+	#
+	# Deliberately done AFTER the stream has genuinely started (not by aborting the
+	# first launch response before ever calling start_stream_v2): a launch that's
+	# never followed through to an actual RTSP/media connection leaves the host
+	# waiting on a handshake that will never come, which held its session-launch
+	# lock forever and made every subsequent connect attempt fail with "the active
+	# session is stopping or changing" - the exact regression this replaces. Tearing
+	# an ACTUALLY-STARTED stream down with stop_play_stream() (same pattern as
+	# settings_controller.gd's _schedule_stream_restart()) gives the host a real,
+	# clean teardown to work with instead of an abandoned half-launch.
+	if not was_restarting and not stream_manager._resolution_retry_done and layout and layout.frame_size != stream_manager._last_requested_resolution:
+		stream_manager._resolution_retry_done = true
+		var retry_host_id = current_host_id
+		var retry_app_id = _selected_app_id
+		var retry_resolution = layout.frame_size
+		_log("[STREAM] Requested resolution %s doesn't match host manifest %s - reconnecting with the correct size" % [
+			str(stream_manager._last_requested_resolution), str(retry_resolution)])
+		_restarting_stream = true
+		stream_backend.stop_play_stream()
+		await get_tree().create_timer(0.5).timeout
+		stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+
 func _switch_to_comp_layer():
 	comp.switch_to_comp_layer()
 
@@ -1605,6 +1633,17 @@ func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	if use_cam_yaw:
 		screen_mesh.rotation.y = atan2(-cam_fwd.x, -cam_fwd.z)
 	screen_mesh.apply_curvature()
+	# get_cylinder_radius() is camera-position-derived, so any screen curved before
+	# this point (e.g. _init_post_xr()'s early best-effort pass, which isn't gated on
+	# _startup_reposition confirming a real tracking pose yet) may have baked in a
+	# wrong radius - grab_bar/corner geometry is fully recomputed by apply_curvature()
+	# each call, so re-running it here with a now-valid camera position is a full fix,
+	# not just a partial one. Only screen_mesh's world position/rotation gets moved
+	# above (it's the one placed relative to the camera); secondary screens are placed
+	# relative to it and must keep their own position/rotation untouched here.
+	for s in screens:
+		if s != screen_mesh:
+			s.apply_curvature()
 	if comp_cylinder or comp_cylinder_left:
 		_update_cylinder_params()
 	_log("[POS] Screen at %s, Cam at %s" % [str(screen_mesh.global_position), str(cam_pos)])

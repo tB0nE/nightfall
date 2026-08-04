@@ -458,8 +458,21 @@ func build_pin_screen(parent: Node):
 
 	back_btn.pressed.connect(func(): show_welcome_screen("server"))
 
+const WELCOME_FRAME := Vector2i(1920, 1080)
+
 func show_welcome_screen(name: String):
 	main._welcome_screen = name
+	# The welcome UI is rendered on the same shared mesh/material as the stream
+	# (see main.gd's comp_shader_mat main_texture reuse) - a resolution requested
+	# for a stream attempt that never actually starts (e.g. a multi-monitor retry
+	# that fails before establish_stream succeeds) still speculatively reshapes
+	# that mesh via resize_stream_viewport()/resize_screen_to_aspect(), since
+	# those run before the connection outcome is known. Always force it back to
+	# a fixed 16:9 here so the welcome screen never inherits a stray aspect from
+	# an attempt that didn't pan out - this function is only ever shown while
+	# not actively streaming.
+	if not main.is_streaming and main.layout and main.layout.frame_size != WELCOME_FRAME:
+		main.settings_controller.apply_screen_layout(ScreenLayout.single(WELCOME_FRAME))
 	var root = main.welcome_viewport.get_node("WelcomeRoot/Screens")
 	for child in root.get_children():
 		child.visible = false

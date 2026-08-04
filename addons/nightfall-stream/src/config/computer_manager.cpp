@@ -709,7 +709,17 @@ void NightfallComputerManager::_on_display_manifest_completed(int code, PackedBy
             }
         }
     }
-    _fetch_session_status(response, callback, ip, port);
+    // NOTE: this used to chain straight into _fetch_session_status() here, firing a
+    // GET /polaris/v1/session/status immediately after every launch response. Pulled
+    // out because it lines up exactly with a newly-reproducible Polaris hang: the
+    // session-launch path holds sync.mutex (a recursive_mutex) through async
+    // post-launch setup, and get_session_status_view() (behind /session/status) takes
+    // the same lock - hitting it while that setup is still in flight is a plausible
+    // deadlock/thread-starvation source that did not exist before this call was added.
+    // cursor_supported/cursor_visible just stay absent from the response now (Host
+    // Cursor toggle degrades to "unsupported", same as any non-Polaris host) until
+    // this is refetched lazily from somewhere that isn't racing session setup.
+    callback.call(response);
 }
 
 // Best-effort, same reasoning as _fetch_display_manifest: only Polaris hosts expose
@@ -803,11 +813,13 @@ void NightfallComputerManager::fetch_display_manifest(int host_id, Callable call
     }
 
     String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    NF_LOG("NightfallPrelaunch", "dispatching GET %s", url.utf8().get_data());
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_prelaunch_manifest_completed).bind(Variant(callback)));
 }
 
 void NightfallComputerManager::_on_prelaunch_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    NF_LOG("NightfallPrelaunch", "completed code=%d body_len=%d error=[%s]", code, body.size(), error.utf8().get_data());
     if (code == 200) {
         Ref<JSON> json;
         json.instantiate();
