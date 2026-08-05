@@ -70,10 +70,12 @@ func apply_stereo():
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
+		main._log("[PASSTHROUGH] toggle ignored: is_xr_active=%s passthrough_supported=%s" % [str(main.is_xr_active), str(main.passthrough_supported)])
 		return
 	main.passthrough_enabled = not main.passthrough_enabled
 	apply_passthrough(main.passthrough_enabled)
 	_save_setting(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
+	main._log("[PASSTHROUGH] toggled to %s and saved" % str(main.passthrough_enabled))
 
 func apply_passthrough(enable: bool):
 	if not main.is_xr_active:
@@ -353,9 +355,11 @@ func add_monitor():
 	# monitor it's meant to represent, showing the full multi-monitor
 	# composite (all monitors' content) squeezed onto every screen instead
 	# of each one's actual content.
-	for m in main.layout.monitors:
+	for i in range(main.layout.monitors.size()):
+		var m = main.layout.monitors[i]
 		if not m.enabled:
 			m.enabled = true
+			main._edit_monitor_idx = i
 			apply_screen_layout(main.layout)
 			return
 
@@ -369,6 +373,13 @@ func remove_monitor():
 	for i in range(enabled.size() - 1, -1, -1):
 		if not enabled[i].is_primary:
 			enabled[i].enabled = false
+			# Point the monitor tab at the one we just disabled, so its
+			# "Enabled" status visibly flips to Off - otherwise the tab keeps
+			# showing whatever was selected before, which may not change at
+			# all if it happened to already be pointed elsewhere.
+			var real_idx = main.layout.monitors.find(enabled[i])
+			if real_idx >= 0:
+				main._edit_monitor_idx = real_idx
 			apply_screen_layout(main.layout)
 			return
 

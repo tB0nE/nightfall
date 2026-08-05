@@ -446,7 +446,19 @@ func bind_yuv_textures():
 	var is_semi_planar = mat.get_shader_parameter("is_semi_planar")
 	var cmt = mat.get_shader_parameter("color_matrix_type")
 	var cr = mat.get_shader_parameter("color_range")
-	if tex_y:
+	# tex_y can be a non-null Texture object whose underlying RID no longer
+	# points to valid GPU memory - e.g. right after a stream restart, before
+	# the new decoder session has produced its first frame, the shader
+	# material (reused across the restart, not recreated) still holds a
+	# reference to the just-freed previous session's texture. Binding that to
+	# the composition layer shader doesn't just look wrong, it makes Godot's
+	# renderer error repeatedly ("uniform_set_create ... not a valid
+	# texture") and render black. Only the null check used to matter because
+	# the RID-dedup cache below happened to skip rebinding a merely-stale (but
+	# still GPU-valid) texture on its own; forcing a rebind via
+	# invalidate_yuv_cache() removed that accidental protection, so this needs
+	# its own explicit validity check now.
+	if tex_y and tex_y.get_rid().is_valid():
 		var yuv_mode_val = 0
 		if is_nv12_rd:
 			yuv_mode_val = 1

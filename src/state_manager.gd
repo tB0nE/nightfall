@@ -199,7 +199,9 @@ func load_state():
 	# change. Only fall back to it as a one-time migration for a save file
 	# that's never been touched by the current format at all.
 	if save.has_section_key("screen", "passthrough_enabled"):
-		main.passthrough_enabled = save.get_value("screen", "passthrough_enabled", false) and main.passthrough_supported
+		var raw_saved = save.get_value("screen", "passthrough_enabled", false)
+		main.passthrough_enabled = raw_saved and main.passthrough_supported
+		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
 	elif save.has_section_key("screen", "passthrough"):
 		var old = clampi(save.get_value("screen", "passthrough", 0), 0, 5)
 		if main.passthrough_supported:

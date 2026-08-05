@@ -63,6 +63,7 @@ var quick_start_enabled: bool = false
 var host_cursor_visible: bool = false
 var _host_cursor_toggle_supported: bool = false
 var _restarting_stream: bool = false
+var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
 var ai_3d_mode: int = 0
@@ -585,6 +586,13 @@ func _on_connect_timeout():
 func _bind_yuv_textures():
 	comp.bind_yuv_textures()
 
+func _retry_yuv_bind(seq: int):
+	for i in range(6):
+		await get_tree().create_timer(0.25).timeout
+		if seq != _stream_start_seq or not is_streaming:
+			return
+		_bind_yuv_textures()
+
 func _bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 	comp.bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode, cmt, cr)
 
@@ -618,6 +626,18 @@ func _on_stream_started():
 	if comp.available:
 		comp.invalidate_yuv_cache()
 	_bind_yuv_textures()
+	# The decoder's shader material is reused across a restart, not recreated -
+	# right here, right at connection start, it can still be holding a
+	# reference to the just-torn-down previous session's (now GPU-invalid)
+	# texture, which bind_yuv_textures() now correctly refuses to bind (see its
+	# RID validity check) rather than crashing the renderer on it. But nothing
+	# else ever retries the real YUV path afterward (binding is purely
+	# event-driven, no periodic re-check), so without this the stream would be
+	# stuck on the SubViewport fallback for the rest of the session. Retry a
+	# few times shortly after connecting, by which point the new session's
+	# first real frame should have landed.
+	_stream_start_seq += 1
+	_retry_yuv_bind(_stream_start_seq)
 	_switch_to_comp_layer()
 	if not was_restarting:
 		ui_visible = false
