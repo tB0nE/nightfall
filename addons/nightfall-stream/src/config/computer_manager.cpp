@@ -594,6 +594,12 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
         url += "&mode=" + mode;
     }
 
+    if (options.has("capture_outputs")) {
+        String outputs = options["capture_outputs"];
+        if (!outputs.is_empty()) {
+            url += "&outputs=" + outputs.uri_encode();
+        }
+    }
     if (options.has("sops")) url += "&sops=" + String::num_int64(options["sops"]);
     if (options.has("surround_audio_info")) url += "&surroundAudioInfo=" + String::num_int64(options["surround_audio_info"]);
     if (options.has("surround_params")) url += "&surroundParams=" + String(options["surround_params"]);

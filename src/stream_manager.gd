@@ -78,9 +78,32 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
 	options["surroundAudioInfo"] = 0xCA0203
+	var capture_outputs = _compute_capture_outputs()
+	if not capture_outputs.is_empty():
+		options["capture_outputs"] = capture_outputs
 	main._ui_status_label.text = "Launching stream..."
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
+
+# Comma-separated real RandR output names (e.g. "DP-0,DP-2") for whichever
+# monitors are currently enabled in main.layout, matching Polaris's new
+# per-session outputs= launch/resume param. Sending this - even listing every
+# currently-known output - activates multi-monitor capture on the host
+# regardless of its static linux_multi_monitor_capture config, so the client
+# always gets exactly what it asked for instead of depending on the host's
+# own toggle. Returns "" when main.layout doesn't have real manifest-derived
+# labels yet (e.g. the placeholder single(1920,1080) layout used before ever
+# connecting to this host) - in that case the launch just omits the param and
+# the host falls back to its static config, same as before this existed.
+func _compute_capture_outputs() -> String:
+	if not main.layout:
+		return ""
+	var labels: Array = []
+	for m in main.layout.enabled_monitors():
+		if m.label.is_empty():
+			return ""
+		labels.append(m.label)
+	return ",".join(labels)
 
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
