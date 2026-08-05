@@ -190,7 +190,17 @@ func load_state():
 	main.bezel_enabled = save.get_value("screen", "bezel", true)
 	main.curvature = save.get_value("screen", "curvature", 2)
 	main.background_mode = save.get_value("screen", "background_mode", 0)
-	if save.has_section_key("screen", "passthrough"):
+	# "passthrough_enabled" is the current format, always written by
+	# save_state() - prefer it whenever present. The old "passthrough" int key
+	# (0=on, 1-5=off with a specific background) predates that and is never
+	# written or cleared anymore, so a save file that has both (any file
+	# saved by a current build that started from an old one) would otherwise
+	# have this permanently prioritize a stale value no toggle can ever
+	# change. Only fall back to it as a one-time migration for a save file
+	# that's never been touched by the current format at all.
+	if save.has_section_key("screen", "passthrough_enabled"):
+		main.passthrough_enabled = save.get_value("screen", "passthrough_enabled", false) and main.passthrough_supported
+	elif save.has_section_key("screen", "passthrough"):
 		var old = clampi(save.get_value("screen", "passthrough", 0), 0, 5)
 		if main.passthrough_supported:
 			main.passthrough_enabled = (old == 0)
@@ -199,7 +209,7 @@ func load_state():
 			main.passthrough_enabled = false
 			main.background_mode = old
 	else:
-		main.passthrough_enabled = save.get_value("screen", "passthrough_enabled", false) and main.passthrough_supported
+		main.passthrough_enabled = false
 	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
 	main.sharpen_mode = save.get_value("screen", "sharpen_mode", 0)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)

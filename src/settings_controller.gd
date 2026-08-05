@@ -344,23 +344,33 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	main.state_manager.save_state()
 
 func add_monitor():
-	var frame = main.layout.frame_size
-	var count = main.layout.monitors.size()
-	if count >= 4:
-		return
-	var next_count = count + 1
-	var next_layout = ScreenLayout.replicate(frame, next_count) if next_count > 1 else ScreenLayout.single(frame)
-	apply_screen_layout(next_layout)
+	# Re-enable the highest-priority currently-disabled monitor, preserving
+	# its real frame_rect/desktop_rect from the host's manifest. There's no
+	# meaningful way to "add" a monitor beyond what the manifest reported -
+	# unlike remove_monitor() below, this used to rebuild the whole layout
+	# via ScreenLayout.replicate()/single(), a pre-manifest placeholder whose
+	# frame_rect always spans the ENTIRE composite frame regardless of which
+	# monitor it's meant to represent, showing the full multi-monitor
+	# composite (all monitors' content) squeezed onto every screen instead
+	# of each one's actual content.
+	for m in main.layout.monitors:
+		if not m.enabled:
+			m.enabled = true
+			apply_screen_layout(main.layout)
+			return
 
 func remove_monitor():
-	if main.layout.monitors.size() <= 1:
+	# Disable the last enabled, non-primary monitor - same reasoning as
+	# add_monitor() above: preserves every remaining monitor's real
+	# frame_rect/desktop_rect instead of rebuilding a placeholder layout.
+	var enabled = main.layout.enabled_monitors()
+	if enabled.size() <= 1:
 		return
-	var frame = main.layout.frame_size
-	var count = main.layout.monitors.size()
-	if main._edit_monitor_idx >= count - 1:
-		main._edit_monitor_idx = count - 2
-	var next_layout = ScreenLayout.replicate(frame, count - 1) if (count - 1) > 1 else ScreenLayout.single(frame)
-	apply_screen_layout(next_layout)
+	for i in range(enabled.size() - 1, -1, -1):
+		if not enabled[i].is_primary:
+			enabled[i].enabled = false
+			apply_screen_layout(main.layout)
+			return
 
 func select_monitor(idx: int):
 	if idx < 0 or idx >= main.layout.monitors.size():

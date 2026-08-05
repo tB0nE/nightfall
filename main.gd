@@ -607,6 +607,16 @@ func _on_stream_started():
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	stream_manager.bind_texture()
+	# bind_yuv_textures() skips rebinding the composition-layer cylinder's
+	# shader when the decoder's texture RIDs "look unchanged" from the last
+	# bind - a real optimization for the steady-state per-frame case, but
+	# wrong right after a (re)connect: a restart's new decoder session can
+	# end up with the exact same RIDs reused (resource pooling) even though
+	# the actual texture is a fresh one, leaving the cylinder showing a
+	# stale/blank frame while decode stats keep updating normally. A stream
+	# genuinely (re)starting here should always force a real rebind.
+	if comp.available:
+		comp.invalidate_yuv_cache()
 	_bind_yuv_textures()
 	_switch_to_comp_layer()
 	if not was_restarting:
