@@ -265,15 +265,11 @@ func cycle_fps():
 	_schedule_stream_restart()
 
 func cycle_resolution():
-	main.resolution_idx += 1
-	if main.resolution_idx >= main.resolutions.size():
-		main.resolution_idx = -1
-	if main.resolution_idx == -1:
-		main.host_resolution = Vector2i(1920, 1080)
-		_save_setting(main._ui_res_btn, "Auto")
-	else:
-		main.host_resolution = main.resolutions[main.resolution_idx]
-		_save_setting(main._ui_res_btn, main.resolution_labels[main.resolution_idx])
+	var opts = main.resolution_scale_options
+	var idx = opts.find(main.resolution_scale_pct)
+	main.resolution_scale_pct = opts[(maxi(idx, 0) + 1) % opts.size()]
+	main.host_resolution = main.compute_requested_resolution()
+	_save_setting(main._ui_res_btn, "%d%%" % main.resolution_scale_pct)
 	_schedule_stream_restart()
 
 func cycle_bitrate():

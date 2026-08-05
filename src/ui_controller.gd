@@ -454,7 +454,7 @@ func build_ui():
 	stream_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_stream.add_child(stream_row1)
 
-	main._ui_res_btn = make_option_btn("Resolution", "HD")
+	main._ui_res_btn = make_option_btn("Resolution", "100%")
 	stream_row1.add_child(main._ui_res_btn)
 	main._ui_fps_btn = make_option_btn("FPS", "60")
 	stream_row1.add_child(main._ui_fps_btn)

@@ -138,10 +138,21 @@ var stream_fps: int = 60
 var _cached_filter_mode: int = -1
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
+# host_resolution is the actual WxH about to be (or last) requested from the
+# host - computed as native_resolution * resolution_scale_pct / 100, not set
+# directly. It always matches whatever the host's real desktop/composite
+# shape is (single monitor or multi-monitor composite alike), instead of a
+# fixed target size that would force the host to letterbox/squeeze a
+# mismatched-aspect composite to fit.
 var host_resolution: Vector2i = Vector2i(1920, 1080)
-var resolution_idx: int = 1
-var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(3440, 1440)]
-var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9"]
+# Last known real desktop/composite size for the currently selected host, as
+# reported by its display manifest (or session_optimization's negotiated
+# width/height for hosts without one). Cached per-host in host_state.cfg so a
+# repeat connection can request the correctly-scaled resolution on the first
+# try instead of needing the mismatch-triggered reconnect every time.
+var native_resolution: Vector2i = Vector2i(1920, 1080)
+var resolution_scale_pct: int = 100
+var resolution_scale_options: Array = [100, 90, 80, 70, 60, 50]
 var double_h: bool = false
 var bitrate_idx: int = -1
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
@@ -183,7 +194,6 @@ var welcome_screen: WelcomeScreen
 var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
-var host_discovery: HostDiscovery
 var controller_mapper: ControllerMapper
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
@@ -343,6 +353,13 @@ var _ui_center_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
+
+func compute_requested_resolution() -> Vector2i:
+	var w = int(native_resolution.x * resolution_scale_pct / 100.0)
+	var h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	w = maxi(w - (w % 2), 320)
+	h = maxi(h - (h % 2), 180)
+	return Vector2i(w, h)
 
 func _log(msg: String):
 	_log_lines.append(msg)
@@ -603,12 +620,14 @@ func _on_stream_started():
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
 	stream_backend.send_controller_arrival(0, 1, 1, all_btn_flags, 0x01|0x02)
 
-	# The host's real desktop can be a very different shape than the resolution we
-	# requested before knowing anything about it (e.g. a wide multi-monitor composite
-	# requested at a default 16:9) - the host then has to letterbox/squeeze it to fit.
-	# Reconnect once with the manifest's real size instead, so the *next* launch
-	# requests the right shape from the start. Only ever once per session, so a host
-	# that free-scales regardless of requested resolution can't loop us forever.
+	# The host's real desktop can be a very different shape than native_resolution
+	# assumed (first-ever connection to a host, or its desktop layout changed since
+	# last time) - requesting the wrong aspect makes the host letterbox/squeeze its
+	# real composite to fit. Reconnect once at the correctly-scaled size instead, so
+	# the *next* launch requests the right shape from the start, and cache the real
+	# size afterward so a repeat connection to this host doesn't need to. Only ever
+	# retries once per session, so a host that free-scales regardless of requested
+	# resolution can't loop us forever.
 	#
 	# Deliberately done AFTER the stream has genuinely started (not by aborting the
 	# first launch response before ever calling start_stream_v2): a launch that's
@@ -619,17 +638,21 @@ func _on_stream_started():
 	# an ACTUALLY-STARTED stream down with stop_play_stream() (same pattern as
 	# settings_controller.gd's _schedule_stream_restart()) gives the host a real,
 	# clean teardown to work with instead of an abandoned half-launch.
-	if not was_restarting and not stream_manager._resolution_retry_done and layout and layout.frame_size != stream_manager._last_requested_resolution:
-		stream_manager._resolution_retry_done = true
-		var retry_host_id = current_host_id
-		var retry_app_id = _selected_app_id
-		var retry_resolution = layout.frame_size
-		_log("[STREAM] Requested resolution %s doesn't match host manifest %s - reconnecting with the correct size" % [
-			str(stream_manager._last_requested_resolution), str(retry_resolution)])
-		_restarting_stream = true
-		stream_backend.stop_play_stream()
-		await get_tree().create_timer(0.5).timeout
-		stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+	if layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
+		native_resolution = layout.frame_size
+		if not was_restarting and not stream_manager._resolution_retry_done:
+			stream_manager._resolution_retry_done = true
+			var retry_host_id = current_host_id
+			var retry_app_id = _selected_app_id
+			var retry_resolution = compute_requested_resolution()
+			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
+				str(layout.frame_size), str(retry_resolution), resolution_scale_pct])
+			_restarting_stream = true
+			stream_backend.stop_play_stream()
+			await get_tree().create_timer(0.5).timeout
+			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+			return
+	state_manager.save_host_state()
 
 func _switch_to_comp_layer():
 	comp.switch_to_comp_layer()
@@ -797,7 +820,6 @@ func _init_modules():
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
-	host_discovery = HostDiscovery.new(self)
 	controller_mapper = ControllerMapper.new(self)
 	add_child(controller_mapper)
 

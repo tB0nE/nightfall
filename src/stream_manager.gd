@@ -24,7 +24,6 @@ func _is_local_host(ip: String) -> bool:
 # retry has happened, so we never retry more than once even if the manifest still doesn't
 # match afterwards (e.g. a host that free-scales regardless of requested resolution).
 var _resolution_retry_done: bool = false
-var _last_requested_resolution: Vector2i = Vector2i.ZERO
 var _current_host_id: int = -1
 var _current_app_id: int = -1
 
@@ -58,7 +57,6 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		main._log("[STREAM] Reconnecting with corrected resolution %dx%d (was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
 	elif main.double_h:
 		w *= 2
-	_last_requested_resolution = Vector2i(w, h)
 
 	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.stream_fps, str(local_capture_mode)])
 	if main.bitrate_idx >= 0:
@@ -272,7 +270,12 @@ func on_pair_pressed():
 	if paired_host_id != -1:
 		main.current_host_id = paired_host_id
 		main._ui_status_label.text = "Connecting..."
-		await main.host_discovery.query_host_resolution(ip)
+		# Used to await host_discovery.query_host_resolution() here, which blindly
+		# sleeps 5s every connect regardless of whether its (single-monitor-only,
+		# not multi-monitor-aware) HTTP probe already answered. Superseded by
+		# native_resolution/resolution_scale_pct - the host's real desktop size
+		# comes from its display manifest (or the negotiated launch resolution)
+		# once actually connecting, and gets cached per-host for next time.
 		await start_stream(paired_host_id, main._selected_app_id)
 	else:
 		main._ui_status_label.text = "Pairing with " + ip + "..."
