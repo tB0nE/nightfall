@@ -380,6 +380,7 @@ func add_monitor():
 			main._edit_monitor_idx = i
 			apply_screen_layout(main.layout)
 			main.state_manager.save_host_state()
+			_schedule_stream_restart()
 			return
 
 func remove_monitor():
@@ -401,6 +402,7 @@ func remove_monitor():
 				main._edit_monitor_idx = real_idx
 			apply_screen_layout(main.layout)
 			main.state_manager.save_host_state()
+			_schedule_stream_restart()
 			return
 
 func select_monitor(idx: int):
@@ -428,6 +430,7 @@ func toggle_edit_monitor_enabled():
 					break
 	apply_screen_layout(main.layout)
 	main.state_manager.save_host_state()
+	_schedule_stream_restart()
 
 func set_edit_monitor_primary():
 	if main._edit_monitor_idx >= main.layout.monitors.size():

@@ -685,7 +685,19 @@ func _on_stream_started():
 	# clean teardown to work with instead of an abandoned half-launch.
 	if layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
 		native_resolution = layout.frame_size
-		if not was_restarting and not stream_manager._resolution_retry_done:
+		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
+		# blocked the retry for exactly the case that needs it most: removing/
+		# adding a monitor changes the server's real captured composite size,
+		# triggering a genuine restart (settings_controller.gd's
+		# _schedule_stream_restart()), which left the stream stuck requesting the
+		# old (now mismatched) aspect for that whole session - the same
+		# squished-with-black-bars server-side letterbox symptom this retry
+		# exists to fix in the first place, just not caught because a restart
+		# was already in flight. _resolution_retry_done alone already prevents
+		# this from cascading (the retry's own reconnect passes a non-zero
+		# forced_resolution, which does not reset it), so was_restarting was
+		# never actually needed for that protection.
+		if not stream_manager._resolution_retry_done:
 			stream_manager._resolution_retry_done = true
 			var retry_host_id = current_host_id
 			var retry_app_id = _selected_app_id

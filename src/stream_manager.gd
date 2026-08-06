@@ -79,6 +79,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["streaming_remotely"] = 2
 	options["surroundAudioInfo"] = 0xCA0203
 	var capture_outputs = _compute_capture_outputs()
+	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
+		capture_outputs, str(main.layout.source) if main.layout else "null",
+		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
 	if not capture_outputs.is_empty():
 		options["capture_outputs"] = capture_outputs
 	main._ui_status_label.text = "Launching stream..."

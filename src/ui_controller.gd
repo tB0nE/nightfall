@@ -65,15 +65,24 @@ func update_monitor_tab():
 	for c in _mon_icon_row.get_children():
 		_mon_icon_row.remove_child(c)
 		c.queue_free()
+	# Only list ENABLED monitors as tabs - a disabled (removed) one has no VR
+	# screen and nothing to configure, and add_monitor() (the "+" button) is
+	# the intended way back for it, not this list. Track real indices into
+	# main.layout.monitors separately from the display position, since a
+	# disabled monitor may sit anywhere in that array once removed.
+	var enabled_indices: Array = []
 	for i in main.layout.monitors.size():
-		var m = main.layout.monitors[i]
+		if main.layout.monitors[i].enabled:
+			enabled_indices.append(i)
+	for display_i in enabled_indices.size():
+		var real_idx = enabled_indices[display_i]
 		var btn = Button.new()
-		btn.text = "Monitor " + str(i + 1)
+		btn.text = "Monitor " + str(display_i + 1)
 		btn.focus_mode = Control.FOCUS_NONE
 		btn.add_theme_font_size_override("font_size", 26)
 		btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 		btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
-		var bg = Color(1, 1, 1, 0.12) if i == main._edit_monitor_idx else Color(1, 1, 1, 0.04)
+		var bg = Color(1, 1, 1, 0.12) if real_idx == main._edit_monitor_idx else Color(1, 1, 1, 0.04)
 		var style = StyleBoxFlat.new()
 		style.bg_color = bg
 		style.set_corner_radius_all(8)
@@ -83,10 +92,9 @@ func update_monitor_tab():
 		btn.add_theme_stylebox_override("hover", hover)
 		btn.custom_minimum_size = Vector2(200, 132)
 		btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		var idx = i
-		btn.button_down.connect(func(): main.settings_controller.select_monitor(idx))
+		btn.button_down.connect(func(): main.settings_controller.select_monitor(real_idx))
 		_mon_icon_row.add_child(btn)
-	if main.layout.monitors.size() < 4:
+	if enabled_indices.size() < main.layout.monitors.size():
 		var add_btn = Button.new()
 		add_btn.text = "+"
 		add_btn.focus_mode = Control.FOCUS_NONE
@@ -103,14 +111,15 @@ func update_monitor_tab():
 		add_btn.add_theme_stylebox_override("hover", add_hover)
 		add_btn.button_down.connect(func(): main.settings_controller.add_monitor())
 		_mon_icon_row.add_child(add_btn)
-	main._edit_monitor_idx = clampi(main._edit_monitor_idx, 0, main.layout.monitors.size() - 1)
+	if not enabled_indices.has(main._edit_monitor_idx):
+		main._edit_monitor_idx = enabled_indices[0] if not enabled_indices.is_empty() else 0
 	var m = main.layout.monitors[main._edit_monitor_idx]
 	update_option_btn(main._ui_mon_enabled_btn, "On" if m.enabled else "Off")
 	update_option_btn(main._ui_mon_primary_btn, "Yes" if m.is_primary else "No")
 	update_option_btn(main._ui_mon_remove_btn, "Remove")
 	main._ui_mon_enabled_btn.disabled = m.is_primary
 	main._ui_mon_primary_btn.disabled = not m.enabled
-	main._ui_mon_remove_btn.disabled = main.layout.monitors.size() <= 1
+	main._ui_mon_remove_btn.disabled = enabled_indices.size() <= 1
 
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
