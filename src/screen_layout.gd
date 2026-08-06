@@ -192,10 +192,24 @@ func uv_region_for(m: MonitorSpec) -> Vector4:
 	)
 
 func uv_to_host_point(m: MonitorSpec, uv: Vector2) -> Vector2i:
+	# Moonlight's absolute mouse position protocol (LiSendMousePositionEvent)
+	# sends x,y as a point WITHIN a refW x refH frame - the host scales that
+	# onto its own capture region using its own knowledge of which outputs
+	# are currently selected. So this must use frame_rect/frame_size (the
+	# monitor's position within the actual COMPOSITED/CAPTURED video frame),
+	# not desktop_rect/desktop_bounds (the monitor's position in the host's
+	# real absolute multi-monitor desktop). Those two are identical whenever
+	# every captured monitor's combined bounding box starts at the desktop
+	# origin - which covers "all monitors captured" and "solo primary
+	# captured", so this bug only ever showed up capturing a lone
+	# non-origin monitor (e.g. a secondary made the sole captured output):
+	# frame_rect there is normalized to (0,0)-sized-to-itself, but
+	# desktop_rect still carried its real offset in the full desktop,
+	# sending clicks scaled/offset into the wrong place.
 	return Vector2i(
-		m.desktop_rect.position.x + int(uv.x * m.desktop_rect.size.x),
-		m.desktop_rect.position.y + int(uv.y * m.desktop_rect.size.y),
+		m.frame_rect.position.x + int(uv.x * m.frame_rect.size.x),
+		m.frame_rect.position.y + int(uv.y * m.frame_rect.size.y),
 	)
 
 func host_ref() -> Vector2i:
-	return desktop_bounds.size
+	return frame_size

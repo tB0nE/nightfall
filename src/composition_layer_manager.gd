@@ -69,6 +69,8 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_shader_mat.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 	s.comp_yuv_rect.material = s.comp_shader_mat
 	s.comp_bezel_rect.add_child(s.comp_yuv_rect)
+	s.comp_loading_label = _make_loading_label()
+	s.comp_bezel_rect.add_child(s.comp_loading_label)
 
 	s.comp_stream_cursor = _make_cursor_texture_rect()
 	s.comp_bezel_rect.add_child(s.comp_stream_cursor)
@@ -117,6 +119,8 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_shader_mat_left.set_shader_parameter("eye_index", 1)
 	s.comp_yuv_rect_left.material = s.comp_shader_mat_left
 	s.comp_bezel_rect_left.add_child(s.comp_yuv_rect_left)
+	s.comp_loading_label_left = _make_loading_label()
+	s.comp_bezel_rect_left.add_child(s.comp_loading_label_left)
 	s.comp_stream_cursor_left = _make_cursor_texture_rect()
 	s.comp_bezel_rect_left.add_child(s.comp_stream_cursor_left)
 	s.comp_stream_cursor_circle_left = _make_cursor_circle_rect()
@@ -139,6 +143,8 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_shader_mat_right.set_shader_parameter("eye_index", 2)
 	s.comp_yuv_rect_right.material = s.comp_shader_mat_right
 	s.comp_bezel_rect_right.add_child(s.comp_yuv_rect_right)
+	s.comp_loading_label_right = _make_loading_label()
+	s.comp_bezel_rect_right.add_child(s.comp_loading_label_right)
 	s.comp_stream_cursor_right = _make_cursor_texture_rect()
 	s.comp_bezel_rect_right.add_child(s.comp_stream_cursor_right)
 	s.comp_stream_cursor_circle_right = _make_cursor_circle_rect()
@@ -168,6 +174,23 @@ func _make_yuv_rect() -> ColorRect:
 	r.grow_horizontal = 2
 	r.grow_vertical = 2
 	return r
+
+func _make_loading_label() -> Label:
+	var l = Label.new()
+	l.name = "CompLoadingLabel"
+	l.text = ". . ."
+	l.add_theme_color_override("font_color", Color(0.25, 0.25, 0.25))
+	l.add_theme_font_size_override("font_size", 96)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.anchors_preset = 15
+	l.anchor_right = 1.0
+	l.anchor_bottom = 1.0
+	l.grow_horizontal = 2
+	l.grow_vertical = 2
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.visible = false
+	return l
 
 func _make_cursor_texture_rect() -> TextureRect:
 	var r = TextureRect.new()
@@ -508,6 +531,9 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 			mat.set_shader_parameter("yuv_mode", yuv_mode)
 			mat.set_shader_parameter("color_matrix_type", cmt)
 			mat.set_shader_parameter("color_range", cr)
+		for lbl in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
+			if lbl:
+				lbl.visible = false
 	main._log("[COMP] YUV textures bound to composition layer shader (mode=%d)" % yuv_mode)
 
 func bind_fallback_texture(stream_tex):
@@ -632,9 +658,17 @@ func clear_yuv_textures():
 			mat.set_shader_parameter("tex_u", null)
 			mat.set_shader_parameter("tex_v", null)
 			mat.set_shader_parameter("yuv_mode", 0)
-			mat.set_shader_parameter("main_texture", null)
+			# main_texture must stay non-null: an unset sampler2D uniform (no
+			# hint_default_black) samples as solid white in Godot, which is
+			# what produced the flash-of-white-screen every restart. Reset to
+			# the same dark placeholder used before the very first frame ever
+			# arrives instead of leaving it null.
+			mat.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
 			mat.set_shader_parameter("stereo_mode", 0)
 			mat.set_shader_parameter("depth_texture", null)
+		for lbl in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
+			if lbl:
+				lbl.visible = true
 
 static func set_grab_bar_color(viewport: SubViewport, color: Color):
 	if not viewport:

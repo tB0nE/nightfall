@@ -36,6 +36,9 @@ var comp_viewport_right: SubViewport = null
 var comp_yuv_rect: ColorRect = null
 var comp_yuv_rect_left: ColorRect = null
 var comp_yuv_rect_right: ColorRect = null
+var comp_loading_label: Label = null
+var comp_loading_label_left: Label = null
+var comp_loading_label_right: Label = null
 var comp_bezel_rect: ColorRect = null
 var comp_bezel_rect_left: ColorRect = null
 var comp_bezel_rect_right: ColorRect = null
@@ -63,7 +66,7 @@ static var _placeholder_tex: ImageTexture = null
 static func placeholder_texture() -> ImageTexture:
 	if _placeholder_tex == null:
 		var img = Image.create(4, 4, false, Image.FORMAT_RGB8)
-		img.fill(Color(0.12, 0.12, 0.12))
+		img.fill(Color(0.45, 0.45, 0.45))
 		_placeholder_tex = ImageTexture.create_from_image(img)
 	return _placeholder_tex
 

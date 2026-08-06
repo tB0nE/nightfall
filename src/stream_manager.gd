@@ -207,9 +207,30 @@ func _on_v2_launch_response(response: Dictionary):
 	var manifest = response.get("manifest", {})
 	if manifest is Dictionary and not manifest.is_empty():
 		var host_layout = ScreenLayout.from_dict(manifest)
+		# The host's "primary" flag tracks its real OS-level primary display,
+		# independent of which output(s) we actually asked it to capture. If
+		# the client is only streaming a non-OS-primary monitor (e.g. after
+		# swapping VR-primary to a secondary and disabling the original),
+		# the manifest for that captured set legitimately has zero enabled
+		# monitors flagged primary - validate() used to reject the whole
+		# manifest for that, leaving the client on its previous (differently
+		# shaped) layout while the actual stream played at the new single
+		# monitor's real aspect, producing a stale-mesh-vs-real-video
+		# letterbox mismatch. Promote the sole/first enabled monitor instead.
+		var enabled_in_manifest := host_layout.enabled_monitors()
+		if not enabled_in_manifest.is_empty():
+			var has_primary := false
+			for m in enabled_in_manifest:
+				if m.is_primary:
+					has_primary = true
+					break
+			if not has_primary:
+				enabled_in_manifest[0].is_primary = true
 		var layout_err = host_layout.validate(host_layout.frame_size)
 		if layout_err == "":
-			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y])
+			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d, desktop_bounds=%s" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y, str(host_layout.desktop_bounds)])
+			for m in host_layout.enabled_monitors():
+				main._log("[LAYOUT]   monitor %s frame_rect=%s desktop_rect=%s primary=%s" % [String(m.id), str(m.frame_rect), str(m.desktop_rect), str(m.is_primary)])
 			main.settings_controller.apply_screen_layout(host_layout)
 		else:
 			main._log("[LAYOUT] Host manifest invalid, ignoring: %s" % layout_err)
