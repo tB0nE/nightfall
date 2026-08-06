@@ -60,6 +60,7 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    bool is_display_ready() const;
 
     String get_decoder_name() const;
     int get_video_width() const;
@@ -167,7 +168,16 @@ private:
     RID dummy_sampler_;
     RID rgba_output_tex_;
     std::atomic<bool> compute_pipeline_ready_{false};
-    bool display_wired_ = false;
+    // Set once per render generation, only after the FIRST successful compute
+    // dispatch has written real video data into rgba_output_tex_ and that
+    // result has actually been wired into the shader material's tex_y param
+    // (see _render_compute_dispatch_rt). Before this flips true, the shader
+    // material's tex_y - if set at all - is either unset or still pointing at
+    // the previous (now torn-down) session's texture; GDScript's
+    // bind_yuv_textures() polls is_display_ready() instead of trusting the
+    // shader parameter's own RID validity, which stays "valid" even when it
+    // wraps freed GPU memory.
+    std::atomic<bool> display_wired_{false};
     int native_video_width_ = 0;
     int native_video_height_ = 0;
     int native_color_range_ = 0;

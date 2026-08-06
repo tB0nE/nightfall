@@ -73,6 +73,8 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    bool is_display_ready() const;
+    String get_codec_capabilities_info() const;
 
     String get_decoder_name() const;
     int get_video_width() const;

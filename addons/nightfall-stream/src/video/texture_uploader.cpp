@@ -58,17 +58,25 @@ void TextureUploader::_render_thread_import_native_rt() {
 
     if (!rd) return;
 
-    // Free any existing textures
-    for (int i = 0; i < 3; i++) {
-        rd_texture_wrappers[i].unref();
-        if (rs_texture_rid[i].is_valid()) {
-            rs->free_rid(rs_texture_rid[i]);
-            rs_texture_rid[i] = RID();
-        }
-        if (rd_texture_rid[i].is_valid() && rd_texture_rid[i] != p_tex_rid) {
-            rd->free_rid(rd_texture_rid[i]);
-            rd_texture_rid[i] = RID();
-        }
+    // Retire the previous frame's texture into the delayed-free queue instead of
+    // freeing it immediately (see NATIVE_TEX_FREE_DELAY_FRAMES comment in the header).
+    // Indices 1/2 are unused by this path (leftover slots shared with the 3-plane
+    // software YUV path) and are never populated here, so nothing to retire for them.
+    if (rd_texture_rid[0].is_valid() && rd_texture_rid[0] != p_tex_rid) {
+        pending_native_tex_free_.push_back({ rd_texture_rid[0], rs_texture_rid[0] });
+    } else if (rs_texture_rid[0].is_valid()) {
+        // rd_texture_rid[0] happened to match the new RID (shouldn't normally happen)
+        // but we still hold a separate rs_texture_rid wrapper around it - retire that.
+        pending_native_tex_free_.push_back({ RID(), rs_texture_rid[0] });
+    }
+    rd_texture_wrappers[0].unref();
+    rd_texture_rid[0] = RID();
+    rs_texture_rid[0] = RID();
+    while ((int)pending_native_tex_free_.size() > NATIVE_TEX_FREE_DELAY_FRAMES) {
+        PendingNativeTexFree oldest = pending_native_tex_free_.front();
+        pending_native_tex_free_.pop_front();
+        if (oldest.rs_tex.is_valid()) rs->free_rid(oldest.rs_tex);
+        if (oldest.rd_tex.is_valid()) rd->free_rid(oldest.rd_tex);
     }
 
     // Use the imported texture directly
@@ -605,18 +613,19 @@ void TextureUploader::cleanup() {
 
 void TextureUploader::_render_thread_cleanup() {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
-    RenderingServer *rs = RenderingServer::get_singleton();
     if (rd) {
+        // Deliberately NOT freeing rd_texture_rid[i]/rs_texture_rid[i] here - this runs
+        // on every restart (called from StreamConnection::_cb_decoder_cleanup(), not just
+        // final teardown), and unconditionally destroying them with no grace period hits
+        // the same compositor-timeline use-after-free as _render_thread_import_native_rt()'s
+        // per-frame case above (confirmed via VK_LAYER_KHRONOS_validation,
+        // VUID-vkDestroyImage-image-01000). pending_native_tex_free_ is deliberately left
+        // untouched too - the next session's frame imports will keep draining it normally,
+        // generation doesn't matter to that queue.
         for (int i = 0; i < 3; i++) {
             rd_texture_wrappers[i].unref();
-            if (rs_texture_rid[i].is_valid()) {
-                rs->free_rid(rs_texture_rid[i]);
-                rs_texture_rid[i] = RID();
-            }
-            if (rd_texture_rid[i].is_valid()) {
-                rd->free_rid(rd_texture_rid[i]);
-                rd_texture_rid[i] = RID();
-            }
+            rs_texture_rid[i] = RID();
+            rd_texture_rid[i] = RID();
         }
         rd = nullptr;
     }

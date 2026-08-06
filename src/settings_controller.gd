@@ -170,6 +170,11 @@ func cycle_codec():
 	else:
 		main.codec_preference = available[0]
 	main.ui_controller.update_codec_btn()
+	# H.264's hardware-decoder dimension cap in compute_requested_resolution() is keyed
+	# off codec_preference - recompute host_resolution now that it just changed, or a
+	# switch to H.264 while already at (e.g.) 100% would restart still requesting the
+	# uncapped resolution left over from whatever codec was active before.
+	main.host_resolution = main.compute_requested_resolution()
 	main.state_manager.save_state()
 	if main.is_streaming:
 		_schedule_stream_restart()
@@ -300,6 +305,20 @@ func _schedule_stream_restart():
 	main._log("[RESTART] Restarting stream")
 	apply_display_refresh_rate()
 	main._restarting_stream = true
+	# Stop the composition layer shader from referencing the current session's
+	# texture BEFORE tearing the connection down. stop_play_stream() triggers
+	# native decoder cleanup, which frees the underlying GPU texture/uniform
+	# set synchronously (on the decode/cleanup thread) - if the shader
+	# material still points at it when that happens, the OpenXR compositor's
+	# own render pass (independent of our own binding code) can end up
+	# rebuilding a uniform set against an already-freed texture on the render
+	# thread, which crashes (not just renders wrong). Clearing first and
+	# yielding a frame gives the renderer a chance to actually pick up the
+	# null texture before the free happens, closing that race instead of
+	# just narrowing it.
+	main._clear_comp_yuv_textures()
+	await main.get_tree().process_frame
+	await main.get_tree().process_frame
 	main.stream_backend.stop_play_stream()
 	await main.get_tree().create_timer(0.5).timeout
 	main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
@@ -343,7 +362,6 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()
 	main.ui_controller.update_monitor_tab()
-	main.state_manager.save_state()
 
 func add_monitor():
 	# Re-enable the highest-priority currently-disabled monitor, preserving
@@ -361,6 +379,7 @@ func add_monitor():
 			m.enabled = true
 			main._edit_monitor_idx = i
 			apply_screen_layout(main.layout)
+			main.state_manager.save_host_state()
 			return
 
 func remove_monitor():
@@ -381,6 +400,7 @@ func remove_monitor():
 			if real_idx >= 0:
 				main._edit_monitor_idx = real_idx
 			apply_screen_layout(main.layout)
+			main.state_manager.save_host_state()
 			return
 
 func select_monitor(idx: int):
@@ -407,6 +427,7 @@ func toggle_edit_monitor_enabled():
 					mm.is_primary = true
 					break
 	apply_screen_layout(main.layout)
+	main.state_manager.save_host_state()
 
 func set_edit_monitor_primary():
 	if main._edit_monitor_idx >= main.layout.monitors.size():
@@ -417,3 +438,4 @@ func set_edit_monitor_primary():
 	for m in main.layout.monitors:
 		m.is_primary = (m == target)
 	apply_screen_layout(main.layout)
+	main.state_manager.save_host_state()

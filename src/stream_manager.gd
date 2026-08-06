@@ -91,12 +91,17 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 # currently-known output - activates multi-monitor capture on the host
 # regardless of its static linux_multi_monitor_capture config, so the client
 # always gets exactly what it asked for instead of depending on the host's
-# own toggle. Returns "" when main.layout doesn't have real manifest-derived
-# labels yet (e.g. the placeholder single(1920,1080) layout used before ever
-# connecting to this host) - in that case the launch just omits the param and
-# the host falls back to its static config, same as before this existed.
+# own toggle. Returns "" when main.layout isn't real manifest-derived data yet
+# (source stays at the class default "client_split" for every client-side
+# placeholder - single()/split_h()/replicate(), including the aspect-mismatch
+# reset in resize_stream_viewport()) - in that case the launch just omits the
+# param and the host falls back to its static config, same as before this
+# existed. Checking label.is_empty() alone isn't enough: single()'s placeholder
+# monitor has a non-empty but FAKE label ("Display", not a real RandR name) -
+# sending that as outputs= matches no real host output, and the host reports
+# back zero enabled monitors and falls back to combined/undivided capture.
 func _compute_capture_outputs() -> String:
-	if not main.layout:
+	if not main.layout or main.layout.source != &"host_manifest":
 		return ""
 	var labels: Array = []
 	for m in main.layout.enabled_monitors():
@@ -251,7 +256,19 @@ func resize_stream_viewport(w: int, h: int):
 		main.comp_layer.set_quad_size(main._mesh_size)
 	var new_frame = Vector2i(w, h)
 	var layout_changed := false
-	if main.layout.frame_size != new_frame:
+	# This runs immediately on start_stream(), before the host's real per-session
+	# manifest has arrived - main.layout at this point is still whatever the
+	# welcome screen last set it to (a 16:9 single-screen placeholder), not the
+	# real multi-monitor layout, so its aspect essentially never matches a wide
+	# multi-monitor request. Eagerly "fixing" that here used to squish
+	# everything onto one screen for the brief window until the manifest
+	# response arrives moments later and correctly re-splits it - a visible
+	# squish-then-split glitch on every connect. local_capture_mode never gets
+	# a manifest at all, so it still needs this eager guess; every other host
+	# is about to send one via the launch response's _on_v2_launch_response()
+	# handler regardless, making this guess pure churn - skip straight to
+	# waiting for the real data instead of rendering a wrong intermediate one.
+	if local_capture_mode and main.layout.frame_size != new_frame:
 		layout_changed = true
 		var old_aspect = float(main.layout.frame_size.x) / float(main.layout.frame_size.y) if main.layout.frame_size.y > 0 else 1.0
 		var new_aspect = float(w) / float(h) if h > 0 else 1.0

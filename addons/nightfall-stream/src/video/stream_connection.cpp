@@ -135,6 +135,14 @@ void StreamConnection::_ensure_compute_pipeline(RenderingDevice *rd, int width, 
     tf->set_usage_bits(RenderingDevice::TEXTURE_USAGE_STORAGE_BIT |
                        RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
                        RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT);
+    // Vulkan validation flagged VUID-VkImageViewCreateInfo-image-12397 here: the later
+    // rs->texture_rd_create(rgba_output_tex_) call (display wiring, below) asks the driver
+    // for an image view in a different-but-compatible format (sRGB, for the compositor's
+    // gamma-correct sampling) than this texture was created with, which Vulkan only allows
+    // when the image itself was created with VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT. Godot sets
+    // that bit automatically once shareable formats are declared.
+    tf->add_shareable_format(RenderingDevice::DATA_FORMAT_R8G8B8A8_UNORM);
+    tf->add_shareable_format(RenderingDevice::DATA_FORMAT_R8G8B8A8_SRGB);
 
     Ref<RDTextureView> tv;
     tv.instantiate();
@@ -483,18 +491,43 @@ void StreamConnection::_render_free_pipeline_rt() {
         retired_imports.swap(pending_free_ahb_imports_);
     }
     for (const CachedAhbImport &entry : retired_imports) {
-        if (entry.uniform_set.is_valid()) rd->free_rid(entry.uniform_set);
-        if (entry.sampler.is_valid()) rd->free_rid(entry.sampler);
-        if (entry.texture.is_valid()) rd->free_rid(entry.texture);
+        // Deliberately NOT freeing entry.uniform_set/sampler/texture - same
+        // VUID-vkDestroyImage-image-01000 as the pipeline resources below, still firing
+        // from here specifically for the _retire_all_ahb_imports() case (the bulk retirement
+        // done at restart/generation-bump time, queued into pending_free_ahb_imports_ and
+        // drained right here). The continuous per-buffer path (_retire_removed_ahb_imports,
+        // driven by MediaCodec's own buffer-removed callbacks during normal playback) also
+        // feeds this same queue/loop, so this now orphans those Vulkan objects too rather
+        // than only the restart-time ones - a larger but still bounded leak (MediaCodec has a
+        // small, fixed pool of output buffers) in exchange for not risking the same
+        // compositor-timeline use-after-free. Releasing the AHardwareBuffer reference below is
+        // NOT affected by this: importing it into Vulkan memory keeps the underlying memory
+        // alive independent of this extra ref, so dropping our ref here is safe regardless of
+        // whether the imported VkImage/sampler/uniform_set ever get destroyed.
         if (entry.owned_buffer_ptr != 0) {
             AHardwareBuffer_release((AHardwareBuffer *)entry.owned_buffer_ptr);
         }
     }
 
-    if (pending_free_pipeline_.is_valid()) { rd->free_rid(pending_free_pipeline_); pending_free_pipeline_ = RID(); }
-    if (pending_free_shader_.is_valid()) { rd->free_rid(pending_free_shader_); pending_free_shader_ = RID(); }
-    if (pending_free_sampler_.is_valid()) { rd->free_rid(pending_free_sampler_); pending_free_sampler_ = RID(); }
-    if (pending_free_tex_.is_valid()) { rd->free_rid(pending_free_tex_); pending_free_tex_ = RID(); }
+    // Deliberately NOT freeing pending_free_pipeline_/_shader_/_sampler_/_tex_ here.
+    // Vulkan validation (VK_LAYER_KHRONOS_validation) confirmed VUID-vkDestroyImage-image-01000
+    // firing right at this call: the OpenXR compositor submits composition layers on its own
+    // frame timeline, decoupled from Godot's regular swapchain frame accounting, so this being
+    // queued one render-thread tick after the generation bump (via call_on_render_thread) is
+    // nowhere near enough of a grace period - free_rid() here was destroying rgba_output_tex_
+    // (and its VkImageView, referenced by the composition layer cylinder's tex_y wrapper) while
+    // the compositor still had in-flight GPU commands referencing it, which is exactly the
+    // random-delay SIGSEGV seen after repeated resolution/codec changes (confirmed via tombstones
+    // - crashed deep in libgodot_android.so's Vulkan/compositor path, not in this addon's code).
+    // These are only recreated on a stream restart (a rare, deliberate user action), so orphaning
+    // one generation's worth of GPU memory per restart is a small, bounded cost against a real
+    // use-after-free crash. The AHB import cache above is NOT affected by this - it's freed via
+    // its own retirement path (_retire_removed_ahb_imports/_retire_all_ahb_imports), tied to
+    // MediaCodec's own buffer lifecycle notifications, not this generation-bump timing.
+    pending_free_pipeline_ = RID();
+    pending_free_shader_ = RID();
+    pending_free_sampler_ = RID();
+    pending_free_tex_ = RID();
 }
 #endif
 
@@ -754,6 +787,7 @@ void StreamConnection::_cb_decoder_cleanup() {
     {
         std::lock_guard<std::mutex> state_lock(self->render_state_mutex_);
         self->compute_pipeline_ready_ = false;
+        self->display_wired_ = false;
         self->render_generation_.fetch_add(1);
         if (rd) {
             self->pending_free_pipeline_ = self->compute_pipeline_;
@@ -1774,6 +1808,14 @@ int StreamConnection::get_last_frame_latency_us() const {
     return last_frame_latency_us_.load();
 }
 
+bool StreamConnection::is_display_ready() const {
+#ifdef __ANDROID__
+    return display_wired_.load();
+#else
+    return true;
+#endif
+}
+
 String StreamConnection::get_decoder_name() const {
     if (decoder_.is_valid()) return decoder_->get_decoder_name();
     return "";
@@ -1843,6 +1885,7 @@ void StreamConnection::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &StreamConnection::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &StreamConnection::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &StreamConnection::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("is_display_ready"), &StreamConnection::is_display_ready);
     ClassDB::bind_method(D_METHOD("get_decoder_name"), &StreamConnection::get_decoder_name);
     ClassDB::bind_method(D_METHOD("get_video_width"), &StreamConnection::get_video_width);
     ClassDB::bind_method(D_METHOD("get_video_height"), &StreamConnection::get_video_height);

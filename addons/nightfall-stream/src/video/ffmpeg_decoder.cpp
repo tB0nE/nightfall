@@ -15,11 +15,34 @@ extern "C" {
 }
 
 static JavaVM *g_jvm = nullptr;
+static jclass g_godot_app_class = nullptr;
 
 extern "C" JNIEXPORT void JNICALL Java_com_godot_game_GodotApp_initializeMoonlightJNI(JNIEnv *env, jclass clazz) {
     if (env->GetJavaVM(&g_jvm) == 0) {
         av_jni_set_java_vm(g_jvm, nullptr);
     }
+    // clazz here IS GodotApp - cache it as a global ref for later lookup-free use.
+    // FindClass("com/godot/game/GodotApp") does NOT reliably work when called later
+    // from a thread the JVM didn't create (e.g. Godot's own native engine thread,
+    // as opposed to this call which arrives FROM Java on a proper JVM thread) - it
+    // can't see the app's classloader from there and hangs/misbehaves rather than
+    // cleanly failing. Caching the already-resolved class as a global ref sidesteps
+    // needing FindClass again from that risky context.
+    g_godot_app_class = (jclass)env->NewGlobalRef(clazz);
+}
+
+// Exposes the JavaVM captured above (from GodotApp's static initializer, the
+// earliest reliable point in the app's lifecycle) to other translation units
+// that need JNI without redoing this bootstrapping - see nightfall_stream.cpp's
+// get_codec_capabilities_info(), which needs a working JNIEnv before OpenXR
+// init even runs, too early for JNI_GetCreatedJavaVMs-via-dlsym to reliably
+// resolve.
+JavaVM *nightfall_get_jvm() {
+    return g_jvm;
+}
+
+jclass nightfall_get_godot_app_class() {
+    return g_godot_app_class;
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_godot_game_GodotApp_setAndroidContext(JNIEnv *env, jclass clazz, jobject context) {

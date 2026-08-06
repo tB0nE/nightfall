@@ -355,9 +355,24 @@ var _ui_center_btn: Button
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
 
+const H264_MAX_DIMENSION = 4096
+
 func compute_requested_resolution() -> Vector2i:
 	var w = int(native_resolution.x * resolution_scale_pct / 100.0)
 	var h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	# H.264 hardware decoders on this class of mobile SoC commonly cap out at 4096px
+	# per dimension (HEVC decoders on the same hardware typically go up to 8192) -
+	# requesting wider/taller than that doesn't error, it just silently never produces
+	# a decoded frame. Confirmed live: at 100% (4480x1440) H.264 decode stalls
+	# completely right after connecting; at 90% (4032x1296, under the limit) it works
+	# fine; HEVC works at 4480x1440 with no cap needed. Scale both dimensions down
+	# together to preserve aspect ratio rather than only clamping the offending one,
+	# which would mismatch the server's capture aspect and trigger its own
+	# letterbox/pillarbox scaling instead.
+	if codec_preference == 0 and (w > H264_MAX_DIMENSION or h > H264_MAX_DIMENSION):
+		var scale = minf(float(H264_MAX_DIMENSION) / w, float(H264_MAX_DIMENSION) / h)
+		w = int(w * scale)
+		h = int(h * scale)
 	w = maxi(w - (w % 2), 320)
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
@@ -678,6 +693,11 @@ func _on_stream_started():
 			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
 				str(layout.frame_size), str(retry_resolution), resolution_scale_pct])
 			_restarting_stream = true
+			# See settings_controller.gd's _schedule_stream_restart() for why this
+			# has to happen (and yield a frame) before stop_play_stream(), not after.
+			_clear_comp_yuv_textures()
+			await get_tree().process_frame
+			await get_tree().process_frame
 			stream_backend.stop_play_stream()
 			await get_tree().create_timer(0.5).timeout
 			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)

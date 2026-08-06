@@ -453,12 +453,17 @@ func bind_yuv_textures():
 	# reference to the just-freed previous session's texture. Binding that to
 	# the composition layer shader doesn't just look wrong, it makes Godot's
 	# renderer error repeatedly ("uniform_set_create ... not a valid
-	# texture") and render black. Only the null check used to matter because
-	# the RID-dedup cache below happened to skip rebinding a merely-stale (but
-	# still GPU-valid) texture on its own; forcing a rebind via
-	# invalidate_yuv_cache() removed that accidental protection, so this needs
-	# its own explicit validity check now.
-	if tex_y and tex_y.get_rid().is_valid():
+	# texture") and render black.
+	#
+	# tex_y.get_rid().is_valid() does NOT detect this: for the AHardwareBuffer
+	# path, tex_y is a reused Texture2DRD wrapper object whose own Godot-side
+	# RID is valid from the moment it's instantiated, regardless of whether
+	# the RD-level texture it currently wraps is live or freed - so that check
+	# is a no-op that's always true once any session has ever bound a texture.
+	# The native side tracks the real signal (has THIS session's first frame
+	# actually been wired into tex_y yet) via is_display_ready(); ask it
+	# directly instead of trying to infer freshness from the RID.
+	if tex_y and main.stream_backend.is_display_ready():
 		var yuv_mode_val = 0
 		if is_nv12_rd:
 			yuv_mode_val = 1

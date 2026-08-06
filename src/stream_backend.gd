@@ -233,6 +233,22 @@ func consume_new_frame() -> bool:
 			return uploader.consume_new_frame()
 	return false
 
+# True only once the CURRENT session's first decoded frame has actually been
+# wired into the shader material's tex_y (native StreamConnection::display_wired_).
+# A shader material's tex_y parameter can hold a non-null Texture2DRD/RID that
+# still passes RID.is_valid() while pointing at a previous session's freed GPU
+# texture - that check alone can't tell "stale" from "fresh", so this asks the
+# native side directly instead of guessing from the Godot-side RID.
+func is_display_ready() -> bool:
+	if _v2 and _v2.has_method("is_display_ready"):
+		return _v2.is_display_ready()
+	return false
+
+func get_codec_capabilities_info() -> String:
+	if _v2 and _v2.has_method("get_codec_capabilities_info"):
+		return _v2.get_codec_capabilities_info()
+	return ""
+
 func browse_mdns(timeout: float) -> Array:
 	if ClassDB.class_exists("MdnsBrowser"):
 		var mdns_browser = ClassDB.instantiate("MdnsBrowser")
