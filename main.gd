@@ -500,7 +500,11 @@ func _update_cursor_layer():
 			var bezel_px = 8 if bezel_enabled else 0
 			var base_w = hovered_screen.comp_base_size.x
 			var base_h = hovered_screen.comp_base_size.y
-			var cursor_px = 48
+			# cx/cy position the cursor in the comp viewport's own pixel space,
+			# which is sized to the real stream resolution - a fixed pixel size
+			# here shrinks/grows on screen as that resolution changes. Scale
+			# against a 1080p baseline instead (same approach as the loading dots).
+			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
 			comp_cursor.visible = false
@@ -766,6 +770,11 @@ func _full_disconnect_cleanup(status_msg: String):
 	welcome_screen.show_welcome_screen("welcome")
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_clear_comp_yuv_textures()
+	# _clear_comp_yuv_textures() shows the ". . ." loading indicator (meant
+	# for mid-restart, waiting-on-real-decoder-frames), but a full disconnect
+	# goes straight to the welcome screen instead of a fresh stream - hide it
+	# again so it doesn't blink away on top of the welcome screen content.
+	comp.hide_loading_dots()
 	comp_shader_mat.set_shader_parameter("main_texture", welcome_viewport.get_texture())
 	comp_shader_mat.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_left:
@@ -1291,6 +1300,9 @@ func _process(delta):
 
 	if Engine.get_frames_drawn() % 120 == 0:
 		_flush_log()
+
+	if comp:
+		comp.process_loading_dots(delta)
 
 	_process_button_input()
 
