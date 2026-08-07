@@ -133,6 +133,35 @@ func enabled_monitors() -> Array[MonitorSpec]:
 			out.append(m)
 	return out
 
+# Mirrors the host's own non-contiguous-outputs rejection (X11's capture is a
+# bounding-box crop, so a gap in the selected set pulls in an unrequested
+# monitor's pixels and the host now refuses to launch at all for that). Rather
+# than let the user hit that rejection blind - monitor tab order is host
+# enumeration order, not spatial order, so "the next monitor" is not
+# necessarily "the adjacent one" - auto-enable whatever disabled monitor(s)
+# sit inside the x-span of the requested enabled set, so every selection made
+# through the UI is guaranteed contiguous before it's ever sent to the host.
+# Uses desktop_rect (real position in the host's full desktop), not frame_rect
+# (meaningless/zeroed for currently-disabled monitors).
+func fill_gaps(enabled_ids: Array) -> Array:
+	if enabled_ids.is_empty():
+		return enabled_ids
+	var min_x = INF
+	var max_x = -INF
+	for m in monitors:
+		if enabled_ids.has(m.id):
+			min_x = minf(min_x, m.desktop_rect.position.x)
+			max_x = maxf(max_x, m.desktop_rect.position.x + m.desktop_rect.size.x)
+	var result = enabled_ids.duplicate()
+	for m in monitors:
+		if result.has(m.id):
+			continue
+		var mx0 = m.desktop_rect.position.x
+		var mx1 = mx0 + m.desktop_rect.size.x
+		if mx0 >= min_x and mx1 <= max_x:
+			result.append(m.id)
+	return result
+
 func validate(frame: Vector2i) -> String:
 	if monitors.is_empty():
 		return "layout has no monitors"

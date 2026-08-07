@@ -121,7 +121,19 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height,
     AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mime);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, width * height);
+    // This is a max COMPRESSED input buffer size, not a raw frame size - width*height
+    // (1 byte/pixel) is a tight budget for a single frame, and codec-agnostic code
+    // like this doesn't account for H264 needing more bits than HEVC to hit the same
+    // quality at the same bitrate, so a large H264 keyframe is more likely to exceed
+    // it than an equivalent HEVC one at the identical resolution. feed_packet() below
+    // silently drops (returns FeedResult::ERROR for) any packet too big for the
+    // buffer AMediaCodec_getInputBuffer() actually hands back, with no retry/recovery
+    // - repeatedly losing keyframes this way would look exactly like the codec-specific
+    // stalls seen testing H264 at resolutions where HEVC (smaller compressed frames at
+    // the same target bitrate) was fine. Untested hypothesis as of 2026-08-07; widen the
+    // budget well past a bare per-pixel guess and confirm live whether this was the
+    // real cause before assuming the earlier "H264 axis limit" conclusion was right.
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, width * height * 3);
 
     status = AMediaCodec_configure(codec_, format, window_, nullptr, 0);
     AMediaFormat_delete(format);

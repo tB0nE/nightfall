@@ -587,8 +587,18 @@ func build_ui():
 	main._ui_status_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
 	main._ui_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main._ui_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
 	main._ui_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Server-provided error text (e.g. a launch-rejection status_message) can run
+	# to a couple hundred characters - without wrapping, a single-line Label just
+	# overflows its container width and breaks the surrounding panel layout. Fill
+	# the vbox's actual width (a fixed 420px was narrower than the real panel,
+	# forcing extra wrap lines it didn't need) and clip vertically instead of
+	# growing the panel if it still wraps past the label's fixed height.
+	main._ui_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	main._ui_status_label.clip_text = false
+	main._ui_status_label.clip_contents = true
+	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
+	main._ui_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(main._ui_status_label)
 
 	var grab_gap = Control.new()
@@ -791,8 +801,12 @@ func make_indicator_btn(label_text: String, value_text: String) -> Button:
 func update_indicator_btn(btn: Button, label: String, value: String):
 	btn.text = label + ": " + value
 
+const STATUS_TEXT_MAX_LEN = 160
+
 func set_status(text: String):
 	if main._ui_status_label:
+		if text.length() > STATUS_TEXT_MAX_LEN:
+			text = text.substr(0, STATUS_TEXT_MAX_LEN - 1) + "…"
 		main._ui_status_label.text = text
 
 func set_disconnect_visible(vis: bool):

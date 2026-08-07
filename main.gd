@@ -355,7 +355,27 @@ var _ui_center_btn: Button
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
 
+
+# 2026-08-07: briefly raised to 8192 (c2.qti.avc.decoder's own MediaCodec
+# capability query reports supportedWidths/Heights=[96,8192] and even claims
+# isSizeSupported(4480x1440)=true) to check whether the original 4096 cap was
+# just an overly conservative guess generalized from one stall test. Live
+# bisection disproved that: 4032x1296 works, 4480x1440 fails, 5760x1296 fails -
+# identical boundary to before, cap raise changed nothing. So this is a real
+# runtime HAL bug the device lies about in its own capability query, not a
+# client-side guess - back to the validated-safe cap.
 const H264_MAX_DIMENSION = 4096
+# Confirmed via on-device MediaCodec capability query (getSupportedWidths/
+# getSupportedHeights against real candidate resolutions - see
+# docs/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
+# dual-limited, not just axis-limited - each dimension independently caps at
+# 8192px, AND the total canvas is separately capped at ~138,240 macroblocks
+# (16x16 each) regardless of aspect. A 4-monitor row can hit the axis cap
+# (e.g. 8320px wide) while sitting nowhere near the total-pixel cap, so both
+# constraints have to be checked - clamping only the axis would silently
+# allow a request that's still invalid for the other reason, and vice versa.
+const HEVC_MAX_DIMENSION = 8192
+const HEVC_MAX_TOTAL_PIXELS = 35389440
 
 func compute_requested_resolution() -> Vector2i:
 	var w = int(native_resolution.x * resolution_scale_pct / 100.0)
@@ -365,14 +385,22 @@ func compute_requested_resolution() -> Vector2i:
 	# requesting wider/taller than that doesn't error, it just silently never produces
 	# a decoded frame. Confirmed live: at 100% (4480x1440) H.264 decode stalls
 	# completely right after connecting; at 90% (4032x1296, under the limit) it works
-	# fine; HEVC works at 4480x1440 with no cap needed. Scale both dimensions down
-	# together to preserve aspect ratio rather than only clamping the offending one,
-	# which would mismatch the server's capture aspect and trigger its own
-	# letterbox/pillarbox scaling instead.
+	# fine. Scale both dimensions down together to preserve aspect ratio rather than
+	# only clamping the offending one, which would mismatch the server's capture
+	# aspect and trigger its own letterbox/pillarbox scaling instead.
 	if codec_preference == 0 and (w > H264_MAX_DIMENSION or h > H264_MAX_DIMENSION):
 		var scale = minf(float(H264_MAX_DIMENSION) / w, float(H264_MAX_DIMENSION) / h)
 		w = int(w * scale)
 		h = int(h * scale)
+	elif codec_preference == 1:
+		var scale = 1.0
+		if w > HEVC_MAX_DIMENSION or h > HEVC_MAX_DIMENSION:
+			scale = minf(scale, minf(float(HEVC_MAX_DIMENSION) / w, float(HEVC_MAX_DIMENSION) / h))
+		if w * h > HEVC_MAX_TOTAL_PIXELS:
+			scale = minf(scale, sqrt(float(HEVC_MAX_TOTAL_PIXELS) / float(w * h)))
+		if scale < 1.0:
+			w = int(w * scale)
+			h = int(h * scale)
 	w = maxi(w - (w % 2), 320)
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
@@ -980,7 +1008,7 @@ func _face_camera(node: Node3D, cam_pos: Vector3, with_pitch: bool) -> void:
 		node.rotation.x = 0.0
 	node.rotation.z = 0.0
 
-func add_screen(monitor_id: StringName) -> VRScreen:
+func add_screen(monitor_id: StringName, real_x_hint: float = INF) -> VRScreen:
 	if screens.size() >= MAX_SCREENS:
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
@@ -991,19 +1019,38 @@ func add_screen(monitor_id: StringName) -> VRScreen:
 	s.curvature = primary_screen.curvature if primary_screen else 2
 	if primary_screen:
 		var gap = 0.05
-		var eps = 0.05
-		var has_left = false
-		var has_right = false
-		for existing in screens:
-			if existing == primary_screen:
-				continue
-			if existing.global_position.x < primary_screen.global_position.x - eps:
-				has_left = true
-			elif existing.global_position.x > primary_screen.global_position.x + eps:
-				has_right = true
-		var slot = "above" if (has_left and has_right) else ("left" if has_right else "right")
 		var cam_pos = xr_camera.global_position
 		var new_radius = primary_screen.get_cylinder_radius() if primary_screen.curvature > 0 else 0.0
+		# Prefer the monitor's real desktop x-position (when the caller has one,
+		# i.e. apply_screen_layout() passing a manifest-backed MonitorSpec) to
+		# decide which side of the chain a new screen extends, and which
+		# existing screen it attaches next to. The old approach only tracked
+		# "is there already anything on the left/right" - it can't distinguish
+		# "further right than the current rightmost" from "should go on the
+		# left", so a 3rd non-primary monitor could land on the wrong side, or
+		# (once both sides already had one) get forced to stack "above" even
+		# when it was really just the next one over in the row. That
+		# visual/real mismatch mattered beyond looks: uv_to_host_point() maps
+		# clicks using the real desktop_rect regardless of where the screen
+		# visually ended up, so a wrongly-placed screen made clicks land on
+		# whatever content was really at that position - often the primary.
+		var have_hint = real_x_hint != INF and primary_screen.monitor != null
+		var primary_real_x = primary_screen.monitor.desktop_rect.position.x if have_hint else 0.0
+		var slot: String
+		if have_hint:
+			slot = "left" if real_x_hint < primary_real_x else "right"
+		else:
+			var eps = 0.05
+			var has_left = false
+			var has_right = false
+			for existing in screens:
+				if existing == primary_screen:
+					continue
+				if existing.global_position.x < primary_screen.global_position.x - eps:
+					has_left = true
+				elif existing.global_position.x > primary_screen.global_position.x + eps:
+					has_right = true
+			slot = "above" if (has_left and has_right) else ("left" if has_right else "right")
 		if slot == "above":
 			var ref_offset = Vector3(0, primary_screen.mesh_size.y * 0.5, 0)
 			var anchor = primary_screen.global_transform * ref_offset
@@ -1017,13 +1064,18 @@ func add_screen(monitor_id: StringName) -> VRScreen:
 		else:
 			var dir = -1.0 if slot == "left" else 1.0
 			var edge_screen = primary_screen
+			var edge_key = primary_real_x
 			for existing in screens:
 				if existing == primary_screen:
 					continue
-				if dir > 0 and existing.global_position.x > edge_screen.global_position.x:
+				var existing_key = existing.monitor.desktop_rect.position.x if (have_hint and existing.monitor) else existing.global_position.x
+				var cmp_key = edge_key if have_hint else edge_screen.global_position.x
+				if dir > 0 and existing_key > cmp_key:
 					edge_screen = existing
-				elif dir < 0 and existing.global_position.x < edge_screen.global_position.x:
+					edge_key = existing_key
+				elif dir < 0 and existing_key < cmp_key:
 					edge_screen = existing
+					edge_key = existing_key
 			var ref_radius = edge_screen.get_cylinder_radius() if edge_screen.curvature > 0 else 0.0
 			var ref_offset = _curve_edge_local_offset(edge_screen.mesh_size.x, ref_radius, edge_screen.curvature, dir)
 			var anchor = edge_screen.global_transform * ref_offset

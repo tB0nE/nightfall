@@ -687,9 +687,24 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
             response["xml_debug"] = xml;
         }
     } else {
-        NF_LOG("NightfallLaunch", "non-200 code=%d error=[%s]", code, error.utf8().get_data());
+        // A non-200 launch/resume failure can still carry a real explanation in
+        // its body (e.g. Polaris rejecting a non-contiguous multi-monitor
+        // `outputs=` selection with a 400 + status_message) rather than the
+        // 200-with-embedded-error-XML shape GameStream conventionally uses.
+        // Try to surface that verbatim instead of the generic HTTP error, same
+        // reasoning as the 200 branch above - don't let a specific, actionable
+        // rejection reason get replaced with "Launch/Resume failed (400): ...".
+        String body_xml = body.get_string_from_utf8();
+        String status_message = _extract_xml_attr(body_xml, "status_message");
+        if (status_message.is_empty()) {
+            status_message = _extract_xml_value(body_xml, "status_message");
+        }
+        NF_LOG("NightfallLaunch", "non-200 code=%d error=[%s] status_message=[%s]", code, error.utf8().get_data(), status_message.utf8().get_data());
         response["status"] = "error";
-        response["message"] = "Launch/Resume failed (" + String::num_int64(code) + "): " + error;
+        response["message"] = status_message.is_empty()
+            ? ("Launch/Resume failed (" + String::num_int64(code) + "): " + error)
+            : status_message;
+        response["xml_debug"] = body_xml;
     }
 
     cb.call(response);

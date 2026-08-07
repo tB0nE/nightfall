@@ -340,13 +340,23 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		if not wanted_ids.has(s.monitor_id):
 			main.remove_screen(s.monitor_id)
 	var new_primary: VRScreen = null
-	for m in new_layout.enabled_monitors():
+	# add_screen() positions each new VRScreen relative to whichever screens
+	# already exist, purely by insertion order (grows left/right of primary).
+	# The manifest's monitor array order is the host's own RandR enumeration
+	# order, not spatial order (confirmed: a 4-monitor grid capture came back
+	# as [HDMI-0, DP-0, DP-2, DP-4], not left-to-right) - inserting in that
+	# raw order scattered screens in VR space in an order that didn't match
+	# their real desktop_rect positions, looking "scrambled". Sort by real
+	# x-position first so insertion order matches physical left-to-right order.
+	var ordered_monitors := new_layout.enabled_monitors()
+	ordered_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
+	for m in ordered_monitors:
 		var existing: VRScreen = null
 		for s in main.screens:
 			if s.monitor_id == m.id:
 				existing = s
 				break
-		var s = existing if existing else main.add_screen(m.id)
+		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x)
 		if s == null:
 			continue
 		s.apply_monitor(m, new_layout.frame_size)
@@ -363,6 +373,25 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		main.comp.bind_yuv_textures()
 	main.ui_controller.update_monitor_tab()
 
+# Monitor tab/enumeration order is the host's own listing order, not spatial
+# left-to-right order - so "enable one more monitor" can silently produce a
+# gap the host's X11 bounding-box capture can't serve (it now rejects
+# non-contiguous outputs= outright). Auto-enable whatever sits in the gap
+# instead of letting the user hit that rejection blind - see
+# ScreenLayout.fill_gaps(). Called after any toggle that turns a monitor ON.
+func _fill_layout_gaps():
+	var enabled_ids: Array = []
+	for m in main.layout.monitors:
+		if m.enabled:
+			enabled_ids.append(m.id)
+	var filled_ids = main.layout.fill_gaps(enabled_ids)
+	if filled_ids.size() == enabled_ids.size():
+		return
+	for m in main.layout.monitors:
+		if filled_ids.has(m.id):
+			m.enabled = true
+	main._log("[LAYOUT] Auto-enabled gap monitor(s) to keep capture contiguous: %s" % str(filled_ids))
+
 func add_monitor():
 	# Re-enable the highest-priority currently-disabled monitor, preserving
 	# its real frame_rect/desktop_rect from the host's manifest. There's no
@@ -373,15 +402,40 @@ func add_monitor():
 	# monitor it's meant to represent, showing the full multi-monitor
 	# composite (all monitors' content) squeezed onto every screen instead
 	# of each one's actual content.
+	# Pick the disabled monitor spatially NEAREST the current enabled set,
+	# not just the lowest array index - monitor array order is the host's
+	# raw RandR enumeration order, not spatial order, so "lowest index" can
+	# be the monitor farthest away. Enabling that one then forced
+	# _fill_layout_gaps() to pull in every monitor in between just to stay
+	# contiguous, jumping straight from 1 to 4 monitors on a single "add"
+	# press instead of growing by one at a time as expected.
+	var enabled = main.layout.enabled_monitors()
+	if enabled.is_empty():
+		return
+	var min_x = INF
+	var max_x = -INF
+	for m in enabled:
+		min_x = minf(min_x, m.desktop_rect.position.x)
+		max_x = maxf(max_x, m.desktop_rect.position.x + m.desktop_rect.size.x)
+	var best_idx = -1
+	var best_dist = INF
 	for i in range(main.layout.monitors.size()):
 		var m = main.layout.monitors[i]
-		if not m.enabled:
-			m.enabled = true
-			main._edit_monitor_idx = i
-			apply_screen_layout(main.layout)
-			main.state_manager.save_host_state()
-			_schedule_stream_restart()
-			return
+		if m.enabled:
+			continue
+		var mx0 = m.desktop_rect.position.x
+		var mx1 = mx0 + m.desktop_rect.size.x
+		var dist = maxf(0.0, maxf(min_x - mx1, mx0 - max_x))
+		if dist < best_dist:
+			best_dist = dist
+			best_idx = i
+	if best_idx >= 0:
+		main.layout.monitors[best_idx].enabled = true
+		main._edit_monitor_idx = best_idx
+		_fill_layout_gaps()
+		apply_screen_layout(main.layout)
+		main.state_manager.save_host_state()
+		_schedule_stream_restart()
 
 func remove_monitor():
 	# Disable the last enabled, non-primary monitor - same reasoning as
@@ -428,6 +482,8 @@ func toggle_edit_monitor_enabled():
 				if mm.enabled:
 					mm.is_primary = true
 					break
+	else:
+		_fill_layout_gaps()
 	apply_screen_layout(main.layout)
 	main.state_manager.save_host_state()
 	_schedule_stream_restart()
