@@ -356,15 +356,17 @@ var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
 
 
-# 2026-08-07: briefly raised to 8192 (c2.qti.avc.decoder's own MediaCodec
-# capability query reports supportedWidths/Heights=[96,8192] and even claims
-# isSizeSupported(4480x1440)=true) to check whether the original 4096 cap was
-# just an overly conservative guess generalized from one stall test. Live
-# bisection disproved that: 4032x1296 works, 4480x1440 fails, 5760x1296 fails -
-# identical boundary to before, cap raise changed nothing. So this is a real
-# runtime HAL bug the device lies about in its own capability query, not a
-# client-side guess - back to the validated-safe cap.
-const H264_MAX_DIMENSION = 4096
+# 2026-08-07: the 4480x1440 stall this cap was built around (bisection showed
+# 4032x1296 works, 4480x1440 fails - see git history for the disproved "raise
+# to 8192" attempt) turned out to be a real client-side bug, not a hardware
+# limit: AndroidMediaCodec's input buffer was sized at width*height, too
+# tight for a large H264 keyframe specifically (H264 needs more bits than
+# HEVC for comparable quality at the same bitrate), and the too-small-buffer
+# case was silently dropped with no recovery (mediacodec_native.cpp's
+# feed_packet()). Fixed there (buffer widened to width*height*3), confirmed
+# live. c2.qti.avc.decoder's own MediaCodec capability query already reported
+# supportedWidths/Heights=[96,8192], matching HEVC - safe to match that now.
+const H264_MAX_DIMENSION = 8192
 # Confirmed via on-device MediaCodec capability query (getSupportedWidths/
 # getSupportedHeights against real candidate resolutions - see
 # docs/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
