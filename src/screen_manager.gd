@@ -48,6 +48,7 @@ func cycle_curvature():
 	for s in main.screens:
 		s.curvature = main.curvature
 		s.apply_curvature()
+	main.settings_controller.reflow_grid_screens()
 	if main.comp.in_use:
 		main.comp.switch_to_comp_layer()
 	main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[main.curvature])

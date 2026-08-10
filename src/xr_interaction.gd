@@ -230,7 +230,7 @@ func handle_pointer_interaction():
 
 	if not main.grabbed_node and main.grabbed_corner_idx < 0:
 		for s in main.screens:
-			_set_grab_bar_color(s.grab_bar, Color.WHITE, 0.05)
+			_set_grab_bar_color(s.grab_bar, _bar_base_color(s), 0.05)
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.08))
 		if main.virtual_keyboard and main.virtual_keyboard.visible:
 			main.set_comp_grab_bar_color(main.virtual_keyboard.viewport, Color(1, 1, 1, 0.08))
@@ -238,7 +238,7 @@ func handle_pointer_interaction():
 			for ch in s.corner_handles:
 				_set_corner_color(ch, Color.WHITE, 0.05)
 	elif main.grabbed_node and main.grabbed_bar:
-		_set_grab_bar_color(main.grabbed_bar, Color.WHITE, 0.4)
+		_set_grab_bar_color(main.grabbed_bar, _bar_base_color(main.grabbed_node), 0.4)
 	elif main.grabbed_node == main.ui_panel_3d:
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.8))
 	elif main.grabbed_node == main.virtual_keyboard:
@@ -333,7 +333,7 @@ func handle_pointer_interaction():
 			pointer_on_ui = true
 
 		if t.role == &"grab_bar" and parent != main.grabbed_bar:
-			_set_grab_bar_color(parent, Color.WHITE, 0.15)
+			_set_grab_bar_color(parent, _bar_base_color(parent.get_parent()), 0.15)
 
 		is_now_clicking = _is_now_clicking()
 
@@ -429,6 +429,15 @@ func handle_pointer_interaction():
 					main.was_clicking = true
 				else:
 					main.was_clicking = false
+			return
+
+		elif t.role == &"screen" and (main.grabbed_node or main.grabbed_corner_idx >= 0):
+			# A grab-bar or corner-handle drag is in progress and the ray just
+			# happens to be sweeping over some screen's surface en route (easy
+			# to hit now that grid mode can place screens close together) -
+			# don't forward that as a click/cursor-move to whatever's playing
+			# on that screen. The drag itself is driven by handle_grab()/
+			# handle_corner_resize() elsewhere, not by this hit-test.
 			return
 
 		elif t.role == &"screen" and not main.is_streaming:
@@ -551,7 +560,7 @@ func handle_pointer_interaction():
 					for other in main.screens:
 						if other != main.primary_screen:
 							main.grab_group_start_transforms[other] = other.global_transform
-				_set_grab_bar_color(parent, Color.WHITE, 0.3)
+				_set_grab_bar_color(parent, _bar_base_color(parent.get_parent()), 0.3)
 				main.was_clicking = true
 			return
 
@@ -719,6 +728,14 @@ func _apply_ui_hover_states():
 	if not main.ui_visible:
 		return
 	for entry in _ui_button_states:
+		# _ui_button_states is only refreshed by explicit populate_ui_buttons()
+		# calls (UI init, tab rebuilds); it's not kept in sync with every place
+		# that frees a Button (e.g. the monitor tab rebuilding its per-monitor
+		# buttons on add/remove), so a stale entry pointing at an already-freed
+		# Button is expected here, not a bug to chase at the population site -
+		# guard against it directly instead of crashing every frame on it.
+		if not is_instance_valid(entry["btn"]):
+			continue
 		var btn: Button = entry["btn"]
 		if not btn.is_visible_in_tree():
 			continue
@@ -768,14 +785,31 @@ func handle_grab():
 		for other in main.grab_group_start_transforms:
 			other.global_transform = group_delta * main.grab_group_start_transforms[other]
 
+	# Primary is exempt by construction - it's always free-mode (moving it
+	# rigidly drags every grid-consistent secondary along via the group-move
+	# block above, which is what "primary moves the whole grid" reduces to).
+	# Secondaries snap live, every frame, to the nearest valid grid cell to
+	# wherever they're currently being dragged - not just once on release.
+	if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen and main.grid_mode_enabled and main.grabbed_node.grid_mode:
+		_apply_live_grid_snap(main.grabbed_node)
+
 	if main.grabbed_node is VRScreen:
 		main.comp.update_cylinder_params()
 		main._debug_log_cyl("grab")
 
 	var still_clicking = _is_now_clicking()
 	if not still_clicking:
+		# Commit grid_mode/grid_pos on release: a screen dragged with Grid Mode
+		# on ends up grid_mode=true at wherever it last snapped to; dragged with
+		# Grid Mode off, it becomes grid_mode=false (free) and is left alone by
+		# the grid system until it's grabbed again with Grid Mode on.
+		if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen:
+			main.grabbed_node.grid_mode = main.grid_mode_enabled
+			if main.grid_mode_enabled and main.grab_snap_candidate.x >= 0:
+				main.grabbed_node.grid_pos = main.grab_snap_candidate
+			main.grab_snap_candidate = Vector2i(-1, -1)
 		if main.grabbed_bar:
-			_set_grab_bar_color(main.grabbed_bar, Color.WHITE, 0.01)
+			_set_grab_bar_color(main.grabbed_bar, _bar_base_color(main.grabbed_node), 0.01)
 			main.grabbed_bar = null
 		if main.grabbed_node == main.ui_panel_3d:
 			main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.08))
@@ -787,6 +821,25 @@ func handle_grab():
 		main.grab_start_node_euler = Vector3.ZERO
 		main.grab_group_start_transforms.clear()
 		main.state_manager.save_state()
+
+# Snaps s (a grabbed, non-primary, grid-mode screen) to the nearest free grid
+# cell relative to primary's CURRENT (possibly itself mid-drag, for a rigid
+# primary-group-move) transform - called every frame during a drag, not just
+# on release, per spec ("snap to the nearest valid position according to
+# where I am pointing the controller" while dragging).
+func _apply_live_grid_snap(s: VRScreen):
+	var primary: VRScreen = main.primary_screen
+	if not primary:
+		return
+	var occupied: Array = []
+	for other in main.screens:
+		if other != s and other.grid_mode:
+			occupied.append(other.grid_pos)
+	var cand = main.nearest_free_grid_cell(s.global_position, occupied, primary.grid_pos.x, primary.grid_pos.y)
+	if cand.x < 0:
+		return
+	main.grab_snap_candidate = cand
+	s.global_transform = main.grid_cell_transform(cand.x, cand.y, primary.grid_pos.x, primary.grid_pos.y)
 
 func handle_corner_resize():
 	if main.grabbed_corner_idx < 0 or not main.grabbed_corner_screen:
@@ -824,6 +877,14 @@ func _push_ui_click(pos: Vector2, pressed: bool):
 	event.pressed = pressed
 	event.button_mask = MOUSE_BUTTON_MASK_LEFT if pressed else 0
 	main.ui_viewport.push_input(event)
+
+const PRIMARY_BAR_COLOR := Color(0.55, 0.78, 1.0)
+
+# Light blue for the primary screen's grab bar, white for every other screen -
+# a quick visual cue for which screen is primary (drag it and the whole
+# constellation moves; drag anything else and only that screen moves/snaps).
+func _bar_base_color(screen: VRScreen) -> Color:
+	return PRIMARY_BAR_COLOR if screen == main.primary_screen else Color.WHITE
 
 func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	bar.material_override.albedo_color = Color(color.r, color.g, color.b, alpha)

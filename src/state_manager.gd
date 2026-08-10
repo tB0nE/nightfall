@@ -17,6 +17,7 @@ func save_state():
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "codec_preference", main.codec_preference)
+	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -51,6 +52,8 @@ func save_host_state():
 			"rot": [s.rotation.x, s.rotation.y, s.rotation.z],
 			"size": [s.mesh_size.x, s.mesh_size.y],
 			"curvature": s.curvature,
+			"grid_mode": s.grid_mode,
+			"grid_pos": [s.grid_pos.x, s.grid_pos.y],
 		})
 	save.set_value(ip, "screen_placements", JSON.stringify(placements))
 	save.save("user://host_state.cfg")
@@ -89,7 +92,7 @@ func load_host_state(ip: String):
 	main.ui_controller.update_3d_btn_state()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()
-	main.ui_controller.update_option_btn(main._ui_res_btn, "%d%%" % main.resolution_scale_pct)
+	main.settings_controller.refresh_resolution_btn_label()
 	var bitrate_label = main.bitrate_labels[main.bitrate_idx + 1] if main.bitrate_idx >= 0 else "Auto"
 	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label)
 	main.settings_controller.apply_stereo()
@@ -126,6 +129,9 @@ func load_host_state(ip: String):
 						s.rotation = Vector3(rot[0], rot[1], rot[2])
 						s.mesh_size = Vector2(size[0], size[1])
 						s.curvature = entry.get("curvature", s.curvature)
+						s.grid_mode = entry.get("grid_mode", s.grid_mode)
+						var gp = entry.get("grid_pos", [s.grid_pos.x, s.grid_pos.y])
+						s.grid_pos = Vector2i(gp[0], gp[1])
 						s.apply_curvature()
 						break
 		# The composition layer cylinder (the surface actually visible in the
@@ -178,6 +184,7 @@ func sync_ui_to_settings():
 		main.settings_controller.apply_filter()
 
 func load_state():
+	MonitorPresets.write_default_presets_snapshot()
 	var save = ConfigFile.new()
 	var err = save.load("user://app_state.cfg")
 	main._log("[STATE] load_state called. Load result: %d" % err)
@@ -221,6 +228,7 @@ func load_state():
 	else:
 		main.pointer_steady = int(saved_steady)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
+	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0

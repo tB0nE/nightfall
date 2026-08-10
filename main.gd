@@ -63,6 +63,7 @@ var quick_start_enabled: bool = false
 var host_cursor_visible: bool = false
 var _host_cursor_toggle_supported: bool = false
 var _restarting_stream: bool = false
+var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
@@ -104,6 +105,8 @@ var grab_start_node_basis: Basis = Basis()
 var grab_start_node_euler: Vector3 = Vector3.ZERO
 var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
 var grab_group_start_transforms: Dictionary = {}
+var grid_mode_enabled: bool = true
+var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
@@ -153,7 +156,12 @@ var host_resolution: Vector2i = Vector2i(1920, 1080)
 # try instead of needing the mismatch-triggered reconnect every time.
 var native_resolution: Vector2i = Vector2i(1920, 1080)
 var resolution_scale_pct: int = 100
-var resolution_scale_options: Array = [100, 90, 80, 70, 60, 50]
+const RESOLUTION_PRESETS: Array = [100, 90, 80, 70, 60, 50]
+# Kept around for state_manager.gd's old-save-file validation fallback; the UI
+# itself now uses compute_resolution_options() instead of this static list -
+# see that function for why (this doesn't know about the per-codec/per-native-
+# resolution caps below, so a preset here can silently be unreachable).
+var resolution_scale_options: Array = RESOLUTION_PRESETS
 var double_h: bool = false
 var bitrate_idx: int = -1
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
@@ -182,7 +190,18 @@ var corner_anchor_world: Vector3 = Vector3.ZERO
 var screens: Array[VRScreen] = []
 var primary_screen: VRScreen = null
 var layout: ScreenLayout = null
-var _edit_monitor_idx: int = 0
+
+# Staging state for the Monitors tab's Row1 (counts) + Row2 (preset) - Apply
+# commits these together via SettingsController.apply_staged_monitor_config();
+# nothing here touches the live layout/stream on its own.
+var _staged_physical_count: int = 1
+var _staged_virtual_count: int = 0
+var _staged_preset_id: StringName = &""
+# Set by apply_staged_monitor_config() when it restarted the stream to pick up
+# a real monitor-selection change; cleared once stream_manager.gd's launch
+# response finishes applying the fresh manifest that follows (see
+# SettingsController.finish_pending_monitor_apply()).
+var _pending_monitor_apply: bool = false
 
 var stream_manager: StreamManager
 var xr_interaction: XRInteraction
@@ -320,10 +339,12 @@ var _ui_pt_btn: Button
 var _ui_bg_btn: Button
 var _ui_curve_btn: Button
 var _ui_bezel_btn: Button
-var _ui_mon_add_btn: Button
-var _ui_mon_remove_btn: Button
-var _ui_mon_enabled_btn: Button
-var _ui_mon_primary_btn: Button
+var _ui_monitors_btn: Button
+var _ui_virtual_monitors_btn: Button
+var _ui_apply_preset_btn: Button
+var _ui_save_preset_btn: Button
+var _ui_remove_preset_btn: Button
+var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
@@ -356,17 +377,24 @@ var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
 
 
-# 2026-08-07: the 4480x1440 stall this cap was built around (bisection showed
-# 4032x1296 works, 4480x1440 fails - see git history for the disproved "raise
-# to 8192" attempt) turned out to be a real client-side bug, not a hardware
-# limit: AndroidMediaCodec's input buffer was sized at width*height, too
-# tight for a large H264 keyframe specifically (H264 needs more bits than
-# HEVC for comparable quality at the same bitrate), and the too-small-buffer
-# case was silently dropped with no recovery (mediacodec_native.cpp's
-# feed_packet()). Fixed there (buffer widened to width*height*3), confirmed
-# live. c2.qti.avc.decoder's own MediaCodec capability query already reported
-# supportedWidths/Heights=[96,8192], matching HEVC - safe to match that now.
-const H264_MAX_DIMENSION = 8192
+# 2026-08-07: settled at 4032, this time with real evidence it's a genuine
+# hardware/driver width ceiling, not a software bug we can fix. Two real,
+# separate software bugs WERE found and fixed along the way (both worth
+# keeping): (1) AndroidMediaCodec's input buffer was sized at width*height,
+# too tight for a real H264 keyframe - widened to width*height*3
+# (mediacodec_native.cpp); (2) that fix itself overshot a ~16MiB Android
+# graphics-buffer-allocation ceiling at wide resolutions, so it's now clamped
+# to 12MiB. But testing at 6912x1944 with both fixes in place still failed
+# completely (zero frames ever decoded), and critically: CCodec's own log
+# showed it silently overrode our 12MiB request UP to 13.27MB (its own
+# platform-computed minimum for that resolution) and decode still never
+# produced a single frame - proving buffer size was never the bottleneck at
+# this width. That points to a real hardware/HAL line-buffer width limit
+# around 4032px on this SoC's H264 decoder, independent of buffer sizing or
+# total pixel count - the MediaCodec capability query's claimed 8192px
+# support just doesn't hold up in practice (a known class of gap on
+# Qualcomm HALs). HEVC has no equivalent cap; prefer it for wide layouts.
+const H264_MAX_DIMENSION = 4032
 # Confirmed via on-device MediaCodec capability query (getSupportedWidths/
 # getSupportedHeights against real candidate resolutions - see
 # docs/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
@@ -378,6 +406,51 @@ const H264_MAX_DIMENSION = 8192
 # allow a request that's still invalid for the other reason, and vice versa.
 const HEVC_MAX_DIMENSION = 8192
 const HEVC_MAX_TOTAL_PIXELS = 35389440
+# A SEPARATE, lower ceiling from the two above - those reflect what the decoder
+# can technically decode at all; this reflects what the headset can actually
+# sustain in real time while also running its own tracking/compositor/etc.
+# Confirmed live testing 4x4K HEVC (2x2 grid, 7680x4320 base): 80% scale
+# (21,233,664 total pixels) ran smoothly; 90% (26,873,856 pixels - still well
+# under HEVC_MAX_TOTAL_PIXELS, so the decode-capability cap never caught it)
+# caused the headset's own tracking-camera watchdog to report multi-second
+# frame delays and visible corruption/freezing - a real-time throughput
+# problem, not a decode failure. Set at exactly the confirmed-good boundary
+# (80% of that specific 4-monitor test), not a round-number guess.
+const HEVC_MAX_SUSTAINED_PIXELS = 21233664
+
+# The highest resolution_scale_pct that keeps compute_requested_resolution()'s
+# result under every constraint that applies to the given codec at the
+# current native_resolution, i.e. the point past which compute_requested_resolution()
+# would otherwise silently downscale further than the requested percentage
+# implied. Used to build the UI's resolution option list (compute_resolution_options())
+# so a user can never select a percentage compute_requested_resolution() would
+# have quietly overridden anyway.
+func compute_max_resolution_pct(codec: int) -> int:
+	if native_resolution.x <= 0 or native_resolution.y <= 0:
+		return 100
+	var nw = float(native_resolution.x)
+	var nh = float(native_resolution.y)
+	var max_pct = 100.0
+	if codec == 0:
+		max_pct = minf(max_pct, 100.0 * H264_MAX_DIMENSION / maxf(nw, nh))
+	elif codec == 1:
+		max_pct = minf(max_pct, 100.0 * HEVC_MAX_DIMENSION / maxf(nw, nh))
+		max_pct = minf(max_pct, 100.0 * sqrt(HEVC_MAX_TOTAL_PIXELS / (nw * nh)))
+		max_pct = minf(max_pct, 100.0 * sqrt(HEVC_MAX_SUSTAINED_PIXELS / (nw * nh)))
+	return clampi(int(floor(max_pct)), 10, 100)
+
+# The dynamic option list for the resolution cycle button: RESOLUTION_PRESETS
+# below the current max get kept as-is; the max itself always occupies the top
+# slot (labeled "MAX" by the UI, not a number) instead of whatever presets
+# would otherwise have sat above an unreachable ceiling - so there's never an
+# option in the list that silently does something other than what its label says.
+func compute_resolution_options() -> Array:
+	var max_pct = compute_max_resolution_pct(codec_preference)
+	var opts: Array = [max_pct]
+	for p in RESOLUTION_PRESETS:
+		if p < max_pct:
+			opts.append(p)
+	return opts
 
 func compute_requested_resolution() -> Vector2i:
 	var w = int(native_resolution.x * resolution_scale_pct / 100.0)
@@ -400,6 +473,8 @@ func compute_requested_resolution() -> Vector2i:
 			scale = minf(scale, minf(float(HEVC_MAX_DIMENSION) / w, float(HEVC_MAX_DIMENSION) / h))
 		if w * h > HEVC_MAX_TOTAL_PIXELS:
 			scale = minf(scale, sqrt(float(HEVC_MAX_TOTAL_PIXELS) / float(w * h)))
+		if w * h > HEVC_MAX_SUSTAINED_PIXELS:
+			scale = minf(scale, sqrt(float(HEVC_MAX_SUSTAINED_PIXELS) / float(w * h)))
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
@@ -717,8 +792,43 @@ func _on_stream_started():
 	# an ACTUALLY-STARTED stream down with stop_play_stream() (same pattern as
 	# settings_controller.gd's _schedule_stream_restart()) gives the host a real,
 	# clean teardown to work with instead of an abandoned half-launch.
+	# Start every session on just the primary monitor - makes multi-monitor
+	# testing much easier to reason about (add monitors one at a time from a
+	# known-good baseline instead of whatever the host's own multi-monitor
+	# default happens to be) and is simpler for real use too. Deliberately a
+	# true one-shot for the whole app run (never reset), not per-host/per-
+	# reconnect - once trimmed, later manual monitor changes this session are
+	# left alone; relaunch the app to get the primary-only starting point again.
+	if layout and not _did_initial_monitor_trim and layout.source == &"host_manifest":
+		_did_initial_monitor_trim = true
+		var enabled_at_connect = layout.enabled_monitors()
+		if enabled_at_connect.size() > 1:
+			var primary_m = layout.get_primary()
+			for m in layout.monitors:
+				if not m.is_primary:
+					m.enabled = false
+			settings_controller.apply_screen_layout(layout)
+			if primary_m:
+				native_resolution = primary_m.frame_rect.size
+			host_resolution = compute_requested_resolution()
+			settings_controller.refresh_resolution_btn_label()
+			stream_manager._resolution_retry_done = true
+			var retry_host_id = current_host_id
+			var retry_app_id = _selected_app_id
+			var retry_resolution = host_resolution
+			_log("[LAYOUT] Trimming to primary-only on first connect (host defaulted to %d monitors)" % enabled_at_connect.size())
+			_restarting_stream = true
+			_clear_comp_yuv_textures()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			stream_backend.stop_play_stream()
+			await get_tree().create_timer(0.5).timeout
+			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+			return
+
 	if layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
 		native_resolution = layout.frame_size
+		settings_controller.refresh_resolution_btn_label()
 		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
 		# blocked the retry for exactly the case that needs it most: removing/
 		# adding a monitor changes the server's real captured composite size,
@@ -964,9 +1074,9 @@ func _init_ui():
 	screen_mesh.setup(self, &"m0")
 	screens = [screen_mesh]
 	primary_screen = screen_mesh
+	primary_screen.grid_pos = Vector2i(3, 1)
 	layout = ScreenLayout.single(Vector2i(1920, 1080))
 	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
-	screen_mesh.grab_bar.material_override = screen_mesh.grab_bar.material_override.duplicate()
 	_mesh_size = screen_mesh.mesh.size
 	screen_manager.create_corner_handles()
 	screen_manager.create_bezel()
@@ -982,6 +1092,9 @@ func _init_ui():
 
 const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
 const MAX_SCREENS := 4
+# Gap between adjacent screen edges, in meters. Shared with MonitorGrid so
+# grid-mode spacing and add_screen()'s free-placement spacing can't drift apart.
+const SCREEN_GAP := 0.05
 
 # Local-space offset (from mesh center) of a curved screen's left/right edge,
 # matching the vertex math in VRScreen.apply_curvature(): the edge sits at
@@ -994,21 +1107,129 @@ func _curve_edge_local_offset(mesh_w: float, radius: float, curvature: int, sign
 	var edge_z = radius * (1.0 - cos(angle * 0.5))
 	return Vector3(sign * half_w, 0, edge_z)
 
-# Orients a screen to face the headset, using the same yaw convention as
-# handle_grab()'s atan2(cam.x-pos.x, cam.z-pos.z) (this mesh's front faces
-# local +Z, not -Z, so Node3D.look_at() is 180 degrees off and must not be
-# used here). with_pitch also tilts the screen down/up toward the headset,
-# for screens placed above/below primary's height.
-func _face_camera(node: Node3D, cam_pos: Vector3, with_pitch: bool) -> void:
-	var pos = node.global_position
-	node.rotation.y = atan2(cam_pos.x - pos.x, cam_pos.z - pos.z)
+# Euler angles (same convention as Node3D.rotation) that orient something at
+# `pos` to face the headset: yaw via atan2(cam.x-pos.x, cam.z-pos.z) (this
+# mesh's front faces local +Z, not -Z, so Node3D.look_at() is 180 degrees off
+# and must not be used here). with_pitch also tilts up/down toward the
+# headset, for screens placed above/below primary's height. Pure function (no
+# node mutation) so grid_cell_transform() below can use it mid-walk, before a
+# screen has actually been moved to the position being evaluated.
+func _face_camera_angles(pos: Vector3, cam_pos: Vector3, with_pitch: bool) -> Vector3:
+	var yaw = atan2(cam_pos.x - pos.x, cam_pos.z - pos.z)
+	var pitch = 0.0
 	if with_pitch:
 		var to_cam = cam_pos - pos
 		var dist = to_cam.length()
-		node.rotation.x = -asin(clampf(to_cam.y / dist, -1.0, 1.0)) if dist > 0.001 else 0.0
-	else:
-		node.rotation.x = 0.0
-	node.rotation.z = 0.0
+		pitch = -asin(clampf(to_cam.y / dist, -1.0, 1.0)) if dist > 0.001 else 0.0
+	return Vector3(pitch, yaw, 0.0)
+
+func _face_camera(node: Node3D, cam_pos: Vector3, with_pitch: bool) -> void:
+	node.rotation = _face_camera_angles(node.global_position, cam_pos, with_pitch)
+
+# Degrees each grid square is turned from its neighbor square (a 155-degree
+# dihedral fold between adjacent squares) - a fixed, constant spacing,
+# deliberately NOT derived from curvature/radius: the grid's own angle stays
+# "a standard size" regardless of whatever Flat/Slight/Curved the screens
+# themselves are set to, and the screens' own existing curve/bow rendering
+# (VRScreen.apply_curvature(), _curve_edge_local_offset()) is completely
+# unaffected by any of this - it stays exactly as it already is. Sized for the
+# common case (3 screens = 6 squares, not the full 8), hence sharper than a
+# naive 120deg/8 would give. A screen is 2 squares wide, so consecutive
+# SCREENS are rotated by 2x this amount from each other.
+const GRID_SQUARE_TURN_DEG := 25.0
+
+# Transform of the screen `n` screen-widths to the right (n>0) or left (n<0)
+# of primary (n=0 = primary itself), for every n from -max_n to +max_n,
+# computed via a single outward walk in each direction (used to be recomputed
+# from scratch for every one of nearest_free_grid_cell()'s ~21 candidates,
+# every frame during a live drag - real cost saver to do it once and look up).
+#
+# Each hop places the next screen's near edge exactly SCREEN_GAP from the
+# current screen's far edge - same anchor+near_offset edge math add_screen()
+# already uses for its own hops (_curve_edge_local_offset(), so a genuinely
+# curved screen's real bowed-backward edge is what the gap is measured from,
+# not an idealized flat one - a curved screen's edge sits well behind its
+# flat mesh_size.x width, and measuring the gap against the flat width was
+# exactly why curved screens kept touching even though the gap looked correct
+# on paper), just with a fixed rotation increment instead of a
+# curvature-derived one - then rotates by 2*GRID_SQUARE_TURN_DEG for the next
+# screen. Using an explicit edge-to-edge gap term like this (rather than
+# deriving screen spacing from a folded multi-square chord) is what
+# guarantees screens never drift closer than SCREEN_GAP as the turn angle
+# increases - an earlier version derived spacing from a chord across 2
+# individually-folded squares, which shrank as the angle increased.
+func _grid_screen_transforms(max_n: int) -> Dictionary:
+	var transforms := {0: Transform3D(primary_screen.global_transform.basis, primary_screen.global_position)}
+	var mesh_w = primary_screen.mesh_size.x
+	var curvature = primary_screen.curvature
+	var radius = primary_screen.get_cylinder_radius() if curvature > 0 else 0.0
+	var turn = deg_to_rad(GRID_SQUARE_TURN_DEG * 2.0)
+	for dir in [1.0, -1.0]:
+		var pos = primary_screen.global_position
+		var basis = primary_screen.global_transform.basis
+		for n in range(1, max_n + 1):
+			var far_edge = _curve_edge_local_offset(mesh_w, radius, curvature, dir)
+			var anchor = pos + basis * far_edge
+			anchor += basis.x * dir * SCREEN_GAP
+			basis = basis.rotated(Vector3.UP, -dir * turn)
+			var near_edge = _curve_edge_local_offset(mesh_w, radius, curvature, -dir)
+			pos = anchor - basis * near_edge
+			transforms[int(dir) * n] = Transform3D(basis, pos)
+	return transforms
+
+# World transform for grid cell (gx,gy), given a screen-transform cache from
+# _grid_screen_transforms() above. Row (vertical) offsets stay horizontally
+# unrotated (curvature has always been horizontal-only here) but DO pitch to
+# face the viewer, same as add_screen()'s existing "above" placement always
+# has - a row that ends up above eye height needs to tilt down to read
+# comfortably, and a row below needs to tilt up.
+func _cell_transform_from_screens(gx: int, gy: int, anchor_gx: int, anchor_gy: int, transforms: Dictionary) -> Transform3D:
+	var n = (gx - anchor_gx) / MonitorGrid.SPAN
+	var t: Transform3D = transforms[n]
+
+	var row_steps = (gy - anchor_gy) / MonitorGrid.SPAN
+	if row_steps != 0:
+		# gy increases downward in the grid, which is -Y (lower) in world space.
+		var row_span = primary_screen.mesh_size.y + SCREEN_GAP
+		t.origin += t.basis.y * (-row_steps) * row_span
+		var yaw = t.basis.get_euler().y
+		var pitch = _face_camera_angles(t.origin, xr_camera.global_position, true).x
+		t.basis = Basis.from_euler(Vector3(pitch, yaw, 0.0))
+
+	return t
+
+# Single-cell convenience wrapper around _cell_transform_from_screens() - fine
+# for the one-off calls (preset apply, default placement); the live-drag hot
+# path below builds one shared cache instead of using this per candidate.
+func grid_cell_transform(gx: int, gy: int, anchor_gx: int, anchor_gy: int) -> Transform3D:
+	var n = absi((gx - anchor_gx) / MonitorGrid.SPAN)
+	return _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, _grid_screen_transforms(n))
+
+# Nearest unoccupied SPANxSPAN cell to raw_pos. Brute-forces all
+# (COLS-SPAN+1)*(ROWS-SPAN+1) = 21 candidate cells against a single shared
+# transform cache - cheap enough to run every frame during a live drag.
+# occupied is an Array[Vector2i] of other screens' current grid cells.
+# Returns Vector2i(-1,-1) if every cell is blocked.
+func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, anchor_gy: int) -> Vector2i:
+	var transforms = _grid_screen_transforms(MonitorGrid.COLS / MonitorGrid.SPAN)
+	var best := Vector2i(-1, -1)
+	var best_dist := INF
+	for gy in range(MonitorGrid.ROWS - MonitorGrid.SPAN + 1):
+		for gx in range(MonitorGrid.COLS - MonitorGrid.SPAN + 1):
+			var cand := Vector2i(gx, gy)
+			var blocked := false
+			for occ in occupied:
+				if MonitorGrid.cells_overlap(cand, occ):
+					blocked = true
+					break
+			if blocked:
+				continue
+			var t = _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, transforms)
+			var d = t.origin.distance_to(raw_pos)
+			if d < best_dist:
+				best_dist = d
+				best = cand
+	return best
 
 func add_screen(monitor_id: StringName, real_x_hint: float = INF) -> VRScreen:
 	if screens.size() >= MAX_SCREENS:
@@ -1020,7 +1241,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF) -> VRScreen:
 	s.mesh_size = primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
 	s.curvature = primary_screen.curvature if primary_screen else 2
 	if primary_screen:
-		var gap = 0.05
+		var gap = SCREEN_GAP
 		var cam_pos = xr_camera.global_position
 		var new_radius = primary_screen.get_cylinder_radius() if primary_screen.curvature > 0 else 0.0
 		# Prefer the monitor's real desktop x-position (when the caller has one,

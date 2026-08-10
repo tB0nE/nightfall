@@ -175,6 +175,7 @@ func cycle_codec():
 	# switch to H.264 while already at (e.g.) 100% would restart still requesting the
 	# uncapped resolution left over from whatever codec was active before.
 	main.host_resolution = main.compute_requested_resolution()
+	refresh_resolution_btn_label()
 	main.state_manager.save_state()
 	if main.is_streaming:
 		_schedule_stream_restart()
@@ -272,12 +273,40 @@ func cycle_fps():
 	_schedule_stream_restart()
 
 func cycle_resolution():
-	var opts = main.resolution_scale_options
-	var idx = opts.find(main.resolution_scale_pct)
+	var opts = main.compute_resolution_options()
+	# opts[0] is always the current max (see compute_resolution_options()) - find by
+	# value for everything else, but treat "currently at-or-past the max" as being
+	# at slot 0 rather than falling through to opts.find()'s -1-not-found case,
+	# which used to skip straight past MAX to the second entry on the very next
+	# click after a codec/monitor change made the old selection unreachable.
+	var idx = 0 if main.resolution_scale_pct >= opts[0] else opts.find(main.resolution_scale_pct)
 	main.resolution_scale_pct = opts[(maxi(idx, 0) + 1) % opts.size()]
 	main.host_resolution = main.compute_requested_resolution()
-	_save_setting(main._ui_res_btn, "%d%%" % main.resolution_scale_pct)
+	_save_setting(main._ui_res_btn, _resolution_btn_label())
 	_schedule_stream_restart()
+
+# The MAX ceiling (compute_resolution_options()[0]) depends on codec_preference
+# and native_resolution, both of which can change without the user ever
+# touching the resolution button itself (codec cycling, monitors being
+# added/removed, the host's real desktop turning out a different size than
+# assumed) - call this after any of those to keep the button's label honest
+# instead of showing a stale percentage that no longer matches what's actually
+# being requested.
+func refresh_resolution_btn_label():
+	if main._ui_res_btn:
+		main.ui_controller.update_option_btn(main._ui_res_btn, _resolution_btn_label())
+
+func _resolution_btn_label() -> String:
+	var opts = main.compute_resolution_options()
+	# Show the actual resulting pixel dimensions, not just an abstract
+	# percentage - a bare "%" doesn't tell you what you're really getting once
+	# any of compute_requested_resolution()'s caps are in play (which is
+	# exactly the case whenever this shows "MAX").
+	var res = main.compute_requested_resolution()
+	var dims = "%dx%d" % [res.x, res.y]
+	if main.resolution_scale_pct >= opts[0]:
+		return "MAX (%s)" % dims
+	return "%d%% (%s)" % [main.resolution_scale_pct, dims]
 
 func cycle_bitrate():
 	main.bitrate_idx += 1
@@ -336,9 +365,11 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	var wanted_ids: Array = []
 	for m in new_layout.enabled_monitors():
 		wanted_ids.append(m.id)
-	for s in main.screens.duplicate():
-		if not wanted_ids.has(s.monitor_id):
-			main.remove_screen(s.monitor_id)
+	# The screen about to be replaced as primary (e.g. the welcome screen's
+	# placeholder on the very first real connect) - used below to hand its exact
+	# position off to whatever takes over as primary, instead of add_screen()
+	# positioning the new one "next to" a screen that's about to disappear.
+	var old_primary_being_replaced: VRScreen = main.primary_screen if (main.primary_screen and not wanted_ids.has(main.primary_screen.monitor_id)) else null
 	var new_primary: VRScreen = null
 	# add_screen() positions each new VRScreen relative to whichever screens
 	# already exist, purely by insertion order (grows left/right of primary).
@@ -362,9 +393,24 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		s.apply_monitor(m, new_layout.frame_size)
 		if m.is_primary:
 			new_primary = s
+	if old_primary_being_replaced and new_primary and new_primary != old_primary_being_replaced:
+		new_primary.global_transform = old_primary_being_replaced.global_transform
 	main.layout = new_layout
+	# Reassign primary BEFORE removing unwanted screens below - remove_screen()
+	# refuses to remove whatever is currently primary_screen (a real safety net
+	# for normal add/remove-monitor flows), but on the very first real connect
+	# the welcome screen's placeholder VRScreen *is* primary_screen, with a
+	# monitor_id that's essentially never going to match the real manifest's
+	# primary id. Removing in the old order left that placeholder permanently
+	# stuck (un-removable, since it was still primary_screen at removal time)
+	# with its own grab bar, while the real primary got added next to it
+	# instead of replacing it - "screen appears in the wrong position, two
+	# grab bars" was this, not a positioning bug in add_screen() itself.
 	if new_primary and new_primary != main.primary_screen:
 		main.set_primary_screen(new_primary)
+	for s in main.screens.duplicate():
+		if not wanted_ids.has(s.monitor_id):
+			main.remove_screen(s.monitor_id)
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
 	if main.comp.available:
 		main.comp.update_cylinder_params()
@@ -373,128 +419,337 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		main.comp.bind_yuv_textures()
 	main.ui_controller.update_monitor_tab()
 
-# Monitor tab/enumeration order is the host's own listing order, not spatial
-# left-to-right order - so "enable one more monitor" can silently produce a
-# gap the host's X11 bounding-box capture can't serve (it now rejects
-# non-contiguous outputs= outright). Auto-enable whatever sits in the gap
-# instead of letting the user hit that rejection blind - see
-# ScreenLayout.fill_gaps(). Called after any toggle that turns a monitor ON.
-func _fill_layout_gaps():
-	var enabled_ids: Array = []
-	for m in main.layout.monitors:
-		if m.enabled:
-			enabled_ids.append(m.id)
-	var filled_ids = main.layout.fill_gaps(enabled_ids)
-	if filled_ids.size() == enabled_ids.size():
-		return
-	for m in main.layout.monitors:
-		if filled_ids.has(m.id):
-			m.enabled = true
-	main._log("[LAYOUT] Auto-enabled gap monitor(s) to keep capture contiguous: %s" % str(filled_ids))
+# ---------------------------------------------------------------------------
+# Monitors tab (grid-mode redesign): staged Monitors/Virtual counts + preset
+# picker, committed together by Apply. Nothing below auto-restarts the stream
+# or touches main.layout/screens until apply_staged_monitor_config() runs -
+# per spec this needed "a lot more to consider" than the old per-toggle
+# auto-restart behavior above. Grid/free screen placement here is purely
+# client-side VR presentation (MonitorGrid) and never touches ScreenLayout/
+# MonitorSpec beyond enabled/is_primary, which apply_screen_layout() (above,
+# unmodified) already owns.
+# ---------------------------------------------------------------------------
 
-func add_monitor():
-	# Re-enable the highest-priority currently-disabled monitor, preserving
-	# its real frame_rect/desktop_rect from the host's manifest. There's no
-	# meaningful way to "add" a monitor beyond what the manifest reported -
-	# unlike remove_monitor() below, this used to rebuild the whole layout
-	# via ScreenLayout.replicate()/single(), a pre-manifest placeholder whose
-	# frame_rect always spans the ENTIRE composite frame regardless of which
-	# monitor it's meant to represent, showing the full multi-monitor
-	# composite (all monitors' content) squeezed onto every screen instead
-	# of each one's actual content.
-	# Pick the disabled monitor spatially NEAREST the current enabled set,
-	# not just the lowest array index - monitor array order is the host's
-	# raw RandR enumeration order, not spatial order, so "lowest index" can
-	# be the monitor farthest away. Enabling that one then forced
-	# _fill_layout_gaps() to pull in every monitor in between just to stay
-	# contiguous, jumping straight from 1 to 4 monitors on a single "add"
-	# press instead of growing by one at a time as expected.
-	var enabled = main.layout.enabled_monitors()
-	if enabled.is_empty():
+func _real_monitor_count() -> int:
+	var count = 0
+	for m in main.layout.monitors:
+		if not m.hint.get("virtual", false):
+			count += 1
+	return count
+
+func staged_total() -> int:
+	return main._staged_physical_count + main._staged_virtual_count
+
+func _clear_staged_preset_if_mismatched():
+	if main._staged_preset_id == &"":
 		return
-	var min_x = INF
-	var max_x = -INF
-	for m in enabled:
-		min_x = minf(min_x, m.desktop_rect.position.x)
-		max_x = maxf(max_x, m.desktop_rect.position.x + m.desktop_rect.size.x)
-	var best_idx = -1
-	var best_dist = INF
-	for i in range(main.layout.monitors.size()):
-		var m = main.layout.monitors[i]
-		if m.enabled:
+	var p = MonitorPresets.find_preset(String(main._staged_preset_id))
+	if p.is_empty() or p.get("screen_count", -1) != staged_total():
+		main._staged_preset_id = &""
+
+# Call whenever the Monitors tab is opened, so its dropdowns reflect what's
+# actually live rather than whatever was last staged in a previous visit.
+func sync_staged_from_current_layout():
+	var real_enabled = 0
+	var virtual_enabled = 0
+	for m in main.layout.monitors:
+		if not m.enabled:
 			continue
-		var mx0 = m.desktop_rect.position.x
-		var mx1 = mx0 + m.desktop_rect.size.x
-		var dist = maxf(0.0, maxf(min_x - mx1, mx0 - max_x))
-		if dist < best_dist:
-			best_dist = dist
-			best_idx = i
-	if best_idx >= 0:
-		main.layout.monitors[best_idx].enabled = true
-		main._edit_monitor_idx = best_idx
-		_fill_layout_gaps()
-		apply_screen_layout(main.layout)
-		main.state_manager.save_host_state()
-		_schedule_stream_restart()
+		if m.hint.get("virtual", false):
+			virtual_enabled += 1
+		else:
+			real_enabled += 1
+	main._staged_physical_count = maxi(real_enabled, 1)
+	main._staged_virtual_count = virtual_enabled
+	main._staged_preset_id = &""
 
-func remove_monitor():
-	# Disable the last enabled, non-primary monitor - same reasoning as
-	# add_monitor() above: preserves every remaining monitor's real
-	# frame_rect/desktop_rect instead of rebuilding a placeholder layout.
-	var enabled = main.layout.enabled_monitors()
-	if enabled.size() <= 1:
-		return
-	for i in range(enabled.size() - 1, -1, -1):
-		if not enabled[i].is_primary:
-			enabled[i].enabled = false
-			# Point the monitor tab at the one we just disabled, so its
-			# "Enabled" status visibly flips to Off - otherwise the tab keeps
-			# showing whatever was selected before, which may not change at
-			# all if it happened to already be pointed elsewhere.
-			var real_idx = main.layout.monitors.find(enabled[i])
-			if real_idx >= 0:
-				main._edit_monitor_idx = real_idx
-			apply_screen_layout(main.layout)
-			main.state_manager.save_host_state()
-			_schedule_stream_restart()
-			return
+func stage_monitor_count(n: int):
+	main._staged_physical_count = clampi(n, 1, maxi(_real_monitor_count(), 1))
+	main._staged_virtual_count = clampi(main._staged_virtual_count, 0, main.MAX_SCREENS - main._staged_physical_count)
+	_clear_staged_preset_if_mismatched()
+	main._log("[LAYOUT] stage_monitor_count(%d): real_monitor_count=%d -> staged_physical=%d" % [n, _real_monitor_count(), main._staged_physical_count])
 
-func select_monitor(idx: int):
-	if idx < 0 or idx >= main.layout.monitors.size():
-		return
-	main._edit_monitor_idx = idx
-	main.ui_controller.update_monitor_tab()
+func stage_virtual_count(n: int):
+	main._staged_virtual_count = clampi(n, 0, main.MAX_SCREENS - main._staged_physical_count)
+	_clear_staged_preset_if_mismatched()
 
-func toggle_edit_monitor_enabled():
-	if main._edit_monitor_idx >= main.layout.monitors.size():
+func select_monitor_preset(id: StringName):
+	if MonitorPresets.find_preset(String(id)).is_empty():
 		return
-	var m = main.layout.monitors[main._edit_monitor_idx]
-	if m.is_primary:
-		return
-	m.enabled = not m.enabled
-	if not m.enabled:
-		var still_has_primary = false
-		for mm in main.layout.monitors:
-			if mm.enabled and mm.is_primary:
-				still_has_primary = true
-		if not still_has_primary:
-			for mm in main.layout.monitors:
-				if mm.enabled:
-					mm.is_primary = true
-					break
-	else:
-		_fill_layout_gaps()
-	apply_screen_layout(main.layout)
-	main.state_manager.save_host_state()
-	_schedule_stream_restart()
+	main._staged_preset_id = id
 
-func set_edit_monitor_primary():
-	if main._edit_monitor_idx >= main.layout.monitors.size():
-		return
-	var target = main.layout.monitors[main._edit_monitor_idx]
-	if not target.enabled:
-		return
+# Builds the ScreenLayout implied by the current staged counts: the N
+# leftmost real (non-virtual) monitors from the live manifest, plus M
+# client-side-only virtual placeholders (hint.virtual=true, see
+# stream_manager.gd::_compute_capture_outputs() for why those are excluded
+# from the real outputs= request). Real monitors' frame_rect/desktop_rect are
+# carried over untouched; only enabled/is_primary and the synthetic virtual
+# entries are new.
+func _build_staged_layout() -> ScreenLayout:
+	var real_monitors: Array = []
 	for m in main.layout.monitors:
-		m.is_primary = (m == target)
-	apply_screen_layout(main.layout)
+		if not m.hint.get("virtual", false):
+			real_monitors.append(m)
+	main._log("[LAYOUT] _build_staged_layout: main.layout.monitors=%d real=%d staged_physical=%d staged_virtual=%d source=%s" % [main.layout.monitors.size(), real_monitors.size(), main._staged_physical_count, main._staged_virtual_count, str(main.layout.source)])
+	if real_monitors.is_empty():
+		return null
+	real_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
+	var phys_count = clampi(main._staged_physical_count, 1, real_monitors.size())
+	var picked: Array = real_monitors.slice(0, phys_count)
+
+	var new_layout := ScreenLayout.new()
+	new_layout.version = main.layout.version
+	new_layout.source = main.layout.source
+	new_layout.frame_size = main.layout.frame_size
+	new_layout.desktop_bounds = main.layout.desktop_bounds
+
+	for m in real_monitors:
+		var nm := ScreenLayout.MonitorSpec.new()
+		nm.id = m.id
+		nm.label = m.label
+		nm.frame_rect = m.frame_rect
+		nm.desktop_rect = m.desktop_rect
+		nm.hint = {}
+		nm.enabled = picked.has(m)
+		nm.is_primary = false
+		new_layout.monitors.append(nm)
+
+	var vcount = clampi(main._staged_virtual_count, 0, main.MAX_SCREENS - phys_count)
+	_append_virtual_placeholders(new_layout, vcount)
+
+	var enabled := new_layout.enabled_monitors()
+	if enabled.is_empty():
+		return null
+	enabled[0].is_primary = true
+	return new_layout
+
+# Client-side-only synthetic monitors (no real RandR output behind them - see
+# stream_manager.gd::_compute_capture_outputs(), which skips hint.virtual
+# entries when building the real outputs= request). Placed just past the real
+# desktop's right edge so they don't overlap any real monitor's desktop_rect.
+func _append_virtual_placeholders(layout: ScreenLayout, vcount: int):
+	var max_x = layout.desktop_bounds.position.x + layout.desktop_bounds.size.x
+	for i in range(vcount):
+		var vm := ScreenLayout.MonitorSpec.new()
+		vm.id = StringName("virtual_%d" % i)
+		vm.label = ""
+		vm.enabled = true
+		vm.is_primary = false
+		vm.frame_rect = Rect2i(0, 0, layout.frame_size.x, layout.frame_size.y)
+		vm.desktop_rect = Rect2i(max_x + i * layout.frame_size.x, layout.desktop_bounds.position.y, layout.frame_size.x, layout.frame_size.y)
+		vm.hint = {"virtual": true}
+		layout.monitors.append(vm)
+
+# Primary first (never repositioned by preset apply - it's the free-mode
+# anchor everything else is placed relative to), then the rest sorted by real
+# desktop x position - deterministic and matches apply_screen_layout()'s own
+# insertion order in the common case.
+func _screens_in_ordinal_order() -> Array:
+	if not main.primary_screen:
+		return []
+	var rest: Array = []
+	for s in main.screens:
+		if s != main.primary_screen:
+			rest.append(s)
+	rest.sort_custom(func(a, b):
+		var ax = a.monitor.desktop_rect.position.x if a.monitor else a.global_position.x
+		var bx = b.monitor.desktop_rect.position.x if b.monitor else b.global_position.x
+		return ax < bx
+	)
+	var ordered: Array = [main.primary_screen]
+	ordered.append_array(rest)
+	return ordered
+
+func _place_secondaries_default(secondaries: Array):
+	var primary: VRScreen = main.primary_screen
+	if primary.grid_pos == Vector2i(-1, -1):
+		primary.grid_pos = Vector2i(3, 1)
+	primary.grid_mode = true
+	var occupied: Array = [primary.grid_pos]
+	for s in secondaries:
+		var cand = main.nearest_free_grid_cell(s.global_position, occupied, primary.grid_pos.x, primary.grid_pos.y)
+		if cand.x < 0:
+			continue
+		occupied.append(cand)
+		s.grid_mode = true
+		s.grid_pos = cand
+		s.global_transform = main.grid_cell_transform(cand.x, cand.y, primary.grid_pos.x, primary.grid_pos.y)
+
+# Applies the selected preset's per-screen grid/free position onto the
+# VRScreens apply_screen_layout() just created/kept, in ordinal order. Falls
+# back to a sane grid default (primary keeps its grid_pos or [3,1], others
+# auto-placed via nearest_free_cell) when no preset is staged or its
+# screen_count no longer matches what's actually enabled.
+func _apply_preset_positions_to_screens():
+	var ordered: Array = _screens_in_ordinal_order()
+	if ordered.is_empty():
+		return
+	var primary: VRScreen = ordered[0]
+	var preset := {}
+	if main._staged_preset_id != &"":
+		var p = MonitorPresets.find_preset(String(main._staged_preset_id))
+		if not p.is_empty() and p.get("screen_count", -1) == ordered.size():
+			preset = p
+	if preset.is_empty():
+		_place_secondaries_default(ordered.slice(1))
+	else:
+		var screens_data: Array = preset.get("screens", [])
+		for i in range(ordered.size()):
+			var s: VRScreen = ordered[i]
+			var data: Dictionary = screens_data[i]
+			var is_grid: bool = data.get("grid_mode", true)
+			s.grid_mode = is_grid
+			if is_grid:
+				var gp: Array = data.get("grid_pos", [3, 1])
+				s.grid_pos = Vector2i(gp[0], gp[1])
+			if s == primary:
+				continue
+			if is_grid:
+				s.global_transform = main.grid_cell_transform(s.grid_pos.x, s.grid_pos.y, primary.grid_pos.x, primary.grid_pos.y)
+			else:
+				var fp: Array = data.get("free_pos", [s.position.x, s.position.y, s.position.z])
+				var fr: Array = data.get("free_rot", [s.rotation.x, s.rotation.y, s.rotation.z])
+				s.position = Vector3(fp[0], fp[1], fp[2])
+				s.rotation = Vector3(fr[0], fr[1], fr[2])
+	if main.comp.available:
+		main.comp.update_cylinder_params()
+
+# Re-derives world transform for every grid-mode secondary from its existing
+# grid_pos. Needed whenever curvature changes: a grid cell's world position
+# depends on curvature/radius (_grid_screen_transforms() measures gaps against
+# the curved edge, see main.gd), but grid_pos itself is just coordinates and
+# doesn't change with curvature - so without this, a screen placed under the
+# old curvature keeps its old (now wrong) position/rotation until something
+# else, like a drag, happens to recompute it.
+func reflow_grid_screens():
+	var primary: VRScreen = main.primary_screen
+	if not primary or primary.grid_pos == Vector2i(-1, -1):
+		return
+	for s in main.screens:
+		if s == primary or not s.grid_mode or s.grid_pos == Vector2i(-1, -1):
+			continue
+		s.global_transform = main.grid_cell_transform(s.grid_pos.x, s.grid_pos.y, primary.grid_pos.x, primary.grid_pos.y)
+
+# The only place that actually calls apply_screen_layout() from the new
+# Monitors tab. Cycling the Monitors/Virtual dropdowns or picking a preset
+# (Row 1/Row 2) never restarts anything on their own - clarification #9 asked
+# for that ("a lot more to consider") - but Apply is the explicit commit
+# point, and if the real (server-facing) monitor selection actually changed,
+# the host needs a fresh outputs= request to capture the new set.
+#
+# A monitor's frame_rect (its position within the CAPTURED/composited video
+# frame) is only meaningful once it's actually part of a live capture - one
+# we haven't asked the host to capture yet reports frame_rect (0,0) in the
+# manifest (there's no video content for it at all), which
+# apply_screen_layout()'s validate() correctly refuses. So when the real
+# selection changes, this does NOT try to build/position VR screens against
+# that stale/invalid geometry up front - it only updates which real monitors
+# are enabled/primary (what the next launch's outputs= will request) and
+# restarts; the restart's own fresh manifest response
+# (stream_manager.gd::_on_v2_launch_response) re-derives and applies a fully
+# valid ScreenLayout once the host actually replies with real geometry for the
+# new set, and finish_pending_monitor_apply() (called from there) finishes the
+# job - adding virtual placeholders (never reported by any real manifest) and
+# positioning every screen per the staged preset.
+func apply_staged_monitor_config():
+	var target = _build_staged_layout()
+	if target == null:
+		main._log("[LAYOUT] apply_staged_monitor_config: _build_staged_layout() returned null (no real monitors known yet)")
+		return
+	var old_real_ids: Array = []
+	for m in main.layout.enabled_monitors():
+		if not m.hint.get("virtual", false):
+			old_real_ids.append(m.id)
+	var new_real_ids: Array = []
+	for m in target.enabled_monitors():
+		if not m.hint.get("virtual", false):
+			new_real_ids.append(m.id)
+	var real_changed = old_real_ids != new_real_ids
+	main._log("[LAYOUT] apply_staged_monitor_config: staged=%d+%dvirtual old_real=%s new_real=%s real_changed=%s streaming=%s" % [main._staged_physical_count, main._staged_virtual_count, str(old_real_ids), str(new_real_ids), str(real_changed), str(main.is_streaming)])
+
+	if real_changed and main.is_streaming:
+		var new_primary = target.get_primary()
+		var new_primary_id = new_primary.id if new_primary else &""
+		for m in main.layout.monitors:
+			if m.hint.get("virtual", false):
+				continue
+			m.enabled = new_real_ids.has(m.id)
+			m.is_primary = (m.id == new_primary_id)
+		main._pending_monitor_apply = true
+		_schedule_stream_restart()
+	else:
+		apply_screen_layout(target)
+		_apply_preset_positions_to_screens()
+
+	main.host_resolution = main.compute_requested_resolution()
 	main.state_manager.save_host_state()
+	if main._ui_status_label:
+		if real_changed and main.is_streaming:
+			main.ui_controller.set_status("Applying - restarting stream for new monitor selection...")
+		elif main._staged_virtual_count > 0:
+			main.ui_controller.set_status("%d virtual monitor(s) - placeholder only, not yet requested from server" % main._staged_virtual_count)
+		else:
+			main.ui_controller.set_status("Monitor layout applied")
+
+# Called once by stream_manager.gd's launch-response handler right after it
+# applies the fresh post-restart manifest (real frame_rect data now valid for
+# the newly-requested set). Re-adds any staged virtual placeholders (the
+# server-sourced manifest only ever describes real outputs, so
+# apply_screen_layout() would otherwise have just dropped them) and applies
+# the staged preset's grid/free positions now that every screen actually exists.
+func finish_pending_monitor_apply():
+	if main._staged_virtual_count > 0:
+		var with_virtual := ScreenLayout.new()
+		with_virtual.version = main.layout.version
+		with_virtual.source = main.layout.source
+		with_virtual.frame_size = main.layout.frame_size
+		with_virtual.desktop_bounds = main.layout.desktop_bounds
+		with_virtual.monitors = main.layout.monitors.duplicate()
+		_append_virtual_placeholders(with_virtual, main._staged_virtual_count)
+		apply_screen_layout(with_virtual)
+	_apply_preset_positions_to_screens()
+
+func save_current_as_preset():
+	var ordered = _screens_in_ordinal_order()
+	if ordered.is_empty():
+		return
+	var screens_data: Array = []
+	for s in ordered:
+		var gp = s.grid_pos if s.grid_pos != Vector2i(-1, -1) else Vector2i(3, 1)
+		screens_data.append({
+			"is_primary": s == main.primary_screen,
+			"grid_mode": s.grid_mode,
+			"grid_pos": [gp.x, gp.y],
+			"free_pos": [s.position.x, s.position.y, s.position.z],
+			"free_rot": [s.rotation.x, s.rotation.y, s.rotation.z],
+		})
+	var customs = MonitorPresets.load_custom_presets()
+	var id = MonitorPresets.next_custom_id(customs)
+	customs.append({
+		"version": 1,
+		"id": id,
+		"built_in": false,
+		"screen_count": screens_data.size(),
+		"screens": screens_data,
+	})
+	MonitorPresets.save_custom_presets(customs)
+	main._staged_preset_id = StringName(id)
+	if main._ui_status_label:
+		main.ui_controller.set_status("Preset saved")
+
+func remove_selected_preset():
+	if main._staged_preset_id == &"":
+		return
+	var p = MonitorPresets.find_preset(String(main._staged_preset_id))
+	if p.is_empty() or p.get("built_in", false):
+		return
+	MonitorPresets.remove_custom_preset(String(main._staged_preset_id))
+	main._staged_preset_id = &""
+	if main._ui_status_label:
+		main.ui_controller.set_status("Preset removed")
+
+func toggle_grid_mode():
+	main.grid_mode_enabled = not main.grid_mode_enabled
+	main.state_manager.save_state()
+	if main._ui_grid_mode_btn:
+		main.ui_controller.update_option_btn(main._ui_grid_mode_btn, "On" if main.grid_mode_enabled else "Off")

@@ -108,6 +108,13 @@ func _compute_capture_outputs() -> String:
 		return ""
 	var labels: Array = []
 	for m in main.layout.enabled_monitors():
+		# Client-side-only virtual monitor placeholders (Monitors tab "Virtual"
+		# staging, see SettingsController._build_staged_layout()) have no real
+		# RandR output behind them - skip them here rather than letting their
+		# empty label trip the "malformed manifest" bailout below and disable
+		# outputs= for the real monitors too.
+		if m.hint.get("virtual", false):
+			continue
 		if m.label.is_empty():
 			return ""
 		labels.append(m.label)
@@ -232,6 +239,14 @@ func _on_v2_launch_response(response: Dictionary):
 			for m in host_layout.enabled_monitors():
 				main._log("[LAYOUT]   monitor %s frame_rect=%s desktop_rect=%s primary=%s" % [String(m.id), str(m.frame_rect), str(m.desktop_rect), str(m.is_primary)])
 			main.settings_controller.apply_screen_layout(host_layout)
+			# A Monitors-tab Apply that changed the real capture selection
+			# deferred adding virtual placeholders/positioning screens until now
+			# (see SettingsController.apply_staged_monitor_config()) - this
+			# manifest is the first one with real geometry for the newly
+			# requested set, so finish that work now that it's safe to.
+			if main._pending_monitor_apply:
+				main._pending_monitor_apply = false
+				main.settings_controller.finish_pending_monitor_apply()
 		else:
 			main._log("[LAYOUT] Host manifest invalid, ignoring: %s" % layout_err)
 

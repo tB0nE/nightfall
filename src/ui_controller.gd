@@ -10,8 +10,13 @@ var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
 var _tab_btn_monitors: Button
-var _mon_icon_row: HBoxContainer
+var _preset_row: HBoxContainer
 var _current_tab: int = 0
+
+const PRESET_CARD_SIZE := Vector2(96, 62)
+const PRESET_DIAGRAM_SIZE := Vector2(84, 42)
+const PRESET_PRIMARY_COLOR := Color(0.55, 0.78, 1.0, 0.9)
+const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 
 func _init(owner: Node3D):
 	main = owner
@@ -60,72 +65,137 @@ func update_3d_btn_state():
 		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
 
 func update_monitor_tab():
-	if not _mon_icon_row or not main._ui_mon_remove_btn:
+	if not main._ui_apply_preset_btn:
 		return
-	for c in _mon_icon_row.get_children():
-		_mon_icon_row.remove_child(c)
+	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
+	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
+	update_option_btn(main._ui_grid_mode_btn, "On" if main.grid_mode_enabled else "Off")
+	_refresh_preset_row()
+	var selected = main._staged_preset_id != &""
+	var selected_preset = MonitorPresets.find_preset(String(main._staged_preset_id)) if selected else {}
+	main._ui_remove_preset_btn.disabled = not selected or selected_preset.get("built_in", true)
+
+func _cycle_monitors_btn():
+	var real_total = maxi(main.settings_controller._real_monitor_count(), 1)
+	var n = main._staged_physical_count + 1
+	if n > real_total:
+		n = 1
+	main.settings_controller.stage_monitor_count(n)
+	update_monitor_tab()
+
+func _cycle_virtual_btn():
+	var max_virtual = main.MAX_SCREENS - main._staged_physical_count
+	var n = main._staged_virtual_count + 1
+	if n > max_virtual:
+		n = 0
+	main.settings_controller.stage_virtual_count(n)
+	update_monitor_tab()
+
+func _on_apply_preset_pressed():
+	main.settings_controller.apply_staged_monitor_config()
+	update_monitor_tab()
+
+func _on_save_preset_pressed():
+	main.settings_controller.save_current_as_preset()
+	update_monitor_tab()
+
+func _on_remove_preset_pressed():
+	main.settings_controller.remove_selected_preset()
+	update_monitor_tab()
+
+# Rebuilds Row 2 with one card per preset whose screen_count matches what's
+# currently staged (Row 1) - a screen-count mismatch between a picked preset
+# and the staged Monitors/Virtual total can then never happen through the UI,
+# which is what lets apply_staged_monitor_config() apply a preset's positions
+# directly without needing to reconcile a mismatch at Apply time.
+func _refresh_preset_row():
+	if not _preset_row:
+		return
+	for c in _preset_row.get_children():
+		_preset_row.remove_child(c)
 		c.queue_free()
-	# Only list ENABLED monitors as tabs - a disabled (removed) one has no VR
-	# screen and nothing to configure, and add_monitor() (the "+" button) is
-	# the intended way back for it, not this list. Track real indices into
-	# main.layout.monitors separately from the display position, since a
-	# disabled monitor may sit anywhere in that array once removed.
-	var enabled_indices: Array = []
-	for i in main.layout.monitors.size():
-		if main.layout.monitors[i].enabled:
-			enabled_indices.append(i)
-	for display_i in enabled_indices.size():
-		var real_idx = enabled_indices[display_i]
-		var btn = Button.new()
-		btn.text = "Monitor " + str(display_i + 1)
-		btn.focus_mode = Control.FOCUS_NONE
-		btn.add_theme_font_size_override("font_size", 26)
-		btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
-		var bg = Color(1, 1, 1, 0.12) if real_idx == main._edit_monitor_idx else Color(1, 1, 1, 0.04)
-		var style = StyleBoxFlat.new()
-		style.bg_color = bg
-		style.set_corner_radius_all(8)
-		btn.add_theme_stylebox_override("normal", style)
-		var hover = style.duplicate()
-		hover.bg_color = Color(1, 1, 1, 0.18)
-		btn.add_theme_stylebox_override("hover", hover)
-		btn.custom_minimum_size = Vector2(200, 132)
-		btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		btn.button_down.connect(func(): main.settings_controller.select_monitor(real_idx))
-		_mon_icon_row.add_child(btn)
-	if enabled_indices.size() < main.layout.monitors.size():
-		var add_btn = Button.new()
-		add_btn.text = "+"
-		add_btn.focus_mode = Control.FOCUS_NONE
-		add_btn.add_theme_font_size_override("font_size", 26)
-		add_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		add_btn.custom_minimum_size = Vector2(60, 132)
-		add_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		var add_style = StyleBoxFlat.new()
-		add_style.bg_color = Color(1, 1, 1, 0.06)
-		add_style.set_corner_radius_all(8)
-		add_btn.add_theme_stylebox_override("normal", add_style)
-		var add_hover = add_style.duplicate()
-		add_hover.bg_color = Color(1, 1, 1, 0.18)
-		add_btn.add_theme_stylebox_override("hover", add_hover)
-		add_btn.button_down.connect(func(): main.settings_controller.add_monitor())
-		_mon_icon_row.add_child(add_btn)
-	if not enabled_indices.has(main._edit_monitor_idx):
-		main._edit_monitor_idx = enabled_indices[0] if not enabled_indices.is_empty() else 0
-	var m = main.layout.monitors[main._edit_monitor_idx]
-	update_option_btn(main._ui_mon_enabled_btn, "On" if m.enabled else "Off")
-	update_option_btn(main._ui_mon_primary_btn, "Yes" if m.is_primary else "No")
-	update_option_btn(main._ui_mon_remove_btn, "Remove")
-	main._ui_mon_enabled_btn.disabled = m.is_primary
-	main._ui_mon_primary_btn.disabled = not m.enabled
-	main._ui_mon_remove_btn.disabled = enabled_indices.size() <= 1
+	var total = main.settings_controller.staged_total()
+	for preset in MonitorPresets.all_presets():
+		if preset.get("screen_count", -1) != total:
+			continue
+		var is_selected = preset.get("id", "") == String(main._staged_preset_id)
+		_preset_row.add_child(_build_preset_card(preset, is_selected))
+	refresh_ui_buttons()
+
+# Presets have no display name (per spec, identified purely by their layout
+# picture) - each card is just a small grid diagram: one block per screen,
+# light blue for primary (matching the primary grab bar color), dim white for
+# secondaries.
+func _build_preset_card(preset: Dictionary, is_selected: bool) -> Button:
+	var card = Button.new()
+	card.focus_mode = Control.FOCUS_NONE
+	card.text = ""
+	card.custom_minimum_size = PRESET_CARD_SIZE
+	card.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(1, 1, 1, 0.16) if is_selected else Color(1, 1, 1, 0.04)
+	style.set_corner_radius_all(10)
+	if is_selected:
+		style.set_border_width_all(2)
+		style.border_color = PRESET_PRIMARY_COLOR
+	card.add_theme_stylebox_override("normal", style)
+	var hover = style.duplicate()
+	hover.bg_color = Color(1, 1, 1, 0.22)
+	card.add_theme_stylebox_override("hover", hover)
+	card.add_theme_stylebox_override("pressed", hover)
+
+	var diagram = Control.new()
+	diagram.custom_minimum_size = PRESET_DIAGRAM_SIZE
+	diagram.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	diagram.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	diagram.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	diagram.position = (PRESET_CARD_SIZE - PRESET_DIAGRAM_SIZE) * 0.5
+	_draw_preset_blocks(diagram, preset)
+	card.add_child(diagram)
+
+	var id = preset.get("id", "")
+	card.button_down.connect(func():
+		main.settings_controller.select_monitor_preset(StringName(id))
+		_refresh_preset_row()
+	)
+	return card
+
+func _draw_preset_blocks(diagram: Control, preset: Dictionary):
+	var cols = float(MonitorGrid.COLS)
+	var rows = float(MonitorGrid.ROWS)
+	var span = float(MonitorGrid.SPAN)
+	var size = PRESET_DIAGRAM_SIZE
+	var margin = 1.5
+	for entry in preset.get("screens", []):
+		var is_grid = entry.get("grid_mode", true)
+		var gx = 3
+		var gy = 1
+		if is_grid and entry.get("grid_pos") != null:
+			var gp: Array = entry["grid_pos"]
+			gx = gp[0]
+			gy = gp[1]
+		# Free-mode entries have no grid cell - approximated at the grid
+		# center purely for the picker's diagram (dimmed to signal it's not
+		# exact); this never affects actual placement.
+		var rect = ColorRect.new()
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var x0 = (gx / cols) * size.x
+		var y0 = (gy / rows) * size.y
+		var w = (span / cols) * size.x
+		var h = (span / rows) * size.y
+		rect.position = Vector2(x0 + margin, y0 + margin)
+		rect.size = Vector2(w - margin * 2, h - margin * 2)
+		rect.color = PRESET_PRIMARY_COLOR if entry.get("is_primary", false) else PRESET_SECONDARY_COLOR
+		if not is_grid:
+			rect.color.a *= 0.5
+		diagram.add_child(rect)
 
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
 	main.get_node("%Laser").visible = main.is_xr_active
 
 func switch_tab(tab: int):
+	var entering_monitors_tab = (tab == 3 and _current_tab != 3)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
@@ -155,6 +225,8 @@ func switch_tab(tab: int):
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
 	if tab == 3:
+		if entering_monitors_tab:
+			main.settings_controller.sync_staged_from_current_layout()
 		update_monitor_tab()
 
 	var ui_buttons = []
@@ -464,6 +536,12 @@ func build_ui():
 	_tab_stream.add_child(stream_row1)
 
 	main._ui_res_btn = make_option_btn("Resolution", "100%")
+	# Wider than the other option buttons and a smaller value-line font: this one's
+	# value now shows the exact resulting pixel dimensions alongside MAX/the
+	# percentage (e.g. "MAX (6144x3456)"), which doesn't fit the standard
+	# 250px/26pt budget the way "100%" or "H.264" do on the other option buttons.
+	main._ui_res_btn.custom_minimum_size = Vector2(310, 132)
+	main._ui_res_btn.add_theme_font_size_override("font_size", 22)
 	stream_row1.add_child(main._ui_res_btn)
 	main._ui_fps_btn = make_option_btn("FPS", "60")
 	stream_row1.add_child(main._ui_fps_btn)
@@ -550,17 +628,36 @@ func build_ui():
 	_tab_monitors.visible = false
 	vbox.add_child(_tab_monitors)
 
-	_mon_icon_row = HBoxContainer.new()
-	_mon_icon_row.name = "MonIconRow"
-	_mon_icon_row.add_theme_constant_override("separation", 8)
-	_mon_icon_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_mon_icon_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_mon_icon_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_mon_icon_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(_mon_icon_row)
+	var mon_row1 = HBoxContainer.new()
+	mon_row1.name = "MonRow1"
+	mon_row1.add_theme_constant_override("separation", 12)
+	mon_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	mon_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	mon_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_row1)
+
+	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
+	mon_row1.add_child(main._ui_monitors_btn)
+	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
+	mon_row1.add_child(main._ui_virtual_monitors_btn)
+
+	var mon_gap1 = Control.new()
+	mon_gap1.custom_minimum_size = Vector2(0, 10)
+	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap1)
+
+	_preset_row = HBoxContainer.new()
+	_preset_row.name = "PresetRow"
+	_preset_row.add_theme_constant_override("separation", 10)
+	_preset_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_preset_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_preset_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(_preset_row)
 
 	var mon_gap2 = Control.new()
-	mon_gap2.custom_minimum_size = Vector2(0, 20)
+	mon_gap2.custom_minimum_size = Vector2(0, 10)
 	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.add_child(mon_gap2)
 
@@ -573,12 +670,14 @@ func build_ui():
 	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.add_child(mon_actions_row1)
 
-	main._ui_mon_enabled_btn = make_option_btn("Enabled", "On")
-	mon_actions_row1.add_child(main._ui_mon_enabled_btn)
-	main._ui_mon_primary_btn = make_option_btn("Primary", "Yes")
-	mon_actions_row1.add_child(main._ui_mon_primary_btn)
-	main._ui_mon_remove_btn = make_option_btn("Remove", "Remove")
-	mon_actions_row1.add_child(main._ui_mon_remove_btn)
+	main._ui_apply_preset_btn = make_action_btn("Apply")
+	mon_actions_row1.add_child(main._ui_apply_preset_btn)
+	main._ui_save_preset_btn = make_action_btn("Save")
+	mon_actions_row1.add_child(main._ui_save_preset_btn)
+	main._ui_remove_preset_btn = make_action_btn("Remove")
+	mon_actions_row1.add_child(main._ui_remove_preset_btn)
+	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
+	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -649,9 +748,12 @@ func build_ui():
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
-	main._ui_mon_remove_btn.button_down.connect(func(): main.settings_controller.remove_monitor())
-	main._ui_mon_enabled_btn.button_down.connect(func(): main.settings_controller.toggle_edit_monitor_enabled())
-	main._ui_mon_primary_btn.button_down.connect(func(): main.settings_controller.set_edit_monitor_primary())
+	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
+	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
+	main._ui_apply_preset_btn.button_down.connect(func(): _on_apply_preset_pressed())
+	main._ui_save_preset_btn.button_down.connect(func(): _on_save_preset_pressed())
+	main._ui_remove_preset_btn.button_down.connect(func(): _on_remove_preset_pressed())
+	main._ui_grid_mode_btn.button_down.connect(func(): main.settings_controller.toggle_grid_mode())
 	main._ui_res_btn.button_down.connect(func(): main.settings_controller.cycle_resolution())
 	main._ui_fps_btn.button_down.connect(func(): main.settings_controller.cycle_fps())
 	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
@@ -695,6 +797,52 @@ func make_option_btn(label_text: String, value_text: String) -> Button:
 	pressed_style.bg_color = Color(1, 1, 1, 0.18)
 	btn.add_theme_stylebox_override("pressed", pressed_style)
 	btn.custom_minimum_size = Vector2(250, 132)
+	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return btn
+
+# Shorter variant of make_option_btn() for the Monitors tab, which packs 3
+# rows into the same vertical budget every other tab spends on 2 (132px each)
+# - smaller font/margins so a "Label\nValue" pair still fits legibly at ~64px.
+func make_compact_option_btn(label_text: String, value_text: String) -> Button:
+	var btn = Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.text = label_text + "\n" + value_text
+	btn.add_theme_font_size_override("font_size", 18)
+	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var style = main._btn_style.duplicate()
+	style.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("normal", style)
+	var hover = main._btn_hover.duplicate()
+	hover.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("hover", hover)
+	var pressed_style = hover.duplicate()
+	pressed_style.bg_color = Color(1, 1, 1, 0.18)
+	btn.add_theme_stylebox_override("pressed", pressed_style)
+	btn.custom_minimum_size = Vector2(150, 64)
+	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return btn
+
+# Single-line pure-action button (Apply/Save/Remove) - unlike make_option_btn's
+# buttons, these have no persistent value to show, so "Label\nLabel" would
+# just be redundant text.
+func make_action_btn(text: String) -> Button:
+	var btn = Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.text = text
+	btn.add_theme_font_size_override("font_size", 20)
+	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var style = main._btn_style.duplicate()
+	style.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("normal", style)
+	var hover = main._btn_hover.duplicate()
+	hover.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("hover", hover)
+	var pressed_style = hover.duplicate()
+	pressed_style.bg_color = Color(1, 1, 1, 0.18)
+	btn.add_theme_stylebox_override("pressed", pressed_style)
+	btn.custom_minimum_size = Vector2(110, 64)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	return btn
 

@@ -12,6 +12,14 @@ var corner_handles: Array = []
 var uv_region: Vector4 = Vector4(0.0, 0.0, 1.0, 1.0)
 var monitor: ScreenLayout.MonitorSpec = null
 
+# Client-side VR presentation grid state (see MonitorGrid/MonitorPresets).
+# grid_pos is (-1,-1) until this screen has ever been placed by the grid
+# system (preset apply or a grid-mode-on drag); grid_mode false means the
+# screen was last placed freely and the grid system leaves it alone until
+# it's grabbed again with grid mode on.
+var grid_mode: bool = true
+var grid_pos: Vector2i = Vector2i(-1, -1)
+
 func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 	monitor = m
 	uv_region = Vector4(
@@ -80,6 +88,12 @@ func _ready() -> void:
 		material_override = material_override.duplicate()
 		if material_override is ShaderMaterial:
 			material_override.set_shader_parameter("main_texture", VRScreen.placeholder_texture())
+	# ScreenGrabBar's material isn't resource_local_to_scene, so without this
+	# every screen instance shares one material resource - invisible while
+	# every bar is always driven to the same color, but breaks the moment
+	# primary/secondary bars need genuinely different base colors.
+	if grab_bar.material_override:
+		grab_bar.material_override = grab_bar.material_override.duplicate()
 
 func setup(p_main: Node3D, p_monitor_id: StringName = &"m0") -> void:
 	main = p_main
