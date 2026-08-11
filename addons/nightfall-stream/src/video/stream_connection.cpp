@@ -455,7 +455,6 @@ void StreamConnection::_render_compute_dispatch_rt() {
     // One-time per session AFTER first compute dispatch: wire display to rgba_output_tex_
     // (must be after dispatch so texture has valid video data, not uninitialized white)
     if (!display_wired_ && rgba_output_tex_.is_valid()) {
-        display_wired_ = true;
         RenderingServer *rs = RenderingServer::get_singleton();
         if (rs) {
             RID rs_tex = rs->texture_rd_create(rgba_output_tex_);
@@ -468,6 +467,15 @@ void StreamConnection::_render_compute_dispatch_rt() {
                 mat->set_shader_parameter("color_range", 1);
                 mat->set_shader_parameter("is_nv12_rd", false);
                 mat->set_shader_parameter("is_semi_planar", false);
+                // Only latch ready AFTER the bind above actually succeeded - setting
+                // this unconditionally (as before) meant a single failed
+                // texture_rd_create()/get_shader_material() on the first dispatch
+                // (e.g. from a driver rejecting this texture's format) permanently
+                // convinced is_display_ready() the stream was live, sending
+                // GDScript's bind_yuv_textures() into its dead-end SubViewport
+                // fallback for the rest of the session with no way to recover.
+                // Leaving it false here lets the next dispatch retry instead.
+                display_wired_ = true;
                 NF_LOG("VCONN", "RT: tex_y set AFTER compute dispatch");
             }
         }
@@ -509,7 +517,7 @@ void StreamConnection::_render_free_pipeline_rt() {
         }
     }
 
-    // Deliberately NOT freeing pending_free_pipeline_/_shader_/_sampler_/_tex_ here.
+    // Can't free pending_free_pipeline_/_shader_/_sampler_/_tex_ immediately here.
     // Vulkan validation (VK_LAYER_KHRONOS_validation) confirmed VUID-vkDestroyImage-image-01000
     // firing right at this call: the OpenXR compositor submits composition layers on its own
     // frame timeline, decoupled from Godot's regular swapchain frame accounting, so this being
@@ -519,15 +527,37 @@ void StreamConnection::_render_free_pipeline_rt() {
     // the compositor still had in-flight GPU commands referencing it, which is exactly the
     // random-delay SIGSEGV seen after repeated resolution/codec changes (confirmed via tombstones
     // - crashed deep in libgodot_android.so's Vulkan/compositor path, not in this addon's code).
-    // These are only recreated on a stream restart (a rare, deliberate user action), so orphaning
-    // one generation's worth of GPU memory per restart is a small, bounded cost against a real
-    // use-after-free crash. The AHB import cache above is NOT affected by this - it's freed via
-    // its own retirement path (_retire_removed_ahb_imports/_retire_all_ahb_imports), tied to
-    // MediaCodec's own buffer lifecycle notifications, not this generation-bump timing.
-    pending_free_pipeline_ = RID();
-    pending_free_shader_ = RID();
-    pending_free_sampler_ = RID();
-    pending_free_tex_ = RID();
+    //
+    // Orphaning them forever (the previous fix for that crash) is safe but leaks one full
+    // generation of GPU memory - pipeline+shader+sampler+a full-resolution RGBA texture - per
+    // restart, unbounded: repeated codec/resolution/fps/bitrate changes during a single session
+    // visibly degraded performance as this accumulated. Instead, defer freeing by a few retired
+    // generations - each restart takes well over a second end to end (_schedule_stream_restart()'s
+    // own 0.8s debounce, plus frame waits, plus a 0.5s reconnect timer, plus full decoder
+    // teardown/setup), so by the time PIPELINE_FREE_DELAY_GENERATIONS more restarts have happened,
+    // the compositor has had orders of magnitude more real time than the single tick that caused
+    // the original crash. The AHB import cache above is NOT affected by this - it's freed via its
+    // own retirement path (_retire_removed_ahb_imports/_retire_all_ahb_imports), tied to
+    // MediaCodec's own buffer lifecycle notifications, and already naturally bounded by
+    // MediaCodec's small, fixed output-buffer pool.
+    if (pending_free_pipeline_.is_valid() || pending_free_shader_.is_valid() ||
+        pending_free_sampler_.is_valid() || pending_free_tex_.is_valid()) {
+        pending_free_pipeline_generations_.push_back({
+            pending_free_pipeline_, pending_free_shader_, pending_free_sampler_, pending_free_tex_
+        });
+        pending_free_pipeline_ = RID();
+        pending_free_shader_ = RID();
+        pending_free_sampler_ = RID();
+        pending_free_tex_ = RID();
+    }
+    while ((int)pending_free_pipeline_generations_.size() > PIPELINE_FREE_DELAY_GENERATIONS) {
+        RetiredPipelineGeneration oldest = pending_free_pipeline_generations_.front();
+        pending_free_pipeline_generations_.pop_front();
+        if (oldest.pipeline.is_valid()) rd->free_rid(oldest.pipeline);
+        if (oldest.shader.is_valid()) rd->free_rid(oldest.shader);
+        if (oldest.sampler.is_valid()) rd->free_rid(oldest.sampler);
+        if (oldest.tex.is_valid()) rd->free_rid(oldest.tex);
+    }
 }
 #endif
 

@@ -73,7 +73,23 @@ func update_monitor_tab():
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
 	var selected_preset = MonitorPresets.find_preset(String(main._staged_preset_id)) if selected else {}
-	main._ui_remove_preset_btn.disabled = not selected or selected_preset.get("built_in", true)
+	# Multi-monitor capture/selection is Polaris-only (see
+	# SettingsController.detect_polaris_host()) - every other host (Sunshine,
+	# etc.) has no manifest to pick real monitors from, so none of this tab's
+	# controls do anything meaningful for it. Grey the whole tab out rather
+	# than let it look interactive and silently no-op (or restart the stream
+	# for a change that can never actually take effect). Revisit once/if
+	# non-Polaris multi-monitor selection is supported.
+	var polaris = main.is_polaris_host
+	main._ui_monitors_btn.disabled = not polaris
+	main._ui_virtual_monitors_btn.disabled = not polaris
+	main._ui_apply_preset_btn.disabled = not polaris
+	main._ui_save_preset_btn.disabled = not polaris
+	main._ui_grid_mode_btn.disabled = not polaris
+	main._ui_remove_preset_btn.disabled = not polaris or not selected or selected_preset.get("built_in", true)
+	for card in _preset_row.get_children():
+		if card is Button:
+			card.disabled = not polaris
 
 func _cycle_monitors_btn():
 	var real_total = maxi(main.settings_controller._real_monitor_count(), 1)

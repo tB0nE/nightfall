@@ -39,6 +39,8 @@ func save_host_state():
 	save.set_value(ip, "fps", main.stream_fps)
 	save.set_value(ip, "resolution_scale_pct", main.resolution_scale_pct)
 	save.set_value(ip, "native_resolution", [main.native_resolution.x, main.native_resolution.y])
+	save.set_value(ip, "is_polaris_host", main.is_polaris_host)
+	save.set_value(ip, "resolution_idx", main.resolution_idx)
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
 	save.set_value(ip, "ai_3d_mode", main.ai_3d_mode)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
@@ -72,6 +74,8 @@ func load_host_state(ip: String):
 		main.resolution_scale_pct = 100
 	var native_arr = save.get_value(ip, "native_resolution", [1920, 1080])
 	main.native_resolution = Vector2i(native_arr[0], native_arr[1])
+	main.is_polaris_host = save.get_value(ip, "is_polaris_host", false)
+	main.resolution_idx = clampi(save.get_value(ip, "resolution_idx", 1), 0, main.resolutions.size() - 1)
 	main.bitrate_idx = save.get_value(ip, "bitrate_idx", -1)
 	main.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
@@ -93,6 +97,7 @@ func load_host_state(ip: String):
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
+	main.ui_controller.update_monitor_tab()
 	var bitrate_label = main.bitrate_labels[main.bitrate_idx + 1] if main.bitrate_idx >= 0 else "Auto"
 	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label)
 	main.settings_controller.apply_stereo()

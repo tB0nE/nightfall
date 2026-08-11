@@ -162,6 +162,31 @@ const RESOLUTION_PRESETS: Array = [100, 90, 80, 70, 60, 50]
 # see that function for why (this doesn't know about the per-codec/per-native-
 # resolution caps below, so a preset here can silently be unreachable).
 var resolution_scale_options: Array = RESOLUTION_PRESETS
+# True once SettingsController.detect_polaris_host() confirms this host answers
+# the Polaris-only /polaris/v1/display/manifest probe. Polaris is host-driven -
+# it reports its real (possibly multi-monitor) desktop size, so the
+# percentage-of-native-resolution system above gives an accurate result. Every
+# other GameStream-compatible host (Sunshine, GFE, etc.) is client-driven -
+# there is no equivalent "ask the host its resolution" mechanism at all, the
+# client is expected to just request what it wants and the host adapts to
+# match - so native_resolution has nothing real to hold for them and the
+# percentage system's "MAX"/percent labels would just describe the wrong
+# thing (confirmed: reported "1080p" against a real 2560x1440 Sunshine
+# display, because native_resolution never left its 1920x1080 fallback).
+# Defaults false (the old fixed-list picker) so a host that hasn't been probed
+# yet - or a probe that's still in flight - never shows a percentage of a
+# guess as if it meant something.
+var is_polaris_host: bool = false
+# The pre-percentage fixed-resolution picker, used for any non-Polaris host
+# (see is_polaris_host above) - the user picks what they actually want
+# instead of the client trying to detect anything, matching how Sunshine
+# itself expects to be driven. Untouched by the H264/HEVC dimension/pixel
+# caps in compute_max_resolution_pct() below - every entry here is well
+# under all of those caps on its own (largest is 3840x2160), so there's
+# nothing to filter for the single-screen case this picker is used for.
+var resolution_idx: int = 1
+var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(3440, 1440)]
+var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9"]
 var double_h: bool = false
 var bitrate_idx: int = -1
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
@@ -453,8 +478,15 @@ func compute_resolution_options() -> Array:
 	return opts
 
 func compute_requested_resolution() -> Vector2i:
-	var w = int(native_resolution.x * resolution_scale_pct / 100.0)
-	var h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	var w: int
+	var h: int
+	if is_polaris_host:
+		w = int(native_resolution.x * resolution_scale_pct / 100.0)
+		h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	else:
+		var res: Vector2i = resolutions[resolution_idx]
+		w = res.x
+		h = res.y
 	# H.264 hardware decoders on this class of mobile SoC commonly cap out at 4096px
 	# per dimension (HEVC decoders on the same hardware typically go up to 8192) -
 	# requesting wider/taller than that doesn't error, it just silently never produces
@@ -826,7 +858,15 @@ func _on_stream_started():
 			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
 			return
 
-	if layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
+	# Polaris-only: this whole comparison is "does the manifest-reported real
+	# desktop size match what native_resolution assumed" - meaningless (and,
+	# confirmed live, actively harmful) for any host that never populates a
+	# real manifest, since layout.frame_size then never reflects this actual
+	# connection at all. Against a Sunshine host this fired repeatedly every
+	# single connect, restarting over and over chasing a comparison that could
+	# never converge - each restart also being a real cost (see
+	# stream_connection.cpp's deferred-free GPU resource queue).
+	if is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
 		native_resolution = layout.frame_size
 		settings_controller.refresh_resolution_btn_label()
 		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
@@ -1231,7 +1271,7 @@ func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, a
 				best = cand
 	return best
 
-func add_screen(monitor_id: StringName, real_x_hint: float = INF) -> VRScreen:
+func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
 	if screens.size() >= MAX_SCREENS:
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
@@ -1313,7 +1353,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF) -> VRScreen:
 	screen_manager.create_bezel_for(s)
 	s.apply_curvature()
 	if comp.available:
-		comp.setup_screen(s, false)
+		comp.setup_screen(s, with_stereo)
 		if is_streaming and stream_viewport:
 			var stream_size = stream_viewport.size
 			if stream_size.x > 0 and stream_size.y > 0:
@@ -1350,19 +1390,16 @@ func remove_screen(monitor_id: StringName) -> void:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
 					s.comp_cylinder.set_layer_viewport(null)
-					s.comp_cylinder.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder)
 					s.comp_cylinder.queue_free()
 				if s.comp_cylinder_left:
 					s.comp_cylinder_left.visible = false
 					s.comp_cylinder_left.set_layer_viewport(null)
-					s.comp_cylinder_left.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder_left)
 					s.comp_cylinder_left.queue_free()
 				if s.comp_cylinder_right:
 					s.comp_cylinder_right.visible = false
 					s.comp_cylinder_right.set_layer_viewport(null)
-					s.comp_cylinder_right.set_layer_enabled(false)
 					xr_origin.remove_child(s.comp_cylinder_right)
 					s.comp_cylinder_right.queue_free()
 				if s.comp_viewport:
@@ -1374,7 +1411,21 @@ func remove_screen(monitor_id: StringName) -> void:
 				if s.comp_viewport_right:
 					remove_child(s.comp_viewport_right)
 					s.comp_viewport_right.queue_free()
-			s.queue_free()
+			# screen_mesh is main.gd's own permanent $MeshInstance3D (see
+			# _init_ui()'s screens = [screen_mesh]/primary_screen = screen_mesh) -
+			# reused for the welcome screen and referenced directly all over this
+			# codebase (dozens of call sites), not a disposable VR_SCREEN_SCENE
+			# instance like every screen add_screen() creates. It's already been
+			# demoted out of the screens[] array and had its comp-layer resources
+			# torn down above by this point (the normal "replace the welcome
+			# placeholder with the real primary" flow on first connect always
+			# reaches here for it, once it's no longer primary_screen) - freeing
+			# the node itself as well would free a node the rest of the app still
+			# holds direct references to, producing "previously freed" errors on
+			# every subsequent access (confirmed live: repeating every frame via
+			# whatever still reads screen_mesh.* after this).
+			if s != screen_mesh:
+				s.queue_free()
 			_log("[SCREEN] Removed screen %s (total=%d)" % [String(monitor_id), screens.size()])
 			if comp.available and is_streaming:
 				comp.invalidate_yuv_cache()
@@ -1525,6 +1576,8 @@ func _init_textures_and_ui():
 					if h.has("localaddress") and h.localaddress == saved_ip:
 						current_host_id = h.id
 						break
+				if current_host_id >= 0:
+					settings_controller.detect_polaris_host(saved_ip, current_host_id)
 				ui_controller.update_host_label()
 				welcome_screen.update_welcome_info()
 

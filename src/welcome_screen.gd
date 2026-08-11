@@ -639,6 +639,7 @@ func browse_mdns():
 						found_host = true
 						break
 				if found_host:
+					main.settings_controller.detect_polaris_host(ip, main.current_host_id)
 					show_welcome_screen("welcome")
 				else:
 					start_pair(ip)
@@ -675,6 +676,7 @@ func populate_server_list():
 			save_last_ip(ip)
 			main.state_manager.load_host_state(ip)
 			main.current_host_id = h.id
+			main.settings_controller.detect_polaris_host(ip, main.current_host_id)
 			show_welcome_screen("welcome")
 		)
 

@@ -12,6 +12,7 @@
 #include <vector>
 #include <chrono>
 #include <memory>
+#include <deque>
 
 extern "C" {
 #include <Limelight.h>
@@ -197,6 +198,24 @@ private:
     RID pending_free_shader_;
     RID pending_free_sampler_;
     RID pending_free_tex_;
+    // See _render_free_pipeline_rt(): the compute pipeline/shader/sampler/
+    // output-texture retired by a stream restart can't be freed immediately
+    // (confirmed UAF - the OpenXR compositor reads them on its own frame
+    // timeline) but also shouldn't be orphaned forever (unbounded leak, one
+    // full-resolution RGBA texture + pipeline per restart, visibly degrading
+    // performance over a session with repeated codec/resolution/fps/bitrate
+    // changes). Keep the last PIPELINE_FREE_DELAY_GENERATIONS retired
+    // generations pending and only free the oldest once a newer one arrives -
+    // each restart takes well over a second end to end, so this gives the
+    // compositor multiple restart-cycles' worth of real slack.
+    struct RetiredPipelineGeneration {
+        RID pipeline;
+        RID shader;
+        RID sampler;
+        RID tex;
+    };
+    std::deque<RetiredPipelineGeneration> pending_free_pipeline_generations_;
+    static const int PIPELINE_FREE_DELAY_GENERATIONS = 2;
 
     std::atomic<uint64_t> render_generation_{1};
     std::mutex render_state_mutex_;

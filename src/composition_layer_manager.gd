@@ -11,6 +11,21 @@ func invalidate_yuv_cache():
 	_last_bind_rids = []
 	_last_bind_mode = [0, 1, 0]
 
+# set_shader_parameter("tex_y", ...) is fed either a Texture wrapper (the
+# direct multi-plane YUV/AHB import path) or a raw RID (StreamConnection's
+# compute-dispatch path sets it via texture_rd_create(), which returns an RID
+# directly, not a Texture) - calling .get_rid() unconditionally only crashes
+# once this branch is actually reachable (is_display_ready() correctly
+# gating it, see the comment above bind_yuv_textures()'s real/fallback
+# split) - a raw RID has no get_rid() method, only Texture-derived objects
+# do. Handle both shapes instead of assuming one.
+func _as_rid(v) -> RID:
+	if v is RID:
+		return v
+	if v and v.has_method("get_rid"):
+		return v.get_rid()
+	return RID()
+
 func _init(p_main):
 	main = p_main
 	available = ClassDB.class_exists("OpenXRCompositionLayerCylinder")
@@ -579,7 +594,7 @@ func bind_yuv_textures():
 			yuv_mode_val = 2
 		else:
 			yuv_mode_val = 3
-		var rids = [tex_y.get_rid(), (tex_u.get_rid() if tex_u else RID()), (tex_v.get_rid() if tex_v else RID())]
+		var rids = [_as_rid(tex_y), _as_rid(tex_u), _as_rid(tex_v)]
 		var mode_tuple = [yuv_mode_val, cmt, cr]
 		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
 		if not in_use:
@@ -666,9 +681,17 @@ func switch_to_stereo_comp_layer():
 		in_use = false
 		main._log("[COMP] Not available, cannot use stereo comp layer")
 		return
+	var s = main.primary_screen
+	# Screens are normally only given stereo (left/right) comp layers when
+	# they're created as primary (see add_screen()'s with_stereo param) -
+	# guard against a screen that somehow became primary without them rather
+	# than half-hiding the working mono layer and crashing on a null
+	# dereference below.
+	if not (s.comp_cylinder_left and s.comp_cylinder_right and s.comp_shader_mat_left and s.comp_shader_mat_right):
+		main._log("[COMP] Primary screen has no stereo comp layers - staying on mono composition layer")
+		return
 	in_use = true
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	var s = main.primary_screen
 	if s.comp_cylinder: s.comp_cylinder.visible = false
 	s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	var stereo = main.settings_controller.get_stereo_mode()
@@ -721,13 +744,20 @@ func switch_to_mesh_rendering():
 	update_bezel()
 	if main.is_streaming:
 		main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		var mode = main.settings_controller.get_stereo_mode()
 		for scr in main.screens:
 			var mat = scr.material_override
 			if mat:
 				mat.set_shader_parameter("main_texture", main.stream_viewport.get_texture())
 				mat.set_shader_parameter("yuv_mode", 0)
-				var mode = main.settings_controller.get_stereo_mode()
-				mat.set_shader_parameter("stereo_mode", mode)
+				# Stereo/AI-3D applies to primary only (matches apply_stereo()
+				# and switch_to_stereo_comp_layer() elsewhere in this file) - a
+				# secondary already samples just its own cropped uv_region of
+				# the composite frame, and the shader halves UV for stereo
+				# BEFORE that crop is applied (yuv_display.gdshader), so
+				# setting this on a secondary would show a quartered slice of
+				# the wrong content instead of that screen's own picture.
+				mat.set_shader_parameter("stereo_mode", mode if scr == main.primary_screen else 0)
 				mat.set_shader_parameter("filter_mode", main.smooth_mode)
 				mat.set_shader_parameter("sharpen", float(main.sharpen_mode) * 0.016)
 		bind_yuv_textures()

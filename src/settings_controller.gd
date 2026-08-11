@@ -273,14 +273,17 @@ func cycle_fps():
 	_schedule_stream_restart()
 
 func cycle_resolution():
-	var opts = main.compute_resolution_options()
-	# opts[0] is always the current max (see compute_resolution_options()) - find by
-	# value for everything else, but treat "currently at-or-past the max" as being
-	# at slot 0 rather than falling through to opts.find()'s -1-not-found case,
-	# which used to skip straight past MAX to the second entry on the very next
-	# click after a codec/monitor change made the old selection unreachable.
-	var idx = 0 if main.resolution_scale_pct >= opts[0] else opts.find(main.resolution_scale_pct)
-	main.resolution_scale_pct = opts[(maxi(idx, 0) + 1) % opts.size()]
+	if main.is_polaris_host:
+		var opts = main.compute_resolution_options()
+		# opts[0] is always the current max (see compute_resolution_options()) - find by
+		# value for everything else, but treat "currently at-or-past the max" as being
+		# at slot 0 rather than falling through to opts.find()'s -1-not-found case,
+		# which used to skip straight past MAX to the second entry on the very next
+		# click after a codec/monitor change made the old selection unreachable.
+		var idx = 0 if main.resolution_scale_pct >= opts[0] else opts.find(main.resolution_scale_pct)
+		main.resolution_scale_pct = opts[(maxi(idx, 0) + 1) % opts.size()]
+	else:
+		main.resolution_idx = (main.resolution_idx + 1) % main.resolutions.size()
 	main.host_resolution = main.compute_requested_resolution()
 	_save_setting(main._ui_res_btn, _resolution_btn_label())
 	_schedule_stream_restart()
@@ -297,6 +300,8 @@ func refresh_resolution_btn_label():
 		main.ui_controller.update_option_btn(main._ui_res_btn, _resolution_btn_label())
 
 func _resolution_btn_label() -> String:
+	if not main.is_polaris_host:
+		return main.resolution_labels[main.resolution_idx]
 	var opts = main.compute_resolution_options()
 	# Show the actual resulting pixel dimensions, not just an abstract
 	# percentage - a bare "%" doesn't tell you what you're really getting once
@@ -307,6 +312,32 @@ func _resolution_btn_label() -> String:
 	if main.resolution_scale_pct >= opts[0]:
 		return "MAX (%s)" % dims
 	return "%d%% (%s)" % [main.resolution_scale_pct, dims]
+
+# Best-effort, cached, one-time-per-host-selection probe for whether this host
+# is a Polaris server (which reports its real, possibly multi-monitor desktop
+# size via a display-manifest extension no other GameStream-compatible host
+# implements) vs everything else, e.g. Sunshine, which is client-driven - the
+# client picks a resolution and the host adapts to match it, so there's
+# nothing for it to report and main.is_polaris_host correctly defaults to
+# false (the old fixed-list picker) for it. Deliberately decoupled from the
+# connect/launch flow itself: the original pre-launch probe (removed in
+# 6a5c17d) shared an HTTP/session lock with establish_stream() and was a
+# plausible contributor to a real connection hang. This fires once when a
+# host is selected in the welcome-screen UI, well before any stream launch,
+# and never blocks or gates anything - is_polaris_host just keeps whatever
+# value it already had (loaded from host_state.cfg, or the false default for
+# a never-seen host) until this resolves.
+func detect_polaris_host(ip: String, host_id: int):
+	if ip.is_empty() or host_id < 0:
+		return
+	main.stream_backend.fetch_display_manifest(host_id, func(manifest: Dictionary):
+		var was_polaris = main.is_polaris_host
+		main.is_polaris_host = manifest is Dictionary and not manifest.is_empty()
+		if main.is_polaris_host != was_polaris:
+			refresh_resolution_btn_label()
+			main.ui_controller.update_monitor_tab()
+			main.state_manager.save_host_state()
+	)
 
 func cycle_bitrate():
 	main.bitrate_idx += 1
@@ -387,7 +418,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 			if s.monitor_id == m.id:
 				existing = s
 				break
-		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x)
+		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x, m.is_primary)
 		if s == null:
 			continue
 		s.apply_monitor(m, new_layout.frame_size)
@@ -408,6 +439,18 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# grab bars" was this, not a positioning bug in add_screen() itself.
 	if new_primary and new_primary != main.primary_screen:
 		main.set_primary_screen(new_primary)
+		# Stereo/AI-3D (switch_to_stereo_comp_layer()) only ever activates
+		# whatever was primary AT THE TIME it was called - it sets up that
+		# screen's own comp_cylinder_left/right visibility, viewport update
+		# mode, and stereo_mode shader param, none of which set_primary_screen()
+		# above carries over to the new primary. On the very first real
+		# connect (this branch always runs then: the welcome screen's
+		# placeholder VRScreen is primary with a monitor_id that can't match
+		# any real manifest id), that left the real primary silently stuck in
+		# flat/non-stereo comp-layer mode even with SBS/AI-3D still toggled
+		# on - looked correct on the welcome screen (where it WAS applied)
+		# and broken the moment the stream's real manifest swapped primary in.
+		apply_stereo()
 	for s in main.screens.duplicate():
 		if not wanted_ids.has(s.monitor_id):
 			main.remove_screen(s.monitor_id)
@@ -675,6 +718,26 @@ func apply_staged_monitor_config():
 				continue
 			m.enabled = new_real_ids.has(m.id)
 			m.is_primary = (m.id == new_primary_id)
+		# Narrowing to exactly one real monitor makes the resulting capture
+		# size exactly knowable right now, client-side: that monitor's own
+		# frame_rect (already reported in the last manifest) doesn't change
+		# size when captured alone - only its position within the composite
+		# does (ScreenLayout always repositions a lone monitor to the
+		# origin). Update native_resolution before scheduling the restart so
+		# the very first launch of the new session already requests the
+		# right size, instead of restarting at the OLD (still-cached)
+		# composite size and relying on _process()'s "doesn't match cached
+		# size" mismatch-retry to correct it via a SECOND restart -
+		# confirmed via logcat to cost a real ~10s stall decoding an
+		# oversized stream before self-correcting. General N>1 targets are
+		# deliberately left to that same mismatch-retry (see its comment in
+		# main.gd) - an arbitrary multi-monitor composite's exact frame_size
+		# depends on host-side gap-filling this client can't predict.
+		if new_real_ids.size() == 1:
+			for m in main.layout.monitors:
+				if m.id == new_real_ids[0]:
+					main.native_resolution = m.frame_rect.size
+					break
 		main._pending_monitor_apply = true
 		_schedule_stream_restart()
 	else:
