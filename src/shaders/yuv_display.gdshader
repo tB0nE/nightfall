@@ -13,6 +13,18 @@ uniform float blur_scale = 1.0;
 uniform int stereo_mode = 0;
 uniform int eye_index = 0;
 uniform sampler2D depth_texture : hint_default_white, filter_linear, repeat_disable;
+// stereo_mode 5's pre-computed textures (depth_estimator.gd owns the passes
+// that produce these, once per frame, shared by both eyes - see
+// depth_upsample.gdshader / depth_offset.gdshader for how).
+uniform sampler2D upsampled_depth_texture : hint_default_white, filter_linear;
+uniform sampler2D offset_texture : hint_default_white, filter_linear;
+// Must match depth_estimator.gd's _pass_parallax exactly - it's baked into
+// offset_texture's encoding via depth_offset.gdshader's own reach
+// computation from the same value, and decoding here needs the identical
+// reach or the disparity comes out scaled wrong. Set from GDScript
+// (depth_estimator.gd's _setup_warp_passes()/set_parallax()) rather than
+// left at this default, precisely so the two can't drift apart.
+uniform float mode5_parallax = 0.006;
 uniform float convergence = 0.5;
 uniform float balance_shift = 0.5;
 
@@ -86,6 +98,27 @@ vec2 clamp_to_region(vec2 f) {
 	return clamp(f, uv_region.xy + guard, uv_region.xy + uv_region.zw - guard);
 }
 
+// Classic 5-stop jet-style heatmap (blue -> cyan -> green -> yellow -> red)
+// for visualizing a scalar depth value - far more legible than grayscale for
+// spotting subtle variation, which is the whole point of stereo_mode 7.
+vec3 heatmap(float t) {
+	t = clamp(t, 0.0, 1.0);
+	vec3 c1 = vec3(0.0, 0.0, 1.0);
+	vec3 c2 = vec3(0.0, 1.0, 1.0);
+	vec3 c3 = vec3(0.0, 1.0, 0.0);
+	vec3 c4 = vec3(1.0, 1.0, 0.0);
+	vec3 c5 = vec3(1.0, 0.0, 0.0);
+	if (t < 0.25) {
+		return mix(c1, c2, t / 0.25);
+	} else if (t < 0.5) {
+		return mix(c2, c3, (t - 0.25) / 0.25);
+	} else if (t < 0.75) {
+		return mix(c3, c4, (t - 0.5) / 0.25);
+	} else {
+		return mix(c4, c5, (t - 0.75) / 0.25);
+	}
+}
+
 vec3 sample_stream(vec2 uv) {
 	uv = clamp_to_region(uv);
 	if (yuv_mode > 0) {
@@ -144,7 +177,7 @@ void fragment() {
 
 	vec2 uv = to_frame_uv(tile_uv);
 
-	if (stereo_mode >= 3) {
+	if (stereo_mode == 3 || stereo_mode == 4) {
 		vec2 depth_texel = 1.0 / vec2(textureSize(depth_texture, 0));
 		float parallax = 0.042;
 		float half_parallax = parallax * 0.5;
@@ -184,8 +217,58 @@ void fragment() {
 
 		uv = vec2(clamp(uv.x - shift * eye_sign, 0.0, 1.0), uv.y);
 	}
+	else if (stereo_mode == 5 || stereo_mode == 6) {
+		// MiDaS-GPU path's gather: cheap by design, since depth_estimator.gd
+		// already ran the expensive edge-aware upsample + occlusion search
+		// ONCE per frame (not per eye) into upsampled_depth_texture /
+		// offset_texture - see depth_upsample.gdshader / depth_offset.gdshader.
+		// This just decodes the offset-search's result and does two Newton
+		// steps for sub-texel accuracy, mirroring xr_renderer.c's
+		// FRAGMENT_SRC occlusion branch. Both textures are addressed in
+		// tile_uv space (matching how depth_estimator.gd rendered them),
+		// not uv (which already has uv_region's tiling/cropping applied).
+		float low_res_width = float(textureSize(upsampled_depth_texture, 0).x);
+		float parallax = mode5_parallax;
+		float disp_texels = parallax * low_res_width;
+		int reach = int(ceil(abs(disp_texels) * max(convergence, 1.0 - convergence))) + 2;
 
-	if (filter_mode > 0 || sharpen > 0.0) {
+		vec2 enc = texture(offset_texture, tile_uv).rg;
+		bool is_left = (eye_index == 1);
+		float eye_off = (is_left ? enc.r : enc.g) - 0.5;
+		float tc_x = tile_uv.x + eye_off * 2.0 * float(reach) / low_res_width;
+
+		float disparity = is_left ? parallax : -parallax;
+		float h = 1.0 / low_res_width;
+		for (int i = 0; i < 2; i++) {
+			float d0 = texture(upsampled_depth_texture, vec2(tc_x, tile_uv.y)).r;
+			float dm = texture(upsampled_depth_texture, vec2(tc_x - h, tile_uv.y)).r;
+			float dp = texture(upsampled_depth_texture, vec2(tc_x + h, tile_uv.y)).r;
+			float e = (tc_x - tile_uv.x) - disparity * (d0 - convergence);
+			float slope = 1.0 - disparity * (dp - dm) / (2.0 * h);
+			if (abs(slope) < 0.25) {
+				slope = 0.25;
+			}
+			tc_x -= clamp(e / slope, -4.0 * h, 4.0 * h);
+		}
+
+		uv = to_frame_uv(vec2(clamp(tc_x, 0.0, 1.0), tile_uv.y));
+	}
+
+	// MiDaS-DMap: shows upsampled_depth_texture - the actual post-upsample
+	// data stereo_mode 5/6's real warp consumes (depth_estimator.gd's
+	// depth_upsample.gdshader pass), not the raw pre-upsample depth_texture -
+	// as a heatmap instead of the video, mono (no warp/disparity). This is
+	// what the warp is actually working with, so it's the right thing to
+	// stare at when asking "is the depth data itself the problem". Same
+	// tile_uv addressing as the mode 5/6 branch above uses for the same
+	// texture. Separate if/else from the stereo_mode chain above (not
+	// chained onto it with else-if) because that chain only adjusts uv -
+	// modes 1-6 still need to fall through to the normal color-sampling
+	// block below, which this must skip instead.
+	if (stereo_mode == 7) {
+		float d = texture(upsampled_depth_texture, tile_uv).r;
+		COLOR = vec4(heatmap(d), 1.0);
+	} else if (filter_mode > 0 || sharpen > 0.0) {
 		vec3 col = filtered_stream(uv);
 		COLOR = vec4(col, 1.0);
 	} else if (yuv_mode > 0) {

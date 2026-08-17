@@ -6,6 +6,14 @@ class MonitorSpec:
 	var id: StringName = &""
 	var label: String = ""
 	var enabled: bool = true
+	# True when the host output has an active CRTC and could be captured at all (mirrors the
+	# host's monitor_manifest_entry_t::capturable). Distinct from `enabled`, which also folds in
+	# whether this session's outputs= currently selects it. A connected-but-disabled host output
+	# is capturable=false regardless of selection state - callers picking N monitors to request
+	# (settings_controller.gd's _real_monitor_count()/_build_staged_layout()) must filter on this,
+	# not just enabled/hint.virtual, or they can pick a monitor the host will always refuse.
+	# Defaults true for older hosts that don't send this field yet.
+	var capturable: bool = true
 	var is_primary: bool = false
 	var frame_rect: Rect2i = Rect2i()
 	var desktop_rect: Rect2i = Rect2i()
@@ -16,6 +24,7 @@ class MonitorSpec:
 			"id": String(id),
 			"label": label,
 			"enabled": enabled,
+			"capturable": capturable,
 			"is_primary": is_primary,
 			"frame_rect": [frame_rect.position.x, frame_rect.position.y, frame_rect.size.x, frame_rect.size.y],
 			"desktop_rect": [desktop_rect.position.x, desktop_rect.position.y, desktop_rect.size.x, desktop_rect.size.y],
@@ -27,6 +36,7 @@ class MonitorSpec:
 		m.id = StringName(d.get("id", ""))
 		m.label = d.get("label", "")
 		m.enabled = d.get("enabled", true)
+		m.capturable = d.get("capturable", true)
 		m.is_primary = d.get("is_primary", false)
 		var fr: Array = d.get("frame_rect", [0, 0, 0, 0])
 		m.frame_rect = Rect2i(fr[0], fr[1], fr[2], fr[3])

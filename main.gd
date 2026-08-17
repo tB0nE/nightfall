@@ -633,6 +633,18 @@ func _update_cursor_layer():
 			comp_cursor.visible = false
 			_hide_all_stream_cursors()
 		elif use_in_stream and on_screen:
+			# Only hovered_screen gets shown below - explicitly hide every other
+			# screen's cursor the instant the hover target changes, rather than
+			# leaving whichever screen was PREVIOUSLY hovered showing its last
+			# cursor position until something else happens to call
+			# _hide_all_stream_cursors() (e.g. the ray briefly leaving every
+			# screen entirely) - that gap is what let two cursors show at once
+			# when moving straight from one screen to another.
+			for s in screens:
+				if s != hovered_screen:
+					_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
+					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
+					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 			var uv = hovered_screen.hit_point_to_uv(hit_point)
 			var bezel_px = 8 if bezel_enabled else 0
 			var base_w = hovered_screen.comp_base_size.x
@@ -648,7 +660,18 @@ func _update_cursor_layer():
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
-				if stereo >= 3:
+				if stereo == 5 or stereo == 6:
+					# This hand-tuned pop was calibrated against the old, much
+					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
+					# the same ratio for modes 5/6's real, calibrated parallax
+					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
+					# than reused verbatim, or the cursor pops far more than
+					# anything actually in the depth-warped video. Both modes
+					# share the exact same warp pipeline/parallax magnitude -
+					# only the depth model backing them differs (GPU delegate
+					# vs NNAPI, see DepthEstimator.java).
+					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
+				elif stereo >= 3:
 					left_cx += 0.015 * base_w
 				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
 				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
@@ -1076,13 +1099,23 @@ func _init_modules():
 
 func _init_android_setup():
 	if OS.get_name() == "Android":
+		# Must run BEFORE _init_backgrounds_and_comp_layer() creates
+		# comp_viewport_left/right - depth_estimator's upsample/offset
+		# SubViewports (stereo_mode 5) produce the warp data those actually-
+		# displayed per-eye viewports consume every frame (via
+		# yuv_display.gdshader), and Godot updates SubViewports in scene-tree
+		# order, so the producer must be added to the tree first. (The
+		# upsample pass used to also depend on comp_viewport - the OPPOSITE
+		# direction - which was the real source of a stutter/double-image
+		# bug; that dependency was removed by having it decode YUV directly
+		# instead, see depth_upsample.gdshader.)
 		depth_estimator.setup()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 1)
+	ai_3d_mode = clampi(ai_3d_mode, 0, 4)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -1529,10 +1562,33 @@ func _init_xr(interface):
 		get_viewport().msaa_3d = Viewport.MSAA_2X
 	_xr_base_render_scale = get_viewport().scaling_3d_scale
 	is_xr_active = true
+	# Godot's own comp-layer/texture bindings (connect_welcome_texture() et al)
+	# only ever run once, here at boot, regardless of whether the OpenXR
+	# session is actually visible yet - is_initialized() (checked before this
+	# function is even called) only means a session exists, not that the
+	# headset is being worn: the proximity sensor is a separate state Quest
+	# tracks independently of session creation. Launching headlessly (e.g. via
+	# adb) and only putting the headset on afterward left the welcome screen
+	# showing its plain grey placeholder texture, because nothing ever
+	# re-touched the binding once the session actually became visible.
+	# user_presence_changed is the proximity-sensor signal itself - re-run the
+	# one-time welcome-texture binding whenever the headset is (re-)donned,
+	# which is cheap and idempotent, so it's safe even on a session that was
+	# already correctly bound.
+	if interface.has_signal("user_presence_changed"):
+		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
 	ai_3d_mode = 0
 
 	settings_controller.apply_display_refresh_rate()
+
+func _on_user_presence_changed(is_present: bool):
+	# Only the welcome screen depends on this - once actually streaming, the
+	# real video texture bindings are already refreshed by their own paths
+	# (_on_stream_started() et al) and re-running connect_welcome_texture()
+	# here would incorrectly stomp them back to the welcome viewport.
+	if is_present and comp and comp.available and not is_streaming:
+		comp.connect_welcome_texture()
 
 func _init_backgrounds_and_comp_layer():
 	_create_backgrounds()
@@ -1628,9 +1684,6 @@ func _process(delta):
 
 	if Engine.get_frames_drawn() % 120 == 0:
 		_flush_log()
-
-	if comp:
-		comp.process_loading_dots(delta)
 
 	_process_button_input()
 

@@ -6,7 +6,7 @@ var _restart_pending: bool = false
 var _restart_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
-var ai_3d_labels: Array = ["2D", "MiDaS"]
+var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-GPU", "MiDaS-NNAPI", "MiDaS-DMap"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -20,6 +20,12 @@ func get_stereo_mode() -> int:
 		return 0
 	elif main.ai_3d_mode == 1:
 		return 3
+	elif main.ai_3d_mode == 2:
+		return 5
+	elif main.ai_3d_mode == 3:
+		return 6
+	elif main.ai_3d_mode == 4:
+		return 7
 	else:
 		return 4
 
@@ -41,7 +47,7 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 2
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 5
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
 	apply_stereo()
 
@@ -60,13 +66,25 @@ func apply_stereo():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
 	if main.depth_estimator:
-		main.depth_estimator.set_enabled(mode >= 3)
+		# mode 7 (MiDaS-DMap) now visualizes upsampled_depth_texture (the real
+		# post-upsample data the actual warp uses), not the raw pre-upsample
+		# depth_texture, so it needs the warp passes running too.
+		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7)
 		if mode >= 3 and main.depth_estimator.depth_texture:
+			var de = main.depth_estimator
+			var upsampled_tex = de.upsample_viewport.get_texture() if de.upsample_viewport else null
+			var offset_tex = de.offset_viewport.get_texture() if de.offset_viewport else null
 			if main.comp_shader_mat_left:
-				main.comp_shader_mat_left.set_shader_parameter("depth_texture", main.depth_estimator.depth_texture)
+				main.comp_shader_mat_left.set_shader_parameter("depth_texture", de.depth_texture)
+				main.comp_shader_mat_left.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
+				main.comp_shader_mat_left.set_shader_parameter("offset_texture", offset_tex)
 			if main.comp_shader_mat_right:
-				main.comp_shader_mat_right.set_shader_parameter("depth_texture", main.depth_estimator.depth_texture)
-	main.stream_backend.set_depth_model(1 if mode == 4 else 0)
+				main.comp_shader_mat_right.set_shader_parameter("depth_texture", de.depth_texture)
+				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
+				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
+	# mode 7 (MiDaS-DMap) reuses the MiDaS-NNAPI model/inference (index 3) - it's
+	# a pure visualization of that same depth data, not a separate source.
+	main.stream_backend.set_depth_model(1 if mode == 4 else (2 if mode == 5 else (3 if mode == 6 or mode == 7 else 0)))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
@@ -476,7 +494,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 func _real_monitor_count() -> int:
 	var count = 0
 	for m in main.layout.monitors:
-		if not m.hint.get("virtual", false):
+		if not m.hint.get("virtual", false) and m.capturable:
 			count += 1
 	return count
 
@@ -531,7 +549,11 @@ func select_monitor_preset(id: StringName):
 func _build_staged_layout() -> ScreenLayout:
 	var real_monitors: Array = []
 	for m in main.layout.monitors:
-		if not m.hint.get("virtual", false):
+		# Excludes capturable=false (connected-but-disabled host outputs) too, not just
+		# virtual placeholders - otherwise the N-leftmost-by-x pick below can select a
+		# monitor the host will always refuse, silently wasting a slot (the host drops it
+		# from capture but this client still thinks it asked for N real monitors).
+		if not m.hint.get("virtual", false) and m.capturable:
 			real_monitors.append(m)
 	main._log("[LAYOUT] _build_staged_layout: main.layout.monitors=%d real=%d staged_physical=%d staged_virtual=%d source=%s" % [main.layout.monitors.size(), real_monitors.size(), main._staged_physical_count, main._staged_virtual_count, str(main.layout.source)])
 	if real_monitors.is_empty():
@@ -654,6 +676,20 @@ func _apply_preset_positions_to_screens():
 				var fr: Array = data.get("free_rot", [s.rotation.x, s.rotation.y, s.rotation.z])
 				s.position = Vector3(fp[0], fp[1], fp[2])
 				s.rotation = Vector3(fr[0], fr[1], fr[2])
+	# Primary itself is deliberately never repositioned above (it's the free-
+	# mode anchor everything else is placed relative to) - but Godot's
+	# CollisionObject3D only pushes a node's transform to PhysicsServer3D on
+	# NOTIFICATION_TRANSFORM_CHANGED, which a node that never actually moves
+	# never receives. Confirmed live: right after adding a second monitor,
+	# primary's own pointer/raycast interaction went laggy/unusable (its
+	# Area3D's physics-side transform was stale relative to whatever the new
+	# secondary's Area3D just did to the broadphase) until manually grabbing
+	# and moving primary even slightly, which fixed it - because a real grab
+	# always writes global_position, firing the notification this never
+	# otherwise gets. Reassigning to its own current transform is a no-op
+	# geometrically but still fires that notification, without needing an
+	# actual (visible) move.
+	primary.global_transform = primary.global_transform
 	if main.comp.available:
 		main.comp.update_cylinder_params()
 
