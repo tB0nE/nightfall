@@ -22,6 +22,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_godot_game_GodotApp_initializeMoonlig
     }
 }
 
+// Exposes the JavaVM* obtained above to other translation units (depth_bridge.cpp)
+// that need a real JNIEnv but aren't part of FFmpeg's own JNI setup.
+JavaVM *nightfall_get_jvm() {
+    return g_jvm;
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_godot_game_GodotApp_setAndroidContext(JNIEnv *env, jclass clazz, jobject context) {
     if (context) {
         jobject global_ref = env->NewGlobalRef(context);

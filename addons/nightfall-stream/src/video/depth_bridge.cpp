@@ -2,20 +2,38 @@
 #include "nf_log.h"
 
 #ifdef __ANDROID__
-#include <dlfcn.h>
 #include <jni.h>
+#include <android/log.h>
+
+// dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs") (the old approach here) fails
+// on this device/NDK combo - modern Android's linker namespace isolation
+// keeps libnativehelper/libart symbols out of a GDExtension .so's default
+// symbol view, so every submit_depth_frame/get_depth_map/set_depth_model
+// call was silently getting a null JNIEnv and no-op'ing, for the whole
+// depth pipeline's lifetime. ffmpeg_decoder.cpp already solved this properly
+// for MediaCodec access: GodotApp.java's static initializer calls
+// initializeMoonlightJNI() before Godot even starts, which stashes a real
+// JavaVM* via env->GetJavaVM() - reuse that instead of re-deriving one.
+extern JavaVM *nightfall_get_jvm();
 
 static JNIEnv *get_jni_env() {
-    typedef jint (*JNI_GetCreatedJavaVMs_t)(JavaVM **, jsize, jsize *);
-    JNI_GetCreatedJavaVMs_t jni_get_created = (JNI_GetCreatedJavaVMs_t)dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs");
-    if (!jni_get_created) return nullptr;
-    JavaVM *vm = nullptr;
-    jsize vm_count = 0;
-    jint result = jni_get_created(&vm, 1, &vm_count);
-    if (result != JNI_OK || vm_count == 0) return nullptr;
-    JNIEnv *env;
-    result = vm->AttachCurrentThread(&env, NULL);
-    if (result != JNI_OK) return nullptr;
+    JavaVM *vm = nightfall_get_jvm();
+    if (!vm) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "get_jni_env: no JavaVM (initializeMoonlightJNI not called yet?)");
+        return nullptr;
+    }
+    JNIEnv *env = nullptr;
+    jint res = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (res == JNI_EDETACHED) {
+        res = vm->AttachCurrentThread(&env, nullptr);
+        if (res != JNI_OK) {
+            __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "get_jni_env: AttachCurrentThread failed result=%d", res);
+            return nullptr;
+        }
+    } else if (res != JNI_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "get_jni_env: GetEnv failed result=%d", res);
+        return nullptr;
+    }
     return env;
 }
 #endif
@@ -86,13 +104,22 @@ PackedByteArray DepthBridge::get_depth_map() {
 void DepthBridge::set_depth_model(int model_index) {
 #ifdef __ANDROID__
     JNIEnv *env = get_jni_env();
-    if (!env) return;
+    if (!env) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: no JNIEnv");
+        return;
+    }
 
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
-    if (!app_class) return;
+    if (!app_class) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: FindClass failed");
+        env->ExceptionClear();
+        return;
+    }
 
     jmethodID method = env->GetStaticMethodID(app_class, "setDepthModel", "(I)V");
     if (!method) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: GetStaticMethodID failed");
+        env->ExceptionClear();
         env->DeleteLocalRef(app_class);
         return;
     }
