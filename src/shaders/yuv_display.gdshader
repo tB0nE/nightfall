@@ -18,6 +18,13 @@ uniform sampler2D depth_texture : hint_default_white, filter_linear, repeat_disa
 // depth_upsample.gdshader / depth_offset.gdshader for how).
 uniform sampler2D upsampled_depth_texture : hint_default_white, filter_linear;
 uniform sampler2D offset_texture : hint_default_white, filter_linear;
+// The literal 256x256 RGBA color capture depth_viewport.gd feeds to MiDaS
+// (depth_estimator.gd's depth_viewport, same texture depth_upsample.gdshader
+// calls depth_guide_texture) - stereo_mode 9 (MiDaS-DMap-Input) shows this
+// directly, unprocessed, to check whether a fixed/scene-independent artifact
+// seen in DMap is already present in the model's INPUT (a capture/mapping
+// bug) rather than something the model or the upsample pass invented.
+uniform sampler2D depth_guide_texture : hint_default_black, filter_linear;
 // Must match depth_estimator.gd's _pass_parallax exactly - it's baked into
 // offset_texture's encoding via depth_offset.gdshader's own reach
 // computation from the same value, and decoding here needs the identical
@@ -227,6 +234,10 @@ void fragment() {
 		// FRAGMENT_SRC occlusion branch. Both textures are addressed in
 		// tile_uv space (matching how depth_estimator.gd rendered them),
 		// not uv (which already has uv_region's tiling/cropping applied).
+		// The error function's sign here (+disparity, not -) must match
+		// depth_offset.gdshader's own search exactly - verified against
+		// xr_renderer.c directly (see git history 2026-08); refining toward
+		// a root of the WRONG equation is worse than not refining at all.
 		float low_res_width = float(textureSize(upsampled_depth_texture, 0).x);
 		float parallax = mode5_parallax;
 		float disp_texels = parallax * low_res_width;
@@ -243,8 +254,8 @@ void fragment() {
 			float d0 = texture(upsampled_depth_texture, vec2(tc_x, tile_uv.y)).r;
 			float dm = texture(upsampled_depth_texture, vec2(tc_x - h, tile_uv.y)).r;
 			float dp = texture(upsampled_depth_texture, vec2(tc_x + h, tile_uv.y)).r;
-			float e = (tc_x - tile_uv.x) - disparity * (d0 - convergence);
-			float slope = 1.0 - disparity * (dp - dm) / (2.0 * h);
+			float e = (tc_x - tile_uv.x) + disparity * (d0 - convergence);
+			float slope = 1.0 + disparity * (dp - dm) / (2.0 * h);
 			if (abs(slope) < 0.25) {
 				slope = 0.25;
 			}
@@ -268,6 +279,25 @@ void fragment() {
 	if (stereo_mode == 7) {
 		float d = texture(upsampled_depth_texture, tile_uv).r;
 		COLOR = vec4(heatmap(d), 1.0);
+	} else if (stereo_mode == 8) {
+		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
+		// actual 256x256 output, before depth_upsample.gdshader's joint
+		// bilateral filter touches it) - lets us tell apart "the model
+		// itself produced this" from "the upsample/warp pass invented
+		// this", when DMap shows content that doesn't correspond to
+		// anything on the real desktop. Same UV mapping as
+		// upsampled_depth_texture (both cover UV 0..1 = the full cropped
+		// frame 1:1), just coarser since it's the raw 256x256 grid instead
+		// of the quarter-native-res upsample.
+		float d = texture(depth_texture, tile_uv).r;
+		COLOR = vec4(heatmap(d), 1.0);
+	} else if (stereo_mode == 9) {
+		// MiDaS-DMap-Input: the literal color image fed to the model, no
+		// heatmap, no processing at all - if a fixed/scene-independent
+		// artifact is already visible HERE, it's a capture/mapping bug
+		// (depth_viewport/depth_target in depth_estimator.gd), not the
+		// model or either shader pass.
+		COLOR = vec4(texture(depth_guide_texture, tile_uv).rgb, 1.0);
 	} else if (filter_mode > 0 || sharpen > 0.0) {
 		vec3 col = filtered_stream(uv);
 		COLOR = vec4(col, 1.0);

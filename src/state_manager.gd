@@ -80,7 +80,7 @@ func load_host_state(ip: String):
 	main.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
-		main.ai_3d_mode = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 4)
+		main.ai_3d_mode = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 6)
 	elif save.has_section_key(ip, "stereo_mode"):
 		var old = clampi(save.get_value(ip, "stereo_mode", 0), 0, 4)
 		if old <= 2:

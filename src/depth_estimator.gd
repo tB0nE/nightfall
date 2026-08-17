@@ -3,7 +3,8 @@ extends RefCounted
 
 var main: Node3D
 var depth_viewport: SubViewport
-var depth_target: TextureRect
+var depth_target: ColorRect
+var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
 var enabled: bool = false
 var submit_timer: float = 0.0
@@ -69,28 +70,22 @@ func setup():
 	depth_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	depth_viewport.transparent_bg = true
 
-	depth_target = TextureRect.new()
+	# A plain shader-sampled ColorRect, NOT a TextureRect+STRETCH_SCALE (see
+	# depth_downscale.gdshader for why that was replaced - it showed a
+	# persistent crop to a sub-region of the frame, most likely a stale
+	# cached source-size in TextureRect's stretch math not tracking
+	# comp_viewport's live resizes). UV 0..1 always covers the FULL current
+	# source texture with plain texture() sampling - depth_texture is
+	# assumed to cover frame UV 0..1 1:1 everywhere else in the pipeline
+	# (the warp shaders index into it via tile_uv directly), matching
+	# Gilleece/moonlight-android-xr's own downscale (DOWNSCALE_FRAGMENT_SRC):
+	# a plain UV stretch with no aspect correction at all.
+	depth_target = ColorRect.new()
 	depth_target.name = "DepthTarget"
-	depth_target.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	# Plain stretch-to-fill, NOT aspect-preserved: depth_texture is assumed
-	# to cover frame UV 0..1 1:1 everywhere else in the pipeline (the warp
-	# shaders index into it via tile_uv directly) - KEEP_ASPECT_CENTERED
-	# would letterbox a 16:9-ish stream into this square target, wasting a
-	# fifth of the model's input on empty margin AND silently breaking that
-	# 1:1 UV assumption for the entire frame, not just the edges.
-	# Gilleece/moonlight-android-xr's own downscale (DOWNSCALE_FRAGMENT_SRC)
-	# confirms this: a plain UV stretch with no aspect correction at all.
-	depth_target.stretch_mode = TextureRect.STRETCH_SCALE
-	depth_target.size = Vector2i(model_size, model_size)
 	depth_target.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# The default filter is a single bilinear tap - for a ~10x reduction
-	# (e.g. 2560px stream -> model_size), that aliases badly, feeding MiDaS a
-	# noisier input than it needs. Gilleece/moonlight-android-xr does an
-	# explicit 4x4 box filter in a shader for exactly this
-	# (DOWNSCALE_FRAGMENT_SRC); mipmap filtering is Godot's built-in
-	# equivalent - the GPU picks/blends the right pre-averaged mip level
-	# instead of a single raw sample.
-	depth_target.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	depth_target_mat = ShaderMaterial.new()
+	depth_target_mat.shader = load("res://src/shaders/depth_downscale.gdshader")
+	depth_target.material = depth_target_mat
 	depth_viewport.add_child(depth_target)
 	main.add_child(depth_viewport)
 
@@ -106,10 +101,12 @@ func setup():
 		main.comp_shader_mat_left.set_shader_parameter("depth_texture", depth_texture)
 		main.comp_shader_mat_left.set_shader_parameter("upsampled_depth_texture", upsample_viewport.get_texture())
 		main.comp_shader_mat_left.set_shader_parameter("offset_texture", offset_viewport.get_texture())
+		main.comp_shader_mat_left.set_shader_parameter("depth_guide_texture", depth_viewport.get_texture())
 	if main.comp_shader_mat_right:
 		main.comp_shader_mat_right.set_shader_parameter("depth_texture", depth_texture)
 		main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsample_viewport.get_texture())
 		main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_viewport.get_texture())
+		main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", depth_viewport.get_texture())
 
 func _setup_warp_passes():
 	upsample_viewport = SubViewport.new()
@@ -175,10 +172,26 @@ func _resize_warp_passes():
 func bind_stream_texture():
 	if not depth_target:
 		return
+	# comp.in_use (switch_to_stereo_comp_layer() active) EXPLICITLY sets
+	# primary_screen.comp_viewport (the mono viewport) to UPDATE_DISABLED in
+	# favor of comp_viewport_left/right - depth capture used to silently
+	# freeze on whatever the mono viewport last rendered before switching to
+	# stereo (often mid-welcome-screen), feeding MiDaS a single stale frame
+	# forever instead of live video (fixed by forcing it back to
+	# UPDATE_ALWAYS in settings_controller.gd's apply_stereo() whenever
+	# depth is enabled). comp_viewport_left is NOT a valid depth-capture
+	# source: it's rendered by comp_shader_mat_left, the SAME material
+	# whose stereo_mode we set to 7/8/9 for the DMap debug views - sourcing
+	# depth capture from it would mean depth_guide_texture circularly
+	# depends on its own output (DMap modes) or MiDaS sees the
+	# already-warped stereo image instead of plain video (warp modes 5/6,
+	# compounding distortion frame over frame). The mono comp_viewport
+	# (comp_shader_mat, permanently stereo_mode=0) is the only semantically
+	# correct source.
 	if main.comp.in_use and main.primary_screen and main.primary_screen.comp_viewport:
-		depth_target.texture = main.primary_screen.comp_viewport.get_texture()
+		depth_target_mat.set_shader_parameter("source_tex", main.primary_screen.comp_viewport.get_texture())
 	elif main.stream_viewport:
-		depth_target.texture = main.stream_viewport.get_texture()
+		depth_target_mat.set_shader_parameter("source_tex", main.stream_viewport.get_texture())
 
 func set_enabled(val: bool, run_warp_passes: bool = false):
 	enabled = val

@@ -6,7 +6,7 @@ var _restart_pending: bool = false
 var _restart_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
-var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-GPU", "MiDaS-NNAPI", "MiDaS-DMap"]
+var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-GPU", "MiDaS-NNAPI", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -25,7 +25,11 @@ func get_stereo_mode() -> int:
 	elif main.ai_3d_mode == 3:
 		return 6
 	elif main.ai_3d_mode == 4:
-		return 7
+		return 7 # MiDaS-DMap
+	elif main.ai_3d_mode == 5:
+		return 8 # MiDaS-DMap-Raw
+	elif main.ai_3d_mode == 6:
+		return 9 # MiDaS-DMap-Input
 	else:
 		return 4
 
@@ -47,7 +51,7 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 5
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 7
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
 	apply_stereo()
 
@@ -66,25 +70,51 @@ func apply_stereo():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
 	if main.depth_estimator:
-		# mode 7 (MiDaS-DMap) now visualizes upsampled_depth_texture (the real
-		# post-upsample data the actual warp uses), not the raw pre-upsample
-		# depth_texture, so it needs the warp passes running too.
+		# mode 7 (MiDaS-DMap) visualizes upsampled_depth_texture (the real
+		# post-upsample data the actual warp uses), so it needs the warp
+		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
+		# pre-upsample depth_texture directly - no warp passes needed. mode 9
+		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
+		# model - also no warp passes needed.
 		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7)
+		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
+		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
+		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
+		# comp_viewport_left/right - but that mono viewport is depth capture's
+		# ONLY semantically correct source (see bind_stream_texture()'s own
+		# comment for why comp_viewport_left doesn't work). Force it back to
+		# UPDATE_ALWAYS whenever depth capture needs it, undoing that disable
+		# every time this runs (switch_to_stereo_comp_layer() re-disables it
+		# on every call, so this has to re-assert every time too, not once).
+		if mode >= 3:
+			if main.primary_screen and main.primary_screen.comp_viewport:
+				main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+			main.depth_estimator.bind_stream_texture()
 		if mode >= 3 and main.depth_estimator.depth_texture:
 			var de = main.depth_estimator
 			var upsampled_tex = de.upsample_viewport.get_texture() if de.upsample_viewport else null
 			var offset_tex = de.offset_viewport.get_texture() if de.offset_viewport else null
+			var guide_tex = de.depth_viewport.get_texture() if de.depth_viewport else null
 			if main.comp_shader_mat_left:
 				main.comp_shader_mat_left.set_shader_parameter("depth_texture", de.depth_texture)
 				main.comp_shader_mat_left.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_left.set_shader_parameter("offset_texture", offset_tex)
+				main.comp_shader_mat_left.set_shader_parameter("depth_guide_texture", guide_tex)
 			if main.comp_shader_mat_right:
 				main.comp_shader_mat_right.set_shader_parameter("depth_texture", de.depth_texture)
 				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
-	# mode 7 (MiDaS-DMap) reuses the MiDaS-NNAPI model/inference (index 3) - it's
-	# a pure visualization of that same depth data, not a separate source.
-	main.stream_backend.set_depth_model(1 if mode == 4 else (2 if mode == 5 else (3 if mode == 6 or mode == 7 else 0)))
+				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
+	# modes 7/8/9 (MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-Input) all reuse the
+	# MiDaS-NNAPI model/inference (index 3) - they're pure visualizations of
+	# that same depth data at different pipeline stages, not a separate
+	# source. mode 9 doesn't even read the model's output (just the color
+	# capture), but MUST still stay on model index 3 here - leaving it out of
+	# this set previously silently swapped the active model down to the slow
+	# CPU/dilate-blur path (index 0) every time mode 9 was selected, which
+	# then poisoned modes 6/7/8 with stale/wrong-quality data the next time
+	# they ran, since all modes share one depth_texture/ImageTexture.
+	main.stream_backend.set_depth_model(1 if mode == 4 else (2 if mode == 5 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 else 0)))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
