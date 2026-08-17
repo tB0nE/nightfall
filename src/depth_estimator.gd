@@ -31,9 +31,25 @@ func setup():
 	depth_target = TextureRect.new()
 	depth_target.name = "DepthTarget"
 	depth_target.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	depth_target.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# Plain stretch-to-fill, NOT aspect-preserved: depth_texture is assumed
+	# to cover frame UV 0..1 1:1 everywhere else in the pipeline -
+	# KEEP_ASPECT_CENTERED would letterbox a 16:9-ish stream into this square
+	# target, wasting a fifth of the model's input on empty margin AND
+	# silently breaking that 1:1 UV assumption for the entire frame, not
+	# just the edges. Gilleece/moonlight-android-xr's own downscale
+	# (DOWNSCALE_FRAGMENT_SRC) confirms this: a plain UV stretch with no
+	# aspect correction at all.
+	depth_target.stretch_mode = TextureRect.STRETCH_SCALE
 	depth_target.size = Vector2i(model_size, model_size)
 	depth_target.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# The default filter is a single bilinear tap - for a ~10x reduction
+	# (e.g. 2560px stream -> model_size), that aliases badly, feeding MiDaS a
+	# noisier input than it needs. Gilleece/moonlight-android-xr does an
+	# explicit 4x4 box filter in a shader for exactly this
+	# (DOWNSCALE_FRAGMENT_SRC); mipmap filtering is Godot's built-in
+	# equivalent - the GPU picks/blends the right pre-averaged mip level
+	# instead of a single raw sample.
+	depth_target.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	depth_viewport.add_child(depth_target)
 	main.add_child(depth_viewport)
 
