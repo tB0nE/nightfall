@@ -26,7 +26,7 @@ var submit_interval: float = 0.05
 var model_size: int = 256
 var _poll_timer: float = 0.0
 
-# stereo_mode 5/6 (MiDaS-GPU / MiDaS-NNAPI)'s upsample+offset passes - see
+# stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
 # Run once per frame, shared by both eyes, at a quarter of the stream's own
 # resolution (matches Gilleece/moonlight-android-xr's own upsampleWidth =
@@ -35,11 +35,42 @@ var _poll_timer: float = 0.0
 # performance, since the same expensive bilateral/search work was repeated
 # per eye per full-res pixel instead of once for the whole frame.
 const PASS_DIVISOR := 4
+# stereo_mode 10 (MiDaS-Fast) only - shrinks the pre-pass's linear resolution
+# further than PASS_DIVISOR, on the same GPU-cost theory as the throttle
+# below. Selected via _pass_divisor in set_enabled(). No power-of-2
+# requirement - this only ever feeds an integer division in GDScript
+# (_resize_warp_passes(), called once per native_resolution change, not
+# per-pixel/per-frame), so any divisor costs the same at runtime; only the
+# resulting resolution (and therefore quality vs. GPU cost) changes.
+const EX_PASS_DIVISOR := 10
 const PASS_MIN_SIZE := 160
+var _pass_divisor: int = PASS_DIVISOR
 var upsample_viewport: SubViewport
 var upsample_mat: ShaderMaterial
 var offset_viewport: SubViewport
 var offset_mat: ShaderMaterial
+# stereo_mode 10 (MiDaS-Fast) only: throttles these two passes to UPDATE_ONCE
+# on this timer instead of UPDATE_ALWAYS, re-rendering the occlusion search
+# at warp_update_interval instead of every render frame (up to 90Hz), even
+# though the depth data feeding them only refreshes at submit_interval's
+# 20Hz. On-device testing (2026-08-18) found NO measurable FPS gain from
+# this on stereo_mode 6 (MiDaS-Std, which stayed on UPDATE_ALWAYS as a
+# result) - the pre-pass apparently isn't the actual bottleneck. Kept as its
+# own mode (not folded into MiDaS-Std) to keep poking at this without
+# risking the known-good mode; the per-eye per-pixel Newton-refinement
+# gather in yuv_display.gdshader (runs at full render resolution every
+# frame regardless of this throttle) is the next suspect.
+var warp_update_interval: float = 1.0 / 30.0
+var _warp_timer: float = 0.0
+var _warp_passes_active: bool = false
+var _warp_throttled: bool = false
+# stereo_mode 10 (MiDaS-Fast) only - toggled every process() tick (one real
+# render frame, see main.gd's _process()) and pushed to comp_shader_mat_
+# left/right as warp_frame_parity. yuv_display.gdshader does 1 Newton
+# refinement step on parity 0, 0 steps (raw offset-search result, no
+# refinement) on parity 1 - amortizing that cost across pairs of frames
+# instead of paying it every frame.
+var _warp_frame_parity: int = 0
 # Matches Gilleece/moonlight-android-xr's own shipped default separation
 # (0.5% of frame width). Tested bumping this to 0.02 (~3.3x) on the theory
 # that magnitude was the remaining gap for why the depth effect still felt
@@ -158,7 +189,7 @@ func _resize_warp_passes():
 	var src = main.native_resolution
 	if src.x <= 0 or src.y <= 0:
 		return
-	var target = Vector2i(maxi(src.x / PASS_DIVISOR, PASS_MIN_SIZE), maxi(src.y / PASS_DIVISOR, PASS_MIN_SIZE))
+	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
 	if target == _pass_size:
 		return
 	_pass_size = target
@@ -193,24 +224,49 @@ func bind_stream_texture():
 	elif main.stream_viewport:
 		depth_target_mat.set_shader_parameter("source_tex", main.stream_viewport.get_texture())
 
-func set_enabled(val: bool, run_warp_passes: bool = false):
+func set_enabled(val: bool, run_warp_passes: bool = false, throttle_warp_passes: bool = false):
 	enabled = val
 	if depth_viewport:
 		depth_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if val else SubViewport.UPDATE_DISABLED
-	# Only stereo_mode 5/6 (MiDaS-GPU / MiDaS-NNAPI) consume these - leave them
-	# off for the older modes 3/4 so they stay a clean, unaffected performance
-	# baseline to compare against.
-	var run_passes = val and run_warp_passes
+	# Only stereo_mode 5/6/10 (MiDaS-GPU / MiDaS-Std / MiDaS-Fast) consume
+	# these - leave them off for the older modes 3/4 so they stay a clean,
+	# unaffected performance baseline to compare against. stereo_mode 10
+	# throttles via _warp_timer in process() (UPDATE_ONCE); everything else
+	# stays UPDATE_ALWAYS - see warp_update_interval's comment above for why.
+	_warp_passes_active = val and run_warp_passes
+	_warp_throttled = val and throttle_warp_passes
+	_warp_timer = 0.0
+	# throttle_warp_passes doubles as "this is stereo_mode 10 (MiDaS-Fast)" -
+	# the two are 1:1 today (only MiDaS-Fast opts into any of these cost-
+	# cutting measures: pre-pass throttle, pre-pass resolution, AND the
+	# Newton-step frame-parity toggle below), so one flag drives all three
+	# instead of threading more params through apply_stereo() for the same
+	# condition.
+	_pass_divisor = EX_PASS_DIVISOR if throttle_warp_passes else PASS_DIVISOR
+	_warp_frame_parity = 0
+	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
 	if upsample_viewport:
-		upsample_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if run_passes else SubViewport.UPDATE_DISABLED
+		upsample_viewport.render_target_update_mode = mode
 	if offset_viewport:
-		offset_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if run_passes else SubViewport.UPDATE_DISABLED
+		offset_viewport.render_target_update_mode = mode
 
 func process(delta: float):
 	if not enabled or not main.is_streaming:
 		return
 
 	_resize_warp_passes()
+
+	if _warp_passes_active and _warp_throttled:
+		_warp_frame_parity = 1 - _warp_frame_parity
+		if main.comp_shader_mat_left:
+			main.comp_shader_mat_left.set_shader_parameter("warp_frame_parity", _warp_frame_parity)
+		if main.comp_shader_mat_right:
+			main.comp_shader_mat_right.set_shader_parameter("warp_frame_parity", _warp_frame_parity)
+		_warp_timer += delta
+		if _warp_timer >= warp_update_interval:
+			_warp_timer = 0.0
+			upsample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta

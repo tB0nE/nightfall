@@ -22,7 +22,6 @@ public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
     private static final int OUTPUT_SIZE = 256;
     private static final int DA_INPUT_SIZE = 256;
-    private static final int HQ_INPUT_SIZE = 256;
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
     // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
     // read directly from the model via ai-edge-litert's Interpreter.get_input/
@@ -45,19 +44,11 @@ public class DepthEstimator {
 
     private Interpreter tfliteMidas;
     private Interpreter tfliteDepthAnything;
-    // Same underlying weights as tfliteMidas (MODEL_MIDAS), loaded as a genuinely
-    // separate Interpreter instance via NNAPI - lets model index 3 ("MiDaS-NNAPI")
-    // feed the occlusion-aware warp pipeline on its own Interpreter instance.
-    // Two instances from the same file share the OS page cache for the read-only
-    // weight bytes, so this isn't a second full copy of the model.
-    private Interpreter tfliteMidasHq;
     private Interpreter activeInterpreter;
     private ByteBuffer inputBufferMidas;
     private ByteBuffer inputBufferDA;
-    private ByteBuffer inputBufferHq;
     private ByteBuffer outputBufferMidas;
     private ByteBuffer outputBufferDA;
-    private ByteBuffer outputBufferHq;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
 
@@ -82,11 +73,9 @@ public class DepthEstimator {
             // bytes" (exactly 4x, the float32/uint8 ratio) on EVERY
             // inference call, deterministically - confirmed via full-session
             // log analysis (2026-08-18): 0 successes out of hundreds of
-            // calls across both runInferenceMidas (this model, model index
-            // 0) and runInferenceMidasHq (same model file, index 3),
-            // regardless of what other models had run before. Caught by
-            // submitFrame()'s try/catch, logged as "Async inference failed"
-            // but easy to miss next to the similarly-worded per-call
+            // calls, regardless of what other models had run before. Caught
+            // by submitFrame()'s try/catch, logged as "Async inference
+            // failed" but easy to miss next to the similarly-worded per-call
             // "Inference: Xms" duration log that still prints from the
             // finally block regardless of success. Only affects this w8a8
             // model - inputBufferDA (a genuinely different, float32 model)
@@ -104,15 +93,6 @@ public class DepthEstimator {
             outputBufferDA = ByteBuffer.allocateDirect(1 * DA_INPUT_SIZE * DA_INPUT_SIZE * 1 * 4)
                     .order(ByteOrder.nativeOrder());
 
-            // Same model file as inputBufferMidas (MODEL_MIDAS) - same UINT8
-            // input requirement, see the comment there.
-            inputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 3)
-                    .order(ByteOrder.nativeOrder());
-            // Same model file as outputBufferMidas - same quantized UINT8
-            // output, see the comment there.
-            outputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 1)
-                    .order(ByteOrder.nativeOrder());
-
             tfliteMidas = loadInterpreter(MODEL_MIDAS);
 
             try {
@@ -123,19 +103,8 @@ public class DepthEstimator {
                 tfliteDepthAnything = null;
             }
 
-            try {
-                // Same weights as MODEL_MIDAS (mode 0), separate instance, via the
-                // proven NNAPI-with-CPU-fallback path - feeds the occlusion-aware
-                // warp pipeline (stereo_mode 6) on its own Interpreter instance.
-                tfliteMidasHq = loadInterpreter(MODEL_MIDAS);
-                Log.i(TAG, "MiDaS-NNAPI (HQ) model loaded");
-            } catch (Exception e) {
-                Log.w(TAG, "MiDaS-NNAPI (HQ) model not available", e);
-                tfliteMidasHq = null;
-            }
-
             activeInterpreter = tfliteMidas;
-            activeModelIndex = 0;
+            activeModelIndex = 3;
             initialized = true;
             Log.i(TAG, "Initialized successfully (MiDaS=" + (tfliteMidas != null) + ", DA=" + (tfliteDepthAnything != null) + ")");
             return true;
@@ -167,11 +136,13 @@ public class DepthEstimator {
         Interpreter target;
         if (modelIndex == 1 && tfliteDepthAnything != null) {
             target = tfliteDepthAnything;
-        } else if (modelIndex == 3 && tfliteMidasHq != null) {
-            target = tfliteMidasHq;
         } else {
+            // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share this
+            // one interpreter - the separate "crude warp" MiDaS instance that
+            // used to live at index 0 is gone, so fold any other/unrecognized
+            // index into this one too rather than requiring index 3 exactly.
             target = tfliteMidas;
-            modelIndex = 0;
+            modelIndex = 3;
         }
         if (activeModelIndex != modelIndex) {
             while (isInferencing.get()) {
@@ -181,12 +152,7 @@ public class DepthEstimator {
             rangeValid = false;
             activeInterpreter = target;
             activeModelIndex = modelIndex;
-            String modelName;
-            switch (modelIndex) {
-                case 1: modelName = "Depth Anything V2"; break;
-                case 3: modelName = "MiDaS-NNAPI"; break;
-                default: modelName = "MiDaS"; break;
-            }
+            String modelName = (modelIndex == 1) ? "Depth Anything V2" : "MiDaS";
             Log.i(TAG, "Switched to model " + modelName);
         }
     }
@@ -208,8 +174,6 @@ public class DepthEstimator {
                 byte[] result;
                 if (modelIdx == 1) {
                     result = runInferenceDA(frameCopy, width, height);
-                } else if (modelIdx == 3) {
-                    result = runInferenceMidasHq(frameCopy, width, height);
                 } else {
                     result = runInferenceMidas(frameCopy, width, height);
                 }
@@ -221,12 +185,7 @@ public class DepthEstimator {
             } finally {
                 isInferencing.set(false);
                 long duration = (System.nanoTime() - startTime) / 1_000_000;
-                String modelName;
-                switch (modelIdx) {
-                    case 1: modelName = "DA"; break;
-                    case 3: modelName = "MiDaS-HQ"; break;
-                    default: modelName = "MiDaS"; break;
-                }
+                String modelName = (modelIdx == 1) ? "DA" : "MiDaS";
                 Log.d(TAG, "Inference: " + duration + "ms (" + modelName + ")");
             }
         });
@@ -237,40 +196,12 @@ public class DepthEstimator {
     }
 
     // real (0..1 normalized pixel) -> quantized uint8, per MIDAS_INPUT_SCALE/
-    // ZERO_POINT above. Shared by runInferenceMidas() and runInferenceMidasHq()
-    // - both use the same model file, so the same quantization applies.
+    // ZERO_POINT above.
     private static byte quantizeMidasInput(int rawPixelByte) {
         float real = (rawPixelByte & 0xFF) / 255.0f;
         int q = Math.round(real / MIDAS_INPUT_SCALE) + MIDAS_INPUT_ZERO_POINT;
         q = Math.max(0, Math.min(255, q));
         return (byte) q;
-    }
-
-    private byte[] runInferenceMidas(byte[] rgbaPixels, int width, int height) {
-        inputBufferMidas.rewind();
-        outputBufferMidas.rewind();
-
-        int srcRowBytes = width * 4;
-        float scaleX = (float) width / OUTPUT_SIZE;
-        float scaleY = (float) height / OUTPUT_SIZE;
-
-        for (int y = 0; y < OUTPUT_SIZE; y++) {
-            int srcY = Math.min((int) (y * scaleY), height - 1);
-            int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < OUTPUT_SIZE; x++) {
-                int srcX = Math.min((int) (x * scaleX), width - 1);
-                int srcIdx = srcRowOff + srcX * 4;
-                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx]));
-                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 1]));
-                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 2]));
-            }
-        }
-        inputBufferMidas.rewind();
-
-        tfliteMidas.run(inputBufferMidas, outputBufferMidas);
-        outputBufferMidas.rewind();
-
-        return postProcess(dequantizeMidasOutput(outputBufferMidas, OUTPUT_SIZE * OUTPUT_SIZE), OUTPUT_SIZE, true);
     }
 
     private byte[] runInferenceDA(byte[] rgbaPixels, int width, int height) {
@@ -300,41 +231,40 @@ public class DepthEstimator {
         return postProcess(extractFloatOutput(outputBufferDA, DA_INPUT_SIZE * DA_INPUT_SIZE), DA_INPUT_SIZE, true);
     }
 
-    // Same model weights as runInferenceMidas() (mode 0), but via the separate
-    // tfliteMidasHq NNAPI instance, feeding stereo_mode 6's warp pipeline. No
-    // dilate/blur here - the warp shader does its own edge-aware joint bilateral
-    // upsample against the actual color frame (depth_upsample.gdshader), which
-    // snaps depth to real edges instead of averaging small objects (taskbar
-    // icons, widgets) away like the CPU blur below does.
-    private byte[] runInferenceMidasHq(byte[] rgbaPixels, int width, int height) {
-        inputBufferHq.rewind();
-        outputBufferHq.rewind();
+    // No dilate/blur here - the warp shader does its own edge-aware joint
+    // bilateral upsample against the actual color frame
+    // (depth_upsample.gdshader), which snaps depth to real edges instead of
+    // averaging small objects (taskbar icons, widgets) away like a CPU blur
+    // would.
+    private byte[] runInferenceMidas(byte[] rgbaPixels, int width, int height) {
+        inputBufferMidas.rewind();
+        outputBufferMidas.rewind();
 
         int srcRowBytes = width * 4;
-        float scaleX = (float) width / HQ_INPUT_SIZE;
-        float scaleY = (float) height / HQ_INPUT_SIZE;
+        float scaleX = (float) width / OUTPUT_SIZE;
+        float scaleY = (float) height / OUTPUT_SIZE;
 
-        for (int y = 0; y < HQ_INPUT_SIZE; y++) {
+        for (int y = 0; y < OUTPUT_SIZE; y++) {
             int srcY = Math.min((int) (y * scaleY), height - 1);
             int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < HQ_INPUT_SIZE; x++) {
+            for (int x = 0; x < OUTPUT_SIZE; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
-                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx]));
-                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx + 1]));
-                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx + 2]));
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx]));
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 1]));
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 2]));
             }
         }
-        inputBufferHq.rewind();
+        inputBufferMidas.rewind();
 
-        tfliteMidasHq.run(inputBufferHq, outputBufferHq);
-        outputBufferHq.rewind();
+        tfliteMidas.run(inputBufferMidas, outputBufferMidas);
+        outputBufferMidas.rewind();
 
-        return postProcess(dequantizeMidasOutput(outputBufferHq, HQ_INPUT_SIZE * HQ_INPUT_SIZE), HQ_INPUT_SIZE, false);
+        return postProcess(dequantizeMidasOutput(outputBufferMidas, OUTPUT_SIZE * OUTPUT_SIZE), OUTPUT_SIZE, false);
     }
 
     // dequantize (quantized - zero_point) * scale, per MIDAS_OUTPUT_SCALE/
-    // ZERO_POINT above. Shared by runInferenceMidas() and runInferenceMidasHq().
+    // ZERO_POINT above.
     private static float[] dequantizeMidasOutput(ByteBuffer output, int count) {
         output.rewind();
         float[] raw = new float[count];
@@ -382,10 +312,10 @@ public class DepthEstimator {
     private boolean rangeValid = false;
 
     // Takes the already-decoded real-valued depth array, not a raw
-    // ByteBuffer - float32 output tensors (runInferenceDA) and quantized
-    // UINT8 ones (runInferenceMidas/runInferenceMidasHq) decode completely
-    // differently at the source (see each call site), and this logic
-    // downstream is identical either way once it's a plain float[].
+    // ByteBuffer - the float32 output tensor (runInferenceDA) and the
+    // quantized UINT8 one (runInferenceMidas) decode completely differently
+    // at the source (see each call site), and this logic downstream is
+    // identical either way once it's a plain float[].
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur) {
         int count = size * size;
 
@@ -570,10 +500,6 @@ public class DepthEstimator {
         if (tfliteDepthAnything != null) {
             tfliteDepthAnything.close();
             tfliteDepthAnything = null;
-        }
-        if (tfliteMidasHq != null) {
-            tfliteMidasHq.close();
-            tfliteMidasHq = null;
         }
         activeInterpreter = null;
         initialized = false;

@@ -12,7 +12,25 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # parameters on the w8a8 model, see git history 2026-08-18) is fixed now,
 # so GPU isn't needed as a working comparison point anymore. Don't restore
 # a mapping for stereo_mode 5 without re-adding that code.
-var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-NNAPI", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
+# The original "MiDaS" mode (a single-sample parallax shift, stereo_mode 3)
+# is REMOVED too (2026-08-18) - once MiDaS-Fast (below) reached similar
+# quality at similar performance on-device, there was no reason to keep the
+# cruder mode around. stereo_mode 3/4's shader branch in yuv_display.gdshader
+# is dead code left in place (harmless, costs nothing unless selected) rather
+# than deleted - see stereo_mode 4/5's own history for the same pattern.
+# MiDaS-Fast (stereo_mode 10) is the same occlusion-aware warp as MiDaS-Std
+# (stereo_mode 6, same model/inference), but with its upsample/offset warp
+# passes throttled + shrunk (EX_PASS_DIVISOR) and the per-eye Newton
+# refinement in yuv_display.gdshader amortized to every other frame - see
+# warp_update_interval's comment in depth_estimator.gd for the full
+# GPU-cost investigation this came out of. Confirmed on-device (2026-08-18)
+# to land near MiDaS-Std's quality at close to the old crude mode's
+# framerate. Kept as its own mode (not folded into MiDaS-Std) so MiDaS-Std
+# stays the unthrottled/known-good reference to compare against.
+# MiDaS-Fast comes before MiDaS-Std in the cycle order (not alphabetical/
+# quality order) so a first-time user cycling through options lands on the
+# faster mode first, rather than possibly judging performance off MiDaS-Std.
+var ai_3d_labels: Array = ["2D", "MiDaS-Fast", "MiDaS-Std", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -25,9 +43,9 @@ func get_stereo_mode() -> int:
 	if main.ai_3d_mode == 0:
 		return 0
 	elif main.ai_3d_mode == 1:
-		return 3
+		return 10 # MiDaS-Fast (throttled/shrunk warp passes)
 	elif main.ai_3d_mode == 2:
-		return 6
+		return 6 # MiDaS-Std
 	elif main.ai_3d_mode == 3:
 		return 7 # MiDaS-DMap
 	elif main.ai_3d_mode == 4:
@@ -84,8 +102,10 @@ func apply_stereo():
 		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
 		# pre-upsample depth_texture directly - no warp passes needed. mode 9
 		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
-		# model - also no warp passes needed.
-		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7)
+		# model - also no warp passes needed. mode 10 (MiDaS-Fast) is the same
+		# warp passes as mode 6, just throttled - see warp_update_interval's
+		# comment in depth_estimator.gd.
+		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7 or mode == 10, mode == 10)
 		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
 		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
 		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
@@ -114,16 +134,17 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
-	# modes 7/8/9 (MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-Input) all reuse the
-	# MiDaS-NNAPI model/inference (index 3) - they're pure visualizations of
-	# that same depth data at different pipeline stages, not a separate
-	# source. mode 9 doesn't even read the model's output (just the color
-	# capture), but MUST still stay on model index 3 here - leaving it out of
-	# this set previously silently swapped the active model down to the slow
-	# CPU/dilate-blur path (index 0) every time mode 9 was selected, which
-	# then poisoned modes 6/7/8 with stale/wrong-quality data the next time
-	# they ran, since all modes share one depth_texture/ImageTexture.
-	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 else 0))
+	# modes 6/7/8/9/10 (MiDaS-Std, MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-
+	# Input, MiDaS-Fast) all reuse the same MiDaS-Std model/inference (index
+	# 3) - they're pure visualizations/warp-pass variants of that same depth
+	# data, not a separate source. mode 9 doesn't even read the model's
+	# output (just the color capture), but MUST still stay on model index 3
+	# here - leaving it out of this set previously silently swapped the
+	# active model down to the slow CPU/dilate-blur path (index 0) every
+	# time mode 9 was selected, which then poisoned the other modes with
+	# stale/wrong-quality data the next time they ran, since all modes share
+	# one depth_texture/ImageTexture.
+	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 or mode == 10 else 0))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
