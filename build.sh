@@ -175,10 +175,21 @@ cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" libs/de
 cd "$SCRIPT_DIR"
 cp android/src/main/java/com/godot/game/GodotApp.java android/build/src/main/java/com/godot/game/GodotApp.java
 cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/main/java/com/godot/game/DepthEstimator.java
-mkdir -p android/build/src/main/assets
-cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/src/main/assets/
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small.tflite" android/build/src/main/assets/ 2>/dev/null || true
+# Godot's own Android export always wipes and repopulates src/main/assets from
+# scratch right before invoking gradle (EditorExportPlatformAndroid::_clear_assets_directory(),
+# platform/android/export/export_plugin.cpp) - it's the directory Godot writes its own
+# project pck data into, so anything staged there before export() runs is deleted
+# regardless of ordering. Gradle's own asset merge (mergeDebugAssets/mergeReleaseAssets)
+# supports multiple source directories per source set though, so a sibling directory
+# declared via sourceSets below survives untouched and still gets merged into the APK.
+mkdir -p android/build/nightfallAssets
+cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small.tflite" android/build/nightfallAssets/ 2>/dev/null || true
 sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"' android/build/build.gradle
+sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
+# mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
+# the entry be stored uncompressed in the APK
+sed -i '/ignoreAssetsPattern/a\            noCompress "tflite"' android/build/build.gradle
 if [ "$PRESET" = "NightfallDev" ]; then
   mkdir -p android/build/libs/debug
   cp "$SCRIPT_DIR/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar" android/build/libs/debug/ 2>/dev/null || true

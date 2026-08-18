@@ -67,7 +67,12 @@ var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
-var ai_3d_mode: int = 0
+# Split (2026-08-18) from a single flat ai_3d_mode into three independent
+# axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
+# ai_3d_debug_labels and get_stereo_mode() for how they combine.
+var ai_3d_model: int = 0 # 0=Off, 1=MiDaS
+var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
+var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -373,6 +378,8 @@ var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_quality_btn: Button
+var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -443,6 +450,35 @@ const HEVC_MAX_TOTAL_PIXELS = 35389440
 # (80% of that specific 4-monitor test), not a round-number guess.
 const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 
+# Extra resolution ceilings applied only while MiDaS-Fast/-Fastest are the
+# active stereo mode (2026-08-18) - unlike every knob AI-3D's own pipeline
+# exposes (pre-pass resolution/throttle, Newton-refinement cadence, depth-
+# capture throttle), none of which moved FPS at 4K when tested, capping the
+# actual decoded/composited stream size directly attacks the real cost:
+# general per-pixel video decode + compositing work, which scales with
+# resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
+# it stays the uncapped/known-good reference. See compute_requested_resolution().
+#
+# History: capped both tiers, then MiDaS-Fast/-Fastest's 3D quality looked
+# visibly worse than MiDaS-Std. [DEPTH]-tagged logging in depth_estimator.gd
+# ruled out the depth pipeline itself (capture/submission/polling equally
+# healthy across all tiers) and the bitrate cliff bug (fixed separately,
+# stream_manager.gd's _auto_bitrate() now scales from the UNCAPPED
+# resolution). Root cause found 2026-08-18: these caps were width/height
+# pairs, aspect-scaled with min(target_w/w, target_h/h) - on a WIDE source
+# (native_resolution here is a 2.96:1 multi-monitor composite, not 16:9),
+# the width dimension binds first, so "cap to 2560x1440" actually produced
+# 2560x864 (2.21M px) instead of the 3.69M px the "1440p" label implied -
+# confirmed directly: manually selecting 1440p and letting Fastest's cap
+# reduce down to "1440p" were NOT delivering the same pixel count at all,
+# despite looking like they should be equal. Fixed by capping to a total
+# PIXEL BUDGET via sqrt(target_px/actual_px) instead of a width/height pair
+# - same approach this file already uses for HEVC_MAX_TOTAL_PIXELS just
+# below, which doesn't have this problem because it already works in pixels.
+const MIDAS_RES_CAP_ENABLED := true
+const MIDAS_FAST_MAX_PIXELS := 3200 * 1800
+const MIDAS_FASTEST_MAX_PIXELS := 2560 * 1440
+
 # The highest resolution_scale_pct that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
 # current native_resolution, i.e. the point past which compute_requested_resolution()
@@ -477,7 +513,7 @@ func compute_resolution_options() -> Array:
 			opts.append(p)
 	return opts
 
-func compute_requested_resolution() -> Vector2i:
+func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	var w: int
 	var h: int
 	if is_polaris_host:
@@ -510,6 +546,30 @@ func compute_requested_resolution() -> Vector2i:
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
+	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
+	# Keyed off the actually-active stereo mode (accounts for sbs_mode
+	# overriding ai_3d_model/quality/debug, same as
+	# settings_controller.get_stereo_mode() itself), not those raw fields
+	# directly. Caps by total pixel budget (like
+	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
+	# min(target_w/w, target_h/h) - that approach silently delivered far
+	# fewer pixels than intended on a non-16:9 source (see history above).
+	# apply_midas_cap=false lets a caller ask "what would this resolution be
+	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which
+	# uses that to pick Auto bitrate from the uncapped resolution instead of
+	# the capped encode resolution (same bitrate, fewer pixels should mean
+	# MORE bits per pixel, not fewer).
+	if apply_midas_cap and MIDAS_RES_CAP_ENABLED and settings_controller:
+		var stereo_mode = settings_controller.get_stereo_mode()
+		var max_pixels := 0
+		if stereo_mode == 10:
+			max_pixels = MIDAS_FAST_MAX_PIXELS
+		elif stereo_mode == 11:
+			max_pixels = MIDAS_FASTEST_MAX_PIXELS
+		if max_pixels > 0 and w * h > max_pixels:
+			var cap_scale = sqrt(float(max_pixels) / float(w * h))
+			w = int(w * cap_scale)
+			h = int(h * cap_scale)
 	w = maxi(w - (w % 2), 320)
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
@@ -633,6 +693,18 @@ func _update_cursor_layer():
 			comp_cursor.visible = false
 			_hide_all_stream_cursors()
 		elif use_in_stream and on_screen:
+			# Only hovered_screen gets shown below - explicitly hide every other
+			# screen's cursor the instant the hover target changes, rather than
+			# leaving whichever screen was PREVIOUSLY hovered showing its last
+			# cursor position until something else happens to call
+			# _hide_all_stream_cursors() (e.g. the ray briefly leaving every
+			# screen entirely) - that gap is what let two cursors show at once
+			# when moving straight from one screen to another.
+			for s in screens:
+				if s != hovered_screen:
+					_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
+					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
+					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 			var uv = hovered_screen.hit_point_to_uv(hit_point)
 			var bezel_px = 8 if bezel_enabled else 0
 			var base_w = hovered_screen.comp_base_size.x
@@ -648,7 +720,18 @@ func _update_cursor_layer():
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
-				if stereo >= 3:
+				if stereo == 5 or stereo == 6:
+					# This hand-tuned pop was calibrated against the old, much
+					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
+					# the same ratio for modes 5/6's real, calibrated parallax
+					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
+					# than reused verbatim, or the cursor pops far more than
+					# anything actually in the depth-warped video. Both modes
+					# share the exact same warp pipeline/parallax magnitude -
+					# only the depth model backing them differs (GPU delegate
+					# vs NNAPI, see DepthEstimator.java).
+					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
+				elif stereo >= 3:
 					left_cx += 0.015 * base_w
 				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
 				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
@@ -794,7 +877,20 @@ func _on_stream_started():
 	# first real frame should have landed.
 	_stream_start_seq += 1
 	_retry_yuv_bind(_stream_start_seq)
-	_switch_to_comp_layer()
+	# Was an unconditional _switch_to_comp_layer() (plain/mono), which reset
+	# AI-3D/SBS to 2D on EVERY (re)connect, silently, with nothing re-
+	# applying the real mode afterward unless the user happened to touch a
+	# mode button again post-restart - root cause of "3D effect stopped
+	# working after a restart, only came back after manually cycling modes"
+	# (2026-08-18, user diagnosed this from watching a MiDaS-Fast switch
+	# visibly apply against the OLD pre-restart video, then get lost when
+	# the restart landed). apply_stereo() re-derives and applies the actual
+	# current stereo mode (2D/SBS/AI-3D) against the freshly (re)started
+	# session instead of blindly resetting to 2D - settings_controller.gd's
+	# _schedule_ai_3d_commit() now deliberately skips its own apply_stereo()
+	# call when a restart is about to happen, relying on this one instead,
+	# so the mode is only ever applied against a session that's actually live.
+	settings_controller.apply_stereo()
 	if not was_restarting:
 		ui_visible = false
 		_set_ui_visible(false)
@@ -1076,13 +1172,25 @@ func _init_modules():
 
 func _init_android_setup():
 	if OS.get_name() == "Android":
+		# Must run BEFORE _init_backgrounds_and_comp_layer() creates
+		# comp_viewport_left/right - depth_estimator's upsample/offset
+		# SubViewports (stereo_mode 5) produce the warp data those actually-
+		# displayed per-eye viewports consume every frame (via
+		# yuv_display.gdshader), and Godot updates SubViewports in scene-tree
+		# order, so the producer must be added to the tree first. (The
+		# upsample pass used to also depend on comp_viewport - the OPPOSITE
+		# direction - which was the real source of a stutter/double-image
+		# bug; that dependency was removed by having it decode YUV directly
+		# instead, see depth_upsample.gdshader.)
 		depth_estimator.setup()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 1)
+	ai_3d_model = clampi(ai_3d_model, 0, 1)
+	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
+	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -1529,10 +1637,33 @@ func _init_xr(interface):
 		get_viewport().msaa_3d = Viewport.MSAA_2X
 	_xr_base_render_scale = get_viewport().scaling_3d_scale
 	is_xr_active = true
+	# Godot's own comp-layer/texture bindings (connect_welcome_texture() et al)
+	# only ever run once, here at boot, regardless of whether the OpenXR
+	# session is actually visible yet - is_initialized() (checked before this
+	# function is even called) only means a session exists, not that the
+	# headset is being worn: the proximity sensor is a separate state Quest
+	# tracks independently of session creation. Launching headlessly (e.g. via
+	# adb) and only putting the headset on afterward left the welcome screen
+	# showing its plain grey placeholder texture, because nothing ever
+	# re-touched the binding once the session actually became visible.
+	# user_presence_changed is the proximity-sensor signal itself - re-run the
+	# one-time welcome-texture binding whenever the headset is (re-)donned,
+	# which is cheap and idempotent, so it's safe even on a session that was
+	# already correctly bound.
+	if interface.has_signal("user_presence_changed"):
+		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
-	ai_3d_mode = 0
+	ai_3d_model = 0
 
 	settings_controller.apply_display_refresh_rate()
+
+func _on_user_presence_changed(is_present: bool):
+	# Only the welcome screen depends on this - once actually streaming, the
+	# real video texture bindings are already refreshed by their own paths
+	# (_on_stream_started() et al) and re-running connect_welcome_texture()
+	# here would incorrectly stomp them back to the welcome viewport.
+	if is_present and comp and comp.available and not is_streaming:
+		comp.connect_welcome_texture()
 
 func _init_backgrounds_and_comp_layer():
 	_create_backgrounds()
@@ -1629,9 +1760,6 @@ func _process(delta):
 	if Engine.get_frames_drawn() % 120 == 0:
 		_flush_log()
 
-	if comp:
-		comp.process_loading_dots(delta)
-
 	_process_button_input()
 
 	if right_click_cooldown > 0.0:
@@ -1651,7 +1779,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_mode > 0 and comp.in_use:
+		if depth_estimator.depth_texture and ai_3d_model > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)

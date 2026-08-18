@@ -62,7 +62,18 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	if main.bitrate_idx >= 0:
 		bitrate = main.bitrates[main.bitrate_idx] * 1000
 	else:
-		bitrate = _auto_bitrate(w, h)
+		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
+		# above - w/h can be reduced by the MiDaS-Fast/-Fastest resolution
+		# cap (main.gd's MIDAS_FAST_MAX_PIXELS), which is meant to trade pixels
+		# for FPS, not ALSO cut the bitrate. _auto_bitrate() keying off the
+		# capped w/h used to do both at once (confirmed via logs: capping to
+		# 3712x2088 or 2560x1440 both dropped bitrate from 80000 to 40000),
+		# which starved the video of real detail and degraded MiDaS-Fast/
+		# -Fastest's depth quality well beyond what the resolution cut alone
+		# would explain (see compute_requested_resolution()'s apply_midas_cap
+		# param). Same bitrate at fewer pixels means MORE bits per pixel.
+		var bitrate_ref = main.compute_requested_resolution(false)
+		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
@@ -258,20 +269,23 @@ func _on_v2_launch_response(response: Dictionary):
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %dMbps)" % [w, h, fps, br])
 
+# Scales linearly against a fixed reference ratio (3840x2160 @ 80000 kbps)
+# instead of the old fixed pixel-count buckets - so it also scales correctly
+# ABOVE 4K (a future multi-monitor layout's total pixel count can exceed a
+# single 4K screen's) and smoothly below it (1080p, 720p, etc.), rather than
+# jumping between a handful of fixed tiers with cliffs at each boundary (a
+# cliff like this is what caused MiDaS-Fast/-Fastest's resolution cap to
+# ALSO cut bitrate in half, see compute_requested_resolution()'s
+# apply_midas_cap param). main.bitrate_idx >= 0 (the manual override) never
+# calls this at all - see start_stream()'s own check.
+const AUTO_BITRATE_REF_PIXELS := 3840 * 2160
+const AUTO_BITRATE_REF_KBPS := 80000
+const AUTO_BITRATE_MIN_KBPS := 1000
+
 func _auto_bitrate(w: int, h: int) -> int:
 	var pixels = w * h
-	if pixels >= 3840 * 2160:
-		return 80000
-	elif pixels >= 2560 * 1440:
-		return 40000
-	elif pixels >= 3440 * 1440:
-		return 50000
-	elif pixels >= 1920 * 1080:
-		return 20000
-	elif pixels >= 1600 * 1200:
-		return 20000
-	else:
-		return 10000
+	var kbps = int(AUTO_BITRATE_REF_KBPS * float(pixels) / float(AUTO_BITRATE_REF_PIXELS))
+	return maxi(kbps, AUTO_BITRATE_MIN_KBPS)
 
 func resize_stream_viewport(w: int, h: int):
 	main.stream_viewport.size = Vector2i(w, h)

@@ -4,9 +4,40 @@ extends RefCounted
 var main: Node3D
 var _restart_pending: bool = false
 var _restart_seq: int = 0
+var _ai_3d_commit_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
-var ai_3d_labels: Array = ["2D", "MiDaS"]
+# MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
+# fp16 model/weights, gradle deps, and Java code are gone
+# (DepthEstimator.java, build.sh). The real bug (wrong quantization
+# parameters on the w8a8 model, see git history 2026-08-18) is fixed now,
+# so GPU isn't needed as a working comparison point anymore. Don't restore
+# a mapping for stereo_mode 5 without re-adding that code.
+# The original "MiDaS" mode (a single-sample parallax shift, stereo_mode 3)
+# is REMOVED too (2026-08-18) - stereo_mode 3/4's shader branch in
+# yuv_display.gdshader is dead code left in place (harmless, costs nothing
+# unless selected) rather than deleted - see stereo_mode 4/5's own history
+# for the same pattern.
+#
+# Split (2026-08-18) from a single flat "3D AI" cycle into three
+# independent controls, matching main.gd's ai_3d_model/ai_3d_quality/
+# ai_3d_debug:
+#   ai_3d_model_labels   - is AI-3D on at all, and with which model (more
+#                          models may join MiDaS here in future).
+#   ai_3d_quality_labels - which performance tier. Fastest/Fast/Standard
+#                          directly select depth_estimator.gd's warp_tier
+#                          2/1/0 (see MiDaS-Fast/-Fastest's own history in
+#                          main.gd, MIDAS_FAST_MAX_PIXELS, for what each
+#                          tier trades off). Auto instead picks a tier from
+#                          the current resolution/passthrough state - see
+#                          resolve_quality_tier()/_auto_quality_tier() below.
+#   ai_3d_debug_labels   - debug depth-data VIEWS (DMap/-Raw/-Input),
+#                          overlaid on whichever quality tier is active
+#                          rather than a mode of their own - see
+#                          get_stereo_mode() and _schedule_ai_3d_commit().
+var ai_3d_model_labels: Array = ["Off", "MiDaS"]
+var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
+var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -16,12 +47,47 @@ func _init(owner: Node3D):
 func get_stereo_mode() -> int:
 	if main.sbs_mode > 0:
 		return main.sbs_mode
-	if main.ai_3d_mode == 0:
+	if main.ai_3d_model == 0:
 		return 0
-	elif main.ai_3d_mode == 1:
-		return 3
+	if main.ai_3d_debug == 1:
+		return 7 # MiDaS-DMap
+	elif main.ai_3d_debug == 2:
+		return 8 # MiDaS-DMap-Raw
+	elif main.ai_3d_debug == 3:
+		return 9 # MiDaS-DMap-Input
+	match resolve_quality_tier():
+		1: return 10 # MiDaS-Fast
+		2: return 11 # MiDaS-Fastest
+		_: return 6 # MiDaS-Std
+
+# 0=Standard, 1=Fast, 2=Fastest - matches depth_estimator.gd's warp_tier
+# numbering exactly, so apply_stereo() can pass this straight through.
+func resolve_quality_tier() -> int:
+	match main.ai_3d_quality:
+		1: return 2 # Fastest
+		2: return 1 # Fast
+		3: return 0 # Standard
+		_: return _auto_quality_tier()
+
+# Reads the pre-AI3D-cap BASE resolution (compute_requested_resolution(false),
+# NOT the live/possibly-already-capped value - reading the capped value
+# would be circular, since Auto's own tier choice is what determines the
+# cap in the first place) and classifies it by total pixel count against
+# the nearest 16:9 reference resolution, not literal width/height - this
+# setup's native_resolution is a wide multi-monitor composite, not 16:9,
+# and a literal-dimension check would misclassify it the same way the old
+# width/height-pair resolution caps did (see MIDAS_FAST_MAX_PIXELS's
+# history in main.gd).
+func _auto_quality_tier() -> int:
+	var res = main.compute_requested_resolution(false)
+	var pixels = res.x * res.y
+	var pt = main.passthrough_enabled
+	if pixels <= 1280 * 720:
+		return 0 # Standard, either passthrough state
+	elif pixels <= 2560 * 1440:
+		return 1 if pt else 0 # 1080p/1440p: Fast w/ passthrough, else Standard
 	else:
-		return 4
+		return 2 if pt else 1 # 4K+: Fastest w/ passthrough, else Fast
 
 func _save_setting(btn: Button, label: String):
 	if btn:
@@ -36,13 +102,83 @@ func cycle_sbs_mode():
 	if main.sbs_mode > 0 and main.screens.size() > 1:
 		main._ui_status_label.text = "SBS applies to primary screen only"
 
-func cycle_ai_3d_mode():
+func cycle_ai_3d_model():
 	if OS.get_name() != "Android":
 		return
 	if main.sbs_mode > 0:
 		return
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 2
-	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
+	# Only the label updates immediately - actually applying the mode
+	# (apply_stereo(), which reconfigures depth_estimator and can trigger a
+	# resolution-cap stream restart) is debounced below, same UX as
+	# cycle_resolution()/_schedule_stream_restart(): click through to find
+	# the setting you want, and it only commits once you stop, instead of
+	# reconfiguring/restarting on every single click along the way.
+	main.ai_3d_model = (main.ai_3d_model + 1) % 2
+	_save_setting(main._ui_3d_btn, ai_3d_model_labels[main.ai_3d_model])
+	main.ui_controller.update_3d_btn_state()
+	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_quality():
+	if OS.get_name() != "Android":
+		return
+	if main.sbs_mode > 0 or main.ai_3d_model == 0:
+		return
+	main.ai_3d_quality = (main.ai_3d_quality + 1) % 4
+	_save_setting(main._ui_3d_quality_btn, ai_3d_quality_labels[main.ai_3d_quality])
+	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_debug():
+	# Disabled (2026-08-18), not removed - get_stereo_mode()/apply_stereo()/
+	# _schedule_ai_3d_commit() still fully handle ai_3d_debug != 0 correctly,
+	# and the button stays visible (just always disabled/dim - see
+	# ui_controller.gd's update_3d_btn_state()) rather than hidden. Delete
+	# this early return to re-enable clicking through DMap/-Raw/-Input again.
+	return
+
+func _schedule_ai_3d_commit():
+	_ai_3d_commit_seq += 1
+	var my_seq = _ai_3d_commit_seq
+	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
+	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input
+	# against whichever tier is active), where quick feedback matters more
+	# than matching the restart delay exactly. Shared across all three
+	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
+	# between model/quality/debug controls in quick succession still only
+	# commits once, for whatever the final combined state ends up being.
+	await main.get_tree().create_timer(0.6).timeout
+	if _ai_3d_commit_seq != my_seq:
+		return
+	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
+	# already flowing, not a separate mode with its own resolution needs -
+	# deliberately inherit whatever resolution (including a MiDaS-Fast/
+	# -Fastest cap) is already active instead of recomputing/restarting back
+	# to the full uncapped resolution. That restart actively worked against
+	# debugging: switching to a debug view to inspect what a tier was doing
+	# changed the very thing being inspected (a different, uncapped
+	# resolution) and interrupted the stream to do it. They never restart,
+	# so apply_stereo() is always safe to call immediately here.
+	if main.ai_3d_debug != 0:
+		apply_stereo()
+		return
+	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
+	# MIDAS_FAST_MAX_PIXELS in main.gd). Checked BEFORE apply_stereo(), not
+	# after - if a restart is needed, apply_stereo() is skipped here
+	# entirely and left to main.gd's _on_stream_started(), which now calls
+	# it once the new session actually lands, instead of calling it here too
+	# and applying the new stereo/depth mode against the OLD, about-to-be-
+	# replaced video for the ~0.8-1.3s the restart takes. That was a real,
+	# visible bug (2026-08-18, user diagnosed it directly): the new effect
+	# would visibly apply and then get lost the moment the restart landed,
+	# since depth_estimator's pre-pass/warp state got initialized against a
+	# session that was seconds from being torn down, not the one that
+	# actually mattered.
+	var new_res = main.compute_requested_resolution()
+	if new_res != main.host_resolution:
+		main.host_resolution = new_res
+		refresh_resolution_btn_label()
+		if main.is_streaming:
+			_schedule_stream_restart()
+			return
 	apply_stereo()
 
 func apply_stereo():
@@ -60,13 +196,60 @@ func apply_stereo():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
 	if main.depth_estimator:
-		main.depth_estimator.set_enabled(mode >= 3)
+		# mode 7 (MiDaS-DMap) visualizes upsampled_depth_texture (the real
+		# post-upsample data the actual warp uses), so it needs the warp
+		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
+		# pre-upsample depth_texture directly - no warp passes needed. mode 9
+		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
+		# model - also no warp passes needed. modes 10/11 (MiDaS-Fast/
+		# -Fastest) are the same warp passes as mode 6, just throttled/shrunk
+		# by differing amounts - see warp_update_interval's comment in
+		# depth_estimator.gd. warp_tier (0=Standard, 1=Fast, 2=Fastest) comes
+		# from resolve_quality_tier() - the SAME tier drives the pre-pass
+		# config whether you're looking at the real warp (mode 6/10/11) or a
+		# debug view of it (mode 7/8/9), since debug views are just a lens
+		# on whichever tier is actually active, not a tier of their own.
+		var warp_tier = resolve_quality_tier() if main.ai_3d_model > 0 else 0
+		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
+		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
+		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
+		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
+		# comp_viewport_left/right - but that mono viewport is depth capture's
+		# ONLY semantically correct source (see bind_stream_texture()'s own
+		# comment for why comp_viewport_left doesn't work). Force it back to
+		# UPDATE_ALWAYS whenever depth capture needs it, undoing that disable
+		# every time this runs (switch_to_stereo_comp_layer() re-disables it
+		# on every call, so this has to re-assert every time too, not once).
+		if mode >= 3:
+			if main.primary_screen and main.primary_screen.comp_viewport:
+				main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+			main.depth_estimator.bind_stream_texture()
 		if mode >= 3 and main.depth_estimator.depth_texture:
+			var de = main.depth_estimator
+			var upsampled_tex = de.upsample_viewport.get_texture() if de.upsample_viewport else null
+			var offset_tex = de.offset_viewport.get_texture() if de.offset_viewport else null
+			var guide_tex = de.depth_viewport.get_texture() if de.depth_viewport else null
 			if main.comp_shader_mat_left:
-				main.comp_shader_mat_left.set_shader_parameter("depth_texture", main.depth_estimator.depth_texture)
+				main.comp_shader_mat_left.set_shader_parameter("depth_texture", de.depth_texture)
+				main.comp_shader_mat_left.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
+				main.comp_shader_mat_left.set_shader_parameter("offset_texture", offset_tex)
+				main.comp_shader_mat_left.set_shader_parameter("depth_guide_texture", guide_tex)
 			if main.comp_shader_mat_right:
-				main.comp_shader_mat_right.set_shader_parameter("depth_texture", main.depth_estimator.depth_texture)
-	main.stream_backend.set_depth_model(1 if mode == 4 else 0)
+				main.comp_shader_mat_right.set_shader_parameter("depth_texture", de.depth_texture)
+				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
+				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
+				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
+	# modes 6/7/8/9/10/11 (MiDaS-Std, MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-
+	# Input, MiDaS-Fast, MiDaS-Fastest) all reuse the same MiDaS-Std model/
+	# inference (index 3) - they're pure visualizations/warp-pass variants of
+	# that same depth data, not a separate source. mode 9 doesn't even read
+	# the model's output (just the color capture), but MUST still stay on
+	# model index 3 here - leaving it out of this set previously silently
+	# swapped the active model down to the slow CPU/dilate-blur path (index
+	# 0) every time mode 9 was selected, which then poisoned the other modes
+	# with stale/wrong-quality data the next time they ran, since all modes
+	# share one depth_texture/ImageTexture.
+	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 or mode == 10 or mode == 11 else 0))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
@@ -476,7 +659,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 func _real_monitor_count() -> int:
 	var count = 0
 	for m in main.layout.monitors:
-		if not m.hint.get("virtual", false):
+		if not m.hint.get("virtual", false) and m.capturable:
 			count += 1
 	return count
 
@@ -531,7 +714,11 @@ func select_monitor_preset(id: StringName):
 func _build_staged_layout() -> ScreenLayout:
 	var real_monitors: Array = []
 	for m in main.layout.monitors:
-		if not m.hint.get("virtual", false):
+		# Excludes capturable=false (connected-but-disabled host outputs) too, not just
+		# virtual placeholders - otherwise the N-leftmost-by-x pick below can select a
+		# monitor the host will always refuse, silently wasting a slot (the host drops it
+		# from capture but this client still thinks it asked for N real monitors).
+		if not m.hint.get("virtual", false) and m.capturable:
 			real_monitors.append(m)
 	main._log("[LAYOUT] _build_staged_layout: main.layout.monitors=%d real=%d staged_physical=%d staged_virtual=%d source=%s" % [main.layout.monitors.size(), real_monitors.size(), main._staged_physical_count, main._staged_virtual_count, str(main.layout.source)])
 	if real_monitors.is_empty():
@@ -654,6 +841,20 @@ func _apply_preset_positions_to_screens():
 				var fr: Array = data.get("free_rot", [s.rotation.x, s.rotation.y, s.rotation.z])
 				s.position = Vector3(fp[0], fp[1], fp[2])
 				s.rotation = Vector3(fr[0], fr[1], fr[2])
+	# Primary itself is deliberately never repositioned above (it's the free-
+	# mode anchor everything else is placed relative to) - but Godot's
+	# CollisionObject3D only pushes a node's transform to PhysicsServer3D on
+	# NOTIFICATION_TRANSFORM_CHANGED, which a node that never actually moves
+	# never receives. Confirmed live: right after adding a second monitor,
+	# primary's own pointer/raycast interaction went laggy/unusable (its
+	# Area3D's physics-side transform was stale relative to whatever the new
+	# secondary's Area3D just did to the broadphase) until manually grabbing
+	# and moving primary even slightly, which fixed it - because a real grab
+	# always writes global_position, firing the notification this never
+	# otherwise gets. Reassigning to its own current transform is a no-op
+	# geometrically but still fires that notification, without needing an
+	# actual (visible) move.
+	primary.global_transform = primary.global_transform
 	if main.comp.available:
 		main.comp.update_cylinder_params()
 

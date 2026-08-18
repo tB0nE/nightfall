@@ -197,14 +197,9 @@ func _make_yuv_rect() -> ColorRect:
 	return r
 
 const DOT_COLOR := Color(0.25, 0.25, 0.25)
-const DOT_HIDDEN_COLOR := Color(0.45, 0.45, 0.45)  # matches the placeholder/background grey, so a "hidden" dot just blends in
 const DOT_BASE_FONT_SIZE := 96
 const DOT_BASE_HEIGHT := 1080.0
 
-const DOT_ANIM_INTERVAL := 0.6
-
-var _dot_anim_time := 0.0
-var _dot_anim_phase := 1  # start on the center dot
 # A single "restart episode" (settings change -> teardown -> reconnect ->
 # possibly one more mismatch-retry reconnect, see main.gd's
 # _on_stream_started()) calls clear_yuv_textures() more than once before the
@@ -241,33 +236,6 @@ func _make_loading_dots() -> Dictionary:
 		hbox.add_child(d)
 		dots.append(d)
 	return {"container": container, "dots": dots}
-
-func _apply_dot_phase(dots: Array):
-	for i in range(dots.size()):
-		if dots[i]:
-			dots[i].add_theme_color_override("font_color", DOT_HIDDEN_COLOR if i == _dot_anim_phase else DOT_COLOR)
-
-# Called every frame from main._process(); cheap no-op unless a loading
-# indicator is actually visible somewhere.
-func process_loading_dots(delta: float):
-	var any_visible = false
-	for s in main.screens:
-		if (s.comp_loading_label and s.comp_loading_label.visible) \
-		or (s.comp_loading_label_left and s.comp_loading_label_left.visible) \
-		or (s.comp_loading_label_right and s.comp_loading_label_right.visible):
-			any_visible = true
-			break
-	if not any_visible:
-		return
-	_dot_anim_time += delta
-	if _dot_anim_time < DOT_ANIM_INTERVAL:
-		return
-	_dot_anim_time -= DOT_ANIM_INTERVAL
-	_dot_anim_phase = (_dot_anim_phase + 1) % 3
-	for s in main.screens:
-		_apply_dot_phase(s.comp_loading_dots)
-		_apply_dot_phase(s.comp_loading_dots_left)
-		_apply_dot_phase(s.comp_loading_dots_right)
 
 # The dots' font_size is in the comp SubViewport's own pixel space, which is
 # resized to the real stream resolution (resize_stream_viewport()) - without
@@ -634,6 +602,19 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 		for lbl in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
 			if lbl:
 				lbl.visible = false
+	# stereo_mode 5's upsample pass decodes YUV itself now (depth_upsample.gdshader)
+	# rather than depending on comp_viewport's rendered output - see main.gd's
+	# depth_estimator.setup() call site for why that dependency direction was a
+	# problem. AI-3D is primary-only, so this always mirrors whatever the loop
+	# above just bound, regardless of which screen(s) it iterated.
+	if main.depth_estimator and main.depth_estimator.upsample_mat:
+		var um = main.depth_estimator.upsample_mat
+		um.set_shader_parameter("tex_y", tex_y)
+		um.set_shader_parameter("tex_u", tex_u)
+		um.set_shader_parameter("tex_v", tex_v)
+		um.set_shader_parameter("yuv_mode", yuv_mode)
+		um.set_shader_parameter("color_matrix_type", cmt)
+		um.set_shader_parameter("color_range", cr)
 	_dots_active = false
 	main._log("[COMP] YUV textures bound to composition layer shader (mode=%d)" % yuv_mode)
 
@@ -800,12 +781,6 @@ func clear_yuv_textures():
 	# _on_stream_started()) only does this once instead of re-sizing/resetting
 	# on every intermediate clear_yuv_textures() call in between.
 	update_loading_dot_sizes()
-	_dot_anim_time = 0.0
-	_dot_anim_phase = 1
-	for s in main.screens:
-		_apply_dot_phase(s.comp_loading_dots)
-		_apply_dot_phase(s.comp_loading_dots_left)
-		_apply_dot_phase(s.comp_loading_dots_right)
 
 static func set_grab_bar_color(viewport: SubViewport, color: Color):
 	if not viewport:
