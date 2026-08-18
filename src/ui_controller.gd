@@ -507,6 +507,14 @@ func build_ui():
 	_tab_btn_monitors.custom_minimum_size = Vector2(160, 44)
 	_tab_btn_monitors.add_theme_font_size_override("font_size", 22)
 	_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	# Disabled (2026-08-18), not removed - the underlying multi-monitor code
+	# (composition_layer_manager.gd, vr_screen.gd, screen_layout.gd etc.) is
+	# still fully wired up and depended on by AI-3D itself, this just hides
+	# the tab/button so the feature isn't user-facing yet. switch_tab(3) is
+	# ONLY ever reached via this button's own click handler below (no other
+	# call site), so hiding it fully disables reachability. Set .visible =
+	# true again to bring the tab back.
+	_tab_btn_monitors.visible = false
 	tab_bar.add_child(_tab_btn_monitors)
 
 	var tab_margin = Control.new()
