@@ -5,9 +5,6 @@ import android.content.res.AssetFileDescriptor;
 import android.util.Log;
 
 import org.tensorflow.lite.Interpreter;
-import org.tensorflow.lite.gpu.CompatibilityList;
-import org.tensorflow.lite.gpu.GpuDelegate;
-import org.tensorflow.lite.gpu.GpuDelegateFactory;
 
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -25,7 +22,6 @@ public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
     private static final int OUTPUT_SIZE = 256;
     private static final int DA_INPUT_SIZE = 256;
-    private static final int GPU_INPUT_SIZE = 256;
     private static final int HQ_INPUT_SIZE = 256;
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
     // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
@@ -46,34 +42,21 @@ public class DepthEstimator {
     private static final float MIDAS_OUTPUT_SCALE = 6.514299392700195f;
     private static final int MIDAS_OUTPUT_ZERO_POINT = 0;
     private static final String MODEL_DEPTH_ANYTHING = "depth-anything-v2-small.tflite";
-    // MiDaS v2.1 small, fp16, vendored from Gilleece/moonlight-android-xr's own
-    // conversion (tools/convert_midas.py there) of the MIT-licensed MIDAS_ISL
-    // ONNX export, for a same-model/same-delegate A/B comparison against our
-    // existing w8a8 CPU/NNAPI path. Comparison-only: this exact binary hasn't
-    // been re-derived from source here, so don't ship it without revisiting
-    // provenance/licensing.
-    private static final String MODEL_MIDAS_GPU = "midas_v21_small_256_fp16.tflite";
 
     private Interpreter tfliteMidas;
     private Interpreter tfliteDepthAnything;
-    private Interpreter tfliteMidasGpu;
-    private GpuDelegate gpuDelegateMidasGpu;
-    private boolean midasGpuAccelerated;
     // Same underlying weights as tfliteMidas (MODEL_MIDAS), loaded as a genuinely
     // separate Interpreter instance via NNAPI - lets model index 3 ("MiDaS-NNAPI")
-    // feed the new occlusion-aware warp pipeline without the GPU delegate's GLES
-    // context fighting Godot's own Vulkan renderer for the GPU (see runInferenceMidasHq()).
+    // feed the occlusion-aware warp pipeline on its own Interpreter instance.
     // Two instances from the same file share the OS page cache for the read-only
     // weight bytes, so this isn't a second full copy of the model.
     private Interpreter tfliteMidasHq;
     private Interpreter activeInterpreter;
     private ByteBuffer inputBufferMidas;
     private ByteBuffer inputBufferDA;
-    private ByteBuffer inputBufferGpu;
     private ByteBuffer inputBufferHq;
     private ByteBuffer outputBufferMidas;
     private ByteBuffer outputBufferDA;
-    private ByteBuffer outputBufferGpu;
     private ByteBuffer outputBufferHq;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
@@ -106,9 +89,8 @@ public class DepthEstimator {
             // but easy to miss next to the similarly-worded per-call
             // "Inference: Xms" duration log that still prints from the
             // finally block regardless of success. Only affects this w8a8
-            // model - inputBufferGpu (a real float32 fp16 model, confirmed
-            // 100% success rate in the same log analysis) and inputBufferDA
-            // are untouched.
+            // model - inputBufferDA (a genuinely different, float32 model)
+            // is untouched.
             inputBufferMidas = ByteBuffer.allocateDirect(1 * OUTPUT_SIZE * OUTPUT_SIZE * 3)
                     .order(ByteOrder.nativeOrder());
             // Output tensor ("depth_estimates") is ALSO quantized UINT8, not
@@ -120,11 +102,6 @@ public class DepthEstimator {
             inputBufferDA = ByteBuffer.allocateDirect(1 * DA_INPUT_SIZE * DA_INPUT_SIZE * 3 * 4)
                     .order(ByteOrder.nativeOrder());
             outputBufferDA = ByteBuffer.allocateDirect(1 * DA_INPUT_SIZE * DA_INPUT_SIZE * 1 * 4)
-                    .order(ByteOrder.nativeOrder());
-
-            inputBufferGpu = ByteBuffer.allocateDirect(1 * GPU_INPUT_SIZE * GPU_INPUT_SIZE * 3 * 4)
-                    .order(ByteOrder.nativeOrder());
-            outputBufferGpu = ByteBuffer.allocateDirect(1 * GPU_INPUT_SIZE * GPU_INPUT_SIZE * 1 * 4)
                     .order(ByteOrder.nativeOrder());
 
             // Same model file as inputBufferMidas (MODEL_MIDAS) - same UINT8
@@ -147,17 +124,9 @@ public class DepthEstimator {
             }
 
             try {
-                tfliteMidasGpu = loadMidasGpuInterpreter();
-                Log.i(TAG, "MiDaS v2.1-small GPU model loaded, accelerated=" + midasGpuAccelerated);
-            } catch (Exception e) {
-                Log.w(TAG, "MiDaS v2.1-small GPU model not available", e);
-                tfliteMidasGpu = null;
-            }
-
-            try {
                 // Same weights as MODEL_MIDAS (mode 0), separate instance, via the
-                // proven NNAPI-with-CPU-fallback path - feeds the new warp pipeline
-                // (stereo_mode 6) without the GPU delegate's GLES/Vulkan contention.
+                // proven NNAPI-with-CPU-fallback path - feeds the occlusion-aware
+                // warp pipeline (stereo_mode 6) on its own Interpreter instance.
                 tfliteMidasHq = loadInterpreter(MODEL_MIDAS);
                 Log.i(TAG, "MiDaS-NNAPI (HQ) model loaded");
             } catch (Exception e) {
@@ -193,56 +162,11 @@ public class DepthEstimator {
         }
     }
 
-    // Mirrors Gilleece/moonlight-android-xr's MidasDepthSource.initialize(): GPU
-    // delegate with fp16 precision loss allowed and sustained-speed preference,
-    // falling back to CPU only if delegate creation/model load fails. Unlike
-    // our other models this deliberately skips NNAPI - their comparison point
-    // is the GPU delegate specifically.
-    private Interpreter loadMidasGpuInterpreter() throws IOException {
-        MappedByteBuffer buffer = loadModelFile(MODEL_MIDAS_GPU);
-
-        CompatibilityList compatibility = new CompatibilityList();
-        Log.i(TAG, "MiDaS GPU: allowlist says " + compatibility.isDelegateSupportedOnThisDevice()
-                + ", trying the delegate anyway");
-
-        Interpreter.Options options = new Interpreter.Options();
-        try {
-            GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
-            gpuOptions.setPrecisionLossAllowed(true);
-            gpuOptions.setInferencePreference(
-                    GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
-            gpuDelegateMidasGpu = new GpuDelegate(gpuOptions);
-            options.addDelegate(gpuDelegateMidasGpu);
-            midasGpuAccelerated = true;
-        } catch (Exception e) {
-            Log.w(TAG, "MiDaS GPU delegate creation failed, using CPU: " + e.getMessage());
-        }
-        if (!midasGpuAccelerated) {
-            options.setNumThreads(2);
-        }
-
-        try {
-            return new Interpreter(buffer, options);
-        } catch (Exception e) {
-            Log.w(TAG, "MiDaS GPU model failed to load with the GPU delegate: " + e.getMessage());
-            if (gpuDelegateMidasGpu != null) {
-                gpuDelegateMidasGpu.close();
-                gpuDelegateMidasGpu = null;
-            }
-            midasGpuAccelerated = false;
-            Interpreter.Options cpuOptions = new Interpreter.Options();
-            cpuOptions.setNumThreads(2);
-            return new Interpreter(buffer, cpuOptions);
-        }
-    }
-
     public void setActiveModel(int modelIndex) {
         if (!initialized) return;
         Interpreter target;
         if (modelIndex == 1 && tfliteDepthAnything != null) {
             target = tfliteDepthAnything;
-        } else if (modelIndex == 2 && tfliteMidasGpu != null) {
-            target = tfliteMidasGpu;
         } else if (modelIndex == 3 && tfliteMidasHq != null) {
             target = tfliteMidasHq;
         } else {
@@ -260,7 +184,6 @@ public class DepthEstimator {
             String modelName;
             switch (modelIndex) {
                 case 1: modelName = "Depth Anything V2"; break;
-                case 2: modelName = "MiDaS-GPU"; break;
                 case 3: modelName = "MiDaS-NNAPI"; break;
                 default: modelName = "MiDaS"; break;
             }
@@ -285,8 +208,6 @@ public class DepthEstimator {
                 byte[] result;
                 if (modelIdx == 1) {
                     result = runInferenceDA(frameCopy, width, height);
-                } else if (modelIdx == 2) {
-                    result = runInferenceMidasGpu(frameCopy, width, height);
                 } else if (modelIdx == 3) {
                     result = runInferenceMidasHq(frameCopy, width, height);
                 } else {
@@ -303,7 +224,6 @@ public class DepthEstimator {
                 String modelName;
                 switch (modelIdx) {
                     case 1: modelName = "DA"; break;
-                    case 2: modelName = "MiDaS-GPU"; break;
                     case 3: modelName = "MiDaS-HQ"; break;
                     default: modelName = "MiDaS"; break;
                 }
@@ -380,41 +300,12 @@ public class DepthEstimator {
         return postProcess(extractFloatOutput(outputBufferDA, DA_INPUT_SIZE * DA_INPUT_SIZE), DA_INPUT_SIZE, true);
     }
 
-    private byte[] runInferenceMidasGpu(byte[] rgbaPixels, int width, int height) {
-        inputBufferGpu.rewind();
-        outputBufferGpu.rewind();
-
-        int srcRowBytes = width * 4;
-        float scaleX = (float) width / GPU_INPUT_SIZE;
-        float scaleY = (float) height / GPU_INPUT_SIZE;
-
-        for (int y = 0; y < GPU_INPUT_SIZE; y++) {
-            int srcY = Math.min((int) (y * scaleY), height - 1);
-            int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < GPU_INPUT_SIZE; x++) {
-                int srcX = Math.min((int) (x * scaleX), width - 1);
-                int srcIdx = srcRowOff + srcX * 4;
-                inputBufferGpu.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
-                inputBufferGpu.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
-                inputBufferGpu.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
-            }
-        }
-        inputBufferGpu.rewind();
-
-        tfliteMidasGpu.run(inputBufferGpu, outputBufferGpu);
-        outputBufferGpu.rewind();
-
-        // No dilate/blur here - the warp shader does its own edge-aware joint
-        // bilateral upsample against the actual color frame (stereo_screen.gdshader,
-        // stereo_mode 5), which snaps depth to real edges instead of averaging
-        // small objects (taskbar icons, widgets) away like the CPU blur below does.
-        return postProcess(extractFloatOutput(outputBufferGpu, GPU_INPUT_SIZE * GPU_INPUT_SIZE), GPU_INPUT_SIZE, false);
-    }
-
     // Same model weights as runInferenceMidas() (mode 0), but via the separate
     // tfliteMidasHq NNAPI instance, feeding stereo_mode 6's warp pipeline. No
-    // dilate/blur here either, for the same reason as runInferenceMidasGpu() above -
-    // this is model-independent, not specific to which delegate produced the depth.
+    // dilate/blur here - the warp shader does its own edge-aware joint bilateral
+    // upsample against the actual color frame (depth_upsample.gdshader), which
+    // snaps depth to real edges instead of averaging small objects (taskbar
+    // icons, widgets) away like the CPU blur below does.
     private byte[] runInferenceMidasHq(byte[] rgbaPixels, int width, int height) {
         inputBufferHq.rewind();
         outputBufferHq.rewind();
@@ -455,8 +346,7 @@ public class DepthEstimator {
     }
 
     // Plain float32 output tensor extraction, for models that genuinely are
-    // float32 (runInferenceDA/runInferenceMidasGpu) - not quantized like the
-    // w8a8 MiDaS model.
+    // float32 (runInferenceDA) - not quantized like the w8a8 MiDaS model.
     private static float[] extractFloatOutput(ByteBuffer output, int count) {
         output.rewind();
         FloatBuffer floatOut = output.asFloatBuffer();
@@ -492,10 +382,10 @@ public class DepthEstimator {
     private boolean rangeValid = false;
 
     // Takes the already-decoded real-valued depth array, not a raw
-    // ByteBuffer - float32 output tensors (runInferenceDA/runInferenceMidasGpu)
-    // and quantized UINT8 ones (runInferenceMidas/runInferenceMidasHq) decode
-    // completely differently at the source (see each call site), and this
-    // logic downstream is identical either way once it's a plain float[].
+    // ByteBuffer - float32 output tensors (runInferenceDA) and quantized
+    // UINT8 ones (runInferenceMidas/runInferenceMidasHq) decode completely
+    // differently at the source (see each call site), and this logic
+    // downstream is identical either way once it's a plain float[].
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur) {
         int count = size * size;
 
@@ -680,14 +570,6 @@ public class DepthEstimator {
         if (tfliteDepthAnything != null) {
             tfliteDepthAnything.close();
             tfliteDepthAnything = null;
-        }
-        if (tfliteMidasGpu != null) {
-            tfliteMidasGpu.close();
-            tfliteMidasGpu = null;
-        }
-        if (gpuDelegateMidasGpu != null) {
-            gpuDelegateMidasGpu.close();
-            gpuDelegateMidasGpu = null;
         }
         if (tfliteMidasHq != null) {
             tfliteMidasHq.close();

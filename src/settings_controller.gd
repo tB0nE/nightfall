@@ -6,12 +6,12 @@ var _restart_pending: bool = false
 var _restart_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
-# MiDaS-GPU is disabled here (not deleted) - the "stale depth_texture from a
-# successful GPU run" theory was ruled out too (segment-by-segment log
-# analysis 2026-08-18 showed MiDaS/MiDaS-NNAPI at 0% success both before AND
-# immediately after MiDaS-GPU ran) but keeping the model/code around for
-# later re-testing was still explicitly requested - see get_stereo_mode()'s
-# commented-out mapping below to re-enable.
+# MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
+# fp16 model/weights, gradle deps, and Java code are gone
+# (DepthEstimator.java, build.sh). The real bug (wrong quantization
+# parameters on the w8a8 model, see git history 2026-08-18) is fixed now,
+# so GPU isn't needed as a working comparison point anymore. Don't restore
+# a mapping for stereo_mode 5 without re-adding that code.
 var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-NNAPI", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
@@ -34,7 +34,6 @@ func get_stereo_mode() -> int:
 		return 8 # MiDaS-DMap-Raw
 	elif main.ai_3d_mode == 5:
 		return 9 # MiDaS-DMap-Input
-	# elif main.ai_3d_mode == X: return 5  # MiDaS-GPU (disabled, not deleted)
 	else:
 		return 4
 
@@ -56,7 +55,12 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 6
+	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 3-5) are disabled from
+	# cycling, not removed - their code/shader params are still wired up in
+	# get_stereo_mode()/apply_stereo() below so they can be re-enabled by
+	# bumping this modulo back to 6 whenever we're doing more work on the
+	# AI-3D pipeline and need to inspect the depth map again.
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 3
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
 	apply_stereo()
 
@@ -119,7 +123,7 @@ func apply_stereo():
 	# CPU/dilate-blur path (index 0) every time mode 9 was selected, which
 	# then poisoned modes 6/7/8 with stale/wrong-quality data the next time
 	# they ran, since all modes share one depth_texture/ImageTexture.
-	main.stream_backend.set_depth_model(1 if mode == 4 else (2 if mode == 5 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 else 0)))
+	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 else 0))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:

@@ -185,8 +185,7 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 mkdir -p android/build/nightfallAssets
 cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small.tflite" android/build/nightfallAssets/ 2>/dev/null || true
-cp "$SCRIPT_DIR/android/src/main/assets/midas_v21_small_256_fp16.tflite" android/build/nightfallAssets/ 2>/dev/null || true
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"\n    implementation "org.tensorflow:tensorflow-lite-gpu:2.16.1"\n    implementation "org.tensorflow:tensorflow-lite-gpu-api:2.16.1"' android/build/build.gradle
+sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK
