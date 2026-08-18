@@ -30,7 +30,14 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-Fast comes before MiDaS-Std in the cycle order (not alphabetical/
 # quality order) so a first-time user cycling through options lands on the
 # faster mode first, rather than possibly judging performance off MiDaS-Std.
-var ai_3d_labels: Array = ["2D", "MiDaS-Fast", "MiDaS-Std", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
+# MiDaS-Fastest (stereo_mode 11, added 2026-08-18) pushes the same GPU-cost
+# knobs further still (FASTEST_PASS_DIVISOR=12, 1 Newton step every 3rd
+# frame instead of every 2nd - see WARP_NEWTON_PERIOD in depth_estimator.gd)
+# aimed at leaving headroom for 4K, where the per-eye Newton gather and the
+# pre-pass both cost more pixels than at the resolutions the other tiers
+# were tuned at. Put last in the cycle (after the known-good tiers) rather
+# than first, since it's the least proven of the three.
+var ai_3d_labels: Array = ["2D", "MiDaS-Fast", "MiDaS-Std", "MiDaS-Fastest", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -47,10 +54,12 @@ func get_stereo_mode() -> int:
 	elif main.ai_3d_mode == 2:
 		return 6 # MiDaS-Std
 	elif main.ai_3d_mode == 3:
-		return 7 # MiDaS-DMap
+		return 11 # MiDaS-Fastest (throttled/shrunk further, for 4K)
 	elif main.ai_3d_mode == 4:
-		return 8 # MiDaS-DMap-Raw
+		return 7 # MiDaS-DMap
 	elif main.ai_3d_mode == 5:
+		return 8 # MiDaS-DMap-Raw
+	elif main.ai_3d_mode == 6:
 		return 9 # MiDaS-DMap-Input
 	else:
 		return 4
@@ -73,14 +82,27 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 3-5) are disabled from
+	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 4-6) are disabled from
 	# cycling, not removed - their code/shader params are still wired up in
 	# get_stereo_mode()/apply_stereo() below so they can be re-enabled by
-	# bumping this modulo back to 6 whenever we're doing more work on the
+	# bumping this modulo back to 7 whenever we're doing more work on the
 	# AI-3D pipeline and need to inspect the depth map again.
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 3
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 4
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
 	apply_stereo()
+	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
+	# MIDAS_FAST_MAX_RES in main.gd) - compute_requested_resolution() is
+	# keyed off get_stereo_mode(), which apply_stereo() just re-evaluated,
+	# so re-derive it here too. Only restart if it actually changed - most
+	# mode switches below 4K-ish source resolutions never hit either cap,
+	# and a restart mid-test is disruptive enough to avoid when it'd be a
+	# no-op anyway.
+	var new_res = main.compute_requested_resolution()
+	if new_res != main.host_resolution:
+		main.host_resolution = new_res
+		refresh_resolution_btn_label()
+		if main.is_streaming:
+			_schedule_stream_restart()
 
 func apply_stereo():
 	var mode = get_stereo_mode()
@@ -102,10 +124,18 @@ func apply_stereo():
 		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
 		# pre-upsample depth_texture directly - no warp passes needed. mode 9
 		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
-		# model - also no warp passes needed. mode 10 (MiDaS-Fast) is the same
-		# warp passes as mode 6, just throttled - see warp_update_interval's
-		# comment in depth_estimator.gd.
-		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7 or mode == 10, mode == 10)
+		# model - also no warp passes needed. modes 10/11 (MiDaS-Fast/
+		# -Fastest) are the same warp passes as mode 6, just throttled/shrunk
+		# by differing amounts - see warp_update_interval's comment in
+		# depth_estimator.gd. warp_tier (0=full, 1=Fast, 2=Fastest) selects
+		# which; anything else defaults to tier 0 (no cost-cutting) inside
+		# set_enabled() itself.
+		var warp_tier := 0
+		if mode == 10:
+			warp_tier = 1
+		elif mode == 11:
+			warp_tier = 2
+		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
 		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
 		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
 		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
@@ -134,17 +164,17 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
-	# modes 6/7/8/9/10 (MiDaS-Std, MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-
-	# Input, MiDaS-Fast) all reuse the same MiDaS-Std model/inference (index
-	# 3) - they're pure visualizations/warp-pass variants of that same depth
-	# data, not a separate source. mode 9 doesn't even read the model's
-	# output (just the color capture), but MUST still stay on model index 3
-	# here - leaving it out of this set previously silently swapped the
-	# active model down to the slow CPU/dilate-blur path (index 0) every
-	# time mode 9 was selected, which then poisoned the other modes with
-	# stale/wrong-quality data the next time they ran, since all modes share
-	# one depth_texture/ImageTexture.
-	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 or mode == 10 else 0))
+	# modes 6/7/8/9/10/11 (MiDaS-Std, MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-
+	# Input, MiDaS-Fast, MiDaS-Fastest) all reuse the same MiDaS-Std model/
+	# inference (index 3) - they're pure visualizations/warp-pass variants of
+	# that same depth data, not a separate source. mode 9 doesn't even read
+	# the model's output (just the color capture), but MUST still stay on
+	# model index 3 here - leaving it out of this set previously silently
+	# swapped the active model down to the slow CPU/dilate-blur path (index
+	# 0) every time mode 9 was selected, which then poisoned the other modes
+	# with stale/wrong-quality data the next time they ran, since all modes
+	# share one depth_texture/ImageTexture.
+	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 or mode == 10 or mode == 11 else 0))
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:

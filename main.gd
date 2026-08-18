@@ -443,6 +443,25 @@ const HEVC_MAX_TOTAL_PIXELS = 35389440
 # (80% of that specific 4-monitor test), not a round-number guess.
 const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 
+# Extra resolution ceilings applied only while MiDaS-Fast/-Fastest are the
+# active stereo mode (2026-08-18) - unlike every knob AI-3D's own pipeline
+# exposes (pre-pass resolution/throttle, Newton-refinement cadence, depth-
+# capture throttle), none of which moved FPS at 4K when tested, capping the
+# actual decoded/composited stream size directly attacks the real cost:
+# general per-pixel video decode + compositing work, which scales with
+# resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
+# it stays the uncapped/known-good reference. See compute_requested_resolution().
+# Confirmed on-device (2026-08-18): 3200x1800 runs MiDaS-Fast stutter-free
+# without passthrough; 2560x1440 runs MiDaS-Fastest stutter-free WITH
+# passthrough on (the extra passthrough compositing cost is why Fastest's
+# cap is the lower of the two). 3456x1944 also held up for Fast, so pushed
+# a bit further; 2816x1584 introduced slight stutter for Fastest, so that
+# one's back down to the last confirmed-good 2560x1440 rather than pushed
+# further - Fastest is protected/conservative, Fast is the one still being
+# probed for its ceiling.
+const MIDAS_FAST_MAX_RES := Vector2i(3712, 2088)
+const MIDAS_FASTEST_MAX_RES := Vector2i(2560, 1440)
+
 # The highest resolution_scale_pct that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
 # current native_resolution, i.e. the point past which compute_requested_resolution()
@@ -510,6 +529,21 @@ func compute_requested_resolution() -> Vector2i:
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
+	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_RES's comment above.
+	# Keyed off the actually-active stereo mode (accounts for sbs_mode
+	# overriding ai_3d_mode, same as settings_controller.get_stereo_mode()
+	# itself), not raw ai_3d_mode.
+	if settings_controller:
+		var stereo_mode = settings_controller.get_stereo_mode()
+		var res_cap := Vector2i.ZERO
+		if stereo_mode == 10:
+			res_cap = MIDAS_FAST_MAX_RES
+		elif stereo_mode == 11:
+			res_cap = MIDAS_FASTEST_MAX_RES
+		if res_cap != Vector2i.ZERO and (w > res_cap.x or h > res_cap.y):
+			var cap_scale = minf(float(res_cap.x) / w, float(res_cap.y) / h)
+			w = int(w * cap_scale)
+			h = int(h * cap_scale)
 	w = maxi(w - (w % 2), 320)
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
@@ -1115,7 +1149,7 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 5)
+	ai_3d_mode = clampi(ai_3d_mode, 0, 6)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")

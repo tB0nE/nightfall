@@ -32,12 +32,14 @@ uniform sampler2D depth_guide_texture : hint_default_black, filter_linear;
 // (depth_estimator.gd's _setup_warp_passes()/set_parallax()) rather than
 // left at this default, precisely so the two can't drift apart.
 uniform float mode5_parallax = 0.006;
-// stereo_mode 10 (MiDaS-Fast) only - toggled 0/1 every render frame by
-// depth_estimator.gd's process(), so the Newton refinement below runs on
-// alternating frames instead of every frame (amortizing that cost over
-// time rather than cutting it outright, on the theory that one stale/
-// unrefined frame out of every two is imperceptible at 72Hz+).
-uniform int warp_frame_parity = 0;
+// How many Newton refinement steps the gather below does THIS frame (see
+// it in use further down) - computed and pushed every render frame by
+// depth_estimator.gd's process()/set_enabled() based on the active warp
+// tier (MiDaS-Std always pushes 2; MiDaS-Fast/-Fastest cycle 1-then-0s on
+// a period, amortizing the refinement's cost across frames instead of
+// paying it every frame). The shader just reads whatever's here - it
+// doesn't know or care which tier is active.
+uniform int warp_newton_steps = 2;
 uniform float convergence = 0.5;
 uniform float balance_shift = 0.5;
 
@@ -230,7 +232,7 @@ void fragment() {
 
 		uv = vec2(clamp(uv.x - shift * eye_sign, 0.0, 1.0), uv.y);
 	}
-	else if (stereo_mode == 5 || stereo_mode == 6 || stereo_mode == 10) {
+	else if (stereo_mode == 5 || stereo_mode == 6 || stereo_mode == 10 || stereo_mode == 11) {
 		// MiDaS-GPU path's gather: cheap by design, since depth_estimator.gd
 		// already ran the expensive edge-aware upsample + occlusion search
 		// ONCE per frame (not per eye) into upsampled_depth_texture /
@@ -245,11 +247,10 @@ void fragment() {
 		// xr_renderer.c directly (see git history 2026-08); refining toward
 		// a root of the WRONG equation is worse than not refining at all.
 		//
-		// MiDaS-Fast (stereo_mode 10) is a GPU-cost experiment (2026-08-18):
-		// it also drives depth_estimator.gd to run the pre-pass above at
-		// EX_PASS_DIVISOR (a quarter the pixels of stereo_mode 6's) and
-		// throttled to warp_update_interval instead of every render frame,
-		// AND does only 1 Newton step here instead of 2 - see
+		// MiDaS-Fast/-Fastest (stereo_mode 10/11) are a GPU-cost experiment
+		// (2026-08-18): they also drive depth_estimator.gd to run the
+		// pre-pass above at a smaller divisor and throttled to
+		// warp_update_interval instead of every render frame - see
 		// warp_update_interval's comment in depth_estimator.gd for why.
 		// stereo_mode 6 (MiDaS-Std) is untouched by any of this.
 		float low_res_width = float(textureSize(upsampled_depth_texture, 0).x);
@@ -264,12 +265,8 @@ void fragment() {
 
 		float disparity = is_left ? parallax : -parallax;
 		float h = 1.0 / low_res_width;
-		int newton_steps = 2;
-		if (stereo_mode == 10) {
-			newton_steps = (warp_frame_parity == 0) ? 1 : 0;
-		}
 		for (int i = 0; i < 2; i++) {
-			if (i >= newton_steps) {
+			if (i >= warp_newton_steps) {
 				break;
 			}
 			float d0 = texture(upsampled_depth_texture, vec2(tc_x, tile_uv.y)).r;
