@@ -12,6 +12,7 @@
 #include <vector>
 #include <chrono>
 #include <memory>
+#include <deque>
 
 extern "C" {
 #include <Limelight.h>
@@ -60,6 +61,7 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    bool is_display_ready() const;
 
     String get_decoder_name() const;
     int get_video_width() const;
@@ -167,7 +169,16 @@ private:
     RID dummy_sampler_;
     RID rgba_output_tex_;
     std::atomic<bool> compute_pipeline_ready_{false};
-    bool display_wired_ = false;
+    // Set once per render generation, only after the FIRST successful compute
+    // dispatch has written real video data into rgba_output_tex_ and that
+    // result has actually been wired into the shader material's tex_y param
+    // (see _render_compute_dispatch_rt). Before this flips true, the shader
+    // material's tex_y - if set at all - is either unset or still pointing at
+    // the previous (now torn-down) session's texture; GDScript's
+    // bind_yuv_textures() polls is_display_ready() instead of trusting the
+    // shader parameter's own RID validity, which stays "valid" even when it
+    // wraps freed GPU memory.
+    std::atomic<bool> display_wired_{false};
     int native_video_width_ = 0;
     int native_video_height_ = 0;
     int native_color_range_ = 0;
@@ -187,6 +198,24 @@ private:
     RID pending_free_shader_;
     RID pending_free_sampler_;
     RID pending_free_tex_;
+    // See _render_free_pipeline_rt(): the compute pipeline/shader/sampler/
+    // output-texture retired by a stream restart can't be freed immediately
+    // (confirmed UAF - the OpenXR compositor reads them on its own frame
+    // timeline) but also shouldn't be orphaned forever (unbounded leak, one
+    // full-resolution RGBA texture + pipeline per restart, visibly degrading
+    // performance over a session with repeated codec/resolution/fps/bitrate
+    // changes). Keep the last PIPELINE_FREE_DELAY_GENERATIONS retired
+    // generations pending and only free the oldest once a newer one arrives -
+    // each restart takes well over a second end to end, so this gives the
+    // compositor multiple restart-cycles' worth of real slack.
+    struct RetiredPipelineGeneration {
+        RID pipeline;
+        RID shader;
+        RID sampler;
+        RID tex;
+    };
+    std::deque<RetiredPipelineGeneration> pending_free_pipeline_generations_;
+    static const int PIPELINE_FREE_DELAY_GENERATIONS = 2;
 
     std::atomic<uint64_t> render_generation_{1};
     std::mutex render_state_mutex_;

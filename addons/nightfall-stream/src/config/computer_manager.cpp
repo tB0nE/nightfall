@@ -594,6 +594,12 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
         url += "&mode=" + mode;
     }
 
+    if (options.has("capture_outputs")) {
+        String outputs = options["capture_outputs"];
+        if (!outputs.is_empty()) {
+            url += "&outputs=" + outputs.uri_encode();
+        }
+    }
     if (options.has("sops")) url += "&sops=" + String::num_int64(options["sops"]);
     if (options.has("surround_audio_info")) url += "&surroundAudioInfo=" + String::num_int64(options["surround_audio_info"]);
     if (options.has("surround_params")) url += "&surroundParams=" + String(options["surround_params"]);
@@ -658,17 +664,111 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
             for (int i = 0; i < keys.size(); i++) {
                 response[keys[i]] = opts[keys[i]];
             }
+
+            String ip = ctx["ip"];
+            int port = ctx["port"];
+            _fetch_display_manifest(response, cb, ip, port);
+            return;
         } else {
+            // The server may explain exactly why (e.g. status_message="Cannot find
+            // requested application" as an XML attribute, not a nested element, for
+            // a 404). Surface that verbatim instead of the generic fallback message,
+            // so the caller doesn't mistake an unambiguous failure (wrong app id) for
+            // a stale-pairing symptom and tear down a perfectly good pairing over it.
+            String status_message = _extract_xml_attr(xml, "status_message");
+            if (status_message.is_empty()) {
+                status_message = _extract_xml_value(xml, "status_message");
+            }
+            NF_LOG("NightfallLaunch", "code=%d xml_len=%d status_message=[%s] raw_xml=[%s]", code, xml.length(), status_message.utf8().get_data(), xml.utf8().get_data());
             response["status"] = "error";
-            response["message"] = "Session URL not found in response. Game may be stuck.";
+            response["message"] = status_message.is_empty()
+                ? "Session URL not found in response. Game may be stuck."
+                : status_message;
             response["xml_debug"] = xml;
         }
     } else {
+        // A non-200 launch/resume failure can still carry a real explanation in
+        // its body (e.g. Polaris rejecting a non-contiguous multi-monitor
+        // `outputs=` selection with a 400 + status_message) rather than the
+        // 200-with-embedded-error-XML shape GameStream conventionally uses.
+        // Try to surface that verbatim instead of the generic HTTP error, same
+        // reasoning as the 200 branch above - don't let a specific, actionable
+        // rejection reason get replaced with "Launch/Resume failed (400): ...".
+        String body_xml = body.get_string_from_utf8();
+        String status_message = _extract_xml_attr(body_xml, "status_message");
+        if (status_message.is_empty()) {
+            status_message = _extract_xml_value(body_xml, "status_message");
+        }
+        NF_LOG("NightfallLaunch", "non-200 code=%d error=[%s] status_message=[%s]", code, error.utf8().get_data(), status_message.utf8().get_data());
         response["status"] = "error";
-        response["message"] = "Launch/Resume failed (" + String::num_int64(code) + "): " + error;
+        response["message"] = status_message.is_empty()
+            ? ("Launch/Resume failed (" + String::num_int64(code) + "): " + error)
+            : status_message;
+        response["xml_debug"] = body_xml;
     }
 
     cb.call(response);
+}
+
+// Best-effort: not every host supports this (only Polaris hosts with multi-monitor
+// capture enabled). Missing/failed/malformed responses just proceed without a
+// manifest - the client falls back to its own single/replicated layout.
+void NightfallComputerManager::_fetch_display_manifest(Dictionary response, Callable callback, String ip, int port) {
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_display_manifest_completed).bind(Variant(response), Variant(callback), Variant(ip), Variant(port)));
+}
+
+void NightfallComputerManager::_on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback, String ip, int port) {
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                response["manifest"] = data;
+            }
+        }
+    }
+    // NOTE: this used to chain straight into _fetch_session_status() here, firing a
+    // GET /polaris/v1/session/status immediately after every launch response. Pulled
+    // out because it lines up exactly with a newly-reproducible Polaris hang: the
+    // session-launch path holds sync.mutex (a recursive_mutex) through async
+    // post-launch setup, and get_session_status_view() (behind /session/status) takes
+    // the same lock - hitting it while that setup is still in flight is a plausible
+    // deadlock/thread-starvation source that did not exist before this call was added.
+    // cursor_supported/cursor_visible just stay absent from the response now (Host
+    // Cursor toggle degrades to "unsupported", same as any non-Polaris host) until
+    // this is refetched lazily from somewhere that isn't racing session setup.
+    callback.call(response);
+}
+
+// Best-effort, same reasoning as _fetch_display_manifest: only Polaris hosts expose
+// this endpoint. Its "cursor_visible" field doubles as the capability probe for the
+// client's cursor toggle - a missing/malformed response just means the toggle stays
+// unavailable, matching how Sunshine/Apollo hosts (no such endpoint) behave today.
+void NightfallComputerManager::_fetch_session_status(Dictionary response, Callable callback, String ip, int port) {
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/status?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_session_status_completed).bind(Variant(response), Variant(callback)));
+}
+
+void NightfallComputerManager::_on_session_status_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback) {
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                Dictionary status = data;
+                if (status.has("cursor_visible")) {
+                    response["cursor_supported"] = true;
+                    response["cursor_visible"] = (bool)status["cursor_visible"];
+                }
+            }
+        }
+    }
+    callback.call(response);
 }
 
 void NightfallComputerManager::stop_stream(int host_id, Callable callback) {
@@ -704,6 +804,108 @@ void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int po
     String url = "https://" + ip + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(), Callable());
     NF_LOG("NightfallPair", "cancel_host_stream: sent /cancel to %s:%d", ip.utf8().get_data(), port);
+}
+
+// Pre-launch, best-effort probe: lets the caller learn the real desktop composite size
+// (e.g. a wide multi-monitor frame) BEFORE requesting a stream resolution, instead of
+// discovering it only after already launching at a guessed/legacy default. Same endpoint
+// _fetch_display_manifest() polls post-launch; only Polaris X11 hosts populate it - a
+// missing/malformed response just means the caller keeps its own fallback resolution.
+void NightfallComputerManager::fetch_display_manifest(int host_id, Callable callback) {
+    if (!config_manager.is_valid()) {
+        callback.call(Dictionary());
+        return;
+    }
+    Array hosts = config_manager->get_hosts();
+    String ip;
+    int port = 47984;
+    for (int i = 0; i < hosts.size(); i++) {
+        Dictionary host = hosts[i];
+        if ((int64_t)host["id"] == host_id) {
+            ip = host.get("localaddress", "");
+            port = host.get("https_port", 47984);
+        }
+    }
+
+    if (ip.is_empty()) {
+        NF_LOG("NightfallPair", "fetch_display_manifest: host_id %d not found", host_id);
+        callback.call(Dictionary());
+        return;
+    }
+
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    NF_LOG("NightfallPrelaunch", "dispatching GET %s", url.utf8().get_data());
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_prelaunch_manifest_completed).bind(Variant(callback)));
+}
+
+void NightfallComputerManager::_on_prelaunch_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    NF_LOG("NightfallPrelaunch", "completed code=%d body_len=%d error=[%s]", code, body.size(), error.utf8().get_data());
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                callback.call(data);
+                return;
+            }
+        }
+    }
+    callback.call(Dictionary());
+}
+
+void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Callable callback) {
+    if (!config_manager.is_valid()) return;
+    Array hosts = config_manager->get_hosts();
+    String ip;
+    int port = 47984;
+    for (int i = 0; i < hosts.size(); i++) {
+        Dictionary host = hosts[i];
+        if ((int64_t)host["id"] == host_id) {
+            ip = host.get("localaddress", "");
+            port = host.get("https_port", 47984);
+        }
+    }
+
+    if (ip.is_empty()) {
+        NF_LOG("NightfallPair", "set_cursor_visible: host_id %d not found", host_id);
+        return;
+    }
+
+    Dictionary body_dict;
+    body_dict["visible"] = visible;
+    Ref<JSON> json;
+    json.instantiate();
+    String body_str = json->stringify(body_dict);
+
+    Dictionary headers;
+    headers["Content-Type"] = "application/json";
+
+    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/cursor?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    http_requester->request(url, "POST", body_str.to_utf8_buffer(), headers, _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_set_cursor_visible_completed).bind(Variant(callback)));
+}
+
+void NightfallComputerManager::_on_set_cursor_visible_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    if (!callback.is_valid()) return;
+    Dictionary response;
+    if (code == 200) {
+        Ref<JSON> json;
+        json.instantiate();
+        if (json->parse(body.get_string_from_utf8()) == OK) {
+            Variant data = json->get_data();
+            if (data.get_type() == Variant::DICTIONARY) {
+                Dictionary status = data;
+                response["status"] = "success";
+                response["visible"] = status.get("visible", false);
+                callback.call(response);
+                return;
+            }
+        }
+    }
+    response["status"] = "error";
+    callback.call(response);
 }
 
 PackedByteArray NightfallComputerManager::_generate_random_bytes(int size) {
@@ -849,6 +1051,19 @@ String NightfallComputerManager::_extract_xml_value(const String &xml, const Str
 	return xml.substr(start, end - start);
 }
 
+// Some responses (e.g. Polaris's boost::property_tree <xmlattr> serialization)
+// put status_message on the root element as an attribute rather than a nested
+// tag, which _extract_xml_value() can't see.
+String NightfallComputerManager::_extract_xml_attr(const String &xml, const String &attr) {
+	String needle = attr + String("=\"");
+	int start = xml.find(needle);
+	if (start == -1) return "";
+	start += needle.length();
+	int end = xml.find("\"", start);
+	if (end == -1) return "";
+	return xml.substr(start, end - start);
+}
+
 String NightfallComputerManager::_get_unique_id() {
     if (!config_manager.is_valid()) {
         return _bytes_to_hex(_generate_random_bytes(8)).to_upper();
@@ -903,4 +1118,6 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("establish_stream", "host_id", "app_id", "options", "callback"), &NightfallComputerManager::establish_stream);
     ClassDB::bind_method(D_METHOD("stop_stream", "host_id", "callback"), &NightfallComputerManager::stop_stream);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
+    ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback"), &NightfallComputerManager::fetch_display_manifest);
 }

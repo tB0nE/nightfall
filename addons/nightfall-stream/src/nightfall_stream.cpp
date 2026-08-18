@@ -17,6 +17,11 @@
 
 #include "nf_log.h"
 
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <jni.h>
+#endif
+
 using namespace godot;
 
 #ifdef NIGHTFALL_HAS_X11
@@ -330,6 +335,65 @@ int NightfallStream::get_last_frame_latency_us() const {
     return 0;
 }
 
+bool NightfallStream::is_display_ready() const {
+    if (stream_connection_) return stream_connection_->is_display_ready();
+    return false;
+}
+
+// One-off diagnostic: queries the real on-device H.264/HEVC hardware decoder
+// limits via MediaCodecInfo.CodecCapabilities.VideoCapabilities (see
+// GodotApp.getCodecCapabilitiesInfo()), rather than inferring them from trial
+// and error. Not on any hot path - call once from GDScript and read the result
+// from logcat/the returned string.
+extern JavaVM *nightfall_get_jvm();
+extern jclass nightfall_get_godot_app_class();
+
+String NightfallStream::get_codec_capabilities_info() const {
+#ifdef __ANDROID__
+    JavaVM *vm = nightfall_get_jvm();
+    if (!vm) return "ERROR: no JavaVM (initializeMoonlightJNI not called yet?)";
+
+    JNIEnv *env = nullptr;
+    jint res = vm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (res == JNI_EDETACHED) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) {
+            return "ERROR: AttachCurrentThread failed";
+        }
+    } else if (res != JNI_OK || !env) {
+        return "ERROR: GetEnv failed";
+    }
+
+    // Use the class reference cached at Java-static-init time (see
+    // initializeMoonlightJNI in ffmpeg_decoder.cpp) instead of calling
+    // FindClass("com/godot/game/GodotApp") here - this runs on whatever thread
+    // GDScript happens to be on (Godot's own native engine thread, not one the
+    // JVM created), and FindClass from that context can't see the app's
+    // classloader; it doesn't fail cleanly, it hangs the whole app.
+    jclass app_class = nightfall_get_godot_app_class();
+    if (!app_class) return "ERROR: GodotApp class not cached (initializeMoonlightJNI not called yet?)";
+
+    jmethodID method = env->GetStaticMethodID(app_class, "getCodecCapabilitiesInfo", "()Ljava/lang/String;");
+    if (!method) {
+        return "ERROR: getCodecCapabilitiesInfo method not found";
+    }
+
+    jstring result_jstr = (jstring)env->CallStaticObjectMethod(app_class, method);
+    String result = "ERROR: null result";
+    if (result_jstr) {
+        const char *chars = env->GetStringUTFChars(result_jstr, nullptr);
+        if (chars) {
+            result = String(chars);
+            env->ReleaseStringUTFChars(result_jstr, chars);
+        }
+        env->DeleteLocalRef(result_jstr);
+    }
+    // app_class is the cached global ref (see above) - not ours to delete.
+    return result;
+#else
+    return "Not supported on this platform";
+#endif
+}
+
 String NightfallStream::get_decoder_name() const {
     if (stream_connection_) return stream_connection_->get_decoder_name();
     return "";
@@ -528,6 +592,8 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &NightfallStream::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &NightfallStream::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &NightfallStream::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("is_display_ready"), &NightfallStream::is_display_ready);
+    ClassDB::bind_method(D_METHOD("get_codec_capabilities_info"), &NightfallStream::get_codec_capabilities_info);
     ClassDB::bind_method(D_METHOD("get_decoder_name"), &NightfallStream::get_decoder_name);
     ClassDB::bind_method(D_METHOD("get_video_width"), &NightfallStream::get_video_width);
     ClassDB::bind_method(D_METHOD("get_video_height"), &NightfallStream::get_video_height);

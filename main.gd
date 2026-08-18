@@ -56,10 +56,23 @@ var _connecting_ip: String = ""
 var _connect_timeout_pending: bool = false
 var _auto_connect: bool = false
 var quick_start_enabled: bool = false
+# Whether the host is drawing its own cursor into the captured frame (Polaris-only:
+# a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
+# Support is detected per-connection from the launch response, not guessed up front,
+# since a version-string heuristic already burned us once for microphone detection.
+var host_cursor_visible: bool = false
+var _host_cursor_toggle_supported: bool = false
 var _restarting_stream: bool = false
+var _did_initial_monitor_trim: bool = false
+var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
-var ai_3d_mode: int = 0
+# Split (2026-08-18) from a single flat ai_3d_mode into three independent
+# axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
+# ai_3d_debug_labels and get_stereo_mode() for how they combine.
+var ai_3d_model: int = 0 # 0=Off, 1=MiDaS
+var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
+var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -95,6 +108,10 @@ var grab_forward: Vector3 = Vector3.FORWARD
 var grab_start_hand_basis: Basis = Basis()
 var grab_start_node_basis: Basis = Basis()
 var grab_start_node_euler: Vector3 = Vector3.ZERO
+var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
+var grab_group_start_transforms: Dictionary = {}
+var grid_mode_enabled: bool = true
+var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
@@ -107,8 +124,14 @@ var bg_names: Array = ["Starfield", "Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
 var bezel_enabled: bool = true
-var bezel_mesh: MeshInstance3D
-var curvature: int = 2
+var bezel_mesh: MeshInstance3D:
+	get: return primary_screen.bezel_mesh if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.bezel_mesh = v
+var curvature: int:
+	get: return primary_screen.curvature if primary_screen else 2
+	set(v):
+		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
 var smooth_mode: int = 0
 var sharpen_mode: int = 0
@@ -116,12 +139,56 @@ var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
-var _mesh_size: Vector2 = Vector2(2.24, 1.26)
+var _mesh_size: Vector2:
+	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
+	set(v):
+		if primary_screen: primary_screen.mesh_size = v
 var stream_fps: int = 60
 var _cached_filter_mode: int = -1
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
+# host_resolution is the actual WxH about to be (or last) requested from the
+# host - computed as native_resolution * resolution_scale_pct / 100, not set
+# directly. It always matches whatever the host's real desktop/composite
+# shape is (single monitor or multi-monitor composite alike), instead of a
+# fixed target size that would force the host to letterbox/squeeze a
+# mismatched-aspect composite to fit.
 var host_resolution: Vector2i = Vector2i(1920, 1080)
+# Last known real desktop/composite size for the currently selected host, as
+# reported by its display manifest (or session_optimization's negotiated
+# width/height for hosts without one). Cached per-host in host_state.cfg so a
+# repeat connection can request the correctly-scaled resolution on the first
+# try instead of needing the mismatch-triggered reconnect every time.
+var native_resolution: Vector2i = Vector2i(1920, 1080)
+var resolution_scale_pct: int = 100
+const RESOLUTION_PRESETS: Array = [100, 90, 80, 70, 60, 50]
+# Kept around for state_manager.gd's old-save-file validation fallback; the UI
+# itself now uses compute_resolution_options() instead of this static list -
+# see that function for why (this doesn't know about the per-codec/per-native-
+# resolution caps below, so a preset here can silently be unreachable).
+var resolution_scale_options: Array = RESOLUTION_PRESETS
+# True once SettingsController.detect_polaris_host() confirms this host answers
+# the Polaris-only /polaris/v1/display/manifest probe. Polaris is host-driven -
+# it reports its real (possibly multi-monitor) desktop size, so the
+# percentage-of-native-resolution system above gives an accurate result. Every
+# other GameStream-compatible host (Sunshine, GFE, etc.) is client-driven -
+# there is no equivalent "ask the host its resolution" mechanism at all, the
+# client is expected to just request what it wants and the host adapts to
+# match - so native_resolution has nothing real to hold for them and the
+# percentage system's "MAX"/percent labels would just describe the wrong
+# thing (confirmed: reported "1080p" against a real 2560x1440 Sunshine
+# display, because native_resolution never left its 1920x1080 fallback).
+# Defaults false (the old fixed-list picker) so a host that hasn't been probed
+# yet - or a probe that's still in flight - never shows a percentage of a
+# guess as if it meant something.
+var is_polaris_host: bool = false
+# The pre-percentage fixed-resolution picker, used for any non-Polaris host
+# (see is_polaris_host above) - the user picks what they actually want
+# instead of the client trying to detect anything, matching how Sunshine
+# itself expects to be driven. Untouched by the H264/HEVC dimension/pixel
+# caps in compute_max_resolution_pct() below - every entry here is well
+# under all of those caps on its own (largest is 3840x2160), so there's
+# nothing to filter for the single-screen case this picker is used for.
 var resolution_idx: int = 1
 var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(3440, 1440)]
 var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9"]
@@ -143,9 +210,28 @@ var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
-var corner_handles: Array = []
+var corner_handles: Array:
+	get: return primary_screen.corner_handles if primary_screen else []
+	set(v):
+		if primary_screen: primary_screen.corner_handles = v
 var grabbed_corner_idx: int = -1
+var grabbed_corner_screen: VRScreen = null
 var corner_anchor_world: Vector3 = Vector3.ZERO
+var screens: Array[VRScreen] = []
+var primary_screen: VRScreen = null
+var layout: ScreenLayout = null
+
+# Staging state for the Monitors tab's Row1 (counts) + Row2 (preset) - Apply
+# commits these together via SettingsController.apply_staged_monitor_config();
+# nothing here touches the live layout/stream on its own.
+var _staged_physical_count: int = 1
+var _staged_virtual_count: int = 0
+var _staged_preset_id: StringName = &""
+# Set by apply_staged_monitor_config() when it restarted the stream to pick up
+# a real monitor-selection change; cleared once stream_manager.gd's launch
+# response finishes applying the fresh manifest that follows (see
+# SettingsController.finish_pending_monitor_apply()).
+var _pending_monitor_apply: bool = false
 
 var stream_manager: StreamManager
 var xr_interaction: XRInteraction
@@ -158,43 +244,121 @@ var welcome_screen: WelcomeScreen
 var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
-var host_discovery: HostDiscovery
 var controller_mapper: ControllerMapper
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 
-var comp_cylinder: Node3D = null
-var _comp_cyl_center := Vector3.ZERO
-var _comp_cyl_radius := 0.0
-var _comp_cyl_central_angle := 0.0
 var comp_cursor: Node3D = null
 var comp_ui: Node3D = null
 var comp_kb: Node3D = null
 var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null
-var comp_layer: Node3D = null
-var comp_viewport: SubViewport = null
-var comp_yuv_rect: ColorRect = null
-var comp_bezel_rect: ColorRect = null
-var comp_shader_mat: ShaderMaterial = null
-var comp_cylinder_left: Node3D = null
-var comp_cylinder_right: Node3D = null
-var comp_viewport_left: SubViewport = null
-var comp_viewport_right: SubViewport = null
-var comp_yuv_rect_left: ColorRect = null
-var comp_yuv_rect_right: ColorRect = null
-var comp_bezel_rect_left: ColorRect = null
-var comp_bezel_rect_right: ColorRect = null
-var comp_shader_mat_left: ShaderMaterial = null
-var comp_shader_mat_right: ShaderMaterial = null
-var comp_stream_cursor: TextureRect = null
-var comp_stream_cursor_circle: ColorRect = null
-var comp_stream_cursor_left: TextureRect = null
-var comp_stream_cursor_circle_left: ColorRect = null
-var comp_stream_cursor_right: TextureRect = null
-var comp_stream_cursor_circle_right: ColorRect = null
-var _screen_mesh_original_mat: Material = null
+
+var comp_cylinder: Node3D:
+	get: return primary_screen.comp_cylinder if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder = v
+var _comp_cyl_center: Vector3:
+	get: return primary_screen._comp_cyl_center if primary_screen else Vector3.ZERO
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_center = v
+var _comp_cyl_radius: float:
+	get: return primary_screen._comp_cyl_radius if primary_screen else 0.0
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_radius = v
+var _comp_cyl_central_angle: float:
+	get: return primary_screen._comp_cyl_central_angle if primary_screen else 0.0
+	set(v):
+		if primary_screen: primary_screen._comp_cyl_central_angle = v
+var comp_layer: Node3D:
+	get: return primary_screen.comp_layer if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_layer = v
+var comp_viewport: SubViewport:
+	get: return primary_screen.comp_viewport if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport = v
+var comp_yuv_rect: ColorRect:
+	get: return primary_screen.comp_yuv_rect if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect = v
+var comp_bezel_rect: ColorRect:
+	get: return primary_screen.comp_bezel_rect if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect = v
+var comp_shader_mat: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat = v
+var comp_cylinder_left: Node3D:
+	get: return primary_screen.comp_cylinder_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder_left = v
+var comp_cylinder_right: Node3D:
+	get: return primary_screen.comp_cylinder_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_cylinder_right = v
+var comp_viewport_left: SubViewport:
+	get: return primary_screen.comp_viewport_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport_left = v
+var comp_viewport_right: SubViewport:
+	get: return primary_screen.comp_viewport_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_viewport_right = v
+var comp_yuv_rect_left: ColorRect:
+	get: return primary_screen.comp_yuv_rect_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect_left = v
+var comp_yuv_rect_right: ColorRect:
+	get: return primary_screen.comp_yuv_rect_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_yuv_rect_right = v
+var comp_bezel_rect_left: ColorRect:
+	get: return primary_screen.comp_bezel_rect_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect_left = v
+var comp_bezel_rect_right: ColorRect:
+	get: return primary_screen.comp_bezel_rect_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_bezel_rect_right = v
+var comp_shader_mat_left: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat_left = v
+var comp_shader_mat_right: ShaderMaterial:
+	get: return primary_screen.comp_shader_mat_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_shader_mat_right = v
+var comp_stream_cursor: TextureRect:
+	get: return primary_screen.comp_stream_cursor if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor = v
+var comp_stream_cursor_circle: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle = v
+var comp_stream_cursor_left: TextureRect:
+	get: return primary_screen.comp_stream_cursor_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_left = v
+var comp_stream_cursor_circle_left: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle_left if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle_left = v
+var comp_stream_cursor_right: TextureRect:
+	get: return primary_screen.comp_stream_cursor_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_right = v
+var comp_stream_cursor_circle_right: ColorRect:
+	get: return primary_screen.comp_stream_cursor_circle_right if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen.comp_stream_cursor_circle_right = v
+var _screen_mesh_original_mat: Material:
+	get: return primary_screen._original_mat if primary_screen else null
+	set(v):
+		if primary_screen: primary_screen._original_mat = v
 
 var _log_lines: PackedStringArray = []
 var _ui_viewport_size := Vector2i(1200, 580)
@@ -205,9 +369,17 @@ var _ui_pt_btn: Button
 var _ui_bg_btn: Button
 var _ui_curve_btn: Button
 var _ui_bezel_btn: Button
+var _ui_monitors_btn: Button
+var _ui_virtual_monitors_btn: Button
+var _ui_apply_preset_btn: Button
+var _ui_save_preset_btn: Button
+var _ui_remove_preset_btn: Button
+var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_quality_btn: Button
+var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -215,6 +387,7 @@ var _ui_ctrl_type_btn: Button
 var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
+var _ui_host_cursor_btn: Button
 var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
 var _ui_ctrl_mode_btn: Button
@@ -234,6 +407,172 @@ var _ui_center_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
+
+
+# 2026-08-07: settled at 4032, this time with real evidence it's a genuine
+# hardware/driver width ceiling, not a software bug we can fix. Two real,
+# separate software bugs WERE found and fixed along the way (both worth
+# keeping): (1) AndroidMediaCodec's input buffer was sized at width*height,
+# too tight for a real H264 keyframe - widened to width*height*3
+# (mediacodec_native.cpp); (2) that fix itself overshot a ~16MiB Android
+# graphics-buffer-allocation ceiling at wide resolutions, so it's now clamped
+# to 12MiB. But testing at 6912x1944 with both fixes in place still failed
+# completely (zero frames ever decoded), and critically: CCodec's own log
+# showed it silently overrode our 12MiB request UP to 13.27MB (its own
+# platform-computed minimum for that resolution) and decode still never
+# produced a single frame - proving buffer size was never the bottleneck at
+# this width. That points to a real hardware/HAL line-buffer width limit
+# around 4032px on this SoC's H264 decoder, independent of buffer sizing or
+# total pixel count - the MediaCodec capability query's claimed 8192px
+# support just doesn't hold up in practice (a known class of gap on
+# Qualcomm HALs). HEVC has no equivalent cap; prefer it for wide layouts.
+const H264_MAX_DIMENSION = 4032
+# Confirmed via on-device MediaCodec capability query (getSupportedWidths/
+# getSupportedHeights against real candidate resolutions - see
+# docs/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
+# dual-limited, not just axis-limited - each dimension independently caps at
+# 8192px, AND the total canvas is separately capped at ~138,240 macroblocks
+# (16x16 each) regardless of aspect. A 4-monitor row can hit the axis cap
+# (e.g. 8320px wide) while sitting nowhere near the total-pixel cap, so both
+# constraints have to be checked - clamping only the axis would silently
+# allow a request that's still invalid for the other reason, and vice versa.
+const HEVC_MAX_DIMENSION = 8192
+const HEVC_MAX_TOTAL_PIXELS = 35389440
+# A SEPARATE, lower ceiling from the two above - those reflect what the decoder
+# can technically decode at all; this reflects what the headset can actually
+# sustain in real time while also running its own tracking/compositor/etc.
+# Confirmed live testing 4x4K HEVC (2x2 grid, 7680x4320 base): 80% scale
+# (21,233,664 total pixels) ran smoothly; 90% (26,873,856 pixels - still well
+# under HEVC_MAX_TOTAL_PIXELS, so the decode-capability cap never caught it)
+# caused the headset's own tracking-camera watchdog to report multi-second
+# frame delays and visible corruption/freezing - a real-time throughput
+# problem, not a decode failure. Set at exactly the confirmed-good boundary
+# (80% of that specific 4-monitor test), not a round-number guess.
+const HEVC_MAX_SUSTAINED_PIXELS = 21233664
+
+# Extra resolution ceilings applied only while MiDaS-Fast/-Fastest are the
+# active stereo mode (2026-08-18) - unlike every knob AI-3D's own pipeline
+# exposes (pre-pass resolution/throttle, Newton-refinement cadence, depth-
+# capture throttle), none of which moved FPS at 4K when tested, capping the
+# actual decoded/composited stream size directly attacks the real cost:
+# general per-pixel video decode + compositing work, which scales with
+# resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
+# it stays the uncapped/known-good reference. See compute_requested_resolution().
+#
+# History: capped both tiers, then MiDaS-Fast/-Fastest's 3D quality looked
+# visibly worse than MiDaS-Std. [DEPTH]-tagged logging in depth_estimator.gd
+# ruled out the depth pipeline itself (capture/submission/polling equally
+# healthy across all tiers) and the bitrate cliff bug (fixed separately,
+# stream_manager.gd's _auto_bitrate() now scales from the UNCAPPED
+# resolution). Root cause found 2026-08-18: these caps were width/height
+# pairs, aspect-scaled with min(target_w/w, target_h/h) - on a WIDE source
+# (native_resolution here is a 2.96:1 multi-monitor composite, not 16:9),
+# the width dimension binds first, so "cap to 2560x1440" actually produced
+# 2560x864 (2.21M px) instead of the 3.69M px the "1440p" label implied -
+# confirmed directly: manually selecting 1440p and letting Fastest's cap
+# reduce down to "1440p" were NOT delivering the same pixel count at all,
+# despite looking like they should be equal. Fixed by capping to a total
+# PIXEL BUDGET via sqrt(target_px/actual_px) instead of a width/height pair
+# - same approach this file already uses for HEVC_MAX_TOTAL_PIXELS just
+# below, which doesn't have this problem because it already works in pixels.
+const MIDAS_RES_CAP_ENABLED := true
+const MIDAS_FAST_MAX_PIXELS := 3200 * 1800
+const MIDAS_FASTEST_MAX_PIXELS := 2560 * 1440
+
+# The highest resolution_scale_pct that keeps compute_requested_resolution()'s
+# result under every constraint that applies to the given codec at the
+# current native_resolution, i.e. the point past which compute_requested_resolution()
+# would otherwise silently downscale further than the requested percentage
+# implied. Used to build the UI's resolution option list (compute_resolution_options())
+# so a user can never select a percentage compute_requested_resolution() would
+# have quietly overridden anyway.
+func compute_max_resolution_pct(codec: int) -> int:
+	if native_resolution.x <= 0 or native_resolution.y <= 0:
+		return 100
+	var nw = float(native_resolution.x)
+	var nh = float(native_resolution.y)
+	var max_pct = 100.0
+	if codec == 0:
+		max_pct = minf(max_pct, 100.0 * H264_MAX_DIMENSION / maxf(nw, nh))
+	elif codec == 1:
+		max_pct = minf(max_pct, 100.0 * HEVC_MAX_DIMENSION / maxf(nw, nh))
+		max_pct = minf(max_pct, 100.0 * sqrt(HEVC_MAX_TOTAL_PIXELS / (nw * nh)))
+		max_pct = minf(max_pct, 100.0 * sqrt(HEVC_MAX_SUSTAINED_PIXELS / (nw * nh)))
+	return clampi(int(floor(max_pct)), 10, 100)
+
+# The dynamic option list for the resolution cycle button: RESOLUTION_PRESETS
+# below the current max get kept as-is; the max itself always occupies the top
+# slot (labeled "MAX" by the UI, not a number) instead of whatever presets
+# would otherwise have sat above an unreachable ceiling - so there's never an
+# option in the list that silently does something other than what its label says.
+func compute_resolution_options() -> Array:
+	var max_pct = compute_max_resolution_pct(codec_preference)
+	var opts: Array = [max_pct]
+	for p in RESOLUTION_PRESETS:
+		if p < max_pct:
+			opts.append(p)
+	return opts
+
+func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
+	var w: int
+	var h: int
+	if is_polaris_host:
+		w = int(native_resolution.x * resolution_scale_pct / 100.0)
+		h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	else:
+		var res: Vector2i = resolutions[resolution_idx]
+		w = res.x
+		h = res.y
+	# H.264 hardware decoders on this class of mobile SoC commonly cap out at 4096px
+	# per dimension (HEVC decoders on the same hardware typically go up to 8192) -
+	# requesting wider/taller than that doesn't error, it just silently never produces
+	# a decoded frame. Confirmed live: at 100% (4480x1440) H.264 decode stalls
+	# completely right after connecting; at 90% (4032x1296, under the limit) it works
+	# fine. Scale both dimensions down together to preserve aspect ratio rather than
+	# only clamping the offending one, which would mismatch the server's capture
+	# aspect and trigger its own letterbox/pillarbox scaling instead.
+	if codec_preference == 0 and (w > H264_MAX_DIMENSION or h > H264_MAX_DIMENSION):
+		var scale = minf(float(H264_MAX_DIMENSION) / w, float(H264_MAX_DIMENSION) / h)
+		w = int(w * scale)
+		h = int(h * scale)
+	elif codec_preference == 1:
+		var scale = 1.0
+		if w > HEVC_MAX_DIMENSION or h > HEVC_MAX_DIMENSION:
+			scale = minf(scale, minf(float(HEVC_MAX_DIMENSION) / w, float(HEVC_MAX_DIMENSION) / h))
+		if w * h > HEVC_MAX_TOTAL_PIXELS:
+			scale = minf(scale, sqrt(float(HEVC_MAX_TOTAL_PIXELS) / float(w * h)))
+		if w * h > HEVC_MAX_SUSTAINED_PIXELS:
+			scale = minf(scale, sqrt(float(HEVC_MAX_SUSTAINED_PIXELS) / float(w * h)))
+		if scale < 1.0:
+			w = int(w * scale)
+			h = int(h * scale)
+	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
+	# Keyed off the actually-active stereo mode (accounts for sbs_mode
+	# overriding ai_3d_model/quality/debug, same as
+	# settings_controller.get_stereo_mode() itself), not those raw fields
+	# directly. Caps by total pixel budget (like
+	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
+	# min(target_w/w, target_h/h) - that approach silently delivered far
+	# fewer pixels than intended on a non-16:9 source (see history above).
+	# apply_midas_cap=false lets a caller ask "what would this resolution be
+	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which
+	# uses that to pick Auto bitrate from the uncapped resolution instead of
+	# the capped encode resolution (same bitrate, fewer pixels should mean
+	# MORE bits per pixel, not fewer).
+	if apply_midas_cap and MIDAS_RES_CAP_ENABLED and settings_controller:
+		var stereo_mode = settings_controller.get_stereo_mode()
+		var max_pixels := 0
+		if stereo_mode == 10:
+			max_pixels = MIDAS_FAST_MAX_PIXELS
+		elif stereo_mode == 11:
+			max_pixels = MIDAS_FASTEST_MAX_PIXELS
+		if max_pixels > 0 and w * h > max_pixels:
+			var cap_scale = sqrt(float(max_pixels) / float(w * h))
+			w = int(w * cap_scale)
+			h = int(h * cap_scale)
+	w = maxi(w - (w % 2), 320)
+	h = maxi(h - (h % 2), 180)
+	return Vector2i(w, h)
 
 func _log(msg: String):
 	_log_lines.append(msg)
@@ -274,7 +613,15 @@ func _restore_ui_material():
 func _restore_kb_material():
 	comp.restore_kb_material()
 
-var _comp_base_size := Vector2i(1920, 1080)
+var _comp_base_size: Vector2i:
+	get: return primary_screen.comp_base_size if primary_screen else Vector2i(1920, 1080)
+	set(v):
+		if primary_screen: primary_screen.comp_base_size = v
+
+func get_blur_scale(s: VRScreen) -> float:
+	if _xr_render_width <= 0:
+		return 1.0
+	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
 
 func _get_steady_hit(raw: Vector3) -> Vector3:
 	if pointer_steady == 0 or not is_xr_active:
@@ -293,64 +640,10 @@ func _get_steady_hit(raw: Vector3) -> Vector3:
 	return _steady_hit
 
 func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
-	if curvature == 0 or not comp_layer:
-		return -screen_mesh.global_transform.basis.z
-	var screen_forward = -screen_mesh.global_transform.basis.z
-	if _comp_cyl_radius < 0.01:
-		return screen_forward
-	var cyl_center = screen_mesh.global_position - screen_forward * _comp_cyl_radius
-	var to_hit = hit_point - cyl_center
-	to_hit.y = 0.0
-	if to_hit.length() < 0.001:
-		return screen_forward
-	return to_hit.normalized()
+	return primary_screen.get_cylinder_normal_at(hit_point)
 
 func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
-	var ms = _mesh_size
-	var local_pos = screen_mesh.to_local(hit_point)
-	var uv_x = 0.0
-	var uv_y = clampf((ms.y * 0.5 - local_pos.y) / ms.y, 0.0, 1.0)
-	if curvature == 0:
-		uv_x = clampf((local_pos.x + ms.x * 0.5) / ms.x, 0.0, 1.0)
-	elif comp and comp.in_use and _comp_cyl_radius > 0.01 and _comp_cyl_central_angle > 0.001:
-		var cam_pos = xr_camera.global_position
-		var ray_dir = (hit_point - cam_pos).normalized()
-		var screen_right = screen_mesh.global_transform.basis.x
-		var screen_forward = -screen_mesh.global_transform.basis.z
-		var screen_up = screen_mesh.global_transform.basis.y
-		var oc = cam_pos - _comp_cyl_center
-		var oc_right = oc.dot(screen_right)
-		var oc_fwd = oc.dot(screen_forward)
-		var d_right = ray_dir.dot(screen_right)
-		var d_fwd = ray_dir.dot(screen_forward)
-		var a = d_right * d_right + d_fwd * d_fwd
-		var b = 2.0 * (oc_right * d_right + oc_fwd * d_fwd)
-		var c = oc_right * oc_right + oc_fwd * oc_fwd - _comp_cyl_radius * _comp_cyl_radius
-		var disc = b * b - 4.0 * a * c
-		if disc < 0.0:
-			uv_x = 0.5
-		else:
-			var sqrt_disc = sqrt(disc)
-			var t1 = (-b - sqrt_disc) / (2.0 * a)
-			var t2 = (-b + sqrt_disc) / (2.0 * a)
-			var t = t1 if t1 > 0.001 else t2
-			if t > 0.0:
-				var hit_world = cam_pos + ray_dir * t
-				var hit_local = screen_mesh.to_local(hit_world)
-				uv_y = clampf((ms.y * 0.5 - hit_local.y) / ms.y, 0.0, 1.0)
-				var hit_cyl = hit_world - _comp_cyl_center
-				var hit_right = hit_cyl.dot(screen_right)
-				var hit_fwd = hit_cyl.dot(screen_forward)
-				var hit_angle = atan2(hit_right, hit_fwd)
-				uv_x = clampf((hit_angle + _comp_cyl_central_angle * 0.5) / _comp_cyl_central_angle, 0.0, 1.0)
-			else:
-				uv_x = 0.5
-	else:
-		var radius = 10.0 if curvature == 1 else 4.0
-		var total_angle = ms.x / radius
-		var chord = clampf(local_pos.x / radius, -1.0, 1.0)
-		uv_x = clampf((asin(chord) + total_angle * 0.5) / total_angle, 0.0, 1.0)
-	return Vector2(uv_x, uv_y)
+	return primary_screen.hit_point_to_uv(hit_point)
 
 func _show_stream_cursor(cursor: TextureRect, circle: ColorRect, cx: float, cy: float, cursor_px: int):
 	if cursor_mode == 0:
@@ -371,9 +664,10 @@ func _hide_stream_cursor(cursor: TextureRect, circle: ColorRect):
 	if circle: circle.visible = false
 
 func _hide_all_stream_cursors():
-	_hide_stream_cursor(comp_stream_cursor, comp_stream_cursor_circle)
-	_hide_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left)
-	_hide_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right)
+	for s in screens:
+		_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
+		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
+		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 
 func _update_cursor_layer():
 	if not comp_cursor or not comp.in_use:
@@ -387,34 +681,63 @@ func _update_cursor_layer():
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
 	var use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
 		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
 		var col = active_raycast.get_collider()
-		var par = col.get_parent() if col else null
-		on_screen = (par == screen_mesh)
+		var t = PointerTarget.resolve(col) if col else {"role": &""}
+		on_screen = (t.role == &"screen")
+		hovered_screen = t.screen if on_screen else null
 		use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
 			comp_cursor.visible = false
 			_hide_all_stream_cursors()
 		elif use_in_stream and on_screen:
-			var uv = _hit_point_to_uv(hit_point)
+			# Only hovered_screen gets shown below - explicitly hide every other
+			# screen's cursor the instant the hover target changes, rather than
+			# leaving whichever screen was PREVIOUSLY hovered showing its last
+			# cursor position until something else happens to call
+			# _hide_all_stream_cursors() (e.g. the ray briefly leaving every
+			# screen entirely) - that gap is what let two cursors show at once
+			# when moving straight from one screen to another.
+			for s in screens:
+				if s != hovered_screen:
+					_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
+					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
+					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
+			var uv = hovered_screen.hit_point_to_uv(hit_point)
 			var bezel_px = 8 if bezel_enabled else 0
-			var base_w = _comp_base_size.x
-			var base_h = _comp_base_size.y
-			var cursor_px = 48
+			var base_w = hovered_screen.comp_base_size.x
+			var base_h = hovered_screen.comp_base_size.y
+			# cx/cy position the cursor in the comp viewport's own pixel space,
+			# which is sized to the real stream resolution - a fixed pixel size
+			# here shrinks/grows on screen as that resolution changes. Scale
+			# against a 1080p baseline instead (same approach as the loading dots).
+			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
 			comp_cursor.visible = false
-			_show_stream_cursor(comp_stream_cursor, comp_stream_cursor_circle, cx, cy, cursor_px)
-			if stereo > 0:
+			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
+			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
-				if stereo >= 3:
+				if stereo == 5 or stereo == 6:
+					# This hand-tuned pop was calibrated against the old, much
+					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
+					# the same ratio for modes 5/6's real, calibrated parallax
+					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
+					# than reused verbatim, or the cursor pops far more than
+					# anything actually in the depth-warped video. Both modes
+					# share the exact same warp pipeline/parallax magnitude -
+					# only the depth model backing them differs (GPU delegate
+					# vs NNAPI, see DepthEstimator.java).
+					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
+				elif stereo >= 3:
 					left_cx += 0.015 * base_w
-				_show_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
-				_show_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right, cx, cy, cursor_px)
+				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
+				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
 			else:
-				_hide_stream_cursor(comp_stream_cursor_left, comp_stream_cursor_circle_left)
-				_hide_stream_cursor(comp_stream_cursor_right, comp_stream_cursor_circle_right)
+				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
+				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
 		else:
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
@@ -502,6 +825,13 @@ func _on_connect_timeout():
 func _bind_yuv_textures():
 	comp.bind_yuv_textures()
 
+func _retry_yuv_bind(seq: int):
+	for i in range(6):
+		await get_tree().create_timer(0.25).timeout
+		if seq != _stream_start_seq or not is_streaming:
+			return
+		_bind_yuv_textures()
+
 func _bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 	comp.bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode, cmt, cr)
 
@@ -524,8 +854,43 @@ func _on_stream_started():
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	stream_manager.bind_texture()
+	# bind_yuv_textures() skips rebinding the composition-layer cylinder's
+	# shader when the decoder's texture RIDs "look unchanged" from the last
+	# bind - a real optimization for the steady-state per-frame case, but
+	# wrong right after a (re)connect: a restart's new decoder session can
+	# end up with the exact same RIDs reused (resource pooling) even though
+	# the actual texture is a fresh one, leaving the cylinder showing a
+	# stale/blank frame while decode stats keep updating normally. A stream
+	# genuinely (re)starting here should always force a real rebind.
+	if comp.available:
+		comp.invalidate_yuv_cache()
 	_bind_yuv_textures()
-	_switch_to_comp_layer()
+	# The decoder's shader material is reused across a restart, not recreated -
+	# right here, right at connection start, it can still be holding a
+	# reference to the just-torn-down previous session's (now GPU-invalid)
+	# texture, which bind_yuv_textures() now correctly refuses to bind (see its
+	# RID validity check) rather than crashing the renderer on it. But nothing
+	# else ever retries the real YUV path afterward (binding is purely
+	# event-driven, no periodic re-check), so without this the stream would be
+	# stuck on the SubViewport fallback for the rest of the session. Retry a
+	# few times shortly after connecting, by which point the new session's
+	# first real frame should have landed.
+	_stream_start_seq += 1
+	_retry_yuv_bind(_stream_start_seq)
+	# Was an unconditional _switch_to_comp_layer() (plain/mono), which reset
+	# AI-3D/SBS to 2D on EVERY (re)connect, silently, with nothing re-
+	# applying the real mode afterward unless the user happened to touch a
+	# mode button again post-restart - root cause of "3D effect stopped
+	# working after a restart, only came back after manually cycling modes"
+	# (2026-08-18, user diagnosed this from watching a MiDaS-Fast switch
+	# visibly apply against the OLD pre-restart video, then get lost when
+	# the restart landed). apply_stereo() re-derives and applies the actual
+	# current stereo mode (2D/SBS/AI-3D) against the freshly (re)started
+	# session instead of blindly resetting to 2D - settings_controller.gd's
+	# _schedule_ai_3d_commit() now deliberately skips its own apply_stereo()
+	# call when a restart is about to happen, relying on this one instead,
+	# so the mode is only ever applied against a session that's actually live.
+	settings_controller.apply_stereo()
 	if not was_restarting:
 		ui_visible = false
 		_set_ui_visible(false)
@@ -536,6 +901,100 @@ func _on_stream_started():
 		_hide_all_backgrounds()
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
 	stream_backend.send_controller_arrival(0, 1, 1, all_btn_flags, 0x01|0x02)
+
+	# The host's real desktop can be a very different shape than native_resolution
+	# assumed (first-ever connection to a host, or its desktop layout changed since
+	# last time) - requesting the wrong aspect makes the host letterbox/squeeze its
+	# real composite to fit. Reconnect once at the correctly-scaled size instead, so
+	# the *next* launch requests the right shape from the start, and cache the real
+	# size afterward so a repeat connection to this host doesn't need to. Only ever
+	# retries once per session, so a host that free-scales regardless of requested
+	# resolution can't loop us forever.
+	#
+	# Deliberately done AFTER the stream has genuinely started (not by aborting the
+	# first launch response before ever calling start_stream_v2): a launch that's
+	# never followed through to an actual RTSP/media connection leaves the host
+	# waiting on a handshake that will never come, which held its session-launch
+	# lock forever and made every subsequent connect attempt fail with "the active
+	# session is stopping or changing" - the exact regression this replaces. Tearing
+	# an ACTUALLY-STARTED stream down with stop_play_stream() (same pattern as
+	# settings_controller.gd's _schedule_stream_restart()) gives the host a real,
+	# clean teardown to work with instead of an abandoned half-launch.
+	# Start every session on just the primary monitor - makes multi-monitor
+	# testing much easier to reason about (add monitors one at a time from a
+	# known-good baseline instead of whatever the host's own multi-monitor
+	# default happens to be) and is simpler for real use too. Deliberately a
+	# true one-shot for the whole app run (never reset), not per-host/per-
+	# reconnect - once trimmed, later manual monitor changes this session are
+	# left alone; relaunch the app to get the primary-only starting point again.
+	if layout and not _did_initial_monitor_trim and layout.source == &"host_manifest":
+		_did_initial_monitor_trim = true
+		var enabled_at_connect = layout.enabled_monitors()
+		if enabled_at_connect.size() > 1:
+			var primary_m = layout.get_primary()
+			for m in layout.monitors:
+				if not m.is_primary:
+					m.enabled = false
+			settings_controller.apply_screen_layout(layout)
+			if primary_m:
+				native_resolution = primary_m.frame_rect.size
+			host_resolution = compute_requested_resolution()
+			settings_controller.refresh_resolution_btn_label()
+			stream_manager._resolution_retry_done = true
+			var retry_host_id = current_host_id
+			var retry_app_id = _selected_app_id
+			var retry_resolution = host_resolution
+			_log("[LAYOUT] Trimming to primary-only on first connect (host defaulted to %d monitors)" % enabled_at_connect.size())
+			_restarting_stream = true
+			_clear_comp_yuv_textures()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			stream_backend.stop_play_stream()
+			await get_tree().create_timer(0.5).timeout
+			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+			return
+
+	# Polaris-only: this whole comparison is "does the manifest-reported real
+	# desktop size match what native_resolution assumed" - meaningless (and,
+	# confirmed live, actively harmful) for any host that never populates a
+	# real manifest, since layout.frame_size then never reflects this actual
+	# connection at all. Against a Sunshine host this fired repeatedly every
+	# single connect, restarting over and over chasing a comparison that could
+	# never converge - each restart also being a real cost (see
+	# stream_connection.cpp's deferred-free GPU resource queue).
+	if is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
+		native_resolution = layout.frame_size
+		settings_controller.refresh_resolution_btn_label()
+		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
+		# blocked the retry for exactly the case that needs it most: removing/
+		# adding a monitor changes the server's real captured composite size,
+		# triggering a genuine restart (settings_controller.gd's
+		# _schedule_stream_restart()), which left the stream stuck requesting the
+		# old (now mismatched) aspect for that whole session - the same
+		# squished-with-black-bars server-side letterbox symptom this retry
+		# exists to fix in the first place, just not caught because a restart
+		# was already in flight. _resolution_retry_done alone already prevents
+		# this from cascading (the retry's own reconnect passes a non-zero
+		# forced_resolution, which does not reset it), so was_restarting was
+		# never actually needed for that protection.
+		if not stream_manager._resolution_retry_done:
+			stream_manager._resolution_retry_done = true
+			var retry_host_id = current_host_id
+			var retry_app_id = _selected_app_id
+			var retry_resolution = compute_requested_resolution()
+			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
+				str(layout.frame_size), str(retry_resolution), resolution_scale_pct])
+			_restarting_stream = true
+			# See settings_controller.gd's _schedule_stream_restart() for why this
+			# has to happen (and yield a frame) before stop_play_stream(), not after.
+			_clear_comp_yuv_textures()
+			await get_tree().process_frame
+			await get_tree().process_frame
+			stream_backend.stop_play_stream()
+			await get_tree().create_timer(0.5).timeout
+			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
+			return
+	state_manager.save_host_state()
 
 func _switch_to_comp_layer():
 	comp.switch_to_comp_layer()
@@ -578,13 +1037,20 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 func _full_disconnect_cleanup(status_msg: String):
 	_connect_timeout_pending = false
 	_server_codec_support = {}
+	_host_cursor_toggle_supported = false
 	ui_controller.update_codec_btn()
+	ui_controller.update_host_cursor_btn_state()
 	ui_controller.set_status(status_msg)
 	ui_controller.set_disconnect_visible(false)
 	_log("[STREAM] Full disconnect: %s" % status_msg)
 	welcome_screen.show_welcome_screen("welcome")
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_clear_comp_yuv_textures()
+	# _clear_comp_yuv_textures() shows the ". . ." loading indicator (meant
+	# for mid-restart, waiting-on-real-decoder-frames), but a full disconnect
+	# goes straight to the welcome screen instead of a fresh stream - hide it
+	# again so it doesn't blink away on top of the welcome screen content.
+	comp.hide_loading_dots()
 	comp_shader_mat.set_shader_parameter("main_texture", welcome_viewport.get_texture())
 	comp_shader_mat.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_left:
@@ -654,6 +1120,9 @@ func _ready():
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():
+		if "--nf-no-xr" in OS.get_cmdline_user_args():
+			_log("[XR] --nf-no-xr set, continuing without OpenXR for desktop testing")
+			return
 		_log("[XR] OpenXR not available - cannot run without VR runtime")
 		if not Engine.is_editor_hint():
 			get_tree().quit()
@@ -698,19 +1167,30 @@ func _init_modules():
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
-	host_discovery = HostDiscovery.new(self)
 	controller_mapper = ControllerMapper.new(self)
 	add_child(controller_mapper)
 
 func _init_android_setup():
 	if OS.get_name() == "Android":
+		# Must run BEFORE _init_backgrounds_and_comp_layer() creates
+		# comp_viewport_left/right - depth_estimator's upsample/offset
+		# SubViewports (stereo_mode 5) produce the warp data those actually-
+		# displayed per-eye viewports consume every frame (via
+		# yuv_display.gdshader), and Godot updates SubViewports in scene-tree
+		# order, so the producer must be added to the tree first. (The
+		# upsample pass used to also depend on comp_viewport - the OPPOSITE
+		# direction - which was the real source of a stutter/double-image
+		# bug; that dependency was removed by having it decode YUV directly
+		# instead, see depth_upsample.gdshader.)
 		depth_estimator.setup()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 1)
+	ai_3d_model = clampi(ai_3d_model, 0, 1)
+	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
+	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -739,11 +1219,17 @@ func _init_ui():
 	add_child(virtual_keyboard)
 	virtual_keyboard.build()
 
-	%ScreenGrabBar.material_override = %ScreenGrabBar.material_override.duplicate()
+	screen_mesh.setup(self, &"m0")
+	screens = [screen_mesh]
+	primary_screen = screen_mesh
+	primary_screen.grid_pos = Vector2i(3, 1)
+	layout = ScreenLayout.single(Vector2i(1920, 1080))
+	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
 	_mesh_size = screen_mesh.mesh.size
 	screen_manager.create_corner_handles()
 	screen_manager.create_bezel()
 	_create_contact_dot()
+	ui_panel_3d.set_meta(&"nf_role", &"panel")
 
 	ui_controller.build_ui()
 	welcome_screen.build_welcome_ui()
@@ -751,6 +1237,309 @@ func _init_ui():
 	%IPInput.gui_input.connect(func(e): ui_controller.on_ipinput_gui_input(e))
 	ui_controller.setup_numpad()
 	ui_controller.refresh_ui_buttons()
+
+const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
+const MAX_SCREENS := 4
+# Gap between adjacent screen edges, in meters. Shared with MonitorGrid so
+# grid-mode spacing and add_screen()'s free-placement spacing can't drift apart.
+const SCREEN_GAP := 0.05
+
+# Local-space offset (from mesh center) of a curved screen's left/right edge,
+# matching the vertex math in VRScreen.apply_curvature(): the edge sits at
+# chord half-width (not mesh_size.x * 0.5) and bows back in +Z.
+func _curve_edge_local_offset(mesh_w: float, radius: float, curvature: int, sign: float) -> Vector3:
+	if curvature == 0 or radius <= 0.0:
+		return Vector3(sign * mesh_w * 0.5, 0, 0)
+	var angle = mesh_w / radius
+	var half_w = sin(angle * 0.5) * radius
+	var edge_z = radius * (1.0 - cos(angle * 0.5))
+	return Vector3(sign * half_w, 0, edge_z)
+
+# Euler angles (same convention as Node3D.rotation) that orient something at
+# `pos` to face the headset: yaw via atan2(cam.x-pos.x, cam.z-pos.z) (this
+# mesh's front faces local +Z, not -Z, so Node3D.look_at() is 180 degrees off
+# and must not be used here). with_pitch also tilts up/down toward the
+# headset, for screens placed above/below primary's height. Pure function (no
+# node mutation) so grid_cell_transform() below can use it mid-walk, before a
+# screen has actually been moved to the position being evaluated.
+func _face_camera_angles(pos: Vector3, cam_pos: Vector3, with_pitch: bool) -> Vector3:
+	var yaw = atan2(cam_pos.x - pos.x, cam_pos.z - pos.z)
+	var pitch = 0.0
+	if with_pitch:
+		var to_cam = cam_pos - pos
+		var dist = to_cam.length()
+		pitch = -asin(clampf(to_cam.y / dist, -1.0, 1.0)) if dist > 0.001 else 0.0
+	return Vector3(pitch, yaw, 0.0)
+
+func _face_camera(node: Node3D, cam_pos: Vector3, with_pitch: bool) -> void:
+	node.rotation = _face_camera_angles(node.global_position, cam_pos, with_pitch)
+
+# Degrees each grid square is turned from its neighbor square (a 155-degree
+# dihedral fold between adjacent squares) - a fixed, constant spacing,
+# deliberately NOT derived from curvature/radius: the grid's own angle stays
+# "a standard size" regardless of whatever Flat/Slight/Curved the screens
+# themselves are set to, and the screens' own existing curve/bow rendering
+# (VRScreen.apply_curvature(), _curve_edge_local_offset()) is completely
+# unaffected by any of this - it stays exactly as it already is. Sized for the
+# common case (3 screens = 6 squares, not the full 8), hence sharper than a
+# naive 120deg/8 would give. A screen is 2 squares wide, so consecutive
+# SCREENS are rotated by 2x this amount from each other.
+const GRID_SQUARE_TURN_DEG := 25.0
+
+# Transform of the screen `n` screen-widths to the right (n>0) or left (n<0)
+# of primary (n=0 = primary itself), for every n from -max_n to +max_n,
+# computed via a single outward walk in each direction (used to be recomputed
+# from scratch for every one of nearest_free_grid_cell()'s ~21 candidates,
+# every frame during a live drag - real cost saver to do it once and look up).
+#
+# Each hop places the next screen's near edge exactly SCREEN_GAP from the
+# current screen's far edge - same anchor+near_offset edge math add_screen()
+# already uses for its own hops (_curve_edge_local_offset(), so a genuinely
+# curved screen's real bowed-backward edge is what the gap is measured from,
+# not an idealized flat one - a curved screen's edge sits well behind its
+# flat mesh_size.x width, and measuring the gap against the flat width was
+# exactly why curved screens kept touching even though the gap looked correct
+# on paper), just with a fixed rotation increment instead of a
+# curvature-derived one - then rotates by 2*GRID_SQUARE_TURN_DEG for the next
+# screen. Using an explicit edge-to-edge gap term like this (rather than
+# deriving screen spacing from a folded multi-square chord) is what
+# guarantees screens never drift closer than SCREEN_GAP as the turn angle
+# increases - an earlier version derived spacing from a chord across 2
+# individually-folded squares, which shrank as the angle increased.
+func _grid_screen_transforms(max_n: int) -> Dictionary:
+	var transforms := {0: Transform3D(primary_screen.global_transform.basis, primary_screen.global_position)}
+	var mesh_w = primary_screen.mesh_size.x
+	var curvature = primary_screen.curvature
+	var radius = primary_screen.get_cylinder_radius() if curvature > 0 else 0.0
+	var turn = deg_to_rad(GRID_SQUARE_TURN_DEG * 2.0)
+	for dir in [1.0, -1.0]:
+		var pos = primary_screen.global_position
+		var basis = primary_screen.global_transform.basis
+		for n in range(1, max_n + 1):
+			var far_edge = _curve_edge_local_offset(mesh_w, radius, curvature, dir)
+			var anchor = pos + basis * far_edge
+			anchor += basis.x * dir * SCREEN_GAP
+			basis = basis.rotated(Vector3.UP, -dir * turn)
+			var near_edge = _curve_edge_local_offset(mesh_w, radius, curvature, -dir)
+			pos = anchor - basis * near_edge
+			transforms[int(dir) * n] = Transform3D(basis, pos)
+	return transforms
+
+# World transform for grid cell (gx,gy), given a screen-transform cache from
+# _grid_screen_transforms() above. Row (vertical) offsets stay horizontally
+# unrotated (curvature has always been horizontal-only here) but DO pitch to
+# face the viewer, same as add_screen()'s existing "above" placement always
+# has - a row that ends up above eye height needs to tilt down to read
+# comfortably, and a row below needs to tilt up.
+func _cell_transform_from_screens(gx: int, gy: int, anchor_gx: int, anchor_gy: int, transforms: Dictionary) -> Transform3D:
+	var n = (gx - anchor_gx) / MonitorGrid.SPAN
+	var t: Transform3D = transforms[n]
+
+	var row_steps = (gy - anchor_gy) / MonitorGrid.SPAN
+	if row_steps != 0:
+		# gy increases downward in the grid, which is -Y (lower) in world space.
+		var row_span = primary_screen.mesh_size.y + SCREEN_GAP
+		t.origin += t.basis.y * (-row_steps) * row_span
+		var yaw = t.basis.get_euler().y
+		var pitch = _face_camera_angles(t.origin, xr_camera.global_position, true).x
+		t.basis = Basis.from_euler(Vector3(pitch, yaw, 0.0))
+
+	return t
+
+# Single-cell convenience wrapper around _cell_transform_from_screens() - fine
+# for the one-off calls (preset apply, default placement); the live-drag hot
+# path below builds one shared cache instead of using this per candidate.
+func grid_cell_transform(gx: int, gy: int, anchor_gx: int, anchor_gy: int) -> Transform3D:
+	var n = absi((gx - anchor_gx) / MonitorGrid.SPAN)
+	return _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, _grid_screen_transforms(n))
+
+# Nearest unoccupied SPANxSPAN cell to raw_pos. Brute-forces all
+# (COLS-SPAN+1)*(ROWS-SPAN+1) = 21 candidate cells against a single shared
+# transform cache - cheap enough to run every frame during a live drag.
+# occupied is an Array[Vector2i] of other screens' current grid cells.
+# Returns Vector2i(-1,-1) if every cell is blocked.
+func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, anchor_gy: int) -> Vector2i:
+	var transforms = _grid_screen_transforms(MonitorGrid.COLS / MonitorGrid.SPAN)
+	var best := Vector2i(-1, -1)
+	var best_dist := INF
+	for gy in range(MonitorGrid.ROWS - MonitorGrid.SPAN + 1):
+		for gx in range(MonitorGrid.COLS - MonitorGrid.SPAN + 1):
+			var cand := Vector2i(gx, gy)
+			var blocked := false
+			for occ in occupied:
+				if MonitorGrid.cells_overlap(cand, occ):
+					blocked = true
+					break
+			if blocked:
+				continue
+			var t = _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, transforms)
+			var d = t.origin.distance_to(raw_pos)
+			if d < best_dist:
+				best_dist = d
+				best = cand
+	return best
+
+func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
+	if screens.size() >= MAX_SCREENS:
+		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
+		return null
+	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
+	add_child(s)
+	s.setup(self, monitor_id)
+	s.mesh_size = primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
+	s.curvature = primary_screen.curvature if primary_screen else 2
+	if primary_screen:
+		var gap = SCREEN_GAP
+		var cam_pos = xr_camera.global_position
+		var new_radius = primary_screen.get_cylinder_radius() if primary_screen.curvature > 0 else 0.0
+		# Prefer the monitor's real desktop x-position (when the caller has one,
+		# i.e. apply_screen_layout() passing a manifest-backed MonitorSpec) to
+		# decide which side of the chain a new screen extends, and which
+		# existing screen it attaches next to. The old approach only tracked
+		# "is there already anything on the left/right" - it can't distinguish
+		# "further right than the current rightmost" from "should go on the
+		# left", so a 3rd non-primary monitor could land on the wrong side, or
+		# (once both sides already had one) get forced to stack "above" even
+		# when it was really just the next one over in the row. That
+		# visual/real mismatch mattered beyond looks: uv_to_host_point() maps
+		# clicks using the real desktop_rect regardless of where the screen
+		# visually ended up, so a wrongly-placed screen made clicks land on
+		# whatever content was really at that position - often the primary.
+		var have_hint = real_x_hint != INF and primary_screen.monitor != null
+		var primary_real_x = primary_screen.monitor.desktop_rect.position.x if have_hint else 0.0
+		var slot: String
+		if have_hint:
+			slot = "left" if real_x_hint < primary_real_x else "right"
+		else:
+			var eps = 0.05
+			var has_left = false
+			var has_right = false
+			for existing in screens:
+				if existing == primary_screen:
+					continue
+				if existing.global_position.x < primary_screen.global_position.x - eps:
+					has_left = true
+				elif existing.global_position.x > primary_screen.global_position.x + eps:
+					has_right = true
+			slot = "above" if (has_left and has_right) else ("left" if has_right else "right")
+		if slot == "above":
+			var ref_offset = Vector3(0, primary_screen.mesh_size.y * 0.5, 0)
+			var anchor = primary_screen.global_transform * ref_offset
+			anchor += primary_screen.global_transform.basis.y * gap
+			var near_offset = Vector3(0, -s.mesh_size.y * 0.5, 0)
+			s.global_position = anchor - near_offset
+			_face_camera(s, cam_pos, true)
+			var rotated_near_offset = s.global_transform.basis * near_offset
+			s.global_position = anchor - rotated_near_offset
+			_face_camera(s, cam_pos, true)
+		else:
+			var dir = -1.0 if slot == "left" else 1.0
+			var edge_screen = primary_screen
+			var edge_key = primary_real_x
+			for existing in screens:
+				if existing == primary_screen:
+					continue
+				var existing_key = existing.monitor.desktop_rect.position.x if (have_hint and existing.monitor) else existing.global_position.x
+				var cmp_key = edge_key if have_hint else edge_screen.global_position.x
+				if dir > 0 and existing_key > cmp_key:
+					edge_screen = existing
+					edge_key = existing_key
+				elif dir < 0 and existing_key < cmp_key:
+					edge_screen = existing
+					edge_key = existing_key
+			var ref_radius = edge_screen.get_cylinder_radius() if edge_screen.curvature > 0 else 0.0
+			var ref_offset = _curve_edge_local_offset(edge_screen.mesh_size.x, ref_radius, edge_screen.curvature, dir)
+			var anchor = edge_screen.global_transform * ref_offset
+			anchor += edge_screen.global_transform.basis.x * dir * gap
+			var near_offset = _curve_edge_local_offset(s.mesh_size.x, new_radius, s.curvature, -dir)
+			s.global_position = anchor - near_offset
+			_face_camera(s, cam_pos, false)
+			var rotated_near_offset = s.global_transform.basis * near_offset
+			s.global_position = anchor - rotated_near_offset
+			_face_camera(s, cam_pos, false)
+	screen_manager.create_corner_handles_for(s)
+	screen_manager.create_bezel_for(s)
+	s.apply_curvature()
+	if comp.available:
+		comp.setup_screen(s, with_stereo)
+		if is_streaming and stream_viewport:
+			var stream_size = stream_viewport.size
+			if stream_size.x > 0 and stream_size.y > 0:
+				s.comp_viewport.size = stream_size
+				s.comp_base_size = stream_size
+	screens.append(s)
+	_log("[SCREEN] Added screen %s (total=%d)" % [String(monitor_id), screens.size()])
+	if comp.available and comp.in_use and s.comp_cylinder:
+		s.comp_cylinder.visible = true
+		s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		s.comp_shader_mat.set_shader_parameter("stereo_mode", 0)
+		s.bezel_mesh.visible = false
+		comp.make_screen_transparent()
+		comp.update_cylinder_params()
+		comp.update_bezel()
+	if comp.available and is_streaming:
+		comp.invalidate_yuv_cache()
+		_bind_yuv_textures()
+	var layer_count = screens.size() + 5
+	_log("[COMP] screens=%d layers=%d" % [screens.size(), layer_count])
+	if comp.available and s.comp_cylinder and not s.comp_cylinder.is_natively_supported():
+		_log("[COMP] Screen %s cylinder not natively supported, falling back to mesh rendering for this screen" % String(monitor_id))
+	return s
+
+func remove_screen(monitor_id: StringName) -> void:
+	for i in range(screens.size()):
+		if screens[i].monitor_id == monitor_id:
+			var s = screens[i]
+			if s == primary_screen:
+				_log("[SCREEN] Refusing to remove the primary screen %s" % String(monitor_id))
+				return
+			screens.remove_at(i)
+			if comp.available:
+				if s.comp_cylinder:
+					s.comp_cylinder.visible = false
+					s.comp_cylinder.set_layer_viewport(null)
+					xr_origin.remove_child(s.comp_cylinder)
+					s.comp_cylinder.queue_free()
+				if s.comp_cylinder_left:
+					s.comp_cylinder_left.visible = false
+					s.comp_cylinder_left.set_layer_viewport(null)
+					xr_origin.remove_child(s.comp_cylinder_left)
+					s.comp_cylinder_left.queue_free()
+				if s.comp_cylinder_right:
+					s.comp_cylinder_right.visible = false
+					s.comp_cylinder_right.set_layer_viewport(null)
+					xr_origin.remove_child(s.comp_cylinder_right)
+					s.comp_cylinder_right.queue_free()
+				if s.comp_viewport:
+					remove_child(s.comp_viewport)
+					s.comp_viewport.queue_free()
+				if s.comp_viewport_left:
+					remove_child(s.comp_viewport_left)
+					s.comp_viewport_left.queue_free()
+				if s.comp_viewport_right:
+					remove_child(s.comp_viewport_right)
+					s.comp_viewport_right.queue_free()
+			# screen_mesh is main.gd's own permanent $MeshInstance3D (see
+			# _init_ui()'s screens = [screen_mesh]/primary_screen = screen_mesh) -
+			# reused for the welcome screen and referenced directly all over this
+			# codebase (dozens of call sites), not a disposable VR_SCREEN_SCENE
+			# instance like every screen add_screen() creates. It's already been
+			# demoted out of the screens[] array and had its comp-layer resources
+			# torn down above by this point (the normal "replace the welcome
+			# placeholder with the real primary" flow on first connect always
+			# reaches here for it, once it's no longer primary_screen) - freeing
+			# the node itself as well would free a node the rest of the app still
+			# holds direct references to, producing "previously freed" errors on
+			# every subsequent access (confirmed live: repeating every frame via
+			# whatever still reads screen_mesh.* after this).
+			if s != screen_mesh:
+				s.queue_free()
+			_log("[SCREEN] Removed screen %s (total=%d)" % [String(monitor_id), screens.size()])
+			if comp.available and is_streaming:
+				comp.invalidate_yuv_cache()
+				_bind_yuv_textures()
+			_update_cursor_layer()
+			return
 
 func _init_stream_backend():
 	if config_mgr and comp_mgr:
@@ -848,10 +1637,33 @@ func _init_xr(interface):
 		get_viewport().msaa_3d = Viewport.MSAA_2X
 	_xr_base_render_scale = get_viewport().scaling_3d_scale
 	is_xr_active = true
+	# Godot's own comp-layer/texture bindings (connect_welcome_texture() et al)
+	# only ever run once, here at boot, regardless of whether the OpenXR
+	# session is actually visible yet - is_initialized() (checked before this
+	# function is even called) only means a session exists, not that the
+	# headset is being worn: the proximity sensor is a separate state Quest
+	# tracks independently of session creation. Launching headlessly (e.g. via
+	# adb) and only putting the headset on afterward left the welcome screen
+	# showing its plain grey placeholder texture, because nothing ever
+	# re-touched the binding once the session actually became visible.
+	# user_presence_changed is the proximity-sensor signal itself - re-run the
+	# one-time welcome-texture binding whenever the headset is (re-)donned,
+	# which is cheap and idempotent, so it's safe even on a session that was
+	# already correctly bound.
+	if interface.has_signal("user_presence_changed"):
+		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
-	ai_3d_mode = 0
+	ai_3d_model = 0
 
 	settings_controller.apply_display_refresh_rate()
+
+func _on_user_presence_changed(is_present: bool):
+	# Only the welcome screen depends on this - once actually streaming, the
+	# real video texture bindings are already refreshed by their own paths
+	# (_on_stream_started() et al) and re-running connect_welcome_texture()
+	# here would incorrectly stomp them back to the welcome viewport.
+	if is_present and comp and comp.available and not is_streaming:
+		comp.connect_welcome_texture()
 
 func _init_backgrounds_and_comp_layer():
 	_create_backgrounds()
@@ -870,6 +1682,15 @@ func _init_post_xr():
 	ui_visible = false
 	_set_ui_visible(false)
 	_ui_has_saved_offset = false
+	# _reposition_screen_and_ui() (triggered from _process()) can race with the
+	# await above, so re-sync everything one last time now that load_state()/
+	# switch_to_comp_layer() have both definitely finished - the same fix a
+	# manual grab performs, just run automatically before the cover lifts.
+	for s in screens:
+		s.apply_curvature()
+	if comp.available:
+		comp.update_cylinder_params()
+	_debug_log_cyl("init_post_xr")
 	_startup_ready = true
 
 func _init_textures_and_ui():
@@ -886,6 +1707,8 @@ func _init_textures_and_ui():
 					if h.has("localaddress") and h.localaddress == saved_ip:
 						current_host_id = h.id
 						break
+				if current_host_id >= 0:
+					settings_controller.detect_polaris_host(saved_ip, current_host_id)
 				ui_controller.update_host_label()
 				welcome_screen.update_welcome_info()
 
@@ -956,7 +1779,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_mode > 0 and comp.in_use:
+		if depth_estimator.depth_texture and ai_3d_model > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)
@@ -975,6 +1798,7 @@ func _process(delta):
 
 	if _startup_cover:
 		if _startup_ready and _startup_reposition == -1:
+			_debug_log_cyl("cover_removed")
 			_startup_cover.queue_free()
 			_startup_cover = null
 			_log("[COVER] Startup cover removed")
@@ -1042,6 +1866,10 @@ func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 		return true
 	return false
 
+const HAND_REST_THRESHOLD := 2.0
+var right_hand_resting: bool = false
+var left_hand_resting: bool = false
+
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
 		return
@@ -1055,11 +1883,25 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
-	var target_alpha = 1.0 if inactive_time < 2.0 else 0.02
+	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
 	var new_alpha = move_toward(_hand_alpha[side], target_alpha, delta * 2.0)
 	_set_hand_alpha(side, new_alpha)
+
+func _apply_hand_rest(side: String, resting: bool):
+	var was_resting = right_hand_resting if side == "right" else left_hand_resting
+	if resting == was_resting:
+		return
+	if side == "right":
+		right_hand_resting = resting
+		if hand_raycast: hand_raycast.enabled = not resting
+	else:
+		left_hand_resting = resting
+		if left_hand_raycast: left_hand_raycast.enabled = not resting
+	_log("[HAND] %s controller %s" % [side, "resting (disabled)" if resting else "picked up (re-enabled)"])
 
 func _process_hand_tracking(_delta):
 	var hands_active = get_is_hand_tracking() and get_hand_tracking_has_data()
@@ -1165,7 +2007,7 @@ func _process_stats(delta):
 	if comp.in_use:
 		var cur_filter = smooth_mode
 		var cur_sharpen = float(sharpen_mode) * 0.5
-		var cur_blur_scale = float(host_resolution.x) / float(_xr_render_width) if _xr_render_width > 0 else 1.0
+		var cur_blur_scale = get_blur_scale(primary_screen)
 		if cur_filter != _cached_filter_mode or cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
 			_cached_filter_mode = cur_filter
 			_cached_sharpen = cur_sharpen
@@ -1248,16 +2090,37 @@ var _ui_saved_rot_y: float = 0.0
 var _ui_saved_rot_x: float = 0.0
 var _ui_has_saved_offset: bool = false
 
+func _anchor_to_primary(node: Node3D, offset: Vector3, rot_y: float, rot_x: float):
+	node.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
+	node.rotation.y = primary_screen.global_rotation.y + rot_y
+	node.rotation.x = rot_x
+
+func set_primary_screen(s: VRScreen) -> void:
+	if s == primary_screen or not screens.has(s):
+		return
+	var panels: Array = [ui_panel_3d]
+	if virtual_keyboard:
+		panels.append(virtual_keyboard)
+	var world_transforms := {}
+	for p in panels:
+		world_transforms[p] = p.global_transform
+	primary_screen = s
+	for p in panels:
+		p.global_transform = world_transforms[p]
+		if p == ui_panel_3d:
+			_save_ui_offset()
+		elif p.has_method("_save_offset"):
+			p._save_offset()
+	state_manager.save_state()
+
 func _set_ui_position():
 	if not is_xr_active:
 		return
 	if _ui_has_saved_offset:
-		ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * _ui_saved_offset
-		ui_panel_3d.rotation.y = screen_mesh.global_rotation.y + _ui_saved_rot_y
-		ui_panel_3d.rotation.x = _ui_saved_rot_x
+		_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 	else:
 		var offset = Vector3(-1.0, -0.5, 0.8)
-		ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * offset
+		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
 		var cam_pos = xr_camera.global_position
 		var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
 		ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
@@ -1265,9 +2128,9 @@ func _set_ui_position():
 		_save_ui_offset()
 
 func _save_ui_offset():
-	var scr_basis = screen_mesh.global_transform.basis.inverse()
-	_ui_saved_offset = scr_basis * (ui_panel_3d.global_position - screen_mesh.global_position)
-	_ui_saved_rot_y = ui_panel_3d.rotation.y - screen_mesh.global_rotation.y
+	var scr_basis = primary_screen.global_transform.basis.inverse()
+	_ui_saved_offset = scr_basis * (ui_panel_3d.global_position - primary_screen.global_position)
+	_ui_saved_rot_y = ui_panel_3d.rotation.y - primary_screen.global_rotation.y
 	_ui_saved_rot_x = ui_panel_3d.rotation.x
 	_ui_has_saved_offset = true
 
@@ -1278,12 +2141,10 @@ func _set_ui_visible(vis: bool):
 		area.process_mode = Node.PROCESS_MODE_INHERIT if vis else Node.PROCESS_MODE_DISABLED
 	if is_xr_active and vis:
 		if _ui_has_saved_offset:
-			ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * _ui_saved_offset
-			ui_panel_3d.rotation.y = screen_mesh.global_rotation.y + _ui_saved_rot_y
-			ui_panel_3d.rotation.x = _ui_saved_rot_x
+			_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 		else:
 			var offset = Vector3(-1.0, -0.5, 0.8)
-			ui_panel_3d.global_position = screen_mesh.global_position + screen_mesh.global_transform.basis * offset
+			ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
 			var cam_pos = xr_camera.global_position
 			var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
 			ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
@@ -1301,6 +2162,17 @@ func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	if left_hand:
 		left_hand.trigger_haptic_pulse("haptic", strength, 0.05)
 
+func _debug_log_cyl(tag: String):
+	var mesh_pos = screen_mesh.global_position if screen_mesh else Vector3.ZERO
+	var mesh_rot = screen_mesh.global_rotation if screen_mesh else Vector3.ZERO
+	var cam_pos = xr_camera.global_position if xr_camera else Vector3.ZERO
+	var cyl_pos = comp_cylinder.global_position if comp_cylinder else Vector3.ZERO
+	var cyl_rot = comp_cylinder.global_rotation if comp_cylinder else Vector3.ZERO
+	var cyl_vis = comp_cylinder.visible if comp_cylinder else false
+	_log("[CYLDBG:%s] cam=%s mesh_pos=%s mesh_rot=%s cyl_pos=%s cyl_rot=%s cyl_vis=%s cyl_radius=%.3f cyl_center=%s" % [
+		tag, str(cam_pos), str(mesh_pos), str(mesh_rot), str(cyl_pos), str(cyl_rot), str(cyl_vis), _comp_cyl_radius, str(_comp_cyl_center)
+	])
+
 func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	if not is_xr_active:
 		return
@@ -1312,9 +2184,22 @@ func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	screen_mesh.rotation = Vector3.ZERO
 	if use_cam_yaw:
 		screen_mesh.rotation.y = atan2(-cam_fwd.x, -cam_fwd.z)
-	if (comp_cylinder and comp_cylinder.visible) or (comp_cylinder_left and comp_cylinder_left.visible):
+	screen_mesh.apply_curvature()
+	# get_cylinder_radius() is camera-position-derived, so any screen curved before
+	# this point (e.g. _init_post_xr()'s early best-effort pass, which isn't gated on
+	# _startup_reposition confirming a real tracking pose yet) may have baked in a
+	# wrong radius - grab_bar/corner geometry is fully recomputed by apply_curvature()
+	# each call, so re-running it here with a now-valid camera position is a full fix,
+	# not just a partial one. Only screen_mesh's world position/rotation gets moved
+	# above (it's the one placed relative to the camera); secondary screens are placed
+	# relative to it and must keep their own position/rotation untouched here.
+	for s in screens:
+		if s != screen_mesh:
+			s.apply_curvature()
+	if comp_cylinder or comp_cylinder_left:
 		_update_cylinder_params()
 	_log("[POS] Screen at %s, Cam at %s" % [str(screen_mesh.global_position), str(cam_pos)])
+	_debug_log_cyl("reposition")
 
 func _reset_positions():
 	if ui_visible:

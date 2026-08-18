@@ -13,6 +13,7 @@
 #include <godot_cpp/classes/mutex.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <atomic>
+#include <deque>
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -61,6 +62,23 @@ private:
     // Pending state for _render_thread_import_native_rt
     RID pending_native_rid_;
     int pending_native_width_ = 0, pending_native_height_ = 0;
+    // _render_thread_import_native_rt() runs once per decoded frame (the H264
+    // hw_frames_ctx/"Tier1" AHardwareBuffer path) and used to free the PREVIOUS
+    // frame's imported texture/wrapper immediately upon importing the next one.
+    // The OpenXR compositor reads tex_y on its own frame timeline, decoupled from
+    // when we happen to re-point the shader parameter, so freeing that
+    // immediately-superseded texture had no guarantee the compositor was actually
+    // done with it yet - confirmed via Vulkan validation (VUID-vkDestroyImage-image-01000)
+    // firing continuously during normal H264 playback, eventually stalling decode
+    // entirely. Deferring the free until a texture has been superseded by several
+    // newer frames (not just the very next one) gives the compositor real slack
+    // without leaking unboundedly on this per-frame path.
+    struct PendingNativeTexFree {
+        RID rd_tex;
+        RID rs_tex;
+    };
+    std::deque<PendingNativeTexFree> pending_native_tex_free_;
+    static const int NATIVE_TEX_FREE_DELAY_FRAMES = 3;
     PackedByteArray rd_texture_buffers[3];
 
     Ref<Image> plane_images[3];

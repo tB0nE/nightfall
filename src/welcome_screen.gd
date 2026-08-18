@@ -458,8 +458,23 @@ func build_pin_screen(parent: Node):
 
 	back_btn.pressed.connect(func(): show_welcome_screen("server"))
 
+const WELCOME_FRAME := Vector2i(1920, 1080)
+
 func show_welcome_screen(name: String):
 	main._welcome_screen = name
+	# The welcome UI is rendered on the same shared mesh/material as the stream
+	# (see main.gd's comp_shader_mat main_texture reuse), and several code paths
+	# can leave that mesh in a non-16:9 state that main.layout doesn't reflect:
+	# a multi-monitor stream attempt that reshapes it before the connection
+	# outcome is known, or load_host_state() restoring a saved per-screen
+	# mesh_size/position directly onto main.screens without ever touching
+	# main.layout. Checking main.layout.frame_size alone can silently miss
+	# both, so force this back to a fixed 16:9 unconditionally instead of
+	# trying to detect every way it could have drifted - this function is only
+	# ever shown while not actively streaming, and apply_screen_layout() is
+	# cheap enough to call on every navigation click.
+	if not main.is_streaming:
+		main.settings_controller.apply_screen_layout(ScreenLayout.single(WELCOME_FRAME))
 	var root = main.welcome_viewport.get_node("WelcomeRoot/Screens")
 	for child in root.get_children():
 		child.visible = false
@@ -624,6 +639,7 @@ func browse_mdns():
 						found_host = true
 						break
 				if found_host:
+					main.settings_controller.detect_polaris_host(ip, main.current_host_id)
 					show_welcome_screen("welcome")
 				else:
 					start_pair(ip)
@@ -660,6 +676,7 @@ func populate_server_list():
 			save_last_ip(ip)
 			main.state_manager.load_host_state(ip)
 			main.current_host_id = h.id
+			main.settings_controller.detect_polaris_host(ip, main.current_host_id)
 			show_welcome_screen("welcome")
 		)
 

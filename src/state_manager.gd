@@ -17,6 +17,7 @@ func save_state():
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "codec_preference", main.codec_preference)
+	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -36,11 +37,29 @@ func save_host_state():
 	var save = ConfigFile.new()
 	save.load("user://host_state.cfg")
 	save.set_value(ip, "fps", main.stream_fps)
+	save.set_value(ip, "resolution_scale_pct", main.resolution_scale_pct)
+	save.set_value(ip, "native_resolution", [main.native_resolution.x, main.native_resolution.y])
+	save.set_value(ip, "is_polaris_host", main.is_polaris_host)
 	save.set_value(ip, "resolution_idx", main.resolution_idx)
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
-	save.set_value(ip, "ai_3d_mode", main.ai_3d_mode)
+	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
+	save.set_value(ip, "ai_3d_quality", main.ai_3d_quality)
+	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
+	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
+	var placements := []
+	for s in main.screens:
+		placements.append({
+			"id": String(s.monitor_id),
+			"pos": [s.position.x, s.position.y, s.position.z],
+			"rot": [s.rotation.x, s.rotation.y, s.rotation.z],
+			"size": [s.mesh_size.x, s.mesh_size.y],
+			"curvature": s.curvature,
+			"grid_mode": s.grid_mode,
+			"grid_pos": [s.grid_pos.x, s.grid_pos.y],
+		})
+	save.set_value(ip, "screen_placements", JSON.stringify(placements))
 	save.save("user://host_state.cfg")
 
 func load_host_state(ip: String):
@@ -52,39 +71,113 @@ func load_host_state(ip: String):
 	if not save.has_section(ip):
 		return
 	main.stream_fps = save.get_value(ip, "fps", 60)
-	main.resolution_idx = save.get_value(ip, "resolution_idx", 1)
+	main.resolution_scale_pct = save.get_value(ip, "resolution_scale_pct", 100)
+	if not main.resolution_scale_options.has(main.resolution_scale_pct):
+		main.resolution_scale_pct = 100
+	var native_arr = save.get_value(ip, "native_resolution", [1920, 1080])
+	main.native_resolution = Vector2i(native_arr[0], native_arr[1])
+	main.is_polaris_host = save.get_value(ip, "is_polaris_host", false)
+	main.resolution_idx = clampi(save.get_value(ip, "resolution_idx", 1), 0, main.resolutions.size() - 1)
 	main.bitrate_idx = save.get_value(ip, "bitrate_idx", -1)
 	main.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
-		main.ai_3d_mode = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 1)
+		if save.has_section_key(ip, "ai_3d_model"):
+			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 1)
+			main.ai_3d_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
+			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+		elif save.has_section_key(ip, "ai_3d_mode"):
+			# Migrate the old flat 0-6 "3D AI" cycle (2026-08-18 split into
+			# three independent controls: model/quality/debug) - 0=Off,
+			# 1=Fast, 2=Standard, 3=Fastest, 4-6=DMap/-Raw/-Input debug
+			# views (always at Standard quality, since the old scheme had
+			# no independent quality selection for them).
+			var old = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 6)
+			main.ai_3d_model = 0 if old == 0 else 1
+			main.ai_3d_debug = 0 if old < 4 else old - 3
+			match old:
+				1: main.ai_3d_quality = 2 # Fast
+				3: main.ai_3d_quality = 1 # Fastest
+				_: main.ai_3d_quality = 3 # Standard (old modes 0, 2, 4-6)
 	elif save.has_section_key(ip, "stereo_mode"):
 		var old = clampi(save.get_value(ip, "stereo_mode", 0), 0, 4)
 		if old <= 2:
 			main.sbs_mode = old
-			main.ai_3d_mode = 0
+			main.ai_3d_model = 0
 		else:
 			main.sbs_mode = 0
-			main.ai_3d_mode = 1
+			main.ai_3d_model = 1
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_labels[main.ai_3d_mode])
+	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	main.ui_controller.update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	main.ui_controller.update_3d_btn_state()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
-	if main.resolution_idx == -1:
-		main.host_resolution = Vector2i(1920, 1080)
-		main.ui_controller.update_option_btn(main._ui_res_btn, "Auto")
-	else:
-		main.resolution_idx = clampi(main.resolution_idx, 0, main.resolutions.size() - 1)
-		main.host_resolution = main.resolutions[main.resolution_idx]
-		main.ui_controller.update_option_btn(main._ui_res_btn, main.resolution_labels[main.resolution_idx])
+	main.host_resolution = main.compute_requested_resolution()
+	main.settings_controller.refresh_resolution_btn_label()
+	main.ui_controller.update_monitor_tab()
 	var bitrate_label = main.bitrate_labels[main.bitrate_idx + 1] if main.bitrate_idx >= 0 else "Auto"
 	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label)
 	main.settings_controller.apply_stereo()
 	if main.depth_estimator:
 		main.depth_estimator.set_enabled(main.settings_controller.get_stereo_mode() >= 3)
 	main.settings_controller.apply_stereo()
+
+	var layout_json = save.get_value(ip, "screen_layout", "")
+	var loaded_layout: ScreenLayout = null
+	if not layout_json.is_empty():
+		var parsed = JSON.parse_string(layout_json)
+		if parsed is Dictionary:
+			var candidate = ScreenLayout.from_dict(parsed)
+			if candidate.validate(candidate.frame_size) == "":
+				loaded_layout = candidate
+			else:
+				main._log("[LAYOUT] Saved layout failed validation, using single()")
+	if loaded_layout == null:
+		loaded_layout = ScreenLayout.single(main.layout.frame_size if main.layout else Vector2i(1920, 1080))
+	main.settings_controller.apply_screen_layout(loaded_layout)
+
+	var placements_json = save.get_value(ip, "screen_placements", "")
+	if not placements_json.is_empty():
+		var placements = JSON.parse_string(placements_json)
+		if placements is Array:
+			for entry in placements:
+				var mid = StringName(entry.get("id", ""))
+				for s in main.screens:
+					if s.monitor_id == mid:
+						var pos = entry.get("pos", [0, 0, 0])
+						var rot = entry.get("rot", [0, 0, 0])
+						var size = entry.get("size", [s.mesh_size.x, s.mesh_size.y])
+						s.position = Vector3(pos[0], pos[1], pos[2])
+						s.rotation = Vector3(rot[0], rot[1], rot[2])
+						s.mesh_size = Vector2(size[0], size[1])
+						s.curvature = entry.get("curvature", s.curvature)
+						s.grid_mode = entry.get("grid_mode", s.grid_mode)
+						var gp = entry.get("grid_pos", [s.grid_pos.x, s.grid_pos.y])
+						s.grid_pos = Vector2i(gp[0], gp[1])
+						s.apply_curvature()
+						break
+		# The composition layer cylinder (the surface actually visible in the
+		# headset) is a separate node with its own world position/radius, only
+		# ever synced by an explicit update_cylinder_params() call - it does NOT
+		# follow along automatically just because a screen's mesh transform above
+		# was restored. Without this, the flat mesh (and its grab_bar child) jump
+		# to the saved position/rotation while the cylinder stays wherever the
+		# generic startup pass left it, until a manual grab forces a resync.
+		if main.comp:
+			main.comp.update_cylinder_params()
+		# These placements describe how screens should look while actively
+		# streaming to this host, not the pre-connect welcome UI - but this runs
+		# during boot (_init_textures_and_ui(), called after _init_ui() already
+		# reset the welcome screen to a fixed 16:9), so a saved non-16:9 layout
+		# would otherwise squish the welcome screen the user sees before they've
+		# even connected. Re-assert the welcome layout now if we're not
+		# streaming; it'll be replaced by the host's real manifest/layout once a
+		# connection actually starts.
+		if not main.is_streaming and main.welcome_screen:
+			main.welcome_screen.show_welcome_screen(main._welcome_screen)
 
 func sync_ui_to_settings():
 	if main.bezel_mesh:
@@ -109,12 +202,14 @@ func sync_ui_to_settings():
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
+		main.ui_controller.update_monitor_tab()
 	if main.screen_manager:
 		main.screen_manager.update_bezel_size()
 	if main.settings_controller:
 		main.settings_controller.apply_filter()
 
 func load_state():
+	MonitorPresets.write_default_presets_snapshot()
 	var save = ConfigFile.new()
 	var err = save.load("user://app_state.cfg")
 	main._log("[STATE] load_state called. Load result: %d" % err)
@@ -127,7 +222,19 @@ func load_state():
 	main.bezel_enabled = save.get_value("screen", "bezel", true)
 	main.curvature = save.get_value("screen", "curvature", 2)
 	main.background_mode = save.get_value("screen", "background_mode", 0)
-	if save.has_section_key("screen", "passthrough"):
+	# "passthrough_enabled" is the current format, always written by
+	# save_state() - prefer it whenever present. The old "passthrough" int key
+	# (0=on, 1-5=off with a specific background) predates that and is never
+	# written or cleared anymore, so a save file that has both (any file
+	# saved by a current build that started from an old one) would otherwise
+	# have this permanently prioritize a stale value no toggle can ever
+	# change. Only fall back to it as a one-time migration for a save file
+	# that's never been touched by the current format at all.
+	if save.has_section_key("screen", "passthrough_enabled"):
+		var raw_saved = save.get_value("screen", "passthrough_enabled", false)
+		main.passthrough_enabled = raw_saved and main.passthrough_supported
+		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
+	elif save.has_section_key("screen", "passthrough"):
 		var old = clampi(save.get_value("screen", "passthrough", 0), 0, 5)
 		if main.passthrough_supported:
 			main.passthrough_enabled = (old == 0)
@@ -136,7 +243,7 @@ func load_state():
 			main.passthrough_enabled = false
 			main.background_mode = old
 	else:
-		main.passthrough_enabled = save.get_value("screen", "passthrough_enabled", false) and main.passthrough_supported
+		main.passthrough_enabled = false
 	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
 	main.sharpen_mode = save.get_value("screen", "sharpen_mode", 0)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
@@ -146,6 +253,7 @@ func load_state():
 	else:
 		main.pointer_steady = int(saved_steady)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
+	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0

@@ -473,7 +473,7 @@ func _apply_modifier_visuals():
 
 func _place_default():
 	var offset = Vector3(0, -0.7, 0.6)
-	global_position = main.screen_mesh.global_position + main.screen_mesh.global_transform.basis * offset
+	global_position = main.primary_screen.global_position + main.primary_screen.global_transform.basis * offset
 	var cam_pos = main.xr_camera.global_position
 	var to_cam = (cam_pos - global_position).normalized()
 	rotation.y = atan2(to_cam.x, to_cam.z)

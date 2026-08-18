@@ -7,10 +7,9 @@ var pointer_on_ui: bool = false
 var _active_hand: String = "right"
 var _pinch_start_time: float = 0.0
 var _pinch_start_pos: Vector2 = Vector2.ZERO
+var _pinch_start_screen: VRScreen = null
 var _click_pending_release: bool = false
 var _corner_resize_started: bool = false
-var _corner_start_width: float = 0.0
-var _corner_start_hit_x: float = 0.0
 var _auto_primary: String = ""
 var _auto_reset_timer: float = 0.0
 var _right_on_screen: bool = false
@@ -172,14 +171,16 @@ func handle_pointer_interaction():
 	if is_now_clicking and not main.was_clicking and not _click_pending_release:
 		_pinch_start_time = Time.get_ticks_msec()
 		var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
-		if col and col.get_parent() == main.screen_mesh:
+		var t0 = PointerTarget.resolve(col) if col else {"role": &""}
+		if t0.role == &"screen":
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = main._hit_point_to_uv(hit_pos)
+			var uv = t0.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
 			if main.settings_controller.get_stereo_mode() >= 3:
 				var shift = _compute_parallax_shift(uv_x)
 				uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
-			_pinch_start_pos = Vector2(uv_x * main.stream_viewport.size.x, uv.y * main.stream_viewport.size.y)
+			_pinch_start_pos = Vector2(main.layout.uv_to_host_point(t0.screen.monitor, Vector2(uv_x, uv.y)))
+			_pinch_start_screen = t0.screen
 			_click_pending_release = true
 
 	if main.is_xr_active and main.is_streaming and main.controller_mapper:
@@ -191,17 +192,18 @@ func handle_pointer_interaction():
 		var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
 		if not pad_blocking and not tp_blocking and is_gripping and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
-			if col and col.get_parent() == main.screen_mesh:
+			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
+			if t1.role == &"screen":
 				var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-				var uv = main._hit_point_to_uv(hit_pos)
+				var uv = t1.screen.hit_point_to_uv(hit_pos)
 				var uv_x = uv.x
 				var uv_y = uv.y
 				if main.settings_controller.get_stereo_mode() >= 3:
 					var shift = _compute_parallax_shift(uv_x)
 					uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
-				var host_x = int(uv_x * main.stream_viewport.size.x)
-				var host_y = int(uv_y * main.stream_viewport.size.y)
-				main.stream_backend.send_mouse_position_event(host_x, host_y, main.stream_viewport.size.x, main.stream_viewport.size.y)
+				var host_pt = main.layout.uv_to_host_point(t1.screen.monitor, Vector2(uv_x, uv_y))
+				var ref = main.layout.host_ref()
+				main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
 			main.stream_backend.send_mouse_button_event(7, 3)
 			main.was_right_clicking = true
 			main.right_click_cooldown = 0.5
@@ -209,28 +211,40 @@ func handle_pointer_interaction():
 			main.stream_backend.send_mouse_button_event(8, 3)
 			main.was_right_clicking = false
 
-	main.get_node("%ScreenGrabBar").visible = true
-	for ch in main.corner_handles:
-		ch.visible = false
+	for s in main.screens:
+		s.grab_bar.visible = true
+		for ch in s.corner_handles:
+			ch.visible = false
+			var ch_area = ch.get_node_or_null("Area3D")
+			if ch_area:
+				ch_area.monitoring = false
+				ch_area.monitorable = false
 
-	if main.grabbed_corner_idx >= 0:
-		main.corner_handles[main.grabbed_corner_idx].visible = true
+	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		var gh = main.grabbed_corner_screen.corner_handles[main.grabbed_corner_idx]
+		gh.visible = true
+		var gh_area = gh.get_node_or_null("Area3D")
+		if gh_area:
+			gh_area.monitoring = true
+			gh_area.monitorable = true
 
 	if not main.grabbed_node and main.grabbed_corner_idx < 0:
-		_set_grab_bar_color(main.get_node("%ScreenGrabBar"), Color.WHITE, 0.05)
+		for s in main.screens:
+			_set_grab_bar_color(s.grab_bar, _bar_base_color(s), 0.05)
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.08))
 		if main.virtual_keyboard and main.virtual_keyboard.visible:
 			main.set_comp_grab_bar_color(main.virtual_keyboard.viewport, Color(1, 1, 1, 0.08))
-		for ch in main.corner_handles:
-			_set_corner_color(ch, Color.WHITE, 0.05)
+		for s in main.screens:
+			for ch in s.corner_handles:
+				_set_corner_color(ch, Color.WHITE, 0.05)
 	elif main.grabbed_node and main.grabbed_bar:
-		_set_grab_bar_color(main.grabbed_bar, Color.WHITE, 0.4)
+		_set_grab_bar_color(main.grabbed_bar, _bar_base_color(main.grabbed_node), 0.4)
 	elif main.grabbed_node == main.ui_panel_3d:
 		main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.8))
 	elif main.grabbed_node == main.virtual_keyboard:
 		main.set_comp_grab_bar_color(main.virtual_keyboard.viewport, Color(1, 1, 1, 0.8))
-	elif main.grabbed_corner_idx >= 0:
-		_set_corner_color(main.corner_handles[main.grabbed_corner_idx], Color.WHITE, 0.4)
+	elif main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		_set_corner_color(main.grabbed_corner_screen.corner_handles[main.grabbed_corner_idx], Color.WHITE, 0.4)
 
 	var right_laser = main.get_node("%Laser")
 	var left_laser = null
@@ -273,8 +287,8 @@ func handle_pointer_interaction():
 	if not tp_capturing and active_raycast.is_colliding():
 		var raw_hit = active_raycast.get_collision_point()
 		var _col = active_raycast.get_collider()
-		var _par = _col.get_parent() if _col else null
-		on_screen = (_par == main.screen_mesh)
+		var t_hover = PointerTarget.resolve(_col) if _col else {"role": &""}
+		on_screen = (t_hover.role == &"screen")
 		var hide_on_screen = on_screen and pad_mode_active
 		var hit_point = main._get_steady_hit(raw_hit) if on_screen else raw_hit
 		var col_normal = active_raycast.get_collision_normal()
@@ -309,24 +323,27 @@ func handle_pointer_interaction():
 	if active_raycast.is_colliding():
 		var collider = active_raycast.get_collider()
 		var parent = collider.get_parent()
+		var t = PointerTarget.resolve(collider)
 		pointer_on_ui = false
-		if parent == main.ui_panel_3d or (main.ui_visible and parent == main.get_node("%ScreenGrabBar")):
+		if t.role == &"panel" and parent == main.ui_panel_3d:
 			pointer_on_ui = true
-		if main.virtual_keyboard and main.virtual_keyboard.visible and parent == main.virtual_keyboard.mesh_instance:
+		if t.role == &"grab_bar" and main.ui_visible:
+			pointer_on_ui = true
+		if main.virtual_keyboard and main.virtual_keyboard.visible and t.role == &"panel" and parent == main.virtual_keyboard.mesh_instance:
 			pointer_on_ui = true
 
-		if parent == main.get_node("%ScreenGrabBar") and parent != main.grabbed_bar:
-			_set_grab_bar_color(parent, Color.WHITE, 0.15)
+		if t.role == &"grab_bar" and parent != main.grabbed_bar:
+			_set_grab_bar_color(parent, _bar_base_color(parent.get_parent()), 0.15)
 
 		is_now_clicking = _is_now_clicking()
 
 		var hit_ui = false
 		if main.ui_visible and main.ui_panel_3d and main.ui_panel_3d.visible:
 			var area = main.ui_panel_3d.get_node_or_null("Area3D")
-			if area and area.monitoring and parent == main.ui_panel_3d:
+			if area and area.monitoring and t.role == &"panel" and parent == main.ui_panel_3d:
 				hit_ui = true
 
-		if parent == main.ui_panel_3d or hit_ui:
+		if (t.role == &"panel" and parent == main.ui_panel_3d) or hit_ui:
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var local_pos = main.ui_panel_3d.to_local(hit_pos)
 			var half_w = main._ui_mesh_size.x / 2.0
@@ -374,7 +391,7 @@ func handle_pointer_interaction():
 					main.was_clicking = false
 			return
 
-		if main.virtual_keyboard and main.virtual_keyboard.visible and parent == main.virtual_keyboard.mesh_instance:
+		if main.virtual_keyboard and main.virtual_keyboard.visible and t.role == &"panel" and parent == main.virtual_keyboard.mesh_instance:
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var local_pos = main.virtual_keyboard.mesh_instance.to_local(hit_pos)
 			var half_w = main.virtual_keyboard.mesh_size.x / 2.0
@@ -414,9 +431,18 @@ func handle_pointer_interaction():
 					main.was_clicking = false
 			return
 
-		elif parent == main.screen_mesh and not main.is_streaming:
+		elif t.role == &"screen" and (main.grabbed_node or main.grabbed_corner_idx >= 0):
+			# A grab-bar or corner-handle drag is in progress and the ray just
+			# happens to be sweeping over some screen's surface en route (easy
+			# to hit now that grid mode can place screens close together) -
+			# don't forward that as a click/cursor-move to whatever's playing
+			# on that screen. The drag itself is driven by handle_grab()/
+			# handle_corner_resize() elsewhere, not by this hit-test.
+			return
+
+		elif t.role == &"screen" and not main.is_streaming:
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = main._hit_point_to_uv(hit_pos)
+			var uv = t.screen.hit_point_to_uv(hit_pos)
 			var wv = main.welcome_viewport
 			var pixel_pos = Vector2(uv.x * wv.size.x, uv.y * wv.size.y)
 
@@ -444,27 +470,27 @@ func handle_pointer_interaction():
 				main.was_clicking = false
 			return
 
-		elif parent == main.screen_mesh and main.is_streaming:
+		elif t.role == &"screen" and main.is_streaming:
 			if main.virtual_keyboard and main.virtual_keyboard.trackpad_active:
 				return
 			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD:
 				return
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = main._hit_point_to_uv(hit_pos)
+			var uv = t.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
 			var uv_y = uv.y
 			if main.settings_controller.get_stereo_mode() >= 3:
 				var shift = _compute_parallax_shift(uv_x)
 				uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
-			var host_x = int(uv_x * main.stream_viewport.size.x)
-			var host_y = int(uv_y * main.stream_viewport.size.y)
+			var host_pt = main.layout.uv_to_host_point(t.screen.monitor, Vector2(uv_x, uv_y))
+			var ref = main.layout.host_ref()
 
 			if main.is_xr_active:
 				if is_now_clicking:
 					var hold_time = Time.get_ticks_msec() - _pinch_start_time
-					var dist = (Vector2(host_x, host_y) - _pinch_start_pos).length()
+					var dist = Vector2(host_pt).distance_to(_pinch_start_pos)
 					if hold_time > 150 or dist > 15:
-						main.stream_backend.send_mouse_position_event(host_x, host_y, main.stream_viewport.size.x, main.stream_viewport.size.y)
+						main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
 						if not main.was_clicking:
 							main.stream_backend.send_mouse_button_event(7, 1)
 							main.was_clicking = true
@@ -473,25 +499,40 @@ func handle_pointer_interaction():
 					main.was_clicking = false
 					_click_pending_release = false
 				elif _click_pending_release:
-					main.stream_backend.send_mouse_position_event(int(_pinch_start_pos.x), int(_pinch_start_pos.y), main.stream_viewport.size.x, main.stream_viewport.size.y)
-					main.stream_backend.send_mouse_button_event(7, 1)
-					main.stream_backend.send_mouse_button_event(8, 1)
+					if _pinch_start_screen == t.screen:
+						main.stream_backend.send_mouse_position_event(int(_pinch_start_pos.x), int(_pinch_start_pos.y), ref.x, ref.y)
+						main.stream_backend.send_mouse_button_event(7, 1)
+						main.stream_backend.send_mouse_button_event(8, 1)
 					_click_pending_release = false
 			else:
 				if is_now_clicking and not main.was_clicking:
-					main.stream_backend.send_mouse_position_event(host_x, host_y, main.stream_viewport.size.x, main.stream_viewport.size.y)
+					main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
 					main.suppress_input_frames = 3
 					main.input_handler.capture_stream_mouse()
 					main.was_clicking = true
 			return
 
-		var corner_idx = _get_corner_index(parent)
-		if corner_idx >= 0:
+		# A stream-content drag already in flight (e.g. dragging a window/icon
+		# toward another screen, kept alive across the gap by the fallback
+		# below) must not be hijacked into a corner-resize or grab-bar-move just
+		# because the ray happens to sweep over one of those hitboxes en route -
+		# the user is still holding the SAME click that started on a screen.
+		# Require a release (which clears _pinch_start_screen) before either
+		# gesture can start.
+		var mid_content_drag = main.was_clicking and _pinch_start_screen != null and not main.grabbed_node and main.grabbed_corner_idx < 0
+
+		if t.role == &"corner":
+			var corner_idx = t.corner_idx
 			parent.visible = true
-			if is_now_clicking and main.grabbed_corner_idx < 0 and not main.grabbed_node:
+			var p_area = parent.get_node_or_null("Area3D")
+			if p_area:
+				p_area.monitoring = true
+				p_area.monitorable = true
+			if is_now_clicking and main.grabbed_corner_idx < 0 and not main.grabbed_node and not mid_content_drag:
 				main.grabbed_corner_idx = corner_idx
+				main.grabbed_corner_screen = t.screen
 				var opposite_idx = 3 - corner_idx
-				var opposite = main.corner_handles[opposite_idx]
+				var opposite = t.screen.corner_handles[opposite_idx]
 				main.corner_anchor_world = opposite.global_position
 				_set_corner_color(parent, Color.WHITE, 0.4)
 				main.was_clicking = true
@@ -499,8 +540,8 @@ func handle_pointer_interaction():
 				_set_corner_color(parent, Color.WHITE, 0.15)
 			return
 
-		elif parent == main.get_node("%ScreenGrabBar"):
-			if is_now_clicking and not main.grabbed_node and main.grabbed_corner_idx < 0:
+		elif t.role == &"grab_bar":
+			if is_now_clicking and not main.grabbed_node and main.grabbed_corner_idx < 0 and not mid_content_drag:
 				main.grabbed_node = parent.get_parent()
 				main.grabbed_bar = parent
 				var grab_point = active_raycast.get_collision_point()
@@ -513,15 +554,35 @@ func handle_pointer_interaction():
 					main.grab_start_hand_basis = active_raycast.global_transform.basis
 					main.grab_start_node_basis = main.grabbed_node.global_transform.basis
 					main.grab_start_node_euler = main.grabbed_node.rotation
-				_set_grab_bar_color(parent, Color.WHITE, 0.3)
+				main.grab_group_start_transforms.clear()
+				if main.grabbed_node == main.primary_screen:
+					main.grab_start_primary_transform = main.primary_screen.global_transform
+					for other in main.screens:
+						if other != main.primary_screen:
+							main.grab_group_start_transforms[other] = other.global_transform
+				_set_grab_bar_color(parent, _bar_base_color(parent.get_parent()), 0.3)
 				main.was_clicking = true
 			return
 
 	elif main.was_clicking:
-		if main.is_streaming:
-			main.stream_backend.send_mouse_button_event(8, 1)
-		main.was_clicking = false
-		_click_pending_release = false
+		# The raycast hit nothing at all this frame - could be the physical trigger/
+		# pinch actually releasing, or just the ray passing through the gap between
+		# two adjacent screens (or off the edge into empty space) mid-drag. Only treat
+		# it as a real release when the physical input itself let go; otherwise keep
+		# the click held server-side and simply skip sending a position update this
+		# frame. Once the ray lands on a screen again (this one or another), the
+		# t.role == &"screen" branch above resumes sending positions from wherever it
+		# is now - which is exactly "drag onto another screen" for free, since it maps
+		# through whichever screen is currently hit, not just the one the drag started on.
+		var mid_screen_drag = _pinch_start_screen != null and main.grabbed_node == null and main.grabbed_corner_idx < 0
+		if is_now_clicking and mid_screen_drag and main.is_streaming:
+			pass
+		else:
+			if main.is_streaming:
+				main.stream_backend.send_mouse_button_event(8, 1)
+			main.was_clicking = false
+			_click_pending_release = false
+			_pinch_start_screen = null
 
 func _update_on_screen_tracking():
 	_right_on_screen = _is_hand_on_screen("right")
@@ -540,21 +601,16 @@ func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast
 	if not rc or not rc.is_colliding():
 		return false
-	var col = rc.get_collider()
-	if not col:
-		return false
-	var p = col.get_parent()
-	return p == main.screen_mesh or p == main.ui_panel_3d or (main.virtual_keyboard and main.virtual_keyboard.visible and p == main.virtual_keyboard.mesh_instance)
+	var t = PointerTarget.resolve(rc.get_collider())
+	if t.role == &"screen":
+		return true
+	return t.role == &"panel"
 
 func _is_hand_on_ui(hnd: String) -> bool:
 	var rc = main.hand_raycast if hnd == "right" else main.left_hand_raycast
 	if not rc or not rc.is_colliding():
 		return false
-	var col = rc.get_collider()
-	if not col:
-		return false
-	var p = col.get_parent()
-	return p == main.ui_panel_3d or (main.virtual_keyboard and main.virtual_keyboard.visible and p == main.virtual_keyboard.mesh_instance)
+	return PointerTarget.resolve(rc.get_collider()).role == &"panel"
 
 func _process_other_hand_ui():
 	if not main.is_xr_active or main._is_using_hands:
@@ -570,7 +626,8 @@ func _process_other_hand_ui():
 		_hide_other_hand_ui()
 		return
 	var parent = col.get_parent()
-	if parent != main.ui_panel_3d and not (main.virtual_keyboard and main.virtual_keyboard.visible and parent == main.virtual_keyboard.mesh_instance):
+	var t_other = PointerTarget.resolve(col)
+	if t_other.role != &"panel":
 		_hide_other_hand_ui()
 		return
 	var panel = parent
@@ -671,6 +728,14 @@ func _apply_ui_hover_states():
 	if not main.ui_visible:
 		return
 	for entry in _ui_button_states:
+		# _ui_button_states is only refreshed by explicit populate_ui_buttons()
+		# calls (UI init, tab rebuilds); it's not kept in sync with every place
+		# that frees a Button (e.g. the monitor tab rebuilding its per-monitor
+		# buttons on add/remove), so a stale entry pointing at an already-freed
+		# Button is expected here, not a bug to chase at the population site -
+		# guard against it directly instead of crashing every frame on it.
+		if not is_instance_valid(entry["btn"]):
+			continue
 		var btn: Button = entry["btn"]
 		if not btn.is_visible_in_tree():
 			continue
@@ -699,11 +764,8 @@ func handle_grab():
 	var cam_pos = main.xr_camera.global_position
 	main.grabbed_node.rotation.y = atan2(cam_pos.x - main.grabbed_node.global_position.x, cam_pos.z - main.grabbed_node.global_position.z)
 
-	if main.grabbed_node == main.screen_mesh:
-		if main.comp_cylinder and main.comp_cylinder.visible:
-			main.comp.update_cylinder_params()
-		if main.comp_cylinder_left and main.comp_cylinder_left.visible:
-			main.comp.update_cylinder_params()
+	if main.grabbed_node is VRScreen:
+		main.comp.update_cylinder_params()
 
 	if main.is_xr_active and main.grab_start_hand_basis != Basis():
 		var hand_fwd = -active_raycast.global_transform.basis.z
@@ -718,16 +780,36 @@ func handle_grab():
 			euler.x = 0.0
 		main.grabbed_node.rotation = euler
 
-	if main.grabbed_node == main.screen_mesh:
-		if main.comp_cylinder and main.comp_cylinder.visible:
-			main.comp.update_cylinder_params()
-		if main.comp_cylinder_left and main.comp_cylinder_left.visible:
-			main.comp.update_cylinder_params()
+	if main.grabbed_node == main.primary_screen and not main.grab_group_start_transforms.is_empty():
+		var group_delta = main.grabbed_node.global_transform * main.grab_start_primary_transform.affine_inverse()
+		for other in main.grab_group_start_transforms:
+			other.global_transform = group_delta * main.grab_group_start_transforms[other]
+
+	# Primary is exempt by construction - it's always free-mode (moving it
+	# rigidly drags every grid-consistent secondary along via the group-move
+	# block above, which is what "primary moves the whole grid" reduces to).
+	# Secondaries snap live, every frame, to the nearest valid grid cell to
+	# wherever they're currently being dragged - not just once on release.
+	if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen and main.grid_mode_enabled and main.grabbed_node.grid_mode:
+		_apply_live_grid_snap(main.grabbed_node)
+
+	if main.grabbed_node is VRScreen:
+		main.comp.update_cylinder_params()
+		main._debug_log_cyl("grab")
 
 	var still_clicking = _is_now_clicking()
 	if not still_clicking:
+		# Commit grid_mode/grid_pos on release: a screen dragged with Grid Mode
+		# on ends up grid_mode=true at wherever it last snapped to; dragged with
+		# Grid Mode off, it becomes grid_mode=false (free) and is left alone by
+		# the grid system until it's grabbed again with Grid Mode on.
+		if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen:
+			main.grabbed_node.grid_mode = main.grid_mode_enabled
+			if main.grid_mode_enabled and main.grab_snap_candidate.x >= 0:
+				main.grabbed_node.grid_pos = main.grab_snap_candidate
+			main.grab_snap_candidate = Vector2i(-1, -1)
 		if main.grabbed_bar:
-			_set_grab_bar_color(main.grabbed_bar, Color.WHITE, 0.01)
+			_set_grab_bar_color(main.grabbed_bar, _bar_base_color(main.grabbed_node), 0.01)
 			main.grabbed_bar = null
 		if main.grabbed_node == main.ui_panel_3d:
 			main.set_comp_grab_bar_color(main.ui_viewport, Color(1, 1, 1, 0.08))
@@ -737,96 +819,55 @@ func handle_grab():
 		main.grab_start_hand_basis = Basis()
 		main.grab_start_node_basis = Basis()
 		main.grab_start_node_euler = Vector3.ZERO
+		main.grab_group_start_transforms.clear()
 		main.state_manager.save_state()
 
-func handle_corner_resize():
-	if main.grabbed_corner_idx < 0:
+# Snaps s (a grabbed, non-primary, grid-mode screen) to the nearest free grid
+# cell relative to primary's CURRENT (possibly itself mid-drag, for a rigid
+# primary-group-move) transform - called every frame during a drag, not just
+# on release, per spec ("snap to the nearest valid position according to
+# where I am pointing the controller" while dragging).
+func _apply_live_grid_snap(s: VRScreen):
+	var primary: VRScreen = main.primary_screen
+	if not primary:
 		return
+	var occupied: Array = []
+	for other in main.screens:
+		if other != s and other.grid_mode:
+			occupied.append(other.grid_pos)
+	var cand = main.nearest_free_grid_cell(s.global_position, occupied, primary.grid_pos.x, primary.grid_pos.y)
+	if cand.x < 0:
+		return
+	main.grab_snap_candidate = cand
+	s.global_transform = main.grid_cell_transform(cand.x, cand.y, primary.grid_pos.x, primary.grid_pos.y)
+
+func handle_corner_resize():
+	if main.grabbed_corner_idx < 0 or not main.grabbed_corner_screen:
+		return
+	var s = main.grabbed_corner_screen
 	var active_raycast = get_active_raycast()
 	var ray_origin = active_raycast.global_position
 	var ray_dir = -active_raycast.global_transform.basis.z
-
-	var plane_normal = -main.screen_mesh.global_transform.basis.z
-	var plane_point = main.screen_mesh.global_position
-	var denom = ray_dir.dot(plane_normal)
-	if absf(denom) < 0.0001:
-		return
-	var t = (plane_point - ray_origin).dot(plane_normal) / denom
-	if t < 0:
-		return
-	var hit_world = ray_origin + ray_dir * t
-
-	var local_hit = main.screen_mesh.to_local(hit_world)
+	var tile_aspect = float(s.monitor.frame_rect.size.x) / float(s.monitor.frame_rect.size.y) if s.monitor and s.monitor.frame_rect.size.y > 0 else 16.0 / 9.0
 
 	if not _corner_resize_started:
+		s.begin_corner_resize()
 		_corner_resize_started = true
-		_corner_start_width = main._mesh_size.x
-		_corner_start_hit_x = local_hit.x
-		return
+	s.apply_corner_resize(ray_origin, ray_dir, main.grabbed_corner_idx, tile_aspect)
 
-	var sv = main.stream_viewport.size
-	var aspect = float(sv.x) / float(sv.y) if sv.y > 0 else 16.0 / 9.0
-	var sign = -1.0 if main.grabbed_corner_idx in [0, 2] else 1.0
-	var new_w: float
-	if main.curvature == 0:
-		var dx = local_hit.x - _corner_start_hit_x
-		new_w = _corner_start_width + dx * sign * 2.0
-	else:
-		var radius = main.screen_manager._get_cylinder_radius()
-		var start_a = asin(clampf(_corner_start_hit_x / radius, -1.0, 1.0))
-		var cur_a = asin(clampf(local_hit.x / radius, -1.0, 1.0))
-		var da = cur_a - start_a
-		new_w = _corner_start_width + da * radius * sign * 2.0
-	new_w = maxf(new_w, 0.6)
-	var new_h = new_w / aspect
-	if new_h < 0.4:
-		new_h = 0.4
-		new_w = new_h * aspect
-
-	main._mesh_size = Vector2(new_w, new_h)
-	if main.curvature == 0:
-		main.screen_mesh.mesh.size = Vector2(new_w, new_h)
-	else:
-		main.screen_manager.apply_curvature()
-
-	var col_shape = main.screen_mesh.get_node_or_null("Area3D/CollisionShape3D")
-	if col_shape:
-		if main.curvature == 0:
-			var box = BoxShape3D.new()
-			box.size = Vector3(new_w, new_h, 0.01)
-			col_shape.shape = box
-		else:
-			var mesh = main.screen_mesh.mesh
-			if mesh is ArrayMesh and mesh.get_surface_count() > 0:
-				var arrays = mesh.surface_get_arrays(0)
-				var verts = arrays[Mesh.ARRAY_VERTEX]
-				var indices = arrays[Mesh.ARRAY_INDEX]
-				var faces = PackedVector3Array()
-				for i in range(0, indices.size(), 3):
-					faces.append(verts[indices[i]])
-					faces.append(verts[indices[i + 1]])
-					faces.append(verts[indices[i + 2]])
-				var concave = ConcavePolygonShape3D.new()
-				concave.set_faces(faces)
-				col_shape.shape = concave
-
-	main.screen_manager.update_corner_positions()
-	main.screen_manager.update_bezel_size()
 	main.comp.update_layer_size()
 
 	var still_clicking = _is_now_clicking()
 	if not still_clicking:
-		var handle = main.corner_handles[main.grabbed_corner_idx]
+		var handle = s.corner_handles[main.grabbed_corner_idx]
 		_set_corner_color(handle, Color.WHITE, 0.05)
 		main.grabbed_corner_idx = -1
+		main.grabbed_corner_screen = null
 		_corner_resize_started = false
+		s.end_corner_resize()
 		main.state_manager.save_state()
 
-func _get_corner_index(node: Node) -> int:
-	for i in range(main.corner_handles.size()):
-		if node == main.corner_handles[i]:
-			return i
-	return -1
+
 
 func _push_ui_click(pos: Vector2, pressed: bool):
 	var event = InputEventMouseButton.new()
@@ -836,6 +877,14 @@ func _push_ui_click(pos: Vector2, pressed: bool):
 	event.pressed = pressed
 	event.button_mask = MOUSE_BUTTON_MASK_LEFT if pressed else 0
 	main.ui_viewport.push_input(event)
+
+const PRIMARY_BAR_COLOR := Color(0.55, 0.78, 1.0)
+
+# Light blue for the primary screen's grab bar, white for every other screen -
+# a quick visual cue for which screen is primary (drag it and the whole
+# constellation moves; drag anything else and only that screen moves/snaps).
+func _bar_base_color(screen: VRScreen) -> Color:
+	return PRIMARY_BAR_COLOR if screen == main.primary_screen else Color.WHITE
 
 func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	bar.material_override.albedo_color = Color(color.r, color.g, color.b, alpha)

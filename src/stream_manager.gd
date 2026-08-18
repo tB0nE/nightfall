@@ -20,12 +20,20 @@ func _is_local_host(ip: String) -> bool:
 			return true
 	return false
 
-func start_stream(host_id: int, app_id: int):
-	var w = main.host_resolution.x
-	var h = main.host_resolution.y
-	if main.double_h:
-		w *= 2
+# Set on the very first connect attempt of a session; cleared once a resolution-mismatch
+# retry has happened, so we never retry more than once even if the manifest still doesn't
+# match afterwards (e.g. a host that free-scales regardless of requested resolution).
+var _resolution_retry_done: bool = false
+var _current_host_id: int = -1
+var _current_app_id: int = -1
 
+func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	_current_host_id = host_id
+	_current_app_id = app_id
+	# forced_resolution set means this call IS the one-shot correction retry itself -
+	# don't reset the guard there, or a host that never matches would loop forever.
+	if forced_resolution == Vector2i.ZERO:
+		_resolution_retry_done = false
 	var ip = ""
 	for h_host in _b().get_hosts():
 		if h_host.get("id") == host_id:
@@ -41,11 +49,31 @@ func start_stream(host_id: int, app_id: int):
 	else:
 		_b().set_local_capture_mode(false)
 
+	var w = main.host_resolution.x
+	var h = main.host_resolution.y
+	if forced_resolution.x > 0 and forced_resolution.y > 0:
+		w = forced_resolution.x
+		h = forced_resolution.y
+		main._log("[STREAM] Reconnecting with corrected resolution %dx%d (was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
+	elif main.double_h:
+		w *= 2
+
 	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.stream_fps, str(local_capture_mode)])
 	if main.bitrate_idx >= 0:
 		bitrate = main.bitrates[main.bitrate_idx] * 1000
 	else:
-		bitrate = _auto_bitrate(w, h)
+		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
+		# above - w/h can be reduced by the MiDaS-Fast/-Fastest resolution
+		# cap (main.gd's MIDAS_FAST_MAX_PIXELS), which is meant to trade pixels
+		# for FPS, not ALSO cut the bitrate. _auto_bitrate() keying off the
+		# capped w/h used to do both at once (confirmed via logs: capping to
+		# 3712x2088 or 2560x1440 both dropped bitrate from 80000 to 40000),
+		# which starved the video of real detail and degraded MiDaS-Fast/
+		# -Fastest's depth quality well beyond what the resolution cut alone
+		# would explain (see compute_requested_resolution()'s apply_midas_cap
+		# param). Same bitrate at fewer pixels means MORE bits per pixel.
+		var bitrate_ref = main.compute_requested_resolution(false)
+		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
@@ -61,9 +89,47 @@ func start_stream(host_id: int, app_id: int):
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
 	options["surroundAudioInfo"] = 0xCA0203
+	var capture_outputs = _compute_capture_outputs()
+	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
+		capture_outputs, str(main.layout.source) if main.layout else "null",
+		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
+	if not capture_outputs.is_empty():
+		options["capture_outputs"] = capture_outputs
 	main._ui_status_label.text = "Launching stream..."
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
+
+# Comma-separated real RandR output names (e.g. "DP-0,DP-2") for whichever
+# monitors are currently enabled in main.layout, matching Polaris's new
+# per-session outputs= launch/resume param. Sending this - even listing every
+# currently-known output - activates multi-monitor capture on the host
+# regardless of its static linux_multi_monitor_capture config, so the client
+# always gets exactly what it asked for instead of depending on the host's
+# own toggle. Returns "" when main.layout isn't real manifest-derived data yet
+# (source stays at the class default "client_split" for every client-side
+# placeholder - single()/split_h()/replicate(), including the aspect-mismatch
+# reset in resize_stream_viewport()) - in that case the launch just omits the
+# param and the host falls back to its static config, same as before this
+# existed. Checking label.is_empty() alone isn't enough: single()'s placeholder
+# monitor has a non-empty but FAKE label ("Display", not a real RandR name) -
+# sending that as outputs= matches no real host output, and the host reports
+# back zero enabled monitors and falls back to combined/undivided capture.
+func _compute_capture_outputs() -> String:
+	if not main.layout or main.layout.source != &"host_manifest":
+		return ""
+	var labels: Array = []
+	for m in main.layout.enabled_monitors():
+		# Client-side-only virtual monitor placeholders (Monitors tab "Virtual"
+		# staging, see SettingsController._build_staged_layout()) have no real
+		# RandR output behind them - skip them here rather than letting their
+		# empty label trip the "malformed manifest" bailout below and disable
+		# outputs= for the real monitors too.
+		if m.hint.get("virtual", false):
+			continue
+		if m.label.is_empty():
+			return ""
+		labels.append(m.label)
+	return ",".join(labels)
 
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
@@ -156,45 +222,129 @@ func _on_v2_launch_response(response: Dictionary):
 		iv[3] = rikeyid & 0xFF
 		stream_config["remote_input_aes_iv"] = iv
 
+	var manifest = response.get("manifest", {})
+	if manifest is Dictionary and not manifest.is_empty():
+		var host_layout = ScreenLayout.from_dict(manifest)
+		# The host's "primary" flag tracks its real OS-level primary display,
+		# independent of which output(s) we actually asked it to capture. If
+		# the client is only streaming a non-OS-primary monitor (e.g. after
+		# swapping VR-primary to a secondary and disabling the original),
+		# the manifest for that captured set legitimately has zero enabled
+		# monitors flagged primary - validate() used to reject the whole
+		# manifest for that, leaving the client on its previous (differently
+		# shaped) layout while the actual stream played at the new single
+		# monitor's real aspect, producing a stale-mesh-vs-real-video
+		# letterbox mismatch. Promote the sole/first enabled monitor instead.
+		var enabled_in_manifest := host_layout.enabled_monitors()
+		if not enabled_in_manifest.is_empty():
+			var has_primary := false
+			for m in enabled_in_manifest:
+				if m.is_primary:
+					has_primary = true
+					break
+			if not has_primary:
+				enabled_in_manifest[0].is_primary = true
+		var layout_err = host_layout.validate(host_layout.frame_size)
+		if layout_err == "":
+			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d, desktop_bounds=%s" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y, str(host_layout.desktop_bounds)])
+			for m in host_layout.enabled_monitors():
+				main._log("[LAYOUT]   monitor %s frame_rect=%s desktop_rect=%s primary=%s" % [String(m.id), str(m.frame_rect), str(m.desktop_rect), str(m.is_primary)])
+			main.settings_controller.apply_screen_layout(host_layout)
+			# A Monitors-tab Apply that changed the real capture selection
+			# deferred adding virtual placeholders/positioning screens until now
+			# (see SettingsController.apply_staged_monitor_config()) - this
+			# manifest is the first one with real geometry for the newly
+			# requested set, so finish that work now that it's safe to.
+			if main._pending_monitor_apply:
+				main._pending_monitor_apply = false
+				main.settings_controller.finish_pending_monitor_apply()
+		else:
+			main._log("[LAYOUT] Host manifest invalid, ignoring: %s" % layout_err)
+
+	main._host_cursor_toggle_supported = response.get("cursor_supported", false)
+	main.host_cursor_visible = response.get("cursor_visible", false)
+	main.ui_controller.update_host_cursor_btn_state()
+
 	var ip = response.get("ip", "")
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %dMbps)" % [w, h, fps, br])
 
+# Scales linearly against a fixed reference ratio (3840x2160 @ 80000 kbps)
+# instead of the old fixed pixel-count buckets - so it also scales correctly
+# ABOVE 4K (a future multi-monitor layout's total pixel count can exceed a
+# single 4K screen's) and smoothly below it (1080p, 720p, etc.), rather than
+# jumping between a handful of fixed tiers with cliffs at each boundary (a
+# cliff like this is what caused MiDaS-Fast/-Fastest's resolution cap to
+# ALSO cut bitrate in half, see compute_requested_resolution()'s
+# apply_midas_cap param). main.bitrate_idx >= 0 (the manual override) never
+# calls this at all - see start_stream()'s own check.
+const AUTO_BITRATE_REF_PIXELS := 3840 * 2160
+const AUTO_BITRATE_REF_KBPS := 80000
+const AUTO_BITRATE_MIN_KBPS := 1000
+
 func _auto_bitrate(w: int, h: int) -> int:
 	var pixels = w * h
-	if pixels >= 3840 * 2160:
-		return 80000
-	elif pixels >= 2560 * 1440:
-		return 40000
-	elif pixels >= 3440 * 1440:
-		return 50000
-	elif pixels >= 1920 * 1080:
-		return 20000
-	elif pixels >= 1600 * 1200:
-		return 20000
-	else:
-		return 10000
+	var kbps = int(AUTO_BITRATE_REF_KBPS * float(pixels) / float(AUTO_BITRATE_REF_PIXELS))
+	return maxi(kbps, AUTO_BITRATE_MIN_KBPS)
 
 func resize_stream_viewport(w: int, h: int):
 	main.stream_viewport.size = Vector2i(w, h)
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
 		_v2_yuv_rect.custom_minimum_size = Vector2(w, h)
-	if main.comp_viewport:
-		main.comp_viewport.size = Vector2i(w, h)
-	if main.comp_viewport_left:
-		main.comp_viewport_left.size = Vector2i(w, h)
-	if main.comp_viewport_right:
-		main.comp_viewport_right.size = Vector2i(w, h)
-	main._comp_base_size = Vector2i(w, h)
+	# comp_viewport/_left/_right/comp_base_size alias to the PRIMARY screen only;
+	# every screen's own composite viewport must track the actual decoded
+	# resolution too, or secondary screens stay stuck at their setup_screen()
+	# default (1920x1080) and look soft once the stream exceeds that.
+	for s in main.screens:
+		if s.comp_viewport:
+			s.comp_viewport.size = Vector2i(w, h)
+		if s.comp_viewport_left:
+			s.comp_viewport_left.size = Vector2i(w, h)
+		if s.comp_viewport_right:
+			s.comp_viewport_right.size = Vector2i(w, h)
+		s.comp_base_size = Vector2i(w, h)
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
-	main.screen_manager.resize_screen_to_aspect(w, h)
-	if main._xr_render_width > 0 and main.screen_mesh.material_override is ShaderMaterial:
-		var scale = float(w) / float(main._xr_render_width)
-		main.screen_mesh.material_override.set_shader_parameter("blur_scale", scale)
-	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, float(w) / float(main._xr_render_width) if main._xr_render_width > 0 else 1.0])
+	var new_frame = Vector2i(w, h)
+	var layout_changed := false
+	# This runs immediately on start_stream(), before the host's real per-session
+	# manifest has arrived - main.layout at this point is still whatever the
+	# welcome screen last set it to (a 16:9 single-screen placeholder), not the
+	# real multi-monitor layout, so its aspect essentially never matches a wide
+	# multi-monitor request. Eagerly "fixing" that here used to squish
+	# everything onto one screen for the brief window until the manifest
+	# response arrives moments later and correctly re-splits it - a visible
+	# squish-then-split glitch on every connect. local_capture_mode never gets
+	# a manifest at all, so it still needs this eager guess; every other host
+	# is about to send one via the launch response's _on_v2_launch_response()
+	# handler regardless, making this guess pure churn - skip straight to
+	# waiting for the real data instead of rendering a wrong intermediate one.
+	if local_capture_mode and main.layout.frame_size != new_frame:
+		layout_changed = true
+		var old_aspect = float(main.layout.frame_size.x) / float(main.layout.frame_size.y) if main.layout.frame_size.y > 0 else 1.0
+		var new_aspect = float(w) / float(h) if h > 0 else 1.0
+		if absf(old_aspect - new_aspect) < 0.01:
+			var rescaled = main.layout.rescale_to(new_frame)
+			if rescaled.validate(new_frame) == "":
+				main.settings_controller.apply_screen_layout(rescaled)
+			else:
+				main._log("[LAYOUT] Rescale produced an invalid layout, resetting to single()")
+				main.settings_controller.apply_screen_layout(ScreenLayout.single(new_frame))
+		else:
+			main._log("[LAYOUT] Stream aspect changed (%.3f -> %.3f), resetting display layout to single()" % [old_aspect, new_aspect])
+			main.settings_controller.apply_screen_layout(ScreenLayout.single(new_frame))
+			main._ui_status_label.text = "Display layout reset: stream resolution changed"
+	if not layout_changed:
+		main.screen_manager.resize_screen_to_aspect(w, h)
+	for s in main.screens:
+		if s.material_override is ShaderMaterial:
+			s.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(s))
+		for cm in main.comp.get_shader_mats(s):
+			if cm:
+				cm.set_shader_parameter("blur_scale", main.get_blur_scale(s))
+	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, main.get_blur_scale(main.primary_screen)])
 
 func on_pair_pressed():
 	var ip = main.get_node("%IPInput").text
@@ -213,7 +363,12 @@ func on_pair_pressed():
 	if paired_host_id != -1:
 		main.current_host_id = paired_host_id
 		main._ui_status_label.text = "Connecting..."
-		await main.host_discovery.query_host_resolution(ip)
+		# Used to await host_discovery.query_host_resolution() here, which blindly
+		# sleeps 5s every connect regardless of whether its (single-monitor-only,
+		# not multi-monitor-aware) HTTP probe already answered. Superseded by
+		# native_resolution/resolution_scale_pct - the host's real desktop size
+		# comes from its display manifest (or the negotiated launch resolution)
+		# once actually connecting, and gets cached per-host for next time.
 		await start_stream(paired_host_id, main._selected_app_id)
 	else:
 		main._ui_status_label.text = "Pairing with " + ip + "..."

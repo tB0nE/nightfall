@@ -5,10 +5,18 @@ var main: Node3D
 var _tab_display: Control
 var _tab_stream: Control
 var _tab_control: Control
+var _tab_monitors: Control
 var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
+var _tab_btn_monitors: Button
+var _preset_row: HBoxContainer
 var _current_tab: int = 0
+
+const PRESET_CARD_SIZE := Vector2(96, 62)
+const PRESET_DIAGRAM_SIZE := Vector2(84, 42)
+const PRESET_PRIMARY_COLOR := Color(0.55, 0.78, 1.0, 0.9)
+const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 
 func _init(owner: Node3D):
 	main = owner
@@ -41,30 +49,198 @@ func on_sbs_toggled():
 
 func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
-	main.settings_controller.cycle_ai_3d_mode()
+	main.settings_controller.cycle_ai_3d_model()
+
+func on_ai_3d_quality_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_quality()
+
+func on_ai_3d_debug_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_debug()
 
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_labels[main.ai_3d_mode])
+	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
+	var disabled = main.sbs_mode > 0 or main.screens.size() > 1
 	if main._ui_3d_btn:
-		var disabled = main.sbs_mode > 0
 		main._ui_3d_btn.disabled = disabled
 		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
+	# Quality/debug controls are additionally meaningless (and disabled)
+	# whenever AI-3D itself is off - no point picking a tier or a debug
+	# view for a model that isn't running.
+	var sub_disabled = disabled or main.ai_3d_model == 0
+	if main._ui_3d_quality_btn:
+		main._ui_3d_quality_btn.disabled = sub_disabled
+		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
+	# Debug is disabled unconditionally (2026-08-18, matches
+	# settings_controller.gd's cycle_ai_3d_debug() early return) - not
+	# folded into sub_disabled above since that's meant to reflect "would
+	# be usable if AI-3D were on," and this one's just off regardless.
+	if main._ui_3d_debug_btn:
+		main._ui_3d_debug_btn.disabled = true
+		main._ui_3d_debug_btn.modulate.a = 0.3
+
+func update_monitor_tab():
+	if not main._ui_apply_preset_btn:
+		return
+	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
+	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
+	update_option_btn(main._ui_grid_mode_btn, "On" if main.grid_mode_enabled else "Off")
+	_refresh_preset_row()
+	var selected = main._staged_preset_id != &""
+	var selected_preset = MonitorPresets.find_preset(String(main._staged_preset_id)) if selected else {}
+	# Multi-monitor capture/selection is Polaris-only (see
+	# SettingsController.detect_polaris_host()) - every other host (Sunshine,
+	# etc.) has no manifest to pick real monitors from, so none of this tab's
+	# controls do anything meaningful for it. Grey the whole tab out rather
+	# than let it look interactive and silently no-op (or restart the stream
+	# for a change that can never actually take effect). Revisit once/if
+	# non-Polaris multi-monitor selection is supported.
+	var polaris = main.is_polaris_host
+	main._ui_monitors_btn.disabled = not polaris
+	main._ui_virtual_monitors_btn.disabled = not polaris
+	main._ui_apply_preset_btn.disabled = not polaris
+	main._ui_save_preset_btn.disabled = not polaris
+	main._ui_grid_mode_btn.disabled = not polaris
+	main._ui_remove_preset_btn.disabled = not polaris or not selected or selected_preset.get("built_in", true)
+	for card in _preset_row.get_children():
+		if card is Button:
+			card.disabled = not polaris
+
+func _cycle_monitors_btn():
+	var real_total = maxi(main.settings_controller._real_monitor_count(), 1)
+	var n = main._staged_physical_count + 1
+	if n > real_total:
+		n = 1
+	main.settings_controller.stage_monitor_count(n)
+	update_monitor_tab()
+
+func _cycle_virtual_btn():
+	var max_virtual = main.MAX_SCREENS - main._staged_physical_count
+	var n = main._staged_virtual_count + 1
+	if n > max_virtual:
+		n = 0
+	main.settings_controller.stage_virtual_count(n)
+	update_monitor_tab()
+
+func _on_apply_preset_pressed():
+	main.settings_controller.apply_staged_monitor_config()
+	update_monitor_tab()
+
+func _on_save_preset_pressed():
+	main.settings_controller.save_current_as_preset()
+	update_monitor_tab()
+
+func _on_remove_preset_pressed():
+	main.settings_controller.remove_selected_preset()
+	update_monitor_tab()
+
+# Rebuilds Row 2 with one card per preset whose screen_count matches what's
+# currently staged (Row 1) - a screen-count mismatch between a picked preset
+# and the staged Monitors/Virtual total can then never happen through the UI,
+# which is what lets apply_staged_monitor_config() apply a preset's positions
+# directly without needing to reconcile a mismatch at Apply time.
+func _refresh_preset_row():
+	if not _preset_row:
+		return
+	for c in _preset_row.get_children():
+		_preset_row.remove_child(c)
+		c.queue_free()
+	var total = main.settings_controller.staged_total()
+	for preset in MonitorPresets.all_presets():
+		if preset.get("screen_count", -1) != total:
+			continue
+		var is_selected = preset.get("id", "") == String(main._staged_preset_id)
+		_preset_row.add_child(_build_preset_card(preset, is_selected))
+	refresh_ui_buttons()
+
+# Presets have no display name (per spec, identified purely by their layout
+# picture) - each card is just a small grid diagram: one block per screen,
+# light blue for primary (matching the primary grab bar color), dim white for
+# secondaries.
+func _build_preset_card(preset: Dictionary, is_selected: bool) -> Button:
+	var card = Button.new()
+	card.focus_mode = Control.FOCUS_NONE
+	card.text = ""
+	card.custom_minimum_size = PRESET_CARD_SIZE
+	card.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(1, 1, 1, 0.16) if is_selected else Color(1, 1, 1, 0.04)
+	style.set_corner_radius_all(10)
+	if is_selected:
+		style.set_border_width_all(2)
+		style.border_color = PRESET_PRIMARY_COLOR
+	card.add_theme_stylebox_override("normal", style)
+	var hover = style.duplicate()
+	hover.bg_color = Color(1, 1, 1, 0.22)
+	card.add_theme_stylebox_override("hover", hover)
+	card.add_theme_stylebox_override("pressed", hover)
+
+	var diagram = Control.new()
+	diagram.custom_minimum_size = PRESET_DIAGRAM_SIZE
+	diagram.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	diagram.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	diagram.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	diagram.position = (PRESET_CARD_SIZE - PRESET_DIAGRAM_SIZE) * 0.5
+	_draw_preset_blocks(diagram, preset)
+	card.add_child(diagram)
+
+	var id = preset.get("id", "")
+	card.button_down.connect(func():
+		main.settings_controller.select_monitor_preset(StringName(id))
+		_refresh_preset_row()
+	)
+	return card
+
+func _draw_preset_blocks(diagram: Control, preset: Dictionary):
+	var cols = float(MonitorGrid.COLS)
+	var rows = float(MonitorGrid.ROWS)
+	var span = float(MonitorGrid.SPAN)
+	var size = PRESET_DIAGRAM_SIZE
+	var margin = 1.5
+	for entry in preset.get("screens", []):
+		var is_grid = entry.get("grid_mode", true)
+		var gx = 3
+		var gy = 1
+		if is_grid and entry.get("grid_pos") != null:
+			var gp: Array = entry["grid_pos"]
+			gx = gp[0]
+			gy = gp[1]
+		# Free-mode entries have no grid cell - approximated at the grid
+		# center purely for the picker's diagram (dimmed to signal it's not
+		# exact); this never affects actual placement.
+		var rect = ColorRect.new()
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var x0 = (gx / cols) * size.x
+		var y0 = (gy / rows) * size.y
+		var w = (span / cols) * size.x
+		var h = (span / rows) * size.y
+		rect.position = Vector2(x0 + margin, y0 + margin)
+		rect.size = Vector2(w - margin * 2, h - margin * 2)
+		rect.color = PRESET_PRIMARY_COLOR if entry.get("is_primary", false) else PRESET_SECONDARY_COLOR
+		if not is_grid:
+			rect.color.a *= 0.5
+		diagram.add_child(rect)
 
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
 	main.get_node("%Laser").visible = main.is_xr_active
 
 func switch_tab(tab: int):
+	var entering_monitors_tab = (tab == 3 and _current_tab != 3)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
 	if _tab_control: _tab_control.visible = (tab == 2)
+	if _tab_monitors: _tab_monitors.visible = (tab == 3)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -81,10 +257,18 @@ func switch_tab(tab: int):
 		_tab_btn_control.add_theme_stylebox_override("normal", tab_active_style if tab == 2 else tab_inactive_style)
 		_tab_btn_control.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 2 else Color(1, 1, 1, 0.5))
+	if _tab_btn_monitors:
+		_tab_btn_monitors.add_theme_stylebox_override("normal", tab_active_style if tab == 3 else tab_inactive_style)
+		_tab_btn_monitors.add_theme_stylebox_override("hover", tab_active_style)
+		_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 3 else Color(1, 1, 1, 0.5))
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
-	# Refresh stored styles for dual-hover tracking
+	if tab == 3:
+		if entering_monitors_tab:
+			main.settings_controller.sync_staged_from_current_layout()
+		update_monitor_tab()
+
 	var ui_buttons = []
 	_collect_buttons(main.get_node("%UIRoot"), ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
@@ -317,6 +501,22 @@ func build_ui():
 	_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	tab_bar.add_child(_tab_btn_control)
 
+	_tab_btn_monitors = Button.new()
+	_tab_btn_monitors.text = "Monitors"
+	_tab_btn_monitors.focus_mode = Control.FOCUS_NONE
+	_tab_btn_monitors.custom_minimum_size = Vector2(160, 44)
+	_tab_btn_monitors.add_theme_font_size_override("font_size", 22)
+	_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	# Disabled (2026-08-18), not removed - the underlying multi-monitor code
+	# (composition_layer_manager.gd, vr_screen.gd, screen_layout.gd etc.) is
+	# still fully wired up and depended on by AI-3D itself, this just hides
+	# the tab/button so the feature isn't user-facing yet. switch_tab(3) is
+	# ONLY ever reached via this button's own click handler below (no other
+	# call site), so hiding it fully disables reachability. Set .visible =
+	# true again to bring the tab back.
+	_tab_btn_monitors.visible = false
+	tab_bar.add_child(_tab_btn_monitors)
+
 	var tab_margin = Control.new()
 	tab_margin.custom_minimum_size = Vector2(0, 12)
 	tab_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -341,8 +541,17 @@ func build_ui():
 	disp_row1.add_child(main._ui_pt_btn)
 	main._ui_sbs_btn = make_option_btn("SBS", "Off")
 	disp_row1.add_child(main._ui_sbs_btn)
-	main._ui_3d_btn = make_option_btn("3D AI", "2D")
+	main._ui_3d_btn = make_option_btn("3D AI", "Off")
 	disp_row1.add_child(main._ui_3d_btn)
+	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
+	disp_row1.add_child(main._ui_3d_quality_btn)
+	# Debug is disabled (and dim) whenever 3D AI is off, which is most of
+	# the time - deliberately left on the same row as everything else even
+	# though 5 buttons overlaps/runs off the panel at this width, per
+	# explicit instruction (2026-08-18): fine since it's rarely the visible/
+	# active one.
+	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+	disp_row1.add_child(main._ui_3d_debug_btn)
 
 	var disp_gap1 = Control.new()
 	disp_gap1.custom_minimum_size = Vector2(0, 20)
@@ -383,12 +592,20 @@ func build_ui():
 	stream_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_stream.add_child(stream_row1)
 
-	main._ui_res_btn = make_option_btn("Resolution", "HD")
+	main._ui_res_btn = make_option_btn("Resolution", "100%")
+	# Wider than the other option buttons and a smaller value-line font: this one's
+	# value now shows the exact resulting pixel dimensions alongside MAX/the
+	# percentage (e.g. "MAX (6144x3456)"), which doesn't fit the standard
+	# 250px/26pt budget the way "100%" or "H.264" do on the other option buttons.
+	main._ui_res_btn.custom_minimum_size = Vector2(310, 132)
+	main._ui_res_btn.add_theme_font_size_override("font_size", 22)
 	stream_row1.add_child(main._ui_res_btn)
 	main._ui_fps_btn = make_option_btn("FPS", "60")
 	stream_row1.add_child(main._ui_fps_btn)
 	main._ui_bitrate_btn = make_option_btn("Bitrate", "Auto")
 	stream_row1.add_child(main._ui_bitrate_btn)
+	main._ui_host_cursor_btn = make_option_btn("Host Cursor", "Off")
+	stream_row1.add_child(main._ui_host_cursor_btn)
 
 	var stream_gap1 = Control.new()
 	stream_gap1.custom_minimum_size = Vector2(0, 20)
@@ -461,6 +678,64 @@ func build_ui():
 	main._ui_primary_btn = make_option_btn("Primary Hand", "Right")
 	control_row2.add_child(main._ui_primary_btn)
 
+	_tab_monitors = VBoxContainer.new()
+	_tab_monitors.name = "TabMonitors"
+	_tab_monitors.add_theme_constant_override("separation", 0)
+	_tab_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.visible = false
+	vbox.add_child(_tab_monitors)
+
+	var mon_row1 = HBoxContainer.new()
+	mon_row1.name = "MonRow1"
+	mon_row1.add_theme_constant_override("separation", 12)
+	mon_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	mon_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	mon_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_row1)
+
+	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
+	mon_row1.add_child(main._ui_monitors_btn)
+	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
+	mon_row1.add_child(main._ui_virtual_monitors_btn)
+
+	var mon_gap1 = Control.new()
+	mon_gap1.custom_minimum_size = Vector2(0, 10)
+	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap1)
+
+	_preset_row = HBoxContainer.new()
+	_preset_row.name = "PresetRow"
+	_preset_row.add_theme_constant_override("separation", 10)
+	_preset_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_preset_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_preset_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(_preset_row)
+
+	var mon_gap2 = Control.new()
+	mon_gap2.custom_minimum_size = Vector2(0, 10)
+	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_gap2)
+
+	var mon_actions_row1 = HBoxContainer.new()
+	mon_actions_row1.name = "MonActionsRow1"
+	mon_actions_row1.add_theme_constant_override("separation", 12)
+	mon_actions_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	mon_actions_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	mon_actions_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(mon_actions_row1)
+
+	main._ui_apply_preset_btn = make_action_btn("Apply")
+	mon_actions_row1.add_child(main._ui_apply_preset_btn)
+	main._ui_save_preset_btn = make_action_btn("Save")
+	mon_actions_row1.add_child(main._ui_save_preset_btn)
+	main._ui_remove_preset_btn = make_action_btn("Remove")
+	mon_actions_row1.add_child(main._ui_remove_preset_btn)
+	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
+	mon_actions_row1.add_child(main._ui_grid_mode_btn)
+
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
 	main._ui_status_label.text = "Ready"
@@ -468,8 +743,18 @@ func build_ui():
 	main._ui_status_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
 	main._ui_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main._ui_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
 	main._ui_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Server-provided error text (e.g. a launch-rejection status_message) can run
+	# to a couple hundred characters - without wrapping, a single-line Label just
+	# overflows its container width and breaks the surrounding panel layout. Fill
+	# the vbox's actual width (a fixed 420px was narrower than the real panel,
+	# forcing extra wrap lines it didn't need) and clip vertically instead of
+	# growing the panel if it still wraps past the label's fixed height.
+	main._ui_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	main._ui_status_label.clip_text = false
+	main._ui_status_label.clip_contents = true
+	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
+	main._ui_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(main._ui_status_label)
 
 	var grab_gap = Control.new()
@@ -520,6 +805,14 @@ func build_ui():
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	main._ui_3d_quality_btn.button_down.connect(func(): on_ai_3d_quality_toggled())
+	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
+	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
+	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
+	main._ui_apply_preset_btn.button_down.connect(func(): _on_apply_preset_pressed())
+	main._ui_save_preset_btn.button_down.connect(func(): _on_save_preset_pressed())
+	main._ui_remove_preset_btn.button_down.connect(func(): _on_remove_preset_pressed())
+	main._ui_grid_mode_btn.button_down.connect(func(): main.settings_controller.toggle_grid_mode())
 	main._ui_res_btn.button_down.connect(func(): main.settings_controller.cycle_resolution())
 	main._ui_fps_btn.button_down.connect(func(): main.settings_controller.cycle_fps())
 	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
@@ -535,12 +828,15 @@ func build_ui():
 	main._ui_reconnect_btn.button_down.connect(func(): main.settings_controller.cycle_auto_reconnect())
 	main._ui_quick_start_btn.button_down.connect(func(): main.settings_controller.cycle_quick_start())
 	main._ui_idle_btn.button_down.connect(func(): main.settings_controller.cycle_idle_timeout())
+	main._ui_host_cursor_btn.button_down.connect(func(): main.settings_controller.toggle_host_cursor())
 	_tab_btn_display.button_down.connect(func(): switch_tab(0))
 	_tab_btn_stream.button_down.connect(func(): switch_tab(1))
 	_tab_btn_control.button_down.connect(func(): switch_tab(2))
+	_tab_btn_monitors.button_down.connect(func(): switch_tab(3))
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
+	update_host_cursor_btn_state()
 	update_host_label()
 
 	var ui_buttons = []
@@ -560,6 +856,52 @@ func make_option_btn(label_text: String, value_text: String) -> Button:
 	pressed_style.bg_color = Color(1, 1, 1, 0.18)
 	btn.add_theme_stylebox_override("pressed", pressed_style)
 	btn.custom_minimum_size = Vector2(250, 132)
+	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return btn
+
+# Shorter variant of make_option_btn() for the Monitors tab, which packs 3
+# rows into the same vertical budget every other tab spends on 2 (132px each)
+# - smaller font/margins so a "Label\nValue" pair still fits legibly at ~64px.
+func make_compact_option_btn(label_text: String, value_text: String) -> Button:
+	var btn = Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.text = label_text + "\n" + value_text
+	btn.add_theme_font_size_override("font_size", 18)
+	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var style = main._btn_style.duplicate()
+	style.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("normal", style)
+	var hover = main._btn_hover.duplicate()
+	hover.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("hover", hover)
+	var pressed_style = hover.duplicate()
+	pressed_style.bg_color = Color(1, 1, 1, 0.18)
+	btn.add_theme_stylebox_override("pressed", pressed_style)
+	btn.custom_minimum_size = Vector2(150, 64)
+	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return btn
+
+# Single-line pure-action button (Apply/Save/Remove) - unlike make_option_btn's
+# buttons, these have no persistent value to show, so "Label\nLabel" would
+# just be redundant text.
+func make_action_btn(text: String) -> Button:
+	var btn = Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.text = text
+	btn.add_theme_font_size_override("font_size", 20)
+	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var style = main._btn_style.duplicate()
+	style.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("normal", style)
+	var hover = main._btn_hover.duplicate()
+	hover.set_content_margin_all(8)
+	btn.add_theme_stylebox_override("hover", hover)
+	var pressed_style = hover.duplicate()
+	pressed_style.bg_color = Color(1, 1, 1, 0.18)
+	btn.add_theme_stylebox_override("pressed", pressed_style)
+	btn.custom_minimum_size = Vector2(110, 64)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	return btn
 
@@ -605,6 +947,14 @@ func update_ctrl_type_btn():
 			var is_kbm = (main.controller_mapper.ctrl_type == 2)
 			main._ui_btn_toggle_btn.disabled = is_kbm
 			main._ui_btn_toggle_btn.modulate = Color(1, 1, 1, 0.3) if is_kbm else Color(1, 1, 1, 1)
+
+func update_host_cursor_btn_state():
+	if not main._ui_host_cursor_btn:
+		return
+	var supported = main._host_cursor_toggle_supported
+	main._ui_host_cursor_btn.disabled = not supported
+	main._ui_host_cursor_btn.modulate = Color(1, 1, 1, 0.3) if not supported else Color(1, 1, 1, 1)
+	update_option_btn(main._ui_host_cursor_btn, "On" if main.host_cursor_visible else "Off")
 
 func update_btn_toggle_btn():
 	if main._ui_btn_toggle_btn and main.controller_mapper:
@@ -658,8 +1008,12 @@ func make_indicator_btn(label_text: String, value_text: String) -> Button:
 func update_indicator_btn(btn: Button, label: String, value: String):
 	btn.text = label + ": " + value
 
+const STATUS_TEXT_MAX_LEN = 160
+
 func set_status(text: String):
 	if main._ui_status_label:
+		if text.length() > STATUS_TEXT_MAX_LEN:
+			text = text.substr(0, STATUS_TEXT_MAX_LEN - 1) + "…"
 		main._ui_status_label.text = text
 
 func set_disconnect_visible(vis: bool):
