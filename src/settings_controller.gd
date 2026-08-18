@@ -6,7 +6,13 @@ var _restart_pending: bool = false
 var _restart_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
-var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-GPU", "MiDaS-NNAPI", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
+# MiDaS-GPU is disabled here (not deleted) - the "stale depth_texture from a
+# successful GPU run" theory was ruled out too (segment-by-segment log
+# analysis 2026-08-18 showed MiDaS/MiDaS-NNAPI at 0% success both before AND
+# immediately after MiDaS-GPU ran) but keeping the model/code around for
+# later re-testing was still explicitly requested - see get_stereo_mode()'s
+# commented-out mapping below to re-enable.
+var ai_3d_labels: Array = ["2D", "MiDaS", "MiDaS-NNAPI", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -21,15 +27,14 @@ func get_stereo_mode() -> int:
 	elif main.ai_3d_mode == 1:
 		return 3
 	elif main.ai_3d_mode == 2:
-		return 5
-	elif main.ai_3d_mode == 3:
 		return 6
-	elif main.ai_3d_mode == 4:
+	elif main.ai_3d_mode == 3:
 		return 7 # MiDaS-DMap
-	elif main.ai_3d_mode == 5:
+	elif main.ai_3d_mode == 4:
 		return 8 # MiDaS-DMap-Raw
-	elif main.ai_3d_mode == 6:
+	elif main.ai_3d_mode == 5:
 		return 9 # MiDaS-DMap-Input
+	# elif main.ai_3d_mode == X: return 5  # MiDaS-GPU (disabled, not deleted)
 	else:
 		return 4
 
@@ -51,7 +56,7 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 7
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 6
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
 	apply_stereo()
 

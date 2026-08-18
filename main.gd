@@ -1115,7 +1115,7 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 6)
+	ai_3d_mode = clampi(ai_3d_mode, 0, 5)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")

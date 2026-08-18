@@ -28,6 +28,23 @@ public class DepthEstimator {
     private static final int GPU_INPUT_SIZE = 256;
     private static final int HQ_INPUT_SIZE = 256;
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
+    // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
+    // read directly from the model via ai-edge-litert's Interpreter.get_input/
+    // output_details() (2026-08-18) - NOT assumed. Both the input ("image")
+    // and output ("depth_estimates") tensors are UINT8, not float32:
+    //   input:  scale=0.00487531116232276, zero_point=24
+    //   output: scale=6.514299392700195,   zero_point=0
+    // Getting either of these wrong doesn't throw - the interpreter runs
+    // "successfully" and produces silently garbage output (confirmed:
+    // sending raw 0..255 pixel bytes as input, and reading the output
+    // ByteBuffer via asFloatBuffer() as if it were float32, both "worked"
+    // with zero exceptions but produced near-black noise). The real/dequantized
+    // value is (quantized - zero_point) * scale; quantizing the other
+    // direction is round(real / scale) + zero_point, clamped to 0..255.
+    private static final float MIDAS_INPUT_SCALE = 0.00487531116232276f;
+    private static final int MIDAS_INPUT_ZERO_POINT = 24;
+    private static final float MIDAS_OUTPUT_SCALE = 6.514299392700195f;
+    private static final int MIDAS_OUTPUT_ZERO_POINT = 0;
     private static final String MODEL_DEPTH_ANYTHING = "depth-anything-v2-small.tflite";
     // MiDaS v2.1 small, fp16, vendored from Gilleece/moonlight-android-xr's own
     // conversion (tools/convert_midas.py there) of the MIT-licensed MIDAS_ISL
@@ -74,9 +91,30 @@ public class DepthEstimator {
         appContext = context.getApplicationContext();
 
         try {
-            inputBufferMidas = ByteBuffer.allocateDirect(1 * OUTPUT_SIZE * OUTPUT_SIZE * 3 * 4)
+            // midas-midas-v2-w8a8.tflite ("w8a8" = 8-bit weights AND
+            // activations) takes a quantized UINT8 input tensor (raw
+            // 0..255 pixel bytes, no normalization) - NOT float32. Sending
+            // float32 here throws "Cannot copy to a TensorFlowLite tensor
+            // (image) with 196608 bytes from a Java Buffer with 786432
+            // bytes" (exactly 4x, the float32/uint8 ratio) on EVERY
+            // inference call, deterministically - confirmed via full-session
+            // log analysis (2026-08-18): 0 successes out of hundreds of
+            // calls across both runInferenceMidas (this model, model index
+            // 0) and runInferenceMidasHq (same model file, index 3),
+            // regardless of what other models had run before. Caught by
+            // submitFrame()'s try/catch, logged as "Async inference failed"
+            // but easy to miss next to the similarly-worded per-call
+            // "Inference: Xms" duration log that still prints from the
+            // finally block regardless of success. Only affects this w8a8
+            // model - inputBufferGpu (a real float32 fp16 model, confirmed
+            // 100% success rate in the same log analysis) and inputBufferDA
+            // are untouched.
+            inputBufferMidas = ByteBuffer.allocateDirect(1 * OUTPUT_SIZE * OUTPUT_SIZE * 3)
                     .order(ByteOrder.nativeOrder());
-            outputBufferMidas = ByteBuffer.allocateDirect(1 * OUTPUT_SIZE * OUTPUT_SIZE * 1 * 4)
+            // Output tensor ("depth_estimates") is ALSO quantized UINT8, not
+            // float32 - see MIDAS_OUTPUT_SCALE/ZERO_POINT above. 1 byte/pixel,
+            // not 4.
+            outputBufferMidas = ByteBuffer.allocateDirect(1 * OUTPUT_SIZE * OUTPUT_SIZE * 1)
                     .order(ByteOrder.nativeOrder());
 
             inputBufferDA = ByteBuffer.allocateDirect(1 * DA_INPUT_SIZE * DA_INPUT_SIZE * 3 * 4)
@@ -89,9 +127,13 @@ public class DepthEstimator {
             outputBufferGpu = ByteBuffer.allocateDirect(1 * GPU_INPUT_SIZE * GPU_INPUT_SIZE * 1 * 4)
                     .order(ByteOrder.nativeOrder());
 
-            inputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 3 * 4)
+            // Same model file as inputBufferMidas (MODEL_MIDAS) - same UINT8
+            // input requirement, see the comment there.
+            inputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 3)
                     .order(ByteOrder.nativeOrder());
-            outputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 1 * 4)
+            // Same model file as outputBufferMidas - same quantized UINT8
+            // output, see the comment there.
+            outputBufferHq = ByteBuffer.allocateDirect(1 * HQ_INPUT_SIZE * HQ_INPUT_SIZE * 1)
                     .order(ByteOrder.nativeOrder());
 
             tfliteMidas = loadInterpreter(MODEL_MIDAS);
@@ -274,6 +316,16 @@ public class DepthEstimator {
         return latestDepthMap.getAndSet(null);
     }
 
+    // real (0..1 normalized pixel) -> quantized uint8, per MIDAS_INPUT_SCALE/
+    // ZERO_POINT above. Shared by runInferenceMidas() and runInferenceMidasHq()
+    // - both use the same model file, so the same quantization applies.
+    private static byte quantizeMidasInput(int rawPixelByte) {
+        float real = (rawPixelByte & 0xFF) / 255.0f;
+        int q = Math.round(real / MIDAS_INPUT_SCALE) + MIDAS_INPUT_ZERO_POINT;
+        q = Math.max(0, Math.min(255, q));
+        return (byte) q;
+    }
+
     private byte[] runInferenceMidas(byte[] rgbaPixels, int width, int height) {
         inputBufferMidas.rewind();
         outputBufferMidas.rewind();
@@ -288,9 +340,9 @@ public class DepthEstimator {
             for (int x = 0; x < OUTPUT_SIZE; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
-                inputBufferMidas.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
-                inputBufferMidas.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
-                inputBufferMidas.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx]));
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 1]));
+                inputBufferMidas.put(quantizeMidasInput(rgbaPixels[srcIdx + 2]));
             }
         }
         inputBufferMidas.rewind();
@@ -298,7 +350,7 @@ public class DepthEstimator {
         tfliteMidas.run(inputBufferMidas, outputBufferMidas);
         outputBufferMidas.rewind();
 
-        return postProcess(outputBufferMidas, OUTPUT_SIZE, true);
+        return postProcess(dequantizeMidasOutput(outputBufferMidas, OUTPUT_SIZE * OUTPUT_SIZE), OUTPUT_SIZE, true);
     }
 
     private byte[] runInferenceDA(byte[] rgbaPixels, int width, int height) {
@@ -325,7 +377,7 @@ public class DepthEstimator {
         tfliteDepthAnything.run(inputBufferDA, outputBufferDA);
         outputBufferDA.rewind();
 
-        return postProcess(outputBufferDA, DA_INPUT_SIZE, true);
+        return postProcess(extractFloatOutput(outputBufferDA, DA_INPUT_SIZE * DA_INPUT_SIZE), DA_INPUT_SIZE, true);
     }
 
     private byte[] runInferenceMidasGpu(byte[] rgbaPixels, int width, int height) {
@@ -356,7 +408,7 @@ public class DepthEstimator {
         // bilateral upsample against the actual color frame (stereo_screen.gdshader,
         // stereo_mode 5), which snaps depth to real edges instead of averaging
         // small objects (taskbar icons, widgets) away like the CPU blur below does.
-        return postProcess(outputBufferGpu, GPU_INPUT_SIZE, false);
+        return postProcess(extractFloatOutput(outputBufferGpu, GPU_INPUT_SIZE * GPU_INPUT_SIZE), GPU_INPUT_SIZE, false);
     }
 
     // Same model weights as runInferenceMidas() (mode 0), but via the separate
@@ -377,9 +429,9 @@ public class DepthEstimator {
             for (int x = 0; x < HQ_INPUT_SIZE; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
-                inputBufferHq.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
-                inputBufferHq.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
-                inputBufferHq.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx]));
+                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx + 1]));
+                inputBufferHq.put(quantizeMidasInput(rgbaPixels[srcIdx + 2]));
             }
         }
         inputBufferHq.rewind();
@@ -387,7 +439,32 @@ public class DepthEstimator {
         tfliteMidasHq.run(inputBufferHq, outputBufferHq);
         outputBufferHq.rewind();
 
-        return postProcess(outputBufferHq, HQ_INPUT_SIZE, false);
+        return postProcess(dequantizeMidasOutput(outputBufferHq, HQ_INPUT_SIZE * HQ_INPUT_SIZE), HQ_INPUT_SIZE, false);
+    }
+
+    // dequantize (quantized - zero_point) * scale, per MIDAS_OUTPUT_SCALE/
+    // ZERO_POINT above. Shared by runInferenceMidas() and runInferenceMidasHq().
+    private static float[] dequantizeMidasOutput(ByteBuffer output, int count) {
+        output.rewind();
+        float[] raw = new float[count];
+        for (int i = 0; i < count; i++) {
+            int q = output.get(i) & 0xFF;
+            raw[i] = (q - MIDAS_OUTPUT_ZERO_POINT) * MIDAS_OUTPUT_SCALE;
+        }
+        return raw;
+    }
+
+    // Plain float32 output tensor extraction, for models that genuinely are
+    // float32 (runInferenceDA/runInferenceMidasGpu) - not quantized like the
+    // w8a8 MiDaS model.
+    private static float[] extractFloatOutput(ByteBuffer output, int count) {
+        output.rewind();
+        FloatBuffer floatOut = output.asFloatBuffer();
+        float[] raw = new float[count];
+        for (int i = 0; i < count; i++) {
+            raw[i] = floatOut.get(i);
+        }
+        return raw;
     }
 
     // Ported from Gilleece/moonlight-android-xr's xr_renderer.c
@@ -414,14 +491,13 @@ public class DepthEstimator {
     private float smoothHi = 1.0f;
     private boolean rangeValid = false;
 
-    private byte[] postProcess(ByteBuffer output, int size, boolean dilateAndBlur) {
-        output.rewind();
-        FloatBuffer floatOut = output.asFloatBuffer();
+    // Takes the already-decoded real-valued depth array, not a raw
+    // ByteBuffer - float32 output tensors (runInferenceDA/runInferenceMidasGpu)
+    // and quantized UINT8 ones (runInferenceMidas/runInferenceMidasHq) decode
+    // completely differently at the source (see each call site), and this
+    // logic downstream is identical either way once it's a plain float[].
+    private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur) {
         int count = size * size;
-        float[] raw = new float[count];
-        for (int i = 0; i < count; i++) {
-            raw[i] = floatOut.get(i);
-        }
 
         float[] loHi = robustRange(raw, count);
         if (!rangeValid) {
