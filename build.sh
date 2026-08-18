@@ -184,7 +184,15 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # declared via sourceSets below survives untouched and still gets merged into the APK.
 mkdir -p android/build/nightfallAssets
 cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small.tflite" android/build/nightfallAssets/ 2>/dev/null || true
+# depth-anything-v2-small.tflite (48.8MB) is deliberately NOT bundled
+# (2026-08-18) - Depth Anything support is currently dead code, unreachable
+# through any path in the current 3D AI UI (only MiDaS is exposed; see
+# settings_controller.gd's ai_3d_model_labels). DepthEstimator.java's own
+# model load already tolerates a missing file gracefully (falls back to
+# MiDaS-only), so this is a pure APK-size win with no behavior change. The
+# asset file and DepthEstimator.java's Depth Anything code both stay in the
+# repo untouched - uncomment the line below to bundle it again.
+# cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small.tflite" android/build/nightfallAssets/ 2>/dev/null || true
 sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.16.1"' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
