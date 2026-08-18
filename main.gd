@@ -552,7 +552,7 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	# settings_controller.get_stereo_mode() itself), not those raw fields
 	# directly. Caps by total pixel budget (like
 	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
-	# min(target_w/w, target_h/h) - that approach silently deliverd far
+	# min(target_w/w, target_h/h) - that approach silently delivered far
 	# fewer pixels than intended on a non-16:9 source (see history above).
 	# apply_midas_cap=false lets a caller ask "what would this resolution be
 	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which

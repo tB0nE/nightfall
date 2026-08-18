@@ -119,6 +119,63 @@ vec3 cas_sharpen_stream(vec2 uv, float strength) {
 	return c + weight * (c - avg);
 }
 
+// Classic 5-stop jet-style heatmap (blue -> cyan -> green -> yellow -> red)
+// for visualizing a scalar depth value - matches yuv_display.gdshader's own
+// heatmap(), duplicated here since this shader has no shared include.
+vec3 heatmap(float t) {
+	t = clamp(t, 0.0, 1.0);
+	vec3 c1 = vec3(0.0, 0.0, 1.0);
+	vec3 c2 = vec3(0.0, 1.0, 1.0);
+	vec3 c3 = vec3(0.0, 1.0, 0.0);
+	vec3 c4 = vec3(1.0, 1.0, 0.0);
+	vec3 c5 = vec3(1.0, 0.0, 0.0);
+	if (t < 0.25) {
+		return mix(c1, c2, t / 0.25);
+	} else if (t < 0.5) {
+		return mix(c2, c3, (t - 0.25) / 0.25);
+	} else if (t < 0.75) {
+		return mix(c3, c4, (t - 0.5) / 0.25);
+	} else {
+		return mix(c4, c5, (t - 0.75) / 0.25);
+	}
+}
+
+// Joint bilateral tap: weight each low-res depth neighbour by how closely
+// its guide color matches the real color at `uv`, so the depth edge snaps
+// to the color edge instead of straddling it. Shared by the mode 5/6/10/11
+// warp below (which also needs dlo/dhi for its edge-snap) and mode 7
+// (MiDaS-DMap), which visualizes this exact interpolated value as a heatmap
+// instead of using it to warp.
+float bilateral_depth(vec2 uv, out float dlo, out float dhi) {
+	ivec2 low_sz = textureSize(depth_texture, 0);
+	float n = float(low_sz.x);
+	vec3 hi_color = sample_stream(uv);
+	vec2 lp = uv * n - 0.5;
+	ivec2 base = ivec2(floor(lp));
+
+	float num = 0.0;
+	float den = 0.0;
+	dlo = 1.0;
+	dhi = 0.0;
+	for (int dy = -2; dy <= 2; dy++) {
+		for (int dx = -2; dx <= 2; dx++) {
+			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(n) - 1));
+			float s = texelFetch(depth_texture, q, 0).r;
+			vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
+			vec2 off = vec2(q) - lp;
+			float ws = exp(-dot(off, off) / (2.0 * 1.5 * 1.5));
+			vec3 cd = hi_color - gcol;
+			float wr = exp(-dot(cd, cd) / (2.0 * 0.12 * 0.12));
+			float w = ws * wr;
+			num += w * s;
+			den += w;
+			dlo = min(dlo, s);
+			dhi = max(dhi, s);
+		}
+	}
+	return num / max(den, 1e-6);
+}
+
 vec3 filtered_stream(vec2 uv) {
 	vec3 original = sample_stream(uv);
 
@@ -212,7 +269,7 @@ void fragment() {
 		vec2 src_uv = vec2(clamp(uv.x - shift * eye_sign, 0.0, 1.0), uv.y);
 		ALBEDO = filtered_stream(src_uv);
 	}
-	else if (stereo_mode == 5 || stereo_mode == 6) {
+	else if (stereo_mode == 5 || stereo_mode == 6 || stereo_mode == 10 || stereo_mode == 11) {
 		// Joint-bilateral-upsampled, occlusion-aware warp (MiDaS-GPU path).
 		// The plain branch above samples one raw, blurry low-res depth texel
 		// per destination pixel and always trusts it - correct only where
@@ -230,39 +287,24 @@ void fragment() {
 		// occlusion branch), collapsed into one pass since Godot's per-eye
 		// fragment shader here doesn't have a cheap way to share a
 		// pre-pass between the two eye invocations.
+		//
+		// stereo_mode 10/11 (MiDaS-Fast/-Fastest) get the exact same
+		// treatment as 6 (Std) here - this single-pass mesh-rendering
+		// fallback (used when comp.available is false) has no equivalent to
+		// depth_estimator.gd's tiered pre-pass throttling/shrinking or
+		// yuv_display.gdshader's warp_newton_steps amortization, so there's
+		// no cheaper version of this warp to give them; full quality is the
+		// only quality this path has.
 		float parallax = 0.042;
 		ivec2 low_sz = textureSize(depth_texture, 0);
 		float n = float(low_sz.x);
 		float texel = 1.0 / n;
 
-		vec3 hi_color = sample_stream(uv);
 		vec2 lp = uv * n - 0.5;
 		ivec2 base = ivec2(floor(lp));
 
-		// 5x5 joint bilateral tap: weight each low-res depth neighbour by
-		// how closely its guide color matches the real color here, so the
-		// depth edge snaps to the color edge instead of straddling it.
-		float num = 0.0;
-		float den = 0.0;
-		float dlo = 1.0;
-		float dhi = 0.0;
-		for (int dy = -2; dy <= 2; dy++) {
-			for (int dx = -2; dx <= 2; dx++) {
-				ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(n) - 1));
-				float s = texelFetch(depth_texture, q, 0).r;
-				vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
-				vec2 off = vec2(q) - lp;
-				float ws = exp(-dot(off, off) / (2.0 * 1.5 * 1.5));
-				vec3 cd = hi_color - gcol;
-				float wr = exp(-dot(cd, cd) / (2.0 * 0.12 * 0.12));
-				float w = ws * wr;
-				num += w * s;
-				den += w;
-				dlo = min(dlo, s);
-				dhi = max(dhi, s);
-			}
-		}
-		float depth_here = num / max(den, 1e-6);
+		float dlo, dhi;
+		float depth_here = bilateral_depth(uv, dlo, dhi);
 		float span = dhi - dlo;
 		if (span >= 0.05) {
 			float edge_u = clamp((depth_here - dlo) / max(span, 1e-6), 0.0, 1.0);
@@ -306,5 +348,27 @@ void fragment() {
 
 		vec2 src_uv = vec2(clamp(uv.x + best_off, 0.0, 1.0), uv.y);
 		ALBEDO = filtered_stream(src_uv);
+	}
+	else if (stereo_mode == 7) {
+		// MiDaS-DMap: the bilateral-upsampled depth the real warp above
+		// (mode 5/6/10/11) actually consumes, as a heatmap instead of used
+		// to warp - matches yuv_display.gdshader's stereo_mode 7, except
+		// that path reads a precomputed upsampled_depth_texture while this
+		// one recomputes bilateral_depth() inline, since this shader has no
+		// equivalent precomputed pass to read from.
+		float dlo, dhi;
+		float d = bilateral_depth(uv, dlo, dhi);
+		ALBEDO = heatmap(d);
+	}
+	else if (stereo_mode == 8) {
+		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
+		// actual 256x256 output), no bilateral upsample applied.
+		float d = texture(depth_texture, uv).r;
+		ALBEDO = heatmap(d);
+	}
+	else if (stereo_mode == 9) {
+		// MiDaS-DMap-Input: the literal color capture fed to the model, no
+		// heatmap, no processing at all.
+		ALBEDO = texture(depth_guide_texture, uv).rgb;
 	}
 }
