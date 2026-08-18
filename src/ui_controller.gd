@@ -80,13 +80,15 @@ func update_3d_btn_state():
 	if main._ui_3d_quality_btn:
 		main._ui_3d_quality_btn.disabled = sub_disabled
 		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
-	# Debug is disabled unconditionally (2026-08-18, matches
+	# Debug is hidden unconditionally (2026-08-18, matches
 	# settings_controller.gd's cycle_ai_3d_debug() early return) - not
 	# folded into sub_disabled above since that's meant to reflect "would
 	# be usable if AI-3D were on," and this one's just off regardless.
+	# Godot's Button.disabled blocks button_down from firing regardless of
+	# visibility, so this still stays fully non-interactive too.
 	if main._ui_3d_debug_btn:
 		main._ui_3d_debug_btn.disabled = true
-		main._ui_3d_debug_btn.modulate.a = 0.3
+		main._ui_3d_debug_btn.visible = false
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
@@ -509,12 +511,15 @@ func build_ui():
 	_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	# Disabled (2026-08-18), not removed - the underlying multi-monitor code
 	# (composition_layer_manager.gd, vr_screen.gd, screen_layout.gd etc.) is
-	# still fully wired up and depended on by AI-3D itself, this just hides
-	# the tab/button so the feature isn't user-facing yet. switch_tab(3) is
-	# ONLY ever reached via this button's own click handler below (no other
-	# call site), so hiding it fully disables reachability. Set .visible =
-	# true again to bring the tab back.
-	_tab_btn_monitors.visible = false
+	# still fully wired up and depended on by AI-3D itself, this just greys
+	# out the tab/button (stays visible, so users can see the feature exists
+	# but isn't ready yet) so it isn't user-facing. switch_tab(3) is ONLY
+	# ever reached via this button's own click handler below (no other call
+	# site), and Godot's Button.disabled blocks button_down from firing, so
+	# disabling it fully disables reachability too. Set .disabled = false
+	# again to bring the tab back.
+	_tab_btn_monitors.disabled = true
+	_tab_btn_monitors.modulate.a = 0.3
 	tab_bar.add_child(_tab_btn_monitors)
 
 	var tab_margin = Control.new()
@@ -545,12 +550,12 @@ func build_ui():
 	disp_row1.add_child(main._ui_3d_btn)
 	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
 	disp_row1.add_child(main._ui_3d_quality_btn)
-	# Debug is disabled (and dim) whenever 3D AI is off, which is most of
-	# the time - deliberately left on the same row as everything else even
-	# though 5 buttons overlaps/runs off the panel at this width, per
-	# explicit instruction (2026-08-18): fine since it's rarely the visible/
-	# active one.
+	# Hidden until update_3d_btn_state() runs (which also happens to set
+	# this every time regardless) - set here too so there's no one-frame
+	# flash of a visible "3D Debug" button before that first fires.
 	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+	main._ui_3d_debug_btn.disabled = true
+	main._ui_3d_debug_btn.visible = false
 	disp_row1.add_child(main._ui_3d_debug_btn)
 
 	var disp_gap1 = Control.new()
@@ -593,12 +598,6 @@ func build_ui():
 	_tab_stream.add_child(stream_row1)
 
 	main._ui_res_btn = make_option_btn("Resolution", "100%")
-	# Wider than the other option buttons and a smaller value-line font: this one's
-	# value now shows the exact resulting pixel dimensions alongside MAX/the
-	# percentage (e.g. "MAX (6144x3456)"), which doesn't fit the standard
-	# 250px/26pt budget the way "100%" or "H.264" do on the other option buttons.
-	main._ui_res_btn.custom_minimum_size = Vector2(310, 132)
-	main._ui_res_btn.add_theme_font_size_override("font_size", 22)
 	stream_row1.add_child(main._ui_res_btn)
 	main._ui_fps_btn = make_option_btn("FPS", "60")
 	stream_row1.add_child(main._ui_fps_btn)

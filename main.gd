@@ -720,16 +720,24 @@ func _update_cursor_layer():
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
-				if stereo == 5 or stereo == 6:
+				if stereo == 5 or stereo == 6 or stereo == 10 or stereo == 11:
 					# This hand-tuned pop was calibrated against the old, much
 					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
-					# the same ratio for modes 5/6's real, calibrated parallax
+					# the same ratio for the real occlusion-aware warp's
+					# actual, much smaller calibrated parallax
 					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
 					# than reused verbatim, or the cursor pops far more than
-					# anything actually in the depth-warped video. Both modes
-					# share the exact same warp pipeline/parallax magnitude -
-					# only the depth model backing them differs (GPU delegate
-					# vs NNAPI, see DepthEstimator.java).
+					# anything actually in the depth-warped video. Modes
+					# 5/6/10/11 (MiDaS-Std/-Fast/-Fastest) all share the
+					# exact same warp pipeline/parallax magnitude - only the
+					# pre-pass resolution/throttling differs between them
+					# (see depth_estimator.gd's warp_tier), not the parallax
+					# itself. 10/11 were missing from this condition
+					# (2026-08-18 fix) and fell through to the elif below,
+					# getting the old crude mode's un-scaled offset - about
+					# 7x too large for their actual warp magnitude, which is
+					# what made the cursor "float" uncomfortably on the
+					# tiers most people actually use.
 					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
 				elif stereo >= 3:
 					left_cx += 0.015 * base_w

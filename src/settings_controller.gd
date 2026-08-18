@@ -489,12 +489,16 @@ func _resolution_btn_label() -> String:
 	# Show the actual resulting pixel dimensions, not just an abstract
 	# percentage - a bare "%" doesn't tell you what you're really getting once
 	# any of compute_requested_resolution()'s caps are in play (which is
-	# exactly the case whenever this shows "MAX").
+	# exactly the case whenever this shows "MAX"). No parens/space between
+	# the two - this has to fit the same 250px/26pt budget every other
+	# option button uses (2026-08-18: this used to get its own wider button
+	# + smaller font instead of fitting the shared size, which looked
+	# inconsistent next to the rest of the row).
 	var res = main.compute_requested_resolution()
 	var dims = "%dx%d" % [res.x, res.y]
 	if main.resolution_scale_pct >= opts[0]:
-		return "MAX (%s)" % dims
-	return "%d%% (%s)" % [main.resolution_scale_pct, dims]
+		return "MAX %s" % dims
+	return "%d%% %s" % [main.resolution_scale_pct, dims]
 
 # Best-effort, cached, one-time-per-host-selection probe for whether this host
 # is a Polaris server (which reports its real, possibly multi-monitor desktop
