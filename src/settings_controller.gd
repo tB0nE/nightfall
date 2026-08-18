@@ -4,6 +4,7 @@ extends RefCounted
 var main: Node3D
 var _restart_pending: bool = false
 var _restart_seq: int = 0
+var _ai_3d_commit_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -82,27 +83,63 @@ func cycle_ai_3d_mode():
 		return
 	if main.sbs_mode > 0:
 		return
-	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 4-6) are disabled from
-	# cycling, not removed - their code/shader params are still wired up in
-	# get_stereo_mode()/apply_stereo() below so they can be re-enabled by
-	# bumping this modulo back to 7 whenever we're doing more work on the
-	# AI-3D pipeline and need to inspect the depth map again.
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 4
+	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 4-6) re-enabled in the
+	# cycle (2026-08-18) to check 3D/depth quality while investigating the
+	# resolution-cap suspicion (see MIDAS_RES_CAP_ENABLED in main.gd). Drop
+	# back to % 4 to disable them again once that's settled.
+	# Only the label updates immediately - actually applying the mode
+	# (apply_stereo(), which reconfigures depth_estimator and can trigger a
+	# resolution-cap stream restart) is debounced below, same UX as
+	# cycle_resolution()/_schedule_stream_restart(): click through to find
+	# the mode you want, and it only commits once you stop, instead of
+	# reconfiguring/restarting on every single click along the way.
+	main.ai_3d_mode = (main.ai_3d_mode + 1) % 7
 	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
-	apply_stereo()
+	_schedule_ai_3d_commit()
+
+func _schedule_ai_3d_commit():
+	_ai_3d_commit_seq += 1
+	var my_seq = _ai_3d_commit_seq
+	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
+	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input
+	# against whichever tier is active), where quick feedback matters more
+	# than matching the restart delay exactly.
+	await main.get_tree().create_timer(0.6).timeout
+	if _ai_3d_commit_seq != my_seq:
+		return
+	var mode = get_stereo_mode()
+	# MiDaS-DMap/-Raw/-Input (7/8/9) are debug VIEWS of whatever depth data
+	# is already flowing, not a separate mode with its own resolution needs
+	# - deliberately inherit whatever resolution (including a MiDaS-Fast/
+	# -Fastest cap) is already active instead of recomputing/restarting back
+	# to the full uncapped resolution. That restart actively worked against
+	# debugging: switching to DMap to inspect what Fast/Fastest were doing
+	# changed the very thing being inspected (a different, uncapped
+	# resolution) and interrupted the stream to do it. They never restart,
+	# so apply_stereo() is always safe to call immediately here.
+	if mode == 7 or mode == 8 or mode == 9:
+		apply_stereo()
+		return
 	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
-	# MIDAS_FAST_MAX_RES in main.gd) - compute_requested_resolution() is
-	# keyed off get_stereo_mode(), which apply_stereo() just re-evaluated,
-	# so re-derive it here too. Only restart if it actually changed - most
-	# mode switches below 4K-ish source resolutions never hit either cap,
-	# and a restart mid-test is disruptive enough to avoid when it'd be a
-	# no-op anyway.
+	# MIDAS_FAST_MAX_PIXELS in main.gd). Checked BEFORE apply_stereo(), not
+	# after - if a restart is needed, apply_stereo() is skipped here
+	# entirely and left to main.gd's _on_stream_started(), which now calls
+	# it once the new session actually lands, instead of calling it here too
+	# and applying the new stereo/depth mode against the OLD, about-to-be-
+	# replaced video for the ~0.8-1.3s the restart takes. That was a real,
+	# visible bug (2026-08-18, user diagnosed it directly): the new effect
+	# would visibly apply and then get lost the moment the restart landed,
+	# since depth_estimator's pre-pass/warp state got initialized against a
+	# session that was seconds from being torn down, not the one that
+	# actually mattered.
 	var new_res = main.compute_requested_resolution()
 	if new_res != main.host_resolution:
 		main.host_resolution = new_res
 		refresh_resolution_btn_label()
 		if main.is_streaming:
 			_schedule_stream_restart()
+			return
+	apply_stereo()
 
 func apply_stereo():
 	var mode = get_stereo_mode()

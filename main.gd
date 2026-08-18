@@ -451,16 +451,26 @@ const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 # general per-pixel video decode + compositing work, which scales with
 # resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
 # it stays the uncapped/known-good reference. See compute_requested_resolution().
-# Confirmed on-device (2026-08-18): 3200x1800 runs MiDaS-Fast stutter-free
-# without passthrough; 2560x1440 runs MiDaS-Fastest stutter-free WITH
-# passthrough on (the extra passthrough compositing cost is why Fastest's
-# cap is the lower of the two). 3456x1944 also held up for Fast, so pushed
-# a bit further; 2816x1584 introduced slight stutter for Fastest, so that
-# one's back down to the last confirmed-good 2560x1440 rather than pushed
-# further - Fastest is protected/conservative, Fast is the one still being
-# probed for its ceiling.
-const MIDAS_FAST_MAX_RES := Vector2i(3712, 2088)
-const MIDAS_FASTEST_MAX_RES := Vector2i(2560, 1440)
+#
+# History: capped both tiers, then MiDaS-Fast/-Fastest's 3D quality looked
+# visibly worse than MiDaS-Std. [DEPTH]-tagged logging in depth_estimator.gd
+# ruled out the depth pipeline itself (capture/submission/polling equally
+# healthy across all tiers) and the bitrate cliff bug (fixed separately,
+# stream_manager.gd's _auto_bitrate() now scales from the UNCAPPED
+# resolution). Root cause found 2026-08-18: these caps were width/height
+# pairs, aspect-scaled with min(target_w/w, target_h/h) - on a WIDE source
+# (native_resolution here is a 2.96:1 multi-monitor composite, not 16:9),
+# the width dimension binds first, so "cap to 2560x1440" actually produced
+# 2560x864 (2.21M px) instead of the 3.69M px the "1440p" label implied -
+# confirmed directly: manually selecting 1440p and letting Fastest's cap
+# reduce down to "1440p" were NOT delivering the same pixel count at all,
+# despite looking like they should be equal. Fixed by capping to a total
+# PIXEL BUDGET via sqrt(target_px/actual_px) instead of a width/height pair
+# - same approach this file already uses for HEVC_MAX_TOTAL_PIXELS just
+# below, which doesn't have this problem because it already works in pixels.
+const MIDAS_RES_CAP_ENABLED := true
+const MIDAS_FAST_MAX_PIXELS := 3200 * 1800
+const MIDAS_FASTEST_MAX_PIXELS := 2560 * 1440
 
 # The highest resolution_scale_pct that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
@@ -496,7 +506,7 @@ func compute_resolution_options() -> Array:
 			opts.append(p)
 	return opts
 
-func compute_requested_resolution() -> Vector2i:
+func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	var w: int
 	var h: int
 	if is_polaris_host:
@@ -529,19 +539,27 @@ func compute_requested_resolution() -> Vector2i:
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
-	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_RES's comment above.
+	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
 	# Keyed off the actually-active stereo mode (accounts for sbs_mode
 	# overriding ai_3d_mode, same as settings_controller.get_stereo_mode()
-	# itself), not raw ai_3d_mode.
-	if settings_controller:
+	# itself), not raw ai_3d_mode. Caps by total pixel budget (like
+	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
+	# min(target_w/w, target_h/h) - that approach silently deliverd far
+	# fewer pixels than intended on a non-16:9 source (see history above).
+	# apply_midas_cap=false lets a caller ask "what would this resolution be
+	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which
+	# uses that to pick Auto bitrate from the uncapped resolution instead of
+	# the capped encode resolution (same bitrate, fewer pixels should mean
+	# MORE bits per pixel, not fewer).
+	if apply_midas_cap and MIDAS_RES_CAP_ENABLED and settings_controller:
 		var stereo_mode = settings_controller.get_stereo_mode()
-		var res_cap := Vector2i.ZERO
+		var max_pixels := 0
 		if stereo_mode == 10:
-			res_cap = MIDAS_FAST_MAX_RES
+			max_pixels = MIDAS_FAST_MAX_PIXELS
 		elif stereo_mode == 11:
-			res_cap = MIDAS_FASTEST_MAX_RES
-		if res_cap != Vector2i.ZERO and (w > res_cap.x or h > res_cap.y):
-			var cap_scale = minf(float(res_cap.x) / w, float(res_cap.y) / h)
+			max_pixels = MIDAS_FASTEST_MAX_PIXELS
+		if max_pixels > 0 and w * h > max_pixels:
+			var cap_scale = sqrt(float(max_pixels) / float(w * h))
 			w = int(w * cap_scale)
 			h = int(h * cap_scale)
 	w = maxi(w - (w % 2), 320)
@@ -851,7 +869,20 @@ func _on_stream_started():
 	# first real frame should have landed.
 	_stream_start_seq += 1
 	_retry_yuv_bind(_stream_start_seq)
-	_switch_to_comp_layer()
+	# Was an unconditional _switch_to_comp_layer() (plain/mono), which reset
+	# AI-3D/SBS to 2D on EVERY (re)connect, silently, with nothing re-
+	# applying the real mode afterward unless the user happened to touch a
+	# mode button again post-restart - root cause of "3D effect stopped
+	# working after a restart, only came back after manually cycling modes"
+	# (2026-08-18, user diagnosed this from watching a MiDaS-Fast switch
+	# visibly apply against the OLD pre-restart video, then get lost when
+	# the restart landed). apply_stereo() re-derives and applies the actual
+	# current stereo mode (2D/SBS/AI-3D) against the freshly (re)started
+	# session instead of blindly resetting to 2D - settings_controller.gd's
+	# _schedule_ai_3d_commit() now deliberately skips its own apply_stereo()
+	# call when a restart is about to happen, relying on this one instead,
+	# so the mode is only ever applied against a session that's actually live.
+	settings_controller.apply_stereo()
 	if not was_restarting:
 		ui_visible = false
 		_set_ui_visible(false)

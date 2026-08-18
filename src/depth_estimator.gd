@@ -25,6 +25,17 @@ var submit_timer: float = 0.0
 var submit_interval: float = 0.05
 var model_size: int = 256
 var _poll_timer: float = 0.0
+# Temporary (2026-08-18): confirms the depth pipeline is actually live -
+# capturing, submitting, and getting real (non-degenerate) depth data back -
+# while investigating why MiDaS-Fastest looks worse than Fast/Std even
+# though it's confirmed NOT a resolution difference. Logs once/sec via
+# main._log() (tag [DEPTH]), not every submit_interval tick, to stay
+# readable in logcat. Remove once the Fastest investigation is done.
+var _debug_log_timer: float = 0.0
+var _debug_last_submit_bytes: int = -1
+var _debug_last_poll_bytes: int = -1
+var _debug_last_poll_min: int = -1
+var _debug_last_poll_max: int = -1
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -277,6 +288,7 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		2: _pass_divisor = FASTEST_PASS_DIVISOR
 		_: _pass_divisor = PASS_DIVISOR
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)
+	main._log("[DEPTH] set_enabled val=%s run_warp_passes=%s warp_tier=%d pass_divisor=%d native_res=%s" % [str(val), str(run_warp_passes), _warp_tier, _pass_divisor, str(main.native_resolution)])
 	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
 	if upsample_viewport:
 		upsample_viewport.render_target_update_mode = mode
@@ -312,8 +324,11 @@ func process(delta: float):
 			var img = depth_viewport.get_texture().get_image()
 			if img != null and not img.is_empty():
 				var data = img.get_data()
+				_debug_last_submit_bytes = data.size()
 				if data.size() > 0:
 					main.stream_backend.submit_depth_frame(data, model_size, model_size)
+			else:
+				_debug_last_submit_bytes = 0
 
 	if main.stream_backend.has_method("get_depth_map"):
 		_poll_timer += delta
@@ -323,3 +338,23 @@ func process(delta: float):
 			if depth_bytes != null and depth_bytes.size() == model_size * model_size:
 				var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
 				depth_texture.update(depth_image)
+				_debug_last_poll_bytes = depth_bytes.size()
+				var lo = 255
+				var hi = 0
+				for i in range(0, depth_bytes.size(), 17):
+					var v = depth_bytes[i]
+					if v < lo: lo = v
+					if v > hi: hi = v
+				_debug_last_poll_min = lo
+				_debug_last_poll_max = hi
+			else:
+				_debug_last_poll_bytes = depth_bytes.size() if depth_bytes != null else -1
+
+	# Temporary - see _debug_log_timer's comment above.
+	_debug_log_timer += delta
+	if _debug_log_timer >= 1.0:
+		_debug_log_timer = 0.0
+		var uv_region = upsample_mat.get_shader_parameter("uv_region") if upsample_mat else null
+		main._log("[DEPTH] tier=%d pass_size=%s submit_bytes=%d poll_bytes=%d poll_range=[%d,%d] uv_region=%s" % [
+			_warp_tier, str(_pass_size), _debug_last_submit_bytes, _debug_last_poll_bytes,
+			_debug_last_poll_min, _debug_last_poll_max, str(uv_region)])
