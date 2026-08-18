@@ -42,7 +42,9 @@ func save_host_state():
 	save.set_value(ip, "is_polaris_host", main.is_polaris_host)
 	save.set_value(ip, "resolution_idx", main.resolution_idx)
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
-	save.set_value(ip, "ai_3d_mode", main.ai_3d_mode)
+	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
+	save.set_value(ip, "ai_3d_quality", main.ai_3d_quality)
+	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
@@ -80,19 +82,37 @@ func load_host_state(ip: String):
 	main.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
-		main.ai_3d_mode = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 6)
+		if save.has_section_key(ip, "ai_3d_model"):
+			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 1)
+			main.ai_3d_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
+			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+		elif save.has_section_key(ip, "ai_3d_mode"):
+			# Migrate the old flat 0-6 "3D AI" cycle (2026-08-18 split into
+			# three independent controls: model/quality/debug) - 0=Off,
+			# 1=Fast, 2=Standard, 3=Fastest, 4-6=DMap/-Raw/-Input debug
+			# views (always at Standard quality, since the old scheme had
+			# no independent quality selection for them).
+			var old = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 6)
+			main.ai_3d_model = 0 if old == 0 else 1
+			main.ai_3d_debug = 0 if old < 4 else old - 3
+			match old:
+				1: main.ai_3d_quality = 2 # Fast
+				3: main.ai_3d_quality = 1 # Fastest
+				_: main.ai_3d_quality = 3 # Standard (old modes 0, 2, 4-6)
 	elif save.has_section_key(ip, "stereo_mode"):
 		var old = clampi(save.get_value(ip, "stereo_mode", 0), 0, 4)
 		if old <= 2:
 			main.sbs_mode = old
-			main.ai_3d_mode = 0
+			main.ai_3d_model = 0
 		else:
 			main.sbs_mode = 0
-			main.ai_3d_mode = 1
+			main.ai_3d_model = 1
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_labels[main.ai_3d_mode])
+	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	main.ui_controller.update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	main.ui_controller.update_3d_btn_state()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()

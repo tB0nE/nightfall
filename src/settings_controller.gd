@@ -14,31 +14,30 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # so GPU isn't needed as a working comparison point anymore. Don't restore
 # a mapping for stereo_mode 5 without re-adding that code.
 # The original "MiDaS" mode (a single-sample parallax shift, stereo_mode 3)
-# is REMOVED too (2026-08-18) - once MiDaS-Fast (below) reached similar
-# quality at similar performance on-device, there was no reason to keep the
-# cruder mode around. stereo_mode 3/4's shader branch in yuv_display.gdshader
-# is dead code left in place (harmless, costs nothing unless selected) rather
-# than deleted - see stereo_mode 4/5's own history for the same pattern.
-# MiDaS-Fast (stereo_mode 10) is the same occlusion-aware warp as MiDaS-Std
-# (stereo_mode 6, same model/inference), but with its upsample/offset warp
-# passes throttled + shrunk (EX_PASS_DIVISOR) and the per-eye Newton
-# refinement in yuv_display.gdshader amortized to every other frame - see
-# warp_update_interval's comment in depth_estimator.gd for the full
-# GPU-cost investigation this came out of. Confirmed on-device (2026-08-18)
-# to land near MiDaS-Std's quality at close to the old crude mode's
-# framerate. Kept as its own mode (not folded into MiDaS-Std) so MiDaS-Std
-# stays the unthrottled/known-good reference to compare against.
-# MiDaS-Fast comes before MiDaS-Std in the cycle order (not alphabetical/
-# quality order) so a first-time user cycling through options lands on the
-# faster mode first, rather than possibly judging performance off MiDaS-Std.
-# MiDaS-Fastest (stereo_mode 11, added 2026-08-18) pushes the same GPU-cost
-# knobs further still (FASTEST_PASS_DIVISOR=12, 1 Newton step every 3rd
-# frame instead of every 2nd - see WARP_NEWTON_PERIOD in depth_estimator.gd)
-# aimed at leaving headroom for 4K, where the per-eye Newton gather and the
-# pre-pass both cost more pixels than at the resolutions the other tiers
-# were tuned at. Put last in the cycle (after the known-good tiers) rather
-# than first, since it's the least proven of the three.
-var ai_3d_labels: Array = ["2D", "MiDaS-Fast", "MiDaS-Std", "MiDaS-Fastest", "MiDaS-DMap", "MiDaS-DMap-Raw", "MiDaS-DMap-Input"]
+# is REMOVED too (2026-08-18) - stereo_mode 3/4's shader branch in
+# yuv_display.gdshader is dead code left in place (harmless, costs nothing
+# unless selected) rather than deleted - see stereo_mode 4/5's own history
+# for the same pattern.
+#
+# Split (2026-08-18) from a single flat "3D AI" cycle into three
+# independent controls, matching main.gd's ai_3d_model/ai_3d_quality/
+# ai_3d_debug:
+#   ai_3d_model_labels   - is AI-3D on at all, and with which model (more
+#                          models may join MiDaS here in future).
+#   ai_3d_quality_labels - which performance tier. Fastest/Fast/Standard
+#                          directly select depth_estimator.gd's warp_tier
+#                          2/1/0 (see MiDaS-Fast/-Fastest's own history in
+#                          main.gd, MIDAS_FAST_MAX_PIXELS, for what each
+#                          tier trades off). Auto instead picks a tier from
+#                          the current resolution/passthrough state - see
+#                          resolve_quality_tier()/_auto_quality_tier() below.
+#   ai_3d_debug_labels   - debug depth-data VIEWS (DMap/-Raw/-Input),
+#                          overlaid on whichever quality tier is active
+#                          rather than a mode of their own - see
+#                          get_stereo_mode() and _schedule_ai_3d_commit().
+var ai_3d_model_labels: Array = ["Off", "MiDaS"]
+var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
+var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -48,22 +47,47 @@ func _init(owner: Node3D):
 func get_stereo_mode() -> int:
 	if main.sbs_mode > 0:
 		return main.sbs_mode
-	if main.ai_3d_mode == 0:
+	if main.ai_3d_model == 0:
 		return 0
-	elif main.ai_3d_mode == 1:
-		return 10 # MiDaS-Fast (throttled/shrunk warp passes)
-	elif main.ai_3d_mode == 2:
-		return 6 # MiDaS-Std
-	elif main.ai_3d_mode == 3:
-		return 11 # MiDaS-Fastest (throttled/shrunk further, for 4K)
-	elif main.ai_3d_mode == 4:
+	if main.ai_3d_debug == 1:
 		return 7 # MiDaS-DMap
-	elif main.ai_3d_mode == 5:
+	elif main.ai_3d_debug == 2:
 		return 8 # MiDaS-DMap-Raw
-	elif main.ai_3d_mode == 6:
+	elif main.ai_3d_debug == 3:
 		return 9 # MiDaS-DMap-Input
+	match resolve_quality_tier():
+		1: return 10 # MiDaS-Fast
+		2: return 11 # MiDaS-Fastest
+		_: return 6 # MiDaS-Std
+
+# 0=Standard, 1=Fast, 2=Fastest - matches depth_estimator.gd's warp_tier
+# numbering exactly, so apply_stereo() can pass this straight through.
+func resolve_quality_tier() -> int:
+	match main.ai_3d_quality:
+		1: return 2 # Fastest
+		2: return 1 # Fast
+		3: return 0 # Standard
+		_: return _auto_quality_tier()
+
+# Reads the pre-AI3D-cap BASE resolution (compute_requested_resolution(false),
+# NOT the live/possibly-already-capped value - reading the capped value
+# would be circular, since Auto's own tier choice is what determines the
+# cap in the first place) and classifies it by total pixel count against
+# the nearest 16:9 reference resolution, not literal width/height - this
+# setup's native_resolution is a wide multi-monitor composite, not 16:9,
+# and a literal-dimension check would misclassify it the same way the old
+# width/height-pair resolution caps did (see MIDAS_FAST_MAX_PIXELS's
+# history in main.gd).
+func _auto_quality_tier() -> int:
+	var res = main.compute_requested_resolution(false)
+	var pixels = res.x * res.y
+	var pt = main.passthrough_enabled
+	if pixels <= 1280 * 720:
+		return 0 # Standard, either passthrough state
+	elif pixels <= 2560 * 1440:
+		return 1 if pt else 0 # 1080p/1440p: Fast w/ passthrough, else Standard
 	else:
-		return 4
+		return 2 if pt else 1 # 4K+: Fastest w/ passthrough, else Fast
 
 func _save_setting(btn: Button, label: String):
 	if btn:
@@ -78,24 +102,38 @@ func cycle_sbs_mode():
 	if main.sbs_mode > 0 and main.screens.size() > 1:
 		main._ui_status_label.text = "SBS applies to primary screen only"
 
-func cycle_ai_3d_mode():
+func cycle_ai_3d_model():
 	if OS.get_name() != "Android":
 		return
 	if main.sbs_mode > 0:
 		return
-	# Debug views (MiDaS-DMap/-Raw/-Input, ai_3d_mode 4-6) re-enabled in the
-	# cycle (2026-08-18) to check 3D/depth quality while investigating the
-	# resolution-cap suspicion (see MIDAS_RES_CAP_ENABLED in main.gd). Drop
-	# back to % 4 to disable them again once that's settled.
 	# Only the label updates immediately - actually applying the mode
 	# (apply_stereo(), which reconfigures depth_estimator and can trigger a
 	# resolution-cap stream restart) is debounced below, same UX as
 	# cycle_resolution()/_schedule_stream_restart(): click through to find
-	# the mode you want, and it only commits once you stop, instead of
+	# the setting you want, and it only commits once you stop, instead of
 	# reconfiguring/restarting on every single click along the way.
-	main.ai_3d_mode = (main.ai_3d_mode + 1) % 7
-	_save_setting(main._ui_3d_btn, ai_3d_labels[main.ai_3d_mode])
+	main.ai_3d_model = (main.ai_3d_model + 1) % 2
+	_save_setting(main._ui_3d_btn, ai_3d_model_labels[main.ai_3d_model])
+	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_quality():
+	if OS.get_name() != "Android":
+		return
+	if main.sbs_mode > 0 or main.ai_3d_model == 0:
+		return
+	main.ai_3d_quality = (main.ai_3d_quality + 1) % 4
+	_save_setting(main._ui_3d_quality_btn, ai_3d_quality_labels[main.ai_3d_quality])
+	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_debug():
+	# Disabled (2026-08-18), not removed - get_stereo_mode()/apply_stereo()/
+	# _schedule_ai_3d_commit() still fully handle ai_3d_debug != 0 correctly,
+	# and the button stays visible (just always disabled/dim - see
+	# ui_controller.gd's update_3d_btn_state()) rather than hidden. Delete
+	# this early return to re-enable clicking through DMap/-Raw/-Input again.
+	return
 
 func _schedule_ai_3d_commit():
 	_ai_3d_commit_seq += 1
@@ -103,21 +141,23 @@ func _schedule_ai_3d_commit():
 	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
 	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input
 	# against whichever tier is active), where quick feedback matters more
-	# than matching the restart delay exactly.
+	# than matching the restart delay exactly. Shared across all three
+	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
+	# between model/quality/debug controls in quick succession still only
+	# commits once, for whatever the final combined state ends up being.
 	await main.get_tree().create_timer(0.6).timeout
 	if _ai_3d_commit_seq != my_seq:
 		return
-	var mode = get_stereo_mode()
-	# MiDaS-DMap/-Raw/-Input (7/8/9) are debug VIEWS of whatever depth data
-	# is already flowing, not a separate mode with its own resolution needs
-	# - deliberately inherit whatever resolution (including a MiDaS-Fast/
+	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
+	# already flowing, not a separate mode with its own resolution needs -
+	# deliberately inherit whatever resolution (including a MiDaS-Fast/
 	# -Fastest cap) is already active instead of recomputing/restarting back
 	# to the full uncapped resolution. That restart actively worked against
-	# debugging: switching to DMap to inspect what Fast/Fastest were doing
+	# debugging: switching to a debug view to inspect what a tier was doing
 	# changed the very thing being inspected (a different, uncapped
 	# resolution) and interrupted the stream to do it. They never restart,
 	# so apply_stereo() is always safe to call immediately here.
-	if mode == 7 or mode == 8 or mode == 9:
+	if main.ai_3d_debug != 0:
 		apply_stereo()
 		return
 	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
@@ -164,15 +204,13 @@ func apply_stereo():
 		# model - also no warp passes needed. modes 10/11 (MiDaS-Fast/
 		# -Fastest) are the same warp passes as mode 6, just throttled/shrunk
 		# by differing amounts - see warp_update_interval's comment in
-		# depth_estimator.gd. warp_tier (0=full, 1=Fast, 2=Fastest) selects
-		# which; anything else defaults to tier 0 (no cost-cutting) inside
-		# set_enabled() itself.
-		var warp_tier := 0
-		if mode == 10:
-			warp_tier = 1
-		elif mode == 11:
-			warp_tier = 2
-		main.depth_estimator.set_enabled(mode >= 3, mode == 5 or mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
+		# depth_estimator.gd. warp_tier (0=Standard, 1=Fast, 2=Fastest) comes
+		# from resolve_quality_tier() - the SAME tier drives the pre-pass
+		# config whether you're looking at the real warp (mode 6/10/11) or a
+		# debug view of it (mode 7/8/9), since debug views are just a lens
+		# on whichever tier is actually active, not a tier of their own.
+		var warp_tier = resolve_quality_tier() if main.ai_3d_model > 0 else 0
+		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
 		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
 		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
 		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of

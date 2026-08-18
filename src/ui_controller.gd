@@ -49,20 +49,44 @@ func on_sbs_toggled():
 
 func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
-	main.settings_controller.cycle_ai_3d_mode()
+	main.settings_controller.cycle_ai_3d_model()
+
+func on_ai_3d_quality_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_quality()
+
+func on_ai_3d_debug_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_debug()
 
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_labels[main.ai_3d_mode])
+	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
+	var disabled = main.sbs_mode > 0 or main.screens.size() > 1
 	if main._ui_3d_btn:
-		var disabled = main.sbs_mode > 0 or main.screens.size() > 1
 		main._ui_3d_btn.disabled = disabled
 		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
+	# Quality/debug controls are additionally meaningless (and disabled)
+	# whenever AI-3D itself is off - no point picking a tier or a debug
+	# view for a model that isn't running.
+	var sub_disabled = disabled or main.ai_3d_model == 0
+	if main._ui_3d_quality_btn:
+		main._ui_3d_quality_btn.disabled = sub_disabled
+		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
+	# Debug is disabled unconditionally (2026-08-18, matches
+	# settings_controller.gd's cycle_ai_3d_debug() early return) - not
+	# folded into sub_disabled above since that's meant to reflect "would
+	# be usable if AI-3D were on," and this one's just off regardless.
+	if main._ui_3d_debug_btn:
+		main._ui_3d_debug_btn.disabled = true
+		main._ui_3d_debug_btn.modulate.a = 0.3
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
@@ -509,8 +533,17 @@ func build_ui():
 	disp_row1.add_child(main._ui_pt_btn)
 	main._ui_sbs_btn = make_option_btn("SBS", "Off")
 	disp_row1.add_child(main._ui_sbs_btn)
-	main._ui_3d_btn = make_option_btn("3D AI", "2D")
+	main._ui_3d_btn = make_option_btn("3D AI", "Off")
 	disp_row1.add_child(main._ui_3d_btn)
+	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
+	disp_row1.add_child(main._ui_3d_quality_btn)
+	# Debug is disabled (and dim) whenever 3D AI is off, which is most of
+	# the time - deliberately left on the same row as everything else even
+	# though 5 buttons overlaps/runs off the panel at this width, per
+	# explicit instruction (2026-08-18): fine since it's rarely the visible/
+	# active one.
+	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+	disp_row1.add_child(main._ui_3d_debug_btn)
 
 	var disp_gap1 = Control.new()
 	disp_gap1.custom_minimum_size = Vector2(0, 20)
@@ -764,6 +797,8 @@ func build_ui():
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	main._ui_3d_quality_btn.button_down.connect(func(): on_ai_3d_quality_toggled())
+	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
 	main._ui_apply_preset_btn.button_down.connect(func(): _on_apply_preset_pressed())

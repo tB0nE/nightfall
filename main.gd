@@ -67,7 +67,12 @@ var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
-var ai_3d_mode: int = 0
+# Split (2026-08-18) from a single flat ai_3d_mode into three independent
+# axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
+# ai_3d_debug_labels and get_stereo_mode() for how they combine.
+var ai_3d_model: int = 0 # 0=Off, 1=MiDaS
+var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
+var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -373,6 +378,8 @@ var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_quality_btn: Button
+var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -541,8 +548,9 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 			h = int(h * scale)
 	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
 	# Keyed off the actually-active stereo mode (accounts for sbs_mode
-	# overriding ai_3d_mode, same as settings_controller.get_stereo_mode()
-	# itself), not raw ai_3d_mode. Caps by total pixel budget (like
+	# overriding ai_3d_model/quality/debug, same as
+	# settings_controller.get_stereo_mode() itself), not those raw fields
+	# directly. Caps by total pixel budget (like
 	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
 	# min(target_w/w, target_h/h) - that approach silently deliverd far
 	# fewer pixels than intended on a non-16:9 source (see history above).
@@ -1180,7 +1188,9 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_mode = clampi(ai_3d_mode, 0, 6)
+	ai_3d_model = clampi(ai_3d_model, 0, 1)
+	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
+	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -1643,7 +1653,7 @@ func _init_xr(interface):
 	if interface.has_signal("user_presence_changed"):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
-	ai_3d_mode = 0
+	ai_3d_model = 0
 
 	settings_controller.apply_display_refresh_rate()
 
@@ -1769,7 +1779,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_mode > 0 and comp.in_use:
+		if depth_estimator.depth_texture and ai_3d_model > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)
