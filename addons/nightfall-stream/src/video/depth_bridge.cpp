@@ -1,6 +1,29 @@
 #include "depth_bridge.h"
 #include "nf_log.h"
 
+#ifdef NIGHTFALL_PLATFORM_LINUX
+#include "midas_depth_engine.h"
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+#include <godot_cpp/classes/os.hpp>
+
+// Loose files next to the running executable, NOT through Godot's res:///PCK
+// - build.sh's Linux PCK export (--export-pack, using the Android preset as
+// a headless-export workaround) never includes android/src/main/assets/, so
+// fighting the resource/import pipeline for two ~17MB binary blobs isn't
+// worth it. Mirrors the exact pattern already used for the GDExtension .so
+// itself and the Meta OpenXR vendor plugin AAR - see build.sh's AppImage-
+// assembly section for where "depth_models/" actually gets populated.
+static std::string nightfall_resolve_model_dir() {
+    godot::String exe_path = godot::OS::get_singleton()->get_executable_path();
+    godot::String dir = exe_path.get_base_dir();
+    return std::string((dir + "/depth_models").utf8().get_data());
+}
+#endif
+
 #ifdef __ANDROID__
 #include <jni.h>
 #include <android/log.h>
@@ -43,8 +66,21 @@ using namespace godot;
 DepthBridge::DepthBridge() {}
 DepthBridge::~DepthBridge() {}
 
+#ifdef NIGHTFALL_PLATFORM_LINUX
+void DepthBridge::ensure_midas_engine() {
+    if (midas_engine_) return;
+    midas_engine_ = std::make_unique<MidasDepthEngine>();
+    midas_engine_->initialize(nightfall_resolve_model_dir());
+}
+#endif
+
 void DepthBridge::submit_depth_frame(const PackedByteArray &frame_data, int width, int height) {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    ensure_midas_engine();
+    if (midas_engine_) {
+        midas_engine_->submit_frame(frame_data.ptr(), (size_t)frame_data.size(), width, height);
+    }
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return;
 
@@ -67,7 +103,15 @@ void DepthBridge::submit_depth_frame(const PackedByteArray &frame_data, int widt
 
 PackedByteArray DepthBridge::get_depth_map() {
     PackedByteArray empty;
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    if (!midas_engine_) return empty;
+    std::vector<uint8_t> depth = midas_engine_->get_latest_depth();
+    if (depth.empty()) return empty;
+    PackedByteArray depth_data;
+    depth_data.resize(depth.size());
+    memcpy(depth_data.ptrw(), depth.data(), depth.size());
+    return depth_data;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return empty;
 
@@ -102,7 +146,12 @@ PackedByteArray DepthBridge::get_depth_map() {
 }
 
 void DepthBridge::set_depth_model(int model_index) {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    ensure_midas_engine();
+    if (midas_engine_) {
+        midas_engine_->set_active_model(model_index);
+    }
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) {
         __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: no JNIEnv");
@@ -130,7 +179,10 @@ void DepthBridge::set_depth_model(int model_index) {
 }
 
 int DepthBridge::get_depth_model_size() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    if (!midas_engine_) return 256;
+    return midas_engine_->get_model_size();
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 256;
 

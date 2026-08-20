@@ -75,6 +75,16 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   SIZE=$(ls -lh "$LINUX_BINARY" | awk '{print $5}')
   echo "Assembled Linux binary ($SIZE)"
 
+  # Native AI-3D depth on Linux (MiDaS only, 2026-08-20) - midas_depth_engine.cpp
+  # resolves its model directory relative to the running executable's own path
+  # (OS::get_executable_path()'s base dir + "/depth_models"), NOT through
+  # Godot's res:///PCK - the PCK export above uses the Android preset as a
+  # headless-export workaround and never includes android/src/main/assets/.
+  # Same "loose files next to the binary" pattern as the .so/AAR copies below.
+  mkdir -p "$SCRIPT_DIR/depth_models"
+  cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
+
   rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 
   if [ "$PLATFORM" = "appimage" ]; then
@@ -90,8 +100,10 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
 
     mkdir -p "$APPDIR/usr/bin/addons/nightfall-stream/bin/linux"
     mkdir -p "$APPDIR/usr/bin/addons/godotopenxrvendors/.bin/linux/template_release/x86_64"
+    mkdir -p "$APPDIR/usr/bin/depth_models"
     cp "$SCRIPT_DIR/addons/nightfall-stream/bin/linux/libnightfall-stream.linux.template_release.x86_64.so" "$APPDIR/usr/bin/addons/nightfall-stream/bin/linux/"
     cp "$SCRIPT_DIR/addons/godotopenxrvendors/.bin/linux/template_release/x86_64/libgodotopenxrvendors.so" "$APPDIR/usr/bin/addons/godotopenxrvendors/.bin/linux/template_release/x86_64/"
+    cp "$SCRIPT_DIR/depth_models/"*.tflite "$APPDIR/usr/bin/depth_models/"
     cp "$SCRIPT_DIR/addons/godotopenxrvendors/plugin.gdextension" "$APPDIR/usr/bin/addons/godotopenxrvendors/"
     cp "$SCRIPT_DIR/nightfall-quest.desktop" "$APPDIR/nightfall-quest.desktop"
     cp "$SCRIPT_DIR/nightfall-quest.desktop" "$APPDIR/usr/share/applications/nightfall-quest.desktop"

@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     libsystemd-dev \
     libx11-dev \
     libxext-dev \
+    libxrandr-dev \
+    gdb \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \

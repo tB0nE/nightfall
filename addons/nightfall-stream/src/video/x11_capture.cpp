@@ -5,12 +5,193 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XShm.h>
+#ifdef NIGHTFALL_HAS_XRANDR
+#include <X11/extensions/Xrandr.h>
+#endif
 #include <sys/shm.h>
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
 
 namespace godot {
+
+#ifdef NIGHTFALL_HAS_XRANDR
+namespace {
+
+// Best-effort: Sunshine's own "output_name" config value is an NvFBC output
+// INDEX (NVIDIA's own head enumeration, e.g. "0"), not an X11 RandR
+// connector name - there's no guarantee the two enumeration orders match,
+// so this is a heuristic, not a guarantee (see CMakeLists.txt/plan notes).
+// Checks both plausible install locations: a native/AppImage install's
+// ~/.config/sunshine/sunshine.conf, and a Flatpak install's
+// ~/.var/app/dev.lizardbyte.app.Sunshine/config/sunshine/sunshine.conf
+// (confirmed real on the dev machine this was built against). Simple
+// line-based "key = value" parsing matches Sunshine's actual config format
+// exactly - no need for a real config-file parser for one integer field.
+bool read_sunshine_output_index(int &out_index) {
+    const char *home = getenv("HOME");
+    if (!home) return false;
+
+    std::vector<std::string> candidate_paths = {
+        std::string(home) + "/.var/app/dev.lizardbyte.app.Sunshine/config/sunshine/sunshine.conf",
+        std::string(home) + "/.config/sunshine/sunshine.conf",
+    };
+
+    for (const auto &path : candidate_paths) {
+        std::ifstream f(path);
+        if (!f.is_open()) continue;
+
+        std::string line;
+        while (std::getline(f, line)) {
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string key = line.substr(0, eq);
+            std::string value = line.substr(eq + 1);
+            // Trim whitespace both sides of key/value.
+            auto trim = [](std::string &s) {
+                size_t a = s.find_first_not_of(" \t\r\n");
+                size_t b = s.find_last_not_of(" \t\r\n");
+                s = (a == std::string::npos) ? "" : s.substr(a, b - a + 1);
+            };
+            trim(key);
+            trim(value);
+            if (key == "output_name" && !value.empty()) {
+                // strtol, not std::stoi - this project builds with
+                // -fno-exceptions, so std::stoi's throw-on-invalid-input
+                // behavior isn't usable here.
+                char *end = nullptr;
+                long parsed = strtol(value.c_str(), &end, 10);
+                if (end == value.c_str() || *end != '\0') {
+                    return false; // non-numeric output_name (e.g. a real device name) - not usable here
+                }
+                out_index = (int)parsed;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Active (connected + has a live CRTC) RandR outputs, in RandR's own
+// enumeration order - the list read_sunshine_output_index()'s value is
+// positionally matched against.
+struct MonitorRect {
+    int x = 0, y = 0, w = 0, h = 0;
+};
+
+bool get_primary_monitor_rect(::Display *display, ::Window root, MonitorRect &out) {
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(display, root);
+    if (!res) return false;
+    bool found = false;
+
+    RROutput primary = XRRGetOutputPrimary(display, root);
+    if (primary != None) {
+        XRROutputInfo *info = XRRGetOutputInfo(display, res, primary);
+        if (info && info->connection == RR_Connected && info->crtc != None) {
+            XRRCrtcInfo *crtc = XRRGetCrtcInfo(display, res, info->crtc);
+            if (crtc) {
+                out = {crtc->x, crtc->y, (int)crtc->width, (int)crtc->height};
+                found = true;
+                XRRFreeCrtcInfo(crtc);
+            }
+        }
+        if (info) XRRFreeOutputInfo(info);
+    }
+
+    if (!found) {
+        // No primary set (or it's disconnected/inactive) - fall back to the
+        // first active output found, still better than the whole desktop.
+        for (int i = 0; i < res->noutput && !found; i++) {
+            XRROutputInfo *info = XRRGetOutputInfo(display, res, res->outputs[i]);
+            if (info && info->connection == RR_Connected && info->crtc != None) {
+                XRRCrtcInfo *crtc = XRRGetCrtcInfo(display, res, info->crtc);
+                if (crtc) {
+                    out = {crtc->x, crtc->y, (int)crtc->width, (int)crtc->height};
+                    found = true;
+                    XRRFreeCrtcInfo(crtc);
+                }
+            }
+            if (info) XRRFreeOutputInfo(info);
+        }
+    }
+
+    XRRFreeScreenResources(res);
+    return found;
+}
+
+bool get_monitor_rect_by_index(::Display *display, ::Window root, int index, MonitorRect &out) {
+    XRRScreenResources *res = XRRGetScreenResourcesCurrent(display, root);
+    if (!res) return false;
+
+    int active_idx = 0;
+    bool found = false;
+    for (int i = 0; i < res->noutput; i++) {
+        XRROutputInfo *info = XRRGetOutputInfo(display, res, res->outputs[i]);
+        if (!info) continue;
+        if (info->connection == RR_Connected && info->crtc != None) {
+            if (active_idx == index) {
+                XRRCrtcInfo *crtc = XRRGetCrtcInfo(display, res, info->crtc);
+                if (crtc) {
+                    out = {crtc->x, crtc->y, (int)crtc->width, (int)crtc->height};
+                    found = true;
+                    XRRFreeCrtcInfo(crtc);
+                }
+                XRRFreeOutputInfo(info);
+                break;
+            }
+            active_idx++;
+        }
+        XRRFreeOutputInfo(info);
+    }
+
+    XRRFreeScreenResources(res);
+    return found;
+}
+
+} // namespace
+#endif // NIGHTFALL_HAS_XRANDR
+
+void X11Capture::select_capture_region(::Display *display, int screen, ::Window root,
+                                        int &out_x, int &out_y, int &out_w, int &out_h) {
+#ifdef NIGHTFALL_HAS_XRANDR
+    int sunshine_index = -1;
+    bool have_index = read_sunshine_output_index(sunshine_index);
+
+    MonitorRect rect;
+    if (have_index && sunshine_index >= 0 && get_monitor_rect_by_index(display, root, sunshine_index, rect)) {
+        NF_LOG("X11Capture", "Selected monitor by Sunshine output_name=%d: %dx%d+%d+%d",
+               sunshine_index, rect.w, rect.h, rect.x, rect.y);
+        out_x = rect.x; out_y = rect.y; out_w = rect.w; out_h = rect.h;
+        return;
+    }
+
+    if (get_primary_monitor_rect(display, root, rect)) {
+        NF_LOG("X11Capture", "Selected primary monitor (%s): %dx%d+%d+%d",
+               have_index ? "Sunshine output_name index out of range" : "no usable Sunshine config found",
+               rect.w, rect.h, rect.x, rect.y);
+        out_x = rect.x; out_y = rect.y; out_w = rect.w; out_h = rect.h;
+        return;
+    }
+
+    NF_LOGE("X11Capture", "RandR found no active outputs - falling back to full desktop capture");
+#else
+    (void)display; (void)screen; (void)root;
+    NF_LOG("X11Capture", "Built without RandR support - capturing full desktop (all monitors)");
+#endif
+    // Full-desktop fallback - matches the previous (pre-2026-08-20) behavior
+    // exactly, so an unusual/broken X setup never regresses to capturing
+    // nothing.
+    XWindowAttributes attrs;
+    XGetWindowAttributes(display, root, &attrs);
+    out_x = 0;
+    out_y = 0;
+    out_w = attrs.width;
+    out_h = attrs.height;
+}
 
 X11Capture::X11Capture() = default;
 
@@ -30,12 +211,14 @@ bool X11Capture::start() {
     screen_ = DefaultScreen(display_);
     Window root = RootWindow(display_, screen_);
 
-    XWindowAttributes attrs;
-    XGetWindowAttributes(display_, root, &attrs);
-    width_ = attrs.width;
-    height_ = attrs.height;
+    int sel_x = 0, sel_y = 0, sel_w = 0, sel_h = 0;
+    select_capture_region(display_, screen_, root, sel_x, sel_y, sel_w, sel_h);
+    x_offset_ = sel_x;
+    y_offset_ = sel_y;
+    width_ = sel_w;
+    height_ = sel_h;
 
-    NF_LOG("X11Capture", "Screen: %dx%d", width_, height_);
+    NF_LOG("X11Capture", "Capture region: %dx%d+%d+%d", width_, height_, x_offset_, y_offset_);
 
     if (width_ == 0 || height_ == 0) {
         NF_LOGE("X11Capture", "Invalid screen dimensions");
@@ -135,7 +318,7 @@ void X11Capture::capture_loop() {
     auto last_report = std::chrono::steady_clock::now();
 
     while (running_.load()) {
-        XShmGetImage(display_, root, image_, 0, 0, AllPlanes);
+        XShmGetImage(display_, root, image_, x_offset_, y_offset_, AllPlanes);
 
         XSync(display_, false);
 

@@ -131,7 +131,18 @@ func _init(owner: Node3D):
 	_platform = OS.get_name()
 
 func setup():
-	if _platform != "Android":
+	# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
+	# (see depth_bridge.cpp's NIGHTFALL_PLATFORM_LINUX branch/MidasDepthEngine) -
+	# same "Android or Linux" check as settings_controller.gd's
+	# _ai_3d_supported(). This guard used to be the ONLY thing gating AI-3D to
+	# Android; missing this second copy of it when Linux support was added
+	# left depth_viewport/depth_texture/upsample_viewport/offset_viewport
+	# etc. all null while the rest of the pipeline (now unlocked via
+	# settings_controller.gd) assumed setup() had actually run - a real
+	# crash (segfault) the moment AI-3D activated on Linux, since several
+	# call sites (_resize_warp_passes() in particular) don't null-check
+	# before using these.
+	if _platform != "Android" and _platform != "Linux":
 		main._log("[DEPTH] Depth estimation disabled on " + _platform)
 		return
 	depth_viewport = SubViewport.new()

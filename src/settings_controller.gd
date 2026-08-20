@@ -144,8 +144,17 @@ func cycle_sbs_mode():
 	if main.sbs_mode > 0 and main.screens.size() > 1:
 		main._ui_status_label.text = "SBS applies to primary screen only"
 
+# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
+# (see depth_bridge.cpp's NIGHTFALL_PLATFORM_LINUX branch / MidasDepthEngine) -
+# MiDaS-192/256 only for now, YOLO26/DA V2 aren't ported there yet (any other
+# model index falls back to MiDaS-256 on that platform, see
+# MidasDepthEngine::set_active_model()). A shared check here instead of
+# repeating "Android or Linux" three times below.
+func _ai_3d_supported() -> bool:
+	return OS.get_name() == "Android" or OS.get_name() == "Linux"
+
 func cycle_ai_3d_model():
-	if OS.get_name() != "Android":
+	if not _ai_3d_supported():
 		return
 	if main.sbs_mode > 0:
 		return
@@ -161,7 +170,7 @@ func cycle_ai_3d_model():
 	_schedule_ai_3d_commit()
 
 func cycle_ai_3d_quality():
-	if OS.get_name() != "Android":
+	if not _ai_3d_supported():
 		return
 	if main.sbs_mode > 0 or main.ai_3d_model == 0:
 		return
@@ -170,7 +179,7 @@ func cycle_ai_3d_quality():
 	_schedule_ai_3d_commit()
 
 func cycle_ai_3d_debug():
-	if OS.get_name() != "Android":
+	if not _ai_3d_supported():
 		return
 	if main.sbs_mode > 0 or main.ai_3d_model == 0:
 		return

@@ -345,8 +345,16 @@ bool NightfallStream::is_display_ready() const {
 // GodotApp.getCodecCapabilitiesInfo()), rather than inferring them from trial
 // and error. Not on any hot path - call once from GDScript and read the result
 // from logcat/the returned string.
+// Pre-existing Linux-build bug (found 2026-08-20 while adding native AI-3D
+// depth on Linux, unrelated to that work) - JavaVM/jclass were declared here
+// unconditionally, with only the FUNCTION BODY below guarded by
+// #ifdef __ANDROID__. On Android something else transitively pulls in
+// <jni.h> before this point so it happened to compile; on Linux nothing ever
+// defines those types at all, failing the whole target's build outright.
+#ifdef __ANDROID__
 extern JavaVM *nightfall_get_jvm();
 extern jclass nightfall_get_godot_app_class();
+#endif
 
 String NightfallStream::get_codec_capabilities_info() const {
 #ifdef __ANDROID__
