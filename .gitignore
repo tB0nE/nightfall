@@ -51,8 +51,10 @@ android/src/main/AndroidManifest.xml
 *.idsig
 *.a
 
-# Large model assets (generate via tools/)
-android/src/main/assets/depth-anything-v2-small.tflite
+# Large model assets, dormant/unreachable from the current UI (kept on disk
+# locally for any future revival work, not worth the repo-size cost until then)
+android/src/main/assets/midas-v21-small-256-gpu.tflite
+android/src/main/assets/yolo26s-depth-int8.tflite
 
 # Model conversion artifacts
 tools/Depth-Anything-V2/
@@ -60,6 +62,14 @@ tools/depth_anything_v2_weights/
 tools/tflite_tmp/
 tools/calibration_data.npz
 tools/depth_anything_v2.onnx
+
+# tools/model_tester/ is a desktop comparison harness (run_models.py,
+# settings.json, eg_input_1.png ARE tracked) - everything below is scratch
+# output reproducible by re-running it, not worth committing.
+tools/model_tester/*.tflite
+tools/model_tester/*_verification/
+tools/model_tester/output/
+tools/model_tester/__pycache__/
 addons/nightfall-stream/build/
 addons/nightfall-stream/build_android/
 openxr_action_map.tres

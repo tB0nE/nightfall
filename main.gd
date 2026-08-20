@@ -70,7 +70,7 @@ var sbs_mode: int = 0
 # Split (2026-08-18) from a single flat ai_3d_mode into three independent
 # axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
 # ai_3d_debug_labels and get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # 0=Off, 1=MiDaS
+var ai_3d_model: int = 0 # 0=Off, 1=MiDaS-192, 2=YOLO26-N-256, 3=YOLO26-N-320, 4=YOLO26-N-384, 5=MiDaS-256, 6=DA-V2-196, 7=DA-V2-252
 var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
@@ -1196,7 +1196,7 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 1)
+	ai_3d_model = clampi(ai_3d_model, 0, 7)
 	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 

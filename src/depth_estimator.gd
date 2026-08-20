@@ -23,6 +23,23 @@ var submit_timer: float = 0.0
 # MORE CPU work per call via dilate+blur. That's the next thing to fix, not
 # this value.
 var submit_interval: float = 0.05
+# MiDaS-GPU only - see its use in process() for why this needs to be its own,
+# much slower cadence than submit_interval above. ~5Hz - a starting point
+# matching the rough order of magnitude of Gilleece/moonlight-android-xr's own
+# "every 3rd frame" cadence at 90Hz (~30Hz, but their raw inference is ~3.5x
+# faster than ours at ~13.5ms vs our ~47-51ms end-to-end, so a slower cadence
+# here is the equivalent tradeoff for a slower model) - tune based on
+# on-device FPS/GPU-utilization testing, not derived precisely.
+const GPU_MODEL_SUBMIT_INTERVAL := 0.2
+# Native output resolution of whichever model is currently active in
+# DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
+# (see YOLO_INPUT_SIZE there). No longer a fixed constant: sync_model_size()
+# below queries DepthEstimator.java's getModelSize() (via depth_bridge.cpp's
+# JNI get_depth_model_size()) whenever settings_controller.gd's apply_stereo()
+# switches the active model, and resizes depth_viewport/depth_texture to
+# match - both submit_depth_frame() and the get_depth_map() size-match check
+# in process() below depend on this being correct for the CURRENTLY active
+# model, not just MiDaS.
 var model_size: int = 256
 var _poll_timer: float = 0.0
 
@@ -225,6 +242,28 @@ func _resize_warp_passes():
 		if mat:
 			mat.set_shader_parameter("mode5_parallax", _pass_parallax)
 
+# Called from settings_controller.gd's apply_stereo() right after
+# stream_backend.set_depth_model() switches the active Java-side model -
+# setActiveModel() busy-waits out any in-flight inference before returning,
+# so getModelSize() is already correct for the new model by the time this
+# runs. Resizes depth_viewport (the capture source fed INTO the model) and
+# recreates depth_texture's image (the model's OUTPUT, read back via
+# get_depth_map()) in place via set_image() rather than a new ImageTexture -
+# every consumer (primary_screen, comp_shader_mat_left/right) already holds
+# a reference to this same object, so updating its image data keeps those
+# bindings valid instead of needing to re-push a new texture reference
+# everywhere depth_texture is used.
+func sync_model_size():
+	if not main.stream_backend or not depth_viewport or not depth_texture:
+		return
+	var new_size = main.stream_backend.get_depth_model_size()
+	if new_size <= 0 or new_size == model_size:
+		return
+	model_size = new_size
+	depth_viewport.size = Vector2i(model_size, model_size)
+	var img = Image.create(model_size, model_size, false, Image.FORMAT_L8)
+	depth_texture.set_image(img)
+
 func bind_stream_texture():
 	if not depth_target:
 		return
@@ -307,6 +346,22 @@ func process(delta: float):
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta
+		# MiDaS-GPU used to need its own, much slower cadence than the CPU
+		# models share above (confirmed on-device, 2026-08-19: TFLite's GPU
+		# delegate runs its compute shaders on the SAME physical GPU that
+		# renders the VR scene, so every inference call is real GPU time
+		# directly competing with the render thread - unlike MiDaS/YOLO26
+		# (CPU/XNNPACK), which are fully decoupled from what renders each
+		# frame. Running it at the same 20Hz cadence as the CPU models drove
+		# GPU utilization to 94% and roughly halved frame rate). But MiDaS-GPU
+		# is now REMOVED from selection entirely (2026-08-19, still performed
+		# poorly even throttled - see settings_controller.gd's
+		# ai_3d_model_labels comment) - GPU_MODEL_SUBMIT_INTERVAL is dead code
+		# below, kept only in case it's revived, since no current ai_3d_model
+		# value maps to it and hardcoding a check against a specific index
+		# here would silently misfire against whatever CPU model ends up at
+		# that index instead (this exact bug happened once already when
+		# YOLO26-S's removal shifted index 3 out from under this check).
 		if submit_timer >= submit_interval:
 			submit_timer = 0.0
 			var img = depth_viewport.get_texture().get_image()

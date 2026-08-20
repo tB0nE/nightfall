@@ -201,6 +201,13 @@ func get_depth_map() -> PackedByteArray:
 			return db.get_depth_map()
 	return PackedByteArray()
 
+func get_depth_model_size() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_depth_model_size()
+	return 256
+
 func probe_video_format(codec_pref: int, disable_hw: bool) -> int:
 	if _v2:
 		return _v2.probe_video_format(codec_pref, disable_hw)

@@ -22,8 +22,20 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # Split (2026-08-18) from a single flat "3D AI" cycle into three
 # independent controls, matching main.gd's ai_3d_model/ai_3d_quality/
 # ai_3d_debug:
-#   ai_3d_model_labels   - is AI-3D on at all, and with which model (more
-#                          models may join MiDaS here in future).
+#   ai_3d_model_labels   - is AI-3D on at all, and with which model. YOLO26-N/
+#                          -S (Ultralytics' new monocular depth export,
+#                          verified via direct TFLite Interpreter inspection,
+#                          2026-08-18) joined MiDaS here - all three share the
+#                          exact same downstream warp/postProcess pipeline
+#                          (DepthEstimator.java's postProcess() works on a
+#                          plain float[] regardless of source model, and the
+#                          warp shaders read textureSize(depth_texture, 0)
+#                          dynamically), so stereo_mode/quality-tier selection
+#                          below is completely orthogonal to which model is
+#                          active - only apply_stereo()'s final
+#                          set_depth_model() call and depth_estimator.gd's
+#                          sync_model_size() (256 vs YOLO's 768) need to know
+#                          which one is picked here.
 #   ai_3d_quality_labels - which performance tier. Fastest/Fast/Standard
 #                          directly select depth_estimator.gd's warp_tier
 #                          2/1/0 (see MiDaS-Fast/-Fastest's own history in
@@ -35,7 +47,37 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                          overlaid on whichever quality tier is active
 #                          rather than a mode of their own - see
 #                          get_stereo_mode() and _schedule_ai_3d_commit().
-var ai_3d_model_labels: Array = ["Off", "MiDaS"]
+# YOLO26-S (2026-08-18) and MiDaS-GPU (2026-08-19) are REMOVED from
+# selection, not deleted - S's int8 quantization turned out fragile on real
+# desktop-UI-style low-texture content even after bumping resolution 256->320
+# (still degenerate/blank on our own menu screenshot); MiDaS-GPU tanked VR
+# frame rate even throttled to ~5Hz (TFLite's GPU delegate shares the same
+# physical GPU as Godot's Vulkan renderer, see DepthEstimator.java's
+# ensureMidasGpuLoaded() comment). DepthEstimator.java still attempts to load
+# both (soft-fails harmlessly since build.sh no longer bundles either asset)
+# and their dispatch code stays in place unreachable, matching how Depth
+# Anything V2 was retired - don't restore a label/mapping for Java model
+# index 5 (YOLO26-S) or 6 (MiDaS-GPU) without fixing their underlying issue
+# first.
+# YOLO26-N (2026-08-19) is now THREE separate resolution choices instead of
+# one, after discovering a wrong-polarity bug (fixed) made the model look
+# far worse than it actually is - now that it's fixed, comparing 256/320/384
+# side by side for speed vs. depth quality is a real, useful experiment
+# rather than working around a bug.
+# Rebuilt (2026-08-20) into a full 7-way perf/quality lineup, ordered fastest
+# to slowest, after a round of desktop-harness comparisons (tools/model_tester/):
+# YOLO26-N re-exported with w8a32 (dynamic/weight-only int8, no calibration
+# data needed) fixes a real collapse bug the old static-int8 export had and
+# looks noticeably less blocky; MiDaS gained a 192px sibling (independently
+# calibrated, not just a resize of the 256px model); Depth Anything V2 is
+# REVIVED (was fully dead code - the originally-deployed fp16 asset never
+# loaded on this CPU path at all) via a re-conversion that fixes a layout bug
+# (onnx2tf -kt input) plus disabling the dilate/blur post-processing that was
+# confirmed to be destroying real fine detail. MiDaS-192 is deliberately
+# FIRST after Off (not fastest-first) - it's the best-tested, safest default
+# to land on when a user first turns AI-3D on, before they've had a chance to
+# explore the rest of the lineup.
+var ai_3d_model_labels: Array = ["Off", "MiDaS-192", "YOLO26-N-256", "YOLO26-N-320", "YOLO26-N-384", "MiDaS-256", "DA-V2-196", "DA-V2-252"]
 var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
@@ -113,7 +155,7 @@ func cycle_ai_3d_model():
 	# cycle_resolution()/_schedule_stream_restart(): click through to find
 	# the setting you want, and it only commits once you stop, instead of
 	# reconfiguring/restarting on every single click along the way.
-	main.ai_3d_model = (main.ai_3d_model + 1) % 2
+	main.ai_3d_model = (main.ai_3d_model + 1) % ai_3d_model_labels.size()
 	_save_setting(main._ui_3d_btn, ai_3d_model_labels[main.ai_3d_model])
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
@@ -128,12 +170,13 @@ func cycle_ai_3d_quality():
 	_schedule_ai_3d_commit()
 
 func cycle_ai_3d_debug():
-	# Disabled (2026-08-18), not removed - get_stereo_mode()/apply_stereo()/
-	# _schedule_ai_3d_commit() still fully handle ai_3d_debug != 0 correctly,
-	# and the button stays visible (just always disabled/dim - see
-	# ui_controller.gd's update_3d_btn_state()) rather than hidden. Delete
-	# this early return to re-enable clicking through DMap/-Raw/-Input again.
-	return
+	if OS.get_name() != "Android":
+		return
+	if main.sbs_mode > 0 or main.ai_3d_model == 0:
+		return
+	main.ai_3d_debug = (main.ai_3d_debug + 1) % ai_3d_debug_labels.size()
+	_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[main.ai_3d_debug])
+	_schedule_ai_3d_commit()
 
 func _schedule_ai_3d_commit():
 	_ai_3d_commit_seq += 1
@@ -239,17 +282,32 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
-	# modes 6/7/8/9/10/11 (MiDaS-Std, MiDaS-DMap, MiDaS-DMap-Raw, MiDaS-DMap-
-	# Input, MiDaS-Fast, MiDaS-Fastest) all reuse the same MiDaS-Std model/
-	# inference (index 3) - they're pure visualizations/warp-pass variants of
-	# that same depth data, not a separate source. mode 9 doesn't even read
-	# the model's output (just the color capture), but MUST still stay on
-	# model index 3 here - leaving it out of this set previously silently
-	# swapped the active model down to the slow CPU/dilate-blur path (index
-	# 0) every time mode 9 was selected, which then poisoned the other modes
+	# Which Java-side model/interpreter to run is entirely orthogonal to mode
+	# (stereo_mode only encodes quality tier / debug view, see
+	# ai_3d_model_labels' comment above) - it comes straight from
+	# main.ai_3d_model. Modes 6/7/8/9/10/11 (Std, DMap, DMap-Raw, DMap-Input,
+	# Fast, Fastest) are pure visualizations/warp-pass variants of whatever
+	# model's depth data is already flowing, not a separate source - mode 9
+	# doesn't even read the model's output (just the color capture), but
+	# MUST still resolve to the same model index here: leaving it out
+	# previously silently swapped the active model down to a different one
+	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	main.stream_backend.set_depth_model(1 if mode == 4 else (3 if mode == 6 or mode == 7 or mode == 8 or mode == 9 or mode == 10 or mode == 11 else 0))
+	var model_idx = 0
+	if mode >= 3:
+		match main.ai_3d_model:
+			1: model_idx = 10 # MiDaS-192
+			2: model_idx = 7 # YOLO26-Depth-N-256
+			3: model_idx = 8 # YOLO26-Depth-N-320
+			4: model_idx = 4 # YOLO26-Depth-N-384
+			5: model_idx = 3 # MiDaS-256
+			6: model_idx = 11 # Depth Anything V2-196
+			7: model_idx = 1 # Depth Anything V2-252
+			_: model_idx = 3 # MiDaS-256 (fallback)
+	main.stream_backend.set_depth_model(model_idx)
+	if mode >= 3 and main.depth_estimator:
+		main.depth_estimator.sync_model_size()
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
