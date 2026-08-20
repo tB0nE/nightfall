@@ -190,8 +190,13 @@ var is_polaris_host: bool = false
 # under all of those caps on its own (largest is 3840x2160), so there's
 # nothing to filter for the single-screen case this picker is used for.
 var resolution_idx: int = 1
-var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(3440, 1440)]
-var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9"]
+var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(2560, 1080), Vector2i(3440, 1440)]
+# 21:9 split into two tiers (2026-08-20, GitHub issue #17) - was a single
+# 3440x1440 entry, which meant there was no way to request a 21:9 source at a
+# more modest pixel budget (matching the HD/2K split every other aspect
+# already gets). 2560x1080 (UWFHD, 64:27) and 3440x1440 (UWQHD, 43:18) are
+# the two real, common ultrawide monitor resolutions - not arbitrary picks.
+var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9 HD", "21:9 2K"]
 var double_h: bool = false
 var bitrate_idx: int = -1
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]

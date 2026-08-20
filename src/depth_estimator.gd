@@ -213,9 +213,23 @@ func _setup_warp_passes():
 
 	_resize_warp_passes()
 
-# Sized off native_resolution (the stream's real resolution) rather than a
-# fixed constant, so the passes track resolution changes/restarts. Cheap to
-# call every frame - it's a no-op once the size matches.
+# Sized off the REAL decoded stream resolution (2026-08-20, was
+# main.native_resolution) rather than a fixed constant, so the passes track
+# resolution changes/restarts. Cheap to call every frame - it's a no-op once
+# the size matches. main.native_resolution is ONLY ever updated from a real
+# host manifest (Polaris hosts) - Sunshine/GameStream hosts never send one,
+# so for them it just stays at whatever stale value was last loaded from
+# saved state (a previous host/session), completely disconnected from
+# whatever resolution is actually being requested/decoded right now. This
+# was the root cause of a real on-device bug (garbled horizontal band with
+# AI-3D on, 21:9 2K specifically): the warp gather's own internal working
+# resolution (target below) silently mismatched the real content's aspect,
+# throwing off the offset-search math in depth_offset.gdshader/
+# yuv_display.gdshader's Newton refinement. main.stream_viewport.size is
+# always current (set directly from the video backend's real reported
+# dimensions in stream_manager.gd's resize_stream_viewport()) regardless of
+# host type - the same fix pattern as screen_manager.gd's
+# resize_screen_to_aspect() (GitHub issue #17).
 func _resize_warp_passes():
 	# upsample_mat decodes YUV directly (see depth_upsample.gdshader) and
 	# needs the same uv_region the primary screen's own materials use, so
@@ -226,7 +240,10 @@ func _resize_warp_passes():
 	if upsample_mat and main.primary_screen:
 		upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
 
-	var src = main.native_resolution
+	if not main.primary_screen or not main.stream_viewport:
+		return
+	var uv = main.primary_screen.uv_region
+	var src = Vector2i(int(float(main.stream_viewport.size.x) * uv.z), int(float(main.stream_viewport.size.y) * uv.w))
 	if src.x <= 0 or src.y <= 0:
 		return
 	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
