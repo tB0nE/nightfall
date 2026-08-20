@@ -192,7 +192,8 @@ Nightfall is a spare-time project built to make VR game streaming feel native
 instead of bolted on. If it becomes part of your setup, that alone makes my day.
 Donations help keep the coffee flowing and the commits coming.
 
-[![PayPal](https://img.shields.io/badge/PayPal-Support-7c73ff?style=for-the-badge&logo=paypal&labelColor=1a1a2e)](https://www.paypal.com/paypalme/fadecomics)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub_Sponsors-Support-7c73ff?style=for-the-badge&logo=github&labelColor=1a1a2e)](https://github.com/sponsors/tB0nE)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-7c73ff?style=for-the-badge&logo=kofi&labelColor=1a1a2e)](https://ko-fi.com/tb0ne)
 
 ## License
 
