@@ -15,6 +15,7 @@ public:
     void submit_depth_frame(const PackedByteArray &frame_data, int width, int height);
     PackedByteArray get_depth_map();
     void set_depth_model(int model_index);
+    int get_depth_model_size();
 
 protected:
     static void _bind_methods();

@@ -97,6 +97,13 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static int getDepthModelSize() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelSize();
+		}
+		return 256;
+	}
+
 	// One-off diagnostic for the H.264/HEVC hardware decoder dimension limits on this
 	// device - queried directly from the platform instead of inferred from trial and error.
 	public static String getCodecCapabilitiesInfo() {

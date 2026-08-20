@@ -83,7 +83,7 @@ func load_host_state(ip: String):
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_model"):
-			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 1)
+			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 7)
 			main.ai_3d_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
 		elif save.has_section_key(ip, "ai_3d_mode"):

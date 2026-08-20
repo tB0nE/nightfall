@@ -1,0 +1,87 @@
+{
+  "_comment": "Tunable knobs for run_models.py. Percentile clips and dilate/blur radii mirror DepthEstimator.java's postProcess() constants exactly - edit here and re-run, no code changes needed. hist_bins/percentile_clip control robustRange()'s normalization stretch (see DepthEstimator.java). dilate/blur radii: on-device, DA's runInferenceDA() always passes dilateAndBlur=true (fixed radius=6/blur=14) and MiDaS/YOLO's runInference*() always pass false - the yolo_* knobs here are a test-harness-only extension (2026-08-20) to explore whether the same edge-aware smoothing helps YOLO26's blockiness; on-device parity would require making DepthEstimator.java's postProcess() radius a parameter instead of the current true/false + fixed-6/14 scheme.",
+
+  "percentile_clip": {
+    "midas": 0.02,
+    "depth_anything": 0.02,
+    "yolo": 0.02
+  },
+  "hist_bins": 512,
+  "depth_anything_dilate_radius": 0,
+  "depth_anything_blur_radius": 0,
+  "yolo_dilate_radius": 2,
+  "yolo_blur_radius": 4,
+
+  "_models_comment": "Set enabled=false to skip a model without deleting its entry. Paths are relative to this settings.json's directory.",
+  "models": {
+    "midas": {
+      "enabled": true,
+      "path": "../../android/src/main/assets/midas-midas-v2-w8a8.tflite"
+    },
+    "midas_192": {
+      "enabled": true,
+      "path": "midas-v21-small-192-int8.tflite",
+      "_note": "Reconverted (2026-08-20) MiDaS_small at 192x192, full int8 (uint8 I/O boundary, calibrated on 29 real photos), same w8a8 style as the deployed 256px model above - fully convolutional EfficientNet-Lite backbone, no ViT patch-size constraint, so 192 needed no rounding. Verified clean (1,192,192,3)/(1,192,192,1) uint8 tensors with real (non-degenerate) per-model calibration-derived scale/zero_point, read automatically by run_models.py's infer_midas() rather than hardcoded."
+    },
+    "depth_anything_reference_fp32": {
+      "enabled": false,
+      "path": "../tflite_tmp/depth_anything_v2_float32.tflite",
+      "_note": "Disabled by default (2026-08-19) - this model LOADS and RUNS fine (unlike the deployed fp16 asset above), but produces spatially incoherent output regardless of which input axis-order interpretation is used for its ambiguous [1,252,3,252] declared shape (tried both a raw NHWC reshape and an explicit H,C,W transpose - neither matched the source image's actual structure, visually confirmed). This means the export itself is likely corrupted from conversion, not just a layout-labeling ambiguity solvable by picking the right transpose. Superseded by depth_anything_v2_reconverted below - kept disabled here only as a documented negative reference."
+    },
+    "depth_anything_v2_reconverted": {
+      "enabled": true,
+      "path": "depth_anything_v2_small_reconverted.tflite",
+      "_note": "Working re-conversion (2026-08-19), fixed via onnx2tf's -kt input flag (same root-cause fix as MiDaS-GPU's original layout bug). Clean NHWC (1,252,252,3) input verified directly, spatially coherent output confirmed visually on real photos (see da_v2_reconvert_verification/). Weight-only int8 (float32 activations/I-O), NOT full-activation int8 - a full-activation attempt was tried and crashes at runtime (LayerNorm's 1/sqrt(var+eps) degenerates to a zero-scale during quantization, confirmed reproducible, not a fallback of convenience). NOT yet wired into the real Android app/DepthEstimator.java - this is a standalone verified file for comparison purposes only so far."
+    },
+    "yolo26n_192_w8a32": {
+      "enabled": true,
+      "path": "yolo26n-depth-192-w8a32.tflite",
+      "_note": "Dynamic/weight-only int8 (w8a32: int8 weights, float32 activations, NO calibration data needed) via model.export(format=\"litert\", imgsz=192, quantize=\"w8a32\") on ultralytics 8.4.121 - compare against yolo26n_192 (static full int8, calibrated on only 4 images) at the same resolution. Verified same NCHW float32 I/O convention as the static-int8 exports (drop-in compatible, no code changes)."
+    },
+    "yolo26n_256_w8a32": {
+      "enabled": true,
+      "path": "yolo26n-depth-256-w8a32.tflite",
+      "_note": "Dynamic/weight-only int8 (w8a32) variant of yolo26n_256, exported the same way as yolo26n_192_w8a32 (see its note). Fixes a confirmed full output collapse (single constant value, num_unique=1) that the static-int8 256 export produces on Depth-Anything-V2's demo01.jpg test image - w8a32 produces normal spatially-varying output on that same image (std~13.8 vs 0.0)."
+    },
+    "yolo26n_320_w8a32": {
+      "enabled": true,
+      "path": "yolo26n-depth-320-w8a32.tflite",
+      "_note": "Dynamic/weight-only int8 (w8a32) variant of yolo26n_320, exported the same way as yolo26n_192_w8a32 (see its note). Fixes a confirmed full output collapse (single constant value, num_unique=1) that the static-int8 320 export produces on Depth-Anything-V2's demo01.jpg test image - w8a32 produces normal spatially-varying output on that same image (std~14.0 vs 0.0)."
+    },
+    "yolo26n_384_w8a32": {
+      "enabled": true,
+      "path": "yolo26n-depth-384-w8a32.tflite",
+      "_note": "Dynamic/weight-only int8 (w8a32) variant of yolo26n_384, exported the same way as yolo26n_192_w8a32 (see its note). Fixes a confirmed full output collapse (single constant value, num_unique=1) that the static-int8 384 export produces on Depth-Anything-V2's demo01.jpg test image - w8a32 produces normal spatially-varying output on that same image (std~14.3 vs 0.0)."
+    },
+    "yolo26n_768_w8a32": {
+      "enabled": true,
+      "path": "yolo26n-depth-768-w8a32.tflite",
+      "_note": "Dynamic/weight-only int8 (w8a32) variant of yolo26n_768, exported the same way as yolo26n_192_w8a32 (see its note). Fixes a confirmed full output collapse (single constant value, num_unique=1) that the static-int8 768 export produces on Depth-Anything-V2's demo01.jpg test image - w8a32 produces normal spatially-varying output on that same image (std~15.0 vs 0.0)."
+    },
+    "depth_anything_v2_native": {
+      "enabled": true,
+      "path": "depth_anything_v2_small_native.tflite",
+      "_note": "Re-exported at 518x518, Depth Anything V2's actual native/default input_size (confirmed directly from Depth-Anything-V2's own run.py --input-size default and dpt.py's infer_image()/image2tensor() default parameter - 518 = 14*37, already a clean ViT-S patch-size-14 multiple, no rounding needed). Same verified conversion pipeline as depth_anything_v2_reconverted (onnx2tf -kt input to preserve NHWC, weight-only int8 via dynamic-range TFLiteConverter, no representative_dataset - full-activation int8 is broken for this architecture, see that entry's note). For quality-ceiling comparison against the speed-driven 252px version, not deployment."
+    },
+    "depth_anything_v2_196": {
+      "enabled": true,
+      "path": "depth_anything_v2_small_196.tflite",
+      "_note": "Reconverted (2026-08-20) at 196x196 - closest clean ViT-S patch-size-14 multiple to the requested ~192 (192/14 is not integral; 196=14*14 was chosen over 182=14*13 as the rounder/closer option). Same proven pipeline as the 252px/518px entries: onnx2tf -kt input (flatbuffer_direct backend + -fdosm for the SavedModel export - the tf_converter backend hit a ConvTranspose weight-axis bug on this graph, same class of issue documented for the 252px export), weight-only/dynamic-range int8 (float32 I/O), no representative_dataset. Verified clean (1,196,196,3)/(1,196,196,1) float32 NHWC, spatially coherent on real photos (see da_v2_196_verification/)."
+    },
+    "yolo26s_256_w8a32": {
+      "enabled": true,
+      "path": "yolo26s-depth-256-w8a32.tflite",
+      "_note": "YOLO26-depth SMALL (not nano - bigger variant, 13.2M params vs nano's, hoping for a finer/less blocky depth head), dynamic/weight-only int8 (w8a32: int8 weights, float32 activations, NO calibration data needed) via model.export(format=\"litert\", imgsz=256, quantize=\"w8a32\") on ultralytics 8.4.121, same recipe proven for yolo26n_*_w8a32 above. Small's ORIGINAL static full-int8 export (calibrated on only 4 default images) had its own confirmed collapse/degenerate-output problem on low-texture desktop-UI content (nightfall_shot.png, nightfall_github_banner.png) that was never fully solved even at higher resolutions - w8a32 FIXES this: verified non-degenerate, spatially-varying output (tens of thousands of unique values, std not near zero) on both nightfall images plus Depth-Anything-V2's demo01.jpg (nano's known collapse case) at this resolution. Verified clean (1,3,256,256)/(1,1,256,256) float32 NCHW I/O, quantization=(0.0,0) at the boundary (int8 only internal to the graph)."
+    },
+    "yolo26s_384_w8a32": {
+      "enabled": true,
+      "path": "yolo26s-depth-384-w8a32.tflite",
+      "_note": "YOLO26-depth SMALL w8a32 variant of yolo26s_256_w8a32 (see its note) at 384x384 - exported the same way. Also fixes small's original static-int8 low-texture collapse: verified non-degenerate output on nightfall_shot.png, nightfall_github_banner.png, and demo01.jpg at this resolution (see yolo26s_w8a32_verification/ for colorized comparisons on room.jpg/dog.jpg - clean sharp object boundaries, no visible blocking/banding, comparable to nano's w8a32 character at the same resolution)."
+    },
+    "yolo26s_768_w8a32": {
+      "enabled": true,
+      "path": "yolo26s-depth-768-w8a32.tflite",
+      "_note": "YOLO26-depth SMALL w8a32 variant of yolo26s_256_w8a32 (see its note) at 768x768 - exported the same way. Also fixes small's original static-int8 low-texture collapse: verified non-degenerate output on nightfall_shot.png, nightfall_github_banner.png, and demo01.jpg at this resolution. At 768, visual character (see yolo26s_w8a32_verification/) shows clean, sharp object silhouette edges (fine detail on e.g. a dog's ear/fur outline, an ornament on a table) with no visible stair-stepping/blocking artifacts."
+    }
+  }
+}

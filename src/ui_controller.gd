@@ -80,15 +80,13 @@ func update_3d_btn_state():
 	if main._ui_3d_quality_btn:
 		main._ui_3d_quality_btn.disabled = sub_disabled
 		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
-	# Debug is hidden unconditionally (2026-08-18, matches
-	# settings_controller.gd's cycle_ai_3d_debug() early return) - not
-	# folded into sub_disabled above since that's meant to reflect "would
-	# be usable if AI-3D were on," and this one's just off regardless.
-	# Godot's Button.disabled blocks button_down from firing regardless of
-	# visibility, so this still stays fully non-interactive too.
+	# Re-enabled (2026-08-19) for on-device DMap inspection while comparing
+	# depth models - visible/interactive again, same disabled rule as
+	# quality above (meaningless with AI-3D off or SBS active).
 	if main._ui_3d_debug_btn:
-		main._ui_3d_debug_btn.disabled = true
-		main._ui_3d_debug_btn.visible = false
+		main._ui_3d_debug_btn.visible = true
+		main._ui_3d_debug_btn.disabled = sub_disabled
+		main._ui_3d_debug_btn.modulate.a = 0.3 if sub_disabled else 1.0
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
@@ -550,12 +548,7 @@ func build_ui():
 	disp_row1.add_child(main._ui_3d_btn)
 	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
 	disp_row1.add_child(main._ui_3d_quality_btn)
-	# Hidden until update_3d_btn_state() runs (which also happens to set
-	# this every time regardless) - set here too so there's no one-frame
-	# flash of a visible "3D Debug" button before that first fires.
 	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
-	main._ui_3d_debug_btn.disabled = true
-	main._ui_3d_debug_btn.visible = false
 	disp_row1.add_child(main._ui_3d_debug_btn)
 
 	var disp_gap1 = Control.new()
