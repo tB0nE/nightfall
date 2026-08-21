@@ -63,6 +63,26 @@ func resize_screen_to_aspect(stream_w: int, stream_h: int):
 		s.resize_to_aspect(content_w, content_h)
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
+	# GitHub issue #17 fix follow-up (found 2026-08-20): resize_to_aspect()
+	# above changes mesh_size (real content aspect, no longer a fixed 16:9
+	# "frame") but does NOT touch the composition-layer cylinder's own
+	# radius/central_angle (_comp_cyl_radius/_comp_cyl_central_angle,
+	# computed by update_cylinder_params() from mesh_size) - leaving them
+	# stale relative to the new mesh height. Those stale params drive BOTH
+	# the actual OpenXR cylinder layer's visual shape AND
+	# vr_screen.gd's hit_point_to_uv() click hit-testing (the comp.in_use
+	# branch re-projects the raycast onto a cylinder of THIS radius) -
+	# confirmed live: vertical click position was correct at screen center
+	# but increasingly wrong toward the top/bottom edges, exactly the
+	# "cylinder radius doesn't match the real geometry" signature. Every
+	# OTHER caller that resizes mesh_size already pairs it with an explicit
+	# update_cylinder_params() call (see settings_controller.gd's
+	# apply_screen_layout()) - stream_manager.gd's resize_stream_viewport()
+	# (the path actually active for local-capture-mode streaming) was the
+	# one missing it. Doing it here instead of at each call site means no
+	# future caller can miss this pairing again.
+	if main.comp.available:
+		main.comp.update_cylinder_params()
 
 func cycle_curvature():
 	main.curvature = (main.curvature + 1) % 3

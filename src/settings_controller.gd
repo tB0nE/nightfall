@@ -708,9 +708,9 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	for s in main.screens.duplicate():
 		if not wanted_ids.has(s.monitor_id):
 			main.remove_screen(s.monitor_id)
+	# resize_screen_to_aspect() now calls update_cylinder_params() itself
+	# (2026-08-20) - no need to pair it here anymore.
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
-	if main.comp.available:
-		main.comp.update_cylinder_params()
 	if main.comp.in_use and main.is_streaming:
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()

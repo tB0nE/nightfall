@@ -40,7 +40,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 			ip = h_host.get("localaddress", "")
 			break
 
-	local_capture_mode = _is_local_host(ip)
+	local_capture_mode = _is_local_host(ip) and OS.get_environment("NIGHTFALL_DISABLE_LOCAL_CAPTURE") == ""
+	if OS.get_environment("NIGHTFALL_DISABLE_LOCAL_CAPTURE") != "" and _is_local_host(ip):
+		main._log("[STREAM] NIGHTFALL_DISABLE_LOCAL_CAPTURE set - forcing normal network decode path despite localhost")
 	if local_capture_mode:
 		main._log("[STREAM] Localhost detected! Enabling local capture mode (%s)" % ("Wayland" if OS.get_environment("WAYLAND_DISPLAY") else "X11"))
 		_b().set_local_capture_mode(true)
@@ -77,10 +79,24 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
-		options["width"] = 320
-		options["height"] = 240
-		options["fps"] = 10
-		options["bitrate"] = 2000
+		# Negotiated at the REAL resolution now, not a 320x240 dummy
+		# (2026-08-21 fix attempt) - theory: Sunshine sizes its OWN capture
+		# surface (and therefore what it scales incoming absolute mouse
+		# events against, via LiSendMousePositionEvent's refWidth/refHeight)
+		# off the NEGOTIATED stream dimensions, not off Nightfall's separate
+		# local X11 capture. A 320x240 negotiation would mean Sunshine's own
+		# internal mouse-scaling reference is 320x240 regardless of what
+		# ref we send - explaining a scale-correct-at-center-wrong-at-edges
+		# mismatch even though every client-side coordinate (uv, host_pt,
+		# ref itself) has been independently verified correct this session.
+		# Local capture never actually DISPLAYS this negotiated stream
+		# (real pixels come from x11_capture.cpp's zero-copy grab instead),
+		# so full resolution costs nothing but negotiation/decode overhead -
+		# fps/bitrate stay minimal since the decoded frames are discarded.
+		options["width"] = w
+		options["height"] = h
+		options["fps"] = 5
+		options["bitrate"] = 500
 	else:
 		options["width"] = w
 		options["height"] = h
@@ -186,10 +202,12 @@ func _on_v2_launch_response(response: Dictionary):
 
 	var stream_config = {}
 	if local_capture_mode:
-		stream_config["width"] = 320
-		stream_config["height"] = 240
-		stream_config["fps"] = 10
-		stream_config["bitrate"] = 2000
+		# Real resolution, not a 320x240 dummy - see the matching comment in
+		# start_stream()'s options block for the full reasoning.
+		stream_config["width"] = w
+		stream_config["height"] = h
+		stream_config["fps"] = 5
+		stream_config["bitrate"] = 500
 	else:
 		stream_config["width"] = w
 		stream_config["height"] = h
@@ -490,11 +508,31 @@ func update_stats():
 	var new_frame = _b().consume_new_frame()
 	var vw = _b().get_video_width()
 	var vh = _b().get_video_height()
-	if vw == 0 or vh == 0:
-		return
-	var cur_size = main.stream_viewport.size
-	if cur_size.x != vw or cur_size.y != vh:
-		resize_stream_viewport(vw, vh)
+	# Local-capture mode (2026-08-21 fix) - the negotiated RTSP video stream
+	# in this mode is a throwaway 320x240 dummy (see start_stream()'s
+	# options block below); get_video_width()/height() read the DECODER's
+	# dims, which reflect that dummy stream, not the real X11-captured
+	# monitor. Relying on vw/vh here (as the normal network path correctly
+	# does) meant layout.frame_size/host_ref() never matched what was
+	# actually captured/shown, sending clicks scaled against the wrong
+	# frame size (confirmed live: [CAPTURE-GT] showed layout.frame_size
+	# stuck at host_resolution/native_resolution defaults while the real
+	# X11 capture was a different resolution entirely). Poll the real
+	# capture region instead and reconcile against THAT.
+	if local_capture_mode:
+		var region = _b().get_local_capture_region()
+		var rw = int(region.get("width", 0))
+		var rh = int(region.get("height", 0))
+		if rw > 0 and rh > 0:
+			var cur_local = main.stream_viewport.size
+			if cur_local.x != rw or cur_local.y != rh:
+				resize_stream_viewport(rw, rh)
+	else:
+		if vw == 0 or vh == 0:
+			return
+		var cur_size = main.stream_viewport.size
+		if cur_size.x != vw or cur_size.y != vh:
+			resize_stream_viewport(vw, vh)
 	var hw = "HW" if _b().is_hw_decode() else "SW"
 	var ip = main.get_node("%IPInput").text
 	var ip_display = ip if not ip.is_empty() else "?"

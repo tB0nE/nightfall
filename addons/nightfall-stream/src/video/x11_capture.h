@@ -34,6 +34,13 @@ public:
 
     uint32_t get_width() const { return width_; }
     uint32_t get_height() const { return height_; }
+#ifdef NIGHTFALL_HAS_X11
+    int get_x_offset() const { return x_offset_; }
+    int get_y_offset() const { return y_offset_; }
+#else
+    int get_x_offset() const { return 0; }
+    int get_y_offset() const { return 0; }
+#endif
 
 private:
     void capture_loop();
