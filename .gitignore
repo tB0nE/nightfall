@@ -82,6 +82,8 @@ Nightfall-*.AppImage
 Nightfall-Linux-x86_64
 Nightfall-Linux.pck
 Nightfall.AppDir/
+/depth_models/
+/.linux-build-cache/
 /tmp/nf_deps/
 /docs/
 /log.txt

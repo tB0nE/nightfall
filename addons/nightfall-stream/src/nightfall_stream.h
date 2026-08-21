@@ -59,6 +59,7 @@ public:
 
     void set_local_capture_mode(bool enabled);
     bool get_local_capture_mode() const;
+    Dictionary get_local_capture_region() const;
     void set_restore_token(const String &token);
     String get_restore_token() const;
 

@@ -1184,18 +1184,24 @@ func _init_modules():
 	add_child(controller_mapper)
 
 func _init_android_setup():
-	if OS.get_name() == "Android":
-		# Must run BEFORE _init_backgrounds_and_comp_layer() creates
-		# comp_viewport_left/right - depth_estimator's upsample/offset
-		# SubViewports (stereo_mode 5) produce the warp data those actually-
-		# displayed per-eye viewports consume every frame (via
-		# yuv_display.gdshader), and Godot updates SubViewports in scene-tree
-		# order, so the producer must be added to the tree first. (The
-		# upsample pass used to also depend on comp_viewport - the OPPOSITE
-		# direction - which was the real source of a stutter/double-image
-		# bug; that dependency was removed by having it decode YUV directly
-		# instead, see depth_upsample.gdshader.)
+	# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
+	# (see depth_bridge.cpp's NIGHTFALL_PLATFORM_LINUX branch/MidasDepthEngine,
+	# and settings_controller.gd's _ai_3d_supported()) - depth_estimator.setup()
+	# needs to run there too now, split out from the rest of this genuinely
+	# Android-only setup (controller models, hand fade materials, mouse
+	# capture - none of which apply to a desktop Linux client). Must run
+	# BEFORE _init_backgrounds_and_comp_layer() creates comp_viewport_left/
+	# right - depth_estimator's upsample/offset SubViewports (stereo_mode 5)
+	# produce the warp data those actually-displayed per-eye viewports
+	# consume every frame (via yuv_display.gdshader), and Godot updates
+	# SubViewports in scene-tree order, so the producer must be added to the
+	# tree first. (The upsample pass used to also depend on comp_viewport -
+	# the OPPOSITE direction - which was the real source of a stutter/
+	# double-image bug; that dependency was removed by having it decode YUV
+	# directly instead, see depth_upsample.gdshader.)
+	if OS.get_name() == "Android" or OS.get_name() == "Linux":
 		depth_estimator.setup()
+	if OS.get_name() == "Android":
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
 		_prepare_fade_materials("right")

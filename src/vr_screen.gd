@@ -475,8 +475,23 @@ func hit_point_to_uv(hit_point: Vector3) -> Vector2:
 			var t = t1 if t1 > 0.001 else t2
 			if t > 0.0:
 				var hit_world = cam_pos + ray_dir * t
-				var hit_local = to_local(hit_world)
-				uv_y = clampf((ms.y * 0.5 - hit_local.y) / ms.y, 0.0, 1.0)
+				# uv_y is deliberately NOT reprojected here (unlike uv_x) -
+				# curvature only bends the screen horizontally, so the
+				# mesh's vertical extent is exactly mesh_size.y regardless
+				# of cylinder radius. Re-deriving Y from the ray-cylinder
+				# intersection walks the ray out to a DIFFERENT point along
+				# its direction using _comp_cyl_radius (maintained on its
+				# own update schedule via update_cylinder_params(), not
+				# necessarily in sync with the radius the collision mesh
+				# was actually built with in apply_curvature()) - any drift
+				# between those two radii pushed the reprojected Y away
+				# from the raw raycast hit, growing worse toward the edges
+				# (confirmed live, 2026-08-21: the in-VR pointer reticle,
+				# anchored to the raw hit_point/local_pos.y computed at the
+				# top of this function, renders in the visually correct
+				# spot; only the value SENT to the host was wrong). The uv_y
+				# computed at the top of this function from the real,
+				# visually-correct raycast hit is used as-is.
 				var hit_cyl = hit_world - _comp_cyl_center
 				var hit_right = hit_cyl.dot(screen_right)
 				var hit_fwd = hit_cyl.dot(screen_forward)

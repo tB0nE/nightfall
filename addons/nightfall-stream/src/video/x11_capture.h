@@ -34,17 +34,36 @@ public:
 
     uint32_t get_width() const { return width_; }
     uint32_t get_height() const { return height_; }
+#ifdef NIGHTFALL_HAS_X11
+    int get_x_offset() const { return x_offset_; }
+    int get_y_offset() const { return y_offset_; }
+#else
+    int get_x_offset() const { return 0; }
+    int get_y_offset() const { return 0; }
+#endif
 
 private:
     void capture_loop();
 
 #ifdef NIGHTFALL_HAS_X11
+    // Local-capture mode's monitor selection (2026-08-20) - see .cpp for the
+    // full reasoning. Determines (out_x, out_y, out_w, out_h) as an offset +
+    // size into the X11 root window, used both to size the SHM XImage in
+    // start() and as XShmGetImage()'s capture origin in capture_loop() (that
+    // call already supports an arbitrary sub-rectangle of the root window -
+    // this was previously always (0,0)+full-root-size, unconditionally
+    // capturing every connected monitor unioned together).
+    void select_capture_region(::Display *display, int screen, ::Window root,
+                                int &out_x, int &out_y, int &out_w, int &out_h);
+
     ::Display *display_ = nullptr;
     XShmSegmentInfo shm_info_;
     XImage *image_ = nullptr;
     int screen_ = 0;
     int damage_event_base_ = 0;
     int damage_error_base_ = 0;
+    int x_offset_ = 0;
+    int y_offset_ = 0;
 #endif
 
     std::thread worker_thread_;

@@ -285,6 +285,28 @@ bool NightfallStream::get_local_capture_mode() const {
     return local_capture_mode_;
 }
 
+// Ground-truth diagnostic (2026-08-21, Linux vertical-click investigation) -
+// surfaces the ACTUAL region x11_capture_ grabbed (offset + size within the
+// X11 root window), so GDScript can compare it against what it assumes
+// (resolutions[idx]/layout.frame_size) instead of trusting those blindly.
+// {} (empty dict, all zero) when local capture isn't active - callers should
+// treat that as "no region info available", not "0x0 capture region".
+Dictionary NightfallStream::get_local_capture_region() const {
+    Dictionary d;
+    if (!x11_capture_) {
+        d["width"] = 0;
+        d["height"] = 0;
+        d["x"] = 0;
+        d["y"] = 0;
+        return d;
+    }
+    d["width"] = (int)x11_capture_->get_width();
+    d["height"] = (int)x11_capture_->get_height();
+    d["x"] = x11_capture_->get_x_offset();
+    d["y"] = x11_capture_->get_y_offset();
+    return d;
+}
+
 Ref<FfmpegDecoder> NightfallStream::get_decoder() const {
     if (stream_connection_) return stream_connection_->get_decoder();
     return nullptr;
@@ -345,8 +367,16 @@ bool NightfallStream::is_display_ready() const {
 // GodotApp.getCodecCapabilitiesInfo()), rather than inferring them from trial
 // and error. Not on any hot path - call once from GDScript and read the result
 // from logcat/the returned string.
+// Pre-existing Linux-build bug (found 2026-08-20 while adding native AI-3D
+// depth on Linux, unrelated to that work) - JavaVM/jclass were declared here
+// unconditionally, with only the FUNCTION BODY below guarded by
+// #ifdef __ANDROID__. On Android something else transitively pulls in
+// <jni.h> before this point so it happened to compile; on Linux nothing ever
+// defines those types at all, failing the whole target's build outright.
+#ifdef __ANDROID__
 extern JavaVM *nightfall_get_jvm();
 extern jclass nightfall_get_godot_app_class();
+#endif
 
 String NightfallStream::get_codec_capabilities_info() const {
 #ifdef __ANDROID__
@@ -579,6 +609,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_reconnect_delay_ms"), &NightfallStream::get_reconnect_delay_ms);
     ClassDB::bind_method(D_METHOD("set_local_capture_mode", "enabled"), &NightfallStream::set_local_capture_mode);
     ClassDB::bind_method(D_METHOD("get_local_capture_mode"), &NightfallStream::get_local_capture_mode);
+    ClassDB::bind_method(D_METHOD("get_local_capture_region"), &NightfallStream::get_local_capture_region);
     ClassDB::bind_method(D_METHOD("set_restore_token", "token"), &NightfallStream::set_restore_token);
     ClassDB::bind_method(D_METHOD("get_restore_token"), &NightfallStream::get_restore_token);
 

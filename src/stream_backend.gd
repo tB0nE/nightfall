@@ -74,6 +74,11 @@ func set_local_capture_mode(enabled: bool):
 	if _v2 and _v2.has_method("set_local_capture_mode"):
 		_v2.set_local_capture_mode(enabled)
 
+func get_local_capture_region() -> Dictionary:
+	if _v2 and _v2.has_method("get_local_capture_region"):
+		return _v2.get_local_capture_region()
+	return {}
+
 func stop_play_stream():
 	if _v2:
 		_v2.stop_stream()

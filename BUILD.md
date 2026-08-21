@@ -68,7 +68,7 @@ ninja -C build/android
 bash docker-build-linux.sh
 ```
 
-`docker-build-linux.sh` builds in an Ubuntu 22.04 container (glibc 2.35) using the `Dockerfile.linux-build` image. It copies the source read-only into the container, builds, and copies the .so back to the host. The Docker image is cached after the first ~5min build.
+`docker-build-linux.sh` builds in an Ubuntu 22.04 container (glibc 2.35) using the `Dockerfile.linux-build` image. It copies the source read-only into the container, builds, and copies the .so back to the host. The Docker image is cached after the first build, but expect the FIRST build to take noticeably longer than before (~15-20min, not ~5min) - see the TFLite note below.
 
 To build on host without Docker (only if your host glibc ≤ 2.35, or you only target very new distros):
 
@@ -82,7 +82,7 @@ cmake --preset linux -DCMAKE_BUILD_TYPE=Release
 ninja -C build/linux-release
 ```
 
-Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so` (~29MB stripped). AI 3D / depth estimation is stubbed on Linux.
+Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux (2026-08-20) - MiDaS-192/256 only for now (no vendor NNAPI HAL on Quest either, so CPU-only isn't a capability downgrade vs Android; YOLO26/DA V2 aren't ported yet). No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.16.1`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The two MiDaS `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `android/src/main/assets/`.
 
 ### Patched Godot Engine (Quest only)
 
