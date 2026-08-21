@@ -82,7 +82,7 @@ cmake --preset linux -DCMAKE_BUILD_TYPE=Release
 ninja -C build/linux-release
 ```
 
-Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux (2026-08-20) - MiDaS-192/256 only for now (no vendor NNAPI HAL on Quest either, so CPU-only isn't a capability downgrade vs Android; YOLO26/DA V2 aren't ported yet). No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.16.1`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The two MiDaS `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `android/src/main/assets/`.
+Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `android/src/main/assets/`.
 
 ### Patched Godot Engine (Quest only)
 

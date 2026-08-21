@@ -68,7 +68,7 @@ endif()
 # hours to build from source - the wrong tool here), so vendor TFLite's own
 # official standalone CMake build directly (tensorflow/lite has first-class
 # CMake support independent of Bazel/full TF - see
-# tensorflow.org/lite/guide/build_cmake) via FetchContent. Pinned to v2.16.1 to
+# tensorflow.org/lite/guide/build_cmake) via FetchContent. Pinned to v2.17.0 to
 # match the Android build's own org.tensorflow:tensorflow-lite Gradle dependency
 # (see build.sh) for op-version/behavior parity between platforms. Linux only
 # (not steamos) - matches this feature's initial scope.
@@ -77,12 +77,24 @@ if(TARGET_PLATFORM STREQUAL "linux")
     FetchContent_Declare(
         tensorflow
         GIT_REPOSITORY https://github.com/tensorflow/tensorflow.git
-        GIT_TAG v2.16.1
+        GIT_TAG v2.17.0
         GIT_SHALLOW TRUE
     )
+    # TFLite 2.17's standalone CMake target expects XNNPACK's transitive
+    # FetchContent sources to be pre-populated, but its own entry point does
+    # not do that when embedded this way. Keep the portable builtin CPU
+    # kernels for now; Android keeps its platform XNNPACK delegate.
+    set(TFLITE_ENABLE_XNNPACK OFF CACHE BOOL "" FORCE)
     FetchContent_GetProperties(tensorflow)
     if(NOT tensorflow_POPULATED)
         FetchContent_Populate(tensorflow)
+        # A previously interrupted TFLite configure can cache a nonexistent
+        # pthreadpool source directory. Let TFLite's bundled downloader restore
+        # its pinned dependency on each fresh configure instead.
+        unset(PTHREADPOOL_SOURCE_DIR)
+        unset(PTHREADPOOL_SOURCE_DIR CACHE)
+        unset(FXDIV_SOURCE_DIR)
+        unset(FXDIV_SOURCE_DIR CACHE)
         # TFLite's own CMakeLists.txt is a standalone entry point (not the full
         # TF build) - produces a "tensorflow-lite" target with public headers,
         # FetchContent-pulling its own small deps (flatbuffers, ruy, xnnpack,

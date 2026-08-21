@@ -40,9 +40,15 @@ MidasDepthEngine::~MidasDepthEngine() {
     }
 }
 
-bool MidasDepthEngine::load_model(MidasModel &model, const std::string &path, const char *name, int size) {
+bool MidasDepthEngine::load_model(DepthModel &model, const std::string &path, const char *name, int size,
+                                  int index, InputLayout input_layout, bool invert_output,
+                                  float percentile_clip) {
     model.name = name;
     model.size = size;
+    model.index = index;
+    model.input_layout = input_layout;
+    model.invert_output = invert_output;
+    model.percentile_clip = percentile_clip;
     model.flat_model = tflite::FlatBufferModel::BuildFromFile(path.c_str());
     if (!model.flat_model) {
         NF_LOGE(TAG, "Failed to load model file: %s", path.c_str());
@@ -69,6 +75,17 @@ bool MidasDepthEngine::load_model(MidasModel &model, const std::string &path, co
     // calibrated.
     const TfLiteTensor *input_tensor = model.interpreter->input_tensor(0);
     const TfLiteTensor *output_tensor = model.interpreter->output_tensor(0);
+    const TfLiteType expected_input_type = input_layout == InputLayout::QuantizedNhWC ? kTfLiteUInt8 : kTfLiteFloat32;
+    if (input_tensor->type != expected_input_type ||
+        (output_tensor->type != kTfLiteUInt8 && output_tensor->type != kTfLiteFloat32) ||
+        input_tensor->bytes != size * size * 3 * (expected_input_type == kTfLiteUInt8 ? 1 : 4) ||
+        output_tensor->bytes != size * size * (output_tensor->type == kTfLiteUInt8 ? 1 : 4)) {
+        NF_LOGE(TAG, "Unexpected tensors for %s (input type=%d bytes=%zu, output type=%d bytes=%zu)",
+                name, input_tensor->type, input_tensor->bytes, output_tensor->type, output_tensor->bytes);
+        model.interpreter.reset();
+        model.flat_model.reset();
+        return false;
+    }
     model.input_scale = input_tensor->params.scale;
     model.input_zero_point = input_tensor->params.zero_point;
     model.output_scale = output_tensor->params.scale;
@@ -84,11 +101,16 @@ bool MidasDepthEngine::load_model(MidasModel &model, const std::string &path, co
 void MidasDepthEngine::initialize(const std::string &model_dir) {
     if (initialized_) return;
 
-    bool ok_256 = load_model(model_256_, model_dir + "/midas-midas-v2-w8a8.tflite", "MiDaS-256", 256);
-    bool ok_192 = load_model(model_192_, model_dir + "/midas-v21-small-192-int8.tflite", "MiDaS-192", 192);
+    bool ok_256 = load_model(model_256_, model_dir + "/midas-midas-v2-w8a8.tflite", "MiDaS-256", 256, 3, InputLayout::QuantizedNhWC);
+    bool ok_192 = load_model(model_192_, model_dir + "/midas-v21-small-192-int8.tflite", "MiDaS-192", 192, 10, InputLayout::QuantizedNhWC);
+    bool ok_yolo_256 = load_model(model_yolo_256_, model_dir + "/yolo26n-depth-256-w8a32.tflite", "YOLO26-N-256", 256, 7, InputLayout::FloatNchW, true, 0.10f);
+    bool ok_yolo_320 = load_model(model_yolo_320_, model_dir + "/yolo26n-depth-320-w8a32.tflite", "YOLO26-N-320", 320, 8, InputLayout::FloatNchW, true, 0.10f);
+    bool ok_yolo_384 = load_model(model_yolo_384_, model_dir + "/yolo26n-depth-384-w8a32.tflite", "YOLO26-N-384", 384, 4, InputLayout::FloatNchW, true, 0.10f);
+    bool ok_da_196 = load_model(model_da_196_, model_dir + "/depth-anything-v2-small-196.tflite", "Depth Anything V2-196", 196, 11, InputLayout::FloatNhWC);
+    bool ok_da_252 = load_model(model_da_252_, model_dir + "/depth-anything-v2-small-252.tflite", "Depth Anything V2-252", 252, 1, InputLayout::FloatNhWC);
 
     if (!ok_256 && !ok_192) {
-        NF_LOGE(TAG, "No MiDaS models could be loaded from %s - AI-3D depth unavailable", model_dir.c_str());
+        NF_LOGE(TAG, "No depth models could be loaded from %s - AI-3D depth unavailable", model_dir.c_str());
         return;
     }
 
@@ -96,23 +118,34 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
     active_model_index_ = ok_256 ? 3 : 10;
     initialized_ = true;
     worker_ = std::thread(&MidasDepthEngine::worker_loop, this);
-    NF_LOG(TAG, "Initialized (MiDaS-256=%s, MiDaS-192=%s)", ok_256 ? "true" : "false", ok_192 ? "true" : "false");
+    NF_LOG(TAG, "Initialized (MiDaS-256=%s, MiDaS-192=%s, YOLO-256=%s, YOLO-320=%s, YOLO-384=%s, DA-196=%s, DA-252=%s)",
+           ok_256 ? "true" : "false", ok_192 ? "true" : "false", ok_yolo_256 ? "true" : "false",
+           ok_yolo_320 ? "true" : "false", ok_yolo_384 ? "true" : "false", ok_da_196 ? "true" : "false",
+           ok_da_252 ? "true" : "false");
+}
+
+MidasDepthEngine::DepthModel *MidasDepthEngine::model_for_index(int model_index) {
+    DepthModel *candidate = nullptr;
+    switch (model_index) {
+        case 1: candidate = &model_da_252_; break;
+        case 4: candidate = &model_yolo_384_; break;
+        case 7: candidate = &model_yolo_256_; break;
+        case 8: candidate = &model_yolo_320_; break;
+        case 10: candidate = &model_192_; break;
+        case 11: candidate = &model_da_196_; break;
+        default: candidate = &model_256_; break;
+    }
+    if (candidate->loaded) return candidate;
+    if (model_256_.loaded) return &model_256_;
+    if (model_192_.loaded) return &model_192_;
+    return nullptr;
 }
 
 void MidasDepthEngine::set_active_model(int model_index) {
     if (!initialized_) return;
 
-    MidasModel *target = &model_256_;
-    if (model_index == 10 && model_192_.loaded) {
-        target = &model_192_;
-    } else if (model_192_.loaded == false && model_256_.loaded == false) {
-        return;
-    } else if (!model_256_.loaded) {
-        // Only MiDaS-192 loaded successfully - fall back to it regardless
-        // of what was requested, same "always land on something loaded"
-        // intent as DepthEstimator.java's own fallback chain.
-        target = &model_192_;
-    }
+    DepthModel *target = model_for_index(model_index);
+    if (!target) return;
 
     if (active_model_ == target) return;
 
@@ -130,12 +163,12 @@ void MidasDepthEngine::set_active_model(int model_index) {
         last_post_process_time_ns_ = 0;
     }
     active_model_ = target;
-    active_model_index_ = (target == &model_192_) ? 10 : 3;
+    active_model_index_ = target->index;
     NF_LOG(TAG, "Switched to model %s", target->name.c_str());
 }
 
 int MidasDepthEngine::get_model_size() const {
-    MidasModel *model = active_model_.load();
+    DepthModel *model = active_model_.load();
     if (!initialized_ || !model) return 256;
     return model->size;
 }
@@ -192,58 +225,80 @@ void MidasDepthEngine::worker_loop() {
         }
 
         is_inferencing_.store(true);
-        MidasModel *model = active_model_;
+        DepthModel *model = active_model_;
         if (model && model->loaded) {
             std::vector<float> raw = run_inference(*model, rgba.data(), width, height);
-            std::vector<uint8_t> depth = post_process(raw, model->size);
-            std::lock_guard<std::mutex> lock(result_mutex_);
-            latest_result_ = std::move(depth);
-            has_result_ = true;
+            if (!raw.empty()) {
+                std::vector<uint8_t> depth = post_process(raw, model->size, model->percentile_clip);
+                std::lock_guard<std::mutex> lock(result_mutex_);
+                latest_result_ = std::move(depth);
+                has_result_ = true;
+            }
         }
         is_inferencing_.store(false);
     }
 }
 
-std::vector<float> MidasDepthEngine::run_inference(MidasModel &model, const uint8_t *rgba, int width, int height) {
+std::vector<float> MidasDepthEngine::run_inference(DepthModel &model, const uint8_t *rgba, int width, int height) {
     const int size = model.size;
-    uint8_t *input_data = model.interpreter->typed_input_tensor<uint8_t>(0);
 
     const int src_row_bytes = width * 4;
     const float scale_x = static_cast<float>(width) / size;
     const float scale_y = static_cast<float>(height) / size;
-    const float in_scale = model.input_scale;
-    const int in_zero_point = model.input_zero_point;
+    uint8_t *quantized_input = nullptr;
+    float *float_input = nullptr;
+    if (model.input_layout == InputLayout::QuantizedNhWC) {
+        quantized_input = model.interpreter->typed_input_tensor<uint8_t>(0);
+    } else {
+        float_input = model.interpreter->typed_input_tensor<float>(0);
+    }
 
-    int idx = 0;
+    const int plane_elems = size * size;
     for (int y = 0; y < size; y++) {
         int src_y = std::min(static_cast<int>(y * scale_y), height - 1);
         int src_row_off = src_y * src_row_bytes;
         for (int x = 0; x < size; x++) {
             int src_x = std::min(static_cast<int>(x * scale_x), width - 1);
             int src_idx = src_row_off + src_x * 4;
+            const int pixel_index = y * size + x;
             for (int c = 0; c < 3; c++) {
                 float real = rgba[src_idx + c] / 255.0f;
-                int q = static_cast<int>(std::lround(real / in_scale)) + in_zero_point;
-                q = std::max(0, std::min(255, q));
-                input_data[idx++] = static_cast<uint8_t>(q);
+                if (quantized_input) {
+                    int q = static_cast<int>(std::lround(real / model.input_scale)) + model.input_zero_point;
+                    quantized_input[pixel_index * 3 + c] = static_cast<uint8_t>(std::max(0, std::min(255, q)));
+                } else if (model.input_layout == InputLayout::FloatNchW) {
+                    float_input[c * plane_elems + pixel_index] = real;
+                } else {
+                    float_input[pixel_index * 3 + c] = real;
+                }
             }
         }
     }
 
-    model.interpreter->Invoke();
+    if (model.interpreter->Invoke() != kTfLiteOk) {
+        NF_LOGE(TAG, "Inference failed for %s", model.name.c_str());
+        return {};
+    }
 
-    const uint8_t *output_data = model.interpreter->typed_output_tensor<uint8_t>(0);
-    const int count = size * size;
-    const float out_scale = model.output_scale;
-    const int out_zero_point = model.output_zero_point;
+    const TfLiteTensor *output_tensor = model.interpreter->output_tensor(0);
+    const int count = plane_elems;
     std::vector<float> raw(count);
-    for (int i = 0; i < count; i++) {
-        raw[i] = (static_cast<int>(output_data[i]) - out_zero_point) * out_scale;
+    if (output_tensor->type == kTfLiteUInt8) {
+        const uint8_t *output_data = model.interpreter->typed_output_tensor<uint8_t>(0);
+        for (int i = 0; i < count; i++) {
+            raw[i] = (static_cast<int>(output_data[i]) - model.output_zero_point) * model.output_scale;
+        }
+    } else {
+        const float *output_data = model.interpreter->typed_output_tensor<float>(0);
+        std::copy(output_data, output_data + count, raw.begin());
+    }
+    if (model.invert_output) {
+        for (float &value : raw) value = -value;
     }
     return raw;
 }
 
-void MidasDepthEngine::robust_range(const std::vector<float> &v, float *lo_out, float *hi_out) const {
+void MidasDepthEngine::robust_range(const std::vector<float> &v, float percentile_clip, float *lo_out, float *hi_out) const {
     const int count = static_cast<int>(v.size());
     float lo = v[0], hi = v[0];
     for (int i = 1; i < count; i++) {
@@ -264,8 +319,8 @@ void MidasDepthEngine::robust_range(const std::vector<float> &v, float *lo_out, 
         hist[b]++;
     }
 
-    int lo_target = static_cast<int>(count * DEFAULT_PERCENTILE_CLIP);
-    int hi_target = static_cast<int>(count * (1.0f - DEFAULT_PERCENTILE_CLIP));
+    int lo_target = static_cast<int>(count * percentile_clip);
+    int hi_target = static_cast<int>(count * (1.0f - percentile_clip));
     int acc = 0;
     int lo_bin = 0, hi_bin = HIST_BINS - 1;
     for (int b = 0; b < HIST_BINS; b++) {
@@ -294,7 +349,7 @@ void MidasDepthEngine::robust_range(const std::vector<float> &v, float *lo_out, 
     *hi_out = robust_hi;
 }
 
-std::vector<uint8_t> MidasDepthEngine::post_process(const std::vector<float> &raw, int size) {
+std::vector<uint8_t> MidasDepthEngine::post_process(const std::vector<float> &raw, int size, float percentile_clip) {
     std::lock_guard<std::mutex> lock(postprocess_mutex_);
     const int count = size * size;
 
@@ -305,7 +360,7 @@ std::vector<uint8_t> MidasDepthEngine::post_process(const std::vector<float> &ra
     last_post_process_time_ns_ = now;
 
     float lo, hi;
-    robust_range(raw, &lo, &hi);
+    robust_range(raw, percentile_clip, &lo, &hi);
     if (!range_valid_) {
         smooth_lo_ = lo;
         smooth_hi_ = hi;

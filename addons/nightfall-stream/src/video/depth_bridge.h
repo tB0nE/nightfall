@@ -27,7 +27,7 @@ protected:
 
 private:
 #ifdef NIGHTFALL_PLATFORM_LINUX
-    // Native (JNI-free) MiDaS-only depth engine - see midas_depth_engine.h.
+    // Native (JNI-free) depth engine - see midas_depth_engine.h.
     // Lazily constructed/initialized on first use (submit_depth_frame() or
     // set_depth_model()) rather than in the constructor, so a DepthBridge
     // that's never actually used for AI-3D never pays the model-load cost.

@@ -84,6 +84,11 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   mkdir -p "$SCRIPT_DIR/depth_models"
   cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-256-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-320-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
 
   rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 
