@@ -688,7 +688,7 @@ func _update_cursor_layer():
 	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
-	var use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
 		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
@@ -696,12 +696,12 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
 			if comp_cursor:
 				comp_cursor.visible = false
 			_hide_all_stream_cursors()
-		elif use_in_stream and on_screen:
+		elif use_embedded_cursor and on_screen:
 			# Only hovered_screen gets shown below - explicitly hide every other
 			# screen's cursor the instant the hover target changes, rather than
 			# leaving whichever screen was PREVIOUSLY hovered showing its last
@@ -727,6 +727,10 @@ func _update_cursor_layer():
 			var cy = bezel_px + uv.y * base_h
 			if comp_cursor:
 				comp_cursor.visible = false
+			if pointer_cursor:
+				pointer_cursor.visible = false
+			if contact_dot:
+				contact_dot.visible = false
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
@@ -802,10 +806,11 @@ func _update_cursor_layer():
 		if comp_cursor:
 			comp_cursor.visible = false
 		_hide_all_stream_cursors()
-	if pointer_cursor and comp_cursor:
-		pointer_cursor.visible = false
-	if contact_dot:
-		contact_dot.visible = false
+	if comp_cursor:
+		if pointer_cursor:
+			pointer_cursor.visible = false
+		if contact_dot:
+			contact_dot.visible = false
 	if comp_ui and comp_ui.visible:
 		comp_ui.global_position = ui_panel_3d.global_position
 		comp_ui.global_rotation = ui_panel_3d.global_rotation
@@ -1220,7 +1225,7 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 7)
+	ai_3d_model = clampi(ai_3d_model, 0, 8)
 	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
@@ -1643,6 +1648,9 @@ func _init_xr(interface):
 	_xr_render_width = int(render_size.x)
 	_log("[XR] OpenXR render target: %dx%d" % [render_size.x, render_size.y])
 	_log("[XR] Blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
+	if OS.get_name() == "Android" and RenderingServer.get_current_rendering_method() == "gl_compatibility" and interface.has_method("set_submit_projection_layer"):
+		interface.set_submit_projection_layer(false)
+		_log("[XR] Projectionless mode enabled; submitting composition layers only")
 
 	var blend_modes = interface.get_supported_environment_blend_modes()
 	passthrough_supported = false

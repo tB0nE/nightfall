@@ -23,14 +23,10 @@ var submit_timer: float = 0.0
 # MORE CPU work per call via dilate+blur. That's the next thing to fix, not
 # this value.
 var submit_interval: float = 0.05
-# MiDaS-GPU only - see its use in process() for why this needs to be its own,
-# much slower cadence than submit_interval above. ~5Hz - a starting point
-# matching the rough order of magnitude of Gilleece/moonlight-android-xr's own
-# "every 3rd frame" cadence at 90Hz (~30Hz, but their raw inference is ~3.5x
-# faster than ours at ~13.5ms vs our ~47-51ms end-to-end, so a slower cadence
-# here is the equivalent tradeoff for a slower model) - tune based on
-# on-device FPS/GPU-utilization testing, not derived precisely.
-const GPU_MODEL_SUBMIT_INTERVAL := 0.2
+# The Java GPU worker owns the 20 Hz inference clock. Match it here rather than
+# paying for synchronous GPU readbacks which the latest-frame mailbox discards.
+const GPU_FRAME_PUBLISH_INTERVAL := 0.05
+const GPU_BOOST_REFRESH_INTERVAL := 15.0
 # Native output resolution of whichever model is currently active in
 # DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
 # (see YOLO_INPUT_SIZE there). No longer a fixed constant: sync_model_size()
@@ -42,6 +38,13 @@ const GPU_MODEL_SUBMIT_INTERVAL := 0.2
 # model, not just MiDaS.
 var model_size: int = 256
 var _poll_timer: float = 0.0
+var _perf_window: float = 0.0
+var _perf_capture_usec: int = 0
+var _perf_submit_usec: int = 0
+var _perf_submitted: int = 0
+var _perf_updates: int = 0
+var _gpu_boost_active: bool = false
+var _gpu_boost_refresh_timer: float = 0.0
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -318,6 +321,8 @@ func bind_stream_texture():
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
+	if not val or main.ai_3d_model != 6:
+		_set_gpu_performance_hint(false)
 	if depth_viewport:
 		# Tried throttling this to UPDATE_ONCE at submit_interval's 20Hz
 		# instead of UPDATE_ALWAYS (2026-08-18) on the theory that
@@ -343,12 +348,25 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		1: _pass_divisor = EX_PASS_DIVISOR
 		2: _pass_divisor = FASTEST_PASS_DIVISOR
 		_: _pass_divisor = PASS_DIVISOR
+
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)
 	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
 	if upsample_viewport:
 		upsample_viewport.render_target_update_mode = mode
 	if offset_viewport:
 		offset_viewport.render_target_update_mode = mode
+
+func _set_gpu_performance_hint(use_boost: bool, force: bool = false):
+	if OS.get_name() != "Android" or (_gpu_boost_active == use_boost and not force):
+		return
+	var interface = XRServer.find_interface("OpenXR")
+	if not interface or not interface.has_method("set_gpu_level"):
+		return
+	var level = OpenXRInterface.PERF_SETTINGS_LEVEL_BOOST if use_boost else OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH
+	interface.set_gpu_level(level)
+	_gpu_boost_active = use_boost
+	_gpu_boost_refresh_timer = 0.0
+	main._log("[DEPTH] GPU performance hint: %s" % ("BOOST" if use_boost else "SUSTAINED_HIGH"))
 
 func _push_warp_newton_steps(steps: int):
 	if main.comp_shader_mat_left:
@@ -357,6 +375,13 @@ func _push_warp_newton_steps(steps: int):
 		main.comp_shader_mat_right.set_shader_parameter("warp_newton_steps", steps)
 
 func process(delta: float):
+	var should_boost = enabled and main.ai_3d_model == 6 and main.is_streaming
+	if should_boost:
+		_gpu_boost_refresh_timer += delta
+		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
+			_set_gpu_performance_hint(true, _gpu_boost_active)
+	elif _gpu_boost_active:
+		_set_gpu_performance_hint(false)
 	if not enabled or not main.is_streaming:
 		return
 
@@ -374,35 +399,34 @@ func process(delta: float):
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta
-		# MiDaS-GPU used to need its own, much slower cadence than the CPU
-		# models share above (confirmed on-device, 2026-08-19: TFLite's GPU
-		# delegate runs its compute shaders on the SAME physical GPU that
-		# renders the VR scene, so every inference call is real GPU time
-		# directly competing with the render thread - unlike MiDaS/YOLO26
-		# (CPU/XNNPACK), which are fully decoupled from what renders each
-		# frame. Running it at the same 20Hz cadence as the CPU models drove
-		# GPU utilization to 94% and roughly halved frame rate). But MiDaS-GPU
-		# is now REMOVED from selection entirely (2026-08-19, still performed
-		# poorly even throttled - see settings_controller.gd's
-		# ai_3d_model_labels comment) - GPU_MODEL_SUBMIT_INTERVAL is dead code
-		# below, kept only in case it's revived, since no current ai_3d_model
-		# value maps to it and hardcoding a check against a specific index
-		# here would silently misfire against whatever CPU model ends up at
-		# that index instead (this exact bug happened once already when
-		# YOLO26-S's removal shifted index 3 out from under this check).
-		if submit_timer >= submit_interval:
-			submit_timer = 0.0
+		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.ai_3d_model == 6 and OS.get_name() == "Android" else submit_interval
+		if submit_timer >= active_submit_interval:
+			submit_timer -= active_submit_interval
+			var capture_start = Time.get_ticks_usec()
 			var img = depth_viewport.get_texture().get_image()
 			if img != null and not img.is_empty():
 				var data = img.get_data()
+				_perf_capture_usec += Time.get_ticks_usec() - capture_start
 				if data.size() > 0:
+					var submit_start = Time.get_ticks_usec()
 					main.stream_backend.submit_depth_frame(data, model_size, model_size)
+					_perf_submit_usec += Time.get_ticks_usec() - submit_start
+					_perf_submitted += 1
 
 	if main.stream_backend.has_method("get_depth_map"):
-		_poll_timer += delta
-		if _poll_timer >= submit_interval:
-			_poll_timer = 0.0
-			var depth_bytes = main.stream_backend.get_depth_map()
-			if depth_bytes != null and depth_bytes.size() == model_size * model_size:
-				var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
-				depth_texture.update(depth_image)
+		var depth_bytes = main.stream_backend.get_depth_map()
+		if depth_bytes != null and depth_bytes.size() == model_size * model_size:
+			var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
+			depth_texture.update(depth_image)
+			_perf_updates += 1
+
+	_perf_window += delta
+	if _perf_window >= 1.0:
+		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
+		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
+		print("[DEPTH-PERF] capture=%.2fms submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_ms, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
+		_perf_window = 0.0
+		_perf_capture_usec = 0
+		_perf_submit_usec = 0
+		_perf_submitted = 0
+		_perf_updates = 0

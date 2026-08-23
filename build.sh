@@ -183,6 +183,11 @@ rm -rf android/build
 mkdir -p android/build
 cd android/build
 unzip -q "$TEMPLATES"
+sed -i '/tools:targetApi="29" \/>/a\
+\
+        <meta-data\
+            android:name="com.oculus.trade_cpu_for_gpu_amount"\
+            android:value="1" />' src/main/AndroidManifest.xml
 # Replace Godot .so with patched version (AHB Vulkan patch for Quest)
 # Cover all locations the Gradle build might pick up the .so from
 cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" aar_extract/jni/arm64-v8a/libgodot_android.so 2>/dev/null || true
@@ -201,6 +206,7 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # declared via sourceSets below survives untouched and still gets merged into the APK.
 mkdir -p android/build/nightfallAssets
 cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
 # MiDaS-small re-exported/re-calibrated at 192x192 (2026-08-20) - an
 # independently-calibrated sibling of the 256px model above, not just a
 # resize (own scale/zero_point, see DepthEstimator.java's MIDAS_192_*
@@ -238,14 +244,7 @@ cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" android/
 # MODEL_DA_196/252 comment for both fixes' full history.
 cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
-# MiDaS-GPU (2026-08-19) is deliberately NOT bundled - it tanked VR frame
-# rate even throttled to ~5Hz (TFLite's GPU delegate shares the same physical
-# GPU as Godot's Vulkan renderer, see DepthEstimator.java's
-# ensureMidasGpuLoaded() comment). Asset file stays in
-# android/src/main/assets/ untouched, same retirement pattern as YOLO26-S -
-# uncomment below to bundle it again.
-# cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.17.0"\n    implementation "org.tensorflow:tensorflow-lite-gpu:2.17.0"\n    implementation "org.tensorflow:tensorflow-lite-gpu-api:2.17.0"' android/build/build.gradle
+sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

@@ -95,6 +95,8 @@ The Quest's zero-copy GPU decode pipeline requires a custom Godot engine build w
 git clone -b 4.7 https://github.com/godotengine/godot.git /tmp/godot
 cd /tmp/godot
 git apply /path/to/moonlight-quest/patches/godot-4.7-ahb.patch
+git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless.patch
+git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless-lifecycle.patch
 
 # Build debug template
 scons platform=android target=template_debug arch=arm64 -j$(nproc)

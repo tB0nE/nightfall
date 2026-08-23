@@ -15,13 +15,16 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
+    private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
     // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
@@ -162,17 +165,9 @@ public class DepthEstimator {
     //   converted via onnx2tf with -ofgd -kt input, NOT the naive TFLite
     //   export path (which decomposes every depthwise conv into ~17000
     //   per-channel convs, useless for the GPU delegate).
-    // REMOVED FROM SELECTION (2026-08-19), not deleted - even correctly
-    // GPU-accelerated (confirmed via inference-time logs, ~47-51ms vs
-    // MiDaS-CPU's ~110-180ms) and throttled to ~5Hz
-    // (see the now-removed GPU_MODEL_SUBMIT_INTERVAL reasoning in
-    // depth_estimator.gd's git history), it still drove GPU utilization to
-    // 94% and roughly halved VR frame rate (72Hz target -> ~33Hz actual) -
-    // TFLite's GPU delegate shares the same physical GPU as Godot's own
-    // Vulkan renderer. settings_controller.gd's ai_3d_model_labels no longer
-    // has a MiDaS-GPU entry and build.sh no longer bundles its asset, so
-    // model index 6 below is unreachable in practice (soft-fails harmlessly
-    // on the missing asset file, same as MODEL_YOLO_S above).
+    // The GLES experiment exposes this as an Android-only option. Quest 3
+    // The scheduled latest-frame worker below owns its 20Hz cadence so Godot
+    // render-loop jitter cannot queue stale work or slow the inference clock.
     private static final String MODEL_MIDAS_GPU = "midas-v21-small-256-gpu.tflite";
     private static final int MIDAS_GPU_INPUT_SIZE = 256;
 
@@ -212,9 +207,35 @@ public class DepthEstimator {
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private static final class PendingFrame {
+        final byte[] pixels;
+        final int width;
+        final int height;
+
+        PendingFrame(byte[] pixels, int width, int height) {
+            this.pixels = pixels;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean isInferencing = new AtomicBoolean(false);
+    private final AtomicBoolean gpuWorkerScheduled = new AtomicBoolean(false);
+    private final AtomicReference<PendingFrame> latestGpuFrame = new AtomicReference<>();
     private final AtomicReference<byte[]> latestDepthMap = new AtomicReference<>();
+    private final AtomicLong submittedFrames = new AtomicLong();
+    private final AtomicLong droppedFrames = new AtomicLong();
+    private long telemetryWindowStartNs;
+    private long telemetryTotalDurationNs;
+    private long telemetryTotalPrepareNs;
+    private long telemetryTotalInvokeNs;
+    private long telemetryTotalPostprocessNs;
+    private int telemetryCompletedFrames;
+    private long lastGpuPrepareNs;
+    private long lastGpuInvokeNs;
+    private long lastGpuPostprocessNs;
+    private volatile long nextGpuInferenceNs;
 
     private float[] smoothedDepthFloat = null;
 
@@ -409,6 +430,8 @@ public class DepthEstimator {
             while (isInferencing.get()) {
                 Thread.yield();
             }
+            latestGpuFrame.set(null);
+            nextGpuInferenceNs = 0;
             smoothedDepthFloat = null;
             rangeValid = false;
             lastPostProcessTimeNs = 0;
@@ -440,10 +463,22 @@ public class DepthEstimator {
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
         if (!initialized || activeInterpreter == null) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
-        if (!isInferencing.compareAndSet(false, true)) return;
-
-        final byte[] frameCopy = rgbaPixels.clone();
         final int modelIdx = activeModelIndex;
+        if (modelIdx == 6) {
+            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height));
+            if (previous != null) {
+                droppedFrames.incrementAndGet();
+            }
+            scheduleGpuInference();
+            return;
+        }
+        if (!isInferencing.compareAndSet(false, true)) {
+            droppedFrames.incrementAndGet();
+            return;
+        }
+
+        submittedFrames.incrementAndGet();
+        final byte[] frameCopy = rgbaPixels;
         executor.submit(() -> {
             long startTime = System.nanoTime();
             try {
@@ -464,15 +499,6 @@ public class DepthEstimator {
                             frameCopy, width, height);
                 } else if (modelIdx == 11) {
                     result = runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 6) {
-                    // Load (if needed) and run on THIS thread - executor is a
-                    // single-thread pool for the app's whole lifetime, so
-                    // doing both here guarantees the GPU delegate's context
-                    // and every interp.run() call share the same thread,
-                    // which GpuDelegate requires (creating on one thread and
-                    // running on another silently breaks it).
-                    ensureMidasGpuLoaded();
-                    result = runInferenceMidasGpu(frameCopy, width, height);
                 } else {
                     result = runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
                             MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
@@ -485,10 +511,92 @@ public class DepthEstimator {
                 Log.e(TAG, "Async inference failed", e);
             } finally {
                 isInferencing.set(false);
-                long duration = (System.nanoTime() - startTime) / 1_000_000;
-                Log.d(TAG, "Inference: " + duration + "ms (" + modelNameFor(modelIdx) + ")");
+                long durationNs = System.nanoTime() - startTime;
+                recordTelemetry(modelIdx, durationNs);
             }
         });
+    }
+
+    private void scheduleGpuInference() {
+        if (!initialized || activeModelIndex != 6 || !gpuWorkerScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());
+        executor.schedule(this::runScheduledGpuInference, delayNs, TimeUnit.NANOSECONDS);
+    }
+
+    private void runScheduledGpuInference() {
+        long startNs = System.nanoTime();
+        long scheduledNs = nextGpuInferenceNs;
+        nextGpuInferenceNs = scheduledNs <= 0 || startNs - scheduledNs >= GPU_INFERENCE_INTERVAL_NS
+                ? startNs + GPU_INFERENCE_INTERVAL_NS
+                : scheduledNs + GPU_INFERENCE_INTERVAL_NS;
+        gpuWorkerScheduled.set(false);
+
+        if (!initialized || activeModelIndex != 6) {
+            latestGpuFrame.set(null);
+            nextGpuInferenceNs = 0;
+            return;
+        }
+
+        PendingFrame frame = latestGpuFrame.getAndSet(null);
+        if (frame == null) {
+            return;
+        }
+
+        isInferencing.set(true);
+        submittedFrames.incrementAndGet();
+        try {
+            ensureMidasGpuLoaded();
+            byte[] result = runInferenceMidasGpu(frame.pixels, frame.width, frame.height);
+            if (result != null) {
+                latestDepthMap.set(result);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Async GPU inference failed", e);
+        } finally {
+            isInferencing.set(false);
+            recordTelemetry(6, System.nanoTime() - startNs);
+        }
+
+        if (latestGpuFrame.get() != null) {
+            scheduleGpuInference();
+        }
+    }
+
+    private void recordTelemetry(int modelIndex, long durationNs) {
+        long nowNs = System.nanoTime();
+        if (telemetryWindowStartNs == 0 || modelIndex != 6) {
+            telemetryWindowStartNs = nowNs;
+            telemetryTotalDurationNs = 0;
+            telemetryTotalPrepareNs = 0;
+            telemetryTotalInvokeNs = 0;
+            telemetryTotalPostprocessNs = 0;
+            telemetryCompletedFrames = 0;
+        }
+        telemetryTotalDurationNs += durationNs;
+        telemetryTotalPrepareNs += lastGpuPrepareNs;
+        telemetryTotalInvokeNs += lastGpuInvokeNs;
+        telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        telemetryCompletedFrames++;
+        long elapsedNs = nowNs - telemetryWindowStartNs;
+        if (elapsedNs < 1_000_000_000L) return;
+
+        float divisor = Math.max(telemetryCompletedFrames, 1);
+        Log.i(TAG, String.format(java.util.Locale.US,
+                "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
+                modelNameFor(modelIndex), telemetryTotalDurationNs / divisor / 1_000_000.0f,
+                telemetryTotalPrepareNs / divisor / 1_000_000.0f,
+                telemetryTotalInvokeNs / divisor / 1_000_000.0f,
+                telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
+                telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs,
+                submittedFrames.getAndSet(0), droppedFrames.getAndSet(0)));
+        telemetryWindowStartNs = nowNs;
+        telemetryTotalDurationNs = 0;
+        telemetryTotalPrepareNs = 0;
+        telemetryTotalInvokeNs = 0;
+        telemetryTotalPostprocessNs = 0;
+        telemetryCompletedFrames = 0;
     }
 
     public byte[] getLatestDepth() {
@@ -685,7 +793,11 @@ public class DepthEstimator {
     // into the graph itself, so this sends the exact same plain 0..1
     // pixel/255.0f every other model here uses.
     private byte[] runInferenceMidasGpu(byte[] rgbaPixels, int width, int height) {
+        lastGpuPrepareNs = 0;
+        lastGpuInvokeNs = 0;
+        lastGpuPostprocessNs = 0;
         if (tfliteMidasGpu == null) return null;
+        long prepareStartNs = System.nanoTime();
         inputBufferMidasGpu.rewind();
         outputBufferMidasGpu.rewind();
 
@@ -705,11 +817,17 @@ public class DepthEstimator {
             }
         }
         inputBufferMidasGpu.rewind();
+        lastGpuPrepareNs = System.nanoTime() - prepareStartNs;
 
+        long invokeStartNs = System.nanoTime();
         tfliteMidasGpu.run(inputBufferMidasGpu, outputBufferMidasGpu);
+        lastGpuInvokeNs = System.nanoTime() - invokeStartNs;
         outputBufferMidasGpu.rewind();
 
-        return postProcess(extractFloatOutput(outputBufferMidasGpu, MIDAS_GPU_INPUT_SIZE * MIDAS_GPU_INPUT_SIZE), MIDAS_GPU_INPUT_SIZE, false);
+        long postprocessStartNs = System.nanoTime();
+        byte[] result = postProcess(extractFloatOutput(outputBufferMidasGpu, MIDAS_GPU_INPUT_SIZE * MIDAS_GPU_INPUT_SIZE), MIDAS_GPU_INPUT_SIZE, false);
+        lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
+        return result;
     }
 
     // dequantize (quantized - zero_point) * scale, given a specific model's

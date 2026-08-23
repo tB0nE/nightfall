@@ -1,0 +1,258 @@
+diff --git a/modules/openxr/openxr_api.cpp b/modules/openxr/openxr_api.cpp
+index 2fa25cc..102af19 100644
+--- a/modules/openxr/openxr_api.cpp
++++ b/modules/openxr/openxr_api.cpp
+@@ -2257,6 +2257,14 @@ void OpenXRAPI::_set_render_state_render_region_rt(const Rect2i &p_render_region
+ 	openxr_api->render_state.render_region = p_render_region;
+ }
+ 
++void OpenXRAPI::_set_render_submit_projection_layer_rt(bool p_submit_projection_layer) {
++	ERR_NOT_ON_RENDER_THREAD;
++
++	OpenXRAPI *openxr_api = OpenXRAPI::get_singleton();
++	ERR_FAIL_NULL(openxr_api);
++	openxr_api->render_state.submit_projection_layer = p_submit_projection_layer;
++}
++
+ void OpenXRAPI::_update_main_swapchain_size_rt() {
+ 	ERR_NOT_ON_RENDER_THREAD;
+ 
+@@ -2333,6 +2341,13 @@ void OpenXRAPI::set_render_state_render_region(const Rect2i &p_render_region) {
+ 	rendering_server->call_on_render_thread(callable_mp_static(&OpenXRAPI::_set_render_state_render_region_rt).bind(p_render_region));
+ }
+ 
++void OpenXRAPI::set_render_submit_projection_layer(bool p_submit_projection_layer) {
++	RenderingServer *rendering_server = RenderingServer::get_singleton();
++	ERR_FAIL_NULL(rendering_server);
++
++	rendering_server->call_on_render_thread(callable_mp_static(&OpenXRAPI::_set_render_submit_projection_layer_rt).bind(p_submit_projection_layer));
++}
++
+ void OpenXRAPI::update_main_swapchain_size() {
+ 	RenderingServer *rendering_server = RenderingServer::get_singleton();
+ 	ERR_FAIL_NULL(rendering_server);
+@@ -2523,6 +2538,9 @@ bool OpenXRAPI::pre_draw_viewport(RID p_render_target) {
+ 	if (instance == XR_NULL_HANDLE || session == XR_NULL_HANDLE || !render_state.running || !render_state.view_pose_valid || !render_state.should_render) {
+ 		return false;
+ 	}
++	if (!render_state.submit_projection_layer) {
++		return false;
++	}
+ 
+ 	Size2i swapchain_size = get_recommended_target_size();
+ 	bool should_recreate_swapchain = (swapchain_size != render_state.main_swapchain_size);
+@@ -2662,7 +2680,7 @@ void OpenXRAPI::end_frame() {
+ 		return;
+ 	}
+ 
+-	if (render_state.should_render && render_state.view_pose_valid) {
++	if (render_state.should_render && render_state.view_pose_valid && render_state.submit_projection_layer) {
+ 		if (!render_state.has_xr_viewport) {
+ 			print_line("OpenXR: No viewport was marked with use_xr, there is no rendered output!");
+ 		} else if (!render_state.main_swapchains[OPENXR_SWAPCHAIN_COLOR].is_image_acquired()) {
+@@ -2691,7 +2709,7 @@ void OpenXRAPI::end_frame() {
+ 	// - should_render set to true
+ 	// - a valid view pose for projection_views[eye].pose to submit layer
+ 	// - an image to render
+-	if (!render_state.should_render || !render_state.view_pose_valid || !render_state.main_swapchains[OPENXR_SWAPCHAIN_COLOR].is_image_acquired()) {
++	if (!render_state.should_render || !render_state.view_pose_valid || (render_state.submit_projection_layer && !render_state.main_swapchains[OPENXR_SWAPCHAIN_COLOR].is_image_acquired())) {
+ 		// submit 0 layers when we shouldn't render
+ 		XrFrameEndInfo frame_end_info = {
+ 			XR_TYPE_FRAME_END_INFO, // type
+@@ -2720,9 +2738,11 @@ void OpenXRAPI::end_frame() {
+ 		}
+ 	}
+ 
+-	for (uint32_t eye = 0; eye < render_state.views.size(); eye++) {
+-		render_state.projection_views[eye].fov = render_state.views[eye].fov;
+-		render_state.projection_views[eye].pose = render_state.views[eye].pose;
++	if (render_state.submit_projection_layer) {
++		for (uint32_t eye = 0; eye < render_state.views.size(); eye++) {
++			render_state.projection_views[eye].fov = render_state.views[eye].fov;
++			render_state.projection_views[eye].pose = render_state.views[eye].pose;
++		}
+ 	}
+ 
+ 	Vector<OrderedCompositionLayer> ordered_layers_list;
+@@ -2746,43 +2766,43 @@ void OpenXRAPI::end_frame() {
+ 		}
+ 	}
+ 
+-	XrCompositionLayerFlags layer_flags = XR_COMPOSITION_LAYER_CORRECT_CHROMATIC_ABERRATION_BIT;
+-	if (!projection_layer_is_first || render_state.environment_blend_mode != XR_ENVIRONMENT_BLEND_MODE_OPAQUE) {
+-		layer_flags |= XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+-	}
+-
+-	void *projection_layer_next_pointer = nullptr;
+-	for (OpenXRExtensionWrapper *extension : projection_layer_extensions) {
+-		void *np = extension->set_projection_layer_and_get_next_pointer(projection_layer_next_pointer);
+-		if (np != nullptr) {
+-			projection_layer_next_pointer = np;
++	if (render_state.submit_projection_layer) {
++		XrCompositionLayerFlags layer_flags = XR_COMPOSITION_LAYER_CORRECT_CHROMATIC_ABERRATION_BIT;
++		if (!projection_layer_is_first || render_state.environment_blend_mode != XR_ENVIRONMENT_BLEND_MODE_OPAQUE) {
++			layer_flags |= XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+ 		}
+-	}
+-
+-	render_state.projection_layer.next = projection_layer_next_pointer;
+-	render_state.projection_layer.layerFlags = layer_flags;
+-	render_state.projection_layer.space = render_state.play_space;
+-	render_state.projection_layer.viewCount = (uint32_t)render_state.projection_views.size();
+-	render_state.projection_layer.views = render_state.projection_views.ptr();
+ 
+-	const bool submit_depth_views = render_state.submit_depth_buffer && OpenXRCompositionLayerDepthExtension::get_singleton()->is_available() && !render_state.depth_views.is_empty();
+-	for (uint32_t v = 0; v < render_state.projection_views.size(); v++) {
+-		void *next_pointer = nullptr;
+-		// Start next chain with depth_views if submitting the depth buffer since this is handled here as a special case currently.
+-		// TODO: Depth composition logic should be moved out into OpenXRCompositionLayerDepthExtension and register as a projection views extension.
+-		if (submit_depth_views) {
+-			next_pointer = &render_state.depth_views[v];
+-		}
+-		for (OpenXRExtensionWrapper *wrapper : projection_views_extensions) {
+-			void *np = wrapper->set_projection_views_and_get_next_pointer(v, next_pointer);
++		void *projection_layer_next_pointer = nullptr;
++		for (OpenXRExtensionWrapper *extension : projection_layer_extensions) {
++			void *np = extension->set_projection_layer_and_get_next_pointer(projection_layer_next_pointer);
+ 			if (np != nullptr) {
+-				next_pointer = np;
++				projection_layer_next_pointer = np;
+ 			}
+ 		}
+-		render_state.projection_views[v].next = next_pointer;
+-	}
+ 
+-	ordered_layers_list.push_back({ (const XrCompositionLayerBaseHeader *)&render_state.projection_layer, 0 });
++		render_state.projection_layer.next = projection_layer_next_pointer;
++		render_state.projection_layer.layerFlags = layer_flags;
++		render_state.projection_layer.space = render_state.play_space;
++		render_state.projection_layer.viewCount = (uint32_t)render_state.projection_views.size();
++		render_state.projection_layer.views = render_state.projection_views.ptr();
++
++		const bool submit_depth_views = render_state.submit_depth_buffer && OpenXRCompositionLayerDepthExtension::get_singleton()->is_available() && !render_state.depth_views.is_empty();
++		for (uint32_t v = 0; v < render_state.projection_views.size(); v++) {
++			void *next_pointer = nullptr;
++			if (submit_depth_views) {
++				next_pointer = &render_state.depth_views[v];
++			}
++			for (OpenXRExtensionWrapper *wrapper : projection_views_extensions) {
++				void *np = wrapper->set_projection_views_and_get_next_pointer(v, next_pointer);
++				if (np != nullptr) {
++					next_pointer = np;
++				}
++			}
++			render_state.projection_views[v].next = next_pointer;
++		}
++
++		ordered_layers_list.push_back({ (const XrCompositionLayerBaseHeader *)&render_state.projection_layer, 0 });
++	}
+ 
+ 	// Sort our layers.
+ 	ordered_layers_list.sort_custom<OrderedCompositionLayer>();
+@@ -2852,6 +2872,15 @@ void OpenXRAPI::set_render_target_size_multiplier(double multiplier) {
+ 	set_render_state_multiplier(multiplier);
+ }
+ 
++bool OpenXRAPI::get_submit_projection_layer() const {
++	return submit_projection_layer;
++}
++
++void OpenXRAPI::set_submit_projection_layer(bool p_submit_projection_layer) {
++	submit_projection_layer = p_submit_projection_layer;
++	set_render_submit_projection_layer(p_submit_projection_layer);
++}
++
+ Rect2i OpenXRAPI::get_render_region() const {
+ 	return render_region;
+ }
+diff --git a/modules/openxr/openxr_api.h b/modules/openxr/openxr_api.h
+index 8ca2e44..ceb53ef 100644
+--- a/modules/openxr/openxr_api.h
++++ b/modules/openxr/openxr_api.h
+@@ -129,6 +129,7 @@ private:
+ 	XrReferenceSpaceType requested_reference_space = XR_REFERENCE_SPACE_TYPE_STAGE;
+ 	XrReferenceSpaceType reference_space = XR_REFERENCE_SPACE_TYPE_LOCAL;
+ 	bool submit_depth_buffer = false; // if set to true we submit depth buffers to OpenXR if a suitable extension is enabled.
++	bool submit_projection_layer = true;
+ 
+ 	// blend mode
+ 	XrEnvironmentBlendMode environment_blend_mode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+@@ -364,6 +365,7 @@ private:
+ 		LocalVector<XrCompositionLayerProjectionView> projection_views;
+ 		LocalVector<XrCompositionLayerDepthInfoKHR> depth_views; // Only used by Composition Layer Depth Extension if available
+ 		bool submit_depth_buffer = false; // if set to true we submit depth buffers to OpenXR if a suitable extension is enabled.
++		bool submit_projection_layer = true;
+ 		bool use_subsampled_images = true; // We need to default to true for the warning to be shown if we fallback immediately at startup.
+ 		bool view_pose_valid = false;
+ 
+@@ -390,6 +392,7 @@ private:
+ 	static void _set_render_environment_blend_mode_rt(int32_t p_environment_blend_mode);
+ 	static void _set_render_state_multiplier_rt(double p_render_target_size_multiplier);
+ 	static void _set_render_state_render_region_rt(const Rect2i &p_render_region);
++	static void _set_render_submit_projection_layer_rt(bool p_submit_projection_layer);
+ 	static void _update_main_swapchain_size_rt();
+ 
+ 	void allocate_view_buffers(uint32_t p_view_count, bool p_submit_depth_buffer);
+@@ -399,6 +402,7 @@ private:
+ 	void set_render_environment_blend_mode(XrEnvironmentBlendMode p_mode);
+ 	void set_render_state_multiplier(double p_render_target_size_multiplier);
+ 	void set_render_state_render_region(const Rect2i &p_render_region);
++	void set_render_submit_projection_layer(bool p_submit_projection_layer);
+ 
+ public:
+ 	void update_main_swapchain_size();
+@@ -512,6 +516,8 @@ public:
+ 	// Render Target size multiplier
+ 	double get_render_target_size_multiplier() const;
+ 	void set_render_target_size_multiplier(double multiplier);
++	bool get_submit_projection_layer() const;
++	void set_submit_projection_layer(bool p_submit_projection_layer);
+ 
+ 	Rect2i get_render_region() const;
+ 	void set_render_region(const Rect2i &p_render_region);
+diff --git a/modules/openxr/openxr_interface.cpp b/modules/openxr/openxr_interface.cpp
+index 38e7916..84de5d7 100644
+--- a/modules/openxr/openxr_interface.cpp
++++ b/modules/openxr/openxr_interface.cpp
+@@ -79,6 +79,10 @@ void OpenXRInterface::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("set_render_target_size_multiplier", "multiplier"), &OpenXRInterface::set_render_target_size_multiplier);
+ 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "render_target_size_multiplier"), "set_render_target_size_multiplier", "get_render_target_size_multiplier");
+ 
++	ClassDB::bind_method(D_METHOD("get_submit_projection_layer"), &OpenXRInterface::get_submit_projection_layer);
++	ClassDB::bind_method(D_METHOD("set_submit_projection_layer", "enabled"), &OpenXRInterface::set_submit_projection_layer);
++	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "submit_projection_layer"), "set_submit_projection_layer", "get_submit_projection_layer");
++
+ 	// Foveation level
+ 	ClassDB::bind_method(D_METHOD("is_foveation_supported"), &OpenXRInterface::is_foveation_supported);
+ 
+@@ -990,6 +994,16 @@ void OpenXRInterface::set_render_target_size_multiplier(double multiplier) {
+ 	}
+ }
+ 
++bool OpenXRInterface::get_submit_projection_layer() const {
++	return openxr_api == nullptr ? true : openxr_api->get_submit_projection_layer();
++}
++
++void OpenXRInterface::set_submit_projection_layer(bool p_submit_projection_layer) {
++	if (openxr_api != nullptr) {
++		openxr_api->set_submit_projection_layer(p_submit_projection_layer);
++	}
++}
++
+ bool OpenXRInterface::is_foveation_supported() const {
+ 	if (openxr_api == nullptr) {
+ 		return false;
+diff --git a/modules/openxr/openxr_interface.h b/modules/openxr/openxr_interface.h
+index d79a05f..ba4b363 100644
+--- a/modules/openxr/openxr_interface.h
++++ b/modules/openxr/openxr_interface.h
+@@ -161,6 +161,8 @@ public:
+ 
+ 	double get_render_target_size_multiplier() const;
+ 	void set_render_target_size_multiplier(double multiplier);
++	bool get_submit_projection_layer() const;
++	void set_submit_projection_layer(bool p_submit_projection_layer);
+ 
+ 	bool is_foveation_supported() const;
+ 
+

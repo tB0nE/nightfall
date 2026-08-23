@@ -77,7 +77,7 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # FIRST after Off (not fastest-first) - it's the best-tested, safest default
 # to land on when a user first turns AI-3D on, before they've had a chance to
 # explore the rest of the lineup.
-var ai_3d_model_labels: Array = ["Off", "MiDaS-192", "YOLO26-N-256", "YOLO26-N-320", "YOLO26-N-384", "MiDaS-256", "DA-V2-196", "DA-V2-252"]
+var ai_3d_model_labels: Array = ["Off", "MiDaS-192", "YOLO26-N-256", "YOLO26-N-320", "YOLO26-N-384", "MiDaS-256", "MiDaS-256-GPU", "DA-V2-196", "DA-V2-252"]
 var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
@@ -309,8 +309,9 @@ func apply_stereo():
 			3: model_idx = 8 # YOLO26-Depth-N-320
 			4: model_idx = 4 # YOLO26-Depth-N-384
 			5: model_idx = 3 # MiDaS-256
-			6: model_idx = 11 # Depth Anything V2-196
-			7: model_idx = 1 # Depth Anything V2-252
+			6: model_idx = 6 if OS.get_name() == "Android" else 3 # MiDaS-256-GPU
+			7: model_idx = 11 # Depth Anything V2-196
+			8: model_idx = 1 # Depth Anything V2-252
 			_: model_idx = 3 # MiDaS-256 (fallback)
 	main.stream_backend.set_depth_model(model_idx)
 	if mode >= 3 and main.depth_estimator:
