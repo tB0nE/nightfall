@@ -26,6 +26,7 @@ public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
     private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
+
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
     // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
     // read directly from the model via ai-edge-litert's Interpreter.get_input/
@@ -770,6 +771,11 @@ public class DepthEstimator {
             // model's own native precision" rather than upcasting to fp32.
             gpuOptions.setPrecisionLossAllowed(true);
             gpuOptions.setInferencePreference(GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
+            // The bundled Nightfall LiteRT GPU JNI creates its Qualcomm OpenCL
+            // context with CL_PRIORITY_HINT_LOW_QCOM. OpenCL is substantially
+            // faster than LiteRT's OpenGL backend on Quest, while the context
+            // priority keeps render work ahead of inference dispatches.
+            gpuOptions.setForceBackend(GpuDelegateFactory.Options.GpuBackend.OPENCL);
             gpuDelegate = new GpuDelegate(gpuOptions);
             Interpreter.Options opts = new Interpreter.Options();
             opts.addDelegate(gpuDelegate);

@@ -43,6 +43,9 @@ android/gradle.properties
 android/gradlew
 android/gradlew.bat
 android/libs/
+!android/libs/
+android/libs/*
+!android/libs/litert-gpu-nightfall-1.4.2.aar
 android/res/
 android/src/androidTestInstrumented/
 android/src/instrumented/

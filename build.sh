@@ -244,7 +244,16 @@ cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" android/
 # MODEL_DA_196/252 comment for both fixes' full history.
 cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
+LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
+if [ ! -f "$LITERT_GPU_AAR" ]; then
+  echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+  exit 1
+fi
+# The local GPU AAR is the official LiteRT 1.4.2 artifact with only its arm64
+# JNI library replaced. Nightfall's JNI build adds Qualcomm's low-priority
+# OpenCL context hint; keeping the Java API artifact separate avoids Gradle
+# resolving the stock native library transitively alongside it.
+sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

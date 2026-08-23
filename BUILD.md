@@ -138,7 +138,7 @@ What `build.sh` does:
 1. Wipes `android/build/` and extracts Godot Android template
 2. Copies `GodotApp.java` and `DepthEstimator.java`
 3. Copies TFLite models to assets (MiDaS + Depth Anything V2 if present)
-4. Patches `build.gradle` with `tensorflow-lite:2.16.1` dependency
+4. Patches `build.gradle` with LiteRT 1.4.2 and Nightfall's GPU AAR
 5. Copies Meta OpenXR vendor plugin AAR
 6. Exports APK via Godot headless
 7. Cleans up `android/build/` (prevents Godot editor duplicate class errors)
@@ -165,6 +165,19 @@ python3 tools/convert_depth_anything_v2.py
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to ONNX (252x252 input for DINOv2 patch size), and converts to int8 quantized TFLite. The output is placed at `android/src/main/assets/depth-anything-v2-small.tflite`.
 
 The app works without it - AI 3D mode will use MiDaS only. AI 3D v2 mode will fall back to MiDaS if the model file is missing.
+
+### Nightfall LiteRT GPU AAR
+
+Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`; they do not rebuild LiteRT. This is the official LiteRT GPU 1.4.2 AAR with only its arm64 JNI library replaced. The replacement creates the Adreno OpenCL context with Qualcomm's low-priority hint so XR rendering is scheduled ahead of depth inference.
+
+To regenerate it:
+
+1. Check out TensorFlow 2.17.0 and apply `android/patches/litert-qcom-low-priority-opencl.patch`.
+2. Configure Bazel 6.5.0 with Android NDK 25.2.9519653.
+3. Build `//tensorflow/lite/java:libtensorflowlite_gpu_jni.so` with `--config=android_arm64`.
+4. Replace `jni/arm64-v8a/libtensorflowlite_gpu_jni.so` in the official `com.google.ai.edge.litert:litert-gpu:1.4.2` AAR and remove its other ABI directories.
+
+The JNI exports must match the official library before replacing the checked-in AAR.
 
 ## 3. Deploy to Quest
 
