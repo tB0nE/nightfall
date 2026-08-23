@@ -744,12 +744,6 @@ func build_ui():
 	main._ui_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main._ui_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	main._ui_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Server-provided error text (e.g. a launch-rejection status_message) can run
-	# to a couple hundred characters - without wrapping, a single-line Label just
-	# overflows its container width and breaks the surrounding panel layout. Fill
-	# the vbox's actual width (a fixed 420px was narrower than the real panel,
-	# forcing extra wrap lines it didn't need) and clip vertically instead of
-	# growing the panel if it still wraps past the label's fixed height.
 	main._ui_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	main._ui_status_label.clip_text = false
 	main._ui_status_label.clip_contents = true

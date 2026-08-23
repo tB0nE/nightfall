@@ -13,7 +13,14 @@
 #include <godot_cpp/classes/mutex.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <atomic>
+#include <condition_variable>
 #include <deque>
+#include <mutex>
+
+#ifdef __ANDROID__
+#include <media/NdkImage.h>
+#include <android/native_window.h>
+#endif
 
 extern "C" {
 #include <libavutil/pixfmt.h>
@@ -39,6 +46,12 @@ public:
     void update_from_frame(AVFrame *frame);
     void update_from_raw_nv12(int width, int height, const uint8_t *data, uint32_t y_size, uint32_t uv_size);
     void update_from_raw_bgra(int width, int height, const uint8_t *data, uint32_t data_size);
+#ifdef __ANDROID__
+    void update_from_android_image(AImage *image, int width, int height);
+    void update_from_android_rgba_image(AImage *image, int width, int height);
+    ANativeWindow *create_android_gles_decoder_surface(int width, int height);
+    void update_android_gles_external_texture();
+#endif
     void update_colorspace(int colorspace, int color_range);
     void perform_gpu_update();
 
@@ -95,6 +108,25 @@ private:
 
     int current_width = 0;
     int current_height = 0;
+
+#ifdef __ANDROID__
+    void _render_thread_create_android_gles_surface();
+    void _render_thread_update_android_gles_texture();
+    void _render_thread_destroy_android_gles_surface();
+    std::mutex gles_surface_mutex_;
+    std::condition_variable gles_surface_cv_;
+    bool gles_surface_ready_ = false;
+    bool gles_surface_failed_ = false;
+    int gles_surface_width_ = 0;
+    int gles_surface_height_ = 0;
+    ANativeWindow *gles_decoder_window_ = nullptr;
+    void *gles_surface_texture_java_ = nullptr;
+    unsigned int gles_oes_texture_ = 0;
+    unsigned int gles_output_texture_ = 0;
+    unsigned int gles_fbo_ = 0;
+    unsigned int gles_blit_program_ = 0;
+    bool gles_update_queued_ = false;
+#endif
 };
 
 } // namespace godot

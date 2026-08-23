@@ -47,6 +47,16 @@ extern "C" {
 
 using namespace godot;
 
+#ifdef __ANDROID__
+static bool supports_android_hardware_buffer_import(RenderingDevice *rendering_device) {
+    if (!rendering_device || !rendering_device->has_method("texture_create_from_android_hardware_buffer")) {
+        return false;
+    }
+    String rendering_method = RenderingServer::get_singleton()->get_current_rendering_method();
+    return rendering_method != "gl_compatibility";
+}
+#endif
+
 StreamConnection *StreamConnection::active_instance_ = nullptr;
 
 StreamConnection::StreamConnection() {
@@ -702,12 +712,13 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
     // lock serializes invalidation with pipeline creation and command recording.
     RenderingServer *rs = RenderingServer::get_singleton();
     RenderingDevice *rd = rs ? rs->get_rendering_device() : nullptr;
+    const bool supports_ahb_import = supports_android_hardware_buffer_import(rd);
     {
         std::lock_guard<std::mutex> state_lock(self->render_state_mutex_);
         self->compute_pipeline_ready_ = false;
         self->display_wired_ = false;
         self->render_generation_.fetch_add(1);
-        if (rd) {
+        if (supports_ahb_import) {
             self->pending_free_pipeline_ = self->compute_pipeline_;
             self->pending_free_shader_ = self->compute_shader_;
             self->pending_free_sampler_ = self->dummy_sampler_;
@@ -721,7 +732,7 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
     self->_retire_all_ahb_imports();
 
     // Free old-generation GPU resources after previously queued dispatches.
-    if (rd) {
+    if (supports_ahb_import) {
         rs->call_on_render_thread(callable_mp(self, &StreamConnection::_render_free_pipeline_rt));
     }
 
@@ -743,14 +754,32 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
             }
             self->queue_cv_.notify_one();
         };
-        if (new_codec->init(mime, width, height, notify_decode_thread)) {
+        ANativeWindow *gles_decoder_surface = nullptr;
+        if (!supports_ahb_import) {
+            gles_decoder_surface = self->uploader_->create_android_gles_decoder_surface(width, height);
+            if (!gles_decoder_surface) {
+                NF_LOGE("StreamConnection", "Failed to create GLES decoder SurfaceTexture");
+                return -1;
+            }
+        }
+        if (new_codec->init(mime, width, height, !supports_ahb_import,
+                            gles_decoder_surface, notify_decode_thread)) {
             NF_LOG("StreamConnection", "Native MediaCodec created: %dx%d mime=%s", width, height, mime);
             self->_replace_native_codec(new_codec);
             self->native_video_width_ = width;
             self->native_video_height_ = height;
-            // Only ensure shader material exists (no texture setup — compute pipeline handles it)
-            self->uploader_->ensure_shader_material();
-            self->uploader_->set_active(true); // NV12 mode
+            NF_LOG("StreamConnection", "Android renderer=%s ahb_import=%d",
+                rs->get_current_rendering_method().utf8().get_data(), supports_ahb_import);
+            if (supports_ahb_import) {
+                // Vulkan imports the ImageReader AHardwareBuffer directly and converts it
+                // through the compute path below.
+                self->uploader_->ensure_shader_material();
+                self->uploader_->set_active(true);
+            } else {
+                // Compatibility/OpenGL renders MediaCodec's SurfaceTexture through the
+                // uploader's native OES-to-2D bridge created above.
+                self->uploader_->ensure_shader_material();
+            }
             self->decoder_ready_.store(true);
             return 0;
         }
@@ -814,12 +843,13 @@ void StreamConnection::_cb_decoder_cleanup() {
 
     RenderingServer *rs = RenderingServer::get_singleton();
     RenderingDevice *rd = rs ? rs->get_rendering_device() : nullptr;
+    const bool supports_ahb_import = supports_android_hardware_buffer_import(rd);
     {
         std::lock_guard<std::mutex> state_lock(self->render_state_mutex_);
         self->compute_pipeline_ready_ = false;
         self->display_wired_ = false;
         self->render_generation_.fetch_add(1);
-        if (rd) {
+        if (supports_ahb_import) {
             self->pending_free_pipeline_ = self->compute_pipeline_;
             self->pending_free_shader_ = self->compute_shader_;
             self->pending_free_sampler_ = self->dummy_sampler_;
@@ -1252,9 +1282,31 @@ void StreamConnection::_decode_thread_func() {
             // Output indices and image availability arrive via callbacks. A
             // zero timeout drains all work already ready without stalling input.
             NativeDecodedFrame frame;
-            while (codec->dequeue_frame(frame, 0)) {
+            RenderingDevice *initial_rd = RenderingServer::get_singleton()
+                ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+            const int64_t frame_timeout_us = supports_android_hardware_buffer_import(initial_rd) ? 0 : 5000;
+            while (codec->dequeue_frame(frame, frame_timeout_us)) {
                 RenderingDevice *rd = RenderingServer::get_singleton()
                     ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
+                const bool supports_ahb_import = supports_android_hardware_buffer_import(rd);
+
+                if (!supports_ahb_import) {
+                    if (decoder_ready_.load() && decode_generation == render_generation_.load()) {
+                        if (frame.external_texture) {
+                            uploader_->update_android_gles_external_texture();
+                            if (!display_wired_.exchange(true)) {
+                                NF_LOG("StreamConnection", "GLES display wired after first external frame");
+                            }
+                        } else if (frame.rgba) {
+                            uploader_->update_from_android_rgba_image(frame.image, frame.width, frame.height);
+                        } else {
+                            uploader_->update_from_android_image(frame.image, frame.width, frame.height);
+                        }
+                        frames_decoded_.fetch_add(1);
+                    }
+                    codec->release_frame(frame);
+                    continue;
+                }
 
                 if (!(rd && rd->has_method("texture_create_from_android_hardware_buffer") && frame.buffer)) {
                     NF_LOGE("VCONN", "SKIP: rd=%p has=%d buf=%p",

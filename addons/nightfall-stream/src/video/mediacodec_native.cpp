@@ -41,12 +41,16 @@ void AndroidMediaCodec::_reset_event_state() {
     async_error_ = AMEDIA_OK;
 }
 
-bool AndroidMediaCodec::init(const char *mime, int width, int height,
+bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_readback,
+                             ANativeWindow *external_output_window,
                              EventNotifier event_notifier) {
     shutdown();
 
     width_.store(width);
     height_.store(height);
+    reader_outputs_rgba_ = cpu_readback;
+    external_surface_output_ = external_output_window != nullptr;
+    owns_external_window_ = false;
     eos_.store(false);
     buffer_cache_supported_.store(false);
     {
@@ -55,47 +59,54 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height,
     }
     _reset_event_state();
 
-    // Create ImageReader with GPU sampling usage for direct Vulkan import.
-    media_status_t status = AImageReader_newWithUsage(
-        width, height, AIMAGE_FORMAT_YUV_420_888,
-        AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
-            AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
-            AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
-        4, &reader_);
-    if (status != AMEDIA_OK || !reader_) {
-        NF_LOGE("AndroidMediaCodec", "AImageReader_newWithUsage failed: %d", status);
-        shutdown();
-        return false;
-    }
-
-    AImageReader_ImageListener image_listener{};
-    image_listener.context = this;
-    image_listener.onImageAvailable = &AndroidMediaCodec::_on_image_available;
-    status = AImageReader_setImageListener(reader_, &image_listener);
-    if (status != AMEDIA_OK) {
-        NF_LOGE("AndroidMediaCodec", "AImageReader_setImageListener failed: %d", status);
-        shutdown();
-        return false;
-    }
-
-    AImageReader_BufferRemovedListener buffer_listener{};
-    buffer_listener.context = this;
-    buffer_listener.onBufferRemoved = &AndroidMediaCodec::_on_buffer_removed;
-    status = AImageReader_setBufferRemovedListener(reader_, &buffer_listener);
-    if (status == AMEDIA_OK) {
-        buffer_cache_supported_.store(true);
-        NF_LOG("AndroidMediaCodec", "AHardwareBuffer import cache enabled (%s keys)",
-               get_hardware_buffer_id_fn() ? "stable ID" : "opaque handle");
+    media_status_t status = AMEDIA_OK;
+    if (external_surface_output_) {
+        window_ = external_output_window;
+        ANativeWindow_acquire(window_);
+        owns_external_window_ = true;
+        NF_LOG("AndroidMediaCodec", "Output surface=GLES SurfaceTexture");
     } else {
-        // Decoding remains available with the original per-frame import path.
-        NF_LOGE("AndroidMediaCodec", "AHardwareBuffer import cache disabled; buffer listener failed: %d", status);
-    }
+        uint64_t usage = cpu_readback
+            ? AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN
+            : AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE;
+        const int32_t image_format = cpu_readback ? AIMAGE_FORMAT_RGBA_8888 : AIMAGE_FORMAT_YUV_420_888;
+        status = AImageReader_newWithUsage(width, height, image_format, usage, 4, &reader_);
+        if (status != AMEDIA_OK || !reader_) {
+            NF_LOGE("AndroidMediaCodec", "AImageReader_newWithUsage failed: %d", status);
+            shutdown();
+            return false;
+        }
+        NF_LOG("AndroidMediaCodec", "ImageReader format=%s usage=%s",
+               cpu_readback ? "RGBA" : "YUV", cpu_readback ? "CPU_READ" : "GPU_SAMPLED");
 
-    status = AImageReader_getWindow(reader_, &window_);
-    if (status != AMEDIA_OK || !window_) {
-        NF_LOGE("AndroidMediaCodec", "AImageReader_getWindow failed: %d", status);
-        shutdown();
-        return false;
+        AImageReader_ImageListener image_listener{};
+        image_listener.context = this;
+        image_listener.onImageAvailable = &AndroidMediaCodec::_on_image_available;
+        status = AImageReader_setImageListener(reader_, &image_listener);
+        if (status != AMEDIA_OK) {
+            NF_LOGE("AndroidMediaCodec", "AImageReader_setImageListener failed: %d", status);
+            shutdown();
+            return false;
+        }
+
+        AImageReader_BufferRemovedListener buffer_listener{};
+        buffer_listener.context = this;
+        buffer_listener.onBufferRemoved = &AndroidMediaCodec::_on_buffer_removed;
+        status = AImageReader_setBufferRemovedListener(reader_, &buffer_listener);
+        if (status == AMEDIA_OK) {
+            buffer_cache_supported_.store(true);
+            NF_LOG("AndroidMediaCodec", "AHardwareBuffer import cache enabled (%s keys)",
+                   get_hardware_buffer_id_fn() ? "stable ID" : "opaque handle");
+        } else {
+            NF_LOGE("AndroidMediaCodec", "AHardwareBuffer import cache disabled; buffer listener failed: %d", status);
+        }
+
+        status = AImageReader_getWindow(reader_, &window_);
+        if (status != AMEDIA_OK || !window_) {
+            NF_LOGE("AndroidMediaCodec", "AImageReader_getWindow failed: %d", status);
+            shutdown();
+            return false;
+        }
     }
 
     codec_ = AMediaCodec_createDecoderByType(mime);
@@ -191,8 +202,12 @@ void AndroidMediaCodec::shutdown() {
         codec_ = nullptr;
     }
 
-    // AImageReader owns the ANativeWindow returned by getWindow().
+    if (owns_external_window_ && window_) {
+        ANativeWindow_release(window_);
+    }
     window_ = nullptr;
+    owns_external_window_ = false;
+    external_surface_output_ = false;
     if (reader_) {
         AImageReader_delete(reader_);
         reader_ = nullptr;
@@ -390,7 +405,7 @@ AndroidMediaCodec::FeedResult AndroidMediaCodec::feed_packet(
 
 bool AndroidMediaCodec::dequeue_frame(NativeDecodedFrame &out_frame,
                                        int64_t timeout_us) {
-    if (!started_.load() || !codec_ || !reader_) return false;
+    if (!started_.load() || !codec_ || (!reader_ && !external_surface_output_)) return false;
 
     const auto timeout = std::chrono::microseconds(timeout_us > 0 ? timeout_us : 0);
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -445,6 +460,25 @@ bool AndroidMediaCodec::dequeue_frame(NativeDecodedFrame &out_frame,
         pending_output_.rendered = true;
     }
 
+    if (external_surface_output_) {
+        out_frame.pts = pending_output_.info.presentationTimeUs;
+        out_frame.width = pending_output_.width;
+        out_frame.height = pending_output_.height;
+        out_frame.external_texture = true;
+        {
+            std::lock_guard<std::mutex> lock(event_mutex_);
+            pending_output_ = OutputEvent{};
+            pending_output_valid_ = false;
+        }
+        static int external_frame_count = 0;
+        if (++external_frame_count <= 3 || external_frame_count % 120 == 0) {
+            NF_LOG("AndroidMediaCodec", "External SurfaceTexture frame #%d: %dx%d pts=%lld",
+                   external_frame_count, out_frame.width, out_frame.height,
+                   (long long)out_frame.pts);
+        }
+        return true;
+    }
+
     AImage *image = nullptr;
     while (started_.load()) {
         uint64_t observed_generation = 0;
@@ -495,6 +529,7 @@ bool AndroidMediaCodec::dequeue_frame(NativeDecodedFrame &out_frame,
     out_frame.pts = pending_output_.info.presentationTimeUs;
     out_frame.width = pending_output_.width;
     out_frame.height = pending_output_.height;
+    out_frame.rgba = reader_outputs_rgba_;
     out_frame.image = image;
 
     {

@@ -297,6 +297,55 @@ func setup():
 	main.xr_origin.add_child(main.comp_ui)
 	main.comp_ui.set_layer_viewport(main.ui_viewport)
 	main._log("[COMP] UI composition layer created")
+	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+		main.comp_kb = OpenXRCompositionLayerQuad.new()
+		main.comp_kb.name = "CompKBLayer"
+		main.comp_kb.set_sort_order(999)
+		main.comp_kb.set_enable_hole_punch(false)
+		main.comp_kb.set_alpha_blend(true)
+		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
+		main.comp_kb.visible = false
+		main.xr_origin.add_child(main.comp_kb)
+		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main._log("[COMP] Keyboard composition layer created")
+
+		main.comp_status = OpenXRCompositionLayerQuad.new()
+		main.comp_status.name = "CompStatusLayer"
+		main.comp_status.set_sort_order(1001)
+		main.comp_status.set_enable_hole_punch(false)
+		main.comp_status.set_alpha_blend(true)
+		main.comp_status.set_quad_size(Vector2(1.20, 0.056))
+		main.comp_status.visible = false
+		main.xr_origin.add_child(main.comp_status)
+
+		var status_viewport = SubViewport.new()
+		status_viewport.name = "CompStatusViewport"
+		status_viewport.disable_3d = true
+		status_viewport.transparent_bg = true
+		status_viewport.size = Vector2i(1200, 56)
+		status_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(status_viewport)
+		main.comp_status_viewport = status_viewport
+
+		main.comp_status_label = Button.new()
+		main.comp_status_label.text = "Ready"
+		main.comp_status_label.focus_mode = Control.FOCUS_NONE
+		main.comp_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		main.comp_status_label.add_theme_font_size_override("font_size", 22)
+		main.comp_status_label.add_theme_color_override("font_color", Color(1, 1, 1, 1))
+		main.comp_status_label.alignment = HORIZONTAL_ALIGNMENT_CENTER
+		main.comp_status_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var status_style = StyleBoxFlat.new()
+		status_style.bg_color = Color(0.06, 0.06, 0.1, 0.92)
+		status_style.set_corner_radius_all(8)
+		main.comp_status_label.add_theme_stylebox_override("normal", status_style)
+		main.comp_status_label.add_theme_stylebox_override("hover", status_style)
+		main.comp_status_label.add_theme_stylebox_override("pressed", status_style)
+		status_viewport.add_child(main.comp_status_label)
+		main.comp_status.set_layer_viewport(status_viewport)
+		main._log("[COMP] GLES status composition layer created")
+		main._log("[COMP] GLES: UI and keyboard composition layers enabled; cursor layer disabled")
+		return
 
 	main.comp_cursor = OpenXRCompositionLayerQuad.new()
 	main.comp_cursor.name = "CompCursorLayer"
@@ -386,6 +435,12 @@ func setup():
 	else:
 		main._log("[COMP] Composition layer cylinder NOT natively supported (using fallback mesh)")
 
+func refresh_gles_status_layer():
+	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+		return
+	if main.comp_status and main.comp_status_viewport:
+		main.comp_status.set_layer_viewport(main.comp_status_viewport)
+
 func connect_welcome_texture():
 	if not available:
 		return
@@ -425,7 +480,9 @@ func _update_bezel_for(s: VRScreen):
 			t.yuv.anchor_right = 1.0
 			t.yuv.anchor_bottom = 1.0
 			t.yuv.anchors_preset = 0
-			t.vp.size = Vector2i(base_w + px * 2, base_h + px * 2)
+			var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
+			if t.vp.size != bezel_size:
+				t.vp.size = bezel_size
 			if t.cyl and t.cyl.visible:
 				t.cyl.set_aspect_ratio(bezel_x / bezel_y)
 	else:
@@ -443,7 +500,9 @@ func _update_bezel_for(s: VRScreen):
 			t.yuv.offset_right = 0
 			t.yuv.offset_bottom = 0
 			t.yuv.anchors_preset = 15
-			t.vp.size = Vector2i(base_w, base_h)
+			var content_size = Vector2i(base_w, base_h)
+			if t.vp.size != content_size:
+				t.vp.size = content_size
 			if t.cyl and t.cyl.visible:
 				t.cyl.set_aspect_ratio(s.mesh_size.x / s.mesh_size.y)
 

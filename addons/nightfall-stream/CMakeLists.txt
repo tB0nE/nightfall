@@ -124,6 +124,13 @@ endif()
 add_library(${LIBNAME} SHARED)
 
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "src/*.cpp" "src/*.h")
+if(ANDROID)
+    # These are Linux-only native TFLite sources. Android uses DepthEstimator.java
+    # through the JNI bridge and does not ship TensorFlow Lite C++ headers.
+    list(REMOVE_ITEM SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_depth_engine.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_test_main.cpp")
+endif()
 target_sources(${LIBNAME} PRIVATE ${SOURCE_FILES})
 
 target_compile_features(${LIBNAME} PRIVATE cxx_std_17)
@@ -208,7 +215,7 @@ endif()
 
 if(ANDROID)
     target_compile_definitions(${LIBNAME} PRIVATE _FORTIFY_SOURCE=0)
-    target_link_libraries(${LIBNAME} PRIVATE atomic m log dl android mediandk)
+    target_link_libraries(${LIBNAME} PRIVATE atomic m log dl android mediandk GLESv3)
 endif()
 
 if(WIN32)

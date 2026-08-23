@@ -255,6 +255,9 @@ var bg_manager: BackgroundManager
 
 var comp_cursor: Node3D = null
 var comp_ui: Node3D = null
+var comp_status: Node3D = null
+var comp_status_label: Button = null
+var comp_status_viewport: SubViewport = null
 var comp_kb: Node3D = null
 var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
@@ -675,7 +678,7 @@ func _hide_all_stream_cursors():
 		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 
 func _update_cursor_layer():
-	if not comp_cursor or not comp.in_use:
+	if not comp.in_use:
 		if comp_cursor:
 			comp_cursor.visible = false
 		_hide_all_stream_cursors()
@@ -695,7 +698,8 @@ func _update_cursor_layer():
 		hovered_screen = t.screen if on_screen else null
 		use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
-			comp_cursor.visible = false
+			if comp_cursor:
+				comp_cursor.visible = false
 			_hide_all_stream_cursors()
 		elif use_in_stream and on_screen:
 			# Only hovered_screen gets shown below - explicitly hide every other
@@ -721,7 +725,8 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
-			comp_cursor.visible = false
+			if comp_cursor:
+				comp_cursor.visible = false
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
@@ -751,7 +756,7 @@ func _update_cursor_layer():
 			else:
 				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
 				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
-		else:
+		elif comp_cursor:
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
 			var to_cam = (xr_camera.global_position - hit_point).normalized()
@@ -764,7 +769,8 @@ func _update_cursor_layer():
 			if cursor_mode == 0:
 				if pointer: pointer.visible = false
 				if circle: circle.visible = true
-				comp_cursor_viewport.size = Vector2i(256, 256)
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
@@ -772,8 +778,10 @@ func _update_cursor_layer():
 			elif on_screen:
 				if pointer: pointer.visible = true
 				if circle: circle.visible = false
-				comp_cursor_viewport.size = Vector2i(40, 64)
-				comp_cursor.set_quad_size(Vector2(0.04 * dist_scale, 0.064 * dist_scale))
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(40, 64)
+				var cursor_quad_size = Vector2(0.064 * dist_scale, 0.064 * dist_scale) if RenderingServer.get_current_rendering_method() == "gl_compatibility" else Vector2(0.04 * dist_scale, 0.064 * dist_scale)
+				comp_cursor.set_quad_size(cursor_quad_size)
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
@@ -783,22 +791,27 @@ func _update_cursor_layer():
 			else:
 				if pointer: pointer.visible = false
 				if circle: circle.visible = true
-				comp_cursor_viewport.size = Vector2i(256, 256)
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(0.035, 0.035))
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 			comp_cursor.visible = true
 	else:
-		comp_cursor.visible = false
+		if comp_cursor:
+			comp_cursor.visible = false
 		_hide_all_stream_cursors()
-	if pointer_cursor:
+	if pointer_cursor and comp_cursor:
 		pointer_cursor.visible = false
 	if contact_dot:
 		contact_dot.visible = false
 	if comp_ui and comp_ui.visible:
 		comp_ui.global_position = ui_panel_3d.global_position
 		comp_ui.global_rotation = ui_panel_3d.global_rotation
+		if comp_status:
+			comp_status.global_position = comp_ui.global_position - comp_ui.global_transform.basis.y * 0.193
+			comp_status.global_rotation = comp_ui.global_rotation
 	if comp_kb and virtual_keyboard and virtual_keyboard.visible:
 		comp_kb.global_position = virtual_keyboard.global_position
 		comp_kb.global_rotation = virtual_keyboard.global_rotation
@@ -2034,7 +2047,7 @@ func _process_stats(delta):
 			settings_controller.apply_filter()
 	stats_frame_times.append(delta)
 	stats_timer += delta
-	if stats_timer >= 0.5:
+	if stats_timer >= 0.1:
 		var avg = 0.0
 		for t in stats_frame_times:
 			avg += t
@@ -2069,12 +2082,21 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings()
 		_set_ui_position()
-		if comp.in_use:
-			if comp_ui:
-				comp_ui.visible = true
-				comp_ui.global_position = ui_panel_3d.global_position
-				comp_ui.global_rotation = ui_panel_3d.global_rotation
-			ui_panel_3d.visible = false
+		if comp.in_use and comp_ui:
+			comp_ui.visible = true
+			comp_ui.global_position = ui_panel_3d.global_position
+			comp_ui.global_rotation = ui_panel_3d.global_rotation
+			if comp_status:
+				comp_status.global_position = comp_ui.global_position - comp_ui.global_transform.basis.y * 0.193
+				comp_status.global_rotation = comp_ui.global_rotation
+				comp_status.visible = true
+			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+				ui_panel_3d.visible = true
+				var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+				if ui_material:
+					ui_material.albedo_color = Color(1, 1, 1, 0.001)
+			else:
+				ui_panel_3d.visible = false
 			if bezel_enabled:
 				comp_bezel_rect.color = Color(0, 0, 0, 0)
 				if comp_bezel_rect_left:
@@ -2083,6 +2105,9 @@ func _toggle_ui():
 					comp_bezel_rect_right.color = Color(0, 0, 0, 0)
 		else:
 			ui_panel_3d.visible = true
+			var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+			if ui_material:
+				ui_material.albedo_color = Color(1, 1, 1, 1)
 			var ui_tex = ui_viewport.get_texture()
 			ui_panel_3d.material_override.albedo_texture = ui_tex
 		var area = ui_panel_3d.get_node_or_null("Area3D")
@@ -2091,6 +2116,11 @@ func _toggle_ui():
 	else:
 		if comp_ui:
 			comp_ui.visible = false
+		if comp_status:
+			comp_status.visible = false
+		var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+		if ui_material:
+			ui_material.albedo_color = Color(1, 1, 1, 1)
 		_save_ui_offset()
 		ui_panel_3d.visible = false
 		var area = ui_panel_3d.get_node_or_null("Area3D")

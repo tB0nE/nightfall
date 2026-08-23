@@ -306,7 +306,9 @@ func _auto_bitrate(w: int, h: int) -> int:
 	return maxi(kbps, AUTO_BITRATE_MIN_KBPS)
 
 func resize_stream_viewport(w: int, h: int):
-	main.stream_viewport.size = Vector2i(w, h)
+	var stream_size = Vector2i(w, h)
+	if main.stream_viewport.size != stream_size:
+		main.stream_viewport.size = stream_size
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
 		_v2_yuv_rect.custom_minimum_size = Vector2(w, h)
@@ -314,14 +316,19 @@ func resize_stream_viewport(w: int, h: int):
 	# every screen's own composite viewport must track the actual decoded
 	# resolution too, or secondary screens stay stuck at their setup_screen()
 	# default (1920x1080) and look soft once the stream exceeds that.
-	for s in main.screens:
-		if s.comp_viewport:
-			s.comp_viewport.size = Vector2i(w, h)
-		if s.comp_viewport_left:
-			s.comp_viewport_left.size = Vector2i(w, h)
-		if s.comp_viewport_right:
-			s.comp_viewport_right.size = Vector2i(w, h)
-		s.comp_base_size = Vector2i(w, h)
+	var resize_comp_viewports = RenderingServer.get_current_rendering_method() != "gl_compatibility"
+	if resize_comp_viewports:
+		for s in main.screens:
+			s.comp_base_size = stream_size
+			var comp_size = stream_size
+			if main.bezel_enabled and main.comp.in_use:
+				comp_size += Vector2i(16, 16)
+			if s.comp_viewport and s.comp_viewport.size != comp_size:
+				s.comp_viewport.size = comp_size
+			if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
+				s.comp_viewport_left.size = comp_size
+			if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
+				s.comp_viewport_right.size = comp_size
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
@@ -554,3 +561,6 @@ func update_stats():
 		if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt
+	if main.comp_status_label:
+		main.comp_status_label.text = txt
+		main.comp.refresh_gles_status_layer()
