@@ -896,6 +896,16 @@ func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0)
 	for child in handle.get_children():
 		if child is MeshInstance3D:
 			child.material_override.albedo_color = c
+	# Mirror onto the composition-space equivalent (2026-08-24) - see
+	# VRScreen's comp_corner_layers/comp_corner_rects comment. modulate.a on
+	# a TextureRect child inside an already-visible viewport is the same
+	# safe category as the per-screen stream cursors (not the composition
+	# layer's own `visible` toggling that caused the earlier crash).
+	var screen = handle.get_parent()
+	if screen is VRScreen and handle.has_meta(&"nf_corner_idx"):
+		var idx: int = handle.get_meta(&"nf_corner_idx")
+		if idx >= 0 and idx < screen.comp_corner_rects.size() and screen.comp_corner_rects[idx]:
+			screen.comp_corner_rects[idx].modulate.a = alpha
 
 func _compute_parallax_shift(uv_x: float) -> float:
 	if not main.depth_estimator or not main.depth_estimator.depth_texture:

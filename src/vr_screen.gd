@@ -72,6 +72,16 @@ var comp_stream_cursor_circle_right: ColorRect = null
 # visual. See main.gd's _update_grab_bar_layers().
 var comp_grab_bar: Node3D = null
 var comp_grab_bar_viewport: SubViewport = null
+
+# Composition-space corner-handle indicators (2026-08-24) - same rationale
+# as comp_grab_bar: corner_handles are plain 3D scene nodes (MeshInstance3D
+# with an L-bracket texture, see create_corner_handles()), invisible under
+# projectionless mode. Parallel arrays indexed the same as corner_handles
+# (top-left/top-right/bottom-left/bottom-right) - see main.gd's
+# _update_grab_bar_layers() (also drives these) and xr_interaction.gd's
+# _set_corner_color() (mirrors hover/click alpha onto comp_corner_rects).
+var comp_corner_layers: Array = []
+var comp_corner_rects: Array = []
 var comp_layer: Node3D = null
 var comp_base_size: Vector2i = Vector2i(1920, 1080)
 var _original_mat: Material = null

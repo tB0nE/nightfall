@@ -930,6 +930,7 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 # direct copy, no basis/orientation math needed (unlike the laser).
 func _update_grab_bar_layers():
 	for s in screens:
+		_update_corner_layers(s)
 		if not s.comp_grab_bar:
 			continue
 		if not comp.in_use:
@@ -957,6 +958,31 @@ func _update_grab_bar_layers():
 		s.comp_grab_bar.rotate_object_local(Vector3.FORWARD, PI / 2.0)
 		if not s.comp_grab_bar.visible:
 			s.comp_grab_bar.visible = true
+
+# Mirrors each of a screen's real corner_handles (already curve/resize-aware
+# via VRScreen.update_corner_positions() - see get_cylinder_radius()/
+# _comp_cyl_radius) onto their composition-space equivalents every frame.
+# No curve math duplicated here - just copying the real handle's already-
+# correct global transform and size, same approach as the grab bar.
+func _update_corner_layers(s: VRScreen):
+	if s.comp_corner_layers.is_empty():
+		return
+	if not comp.in_use:
+		for layer in s.comp_corner_layers:
+			if layer and layer.visible:
+				layer.visible = false
+		return
+	var corner_size = s.mesh_size.x * 0.027
+	for i in range(s.comp_corner_layers.size()):
+		var layer = s.comp_corner_layers[i]
+		if not layer or i >= s.corner_handles.size():
+			continue
+		var handle = s.corner_handles[i]
+		layer.set_quad_size(Vector2(corner_size, corner_size))
+		layer.global_position = handle.global_position
+		layer.global_rotation = handle.global_rotation
+		if not layer.visible:
+			layer.visible = true
 
 func exit_app():
 	get_tree().quit()

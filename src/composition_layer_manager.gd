@@ -148,6 +148,59 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_grab_bar.set_layer_viewport(s.comp_grab_bar_viewport)
 	main._log("[COMP] Grab-bar composition layer created (%s)" % s.monitor_id)
 
+	# Corner-handle visuals (2026-08-24) - see VRScreen's comp_corner_layers
+	# comment. Reuses VRScreen._make_corner_texture() directly (the exact
+	# same L-bracket generator the real corner_handles use) rather than
+	# duplicating it - the base 0.08 opacity baked into that texture
+	# already matches the real handles' idle state, and
+	# xr_interaction.gd's _set_corner_color() mirrors hover/click alpha
+	# onto comp_corner_rects[i].modulate.a the same way it already updates
+	# the real handle's material_override.albedo_color.
+	var corner_ids = ["top-left", "top-right", "bottom-left", "bottom-right"]
+	s.comp_corner_layers.resize(4)
+	s.comp_corner_rects.resize(4)
+	for i in range(4):
+		var corner_layer = OpenXRCompositionLayerQuad.new()
+		corner_layer.name = "CompCorner%dLayer_%s" % [i, s.monitor_id]
+		corner_layer.set_sort_order(998)
+		corner_layer.set_enable_hole_punch(false)
+		corner_layer.set_alpha_blend(true)
+		corner_layer.visible = false
+		main.xr_origin.add_child(corner_layer)
+
+		var corner_viewport = SubViewport.new()
+		corner_viewport.name = "CompCorner%dViewport_%s" % [i, s.monitor_id]
+		corner_viewport.disable_3d = true
+		corner_viewport.transparent_bg = true
+		corner_viewport.size = Vector2i(128, 128)
+		corner_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(corner_viewport)
+
+		var corner_rect = TextureRect.new()
+		corner_rect.name = "CornerBracket"
+		corner_rect.anchors_preset = 15
+		corner_rect.anchor_right = 1.0
+		corner_rect.anchor_bottom = 1.0
+		corner_rect.expand_mode = 1
+		corner_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		# opacity=1.0 here, NOT the real corner_handles default of 0.08
+		# (2026-08-24) - _set_corner_color() sets modulate.a to the dynamic
+		# hover/click alpha (0.05 idle / 0.15 hover / 0.4 grabbed), which
+		# MULTIPLIES against this texture's own baked alpha rather than
+		# replacing it. With the real 0.08 baked in, that chain crushed
+		# the actual rendered alpha down to ~0.03 at best (0.08 * 0.4) -
+		# confirmed via a full-opacity test to be why nothing was visible
+		# at all. Baking in full opacity here makes modulate.a the sole,
+		# meaningful alpha control, matching what the dynamic values were
+		# actually meant to look like.
+		corner_rect.texture = VRScreen._make_corner_texture(corner_ids[i], 128, 20, 1.0)
+		corner_viewport.add_child(corner_rect)
+
+		corner_layer.set_layer_viewport(corner_viewport)
+		s.comp_corner_layers[i] = corner_layer
+		s.comp_corner_rects[i] = corner_rect
+	main._log("[COMP] Corner-handle composition layers created (%s)" % s.monitor_id)
+
 	if not with_stereo:
 		return
 
