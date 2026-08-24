@@ -315,20 +315,25 @@ func resize_stream_viewport(w: int, h: int):
 	# comp_viewport/_left/_right/comp_base_size alias to the PRIMARY screen only;
 	# every screen's own composite viewport must track the actual decoded
 	# resolution too, or secondary screens stay stuck at their setup_screen()
-	# default (1920x1080) and look soft once the stream exceeds that.
-	var resize_comp_viewports = RenderingServer.get_current_rendering_method() != "gl_compatibility"
-	if resize_comp_viewports:
-		for s in main.screens:
-			s.comp_base_size = stream_size
-			var comp_size = stream_size
-			if main.bezel_enabled and main.comp.in_use:
-				comp_size += Vector2i(16, 16)
-			if s.comp_viewport and s.comp_viewport.size != comp_size:
-				s.comp_viewport.size = comp_size
-			if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
-				s.comp_viewport_left.size = comp_size
-			if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
-				s.comp_viewport_right.size = comp_size
+	# default (1920x1080) and look soft once the stream exceeds that. Used to
+	# be skipped entirely under GLES (2026-08-23's "gl_compatibility" gate,
+	# no comment explaining why) - re-enabled (2026-08-24) since it was
+	# silently downscale-then-upscale blurring every GLES stream above
+	# 1920x1080, and none of the swapchain-teardown crashes fixed earlier
+	# this session were about resizing SubViewports (they were about
+	# repeatedly toggling a composition layer's `.visible`), so there's no
+	# known reason left to keep this GLES-specific.
+	for s in main.screens:
+		s.comp_base_size = stream_size
+		var comp_size = stream_size
+		if main.bezel_enabled and main.comp.in_use:
+			comp_size += Vector2i(16, 16)
+		if s.comp_viewport and s.comp_viewport.size != comp_size:
+			s.comp_viewport.size = comp_size
+		if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
+			s.comp_viewport_left.size = comp_size
+		if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
+			s.comp_viewport_right.size = comp_size
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
