@@ -79,16 +79,21 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   # resolves its model directory relative to the running executable's own path
   # (OS::get_executable_path()'s base dir + "/depth_models"), NOT through
   # Godot's res:///PCK - the PCK export above uses the Android preset as a
-  # headless-export workaround and never includes android/src/main/assets/.
+  # headless-export workaround and never includes models/ or android/src/main/assets/.
   # Same "loose files next to the binary" pattern as the .so/AAR copies below.
+  # Models live in models/ (gitignored, not committed - see models/README.md
+  # for the full manifest and how to obtain each file) rather than
+  # android/src/main/assets/ (2026-08-24) - both Android and Linux now pull
+  # from the same single source directory instead of Android's assets folder
+  # doing double duty as the canonical location for a non-Android platform.
   mkdir -p "$SCRIPT_DIR/depth_models"
-  cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-256-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-320-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/yolo26n-depth-256-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/yolo26n-depth-320-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/yolo26n-depth-384-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
 
   rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 
@@ -204,15 +209,19 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # regardless of ordering. Gradle's own asset merge (mergeDebugAssets/mergeReleaseAssets)
 # supports multiple source directories per source set though, so a sibling directory
 # declared via sourceSets below survives untouched and still gets merged into the APK.
+# Models live in models/ (gitignored, not committed - see models/README.md
+# for the full manifest and how to obtain each file), not
+# android/src/main/assets/ (2026-08-24) - see the matching comment in the
+# Linux depth_models block above.
 mkdir -p android/build/nightfallAssets
-cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
 # MiDaS-small re-exported/re-calibrated at 192x192 (2026-08-20) - an
 # independently-calibrated sibling of the 256px model above, not just a
 # resize (own scale/zero_point, see DepthEstimator.java's MIDAS_192_*
 # constants). Now the default landing spot right after Off (see
 # settings_controller.gd's ai_3d_model_labels comment).
-cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
 # YOLO26-depth nano (5.5MB each), w8a32 quantization (2026-08-20, was static
 # full int8) - Ultralytics' new monocular depth export, verified via direct
 # TFLite Interpreter inspection (2026-08-18). w8a32 (dynamic/weight-only
@@ -226,10 +235,10 @@ cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" android
 # quantization proved fragile on real desktop-UI-style low-texture content
 # even after a resolution bump; DepthEstimator.java still attempts to load it
 # (soft-fails harmlessly, same pattern as MiDaS-GPU) and its file stays
-# in android/src/main/assets/ untouched if the calibration issue gets fixed.
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-256-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-320-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" android/build/nightfallAssets/
+# in models/ untouched if the calibration issue gets fixed.
+cp "$SCRIPT_DIR/models/yolo26n-depth-256-w8a32.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/yolo26n-depth-320-w8a32.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/yolo26n-depth-384-w8a32.tflite" android/build/nightfallAssets/
 # Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
 # fp16 asset was fully dead code (never loaded on this CPU path at all: an
 # "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
@@ -242,8 +251,8 @@ cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" android/
 # produce spatially incoherent output) and shipped with dilate/blur
 # post-processing OFF (was hardcoded on) - see DepthEstimator.java's
 # MODEL_DA_196/252 comment for both fixes' full history.
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
 LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
 if [ ! -f "$LITERT_GPU_AAR" ]; then
   echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"

@@ -54,10 +54,14 @@ android/src/main/AndroidManifest.xml
 *.idsig
 *.a
 
-# Large model assets, dormant/unreachable from the current UI (kept on disk
-# locally for any future revival work, not worth the repo-size cost until then)
-android/src/main/assets/midas-v21-small-256-gpu.tflite
-android/src/main/assets/yolo26s-depth-int8.tflite
+# Depth model weights (2026-08-24) - moved out of git entirely (were ~115MB
+# committed across android/src/main/assets/*.tflite) into models/, which is
+# gitignored wholesale instead of tracked. See models/README.md for the full
+# manifest (filenames, sizes, per-model acquisition/conversion instructions)
+# and build.sh for how they get copied into the Android APK / Linux binary
+# at build time - build.sh will fail loudly if one referenced there is
+# missing, rather than silently shipping an incomplete build.
+/models/*.tflite
 
 # Model conversion artifacts
 tools/Depth-Anything-V2/

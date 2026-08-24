@@ -82,7 +82,7 @@ cmake --preset linux -DCMAKE_BUILD_TYPE=Release
 ninja -C build/linux-release
 ```
 
-Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `android/src/main/assets/`.
+Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh` from `models/` - see `models/README.md`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `models/`.
 
 ### Patched Godot Engine (Quest only)
 
@@ -137,7 +137,7 @@ The `build.sh` script handles everything:
 What `build.sh` does:
 1. Wipes `android/build/` and extracts Godot Android template
 2. Copies `GodotApp.java` and `DepthEstimator.java`
-3. Copies TFLite models to assets (MiDaS + Depth Anything V2 if present)
+3. Copies TFLite models from `models/` to assets (see `models/README.md`)
 4. Patches `build.gradle` with LiteRT 1.4.2 and Nightfall's GPU AAR
 5. Copies Meta OpenXR vendor plugin AAR
 6. Exports APK via Godot headless
@@ -151,9 +151,18 @@ For Linux AppImage (`--appimage`):
 3. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
 4. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
 
-### Generate Depth Anything V2 Model
+### Depth models
 
-The MiDaS model (`midas-midas-v2-w8a8.tflite`, 17MB) is included in the repo. The Depth Anything V2 model (`depth-anything-v2-small.tflite`, 85MB) must be generated separately:
+`build.sh` bundles a set of `.tflite` depth-estimation models from `models/` into
+both the Android APK and the Linux binary - none of them are committed to git
+(`.gitignore`'s `/models/*.tflite`), so you need them present locally before
+building. See **`models/README.md`** for the full manifest (every file `build.sh`
+needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
+missing-file error if one isn't there rather than silently shipping an incomplete
+build.
+
+Depth Anything V2 has a real conversion script (the others don't yet - see
+`models/README.md`):
 
 ```bash
 # Requires: Python 3.12+ with PyTorch, onnx2tf, onnxsim
@@ -162,9 +171,9 @@ pip install onnx2tf sng4onnx onnxsim
 python3 tools/convert_depth_anything_v2.py
 ```
 
-This downloads the Depth Anything V2 Small weights from HuggingFace, exports to ONNX (252x252 input for DINOv2 patch size), and converts to int8 quantized TFLite. The output is placed at `android/src/main/assets/depth-anything-v2-small.tflite`.
-
-The app works without it - AI 3D mode will use MiDaS only. AI 3D v2 mode will fall back to MiDaS if the model file is missing.
+This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
+ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
+quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
 
 ### Nightfall LiteRT GPU AAR
 
@@ -214,7 +223,8 @@ adb install -r Nightfall-Android-arm64-v8a-debug.apk
 ├── android/
 │   └── src/main/
 │       ├── java/com/godot/game/  # GodotApp.java, DepthEstimator.java
-│       └── assets/               # midas-midas-v2-w8a8.tflite (depth-anything-v2-small.tflite generated separately)
+│       └── assets/               # controllers/ (non-model assets); depth models live in models/, not here
+├── models/                    # Depth model .tflite files (gitignored, see models/README.md)
 ├── BUILD.md
 └── README.md
 ```
