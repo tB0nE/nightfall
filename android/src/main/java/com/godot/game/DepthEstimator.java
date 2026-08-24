@@ -189,6 +189,22 @@ public class DepthEstimator {
     // duplicating runInferenceMidasGpu()/ensureMidasGpuLoaded()'s logic.
     private static final String MODEL_MIDAS_192_GPU = "midas-v21-small-192-gpu.tflite";
     private static final int MIDAS_192_GPU_INPUT_SIZE = 192;
+    // YOLO26-N-depth-384-GPU (2026-08-24) - unlike the deployed CPU YOLO26
+    // models (NCHW, see MODEL_YOLO_N_* comment), this is a fresh export via
+    // Ultralytics' own ONNX export (model.export(format="onnx")) run through
+    // the same onnx2tf GPU-friendly recipe as the MiDaS GPU variants -
+    // verified the resulting graph is NHWC/float32 I/O (confirmed directly,
+    // not assumed) and CNN-dominated (86 CONV_2D, 78 LOGISTIC/sigmoid for
+    // SiLU activations, only 4 BATCH_MATMUL/2 SOFTMAX from one small
+    // attention block) - a much better GPU-delegate op mix than Depth
+    // Anything V2's ViT backbone (72 BATCH_MATMUL/12 GELU/12 SOFTMAX, judged
+    // not GPU-viable and not pursued). Confirmed non-degenerate real
+    // inference output before bundling. Because this export happens to be
+    // NHWC (not the CPU model's NCHW), runInferenceGpu()'s existing
+    // per-pixel-interleaved fill is directly reusable, unlike
+    // runInferenceYolo()'s NCHW channel-planar fill used for the CPU model.
+    private static final String MODEL_YOLO_N_384_GPU = "yolo26n-depth-384-gpu.tflite";
+    private static final int YOLO_N_384_GPU_INPUT_SIZE = 384;
 
     private Interpreter tfliteMidas;
     private Interpreter tfliteMidas192;
@@ -206,10 +222,12 @@ public class DepthEstimator {
     // one Interpreter) and its own lazy-load/failure state, same semantics
     // as the original single-model fields just made per-model instead of
     // hardcoded to MiDaS-256. NHWC/float32-I/O fill (runInferenceGpu below)
-    // is shared across all variants registered here - only valid for the
-    // MiDaS-small architecture family; a future YOLO/DA-V2 GPU variant with
-    // a different layout would need its own fill function, not a new field
-    // on this class.
+    // is shared across all variants registered here - not tied to a specific
+    // architecture, just to a layout (NHWC per-pixel-interleaved float32).
+    // MiDaS's GPU exports and YOLO26-N-384's GPU export both happen to be
+    // NHWC via the same onnx2tf recipe; a future GPU variant exported with a
+    // different layout (e.g. NCHW, matching the deployed CPU YOLO26 models)
+    // would need its own fill function, not a new field on this class.
     private static final class GpuVariant {
         final String label;
         final String assetFile;
@@ -417,6 +435,7 @@ public class DepthEstimator {
             // single-model MiDaS-256-GPU deferred-load pattern.
             gpuVariants.put(3, new GpuVariant("MiDaS-256-GPU", MODEL_MIDAS_GPU, MIDAS_GPU_INPUT_SIZE));
             gpuVariants.put(10, new GpuVariant("MiDaS-192-GPU", MODEL_MIDAS_192_GPU, MIDAS_192_GPU_INPUT_SIZE));
+            gpuVariants.put(4, new GpuVariant("YOLO26-N-384-GPU", MODEL_YOLO_N_384_GPU, YOLO_N_384_GPU_INPUT_SIZE));
 
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
@@ -949,15 +968,17 @@ public class DepthEstimator {
     }
 
     // NHWC (per-pixel interleaved, same fill order as runInferenceDA/Midas -
-    // NOT the NCHW channel-planar fill YOLO26 needs) and plain float32 I/O,
-    // verified directly against the exported model (see MODEL_MIDAS_GPU
-    // comment for why this is float32, not fp16, despite running through the
-    // GPU delegate). No external ImageNet normalization here - it's baked
-    // into the graph itself, so this sends the exact same plain 0..1
-    // pixel/255.0f every other model here uses. Only valid for the
-    // MiDaS-small architecture family (both variants registered today share
-    // this) - a future YOLO/DA-V2 GPU variant would need its own fill
-    // function (NCHW layout, or a ViT patch-size constraint) rather than
+    // NOT the NCHW channel-planar fill the CPU YOLO26 models need) and plain
+    // float32 I/O, verified directly against each exported model (see
+    // MODEL_MIDAS_GPU's comment for why this is float32, not fp16, despite
+    // running through the GPU delegate). MiDaS's GPU exports bake ImageNet
+    // normalization into the graph itself; YOLO26-N-384-GPU's export needs
+    // no normalization at all (Ultralytics' plain 0..1 convention) - either
+    // way this sends the exact same plain 0..1 pixel/255.0f every model here
+    // uses, any graph-internal preprocessing is invisible at this boundary.
+    // Only valid for a NHWC-layout GPU export (see GpuVariant's own comment
+    // above) - a future GPU variant exported with a different layout (e.g.
+    // NCHW) would need its own fill function rather than
     // reusing this one.
     private byte[] runInferenceGpu(GpuVariant v, byte[] rgbaPixels, int width, int height) {
         lastGpuPrepareNs = 0;

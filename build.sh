@@ -253,6 +253,14 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAs
 cp "$SCRIPT_DIR/models/yolo26n-depth-256-w8a32.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/models/yolo26n-depth-320-w8a32.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/models/yolo26n-depth-384-w8a32.tflite" android/build/nightfallAssets/
+# YOLO26-N-384-GPU (2026-08-24) - fresh export via Ultralytics' own ONNX
+# export (NOT a conversion of the deployed CPU w8a32 model above, which is
+# NCHW) run through the same onnx2tf GPU-friendly recipe as the MiDaS GPU
+# exports. Verified NHWC/float32-I/O and a CNN-dominated op graph (86
+# CONV_2D, 78 LOGISTIC/sigmoid, only 4 BATCH_MATMUL/2 SOFTMAX from one small
+# attention block) - unlike Depth Anything V2's ViT backbone (72 BATCH_MATMUL/
+# 12 GELU/12 SOFTMAX, judged not GPU-delegate-viable and not bundled).
+cp "$SCRIPT_DIR/models/yolo26n-depth-384-gpu.tflite" android/build/nightfallAssets/
 # Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
 # fp16 asset was fully dead code (never loaded on this CPU path at all: an
 # "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
