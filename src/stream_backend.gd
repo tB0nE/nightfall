@@ -193,6 +193,33 @@ func set_depth_model(model_id: int):
 		if db:
 			db.set_depth_model(model_id)
 
+func configure_depth(model_id: int, requested_backend: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			db.configure_depth(model_id, requested_backend)
+
+func get_depth_backend_capabilities(model_id: int) -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_depth_backend_capabilities(model_id)
+	return 1 # CPU
+
+func get_effective_depth_backend() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_effective_depth_backend()
+	return 1 # CPU
+
+func get_depth_backend_status() -> String:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_depth_backend_status()
+	return ""
+
 func submit_depth_frame(data: PackedByteArray, w: int, h: int):
 	if _v2:
 		var db = _v2.get_depth_bridge()

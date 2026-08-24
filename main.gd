@@ -70,7 +70,8 @@ var sbs_mode: int = 0
 # Split (2026-08-18) from a single flat ai_3d_mode into three independent
 # axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
 # ai_3d_debug_labels and get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # 0=Off, 1=MiDaS-192, 2=YOLO26-N-256, 3=YOLO26-N-320, 4=YOLO26-N-384, 5=MiDaS-256, 6=DA-V2-196, 7=DA-V2-252
+var ai_3d_model: int = 0 # 0=Off, 1=MiDaS-192, 2=YOLO26-N-256, 3=YOLO26-N-320, 4=YOLO26-N-384, 5=MiDaS-256, 6=MiDaS-256-GPU, 7=DA-V2-196, 8=DA-V2-252
+var ai_3d_backend: int = 0 # 0=Auto, 1=CPU, 2=GPU
 var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
@@ -386,6 +387,7 @@ var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_backend_btn: Button
 var _ui_3d_quality_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button

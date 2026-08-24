@@ -51,6 +51,10 @@ func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_model()
 
+func on_ai_3d_backend_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_backend()
+
 func on_ai_3d_quality_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_quality()
@@ -64,6 +68,7 @@ func update_stereo_shader():
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
 	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	update_option_btn(main._ui_3d_backend_btn, main.settings_controller.get_depth_backend_label())
 	update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
@@ -77,6 +82,9 @@ func update_3d_btn_state():
 	# whenever AI-3D itself is off - no point picking a tier or a debug
 	# view for a model that isn't running.
 	var sub_disabled = disabled or main.ai_3d_model == 0
+	if main._ui_3d_backend_btn:
+		main._ui_3d_backend_btn.disabled = sub_disabled
+		main._ui_3d_backend_btn.modulate.a = 0.3 if sub_disabled else 1.0
 	if main._ui_3d_quality_btn:
 		main._ui_3d_quality_btn.disabled = sub_disabled
 		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
@@ -549,6 +557,8 @@ func build_ui():
 	disp_row1.add_child(main._ui_sbs_btn)
 	main._ui_3d_btn = make_option_btn("3D AI", "Off")
 	disp_row1.add_child(main._ui_3d_btn)
+	main._ui_3d_backend_btn = make_option_btn("3D Backend", "Auto (CPU)")
+	disp_row1.add_child(main._ui_3d_backend_btn)
 	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
 	disp_row1.add_child(main._ui_3d_quality_btn)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
@@ -799,6 +809,7 @@ func build_ui():
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	main._ui_3d_backend_btn.button_down.connect(func(): on_ai_3d_backend_toggled())
 	main._ui_3d_quality_btn.button_down.connect(func(): on_ai_3d_quality_toggled())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())

@@ -97,6 +97,24 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static void configureDepth(int modelIndex, int requestedBackend) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.configureDepth(modelIndex, requestedBackend);
+		}
+	}
+
+	public static int getDepthBackendCapabilities(int modelIndex) {
+		return depthEstimator != null ? depthEstimator.getBackendCapabilities(modelIndex) : 1;
+	}
+
+	public static int getEffectiveDepthBackend() {
+		return depthEstimator != null ? depthEstimator.getEffectiveBackend() : 1;
+	}
+
+	public static String getDepthBackendStatus() {
+		return depthEstimator != null ? depthEstimator.getBackendStatus() : "Depth runtime unavailable; using CPU";
+	}
+
 	public static int getDepthModelSize() {
 		if (depthEstimator != null && depthEstimator.isInitialized()) {
 			return depthEstimator.getModelSize();

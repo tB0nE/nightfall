@@ -5,6 +5,8 @@ var main: Node3D
 var _restart_pending: bool = false
 var _restart_seq: int = 0
 var _ai_3d_commit_seq: int = 0
+var _last_effective_backend: int = -1
+var _last_backend_status: String = ""
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -78,6 +80,15 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # to land on when a user first turns AI-3D on, before they've had a chance to
 # explore the rest of the lineup.
 var ai_3d_model_labels: Array = ["Off", "MiDaS-192", "YOLO26-N-256", "YOLO26-N-320", "YOLO26-N-384", "MiDaS-256", "MiDaS-256-GPU", "DA-V2-196", "DA-V2-252"]
+# Separate 3D Backend control (2026-08-22, GLES-first migration) - lets
+# MiDaS-256 (index 5) explicitly request GPU without needing its own
+# dedicated model list entry. The pre-existing "MiDaS-256-GPU" entry
+# (index 6) is kept as-is for persisted-ID compatibility (see
+# ai_3d_model_labels' own history above) and behaves as a shorthand for
+# "MiDaS-256 + Backend=GPU" - apply_stereo() below folds it into the same
+# configure_depth() call. New selections should prefer MiDaS-256 + this
+# Backend control over picking index 6 directly.
+var ai_3d_backend_labels: Array = ["Auto", "CPU", "GPU"]
 var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
@@ -167,6 +178,13 @@ func cycle_ai_3d_model():
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
 
+func cycle_ai_3d_backend():
+	if not _ai_3d_supported() or main.sbs_mode > 0 or main.ai_3d_model == 0:
+		return
+	main.ai_3d_backend = (main.ai_3d_backend + 1) % ai_3d_backend_labels.size()
+	_save_setting(main._ui_3d_backend_btn, get_depth_backend_label())
+	_schedule_ai_3d_commit()
+
 func cycle_ai_3d_quality():
 	if not _ai_3d_supported():
 		return
@@ -175,6 +193,66 @@ func cycle_ai_3d_quality():
 	main.ai_3d_quality = (main.ai_3d_quality + 1) % 4
 	_save_setting(main._ui_3d_quality_btn, ai_3d_quality_labels[main.ai_3d_quality])
 	_schedule_ai_3d_commit()
+
+# Maps main.ai_3d_model (the persisted UI selection) to DepthEstimator's real
+# Java-side model index. Index 6 ("MiDaS-256-GPU") resolves to MiDaS-256's
+# own index (3) - it's just a shorthand for "MiDaS-256 + GPU backend", not a
+# distinct model; get_depth_backend_index() below supplies the GPU intent.
+func get_depth_model_index() -> int:
+	if main.ai_3d_model == 0:
+		return 0
+	match main.ai_3d_model:
+		1: return 10 # MiDaS-192
+		2: return 7 # YOLO26-Depth-N-256
+		3: return 8 # YOLO26-Depth-N-320
+		4: return 4 # YOLO26-Depth-N-384
+		5: return 3 # MiDaS-256
+		6: return 3 # MiDaS-256-GPU (shorthand - see comment above)
+		7: return 11 # Depth Anything V2-196
+		8: return 1 # Depth Anything V2-252
+		_: return 3 # MiDaS-256 (fallback)
+
+# The backend to actually request from configure_depth(): the explicit
+# "MiDaS-256-GPU" model entry (index 6) always requests GPU regardless of
+# the separate Backend control, for continuity with how it behaved before
+# this control existed; every other model defers to main.ai_3d_backend.
+func get_depth_backend_index() -> int:
+	if main.ai_3d_model == 6:
+		return 2 # GPU
+	return main.ai_3d_backend
+
+func get_depth_backend_label() -> String:
+	var effective = 1
+	if main.stream_backend and main.stream_backend.has_method("get_effective_depth_backend"):
+		effective = main.stream_backend.get_effective_depth_backend()
+	var requested = get_depth_backend_index()
+	match requested:
+		0: return "Auto (GPU)" if effective == 2 else "Auto (CPU)"
+		1: return "CPU"
+		2: return "GPU" if effective == 2 else "GPU→CPU"
+		_: return "Auto (CPU)"
+
+func refresh_depth_backend_status(notify_transition: bool = false):
+	if not main.stream_backend:
+		return
+	var effective = main.stream_backend.get_effective_depth_backend()
+	var status = main.stream_backend.get_depth_backend_status()
+	var requested = get_depth_backend_index()
+	var fallback = not status.is_empty() and effective == 1 and requested != 1
+	var was_fallback = not _last_backend_status.is_empty() and _last_effective_backend == 1
+	if main._ui_3d_backend_btn:
+		main.ui_controller.update_option_btn(main._ui_3d_backend_btn, get_depth_backend_label())
+	if notify_transition and fallback and (not was_fallback or status != _last_backend_status):
+		main._log("[DEPTH] Backend fallback: " + status)
+		if main.ui_controller:
+			main.ui_controller.set_status(status)
+	elif notify_transition and was_fallback and not fallback:
+		var ended = "GPU depth fallback ended (%s)" % get_depth_backend_label()
+		main._log("[DEPTH] " + ended)
+		if main.ui_controller:
+			main.ui_controller.set_status(ended)
+	_last_effective_backend = effective
+	_last_backend_status = status if fallback else ""
 
 func cycle_ai_3d_debug():
 	if not _ai_3d_supported():
@@ -301,19 +379,9 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var model_idx = 0
-	if mode >= 3:
-		match main.ai_3d_model:
-			1: model_idx = 10 # MiDaS-192
-			2: model_idx = 7 # YOLO26-Depth-N-256
-			3: model_idx = 8 # YOLO26-Depth-N-320
-			4: model_idx = 4 # YOLO26-Depth-N-384
-			5: model_idx = 3 # MiDaS-256
-			6: model_idx = 6 if OS.get_name() == "Android" else 3 # MiDaS-256-GPU
-			7: model_idx = 11 # Depth Anything V2-196
-			8: model_idx = 1 # Depth Anything V2-252
-			_: model_idx = 3 # MiDaS-256 (fallback)
-	main.stream_backend.set_depth_model(model_idx)
+	var model_idx = get_depth_model_index() if mode >= 3 else 0
+	main.stream_backend.configure_depth(model_idx, get_depth_backend_index())
+	refresh_depth_backend_status(true)
 	if mode >= 3 and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
 

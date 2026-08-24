@@ -43,6 +43,7 @@ func save_host_state():
 	save.set_value(ip, "resolution_idx", main.resolution_idx)
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
 	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
+	save.set_value(ip, "ai_3d_backend", main.ai_3d_backend)
 	save.set_value(ip, "ai_3d_quality", main.ai_3d_quality)
 	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
@@ -83,7 +84,8 @@ func load_host_state(ip: String):
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_model"):
-			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 7)
+			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_model_labels.size() - 1)
+			main.ai_3d_backend = clampi(save.get_value(ip, "ai_3d_backend", 0), 0, 2)
 			main.ai_3d_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
 		elif save.has_section_key(ip, "ai_3d_mode"):
@@ -111,6 +113,7 @@ func load_host_state(ip: String):
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
 	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
+	main.ui_controller.update_option_btn(main._ui_3d_backend_btn, main.settings_controller.get_depth_backend_label())
 	main.ui_controller.update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
 	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	main.ui_controller.update_3d_btn_state()

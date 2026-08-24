@@ -38,6 +38,7 @@ const GPU_BOOST_REFRESH_INTERVAL := 15.0
 # model, not just MiDaS.
 var model_size: int = 256
 var _poll_timer: float = 0.0
+var _backend_status_timer: float = 0.0
 var _perf_window: float = 0.0
 var _perf_capture_usec: int = 0
 var _perf_submit_usec: int = 0
@@ -274,8 +275,8 @@ func _resize_warp_passes():
 			mat.set_shader_parameter("mode5_parallax", _pass_parallax)
 
 # Called from settings_controller.gd's apply_stereo() right after
-# stream_backend.set_depth_model() switches the active Java-side model -
-# setActiveModel() busy-waits out any in-flight inference before returning,
+# stream_backend.configure_depth() switches the active Java-side model -
+# switchActiveModel() busy-waits out any in-flight inference before returning,
 # so getModelSize() is already correct for the new model by the time this
 # runs. Resizes depth_viewport (the capture source fed INTO the model) and
 # recreates depth_texture's image (the model's OUTPUT, read back via
@@ -375,7 +376,13 @@ func _push_warp_newton_steps(steps: int):
 		main.comp_shader_mat_right.set_shader_parameter("warp_newton_steps", steps)
 
 func process(delta: float):
-	var should_boost = enabled and main.ai_3d_model == 6 and main.is_streaming
+	# GPU boost fires whenever depth inference is ACTUALLY running on GPU
+	# (main.stream_backend.get_effective_depth_backend() == 2), not just
+	# when the legacy "MiDaS-256-GPU" model entry (index 6) is picked
+	# directly - the separate 3D Backend control (2026-08-22) lets MiDaS-256
+	# (index 5) also end up running on GPU via Auto/GPU backend selection.
+	var effective_gpu = main.stream_backend and main.stream_backend.get_effective_depth_backend() == 2
+	var should_boost = enabled and effective_gpu and main.is_streaming
 	if should_boost:
 		_gpu_boost_refresh_timer += delta
 		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
@@ -386,6 +393,10 @@ func process(delta: float):
 		return
 
 	_resize_warp_passes()
+	_backend_status_timer += delta
+	if _backend_status_timer >= 0.25:
+		_backend_status_timer = 0.0
+		main.settings_controller.refresh_depth_backend_status(true)
 
 	if _warp_passes_active and _warp_throttled:
 		_warp_frame_counter += 1

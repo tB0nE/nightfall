@@ -24,6 +24,11 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
+    public static final int BACKEND_AUTO = 0;
+    public static final int BACKEND_CPU = 1;
+    public static final int BACKEND_GPU = 2;
+    public static final int BACKEND_CAP_CPU = 1;
+    public static final int BACKEND_CAP_GPU = 2;
     private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
 
@@ -207,6 +212,12 @@ public class DepthEstimator {
     private ByteBuffer outputBufferYoloS;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
+    private volatile int requestedModelIndex = 3;
+    private volatile int requestedBackend = BACKEND_AUTO;
+    private volatile int effectiveBackend = BACKEND_CPU;
+    private volatile String backendStatus = "";
+    private volatile boolean gpuPermanentlyUnavailable = false;
+    private volatile String midasGpuFailureReason = "";
 
     private static final class PendingFrame {
         final byte[] pixels;
@@ -391,6 +402,57 @@ public class DepthEstimator {
     }
 
     public void setActiveModel(int modelIndex) {
+        configureDepth(modelIndex, BACKEND_CPU);
+    }
+
+    public int getBackendCapabilities(int modelIndex) {
+        int capabilities = BACKEND_CAP_CPU;
+        if (modelIndex == 3 && !gpuPermanentlyUnavailable) {
+            capabilities |= BACKEND_CAP_GPU;
+        }
+        return capabilities;
+    }
+
+    public int getEffectiveBackend() {
+        return effectiveBackend;
+    }
+
+    public String getBackendStatus() {
+        return backendStatus;
+    }
+
+    public synchronized void configureDepth(int modelIndex, int backend) {
+        if (!initialized) return;
+        requestedModelIndex = modelIndex;
+        requestedBackend = backend >= BACKEND_AUTO && backend <= BACKEND_GPU ? backend : BACKEND_AUTO;
+
+        boolean gpuSupported = (getBackendCapabilities(modelIndex) & BACKEND_CAP_GPU) != 0;
+        boolean useGpu = requestedBackend != BACKEND_CPU && gpuSupported;
+        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        if (requestedBackend == BACKEND_GPU && !gpuSupported) {
+            backendStatus = gpuPermanentlyUnavailable && !midasGpuFailureReason.isEmpty()
+                    ? midasGpuFailureReason
+                    : "GPU depth is unavailable for this model; using CPU";
+        } else {
+            backendStatus = "";
+        }
+
+        switchActiveModel(useGpu ? 6 : modelIndex);
+        Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
+                + " requested=" + backendName(requestedBackend)
+                + " effective=" + backendName(effectiveBackend)
+                + (backendStatus.isEmpty() ? "" : " status=" + backendStatus));
+    }
+
+    private static String backendName(int backend) {
+        switch (backend) {
+            case BACKEND_GPU: return "GPU";
+            case BACKEND_CPU: return "CPU";
+            default: return "Auto";
+        }
+    }
+
+    private void switchActiveModel(int modelIndex) {
         if (!initialized) return;
         Interpreter target;
         if (modelIndex == 1 && tfliteDA252 != null) {
@@ -549,7 +611,33 @@ public class DepthEstimator {
         submittedFrames.incrementAndGet();
         try {
             ensureMidasGpuLoaded();
-            byte[] result = runInferenceMidasGpu(frame.pixels, frame.width, frame.height);
+            byte[] result;
+            if (tfliteMidasGpu != null) {
+                result = runInferenceMidasGpu(frame.pixels, frame.width, frame.height);
+            } else {
+                // GPU delegate/model failed to load - fall back to CPU MiDaS
+                // for the rest of this session (no per-frame retry). Set
+                // fallback state inline rather than via a separate helper -
+                // this IS the single-threaded inference worker itself, so
+                // there's no other in-flight inference to wait for; the
+                // surrounding try/finally already owns isInferencing.
+                String reason = midasGpuFailureReason.isEmpty()
+                        ? "GPU delegate initialization failed"
+                        : midasGpuFailureReason;
+                gpuPermanentlyUnavailable = true;
+                midasGpuFailureReason = reason;
+                effectiveBackend = BACKEND_CPU;
+                backendStatus = reason;
+                activeInterpreter = tfliteMidas;
+                activeModelIndex = requestedModelIndex == 6 ? 3 : requestedModelIndex;
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                Log.w(TAG, reason + "; CPU depth will continue without retrying GPU this session");
+                result = runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
+                        MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
+                        frame.pixels, frame.width, frame.height);
+            }
             if (result != null) {
                 latestDepthMap.set(result);
             }
@@ -783,6 +871,7 @@ public class DepthEstimator {
             Log.i(TAG, "MiDaS-GPU model loaded with GPU delegate");
         } catch (Exception e) {
             Log.w(TAG, "MiDaS-GPU model/GPU delegate not available", e);
+            midasGpuFailureReason = "GPU delegate initialization failed: " + e.getClass().getSimpleName();
             tfliteMidasGpu = null;
             if (gpuDelegate != null) {
                 gpuDelegate.close();
