@@ -888,6 +888,21 @@ func _bar_base_color(screen: VRScreen) -> Color:
 
 func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	bar.material_override.albedo_color = Color(color.r, color.g, color.b, alpha)
+	# Mirror onto the composition-space equivalent (2026-08-24) - same
+	# pattern as _set_corner_color(). grab_bar is a %-unique-named node
+	# from VRScreen's own packed scene, not necessarily a direct child, so
+	# walk up to find the owning VRScreen rather than assuming get_parent().
+	var screen = bar.get_parent()
+	while screen and not (screen is VRScreen):
+		screen = screen.get_parent()
+	if screen is VRScreen and screen.comp_grab_bar_viewport:
+		var panel = screen.comp_grab_bar_viewport.find_child("GrabBarPanel", true, false)
+		if panel:
+			var style = panel.get_theme_stylebox("panel") as StyleBoxFlat
+			if style:
+				style = style.duplicate()
+				style.bg_color = Color(color.r, color.g, color.b, alpha)
+				panel.add_theme_stylebox_override("panel", style)
 
 func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var c = Color(color.r, color.g, color.b, alpha)

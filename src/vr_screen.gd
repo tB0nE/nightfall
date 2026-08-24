@@ -209,7 +209,13 @@ func update_corner_positions():
 			cx -= corner_size * 0.5
 		handle.position = Vector3(cx, cy, edge_z)
 		handle.rotation.y = -a
-	grab_bar.position.y = -ms.y / 2.0 - grab_bar_off
+	# Halved (2026-08-24, was the full grab_bar_off gap) - moves the real
+	# grab_bar (and its Area3D hitbox) closer to the screen edge, not just
+	# its composition-space visual (main.gd's _update_grab_bar_layers()
+	# mirrors this position directly) - keeping both in sync was the point;
+	# an earlier attempt that only offset the visual left the hitbox
+	# behind, making it hard to find/grab.
+	grab_bar.position.y = -ms.y / 2.0 - grab_bar_off * 0.5
 	if grab_bar.mesh is CylinderMesh:
 		var grab_r = ms.x * 0.0045
 		var grab_h = ms.x * 0.134

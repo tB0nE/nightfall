@@ -947,8 +947,14 @@ func _update_grab_bar_layers():
 		# hitbox size (ms.x*0.134, ms.y*0.079), which made this look like
 		# a chunky pill instead of a thin bar.
 		s.comp_grab_bar.set_quad_size(Vector2(ms.x * 0.134, ms.x * 0.009))
-		s.comp_grab_bar.global_position = s.grab_bar.global_position
 		s.comp_grab_bar.global_rotation = s.grab_bar.global_rotation
+		# Direct copy, no extra offset (2026-08-24) - the "move closer to
+		# the screen" adjustment now happens at the source (vr_screen.gd's
+		# update_corner_positions(), which also moves the real Area3D
+		# hitbox) rather than as a visual-only offset here. An earlier
+		# visual-only version left the hitbox behind at the old position,
+		# making the bar hard to find/grab where it visually appeared.
+		s.comp_grab_bar.global_position = s.grab_bar.global_position
 		# grab_bar's own length runs along its local Y (CylinderMesh's
 		# default height axis), but quad_size.x (this quad's local X) is
 		# where the length was set above - an extra 90 degree in-plane

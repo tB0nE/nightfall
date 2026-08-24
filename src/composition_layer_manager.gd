@@ -140,7 +140,12 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	grab_bar_panel.anchor_right = 1.0
 	grab_bar_panel.anchor_bottom = 1.0
 	var grab_bar_style = StyleBoxFlat.new()
-	grab_bar_style.bg_color = Color(1, 1, 1, 0.35)
+	# 0.05 idle alpha, matching the corner handles' same idle/hover/grabbed
+	# dynamics (2026-08-24) - xr_interaction.gd's _set_grab_bar_color() now
+	# mirrors the real dynamic alpha (0.01/0.05/0.15/0.3/0.4 depending on
+	# state) onto this stylebox every time it changes; this is just the
+	# initial value before the first such call.
+	grab_bar_style.bg_color = Color(1, 1, 1, 0.05)
 	grab_bar_style.set_corner_radius_all(6)
 	grab_bar_panel.add_theme_stylebox_override("panel", grab_bar_style)
 	s.comp_grab_bar_viewport.add_child(grab_bar_panel)
