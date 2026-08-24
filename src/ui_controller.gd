@@ -51,13 +51,9 @@ func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_model()
 
-func on_ai_3d_backend_toggled():
+func on_ai_3d_speed_toggled():
 	main.auto_detect_enabled = false
-	main.settings_controller.cycle_ai_3d_backend()
-
-func on_ai_3d_quality_toggled():
-	main.auto_detect_enabled = false
-	main.settings_controller.cycle_ai_3d_quality()
+	main.settings_controller.cycle_ai_3d_speed()
 
 func on_ai_3d_debug_toggled():
 	main.auto_detect_enabled = false
@@ -67,27 +63,23 @@ func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
-	update_option_btn(main._ui_3d_backend_btn, main.settings_controller.get_depth_backend_label())
-	update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
+	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[main.ai_3d_model].label)
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
 	var disabled = main.sbs_mode > 0 or main.screens.size() > 1
-	if main._ui_3d_btn:
-		main._ui_3d_btn.disabled = disabled
-		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
-	# Quality/debug controls are additionally meaningless (and disabled)
-	# whenever AI-3D itself is off - no point picking a tier or a debug
+	if main._ui_3d_speed_btn:
+		main._ui_3d_speed_btn.disabled = disabled
+		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
+	# Model/debug controls are additionally meaningless (and disabled)
+	# whenever AI-3D itself is off - no point picking a model or a debug
 	# view for a model that isn't running.
-	var sub_disabled = disabled or main.ai_3d_model == 0
-	if main._ui_3d_backend_btn:
-		main._ui_3d_backend_btn.disabled = sub_disabled
-		main._ui_3d_backend_btn.modulate.a = 0.3 if sub_disabled else 1.0
-	if main._ui_3d_quality_btn:
-		main._ui_3d_quality_btn.disabled = sub_disabled
-		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
+	var sub_disabled = disabled or main.ai_3d_speed == 0
+	if main._ui_3d_btn:
+		main._ui_3d_btn.disabled = sub_disabled
+		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0
 	# Hidden again (2026-08-20) - the 2026-08-19 re-enable (for on-device
 	# DMap inspection while comparing depth models) was only meant for that
 	# comparison work and got shipped to main by accident. Not folded into
@@ -555,12 +547,10 @@ func build_ui():
 	disp_row1.add_child(main._ui_pt_btn)
 	main._ui_sbs_btn = make_option_btn("SBS", "Off")
 	disp_row1.add_child(main._ui_sbs_btn)
-	main._ui_3d_btn = make_option_btn("3D AI", "Off")
+	main._ui_3d_speed_btn = make_option_btn("AI 3D", "Off")
+	disp_row1.add_child(main._ui_3d_speed_btn)
+	main._ui_3d_btn = make_option_btn("AI Model", main.settings_controller.ai_3d_models[0].label)
 	disp_row1.add_child(main._ui_3d_btn)
-	main._ui_3d_backend_btn = make_option_btn("3D Backend", "Auto (CPU)")
-	disp_row1.add_child(main._ui_3d_backend_btn)
-	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
-	disp_row1.add_child(main._ui_3d_quality_btn)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
 	# this every time regardless) - set here too so there's no one-frame
 	# flash of a visible "3D Debug" button before that first fires.
@@ -808,9 +798,8 @@ func build_ui():
 	main._ui_bezel_btn.button_down.connect(func(): main.screen_manager.toggle_bezel())
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
+	main._ui_3d_speed_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
-	main._ui_3d_backend_btn.button_down.connect(func(): on_ai_3d_backend_toggled())
-	main._ui_3d_quality_btn.button_down.connect(func(): on_ai_3d_quality_toggled())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())

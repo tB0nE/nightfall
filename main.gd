@@ -67,12 +67,11 @@ var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
-# Split (2026-08-18) from a single flat ai_3d_mode into three independent
-# axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
-# ai_3d_debug_labels and get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # 0=Off, 1=MiDaS-192, 2=YOLO26-N-256, 3=YOLO26-N-320, 4=YOLO26-N-384, 5=MiDaS-256, 6=MiDaS-256-GPU, 7=DA-V2-196, 8=DA-V2-252
-var ai_3d_backend: int = 0 # 0=Auto, 1=CPU, 2=GPU
-var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
+# Collapsed (2026-08-24) to two independent axes - see
+# settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
+# get_stereo_mode() for how they combine.
+var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
+var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Fastest, 4=Standard
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
@@ -120,9 +119,9 @@ var stats_network_events: int = 0
 var passthrough_enabled: bool = false
 var passthrough_supported: bool = false
 var background_mode: int = 0
-var background_labels: Array = ["Black", "Starfield", "Ash", "Snow", "Data"]
-var bg_names: Array = ["Starfield", "Ash", "Snow", "Data"]
-var bg_offsets: Array = [Vector3.ZERO, Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
+var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
+var bg_names: Array = ["Ash", "Snow", "Data"]
+var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
 var bezel_enabled: bool = true
 var bezel_mesh: MeshInstance3D:
@@ -278,6 +277,30 @@ const LASER_QUAD_LENGTH := 0.4
 const LASER_QUAD_WIDTH := 0.003
 const LASER_START_OFFSET := 0.06
 
+# Composition-space environment-background replacement (2026-08-24,
+# GLES projectionless polish) - the ambient particle backgrounds
+# (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
+# in the normal 3D scene, invisible under projectionless mode like
+# everything else plain-3D. Unlike the cursor/laser/grab-bar/corners (flat
+# 2D UI content on a quad), this needs an actual 3D scene capture -
+# comp_bg_capture_viewport (disable_3d=false, a real mini 3D scene, not
+# just a Control tree) holding a wide-FOV camera and a standalone duplicate
+# of whichever background is active (background_manager.create_capture_
+# instance()), fed into comp_bg_equirect (OpenXRCompositionLayerEquirect,
+# a real 360-capable OpenXR layer type - confirmed natively supported by
+# WiVRn on this device). A single perspective camera can't capture a true
+# full sphere without heavy edge distortion, so this deliberately covers a
+# wide-but-partial angular range (BG_CAPTURE_FOV_DEG) rather than claiming
+# full 360 coverage - turning far enough away may show black instead of
+# the effect, unlike the original always-surrounding particle system.
+var comp_bg_equirect: Node3D = null
+var comp_bg_capture_viewport: SubViewport = null
+var comp_bg_capture_camera: Camera3D = null
+var comp_bg_capture_instance: GPUParticles3D = null
+var comp_bg_capture_index: int = -1
+const BG_CAPTURE_FOV_DEG := 160.0
+const BG_EQUIRECT_ANGLE_DEG := 150.0
+
 var comp_cylinder: Node3D:
 	get: return primary_screen.comp_cylinder if primary_screen else null
 	set(v):
@@ -400,9 +423,8 @@ var _ui_remove_preset_btn: Button
 var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
+var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
-var _ui_3d_backend_btn: Button
-var _ui_3d_quality_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -572,7 +594,7 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 			h = int(h * scale)
 	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
 	# Keyed off the actually-active stereo mode (accounts for sbs_mode
-	# overriding ai_3d_model/quality/debug, same as
+	# overriding ai_3d_speed/model/debug, same as
 	# settings_controller.get_stereo_mode() itself), not those raw fields
 	# directly. Caps by total pixel budget (like
 	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
@@ -1383,8 +1405,8 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 8)
-	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
+	ai_3d_model = clampi(ai_3d_model, 0, 7)
+	ai_3d_speed = clampi(ai_3d_speed, 0, 4)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
@@ -1851,7 +1873,7 @@ func _init_xr(interface):
 	if interface.has_signal("user_presence_changed"):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
-	ai_3d_model = 0
+	ai_3d_speed = 0
 
 	settings_controller.apply_display_refresh_rate()
 
@@ -1970,6 +1992,7 @@ func _process(delta):
 	_update_cursor_layer()
 	_update_laser_layers()
 	_update_grab_bar_layers()
+	_sync_comp_background()
 
 	_process_idle_activity()
 
@@ -1979,7 +2002,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_model > 0 and comp.in_use:
+		if depth_estimator.depth_texture and ai_3d_speed > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)
@@ -2200,6 +2223,47 @@ func _process_background_follow():
 		if bg and bg.visible:
 			bg.global_position = xr_camera.global_position + bg_offsets[i]
 			break
+	# Position-only follow (2026-08-24), matching the real particle
+	# systems above - comp_bg_equirect's rotation deliberately stays fixed
+	# (world-locked skybox feel, not spinning with head-look) while its
+	# position re-centers on the camera every frame, same as the
+	# GPUParticles3D backgrounds re-centering via bg_offsets.
+	if comp_bg_equirect and comp_bg_equirect.visible:
+		comp_bg_equirect.global_position = xr_camera.global_position
+
+# Keeps comp_bg_capture_instance in sync with the currently selected
+# background (background_mode) and shows/hides comp_bg_equirect to match
+# whether an environment background should currently be visible (passthrough
+# off, a background selected, in composition mode). Called from
+# apply_background()/apply_passthrough() on real transitions, and also every
+# frame from _process() as a safety net (e.g. entering/leaving composition
+# mode without touching background/passthrough settings) - safe because the
+# work below only runs on an actual state change (bg_idx/want_visible), and
+# unlike comp_cursor this never repeatedly toggles comp_bg_equirect.visible
+# once shown, so it doesn't hit the swapchain-teardown crash from earlier.
+func _sync_comp_background():
+	if not comp_bg_equirect or not comp_bg_capture_viewport:
+		return
+	var bg_idx = background_mode - 1
+	var want_visible = comp.available and comp.in_use and is_xr_active and not passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
+	if not want_visible:
+		if comp_bg_equirect.visible:
+			comp_bg_equirect.visible = false
+		if comp_bg_capture_instance:
+			comp_bg_capture_instance.queue_free()
+			comp_bg_capture_instance = null
+			comp_bg_capture_index = -1
+		return
+	if bg_idx != comp_bg_capture_index:
+		if comp_bg_capture_instance:
+			comp_bg_capture_instance.queue_free()
+			comp_bg_capture_instance = null
+		comp_bg_capture_instance = bg_manager.create_capture_instance(bg_idx, comp_bg_capture_viewport)
+		comp_bg_capture_instance.visible = true
+		comp_bg_capture_instance.emitting = true
+		comp_bg_capture_index = bg_idx
+	if not comp_bg_equirect.visible:
+		comp_bg_equirect.visible = true
 
 func _process_stats(delta):
 	if not is_streaming:
@@ -2564,9 +2628,6 @@ func _hide_all_backgrounds():
 func _create_backgrounds():
 	bg_manager = BackgroundManager.new(self)
 	bg_manager.create_backgrounds()
-
-func _create_starfield():
-	bg_manager._create_starfield()
 
 func _create_ash():
 	bg_manager._create_ash()

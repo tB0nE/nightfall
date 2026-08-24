@@ -43,8 +43,7 @@ func save_host_state():
 	save.set_value(ip, "resolution_idx", main.resolution_idx)
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
 	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
-	save.set_value(ip, "ai_3d_backend", main.ai_3d_backend)
-	save.set_value(ip, "ai_3d_quality", main.ai_3d_quality)
+	save.set_value(ip, "ai_3d_speed", main.ai_3d_speed)
 	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
@@ -83,38 +82,72 @@ func load_host_state(ip: String):
 	main.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
-		if save.has_section_key(ip, "ai_3d_model"):
-			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_model_labels.size() - 1)
-			main.ai_3d_backend = clampi(save.get_value(ip, "ai_3d_backend", 0), 0, 2)
-			main.ai_3d_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
+		if save.has_section_key(ip, "ai_3d_speed"):
+			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_models.size() - 1)
+			main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 0), 0, 4)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+		elif save.has_section_key(ip, "ai_3d_model"):
+			# Migrate the old 4-control save format (2026-08-24 collapse to
+			# two controls - see settings_controller.gd's ai_3d_speed_labels/
+			# ai_3d_models comment) - old ai_3d_model was 0=Off plus 8 models
+			# in a different order (Off, MiDaS-192, YOLO-256/320/384,
+			# MiDaS-256, MiDaS-256-GPU, DA-V2-196/252); old ai_3d_quality was
+			# 0=Auto/1=Fastest/2=Fast/3=Standard, with no on/off state of its
+			# own (that lived in ai_3d_model==0 instead).
+			var old_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, 8)
+			var old_quality = clampi(save.get_value(ip, "ai_3d_quality", 0), 0, 3)
+			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+			if old_model == 0:
+				main.ai_3d_speed = 0
+				main.ai_3d_model = 0
+			else:
+				match old_quality:
+					1: main.ai_3d_speed = 3 # Fastest
+					2: main.ai_3d_speed = 2 # Fast
+					3: main.ai_3d_speed = 4 # Standard
+					_: main.ai_3d_speed = 1 # Auto
+				match old_model:
+					1: main.ai_3d_model = 1 # MiDaS-192
+					2: main.ai_3d_model = 3 # YOLO26-N-256
+					3: main.ai_3d_model = 4 # YOLO26-N-320
+					4: main.ai_3d_model = 5 # YOLO26-N-384
+					5: main.ai_3d_model = 2 # MiDaS-256
+					6: main.ai_3d_model = 0 # MiDaS-256-GPU
+					7: main.ai_3d_model = 6 # DA-V2-196
+					8: main.ai_3d_model = 7 # DA-V2-252
+					_: main.ai_3d_model = 2 # MiDaS-256 (fallback)
 		elif save.has_section_key(ip, "ai_3d_mode"):
 			# Migrate the old flat 0-6 "3D AI" cycle (2026-08-18 split into
-			# three independent controls: model/quality/debug) - 0=Off,
-			# 1=Fast, 2=Standard, 3=Fastest, 4-6=DMap/-Raw/-Input debug
-			# views (always at Standard quality, since the old scheme had
-			# no independent quality selection for them).
+			# independent controls) - 0=Off, 1=Fast, 2=Standard, 3=Fastest,
+			# 4-6=DMap/-Raw/-Input debug views (always at Standard quality,
+			# since the old scheme had no independent quality selection for
+			# them). Lands on MiDaS-192 (model index 1) same as the
+			# 2026-08-18 migration always did.
 			var old = clampi(save.get_value(ip, "ai_3d_mode", 0), 0, 6)
-			main.ai_3d_model = 0 if old == 0 else 1
 			main.ai_3d_debug = 0 if old < 4 else old - 3
-			match old:
-				1: main.ai_3d_quality = 2 # Fast
-				3: main.ai_3d_quality = 1 # Fastest
-				_: main.ai_3d_quality = 3 # Standard (old modes 0, 2, 4-6)
+			if old == 0:
+				main.ai_3d_speed = 0
+				main.ai_3d_model = 0
+			else:
+				main.ai_3d_model = 1 # MiDaS-192
+				match old:
+					1: main.ai_3d_speed = 2 # Fast
+					3: main.ai_3d_speed = 3 # Fastest
+					_: main.ai_3d_speed = 4 # Standard (old modes 0, 2, 4-6)
 	elif save.has_section_key(ip, "stereo_mode"):
 		var old = clampi(save.get_value(ip, "stereo_mode", 0), 0, 4)
 		if old <= 2:
 			main.sbs_mode = old
-			main.ai_3d_model = 0
+			main.ai_3d_speed = 0
 		else:
 			main.sbs_mode = 0
-			main.ai_3d_model = 1
+			main.ai_3d_model = 1 # MiDaS-192
+			main.ai_3d_speed = 1 # Auto
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
-	main.ui_controller.update_option_btn(main._ui_3d_backend_btn, main.settings_controller.get_depth_backend_label())
-	main.ui_controller.update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	main.ui_controller.update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
+	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[main.ai_3d_model].label)
 	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	main.ui_controller.update_3d_btn_state()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)

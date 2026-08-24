@@ -322,7 +322,7 @@ func bind_stream_texture():
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
-	if not val or main.ai_3d_model != 6:
+	if not val or main.settings_controller.get_depth_backend_index() != 2:
 		_set_gpu_performance_hint(false)
 	if depth_viewport:
 		# Tried throttling this to UPDATE_ONCE at submit_interval's 20Hz
@@ -410,7 +410,7 @@ func process(delta: float):
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta
-		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.ai_3d_model == 6 and OS.get_name() == "Android" else submit_interval
+		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.settings_controller.get_depth_backend_index() == 2 and OS.get_name() == "Android" else submit_interval
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			var capture_start = Time.get_ticks_usec()

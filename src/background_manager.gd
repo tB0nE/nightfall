@@ -7,7 +7,6 @@ func _init(p_main):
 	main = p_main
 
 func create_backgrounds():
-	_create_starfield()
 	_create_ash()
 	_create_snow()
 	_create_data()
@@ -24,39 +23,27 @@ func hide_all():
 			bg.visible = false
 			bg.emitting = false
 
-func _create_starfield():
-	var particles = GPUParticles3D.new()
-	particles.name = "Starfield"
-	particles.emitting = true
-	particles.amount = 80
-	particles.lifetime = 30.0
-	particles.explosiveness = 0.0
-	particles.randomness = 1.0
-	particles.fixed_fps = 30
-	particles.local_coords = true
-	particles.visible = false
-	var mat = ParticleProcessMaterial.new()
-	mat.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	mat.emission_box_extents = Vector3(50, 50, 50)
-	mat.particle_flag_disable_z = false
-	mat.gravity = Vector3.ZERO
-	mat.direction = Vector3(0, 0, 0)
-	mat.spread = 0.0
-	particles.process_material = mat
-	var star_mesh = SphereMesh.new()
-	star_mesh.radius = 0.05
-	star_mesh.height = 0.1
-	var star_shader = load("res://src/shaders/star.gdshader")
-	var star_mat = ShaderMaterial.new()
-	star_mat.shader = star_shader
-	star_mat.render_priority = -128
-	star_mesh.material = star_mat
-	particles.draw_pass_1 = star_mesh
-	particles.sorting_offset = -100.0
-	particles.position = main.xr_camera.global_position
-	main.add_child(particles)
+# Spawns a standalone duplicate of one background's particle system under an
+# arbitrary parent, for the composition-space equirect capture (2026-08-24,
+# see main.gd's comp_bg_equirect comment) - a separate instance, not the
+# same node reparented, so the normal-projection-mode original (still used
+# whenever comp.in_use is false) is untouched. capture_mode=true positions
+# it at bg_offsets[bg_index] directly (the capture camera sits at the
+# capture viewport's own local origin, standing in for "at the user"),
+# instead of main.xr_camera.global_position + offset (meaningless in a
+# separate viewport's own coordinate space).
+func create_capture_instance(bg_index: int, parent: Node) -> GPUParticles3D:
+	match bg_index:
+		0: return _create_ash(parent, true)
+		1: return _create_snow(parent, true)
+		2: return _create_data(parent, true)
+		_: return null
 
-func _create_ash():
+# Ash/snow/data read as much faster once captured into the equirect background
+# than in normal projection mode, since the capture camera sits close to the
+# particles with a wide FOV - halve their playback speed in capture_mode to
+# compensate (starfield's particles barely move, so it's left untouched).
+func _create_ash(parent: Node = null, capture_mode: bool = false) -> GPUParticles3D:
 	var particles = GPUParticles3D.new()
 	particles.name = "Ash"
 	particles.emitting = true
@@ -87,10 +74,12 @@ func _create_ash():
 	dot.material = sm
 	particles.draw_pass_1 = dot
 	particles.sorting_offset = -100.0
-	particles.position = main.xr_camera.global_position
-	main.add_child(particles)
+	particles.speed_scale = 0.5 if capture_mode else 1.0
+	particles.position = Vector3.ZERO if capture_mode else main.xr_camera.global_position
+	(parent if parent else main).add_child(particles)
+	return particles
 
-func _create_snow():
+func _create_snow(parent: Node = null, capture_mode: bool = false) -> GPUParticles3D:
 	var particles = GPUParticles3D.new()
 	particles.name = "Snow"
 	particles.emitting = true
@@ -120,10 +109,12 @@ func _create_snow():
 	flake.material = sm
 	particles.draw_pass_1 = flake
 	particles.sorting_offset = -100.0
-	particles.position = main.xr_camera.global_position + Vector3(0, 10, 0)
-	main.add_child(particles)
+	particles.speed_scale = 0.5 if capture_mode else 1.0
+	particles.position = Vector3(0, 10, 0) if capture_mode else main.xr_camera.global_position + Vector3(0, 10, 0)
+	(parent if parent else main).add_child(particles)
+	return particles
 
-func _create_data():
+func _create_data(parent: Node = null, capture_mode: bool = false) -> GPUParticles3D:
 	var particles = GPUParticles3D.new()
 	particles.name = "Data"
 	particles.emitting = true
@@ -153,5 +144,7 @@ func _create_data():
 	quad.material = sm
 	particles.draw_pass_1 = quad
 	particles.sorting_offset = -100.0
-	particles.position = main.xr_camera.global_position + Vector3(0, -3, 0)
-	main.add_child(particles)
+	particles.speed_scale = 0.5 if capture_mode else 1.0
+	particles.position = Vector3(0, -3, 0) if capture_mode else main.xr_camera.global_position + Vector3(0, -3, 0)
+	(parent if parent else main).add_child(particles)
+	return particles
