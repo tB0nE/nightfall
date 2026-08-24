@@ -561,6 +561,3 @@ func update_stats():
 		if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt
-	if main.comp_status_label:
-		main.comp_status_label.text = txt
-		main.comp.refresh_gles_status_layer()

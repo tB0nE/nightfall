@@ -746,7 +746,12 @@ func build_ui():
 	main._ui_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	main._ui_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	main._ui_status_label.clip_text = false
-	main._ui_status_label.clip_contents = true
+	# clip_contents was true here - a leaf Label has no children to clip, so
+	# this only risked the compatibility renderer computing a bad/zero clip
+	# rect for its own text draw call (2026-08-24: this label was invisible
+	# under GLES despite fully correct layout/visibility/alpha - every other
+	# Label in the menu, e.g. the host-address label, works fine and none of
+	# them set clip_contents). Removed as the prime suspect.
 	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
 	main._ui_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(main._ui_status_label)

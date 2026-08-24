@@ -255,9 +255,6 @@ var bg_manager: BackgroundManager
 
 var comp_cursor: Node3D = null
 var comp_ui: Node3D = null
-var comp_status: Node3D = null
-var comp_status_label: Button = null
-var comp_status_viewport: SubViewport = null
 var comp_kb: Node3D = null
 var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
@@ -872,9 +869,6 @@ func _update_cursor_layer():
 	if comp_ui and comp_ui.visible:
 		comp_ui.global_position = ui_panel_3d.global_position
 		comp_ui.global_rotation = ui_panel_3d.global_rotation
-		if comp_status:
-			comp_status.global_position = comp_ui.global_position - comp_ui.global_transform.basis.y * 0.193
-			comp_status.global_rotation = comp_ui.global_rotation
 	if comp_kb and virtual_keyboard and virtual_keyboard.visible:
 		comp_kb.global_position = virtual_keyboard.global_position
 		comp_kb.global_rotation = virtual_keyboard.global_rotation
@@ -2318,10 +2312,6 @@ func _toggle_ui():
 			comp_ui.visible = true
 			comp_ui.global_position = ui_panel_3d.global_position
 			comp_ui.global_rotation = ui_panel_3d.global_rotation
-			if comp_status:
-				comp_status.global_position = comp_ui.global_position - comp_ui.global_transform.basis.y * 0.193
-				comp_status.global_rotation = comp_ui.global_rotation
-				comp_status.visible = true
 			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 				ui_panel_3d.visible = true
 				var ui_material = ui_panel_3d.material_override as StandardMaterial3D
@@ -2348,8 +2338,6 @@ func _toggle_ui():
 	else:
 		if comp_ui:
 			comp_ui.visible = false
-		if comp_status:
-			comp_status.visible = false
 		var ui_material = ui_panel_3d.material_override as StandardMaterial3D
 		if ui_material:
 			ui_material.albedo_color = Color(1, 1, 1, 1)
