@@ -447,7 +447,14 @@ func setup():
 		viewport.disable_3d = true
 		viewport.transparent_bg = true
 		viewport.size = Vector2i(8, 256)
-		viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		# UPDATE_ALWAYS, not UPDATE_ONCE (2026-08-24) - matching comp_cursor_
+		# viewport's working pattern. UPDATE_ONCE was an unproven attempt to
+		# save a little render cost for what's genuinely static content (the
+		# gradient texture never changes), but it's suspected as part of why
+		# the laser never actually appeared - the one-time render could
+		# plausibly land before the viewport/TextureRect were fully ready,
+		# leaving it blank forever with nothing to mark it dirty again.
+		viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		main.add_child(viewport)
 
 		var laser_tex_rect = TextureRect.new()

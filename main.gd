@@ -692,10 +692,33 @@ func _hide_all_stream_cursors():
 		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
 		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 
+# Hides an OpenXRCompositionLayerQuad WITHOUT toggling its `visible`
+# property (2026-08-24) - under GLES specifically, repeatedly flipping
+# `visible` false/true on these every frame (as the cursor/laser hides and
+# shows while the raycast target moves on/off a screen, very frequent
+# during a grab-bar/corner drag) was found to repeatedly tear down and
+# recreate the layer's swapchain (confirmed via logcat: repeated
+# "CreateSwapChain: ... 40 64" matching comp_cursor_viewport's exact size,
+# each followed by "Condition t->is_render_target is true" in texture_free/
+# texture_remap_proxies) - a race between that teardown/recreate and
+# in-flight render commands eventually SIGSEGVs in the GLES3 backend.
+# Shrinking quad_size to near-zero instead achieves the same visual result
+# (nothing meaningful to see) without touching the swapchain at all -
+# set_quad_size() is a pure world-space geometry parameter, unlike the
+# viewport's own pixel size, so it doesn't trigger texture reallocation.
+# `visible` itself is set true exactly once (whenever comp.in_use first
+# becomes true) and never set false again.
+func _set_comp_quad_hidden(layer: Node3D, hidden: bool):
+	if not layer:
+		return
+	if hidden:
+		layer.set_quad_size(Vector2(0.0001, 0.0001))
+	elif not layer.visible:
+		layer.visible = true
+
 func _update_cursor_layer():
 	if not comp.in_use:
-		if comp_cursor:
-			comp_cursor.visible = false
+		_set_comp_quad_hidden(comp_cursor, true)
 		_hide_all_stream_cursors()
 		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
@@ -713,8 +736,7 @@ func _update_cursor_layer():
 		hovered_screen = t.screen if on_screen else null
 		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
-			if comp_cursor:
-				comp_cursor.visible = false
+			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
 		elif use_embedded_cursor and on_screen:
 			# Only hovered_screen gets shown below - explicitly hide every other
@@ -740,8 +762,7 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
-			if comp_cursor:
-				comp_cursor.visible = false
+			_set_comp_quad_hidden(comp_cursor, true)
 			if pointer_cursor:
 				pointer_cursor.visible = false
 			if contact_dot:
@@ -818,8 +839,7 @@ func _update_cursor_layer():
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 			comp_cursor.visible = true
 	else:
-		if comp_cursor:
-			comp_cursor.visible = false
+		_set_comp_quad_hidden(comp_cursor, true)
 		_hide_all_stream_cursors()
 	if comp_cursor:
 		if pointer_cursor:
@@ -854,17 +874,24 @@ func _update_laser_layers():
 	if not comp_laser_right and not comp_laser_left:
 		return
 	if not comp.in_use or not is_xr_active:
-		if comp_laser_right: comp_laser_right.visible = false
-		if comp_laser_left: comp_laser_left.visible = false
+		_set_comp_quad_hidden(comp_laser_right, true)
+		_set_comp_quad_hidden(comp_laser_left, true)
 		return
-	_update_one_laser_layer(comp_laser_right, right_hand, hand_raycast)
-	_update_one_laser_layer(comp_laser_left, left_hand, left_hand_raycast)
+	_update_one_laser_layer(comp_laser_right, hand_raycast)
+	_update_one_laser_layer(comp_laser_left, left_hand_raycast)
 
-func _update_one_laser_layer(layer: Node3D, hand: XRController3D, raycast: RayCast3D):
+func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
 	if not layer:
 		return
-	if not hand or not raycast or not hand.get_is_active():
-		layer.visible = false
+	# raycast.enabled (not XRController3D.get_is_active()) is this codebase's
+	# real "is this hand currently in an active pointing posture" signal -
+	# see _apply_hand_rest()/HAND_REST_THRESHOLD, toggled the same way for
+	# both physical controllers and hand-tracking. get_is_active() reflects
+	# OpenXR controller-pose activity specifically and stays false during
+	# hand-tracking, which silently hid this indicator entirely for anyone
+	# not holding physical controllers.
+	if not raycast or not raycast.enabled:
+		_set_comp_quad_hidden(layer, true)
 		return
 	var ray_origin = raycast.global_position
 	var ray_dir = -raycast.global_transform.basis.z.normalized()
