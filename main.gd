@@ -260,6 +260,25 @@ var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null
 
+# Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
+# composition-space additions (laser/grab-bar/corners/background-equirect,
+# all added this session) is contending with the GLES GPU TFLite delegate
+# for depth inference - MiDaS-256-GPU measured ~13-15Hz today vs. an
+# earlier-session ~20Hz. Each gates both its composition layer's visibility
+# AND its backing SubViewport's render_target_update_mode (UPDATE_ALWAYS
+# viewports render every frame regardless of the layer's own visibility, so
+# hiding alone doesn't stop the GPU cost) - see
+# _update_laser_layers()/_update_grab_bar_layers()/_update_corner_layers()/
+# _sync_comp_background(). Toggle one at a time and rebuild; remove once the
+# regression is isolated (see the diagnosis plan). Confirmed 2026-08-24 the
+# regression was a debug-build-vs-release-build artifact, not caused by any
+# of these - release build hits ~19.5-20.2Hz with all four enabled. Kept
+# around (all true) in case it's needed again rather than deleting outright.
+const DEBUG_COMP_BG_EQUIRECT := true
+const DEBUG_COMP_LASER := true
+const DEBUG_COMP_GRAB_BAR := true
+const DEBUG_COMP_CORNERS := true
+
 # Composition-space controller ray indicators (2026-08-24, GLES projectionless
 # polish) - projectionless mode (submit_projection_layer=false) never renders
 # the normal 3D scene at all, so the real "Laser" MeshInstance3D (a fixed
@@ -890,6 +909,14 @@ func _update_cursor_layer():
 func _update_laser_layers():
 	if not comp_laser_right and not comp_laser_left:
 		return
+	if not DEBUG_COMP_LASER:
+		if comp_laser_right_viewport and comp_laser_right_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_laser_right_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if comp_laser_left_viewport and comp_laser_left_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_laser_left_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		_set_comp_quad_hidden(comp_laser_right, true)
+		_set_comp_quad_hidden(comp_laser_left, true)
+		return
 	if not comp.in_use or not is_xr_active:
 		_set_comp_quad_hidden(comp_laser_right, true)
 		_set_comp_quad_hidden(comp_laser_left, true)
@@ -949,13 +976,16 @@ func _update_grab_bar_layers():
 		_update_corner_layers(s)
 		if not s.comp_grab_bar:
 			continue
-		if not comp.in_use:
+		if not DEBUG_COMP_GRAB_BAR or not comp.in_use:
 			# A rare, one-time transition (stereo mode / mesh-rendering
 			# fallback switch), not a per-frame toggle - safe, unlike the
 			# cursor/laser's old every-frame hide/show that caused the
 			# swapchain crash.
 			if s.comp_grab_bar.visible:
 				s.comp_grab_bar.visible = false
+			var bar_vp = s.comp_grab_bar.get_layer_viewport()
+			if bar_vp and bar_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+				bar_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 			continue
 		var ms = s.mesh_size
 		# Matches the real grab_bar CylinderMesh's own length/diameter
@@ -978,6 +1008,9 @@ func _update_grab_bar_layers():
 		# conventions (confirmed needed on-device, reported as "rotated 90
 		# degrees" without it).
 		s.comp_grab_bar.rotate_object_local(Vector3.FORWARD, PI / 2.0)
+		var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
+		if bar_vp2 and bar_vp2.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if not s.comp_grab_bar.visible:
 			s.comp_grab_bar.visible = true
 
@@ -989,10 +1022,15 @@ func _update_grab_bar_layers():
 func _update_corner_layers(s: VRScreen):
 	if s.comp_corner_layers.is_empty():
 		return
-	if not comp.in_use:
+	if not DEBUG_COMP_CORNERS or not comp.in_use:
 		for layer in s.comp_corner_layers:
-			if layer and layer.visible:
+			if not layer:
+				continue
+			if layer.visible:
 				layer.visible = false
+			var corner_vp = layer.get_layer_viewport()
+			if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+				corner_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		return
 	var corner_size = s.mesh_size.x * 0.027
 	for i in range(s.comp_corner_layers.size()):
@@ -1003,6 +1041,9 @@ func _update_corner_layers(s: VRScreen):
 		layer.set_quad_size(Vector2(corner_size, corner_size))
 		layer.global_position = handle.global_position
 		layer.global_rotation = handle.global_rotation
+		var corner_vp = layer.get_layer_viewport()
+		if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			corner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if not layer.visible:
 			layer.visible = true
 
@@ -2239,15 +2280,19 @@ func _sync_comp_background():
 	if not comp_bg_equirect or not comp_bg_capture_viewport:
 		return
 	var bg_idx = background_mode - 1
-	var want_visible = comp.available and comp.in_use and is_xr_active and not passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
+	var want_visible = DEBUG_COMP_BG_EQUIRECT and comp.available and comp.in_use and is_xr_active and not passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
 	if not want_visible:
 		if comp_bg_equirect.visible:
 			comp_bg_equirect.visible = false
+		if comp_bg_capture_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		if comp_bg_capture_instance:
 			comp_bg_capture_instance.queue_free()
 			comp_bg_capture_instance = null
 			comp_bg_capture_index = -1
 		return
+	if comp_bg_capture_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	if bg_idx != comp_bg_capture_index:
 		if comp_bg_capture_instance:
 			comp_bg_capture_instance.queue_free()
