@@ -98,6 +98,56 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_layer.set_layer_viewport(s.comp_viewport)
 	main._log("[COMP] Per-screen mono comp layer created (%s)" % s.monitor_id)
 
+	# Grab-bar visual (2026-08-24) - see VRScreen's comp_grab_bar comment.
+	# Not billboarded (unlike the cursor/laser) - lies flat in the screen's
+	# own plane, matching the real grab_bar MeshInstance3D's orientation,
+	# so main.gd's _update_grab_bar_layers() just copies grab_bar's own
+	# global position/rotation onto it directly every frame, no basis math
+	# needed. Always visible once comp.in_use (like the real grab_bar in
+	# normal projection mode) - never toggled off, so no risk of the
+	# swapchain-teardown crash toggling caused for the cursor/laser.
+	s.comp_grab_bar = OpenXRCompositionLayerQuad.new()
+	s.comp_grab_bar.name = "CompGrabBarLayer_%s" % s.monitor_id
+	s.comp_grab_bar.set_sort_order(998)
+	s.comp_grab_bar.set_enable_hole_punch(false)
+	s.comp_grab_bar.set_alpha_blend(true)
+	s.comp_grab_bar.visible = false
+	main.xr_origin.add_child(s.comp_grab_bar)
+
+	s.comp_grab_bar_viewport = SubViewport.new()
+	s.comp_grab_bar_viewport.name = "CompGrabBarViewport_%s" % s.monitor_id
+	s.comp_grab_bar_viewport.disable_3d = true
+	s.comp_grab_bar_viewport.transparent_bg = true
+	# Aspect matches the quad_size set in main.gd's _update_grab_bar_layers()
+	# (ms.x*0.134 x ms.x*0.009, ~14.9:1) - a mismatched viewport aspect would
+	# stretch the panel non-uniformly onto the quad.
+	s.comp_grab_bar_viewport.size = Vector2i(256, 18)
+	s.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	main.add_child(s.comp_grab_bar_viewport)
+
+	# PanelContainer + StyleBoxFlat (2026-08-24, replacing an earlier
+	# hand-rolled pixel-SDF pill texture) - reuses the exact same technique
+	# the menu/keyboard's own "CompGrabBar" already uses (see
+	# vr_panel_base.gd's _setup_grab_bar()), a small corner radius relative
+	# to the bar's height for a rounded-rectangle "bar" look, not a full
+	# stadium/pill. Also matters more now that the visual quad is much
+	# thinner than the collision hitbox (see _update_grab_bar_layers()) -
+	# a small fixed pixel radius reads correctly at that thinner aspect,
+	# where the earlier radius-scales-with-height approach didn't.
+	var grab_bar_panel = PanelContainer.new()
+	grab_bar_panel.name = "GrabBarPanel"
+	grab_bar_panel.anchors_preset = 15
+	grab_bar_panel.anchor_right = 1.0
+	grab_bar_panel.anchor_bottom = 1.0
+	var grab_bar_style = StyleBoxFlat.new()
+	grab_bar_style.bg_color = Color(1, 1, 1, 0.35)
+	grab_bar_style.set_corner_radius_all(6)
+	grab_bar_panel.add_theme_stylebox_override("panel", grab_bar_style)
+	s.comp_grab_bar_viewport.add_child(grab_bar_panel)
+
+	s.comp_grab_bar.set_layer_viewport(s.comp_grab_bar_viewport)
+	main._log("[COMP] Grab-bar composition layer created (%s)" % s.monitor_id)
+
 	if not with_stereo:
 		return
 

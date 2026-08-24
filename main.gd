@@ -924,6 +924,40 @@ func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
+# Mirrors each screen's real (invisible-under-projectionless) grab_bar
+# transform/size onto its composition-space equivalent every frame. Not
+# billboarded - grab_bar lies flat in the screen's own plane, so this is a
+# direct copy, no basis/orientation math needed (unlike the laser).
+func _update_grab_bar_layers():
+	for s in screens:
+		if not s.comp_grab_bar:
+			continue
+		if not comp.in_use:
+			# A rare, one-time transition (stereo mode / mesh-rendering
+			# fallback switch), not a per-frame toggle - safe, unlike the
+			# cursor/laser's old every-frame hide/show that caused the
+			# swapchain crash.
+			if s.comp_grab_bar.visible:
+				s.comp_grab_bar.visible = false
+			continue
+		var ms = s.mesh_size
+		# Matches the real grab_bar CylinderMesh's own length/diameter
+		# (vr_screen.gd's grab_h/grab_r*2) - NOT the larger collision
+		# hitbox size (ms.x*0.134, ms.y*0.079), which made this look like
+		# a chunky pill instead of a thin bar.
+		s.comp_grab_bar.set_quad_size(Vector2(ms.x * 0.134, ms.x * 0.009))
+		s.comp_grab_bar.global_position = s.grab_bar.global_position
+		s.comp_grab_bar.global_rotation = s.grab_bar.global_rotation
+		# grab_bar's own length runs along its local Y (CylinderMesh's
+		# default height axis), but quad_size.x (this quad's local X) is
+		# where the length was set above - an extra 90 degree in-plane
+		# rotation around the quad's own normal reconciles the two
+		# conventions (confirmed needed on-device, reported as "rotated 90
+		# degrees" without it).
+		s.comp_grab_bar.rotate_object_local(Vector3.FORWARD, PI / 2.0)
+		if not s.comp_grab_bar.visible:
+			s.comp_grab_bar.visible = true
+
 func exit_app():
 	get_tree().quit()
 
@@ -1903,6 +1937,7 @@ func _process(delta):
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
 	_update_laser_layers()
+	_update_grab_bar_layers()
 
 	_process_idle_activity()
 

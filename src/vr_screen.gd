@@ -62,6 +62,16 @@ var comp_stream_cursor_left: TextureRect = null
 var comp_stream_cursor_circle_left: ColorRect = null
 var comp_stream_cursor_right: TextureRect = null
 var comp_stream_cursor_circle_right: ColorRect = null
+
+# Composition-space grab-bar indicator (2026-08-24, GLES projectionless
+# polish) - the real grab_bar (a MeshInstance3D, see @onready above) is
+# invisible under projectionless mode for the same reason the laser/cursor
+# were (plain 3D scene nodes never reach the compositor when
+# submit_projection_layer=false). Its Area3D grab interaction is unaffected
+# (physics doesn't depend on rendering) - this only adds the missing
+# visual. See main.gd's _update_grab_bar_layers().
+var comp_grab_bar: Node3D = null
+var comp_grab_bar_viewport: SubViewport = null
 var comp_layer: Node3D = null
 var comp_base_size: Vector2i = Vector2i(1920, 1080)
 var _original_mat: Material = null
