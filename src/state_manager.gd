@@ -107,15 +107,15 @@ func load_host_state(ip: String):
 					3: main.ai_3d_speed = 4 # Standard
 					_: main.ai_3d_speed = 1 # Auto
 				match old_model:
-					1: main.ai_3d_model = 1 # MiDaS-192
-					2: main.ai_3d_model = 3 # YOLO26-N-256
-					3: main.ai_3d_model = 4 # YOLO26-N-320
-					4: main.ai_3d_model = 5 # YOLO26-N-384
-					5: main.ai_3d_model = 2 # MiDaS-256
+					1: main.ai_3d_model = 2 # MiDaS-192
+					2: main.ai_3d_model = 4 # YOLO26-N-256
+					3: main.ai_3d_model = 5 # YOLO26-N-320
+					4: main.ai_3d_model = 6 # YOLO26-N-384
+					5: main.ai_3d_model = 3 # MiDaS-256
 					6: main.ai_3d_model = 0 # MiDaS-256-GPU
-					7: main.ai_3d_model = 6 # DA-V2-196
-					8: main.ai_3d_model = 7 # DA-V2-252
-					_: main.ai_3d_model = 2 # MiDaS-256 (fallback)
+					7: main.ai_3d_model = 7 # DA-V2-196
+					8: main.ai_3d_model = 8 # DA-V2-252
+					_: main.ai_3d_model = 3 # MiDaS-256 (fallback)
 		elif save.has_section_key(ip, "ai_3d_mode"):
 			# Migrate the old flat 0-6 "3D AI" cycle (2026-08-18 split into
 			# independent controls) - 0=Off, 1=Fast, 2=Standard, 3=Fastest,
@@ -129,7 +129,7 @@ func load_host_state(ip: String):
 				main.ai_3d_speed = 0
 				main.ai_3d_model = 0
 			else:
-				main.ai_3d_model = 1 # MiDaS-192
+				main.ai_3d_model = 2 # MiDaS-192
 				match old:
 					1: main.ai_3d_speed = 2 # Fast
 					3: main.ai_3d_speed = 3 # Fastest
@@ -141,7 +141,7 @@ func load_host_state(ip: String):
 			main.ai_3d_speed = 0
 		else:
 			main.sbs_mode = 0
-			main.ai_3d_model = 1 # MiDaS-192
+			main.ai_3d_model = 2 # MiDaS-192
 			main.ai_3d_speed = 1 # Auto
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())

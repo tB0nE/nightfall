@@ -222,6 +222,20 @@ cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAs
 # constants). Now the default landing spot right after Off (see
 # settings_controller.gd's ai_3d_model_labels comment).
 cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
+# MiDaS-192-GPU (2026-08-24) - same onnx2tf -ofgd -kt input recipe that
+# produced the working 256px GPU export (see midas-v21-small-256-gpu.tflite's
+# own history), just re-run against the ONNX graph's input resized to
+# 192x192 - MiDaS-small's Resize ops use relative scale factors, not
+# hardcoded absolute sizes, so it's resolution-agnostic. Verified clean
+# 73 CONV_2D/24 DEPTHWISE_CONV_2D/5 RESIZE_BILINEAR graph (matches the
+# 256px model's op composition exactly) and non-degenerate real inference
+# output before bundling. This is the float32-I/O sibling of that export
+# (NOT onnx2tf's literal-fp16-tensor output) - confirmed on-device the
+# fp16-I/O version fails identically to the 256px model's own documented
+# history ("(CONV_2D) failed to prepare, Node number 3"); the GPU delegate
+# still runs at fp16 precision internally via setPrecisionLossAllowed(true)
+# in DepthEstimator.java, it just needs a float32 tensor boundary.
+cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
 # YOLO26-depth nano (5.5MB each), w8a32 quantization (2026-08-20, was static
 # full int8) - Ultralytics' new monocular depth export, verified via direct
 # TFLite Interpreter inspection (2026-08-18). w8a32 (dynamic/weight-only
