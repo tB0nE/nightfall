@@ -427,6 +427,48 @@ func setup():
 	main.left_comp_cursor_layer.set_layer_viewport(main.left_comp_cursor_viewport)
 	main._log("[COMP] Left cursor composition layer created")
 
+	# Controller ray indicators - see main.gd's comp_laser_right/left comment
+	# for why these exist. Reuses main._make_laser_gradient()'s fade texture
+	# (the same one the real 3D "Laser" mesh's material uses) for visual
+	# consistency between the two rendering paths.
+	var laser_tex = main._make_laser_gradient()
+	for side in ["right", "left"]:
+		var layer = OpenXRCompositionLayerQuad.new()
+		layer.name = "CompLaser%sLayer" % side.capitalize()
+		layer.set_sort_order(998)
+		layer.set_enable_hole_punch(false)
+		layer.set_alpha_blend(true)
+		layer.set_quad_size(Vector2(main.LASER_QUAD_WIDTH, main.LASER_QUAD_LENGTH))
+		layer.visible = false
+		main.xr_origin.add_child(layer)
+
+		var viewport = SubViewport.new()
+		viewport.name = "CompLaser%sViewport" % side.capitalize()
+		viewport.disable_3d = true
+		viewport.transparent_bg = true
+		viewport.size = Vector2i(8, 256)
+		viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+		main.add_child(viewport)
+
+		var laser_tex_rect = TextureRect.new()
+		laser_tex_rect.name = "LaserGradient"
+		laser_tex_rect.anchors_preset = 15
+		laser_tex_rect.anchor_right = 1.0
+		laser_tex_rect.anchor_bottom = 1.0
+		laser_tex_rect.expand_mode = 1
+		laser_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		laser_tex_rect.texture = laser_tex
+		viewport.add_child(laser_tex_rect)
+
+		layer.set_layer_viewport(viewport)
+		if side == "right":
+			main.comp_laser_right = layer
+			main.comp_laser_right_viewport = viewport
+		else:
+			main.comp_laser_left = layer
+			main.comp_laser_left_viewport = viewport
+	main._log("[COMP] Controller ray composition layers created")
+
 	# GLES already created its own comp_kb above (different sort order/log,
 	# same overall shape) - only create the non-GLES variant here to avoid
 	# double-creating (and leaking the first one's viewport/quad) now that

@@ -264,6 +264,19 @@ var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null
 
+# Composition-space controller ray indicators (2026-08-24, GLES projectionless
+# polish) - projectionless mode (submit_projection_layer=false) never renders
+# the normal 3D scene at all, so the real "Laser" MeshInstance3D (a fixed
+# 0.4m CapsuleMesh under HandRayCast, see main.tscn) is invisible whenever
+# comp.in_use is true. These are lightweight composition-layer equivalents -
+# see _update_laser_layers().
+var comp_laser_right: Node3D = null
+var comp_laser_right_viewport: SubViewport = null
+var comp_laser_left: Node3D = null
+var comp_laser_left_viewport: SubViewport = null
+const LASER_QUAD_LENGTH := 0.4
+const LASER_QUAD_WIDTH := 0.006
+
 var comp_cylinder: Node3D:
 	get: return primary_screen.comp_cylinder if primary_screen else null
 	set(v):
@@ -830,6 +843,47 @@ func _update_cursor_layer():
 			comp_kb.visible = false
 		if virtual_keyboard and not virtual_keyboard.mesh_instance.visible:
 			_restore_kb_material()
+
+# Composition-space controller ray indicators (2026-08-24) - see
+# comp_laser_right/left's declaration comment. Only active in projectionless
+# mode (comp.in_use) - the real 3D "Laser" mesh under HandRayCast already
+# works fine in normal projection mode, so showing both would double up.
+# Fixed-length (LASER_QUAD_LENGTH), not stretched to the raycast hit
+# distance, matching the real Laser's own fixed 0.4m CapsuleMesh (main.tscn).
+func _update_laser_layers():
+	if not comp_laser_right and not comp_laser_left:
+		return
+	if not comp.in_use or not is_xr_active:
+		if comp_laser_right: comp_laser_right.visible = false
+		if comp_laser_left: comp_laser_left.visible = false
+		return
+	_update_one_laser_layer(comp_laser_right, right_hand, hand_raycast)
+	_update_one_laser_layer(comp_laser_left, left_hand, left_hand_raycast)
+
+func _update_one_laser_layer(layer: Node3D, hand: XRController3D, raycast: RayCast3D):
+	if not layer:
+		return
+	if not hand or not raycast or not hand.get_is_active():
+		layer.visible = false
+		return
+	var ray_origin = raycast.global_position
+	var ray_dir = -raycast.global_transform.basis.z.normalized()
+	var to_cam = (xr_camera.global_position - ray_origin).normalized()
+	# quad_size.y (the gradient's fade axis) maps to the basis' local Y, so Y
+	# must be the ray direction. Z (the quad's face normal) is derived to
+	# point roughly toward the camera - a "billboard around the ray axis"
+	# rather than a full billboard, which would tilt the ray off its real
+	# direction. X falls out of Y and Z via the standard right-handed
+	# cross-product basis (x = y.cross(z)), not chosen independently.
+	var z_axis = to_cam - to_cam.project(ray_dir)
+	if z_axis.length() < 0.001:
+		z_axis = layer.global_transform.basis.z
+	z_axis = z_axis.normalized()
+	var x_axis = ray_dir.cross(z_axis).normalized()
+	z_axis = x_axis.cross(ray_dir).normalized()
+	layer.global_transform.basis = Basis(x_axis, ray_dir, z_axis)
+	layer.global_position = ray_origin + ray_dir * (LASER_QUAD_LENGTH * 0.5)
+	layer.visible = true
 
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
@@ -1812,6 +1866,7 @@ func _process(delta):
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_update_laser_layers()
 
 	_process_idle_activity()
 
