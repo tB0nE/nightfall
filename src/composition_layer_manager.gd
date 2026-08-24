@@ -344,9 +344,18 @@ func setup():
 		status_viewport.add_child(main.comp_status_label)
 		main.comp_status.set_layer_viewport(status_viewport)
 		main._log("[COMP] GLES status composition layer created")
-		main._log("[COMP] GLES: UI and keyboard composition layers enabled; cursor layer disabled")
-		return
 
+	# Cursor layers (2026-08-24) - previously created only for the non-GLES
+	# path (an early return here skipped them entirely under GLES), even
+	# though the cursor-update logic in main.gd's _update_cursor_layer()
+	# already had GLES-specific quad-sizing branches for them (see its
+	# RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	# checks) - that code was dead/unreachable since comp_cursor was always
+	# null under GLES. Nothing in this creation code is Vulkan-specific
+	# (plain SubViewport + TextureRect/ColorRect + shader), so there was no
+	# actual technical reason to skip it - just an oversight from GLES's
+	# first pass. Moved above the gl_compatibility/else split so both paths
+	# reach it, instead of duplicating it into the GLES branch above.
 	main.comp_cursor = OpenXRCompositionLayerQuad.new()
 	main.comp_cursor.name = "CompCursorLayer"
 	main.comp_cursor.set_sort_order(999)
@@ -418,16 +427,21 @@ func setup():
 	main.left_comp_cursor_layer.set_layer_viewport(main.left_comp_cursor_viewport)
 	main._log("[COMP] Left cursor composition layer created")
 
-	main.comp_kb = OpenXRCompositionLayerQuad.new()
-	main.comp_kb.name = "CompKBLayer"
-	main.comp_kb.set_sort_order(999)
-	main.comp_kb.set_enable_hole_punch(false)
-	main.comp_kb.set_alpha_blend(true)
-	main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-	main.comp_kb.visible = false
-	main.xr_origin.add_child(main.comp_kb)
-	main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
-	main._log("[COMP] Keyboard composition layer created")
+	# GLES already created its own comp_kb above (different sort order/log,
+	# same overall shape) - only create the non-GLES variant here to avoid
+	# double-creating (and leaking the first one's viewport/quad) now that
+	# cursor creation above runs unconditionally for both paths.
+	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+		main.comp_kb = OpenXRCompositionLayerQuad.new()
+		main.comp_kb.name = "CompKBLayer"
+		main.comp_kb.set_sort_order(999)
+		main.comp_kb.set_enable_hole_punch(false)
+		main.comp_kb.set_alpha_blend(true)
+		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
+		main.comp_kb.visible = false
+		main.xr_origin.add_child(main.comp_kb)
+		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main._log("[COMP] Keyboard composition layer created")
 
 	available = true
 	if main.primary_screen.comp_cylinder.is_natively_supported():
