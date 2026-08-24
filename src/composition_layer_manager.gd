@@ -428,10 +428,11 @@ func setup():
 	main._log("[COMP] Left cursor composition layer created")
 
 	# Controller ray indicators - see main.gd's comp_laser_right/left comment
-	# for why these exist. Reuses main._make_laser_gradient()'s fade texture
-	# (the same one the real 3D "Laser" mesh's material uses) for visual
-	# consistency between the two rendering paths.
-	var laser_tex = main._make_laser_gradient()
+	# for why these exist. Uses main._make_comp_laser_texture() - a wider
+	# texture than the real 3D laser's shared gradient, with room to render
+	# rounded capsule-style end caps (matching the real Laser mesh's own
+	# CapsuleMesh shape) rather than a hard rectangular cutoff.
+	var laser_tex = main._make_comp_laser_texture(32, 256)
 	for side in ["right", "left"]:
 		var layer = OpenXRCompositionLayerQuad.new()
 		layer.name = "CompLaser%sLayer" % side.capitalize()
@@ -446,7 +447,7 @@ func setup():
 		viewport.name = "CompLaser%sViewport" % side.capitalize()
 		viewport.disable_3d = true
 		viewport.transparent_bg = true
-		viewport.size = Vector2i(8, 256)
+		viewport.size = Vector2i(32, 256)
 		# UPDATE_ALWAYS, not UPDATE_ONCE (2026-08-24) - matching comp_cursor_
 		# viewport's working pattern. UPDATE_ONCE was an unproven attempt to
 		# save a little render cost for what's genuinely static content (the
@@ -464,6 +465,12 @@ func setup():
 		laser_tex_rect.anchor_bottom = 1.0
 		laser_tex_rect.expand_mode = 1
 		laser_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		# _make_comp_laser_texture() is opaque at one end, fading to
+		# transparent at the other (same convention as _make_laser_gradient(),
+		# which this was split off from) - flip_v confirmed correct on-device
+		# (opaque near the hand, fading toward the far end) for that
+		# convention, kept when switching to the new capsule-shaped texture.
+		laser_tex_rect.flip_v = true
 		laser_tex_rect.texture = laser_tex
 		viewport.add_child(laser_tex_rect)
 
