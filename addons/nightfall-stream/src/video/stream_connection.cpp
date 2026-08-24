@@ -1303,6 +1303,16 @@ void StreamConnection::_decode_thread_func() {
                             uploader_->update_from_android_image(frame.image, frame.width, frame.height);
                         }
                         frames_decoded_.fetch_add(1);
+                        // GLES path (no AHB import support) never recorded
+                        // latency - the AHB branch below does this after its
+                        // own decode/upload, but this branch returned early
+                        // via `continue` before reaching it, leaving
+                        // last_frame_latency_us_ permanently 0 under GLES.
+                        auto decode_done = std::chrono::steady_clock::now();
+                        auto decode_done_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_done.time_since_epoch()).count();
+                        int64_t submit_us = last_submit_time_us_.load();
+                        if (submit_us > 0 && decode_done_us > submit_us)
+                            last_frame_latency_us_.store((int)(decode_done_us - submit_us));
                     }
                     codec->release_frame(frame);
                     continue;
