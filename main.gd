@@ -71,7 +71,7 @@ var sbs_mode: int = 0
 # settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
 # get_stereo_mode() for how they combine.
 var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
-var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Fastest, 4=Standard
+var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
@@ -133,6 +133,10 @@ var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
 var stats_network_events: int = 0
+# Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
+# by the system compositor, confirmed via on-device benchmark 2026-08-25) -
+# no in-app UI disclaimer for this by design; settings_controller.gd's
+# AUTO_TABLE already accounts for it directly in its tier/model picks.
 var passthrough_enabled: bool = false
 var passthrough_supported: bool = false
 var background_mode: int = 0
@@ -295,6 +299,7 @@ const DEBUG_COMP_BG_EQUIRECT := true
 const DEBUG_COMP_LASER := true
 const DEBUG_COMP_GRAB_BAR := true
 const DEBUG_COMP_CORNERS := true
+const DEBUG_COMP_MARKER := true
 
 # Composition-space controller ray indicators (2026-08-24, GLES projectionless
 # polish) - projectionless mode (submit_projection_layer=false) never renders
@@ -539,14 +544,24 @@ const HEVC_MAX_TOTAL_PIXELS = 35389440
 # (80% of that specific 4-monitor test), not a round-number guess.
 const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 
-# Extra resolution ceilings applied only while MiDaS-Fast/-Fastest are the
-# active stereo mode (2026-08-18) - unlike every knob AI-3D's own pipeline
-# exposes (pre-pass resolution/throttle, Newton-refinement cadence, depth-
-# capture throttle), none of which moved FPS at 4K when tested, capping the
-# actual decoded/composited stream size directly attacks the real cost:
-# general per-pixel video decode + compositing work, which scales with
-# resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
-# it stays the uncapped/known-good reference. See compute_requested_resolution().
+# Extra resolution ceiling applied whenever MiDaS-Fast is the active stereo
+# mode (2026-08-18, redesigned 2026-08-25) - unlike every knob AI-3D's own
+# pipeline exposes (pre-pass resolution/throttle, Newton-refinement cadence,
+# depth-capture throttle), none of which moved FPS at 4K when tested,
+# capping the actual decoded/composited stream size directly attacks the
+# real cost: general per-pixel video decode + compositing work, which
+# scales with resolution regardless of AI-3D. MiDaS-Std is intentionally
+# NOT capped here - it stays the uncapped/known-good reference. See
+# compute_requested_resolution().
+#
+# 2026-08-25: replaced the old flat MIDAS_FAST_MAX_PIXELS/
+# MIDAS_FASTEST_MAX_PIXELS constants (one budget per tier, applied
+# regardless of resolution/passthrough) with settings_controller.gd's
+# AUTO_TABLE, whose cap_px varies per (resolution-class, passthrough) combo
+# from an on-device GPU-inference benchmark matrix - e.g. Fast is uncapped
+# at HD-passthrough-on but capped to 2K's pixel budget at 4K-passthrough-on.
+# Applies to MANUAL Fast selection too, not just Auto - see
+# compute_requested_resolution()'s cap block below.
 #
 # History: capped both tiers, then MiDaS-Fast/-Fastest's 3D quality looked
 # visibly worse than MiDaS-Std. [DEPTH]-tagged logging in depth_estimator.gd
@@ -565,8 +580,6 @@ const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 # - same approach this file already uses for HEVC_MAX_TOTAL_PIXELS just
 # below, which doesn't have this problem because it already works in pixels.
 const MIDAS_RES_CAP_ENABLED := true
-const MIDAS_FAST_MAX_PIXELS := 3200 * 1800
-const MIDAS_FASTEST_MAX_PIXELS := 2560 * 1440
 
 # The highest resolution_scale_pct that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
@@ -635,26 +648,32 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
-	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
-	# Keyed off the actually-active stereo mode (accounts for sbs_mode
-	# overriding ai_3d_speed/model/debug, same as
-	# settings_controller.get_stereo_mode() itself), not those raw fields
-	# directly. Caps by total pixel budget (like
-	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
+	# MiDaS-Fast only - see MIDAS_RES_CAP_ENABLED's comment above. Keyed off
+	# the actually-active stereo mode (accounts for sbs_mode overriding
+	# ai_3d_speed/model/debug, same as settings_controller.get_stereo_mode()
+	# itself), not those raw fields directly. Caps by total pixel budget
+	# (like HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
 	# min(target_w/w, target_h/h) - that approach silently delivered far
 	# fewer pixels than intended on a non-16:9 source (see history above).
 	# apply_midas_cap=false lets a caller ask "what would this resolution be
 	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which
 	# uses that to pick Auto bitrate from the uncapped resolution instead of
 	# the capped encode resolution (same bitrate, fewer pixels should mean
-	# MORE bits per pixel, not fewer).
+	# MORE bits per pixel, not fewer). get_auto_selection() always reads the
+	# UNCAPPED resolution internally (apply_midas_cap=false), so this can't
+	# recurse into itself.
+	#
+	# cap_px comes from settings_controller.gd's AUTO_TABLE UNCONDITIONALLY
+	# whenever the resulting tier is Fast (stereo_mode 10) - not gated on
+	# ai_3d_speed==1 - so a MANUAL Fast selection gets the same per-combo cap
+	# Auto's own Fast pick would use at that resolution/passthrough combo,
+	# matching this cap's pre-2026-08-25 behavior of applying to manual Fast
+	# too (it just used one flat constant then instead of a per-combo table).
 	if apply_midas_cap and MIDAS_RES_CAP_ENABLED and settings_controller:
 		var stereo_mode = settings_controller.get_stereo_mode()
 		var max_pixels := 0
 		if stereo_mode == 10:
-			max_pixels = MIDAS_FAST_MAX_PIXELS
-		elif stereo_mode == 11:
-			max_pixels = MIDAS_FASTEST_MAX_PIXELS
+			max_pixels = settings_controller.get_auto_selection().cap_px
 		if max_pixels > 0 and w * h > max_pixels:
 			var cap_scale = sqrt(float(max_pixels) / float(w * h))
 			w = int(w * cap_scale)
@@ -999,7 +1018,7 @@ func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
 func _update_marker_layers(_delta: float):
 	if not comp_marker_right and not comp_marker_left:
 		return
-	if not comp.in_use or not is_xr_active:
+	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
 		_set_comp_quad_hidden(comp_marker_right, true)
 		_set_comp_quad_hidden(comp_marker_left, true)
 		return
@@ -1510,7 +1529,7 @@ func _init_android_setup():
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
 	ai_3d_model = clampi(ai_3d_model, 0, 4)
-	ai_3d_speed = clampi(ai_3d_speed, 0, 4)
+	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:

@@ -122,6 +122,14 @@ public class GodotApp extends GodotActivity {
 		return 256;
 	}
 
+	public static float getDepthLastInferenceMs() {
+		return depthEstimator != null ? depthEstimator.getLastInferenceMs() : 0f;
+	}
+
+	public static float getDepthLastInferenceHz() {
+		return depthEstimator != null ? depthEstimator.getLastInferenceHz() : 0f;
+	}
+
 	// One-off diagnostic for the H.264/HEVC hardware decoder dimension limits on this
 	// device - queried directly from the platform instead of inferred from trial and error.
 	public static String getCodecCapabilitiesInfo() {

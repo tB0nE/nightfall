@@ -56,42 +56,29 @@ var _gpu_boost_refresh_timer: float = 0.0
 # performance, since the same expensive bilateral/search work was repeated
 # per eye per full-res pixel instead of once for the whole frame.
 const PASS_DIVISOR := 4
-# stereo_mode 10/11 (MiDaS-Fast / MiDaS-Fastest) only - shrinks the
-# pre-pass's linear resolution further than PASS_DIVISOR, on the same
-# GPU-cost theory as the throttle below. Selected via _pass_divisor in
-# set_enabled() based on warp_tier. No power-of-2 requirement - this only
-# ever feeds an integer division in GDScript (_resize_warp_passes(), called
-# once per native_resolution change, not per-pixel/per-frame), so any
-# divisor costs the same at runtime; only the resulting resolution (and
-# therefore quality vs. GPU cost) changes.
+# stereo_mode 10 (MiDaS-Fast) only - shrinks the pre-pass's linear
+# resolution further than PASS_DIVISOR, on the same GPU-cost theory as the
+# throttle below. Selected via _pass_divisor in set_enabled() based on
+# warp_tier. No power-of-2 requirement - this only ever feeds an integer
+# division in GDScript (_resize_warp_passes(), called once per
+# native_resolution change, not per-pixel/per-frame), so any divisor costs
+# the same at runtime; only the resulting resolution (and therefore quality
+# vs. GPU cost) changes.
 const EX_PASS_DIVISOR := 10
-const FASTEST_PASS_DIVISOR := 12
 const PASS_MIN_SIZE := 160
-# MiDaS-Fastest only: an absolute ceiling on the pre-pass size, equal to
-# what MiDaS-Fast (EX_PASS_DIVISOR=10) already produces at 2560x1440 - the
-# resolution it was tuned/tested at (2560/10=256, 1440/10=144, floored up
-# to PASS_MIN_SIZE=160). FASTEST_PASS_DIVISOR alone still scales up
-# proportionally with native_resolution, so at 4K (roughly double 1440p's
-# linear dimensions) it costs ~4x more than at 1440p for the same divisor -
-# that's the actual reason 4K costs more, not something a bigger divisor
-# alone fixes. Clamping to this ceiling means going to 4K (or beyond) never
-# makes MiDaS-Fastest's pre-pass more expensive than it already is at
-# 1440p; below that, FASTEST_PASS_DIVISOR's own result is already smaller
-# than this and the ceiling is a no-op.
-const FASTEST_PASS_MAX_SIZE := Vector2i(256, 160)
 var _pass_divisor: int = PASS_DIVISOR
 var upsample_viewport: SubViewport
 var upsample_mat: ShaderMaterial
 var offset_viewport: SubViewport
 var offset_mat: ShaderMaterial
-# stereo_mode 10/11 only: throttles these two passes to UPDATE_ONCE on this
+# stereo_mode 10 only: throttles these two passes to UPDATE_ONCE on this
 # timer instead of UPDATE_ALWAYS, re-rendering the occlusion search at
 # warp_update_interval instead of every render frame (up to 90Hz), even
 # though the depth data feeding them only refreshes at submit_interval's
 # 20Hz. On-device testing (2026-08-18) found NO measurable FPS gain from
 # this on stereo_mode 6 (MiDaS-Std, which stayed on UPDATE_ALWAYS as a
 # result) - the pre-pass apparently isn't the actual bottleneck. Kept in
-# these separate modes (not folded into MiDaS-Std) to keep poking at this
+# this separate mode (not folded into MiDaS-Std) to keep poking at this
 # without risking the known-good mode; the per-eye per-pixel Newton-
 # refinement gather in yuv_display.gdshader (runs at full render resolution
 # every frame regardless of this throttle) is the next suspect.
@@ -100,20 +87,20 @@ var _warp_timer: float = 0.0
 var _warp_passes_active: bool = false
 var _warp_throttled: bool = false
 # 0 = MiDaS-Std (no throttling/shrinking - full quality, unthrottled), 1 =
-# MiDaS-Fast, 2 = MiDaS-Fastest. Set via set_enabled()'s warp_tier param;
-# drives _pass_divisor and WARP_NEWTON_PERIOD below.
+# MiDaS-Fast. Set via set_enabled()'s warp_tier param; drives _pass_divisor
+# and WARP_NEWTON_PERIOD below. Fastest (tier 2) was removed 2026-08-25 -
+# on-device benchmarking found it near-identical to Fast at every tested
+# resolution, not worth the extra tier.
 var _warp_tier: int = 0
-# stereo_mode 10/11 only - a 1-indexed counter, incremented every process()
+# stereo_mode 10 only - a 1-indexed counter, incremented every process()
 # tick (one real render frame, see main.gd's _process()) while a throttled
 # tier is active. Pushed to comp_shader_mat_left/right as warp_newton_steps
 # (1 on the tick where counter % WARP_NEWTON_PERIOD[_warp_tier] == 0, else
 # 0) - yuv_display.gdshader just reads that uniform directly rather than
-# special-casing stereo_mode itself, so adding another tier only needs an
-# entry here, not a shader change. MiDaS-Fast (tier 1) does 1 Newton step
-# every 2nd frame (alternating); MiDaS-Fastest (tier 2) does 1 every 3rd
-# frame, 0 the other two - both amortize that per-pixel refinement cost
+# special-casing stereo_mode itself. MiDaS-Fast (tier 1) does 1 Newton step
+# every 2nd frame (alternating), amortizing that per-pixel refinement cost
 # across frames instead of paying it every frame.
-const WARP_NEWTON_PERIOD: Array[int] = [1, 2, 3]
+const WARP_NEWTON_PERIOD: Array[int] = [1, 2]
 var _warp_frame_counter: int = 0
 # Matches Gilleece/moonlight-android-xr's own shipped default separation
 # (0.5% of frame width). Tested bumping this to 0.02 (~3.3x) on the theory
@@ -262,8 +249,6 @@ func _resize_warp_passes():
 	if src.x <= 0 or src.y <= 0:
 		return
 	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
-	if _warp_tier == 2:
-		target = Vector2i(mini(target.x, FASTEST_PASS_MAX_SIZE.x), mini(target.y, FASTEST_PASS_MAX_SIZE.y))
 	if target == _pass_size:
 		return
 	_pass_size = target
@@ -334,12 +319,11 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		# throttling - it's a single cheap fullscreen blit, not the
 		# occlusion-search work those passes do.
 		depth_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if val else SubViewport.UPDATE_DISABLED
-	# Only stereo_mode 5/6/10/11 (MiDaS-GPU / MiDaS-Std / MiDaS-Fast /
-	# MiDaS-Fastest) consume these - leave them off for the older modes 3/4
-	# so they stay a clean, unaffected performance baseline to compare
-	# against. Tiers 1/2 throttle via _warp_timer in process() (UPDATE_ONCE);
-	# tier 0 (MiDaS-Std) stays UPDATE_ALWAYS - see warp_update_interval's
-	# comment above for why.
+	# Only stereo_mode 5/6/10 (MiDaS-GPU / MiDaS-Std / MiDaS-Fast) consume
+	# these - leave them off for the older modes 3/4 so they stay a clean,
+	# unaffected performance baseline to compare against. Tier 1 throttles
+	# via _warp_timer in process() (UPDATE_ONCE); tier 0 (MiDaS-Std) stays
+	# UPDATE_ALWAYS - see warp_update_interval's comment above for why.
 	_warp_passes_active = val and run_warp_passes
 	_warp_tier = warp_tier if _warp_passes_active else 0
 	_warp_throttled = _warp_tier > 0
@@ -347,7 +331,6 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	_warp_frame_counter = 0
 	match _warp_tier:
 		1: _pass_divisor = EX_PASS_DIVISOR
-		2: _pass_divisor = FASTEST_PASS_DIVISOR
 		_: _pass_divisor = PASS_DIVISOR
 
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)

@@ -37,6 +37,8 @@ public:
     int get_effective_depth_backend();
     String get_depth_backend_status();
     int get_depth_model_size();
+    float get_depth_last_inference_ms();
+    float get_depth_last_inference_hz();
 
 protected:
     static void _bind_methods();

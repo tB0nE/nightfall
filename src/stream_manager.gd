@@ -65,13 +65,14 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		bitrate = main.bitrates[main.bitrate_idx] * 1000
 	else:
 		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
-		# above - w/h can be reduced by the MiDaS-Fast/-Fastest resolution
-		# cap (main.gd's MIDAS_FAST_MAX_PIXELS), which is meant to trade pixels
+		# above - w/h can be reduced by the MiDaS-Fast resolution cap
+		# (settings_controller.gd's AUTO_TABLE cap_px, applied in main.gd's
+		# compute_requested_resolution()), which is meant to trade pixels
 		# for FPS, not ALSO cut the bitrate. _auto_bitrate() keying off the
 		# capped w/h used to do both at once (confirmed via logs: capping to
 		# 3712x2088 or 2560x1440 both dropped bitrate from 80000 to 40000),
-		# which starved the video of real detail and degraded MiDaS-Fast/
-		# -Fastest's depth quality well beyond what the resolution cut alone
+		# which starved the video of real detail and degraded MiDaS-Fast's
+		# depth quality well beyond what the resolution cut alone
 		# would explain (see compute_requested_resolution()'s apply_midas_cap
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
@@ -561,6 +562,21 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 " + str(int(main.stats_fps)) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
+	# Live GPU-depth-inference readout (2026-08-25) - added for the
+	# 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so testing
+	# resolution/quality-tier combos doesn't require pulling logcat each
+	# time. Only shown while depth is actually running on GPU (matches
+	# depth_estimator.gd's own should_boost/effective_gpu gate) - CPU-model
+	# telemetry isn't meaningfully populated (see DepthEstimator.java's
+	# recordTelemetry(), which resets its window every CPU call).
+	if main.depth_estimator and main.depth_estimator.enabled and main.stream_backend \
+			and main.stream_backend.has_method("get_effective_depth_backend") \
+			and main.stream_backend.get_effective_depth_backend() == 2 \
+			and main.stream_backend.has_method("get_depth_last_inference_ms"):
+		var inf_ms = main.stream_backend.get_depth_last_inference_ms()
+		var inf_hz = main.stream_backend.get_depth_last_inference_hz()
+		if inf_ms > 0.0:
+			txt += " \u2022 AI3D:" + str(snapped(inf_ms, 0.1)) + "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
 	if main.controller_mapper and main.controller_mapper.is_active():
 		txt += " \u2022 " + main.controller_mapper.get_mode_label()
 		if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD and main.controller_mapper.get_close_to_head():

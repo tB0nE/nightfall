@@ -25,15 +25,20 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # quality/debug) down to two, per user request - "AI 3D" and "AI Model" felt
 # like they should each be a single toggle, not four:
 #   ai_3d_speed_labels  - is AI-3D on at all, and at which performance tier.
-#                         Off/Auto/Fast/Fastest/Standard - absorbs both the
+#                         Off/Auto/Fast/Standard - absorbs both the
 #                         old on/off state (previously ai_3d_model==0) and
 #                         the old ai_3d_quality_labels tier picker. Fast/
-#                         Fastest/Standard directly select depth_estimator.gd's
-#                         warp_tier 1/2/0 (see MiDaS-Fast/-Fastest's own
-#                         history in main.gd, MIDAS_FAST_MAX_PIXELS, for what
-#                         each tier trades off). Auto instead picks a tier
-#                         from the current resolution/passthrough state - see
-#                         resolve_quality_tier()/_auto_quality_tier() below.
+#                         Standard directly select depth_estimator.gd's
+#                         warp_tier 1/0 (see MiDaS-Fast's own history in
+#                         main.gd for what it trades off - Fastest/tier 2
+#                         was removed 2026-08-25, on-device benchmarking
+#                         showed it near-identical to Fast at every tested
+#                         resolution). Auto instead picks BOTH a tier and a
+#                         model from the current resolution/passthrough
+#                         state, via a literal lookup table (AUTO_TABLE
+#                         below) built from an on-device GPU-inference
+#                         benchmark matrix, not a formula - see
+#                         resolve_quality_tier()/get_auto_selection() below.
 #   ai_3d_models        - WHICH model, dictionaries of {label, java_index,
 #                         gpu}. Absorbs the old separate Backend control
 #                         (Auto/CPU/GPU) - each model entry states its own
@@ -60,7 +65,7 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # in git blame for this file rather than repeated here - see commits through
 # 2026-08-20 for the YOLO26-S/MiDaS-GPU/YOLO26-N-resolution/7-way-lineup
 # history that produced the roster below.
-var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Fastest", "Standard"]
+var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
 var ai_3d_models: Array = [
 	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
@@ -69,6 +74,48 @@ var ai_3d_models: Array = [
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+
+# Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
+# vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
+# separated from 16:9's 1.778 by a 2.0 threshold), then bucket by pixel
+# count within that aspect class at the midpoint between each pair of named
+# reference resolutions - anything below the lowest or above the highest
+# named bucket clamps to the nearest end rather than extrapolating. See
+# _classify_auto_resolution()/get_auto_selection() below.
+const AUTO_ASPECT_ULTRAWIDE_THRESHOLD := 2.0
+const AUTO_CLASS_16_9 := [
+	{"name": "720p", "px": 1280 * 720},
+	{"name": "HD", "px": 1920 * 1080},
+	{"name": "2K", "px": 2560 * 1440},
+	{"name": "4K", "px": 3840 * 2160},
+]
+const AUTO_CLASS_ULTRAWIDE := [
+	{"name": "21:9 HD", "px": 2560 * 1080},
+	{"name": "21:9 2K", "px": 3440 * 1440},
+]
+
+# The Auto-mode target table (2026-08-25, on-device GPU-inference benchmark
+# matrix - MiDaS-192-GPU/MiDaS-256-GPU x Fast/Fastest/Standard x six
+# resolution classes x passthrough on/off, Quest 3/3s). A literal lookup,
+# NOT a formula - which model wins (192 vs 256) does not follow a
+# monotonic rule against resolution or passthrough alone (2K-on picks 192
+# but 2K-off picks 256; 21:9-2K-on picks 256 but -off picks 192) - these
+# are direct empirical judgment calls per combo. tier: 0=Standard/1=Fast
+# (matches depth_estimator.gd's warp_tier - Fastest/2 was removed the same
+# day). model_idx: index into ai_3d_models above (0=MiDaS-256-GPU,
+# 1=MiDaS-192-GPU - Auto never picks a CPU model or DA-V2). cap_px: 0 = no
+# cap, else the sqrt-pixel-budget resolution cap compute_requested_resolution()
+# applies (replaces the old flat MIDAS_FAST_MAX_PIXELS/MIDAS_FASTEST_MAX_PIXELS
+# constants, which this table's per-combo caps supersede - see main.gd).
+# Keyed by class name, then main.passthrough_enabled (bool).
+const AUTO_TABLE := {
+	"720p":    {false: {"tier": 0, "model_idx": 0, "cap_px": 0}, true: {"tier": 0, "model_idx": 0, "cap_px": 0}},
+	"HD":      {false: {"tier": 0, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 0}},
+	"21:9 HD": {false: {"tier": 1, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 0}},
+	"2K":      {false: {"tier": 1, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 1, "cap_px": 0}},
+	"21:9 2K": {false: {"tier": 1, "model_idx": 1, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1080}},
+	"4K":      {false: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1440}, true: {"tier": 1, "model_idx": 1, "cap_px": 2560 * 1440}},
+}
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -88,39 +135,50 @@ func get_stereo_mode() -> int:
 		return 9 # MiDaS-DMap-Input
 	match resolve_quality_tier():
 		1: return 10 # MiDaS-Fast
-		2: return 11 # MiDaS-Fastest
 		_: return 6 # MiDaS-Std
 
-# 0=Standard, 1=Fast, 2=Fastest - matches depth_estimator.gd's warp_tier
-# numbering exactly, so apply_stereo() can pass this straight through.
-# ai_3d_speed_labels = ["Off", "Auto", "Fast", "Fastest", "Standard"] - Off
-# never reaches here (get_stereo_mode() short-circuits on it above).
+# 0=Standard, 1=Fast - matches depth_estimator.gd's warp_tier numbering
+# exactly, so apply_stereo() can pass this straight through. Fastest/2 was
+# removed 2026-08-25 (was ai_3d_speed==3) - near-identical to Fast at every
+# resolution benchmarked, not worth the extra tier. ai_3d_speed_labels =
+# ["Off", "Auto", "Fast", "Standard"] - Off never reaches here
+# (get_stereo_mode() short-circuits on it above).
 func resolve_quality_tier() -> int:
 	match main.ai_3d_speed:
 		2: return 1 # Fast
-		3: return 2 # Fastest
-		4: return 0 # Standard
-		_: return _auto_quality_tier()
+		3: return 0 # Standard
+		_: return get_auto_selection().tier
 
 # Reads the pre-AI3D-cap BASE resolution (compute_requested_resolution(false),
 # NOT the live/possibly-already-capped value - reading the capped value
 # would be circular, since Auto's own tier choice is what determines the
-# cap in the first place) and classifies it by total pixel count against
-# the nearest 16:9 reference resolution, not literal width/height - this
-# setup's native_resolution is a wide multi-monitor composite, not 16:9,
-# and a literal-dimension check would misclassify it the same way the old
-# width/height-pair resolution caps did (see MIDAS_FAST_MAX_PIXELS's
-# history in main.gd).
-func _auto_quality_tier() -> int:
-	var res = main.compute_requested_resolution(false)
-	var pixels = res.x * res.y
-	var pt = main.passthrough_enabled
-	if pixels <= 1280 * 720:
-		return 0 # Standard, either passthrough state
-	elif pixels <= 2560 * 1440:
-		return 1 if pt else 0 # 1080p/1440p: Fast w/ passthrough, else Standard
-	else:
-		return 2 if pt else 1 # 4K+: Fastest w/ passthrough, else Fast
+# cap in the first place), classifies it (aspect + pixel-count bucket, see
+# AUTO_CLASS_16_9/AUTO_CLASS_ULTRAWIDE above), and looks up the matching
+# AUTO_TABLE row. Public (unlike the old _auto_quality_tier()) - main.gd's
+# compute_requested_resolution() and ui_controller.gd's AI-Model-button
+# labeling both need this same combo, not just resolve_quality_tier() here.
+# Deliberately NOT cached - get_stereo_mode() (which calls this via
+# resolve_quality_tier()) already gets called every frame from several
+# places with no caching today, and this is exactly as cheap as the
+# function it replaces (one Vector2i compute + a handful of comparisons,
+# no allocations) - a cache/invalidation path would be new complexity for
+# no measured benefit.
+func _classify_auto_resolution(w: int, h: int) -> String:
+	if h <= 0:
+		return "720p"
+	var aspect := float(w) / float(h)
+	var refs: Array = AUTO_CLASS_ULTRAWIDE if aspect >= AUTO_ASPECT_ULTRAWIDE_THRESHOLD else AUTO_CLASS_16_9
+	var pixels := w * h
+	for i in range(refs.size() - 1):
+		var midpoint: float = (refs[i].px + refs[i + 1].px) / 2.0
+		if pixels <= midpoint:
+			return refs[i].name
+	return refs[refs.size() - 1].name
+
+func get_auto_selection() -> Dictionary:
+	var res: Vector2i = main.compute_requested_resolution(false)
+	var cls := _classify_auto_resolution(res.x, res.y)
+	return AUTO_TABLE[cls][main.passthrough_enabled]
 
 func _save_setting(btn: Button, label: String):
 	if btn:
@@ -184,10 +242,14 @@ func cycle_ai_3d_model():
 	_schedule_ai_3d_commit()
 
 # Maps main.ai_3d_model (the persisted UI selection, an index into
-# ai_3d_models) to DepthEstimator's real Java-side model index.
+# ai_3d_models) to DepthEstimator's real Java-side model index. Under Auto
+# (ai_3d_speed==1), main.ai_3d_model is frozen/irrelevant - the table picks
+# the model instead (see get_auto_selection()/AUTO_TABLE above).
 func get_depth_model_index() -> int:
 	if main.ai_3d_speed == 0:
 		return 0
+	if main.ai_3d_speed == 1:
+		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.ai_3d_model].java_index
 
 # The backend to actually request from configure_depth() - comes straight
@@ -196,7 +258,8 @@ func get_depth_model_index() -> int:
 func get_depth_backend_index() -> int:
 	if main.ai_3d_speed == 0:
 		return 1 # CPU (irrelevant, AI-3D is off)
-	return 2 if ai_3d_models[main.ai_3d_model].gpu else 1
+	var idx = get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	return 2 if ai_3d_models[idx].gpu else 1
 
 func get_depth_backend_label() -> String:
 	var effective = 1
@@ -251,8 +314,8 @@ func _schedule_ai_3d_commit():
 		return
 	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
 	# already flowing, not a separate mode with its own resolution needs -
-	# deliberately inherit whatever resolution (including a MiDaS-Fast/
-	# -Fastest cap) is already active instead of recomputing/restarting back
+	# deliberately inherit whatever resolution (including a MiDaS-Fast
+	# cap) is already active instead of recomputing/restarting back
 	# to the full uncapped resolution. That restart actively worked against
 	# debugging: switching to a debug view to inspect what a tier was doing
 	# changed the very thing being inspected (a different, uncapped
@@ -261,8 +324,8 @@ func _schedule_ai_3d_commit():
 	if main.ai_3d_debug != 0:
 		apply_stereo()
 		return
-	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
-	# MIDAS_FAST_MAX_PIXELS in main.gd). Checked BEFORE apply_stereo(), not
+	# MiDaS-Fast caps the actual requested stream resolution (see
+	# AUTO_TABLE's cap_px above, applied in main.gd). Checked BEFORE apply_stereo(), not
 	# after - if a restart is needed, apply_stereo() is skipped here
 	# entirely and left to main.gd's _on_stream_started(), which now calls
 	# it once the new session actually lands, instead of calling it here too
@@ -302,14 +365,16 @@ func apply_stereo():
 		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
 		# pre-upsample depth_texture directly - no warp passes needed. mode 9
 		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
-		# model - also no warp passes needed. modes 10/11 (MiDaS-Fast/
-		# -Fastest) are the same warp passes as mode 6, just throttled/shrunk
-		# by differing amounts - see warp_update_interval's comment in
-		# depth_estimator.gd. warp_tier (0=Standard, 1=Fast, 2=Fastest) comes
-		# from resolve_quality_tier() - the SAME tier drives the pre-pass
-		# config whether you're looking at the real warp (mode 6/10/11) or a
-		# debug view of it (mode 7/8/9), since debug views are just a lens
-		# on whichever tier is actually active, not a tier of their own.
+		# model - also no warp passes needed. mode 10 (MiDaS-Fast) is the
+		# same warp passes as mode 6, just throttled/shrunk - see
+		# warp_update_interval's comment in depth_estimator.gd. warp_tier
+		# (0=Standard, 1=Fast - Fastest/2 removed 2026-08-25) comes from
+		# resolve_quality_tier() - the SAME tier drives the pre-pass config
+		# whether you're looking at the real warp (mode 6/10) or a debug
+		# view of it (mode 7/8/9), since debug views are just a lens on
+		# whichever tier is actually active, not a tier of their own. mode
+		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
+		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.ai_3d_speed > 0 else 0
 		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
 		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
@@ -343,8 +408,8 @@ func apply_stereo():
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
 	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
 	# comment above) - it comes straight from main.ai_3d_model. Modes
-	# 6/7/8/9/10/11 (Std, DMap, DMap-Raw, DMap-Input,
-	# Fast, Fastest) are pure visualizations/warp-pass variants of whatever
+	# 6/7/8/9/10 (Std, DMap, DMap-Raw, DMap-Input,
+	# Fast) are pure visualizations/warp-pass variants of whatever
 	# model's depth data is already flowing, not a separate source - mode 9
 	# doesn't even read the model's output (just the color capture), but
 	# MUST still resolve to the same model index here: leaving it out

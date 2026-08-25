@@ -64,7 +64,11 @@ func update_stereo_shader():
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
 	update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[main.ai_3d_model].label)
+	# Under Auto (ai_3d_speed==1) main.ai_3d_model is frozen/irrelevant - show
+	# whichever model AUTO_TABLE actually picked instead (see
+	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
+	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
@@ -74,9 +78,10 @@ func update_3d_btn_state():
 		main._ui_3d_speed_btn.disabled = disabled
 		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
 	# Model/debug controls are additionally meaningless (and disabled)
-	# whenever AI-3D itself is off - no point picking a model or a debug
-	# view for a model that isn't running.
-	var sub_disabled = disabled or main.ai_3d_speed == 0
+	# whenever AI-3D itself is off, OR Auto is picking the model itself
+	# (2026-08-25) - main.ai_3d_model is frozen/irrelevant while Auto
+	# overrides it (see get_depth_model_index()).
+	var sub_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1
 	if main._ui_3d_btn:
 		main._ui_3d_btn.disabled = sub_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0

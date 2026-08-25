@@ -305,6 +305,12 @@ public class DepthEstimator {
     private long telemetryTotalInvokeNs;
     private long telemetryTotalPostprocessNs;
     private int telemetryCompletedFrames;
+    // Latest committed telemetry window's avg invoke time / completed rate
+    // (2026-08-25) - mirrors exactly what recordTelemetry() below logs,
+    // updated at the same point, so a GDScript status-bar readout stays in
+    // sync with logcat's own "Perf:" lines rather than sampling mid-window.
+    private volatile float lastInferenceInvokeMs = 0f;
+    private volatile float lastInferenceHz = 0f;
     private long lastGpuPrepareNs;
     private long lastGpuInvokeNs;
     private long lastGpuPostprocessNs;
@@ -488,6 +494,14 @@ public class DepthEstimator {
 
     public String getBackendStatus() {
         return backendStatus;
+    }
+
+    public float getLastInferenceMs() {
+        return lastInferenceInvokeMs;
+    }
+
+    public float getLastInferenceHz() {
+        return lastInferenceHz;
     }
 
     public synchronized void configureDepth(int modelIndex, int backend) {
@@ -756,13 +770,15 @@ public class DepthEstimator {
         if (elapsedNs < 1_000_000_000L) return;
 
         float divisor = Math.max(telemetryCompletedFrames, 1);
+        lastInferenceInvokeMs = telemetryTotalInvokeNs / divisor / 1_000_000.0f;
+        lastInferenceHz = telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
                 modelNameFor(modelIndex) + "-GPU", telemetryTotalDurationNs / divisor / 1_000_000.0f,
                 telemetryTotalPrepareNs / divisor / 1_000_000.0f,
-                telemetryTotalInvokeNs / divisor / 1_000_000.0f,
+                lastInferenceInvokeMs,
                 telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
-                telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs,
+                lastInferenceHz,
                 submittedFrames.getAndSet(0), droppedFrames.getAndSet(0)));
         telemetryWindowStartNs = nowNs;
         telemetryTotalDurationNs = 0;

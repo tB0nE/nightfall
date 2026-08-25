@@ -240,6 +240,20 @@ func get_depth_model_size() -> int:
 			return db.get_depth_model_size()
 	return 256
 
+func get_depth_last_inference_ms() -> float:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_depth_last_inference_ms()
+	return 0.0
+
+func get_depth_last_inference_hz() -> float:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			return db.get_depth_last_inference_hz()
+	return 0.0
+
 func probe_video_format(codec_pref: int, disable_hw: bool) -> int:
 	if _v2:
 		return _v2.probe_video_format(codec_pref, disable_hw)

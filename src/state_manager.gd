@@ -44,6 +44,11 @@ func save_host_state():
 	save.set_value(ip, "sbs_mode", main.sbs_mode)
 	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
 	save.set_value(ip, "ai_3d_speed", main.ai_3d_speed)
+	# Marks the post-Fastest-removal ai_3d_speed range (0-3, was 0-4) -
+	# 2026-08-25. The key name is unchanged so has_section_key(ip,
+	# "ai_3d_speed") alone can't tell an old-range save from a new one; this
+	# marker disambiguates. See load_host_state()'s migration below.
+	save.set_value(ip, "ai_3d_speed_v2", true)
 	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
@@ -84,8 +89,21 @@ func load_host_state(ip: String):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_speed"):
 			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_models.size() - 1)
-			main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 0), 0, 4)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+			if save.has_section_key(ip, "ai_3d_speed_v2"):
+				main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 1), 0, 3)
+			else:
+				# Migrate the pre-2026-08-25 5-label range (Off/Auto/Fast/
+				# Fastest/Standard, 0-4) to the new 4-label range
+				# (Off/Auto/Fast/Standard, 0-3) - old index 3 (Fastest,
+				# removed - near-identical to Fast on-device) falls back to
+				# Fast (new index 2); old index 4 (Standard) shifts down to
+				# new index 3. 0/1/2 (Off/Auto/Fast) are unchanged.
+				var old_speed = clampi(save.get_value(ip, "ai_3d_speed", 1), 0, 4)
+				match old_speed:
+					3: main.ai_3d_speed = 2 # Fastest -> Fast
+					4: main.ai_3d_speed = 3 # Standard (shifted)
+					_: main.ai_3d_speed = old_speed # Off/Auto/Fast unchanged
 		elif save.has_section_key(ip, "ai_3d_model"):
 			# Migrate the old 4-control save format (2026-08-24 collapse to
 			# two controls - see settings_controller.gd's ai_3d_speed_labels/
@@ -102,9 +120,9 @@ func load_host_state(ip: String):
 				main.ai_3d_model = 0
 			else:
 				match old_quality:
-					1: main.ai_3d_speed = 3 # Fastest
+					1: main.ai_3d_speed = 2 # Fastest -> Fast (removed 2026-08-25)
 					2: main.ai_3d_speed = 2 # Fast
-					3: main.ai_3d_speed = 4 # Standard
+					3: main.ai_3d_speed = 3 # Standard
 					_: main.ai_3d_speed = 1 # Auto
 				match old_model:
 					1: main.ai_3d_model = 2 # MiDaS-192
@@ -132,8 +150,8 @@ func load_host_state(ip: String):
 				main.ai_3d_model = 2 # MiDaS-192
 				match old:
 					1: main.ai_3d_speed = 2 # Fast
-					3: main.ai_3d_speed = 3 # Fastest
-					_: main.ai_3d_speed = 4 # Standard (old modes 0, 2, 4-6)
+					3: main.ai_3d_speed = 2 # Fastest -> Fast (removed 2026-08-25)
+					_: main.ai_3d_speed = 3 # Standard (old modes 0, 2, 4-6)
 	elif save.has_section_key(ip, "stereo_mode"):
 		var old = clampi(save.get_value(ip, "stereo_mode", 0), 0, 4)
 		if old <= 2:
@@ -147,7 +165,11 @@ func load_host_state(ip: String):
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
 	main.ui_controller.update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[main.ai_3d_model].label)
+	# Auto (ai_3d_speed==1) picks its own model - main.ai_3d_model is
+	# frozen/irrelevant then (see ui_controller.gd's update_stereo_shader(),
+	# same logic mirrored here since this doesn't call that function directly).
+	var loaded_model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[loaded_model_idx].label)
 	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	main.ui_controller.update_3d_btn_state()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
