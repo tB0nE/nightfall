@@ -232,6 +232,20 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallA
 # history ("(CONV_2D) failed to prepare, Node number 3"); the GPU delegate
 # still runs at fp16 precision internally via setPrecisionLossAllowed(true)
 # in DepthEstimator.java, it just needs a float32 tensor boundary.
+# Re-quantized (2026-08-25) - the first bundled version was a plain
+# all-float32 export (64MB), nearly 2x the reference 256px model (33MB)
+# despite the smaller input, because that 256px asset was never built by
+# this project - it's an externally-sourced export that already used
+# TFLite's standard weight-only float16 quantization internally (fp16
+# CONV weights, float32 I/O boundary - the same technique
+# setPrecisionLossAllowed(true) exploits at the delegate level). Applied
+# the same technique here directly via tf.lite.TFLiteConverter
+# (optimizations=[DEFAULT], target_spec.supported_types=[float16]) against
+# the SavedModel onnx2tf's tf_converter backend produces - onnx2tf's own
+# "_float16.tflite" sibling isn't this; it's a literal fp16 I/O boundary
+# export that fails to load (same root cause as this comment's own
+# fp16-I/O history above). Result: 33.2MB, verified same float32 I/O +
+# fp16-weight tensor pattern as the reference model, non-degenerate output.
 cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
 # YOLO26-depth (nano, all resolutions) and YOLO26-N-384-GPU REMOVED from
 # selection (2026-08-25) - the w8a32 nano CPU lineup and a fresh
