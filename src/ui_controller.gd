@@ -676,7 +676,7 @@ func build_ui():
 
 	main._ui_ctrl_mode_btn = make_option_btn("Mapping", "Off")
 	control_row2.add_child(main._ui_ctrl_mode_btn)
-	main._ui_ctrl_type_btn = make_option_btn("Device Mode", "PAD")
+	main._ui_ctrl_type_btn = make_option_btn("Device Mode", "PAD-HAND")
 	control_row2.add_child(main._ui_ctrl_type_btn)
 	main._ui_btn_toggle_btn = make_option_btn("Alternate Mode", "Head")
 	control_row2.add_child(main._ui_btn_toggle_btn)

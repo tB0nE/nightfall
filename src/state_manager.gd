@@ -321,8 +321,6 @@ func load_state():
 		if save.has_section_key("controller", "active"):
 			main.controller_mapper.active = save.get_value("controller", "active", false)
 			main.controller_mapper.ctrl_type = clampi(save.get_value("controller", "ctrl_type", 0), 0, 2)
-			if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.KEYBOARD:
-				main.controller_mapper.ctrl_type = ControllerMapper.CtrlType.KBMOUSE
 		else:
 			var old_mode = clampi(save.get_value("controller", "mode", 0), 0, 2)
 			if old_mode == 0:

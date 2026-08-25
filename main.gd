@@ -808,7 +808,7 @@ func _update_cursor_layer():
 		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
-	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.is_gamepad_mode()
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
 	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing

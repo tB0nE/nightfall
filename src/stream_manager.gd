@@ -579,6 +579,6 @@ func update_stats():
 			txt += " \u2022 AI3D:" + str(snapped(inf_ms, 0.1)) + "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
 	if main.controller_mapper and main.controller_mapper.is_active():
 		txt += " \u2022 " + main.controller_mapper.get_mode_label()
-		if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD and main.controller_mapper.get_close_to_head():
+		if main.controller_mapper.is_gamepad_mode() and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt

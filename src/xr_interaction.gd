@@ -188,7 +188,7 @@ func handle_pointer_interaction():
 
 	if main.is_xr_active and main.is_streaming:
 		var is_gripping = _is_now_gripping()
-		var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+		var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 		var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
 		if not pad_blocking and not tp_blocking and is_gripping and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
@@ -273,7 +273,7 @@ func handle_pointer_interaction():
 			left_laser.visible = false
 	var on_screen = false
 	var tp_capturing = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
-	var pad_mode_active = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+	var pad_mode_active = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	if tp_capturing:
 		if main.contact_dot:
 			main.contact_dot.visible = false
@@ -473,7 +473,7 @@ func handle_pointer_interaction():
 		elif t.role == &"screen" and main.is_streaming:
 			if main.virtual_keyboard and main.virtual_keyboard.trackpad_active:
 				return
-			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD:
+			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode():
 				return
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t.screen.hit_point_to_uv(hit_pos)
