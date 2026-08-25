@@ -64,12 +64,8 @@ var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Fastest", "Standard"]
 var ai_3d_models: Array = [
 	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
-	{"label": "YOLO26-N-384-GPU", "java_index": 4, "gpu": true},
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
-	{"label": "YOLO26-N-256", "java_index": 7, "gpu": false},
-	{"label": "YOLO26-N-320", "java_index": 8, "gpu": false},
-	{"label": "YOLO26-N-384", "java_index": 4, "gpu": false},
 	{"label": "DA-V2-196", "java_index": 11, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
 ]

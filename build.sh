@@ -89,9 +89,6 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   mkdir -p "$SCRIPT_DIR/depth_models"
   cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/models/yolo26n-depth-256-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/models/yolo26n-depth-320-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/models/yolo26n-depth-384-w8a32.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
 
@@ -236,31 +233,13 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallA
 # still runs at fp16 precision internally via setPrecisionLossAllowed(true)
 # in DepthEstimator.java, it just needs a float32 tensor boundary.
 cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
-# YOLO26-depth nano (5.5MB each), w8a32 quantization (2026-08-20, was static
-# full int8) - Ultralytics' new monocular depth export, verified via direct
-# TFLite Interpreter inspection (2026-08-18). w8a32 (dynamic/weight-only
-# int8, no calibration data needed) fixes a confirmed collapse bug the old
-# static-int8 export had on at least one busy/high-texture photo, and looks
-# noticeably less blocky everywhere else - see DepthEstimator.java's
-# MODEL_YOLO_N_* comment. Bundled at THREE resolutions as separate, real,
-# reachable ai_3d_model choices for a direct on-device speed-vs-quality
-# comparison. YOLO26-S is deliberately NOT bundled (2026-08-19, unlike
-# Depth Anything below, it's not dead code, just retired) - its int8
-# quantization proved fragile on real desktop-UI-style low-texture content
-# even after a resolution bump; DepthEstimator.java still attempts to load it
-# (soft-fails harmlessly, same pattern as MiDaS-GPU) and its file stays
-# in models/ untouched if the calibration issue gets fixed.
-cp "$SCRIPT_DIR/models/yolo26n-depth-256-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/models/yolo26n-depth-320-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/models/yolo26n-depth-384-w8a32.tflite" android/build/nightfallAssets/
-# YOLO26-N-384-GPU (2026-08-24) - fresh export via Ultralytics' own ONNX
-# export (NOT a conversion of the deployed CPU w8a32 model above, which is
-# NCHW) run through the same onnx2tf GPU-friendly recipe as the MiDaS GPU
-# exports. Verified NHWC/float32-I/O and a CNN-dominated op graph (86
-# CONV_2D, 78 LOGISTIC/sigmoid, only 4 BATCH_MATMUL/2 SOFTMAX from one small
-# attention block) - unlike Depth Anything V2's ViT backbone (72 BATCH_MATMUL/
-# 12 GELU/12 SOFTMAX, judged not GPU-delegate-viable and not bundled).
-cp "$SCRIPT_DIR/models/yolo26n-depth-384-gpu.tflite" android/build/nightfallAssets/
+# YOLO26-depth (nano, all resolutions) and YOLO26-N-384-GPU REMOVED from
+# selection (2026-08-25) - the w8a32 nano CPU lineup and a fresh
+# NHWC/CNN-dominated GPU export were both tried, but the GPU delegate never
+# loaded on-device ("Failed to apply delegates") and the CPU lineup wasn't
+# worth keeping bundled without it. Same soft-fail pattern as YOLO26-S
+# below: DepthEstimator.java still attempts to load these (harmless, no
+# asset present) and the files stay in models/ untouched if revisited.
 # Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
 # fp16 asset was fully dead code (never loaded on this CPU path at all: an
 # "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
@@ -275,6 +254,13 @@ cp "$SCRIPT_DIR/models/yolo26n-depth-384-gpu.tflite" android/build/nightfallAsse
 # MODEL_DA_196/252 comment for both fixes' full history.
 cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
 cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
+# DA-V2-196-GPU tried (2026-08-25), REMOVED from selection - the GPU
+# delegate loaded and produced correct output (same onnx2tf -kt input fix
+# as the CPU models above), but only at ~2.8Hz vs. MiDaS-GPU's ~15-20Hz -
+# DA-V2's ViT backbone repeats an unsupported-op region 12 times, forcing
+# 12 GPU<->CPU handoffs per inference that dominate the cost. See
+# DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
+# constant for the full history if revisiting.
 LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
 if [ ! -f "$LITERT_GPU_AAR" ]; then
   echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"

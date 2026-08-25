@@ -1440,7 +1440,7 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 9)
+	ai_3d_model = clampi(ai_3d_model, 0, 5)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 4)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
