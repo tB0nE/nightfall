@@ -46,3 +46,4 @@ openxr/environment_blend_mode=2
 openxr/extensions/hand_tracking=true
 shaders/enabled=true
 openxr/extensions/meta/passthrough=true
+openxr/extensions/meta/render_model=false

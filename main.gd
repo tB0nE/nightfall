@@ -89,6 +89,23 @@ var tracking_mode: int = 0
 var tracking_labels: Array = ["Off", "Hands"]
 var right_hand_visual: Node3D = null
 var left_hand_visual: Node3D = null
+
+# OS/runtime controller render models (2026-08-25, docs/gles-quest-projectionless-plan.md's
+# "Controller and hand experiment" section) - OpenXRFbRenderModel wraps
+# XR_FB_render_model, letting the runtime hand us its own real controller
+# mesh instead of the bundled MetaQuestTouchPlus FBX (_load_controller_models()
+# below, which stays as the fallback). Default OFF ("keep this behind a
+# runtime/debug flag until tested" - unlike the DEBUG_COMP_* flags earlier
+# this session, which default true because they're already confirmed
+# working, this one hasn't been tested on-device at all yet). Deliberately
+# scoped to normal (mesh) projection mode only, per the plan - projectionless/
+# composition mode would need a full 3D-in-composition-layer controller
+# renderer, explicitly called out as out of scope for this first pass.
+const DEBUG_RENDER_MODEL_CONTROLLERS := false
+var right_render_model: Node3D = null
+var left_render_model: Node3D = null
+var _right_render_model_ready: bool = false
+var _left_render_model_ready: bool = false
 var left_hand_raycast: RayCast3D = null
 var mouse_captured_by_stream: bool = false
 var suppress_input_frames: int = 0
@@ -292,6 +309,16 @@ var comp_laser_left_viewport: SubViewport = null
 const LASER_QUAD_LENGTH := 0.4
 const LASER_QUAD_WIDTH := 0.003
 const LASER_START_OFFSET := 0.06
+
+# Persistent controller position markers - see _update_marker_layers().
+# Inverse of the laser above: hidden while actively pointing/held (laser is
+# showing instead), and a faint always-on marker while resting/put down so
+# it can still be located.
+var comp_marker_right: Node3D = null
+var comp_marker_left: Node3D = null
+var comp_marker_right_circle: ColorRect = null
+var comp_marker_left_circle: ColorRect = null
+const MARKER_IDLE_ALPHA := 0.16
 
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
@@ -964,6 +991,46 @@ func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
 	layer.set_quad_size(Vector2(LASER_QUAD_WIDTH, LASER_QUAD_LENGTH))
 	layer.visible = true
 
+# Persistent controller position markers (2026-08-25) - complements
+# _update_laser_layers() above. Inverse of the laser's own visibility:
+# hidden while actively pointing (raycast.enabled - the laser is showing
+# instead), and a faint always-visible dot while resting/put down so it can
+# still be located at a glance.
+func _update_marker_layers(_delta: float):
+	if not comp_marker_right and not comp_marker_left:
+		return
+	if not comp.in_use or not is_xr_active:
+		_set_comp_quad_hidden(comp_marker_right, true)
+		_set_comp_quad_hidden(comp_marker_left, true)
+		return
+	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
+	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
+
+func _update_one_marker_layer(layer: Node3D, circle: ColorRect, hand: XRController3D, raycast: RayCast3D):
+	if not layer or not hand:
+		return
+
+	# raycast.enabled is this codebase's real "actively pointing/held" signal
+	# (see _update_one_laser_layer's own comment) - not get_is_active(),
+	# which stays true for the whole session regardless of pickup/put-down
+	# and can lag behind a freshly-booted or just-picked-up controller by a
+	# few frames. Not gating on get_is_active() at all (2026-08-25) - a
+	# controller untouched since boot still has a last-known/default
+	# transform to show a marker at, and always updating position here
+	# every frame (rather than skipping while "inactive") avoids the marker
+	# appearing frozen for a moment right after pickup.
+	if raycast and raycast.enabled:
+		# Actively pointing - the laser is showing, hide the marker.
+		_set_comp_quad_hidden(layer, true)
+		return
+
+	layer.global_transform.basis = xr_camera.global_transform.basis
+	layer.global_position = hand.global_position
+	layer.set_quad_size(Vector2(0.03, 0.03))
+	if circle and circle.material:
+		circle.material.set_shader_parameter("alpha_mult", MARKER_IDLE_ALPHA)
+	layer.visible = true
+
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
@@ -1437,10 +1504,12 @@ func _init_android_setup():
 	if OS.get_name() == "Android":
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
+		if DEBUG_RENDER_MODEL_CONTROLLERS:
+			_setup_render_model_controllers()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 5)
+	ai_3d_model = clampi(ai_3d_model, 0, 4)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 4)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
@@ -2012,6 +2081,9 @@ func _process(delta):
 	if is_xr_active:
 		_process_hand_tracking(delta)
 
+	if DEBUG_RENDER_MODEL_CONTROLLERS:
+		_process_render_model_controllers(delta)
+
 	if Engine.get_frames_drawn() % 120 == 0:
 		_flush_log()
 
@@ -2026,6 +2098,7 @@ func _process(delta):
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
 	_update_laser_layers()
+	_update_marker_layers(delta)
 	_update_grab_bar_layers()
 	_sync_comp_background()
 
@@ -2543,11 +2616,73 @@ func _load_controller_models():
 		_apply_controller_textures(right_model, false)
 
 func _set_controller_models_visible(visible_state: bool):
-	for hand in [right_hand, left_hand]:
-		if hand:
-			for child in hand.get_children():
-				if child is Node3D and child.name != "HandRayCast" and child.name != "LeftHandRayCast":
-					child.visible = visible_state
+	_set_hand_local_model_visible(right_hand, visible_state)
+	_set_hand_local_model_visible(left_hand, visible_state)
+
+# Local FBX fallback model visibility, per-hand - factored out of
+# _set_controller_models_visible() (2026-08-25) so the render-model
+# experiment can hide just one hand's local model without touching the
+# other, e.g. if the runtime only supplies a render model for one
+# controller.
+func _set_hand_local_model_visible(hand: Node3D, visible_state: bool):
+	if not hand:
+		return
+	for child in hand.get_children():
+		if child is Node3D and child.name != "HandRayCast" and child.name != "LeftHandRayCast":
+			child.visible = visible_state
+
+# OpenXRFbRenderModel is itself a Node3D that self-tracks the runtime's
+# controller pose (confirmed via ClassDB introspection, 2026-08-25) - no
+# separate XRController3D wrapper needed, unlike an earlier draft of this
+# function. It exposes render_model_type (OpenXRFbRenderModel.MODEL_CONTROLLER_LEFT/
+# _RIGHT), has_render_model_node()/get_render_model_node(), and an
+# openxr_fb_render_model_loaded signal fired once the runtime actually
+# supplies geometry - used below for proper async detection instead of a
+# guessed timer delay.
+func _setup_render_model_controllers():
+	if not ClassDB.class_exists("OpenXRFbRenderModel"):
+		_log("[CTRLMODEL] OpenXRFbRenderModel not available in this Godot build")
+		return
+	right_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
+	right_render_model.name = "RightRenderModel"
+	right_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_RIGHT
+	xr_origin.add_child(right_render_model)
+	right_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(true))
+
+	left_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
+	left_render_model.name = "LeftRenderModel"
+	left_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_LEFT
+	xr_origin.add_child(left_render_model)
+	left_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(false))
+	_log("[CTRLMODEL] OpenXRFbRenderModel nodes created, waiting on load signal")
+
+# Fired by OpenXRFbRenderModel once the runtime actually supplies real
+# geometry for that hand. Hides the local FBX fallback for just that hand
+# (_set_hand_local_model_visible - the render model and the fallback should
+# never both be visible at once) and leaves the other hand's fallback alone
+# if its render model hasn't loaded (or never will - not every runtime
+# supports XR_FB_render_model for every controller).
+func _on_render_model_loaded(is_right: bool):
+	if is_right:
+		_right_render_model_ready = true
+		_set_hand_local_model_visible(right_hand, false)
+		_log("[CTRLMODEL] Right controller render model loaded")
+	else:
+		_left_render_model_ready = true
+		_set_hand_local_model_visible(left_hand, false)
+		_log("[CTRLMODEL] Left controller render model loaded")
+
+# Called from _process() - see the DEBUG_RENDER_MODEL_CONTROLLERS var
+# comment for why this only runs in normal (mesh) projection mode. Purely
+# visibility gating each frame; the FBX-fallback-hiding decision itself
+# happens once, in _on_render_model_loaded() above.
+func _process_render_model_controllers(_delta: float):
+	if not DEBUG_RENDER_MODEL_CONTROLLERS:
+		return
+	if right_render_model:
+		right_render_model.visible = not comp.in_use and _right_render_model_ready
+	if left_render_model:
+		left_render_model.visible = not comp.in_use and _left_render_model_ready
 
 func _apply_controller_textures(node: Node, is_left: bool):
 	var base_color_path = "res://models/controllers/textures/MetaQuestTouchPlus_Left_BaseColor.png" if is_left else "res://models/controllers/textures/MetaQuestTouchPlus_right_BaseColor.png"
