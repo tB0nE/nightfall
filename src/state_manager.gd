@@ -113,8 +113,8 @@ func load_host_state(ip: String):
 					4: main.ai_3d_model = 3 # YOLO26-N-384 (removed, fallback MiDaS-256)
 					5: main.ai_3d_model = 3 # MiDaS-256
 					6: main.ai_3d_model = 0 # MiDaS-256-GPU
-					7: main.ai_3d_model = 4 # DA-V2-196
-					8: main.ai_3d_model = 5 # DA-V2-252
+					7: main.ai_3d_model = 4 # DA-V2-196 (removed, fallback DA-V2-252)
+					8: main.ai_3d_model = 4 # DA-V2-252
 					_: main.ai_3d_model = 3 # MiDaS-256 (fallback)
 		elif save.has_section_key(ip, "ai_3d_mode"):
 			# Migrate the old flat 0-6 "3D AI" cycle (2026-08-18 split into

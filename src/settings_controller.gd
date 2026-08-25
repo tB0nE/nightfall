@@ -66,7 +66,6 @@ var ai_3d_models: Array = [
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
-	{"label": "DA-V2-196", "java_index": 11, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]

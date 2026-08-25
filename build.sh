@@ -89,7 +89,6 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   mkdir -p "$SCRIPT_DIR/depth_models"
   cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" "$SCRIPT_DIR/depth_models/"
   cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
 
   rm -f "$SCRIPT_DIR/openxr_action_map.tres"
@@ -257,16 +256,19 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAs
 # Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
 # fp16 asset was fully dead code (never loaded on this CPU path at all: an
 # "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
-# same class of bug MiDaS-GPU's fp16 export originally hit), so unlike
-# YOLO26-S/MiDaS-GPU below this isn't "re-bundling a working but retired
-# model" - it's a genuinely new capability. Two sizes bundled (25.2-25.4MB
-# each), matching the ViT-S patch-size-14-multiple constraint: 196 (14*14,
-# ~192px target) and 252 (14*18, ~256px target). Re-converted via onnx2tf
-# -kt input (fixes a layout-mangling bug that made every prior export
-# produce spatially incoherent output) and shipped with dilate/blur
-# post-processing OFF (was hardcoded on) - see DepthEstimator.java's
-# MODEL_DA_196/252 comment for both fixes' full history.
-cp "$SCRIPT_DIR/models/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
+# same class of bug MiDaS-GPU's fp16 export originally hit), so this isn't
+# "re-bundling a working but retired model" - it's a genuinely new
+# capability. Re-converted via onnx2tf -kt input (fixes a layout-mangling
+# bug that made every prior export produce spatially incoherent output)
+# and shipped with dilate/blur post-processing OFF (was hardcoded on) -
+# see DepthEstimator.java's MODEL_DA_196/252 comment for both fixes' full
+# history. DA-V2-196 REMOVED from selection (2026-08-25, kept as loading
+# code only, same soft-fail pattern as YOLO26-S) - both DA-V2 resolutions
+# are impractically slow on real streaming content (CPU-only, no viable
+# GPU path - see DA-V2-196-GPU's history below), so only one is kept
+# bundled at all, as a curiosity/future-hardware placeholder rather than
+# a genuinely usable option today. 252 kept over 196 as the higher-quality
+# of the two.
 cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
 # DA-V2-196-GPU tried (2026-08-25), REMOVED from selection - the GPU
 # delegate loaded and produced correct output (same onnx2tf -kt input fix
