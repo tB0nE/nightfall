@@ -29,21 +29,43 @@ int main(int argc, char **argv) {
     MidasDepthEngine engine;
     engine.initialize(model_dir);
 
-    // Mirrors the real sequence that crashed: default model (256) active,
-    // then switch to 192 right as frames start flowing, repeatedly.
-    for (int cycle = 0; cycle < 6; cycle++) {
-        int model_index = (cycle % 2 == 0) ? 10 : 3; // 10=MiDaS-192, 3=MiDaS-256
-        int size = (model_index == 10) ? 192 : 256;
+    struct ModelCase {
+        int index;
+        int expected_size;
+    };
+    const ModelCase models[] = {
+        {3, 256}, {10, 192}, {7, 256}, {8, 320}, {4, 384}, {11, 196}, {1, 252},
+    };
+    constexpr int model_count = sizeof(models) / sizeof(models[0]);
+    for (int cycle = 0; cycle < model_count; cycle++) {
+        int model_index = models[cycle].index;
         printf("[test] cycle %d: set_active_model(%d), get_model_size()=%d\n",
                cycle, model_index, engine.get_model_size());
         engine.set_active_model(model_index);
-        printf("[test] cycle %d: get_model_size() after switch = %d\n", cycle, engine.get_model_size());
+        int size = engine.get_model_size();
+        printf("[test] cycle %d: get_model_size() after switch = %d\n", cycle, size);
+        if (size != models[cycle].expected_size) {
+            fprintf(stderr, "[test] model %d did not load (expected %d, got %d)\n",
+                    model_index, models[cycle].expected_size, size);
+            return 1;
+        }
 
-        for (int i = 0; i < 10; i++) {
+        bool received_depth = false;
+        const size_t expected_depth_bytes = static_cast<size_t>(size) * size;
+        for (int i = 0; i < 100; i++) {
             submit_synthetic_frame(engine, size);
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             auto depth = engine.get_latest_depth();
             printf("[test] cycle %d frame %d: submitted, got %zu depth bytes\n", cycle, i, depth.size());
+            if (depth.size() == expected_depth_bytes) {
+                received_depth = true;
+                break;
+            }
+        }
+        if (!received_depth) {
+            fprintf(stderr, "[test] model %d produced no %zu-byte depth frame\n",
+                    model_index, expected_depth_bytes);
+            return 1;
         }
     }
 

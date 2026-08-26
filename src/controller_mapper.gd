@@ -1,7 +1,7 @@
 class_name ControllerMapper
 extends Node
 
-enum CtrlType { GAMEPAD, KEYBOARD, KBMOUSE }
+enum CtrlType { GAMEPAD, PAD_ABXY, KBMOUSE }
 enum BtnToggle { HEAD, TILT, NONE }
 enum PrimaryHand { RIGHT, LEFT, AUTO }
 
@@ -14,7 +14,14 @@ var primary_labels: Array = ["Right", "Left", "Auto"]
 var main: Node3D
 var active: bool = false
 var ctrl_type: int = CtrlType.GAMEPAD
-var type_labels: Array = ["PAD", "PAD", "KBM"]
+# PAD-HAND (GAMEPAD): face buttons split by hand - left hand's two buttons
+# are the d-pad (swapped by alt), right hand's two are A/B (swapped to X/Y
+# by alt). PAD-ABXY: face buttons always map to their real Xbox letter
+# (left=X/Y, right=A/B); alt turns that HAND's two buttons into d-pad
+# directions instead (b=left, a=right, y=up, x=down - see
+# _send_gamepad_mode()'s abxy_layout branch). Both share is_gamepad_mode()/
+# _send_gamepad_mode() below - only the four-face-button mapping differs.
+var type_labels: Array = ["PAD-HAND", "PAD-ABXY", "KBM"]
 
 var _active_key_dirs: Dictionary = {}
 var _prev_button_flags: int = 0
@@ -28,27 +35,6 @@ var _was_both_sticks: bool = false
 var _close_to_head: bool = false
 var _close_dist: float = 0.25
 var _poll_timer: float = 0.0
-
-var _KBD_DEFAULT = {
-	"left_up": KEY_W,
-	"left_down": KEY_S,
-	"left_left": KEY_A,
-	"left_right": KEY_D,
-	"right_up": KEY_UP,
-	"right_down": KEY_DOWN,
-	"right_left": KEY_LEFT,
-	"right_right": KEY_RIGHT,
-	"right_a": KEY_1,
-	"right_b": KEY_2,
-	"left_x": KEY_3,
-	"left_y": KEY_4,
-	"left_trigger": KEY_SHIFT,
-	"right_trigger": KEY_SPACE,
-	"left_grip": KEY_CTRL,
-	"right_grip": KEY_TAB,
-	"left_menu": KEY_ESCAPE,
-	"right_menu": KEY_ENTER,
-}
 
 var _KBM_DEFAULT = {
 	"left_up": KEY_W,
@@ -65,13 +51,11 @@ var _KBM_DEFAULT = {
 	"right_menu": KEY_TAB,
 }
 
-var _kbd_profile: Dictionary = {}
 var _kbm_profile: Dictionary = {}
 var _kb_held: Dictionary = {}
 
 func _init(owner: Node3D):
 	main = owner
-	_kbd_profile = _KBD_DEFAULT.duplicate()
 	_kbm_profile = _KBM_DEFAULT.duplicate()
 
 func _process(_delta):
@@ -84,12 +68,17 @@ func _process(_delta):
 
 	_poll_timer += _delta
 
-	if ctrl_type == CtrlType.GAMEPAD:
-		_send_controller_mode()
-	elif ctrl_type == CtrlType.KEYBOARD:
-		_send_keyboard_mode()
+	if is_gamepad_mode():
+		_send_gamepad_mode(ctrl_type == CtrlType.PAD_ABXY)
 	elif ctrl_type == CtrlType.KBMOUSE:
 		_send_kbm_mode()
+
+# True for either PAD-HAND or PAD-ABXY - both drive send_multi_controller_event
+# via the shared _send_gamepad_mode() below and need the same UI/interaction
+# gating (laser pointer disabled, "PAD" status indicator, etc.) elsewhere in
+# the codebase - see xr_interaction.gd/main.gd/stream_manager.gd's callers.
+func is_gamepad_mode() -> bool:
+	return ctrl_type == CtrlType.GAMEPAD or ctrl_type == CtrlType.PAD_ABXY
 
 func check_toggle():
 	if not main.is_xr_active:
@@ -122,7 +111,7 @@ func check_toggle_ui():
 
 func _activate():
 	active = true
-	if ctrl_type == CtrlType.GAMEPAD:
+	if is_gamepad_mode():
 		_prev_button_flags = -1
 		_prev_lt = -1
 		_prev_rt = -1
@@ -157,11 +146,9 @@ func _deactivate():
 
 func cycle_type():
 	ctrl_type = (ctrl_type + 1) % 3
-	if ctrl_type == CtrlType.KEYBOARD:
-		ctrl_type = CtrlType.KBMOUSE
 	if active:
 		_deactivate_silent()
-		if ctrl_type == CtrlType.GAMEPAD:
+		if is_gamepad_mode():
 			_prev_button_flags = -1
 			_prev_lt = -1
 			_prev_rt = -1
@@ -195,7 +182,16 @@ func _log(msg: String):
 	if main and main.has_method("_log"):
 		main._log(msg)
 
-func _send_controller_mode():
+# abxy_layout=false: PAD-HAND (left hand = d-pad/swaps to X/Y under alt,
+# right hand = A/B/swaps to d-pad under alt - the original single "PAD" mode).
+# abxy_layout=true: PAD-ABXY (each hand's two buttons always map to their
+# real Xbox letter; that hand's own alt state turns THAT hand's pair into
+# d-pad directions instead - b=left, a=right, y=up, x=down, per-hand
+# independent exactly like PAD-HAND's alt, just a different base mapping).
+# Bit values below are moonlight-common-c's standard XInput-style button
+# flags (0x0001/2/4/8 = d-pad up/down/left/right, 0x1000/2000/4000/8000 =
+# A/B/X/Y).
+func _send_gamepad_mode(abxy_layout: bool):
 	var head_pos = main.xr_camera.global_position
 	var left_pos = main.left_hand.global_position if main.left_hand else Vector3.ZERO
 	var right_pos = main.right_hand.global_position if main.right_hand else Vector3.ZERO
@@ -234,19 +230,37 @@ func _send_controller_mode():
 	var l_click = main.left_hand.is_button_pressed("primary_click") if main.left_hand else false
 	var r_click = main.right_hand.is_button_pressed("primary_click") if main.right_hand else false
 
-	if left_alt:
-		if left_a: button_flags |= 0x0002
-		if left_b: button_flags |= 0x0001
-	else:
-		if left_a: button_flags |= 0x0004
-		if left_b: button_flags |= 0x0008
+	if abxy_layout:
+		# left_a/left_b are physically X/Y; right_a/right_b are physically A/B
+		# (see the ax_button/by_button reads above - same "_a"/"_b" naming as
+		# PAD-HAND, just interpreted differently here).
+		if left_alt:
+			if left_a: button_flags |= 0x0002 # X -> DOWN
+			if left_b: button_flags |= 0x0001 # Y -> UP
+		else:
+			if left_a: button_flags |= 0x4000 # X -> X
+			if left_b: button_flags |= 0x8000 # Y -> Y
 
-	if right_alt:
-		if right_a: button_flags |= 0x4000
-		if right_b: button_flags |= 0x8000
+		if right_alt:
+			if right_a: button_flags |= 0x0008 # A -> RIGHT
+			if right_b: button_flags |= 0x0004 # B -> LEFT
+		else:
+			if right_a: button_flags |= 0x1000 # A -> A
+			if right_b: button_flags |= 0x2000 # B -> B
 	else:
-		if right_a: button_flags |= 0x1000
-		if right_b: button_flags |= 0x2000
+		if left_alt:
+			if left_a: button_flags |= 0x0002
+			if left_b: button_flags |= 0x0001
+		else:
+			if left_a: button_flags |= 0x0004
+			if left_b: button_flags |= 0x0008
+
+		if right_alt:
+			if right_a: button_flags |= 0x4000
+			if right_b: button_flags |= 0x8000
+		else:
+			if right_a: button_flags |= 0x1000
+			if right_b: button_flags |= 0x2000
 
 	if lg_val > 0.5: button_flags |= 0x0100
 	if rg_val > 0.5: button_flags |= 0x0200
@@ -276,39 +290,6 @@ func _send_controller_mode():
 		_prev_rx = rx
 		_prev_ry = ry
 		_poll_timer = 0.0
-
-func _send_keyboard_mode():
-	var lv = main.left_hand.get_vector2("primary") if main.left_hand else Vector2.ZERO
-	var rv = main.right_hand.get_vector2("primary") if main.right_hand else Vector2.ZERO
-	var stick_threshold = 0.5
-
-	_handle_thumbstick_key(lv.y < -stick_threshold, "left_up", _kbd_profile.get("left_up", KEY_W))
-	_handle_thumbstick_key(lv.y > stick_threshold, "left_down", _kbd_profile.get("left_down", KEY_S))
-	_handle_thumbstick_key(lv.x < -stick_threshold, "left_left", _kbd_profile.get("left_left", KEY_A))
-	_handle_thumbstick_key(lv.x > stick_threshold, "left_right", _kbd_profile.get("left_right", KEY_D))
-	_handle_thumbstick_key(rv.y < -stick_threshold, "right_up", _kbd_profile.get("right_up", KEY_UP))
-	_handle_thumbstick_key(rv.y > stick_threshold, "right_down", _kbd_profile.get("right_down", KEY_DOWN))
-	_handle_thumbstick_key(rv.x < -stick_threshold, "right_left", _kbd_profile.get("right_left", KEY_LEFT))
-	_handle_thumbstick_key(rv.x > stick_threshold, "right_right", _kbd_profile.get("right_right", KEY_RIGHT))
-
-	var trigger_threshold = 0.5
-	var lt = main.left_hand.get_float("trigger") if main.left_hand else 0.0
-	var rt = main.right_hand.get_float("trigger") if main.right_hand else 0.0
-	_handle_analog_key(lt > trigger_threshold, "left_trigger", _kbd_profile.get("left_trigger", KEY_SHIFT))
-	_handle_analog_key(rt > trigger_threshold, "right_trigger", _kbd_profile.get("right_trigger", KEY_SPACE))
-
-	var grip_threshold = 0.5
-	var lg = main.left_hand.get_float("grip") if main.left_hand else 0.0
-	var rg = main.right_hand.get_float("grip") if main.right_hand else 0.0
-	_handle_analog_key(lg > grip_threshold, "left_grip", _kbd_profile.get("left_grip", KEY_CTRL))
-	_handle_analog_key(rg > grip_threshold, "right_grip", _kbd_profile.get("right_grip", KEY_TAB))
-
-	_handle_button_key(main.right_hand.is_button_pressed("ax_button") if main.right_hand else false, "right_a", _kbd_profile.get("right_a", KEY_1))
-	_handle_button_key(main.right_hand.is_button_pressed("by_button") if main.right_hand else false, "right_b", _kbd_profile.get("right_b", KEY_2))
-	_handle_button_key(main.left_hand.is_button_pressed("ax_button") if main.left_hand else false, "left_x", _kbd_profile.get("left_x", KEY_3))
-	_handle_button_key(main.left_hand.is_button_pressed("by_button") if main.left_hand else false, "left_y", _kbd_profile.get("left_y", KEY_4))
-	_handle_button_key(main.left_hand.is_button_pressed("menu_button") if main.left_hand else false, "left_menu", _kbd_profile.get("left_menu", KEY_ESCAPE))
-	_handle_button_key(main.right_hand.is_button_pressed("menu_button") if main.right_hand else false, "right_menu", _kbd_profile.get("right_menu", KEY_ENTER))
 
 func _send_kbm_mode():
 	var lv = main.left_hand.get_vector2("primary") if main.left_hand else Vector2.ZERO

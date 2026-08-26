@@ -15,14 +15,23 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class DepthEstimator {
     private static final String TAG = "DepthEstimator";
+    public static final int BACKEND_AUTO = 0;
+    public static final int BACKEND_CPU = 1;
+    public static final int BACKEND_GPU = 2;
+    public static final int BACKEND_CAP_CPU = 1;
+    public static final int BACKEND_CAP_GPU = 2;
+    private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
+
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
     // midas-midas-v2-w8a8.tflite's actual per-tensor quantization parameters,
     // read directly from the model via ai-edge-litert's Interpreter.get_input/
@@ -162,19 +171,42 @@ public class DepthEstimator {
     //   converted via onnx2tf with -ofgd -kt input, NOT the naive TFLite
     //   export path (which decomposes every depthwise conv into ~17000
     //   per-channel convs, useless for the GPU delegate).
-    // REMOVED FROM SELECTION (2026-08-19), not deleted - even correctly
-    // GPU-accelerated (confirmed via inference-time logs, ~47-51ms vs
-    // MiDaS-CPU's ~110-180ms) and throttled to ~5Hz
-    // (see the now-removed GPU_MODEL_SUBMIT_INTERVAL reasoning in
-    // depth_estimator.gd's git history), it still drove GPU utilization to
-    // 94% and roughly halved VR frame rate (72Hz target -> ~33Hz actual) -
-    // TFLite's GPU delegate shares the same physical GPU as Godot's own
-    // Vulkan renderer. settings_controller.gd's ai_3d_model_labels no longer
-    // has a MiDaS-GPU entry and build.sh no longer bundles its asset, so
-    // model index 6 below is unreachable in practice (soft-fails harmlessly
-    // on the missing asset file, same as MODEL_YOLO_S above).
+    // The GLES experiment exposes this as an Android-only option. Quest 3
+    // The scheduled latest-frame worker below owns its 20Hz cadence so Godot
+    // render-loop jitter cannot queue stale work or slow the inference clock.
     private static final String MODEL_MIDAS_GPU = "midas-v21-small-256-gpu.tflite";
     private static final int MIDAS_GPU_INPUT_SIZE = 256;
+    // MiDaS-192-GPU (2026-08-24) - same onnx2tf -ofgd -kt input recipe as
+    // the 256px model above, just re-run against the ONNX graph's input
+    // resized to 192x192. MiDaS-small's Resize ops use relative scale
+    // factors (not hardcoded absolute sizes), so the architecture is
+    // resolution-agnostic - verified the resulting graph has the exact same
+    // clean 73 CONV_2D/24 DEPTHWISE_CONV_2D/5 RESIZE_BILINEAR composition as
+    // the 256px model, and confirmed non-degenerate real inference output,
+    // before bundling. Same NHWC/float32-I/O/no-external-normalization
+    // properties as MIDAS_GPU above - registered as a second GpuVariant
+    // keyed to modelIndex 10 (MiDaS-192's CPU model index) rather than
+    // duplicating runInferenceMidasGpu()/ensureMidasGpuLoaded()'s logic.
+    private static final String MODEL_MIDAS_192_GPU = "midas-v21-small-192-gpu.tflite";
+    private static final int MIDAS_192_GPU_INPUT_SIZE = 192;
+    // YOLO26-N-384-GPU and DA-V2-196-GPU were both tried (2026-08-24/25)
+    // and dropped, not silently removed - keep this history so neither gets
+    // re-attempted the same way without a new angle:
+    // - YOLO26-N-384-GPU: converted cleanly (NHWC, CNN-dominated graph,
+    //   confirmed non-degenerate output desktop-side) but the GPU delegate
+    //   failed to load on-device ("Failed to apply delegates", no specific
+    //   node identified) - never diagnosed further.
+    // - DA-V2-196-GPU: converted cleanly (same onnx2tf -kt input fix used
+    //   for the CPU DA-V2 models) and the delegate DID load and produce
+    //   real, correct depth output on-device - but only at ~2.8Hz
+    //   (~350ms/inference), far below the ~15-20Hz MiDaS-GPU hits. Root
+    //   cause: DA-V2's ViT backbone repeats its transformer block 12 times,
+    //   each with an unsupported-op region (GELU/GATHER/BATCH_MATMUL) the
+    //   GPU delegate can't claim, forcing 12 separate GPU<->CPU handoffs
+    //   per inference - that synchronization cost, not compute, is what's
+    //   slow. Not fixable via delegate config (GpuBackend.OPENCL vs.
+    //   OPENGL doesn't change which ops are supported); would need real
+    //   model surgery (replacing the unsupported ops) to be worth revisiting.
 
     private Interpreter tfliteMidas;
     private Interpreter tfliteMidas192;
@@ -184,12 +216,46 @@ public class DepthEstimator {
     private Interpreter tfliteYoloN320;
     private Interpreter tfliteYoloN384;
     private Interpreter tfliteYoloS;
-    private Interpreter tfliteMidasGpu;
-    private GpuDelegate gpuDelegate;
-    // Lazy-loaded on first actual use, not eagerly in initialize() like every
-    // other model - see ensureMidasGpuLoaded() for why (GPU delegate/GL
-    // context thread affinity).
-    private volatile boolean midasGpuLoadAttempted = false;
+
+    // Generic GPU-backed model slot (2026-08-24, replacing the original
+    // single-model-hardcoded MiDaS-256-GPU-only fields) - one GpuVariant per
+    // GPU-capable CPU model index, keyed in gpuVariants below. Each owns its
+    // own Interpreter/GpuDelegate/buffers (a GpuDelegate binds to exactly
+    // one Interpreter) and its own lazy-load/failure state, same semantics
+    // as the original single-model fields just made per-model instead of
+    // hardcoded to MiDaS-256. NHWC/float32-I/O fill (runInferenceGpu below)
+    // is shared across all variants registered here - not tied to a specific
+    // architecture, just to a layout (NHWC per-pixel-interleaved float32).
+    // MiDaS's GPU exports and YOLO26-N-384's GPU export both happen to be
+    // NHWC via the same onnx2tf recipe; a future GPU variant exported with a
+    // different layout (e.g. NCHW, matching the deployed CPU YOLO26 models)
+    // would need its own fill function, not a new field on this class.
+    private static final class GpuVariant {
+        final String label;
+        final String assetFile;
+        final int inputSize;
+        Interpreter interp;
+        GpuDelegate delegate;
+        ByteBuffer inputBuf;
+        ByteBuffer outputBuf;
+        boolean loadAttempted;
+        boolean permanentlyUnavailable;
+        String failureReason = "";
+
+        GpuVariant(String label, String assetFile, int inputSize) {
+            this.label = label;
+            this.assetFile = assetFile;
+            this.inputSize = inputSize;
+        }
+    }
+
+    // Keyed by the CPU model index this GPU variant substitutes for (see
+    // switchActiveModel()'s modelIndex mapping - 3=MiDaS-256, 10=MiDaS-192).
+    private final java.util.Map<Integer, GpuVariant> gpuVariants = new java.util.HashMap<>();
+    // The GPU variant currently in use, or null when running a CPU model -
+    // orthogonal to activeModelIndex (which stays the real requested model
+    // index either way, not a fake placeholder index).
+    private volatile GpuVariant activeGpuVariant;
     private Interpreter activeInterpreter;
     private ByteBuffer inputBufferMidas;
     private ByteBuffer outputBufferMidas;
@@ -199,8 +265,6 @@ public class DepthEstimator {
     private ByteBuffer outputBufferDA196;
     private ByteBuffer inputBufferDA252;
     private ByteBuffer outputBufferDA252;
-    private ByteBuffer inputBufferMidasGpu;
-    private ByteBuffer outputBufferMidasGpu;
     private ByteBuffer inputBufferYoloN256;
     private ByteBuffer outputBufferYoloN256;
     private ByteBuffer inputBufferYoloN320;
@@ -211,10 +275,46 @@ public class DepthEstimator {
     private ByteBuffer outputBufferYoloS;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
+    private volatile int requestedModelIndex = 3;
+    private volatile int requestedBackend = BACKEND_AUTO;
+    private volatile int effectiveBackend = BACKEND_CPU;
+    private volatile String backendStatus = "";
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private static final class PendingFrame {
+        final byte[] pixels;
+        final int width;
+        final int height;
+
+        PendingFrame(byte[] pixels, int width, int height) {
+            this.pixels = pixels;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean isInferencing = new AtomicBoolean(false);
+    private final AtomicBoolean gpuWorkerScheduled = new AtomicBoolean(false);
+    private final AtomicReference<PendingFrame> latestGpuFrame = new AtomicReference<>();
     private final AtomicReference<byte[]> latestDepthMap = new AtomicReference<>();
+    private final AtomicLong submittedFrames = new AtomicLong();
+    private final AtomicLong droppedFrames = new AtomicLong();
+    private long telemetryWindowStartNs;
+    private long telemetryTotalDurationNs;
+    private long telemetryTotalPrepareNs;
+    private long telemetryTotalInvokeNs;
+    private long telemetryTotalPostprocessNs;
+    private int telemetryCompletedFrames;
+    // Latest committed telemetry window's avg invoke time / completed rate
+    // (2026-08-25) - mirrors exactly what recordTelemetry() below logs,
+    // updated at the same point, so a GDScript status-bar readout stays in
+    // sync with logcat's own "Perf:" lines rather than sampling mid-window.
+    private volatile float lastInferenceInvokeMs = 0f;
+    private volatile float lastInferenceHz = 0f;
+    private long lastGpuPrepareNs;
+    private long lastGpuInvokeNs;
+    private long lastGpuPostprocessNs;
+    private volatile long nextGpuInferenceNs;
 
     private float[] smoothedDepthFloat = null;
 
@@ -337,6 +437,13 @@ public class DepthEstimator {
                 tfliteYoloS = null;
             }
 
+            // GPU variants are lazy-loaded on first actual use (see
+            // ensureGpuVariantLoaded()), not eagerly here - just registering
+            // the slot/asset-filename/input-size, same as the original
+            // single-model MiDaS-256-GPU deferred-load pattern.
+            gpuVariants.put(3, new GpuVariant("MiDaS-256-GPU", MODEL_MIDAS_GPU, MIDAS_GPU_INPUT_SIZE));
+            gpuVariants.put(10, new GpuVariant("MiDaS-192-GPU", MODEL_MIDAS_192_GPU, MIDAS_192_GPU_INPUT_SIZE));
+
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
             initialized = true;
@@ -369,52 +476,122 @@ public class DepthEstimator {
     }
 
     public void setActiveModel(int modelIndex) {
-        if (!initialized) return;
-        Interpreter target;
-        if (modelIndex == 1 && tfliteDA252 != null) {
-            target = tfliteDA252;
-        } else if (modelIndex == 4 && tfliteYoloN384 != null) {
-            target = tfliteYoloN384;
-        } else if (modelIndex == 5 && tfliteYoloS != null) {
-            target = tfliteYoloS;
-        } else if (modelIndex == 7 && tfliteYoloN256 != null) {
-            target = tfliteYoloN256;
-        } else if (modelIndex == 8 && tfliteYoloN320 != null) {
-            target = tfliteYoloN320;
-        } else if (modelIndex == 10 && tfliteMidas192 != null) {
-            target = tfliteMidas192;
-        } else if (modelIndex == 11 && tfliteDA196 != null) {
-            target = tfliteDA196;
-        } else if (modelIndex == 6) {
-            // MiDaS-GPU is lazy-loaded on first actual inference (see
-            // ensureMidasGpuLoaded()) - tfliteMidasGpu is legitimately still
-            // null the very first time this switch happens, so (unlike the
-            // other models above) this branch does NOT gate on it being
-            // non-null yet. activeInterpreter only exists to satisfy
-            // submitFrame()'s "is anything loaded at all" check below, not to
-            // select which inference method actually runs (that's modelIdx-
-            // driven in submitFrame()'s dispatch) - point it at the always-
-            // loaded CPU MiDaS as a placeholder so frames aren't dropped
-            // before ensureMidasGpuLoaded() gets a chance to run.
-            target = tfliteMidas;
-        } else {
-            // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share this
-            // one interpreter - the separate "crude warp" MiDaS instance that
-            // used to live at index 0 is gone, so fold any other/unrecognized
-            // index into this one too rather than requiring index 3 exactly.
-            target = tfliteMidas;
-            modelIndex = 3;
+        configureDepth(modelIndex, BACKEND_CPU);
+    }
+
+    public int getBackendCapabilities(int modelIndex) {
+        int capabilities = BACKEND_CAP_CPU;
+        GpuVariant v = gpuVariants.get(modelIndex);
+        if (v != null && !v.permanentlyUnavailable) {
+            capabilities |= BACKEND_CAP_GPU;
         }
-        if (activeModelIndex != modelIndex) {
+        return capabilities;
+    }
+
+    public int getEffectiveBackend() {
+        return effectiveBackend;
+    }
+
+    public String getBackendStatus() {
+        return backendStatus;
+    }
+
+    public float getLastInferenceMs() {
+        return lastInferenceInvokeMs;
+    }
+
+    public float getLastInferenceHz() {
+        return lastInferenceHz;
+    }
+
+    public synchronized void configureDepth(int modelIndex, int backend) {
+        if (!initialized) return;
+        requestedModelIndex = modelIndex;
+        requestedBackend = backend >= BACKEND_AUTO && backend <= BACKEND_GPU ? backend : BACKEND_AUTO;
+
+        boolean gpuSupported = (getBackendCapabilities(modelIndex) & BACKEND_CAP_GPU) != 0;
+        boolean useGpu = requestedBackend != BACKEND_CPU && gpuSupported;
+        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        GpuVariant requestedVariant = gpuVariants.get(modelIndex);
+        if (requestedBackend == BACKEND_GPU && !gpuSupported) {
+            backendStatus = requestedVariant != null && requestedVariant.permanentlyUnavailable && !requestedVariant.failureReason.isEmpty()
+                    ? requestedVariant.failureReason
+                    : "GPU depth is unavailable for this model; using CPU";
+        } else {
+            backendStatus = "";
+        }
+
+        switchActiveModel(modelIndex, useGpu);
+        Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
+                + " requested=" + backendName(requestedBackend)
+                + " effective=" + backendName(effectiveBackend)
+                + (backendStatus.isEmpty() ? "" : " status=" + backendStatus));
+    }
+
+    private static String backendName(int backend) {
+        switch (backend) {
+            case BACKEND_GPU: return "GPU";
+            case BACKEND_CPU: return "CPU";
+            default: return "Auto";
+        }
+    }
+
+    // Pure lookup, no side effects - shared by switchActiveModel() and the
+    // GPU-failure fallback in runScheduledGpuInference() (which can't call
+    // switchActiveModel() directly - it busy-waits on isInferencing, which
+    // is already held by the very inference worker that would be calling it,
+    // a guaranteed deadlock). normalizeModelIndex() mirrors the same
+    // "unrecognized index folds into MiDaS-256" rule.
+    private Interpreter cpuInterpreterFor(int modelIndex) {
+        if (modelIndex == 1 && tfliteDA252 != null) return tfliteDA252;
+        if (modelIndex == 4 && tfliteYoloN384 != null) return tfliteYoloN384;
+        if (modelIndex == 5 && tfliteYoloS != null) return tfliteYoloS;
+        if (modelIndex == 7 && tfliteYoloN256 != null) return tfliteYoloN256;
+        if (modelIndex == 8 && tfliteYoloN320 != null) return tfliteYoloN320;
+        if (modelIndex == 10 && tfliteMidas192 != null) return tfliteMidas192;
+        if (modelIndex == 11 && tfliteDA196 != null) return tfliteDA196;
+        return tfliteMidas;
+    }
+
+    private static int normalizeModelIndex(int modelIndex) {
+        switch (modelIndex) {
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11:
+                return modelIndex;
+            default:
+                // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
+                // one interpreter - the separate "crude warp" MiDaS instance
+                // that used to live at index 0 is gone, so fold any other/
+                // unrecognized index into this one too rather than requiring
+                // index 3 exactly.
+                return 3;
+        }
+    }
+
+    private void switchActiveModel(int modelIndex, boolean useGpu) {
+        if (!initialized) return;
+        modelIndex = normalizeModelIndex(modelIndex);
+        Interpreter target = cpuInterpreterFor(modelIndex);
+        // The requested GPU variant (if any) - lazy-loaded on first actual
+        // inference (see ensureGpuVariantLoaded()), not here, so v.interp is
+        // legitimately still null the first time this switch happens.
+        // activeInterpreter (the CPU target resolved above) only exists to
+        // satisfy submitFrame()'s "is anything loaded at all" check in that
+        // case, not to select which inference method runs - that's driven by
+        // activeGpuVariant being non-null, checked in submitFrame() below.
+        GpuVariant variant = useGpu ? gpuVariants.get(modelIndex) : null;
+        if (activeModelIndex != modelIndex || activeGpuVariant != variant) {
             while (isInferencing.get()) {
                 Thread.yield();
             }
+            latestGpuFrame.set(null);
+            nextGpuInferenceNs = 0;
             smoothedDepthFloat = null;
             rangeValid = false;
             lastPostProcessTimeNs = 0;
             activeInterpreter = target;
             activeModelIndex = modelIndex;
-            String modelName = modelNameFor(modelIndex);
+            activeGpuVariant = variant;
+            String modelName = modelNameFor(modelIndex) + (variant != null ? " (GPU)" : "");
             Log.i(TAG, "Switched to model " + modelName);
         }
     }
@@ -424,7 +601,6 @@ public class DepthEstimator {
             case 1: return "Depth Anything V2-252";
             case 4: return "YOLO26-Depth-N-384";
             case 5: return "YOLO26-Depth-S";
-            case 6: return "MiDaS-GPU";
             case 7: return "YOLO26-Depth-N-256";
             case 8: return "YOLO26-Depth-N-320";
             case 10: return "MiDaS-192";
@@ -440,44 +616,27 @@ public class DepthEstimator {
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
         if (!initialized || activeInterpreter == null) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
-        if (!isInferencing.compareAndSet(false, true)) return;
-
-        final byte[] frameCopy = rgbaPixels.clone();
         final int modelIdx = activeModelIndex;
+        final GpuVariant gpuVariant = activeGpuVariant;
+        if (gpuVariant != null) {
+            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height));
+            if (previous != null) {
+                droppedFrames.incrementAndGet();
+            }
+            scheduleGpuInference(gpuVariant);
+            return;
+        }
+        if (!isInferencing.compareAndSet(false, true)) {
+            droppedFrames.incrementAndGet();
+            return;
+        }
+
+        submittedFrames.incrementAndGet();
+        final byte[] frameCopy = rgbaPixels;
         executor.submit(() -> {
             long startTime = System.nanoTime();
             try {
-                byte[] result;
-                if (modelIdx == 1) {
-                    result = runInferenceDA(tfliteDA252, inputBufferDA252, outputBufferDA252, DA_252_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 4) {
-                    result = runInferenceYolo(tfliteYoloN384, inputBufferYoloN384, outputBufferYoloN384, YOLO_N_384_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 5) {
-                    result = runInferenceYolo(tfliteYoloS, inputBufferYoloS, outputBufferYoloS, YOLO_S_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 7) {
-                    result = runInferenceYolo(tfliteYoloN256, inputBufferYoloN256, outputBufferYoloN256, YOLO_N_256_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 8) {
-                    result = runInferenceYolo(tfliteYoloN320, inputBufferYoloN320, outputBufferYoloN320, YOLO_N_320_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 10) {
-                    result = runInferenceMidas(tfliteMidas192, inputBufferMidas192, outputBufferMidas192, MIDAS_192_INPUT_SIZE,
-                            MIDAS_192_INPUT_SCALE, MIDAS_192_INPUT_ZERO_POINT, MIDAS_192_OUTPUT_SCALE, MIDAS_192_OUTPUT_ZERO_POINT,
-                            frameCopy, width, height);
-                } else if (modelIdx == 11) {
-                    result = runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
-                } else if (modelIdx == 6) {
-                    // Load (if needed) and run on THIS thread - executor is a
-                    // single-thread pool for the app's whole lifetime, so
-                    // doing both here guarantees the GPU delegate's context
-                    // and every interp.run() call share the same thread,
-                    // which GpuDelegate requires (creating on one thread and
-                    // running on another silently breaks it).
-                    ensureMidasGpuLoaded();
-                    result = runInferenceMidasGpu(frameCopy, width, height);
-                } else {
-                    result = runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
-                            MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
-                            frameCopy, width, height);
-                }
+                byte[] result = runCpuInference(modelIdx, frameCopy, width, height);
                 if (result != null) {
                     latestDepthMap.set(result);
                 }
@@ -485,10 +644,148 @@ public class DepthEstimator {
                 Log.e(TAG, "Async inference failed", e);
             } finally {
                 isInferencing.set(false);
-                long duration = (System.nanoTime() - startTime) / 1_000_000;
-                Log.d(TAG, "Inference: " + duration + "ms (" + modelNameFor(modelIdx) + ")");
+                long durationNs = System.nanoTime() - startTime;
+                recordTelemetry(modelIdx, false, durationNs);
             }
         });
+    }
+
+    // Extracted (2026-08-24) so the GPU-failure fallback path in
+    // runScheduledGpuInference() can dispatch to the right CPU model
+    // generically instead of hardcoding tfliteMidas - MUST only be called
+    // from the single-thread executor (same constraint as before extraction).
+    private byte[] runCpuInference(int modelIdx, byte[] frameCopy, int width, int height) {
+        if (modelIdx == 1) {
+            return runInferenceDA(tfliteDA252, inputBufferDA252, outputBufferDA252, DA_252_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 4) {
+            return runInferenceYolo(tfliteYoloN384, inputBufferYoloN384, outputBufferYoloN384, YOLO_N_384_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 5) {
+            return runInferenceYolo(tfliteYoloS, inputBufferYoloS, outputBufferYoloS, YOLO_S_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 7) {
+            return runInferenceYolo(tfliteYoloN256, inputBufferYoloN256, outputBufferYoloN256, YOLO_N_256_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 8) {
+            return runInferenceYolo(tfliteYoloN320, inputBufferYoloN320, outputBufferYoloN320, YOLO_N_320_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 10) {
+            return runInferenceMidas(tfliteMidas192, inputBufferMidas192, outputBufferMidas192, MIDAS_192_INPUT_SIZE,
+                    MIDAS_192_INPUT_SCALE, MIDAS_192_INPUT_ZERO_POINT, MIDAS_192_OUTPUT_SCALE, MIDAS_192_OUTPUT_ZERO_POINT,
+                    frameCopy, width, height);
+        } else if (modelIdx == 11) {
+            return runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
+        } else {
+            return runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
+                    MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
+                    frameCopy, width, height);
+        }
+    }
+
+    private void scheduleGpuInference(GpuVariant variant) {
+        if (!initialized || activeGpuVariant != variant || !gpuWorkerScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());
+        executor.schedule(() -> runScheduledGpuInference(variant), delayNs, TimeUnit.NANOSECONDS);
+    }
+
+    private void runScheduledGpuInference(GpuVariant variant) {
+        long startNs = System.nanoTime();
+        long scheduledNs = nextGpuInferenceNs;
+        nextGpuInferenceNs = scheduledNs <= 0 || startNs - scheduledNs >= GPU_INFERENCE_INTERVAL_NS
+                ? startNs + GPU_INFERENCE_INTERVAL_NS
+                : scheduledNs + GPU_INFERENCE_INTERVAL_NS;
+        gpuWorkerScheduled.set(false);
+
+        if (!initialized || activeGpuVariant != variant) {
+            latestGpuFrame.set(null);
+            nextGpuInferenceNs = 0;
+            return;
+        }
+
+        PendingFrame frame = latestGpuFrame.getAndSet(null);
+        if (frame == null) {
+            return;
+        }
+
+        int fallbackModelIndex = activeModelIndex;
+        isInferencing.set(true);
+        submittedFrames.incrementAndGet();
+        try {
+            ensureGpuVariantLoaded(variant);
+            byte[] result;
+            if (variant.interp != null) {
+                result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
+            } else {
+                // GPU delegate/model failed to load - fall back to this
+                // variant's CPU counterpart for the rest of this session (no
+                // per-frame retry). Set fallback state inline rather than via
+                // a separate helper - this IS the single-threaded inference
+                // worker itself, so there's no other in-flight inference to
+                // wait for; the surrounding try/finally already owns
+                // isInferencing.
+                String reason = variant.failureReason.isEmpty()
+                        ? "GPU delegate initialization failed"
+                        : variant.failureReason;
+                variant.permanentlyUnavailable = true;
+                variant.failureReason = reason;
+                effectiveBackend = BACKEND_CPU;
+                backendStatus = reason;
+                activeGpuVariant = null;
+                activeInterpreter = cpuInterpreterFor(fallbackModelIndex);
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                Log.w(TAG, reason + "; CPU depth will continue without retrying GPU this session");
+                result = runCpuInference(fallbackModelIndex, frame.pixels, frame.width, frame.height);
+            }
+            if (result != null) {
+                latestDepthMap.set(result);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Async GPU inference failed", e);
+        } finally {
+            isInferencing.set(false);
+            recordTelemetry(fallbackModelIndex, true, System.nanoTime() - startNs);
+        }
+
+        if (latestGpuFrame.get() != null && activeGpuVariant == variant) {
+            scheduleGpuInference(variant);
+        }
+    }
+
+    private void recordTelemetry(int modelIndex, boolean isGpu, long durationNs) {
+        long nowNs = System.nanoTime();
+        if (telemetryWindowStartNs == 0 || !isGpu) {
+            telemetryWindowStartNs = nowNs;
+            telemetryTotalDurationNs = 0;
+            telemetryTotalPrepareNs = 0;
+            telemetryTotalInvokeNs = 0;
+            telemetryTotalPostprocessNs = 0;
+            telemetryCompletedFrames = 0;
+        }
+        telemetryTotalDurationNs += durationNs;
+        telemetryTotalPrepareNs += lastGpuPrepareNs;
+        telemetryTotalInvokeNs += lastGpuInvokeNs;
+        telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        telemetryCompletedFrames++;
+        long elapsedNs = nowNs - telemetryWindowStartNs;
+        if (elapsedNs < 1_000_000_000L) return;
+
+        float divisor = Math.max(telemetryCompletedFrames, 1);
+        lastInferenceInvokeMs = telemetryTotalInvokeNs / divisor / 1_000_000.0f;
+        lastInferenceHz = telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs;
+        Log.i(TAG, String.format(java.util.Locale.US,
+                "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
+                modelNameFor(modelIndex) + "-GPU", telemetryTotalDurationNs / divisor / 1_000_000.0f,
+                telemetryTotalPrepareNs / divisor / 1_000_000.0f,
+                lastInferenceInvokeMs,
+                telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
+                lastInferenceHz,
+                submittedFrames.getAndSet(0), droppedFrames.getAndSet(0)));
+        telemetryWindowStartNs = nowNs;
+        telemetryTotalDurationNs = 0;
+        telemetryTotalPrepareNs = 0;
+        telemetryTotalInvokeNs = 0;
+        telemetryTotalPostprocessNs = 0;
+        telemetryCompletedFrames = 0;
     }
 
     public byte[] getLatestDepth() {
@@ -640,76 +937,102 @@ public class DepthEstimator {
         return postProcess(dequantizeMidasOutput(outputBuf, size * size, outScale, outZeroPoint), size, false);
     }
 
-    // Only ever called from submitFrame()'s executor-thread lambda (modelIdx==6
-    // branch) - MUST run on that same single-thread executor, not eagerly in
-    // initialize() like every other model, because the GPU delegate binds to
-    // whichever thread creates it and every future interp.run() call has to
-    // happen on that same thread (see the MODEL_MIDAS_GPU comment above).
-    // Loading it eagerly in initialize() (which runs on the app's main/UI
-    // thread) would create the delegate on the wrong thread entirely.
-    private void ensureMidasGpuLoaded() {
-        if (midasGpuLoadAttempted) return;
-        midasGpuLoadAttempted = true;
+    // Only ever called from the GPU inference worker (runScheduledGpuInference(),
+    // itself only ever scheduled onto the single-thread executor) - MUST run
+    // on that same thread, not eagerly in initialize() like every CPU model,
+    // because the GPU delegate binds to whichever thread creates it and
+    // every future interp.run() call has to happen on that same thread (see
+    // MODEL_MIDAS_GPU's comment above). Loading it eagerly in initialize()
+    // (which runs on the app's main/UI thread) would create the delegate on
+    // the wrong thread entirely. Generalized (2026-08-24) from the original
+    // MiDaS-256-GPU-only ensureMidasGpuLoaded() - each GpuVariant loads/fails
+    // independently, so one model's GPU delegate failing doesn't affect
+    // another's.
+    private void ensureGpuVariantLoaded(GpuVariant v) {
+        if (v.loadAttempted) return;
+        v.loadAttempted = true;
         try {
-            inputBufferMidasGpu = ByteBuffer.allocateDirect(1 * MIDAS_GPU_INPUT_SIZE * MIDAS_GPU_INPUT_SIZE * 3 * 4)
+            v.inputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 3 * 4)
                     .order(ByteOrder.nativeOrder());
-            outputBufferMidasGpu = ByteBuffer.allocateDirect(1 * MIDAS_GPU_INPUT_SIZE * MIDAS_GPU_INPUT_SIZE * 1 * 4)
+            v.outputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 1 * 4)
                     .order(ByteOrder.nativeOrder());
-            MappedByteBuffer buffer = loadModelFile(MODEL_MIDAS_GPU);
+            MappedByteBuffer buffer = loadModelFile(v.assetFile);
             GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
             // Matches Gilleece/moonlight-android-xr's own config - the model
             // is fp16, so allowing precision loss just means "run at the
             // model's own native precision" rather than upcasting to fp32.
             gpuOptions.setPrecisionLossAllowed(true);
             gpuOptions.setInferencePreference(GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
-            gpuDelegate = new GpuDelegate(gpuOptions);
+            // The bundled Nightfall LiteRT GPU JNI creates its Qualcomm OpenCL
+            // context with CL_PRIORITY_HINT_LOW_QCOM. OpenCL is substantially
+            // faster than LiteRT's OpenGL backend on Quest, while the context
+            // priority keeps render work ahead of inference dispatches.
+            gpuOptions.setForceBackend(GpuDelegateFactory.Options.GpuBackend.OPENCL);
+            v.delegate = new GpuDelegate(gpuOptions);
             Interpreter.Options opts = new Interpreter.Options();
-            opts.addDelegate(gpuDelegate);
-            tfliteMidasGpu = new Interpreter(buffer, opts);
-            Log.i(TAG, "MiDaS-GPU model loaded with GPU delegate");
+            opts.addDelegate(v.delegate);
+            v.interp = new Interpreter(buffer, opts);
+            Log.i(TAG, v.label + " model loaded with GPU delegate");
         } catch (Exception e) {
-            Log.w(TAG, "MiDaS-GPU model/GPU delegate not available", e);
-            tfliteMidasGpu = null;
-            if (gpuDelegate != null) {
-                gpuDelegate.close();
-                gpuDelegate = null;
+            Log.w(TAG, v.label + " model/GPU delegate not available", e);
+            v.failureReason = "GPU delegate initialization failed: " + e.getClass().getSimpleName();
+            v.interp = null;
+            if (v.delegate != null) {
+                v.delegate.close();
+                v.delegate = null;
             }
         }
     }
 
     // NHWC (per-pixel interleaved, same fill order as runInferenceDA/Midas -
-    // NOT the NCHW channel-planar fill YOLO26 needs) and plain float32 I/O,
-    // verified directly against the exported model (see MODEL_MIDAS_GPU
-    // comment for why this is float32, not fp16, despite running through the
-    // GPU delegate). No external ImageNet normalization here - it's baked
-    // into the graph itself, so this sends the exact same plain 0..1
-    // pixel/255.0f every other model here uses.
-    private byte[] runInferenceMidasGpu(byte[] rgbaPixels, int width, int height) {
-        if (tfliteMidasGpu == null) return null;
-        inputBufferMidasGpu.rewind();
-        outputBufferMidasGpu.rewind();
+    // NOT the NCHW channel-planar fill the CPU YOLO26 models need) and plain
+    // float32 I/O, verified directly against each exported model (see
+    // MODEL_MIDAS_GPU's comment for why this is float32, not fp16, despite
+    // running through the GPU delegate). MiDaS's GPU exports bake ImageNet
+    // normalization into the graph itself; YOLO26-N-384-GPU's export needs
+    // no normalization at all (Ultralytics' plain 0..1 convention) - either
+    // way this sends the exact same plain 0..1 pixel/255.0f every model here
+    // uses, any graph-internal preprocessing is invisible at this boundary.
+    // Only valid for a NHWC-layout GPU export (see GpuVariant's own comment
+    // above) - a future GPU variant exported with a different layout (e.g.
+    // NCHW) would need its own fill function rather than
+    // reusing this one.
+    private byte[] runInferenceGpu(GpuVariant v, byte[] rgbaPixels, int width, int height) {
+        lastGpuPrepareNs = 0;
+        lastGpuInvokeNs = 0;
+        lastGpuPostprocessNs = 0;
+        if (v.interp == null) return null;
+        long prepareStartNs = System.nanoTime();
+        v.inputBuf.rewind();
+        v.outputBuf.rewind();
 
         int srcRowBytes = width * 4;
-        float scaleX = (float) width / MIDAS_GPU_INPUT_SIZE;
-        float scaleY = (float) height / MIDAS_GPU_INPUT_SIZE;
+        float scaleX = (float) width / v.inputSize;
+        float scaleY = (float) height / v.inputSize;
 
-        for (int y = 0; y < MIDAS_GPU_INPUT_SIZE; y++) {
+        for (int y = 0; y < v.inputSize; y++) {
             int srcY = Math.min((int) (y * scaleY), height - 1);
             int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < MIDAS_GPU_INPUT_SIZE; x++) {
+            for (int x = 0; x < v.inputSize; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
-                inputBufferMidasGpu.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
-                inputBufferMidasGpu.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
-                inputBufferMidasGpu.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+                v.inputBuf.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
+                v.inputBuf.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
+                v.inputBuf.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
             }
         }
-        inputBufferMidasGpu.rewind();
+        v.inputBuf.rewind();
+        lastGpuPrepareNs = System.nanoTime() - prepareStartNs;
 
-        tfliteMidasGpu.run(inputBufferMidasGpu, outputBufferMidasGpu);
-        outputBufferMidasGpu.rewind();
+        long invokeStartNs = System.nanoTime();
+        v.interp.run(v.inputBuf, v.outputBuf);
+        lastGpuInvokeNs = System.nanoTime() - invokeStartNs;
+        v.outputBuf.rewind();
 
-        return postProcess(extractFloatOutput(outputBufferMidasGpu, MIDAS_GPU_INPUT_SIZE * MIDAS_GPU_INPUT_SIZE), MIDAS_GPU_INPUT_SIZE, false);
+        long postprocessStartNs = System.nanoTime();
+        byte[] result = postProcess(extractFloatOutput(v.outputBuf, v.inputSize * v.inputSize), v.inputSize, false);
+        lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
+        return result;
     }
 
     // dequantize (quantized - zero_point) * scale, given a specific model's
@@ -1042,14 +1365,18 @@ public class DepthEstimator {
             tfliteYoloS.close();
             tfliteYoloS = null;
         }
-        if (tfliteMidasGpu != null) {
-            tfliteMidasGpu.close();
-            tfliteMidasGpu = null;
+        for (GpuVariant v : gpuVariants.values()) {
+            if (v.interp != null) {
+                v.interp.close();
+                v.interp = null;
+            }
+            if (v.delegate != null) {
+                v.delegate.close();
+                v.delegate = null;
+            }
         }
-        if (gpuDelegate != null) {
-            gpuDelegate.close();
-            gpuDelegate = null;
-        }
+        gpuVariants.clear();
+        activeGpuVariant = null;
         activeInterpreter = null;
         initialized = false;
         executor.shutdownNow();
@@ -1069,9 +1396,6 @@ public class DepthEstimator {
         }
         if (activeModelIndex == 5) {
             return YOLO_S_INPUT_SIZE;
-        }
-        if (activeModelIndex == 6) {
-            return MIDAS_GPU_INPUT_SIZE;
         }
         if (activeModelIndex == 7) {
             return YOLO_N_256_INPUT_SIZE;

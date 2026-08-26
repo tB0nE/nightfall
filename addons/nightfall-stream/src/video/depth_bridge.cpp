@@ -146,36 +146,130 @@ PackedByteArray DepthBridge::get_depth_map() {
 }
 
 void DepthBridge::set_depth_model(int model_index) {
+    configure_depth(model_index, DEPTH_BACKEND_CPU);
+}
+
+void DepthBridge::configure_depth(int model_index, int requested_backend) {
+    selected_model_index_ = model_index;
+    requested_backend_ = requested_backend >= DEPTH_BACKEND_AUTO && requested_backend <= DEPTH_BACKEND_GPU
+            ? requested_backend : DEPTH_BACKEND_AUTO;
 #ifdef NIGHTFALL_PLATFORM_LINUX
     ensure_midas_engine();
     if (midas_engine_) {
         midas_engine_->set_active_model(model_index);
     }
+    effective_backend_ = DEPTH_BACKEND_CPU;
+    backend_status_ = requested_backend_ == DEPTH_BACKEND_GPU
+            ? "GPU depth is unavailable on Linux; using CPU" : "";
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) {
-        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: no JNIEnv");
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "configure_depth: no JNIEnv");
+        effective_backend_ = DEPTH_BACKEND_CPU;
+        backend_status_ = "Android depth runtime unavailable; using CPU";
         return;
     }
 
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
     if (!app_class) {
-        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: FindClass failed");
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "configure_depth: FindClass failed");
         env->ExceptionClear();
+        effective_backend_ = DEPTH_BACKEND_CPU;
+        backend_status_ = "Android depth runtime unavailable; using CPU";
         return;
     }
 
-    jmethodID method = env->GetStaticMethodID(app_class, "setDepthModel", "(I)V");
+    jmethodID method = env->GetStaticMethodID(app_class, "configureDepth", "(II)V");
     if (!method) {
-        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_model: GetStaticMethodID failed");
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "configure_depth: GetStaticMethodID failed");
         env->ExceptionClear();
         env->DeleteLocalRef(app_class);
+        effective_backend_ = DEPTH_BACKEND_CPU;
+        backend_status_ = "Android depth runtime unavailable; using CPU";
         return;
     }
 
-    env->CallStaticVoidMethod(app_class, method, (jint)model_index);
+    env->CallStaticVoidMethod(app_class, method, (jint)model_index, (jint)requested_backend_);
+    env->DeleteLocalRef(app_class);
+#else
+    effective_backend_ = DEPTH_BACKEND_CPU;
+    backend_status_ = requested_backend_ == DEPTH_BACKEND_GPU
+            ? "GPU depth is unavailable on this platform; using CPU" : "";
+#endif
+}
+
+int DepthBridge::get_depth_backend_capabilities(int model_index) {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return DEPTH_BACKEND_CAP_CPU;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        env->ExceptionClear();
+        return DEPTH_BACKEND_CAP_CPU;
+    }
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthBackendCapabilities", "(I)I");
+    if (!method) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return DEPTH_BACKEND_CAP_CPU;
+    }
+    jint capabilities = env->CallStaticIntMethod(app_class, method, (jint)model_index);
+    env->DeleteLocalRef(app_class);
+    return (int)capabilities;
+#else
+    (void)model_index;
+    return DEPTH_BACKEND_CAP_CPU;
+#endif
+}
+
+int DepthBridge::get_effective_depth_backend() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return effective_backend_;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        env->ExceptionClear();
+        return effective_backend_;
+    }
+    jmethodID method = env->GetStaticMethodID(app_class, "getEffectiveDepthBackend", "()I");
+    if (!method) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return effective_backend_;
+    }
+    effective_backend_ = (int)env->CallStaticIntMethod(app_class, method);
     env->DeleteLocalRef(app_class);
 #endif
+    return effective_backend_;
+}
+
+String DepthBridge::get_depth_backend_status() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return backend_status_;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        env->ExceptionClear();
+        return backend_status_;
+    }
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthBackendStatus", "()Ljava/lang/String;");
+    if (!method) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return backend_status_;
+    }
+    jstring status = (jstring)env->CallStaticObjectMethod(app_class, method);
+    if (status) {
+        const char *chars = env->GetStringUTFChars(status, nullptr);
+        if (chars) {
+            backend_status_ = String::utf8(chars);
+            env->ReleaseStringUTFChars(status, chars);
+        }
+        env->DeleteLocalRef(status);
+    }
+    env->DeleteLocalRef(app_class);
+#endif
+    return backend_status_;
 }
 
 int DepthBridge::get_depth_model_size() {
@@ -203,9 +297,66 @@ int DepthBridge::get_depth_model_size() {
 #endif
 }
 
+// Both getters (2026-08-25) mirror DepthEstimator.java's own "Perf:" logcat
+// line exactly (same volatile fields, updated at the same point) - added so
+// a GDScript status-bar readout can show live inference timing without
+// needing adb/logcat, for the 1080p-vs-1440p+ GPU-depth-inference regression
+// investigation. Linux has no equivalent telemetry wired up yet (MidasDepthEngine
+// doesn't track this) - returns 0 there, same "no data" convention as
+// get_depth_model_size()'s own platform fallback.
+float DepthBridge::get_depth_last_inference_ms() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0.0f;
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0.0f;
+
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastInferenceMs", "()F");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0.0f;
+    }
+
+    jfloat ms = env->CallStaticFloatMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (float)ms;
+#else
+    return 0.0f;
+#endif
+}
+
+float DepthBridge::get_depth_last_inference_hz() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0.0f;
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0.0f;
+
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastInferenceHz", "()F");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0.0f;
+    }
+
+    jfloat hz = env->CallStaticFloatMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (float)hz;
+#else
+    return 0.0f;
+#endif
+}
+
 void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("submit_depth_frame", "frame_data", "width", "height"), &DepthBridge::submit_depth_frame);
     ClassDB::bind_method(D_METHOD("get_depth_map"), &DepthBridge::get_depth_map);
     ClassDB::bind_method(D_METHOD("set_depth_model", "model_index"), &DepthBridge::set_depth_model);
+    ClassDB::bind_method(D_METHOD("configure_depth", "model_index", "requested_backend"), &DepthBridge::configure_depth);
+    ClassDB::bind_method(D_METHOD("get_depth_backend_capabilities", "model_index"), &DepthBridge::get_depth_backend_capabilities);
+    ClassDB::bind_method(D_METHOD("get_effective_depth_backend"), &DepthBridge::get_effective_depth_backend);
+    ClassDB::bind_method(D_METHOD("get_depth_backend_status"), &DepthBridge::get_depth_backend_status);
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
+    ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
+    ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
 }

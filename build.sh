@@ -79,11 +79,17 @@ if [ "$PLATFORM" = "linux" ] || [ "$PLATFORM" = "appimage" ]; then
   # resolves its model directory relative to the running executable's own path
   # (OS::get_executable_path()'s base dir + "/depth_models"), NOT through
   # Godot's res:///PCK - the PCK export above uses the Android preset as a
-  # headless-export workaround and never includes android/src/main/assets/.
+  # headless-export workaround and never includes models/ or android/src/main/assets/.
   # Same "loose files next to the binary" pattern as the .so/AAR copies below.
+  # Models live in models/ (gitignored, not committed - see models/README.md
+  # for the full manifest and how to obtain each file) rather than
+  # android/src/main/assets/ (2026-08-24) - both Android and Linux now pull
+  # from the same single source directory instead of Android's assets folder
+  # doing double duty as the canonical location for a non-Android platform.
   mkdir -p "$SCRIPT_DIR/depth_models"
-  cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
-  cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" "$SCRIPT_DIR/depth_models/"
+  cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" "$SCRIPT_DIR/depth_models/"
 
   rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 
@@ -178,6 +184,11 @@ rm -rf android/build
 mkdir -p android/build
 cd android/build
 unzip -q "$TEMPLATES"
+sed -i '/tools:targetApi="29" \/>/a\
+\
+        <meta-data\
+            android:name="com.oculus.trade_cpu_for_gpu_amount"\
+            android:value="1" />' src/main/AndroidManifest.xml
 # Replace Godot .so with patched version (AHB Vulkan patch for Quest)
 # Cover all locations the Gradle build might pick up the .so from
 cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" aar_extract/jni/arm64-v8a/libgodot_android.so 2>/dev/null || true
@@ -194,53 +205,88 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # regardless of ordering. Gradle's own asset merge (mergeDebugAssets/mergeReleaseAssets)
 # supports multiple source directories per source set though, so a sibling directory
 # declared via sourceSets below survives untouched and still gets merged into the APK.
+# Models live in models/ (gitignored, not committed - see models/README.md
+# for the full manifest and how to obtain each file), not
+# android/src/main/assets/ (2026-08-24) - see the matching comment in the
+# Linux depth_models block above.
 mkdir -p android/build/nightfallAssets
-cp "$SCRIPT_DIR/android/src/main/assets/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
 # MiDaS-small re-exported/re-calibrated at 192x192 (2026-08-20) - an
 # independently-calibrated sibling of the 256px model above, not just a
 # resize (own scale/zero_point, see DepthEstimator.java's MIDAS_192_*
 # constants). Now the default landing spot right after Off (see
 # settings_controller.gd's ai_3d_model_labels comment).
-cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
-# YOLO26-depth nano (5.5MB each), w8a32 quantization (2026-08-20, was static
-# full int8) - Ultralytics' new monocular depth export, verified via direct
-# TFLite Interpreter inspection (2026-08-18). w8a32 (dynamic/weight-only
-# int8, no calibration data needed) fixes a confirmed collapse bug the old
-# static-int8 export had on at least one busy/high-texture photo, and looks
-# noticeably less blocky everywhere else - see DepthEstimator.java's
-# MODEL_YOLO_N_* comment. Bundled at THREE resolutions as separate, real,
-# reachable ai_3d_model choices for a direct on-device speed-vs-quality
-# comparison. YOLO26-S is deliberately NOT bundled (2026-08-19, unlike
-# Depth Anything below, it's not dead code, just retired) - its int8
-# quantization proved fragile on real desktop-UI-style low-texture content
-# even after a resolution bump; DepthEstimator.java still attempts to load it
-# (soft-fails harmlessly, same pattern as MiDaS-GPU) and its file stays
-# in android/src/main/assets/ untouched if the calibration issue gets fixed.
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-256-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-320-w8a32.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/yolo26n-depth-384-w8a32.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
+# MiDaS-192-GPU (2026-08-24) - same onnx2tf -ofgd -kt input recipe that
+# produced the working 256px GPU export (see midas-v21-small-256-gpu.tflite's
+# own history), just re-run against the ONNX graph's input resized to
+# 192x192 - MiDaS-small's Resize ops use relative scale factors, not
+# hardcoded absolute sizes, so it's resolution-agnostic. Verified clean
+# 73 CONV_2D/24 DEPTHWISE_CONV_2D/5 RESIZE_BILINEAR graph (matches the
+# 256px model's op composition exactly) and non-degenerate real inference
+# output before bundling. This is the float32-I/O sibling of that export
+# (NOT onnx2tf's literal-fp16-tensor output) - confirmed on-device the
+# fp16-I/O version fails identically to the 256px model's own documented
+# history ("(CONV_2D) failed to prepare, Node number 3"); the GPU delegate
+# still runs at fp16 precision internally via setPrecisionLossAllowed(true)
+# in DepthEstimator.java, it just needs a float32 tensor boundary.
+# Re-quantized (2026-08-25) - the first bundled version was a plain
+# all-float32 export (64MB), nearly 2x the reference 256px model (33MB)
+# despite the smaller input, because that 256px asset was never built by
+# this project - it's an externally-sourced export that already used
+# TFLite's standard weight-only float16 quantization internally (fp16
+# CONV weights, float32 I/O boundary - the same technique
+# setPrecisionLossAllowed(true) exploits at the delegate level). Applied
+# the same technique here directly via tf.lite.TFLiteConverter
+# (optimizations=[DEFAULT], target_spec.supported_types=[float16]) against
+# the SavedModel onnx2tf's tf_converter backend produces - onnx2tf's own
+# "_float16.tflite" sibling isn't this; it's a literal fp16 I/O boundary
+# export that fails to load (same root cause as this comment's own
+# fp16-I/O history above). Result: 33.2MB, verified same float32 I/O +
+# fp16-weight tensor pattern as the reference model, non-degenerate output.
+cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
+# YOLO26-depth (nano, all resolutions) and YOLO26-N-384-GPU REMOVED from
+# selection (2026-08-25) - the w8a32 nano CPU lineup and a fresh
+# NHWC/CNN-dominated GPU export were both tried, but the GPU delegate never
+# loaded on-device ("Failed to apply delegates") and the CPU lineup wasn't
+# worth keeping bundled without it. Same soft-fail pattern as YOLO26-S
+# below: DepthEstimator.java still attempts to load these (harmless, no
+# asset present) and the files stay in models/ untouched if revisited.
 # Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
 # fp16 asset was fully dead code (never loaded on this CPU path at all: an
 # "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
-# same class of bug MiDaS-GPU's fp16 export originally hit), so unlike
-# YOLO26-S/MiDaS-GPU below this isn't "re-bundling a working but retired
-# model" - it's a genuinely new capability. Two sizes bundled (25.2-25.4MB
-# each), matching the ViT-S patch-size-14-multiple constraint: 196 (14*14,
-# ~192px target) and 252 (14*18, ~256px target). Re-converted via onnx2tf
-# -kt input (fixes a layout-mangling bug that made every prior export
-# produce spatially incoherent output) and shipped with dilate/blur
-# post-processing OFF (was hardcoded on) - see DepthEstimator.java's
-# MODEL_DA_196/252 comment for both fixes' full history.
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-196.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/android/src/main/assets/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
-# MiDaS-GPU (2026-08-19) is deliberately NOT bundled - it tanked VR frame
-# rate even throttled to ~5Hz (TFLite's GPU delegate shares the same physical
-# GPU as Godot's Vulkan renderer, see DepthEstimator.java's
-# ensureMidasGpuLoaded() comment). Asset file stays in
-# android/src/main/assets/ untouched, same retirement pattern as YOLO26-S -
-# uncomment below to bundle it again.
-# cp "$SCRIPT_DIR/android/src/main/assets/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "org.tensorflow:tensorflow-lite:2.17.0"\n    implementation "org.tensorflow:tensorflow-lite-gpu:2.17.0"\n    implementation "org.tensorflow:tensorflow-lite-gpu-api:2.17.0"' android/build/build.gradle
+# same class of bug MiDaS-GPU's fp16 export originally hit), so this isn't
+# "re-bundling a working but retired model" - it's a genuinely new
+# capability. Re-converted via onnx2tf -kt input (fixes a layout-mangling
+# bug that made every prior export produce spatially incoherent output)
+# and shipped with dilate/blur post-processing OFF (was hardcoded on) -
+# see DepthEstimator.java's MODEL_DA_196/252 comment for both fixes' full
+# history. DA-V2-196 REMOVED from selection (2026-08-25, kept as loading
+# code only, same soft-fail pattern as YOLO26-S) - both DA-V2 resolutions
+# are impractically slow on real streaming content (CPU-only, no viable
+# GPU path - see DA-V2-196-GPU's history below), so only one is kept
+# bundled at all, as a curiosity/future-hardware placeholder rather than
+# a genuinely usable option today. 252 kept over 196 as the higher-quality
+# of the two.
+cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
+# DA-V2-196-GPU tried (2026-08-25), REMOVED from selection - the GPU
+# delegate loaded and produced correct output (same onnx2tf -kt input fix
+# as the CPU models above), but only at ~2.8Hz vs. MiDaS-GPU's ~15-20Hz -
+# DA-V2's ViT backbone repeats an unsupported-op region 12 times, forcing
+# 12 GPU<->CPU handoffs per inference that dominate the cost. See
+# DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
+# constant for the full history if revisiting.
+LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
+if [ ! -f "$LITERT_GPU_AAR" ]; then
+  echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+  exit 1
+fi
+# The local GPU AAR is the official LiteRT 1.4.2 artifact with only its arm64
+# JNI library replaced. Nightfall's JNI build adds Qualcomm's low-priority
+# OpenCL context hint; keeping the Java API artifact separate avoids Gradle
+# resolving the stock native library transitively alongside it.
+sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

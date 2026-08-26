@@ -188,7 +188,7 @@ func handle_pointer_interaction():
 
 	if main.is_xr_active and main.is_streaming:
 		var is_gripping = _is_now_gripping()
-		var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+		var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 		var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
 		if not pad_blocking and not tp_blocking and is_gripping and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
@@ -273,7 +273,7 @@ func handle_pointer_interaction():
 			left_laser.visible = false
 	var on_screen = false
 	var tp_capturing = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
-	var pad_mode_active = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+	var pad_mode_active = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	if tp_capturing:
 		if main.contact_dot:
 			main.contact_dot.visible = false
@@ -473,7 +473,7 @@ func handle_pointer_interaction():
 		elif t.role == &"screen" and main.is_streaming:
 			if main.virtual_keyboard and main.virtual_keyboard.trackpad_active:
 				return
-			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD:
+			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode():
 				return
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t.screen.hit_point_to_uv(hit_pos)
@@ -888,6 +888,21 @@ func _bar_base_color(screen: VRScreen) -> Color:
 
 func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	bar.material_override.albedo_color = Color(color.r, color.g, color.b, alpha)
+	# Mirror onto the composition-space equivalent (2026-08-24) - same
+	# pattern as _set_corner_color(). grab_bar is a %-unique-named node
+	# from VRScreen's own packed scene, not necessarily a direct child, so
+	# walk up to find the owning VRScreen rather than assuming get_parent().
+	var screen = bar.get_parent()
+	while screen and not (screen is VRScreen):
+		screen = screen.get_parent()
+	if screen is VRScreen and screen.comp_grab_bar_viewport:
+		var panel = screen.comp_grab_bar_viewport.find_child("GrabBarPanel", true, false)
+		if panel:
+			var style = panel.get_theme_stylebox("panel") as StyleBoxFlat
+			if style:
+				style = style.duplicate()
+				style.bg_color = Color(color.r, color.g, color.b, alpha)
+				panel.add_theme_stylebox_override("panel", style)
 
 func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var c = Color(color.r, color.g, color.b, alpha)
@@ -896,6 +911,16 @@ func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0)
 	for child in handle.get_children():
 		if child is MeshInstance3D:
 			child.material_override.albedo_color = c
+	# Mirror onto the composition-space equivalent (2026-08-24) - see
+	# VRScreen's comp_corner_layers/comp_corner_rects comment. modulate.a on
+	# a TextureRect child inside an already-visible viewport is the same
+	# safe category as the per-screen stream cursors (not the composition
+	# layer's own `visible` toggling that caused the earlier crash).
+	var screen = handle.get_parent()
+	if screen is VRScreen and handle.has_meta(&"nf_corner_idx"):
+		var idx: int = handle.get_meta(&"nf_corner_idx")
+		if idx >= 0 and idx < screen.comp_corner_rects.size() and screen.comp_corner_rects[idx]:
+			screen.comp_corner_rects[idx].modulate.a = alpha
 
 func _compute_parallax_shift(uv_x: float) -> float:
 	if not main.depth_estimator or not main.depth_estimator.depth_texture:

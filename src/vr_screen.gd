@@ -62,6 +62,26 @@ var comp_stream_cursor_left: TextureRect = null
 var comp_stream_cursor_circle_left: ColorRect = null
 var comp_stream_cursor_right: TextureRect = null
 var comp_stream_cursor_circle_right: ColorRect = null
+
+# Composition-space grab-bar indicator (2026-08-24, GLES projectionless
+# polish) - the real grab_bar (a MeshInstance3D, see @onready above) is
+# invisible under projectionless mode for the same reason the laser/cursor
+# were (plain 3D scene nodes never reach the compositor when
+# submit_projection_layer=false). Its Area3D grab interaction is unaffected
+# (physics doesn't depend on rendering) - this only adds the missing
+# visual. See main.gd's _update_grab_bar_layers().
+var comp_grab_bar: Node3D = null
+var comp_grab_bar_viewport: SubViewport = null
+
+# Composition-space corner-handle indicators (2026-08-24) - same rationale
+# as comp_grab_bar: corner_handles are plain 3D scene nodes (MeshInstance3D
+# with an L-bracket texture, see create_corner_handles()), invisible under
+# projectionless mode. Parallel arrays indexed the same as corner_handles
+# (top-left/top-right/bottom-left/bottom-right) - see main.gd's
+# _update_grab_bar_layers() (also drives these) and xr_interaction.gd's
+# _set_corner_color() (mirrors hover/click alpha onto comp_corner_rects).
+var comp_corner_layers: Array = []
+var comp_corner_rects: Array = []
 var comp_layer: Node3D = null
 var comp_base_size: Vector2i = Vector2i(1920, 1080)
 var _original_mat: Material = null
@@ -189,7 +209,13 @@ func update_corner_positions():
 			cx -= corner_size * 0.5
 		handle.position = Vector3(cx, cy, edge_z)
 		handle.rotation.y = -a
-	grab_bar.position.y = -ms.y / 2.0 - grab_bar_off
+	# Halved (2026-08-24, was the full grab_bar_off gap) - moves the real
+	# grab_bar (and its Area3D hitbox) closer to the screen edge, not just
+	# its composition-space visual (main.gd's _update_grab_bar_layers()
+	# mirrors this position directly) - keeping both in sync was the point;
+	# an earlier attempt that only offset the visual left the hitbox
+	# behind, making it hard to find/grab.
+	grab_bar.position.y = -ms.y / 2.0 - grab_bar_off * 0.5
 	if grab_bar.mesh is CylinderMesh:
 		var grab_r = ms.x * 0.0045
 		var grab_h = ms.x * 0.134

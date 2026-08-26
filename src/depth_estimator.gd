@@ -23,14 +23,10 @@ var submit_timer: float = 0.0
 # MORE CPU work per call via dilate+blur. That's the next thing to fix, not
 # this value.
 var submit_interval: float = 0.05
-# MiDaS-GPU only - see its use in process() for why this needs to be its own,
-# much slower cadence than submit_interval above. ~5Hz - a starting point
-# matching the rough order of magnitude of Gilleece/moonlight-android-xr's own
-# "every 3rd frame" cadence at 90Hz (~30Hz, but their raw inference is ~3.5x
-# faster than ours at ~13.5ms vs our ~47-51ms end-to-end, so a slower cadence
-# here is the equivalent tradeoff for a slower model) - tune based on
-# on-device FPS/GPU-utilization testing, not derived precisely.
-const GPU_MODEL_SUBMIT_INTERVAL := 0.2
+# The Java GPU worker owns the 20 Hz inference clock. Match it here rather than
+# paying for synchronous GPU readbacks which the latest-frame mailbox discards.
+const GPU_FRAME_PUBLISH_INTERVAL := 0.05
+const GPU_BOOST_REFRESH_INTERVAL := 15.0
 # Native output resolution of whichever model is currently active in
 # DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
 # (see YOLO_INPUT_SIZE there). No longer a fixed constant: sync_model_size()
@@ -42,6 +38,14 @@ const GPU_MODEL_SUBMIT_INTERVAL := 0.2
 # model, not just MiDaS.
 var model_size: int = 256
 var _poll_timer: float = 0.0
+var _backend_status_timer: float = 0.0
+var _perf_window: float = 0.0
+var _perf_capture_usec: int = 0
+var _perf_submit_usec: int = 0
+var _perf_submitted: int = 0
+var _perf_updates: int = 0
+var _gpu_boost_active: bool = false
+var _gpu_boost_refresh_timer: float = 0.0
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -52,42 +56,29 @@ var _poll_timer: float = 0.0
 # performance, since the same expensive bilateral/search work was repeated
 # per eye per full-res pixel instead of once for the whole frame.
 const PASS_DIVISOR := 4
-# stereo_mode 10/11 (MiDaS-Fast / MiDaS-Fastest) only - shrinks the
-# pre-pass's linear resolution further than PASS_DIVISOR, on the same
-# GPU-cost theory as the throttle below. Selected via _pass_divisor in
-# set_enabled() based on warp_tier. No power-of-2 requirement - this only
-# ever feeds an integer division in GDScript (_resize_warp_passes(), called
-# once per native_resolution change, not per-pixel/per-frame), so any
-# divisor costs the same at runtime; only the resulting resolution (and
-# therefore quality vs. GPU cost) changes.
+# stereo_mode 10 (MiDaS-Fast) only - shrinks the pre-pass's linear
+# resolution further than PASS_DIVISOR, on the same GPU-cost theory as the
+# throttle below. Selected via _pass_divisor in set_enabled() based on
+# warp_tier. No power-of-2 requirement - this only ever feeds an integer
+# division in GDScript (_resize_warp_passes(), called once per
+# native_resolution change, not per-pixel/per-frame), so any divisor costs
+# the same at runtime; only the resulting resolution (and therefore quality
+# vs. GPU cost) changes.
 const EX_PASS_DIVISOR := 10
-const FASTEST_PASS_DIVISOR := 12
 const PASS_MIN_SIZE := 160
-# MiDaS-Fastest only: an absolute ceiling on the pre-pass size, equal to
-# what MiDaS-Fast (EX_PASS_DIVISOR=10) already produces at 2560x1440 - the
-# resolution it was tuned/tested at (2560/10=256, 1440/10=144, floored up
-# to PASS_MIN_SIZE=160). FASTEST_PASS_DIVISOR alone still scales up
-# proportionally with native_resolution, so at 4K (roughly double 1440p's
-# linear dimensions) it costs ~4x more than at 1440p for the same divisor -
-# that's the actual reason 4K costs more, not something a bigger divisor
-# alone fixes. Clamping to this ceiling means going to 4K (or beyond) never
-# makes MiDaS-Fastest's pre-pass more expensive than it already is at
-# 1440p; below that, FASTEST_PASS_DIVISOR's own result is already smaller
-# than this and the ceiling is a no-op.
-const FASTEST_PASS_MAX_SIZE := Vector2i(256, 160)
 var _pass_divisor: int = PASS_DIVISOR
 var upsample_viewport: SubViewport
 var upsample_mat: ShaderMaterial
 var offset_viewport: SubViewport
 var offset_mat: ShaderMaterial
-# stereo_mode 10/11 only: throttles these two passes to UPDATE_ONCE on this
+# stereo_mode 10 only: throttles these two passes to UPDATE_ONCE on this
 # timer instead of UPDATE_ALWAYS, re-rendering the occlusion search at
 # warp_update_interval instead of every render frame (up to 90Hz), even
 # though the depth data feeding them only refreshes at submit_interval's
 # 20Hz. On-device testing (2026-08-18) found NO measurable FPS gain from
 # this on stereo_mode 6 (MiDaS-Std, which stayed on UPDATE_ALWAYS as a
 # result) - the pre-pass apparently isn't the actual bottleneck. Kept in
-# these separate modes (not folded into MiDaS-Std) to keep poking at this
+# this separate mode (not folded into MiDaS-Std) to keep poking at this
 # without risking the known-good mode; the per-eye per-pixel Newton-
 # refinement gather in yuv_display.gdshader (runs at full render resolution
 # every frame regardless of this throttle) is the next suspect.
@@ -96,20 +87,20 @@ var _warp_timer: float = 0.0
 var _warp_passes_active: bool = false
 var _warp_throttled: bool = false
 # 0 = MiDaS-Std (no throttling/shrinking - full quality, unthrottled), 1 =
-# MiDaS-Fast, 2 = MiDaS-Fastest. Set via set_enabled()'s warp_tier param;
-# drives _pass_divisor and WARP_NEWTON_PERIOD below.
+# MiDaS-Fast. Set via set_enabled()'s warp_tier param; drives _pass_divisor
+# and WARP_NEWTON_PERIOD below. Fastest (tier 2) was removed 2026-08-25 -
+# on-device benchmarking found it near-identical to Fast at every tested
+# resolution, not worth the extra tier.
 var _warp_tier: int = 0
-# stereo_mode 10/11 only - a 1-indexed counter, incremented every process()
+# stereo_mode 10 only - a 1-indexed counter, incremented every process()
 # tick (one real render frame, see main.gd's _process()) while a throttled
 # tier is active. Pushed to comp_shader_mat_left/right as warp_newton_steps
 # (1 on the tick where counter % WARP_NEWTON_PERIOD[_warp_tier] == 0, else
 # 0) - yuv_display.gdshader just reads that uniform directly rather than
-# special-casing stereo_mode itself, so adding another tier only needs an
-# entry here, not a shader change. MiDaS-Fast (tier 1) does 1 Newton step
-# every 2nd frame (alternating); MiDaS-Fastest (tier 2) does 1 every 3rd
-# frame, 0 the other two - both amortize that per-pixel refinement cost
+# special-casing stereo_mode itself. MiDaS-Fast (tier 1) does 1 Newton step
+# every 2nd frame (alternating), amortizing that per-pixel refinement cost
 # across frames instead of paying it every frame.
-const WARP_NEWTON_PERIOD: Array[int] = [1, 2, 3]
+const WARP_NEWTON_PERIOD: Array[int] = [1, 2]
 var _warp_frame_counter: int = 0
 # Matches Gilleece/moonlight-android-xr's own shipped default separation
 # (0.5% of frame width). Tested bumping this to 0.02 (~3.3x) on the theory
@@ -258,8 +249,6 @@ func _resize_warp_passes():
 	if src.x <= 0 or src.y <= 0:
 		return
 	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
-	if _warp_tier == 2:
-		target = Vector2i(mini(target.x, FASTEST_PASS_MAX_SIZE.x), mini(target.y, FASTEST_PASS_MAX_SIZE.y))
 	if target == _pass_size:
 		return
 	_pass_size = target
@@ -271,8 +260,8 @@ func _resize_warp_passes():
 			mat.set_shader_parameter("mode5_parallax", _pass_parallax)
 
 # Called from settings_controller.gd's apply_stereo() right after
-# stream_backend.set_depth_model() switches the active Java-side model -
-# setActiveModel() busy-waits out any in-flight inference before returning,
+# stream_backend.configure_depth() switches the active Java-side model -
+# switchActiveModel() busy-waits out any in-flight inference before returning,
 # so getModelSize() is already correct for the new model by the time this
 # runs. Resizes depth_viewport (the capture source fed INTO the model) and
 # recreates depth_texture's image (the model's OUTPUT, read back via
@@ -318,6 +307,8 @@ func bind_stream_texture():
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
+	if not val or main.settings_controller.get_depth_backend_index() != 2:
+		_set_gpu_performance_hint(false)
 	if depth_viewport:
 		# Tried throttling this to UPDATE_ONCE at submit_interval's 20Hz
 		# instead of UPDATE_ALWAYS (2026-08-18) on the theory that
@@ -328,12 +319,11 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		# throttling - it's a single cheap fullscreen blit, not the
 		# occlusion-search work those passes do.
 		depth_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if val else SubViewport.UPDATE_DISABLED
-	# Only stereo_mode 5/6/10/11 (MiDaS-GPU / MiDaS-Std / MiDaS-Fast /
-	# MiDaS-Fastest) consume these - leave them off for the older modes 3/4
-	# so they stay a clean, unaffected performance baseline to compare
-	# against. Tiers 1/2 throttle via _warp_timer in process() (UPDATE_ONCE);
-	# tier 0 (MiDaS-Std) stays UPDATE_ALWAYS - see warp_update_interval's
-	# comment above for why.
+	# Only stereo_mode 5/6/10 (MiDaS-GPU / MiDaS-Std / MiDaS-Fast) consume
+	# these - leave them off for the older modes 3/4 so they stay a clean,
+	# unaffected performance baseline to compare against. Tier 1 throttles
+	# via _warp_timer in process() (UPDATE_ONCE); tier 0 (MiDaS-Std) stays
+	# UPDATE_ALWAYS - see warp_update_interval's comment above for why.
 	_warp_passes_active = val and run_warp_passes
 	_warp_tier = warp_tier if _warp_passes_active else 0
 	_warp_throttled = _warp_tier > 0
@@ -341,14 +331,26 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	_warp_frame_counter = 0
 	match _warp_tier:
 		1: _pass_divisor = EX_PASS_DIVISOR
-		2: _pass_divisor = FASTEST_PASS_DIVISOR
 		_: _pass_divisor = PASS_DIVISOR
+
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)
 	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
 	if upsample_viewport:
 		upsample_viewport.render_target_update_mode = mode
 	if offset_viewport:
 		offset_viewport.render_target_update_mode = mode
+
+func _set_gpu_performance_hint(use_boost: bool, force: bool = false):
+	if OS.get_name() != "Android" or (_gpu_boost_active == use_boost and not force):
+		return
+	var interface = XRServer.find_interface("OpenXR")
+	if not interface or not interface.has_method("set_gpu_level"):
+		return
+	var level = OpenXRInterface.PERF_SETTINGS_LEVEL_BOOST if use_boost else OpenXRInterface.PERF_SETTINGS_LEVEL_SUSTAINED_HIGH
+	interface.set_gpu_level(level)
+	_gpu_boost_active = use_boost
+	_gpu_boost_refresh_timer = 0.0
+	main._log("[DEPTH] GPU performance hint: %s" % ("BOOST" if use_boost else "SUSTAINED_HIGH"))
 
 func _push_warp_newton_steps(steps: int):
 	if main.comp_shader_mat_left:
@@ -357,10 +359,27 @@ func _push_warp_newton_steps(steps: int):
 		main.comp_shader_mat_right.set_shader_parameter("warp_newton_steps", steps)
 
 func process(delta: float):
+	# GPU boost fires whenever depth inference is ACTUALLY running on GPU
+	# (main.stream_backend.get_effective_depth_backend() == 2), not just
+	# when the legacy "MiDaS-256-GPU" model entry (index 6) is picked
+	# directly - the separate 3D Backend control (2026-08-22) lets MiDaS-256
+	# (index 5) also end up running on GPU via Auto/GPU backend selection.
+	var effective_gpu = main.stream_backend and main.stream_backend.get_effective_depth_backend() == 2
+	var should_boost = enabled and effective_gpu and main.is_streaming
+	if should_boost:
+		_gpu_boost_refresh_timer += delta
+		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
+			_set_gpu_performance_hint(true, _gpu_boost_active)
+	elif _gpu_boost_active:
+		_set_gpu_performance_hint(false)
 	if not enabled or not main.is_streaming:
 		return
 
 	_resize_warp_passes()
+	_backend_status_timer += delta
+	if _backend_status_timer >= 0.25:
+		_backend_status_timer = 0.0
+		main.settings_controller.refresh_depth_backend_status(true)
 
 	if _warp_passes_active and _warp_throttled:
 		_warp_frame_counter += 1
@@ -374,35 +393,34 @@ func process(delta: float):
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta
-		# MiDaS-GPU used to need its own, much slower cadence than the CPU
-		# models share above (confirmed on-device, 2026-08-19: TFLite's GPU
-		# delegate runs its compute shaders on the SAME physical GPU that
-		# renders the VR scene, so every inference call is real GPU time
-		# directly competing with the render thread - unlike MiDaS/YOLO26
-		# (CPU/XNNPACK), which are fully decoupled from what renders each
-		# frame. Running it at the same 20Hz cadence as the CPU models drove
-		# GPU utilization to 94% and roughly halved frame rate). But MiDaS-GPU
-		# is now REMOVED from selection entirely (2026-08-19, still performed
-		# poorly even throttled - see settings_controller.gd's
-		# ai_3d_model_labels comment) - GPU_MODEL_SUBMIT_INTERVAL is dead code
-		# below, kept only in case it's revived, since no current ai_3d_model
-		# value maps to it and hardcoding a check against a specific index
-		# here would silently misfire against whatever CPU model ends up at
-		# that index instead (this exact bug happened once already when
-		# YOLO26-S's removal shifted index 3 out from under this check).
-		if submit_timer >= submit_interval:
-			submit_timer = 0.0
+		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.settings_controller.get_depth_backend_index() == 2 and OS.get_name() == "Android" else submit_interval
+		if submit_timer >= active_submit_interval:
+			submit_timer -= active_submit_interval
+			var capture_start = Time.get_ticks_usec()
 			var img = depth_viewport.get_texture().get_image()
 			if img != null and not img.is_empty():
 				var data = img.get_data()
+				_perf_capture_usec += Time.get_ticks_usec() - capture_start
 				if data.size() > 0:
+					var submit_start = Time.get_ticks_usec()
 					main.stream_backend.submit_depth_frame(data, model_size, model_size)
+					_perf_submit_usec += Time.get_ticks_usec() - submit_start
+					_perf_submitted += 1
 
 	if main.stream_backend.has_method("get_depth_map"):
-		_poll_timer += delta
-		if _poll_timer >= submit_interval:
-			_poll_timer = 0.0
-			var depth_bytes = main.stream_backend.get_depth_map()
-			if depth_bytes != null and depth_bytes.size() == model_size * model_size:
-				var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
-				depth_texture.update(depth_image)
+		var depth_bytes = main.stream_backend.get_depth_map()
+		if depth_bytes != null and depth_bytes.size() == model_size * model_size:
+			var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
+			depth_texture.update(depth_image)
+			_perf_updates += 1
+
+	_perf_window += delta
+	if _perf_window >= 1.0:
+		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
+		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
+		print("[DEPTH-PERF] capture=%.2fms submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_ms, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
+		_perf_window = 0.0
+		_perf_capture_usec = 0
+		_perf_submit_usec = 0
+		_perf_submitted = 0
+		_perf_updates = 0

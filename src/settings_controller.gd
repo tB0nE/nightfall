@@ -5,6 +5,8 @@ var main: Node3D
 var _restart_pending: bool = false
 var _restart_seq: int = 0
 var _ai_3d_commit_seq: int = 0
+var _last_effective_backend: int = -1
+var _last_backend_status: String = ""
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -19,67 +21,101 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # unless selected) rather than deleted - see stereo_mode 4/5's own history
 # for the same pattern.
 #
-# Split (2026-08-18) from a single flat "3D AI" cycle into three
-# independent controls, matching main.gd's ai_3d_model/ai_3d_quality/
-# ai_3d_debug:
-#   ai_3d_model_labels   - is AI-3D on at all, and with which model. YOLO26-N/
-#                          -S (Ultralytics' new monocular depth export,
-#                          verified via direct TFLite Interpreter inspection,
-#                          2026-08-18) joined MiDaS here - all three share the
-#                          exact same downstream warp/postProcess pipeline
-#                          (DepthEstimator.java's postProcess() works on a
-#                          plain float[] regardless of source model, and the
-#                          warp shaders read textureSize(depth_texture, 0)
-#                          dynamically), so stereo_mode/quality-tier selection
-#                          below is completely orthogonal to which model is
-#                          active - only apply_stereo()'s final
-#                          set_depth_model() call and depth_estimator.gd's
-#                          sync_model_size() (256 vs YOLO's 768) need to know
-#                          which one is picked here.
-#   ai_3d_quality_labels - which performance tier. Fastest/Fast/Standard
-#                          directly select depth_estimator.gd's warp_tier
-#                          2/1/0 (see MiDaS-Fast/-Fastest's own history in
-#                          main.gd, MIDAS_FAST_MAX_PIXELS, for what each
-#                          tier trades off). Auto instead picks a tier from
-#                          the current resolution/passthrough state - see
-#                          resolve_quality_tier()/_auto_quality_tier() below.
-#   ai_3d_debug_labels   - debug depth-data VIEWS (DMap/-Raw/-Input),
-#                          overlaid on whichever quality tier is active
-#                          rather than a mode of their own - see
-#                          get_stereo_mode() and _schedule_ai_3d_commit().
-# YOLO26-S (2026-08-18) and MiDaS-GPU (2026-08-19) are REMOVED from
-# selection, not deleted - S's int8 quantization turned out fragile on real
-# desktop-UI-style low-texture content even after bumping resolution 256->320
-# (still degenerate/blank on our own menu screenshot); MiDaS-GPU tanked VR
-# frame rate even throttled to ~5Hz (TFLite's GPU delegate shares the same
-# physical GPU as Godot's Vulkan renderer, see DepthEstimator.java's
-# ensureMidasGpuLoaded() comment). DepthEstimator.java still attempts to load
-# both (soft-fails harmlessly since build.sh no longer bundles either asset)
-# and their dispatch code stays in place unreachable, matching how Depth
-# Anything V2 was retired - don't restore a label/mapping for Java model
-# index 5 (YOLO26-S) or 6 (MiDaS-GPU) without fixing their underlying issue
-# first.
-# YOLO26-N (2026-08-19) is now THREE separate resolution choices instead of
-# one, after discovering a wrong-polarity bug (fixed) made the model look
-# far worse than it actually is - now that it's fixed, comparing 256/320/384
-# side by side for speed vs. depth quality is a real, useful experiment
-# rather than working around a bug.
-# Rebuilt (2026-08-20) into a full 7-way perf/quality lineup, ordered fastest
-# to slowest, after a round of desktop-harness comparisons (tools/model_tester/):
-# YOLO26-N re-exported with w8a32 (dynamic/weight-only int8, no calibration
-# data needed) fixes a real collapse bug the old static-int8 export had and
-# looks noticeably less blocky; MiDaS gained a 192px sibling (independently
-# calibrated, not just a resize of the 256px model); Depth Anything V2 is
-# REVIVED (was fully dead code - the originally-deployed fp16 asset never
-# loaded on this CPU path at all) via a re-conversion that fixes a layout bug
-# (onnx2tf -kt input) plus disabling the dilate/blur post-processing that was
-# confirmed to be destroying real fine detail. MiDaS-192 is deliberately
-# FIRST after Off (not fastest-first) - it's the best-tested, safest default
-# to land on when a user first turns AI-3D on, before they've had a chance to
-# explore the rest of the lineup.
-var ai_3d_model_labels: Array = ["Off", "MiDaS-192", "YOLO26-N-256", "YOLO26-N-320", "YOLO26-N-384", "MiDaS-256", "DA-V2-196", "DA-V2-252"]
-var ai_3d_quality_labels: Array = ["Auto", "Fastest", "Fast", "Standard"]
+# Collapsed (2026-08-24) from four independent controls (model/backend/
+# quality/debug) down to two, per user request - "AI 3D" and "AI Model" felt
+# like they should each be a single toggle, not four:
+#   ai_3d_speed_labels  - is AI-3D on at all, and at which performance tier.
+#                         Off/Auto/Fast/Standard - absorbs both the
+#                         old on/off state (previously ai_3d_model==0) and
+#                         the old ai_3d_quality_labels tier picker. Fast/
+#                         Standard directly select depth_estimator.gd's
+#                         warp_tier 1/0 (see MiDaS-Fast's own history in
+#                         main.gd for what it trades off - Fastest/tier 2
+#                         was removed 2026-08-25, on-device benchmarking
+#                         showed it near-identical to Fast at every tested
+#                         resolution). Auto instead picks BOTH a tier and a
+#                         model from the current resolution/passthrough
+#                         state, via a literal lookup table (AUTO_TABLE
+#                         below) built from an on-device GPU-inference
+#                         benchmark matrix, not a formula - see
+#                         resolve_quality_tier()/get_auto_selection() below.
+#   ai_3d_models        - WHICH model, dictionaries of {label, java_index,
+#                         gpu}. Absorbs the old separate Backend control
+#                         (Auto/CPU/GPU) - each model entry states its own
+#                         backend directly instead of leaving it as a
+#                         separate toggle, and GPU entries are listed first
+#                         (cycle_ai_3d_model() below skips them entirely when
+#                         _gpu_depth_available() is false). YOLO26-N/
+#                         MiDaS/Depth Anything V2 all share the exact same
+#                         downstream warp/postProcess pipeline
+#                         (DepthEstimator.java's postProcess() works on a
+#                         plain float[] regardless of source model, and the
+#                         warp shaders read textureSize(depth_texture, 0)
+#                         dynamically), so the speed-tier selection above is
+#                         completely orthogonal to which model is active -
+#                         only apply_stereo()'s final set_depth_model() call
+#                         and depth_estimator.gd's sync_model_size() (256 vs
+#                         YOLO's 768) need to know which one is picked here.
+#   ai_3d_debug_labels  - debug depth-data VIEWS (DMap/-Raw/-Input), overlaid
+#                         on whichever tier is active rather than a mode of
+#                         its own - see get_stereo_mode() and
+#                         _schedule_ai_3d_commit(). Left untouched by this
+#                         collapse (still its own hidden/disabled button).
+# History prior to the collapse (model roster, retired entries, etc.) lives
+# in git blame for this file rather than repeated here - see commits through
+# 2026-08-20 for the YOLO26-S/MiDaS-GPU/YOLO26-N-resolution/7-way-lineup
+# history that produced the roster below.
+var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
+var ai_3d_models: Array = [
+	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
+	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
+	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
+	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
+	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
+]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+
+# Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
+# vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
+# separated from 16:9's 1.778 by a 2.0 threshold), then bucket by pixel
+# count within that aspect class at the midpoint between each pair of named
+# reference resolutions - anything below the lowest or above the highest
+# named bucket clamps to the nearest end rather than extrapolating. See
+# _classify_auto_resolution()/get_auto_selection() below.
+const AUTO_ASPECT_ULTRAWIDE_THRESHOLD := 2.0
+const AUTO_CLASS_16_9 := [
+	{"name": "720p", "px": 1280 * 720},
+	{"name": "HD", "px": 1920 * 1080},
+	{"name": "2K", "px": 2560 * 1440},
+	{"name": "4K", "px": 3840 * 2160},
+]
+const AUTO_CLASS_ULTRAWIDE := [
+	{"name": "21:9 HD", "px": 2560 * 1080},
+	{"name": "21:9 2K", "px": 3440 * 1440},
+]
+
+# The Auto-mode target table (2026-08-25, on-device GPU-inference benchmark
+# matrix - MiDaS-192-GPU/MiDaS-256-GPU x Fast/Fastest/Standard x six
+# resolution classes x passthrough on/off, Quest 3/3s). A literal lookup,
+# NOT a formula - which model wins (192 vs 256) does not follow a
+# monotonic rule against resolution or passthrough alone (2K-on picks 192
+# but 2K-off picks 256; 21:9-2K-on picks 256 but -off picks 192) - these
+# are direct empirical judgment calls per combo. tier: 0=Standard/1=Fast
+# (matches depth_estimator.gd's warp_tier - Fastest/2 was removed the same
+# day). model_idx: index into ai_3d_models above (0=MiDaS-256-GPU,
+# 1=MiDaS-192-GPU - Auto never picks a CPU model or DA-V2). cap_px: 0 = no
+# cap, else the sqrt-pixel-budget resolution cap compute_requested_resolution()
+# applies (replaces the old flat MIDAS_FAST_MAX_PIXELS/MIDAS_FASTEST_MAX_PIXELS
+# constants, which this table's per-combo caps supersede - see main.gd).
+# Keyed by class name, then main.passthrough_enabled (bool).
+const AUTO_TABLE := {
+	"720p":    {false: {"tier": 0, "model_idx": 0, "cap_px": 0}, true: {"tier": 0, "model_idx": 0, "cap_px": 0}},
+	"HD":      {false: {"tier": 0, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 0}},
+	"21:9 HD": {false: {"tier": 1, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 0}},
+	"2K":      {false: {"tier": 1, "model_idx": 0, "cap_px": 0}, true: {"tier": 1, "model_idx": 1, "cap_px": 0}},
+	"21:9 2K": {false: {"tier": 1, "model_idx": 1, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1080}},
+	"4K":      {false: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1440}, true: {"tier": 1, "model_idx": 1, "cap_px": 2560 * 1440}},
+}
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -89,7 +125,7 @@ func _init(owner: Node3D):
 func get_stereo_mode() -> int:
 	if main.sbs_mode > 0:
 		return main.sbs_mode
-	if main.ai_3d_model == 0:
+	if main.ai_3d_speed == 0:
 		return 0
 	if main.ai_3d_debug == 1:
 		return 7 # MiDaS-DMap
@@ -99,37 +135,50 @@ func get_stereo_mode() -> int:
 		return 9 # MiDaS-DMap-Input
 	match resolve_quality_tier():
 		1: return 10 # MiDaS-Fast
-		2: return 11 # MiDaS-Fastest
 		_: return 6 # MiDaS-Std
 
-# 0=Standard, 1=Fast, 2=Fastest - matches depth_estimator.gd's warp_tier
-# numbering exactly, so apply_stereo() can pass this straight through.
+# 0=Standard, 1=Fast - matches depth_estimator.gd's warp_tier numbering
+# exactly, so apply_stereo() can pass this straight through. Fastest/2 was
+# removed 2026-08-25 (was ai_3d_speed==3) - near-identical to Fast at every
+# resolution benchmarked, not worth the extra tier. ai_3d_speed_labels =
+# ["Off", "Auto", "Fast", "Standard"] - Off never reaches here
+# (get_stereo_mode() short-circuits on it above).
 func resolve_quality_tier() -> int:
-	match main.ai_3d_quality:
-		1: return 2 # Fastest
+	match main.ai_3d_speed:
 		2: return 1 # Fast
 		3: return 0 # Standard
-		_: return _auto_quality_tier()
+		_: return get_auto_selection().tier
 
 # Reads the pre-AI3D-cap BASE resolution (compute_requested_resolution(false),
 # NOT the live/possibly-already-capped value - reading the capped value
 # would be circular, since Auto's own tier choice is what determines the
-# cap in the first place) and classifies it by total pixel count against
-# the nearest 16:9 reference resolution, not literal width/height - this
-# setup's native_resolution is a wide multi-monitor composite, not 16:9,
-# and a literal-dimension check would misclassify it the same way the old
-# width/height-pair resolution caps did (see MIDAS_FAST_MAX_PIXELS's
-# history in main.gd).
-func _auto_quality_tier() -> int:
-	var res = main.compute_requested_resolution(false)
-	var pixels = res.x * res.y
-	var pt = main.passthrough_enabled
-	if pixels <= 1280 * 720:
-		return 0 # Standard, either passthrough state
-	elif pixels <= 2560 * 1440:
-		return 1 if pt else 0 # 1080p/1440p: Fast w/ passthrough, else Standard
-	else:
-		return 2 if pt else 1 # 4K+: Fastest w/ passthrough, else Fast
+# cap in the first place), classifies it (aspect + pixel-count bucket, see
+# AUTO_CLASS_16_9/AUTO_CLASS_ULTRAWIDE above), and looks up the matching
+# AUTO_TABLE row. Public (unlike the old _auto_quality_tier()) - main.gd's
+# compute_requested_resolution() and ui_controller.gd's AI-Model-button
+# labeling both need this same combo, not just resolve_quality_tier() here.
+# Deliberately NOT cached - get_stereo_mode() (which calls this via
+# resolve_quality_tier()) already gets called every frame from several
+# places with no caching today, and this is exactly as cheap as the
+# function it replaces (one Vector2i compute + a handful of comparisons,
+# no allocations) - a cache/invalidation path would be new complexity for
+# no measured benefit.
+func _classify_auto_resolution(w: int, h: int) -> String:
+	if h <= 0:
+		return "720p"
+	var aspect := float(w) / float(h)
+	var refs: Array = AUTO_CLASS_ULTRAWIDE if aspect >= AUTO_ASPECT_ULTRAWIDE_THRESHOLD else AUTO_CLASS_16_9
+	var pixels := w * h
+	for i in range(refs.size() - 1):
+		var midpoint: float = (refs[i].px + refs[i + 1].px) / 2.0
+		if pixels <= midpoint:
+			return refs[i].name
+	return refs[refs.size() - 1].name
+
+func get_auto_selection() -> Dictionary:
+	var res: Vector2i = main.compute_requested_resolution(false)
+	var cls := _classify_auto_resolution(res.x, res.y)
+	return AUTO_TABLE[cls][main.passthrough_enabled]
 
 func _save_setting(btn: Button, label: String):
 	if btn:
@@ -146,14 +195,12 @@ func cycle_sbs_mode():
 
 # AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
 # (see depth_bridge.cpp's NIGHTFALL_PLATFORM_LINUX branch / MidasDepthEngine) -
-# MiDaS-192/256 only for now, YOLO26/DA V2 aren't ported there yet (any other
-# model index falls back to MiDaS-256 on that platform, see
-# MidasDepthEngine::set_active_model()). A shared check here instead of
-# repeating "Android or Linux" three times below.
+# Linux uses the same selectable native TFLite models as Android. A shared
+# check here avoids repeating "Android or Linux" three times below.
 func _ai_3d_supported() -> bool:
 	return OS.get_name() == "Android" or OS.get_name() == "Linux"
 
-func cycle_ai_3d_model():
+func cycle_ai_3d_speed():
 	if not _ai_3d_supported():
 		return
 	if main.sbs_mode > 0:
@@ -164,24 +211,89 @@ func cycle_ai_3d_model():
 	# cycle_resolution()/_schedule_stream_restart(): click through to find
 	# the setting you want, and it only commits once you stop, instead of
 	# reconfiguring/restarting on every single click along the way.
-	main.ai_3d_model = (main.ai_3d_model + 1) % ai_3d_model_labels.size()
-	_save_setting(main._ui_3d_btn, ai_3d_model_labels[main.ai_3d_model])
+	main.ai_3d_speed = (main.ai_3d_speed + 1) % ai_3d_speed_labels.size()
+	_save_setting(main._ui_3d_speed_btn, ai_3d_speed_labels[main.ai_3d_speed])
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
 
-func cycle_ai_3d_quality():
+# No live GPU-capability query exists yet (TFLite's GPU delegate availability
+# isn't probed ahead of time), so this always returns true for now - MiDaS-
+# 256-GPU already runs on both Android and Linux via the existing GPU
+# backend path (see DepthEstimator.java's ensureMidasGpuLoaded()), it's just
+# not a great choice on Quest (shares the physical GPU with Godot's Vulkan
+# renderer). Revisit once there's an actual capability check to call instead
+# of a placeholder - not a priority while this whole model list is still WIP.
+func _gpu_depth_available() -> bool:
+	return true
+
+func cycle_ai_3d_model():
 	if not _ai_3d_supported():
 		return
-	if main.sbs_mode > 0 or main.ai_3d_model == 0:
+	if main.sbs_mode > 0:
 		return
-	main.ai_3d_quality = (main.ai_3d_quality + 1) % 4
-	_save_setting(main._ui_3d_quality_btn, ai_3d_quality_labels[main.ai_3d_quality])
+	var n = ai_3d_models.size()
+	var next = main.ai_3d_model
+	for i in range(n):
+		next = (next + 1) % n
+		if not ai_3d_models[next].gpu or _gpu_depth_available():
+			break
+	main.ai_3d_model = next
+	_save_setting(main._ui_3d_btn, ai_3d_models[main.ai_3d_model].label)
 	_schedule_ai_3d_commit()
+
+# Maps main.ai_3d_model (the persisted UI selection, an index into
+# ai_3d_models) to DepthEstimator's real Java-side model index. Under Auto
+# (ai_3d_speed==1), main.ai_3d_model is frozen/irrelevant - the table picks
+# the model instead (see get_auto_selection()/AUTO_TABLE above).
+func get_depth_model_index() -> int:
+	if main.ai_3d_speed == 0:
+		return 0
+	if main.ai_3d_speed == 1:
+		return ai_3d_models[get_auto_selection().model_idx].java_index
+	return ai_3d_models[main.ai_3d_model].java_index
+
+# The backend to actually request from configure_depth() - comes straight
+# from the selected model entry now (see ai_3d_models above), not a separate
+# user-facing toggle.
+func get_depth_backend_index() -> int:
+	if main.ai_3d_speed == 0:
+		return 1 # CPU (irrelevant, AI-3D is off)
+	var idx = get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	return 2 if ai_3d_models[idx].gpu else 1
+
+func get_depth_backend_label() -> String:
+	var effective = 1
+	if main.stream_backend and main.stream_backend.has_method("get_effective_depth_backend"):
+		effective = main.stream_backend.get_effective_depth_backend()
+	var requested = get_depth_backend_index()
+	if requested == 2:
+		return "GPU" if effective == 2 else "GPU→CPU"
+	return "CPU"
+
+func refresh_depth_backend_status(notify_transition: bool = false):
+	if not main.stream_backend:
+		return
+	var effective = main.stream_backend.get_effective_depth_backend()
+	var status = main.stream_backend.get_depth_backend_status()
+	var requested = get_depth_backend_index()
+	var fallback = not status.is_empty() and effective == 1 and requested != 1
+	var was_fallback = not _last_backend_status.is_empty() and _last_effective_backend == 1
+	if notify_transition and fallback and (not was_fallback or status != _last_backend_status):
+		main._log("[DEPTH] Backend fallback: " + status)
+		if main.ui_controller:
+			main.ui_controller.set_status(status)
+	elif notify_transition and was_fallback and not fallback:
+		var ended = "GPU depth fallback ended (%s)" % get_depth_backend_label()
+		main._log("[DEPTH] " + ended)
+		if main.ui_controller:
+			main.ui_controller.set_status(ended)
+	_last_effective_backend = effective
+	_last_backend_status = status if fallback else ""
 
 func cycle_ai_3d_debug():
 	if not _ai_3d_supported():
 		return
-	if main.sbs_mode > 0 or main.ai_3d_model == 0:
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
 		return
 	main.ai_3d_debug = (main.ai_3d_debug + 1) % ai_3d_debug_labels.size()
 	_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[main.ai_3d_debug])
@@ -202,8 +314,8 @@ func _schedule_ai_3d_commit():
 		return
 	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
 	# already flowing, not a separate mode with its own resolution needs -
-	# deliberately inherit whatever resolution (including a MiDaS-Fast/
-	# -Fastest cap) is already active instead of recomputing/restarting back
+	# deliberately inherit whatever resolution (including a MiDaS-Fast
+	# cap) is already active instead of recomputing/restarting back
 	# to the full uncapped resolution. That restart actively worked against
 	# debugging: switching to a debug view to inspect what a tier was doing
 	# changed the very thing being inspected (a different, uncapped
@@ -212,8 +324,8 @@ func _schedule_ai_3d_commit():
 	if main.ai_3d_debug != 0:
 		apply_stereo()
 		return
-	# MiDaS-Fast/-Fastest cap the actual requested stream resolution (see
-	# MIDAS_FAST_MAX_PIXELS in main.gd). Checked BEFORE apply_stereo(), not
+	# MiDaS-Fast caps the actual requested stream resolution (see
+	# AUTO_TABLE's cap_px above, applied in main.gd). Checked BEFORE apply_stereo(), not
 	# after - if a restart is needed, apply_stereo() is skipped here
 	# entirely and left to main.gd's _on_stream_started(), which now calls
 	# it once the new session actually lands, instead of calling it here too
@@ -253,15 +365,17 @@ func apply_stereo():
 		# passes running too. mode 8 (MiDaS-DMap-Raw) visualizes the raw
 		# pre-upsample depth_texture directly - no warp passes needed. mode 9
 		# (MiDaS-DMap-Input) visualizes the literal color capture fed to the
-		# model - also no warp passes needed. modes 10/11 (MiDaS-Fast/
-		# -Fastest) are the same warp passes as mode 6, just throttled/shrunk
-		# by differing amounts - see warp_update_interval's comment in
-		# depth_estimator.gd. warp_tier (0=Standard, 1=Fast, 2=Fastest) comes
-		# from resolve_quality_tier() - the SAME tier drives the pre-pass
-		# config whether you're looking at the real warp (mode 6/10/11) or a
-		# debug view of it (mode 7/8/9), since debug views are just a lens
-		# on whichever tier is actually active, not a tier of their own.
-		var warp_tier = resolve_quality_tier() if main.ai_3d_model > 0 else 0
+		# model - also no warp passes needed. mode 10 (MiDaS-Fast) is the
+		# same warp passes as mode 6, just throttled/shrunk - see
+		# warp_update_interval's comment in depth_estimator.gd. warp_tier
+		# (0=Standard, 1=Fast - Fastest/2 removed 2026-08-25) comes from
+		# resolve_quality_tier() - the SAME tier drives the pre-pass config
+		# whether you're looking at the real warp (mode 6/10) or a debug
+		# view of it (mode 7/8/9), since debug views are just a lens on
+		# whichever tier is actually active, not a tier of their own. mode
+		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
+		# same as this file's other retired-stereo_mode conventions.
+		var warp_tier = resolve_quality_tier() if main.ai_3d_speed > 0 else 0
 		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
 		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
 		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
@@ -292,10 +406,10 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
-	# (stereo_mode only encodes quality tier / debug view, see
-	# ai_3d_model_labels' comment above) - it comes straight from
-	# main.ai_3d_model. Modes 6/7/8/9/10/11 (Std, DMap, DMap-Raw, DMap-Input,
-	# Fast, Fastest) are pure visualizations/warp-pass variants of whatever
+	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
+	# comment above) - it comes straight from main.ai_3d_model. Modes
+	# 6/7/8/9/10 (Std, DMap, DMap-Raw, DMap-Input,
+	# Fast) are pure visualizations/warp-pass variants of whatever
 	# model's depth data is already flowing, not a separate source - mode 9
 	# doesn't even read the model's output (just the color capture), but
 	# MUST still resolve to the same model index here: leaving it out
@@ -303,18 +417,9 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var model_idx = 0
-	if mode >= 3:
-		match main.ai_3d_model:
-			1: model_idx = 10 # MiDaS-192
-			2: model_idx = 7 # YOLO26-Depth-N-256
-			3: model_idx = 8 # YOLO26-Depth-N-320
-			4: model_idx = 4 # YOLO26-Depth-N-384
-			5: model_idx = 3 # MiDaS-256
-			6: model_idx = 11 # Depth Anything V2-196
-			7: model_idx = 1 # Depth Anything V2-252
-			_: model_idx = 3 # MiDaS-256 (fallback)
-	main.stream_backend.set_depth_model(model_idx)
+	var model_idx = get_depth_model_index() if mode >= 3 else 0
+	main.stream_backend.configure_depth(model_idx, get_depth_backend_index())
+	refresh_depth_backend_status(true)
 	if mode >= 3 and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
 
@@ -326,11 +431,24 @@ func toggle_passthrough():
 	apply_passthrough(main.passthrough_enabled)
 	_save_setting(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 	main._log("[PASSTHROUGH] toggled to %s and saved" % str(main.passthrough_enabled))
+	# AUTO_TABLE's tier/model/cap picks all key off passthrough_enabled (see
+	# get_auto_selection()) - and manual Fast's resolution cap does too, same
+	# table. Refresh the AI Model button immediately (was showing a stale
+	# label otherwise - Auto's resolved model can silently change here, e.g.
+	# 2K flips between MiDaS-192-GPU and MiDaS-256-GPU) and re-commit the
+	# actual depth config/resolution cap the same debounced way any other
+	# AI-3D-affecting change does - nothing else calls apply_stereo() on a
+	# passthrough toggle otherwise, so the server-side model/cap would
+	# silently stay stale too, not just the label.
+	if main.ai_3d_speed != 0 and main.ui_controller:
+		main.ui_controller.update_stereo_shader()
+		_schedule_ai_3d_commit()
 
 func apply_passthrough(enable: bool):
 	if not main.is_xr_active:
 		return
 	_hide_all_backgrounds()
+	main._sync_comp_background()
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
 		return
@@ -361,6 +479,7 @@ func apply_background(bg_mode: int):
 			if bg:
 				bg.visible = true
 				bg.emitting = true
+	main._sync_comp_background()
 
 func _hide_all_backgrounds():
 	for name in main.bg_names:

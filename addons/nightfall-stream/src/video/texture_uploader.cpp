@@ -4,7 +4,27 @@
 
 #include "nf_log.h"
 
+#ifdef __ANDROID__
+#include <GLES3/gl32.h>
+#include <GLES2/gl2ext.h>
+#include <android/native_window_jni.h>
+#include <chrono>
+#include <jni.h>
+#endif
+
 using namespace godot;
+
+static bool supports_android_hardware_buffer_import(RenderingDevice *rendering_device) {
+#ifdef __ANDROID__
+    if (!rendering_device || !rendering_device->has_method("texture_create_from_android_hardware_buffer")) {
+        return false;
+    }
+    String rendering_method = RenderingServer::get_singleton()->get_current_rendering_method();
+    return rendering_method != "gl_compatibility";
+#else
+    return rendering_device != nullptr;
+#endif
+}
 
 TextureUploader::TextureUploader() {
     texture_mutex.instantiate();
@@ -55,6 +75,9 @@ void TextureUploader::_render_thread_import_native_rt() {
 
     RenderingServer *rs = RenderingServer::get_singleton();
     rd = rs ? rs->get_rendering_device() : nullptr;
+    if (!supports_android_hardware_buffer_import(rd)) {
+        rd = nullptr;
+    }
 
     if (!rd) return;
 
@@ -161,6 +184,9 @@ void TextureUploader::_render_thread_setup_bgra(int width, int height) {
 
     RenderingServer *rs = RenderingServer::get_singleton();
     rd = rs ? rs->get_rendering_device() : nullptr;
+    if (!supports_android_hardware_buffer_import(rd)) {
+        rd = nullptr;
+    }
 
     if (rd) {
         for (int i = 0; i < 3; i++) {
@@ -275,6 +301,9 @@ void TextureUploader::_render_thread_setup(int width, int height, int format, in
     int uv_h = height / 2;
 
     rd = rs->get_rendering_device();
+    if (!supports_android_hardware_buffer_import(rd)) {
+        rd = nullptr;
+    }
     if (rd) {
         auto create_rd_texture = [&](int idx, int w, int h, RenderingDevice::DataFormat fmt) {
             Ref<RDTextureFormat> tf;
@@ -584,6 +613,420 @@ void TextureUploader::update_from_raw_bgra(int width, int height, const uint8_t 
     }
 }
 
+#ifdef __ANDROID__
+extern JavaVM *nightfall_get_jvm();
+
+namespace {
+const char *GLES_EXTERNAL_VERTEX_SHADER = R"(
+#version 300 es
+uniform mat4 u_tex_matrix;
+out vec2 v_uv;
+void main() {
+    vec2 position;
+    vec2 uv;
+    if (gl_VertexID == 0) {
+        position = vec2(-1.0, -1.0); uv = vec2(0.0, 0.0);
+    } else if (gl_VertexID == 1) {
+        position = vec2(1.0, -1.0); uv = vec2(1.0, 0.0);
+    } else if (gl_VertexID == 2) {
+        position = vec2(-1.0, 1.0); uv = vec2(0.0, 1.0);
+    } else {
+        position = vec2(1.0, 1.0); uv = vec2(1.0, 1.0);
+    }
+    gl_Position = vec4(position, 0.0, 1.0);
+    uv.y = 1.0 - uv.y;
+    v_uv = (u_tex_matrix * vec4(uv, 0.0, 1.0)).xy;
+}
+)";
+
+const char *GLES_EXTERNAL_FRAGMENT_SHADER = R"(
+#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+uniform samplerExternalOES u_video;
+in vec2 v_uv;
+out vec4 frag_color;
+void main() {
+    frag_color = texture(u_video, v_uv);
+}
+)";
+
+GLuint compile_gles_shader(GLenum type, const char *source) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_TRUE) return shader;
+    char log[512]{};
+    glGetShaderInfoLog(shader, sizeof(log), nullptr, log);
+    NF_LOGE("TextureUploader", "GLES shader compile failed: %s", log);
+    glDeleteShader(shader);
+    return 0;
+}
+
+JNIEnv *get_gles_jni_env(JavaVM *&out_vm) {
+    out_vm = nightfall_get_jvm();
+    if (!out_vm) return nullptr;
+    JNIEnv *env = nullptr;
+    const jint status = out_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (out_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return nullptr;
+    } else if (status != JNI_OK) {
+        return nullptr;
+    }
+    return env;
+}
+} // namespace
+
+ANativeWindow *TextureUploader::create_android_gles_decoder_surface(int width, int height) {
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (!rs) return nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        if (gles_decoder_window_ && gles_surface_width_ == width && gles_surface_height_ == height) {
+            return gles_decoder_window_;
+        }
+        gles_surface_width_ = width;
+        gles_surface_height_ = height;
+        gles_surface_ready_ = false;
+        gles_surface_failed_ = false;
+    }
+    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_create_android_gles_surface));
+    std::unique_lock<std::mutex> lock(gles_surface_mutex_);
+    if (!gles_surface_cv_.wait_for(lock, std::chrono::seconds(5), [this] {
+            return gles_surface_ready_ || gles_surface_failed_;
+        })) {
+        NF_LOGE("TextureUploader", "Timed out creating GLES decoder SurfaceTexture");
+        return nullptr;
+    }
+    return gles_surface_ready_ ? gles_decoder_window_ : nullptr;
+}
+
+void TextureUploader::_render_thread_create_android_gles_surface() {
+    const int width = gles_surface_width_;
+    const int height = gles_surface_height_;
+    auto fail = [this] {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        gles_surface_failed_ = true;
+        gles_surface_cv_.notify_all();
+    };
+
+    if (gles_decoder_window_ || width <= 0 || height <= 0) {
+        NF_LOGE("TextureUploader", "GLES decoder surface requested with invalid state");
+        fail();
+        return;
+    }
+
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    if (!env) {
+        NF_LOGE("TextureUploader", "Unable to get JNIEnv on Godot GLES render thread");
+        fail();
+        return;
+    }
+
+    GLuint vertex = compile_gles_shader(GL_VERTEX_SHADER, GLES_EXTERNAL_VERTEX_SHADER);
+    GLuint fragment = compile_gles_shader(GL_FRAGMENT_SHADER, GLES_EXTERNAL_FRAGMENT_SHADER);
+    if (!vertex || !fragment) {
+        if (vertex) glDeleteShader(vertex);
+        if (fragment) glDeleteShader(fragment);
+        fail();
+        return;
+    }
+    gles_blit_program_ = glCreateProgram();
+    glAttachShader(gles_blit_program_, vertex);
+    glAttachShader(gles_blit_program_, fragment);
+    glLinkProgram(gles_blit_program_);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(gles_blit_program_, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        char log[512]{};
+        glGetProgramInfoLog(gles_blit_program_, sizeof(log), nullptr, log);
+        NF_LOGE("TextureUploader", "GLES external blit link failed: %s", log);
+        glDeleteProgram(gles_blit_program_);
+        gles_blit_program_ = 0;
+        fail();
+        return;
+    }
+
+    glGenTextures(1, &gles_oes_texture_);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
+    jmethodID constructor = surface_texture_class ? env->GetMethodID(surface_texture_class, "<init>", "(I)V") : nullptr;
+    jmethodID set_size = surface_texture_class ? env->GetMethodID(surface_texture_class, "setDefaultBufferSize", "(II)V") : nullptr;
+    if (!surface_texture_class || !constructor || !set_size) {
+        NF_LOGE("TextureUploader", "SurfaceTexture JNI methods unavailable");
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        fail();
+        return;
+    }
+    jobject local_surface_texture = env->NewObject(surface_texture_class, constructor, (jint)gles_oes_texture_);
+    if (!local_surface_texture || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        NF_LOGE("TextureUploader", "SurfaceTexture construction failed");
+        fail();
+        return;
+    }
+    env->CallVoidMethod(local_surface_texture, set_size, width, height);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        NF_LOGE("TextureUploader", "SurfaceTexture setDefaultBufferSize failed");
+        env->DeleteLocalRef(local_surface_texture);
+        fail();
+        return;
+    }
+    jclass surface_class = env->FindClass("android/view/Surface");
+    jmethodID surface_constructor = surface_class
+        ? env->GetMethodID(surface_class, "<init>", "(Landroid/graphics/SurfaceTexture;)V") : nullptr;
+    jobject local_surface = surface_constructor
+        ? env->NewObject(surface_class, surface_constructor, local_surface_texture) : nullptr;
+    if (!local_surface || env->ExceptionCheck()) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        NF_LOGE("TextureUploader", "Surface construction failed");
+        env->DeleteLocalRef(local_surface_texture);
+        fail();
+        return;
+    }
+    gles_decoder_window_ = ANativeWindow_fromSurface(env, local_surface);
+    env->DeleteLocalRef(local_surface);
+    gles_surface_texture_java_ = env->NewGlobalRef(local_surface_texture);
+    env->DeleteLocalRef(local_surface_texture);
+    if (!gles_decoder_window_) {
+        NF_LOGE("TextureUploader", "ANativeWindow_fromSurface failed");
+        fail();
+        return;
+    }
+
+    glGenTextures(1, &gles_output_texture_);
+    glBindTexture(GL_TEXTURE_2D, gles_output_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glGenFramebuffers(1, &gles_fbo_);
+
+    RenderingServer *rs = RenderingServer::get_singleton();
+    PackedByteArray placeholder_data;
+    placeholder_data.resize(width * height * 4);
+    placeholder_data.fill(0);
+    Ref<Image> placeholder = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, placeholder_data);
+    plane_textures[0] = ImageTexture::create_from_image(placeholder);
+    RID native_texture = rs->texture_create_from_native_handle(
+        RenderingServer::TEXTURE_TYPE_2D, Image::FORMAT_RGBA8,
+        (uint64_t)gles_output_texture_, width, height, 1);
+    if (!native_texture.is_valid() || plane_textures[0].is_null()) {
+        NF_LOGE("TextureUploader", "Godot refused GLES native output texture");
+        fail();
+        return;
+    }
+    rs->texture_replace(plane_textures[0]->get_rid(), native_texture);
+    use_shader_conversion = true;
+    is_nv12 = false;
+    current_width = width;
+    current_height = height;
+    ensure_shader_material();
+    shader_material->set_shader_parameter("tex_y", plane_textures[0]);
+    shader_material->set_shader_parameter("is_semi_planar", false);
+    shader_material->set_shader_parameter("is_nv12_rd", false);
+    shader_material->set_shader_parameter("color_matrix_type", 3);
+    shader_material->set_shader_parameter("color_range", 1);
+    shader_material->set_shader_parameter("swap_uv", false);
+
+    NF_LOG("TextureUploader", "GLES external decoder surface ready: %dx%d", width, height);
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        gles_surface_ready_ = true;
+        gles_surface_cv_.notify_all();
+    }
+}
+
+void TextureUploader::update_android_gles_external_texture() {
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (!rs) return;
+    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    if (!gles_surface_ready_ || gles_update_queued_) return;
+    gles_update_queued_ = true;
+    static int queued_updates = 0;
+    if (++queued_updates <= 3 || queued_updates % 120 == 0) {
+        NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_updates);
+    }
+    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
+}
+
+void TextureUploader::_render_thread_update_android_gles_texture() {
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        gles_update_queued_ = false;
+    }
+    if (!gles_surface_texture_java_ || !gles_fbo_ || !gles_blit_program_) return;
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass surface_texture_class = env ? env->FindClass("android/graphics/SurfaceTexture") : nullptr;
+    jmethodID update = surface_texture_class ? env->GetMethodID(surface_texture_class, "updateTexImage", "()V") : nullptr;
+    jmethodID transform = surface_texture_class ? env->GetMethodID(surface_texture_class, "getTransformMatrix", "([F)V") : nullptr;
+    if (!env || !update || !transform) return;
+    env->CallVoidMethod((jobject)gles_surface_texture_java_, update);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        static int update_failures = 0;
+        if (++update_failures <= 3) NF_LOGE("TextureUploader", "SurfaceTexture updateTexImage failed");
+        return;
+    }
+    float matrix[16]{};
+    jfloatArray java_matrix = env->NewFloatArray(16);
+    env->CallVoidMethod((jobject)gles_surface_texture_java_, transform, java_matrix);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(java_matrix);
+        return;
+    }
+    env->GetFloatArrayRegion(java_matrix, 0, 16, matrix);
+    env->DeleteLocalRef(java_matrix);
+    GLint old_fbo = 0;
+    GLint old_viewport[4]{};
+    GLint old_program = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
+    glGetIntegerv(GL_VIEWPORT, old_viewport);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
+    glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        NF_LOGE("TextureUploader", "GLES external output framebuffer incomplete");
+        glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+        return;
+    }
+    glViewport(0, 0, gles_surface_width_, gles_surface_height_);
+    glUseProgram(gles_blit_program_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
+    glUniform1i(glGetUniformLocation(gles_blit_program_, "u_video"), 0);
+    glUniformMatrix4fv(glGetUniformLocation(gles_blit_program_, "u_tex_matrix"), 1, GL_FALSE, matrix);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    const GLenum draw_error = glGetError();
+    glUseProgram(old_program);
+    glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+    glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
+    if (draw_error != GL_NO_ERROR) {
+        NF_LOGE("TextureUploader", "GLES external blit failed: 0x%x", draw_error);
+        return;
+    }
+    static int completed_updates = 0;
+    if (++completed_updates <= 3 || completed_updates % 120 == 0) {
+        NF_LOG("TextureUploader", "Completed GLES external blit #%d", completed_updates);
+    }
+    new_frame_available_.store(true);
+}
+
+void TextureUploader::update_from_android_image(AImage *image, int width, int height) {
+    static int gles_upload_count = 0;
+    const int upload_attempt = ++gles_upload_count;
+    if (!image || rd || !use_shader_conversion) {
+        if (upload_attempt <= 3) {
+            NF_LOG("TextureUploader", "GLES upload unavailable: image=%d rd=%d shader=%d",
+                image != nullptr, rd != nullptr, use_shader_conversion);
+        }
+        return;
+    }
+
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (!rs || plane_images[0].is_null() || plane_textures[0].is_null()) {
+        if (upload_attempt <= 3) {
+            NF_LOG("TextureUploader", "GLES textures unavailable: rs=%d image=%d texture=%d",
+                rs != nullptr, plane_images[0].is_valid(), plane_textures[0].is_valid());
+        }
+        return;
+    }
+
+    int32_t plane_count = 0;
+    if (AImage_getNumberOfPlanes(image, &plane_count) != AMEDIA_OK || plane_count < 3) {
+        if (upload_attempt <= 3) {
+            NF_LOG("TextureUploader", "GLES image has %d planes; expected YUV_420_888", plane_count);
+        }
+        return;
+    }
+
+    const int plane_widths[3] = { width, width / 2, width / 2 };
+    const int plane_heights[3] = { height, height / 2, height / 2 };
+
+    for (int plane = 0; plane < 3; ++plane) {
+        uint8_t *source = nullptr;
+        int source_length = 0;
+        int row_stride = 0;
+        int pixel_stride = 0;
+        media_status_t data_status = AImage_getPlaneData(image, plane, &source, &source_length);
+        media_status_t row_status = AImage_getPlaneRowStride(image, plane, &row_stride);
+        media_status_t pixel_status = AImage_getPlanePixelStride(image, plane, &pixel_stride);
+        if (data_status != AMEDIA_OK || row_status != AMEDIA_OK || pixel_status != AMEDIA_OK ||
+            !source || row_stride <= 0 || pixel_stride <= 0) {
+            if (upload_attempt <= 3) {
+                NF_LOG("TextureUploader", "GLES plane %d unavailable: data=%d row=%d pixel=%d ptr=%d stride=%d/%d",
+                    plane, data_status, row_status, pixel_status, source != nullptr, row_stride, pixel_stride);
+            }
+            return;
+        }
+
+        const int packed_size = plane_widths[plane] * plane_heights[plane];
+        if (plane_buffers[plane].size() != packed_size) {
+            plane_buffers[plane].resize(packed_size);
+        }
+        uint8_t *destination = plane_buffers[plane].ptrw();
+        for (int row = 0; row < plane_heights[plane]; ++row) {
+            const int source_offset = row * row_stride;
+            if (source_offset >= source_length) return;
+            for (int column = 0; column < plane_widths[plane]; ++column) {
+                const int source_index = source_offset + column * pixel_stride;
+                if (source_index >= source_length) return;
+                destination[row * plane_widths[plane] + column] = source[source_index];
+            }
+        }
+
+        plane_images[plane]->set_data(
+            plane_widths[plane], plane_heights[plane], false, Image::FORMAT_L8, plane_buffers[plane]);
+        rs->texture_2d_update(plane_textures[plane]->get_rid(), plane_images[plane], 0);
+    }
+
+    new_frame_available_.store(true);
+    if (upload_attempt <= 3) {
+        NF_LOG("TextureUploader", "GLES YUV upload #%d: %dx%d", upload_attempt, width, height);
+    }
+}
+
+void TextureUploader::update_from_android_rgba_image(AImage *image, int width, int height) {
+    if (!image || !use_shader_conversion) return;
+
+    uint8_t *source = nullptr;
+    int source_length = 0;
+    int row_stride = 0;
+    int pixel_stride = 0;
+    if (AImage_getPlaneData(image, 0, &source, &source_length) != AMEDIA_OK ||
+        AImage_getPlaneRowStride(image, 0, &row_stride) != AMEDIA_OK ||
+        AImage_getPlanePixelStride(image, 0, &pixel_stride) != AMEDIA_OK ||
+        !source || row_stride < width * 4 || pixel_stride != 4) {
+        return;
+    }
+
+    PackedByteArray rgba;
+    rgba.resize(width * height * 4);
+    uint8_t *destination = rgba.ptrw();
+    for (int row = 0; row < height; ++row) {
+        const int source_offset = row * row_stride;
+        if (source_offset + width * 4 > source_length) return;
+        memcpy(destination + row * width * 4, source + source_offset, width * 4);
+    }
+    update_from_raw_bgra(width, height, rgba.ptr(), rgba.size());
+    new_frame_available_.store(true);
+}
+#endif
+
 void TextureUploader::perform_gpu_update() {
     if (!rd) return;
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
@@ -613,6 +1056,9 @@ void TextureUploader::cleanup() {
 
 void TextureUploader::_render_thread_cleanup() {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
+#ifdef __ANDROID__
+    _render_thread_destroy_android_gles_surface();
+#endif
     if (rd) {
         // Deliberately NOT freeing rd_texture_rid[i]/rs_texture_rid[i] here - this runs
         // on every restart (called from StreamConnection::_cb_decoder_cleanup(), not just
@@ -631,6 +1077,38 @@ void TextureUploader::_render_thread_cleanup() {
     }
     use_shader_conversion = false;
 }
+
+#ifdef __ANDROID__
+void TextureUploader::_render_thread_destroy_android_gles_surface() {
+    if (!gles_decoder_window_ && !gles_surface_texture_java_ && !gles_blit_program_) return;
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    if (gles_decoder_window_) {
+        ANativeWindow_release(gles_decoder_window_);
+        gles_decoder_window_ = nullptr;
+    }
+    if (env && gles_surface_texture_java_) {
+        jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
+        jmethodID release = surface_texture_class ? env->GetMethodID(surface_texture_class, "release", "()V") : nullptr;
+        if (release) env->CallVoidMethod((jobject)gles_surface_texture_java_, release);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteGlobalRef((jobject)gles_surface_texture_java_);
+    }
+    gles_surface_texture_java_ = nullptr;
+    if (gles_fbo_) glDeleteFramebuffers(1, &gles_fbo_);
+    if (gles_output_texture_) glDeleteTextures(1, &gles_output_texture_);
+    if (gles_oes_texture_) glDeleteTextures(1, &gles_oes_texture_);
+    if (gles_blit_program_) glDeleteProgram(gles_blit_program_);
+    gles_fbo_ = 0;
+    gles_output_texture_ = 0;
+    gles_oes_texture_ = 0;
+    gles_blit_program_ = 0;
+    std::lock_guard<std::mutex> surface_lock(gles_surface_mutex_);
+    gles_surface_ready_ = false;
+    gles_surface_failed_ = false;
+    gles_update_queued_ = false;
+}
+#endif
 
 void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range"), &TextureUploader::setup);

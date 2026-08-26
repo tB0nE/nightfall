@@ -184,7 +184,10 @@ func build_welcome_screen(parent: Node):
 			main.stream_manager.on_pair_pressed()
 	)
 	wol_btn.pressed.connect(func():
-		var current_ip = main.get_node("%IPInput").text
+		# Parsed (port-suffix stripped) - send_wol_to_host() below sends a
+		# UDP packet DIRECTLY to this address (port 9, hardcoded, unrelated
+		# to any pairing port in the field), so it needs a real bare IP.
+		var current_ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
 		var mac = _get_host_mac(current_ip)
 		if mac.is_empty():
 			main._log("[WOL] No MAC address found for " + current_ip)
@@ -348,7 +351,13 @@ func build_ip_screen(parent: Node):
 	numpad.add_theme_constant_override("v_separation", 8)
 	numpad_center.add_child(numpad)
 
-	var keys = ["7","8","9","4","5","6","1","2","3",".","0","DEL"]
+	# ":" added (2026-08-26) so an optional custom port can be typed here too
+	# ("ip:port") - matches the main %IPInput numpad in ui_controller.gd, see
+	# main.gd's parse_ip_port(). Max length raised 15 -> 21 to fit it. "DEL"
+	# moved out of this grid (below, next to PairBtn) - with 13 items (after
+	# adding ":") a 3-column grid left DEL alone on its own final row,
+	# isolated from the other keys.
+	var keys = ["7","8","9","4","5","6","1","2","3",".","0",":"]
 	for key in keys:
 		var btn = Button.new()
 		btn.text = key
@@ -357,10 +366,7 @@ func build_ip_screen(parent: Node):
 		numpad.add_child(btn)
 		btn.pressed.connect(func():
 			var text = ip_input.text
-			if key == "DEL":
-				if text.length() > 0:
-					ip_input.text = text.substr(0, text.length() - 1)
-			elif text.length() < 15:
+			if text.length() < 21:
 				ip_input.text = text + key
 		)
 
@@ -369,13 +375,35 @@ func build_ip_screen(parent: Node):
 	btn_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(btn_spacer)
 
+	# Pair + DEL share a row (2026-08-26) - Pair on the left, DEL on the
+	# right, rather than DEL sitting alone in the numpad grid above. Widths
+	# sized so the row's total width (240 + 16 separation + 120 = 376)
+	# matches the numpad grid's own width (3 * 120 + 2 * 8 h_separation =
+	# 376), so this row visually aligns with the grid above it.
+	var action_row = HBoxContainer.new()
+	action_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	action_row.add_theme_constant_override("separation", 16)
+	action_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(action_row)
+
 	var pair_btn = Button.new()
 	pair_btn.name = "PairBtn"
-	pair_btn.custom_minimum_size = Vector2(400, 90)
+	pair_btn.custom_minimum_size = Vector2(240, 90)
 	pair_btn.add_theme_font_size_override("font_size", 36)
 	pair_btn.text = "Pair"
-	pair_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	screen.add_child(pair_btn)
+	action_row.add_child(pair_btn)
+
+	var del_btn = Button.new()
+	del_btn.name = "DelBtn"
+	del_btn.custom_minimum_size = Vector2(120, 90)
+	del_btn.add_theme_font_size_override("font_size", 36)
+	del_btn.text = "DEL"
+	action_row.add_child(del_btn)
+	del_btn.pressed.connect(func():
+		var text = ip_input.text
+		if text.length() > 0:
+			ip_input.text = text.substr(0, text.length() - 1)
+	)
 
 	var bottom_spacer = Control.new()
 	bottom_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -514,8 +542,9 @@ func update_welcome_info():
 	var spacer1 = ws.get_node_or_null("Spacer1")
 	var spacer2 = ws.get_node_or_null("Spacer2")
 
-	var saved_ip = main.get_node("%IPInput").text
-	var has_saved = not saved_ip.is_empty()
+	var saved_ip_raw = main.get_node("%IPInput").text
+	var saved_ip = main.parse_ip_port(saved_ip_raw)[0]
+	var has_saved = not saved_ip_raw.is_empty()
 	var _cm = main.stream_backend.get_config_manager() if main.stream_backend else null
 	var _hosts = _cm.get_hosts() if _cm else []
 	var has_hosts = _hosts.size() > 0
@@ -664,7 +693,11 @@ func populate_server_list():
 		var hname = h.get("hostname", "")
 		if hname == ip:
 			hname = ""
-		var display = hname if not hname.is_empty() else ip
+		# Show the IP alongside the hostname (2026-08-26) - previously showed
+		# only one or the other, which made it hard to tell entries with the
+		# same/similar hostname apart, or to know what IP a "Pair" would
+		# actually target without selecting it first.
+		var display = "%s (%s)" % [hname, ip] if not hname.is_empty() else ip
 		var btn = Button.new()
 		btn.custom_minimum_size = Vector2(400, 80)
 		btn.add_theme_font_size_override("font_size", 36)
@@ -697,8 +730,11 @@ func clear_saved_servers():
 
 func start_pair(ip: String):
 	main.get_node("%IPInput").text = ip
-	main._log("[PAIR] Starting pair with %s:47989..." % ip)
-	var pin = main.stream_backend.start_pair(ip, 47989)
+	var parsed = main.parse_ip_port(ip)
+	var host_ip: String = parsed[0]
+	var host_port: int = parsed[1]
+	main._log("[PAIR] Starting pair with %s:%d..." % [host_ip, host_port])
+	var pin = main.stream_backend.start_pair(host_ip, host_port)
 	main._log("[PAIR] start_pair returned: %s" % str(pin))
 	if str(pin) == "" or str(pin) == "0":
 		main._log("[PAIR] FAILED - no pin returned")

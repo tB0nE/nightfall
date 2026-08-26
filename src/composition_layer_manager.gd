@@ -26,9 +26,18 @@ func _as_rid(v) -> RID:
 		return v.get_rid()
 	return RID()
 
+var equirect_available: bool = false
+
 func _init(p_main):
 	main = p_main
 	available = ClassDB.class_exists("OpenXRCompositionLayerCylinder")
+	# Checked separately (2026-08-24) - the equirect2 OpenXR extension is
+	# less commonly implemented than cylinder, needed for a composition-
+	# space environment-background replacement (see main.gd's
+	# comp_bg_equirect comment). Just existing as a Godot class isn't
+	# proof the RUNTIME actually supports it - is_natively_supported()
+	# (checked once the layer is created) is the real signal.
+	equirect_available = ClassDB.class_exists("OpenXRCompositionLayerEquirect")
 
 func get_screen_mesh_original_mat() -> Material:
 	return main.primary_screen._original_mat
@@ -97,6 +106,114 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_layer = s.comp_cylinder
 	s.comp_layer.set_layer_viewport(s.comp_viewport)
 	main._log("[COMP] Per-screen mono comp layer created (%s)" % s.monitor_id)
+
+	# Grab-bar visual (2026-08-24) - see VRScreen's comp_grab_bar comment.
+	# Not billboarded (unlike the cursor/laser) - lies flat in the screen's
+	# own plane, matching the real grab_bar MeshInstance3D's orientation,
+	# so main.gd's _update_grab_bar_layers() just copies grab_bar's own
+	# global position/rotation onto it directly every frame, no basis math
+	# needed. Always visible once comp.in_use (like the real grab_bar in
+	# normal projection mode) - never toggled off, so no risk of the
+	# swapchain-teardown crash toggling caused for the cursor/laser.
+	s.comp_grab_bar = OpenXRCompositionLayerQuad.new()
+	s.comp_grab_bar.name = "CompGrabBarLayer_%s" % s.monitor_id
+	s.comp_grab_bar.set_sort_order(998)
+	s.comp_grab_bar.set_enable_hole_punch(false)
+	s.comp_grab_bar.set_alpha_blend(true)
+	s.comp_grab_bar.visible = false
+	main.xr_origin.add_child(s.comp_grab_bar)
+
+	s.comp_grab_bar_viewport = SubViewport.new()
+	s.comp_grab_bar_viewport.name = "CompGrabBarViewport_%s" % s.monitor_id
+	s.comp_grab_bar_viewport.disable_3d = true
+	s.comp_grab_bar_viewport.transparent_bg = true
+	# Aspect matches the quad_size set in main.gd's _update_grab_bar_layers()
+	# (ms.x*0.134 x ms.x*0.009, ~14.9:1) - a mismatched viewport aspect would
+	# stretch the panel non-uniformly onto the quad.
+	s.comp_grab_bar_viewport.size = Vector2i(256, 18)
+	s.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	main.add_child(s.comp_grab_bar_viewport)
+
+	# PanelContainer + StyleBoxFlat (2026-08-24, replacing an earlier
+	# hand-rolled pixel-SDF pill texture) - reuses the exact same technique
+	# the menu/keyboard's own "CompGrabBar" already uses (see
+	# vr_panel_base.gd's _setup_grab_bar()), a small corner radius relative
+	# to the bar's height for a rounded-rectangle "bar" look, not a full
+	# stadium/pill. Also matters more now that the visual quad is much
+	# thinner than the collision hitbox (see _update_grab_bar_layers()) -
+	# a small fixed pixel radius reads correctly at that thinner aspect,
+	# where the earlier radius-scales-with-height approach didn't.
+	var grab_bar_panel = PanelContainer.new()
+	grab_bar_panel.name = "GrabBarPanel"
+	grab_bar_panel.anchors_preset = 15
+	grab_bar_panel.anchor_right = 1.0
+	grab_bar_panel.anchor_bottom = 1.0
+	var grab_bar_style = StyleBoxFlat.new()
+	# 0.05 idle alpha, matching the corner handles' same idle/hover/grabbed
+	# dynamics (2026-08-24) - xr_interaction.gd's _set_grab_bar_color() now
+	# mirrors the real dynamic alpha (0.01/0.05/0.15/0.3/0.4 depending on
+	# state) onto this stylebox every time it changes; this is just the
+	# initial value before the first such call.
+	grab_bar_style.bg_color = Color(1, 1, 1, 0.05)
+	grab_bar_style.set_corner_radius_all(6)
+	grab_bar_panel.add_theme_stylebox_override("panel", grab_bar_style)
+	s.comp_grab_bar_viewport.add_child(grab_bar_panel)
+
+	s.comp_grab_bar.set_layer_viewport(s.comp_grab_bar_viewport)
+	main._log("[COMP] Grab-bar composition layer created (%s)" % s.monitor_id)
+
+	# Corner-handle visuals (2026-08-24) - see VRScreen's comp_corner_layers
+	# comment. Reuses VRScreen._make_corner_texture() directly (the exact
+	# same L-bracket generator the real corner_handles use) rather than
+	# duplicating it - the base 0.08 opacity baked into that texture
+	# already matches the real handles' idle state, and
+	# xr_interaction.gd's _set_corner_color() mirrors hover/click alpha
+	# onto comp_corner_rects[i].modulate.a the same way it already updates
+	# the real handle's material_override.albedo_color.
+	var corner_ids = ["top-left", "top-right", "bottom-left", "bottom-right"]
+	s.comp_corner_layers.resize(4)
+	s.comp_corner_rects.resize(4)
+	for i in range(4):
+		var corner_layer = OpenXRCompositionLayerQuad.new()
+		corner_layer.name = "CompCorner%dLayer_%s" % [i, s.monitor_id]
+		corner_layer.set_sort_order(998)
+		corner_layer.set_enable_hole_punch(false)
+		corner_layer.set_alpha_blend(true)
+		corner_layer.visible = false
+		main.xr_origin.add_child(corner_layer)
+
+		var corner_viewport = SubViewport.new()
+		corner_viewport.name = "CompCorner%dViewport_%s" % [i, s.monitor_id]
+		corner_viewport.disable_3d = true
+		corner_viewport.transparent_bg = true
+		corner_viewport.size = Vector2i(128, 128)
+		corner_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(corner_viewport)
+
+		var corner_rect = TextureRect.new()
+		corner_rect.name = "CornerBracket"
+		corner_rect.anchors_preset = 15
+		corner_rect.anchor_right = 1.0
+		corner_rect.anchor_bottom = 1.0
+		corner_rect.expand_mode = 1
+		corner_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		# opacity=1.0 here, NOT the real corner_handles default of 0.08
+		# (2026-08-24) - _set_corner_color() sets modulate.a to the dynamic
+		# hover/click alpha (0.05 idle / 0.15 hover / 0.4 grabbed), which
+		# MULTIPLIES against this texture's own baked alpha rather than
+		# replacing it. With the real 0.08 baked in, that chain crushed
+		# the actual rendered alpha down to ~0.03 at best (0.08 * 0.4) -
+		# confirmed via a full-opacity test to be why nothing was visible
+		# at all. Baking in full opacity here makes modulate.a the sole,
+		# meaningful alpha control, matching what the dynamic values were
+		# actually meant to look like.
+		corner_rect.texture = VRScreen._make_corner_texture(corner_ids[i], 128, 20, 1.0)
+		corner_viewport.add_child(corner_rect)
+
+		corner_layer.set_layer_viewport(corner_viewport)
+		s.comp_corner_layers[i] = corner_layer
+		s.comp_corner_rects[i] = corner_rect
+	main._log("[COMP] Corner-handle composition layers created (%s)" % s.monitor_id)
 
 	if not with_stereo:
 		return
@@ -285,7 +402,55 @@ func setup():
 		main._log("[COMP] OpenXRCompositionLayerCylinder not available")
 		return
 
+	setup_background_equirect()
+
 	setup_screen(main.primary_screen, true)
+
+func setup_background_equirect():
+	if not equirect_available:
+		main._log("[COMP] OpenXRCompositionLayerEquirect not available - environment backgrounds won't show in projectionless mode")
+		return
+
+	main.comp_bg_equirect = OpenXRCompositionLayerEquirect.new()
+	main.comp_bg_equirect.name = "CompBgEquirect"
+	main.comp_bg_equirect.set_sort_order(-100)
+	main.comp_bg_equirect.set_radius(40.0)
+	main.comp_bg_equirect.set_central_horizontal_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG))
+	main.comp_bg_equirect.set_upper_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
+	main.comp_bg_equirect.set_lower_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
+	main.comp_bg_equirect.visible = false
+	main.xr_origin.add_child(main.comp_bg_equirect)
+	if not main.comp_bg_equirect.is_natively_supported():
+		main._log("[COMP] OpenXRCompositionLayerEquirect not natively supported on this runtime - environment backgrounds won't show in projectionless mode")
+		main.comp_bg_equirect.queue_free()
+		main.comp_bg_equirect = null
+		return
+
+	main.comp_bg_capture_viewport = SubViewport.new()
+	main.comp_bg_capture_viewport.name = "CompBgCaptureViewport"
+	main.comp_bg_capture_viewport.disable_3d = false
+	main.comp_bg_capture_viewport.own_world_3d = true
+	main.comp_bg_capture_viewport.transparent_bg = false
+	main.comp_bg_capture_viewport.size = Vector2i(1024, 1024)
+	main.comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	main.add_child(main.comp_bg_capture_viewport)
+
+	var bg_env = WorldEnvironment.new()
+	bg_env.name = "CaptureEnvironment"
+	var env = Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0, 0, 0, 1)
+	bg_env.environment = env
+	main.comp_bg_capture_viewport.add_child(bg_env)
+
+	main.comp_bg_capture_camera = Camera3D.new()
+	main.comp_bg_capture_camera.name = "CaptureCamera"
+	main.comp_bg_capture_camera.fov = main.BG_CAPTURE_FOV_DEG
+	main.comp_bg_capture_camera.current = true
+	main.comp_bg_capture_viewport.add_child(main.comp_bg_capture_camera)
+
+	main.comp_bg_equirect.set_layer_viewport(main.comp_bg_capture_viewport)
+	main._log("[COMP] Environment-background equirect composition layer created")
 
 	main.comp_ui = OpenXRCompositionLayerQuad.new()
 	main.comp_ui.name = "CompUILayer"
@@ -297,7 +462,29 @@ func setup():
 	main.xr_origin.add_child(main.comp_ui)
 	main.comp_ui.set_layer_viewport(main.ui_viewport)
 	main._log("[COMP] UI composition layer created")
+	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+		main.comp_kb = OpenXRCompositionLayerQuad.new()
+		main.comp_kb.name = "CompKBLayer"
+		main.comp_kb.set_sort_order(999)
+		main.comp_kb.set_enable_hole_punch(false)
+		main.comp_kb.set_alpha_blend(true)
+		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
+		main.comp_kb.visible = false
+		main.xr_origin.add_child(main.comp_kb)
+		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main._log("[COMP] Keyboard composition layer created")
 
+	# Cursor layers (2026-08-24) - previously created only for the non-GLES
+	# path (an early return here skipped them entirely under GLES), even
+	# though the cursor-update logic in main.gd's _update_cursor_layer()
+	# already had GLES-specific quad-sizing branches for them (see its
+	# RenderingServer.get_current_rendering_method() == "gl_compatibility"
+	# checks) - that code was dead/unreachable since comp_cursor was always
+	# null under GLES. Nothing in this creation code is Vulkan-specific
+	# (plain SubViewport + TextureRect/ColorRect + shader), so there was no
+	# actual technical reason to skip it - just an oversight from GLES's
+	# first pass. Moved above the gl_compatibility/else split so both paths
+	# reach it, instead of duplicating it into the GLES branch above.
 	main.comp_cursor = OpenXRCompositionLayerQuad.new()
 	main.comp_cursor.name = "CompCursorLayer"
 	main.comp_cursor.set_sort_order(999)
@@ -369,16 +556,118 @@ func setup():
 	main.left_comp_cursor_layer.set_layer_viewport(main.left_comp_cursor_viewport)
 	main._log("[COMP] Left cursor composition layer created")
 
-	main.comp_kb = OpenXRCompositionLayerQuad.new()
-	main.comp_kb.name = "CompKBLayer"
-	main.comp_kb.set_sort_order(999)
-	main.comp_kb.set_enable_hole_punch(false)
-	main.comp_kb.set_alpha_blend(true)
-	main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-	main.comp_kb.visible = false
-	main.xr_origin.add_child(main.comp_kb)
-	main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
-	main._log("[COMP] Keyboard composition layer created")
+	# Controller ray indicators - see main.gd's comp_laser_right/left comment
+	# for why these exist. Uses main._make_comp_laser_texture() - a wider
+	# texture than the real 3D laser's shared gradient, with room to render
+	# rounded capsule-style end caps (matching the real Laser mesh's own
+	# CapsuleMesh shape) rather than a hard rectangular cutoff.
+	var laser_tex = main._make_comp_laser_texture(32, 256)
+	for side in ["right", "left"]:
+		var layer = OpenXRCompositionLayerQuad.new()
+		layer.name = "CompLaser%sLayer" % side.capitalize()
+		layer.set_sort_order(998)
+		layer.set_enable_hole_punch(false)
+		layer.set_alpha_blend(true)
+		layer.set_quad_size(Vector2(main.LASER_QUAD_WIDTH, main.LASER_QUAD_LENGTH))
+		layer.visible = false
+		main.xr_origin.add_child(layer)
+
+		var viewport = SubViewport.new()
+		viewport.name = "CompLaser%sViewport" % side.capitalize()
+		viewport.disable_3d = true
+		viewport.transparent_bg = true
+		viewport.size = Vector2i(32, 256)
+		# UPDATE_ALWAYS, not UPDATE_ONCE (2026-08-24) - matching comp_cursor_
+		# viewport's working pattern. UPDATE_ONCE was an unproven attempt to
+		# save a little render cost for what's genuinely static content (the
+		# gradient texture never changes), but it's suspected as part of why
+		# the laser never actually appeared - the one-time render could
+		# plausibly land before the viewport/TextureRect were fully ready,
+		# leaving it blank forever with nothing to mark it dirty again.
+		viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(viewport)
+
+		var laser_tex_rect = TextureRect.new()
+		laser_tex_rect.name = "LaserGradient"
+		laser_tex_rect.anchors_preset = 15
+		laser_tex_rect.anchor_right = 1.0
+		laser_tex_rect.anchor_bottom = 1.0
+		laser_tex_rect.expand_mode = 1
+		laser_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		# _make_comp_laser_texture() is opaque at one end, fading to
+		# transparent at the other (same convention as _make_laser_gradient(),
+		# which this was split off from) - flip_v confirmed correct on-device
+		# (opaque near the hand, fading toward the far end) for that
+		# convention, kept when switching to the new capsule-shaped texture.
+		laser_tex_rect.flip_v = true
+		laser_tex_rect.texture = laser_tex
+		viewport.add_child(laser_tex_rect)
+
+		layer.set_layer_viewport(viewport)
+		if side == "right":
+			main.comp_laser_right = layer
+			main.comp_laser_right_viewport = viewport
+		else:
+			main.comp_laser_left = layer
+			main.comp_laser_left_viewport = viewport
+	main._log("[COMP] Controller ray composition layers created")
+
+	# Persistent controller position markers (2026-08-25) - the ray above only
+	# shows while the raycast is in an active pointing posture (raycast.enabled),
+	# so a resting/idle controller has no projectionless indicator at all. This
+	# is a small always-on dot shown at the tracked controller position whenever
+	# XRController3D.get_is_active() is true, independent of pointing posture -
+	# see main.gd's _update_marker_layers().
+	for side in ["right", "left"]:
+		var marker_layer = OpenXRCompositionLayerQuad.new()
+		marker_layer.name = "CompMarker%sLayer" % side.capitalize()
+		marker_layer.set_sort_order(998)
+		marker_layer.set_enable_hole_punch(false)
+		marker_layer.set_alpha_blend(true)
+		marker_layer.set_quad_size(Vector2(0.03, 0.03))
+		marker_layer.visible = false
+		main.xr_origin.add_child(marker_layer)
+
+		var marker_viewport = SubViewport.new()
+		marker_viewport.name = "CompMarker%sViewport" % side.capitalize()
+		marker_viewport.disable_3d = true
+		marker_viewport.transparent_bg = true
+		marker_viewport.size = Vector2i(64, 64)
+		marker_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(marker_viewport)
+
+		var marker_circle = _make_cursor_circle_rect()
+		marker_circle.name = "MarkerCircle"
+		marker_circle.anchors_preset = 15
+		marker_circle.anchor_right = 1.0
+		marker_circle.anchor_bottom = 1.0
+		marker_circle.visible = true
+		marker_viewport.add_child(marker_circle)
+
+		marker_layer.set_layer_viewport(marker_viewport)
+		if side == "right":
+			main.comp_marker_right = marker_layer
+			main.comp_marker_right_circle = marker_circle
+		else:
+			main.comp_marker_left = marker_layer
+			main.comp_marker_left_circle = marker_circle
+	main._log("[COMP] Controller position marker composition layers created")
+
+	# GLES already created its own comp_kb above (different sort order/log,
+	# same overall shape) - only create the non-GLES variant here to avoid
+	# double-creating (and leaking the first one's viewport/quad) now that
+	# cursor creation above runs unconditionally for both paths.
+	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+		main.comp_kb = OpenXRCompositionLayerQuad.new()
+		main.comp_kb.name = "CompKBLayer"
+		main.comp_kb.set_sort_order(999)
+		main.comp_kb.set_enable_hole_punch(false)
+		main.comp_kb.set_alpha_blend(true)
+		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
+		main.comp_kb.visible = false
+		main.xr_origin.add_child(main.comp_kb)
+		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main._log("[COMP] Keyboard composition layer created")
 
 	available = true
 	if main.primary_screen.comp_cylinder.is_natively_supported():
@@ -425,7 +714,9 @@ func _update_bezel_for(s: VRScreen):
 			t.yuv.anchor_right = 1.0
 			t.yuv.anchor_bottom = 1.0
 			t.yuv.anchors_preset = 0
-			t.vp.size = Vector2i(base_w + px * 2, base_h + px * 2)
+			var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
+			if t.vp.size != bezel_size:
+				t.vp.size = bezel_size
 			if t.cyl and t.cyl.visible:
 				t.cyl.set_aspect_ratio(bezel_x / bezel_y)
 	else:
@@ -443,7 +734,9 @@ func _update_bezel_for(s: VRScreen):
 			t.yuv.offset_right = 0
 			t.yuv.offset_bottom = 0
 			t.yuv.anchors_preset = 15
-			t.vp.size = Vector2i(base_w, base_h)
+			var content_size = Vector2i(base_w, base_h)
+			if t.vp.size != content_size:
+				t.vp.size = content_size
 			if t.cyl and t.cyl.visible:
 				t.cyl.set_aspect_ratio(s.mesh_size.x / s.mesh_size.y)
 

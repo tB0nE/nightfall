@@ -65,13 +65,14 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		bitrate = main.bitrates[main.bitrate_idx] * 1000
 	else:
 		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
-		# above - w/h can be reduced by the MiDaS-Fast/-Fastest resolution
-		# cap (main.gd's MIDAS_FAST_MAX_PIXELS), which is meant to trade pixels
+		# above - w/h can be reduced by the MiDaS-Fast resolution cap
+		# (settings_controller.gd's AUTO_TABLE cap_px, applied in main.gd's
+		# compute_requested_resolution()), which is meant to trade pixels
 		# for FPS, not ALSO cut the bitrate. _auto_bitrate() keying off the
 		# capped w/h used to do both at once (confirmed via logs: capping to
 		# 3712x2088 or 2560x1440 both dropped bitrate from 80000 to 40000),
-		# which starved the video of real detail and degraded MiDaS-Fast/
-		# -Fastest's depth quality well beyond what the resolution cut alone
+		# which starved the video of real detail and degraded MiDaS-Fast's
+		# depth quality well beyond what the resolution cut alone
 		# would explain (see compute_requested_resolution()'s apply_midas_cap
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
@@ -161,7 +162,12 @@ func _on_v2_launch_response(response: Dictionary):
 			if not ip.is_empty():
 				_b().get_config_manager().remove_host(main.current_host_id)
 				main._ui_status_label.text = "Re-pairing with " + ip + "..."
-				var pin = _b().start_pair(ip, 47989)
+				# Stored host records only keep the plain HTTPS port
+				# (localaddress/https_port), not whatever custom HTTP pairing
+				# port the user originally typed into %IPInput (see
+				# main.parse_ip_port()) - falls back to the default here,
+				# same as before this port-suffix support existed.
+				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
 				if str(pin) != "" and str(pin) != "0":
 					main._pair_pin = str(pin)
 					main.welcome_screen.show_welcome_screen("pin")
@@ -306,22 +312,34 @@ func _auto_bitrate(w: int, h: int) -> int:
 	return maxi(kbps, AUTO_BITRATE_MIN_KBPS)
 
 func resize_stream_viewport(w: int, h: int):
-	main.stream_viewport.size = Vector2i(w, h)
+	var stream_size = Vector2i(w, h)
+	if main.stream_viewport.size != stream_size:
+		main.stream_viewport.size = stream_size
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
 		_v2_yuv_rect.custom_minimum_size = Vector2(w, h)
 	# comp_viewport/_left/_right/comp_base_size alias to the PRIMARY screen only;
 	# every screen's own composite viewport must track the actual decoded
 	# resolution too, or secondary screens stay stuck at their setup_screen()
-	# default (1920x1080) and look soft once the stream exceeds that.
+	# default (1920x1080) and look soft once the stream exceeds that. Used to
+	# be skipped entirely under GLES (2026-08-23's "gl_compatibility" gate,
+	# no comment explaining why) - re-enabled (2026-08-24) since it was
+	# silently downscale-then-upscale blurring every GLES stream above
+	# 1920x1080, and none of the swapchain-teardown crashes fixed earlier
+	# this session were about resizing SubViewports (they were about
+	# repeatedly toggling a composition layer's `.visible`), so there's no
+	# known reason left to keep this GLES-specific.
 	for s in main.screens:
-		if s.comp_viewport:
-			s.comp_viewport.size = Vector2i(w, h)
-		if s.comp_viewport_left:
-			s.comp_viewport_left.size = Vector2i(w, h)
-		if s.comp_viewport_right:
-			s.comp_viewport_right.size = Vector2i(w, h)
-		s.comp_base_size = Vector2i(w, h)
+		s.comp_base_size = stream_size
+		var comp_size = stream_size
+		if main.bezel_enabled and main.comp.in_use:
+			comp_size += Vector2i(16, 16)
+		if s.comp_viewport and s.comp_viewport.size != comp_size:
+			s.comp_viewport.size = comp_size
+		if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
+			s.comp_viewport_left.size = comp_size
+		if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
+			s.comp_viewport_right.size = comp_size
 	main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
@@ -365,14 +383,21 @@ func resize_stream_viewport(w: int, h: int):
 	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, main.get_blur_scale(main.primary_screen)])
 
 func on_pair_pressed():
-	var ip = main.get_node("%IPInput").text
+	var raw_text = main.get_node("%IPInput").text
 	main.get_node("%Numpad").visible = false
-	if ip.is_empty(): ip = "127.0.0.1"
+	if raw_text.is_empty(): raw_text = "127.0.0.1"
 	var save = ConfigFile.new()
-	save.set_value("connection", "ip", ip)
+	save.set_value("connection", "ip", raw_text)
 	save.save("user://last_connection.cfg")
 	if _b().get_config_manager():
 		_b().get_config_manager().load_config()
+	# Optional "ip:port" suffix (see main.parse_ip_port()) - host records only
+	# ever store the plain ip (pairing saves host_data["localaddress"] from
+	# the ALREADY-parsed ip, not the raw field text), so matching against
+	# h.localaddress needs the parsed ip too, not raw_text verbatim.
+	var parsed = main.parse_ip_port(raw_text)
+	var ip: String = parsed[0]
+	var pair_port: int = parsed[1]
 	var paired_host_id = -1
 	for h in _b().get_hosts():
 		if h.has("localaddress") and h.localaddress == ip:
@@ -390,8 +415,8 @@ func on_pair_pressed():
 		await start_stream(paired_host_id, main._selected_app_id)
 	else:
 		main._ui_status_label.text = "Pairing with " + ip + "..."
-		main._log("[PAIR] Starting pair with %s:47989..." % ip)
-		var pin = _b().start_pair(ip, 47989)
+		main._log("[PAIR] Starting pair with %s:%d..." % [ip, pair_port])
+		var pin = _b().start_pair(ip, pair_port)
 		main._log("[PAIR] start_pair returned: %s (type=%s)" % [str(pin), str(typeof(pin))])
 		if str(pin) == "" or str(pin) == "0":
 			main._ui_status_label.text = "Failed to connect to " + ip
@@ -408,21 +433,56 @@ func on_pair_completed(success: bool, _msg: String):
 		main.welcome_screen.show_welcome_screen("server")
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
+	# Settle delay (2026-08-26) - the mutual-TLS HTTPS endpoint (port 57984)
+	# that pairing's own stage 5 (phrase=pairchallenge) just used successfully
+	# was seen failing to connect ("Could not connect to server") when
+	# establish_stream()'s first HTTPS call landed only ~15ms after pairing
+	# completed - the host's TLS server needs a brief moment to actually
+	# start accepting the just-registered client certificate for mutual TLS.
+	# Confirmed via on-device logcat: an identical cert, same host/port,
+	# succeeded during pairing and failed moments later with no other
+	# change. Only on this fresh-pairing path - normal reconnects (an
+	# already-paired host) don't hit this race and aren't delayed.
+	await main.get_tree().create_timer(1.5).timeout
 	if _b().get_config_manager():
 		_b().get_config_manager().load_config()
-	var ip = main.get_node("%IPInput").text
+	var ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
+	# Match by server_unique_id, not bare IP (2026-08-26) - a host reached via
+	# NAT port-forwarding (e.g. a VM's game-streaming port forwarded through
+	# its host machine's IP) can share the exact same localaddress as a
+	# completely different, already-paired host on another port. Bare-IP
+	# matching would then pick whichever host record happens to be FIRST in
+	# get_hosts(), not the one just paired. server_unique_id is the value
+	# each server reports in its own serverinfo XML and is what pairing
+	# itself already dedupes existing host records by (computer_manager.cpp),
+	# so it's the only reliable way to find the host record that was just
+	# created/updated. Fall back to bare-IP matching only if unique_id is
+	# unavailable (e.g. an older cached build without get_last_paired_unique_id).
+	var unique_id = _b().get_last_paired_unique_id() if _b().has_method("get_last_paired_unique_id") else ""
 	var found = false
 	for h in _b().get_hosts():
-		if h.has("localaddress") and h.localaddress == ip:
+		if not unique_id.is_empty() and h.get("server_unique_id", "") == unique_id:
 			main.current_host_id = h.id
 			found = true
 			await start_stream(h.id, main._selected_app_id)
 			break
+	if not found and unique_id.is_empty():
+		for h in _b().get_hosts():
+			if h.has("localaddress") and h.localaddress == ip:
+				main.current_host_id = h.id
+				found = true
+				await start_stream(h.id, main._selected_app_id)
+				break
 	if not found:
 		main._log("[PAIR] Host not found after pairing, retrying config load")
 		_b().get_config_manager().load_config()
 		for h in _b().get_hosts():
-			if h.has("localaddress") and h.localaddress == ip:
+			if not unique_id.is_empty() and h.get("server_unique_id", "") == unique_id:
+				main.current_host_id = h.id
+				found = true
+				await start_stream(h.id, main._selected_app_id)
+				break
+			elif unique_id.is_empty() and h.has("localaddress") and h.localaddress == ip:
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
@@ -549,8 +609,23 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 " + str(int(main.stats_fps)) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
+	# Live GPU-depth-inference readout (2026-08-25) - added for the
+	# 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so testing
+	# resolution/quality-tier combos doesn't require pulling logcat each
+	# time. Only shown while depth is actually running on GPU (matches
+	# depth_estimator.gd's own should_boost/effective_gpu gate) - CPU-model
+	# telemetry isn't meaningfully populated (see DepthEstimator.java's
+	# recordTelemetry(), which resets its window every CPU call).
+	if main.depth_estimator and main.depth_estimator.enabled and main.stream_backend \
+			and main.stream_backend.has_method("get_effective_depth_backend") \
+			and main.stream_backend.get_effective_depth_backend() == 2 \
+			and main.stream_backend.has_method("get_depth_last_inference_ms"):
+		var inf_ms = main.stream_backend.get_depth_last_inference_ms()
+		var inf_hz = main.stream_backend.get_depth_last_inference_hz()
+		if inf_ms > 0.0:
+			txt += " \u2022 AI3D:" + str(snapped(inf_ms, 0.1)) + "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
 	if main.controller_mapper and main.controller_mapper.is_active():
 		txt += " \u2022 " + main.controller_mapper.get_mode_label()
-		if main.controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD and main.controller_mapper.get_close_to_head():
+		if main.controller_mapper.is_gamepad_mode() and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt

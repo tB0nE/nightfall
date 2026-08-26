@@ -1,0 +1,22 @@
+diff --git a/tensorflow/lite/delegates/gpu/cl/cl_context.cc b/tensorflow/lite/delegates/gpu/cl/cl_context.cc
+index f1af858790..d97c55a10a 100644
+--- a/tensorflow/lite/delegates/gpu/cl/cl_context.cc
++++ b/tensorflow/lite/delegates/gpu/cl/cl_context.cc
+@@ -17,0 +18,2 @@ limitations under the License.
++#include <cstdio>
++
+@@ -27,0 +30,3 @@ namespace {
++constexpr cl_context_properties kContextPriorityHintQcom = 0x40C9;
++constexpr cl_context_properties kPriorityHintLowQcom = 0x40CC;
++
+@@ -138,0 +144,10 @@ absl::Status CreateCLContext(const CLDevice& device, CLContext* result) {
++  if (device.GetInfo().SupportsExtension("cl_qcom_priority_hint")) {
++    cl_context_properties platform =
++        reinterpret_cast<cl_context_properties>(device.platform());
++    cl_context_properties properties[] = {
++        kContextPriorityHintQcom, kPriorityHintLowQcom,
++        CL_CONTEXT_PLATFORM, platform, 0};
++    std::fprintf(stderr,
++                 "Nightfall LiteRT: creating LOW-priority Qualcomm OpenCL context\n");
++    return CreateCLContext(device, properties, result);
++  }

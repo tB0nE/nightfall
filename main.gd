@@ -67,11 +67,11 @@ var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
 var sbs_mode: int = 0
-# Split (2026-08-18) from a single flat ai_3d_mode into three independent
-# axes - see settings_controller.gd's ai_3d_model_labels/ai_3d_quality_labels/
-# ai_3d_debug_labels and get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # 0=Off, 1=MiDaS-192, 2=YOLO26-N-256, 3=YOLO26-N-320, 4=YOLO26-N-384, 5=MiDaS-256, 6=DA-V2-196, 7=DA-V2-252
-var ai_3d_quality: int = 0 # 0=Auto, 1=Fastest, 2=Fast, 3=Standard
+# Collapsed (2026-08-24) to two independent axes - see
+# settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
+# get_stereo_mode() for how they combine.
+var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
+var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var is_xr_active: bool = false
 var was_clicking: bool = false
@@ -89,6 +89,23 @@ var tracking_mode: int = 0
 var tracking_labels: Array = ["Off", "Hands"]
 var right_hand_visual: Node3D = null
 var left_hand_visual: Node3D = null
+
+# OS/runtime controller render models (2026-08-25, docs/gles-quest-projectionless-plan.md's
+# "Controller and hand experiment" section) - OpenXRFbRenderModel wraps
+# XR_FB_render_model, letting the runtime hand us its own real controller
+# mesh instead of the bundled MetaQuestTouchPlus FBX (_load_controller_models()
+# below, which stays as the fallback). Default OFF ("keep this behind a
+# runtime/debug flag until tested" - unlike the DEBUG_COMP_* flags earlier
+# this session, which default true because they're already confirmed
+# working, this one hasn't been tested on-device at all yet). Deliberately
+# scoped to normal (mesh) projection mode only, per the plan - projectionless/
+# composition mode would need a full 3D-in-composition-layer controller
+# renderer, explicitly called out as out of scope for this first pass.
+const DEBUG_RENDER_MODEL_CONTROLLERS := false
+var right_render_model: Node3D = null
+var left_render_model: Node3D = null
+var _right_render_model_ready: bool = false
+var _left_render_model_ready: bool = false
 var left_hand_raycast: RayCast3D = null
 var mouse_captured_by_stream: bool = false
 var suppress_input_frames: int = 0
@@ -116,12 +133,16 @@ var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
 var stats_network_events: int = 0
+# Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
+# by the system compositor, confirmed via on-device benchmark 2026-08-25) -
+# no in-app UI disclaimer for this by design; settings_controller.gd's
+# AUTO_TABLE already accounts for it directly in its tier/model picks.
 var passthrough_enabled: bool = false
 var passthrough_supported: bool = false
 var background_mode: int = 0
-var background_labels: Array = ["Black", "Starfield", "Ash", "Snow", "Data"]
-var bg_names: Array = ["Starfield", "Ash", "Snow", "Data"]
-var bg_offsets: Array = [Vector3.ZERO, Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
+var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
+var bg_names: Array = ["Ash", "Snow", "Data"]
+var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
 var bezel_enabled: bool = true
 var bezel_mesh: MeshInstance3D:
@@ -260,6 +281,74 @@ var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null
 
+# Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
+# composition-space additions (laser/grab-bar/corners/background-equirect,
+# all added this session) is contending with the GLES GPU TFLite delegate
+# for depth inference - MiDaS-256-GPU measured ~13-15Hz today vs. an
+# earlier-session ~20Hz. Each gates both its composition layer's visibility
+# AND its backing SubViewport's render_target_update_mode (UPDATE_ALWAYS
+# viewports render every frame regardless of the layer's own visibility, so
+# hiding alone doesn't stop the GPU cost) - see
+# _update_laser_layers()/_update_grab_bar_layers()/_update_corner_layers()/
+# _sync_comp_background(). Toggle one at a time and rebuild; remove once the
+# regression is isolated (see the diagnosis plan). Confirmed 2026-08-24 the
+# regression was a debug-build-vs-release-build artifact, not caused by any
+# of these - release build hits ~19.5-20.2Hz with all four enabled. Kept
+# around (all true) in case it's needed again rather than deleting outright.
+const DEBUG_COMP_BG_EQUIRECT := true
+const DEBUG_COMP_LASER := true
+const DEBUG_COMP_GRAB_BAR := true
+const DEBUG_COMP_CORNERS := true
+const DEBUG_COMP_MARKER := true
+
+# Composition-space controller ray indicators (2026-08-24, GLES projectionless
+# polish) - projectionless mode (submit_projection_layer=false) never renders
+# the normal 3D scene at all, so the real "Laser" MeshInstance3D (a fixed
+# 0.4m CapsuleMesh under HandRayCast, see main.tscn) is invisible whenever
+# comp.in_use is true. These are lightweight composition-layer equivalents -
+# see _update_laser_layers().
+var comp_laser_right: Node3D = null
+var comp_laser_right_viewport: SubViewport = null
+var comp_laser_left: Node3D = null
+var comp_laser_left_viewport: SubViewport = null
+const LASER_QUAD_LENGTH := 0.4
+const LASER_QUAD_WIDTH := 0.003
+const LASER_START_OFFSET := 0.06
+
+# Persistent controller position markers - see _update_marker_layers().
+# Inverse of the laser above: hidden while actively pointing/held (laser is
+# showing instead), and a faint always-on marker while resting/put down so
+# it can still be located.
+var comp_marker_right: Node3D = null
+var comp_marker_left: Node3D = null
+var comp_marker_right_circle: ColorRect = null
+var comp_marker_left_circle: ColorRect = null
+const MARKER_IDLE_ALPHA := 0.16
+
+# Composition-space environment-background replacement (2026-08-24,
+# GLES projectionless polish) - the ambient particle backgrounds
+# (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
+# in the normal 3D scene, invisible under projectionless mode like
+# everything else plain-3D. Unlike the cursor/laser/grab-bar/corners (flat
+# 2D UI content on a quad), this needs an actual 3D scene capture -
+# comp_bg_capture_viewport (disable_3d=false, a real mini 3D scene, not
+# just a Control tree) holding a wide-FOV camera and a standalone duplicate
+# of whichever background is active (background_manager.create_capture_
+# instance()), fed into comp_bg_equirect (OpenXRCompositionLayerEquirect,
+# a real 360-capable OpenXR layer type - confirmed natively supported by
+# WiVRn on this device). A single perspective camera can't capture a true
+# full sphere without heavy edge distortion, so this deliberately covers a
+# wide-but-partial angular range (BG_CAPTURE_FOV_DEG) rather than claiming
+# full 360 coverage - turning far enough away may show black instead of
+# the effect, unlike the original always-surrounding particle system.
+var comp_bg_equirect: Node3D = null
+var comp_bg_capture_viewport: SubViewport = null
+var comp_bg_capture_camera: Camera3D = null
+var comp_bg_capture_instance: GPUParticles3D = null
+var comp_bg_capture_index: int = -1
+const BG_CAPTURE_FOV_DEG := 160.0
+const BG_EQUIRECT_ANGLE_DEG := 150.0
+
 var comp_cylinder: Node3D:
 	get: return primary_screen.comp_cylinder if primary_screen else null
 	set(v):
@@ -382,8 +471,8 @@ var _ui_remove_preset_btn: Button
 var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
+var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
-var _ui_3d_quality_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -455,14 +544,24 @@ const HEVC_MAX_TOTAL_PIXELS = 35389440
 # (80% of that specific 4-monitor test), not a round-number guess.
 const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 
-# Extra resolution ceilings applied only while MiDaS-Fast/-Fastest are the
-# active stereo mode (2026-08-18) - unlike every knob AI-3D's own pipeline
-# exposes (pre-pass resolution/throttle, Newton-refinement cadence, depth-
-# capture throttle), none of which moved FPS at 4K when tested, capping the
-# actual decoded/composited stream size directly attacks the real cost:
-# general per-pixel video decode + compositing work, which scales with
-# resolution regardless of AI-3D. MiDaS-Std is intentionally NOT capped here -
-# it stays the uncapped/known-good reference. See compute_requested_resolution().
+# Extra resolution ceiling applied whenever MiDaS-Fast is the active stereo
+# mode (2026-08-18, redesigned 2026-08-25) - unlike every knob AI-3D's own
+# pipeline exposes (pre-pass resolution/throttle, Newton-refinement cadence,
+# depth-capture throttle), none of which moved FPS at 4K when tested,
+# capping the actual decoded/composited stream size directly attacks the
+# real cost: general per-pixel video decode + compositing work, which
+# scales with resolution regardless of AI-3D. MiDaS-Std is intentionally
+# NOT capped here - it stays the uncapped/known-good reference. See
+# compute_requested_resolution().
+#
+# 2026-08-25: replaced the old flat MIDAS_FAST_MAX_PIXELS/
+# MIDAS_FASTEST_MAX_PIXELS constants (one budget per tier, applied
+# regardless of resolution/passthrough) with settings_controller.gd's
+# AUTO_TABLE, whose cap_px varies per (resolution-class, passthrough) combo
+# from an on-device GPU-inference benchmark matrix - e.g. Fast is uncapped
+# at HD-passthrough-on but capped to 2K's pixel budget at 4K-passthrough-on.
+# Applies to MANUAL Fast selection too, not just Auto - see
+# compute_requested_resolution()'s cap block below.
 #
 # History: capped both tiers, then MiDaS-Fast/-Fastest's 3D quality looked
 # visibly worse than MiDaS-Std. [DEPTH]-tagged logging in depth_estimator.gd
@@ -481,8 +580,6 @@ const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 # - same approach this file already uses for HEVC_MAX_TOTAL_PIXELS just
 # below, which doesn't have this problem because it already works in pixels.
 const MIDAS_RES_CAP_ENABLED := true
-const MIDAS_FAST_MAX_PIXELS := 3200 * 1800
-const MIDAS_FASTEST_MAX_PIXELS := 2560 * 1440
 
 # The highest resolution_scale_pct that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
@@ -551,26 +648,32 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 		if scale < 1.0:
 			w = int(w * scale)
 			h = int(h * scale)
-	# MiDaS-Fast/-Fastest only - see MIDAS_FAST_MAX_PIXELS's comment above.
-	# Keyed off the actually-active stereo mode (accounts for sbs_mode
-	# overriding ai_3d_model/quality/debug, same as
-	# settings_controller.get_stereo_mode() itself), not those raw fields
-	# directly. Caps by total pixel budget (like
-	# HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
+	# MiDaS-Fast only - see MIDAS_RES_CAP_ENABLED's comment above. Keyed off
+	# the actually-active stereo mode (accounts for sbs_mode overriding
+	# ai_3d_speed/model/debug, same as settings_controller.get_stereo_mode()
+	# itself), not those raw fields directly. Caps by total pixel budget
+	# (like HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
 	# min(target_w/w, target_h/h) - that approach silently delivered far
 	# fewer pixels than intended on a non-16:9 source (see history above).
 	# apply_midas_cap=false lets a caller ask "what would this resolution be
 	# WITHOUT the AI-3D cap" - see stream_manager.gd's start_stream(), which
 	# uses that to pick Auto bitrate from the uncapped resolution instead of
 	# the capped encode resolution (same bitrate, fewer pixels should mean
-	# MORE bits per pixel, not fewer).
+	# MORE bits per pixel, not fewer). get_auto_selection() always reads the
+	# UNCAPPED resolution internally (apply_midas_cap=false), so this can't
+	# recurse into itself.
+	#
+	# cap_px comes from settings_controller.gd's AUTO_TABLE UNCONDITIONALLY
+	# whenever the resulting tier is Fast (stereo_mode 10) - not gated on
+	# ai_3d_speed==1 - so a MANUAL Fast selection gets the same per-combo cap
+	# Auto's own Fast pick would use at that resolution/passthrough combo,
+	# matching this cap's pre-2026-08-25 behavior of applying to manual Fast
+	# too (it just used one flat constant then instead of a per-combo table).
 	if apply_midas_cap and MIDAS_RES_CAP_ENABLED and settings_controller:
 		var stereo_mode = settings_controller.get_stereo_mode()
 		var max_pixels := 0
 		if stereo_mode == 10:
-			max_pixels = MIDAS_FAST_MAX_PIXELS
-		elif stereo_mode == 11:
-			max_pixels = MIDAS_FASTEST_MAX_PIXELS
+			max_pixels = settings_controller.get_auto_selection().cap_px
 		if max_pixels > 0 and w * h > max_pixels:
 			var cap_scale = sqrt(float(max_pixels) / float(w * h))
 			w = int(w * cap_scale)
@@ -578,6 +681,29 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	w = maxi(w - (w % 2), 320)
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
+
+# %IPInput accepts an optional ":port" suffix now (2026-08-26, GitHub-reported
+# need for a custom Apollo/Sunshine HTTP port) - splits on the LAST ":" so a
+# bare IP with no port still works unchanged. Returns [ip: String, port: int],
+# defaulting to DEFAULT_PAIR_PORT when no ":" is present or the suffix isn't a
+# valid number. Callers that just DISPLAY the field text or use it as a
+# per-host settings-persistence key (state_manager.gd's save_host_state())
+# should keep using the raw text as-is - only callers that actually connect
+# somewhere (pairing, host-record matching, Wake-on-LAN's host lookup) need
+# the parsed ip/port.
+const DEFAULT_PAIR_PORT := 47989
+func parse_ip_port(text: String) -> Array:
+	var colon = text.rfind(":")
+	if colon == -1:
+		return [text, DEFAULT_PAIR_PORT]
+	var ip_part = text.substr(0, colon)
+	var port_part = text.substr(colon + 1)
+	if not port_part.is_valid_int():
+		return [text, DEFAULT_PAIR_PORT]
+	var port = port_part.to_int()
+	if port <= 0 or port > 65535:
+		return [text, DEFAULT_PAIR_PORT]
+	return [ip_part, port]
 
 func _log(msg: String):
 	_log_lines.append(msg)
@@ -674,18 +800,41 @@ func _hide_all_stream_cursors():
 		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
 		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 
+# Hides an OpenXRCompositionLayerQuad WITHOUT toggling its `visible`
+# property (2026-08-24) - under GLES specifically, repeatedly flipping
+# `visible` false/true on these every frame (as the cursor/laser hides and
+# shows while the raycast target moves on/off a screen, very frequent
+# during a grab-bar/corner drag) was found to repeatedly tear down and
+# recreate the layer's swapchain (confirmed via logcat: repeated
+# "CreateSwapChain: ... 40 64" matching comp_cursor_viewport's exact size,
+# each followed by "Condition t->is_render_target is true" in texture_free/
+# texture_remap_proxies) - a race between that teardown/recreate and
+# in-flight render commands eventually SIGSEGVs in the GLES3 backend.
+# Shrinking quad_size to near-zero instead achieves the same visual result
+# (nothing meaningful to see) without touching the swapchain at all -
+# set_quad_size() is a pure world-space geometry parameter, unlike the
+# viewport's own pixel size, so it doesn't trigger texture reallocation.
+# `visible` itself is set true exactly once (whenever comp.in_use first
+# becomes true) and never set false again.
+func _set_comp_quad_hidden(layer: Node3D, hidden: bool):
+	if not layer:
+		return
+	if hidden:
+		layer.set_quad_size(Vector2(0.0001, 0.0001))
+	elif not layer.visible:
+		layer.visible = true
+
 func _update_cursor_layer():
-	if not comp_cursor or not comp.in_use:
-		if comp_cursor:
-			comp_cursor.visible = false
+	if not comp.in_use:
+		_set_comp_quad_hidden(comp_cursor, true)
 		_hide_all_stream_cursors()
 		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
-	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.ctrl_type == ControllerMapper.CtrlType.GAMEPAD
+	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.is_gamepad_mode()
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
-	var use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
 		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
@@ -693,11 +842,11 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_in_stream = is_streaming and on_screen and not pad_on_screen and not tp_capturing
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 		if on_screen and (pad_on_screen or tp_capturing):
-			comp_cursor.visible = false
+			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
-		elif use_in_stream and on_screen:
+		elif use_embedded_cursor and on_screen:
 			# Only hovered_screen gets shown below - explicitly hide every other
 			# screen's cursor the instant the hover target changes, rather than
 			# leaving whichever screen was PREVIOUSLY hovered showing its last
@@ -721,7 +870,11 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
-			comp_cursor.visible = false
+			_set_comp_quad_hidden(comp_cursor, true)
+			if pointer_cursor:
+				pointer_cursor.visible = false
+			if contact_dot:
+				contact_dot.visible = false
 			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
 			if stereo > 0 and hovered_screen == primary_screen:
 				var left_cx = cx
@@ -751,7 +904,7 @@ func _update_cursor_layer():
 			else:
 				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
 				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
-		else:
+		elif comp_cursor:
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
 			var to_cam = (xr_camera.global_position - hit_point).normalized()
@@ -764,7 +917,8 @@ func _update_cursor_layer():
 			if cursor_mode == 0:
 				if pointer: pointer.visible = false
 				if circle: circle.visible = true
-				comp_cursor_viewport.size = Vector2i(256, 256)
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
@@ -772,8 +926,10 @@ func _update_cursor_layer():
 			elif on_screen:
 				if pointer: pointer.visible = true
 				if circle: circle.visible = false
-				comp_cursor_viewport.size = Vector2i(40, 64)
-				comp_cursor.set_quad_size(Vector2(0.04 * dist_scale, 0.064 * dist_scale))
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(40, 64)
+				var cursor_quad_size = Vector2(0.064 * dist_scale, 0.064 * dist_scale) if RenderingServer.get_current_rendering_method() == "gl_compatibility" else Vector2(0.04 * dist_scale, 0.064 * dist_scale)
+				comp_cursor.set_quad_size(cursor_quad_size)
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
@@ -783,19 +939,21 @@ func _update_cursor_layer():
 			else:
 				if pointer: pointer.visible = false
 				if circle: circle.visible = true
-				comp_cursor_viewport.size = Vector2i(256, 256)
+				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(0.035, 0.035))
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 			comp_cursor.visible = true
 	else:
-		comp_cursor.visible = false
+		_set_comp_quad_hidden(comp_cursor, true)
 		_hide_all_stream_cursors()
-	if pointer_cursor:
-		pointer_cursor.visible = false
-	if contact_dot:
-		contact_dot.visible = false
+	if comp_cursor:
+		if pointer_cursor:
+			pointer_cursor.visible = false
+		if contact_dot:
+			contact_dot.visible = false
 	if comp_ui and comp_ui.visible:
 		comp_ui.global_position = ui_panel_3d.global_position
 		comp_ui.global_rotation = ui_panel_3d.global_rotation
@@ -811,8 +969,192 @@ func _update_cursor_layer():
 		if virtual_keyboard and not virtual_keyboard.mesh_instance.visible:
 			_restore_kb_material()
 
+# Composition-space controller ray indicators (2026-08-24) - see
+# comp_laser_right/left's declaration comment. Only active in projectionless
+# mode (comp.in_use) - the real 3D "Laser" mesh under HandRayCast already
+# works fine in normal projection mode, so showing both would double up.
+# Fixed-length (LASER_QUAD_LENGTH), not stretched to the raycast hit
+# distance, matching the real Laser's own fixed 0.4m CapsuleMesh (main.tscn).
+func _update_laser_layers():
+	if not comp_laser_right and not comp_laser_left:
+		return
+	if not DEBUG_COMP_LASER:
+		if comp_laser_right_viewport and comp_laser_right_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_laser_right_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if comp_laser_left_viewport and comp_laser_left_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_laser_left_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		_set_comp_quad_hidden(comp_laser_right, true)
+		_set_comp_quad_hidden(comp_laser_left, true)
+		return
+	if not comp.in_use or not is_xr_active:
+		_set_comp_quad_hidden(comp_laser_right, true)
+		_set_comp_quad_hidden(comp_laser_left, true)
+		return
+	_update_one_laser_layer(comp_laser_right, hand_raycast)
+	_update_one_laser_layer(comp_laser_left, left_hand_raycast)
+
+func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
+	if not layer:
+		return
+	# raycast.enabled (not XRController3D.get_is_active()) is this codebase's
+	# real "is this hand currently in an active pointing posture" signal -
+	# see _apply_hand_rest()/HAND_REST_THRESHOLD, toggled the same way for
+	# both physical controllers and hand-tracking. get_is_active() reflects
+	# OpenXR controller-pose activity specifically and stays false during
+	# hand-tracking, which silently hid this indicator entirely for anyone
+	# not holding physical controllers.
+	if not raycast or not raycast.enabled:
+		_set_comp_quad_hidden(layer, true)
+		return
+	var ray_origin = raycast.global_position
+	var ray_dir = -raycast.global_transform.basis.z.normalized()
+	var to_cam = (xr_camera.global_position - ray_origin).normalized()
+	# quad_size.y (the gradient's fade axis) maps to the basis' local Y, so Y
+	# must be the ray direction. Z (the quad's face normal) is derived to
+	# point roughly toward the camera - a "billboard around the ray axis"
+	# rather than a full billboard, which would tilt the ray off its real
+	# direction. X falls out of Y and Z via the standard right-handed
+	# cross-product basis (x = y.cross(z)), not chosen independently.
+	var z_axis = to_cam - to_cam.project(ray_dir)
+	if z_axis.length() < 0.001:
+		z_axis = layer.global_transform.basis.z
+	z_axis = z_axis.normalized()
+	var x_axis = ray_dir.cross(z_axis).normalized()
+	z_axis = x_axis.cross(ray_dir).normalized()
+	layer.global_transform.basis = Basis(x_axis, ray_dir, z_axis)
+	# LASER_START_OFFSET shifts the whole segment away from the hand rather
+	# than starting right at the raycast origin - purely cosmetic (avoids
+	# the beam appearing to emerge from inside the hand/controller model).
+	layer.global_position = ray_origin + ray_dir * (LASER_START_OFFSET + LASER_QUAD_LENGTH * 0.5)
+	# _set_comp_quad_hidden() shrinks quad_size to hide - restore the real
+	# size every time we show, since hiding happens unconditionally at
+	# startup (before comp.in_use/is_xr_active are true) and nothing else
+	# ever restores it otherwise.
+	layer.set_quad_size(Vector2(LASER_QUAD_WIDTH, LASER_QUAD_LENGTH))
+	layer.visible = true
+
+# Persistent controller position markers (2026-08-25) - complements
+# _update_laser_layers() above. Inverse of the laser's own visibility:
+# hidden while actively pointing (raycast.enabled - the laser is showing
+# instead), and a faint always-visible dot while resting/put down so it can
+# still be located at a glance.
+func _update_marker_layers(_delta: float):
+	if not comp_marker_right and not comp_marker_left:
+		return
+	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
+		_set_comp_quad_hidden(comp_marker_right, true)
+		_set_comp_quad_hidden(comp_marker_left, true)
+		return
+	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
+	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
+
+func _update_one_marker_layer(layer: Node3D, circle: ColorRect, hand: XRController3D, raycast: RayCast3D):
+	if not layer or not hand:
+		return
+
+	# raycast.enabled is this codebase's real "actively pointing/held" signal
+	# (see _update_one_laser_layer's own comment) - not get_is_active(),
+	# which stays true for the whole session regardless of pickup/put-down
+	# and can lag behind a freshly-booted or just-picked-up controller by a
+	# few frames. Not gating on get_is_active() at all (2026-08-25) - a
+	# controller untouched since boot still has a last-known/default
+	# transform to show a marker at, and always updating position here
+	# every frame (rather than skipping while "inactive") avoids the marker
+	# appearing frozen for a moment right after pickup.
+	if raycast and raycast.enabled:
+		# Actively pointing - the laser is showing, hide the marker.
+		_set_comp_quad_hidden(layer, true)
+		return
+
+	layer.global_transform.basis = xr_camera.global_transform.basis
+	layer.global_position = hand.global_position
+	layer.set_quad_size(Vector2(0.03, 0.03))
+	if circle and circle.material:
+		circle.material.set_shader_parameter("alpha_mult", MARKER_IDLE_ALPHA)
+	layer.visible = true
+
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
+
+# Mirrors each screen's real (invisible-under-projectionless) grab_bar
+# transform/size onto its composition-space equivalent every frame. Not
+# billboarded - grab_bar lies flat in the screen's own plane, so this is a
+# direct copy, no basis/orientation math needed (unlike the laser).
+func _update_grab_bar_layers():
+	for s in screens:
+		_update_corner_layers(s)
+		if not s.comp_grab_bar:
+			continue
+		if not DEBUG_COMP_GRAB_BAR or not comp.in_use:
+			# A rare, one-time transition (stereo mode / mesh-rendering
+			# fallback switch), not a per-frame toggle - safe, unlike the
+			# cursor/laser's old every-frame hide/show that caused the
+			# swapchain crash.
+			if s.comp_grab_bar.visible:
+				s.comp_grab_bar.visible = false
+			var bar_vp = s.comp_grab_bar.get_layer_viewport()
+			if bar_vp and bar_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+				bar_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+			continue
+		var ms = s.mesh_size
+		# Matches the real grab_bar CylinderMesh's own length/diameter
+		# (vr_screen.gd's grab_h/grab_r*2) - NOT the larger collision
+		# hitbox size (ms.x*0.134, ms.y*0.079), which made this look like
+		# a chunky pill instead of a thin bar.
+		s.comp_grab_bar.set_quad_size(Vector2(ms.x * 0.134, ms.x * 0.009))
+		s.comp_grab_bar.global_rotation = s.grab_bar.global_rotation
+		# Direct copy, no extra offset (2026-08-24) - the "move closer to
+		# the screen" adjustment now happens at the source (vr_screen.gd's
+		# update_corner_positions(), which also moves the real Area3D
+		# hitbox) rather than as a visual-only offset here. An earlier
+		# visual-only version left the hitbox behind at the old position,
+		# making the bar hard to find/grab where it visually appeared.
+		s.comp_grab_bar.global_position = s.grab_bar.global_position
+		# grab_bar's own length runs along its local Y (CylinderMesh's
+		# default height axis), but quad_size.x (this quad's local X) is
+		# where the length was set above - an extra 90 degree in-plane
+		# rotation around the quad's own normal reconciles the two
+		# conventions (confirmed needed on-device, reported as "rotated 90
+		# degrees" without it).
+		s.comp_grab_bar.rotate_object_local(Vector3.FORWARD, PI / 2.0)
+		var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
+		if bar_vp2 and bar_vp2.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		if not s.comp_grab_bar.visible:
+			s.comp_grab_bar.visible = true
+
+# Mirrors each of a screen's real corner_handles (already curve/resize-aware
+# via VRScreen.update_corner_positions() - see get_cylinder_radius()/
+# _comp_cyl_radius) onto their composition-space equivalents every frame.
+# No curve math duplicated here - just copying the real handle's already-
+# correct global transform and size, same approach as the grab bar.
+func _update_corner_layers(s: VRScreen):
+	if s.comp_corner_layers.is_empty():
+		return
+	if not DEBUG_COMP_CORNERS or not comp.in_use:
+		for layer in s.comp_corner_layers:
+			if not layer:
+				continue
+			if layer.visible:
+				layer.visible = false
+			var corner_vp = layer.get_layer_viewport()
+			if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+				corner_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		return
+	var corner_size = s.mesh_size.x * 0.027
+	for i in range(s.comp_corner_layers.size()):
+		var layer = s.comp_corner_layers[i]
+		if not layer or i >= s.corner_handles.size():
+			continue
+		var handle = s.corner_handles[i]
+		layer.set_quad_size(Vector2(corner_size, corner_size))
+		layer.global_position = handle.global_position
+		layer.global_rotation = handle.global_rotation
+		var corner_vp = layer.get_layer_viewport()
+		if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+			corner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		if not layer.visible:
+			layer.visible = true
 
 func exit_app():
 	get_tree().quit()
@@ -1204,11 +1546,13 @@ func _init_android_setup():
 	if OS.get_name() == "Android":
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		_load_controller_models()
+		if DEBUG_RENDER_MODEL_CONTROLLERS:
+			_setup_render_model_controllers()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 7)
-	ai_3d_quality = clampi(ai_3d_quality, 0, 3)
+	ai_3d_model = clampi(ai_3d_model, 0, 4)
+	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
@@ -1630,6 +1974,9 @@ func _init_xr(interface):
 	_xr_render_width = int(render_size.x)
 	_log("[XR] OpenXR render target: %dx%d" % [render_size.x, render_size.y])
 	_log("[XR] Blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
+	if OS.get_name() == "Android" and RenderingServer.get_current_rendering_method() == "gl_compatibility" and interface.has_method("set_submit_projection_layer"):
+		interface.set_submit_projection_layer(false)
+		_log("[XR] Projectionless mode enabled; submitting composition layers only")
 
 	var blend_modes = interface.get_supported_environment_blend_modes()
 	passthrough_supported = false
@@ -1672,7 +2019,7 @@ func _init_xr(interface):
 	if interface.has_signal("user_presence_changed"):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
-	ai_3d_model = 0
+	ai_3d_speed = 0
 
 	settings_controller.apply_display_refresh_rate()
 
@@ -1721,13 +2068,18 @@ func _init_textures_and_ui():
 			saved_ip = save.get_value("connection", "ip", "")
 			if saved_ip != "":
 				%IPInput.text = saved_ip
+				# state_manager's host_state.cfg is keyed by the raw field text
+				# (see save_host_state()), so load_host_state() needs that same
+				# raw text - but localaddress/detect_polaris_host() need the
+				# parsed (port-suffix stripped) ip, see main.parse_ip_port().
 				state_manager.load_host_state(saved_ip)
+				var saved_host_ip: String = parse_ip_port(saved_ip)[0]
 				for h in config_mgr.get_hosts():
-					if h.has("localaddress") and h.localaddress == saved_ip:
+					if h.has("localaddress") and h.localaddress == saved_host_ip:
 						current_host_id = h.id
 						break
 				if current_host_id >= 0:
-					settings_controller.detect_polaris_host(saved_ip, current_host_id)
+					settings_controller.detect_polaris_host(saved_host_ip, current_host_id)
 				ui_controller.update_host_label()
 				welcome_screen.update_welcome_info()
 
@@ -1742,7 +2094,7 @@ func _init_textures_and_ui():
 	ui_controller.update_stereo_shader()
 
 func _try_auto_connect():
-	var saved_ip = %IPInput.text
+	var saved_ip = parse_ip_port(%IPInput.text)[0]
 	var v2_cm = stream_backend.get_config_manager()
 	if v2_cm:
 		var v2_hosts = v2_cm.get_hosts()
@@ -1776,6 +2128,9 @@ func _process(delta):
 	if is_xr_active:
 		_process_hand_tracking(delta)
 
+	if DEBUG_RENDER_MODEL_CONTROLLERS:
+		_process_render_model_controllers(delta)
+
 	if Engine.get_frames_drawn() % 120 == 0:
 		_flush_log()
 
@@ -1789,6 +2144,10 @@ func _process(delta):
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_update_laser_layers()
+	_update_marker_layers(delta)
+	_update_grab_bar_layers()
+	_sync_comp_background()
 
 	_process_idle_activity()
 
@@ -1798,7 +2157,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_model > 0 and comp.in_use:
+		if depth_estimator.depth_texture and ai_3d_speed > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)
@@ -2019,6 +2378,51 @@ func _process_background_follow():
 		if bg and bg.visible:
 			bg.global_position = xr_camera.global_position + bg_offsets[i]
 			break
+	# Position-only follow (2026-08-24), matching the real particle
+	# systems above - comp_bg_equirect's rotation deliberately stays fixed
+	# (world-locked skybox feel, not spinning with head-look) while its
+	# position re-centers on the camera every frame, same as the
+	# GPUParticles3D backgrounds re-centering via bg_offsets.
+	if comp_bg_equirect and comp_bg_equirect.visible:
+		comp_bg_equirect.global_position = xr_camera.global_position
+
+# Keeps comp_bg_capture_instance in sync with the currently selected
+# background (background_mode) and shows/hides comp_bg_equirect to match
+# whether an environment background should currently be visible (passthrough
+# off, a background selected, in composition mode). Called from
+# apply_background()/apply_passthrough() on real transitions, and also every
+# frame from _process() as a safety net (e.g. entering/leaving composition
+# mode without touching background/passthrough settings) - safe because the
+# work below only runs on an actual state change (bg_idx/want_visible), and
+# unlike comp_cursor this never repeatedly toggles comp_bg_equirect.visible
+# once shown, so it doesn't hit the swapchain-teardown crash from earlier.
+func _sync_comp_background():
+	if not comp_bg_equirect or not comp_bg_capture_viewport:
+		return
+	var bg_idx = background_mode - 1
+	var want_visible = DEBUG_COMP_BG_EQUIRECT and comp.available and comp.in_use and is_xr_active and not passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
+	if not want_visible:
+		if comp_bg_equirect.visible:
+			comp_bg_equirect.visible = false
+		if comp_bg_capture_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+			comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if comp_bg_capture_instance:
+			comp_bg_capture_instance.queue_free()
+			comp_bg_capture_instance = null
+			comp_bg_capture_index = -1
+		return
+	if comp_bg_capture_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if bg_idx != comp_bg_capture_index:
+		if comp_bg_capture_instance:
+			comp_bg_capture_instance.queue_free()
+			comp_bg_capture_instance = null
+		comp_bg_capture_instance = bg_manager.create_capture_instance(bg_idx, comp_bg_capture_viewport)
+		comp_bg_capture_instance.visible = true
+		comp_bg_capture_instance.emitting = true
+		comp_bg_capture_index = bg_idx
+	if not comp_bg_equirect.visible:
+		comp_bg_equirect.visible = true
 
 func _process_stats(delta):
 	if not is_streaming:
@@ -2034,7 +2438,7 @@ func _process_stats(delta):
 			settings_controller.apply_filter()
 	stats_frame_times.append(delta)
 	stats_timer += delta
-	if stats_timer >= 0.5:
+	if stats_timer >= 0.1:
 		var avg = 0.0
 		for t in stats_frame_times:
 			avg += t
@@ -2069,12 +2473,17 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings()
 		_set_ui_position()
-		if comp.in_use:
-			if comp_ui:
-				comp_ui.visible = true
-				comp_ui.global_position = ui_panel_3d.global_position
-				comp_ui.global_rotation = ui_panel_3d.global_rotation
-			ui_panel_3d.visible = false
+		if comp.in_use and comp_ui:
+			comp_ui.visible = true
+			comp_ui.global_position = ui_panel_3d.global_position
+			comp_ui.global_rotation = ui_panel_3d.global_rotation
+			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
+				ui_panel_3d.visible = true
+				var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+				if ui_material:
+					ui_material.albedo_color = Color(1, 1, 1, 0.001)
+			else:
+				ui_panel_3d.visible = false
 			if bezel_enabled:
 				comp_bezel_rect.color = Color(0, 0, 0, 0)
 				if comp_bezel_rect_left:
@@ -2083,6 +2492,9 @@ func _toggle_ui():
 					comp_bezel_rect_right.color = Color(0, 0, 0, 0)
 		else:
 			ui_panel_3d.visible = true
+			var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+			if ui_material:
+				ui_material.albedo_color = Color(1, 1, 1, 1)
 			var ui_tex = ui_viewport.get_texture()
 			ui_panel_3d.material_override.albedo_texture = ui_tex
 		var area = ui_panel_3d.get_node_or_null("Area3D")
@@ -2091,6 +2503,9 @@ func _toggle_ui():
 	else:
 		if comp_ui:
 			comp_ui.visible = false
+		var ui_material = ui_panel_3d.material_override as StandardMaterial3D
+		if ui_material:
+			ui_material.albedo_color = Color(1, 1, 1, 1)
 		_save_ui_offset()
 		ui_panel_3d.visible = false
 		var area = ui_panel_3d.get_node_or_null("Area3D")
@@ -2248,11 +2663,73 @@ func _load_controller_models():
 		_apply_controller_textures(right_model, false)
 
 func _set_controller_models_visible(visible_state: bool):
-	for hand in [right_hand, left_hand]:
-		if hand:
-			for child in hand.get_children():
-				if child is Node3D and child.name != "HandRayCast" and child.name != "LeftHandRayCast":
-					child.visible = visible_state
+	_set_hand_local_model_visible(right_hand, visible_state)
+	_set_hand_local_model_visible(left_hand, visible_state)
+
+# Local FBX fallback model visibility, per-hand - factored out of
+# _set_controller_models_visible() (2026-08-25) so the render-model
+# experiment can hide just one hand's local model without touching the
+# other, e.g. if the runtime only supplies a render model for one
+# controller.
+func _set_hand_local_model_visible(hand: Node3D, visible_state: bool):
+	if not hand:
+		return
+	for child in hand.get_children():
+		if child is Node3D and child.name != "HandRayCast" and child.name != "LeftHandRayCast":
+			child.visible = visible_state
+
+# OpenXRFbRenderModel is itself a Node3D that self-tracks the runtime's
+# controller pose (confirmed via ClassDB introspection, 2026-08-25) - no
+# separate XRController3D wrapper needed, unlike an earlier draft of this
+# function. It exposes render_model_type (OpenXRFbRenderModel.MODEL_CONTROLLER_LEFT/
+# _RIGHT), has_render_model_node()/get_render_model_node(), and an
+# openxr_fb_render_model_loaded signal fired once the runtime actually
+# supplies geometry - used below for proper async detection instead of a
+# guessed timer delay.
+func _setup_render_model_controllers():
+	if not ClassDB.class_exists("OpenXRFbRenderModel"):
+		_log("[CTRLMODEL] OpenXRFbRenderModel not available in this Godot build")
+		return
+	right_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
+	right_render_model.name = "RightRenderModel"
+	right_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_RIGHT
+	xr_origin.add_child(right_render_model)
+	right_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(true))
+
+	left_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
+	left_render_model.name = "LeftRenderModel"
+	left_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_LEFT
+	xr_origin.add_child(left_render_model)
+	left_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(false))
+	_log("[CTRLMODEL] OpenXRFbRenderModel nodes created, waiting on load signal")
+
+# Fired by OpenXRFbRenderModel once the runtime actually supplies real
+# geometry for that hand. Hides the local FBX fallback for just that hand
+# (_set_hand_local_model_visible - the render model and the fallback should
+# never both be visible at once) and leaves the other hand's fallback alone
+# if its render model hasn't loaded (or never will - not every runtime
+# supports XR_FB_render_model for every controller).
+func _on_render_model_loaded(is_right: bool):
+	if is_right:
+		_right_render_model_ready = true
+		_set_hand_local_model_visible(right_hand, false)
+		_log("[CTRLMODEL] Right controller render model loaded")
+	else:
+		_left_render_model_ready = true
+		_set_hand_local_model_visible(left_hand, false)
+		_log("[CTRLMODEL] Left controller render model loaded")
+
+# Called from _process() - see the DEBUG_RENDER_MODEL_CONTROLLERS var
+# comment for why this only runs in normal (mesh) projection mode. Purely
+# visibility gating each frame; the FBX-fallback-hiding decision itself
+# happens once, in _on_render_model_loaded() above.
+func _process_render_model_controllers(_delta: float):
+	if not DEBUG_RENDER_MODEL_CONTROLLERS:
+		return
+	if right_render_model:
+		right_render_model.visible = not comp.in_use and _right_render_model_ready
+	if left_render_model:
+		left_render_model.visible = not comp.in_use and _left_render_model_ready
 
 func _apply_controller_textures(node: Node, is_left: bool):
 	var base_color_path = "res://models/controllers/textures/MetaQuestTouchPlus_Left_BaseColor.png" if is_left else "res://models/controllers/textures/MetaQuestTouchPlus_right_BaseColor.png"
@@ -2366,9 +2843,6 @@ func _hide_all_backgrounds():
 func _create_backgrounds():
 	bg_manager = BackgroundManager.new(self)
 	bg_manager.create_backgrounds()
-
-func _create_starfield():
-	bg_manager._create_starfield()
 
 func _create_ash():
 	bg_manager._create_ash()
@@ -2493,4 +2967,36 @@ func _make_laser_gradient() -> ImageTexture:
 	for y in range(256):
 		var a = 1.0 - float(y) / 255.0
 		img.set_pixel(0, y, Color(1, 1, 1, a))
+	return ImageTexture.create_from_image(img)
+
+# Separate from _make_laser_gradient() (2026-08-24) - that one is shared with
+# the real 3D "Laser" CapsuleMesh's material (normal projection mode), which
+# already looks right; this is only for the composition-space quad
+# replacement, which needed actual pixel width to render rounded end caps
+# (a capsule/stadium alpha mask - matching the real Laser's own CapsuleMesh
+# shape - combined with the existing length-fade gradient), unlike the
+# original's 1px-wide texture that had no room for horizontal shaping.
+func _make_comp_laser_texture(width: int, height: int) -> ImageTexture:
+	var img = Image.create(width, height, false, Image.FORMAT_RGBA8)
+	var cap_r = float(width) * 0.5
+	var half_w = float(width) * 0.5
+	var body_top = cap_r
+	var body_bottom = float(height - 1) - cap_r
+	for y in range(height):
+		var fade = 1.0 - float(y) / float(height - 1)
+		var fy = float(y)
+		for x in range(width):
+			var nx = float(x) - (float(width) - 1.0) * 0.5
+			var shape_alpha = 0.0
+			if fy < body_top:
+				var dy = body_top - fy
+				var dist = sqrt(nx * nx + dy * dy)
+				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
+			elif fy > body_bottom:
+				var dy = fy - body_bottom
+				var dist = sqrt(nx * nx + dy * dy)
+				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
+			else:
+				shape_alpha = clampf(half_w - absf(nx) + 0.5, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, fade * shape_alpha))
 	return ImageTexture.create_from_image(img)

@@ -21,8 +21,10 @@ const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 func _init(owner: Node3D):
 	main = owner
 
+# ":" added (2026-08-26) so an optional custom port can be typed directly
+# into %IPInput as "ip:port" - see main.gd's parse_ip_port().
 func setup_numpad():
-	var keys = ["7","8","9","4","5","6","1","2","3",".","0","DEL"]
+	var keys = ["7","8","9","4","5","6","1","2","3",".","0",":","DEL"]
 	for key in keys:
 		var btn = Button.new()
 		btn.text = key
@@ -31,12 +33,15 @@ func setup_numpad():
 		btn.pressed.connect(on_numpad_key.bind(key))
 		main.get_node("%Numpad").add_child(btn)
 
+# Max length raised from 15 (bare "255.255.255.255") to 21
+# ("255.255.255.255:65535", the longest possible ip:port string) to fit an
+# optional port suffix.
 func on_numpad_key(key: String):
 	if key == "DEL":
 		var text = main.get_node("%IPInput").text
 		if text.length() > 0:
 			main.get_node("%IPInput").text = text.substr(0, text.length() - 1)
-	elif main.get_node("%IPInput").text.length() < 15:
+	elif main.get_node("%IPInput").text.length() < 21:
 		main.get_node("%IPInput").text += key
 
 func on_ipinput_gui_input(event: InputEvent):
@@ -51,9 +56,9 @@ func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_model()
 
-func on_ai_3d_quality_toggled():
+func on_ai_3d_speed_toggled():
 	main.auto_detect_enabled = false
-	main.settings_controller.cycle_ai_3d_quality()
+	main.settings_controller.cycle_ai_3d_speed()
 
 func on_ai_3d_debug_toggled():
 	main.auto_detect_enabled = false
@@ -63,23 +68,28 @@ func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_model_labels[main.ai_3d_model])
-	update_option_btn(main._ui_3d_quality_btn, main.settings_controller.ai_3d_quality_labels[main.ai_3d_quality])
+	update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
+	# Under Auto (ai_3d_speed==1) main.ai_3d_model is frozen/irrelevant - show
+	# whichever model AUTO_TABLE actually picked instead (see
+	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
+	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
 	var disabled = main.sbs_mode > 0 or main.screens.size() > 1
+	if main._ui_3d_speed_btn:
+		main._ui_3d_speed_btn.disabled = disabled
+		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
+	# Model/debug controls are additionally meaningless (and disabled)
+	# whenever AI-3D itself is off, OR Auto is picking the model itself
+	# (2026-08-25) - main.ai_3d_model is frozen/irrelevant while Auto
+	# overrides it (see get_depth_model_index()).
+	var sub_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1
 	if main._ui_3d_btn:
-		main._ui_3d_btn.disabled = disabled
-		main._ui_3d_btn.modulate.a = 0.3 if disabled else 1.0
-	# Quality/debug controls are additionally meaningless (and disabled)
-	# whenever AI-3D itself is off - no point picking a tier or a debug
-	# view for a model that isn't running.
-	var sub_disabled = disabled or main.ai_3d_model == 0
-	if main._ui_3d_quality_btn:
-		main._ui_3d_quality_btn.disabled = sub_disabled
-		main._ui_3d_quality_btn.modulate.a = 0.3 if sub_disabled else 1.0
+		main._ui_3d_btn.disabled = sub_disabled
+		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0
 	# Hidden again (2026-08-20) - the 2026-08-19 re-enable (for on-device
 	# DMap inspection while comparing depth models) was only meant for that
 	# comparison work and got shipped to main by accident. Not folded into
@@ -547,10 +557,10 @@ func build_ui():
 	disp_row1.add_child(main._ui_pt_btn)
 	main._ui_sbs_btn = make_option_btn("SBS", "Off")
 	disp_row1.add_child(main._ui_sbs_btn)
-	main._ui_3d_btn = make_option_btn("3D AI", "Off")
+	main._ui_3d_speed_btn = make_option_btn("AI 3D", "Off")
+	disp_row1.add_child(main._ui_3d_speed_btn)
+	main._ui_3d_btn = make_option_btn("AI Model", main.settings_controller.ai_3d_models[0].label)
 	disp_row1.add_child(main._ui_3d_btn)
-	main._ui_3d_quality_btn = make_option_btn("3D Quality", "Auto")
-	disp_row1.add_child(main._ui_3d_quality_btn)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
 	# this every time regardless) - set here too so there's no one-frame
 	# flash of a visible "3D Debug" button before that first fires.
@@ -671,7 +681,7 @@ func build_ui():
 
 	main._ui_ctrl_mode_btn = make_option_btn("Mapping", "Off")
 	control_row2.add_child(main._ui_ctrl_mode_btn)
-	main._ui_ctrl_type_btn = make_option_btn("Device Mode", "PAD")
+	main._ui_ctrl_type_btn = make_option_btn("Device Mode", "PAD-HAND")
 	control_row2.add_child(main._ui_ctrl_type_btn)
 	main._ui_btn_toggle_btn = make_option_btn("Alternate Mode", "Head")
 	control_row2.add_child(main._ui_btn_toggle_btn)
@@ -744,15 +754,14 @@ func build_ui():
 	main._ui_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	main._ui_status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	main._ui_status_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# Server-provided error text (e.g. a launch-rejection status_message) can run
-	# to a couple hundred characters - without wrapping, a single-line Label just
-	# overflows its container width and breaks the surrounding panel layout. Fill
-	# the vbox's actual width (a fixed 420px was narrower than the real panel,
-	# forcing extra wrap lines it didn't need) and clip vertically instead of
-	# growing the panel if it still wraps past the label's fixed height.
 	main._ui_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	main._ui_status_label.clip_text = false
-	main._ui_status_label.clip_contents = true
+	# clip_contents was true here - a leaf Label has no children to clip, so
+	# this only risked the compatibility renderer computing a bad/zero clip
+	# rect for its own text draw call (2026-08-24: this label was invisible
+	# under GLES despite fully correct layout/visibility/alpha - every other
+	# Label in the menu, e.g. the host-address label, works fine and none of
+	# them set clip_contents). Removed as the prime suspect.
 	main._ui_status_label.custom_minimum_size = Vector2(0, 56)
 	main._ui_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(main._ui_status_label)
@@ -804,8 +813,8 @@ func build_ui():
 	main._ui_bezel_btn.button_down.connect(func(): main.screen_manager.toggle_bezel())
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
+	main._ui_3d_speed_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
-	main._ui_3d_quality_btn.button_down.connect(func(): on_ai_3d_quality_toggled())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
@@ -973,7 +982,7 @@ func update_host_label():
 		if not main._last_hostname.is_empty():
 			main._ui_host_label.text = main._last_hostname
 		else:
-			var ip = main.get_node("%IPInput").text
+			var ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
 			var host_name = ""
 			for h in main.stream_backend.get_config_manager().get_hosts():
 				if h.has("localaddress") and h.localaddress == ip:

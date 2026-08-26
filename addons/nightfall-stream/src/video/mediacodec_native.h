@@ -20,6 +20,8 @@ struct NativeDecodedFrame {
     int64_t pts = 0;
     int width = 0;
     int height = 0;
+    bool rgba = false;
+    bool external_texture = false;
     AImage *image = nullptr; // Owns the ImageReader slot until release_frame().
 };
 
@@ -38,7 +40,8 @@ public:
     AndroidMediaCodec();
     ~AndroidMediaCodec();
 
-    bool init(const char *mime, int width, int height,
+    bool init(const char *mime, int width, int height, bool cpu_readback,
+              ANativeWindow *external_output_window = nullptr,
               EventNotifier event_notifier = {});
     void shutdown();
 
@@ -93,6 +96,9 @@ private:
     ANativeWindow *window_ = nullptr;
     std::atomic<int> width_{0};
     std::atomic<int> height_{0};
+    bool reader_outputs_rgba_ = false;
+    bool external_surface_output_ = false;
+    bool owns_external_window_ = false;
     std::atomic<bool> started_{false};
     std::atomic<bool> eos_{false};
     std::atomic<bool> buffer_cache_supported_{false};
