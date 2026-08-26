@@ -1545,9 +1545,16 @@ func _init_android_setup():
 		depth_estimator.setup()
 	if OS.get_name() == "Android":
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		_load_controller_models()
-		if DEBUG_RENDER_MODEL_CONTROLLERS:
-			_setup_render_model_controllers()
+		# Projectionless (gl_compatibility) builds never render the mesh
+		# controller models - comp.in_use always ends up true (see _init_xr's
+		# set_submit_projection_layer(false)), and composition-space ray
+		# indicators are used instead. The bundled FBX assets are excluded
+		# from the Android export (export_presets.cfg exclude_filter) for
+		# this reason, so skip trying to load them here too.
+		if RenderingServer.get_current_rendering_method() != "gl_compatibility":
+			_load_controller_models()
+			if DEBUG_RENDER_MODEL_CONTROLLERS:
+				_setup_render_model_controllers()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
