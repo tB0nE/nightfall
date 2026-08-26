@@ -28,6 +28,18 @@ void NightfallComputerManager::set_config_manager(Object *cm) {
     } else {
         config_manager.unref();
     }
+    // The `unique_id` member is otherwise only populated by start_pair() -
+    // every other URL builder (establish_stream(), get_app_list(),
+    // fetch_display_manifest(), etc.) reads it directly rather than calling
+    // _get_unique_id(), so reconnecting to an already-paired host without
+    // re-pairing first sent "uniqueid=" blank. Some endpoints (display
+    // manifest) tolerated that; /serverinfo did not and hung until timeout.
+    // Populate it here, as soon as config_manager (which _get_unique_id()
+    // needs to load/persist the real id) is available - not in the
+    // constructor, which runs before set_config_manager() is ever called.
+    if (config_manager.is_valid()) {
+        unique_id = _get_unique_id();
+    }
 }
 
 void NightfallComputerManager::set_http_requester(Object *req) {

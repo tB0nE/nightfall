@@ -606,9 +606,15 @@ func reset_connect_button():
 		connect_btn.text = "Connect"
 		connect_btn.disabled = false
 
-func save_last_ip(ip: String):
+func save_last_ip(ip: String, server_unique_id: String = ""):
 	var save = ConfigFile.new()
 	save.set_value("connection", "ip", ip)
+	# server_unique_id (2026-08-27) - a host reached via NAT port-forwarding
+	# can share a bare IP with a completely different, already-paired host
+	# (see stream_manager.gd's on_pair_completed() fix). Startup auto-connect
+	# needs this same unique_id, not just the IP, to find the right saved
+	# host record - see main.gd's _init_textures_and_ui()/_try_auto_connect().
+	save.set_value("connection", "server_unique_id", server_unique_id)
 	save.save("user://last_connection.cfg")
 
 func browse_mdns():
@@ -697,7 +703,14 @@ func populate_server_list():
 		# only one or the other, which made it hard to tell entries with the
 		# same/similar hostname apart, or to know what IP a "Pair" would
 		# actually target without selecting it first.
-		var display = "%s (%s)" % [hname, ip] if not hname.is_empty() else ip
+		# hostname is currently always == ip (add_host() sets hostname to the
+		# pairing IP, not a real advertised name - computer_manager.cpp never
+		# reads <hostname> from serverinfo), so two hosts sharing an IP via
+		# NAT port-forwarding are otherwise indistinguishable in this list -
+		# append the https_port too (2026-08-27) so they read as, e.g.,
+		# "10.0.0.13:57984" vs "10.0.0.13:47984".
+		var https_port = h.get("https_port", 47984)
+		var display = "%s (%s:%d)" % [hname, ip, https_port] if not hname.is_empty() else "%s:%d" % [ip, https_port]
 		var btn = Button.new()
 		btn.custom_minimum_size = Vector2(400, 80)
 		btn.add_theme_font_size_override("font_size", 36)
@@ -706,7 +719,7 @@ func populate_server_list():
 		server_list.add_child(btn)
 		btn.pressed.connect(func():
 			main.get_node("%IPInput").text = ip
-			save_last_ip(ip)
+			save_last_ip(ip, h.get("server_unique_id", ""))
 			main.state_manager.load_host_state(ip)
 			main.current_host_id = h.id
 			main.settings_controller.detect_polaris_host(ip, main.current_host_id)

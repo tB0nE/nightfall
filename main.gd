@@ -2073,6 +2073,7 @@ func _init_textures_and_ui():
 		var save = ConfigFile.new()
 		if save.load("user://last_connection.cfg") == OK:
 			saved_ip = save.get_value("connection", "ip", "")
+			var saved_unique_id: String = save.get_value("connection", "server_unique_id", "")
 			if saved_ip != "":
 				%IPInput.text = saved_ip
 				# state_manager's host_state.cfg is keyed by the raw field text
@@ -2081,10 +2082,21 @@ func _init_textures_and_ui():
 				# parsed (port-suffix stripped) ip, see main.parse_ip_port().
 				state_manager.load_host_state(saved_ip)
 				var saved_host_ip: String = parse_ip_port(saved_ip)[0]
-				for h in config_mgr.get_hosts():
-					if h.has("localaddress") and h.localaddress == saved_host_ip:
-						current_host_id = h.id
-						break
+				# Match by server_unique_id first (2026-08-27) - a host reached
+				# via NAT port-forwarding can share a bare IP with a different,
+				# already-paired host (see stream_manager.gd's
+				# on_pair_completed() fix). Fall back to bare-IP matching only
+				# if no unique_id was saved (e.g. an older last_connection.cfg).
+				if not saved_unique_id.is_empty():
+					for h in config_mgr.get_hosts():
+						if h.get("server_unique_id", "") == saved_unique_id:
+							current_host_id = h.id
+							break
+				if current_host_id < 0:
+					for h in config_mgr.get_hosts():
+						if h.has("localaddress") and h.localaddress == saved_host_ip:
+							current_host_id = h.id
+							break
 				if current_host_id >= 0:
 					settings_controller.detect_polaris_host(saved_host_ip, current_host_id)
 				ui_controller.update_host_label()
@@ -2102,15 +2114,29 @@ func _init_textures_and_ui():
 
 func _try_auto_connect():
 	var saved_ip = parse_ip_port(%IPInput.text)[0]
+	var saved_unique_id: String = ""
+	var save = ConfigFile.new()
+	if save.load("user://last_connection.cfg") == OK:
+		saved_unique_id = save.get_value("connection", "server_unique_id", "")
 	var v2_cm = stream_backend.get_config_manager()
 	if v2_cm:
 		var v2_hosts = v2_cm.get_hosts()
 		if v2_hosts.size() > 0:
 			var h: Dictionary = {}
-			for candidate in v2_hosts:
-				if candidate.get("localaddress", "") == saved_ip:
-					h = candidate
-					break
+			# Match by server_unique_id first (2026-08-27) - see
+			# _init_textures_and_ui()'s identical fix above for why bare-IP
+			# matching alone can pick the wrong host (NAT port-forwarding
+			# sharing one IP across different, already-paired servers).
+			if not saved_unique_id.is_empty():
+				for candidate in v2_hosts:
+					if candidate.get("server_unique_id", "") == saved_unique_id:
+						h = candidate
+						break
+			if h.is_empty():
+				for candidate in v2_hosts:
+					if candidate.get("localaddress", "") == saved_ip:
+						h = candidate
+						break
 			if h.is_empty():
 				h = v2_hosts[0]
 			var host_ip = h.get("localaddress", "") if h.has("localaddress") else saved_ip

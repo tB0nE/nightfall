@@ -459,6 +459,7 @@ func on_pair_completed(success: bool, _msg: String):
 	# created/updated. Fall back to bare-IP matching only if unique_id is
 	# unavailable (e.g. an older cached build without get_last_paired_unique_id).
 	var unique_id = _b().get_last_paired_unique_id() if _b().has_method("get_last_paired_unique_id") else ""
+	main.welcome_screen.save_last_ip(main.get_node("%IPInput").text, unique_id)
 	var found = false
 	for h in _b().get_hosts():
 		if not unique_id.is_empty() and h.get("server_unique_id", "") == unique_id:
