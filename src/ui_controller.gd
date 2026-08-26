@@ -21,8 +21,10 @@ const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 func _init(owner: Node3D):
 	main = owner
 
+# ":" added (2026-08-26) so an optional custom port can be typed directly
+# into %IPInput as "ip:port" - see main.gd's parse_ip_port().
 func setup_numpad():
-	var keys = ["7","8","9","4","5","6","1","2","3",".","0","DEL"]
+	var keys = ["7","8","9","4","5","6","1","2","3",".","0",":","DEL"]
 	for key in keys:
 		var btn = Button.new()
 		btn.text = key
@@ -31,12 +33,15 @@ func setup_numpad():
 		btn.pressed.connect(on_numpad_key.bind(key))
 		main.get_node("%Numpad").add_child(btn)
 
+# Max length raised from 15 (bare "255.255.255.255") to 21
+# ("255.255.255.255:65535", the longest possible ip:port string) to fit an
+# optional port suffix.
 func on_numpad_key(key: String):
 	if key == "DEL":
 		var text = main.get_node("%IPInput").text
 		if text.length() > 0:
 			main.get_node("%IPInput").text = text.substr(0, text.length() - 1)
-	elif main.get_node("%IPInput").text.length() < 15:
+	elif main.get_node("%IPInput").text.length() < 21:
 		main.get_node("%IPInput").text += key
 
 func on_ipinput_gui_input(event: InputEvent):
@@ -977,7 +982,7 @@ func update_host_label():
 		if not main._last_hostname.is_empty():
 			main._ui_host_label.text = main._last_hostname
 		else:
-			var ip = main.get_node("%IPInput").text
+			var ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
 			var host_name = ""
 			for h in main.stream_backend.get_config_manager().get_hosts():
 				if h.has("localaddress") and h.localaddress == ip:

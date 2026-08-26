@@ -56,6 +56,12 @@ func start_pair(ip: String, port: int = 47989) -> String:
 		return cm.start_pair(ip, port)
 	return ""
 
+func get_last_paired_unique_id() -> String:
+	var cm = get_computer_manager()
+	if cm:
+		return cm.get_last_paired_unique_id()
+	return ""
+
 func get_app_list(host_id: int, callback: Callable):
 	var cm = get_computer_manager()
 	if cm:

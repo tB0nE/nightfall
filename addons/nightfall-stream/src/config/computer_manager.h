@@ -111,6 +111,7 @@ public:
     String start_pair(String ip, int port = 47989);
     void cancel_pair();
     void unpair(int host_id);
+    String get_last_paired_unique_id();
 
     void connect_to_computer(String ip, int port = 47989, Callable callback = Callable());
 

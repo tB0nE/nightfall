@@ -682,6 +682,29 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	h = maxi(h - (h % 2), 180)
 	return Vector2i(w, h)
 
+# %IPInput accepts an optional ":port" suffix now (2026-08-26, GitHub-reported
+# need for a custom Apollo/Sunshine HTTP port) - splits on the LAST ":" so a
+# bare IP with no port still works unchanged. Returns [ip: String, port: int],
+# defaulting to DEFAULT_PAIR_PORT when no ":" is present or the suffix isn't a
+# valid number. Callers that just DISPLAY the field text or use it as a
+# per-host settings-persistence key (state_manager.gd's save_host_state())
+# should keep using the raw text as-is - only callers that actually connect
+# somewhere (pairing, host-record matching, Wake-on-LAN's host lookup) need
+# the parsed ip/port.
+const DEFAULT_PAIR_PORT := 47989
+func parse_ip_port(text: String) -> Array:
+	var colon = text.rfind(":")
+	if colon == -1:
+		return [text, DEFAULT_PAIR_PORT]
+	var ip_part = text.substr(0, colon)
+	var port_part = text.substr(colon + 1)
+	if not port_part.is_valid_int():
+		return [text, DEFAULT_PAIR_PORT]
+	var port = port_part.to_int()
+	if port <= 0 or port > 65535:
+		return [text, DEFAULT_PAIR_PORT]
+	return [ip_part, port]
+
 func _log(msg: String):
 	_log_lines.append(msg)
 	push_warning("NF: %s" % msg)
@@ -2045,13 +2068,18 @@ func _init_textures_and_ui():
 			saved_ip = save.get_value("connection", "ip", "")
 			if saved_ip != "":
 				%IPInput.text = saved_ip
+				# state_manager's host_state.cfg is keyed by the raw field text
+				# (see save_host_state()), so load_host_state() needs that same
+				# raw text - but localaddress/detect_polaris_host() need the
+				# parsed (port-suffix stripped) ip, see main.parse_ip_port().
 				state_manager.load_host_state(saved_ip)
+				var saved_host_ip: String = parse_ip_port(saved_ip)[0]
 				for h in config_mgr.get_hosts():
-					if h.has("localaddress") and h.localaddress == saved_ip:
+					if h.has("localaddress") and h.localaddress == saved_host_ip:
 						current_host_id = h.id
 						break
 				if current_host_id >= 0:
-					settings_controller.detect_polaris_host(saved_ip, current_host_id)
+					settings_controller.detect_polaris_host(saved_host_ip, current_host_id)
 				ui_controller.update_host_label()
 				welcome_screen.update_welcome_info()
 
@@ -2066,7 +2094,7 @@ func _init_textures_and_ui():
 	ui_controller.update_stereo_shader()
 
 func _try_auto_connect():
-	var saved_ip = %IPInput.text
+	var saved_ip = parse_ip_port(%IPInput.text)[0]
 	var v2_cm = stream_backend.get_config_manager()
 	if v2_cm:
 		var v2_hosts = v2_cm.get_hosts()

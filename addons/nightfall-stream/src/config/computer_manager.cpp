@@ -87,8 +87,25 @@ void NightfallComputerManager::_step_pair() {
             String client_cert_pem = keys["certificate"];
             PackedByteArray cert_bytes = client_cert_pem.to_utf8_buffer();
 
+            // Sunshine/Apollo hosts hold this specific request open with NO
+            // response at all until the PIN is entered on the host's own web
+            // UI/tray (confirmed directly against Apollo's nvhttp.cpp:
+            // ptr->second.async_insert_pin.response = std::move(response);
+            // fg.disable(); return; - a genuine long-poll, not a slow
+            // server). Every other pairing stage here uses a fixed 120s
+            // CURLOPT_TIMEOUT_MS (the request's TOTAL time, not idle time),
+            // which silently aborted this exact stage for anyone who took
+            // longer than 2 minutes to find the host's pairing UI and type
+            // the PIN in - a real cause of "pairing never completes"/
+            // "can't connect" reports. 0 = no timeout, matching
+            // moonlight-android-xr's PairingManager.java, which explicitly
+            // uses a zero-read-timeout OkHttpClient for this exact call
+            // ("This doesn't have a read timeout because the user must
+            // enter the PIN before the server responds"). Every OTHER stage
+            // keeps its 120000ms cap - only this one, PIN-entry-blocking
+            // stage needs to be unbounded.
             String url = base_url + "?" + common_params + "&phrase=getservercert&salt=" + _bytes_to_hex(pair_salt) + "&clientcert=" + _bytes_to_hex(cert_bytes);
-            http_requester->request(url, "GET", PackedByteArray(), Dictionary(), ssl_opts, callable_mp(this, &NightfallComputerManager::_on_pair_request_completed).bind(1), 120000);
+            http_requester->request(url, "GET", PackedByteArray(), Dictionary(), ssl_opts, callable_mp(this, &NightfallComputerManager::_on_pair_request_completed).bind(1), 0);
             break;
         }
         case PAIR_STAGE_2_CLIENT_CHALLENGE: {
@@ -316,6 +333,10 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             break;
         }
     }
+}
+
+String NightfallComputerManager::get_last_paired_unique_id() {
+    return server_unique_id;
 }
 
 void NightfallComputerManager::cancel_pair() {
@@ -1110,6 +1131,7 @@ void NightfallComputerManager::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("start_pair", "ip", "port"), &NightfallComputerManager::start_pair, DEFVAL(47989));
     ClassDB::bind_method(D_METHOD("cancel_pair"), &NightfallComputerManager::cancel_pair);
+    ClassDB::bind_method(D_METHOD("get_last_paired_unique_id"), &NightfallComputerManager::get_last_paired_unique_id);
     ClassDB::bind_method(D_METHOD("unpair", "host_id"), &NightfallComputerManager::unpair);
 
     ClassDB::bind_method(D_METHOD("connect_to_computer", "ip", "port", "callback"), &NightfallComputerManager::connect_to_computer, DEFVAL(47989), DEFVAL(Callable()));

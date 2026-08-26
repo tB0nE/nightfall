@@ -162,7 +162,12 @@ func _on_v2_launch_response(response: Dictionary):
 			if not ip.is_empty():
 				_b().get_config_manager().remove_host(main.current_host_id)
 				main._ui_status_label.text = "Re-pairing with " + ip + "..."
-				var pin = _b().start_pair(ip, 47989)
+				# Stored host records only keep the plain HTTPS port
+				# (localaddress/https_port), not whatever custom HTTP pairing
+				# port the user originally typed into %IPInput (see
+				# main.parse_ip_port()) - falls back to the default here,
+				# same as before this port-suffix support existed.
+				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
 				if str(pin) != "" and str(pin) != "0":
 					main._pair_pin = str(pin)
 					main.welcome_screen.show_welcome_screen("pin")
@@ -378,14 +383,21 @@ func resize_stream_viewport(w: int, h: int):
 	main._log("[STREAM] Viewport resized to %dx%d (blur_scale=%.2f)" % [w, h, main.get_blur_scale(main.primary_screen)])
 
 func on_pair_pressed():
-	var ip = main.get_node("%IPInput").text
+	var raw_text = main.get_node("%IPInput").text
 	main.get_node("%Numpad").visible = false
-	if ip.is_empty(): ip = "127.0.0.1"
+	if raw_text.is_empty(): raw_text = "127.0.0.1"
 	var save = ConfigFile.new()
-	save.set_value("connection", "ip", ip)
+	save.set_value("connection", "ip", raw_text)
 	save.save("user://last_connection.cfg")
 	if _b().get_config_manager():
 		_b().get_config_manager().load_config()
+	# Optional "ip:port" suffix (see main.parse_ip_port()) - host records only
+	# ever store the plain ip (pairing saves host_data["localaddress"] from
+	# the ALREADY-parsed ip, not the raw field text), so matching against
+	# h.localaddress needs the parsed ip too, not raw_text verbatim.
+	var parsed = main.parse_ip_port(raw_text)
+	var ip: String = parsed[0]
+	var pair_port: int = parsed[1]
 	var paired_host_id = -1
 	for h in _b().get_hosts():
 		if h.has("localaddress") and h.localaddress == ip:
@@ -403,8 +415,8 @@ func on_pair_pressed():
 		await start_stream(paired_host_id, main._selected_app_id)
 	else:
 		main._ui_status_label.text = "Pairing with " + ip + "..."
-		main._log("[PAIR] Starting pair with %s:47989..." % ip)
-		var pin = _b().start_pair(ip, 47989)
+		main._log("[PAIR] Starting pair with %s:%d..." % [ip, pair_port])
+		var pin = _b().start_pair(ip, pair_port)
 		main._log("[PAIR] start_pair returned: %s (type=%s)" % [str(pin), str(typeof(pin))])
 		if str(pin) == "" or str(pin) == "0":
 			main._ui_status_label.text = "Failed to connect to " + ip
@@ -421,21 +433,56 @@ func on_pair_completed(success: bool, _msg: String):
 		main.welcome_screen.show_welcome_screen("server")
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
+	# Settle delay (2026-08-26) - the mutual-TLS HTTPS endpoint (port 57984)
+	# that pairing's own stage 5 (phrase=pairchallenge) just used successfully
+	# was seen failing to connect ("Could not connect to server") when
+	# establish_stream()'s first HTTPS call landed only ~15ms after pairing
+	# completed - the host's TLS server needs a brief moment to actually
+	# start accepting the just-registered client certificate for mutual TLS.
+	# Confirmed via on-device logcat: an identical cert, same host/port,
+	# succeeded during pairing and failed moments later with no other
+	# change. Only on this fresh-pairing path - normal reconnects (an
+	# already-paired host) don't hit this race and aren't delayed.
+	await main.get_tree().create_timer(1.5).timeout
 	if _b().get_config_manager():
 		_b().get_config_manager().load_config()
-	var ip = main.get_node("%IPInput").text
+	var ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
+	# Match by server_unique_id, not bare IP (2026-08-26) - a host reached via
+	# NAT port-forwarding (e.g. a VM's game-streaming port forwarded through
+	# its host machine's IP) can share the exact same localaddress as a
+	# completely different, already-paired host on another port. Bare-IP
+	# matching would then pick whichever host record happens to be FIRST in
+	# get_hosts(), not the one just paired. server_unique_id is the value
+	# each server reports in its own serverinfo XML and is what pairing
+	# itself already dedupes existing host records by (computer_manager.cpp),
+	# so it's the only reliable way to find the host record that was just
+	# created/updated. Fall back to bare-IP matching only if unique_id is
+	# unavailable (e.g. an older cached build without get_last_paired_unique_id).
+	var unique_id = _b().get_last_paired_unique_id() if _b().has_method("get_last_paired_unique_id") else ""
 	var found = false
 	for h in _b().get_hosts():
-		if h.has("localaddress") and h.localaddress == ip:
+		if not unique_id.is_empty() and h.get("server_unique_id", "") == unique_id:
 			main.current_host_id = h.id
 			found = true
 			await start_stream(h.id, main._selected_app_id)
 			break
+	if not found and unique_id.is_empty():
+		for h in _b().get_hosts():
+			if h.has("localaddress") and h.localaddress == ip:
+				main.current_host_id = h.id
+				found = true
+				await start_stream(h.id, main._selected_app_id)
+				break
 	if not found:
 		main._log("[PAIR] Host not found after pairing, retrying config load")
 		_b().get_config_manager().load_config()
 		for h in _b().get_hosts():
-			if h.has("localaddress") and h.localaddress == ip:
+			if not unique_id.is_empty() and h.get("server_unique_id", "") == unique_id:
+				main.current_host_id = h.id
+				found = true
+				await start_stream(h.id, main._selected_app_id)
+				break
+			elif unique_id.is_empty() and h.has("localaddress") and h.localaddress == ip:
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
