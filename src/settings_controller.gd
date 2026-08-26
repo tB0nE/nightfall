@@ -431,6 +431,18 @@ func toggle_passthrough():
 	apply_passthrough(main.passthrough_enabled)
 	_save_setting(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 	main._log("[PASSTHROUGH] toggled to %s and saved" % str(main.passthrough_enabled))
+	# AUTO_TABLE's tier/model/cap picks all key off passthrough_enabled (see
+	# get_auto_selection()) - and manual Fast's resolution cap does too, same
+	# table. Refresh the AI Model button immediately (was showing a stale
+	# label otherwise - Auto's resolved model can silently change here, e.g.
+	# 2K flips between MiDaS-192-GPU and MiDaS-256-GPU) and re-commit the
+	# actual depth config/resolution cap the same debounced way any other
+	# AI-3D-affecting change does - nothing else calls apply_stereo() on a
+	# passthrough toggle otherwise, so the server-side model/cap would
+	# silently stay stale too, not just the label.
+	if main.ai_3d_speed != 0 and main.ui_controller:
+		main.ui_controller.update_stereo_shader()
+		_schedule_ai_3d_commit()
 
 func apply_passthrough(enable: bool):
 	if not main.is_xr_active:
