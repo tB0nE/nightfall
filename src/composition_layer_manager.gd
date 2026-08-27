@@ -397,6 +397,16 @@ func _make_cursor_circle_rect() -> ColorRect:
 	r.material = mat
 	return r
 
+func _make_triangle_rect() -> ColorRect:
+	var r = ColorRect.new()
+	r.name = "CompHandTriangle"
+	r.visible = true
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var mat = ShaderMaterial.new()
+	mat.shader = preload("res://src/shaders/inverted_triangle.gdshader")
+	r.material = mat
+	return r
+
 func setup():
 	if not available:
 		main._log("[COMP] OpenXRCompositionLayerCylinder not available")
@@ -652,6 +662,55 @@ func setup_background_equirect():
 			main.comp_marker_left = marker_layer
 			main.comp_marker_left_circle = marker_circle
 	main._log("[COMP] Controller position marker composition layers created")
+
+	# Composite-only hand indicators (2026-08-27) - see main.gd's
+	# comp_hand_right/left comment for why this replaced an earlier full
+	# 3D-scene-in-a-viewport hand skeleton (too expensive even throttled to
+	# 14fps). Same disable_3d=true/no-offscreen-3D-scene shape as the
+	# controller markers just above, but the triangle's three vertices are
+	# live shader uniforms (inverted_triangle.gdshader's point_a/b/c) driven
+	# every frame from the wrist + two knuckle joints' real projected
+	# positions (main._update_one_hand_indicator()), not a fixed icon - the
+	# quad itself is also oriented to the hand's own plane, not billboarded
+	# to the camera, so the triangle's shape/orientation genuinely tracks
+	# hand pose in real time.
+	for side in ["right", "left"]:
+		var hand_layer = OpenXRCompositionLayerQuad.new()
+		hand_layer.name = "CompHand%sLayer" % side.capitalize()
+		hand_layer.set_sort_order(998)
+		hand_layer.set_enable_hole_punch(false)
+		hand_layer.set_alpha_blend(true)
+		hand_layer.set_quad_size(Vector2(main.HAND_INDICATOR_SIZE, main.HAND_INDICATOR_SIZE))
+		hand_layer.visible = false
+		main.xr_origin.add_child(hand_layer)
+
+		var hand_viewport = SubViewport.new()
+		hand_viewport.name = "CompHand%sViewport" % side.capitalize()
+		hand_viewport.disable_3d = true
+		hand_viewport.transparent_bg = true
+		# 256x256, not 64x64 (2026-08-27 fix) - the shader's own smoothstep
+		# antialiasing (inverted_triangle.gdshader's edge_soft) needs enough
+		# pixels to actually blend across, and at 64px on a 0.32m quad each
+		# pixel is ~5mm - reported as "very pixelated and blocky".
+		hand_viewport.size = Vector2i(256, 256)
+		hand_viewport.msaa_2d = Viewport.MSAA_4X
+		hand_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		main.add_child(hand_viewport)
+
+		var hand_triangle = _make_triangle_rect()
+		hand_triangle.anchors_preset = 15
+		hand_triangle.anchor_right = 1.0
+		hand_triangle.anchor_bottom = 1.0
+		hand_viewport.add_child(hand_triangle)
+
+		hand_layer.set_layer_viewport(hand_viewport)
+		if side == "right":
+			main.comp_hand_right = hand_layer
+			main.comp_hand_right_triangle = hand_triangle
+		else:
+			main.comp_hand_left = hand_layer
+			main.comp_hand_left_triangle = hand_triangle
+	main._log("[COMP] Hand indicator composition layers created")
 
 	# GLES already created its own comp_kb above (different sort order/log,
 	# same overall shape) - only create the non-GLES variant here to avoid

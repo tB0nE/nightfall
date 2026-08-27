@@ -116,6 +116,24 @@ const AUTO_TABLE := {
 	"21:9 2K": {false: {"tier": 1, "model_idx": 1, "cap_px": 0}, true: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1080}},
 	"4K":      {false: {"tier": 1, "model_idx": 0, "cap_px": 2560 * 1440}, true: {"tier": 1, "model_idx": 1, "cap_px": 2560 * 1440}},
 }
+
+# Quest 2 Auto table (2026-08-27) - NOT benchmarked on real Quest 2 hardware
+# (none available) - extrapolated from Meta's own published XR2 Gen 1 vs
+# Gen 2 GPU figures (roughly 2-2.5x slower on Quest 2, worse under sustained
+# thermal load) applied to the real Quest 3 benchmark data above. main.gd's
+# QUEST2_MAX_RESOLUTION already hard-caps the stream to 1080p before this
+# table is even consulted (Quest 2's own display is lower-res than Quest 3's
+# anyway, and dividing AUTO_TABLE's 4K/cap_px=2560x1440 entry by ~2.2x lands
+# almost exactly on 1080p's pixel count) - so only 720p/HD rows exist here,
+# always the cheapest surviving tier+model (Fast, MiDaS-192-GPU), with an
+# extra pixel-budget cap on HD+passthrough since passthrough adds real GPU
+# cost this hardware has much less headroom for. Treat as a starting point
+# to be corrected once real on-device Quest 2 feedback comes in, not a
+# measured result like the table above.
+const QUEST2_AUTO_TABLE := {
+	"720p": {false: {"tier": 1, "model_idx": 1, "cap_px": 0}, true: {"tier": 1, "model_idx": 1, "cap_px": 0}},
+	"HD":   {false: {"tier": 1, "model_idx": 1, "cap_px": 0}, true: {"tier": 1, "model_idx": 1, "cap_px": 1280 * 720}},
+}
 var idle_labels: Array = ["Off", "5m", "15m", "30m", "60m"]
 var idle_values: Array = [0, 5, 15, 30, 60]
 
@@ -178,6 +196,13 @@ func _classify_auto_resolution(w: int, h: int) -> String:
 func get_auto_selection() -> Dictionary:
 	var res: Vector2i = main.compute_requested_resolution(false)
 	var cls := _classify_auto_resolution(res.x, res.y)
+	if main.device_is_quest2:
+		# QUEST2_AUTO_TABLE only has 720p/HD rows (see its own comment) -
+		# QUEST2_MAX_RESOLUTION means classification should never actually
+		# produce anything above HD on Quest 2, but clamp defensively rather
+		# than throw if it somehow does.
+		var quest2_cls = cls if QUEST2_AUTO_TABLE.has(cls) else "HD"
+		return QUEST2_AUTO_TABLE[quest2_cls][main.passthrough_enabled]
 	return AUTO_TABLE[cls][main.passthrough_enabled]
 
 func _save_setting(btn: Button, label: String):

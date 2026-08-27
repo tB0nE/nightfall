@@ -348,6 +348,38 @@ float DepthBridge::get_depth_last_inference_hz() {
 #endif
 }
 
+// Headset model string (2026-08-27) - see GodotApp.java's getDeviceModel()
+// comment. Same JNI call pattern as the getters above; Linux/other
+// platforms return an empty string, which callers treat the same as "not a
+// recognized Quest 2" (settings_controller.gd only special-cases a match).
+String DepthBridge::get_device_model() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return String();
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return String();
+
+    jmethodID method = env->GetStaticMethodID(app_class, "getDeviceModel", "()Ljava/lang/String;");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return String();
+    }
+
+    jstring jresult = (jstring)env->CallStaticObjectMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    if (!jresult) return String();
+
+    const char *chars = env->GetStringUTFChars(jresult, nullptr);
+    String result = String::utf8(chars);
+    env->ReleaseStringUTFChars(jresult, chars);
+    env->DeleteLocalRef(jresult);
+    return result;
+#else
+    return String();
+#endif
+}
+
 void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("submit_depth_frame", "frame_data", "width", "height"), &DepthBridge::submit_depth_frame);
     ClassDB::bind_method(D_METHOD("get_depth_map"), &DepthBridge::get_depth_map);
@@ -359,4 +391,5 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
+    ClassDB::bind_method(D_METHOD("get_device_model"), &DepthBridge::get_device_model);
 }
