@@ -130,6 +130,21 @@ public class GodotApp extends GodotActivity {
 		return depthEstimator != null ? depthEstimator.getLastInferenceHz() : 0f;
 	}
 
+	// Headset device codename (e.g. "hollywood" for Quest 2, "eureka" for
+	// Quest 3) - used by settings_controller.gd to pick a per-device AI-3D
+	// Auto table and resolution ceiling (2026-08-27, following a Quest 2
+	// user report that AI-3D tanks performance there - the existing
+	// AUTO_TABLE was hand-tuned entirely on Quest 3/3s hardware).
+	// Build.MODEL is USELESS here - confirmed on a real Quest 3 that it
+	// returns the generic "Quest" regardless of generation (likely a Meta
+	// compatibility shim), not the marketing name. Build.DEVICE returns the
+	// real internal codename instead (matches "ro.product.device"/
+	// "ro.hardware" at the system-property level, confirmed "eureka" on
+	// that same Quest 3) and is what's actually distinct per generation.
+	public static String getDeviceModel() {
+		return android.os.Build.DEVICE;
+	}
+
 	// One-off diagnostic for the H.264/HEVC hardware decoder dimension limits on this
 	// device - queried directly from the platform instead of inferred from trial and error.
 	public static String getCodecCapabilitiesInfo() {

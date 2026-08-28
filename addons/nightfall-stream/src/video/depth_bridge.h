@@ -39,6 +39,7 @@ public:
     int get_depth_model_size();
     float get_depth_last_inference_ms();
     float get_depth_last_inference_hz();
+    String get_device_model();
 
 protected:
     static void _bind_methods();
