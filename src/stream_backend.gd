@@ -205,6 +205,12 @@ func configure_depth(model_id: int, requested_backend: int):
 		if db:
 			db.configure_depth(model_id, requested_backend)
 
+func set_depth_hz_cap(hz: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			db.set_depth_hz_cap(hz)
+
 func get_depth_backend_capabilities(model_id: int) -> int:
 	if _v2:
 		var db = _v2.get_depth_bridge()

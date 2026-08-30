@@ -8,24 +8,24 @@ var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
 var enabled: bool = false
 var submit_timer: float = 0.0
-# 20Hz, matching Gilleece/moonlight-android-xr's own cadence comment ("depth
-# arrives at about 20Hz") and their own tuned/shipped default - trusted as
-# measured rather than re-litigated here. A 10Hz middle ground was tried
-# after the JNI depth pipeline was fixed from being silently broken (see git
-# history around 2026-08-17) to rule out this cadence as the cause of
-# DMap detail loss / GPU-NNAPI stutter observed at 20Hz, but the user
-# confirmed on-device that 20Hz gives back full DMap detail (a clock widget
-# that had disappeared) - so the stutter and detail-loss symptoms are NOT
-# from this cadence. More likely cause: depth_upsample.gdshader /
-# depth_offset.gdshader's own per-render-frame warp passes (see
-# _setup_warp_passes() below), since baseline stereo_mode 3/4 (which skips
-# those passes entirely) stays smooth even though its own postProcess does
-# MORE CPU work per call via dilate+blur. That's the next thing to fix, not
-# this value.
-var submit_interval: float = 0.05
-# The Java GPU worker owns the 20 Hz inference clock. Match it here rather than
-# paying for synchronous GPU readbacks which the latest-frame mailbox discards.
-const GPU_FRAME_PUBLISH_INTERVAL := 0.05
+# Default submit/readback rate, 20Hz - matching Gilleece/moonlight-android-xr's
+# own cadence comment ("depth arrives at about 20Hz") and their own tuned/
+# shipped default - trusted as measured rather than re-litigated here. A
+# 10Hz middle ground was tried after the JNI depth pipeline was fixed from
+# being silently broken (see git history around 2026-08-17) to rule out
+# this cadence as the cause of DMap detail loss / GPU-NNAPI stutter
+# observed at 20Hz, but the user confirmed on-device that 20Hz gives back
+# full DMap detail (a clock widget that had disappeared) - so the stutter
+# and detail-loss symptoms are NOT from this cadence. More likely cause:
+# depth_upsample.gdshader / depth_offset.gdshader's own per-render-frame
+# warp passes (see _setup_warp_passes() below), since baseline stereo_mode
+# 3/4 (which skips those passes entirely) stays smooth even though its own
+# postProcess does MORE CPU work per call via dilate+blur. That's the next
+# thing to fix, not this value. User-adjustable since 2026-08-28 (AI 3D
+# tab's Hz Cap control, main.ai_3d_hz_cap) - both this CPU-path submit rate
+# and the GPU readback cadence below now derive from
+# settings_controller.gd's get_effective_hz_cap() at the one call site in
+# process(), rather than each being a separate fixed constant.
 const GPU_BOOST_REFRESH_INTERVAL := 15.0
 # Native output resolution of whichever model is currently active in
 # DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
@@ -113,6 +113,11 @@ var _warp_frame_counter: int = 0
 # aliasing, render-order, and GPU-contention fixes all landed first and are
 # confirmed working - this is what's left after all of that).
 var _pass_parallax: float = 0.006
+# AI 3D tab's "Stereo Separation" control (2026-08-28) - a percentage
+# multiplier applied on top of _pass_parallax above, not a replacement for
+# it, so the tuning history/comment on _pass_parallax stays meaningful as
+# the true 100% baseline. See set_separation_pct()/refresh_parallax_uniforms().
+var _separation_pct: int = 100
 var _pass_size: Vector2i = Vector2i.ZERO
 
 var _platform: String
@@ -254,10 +259,27 @@ func _resize_warp_passes():
 	_pass_size = target
 	upsample_viewport.size = target
 	offset_viewport.size = target
-	offset_mat.set_shader_parameter("disp_texels", _pass_parallax * float(target.x))
+	refresh_parallax_uniforms()
+
+# Factored out of _resize_warp_passes() (2026-08-28) so the AI 3D tab's
+# "Stereo Separation" control can force a re-push (via set_separation_pct()
+# below) without needing an actual resolution change - _resize_warp_passes()
+# only reaches this on a genuine target-size change, which a pure
+# percentage tweak never triggers on its own.
+func refresh_parallax_uniforms():
+	if not offset_mat or _pass_size == Vector2i.ZERO:
+		return
+	var effective_parallax = _pass_parallax * (_separation_pct / 100.0)
+	offset_mat.set_shader_parameter("disp_texels", effective_parallax * float(_pass_size.x))
 	for mat in [main.comp_shader_mat_left, main.comp_shader_mat_right]:
 		if mat:
-			mat.set_shader_parameter("mode5_parallax", _pass_parallax)
+			mat.set_shader_parameter("mode5_parallax", effective_parallax)
+
+func set_separation_pct(pct: int):
+	if pct == _separation_pct:
+		return
+	_separation_pct = pct
+	refresh_parallax_uniforms()
 
 # Called from settings_controller.gd's apply_stereo() right after
 # stream_backend.configure_depth() switches the active Java-side model -
@@ -393,7 +415,13 @@ func process(delta: float):
 
 	if main.stream_backend.has_method("submit_depth_frame"):
 		submit_timer += delta
-		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.settings_controller.get_depth_backend_index() == 2 and OS.get_name() == "Android" else submit_interval
+		# Both the CPU-path submit rate and the GPU readback cadence now
+		# derive from the AI 3D tab's Hz Cap (2026-08-28, was a fixed 0.05/
+		# 20Hz for both) - get_effective_hz_cap() also forces 20Hz under
+		# Auto, matching what's actually pushed to the Java inference loop
+		# (DepthBridge::set_depth_hz_cap()), so this timer and the real
+		# inference rate can never drift apart.
+		var active_submit_interval = 1.0 / maxi(main.settings_controller.get_effective_hz_cap(), 1)
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			var capture_start = Time.get_ticks_usec()

@@ -103,6 +103,12 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static void setDepthHzCap(int hz) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.setHzCap(hz);
+		}
+	}
+
 	public static int getDepthBackendCapabilities(int modelIndex) {
 		return depthEstimator != null ? depthEstimator.getBackendCapabilities(modelIndex) : 1;
 	}

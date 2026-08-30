@@ -50,6 +50,13 @@ func save_host_state():
 	# marker disambiguates. See load_host_state()'s migration below.
 	save.set_value(ip, "ai_3d_speed_v2", true)
 	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
+	# AI 3D tab (2026-08-28) - new fields, no migration needed (ai_3d_models
+	# itself kept its original 5-entry indexing, see its own comment).
+	save.set_value(ip, "ai_3d_last_mode", main.ai_3d_last_mode)
+	save.set_value(ip, "ai_3d_backend_pref", main.ai_3d_backend_pref)
+	save.set_value(ip, "ai_3d_hz_cap", main.ai_3d_hz_cap)
+	save.set_value(ip, "ai_3d_separation_pct", main.ai_3d_separation_pct)
+	save.set_value(ip, "ai_3d_convergence_pct", main.ai_3d_convergence_pct)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
@@ -88,8 +95,22 @@ func load_host_state(ip: String):
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_speed"):
+			# ai_3d_models is back to its original 5-entry indexing (2026-08-28,
+			# see its own comment) - no migration needed here, same as before
+			# the brief 3-entry detour.
 			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_models.size() - 1)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+			main.ai_3d_last_mode = clampi(save.get_value(ip, "ai_3d_last_mode", 1), 1, 3)
+			main.ai_3d_backend_pref = 1 if save.get_value(ip, "ai_3d_backend_pref", 2) == 1 else 2
+			main.ai_3d_hz_cap = save.get_value(ip, "ai_3d_hz_cap", 20)
+			if not [12, 15, 20, 30].has(main.ai_3d_hz_cap):
+				main.ai_3d_hz_cap = 20
+			main.ai_3d_separation_pct = save.get_value(ip, "ai_3d_separation_pct", 100)
+			if not [50, 75, 100, 125, 150].has(main.ai_3d_separation_pct):
+				main.ai_3d_separation_pct = 100
+			main.ai_3d_convergence_pct = save.get_value(ip, "ai_3d_convergence_pct", 50)
+			if not [30, 40, 50, 60, 70].has(main.ai_3d_convergence_pct):
+				main.ai_3d_convergence_pct = 50
 			if save.has_section_key(ip, "ai_3d_speed_v2"):
 				main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 1), 0, 3)
 			else:
@@ -161,17 +182,20 @@ func load_host_state(ip: String):
 			main.sbs_mode = 0
 			main.ai_3d_model = 2 # MiDaS-192
 			main.ai_3d_speed = 1 # Auto
-	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
-	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	main.ui_controller.update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
-	# Auto (ai_3d_speed==1) picks its own model - main.ai_3d_model is
-	# frozen/irrelevant then (see ui_controller.gd's update_stereo_shader(),
-	# same logic mirrored here since this doesn't call that function directly).
-	var loaded_model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[loaded_model_idx].label)
-	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
-	main.ui_controller.update_3d_btn_state()
+	# Model may not actually belong to the loaded Type (main.ai_3d_backend_pref) -
+	# every migration branch above (including the pre-Type-existing legacy
+	# ones, which never touch ai_3d_backend_pref at all) can land here with
+	# them disagreeing. Snaps Model to Type's first matching entry if so;
+	# a no-op otherwise. Covers every branch above in one place rather than
+	# repeating it in each.
+	main.settings_controller.normalize_ai_3d_model_for_type()
+	# update_stereo_shader() (2026-08-28 - replaces a hand-duplicated copy of
+	# its own logic that lived here, "since this doesn't call that function
+	# directly" per its own old comment) already sets the stereo_mode
+	# uniform, every AI-3D button label (including the new AI 3D tab's
+	# controls, which that duplicate never knew about), and
+	# update_3d_btn_state() - no reason to keep two copies of this in sync.
+	main.ui_controller.update_stereo_shader()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()

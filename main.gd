@@ -69,10 +69,44 @@ var is_streaming: bool = false
 var sbs_mode: int = 0
 # Collapsed (2026-08-24) to two independent axes - see
 # settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
-# get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
+# get_stereo_mode() for how they combine. Split across a main-page On/Off
+# toggle and a dedicated "AI 3D" tab (2026-08-28) - ai_3d_speed itself is
+# UNCHANGED (still the single source of truth everywhere else in the
+# codebase), just driven by two different UI controls now: the main page
+# toggle flips it between 0 and ai_3d_last_mode, while the tab's own "3D
+# Mode" control cycles 1-3 directly and keeps ai_3d_last_mode in sync - see
+# settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
+var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
 var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
+var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
+# GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
+# only meaningful when that model actually has a GPU variant
+# (ai_3d_models[idx].gpu_available); DA-V2-252 has none, so this is
+# silently ignored (forced CPU) when it's selected - see
+# settings_controller.gd's get_depth_backend_index(). Values match
+# DepthBridge's own BACKEND_CPU=1/BACKEND_GPU=2 constants directly, no
+# separate mapping needed.
+var ai_3d_backend_pref: int = 2 # 1=CPU, 2=GPU
+# Depth-inference update-rate cap, in Hz - "more for experimentation" per
+# the user's own framing, so it's a straightforward pass-through to the
+# Java inference loop (see DepthBridge::set_depth_hz_cap()), not something
+# that changes the visual algorithm. Ignored under Auto (which always
+# targets a fixed 20Hz) - see settings_controller.gd's get_effective_hz_cap().
+var ai_3d_hz_cap: int = 20
+# Percentage multiplier on top of the depth-warp shaders' own tuned base
+# separation values (yuv_display.gdshader's mode5_parallax=0.006,
+# stereo_screen.gdshader's own copy=0.042) - NOT one shared absolute value,
+# since those two rendering paths were independently tuned to different
+# magnitudes for the same visual effect. See settings_controller.gd's
+# _push_ai3d_effect_uniforms()/depth_estimator.gd's set_separation_pct().
+var ai_3d_separation_pct: int = 100
+# Percentage-as-depth-fraction (30-70, maps directly to 0.30-0.70) for the
+# warp shaders' "convergence" uniform - the depth value that renders with
+# zero parallax (the "screen plane"). Declared in every depth-warp shader
+# already, default 0.5, but never actually driven from GDScript until this
+# - see _push_ai3d_effect_uniforms().
+var ai_3d_convergence_pct: int = 50
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -533,6 +567,13 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
+# AI 3D tab (2026-08-28) - see ui_controller.gd's build_ui() for layout.
+var _ui_3d_mode_btn: Button
+var _ui_3d_type_btn: Button
+var _ui_3d_hz_cap_btn: Button
+var _ui_3d_separation_btn: Button
+var _ui_3d_convergence_btn: Button
+var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -1632,6 +1673,14 @@ func _init_android_setup():
 	sbs_mode = clampi(sbs_mode, 0, 2)
 	ai_3d_model = clampi(ai_3d_model, 0, 4)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
+	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
+	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
+	if not [12, 15, 20, 30].has(ai_3d_hz_cap):
+		ai_3d_hz_cap = 20
+	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
+		ai_3d_separation_pct = 100
+	if not [30, 40, 50, 60, 70].has(ai_3d_convergence_pct):
+		ai_3d_convergence_pct = 50
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:

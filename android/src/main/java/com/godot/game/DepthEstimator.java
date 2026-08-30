@@ -29,7 +29,9 @@ public class DepthEstimator {
     public static final int BACKEND_GPU = 2;
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
-    private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
+    // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
+    // 50ms/20Hz default unchanged, see setHzCap() below.
+    private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
 
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
@@ -504,19 +506,43 @@ public class DepthEstimator {
         return lastInferenceHz;
     }
 
+    // AI 3D tab's Hz Cap control (2026-08-28) - re-targets the GPU
+    // inference loop's own clock (see GPU_INFERENCE_INTERVAL_NS above).
+    // Silently ignored for hz <= 0 rather than throwing - callers (see
+    // DepthBridge::set_depth_hz_cap()) already clamp to a fixed value set,
+    // but this stays defensive at the boundary regardless.
+    public synchronized void setHzCap(int hz) {
+        if (hz > 0) {
+            GPU_INFERENCE_INTERVAL_NS = 1_000_000_000L / hz;
+        }
+    }
+
     public synchronized void configureDepth(int modelIndex, int backend) {
         if (!initialized) return;
         requestedModelIndex = modelIndex;
         requestedBackend = backend >= BACKEND_AUTO && backend <= BACKEND_GPU ? backend : BACKEND_AUTO;
 
-        boolean gpuSupported = (getBackendCapabilities(modelIndex) & BACKEND_CAP_GPU) != 0;
-        boolean useGpu = requestedBackend != BACKEND_CPU && gpuSupported;
-        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        // 2026-08-30: gpuVariantExists (does this model have a GPU variant AT
+        // ALL) is deliberately separate from getBackendCapabilities()'s old
+        // gpuSupported check (which folded "no variant was ever built" and
+        // "variant exists but failed at runtime" into the same CPU
+        // substitution) - a model with no GPU variant is a real capability
+        // constraint (CPU is the only option that ever existed), but a
+        // variant that failed at runtime should NOT silently switch to CPU
+        // (see runScheduledGpuInference()'s "fail visibly" comment) - useGpu
+        // stays true for a permanently-failed variant so submitFrame() keeps
+        // routing into the (already-failed, no-retry) GPU path instead of
+        // quietly running CPU under a still-"GPU" label.
         GpuVariant requestedVariant = gpuVariants.get(modelIndex);
-        if (requestedBackend == BACKEND_GPU && !gpuSupported) {
-            backendStatus = requestedVariant != null && requestedVariant.permanentlyUnavailable && !requestedVariant.failureReason.isEmpty()
-                    ? requestedVariant.failureReason
-                    : "GPU depth is unavailable for this model; using CPU";
+        boolean gpuVariantExists = requestedVariant != null;
+        boolean useGpu = requestedBackend != BACKEND_CPU && gpuVariantExists;
+        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        if (requestedBackend == BACKEND_GPU && !gpuVariantExists) {
+            backendStatus = "GPU depth is unavailable for this model; using CPU";
+        } else if (requestedBackend == BACKEND_GPU && requestedVariant.permanentlyUnavailable) {
+            backendStatus = requestedVariant.failureReason.isEmpty()
+                    ? "GPU delegate initialization failed - AI-3D depth stopped (not falling back to CPU)"
+                    : requestedVariant.failureReason;
         } else {
             backendStatus = "";
         }
@@ -710,43 +736,50 @@ public class DepthEstimator {
         submittedFrames.incrementAndGet();
         try {
             ensureGpuVariantLoaded(variant);
-            byte[] result;
             if (variant.interp != null) {
-                result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
+                byte[] result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
+                if (result != null) {
+                    latestDepthMap.set(result);
+                }
+                // Only record telemetry for a real, successful invocation -
+                // recording it on the failure branch below would report a
+                // misleading ~0ms/~20Hz "it's running fine" readout (status
+                // bar's AI3D:Xms/XHz) off stale lastGpu*Ns fields, exactly
+                // the kind of invisible-failure this whole change is meant
+                // to remove.
+                recordTelemetry(fallbackModelIndex, true, System.nanoTime() - startNs);
             } else {
-                // GPU delegate/model failed to load - fall back to this
-                // variant's CPU counterpart for the rest of this session (no
-                // per-frame retry). Set fallback state inline rather than via
-                // a separate helper - this IS the single-threaded inference
-                // worker itself, so there's no other in-flight inference to
-                // wait for; the surrounding try/finally already owns
-                // isInferencing.
+                // GPU delegate/model failed to load. No silent CPU
+                // substitution (2026-08-30, explicit user request: "no
+                // unnecessary fallbacks that aren't visible, especially on
+                // Auto") - AI-3D depth simply stops producing new frames
+                // instead of quietly switching backend out from under the
+                // "GPU" the user (or Auto) actually selected. Sticky for the
+                // rest of this session (permanentlyUnavailable, no per-frame
+                // retry) - effectiveBackend/requestedBackend deliberately
+                // left untouched so get_depth_backend_label() never has to
+                // represent a third "GPU->CPU" hybrid state; the failure is
+                // surfaced entirely through backendStatus (settings_controller.gd's
+                // refresh_depth_backend_status() shows it persistently, not
+                // just on the transition).
                 String reason = variant.failureReason.isEmpty()
                         ? "GPU delegate initialization failed"
                         : variant.failureReason;
                 variant.permanentlyUnavailable = true;
                 variant.failureReason = reason;
-                effectiveBackend = BACKEND_CPU;
-                backendStatus = reason;
-                activeGpuVariant = null;
-                activeInterpreter = cpuInterpreterFor(fallbackModelIndex);
-                smoothedDepthFloat = null;
-                rangeValid = false;
-                lastPostProcessTimeNs = 0;
-                Log.w(TAG, reason + "; CPU depth will continue without retrying GPU this session");
-                result = runCpuInference(fallbackModelIndex, frame.pixels, frame.width, frame.height);
-            }
-            if (result != null) {
-                latestDepthMap.set(result);
+                backendStatus = reason + " - AI-3D depth stopped (not falling back to CPU)";
+                Log.e(TAG, reason + "; AI-3D depth stopped for this session, not falling back to CPU");
             }
         } catch (Exception e) {
             Log.e(TAG, "Async GPU inference failed", e);
         } finally {
             isInferencing.set(false);
-            recordTelemetry(fallbackModelIndex, true, System.nanoTime() - startNs);
         }
 
-        if (latestGpuFrame.get() != null && activeGpuVariant == variant) {
+        // Don't keep rescheduling once permanently failed - variant.interp
+        // will never become non-null again this session, so this would
+        // otherwise busy-loop at the Hz cap rate doing nothing but logging.
+        if (variant.interp != null && latestGpuFrame.get() != null && activeGpuVariant == variant) {
             scheduleGpuInference(variant);
         }
     }
