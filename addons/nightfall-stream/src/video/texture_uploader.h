@@ -37,7 +37,7 @@ public:
     TextureUploader();
     ~TextureUploader();
 
-    void setup(int width, int height, int format, int colorspace, int color_range);
+    void setup(int width, int height, int format, int colorspace, int color_range, int color_transfer = 0);
     void setup_bgra(int width, int height);
     void ensure_shader_material();
     void set_active(bool nv12); // Main-thread flags for shader conversion + NV12 mode
@@ -52,7 +52,11 @@ public:
     ANativeWindow *create_android_gles_decoder_surface(int width, int height);
     void update_android_gles_external_texture();
 #endif
-    void update_colorspace(int colorspace, int color_range);
+    void update_colorspace(int colorspace, int color_range, int color_transfer = 0);
+    // Protocol-level transfer metadata for native Android decoder paths which
+    // never expose an AVFrame (GLES SurfaceTexture and Vulkan AHB compute).
+    // Persisted independently from the material so it survives setup races.
+    void update_color_transfer(int color_transfer);
     void perform_gpu_update();
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
@@ -62,10 +66,11 @@ protected:
     static void _bind_methods();
 
 private:
-    void _render_thread_setup(int width, int height, int format, int colorspace, int color_range);
+    void _render_thread_setup(int width, int height, int format, int colorspace, int color_range, int color_transfer);
     void _render_thread_setup_bgra(int width, int height);
     void _render_thread_import_native(RID p_tex_rid, int p_width, int p_height);
     void _render_thread_cleanup();
+    void _render_thread_apply_color_transfer();
     void _render_thread_import_native_rt(); // Zero-arg version for call_on_render_thread (no .bind RID issues)
 
     RenderingDevice *rd = nullptr;
@@ -104,6 +109,7 @@ private:
     bool is_nv12 = false;
     std::atomic<bool> pending_gpu_update{false};
     std::atomic<bool> new_frame_available_{false};
+    std::atomic<int> current_color_transfer_type_{0};
     Ref<Mutex> texture_mutex;
 
     int current_width = 0;

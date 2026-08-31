@@ -7,6 +7,8 @@ var _restart_seq: int = 0
 var _ai_3d_commit_seq: int = 0
 var _last_effective_backend: int = -1
 var _last_backend_status: String = ""
+var _stereo_sdr_shader: Shader = null
+var _stereo_picture_shader: Shader = null
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -90,6 +92,7 @@ const AI3D_BACKEND_GPU := 2
 const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30]
 const AI3D_SEPARATION_VALUES: Array = [50, 75, 100, 125, 150]
 const AI3D_CONVERGENCE_VALUES: Array = [30, 40, 50, 60, 70]
+const AI3D_CURSOR_POSITION_LABELS: Array = ["Left", "Default", "Right"]
 # stereo_screen.gdshader's own live-path separation constant (mesh-
 # projection rendering, not the composition path yuv_display.gdshader
 # covers) - independently tuned to a different magnitude than
@@ -97,6 +100,13 @@ const AI3D_CONVERGENCE_VALUES: Array = [30, 40, 50, 60, 70]
 # comment about the two paths never having been unified. Scaled by
 # main.ai_3d_separation_pct the same way, just against its own base.
 const STEREO_SCREEN_BASE_PARALLAX := 0.042
+
+# Picture tab (2026-08-31). Brightness is additive (-20%..20%, mapped to
+# -0.2..0.2 in apply_filter()); Contrast/Gamma are multiplier/exponent-style
+# like AI3D_SEPARATION_VALUES above (50%..150% around a neutral 100%).
+const PICTURE_BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
+const PICTURE_CONTRAST_VALUES: Array = [50, 75, 100, 125, 150]
+const PICTURE_GAMMA_VALUES: Array = [50, 75, 100, 125, 150]
 
 # Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
 # vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
@@ -371,6 +381,20 @@ func cycle_ai_3d_convergence():
 	_save_setting(main._ui_3d_convergence_btn, "%d%%" % main.ai_3d_convergence_pct)
 	_schedule_ai_3d_commit()
 
+# Moves the rendered cursor over the AI-warped image without changing the
+# raycast or host click coordinates. This corrects visual click alignment;
+# it deliberately does not alter cursor depth/binocular disparity.
+func cycle_ai_3d_cursor_position():
+	if not _ai_3d_supported():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
+		return
+	main.ai_3d_cursor_position = ((clampi(main.ai_3d_cursor_position, -1, 1) + 1 + 1) % AI3D_CURSOR_POSITION_LABELS.size()) - 1
+	_save_setting(main._ui_3d_cursor_position_btn, get_ai_3d_cursor_position_label())
+
+func get_ai_3d_cursor_position_label() -> String:
+	return AI3D_CURSOR_POSITION_LABELS[clampi(main.ai_3d_cursor_position, -1, 1) + 1]
+
 # AI 3D tab's "Reset" button (2026-08-28) - restores only this tab's own
 # settings to their defaults (today's real, previously-hardcoded values -
 # see each field's own comment on main.gd). Deliberately does NOT touch
@@ -389,6 +413,7 @@ func reset_ai_3d_effect_settings():
 	main.ai_3d_hz_cap = 20
 	main.ai_3d_separation_pct = 100
 	main.ai_3d_convergence_pct = 50
+	main.ai_3d_cursor_position = 0
 	main.state_manager.save_state()
 	main.ui_controller.update_stereo_shader()
 	_schedule_ai_3d_commit()
@@ -791,6 +816,24 @@ func cycle_sharpen_mode():
 	_save_setting(main._ui_sharpen_btn, main.sharpen_labels[main.sharpen_mode])
 	apply_filter()
 
+func cycle_brightness():
+	var idx = PICTURE_BRIGHTNESS_VALUES.find(main.brightness_pct)
+	main.brightness_pct = PICTURE_BRIGHTNESS_VALUES[(maxi(idx, 0) + 1) % PICTURE_BRIGHTNESS_VALUES.size()]
+	_save_setting(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
+	apply_filter()
+
+func cycle_contrast():
+	var idx = PICTURE_CONTRAST_VALUES.find(main.contrast_pct)
+	main.contrast_pct = PICTURE_CONTRAST_VALUES[(maxi(idx, 0) + 1) % PICTURE_CONTRAST_VALUES.size()]
+	_save_setting(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
+	apply_filter()
+
+func cycle_gamma():
+	var idx = PICTURE_GAMMA_VALUES.find(main.gamma_pct)
+	main.gamma_pct = PICTURE_GAMMA_VALUES[(maxi(idx, 0) + 1) % PICTURE_GAMMA_VALUES.size()]
+	_save_setting(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+	apply_filter()
+
 func cycle_auto_reconnect():
 	main.auto_reconnect_enabled = not main.auto_reconnect_enabled
 	if main.stream_backend and main.stream_backend._v2:
@@ -822,17 +865,41 @@ func apply_filter():
 		return
 	var filter_val = main.smooth_mode
 	var sharp_val = float(main.sharpen_mode) * 0.5
+	# Picture tab (2026-08-31) - percent state -> shader-unit conversion
+	# lives here, shaders themselves stay unit-agnostic (0.0/1.0/1.0
+	# neutral defaults).
+	var brightness_val = main.brightness_pct / 100.0
+	var contrast_val = main.contrast_pct / 100.0
+	var gamma_val = main.gamma_pct / 100.0
+	var picture_adjusted = main.brightness_pct != 0 or main.contrast_pct != 100 or main.gamma_pct != 100
+	# Keep pow() and the three grading uniforms out of the default mesh and
+	# composition shader programs. Shader swaps only occur when crossing the
+	# neutral/adjusted boundary, not for every value within that state.
+	if not _stereo_sdr_shader:
+		_stereo_sdr_shader = load("res://src/shaders/stereo_screen.gdshader")
+	if not _stereo_picture_shader:
+		_stereo_picture_shader = load("res://src/shaders/stereo_screen_picture.gdshader")
 	var mat = main.screen_mesh.material_override
 	if mat and mat is ShaderMaterial:
+		var desired_shader = _stereo_picture_shader if picture_adjusted else _stereo_sdr_shader
+		if mat.shader != desired_shader:
+			mat.shader = desired_shader
 		mat.set_shader_parameter("filter_mode", filter_val)
 		mat.set_shader_parameter("sharpen", sharp_val)
 		mat.set_shader_parameter("blur_scale", main.get_blur_scale(main.primary_screen))
+		mat.set_shader_parameter("brightness", brightness_val)
+		mat.set_shader_parameter("contrast", contrast_val)
+		mat.set_shader_parameter("gamma", gamma_val)
+	main.comp.refresh_picture_shader_state()
 	for s in main.screens:
 		for cm in main.comp.get_shader_mats(s):
 			if cm:
 				cm.set_shader_parameter("filter_mode", filter_val)
 				cm.set_shader_parameter("sharpen", sharp_val)
 				cm.set_shader_parameter("blur_scale", main.get_blur_scale(s))
+				cm.set_shader_parameter("brightness", brightness_val)
+				cm.set_shader_parameter("contrast", contrast_val)
+				cm.set_shader_parameter("gamma", gamma_val)
 
 func apply_display_refresh_rate():
 	if not main.is_xr_active:

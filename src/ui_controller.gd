@@ -7,11 +7,13 @@ var _tab_stream: Control
 var _tab_control: Control
 var _tab_monitors: Control
 var _tab_ai3d: Control
+var _tab_picture: Control
 var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
 var _tab_btn_monitors: Button
 var _tab_btn_ai3d: Button
+var _tab_btn_picture: Button
 var _preset_row: HBoxContainer
 var _current_tab: int = 0
 
@@ -84,6 +86,10 @@ func on_ai_3d_convergence_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_convergence()
 
+func on_ai_3d_cursor_position_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_cursor_position()
+
 func on_ai_3d_reset_pressed():
 	main.settings_controller.reset_ai_3d_effect_settings()
 
@@ -115,6 +121,7 @@ func update_stereo_shader():
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
 	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.ai_3d_separation_pct)
 	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.ai_3d_convergence_pct)
+	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
 	update_3d_btn_state()
 
@@ -153,9 +160,10 @@ func update_3d_btn_state():
 	if main._ui_3d_hz_cap_btn:
 		main._ui_3d_hz_cap_btn.disabled = sub_disabled
 		main._ui_3d_hz_cap_btn.modulate.a = 0.3 if sub_disabled else 1.0
-	# Separation/Convergence stay live under Auto (2026-08-28) - they're a
-	# general 3D-strength tune, not something the Auto table decides, so
-	# they only grey when AI-3D itself is off.
+	# Separation/Convergence/Cursor Position stay live under Auto - they're
+	# visual tuning controls, not something the Auto table decides. They grey
+	# out whenever AI-3D itself is off; Cursor Position also has no rendering
+	# effect outside the AI stereo modes (see main.gd's cursor update).
 	var effect_disabled = disabled or main.ai_3d_speed == 0
 	if main._ui_3d_separation_btn:
 		main._ui_3d_separation_btn.disabled = effect_disabled
@@ -163,6 +171,9 @@ func update_3d_btn_state():
 	if main._ui_3d_convergence_btn:
 		main._ui_3d_convergence_btn.disabled = effect_disabled
 		main._ui_3d_convergence_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	if main._ui_3d_cursor_position_btn:
+		main._ui_3d_cursor_position_btn.disabled = effect_disabled
+		main._ui_3d_cursor_position_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	# Reset (2026-08-28) - always usable regardless of ai_3d_speed/Auto
 	# state (it's a getback-to-safe-defaults action), only greyed by the
 	# same base sbs/multi-screen conflict everything else on this tab has.
@@ -334,6 +345,7 @@ func switch_tab(tab: int):
 	if _tab_control: _tab_control.visible = (tab == 2)
 	if _tab_monitors: _tab_monitors.visible = (tab == 3)
 	if _tab_ai3d: _tab_ai3d.visible = (tab == 4)
+	if _tab_picture: _tab_picture.visible = (tab == 5)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -358,6 +370,10 @@ func switch_tab(tab: int):
 		_tab_btn_ai3d.add_theme_stylebox_override("normal", tab_active_style if tab == 4 else tab_inactive_style)
 		_tab_btn_ai3d.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_ai3d.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 4 else Color(1, 1, 1, 0.5))
+	if _tab_btn_picture:
+		_tab_btn_picture.add_theme_stylebox_override("normal", tab_active_style if tab == 5 else tab_inactive_style)
+		_tab_btn_picture.add_theme_stylebox_override("hover", tab_active_style)
+		_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 5 else Color(1, 1, 1, 0.5))
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
@@ -625,6 +641,14 @@ func build_ui():
 	_tab_btn_ai3d.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	tab_bar.add_child(_tab_btn_ai3d)
 
+	_tab_btn_picture = Button.new()
+	_tab_btn_picture.text = "Picture"
+	_tab_btn_picture.focus_mode = Control.FOCUS_NONE
+	_tab_btn_picture.custom_minimum_size = Vector2(160, 44)
+	_tab_btn_picture.add_theme_font_size_override("font_size", 22)
+	_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	tab_bar.add_child(_tab_btn_picture)
+
 	var tab_margin = Control.new()
 	tab_margin.custom_minimum_size = Vector2(0, 12)
 	tab_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -677,10 +701,6 @@ func build_ui():
 
 	main._ui_curve_btn = make_option_btn("Curve", "Flat")
 	disp_row2.add_child(main._ui_curve_btn)
-	main._ui_sharpen_btn = make_option_btn("Sharpen", "0%")
-	disp_row2.add_child(main._ui_sharpen_btn)
-	main._ui_render_btn = make_option_btn("Blur", "0%")
-	disp_row2.add_child(main._ui_render_btn)
 	main._ui_bg_btn = make_option_btn("Background", "Black")
 	disp_row2.add_child(main._ui_bg_btn)
 
@@ -752,8 +772,6 @@ func build_ui():
 	control_row1.add_child(main._ui_cursor_btn)
 	main._ui_steady_btn = make_option_btn("Cursor Steady", "Low")
 	control_row1.add_child(main._ui_steady_btn)
-	main._ui_bezel_btn = make_option_btn("Bezel", "On")
-	control_row1.add_child(main._ui_bezel_btn)
 	main._ui_hand_tracking_btn = make_option_btn("Tracking", "Off")
 	control_row1.add_child(main._ui_hand_tracking_btn)
 
@@ -802,6 +820,8 @@ func build_ui():
 	ai3d_row1.add_child(main._ui_3d_type_btn)
 	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
 	ai3d_row1.add_child(main._ui_3d_btn)
+	main._ui_3d_reset_btn = make_action_btn("Reset")
+	ai3d_row1.add_child(main._ui_3d_reset_btn)
 
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.custom_minimum_size = Vector2(0, 20)
@@ -823,8 +843,52 @@ func build_ui():
 	ai3d_row2.add_child(main._ui_3d_separation_btn)
 	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50%")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
-	main._ui_3d_reset_btn = make_action_btn("Reset")
-	ai3d_row2.add_child(main._ui_3d_reset_btn)
+	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
+	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
+
+	_tab_picture = VBoxContainer.new()
+	_tab_picture.name = "TabPicture"
+	_tab_picture.add_theme_constant_override("separation", 0)
+	_tab_picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_picture.visible = false
+	vbox.add_child(_tab_picture)
+
+	var picture_row1 = HBoxContainer.new()
+	picture_row1.name = "PictureRow1"
+	picture_row1.add_theme_constant_override("separation", 12)
+	picture_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	picture_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	picture_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	picture_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_picture.add_child(picture_row1)
+
+	main._ui_brightness_btn = make_option_btn("Brightness", "+0%")
+	picture_row1.add_child(main._ui_brightness_btn)
+	main._ui_contrast_btn = make_option_btn("Contrast", "100%")
+	picture_row1.add_child(main._ui_contrast_btn)
+	main._ui_gamma_btn = make_option_btn("Gamma", "100%")
+	picture_row1.add_child(main._ui_gamma_btn)
+
+	var picture_gap1 = Control.new()
+	picture_gap1.custom_minimum_size = Vector2(0, 20)
+	picture_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_picture.add_child(picture_gap1)
+
+	var picture_row2 = HBoxContainer.new()
+	picture_row2.name = "PictureRow2"
+	picture_row2.add_theme_constant_override("separation", 12)
+	picture_row2.alignment = BoxContainer.ALIGNMENT_CENTER
+	picture_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	picture_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	picture_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_picture.add_child(picture_row2)
+
+	main._ui_sharpen_btn = make_option_btn("Sharpen", main.sharpen_labels[0])
+	picture_row2.add_child(main._ui_sharpen_btn)
+	main._ui_render_btn = make_option_btn("Blur", main.smooth_labels[0])
+	picture_row2.add_child(main._ui_render_btn)
+	main._ui_bezel_btn = make_option_btn("Bezel", "On")
+	picture_row2.add_child(main._ui_bezel_btn)
 
 	_tab_monitors = VBoxContainer.new()
 	_tab_monitors.name = "TabMonitors"
@@ -958,6 +1022,7 @@ func build_ui():
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
+	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
 	main._ui_3d_reset_btn.button_down.connect(func(): on_ai_3d_reset_pressed())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
@@ -971,6 +1036,9 @@ func build_ui():
 	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
 	main._ui_render_btn.button_down.connect(func(): main.settings_controller.cycle_smooth_mode())
 	main._ui_sharpen_btn.button_down.connect(func(): main.settings_controller.cycle_sharpen_mode())
+	main._ui_brightness_btn.button_down.connect(func(): main.settings_controller.cycle_brightness())
+	main._ui_contrast_btn.button_down.connect(func(): main.settings_controller.cycle_contrast())
+	main._ui_gamma_btn.button_down.connect(func(): main.settings_controller.cycle_gamma())
 	main._ui_cursor_btn.button_down.connect(func(): main.settings_controller.cycle_cursor_mode())
 	main._ui_steady_btn.button_down.connect(func(): main.settings_controller.cycle_steady())
 	main._ui_codec_btn.button_down.connect(func(): main.settings_controller.cycle_codec())
@@ -987,6 +1055,7 @@ func build_ui():
 	_tab_btn_control.button_down.connect(func(): switch_tab(2))
 	_tab_btn_monitors.button_down.connect(func(): switch_tab(3))
 	_tab_btn_ai3d.button_down.connect(func(): switch_tab(4))
+	_tab_btn_picture.button_down.connect(func(): switch_tab(5))
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()

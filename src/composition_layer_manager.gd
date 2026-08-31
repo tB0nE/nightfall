@@ -5,11 +5,101 @@ var main
 var available: bool = false
 var in_use: bool = false
 var _last_bind_rids: Array = []
-var _last_bind_mode: Array = [0, 1, 0]
+var _last_bind_mode: Array = [0, 1, 0, 0]
+var _sdr_shader: Shader = null
+var _sdr_picture_shader: Shader = null
+var _hdr_shader: Shader = null
+var _hdr_lut: ImageTexture = null
+var _current_color_transfer_type: int = 0
+
+func _get_sdr_shader() -> Shader:
+	if not _sdr_shader:
+		_sdr_shader = load("res://src/shaders/yuv_display.gdshader")
+	return _sdr_shader
+
+func _get_sdr_picture_shader() -> Shader:
+	if not _sdr_picture_shader:
+		_sdr_picture_shader = load("res://src/shaders/yuv_display_picture.gdshader")
+	return _sdr_picture_shader
+
+func _get_hdr_shader() -> Shader:
+	if not _hdr_shader:
+		_hdr_shader = load("res://src/shaders/yuv_display_hdr.gdshader")
+	return _hdr_shader
+
+# ST 2084 (PQ) inverse EOTF -> linear, normalized so 203 nits (the standard
+# PQ SDR reference-white anchor, ITU-R BT.2408) = 1.0.
+func _pq_decode(e: float) -> float:
+	var m1 = 0.1593017578125
+	var m2 = 78.84375
+	var c1 = 0.8359375
+	var c2 = 18.8515625
+	var c3 = 18.6875
+	var ep = pow(e, 1.0 / m2)
+	var num = maxf(ep - c1, 0.0)
+	var den = maxf(c2 - c3 * ep, 1e-6)
+	var linear = pow(num / den, 1.0 / m1) # 0..1 represents 0..10000 nits
+	return linear / 0.0203 # 203/10000
+
+# ARIB STD-B67 (HLG) inverse OETF composed with its system-gamma OOTF (fixed
+# 1.2, BT.2100's nominal value for a ~1000 nit reference display), normalized
+# so 203 nits of HLG's ~1000 nit nominal peak = 1.0.
+func _hlg_decode(e: float) -> float:
+	var a = 0.17883277
+	var b = 1.0 - 4.0 * a
+	var c = 0.5 - a * log(4.0 * a)
+	var scene = ((e * e) / 3.0) if (e < 0.5) else ((exp((e - c) / a) + b) / 12.0)
+	var ootf = pow(maxf(scene, 0.0), 1.2)
+	return ootf / 0.203 # 203/1000
+
+func _srgb_encode(c: float) -> float:
+	c = clampf(c, 0.0, 1.0)
+	if c <= 0.0031308:
+		return c * 12.92
+	return 1.055 * pow(c, 1.0 / 2.4) - 0.055
+
+# 256 wide (LUT input resolution) x 3 tall - row 0 = PQ decode, row 1 = HLG
+# decode, row 2 = linear->sRGB encode (see yuv_display_hdr.gdshader's own
+# comment on hdr_eotf_lut for why: trades per-pixel pow()/exp() calls for
+# texture fetches). Built once, lazily, on first use - 768 total evaluations,
+# not a per-frame cost.
+func _get_hdr_lut() -> ImageTexture:
+	if _hdr_lut:
+		return _hdr_lut
+	var img = Image.create(256, 3, false, Image.FORMAT_RF)
+	for x in range(256):
+		var e = float(x) / 255.0
+		img.set_pixel(x, 0, Color(_pq_decode(e), 0.0, 0.0))
+		img.set_pixel(x, 1, Color(_hlg_decode(e), 0.0, 0.0))
+		img.set_pixel(x, 2, Color(_srgb_encode(e), 0.0, 0.0))
+	_hdr_lut = ImageTexture.create_from_image(img)
+	return _hdr_lut
+
+# Select a compiled shader variant instead of making HDR and picture grading
+# runtime branches in the always-hot SDR/AI-depth shader. Check each material
+# rather than caching one global state: screen/layout rebuilds can introduce
+# fresh materials without changing the stream's transfer type.
+func _apply_video_shader_state(color_transfer_type: int):
+	_current_color_transfer_type = color_transfer_type
+	var picture_adjusted = main.brightness_pct != 0 or main.contrast_pct != 100 or main.gamma_pct != 100
+	var shader: Shader
+	if color_transfer_type != 0:
+		shader = _get_hdr_shader()
+	elif picture_adjusted:
+		shader = _get_sdr_picture_shader()
+	else:
+		shader = _get_sdr_shader()
+	for s in main.screens:
+		for mat in get_shader_mats(s):
+			if mat and mat.shader != shader:
+				mat.shader = shader
+
+func refresh_picture_shader_state():
+	_apply_video_shader_state(_current_color_transfer_type)
 
 func invalidate_yuv_cache():
 	_last_bind_rids = []
-	_last_bind_mode = [0, 1, 0]
+	_last_bind_mode = [0, 1, 0, 0]
 
 # set_shader_parameter("tex_y", ...) is fed either a Texture wrapper (the
 # direct multi-plane YUV/AHB import path) or a raw RID (StreamConnection's
@@ -889,6 +979,11 @@ func bind_yuv_textures():
 	var is_semi_planar = mat.get_shader_parameter("is_semi_planar")
 	var cmt = mat.get_shader_parameter("color_matrix_type")
 	var cr = mat.get_shader_parameter("color_range")
+	# 0 = SDR, 1 = PQ, 2 = HLG - see TextureUploader::_render_thread_setup()/
+	# update_colorspace() (native) for where this actually gets set.
+	var ctt = mat.get_shader_parameter("color_transfer_type")
+	if ctt == null:
+		ctt = 0
 	# tex_y can be a non-null Texture object whose underlying RID no longer
 	# points to valid GPU memory - e.g. right after a stream restart, before
 	# the new decoder session has produced its first frame, the shader
@@ -915,7 +1010,7 @@ func bind_yuv_textures():
 		else:
 			yuv_mode_val = 3
 		var rids = [_as_rid(tex_y), _as_rid(tex_u), _as_rid(tex_v)]
-		var mode_tuple = [yuv_mode_val, cmt, cr]
+		var mode_tuple = [yuv_mode_val, cmt, cr, ctt]
 		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
 		if not in_use:
 			for s in main.screens:
@@ -927,8 +1022,8 @@ func bind_yuv_textures():
 					s.material_override.set_shader_parameter("color_range", cr)
 					s.material_override.set_shader_parameter("yuv_mode", yuv_mode_val)
 		if not unchanged:
-			main._log("[YUV] Direct YUV binding: mode=%d nv12_rd=%s semi_planar=%s" % [yuv_mode_val, str(is_nv12_rd), str(is_semi_planar)])
-			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr)
+			main._log("[YUV] Direct YUV binding: mode=%d nv12_rd=%s semi_planar=%s transfer=%d" % [yuv_mode_val, str(is_nv12_rd), str(is_semi_planar), ctt])
+			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr, ctt)
 			_last_bind_rids = rids
 			_last_bind_mode = mode_tuple
 	else:
@@ -940,7 +1035,14 @@ func bind_yuv_textures():
 					s.material_override.set_shader_parameter("yuv_mode", 0)
 		bind_fallback_texture(stream_tex)
 
-func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
+func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: int = 0):
+	# Swap the composition materials' shader resource BEFORE pushing
+	# parameters below - see yuv_display_hdr.gdshader's own comment for why
+	# this is a separate compiled shader rather than a branch in the plain
+	# one (keeps the always-hot SDR/depth-warp path free of PQ/HLG code
+	# entirely, instead of paying for it on every stream regardless of
+	# whether it's ever used).
+	_apply_video_shader_state(ctt)
 	for s in main.screens:
 		for mat in get_shader_mats(s):
 			if not mat:
@@ -951,6 +1053,9 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 			mat.set_shader_parameter("yuv_mode", yuv_mode)
 			mat.set_shader_parameter("color_matrix_type", cmt)
 			mat.set_shader_parameter("color_range", cr)
+			if ctt != 0:
+				mat.set_shader_parameter("color_transfer_type", ctt)
+				mat.set_shader_parameter("hdr_eotf_lut", _get_hdr_lut())
 		for lbl in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
 			if lbl:
 				lbl.visible = false
@@ -971,6 +1076,12 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 	main._log("[COMP] YUV textures bound to composition layer shader (mode=%d)" % yuv_mode)
 
 func bind_fallback_texture(stream_tex):
+	# This path is also used while a new decoder session has not produced a
+	# bindable direct-YUV texture yet. The HDR shader only tonemaps its direct
+	# YUV/RGB input path (yuv_mode > 0), not main_texture, so retaining it here
+	# cannot correctly process an HDR fallback and only leaks the previous
+	# session's shader state. GLES HDR fallback needs its own explicit plumbing.
+	_apply_video_shader_state(0)
 	for s in main.screens:
 		for mat in get_shader_mats(s):
 			if not mat:

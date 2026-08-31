@@ -241,7 +241,10 @@ public class DepthEstimator {
         ByteBuffer inputBuf;
         ByteBuffer outputBuf;
         boolean loadAttempted;
-        boolean permanentlyUnavailable;
+        // Written by the inference executor and read by the submission/UI
+        // threads, so failure must become visible without relying on an
+        // unrelated synchronized call.
+        volatile boolean permanentlyUnavailable;
         String failureReason = "";
 
         GpuVariant(String label, String assetFile, int inputSize) {
@@ -645,6 +648,12 @@ public class DepthEstimator {
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
         if (gpuVariant != null) {
+            // A failed delegate is sticky for this session. Keep the requested/
+            // effective backend labeled GPU so the UI can report the actual
+            // failed choice, but do not keep allocating frames and scheduling
+            // a worker which ensureGpuVariantLoaded() has already declared
+            // permanently unavailable.
+            if (gpuVariant.permanentlyUnavailable) return;
             PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height));
             if (previous != null) {
                 droppedFrames.incrementAndGet();
@@ -705,7 +714,8 @@ public class DepthEstimator {
     }
 
     private void scheduleGpuInference(GpuVariant variant) {
-        if (!initialized || activeGpuVariant != variant || !gpuWorkerScheduled.compareAndSet(false, true)) {
+        if (!initialized || variant.permanentlyUnavailable || activeGpuVariant != variant
+                || !gpuWorkerScheduled.compareAndSet(false, true)) {
             return;
         }
         long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());

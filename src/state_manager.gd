@@ -14,6 +14,9 @@ func save_state():
 	save.set_value("screen", "background_mode", main.background_mode)
 	save.set_value("screen", "smooth_mode", main.smooth_mode)
 	save.set_value("screen", "sharpen_mode", main.sharpen_mode)
+	save.set_value("screen", "brightness_pct", main.brightness_pct)
+	save.set_value("screen", "contrast_pct", main.contrast_pct)
+	save.set_value("screen", "gamma_pct", main.gamma_pct)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "codec_preference", main.codec_preference)
@@ -57,6 +60,7 @@ func save_host_state():
 	save.set_value(ip, "ai_3d_hz_cap", main.ai_3d_hz_cap)
 	save.set_value(ip, "ai_3d_separation_pct", main.ai_3d_separation_pct)
 	save.set_value(ip, "ai_3d_convergence_pct", main.ai_3d_convergence_pct)
+	save.set_value(ip, "ai_3d_cursor_position_v2", main.ai_3d_cursor_position)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
@@ -111,6 +115,12 @@ func load_host_state(ip: String):
 			main.ai_3d_convergence_pct = save.get_value(ip, "ai_3d_convergence_pct", 50)
 			if not [30, 40, 50, 60, 70].has(main.ai_3d_convergence_pct):
 				main.ai_3d_convergence_pct = 50
+			if save.has_section_key(ip, "ai_3d_cursor_position_v2"):
+				main.ai_3d_cursor_position = clampi(save.get_value(ip, "ai_3d_cursor_position_v2", 0), -1, 1)
+			else:
+				# Migrate the short-lived seven-position control: old Default,
+				# Right, and Right+ are the new Left, Default, and Right.
+				main.ai_3d_cursor_position = clampi(save.get_value(ip, "ai_3d_cursor_position", 1) - 1, -1, 1)
 			if save.has_section_key(ip, "ai_3d_speed_v2"):
 				main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 1), 0, 3)
 			else:
@@ -272,6 +282,10 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_render_btn, main.smooth_labels[clampi(main.smooth_mode, 0, main.smooth_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
+		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
+		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+		main.ui_controller.update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
@@ -328,6 +342,15 @@ func load_state():
 		main.passthrough_enabled = false
 	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
 	main.sharpen_mode = save.get_value("screen", "sharpen_mode", 0)
+	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
+	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):
+		main.brightness_pct = 0
+	main.contrast_pct = save.get_value("screen", "contrast_pct", 100)
+	if not [50, 75, 100, 125, 150].has(main.contrast_pct):
+		main.contrast_pct = 100
+	main.gamma_pct = save.get_value("screen", "gamma_pct", 100)
+	if not [50, 75, 100, 125, 150].has(main.gamma_pct):
+		main.gamma_pct = 100
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
 	var saved_steady = save.get_value("screen", "pointer_steady", 1)
 	if saved_steady is bool:

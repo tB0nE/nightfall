@@ -107,6 +107,11 @@ var ai_3d_separation_pct: int = 100
 # already, default 0.5, but never actually driven from GDScript until this
 # - see _push_ai3d_effect_uniforms().
 var ai_3d_convergence_pct: int = 50
+# Horizontal correction for the cursor drawn over AI-warped video. Stored as
+# -1/0/1 (Left/Default/Right). The calibrated Default is one 12px-at-1080p
+# step right of the original position. Presentation only: raycast and host
+# click coordinates stay unchanged.
+var ai_3d_cursor_position: int = 0
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -194,6 +199,13 @@ var smooth_mode: int = 0
 var sharpen_mode: int = 0
 var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
+# Picture tab (2026-08-31) - brightness/contrast/gamma grade applied as a
+# final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
+# shader variant) - see settings_controller.gd's apply_filter() for the
+# percent->shader-uniform mapping and each shader's apply_picture().
+var brightness_pct: int = 0 # -20..20, step 10 (additive)
+var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
+var gamma_pct: int = 100 # 50..150, step 25 (exponent)
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
@@ -573,6 +585,7 @@ var _ui_3d_type_btn: Button
 var _ui_3d_hz_cap_btn: Button
 var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
+var _ui_3d_cursor_position_btn: Button
 var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -584,6 +597,10 @@ var _ui_quick_start_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
+# Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
+var _ui_brightness_btn: Button
+var _ui_contrast_btn: Button
+var _ui_gamma_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
@@ -983,6 +1000,13 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
+			# Correct the visible cursor independently of the real click point.
+			# One step is 12 pixels at 1080p and scales with stream height so the
+			# apparent adjustment stays consistent at other resolutions.
+			if stereo >= 3:
+				# New Left/Default/Right correspond to the old Default/Right/
+				# Right+ positions respectively, hence the +1 calibration step.
+				cx += (ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 			_set_comp_quad_hidden(comp_cursor, true)
 			if pointer_cursor:
 				pointer_cursor.visible = false
@@ -2087,6 +2111,19 @@ func _init_stream_backend():
 		v2_node.h264_hw_upgraded.connect(func():
 			_bind_yuv_textures()
 			_log("[H264] HW upgrade: re-bound YUV textures for NV12")
+		)
+	if v2_node.has_signal("hdr_mode_changed"):
+		v2_node.hdr_mode_changed.connect(func(enabled: bool, metadata: Dictionary):
+			_log("[HDR] Protocol mode changed: enabled=%s metadata=%s" % [str(enabled), str(metadata)])
+			# The native callback persists transfer metadata immediately, then
+			# applies it on the render thread. Rebind on this frame and once more
+			# after a rendered frame so either ordering updates the composition
+			# shader variant without relying on stream-start retry timing.
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
+			await get_tree().process_frame
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
 		)
 	if v2_node.has_signal("controller_rumble"):
 		v2_node.controller_rumble.connect(func(controller, low_freq, high_freq):

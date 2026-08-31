@@ -387,7 +387,13 @@ func process(delta: float):
 	# directly - the separate 3D Backend control (2026-08-22) lets MiDaS-256
 	# (index 5) also end up running on GPU via Auto/GPU backend selection.
 	var effective_gpu = main.stream_backend and main.stream_backend.get_effective_depth_backend() == 2
-	var should_boost = enabled and effective_gpu and main.is_streaming
+	# effectiveBackend deliberately remains GPU after a delegate failure so the
+	# UI continues to describe the backend the user actually selected. A
+	# non-empty failure status is therefore the missing "is it really running"
+	# half of this decision: boost before/during normal GPU inference, but drop
+	# back to sustained-high once that GPU path has stopped for the session.
+	var backend_failed = effective_gpu and not main.stream_backend.get_depth_backend_status().is_empty()
+	var should_boost = enabled and effective_gpu and not backend_failed and main.is_streaming
 	if should_boost:
 		_gpu_boost_refresh_timer += delta
 		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:

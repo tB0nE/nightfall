@@ -146,14 +146,15 @@ void TextureUploader::ensure_shader_material() {
         shader_material->set_shader_parameter("is_nv12_rd", false);
         shader_material->set_shader_parameter("color_matrix_type", 3);
         shader_material->set_shader_parameter("color_range", 1);
+        shader_material->set_shader_parameter("color_transfer_type", current_color_transfer_type_.load());
         shader_material->set_shader_parameter("swap_uv", false);
     }
 }
 
-void TextureUploader::setup(int width, int height, int format, int colorspace, int color_range) {
+void TextureUploader::setup(int width, int height, int format, int colorspace, int color_range, int color_transfer) {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (rs) {
-        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_setup).bind(width, height, format, colorspace, color_range));
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_setup).bind(width, height, format, colorspace, color_range, color_transfer));
     }
 }
 
@@ -258,11 +259,12 @@ void TextureUploader::_render_thread_setup_bgra(int width, int height) {
     }
 }
 
-void TextureUploader::_render_thread_setup(int width, int height, int format, int colorspace, int color_range) {
+void TextureUploader::_render_thread_setup(int width, int height, int format, int colorspace, int color_range, int color_transfer) {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
     AVPixelFormat av_format = (AVPixelFormat)format;
     AVColorSpace av_colorspace = (AVColorSpace)colorspace;
     AVColorRange av_color_range = (AVColorRange)color_range;
+    current_color_transfer_type_.store(color_transfer);
 
     RenderingServer *rs = RenderingServer::get_singleton();
     if (rd) {
@@ -380,6 +382,7 @@ void TextureUploader::_render_thread_setup(int width, int height, int format, in
         shader_material->set_shader_parameter("is_nv12_rd", is_nv12 && rd);
         shader_material->set_shader_parameter("color_matrix_type", matrix_type);
         shader_material->set_shader_parameter("color_range", range_val);
+        shader_material->set_shader_parameter("color_transfer_type", color_transfer);
         shader_material->set_shader_parameter("swap_uv", false);
 
         if (rd) {
@@ -394,9 +397,7 @@ void TextureUploader::_render_thread_setup(int width, int height, int format, in
     }
 }
 
-void TextureUploader::update_colorspace(int colorspace, int color_range) {
-    if (!shader_material.is_valid()) return;
-
+void TextureUploader::update_colorspace(int colorspace, int color_range, int color_transfer) {
     AVColorSpace av_cs = (AVColorSpace)colorspace;
     AVColorRange av_cr = (AVColorRange)color_range;
 
@@ -408,8 +409,30 @@ void TextureUploader::update_colorspace(int colorspace, int color_range) {
 
     int range_val = (av_cr == AVCOL_RANGE_JPEG) ? 1 : 0;
 
-    shader_material->set_shader_parameter("color_matrix_type", matrix_type);
-    shader_material->set_shader_parameter("color_range", range_val);
+    current_color_transfer_type_.store(color_transfer);
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_matrix_type", matrix_type);
+        shader_material->set_shader_parameter("color_range", range_val);
+    }
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_apply_color_transfer));
+    }
+}
+
+void TextureUploader::update_color_transfer(int color_transfer) {
+    current_color_transfer_type_.store(color_transfer);
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_apply_color_transfer));
+    }
+}
+
+void TextureUploader::_render_thread_apply_color_transfer() {
+    ensure_shader_material();
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_transfer_type", current_color_transfer_type_.load());
+    }
 }
 
 void TextureUploader::update_from_frame(AVFrame *frame) {
@@ -1049,6 +1072,10 @@ void TextureUploader::perform_gpu_update() {
 }
 
 void TextureUploader::cleanup() {
+    // HDR mode is connection-scoped. Do not let a previous session's PQ flag
+    // survive in the persistent uploader/material while the next decoder is
+    // being created (the protocol will set it again if that stream is HDR).
+    current_color_transfer_type_.store(0);
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return;
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_cleanup));
@@ -1056,6 +1083,9 @@ void TextureUploader::cleanup() {
 
 void TextureUploader::_render_thread_cleanup() {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_transfer_type", 0);
+    }
 #ifdef __ANDROID__
     _render_thread_destroy_android_gles_surface();
 #endif
@@ -1111,7 +1141,8 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
 #endif
 
 void TextureUploader::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range"), &TextureUploader::setup);
+    ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range", "color_transfer"), &TextureUploader::setup, DEFVAL(0));
+    ClassDB::bind_method(D_METHOD("update_color_transfer", "color_transfer"), &TextureUploader::update_color_transfer);
     ClassDB::bind_method(D_METHOD("cleanup"), &TextureUploader::cleanup);
     ClassDB::bind_method(D_METHOD("get_shader_material"), &TextureUploader::get_shader_material);
     ClassDB::bind_method(D_METHOD("perform_gpu_update"), &TextureUploader::perform_gpu_update);
