@@ -757,6 +757,10 @@ func cycle_steady():
 	main._steady_active = false
 	_save_setting(main._ui_steady_btn, main.pointer_steady_labels[main.pointer_steady])
 
+func cycle_double_click_mode():
+	main.double_click_mode = (main.double_click_mode + 1) % main.double_click_mode_labels.size()
+	_save_setting(main._ui_double_click_btn, main.double_click_mode_labels[main.double_click_mode])
+
 func is_codec_available(idx: int) -> bool:
 	var client_ok = false
 	var server_ok = false

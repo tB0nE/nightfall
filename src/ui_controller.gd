@@ -774,6 +774,8 @@ func build_ui():
 	control_row1.add_child(main._ui_steady_btn)
 	main._ui_hand_tracking_btn = make_option_btn("Tracking", "Off")
 	control_row1.add_child(main._ui_hand_tracking_btn)
+	main._ui_double_click_btn = make_option_btn("Double Click", "Standard")
+	control_row1.add_child(main._ui_double_click_btn)
 
 	var control_gap1 = Control.new()
 	control_gap1.custom_minimum_size = Vector2(0, 20)
@@ -1041,6 +1043,7 @@ func build_ui():
 	main._ui_gamma_btn.button_down.connect(func(): main.settings_controller.cycle_gamma())
 	main._ui_cursor_btn.button_down.connect(func(): main.settings_controller.cycle_cursor_mode())
 	main._ui_steady_btn.button_down.connect(func(): main.settings_controller.cycle_steady())
+	main._ui_double_click_btn.button_down.connect(func(): main.settings_controller.cycle_double_click_mode())
 	main._ui_codec_btn.button_down.connect(func(): main.settings_controller.cycle_codec())
 	main._ui_ctrl_mode_btn.button_down.connect(func(): main.controller_mapper.check_toggle_ui())
 	main._ui_ctrl_type_btn.button_down.connect(func(): main.controller_mapper.cycle_type())

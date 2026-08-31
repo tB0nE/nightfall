@@ -19,6 +19,7 @@ func save_state():
 	save.set_value("screen", "gamma_pct", main.gamma_pct)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
+	save.set_value("screen", "double_click_mode", main.double_click_mode)
 	save.set_value("screen", "codec_preference", main.codec_preference)
 	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
 	save.set_value("controller", "active", main.controller_mapper.active)
@@ -288,6 +289,7 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
@@ -357,6 +359,7 @@ func load_state():
 		main.pointer_steady = 1 if saved_steady else 0
 	else:
 		main.pointer_steady = int(saved_steady)
+	main.double_click_mode = clampi(save.get_value("screen", "double_click_mode", 0), 0, 1)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)

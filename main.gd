@@ -293,6 +293,11 @@ var cursor_mode: int = 1
 var cursor_labels: Array = ["Circle", "Pointer"]
 var pointer_steady: int = 1
 var pointer_steady_labels: Array = ["Off", "Low", "High"]
+# Touch-controller double-click gesture. Standard leaves host-side recognition
+# untouched; Chord maps a near-simultaneous trigger+grip press to two left
+# clicks. Hand tracking always retains its normal pinch-twice behaviour.
+var double_click_mode: int = 0
+var double_click_mode_labels: Array = ["Standard", "Chord"]
 var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
 var _steady_factor: float = 0.3
@@ -604,6 +609,7 @@ var _ui_gamma_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
+var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
 var auto_reconnect_enabled: bool = true
 var _reconnecting: bool = false
