@@ -191,6 +191,28 @@ func update_3d_btn_state():
 		main._ui_3d_debug_btn.disabled = true
 		main._ui_3d_debug_btn.visible = false
 
+func update_ambient_btn_state():
+	var supported = main.comp != null and main.comp.ambient_supported()
+	update_option_btn(main._ui_ambient_btn, main.ambient_mode_labels[clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)])
+	update_option_btn(main._ui_ambient_style_btn, main.ambient_style_labels[clampi(main.ambient_style, 0, main.ambient_style_labels.size() - 1)])
+	update_option_btn(main._ui_ambient_color_btn, main.ambient_color_labels[clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)])
+	update_option_btn(main._ui_ambient_intensity_btn, main.ambient_intensity_labels[clampi(main.ambient_intensity, 0, main.ambient_intensity_labels.size() - 1)])
+
+	if main._ui_ambient_btn:
+		main._ui_ambient_btn.disabled = not supported
+		main._ui_ambient_btn.modulate.a = 1.0 if supported else 0.3
+	var tuning_disabled = not supported or main.ambient_mode == 0
+	for btn in [main._ui_ambient_style_btn, main._ui_ambient_intensity_btn]:
+		if btn:
+			btn.disabled = tuning_disabled
+			btn.modulate.a = 0.3 if tuning_disabled else 1.0
+	# Static uses the selected colour; Slow/Live derive their colour from the
+	# rendered screen edges, so allowing this control there would be misleading.
+	var color_disabled = not supported or main.ambient_mode != 1
+	if main._ui_ambient_color_btn:
+		main._ui_ambient_color_btn.disabled = color_disabled
+		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
+
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
@@ -677,6 +699,8 @@ func build_ui():
 	# Model, and everything else moved to the dedicated AI 3D tab below.
 	main._ui_3d_speed_btn = make_option_btn("AI 3D", "Off")
 	disp_row1.add_child(main._ui_3d_speed_btn)
+	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
+	disp_row1.add_child(main._ui_ambient_btn)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
 	# this every time regardless) - set here too so there's no one-frame
 	# flash of a visible "3D Debug" button before that first fires.
@@ -703,6 +727,12 @@ func build_ui():
 	disp_row2.add_child(main._ui_curve_btn)
 	main._ui_bg_btn = make_option_btn("Background", "Black")
 	disp_row2.add_child(main._ui_bg_btn)
+	main._ui_ambient_style_btn = make_display_tuning_btn("Style", "Glow")
+	disp_row2.add_child(main._ui_ambient_style_btn)
+	main._ui_ambient_color_btn = make_display_tuning_btn("Colour", "White")
+	disp_row2.add_child(main._ui_ambient_color_btn)
+	main._ui_ambient_intensity_btn = make_display_tuning_btn("Intensity", "Medium")
+	disp_row2.add_child(main._ui_ambient_intensity_btn)
 
 	_tab_stream = VBoxContainer.new()
 	_tab_stream.name = "TabStream"
@@ -1014,6 +1044,10 @@ func build_ui():
 	main._ui_pt_btn.button_down.connect(func(): main.settings_controller.toggle_passthrough())
 	main._ui_curve_btn.button_down.connect(func(): main.screen_manager.cycle_curvature())
 	main._ui_bg_btn.button_down.connect(func(): main.settings_controller.cycle_background())
+	main._ui_ambient_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_mode())
+	main._ui_ambient_style_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_style())
+	main._ui_ambient_color_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_color())
+	main._ui_ambient_intensity_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_intensity())
 	main._ui_bezel_btn.button_down.connect(func(): main.screen_manager.toggle_bezel())
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
@@ -1083,6 +1117,12 @@ func make_option_btn(label_text: String, value_text: String) -> Button:
 	btn.add_theme_stylebox_override("pressed", pressed_style)
 	btn.custom_minimum_size = Vector2(250, 132)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return btn
+
+func make_display_tuning_btn(label_text: String, value_text: String) -> Button:
+	var btn = make_option_btn(label_text, value_text)
+	btn.custom_minimum_size = Vector2(190, 132)
+	btn.add_theme_font_size_override("font_size", 22)
 	return btn
 
 # Shorter variant of make_option_btn() for the Monitors tab, which packs 3

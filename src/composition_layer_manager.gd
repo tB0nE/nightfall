@@ -12,6 +12,21 @@ var _hdr_shader: Shader = null
 var _hdr_lut: ImageTexture = null
 var _current_color_transfer_type: int = 0
 
+# Primary-screen ambient lighting is deliberately isolated in one small,
+# alpha-blended compositor layer. It never changes the main screen layer's
+# opaque blend mode or any of the YUV/HDR/AI-depth shaders.
+const AMBIENT_LAYER_SCALE := 1.30
+const AMBIENT_VIEWPORT_LONG_EDGE := 320
+const AMBIENT_SLOW_INTERVAL_SEC := 0.10
+var _ambient_layer: Node3D = null
+var _ambient_viewport: SubViewport = null
+var _ambient_rect: ColorRect = null
+var _ambient_material: ShaderMaterial = null
+var _ambient_source_viewport: SubViewport = null
+var _ambient_native_supported := false
+var _ambient_dirty := true
+var _ambient_slow_elapsed := 0.0
+
 func _get_sdr_shader() -> Shader:
 	if not _sdr_shader:
 		_sdr_shader = load("res://src/shaders/yuv_display.gdshader")
@@ -505,6 +520,163 @@ func setup():
 	setup_background_equirect()
 
 	setup_screen(main.primary_screen, true)
+	_setup_ambient_layer()
+
+func _setup_ambient_layer():
+	if not available or not main.primary_screen:
+		return
+
+	_ambient_layer = OpenXRCompositionLayerCylinder.new()
+	_ambient_layer.name = "CompAmbientLayer"
+	_ambient_layer.set_sort_order(0)
+	_ambient_layer.set_enable_hole_punch(false)
+	_ambient_layer.set_alpha_blend(true)
+	_ambient_layer.visible = false
+	main.xr_origin.add_child(_ambient_layer)
+	_ambient_native_supported = _ambient_layer.is_natively_supported()
+	if not _ambient_native_supported:
+		main._log("[AMBIENT] Cylinder layer not natively supported - ambient lighting disabled")
+		_ambient_layer.queue_free()
+		_ambient_layer = null
+		return
+
+	_ambient_viewport = SubViewport.new()
+	_ambient_viewport.name = "CompAmbientViewport"
+	_ambient_viewport.disable_3d = true
+	_ambient_viewport.transparent_bg = true
+	_ambient_viewport.size = Vector2i(AMBIENT_VIEWPORT_LONG_EDGE, 180)
+	_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	main.add_child(_ambient_viewport)
+
+	_ambient_rect = ColorRect.new()
+	_ambient_rect.name = "AmbientHalo"
+	_ambient_rect.anchors_preset = 15
+	_ambient_rect.anchor_right = 1.0
+	_ambient_rect.anchor_bottom = 1.0
+	_ambient_rect.grow_horizontal = 2
+	_ambient_rect.grow_vertical = 2
+	_ambient_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ambient_material = ShaderMaterial.new()
+	_ambient_material.shader = load("res://src/shaders/ambient_halo.gdshader")
+	_ambient_rect.material = _ambient_material
+	_ambient_viewport.add_child(_ambient_rect)
+
+	_ambient_layer.set_layer_viewport(_ambient_viewport)
+	_update_ambient_geometry()
+	apply_ambient_settings()
+	main._log("[AMBIENT] Low-resolution composition layer created")
+
+func ambient_supported() -> bool:
+	return _ambient_native_supported and _ambient_layer != null
+
+func _ambient_static_color() -> Color:
+	var colors := [
+		Color(1.0, 1.0, 1.0),
+		Color(1.0, 0.72, 0.45),
+		Color(1.0, 0.12, 0.08),
+		Color(0.20, 1.0, 0.25),
+		Color(0.15, 0.45, 1.0),
+		Color(0.72, 0.20, 1.0),
+	]
+	return colors[clampi(main.ambient_color, 0, colors.size() - 1)]
+
+func _ambient_intensity() -> float:
+	var intensities := [0.20, 0.35, 0.55]
+	return intensities[clampi(main.ambient_intensity, 0, intensities.size() - 1)]
+
+func _refresh_ambient_source():
+	if not _ambient_material or not main.primary_screen:
+		return
+	var source: SubViewport = main.primary_screen.comp_viewport
+	var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
+	if stereo > 0 and main.primary_screen.comp_viewport_left:
+		# A single both-eye halo is intentional. The left-eye composited output
+		# is a stable representative source and avoids a second ambient layer.
+		source = main.primary_screen.comp_viewport_left
+	if source != _ambient_source_viewport:
+		_ambient_source_viewport = source
+		_ambient_material.set_shader_parameter("source_texture", source.get_texture())
+		_ambient_dirty = true
+
+func apply_ambient_settings():
+	if not _ambient_material:
+		return
+	main.ambient_mode = clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)
+	main.ambient_style = clampi(main.ambient_style, 0, main.ambient_style_labels.size() - 1)
+	main.ambient_color = clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)
+	main.ambient_intensity = clampi(main.ambient_intensity, 0, main.ambient_intensity_labels.size() - 1)
+	_ambient_material.set_shader_parameter("reactive", main.ambient_mode >= 2)
+	_ambient_material.set_shader_parameter("style_mode", main.ambient_style)
+	_ambient_material.set_shader_parameter("static_color", _ambient_static_color())
+	_ambient_material.set_shader_parameter("intensity", _ambient_intensity())
+	_ambient_slow_elapsed = 0.0
+	_ambient_dirty = true
+	_refresh_ambient_source()
+	if main.ambient_mode == 0:
+		_disable_ambient()
+
+func _disable_ambient():
+	# Avoid needlessly touching composition-layer visibility every frame while
+	# Off/disconnected; layer visibility transitions can rebuild swapchains.
+	if _ambient_layer and _ambient_layer.visible:
+		_ambient_layer.visible = false
+	if _ambient_viewport and _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+
+func process_ambient(delta: float):
+	if not ambient_supported() or not _ambient_viewport:
+		return
+	var should_show = available and in_use and main.is_streaming and main.ambient_mode > 0
+	if not should_show:
+		_disable_ambient()
+		return
+	if not _ambient_layer.visible:
+		_ambient_layer.visible = true
+		_update_ambient_geometry()
+		_ambient_dirty = true
+	# Also detects a primary-screen or stereo-mode change while the layer is
+	# already visible; the uniform is only touched when the source changes.
+	_refresh_ambient_source()
+
+	match main.ambient_mode:
+		1: # Static: redraw only after a setting/geometry change.
+			if _ambient_dirty:
+				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
+		2: # Slow: sample the screen at 10 Hz.
+			_ambient_slow_elapsed += delta
+			if _ambient_dirty or _ambient_slow_elapsed >= AMBIENT_SLOW_INTERVAL_SEC:
+				_ambient_slow_elapsed = fmod(_ambient_slow_elapsed, AMBIENT_SLOW_INTERVAL_SEC)
+				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
+		3: # Live: useful as the visual/performance comparison ceiling.
+			if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+func _update_ambient_geometry():
+	if not _ambient_layer or not _ambient_viewport or not main.primary_screen:
+		return
+	var s = main.primary_screen
+	var expanded_size: Vector2 = s.mesh_size * AMBIENT_LAYER_SCALE
+	var aspect = expanded_size.x / maxf(expanded_size.y, 0.001)
+	var viewport_size: Vector2i
+	if aspect >= 1.0:
+		viewport_size = Vector2i(AMBIENT_VIEWPORT_LONG_EDGE, maxi(64, roundi(AMBIENT_VIEWPORT_LONG_EDGE / aspect)))
+	else:
+		viewport_size = Vector2i(maxi(64, roundi(AMBIENT_VIEWPORT_LONG_EDGE * aspect)), AMBIENT_VIEWPORT_LONG_EDGE)
+	if _ambient_viewport.size != viewport_size:
+		_ambient_viewport.size = viewport_size
+		_ambient_dirty = true
+
+	var radius = maxf(s._comp_cyl_radius, 0.001)
+	var view_dist = maxf((s.global_position - main.xr_camera.global_position).length(), 0.5)
+	var screen_sort = clampi(int((10.0 - view_dist) * 10), 1, 100)
+	_ambient_layer.set_sort_order(maxi(0, screen_sort - 1))
+	_ambient_layer.set_radius(radius)
+	_ambient_layer.set_central_angle(expanded_size.x / radius)
+	_ambient_layer.set_aspect_ratio(aspect)
+	_ambient_layer.global_position = s._comp_cyl_center
+	_ambient_layer.global_rotation = s.global_rotation
 
 func setup_background_equirect():
 	if not equirect_available:
@@ -920,6 +1092,8 @@ func _update_cylinder_params_for(s: VRScreen):
 			cyl.set_aspect_ratio(aspect)
 			cyl.global_position = s.global_position - screen_forward * radius
 			cyl.global_rotation = s.global_rotation
+	if s == main.primary_screen:
+		_update_ambient_geometry()
 
 func update_cylinder_params():
 	for s in main.screens:
@@ -1119,6 +1293,8 @@ func switch_to_comp_layer():
 			scr.bezel_mesh.visible = false
 	update_cylinder_params()
 	update_bezel()
+	_refresh_ambient_source()
+	_ambient_dirty = true
 
 func switch_to_stereo_comp_layer():
 	if not available:
@@ -1165,10 +1341,13 @@ func switch_to_stereo_comp_layer():
 	update_bezel()
 	if main.is_streaming:
 		bind_yuv_textures()
+	_refresh_ambient_source()
+	_ambient_dirty = true
 	main._log("[COMP] Switched to stereo composition layer (mode=%d)" % stereo)
 
 func switch_to_mesh_rendering():
 	in_use = false
+	_disable_ambient()
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if main.is_streaming else SubViewport.UPDATE_DISABLED
 	for scr in main.screens:
 		if scr.comp_cylinder: scr.comp_cylinder.visible = false

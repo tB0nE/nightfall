@@ -206,6 +206,17 @@ var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 var brightness_pct: int = 0 # -20..20, step 10 (additive)
 var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
 var gamma_pct: int = 100 # 50..150, step 25 (exponent)
+# Ambient screen lighting is a separate low-resolution composition layer,
+# so it stays out of the main YUV/HDR/AI-3D shader path. Reactive modes use
+# the already-rendered primary screen as their colour source.
+var ambient_mode: int = 0
+var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
+var ambient_style: int = 0
+var ambient_style_labels: Array = ["Glow", "Neon", "Both"]
+var ambient_color: int = 0
+var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
+var ambient_intensity: int = 1
+var ambient_intensity_labels: Array = ["Low", "Medium", "High"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
@@ -606,6 +617,10 @@ var _ui_sharpen_btn: Button
 var _ui_brightness_btn: Button
 var _ui_contrast_btn: Button
 var _ui_gamma_btn: Button
+var _ui_ambient_btn: Button
+var _ui_ambient_style_btn: Button
+var _ui_ambient_color_btn: Button
+var _ui_ambient_intensity_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
@@ -2350,6 +2365,8 @@ func _process(delta):
 	_update_hand_indicator_layers()
 	_update_grab_bar_layers()
 	_sync_comp_background()
+	if comp:
+		comp.process_ambient(delta)
 
 	_process_idle_activity()
 

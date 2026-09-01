@@ -838,6 +838,30 @@ func cycle_gamma():
 	_save_setting(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
 	apply_filter()
 
+func cycle_ambient_mode():
+	main.ambient_mode = (main.ambient_mode + 1) % main.ambient_mode_labels.size()
+	_save_setting(main._ui_ambient_btn, main.ambient_mode_labels[main.ambient_mode])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
+
+func cycle_ambient_style():
+	main.ambient_style = (main.ambient_style + 1) % main.ambient_style_labels.size()
+	_save_setting(main._ui_ambient_style_btn, main.ambient_style_labels[main.ambient_style])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
+
+func cycle_ambient_color():
+	main.ambient_color = (main.ambient_color + 1) % main.ambient_color_labels.size()
+	_save_setting(main._ui_ambient_color_btn, main.ambient_color_labels[main.ambient_color])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
+
+func cycle_ambient_intensity():
+	main.ambient_intensity = (main.ambient_intensity + 1) % main.ambient_intensity_labels.size()
+	_save_setting(main._ui_ambient_intensity_btn, main.ambient_intensity_labels[main.ambient_intensity])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
+
 func cycle_auto_reconnect():
 	main.auto_reconnect_enabled = not main.auto_reconnect_enabled
 	if main.stream_backend and main.stream_backend._v2:

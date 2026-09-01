@@ -17,6 +17,10 @@ func save_state():
 	save.set_value("screen", "brightness_pct", main.brightness_pct)
 	save.set_value("screen", "contrast_pct", main.contrast_pct)
 	save.set_value("screen", "gamma_pct", main.gamma_pct)
+	save.set_value("screen", "ambient_mode", main.ambient_mode)
+	save.set_value("screen", "ambient_style", main.ambient_style)
+	save.set_value("screen", "ambient_color", main.ambient_color)
+	save.set_value("screen", "ambient_intensity", main.ambient_intensity)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "double_click_mode", main.double_click_mode)
@@ -286,6 +290,7 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
 		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
 		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+		main.ui_controller.update_ambient_btn_state()
 		main.ui_controller.update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
@@ -305,6 +310,8 @@ func sync_ui_to_settings():
 		main.screen_manager.update_bezel_size()
 	if main.settings_controller:
 		main.settings_controller.apply_filter()
+	if main.comp:
+		main.comp.apply_ambient_settings()
 
 func load_state():
 	MonitorPresets.write_default_presets_snapshot()
@@ -353,6 +360,10 @@ func load_state():
 	main.gamma_pct = save.get_value("screen", "gamma_pct", 100)
 	if not [50, 75, 100, 125, 150].has(main.gamma_pct):
 		main.gamma_pct = 100
+	main.ambient_mode = clampi(save.get_value("screen", "ambient_mode", 0), 0, main.ambient_mode_labels.size() - 1)
+	main.ambient_style = clampi(save.get_value("screen", "ambient_style", 0), 0, main.ambient_style_labels.size() - 1)
+	main.ambient_color = clampi(save.get_value("screen", "ambient_color", 0), 0, main.ambient_color_labels.size() - 1)
+	main.ambient_intensity = clampi(save.get_value("screen", "ambient_intensity", 1), 0, main.ambient_intensity_labels.size() - 1)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
 	var saved_steady = save.get_value("screen", "pointer_steady", 1)
 	if saved_steady is bool:
