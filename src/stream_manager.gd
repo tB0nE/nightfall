@@ -30,6 +30,11 @@ var _current_app_id: int = -1
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
 	_current_host_id = host_id
 	_current_app_id = app_id
+	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
+	# setup. Apply it again at the actual connection boundary so a saved
+	# 144/165/200/207 FPS selection is reflected both on the panel and in
+	# client_refresh_rate_x100 before the Moonlight session is configured.
+	await main.settings_controller.apply_display_refresh_rate()
 	# forced_resolution set means this call IS the one-shot correction retry itself -
 	# don't reset the guard there, or a host that never matches would loop forever.
 	if forced_resolution == Vector2i.ZERO:

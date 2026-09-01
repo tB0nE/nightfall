@@ -91,7 +91,9 @@ func load_host_state(ip: String):
 		return
 	if not save.has_section(ip):
 		return
-	main.stream_fps = save.get_value(ip, "fps", 60)
+	main.stream_fps = int(save.get_value(ip, "fps", 60))
+	if not main.settings_controller.STREAM_FPS_RATES.has(main.stream_fps):
+		main.stream_fps = 60
 	main.resolution_scale_pct = save.get_value(ip, "resolution_scale_pct", 100)
 	if not main.resolution_scale_options.has(main.resolution_scale_pct):
 		main.resolution_scale_pct = 100

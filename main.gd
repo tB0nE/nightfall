@@ -272,6 +272,7 @@ var resolution_scale_options: Array = RESOLUTION_PRESETS
 # Quest 2 user reported AI-3D tanking performance; see settings_controller.
 # gd's QUEST2_AUTO_TABLE and main.gd's QUEST2_MAX_RESOLUTION.
 var device_is_quest2: bool = false
+var device_is_quest3: bool = false
 # See device_is_quest2's comment. Quest 2's own per-eye display resolution
 # (~1832x1920) is already below Quest 3's, so there's no real benefit
 # requesting more than this regardless of AI-3D state - applied in
@@ -2096,7 +2097,8 @@ func _init_stream_backend():
 		# generation), see GodotApp.java's getDeviceModel() comment.
 		var device_codename = stream_backend.get_device_model()
 		device_is_quest2 = device_codename.to_lower() == "hollywood"
-		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s" % [device_codename, str(device_is_quest2)])
+		device_is_quest3 = device_codename.to_lower() == "eureka"
+		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s device_is_quest3=%s" % [device_codename, str(device_is_quest2), str(device_is_quest3)])
 	_client_codec_support = stream_backend.probe_all_video_formats()
 	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s" % [
 		str(_client_codec_support.get("h264", false)),
@@ -2210,8 +2212,10 @@ func _init_xr(interface):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
 	ai_3d_speed = 0
-
-	settings_controller.apply_display_refresh_rate()
+	# The display rate is applied by StreamManager.start_stream(), after the
+	# selected host's saved FPS has loaded. Applying the default 60 FPS mapping
+	# here would overwrite the selected host's extended refresh rate before its
+	# saved FPS setting is known.
 
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the

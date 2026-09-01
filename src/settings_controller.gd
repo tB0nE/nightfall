@@ -9,6 +9,7 @@ var _last_effective_backend: int = -1
 var _last_backend_status: String = ""
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
+var _refresh_request_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -107,6 +108,15 @@ const STEREO_SCREEN_BASE_PARALLAX := 0.042
 const PICTURE_BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
 const PICTURE_CONTRAST_VALUES: Array = [50, 75, 100, 125, 150]
 const PICTURE_GAMMA_VALUES: Array = [50, 75, 100, 125, 150]
+
+# HorizonOS v2.7 accepts arbitrary integer display rates through 207 Hz on
+# Quest 3 using the standard API. Rates above that require developer-only
+# global display scaling, so they are deliberately not exposed here.
+# Keep the stream choices device-independent. apply_display_refresh_rate()
+# requests the unlisted standard extended rates only on known Quest 3
+# hardware, then verifies them and falls back to the runtime's reported list.
+const STREAM_FPS_RATES: Array = [30, 60, 72, 90, 120, 144, 165, 200, 207]
+const QUEST3_REFRESH_REQUEST_MAX := 207.0
 
 # Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
 # vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
@@ -935,7 +945,9 @@ func apply_display_refresh_rate():
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
 		return
-	var target_hz: float = 90.0
+	_refresh_request_seq += 1
+	var request_seq = _refresh_request_seq
+	var target_hz: float = float(main.stream_fps)
 	match main.stream_fps:
 		30: target_hz = 90.0
 		# 2026-08-29: testing 120Hz again now that stereo rendering is
@@ -944,35 +956,68 @@ func apply_display_refresh_rate():
 		# the old mesh-projection render path and caused stutter. Revert to
 		# 72.0 if that's still true here.
 		60: target_hz = 120.0
-		72: target_hz = 72.0
-		90: target_hz = 90.0
-		120: target_hz = 120.0
 	var available = interface.get_available_display_refresh_rates()
+	Engine.max_fps = main.stream_fps
 	if available.is_empty():
 		main._log("[REFRESH] No available refresh rates reported")
 		main.display_refresh_rate = target_hz
 		return
+	available.sort()
+	var current_hz: float = interface.get_display_refresh_rate()
+	main._log("[REFRESH] Runtime rates=%s current=%.0fHz target=%.0fHz" % [str(available), current_hz, target_hz])
+
+	# Preserve an exact current rate. Otherwise request every Quest 3 extended
+	# target through the standard API up to the documented 207 Hz maximum;
+	# verification below selects a reported fallback if the runtime rejects it.
+	var target_already_active := absf(current_hz - target_hz) < 0.6
 	var best: float = 0.0
-	for rate in available:
-		if rate >= target_hz and (best == 0.0 or rate < best):
-			best = rate
-	if best == 0.0:
-		available.sort()
-		best = available[available.size() - 1]
-	interface.set_display_refresh_rate(best)
+	if target_already_active:
+		best = current_hz
+	elif main.device_is_quest3 and target_hz > 120.0 and target_hz <= QUEST3_REFRESH_REQUEST_MAX:
+		# Meta deprecated the enumeration API; HorizonOS still returns only
+		# legacy presets even though Quest 3 accepts arbitrary integer rates.
+		# Request the unlisted rate directly, then verify it and fall back to
+		# the reported list on older/currently-limited runtime versions.
+		interface.set_display_refresh_rate(target_hz)
+		await main.get_tree().create_timer(0.20).timeout
+		if request_seq != _refresh_request_seq:
+			return
+		var applied_hz: float = interface.get_display_refresh_rate()
+		if absf(applied_hz - target_hz) < 0.6:
+			best = applied_hz
+		else:
+			best = _reported_refresh_fallback(available, target_hz)
+			interface.set_display_refresh_rate(best)
+			main._log("[REFRESH] Quest 3 rejected unlisted %.0fHz (actual %.0fHz); using reported %.0fHz" % [target_hz, applied_hz, best])
+	else:
+		best = _reported_refresh_fallback(available, target_hz)
+		interface.set_display_refresh_rate(best)
 	main.display_refresh_rate = best
 	# 2026-08-29: capping render fps to the stream's own fps again (was
 	# uncapped since 8ffa8fe, 2026-05-05, "remove 60fps cap causing Quest ASW
 	# reprojection blur") - testing whether that ASW blur was a symptom of
 	# the old mesh-projection render path specifically, now that rendering
 	# is projectionless. Revert to 0 (uncapped) if the blur is still there.
-	Engine.max_fps = main.stream_fps
-	main._log("[REFRESH] Set headset to %.0fHz (target %.0fHz for %dfps), capped render to %dfps" % [best, target_hz, main.stream_fps, main.stream_fps])
+	if target_already_active:
+		main._log("[REFRESH] Preserved active %.0fHz for %dfps, capped render to %dfps" % [best, main.stream_fps, main.stream_fps])
+	elif absf(best - target_hz) < 0.6:
+		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.stream_fps, main.stream_fps])
+	else:
+		main._log("[REFRESH] %.0fHz unavailable; fell back to reported %.0fHz for %dfps stream, capped render to %dfps" % [target_hz, best, main.stream_fps, main.stream_fps])
+
+func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
+	var best := 0.0
+	for rate in available:
+		if rate >= target_hz and (best == 0.0 or rate < best):
+			best = rate
+	if best == 0.0:
+		best = available[available.size() - 1]
+	return best
 
 func cycle_fps():
-	var rates = [30, 60, 72, 90, 120]
-	var idx = rates.find(main.stream_fps)
-	main.stream_fps = rates[(idx + 1) % rates.size()]
+	var idx = STREAM_FPS_RATES.find(main.stream_fps)
+	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
+	main.stream_fps = STREAM_FPS_RATES[next_idx]
 	_save_setting(main._ui_fps_btn, "%d" % main.stream_fps)
 	_schedule_stream_restart()
 
@@ -1071,7 +1116,6 @@ func _schedule_stream_restart():
 		return
 	_restart_pending = false
 	main._log("[RESTART] Restarting stream")
-	apply_display_refresh_rate()
 	main._restarting_stream = true
 	# Stop the composition layer shader from referencing the current session's
 	# texture BEFORE tearing the connection down. stop_play_stream() triggers
