@@ -43,6 +43,9 @@ viewport/hdr_3d=false
 
 openxr/enabled=true
 openxr/environment_blend_mode=2
+; Subsampled foveation is a Vulkan-only optimization and is incompatible with
+; the GLES room projection viewport. Regular fixed foveation is unaffected.
+openxr/foveation_with_subsampled_images=false
 openxr/extensions/hand_tracking=true
 shaders/enabled=true
 openxr/extensions/meta/passthrough=true

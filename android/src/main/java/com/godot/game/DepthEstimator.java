@@ -284,11 +284,13 @@ public class DepthEstimator {
         final byte[] pixels;
         final int width;
         final int height;
+        final long captureNs;
 
-        PendingFrame(byte[] pixels, int width, int height) {
+        PendingFrame(byte[] pixels, int width, int height, long captureNs) {
             this.pixels = pixels;
             this.width = width;
             this.height = height;
+            this.captureNs = captureNs;
         }
     }
 
@@ -311,6 +313,8 @@ public class DepthEstimator {
     // sync with logcat's own "Perf:" lines rather than sampling mid-window.
     private volatile float lastInferenceInvokeMs = 0f;
     private volatile float lastInferenceHz = 0f;
+    private volatile long latestDepthCaptureNs = 0L;
+    private volatile long lastDepthSkippedFrames = 0L;
     private long lastGpuPrepareNs;
     private long lastGpuInvokeNs;
     private long lastGpuPostprocessNs;
@@ -619,7 +623,7 @@ public class DepthEstimator {
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
         if (gpuVariant != null) {
-            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height));
+            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height, System.nanoTime()));
             if (previous != null) {
                 droppedFrames.incrementAndGet();
             }
@@ -633,11 +637,13 @@ public class DepthEstimator {
 
         submittedFrames.incrementAndGet();
         final byte[] frameCopy = rgbaPixels;
+        final long captureNs = System.nanoTime();
         executor.submit(() -> {
             long startTime = System.nanoTime();
             try {
                 byte[] result = runCpuInference(modelIdx, frameCopy, width, height);
                 if (result != null) {
+                    latestDepthCaptureNs = captureNs;
                     latestDepthMap.set(result);
                 }
             } catch (Exception e) {
@@ -737,6 +743,7 @@ public class DepthEstimator {
                 result = runCpuInference(fallbackModelIndex, frame.pixels, frame.width, frame.height);
             }
             if (result != null) {
+                latestDepthCaptureNs = frame.captureNs;
                 latestDepthMap.set(result);
             }
         } catch (Exception e) {
@@ -753,7 +760,7 @@ public class DepthEstimator {
 
     private void recordTelemetry(int modelIndex, boolean isGpu, long durationNs) {
         long nowNs = System.nanoTime();
-        if (telemetryWindowStartNs == 0 || !isGpu) {
+        if (telemetryWindowStartNs == 0) {
             telemetryWindowStartNs = nowNs;
             telemetryTotalDurationNs = 0;
             telemetryTotalPrepareNs = 0;
@@ -762,9 +769,17 @@ public class DepthEstimator {
             telemetryCompletedFrames = 0;
         }
         telemetryTotalDurationNs += durationNs;
-        telemetryTotalPrepareNs += lastGpuPrepareNs;
-        telemetryTotalInvokeNs += lastGpuInvokeNs;
-        telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        if (isGpu) {
+            telemetryTotalPrepareNs += lastGpuPrepareNs;
+            telemetryTotalInvokeNs += lastGpuInvokeNs;
+            telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        } else {
+            // CPU models do their preparation/invoke/postprocess inside one
+            // method, so their comparable inference figure is the measured
+            // worker duration. The old `|| !isGpu` reset above discarded the
+            // window every frame and made the public CPU statistic stay 0.
+            telemetryTotalInvokeNs += durationNs;
+        }
         telemetryCompletedFrames++;
         long elapsedNs = nowNs - telemetryWindowStartNs;
         if (elapsedNs < 1_000_000_000L) return;
@@ -772,14 +787,16 @@ public class DepthEstimator {
         float divisor = Math.max(telemetryCompletedFrames, 1);
         lastInferenceInvokeMs = telemetryTotalInvokeNs / divisor / 1_000_000.0f;
         lastInferenceHz = telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs;
+        long submitted = submittedFrames.getAndSet(0);
+        long dropped = droppedFrames.getAndSet(0);
+        lastDepthSkippedFrames = dropped;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
-                modelNameFor(modelIndex) + "-GPU", telemetryTotalDurationNs / divisor / 1_000_000.0f,
+                modelNameFor(modelIndex) + (isGpu ? "-GPU" : "-CPU"), telemetryTotalDurationNs / divisor / 1_000_000.0f,
                 telemetryTotalPrepareNs / divisor / 1_000_000.0f,
                 lastInferenceInvokeMs,
                 telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
-                lastInferenceHz,
-                submittedFrames.getAndSet(0), droppedFrames.getAndSet(0)));
+                lastInferenceHz, submitted, dropped));
         telemetryWindowStartNs = nowNs;
         telemetryTotalDurationNs = 0;
         telemetryTotalPrepareNs = 0;
@@ -790,6 +807,15 @@ public class DepthEstimator {
 
     public byte[] getLatestDepth() {
         return latestDepthMap.getAndSet(null);
+    }
+
+    public float getLastDepthAgeMs() {
+        long captured = latestDepthCaptureNs;
+        return captured == 0L ? 0f : (System.nanoTime() - captured) / 1_000_000.0f;
+    }
+
+    public int getLastDepthSkippedFrames() {
+        return (int)Math.min(lastDepthSkippedFrames, Integer.MAX_VALUE);
     }
 
     // real (0..1 normalized pixel) -> quantized uint8, given a specific

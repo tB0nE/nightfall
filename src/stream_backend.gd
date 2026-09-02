@@ -193,6 +193,11 @@ func get_last_frame_latency() -> int:
 		return _v2.get_last_frame_latency_us()
 	return 0
 
+func take_performance_stats() -> Dictionary:
+	if _v2 and _v2.has_method("take_performance_stats"):
+		return _v2.take_performance_stats()
+	return {}
+
 func set_depth_model(model_id: int):
 	if _v2:
 		var db = _v2.get_depth_bridge()
@@ -259,6 +264,20 @@ func get_depth_last_inference_hz() -> float:
 		if db:
 			return db.get_depth_last_inference_hz()
 	return 0.0
+
+func get_depth_last_age_ms() -> float:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("get_depth_last_age_ms"):
+			return db.get_depth_last_age_ms()
+	return 0.0
+
+func get_depth_last_skipped_frames() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("get_depth_last_skipped_frames"):
+			return db.get_depth_last_skipped_frames()
+	return 0
 
 func get_device_model() -> String:
 	if _v2:

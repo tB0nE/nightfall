@@ -12,12 +12,14 @@ func save_state():
 	save.set_value("screen", "curvature", main.curvature)
 	save.set_value("screen", "passthrough_enabled", main.passthrough_enabled)
 	save.set_value("screen", "background_mode", main.background_mode)
+	save.set_value("screen", "environment_mode", main.environment_mode)
 	save.set_value("screen", "smooth_mode", main.smooth_mode)
 	save.set_value("screen", "sharpen_mode", main.sharpen_mode)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "codec_preference", main.codec_preference)
 	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
+	save.set_value("diagnostics", "performance_overlay", main.performance_overlay_enabled)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -31,6 +33,11 @@ func save_state():
 	save_host_state()
 
 func save_host_state():
+	# Room mode temporarily mounts the compositor screen on the environment's
+	# wall. Never persist that experimental placement over the user's normal
+	# screen layout.
+	if main.environment_mode > 0:
+		return
 	var ip = main.get_node("%IPInput").text
 	if ip.is_empty():
 		return
@@ -246,6 +253,7 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
+		main.ui_controller.update_environment_btn_state()
 		main.ui_controller.update_option_btn(main._ui_render_btn, main.smooth_labels[clampi(main.smooth_mode, 0, main.smooth_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
@@ -257,6 +265,7 @@ func sync_ui_to_settings():
 		var idle_idx = main.settings_controller.idle_values.find(main.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
+		main.ui_controller.update_stats_btn_state()
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
@@ -280,6 +289,7 @@ func load_state():
 	main.bezel_enabled = save.get_value("screen", "bezel", true)
 	main.curvature = save.get_value("screen", "curvature", 2)
 	main.background_mode = save.get_value("screen", "background_mode", 0)
+	main.environment_mode = clampi(save.get_value("screen", "environment_mode", 0), 0, main.environment_labels.size() - 1)
 	# "passthrough_enabled" is the current format, always written by
 	# save_state() - prefer it whenever present. The old "passthrough" int key
 	# (0=on, 1-5=off with a specific background) predates that and is never
@@ -312,6 +322,7 @@ func load_state():
 		main.pointer_steady = int(saved_steady)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
+	main.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", false)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0

@@ -348,6 +348,44 @@ float DepthBridge::get_depth_last_inference_hz() {
 #endif
 }
 
+float DepthBridge::get_depth_last_age_ms() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0.0f;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0.0f;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastAgeMs", "()F");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0.0f;
+    }
+    jfloat value = env->CallStaticFloatMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (float)value;
+#else
+    return 0.0f;
+#endif
+}
+
+int DepthBridge::get_depth_last_skipped_frames() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastSkippedFrames", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0;
+    }
+    jint value = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)value;
+#else
+    return 0;
+#endif
+}
+
 // Headset model string (2026-08-27) - see GodotApp.java's getDeviceModel()
 // comment. Same JNI call pattern as the getters above; Linux/other
 // platforms return an empty string, which callers treat the same as "not a
@@ -391,5 +429,7 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
+    ClassDB::bind_method(D_METHOD("get_depth_last_age_ms"), &DepthBridge::get_depth_last_age_ms);
+    ClassDB::bind_method(D_METHOD("get_depth_last_skipped_frames"), &DepthBridge::get_depth_last_skipped_frames);
     ClassDB::bind_method(D_METHOD("get_device_model"), &DepthBridge::get_device_model);
 }

@@ -121,10 +121,16 @@ private:
     int gles_surface_height_ = 0;
     ANativeWindow *gles_decoder_window_ = nullptr;
     void *gles_surface_texture_java_ = nullptr;
+    void *gles_transform_matrix_java_ = nullptr;
+    void *gles_update_method_ = nullptr;
+    void *gles_transform_method_ = nullptr;
+    void *gles_release_method_ = nullptr;
     unsigned int gles_oes_texture_ = 0;
     unsigned int gles_output_texture_ = 0;
     unsigned int gles_fbo_ = 0;
     unsigned int gles_blit_program_ = 0;
+    int gles_video_uniform_ = -1;
+    int gles_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
 #endif
 };

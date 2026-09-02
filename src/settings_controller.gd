@@ -462,6 +462,9 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
 
 func toggle_passthrough():
+	if main.environment_mode > 0:
+		main._log("[PASSTHROUGH] toggle ignored while a 3D environment is active")
+		return
 	if not main.is_xr_active or not main.passthrough_supported:
 		main._log("[PASSTHROUGH] toggle ignored: is_xr_active=%s passthrough_supported=%s" % [str(main.is_xr_active), str(main.passthrough_supported)])
 		return
@@ -506,7 +509,7 @@ func cycle_background():
 	_save_setting(main._ui_bg_btn, main.background_labels[main.background_mode])
 
 func apply_background(bg_mode: int):
-	if not main.is_xr_active or main.passthrough_enabled:
+	if not main.is_xr_active or main.passthrough_enabled or main.environment_mode > 0:
 		return
 	_hide_all_backgrounds()
 	main.world_env.environment.background_color = Color(0, 0, 0, 1 if bg_mode == 0 else 0)

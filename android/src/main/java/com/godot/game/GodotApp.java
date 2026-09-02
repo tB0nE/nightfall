@@ -130,6 +130,14 @@ public class GodotApp extends GodotActivity {
 		return depthEstimator != null ? depthEstimator.getLastInferenceHz() : 0f;
 	}
 
+	public static float getDepthLastAgeMs() {
+		return depthEstimator != null ? depthEstimator.getLastDepthAgeMs() : 0f;
+	}
+
+	public static int getDepthLastSkippedFrames() {
+		return depthEstimator != null ? depthEstimator.getLastDepthSkippedFrames() : 0;
+	}
+
 	// Headset device codename (e.g. "hollywood" for Quest 2, "eureka" for
 	// Quest 3) - used by settings_controller.gd to pick a per-device AI-3D
 	// Auto table and resolution ceiling (2026-08-27, following a Quest 2

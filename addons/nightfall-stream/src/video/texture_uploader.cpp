@@ -762,7 +762,10 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
     jmethodID constructor = surface_texture_class ? env->GetMethodID(surface_texture_class, "<init>", "(I)V") : nullptr;
     jmethodID set_size = surface_texture_class ? env->GetMethodID(surface_texture_class, "setDefaultBufferSize", "(II)V") : nullptr;
-    if (!surface_texture_class || !constructor || !set_size) {
+    jmethodID update_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "updateTexImage", "()V") : nullptr;
+    jmethodID transform_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "getTransformMatrix", "([F)V") : nullptr;
+    jmethodID release_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "release", "()V") : nullptr;
+    if (!surface_texture_class || !constructor || !set_size || !update_method || !transform_method || !release_method) {
         NF_LOGE("TextureUploader", "SurfaceTexture JNI methods unavailable");
         if (env->ExceptionCheck()) env->ExceptionClear();
         fail();
@@ -798,7 +801,19 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     gles_decoder_window_ = ANativeWindow_fromSurface(env, local_surface);
     env->DeleteLocalRef(local_surface);
     gles_surface_texture_java_ = env->NewGlobalRef(local_surface_texture);
+    jfloatArray local_matrix = env->NewFloatArray(16);
+    gles_transform_matrix_java_ = local_matrix ? env->NewGlobalRef(local_matrix) : nullptr;
+    if (local_matrix) env->DeleteLocalRef(local_matrix);
+    gles_update_method_ = reinterpret_cast<void *>(update_method);
+    gles_transform_method_ = reinterpret_cast<void *>(transform_method);
+    gles_release_method_ = reinterpret_cast<void *>(release_method);
     env->DeleteLocalRef(local_surface_texture);
+    env->DeleteLocalRef(surface_texture_class);
+    if (!gles_surface_texture_java_ || !gles_transform_matrix_java_) {
+        NF_LOGE("TextureUploader", "Failed to cache GLES SurfaceTexture JNI state");
+        fail();
+        return;
+    }
     if (!gles_decoder_window_) {
         NF_LOGE("TextureUploader", "ANativeWindow_fromSurface failed");
         fail();
@@ -813,6 +828,8 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glGenFramebuffers(1, &gles_fbo_);
+    gles_video_uniform_ = glGetUniformLocation(gles_blit_program_, "u_video");
+    gles_matrix_uniform_ = glGetUniformLocation(gles_blit_program_, "u_tex_matrix");
 
     RenderingServer *rs = RenderingServer::get_singleton();
     PackedByteArray placeholder_data;
@@ -856,7 +873,7 @@ void TextureUploader::update_android_gles_external_texture() {
     if (!gles_surface_ready_ || gles_update_queued_) return;
     gles_update_queued_ = true;
     static int queued_updates = 0;
-    if (++queued_updates <= 3 || queued_updates % 120 == 0) {
+    if (++queued_updates <= 3) {
         NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_updates);
     }
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
@@ -867,13 +884,13 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         gles_update_queued_ = false;
     }
-    if (!gles_surface_texture_java_ || !gles_fbo_ || !gles_blit_program_) return;
+    if (!gles_surface_texture_java_ || !gles_transform_matrix_java_ || !gles_fbo_ || !gles_blit_program_) return;
     JavaVM *vm = nullptr;
     JNIEnv *env = get_gles_jni_env(vm);
-    jclass surface_texture_class = env ? env->FindClass("android/graphics/SurfaceTexture") : nullptr;
-    jmethodID update = surface_texture_class ? env->GetMethodID(surface_texture_class, "updateTexImage", "()V") : nullptr;
-    jmethodID transform = surface_texture_class ? env->GetMethodID(surface_texture_class, "getTransformMatrix", "([F)V") : nullptr;
-    if (!env || !update || !transform) return;
+    if (!env || !gles_update_method_ || !gles_transform_method_) return;
+    auto update = reinterpret_cast<jmethodID>(gles_update_method_);
+    auto transform = reinterpret_cast<jmethodID>(gles_transform_method_);
+    auto java_matrix = reinterpret_cast<jfloatArray>(gles_transform_matrix_java_);
     env->CallVoidMethod((jobject)gles_surface_texture_java_, update);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
@@ -882,15 +899,12 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         return;
     }
     float matrix[16]{};
-    jfloatArray java_matrix = env->NewFloatArray(16);
     env->CallVoidMethod((jobject)gles_surface_texture_java_, transform, java_matrix);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
-        env->DeleteLocalRef(java_matrix);
         return;
     }
     env->GetFloatArrayRegion(java_matrix, 0, 16, matrix);
-    env->DeleteLocalRef(java_matrix);
     GLint old_fbo = 0;
     GLint old_viewport[4]{};
     GLint old_program = 0;
@@ -908,8 +922,8 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     glUseProgram(gles_blit_program_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
-    glUniform1i(glGetUniformLocation(gles_blit_program_, "u_video"), 0);
-    glUniformMatrix4fv(glGetUniformLocation(gles_blit_program_, "u_tex_matrix"), 1, GL_FALSE, matrix);
+    glUniform1i(gles_video_uniform_, 0);
+    glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     const GLenum draw_error = glGetError();
     glUseProgram(old_program);
@@ -920,7 +934,7 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         return;
     }
     static int completed_updates = 0;
-    if (++completed_updates <= 3 || completed_updates % 120 == 0) {
+    if (++completed_updates <= 3) {
         NF_LOG("TextureUploader", "Completed GLES external blit #%d", completed_updates);
     }
     new_frame_available_.store(true);
@@ -1088,13 +1102,18 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
         gles_decoder_window_ = nullptr;
     }
     if (env && gles_surface_texture_java_) {
-        jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
-        jmethodID release = surface_texture_class ? env->GetMethodID(surface_texture_class, "release", "()V") : nullptr;
+        auto release = reinterpret_cast<jmethodID>(gles_release_method_);
         if (release) env->CallVoidMethod((jobject)gles_surface_texture_java_, release);
         if (env->ExceptionCheck()) env->ExceptionClear();
         env->DeleteGlobalRef((jobject)gles_surface_texture_java_);
     }
+    if (env && gles_transform_matrix_java_)
+        env->DeleteGlobalRef((jfloatArray)gles_transform_matrix_java_);
     gles_surface_texture_java_ = nullptr;
+    gles_transform_matrix_java_ = nullptr;
+    gles_update_method_ = nullptr;
+    gles_transform_method_ = nullptr;
+    gles_release_method_ = nullptr;
     if (gles_fbo_) glDeleteFramebuffers(1, &gles_fbo_);
     if (gles_output_texture_) glDeleteTextures(1, &gles_output_texture_);
     if (gles_oes_texture_) glDeleteTextures(1, &gles_oes_texture_);
@@ -1103,6 +1122,8 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     gles_output_texture_ = 0;
     gles_oes_texture_ = 0;
     gles_blit_program_ = 0;
+    gles_video_uniform_ = -1;
+    gles_matrix_uniform_ = -1;
     std::lock_guard<std::mutex> surface_lock(gles_surface_mutex_);
     gles_surface_ready_ = false;
     gles_surface_failed_ = false;
