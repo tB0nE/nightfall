@@ -198,7 +198,12 @@ var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
 var smooth_mode: int = 0
 var sharpen_mode: int = 0
 var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
-var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
+const SHARPEN_RUNTIME_NORMAL := 6
+const SHARPEN_RUNTIME_QUALITY := 7
+# Keep the existing shader modes in their original saved-state slots for a
+# direct A/B comparison. The two runtime modes bypass those expensive video
+# neighbourhood samples when the OpenXR extension is available.
+var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime", "Runtime Quality"]
 # Picture tab (2026-08-31) - brightness/contrast/gamma grade applied as a
 # final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
 # shader variant) - see settings_controller.gd's apply_filter() for the
@@ -211,8 +216,9 @@ var gamma_pct: int = 100 # 50..150, step 25 (exponent)
 # the already-rendered primary screen as their colour source.
 var ambient_mode: int = 0
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
+const AMBIENT_STYLE_BLUR := 3
 var ambient_style: int = 0
-var ambient_style_labels: Array = ["Glow", "Neon", "Both"]
+var ambient_style_labels: Array = ["Glow", "Neon", "Both", "Blur"]
 var ambient_color: int = 0
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var ambient_intensity: int = 1
@@ -304,7 +310,7 @@ var display_refresh_rate: float = 72.0
 var cursor_mode: int = 1
 var cursor_labels: Array = ["Circle", "Pointer"]
 var pointer_steady: int = 1
-var pointer_steady_labels: Array = ["Off", "Low", "High"]
+var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
 # Touch-controller double-click gesture. Standard leaves host-side recognition
 # untouched; Chord maps a near-simultaneous trigger+grip press to two left
 # clicks. Hand tracking always retains its normal pinch-twice behaviour.
@@ -314,6 +320,10 @@ var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
 var _steady_factor: float = 0.3
 var _steady_dead_zone: float = 0.002
+var _steady_velocity: Vector3 = Vector3.ZERO
+var _steady_raw_hit: Vector3 = Vector3.ZERO
+var _steady_last_usec: int = 0
+var _steady_last_frame: int = -1
 var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
@@ -906,20 +916,69 @@ func get_blur_scale(s: VRScreen) -> float:
 		return 1.0
 	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
 
+func _reset_steady_filter():
+	_steady_active = false
+	_steady_velocity = Vector3.ZERO
+	_steady_raw_hit = Vector3.ZERO
+	_steady_last_usec = 0
+	_steady_last_frame = -1
+
+func _one_euro_alpha(cutoff_hz: float, delta: float) -> float:
+	var tau := 1.0 / (TAU * maxf(cutoff_hz, 0.001))
+	return 1.0 / (1.0 + tau / maxf(delta, 0.000001))
+
 func _get_steady_hit(raw: Vector3) -> Vector3:
 	if pointer_steady == 0 or not is_xr_active:
-		_steady_active = false
+		_reset_steady_filter()
 		return raw
+	var frame := Engine.get_process_frames()
+	# Several interaction paths ask for the same ray hit in one frame. Advancing
+	# a time-based filter for every caller would make its response depend on UI
+	# state rather than elapsed time.
+	if _steady_active and frame == _steady_last_frame:
+		return _steady_hit
+	var now_usec := Time.get_ticks_usec()
 	if not _steady_active:
 		_steady_hit = raw
 		_steady_active = true
+		_steady_velocity = Vector3.ZERO
+		_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return raw
+	if pointer_steady == 3:
+		var delta := float(now_usec - _steady_last_usec) / 1000000.0
+		# A long gap means the ray left the screen or tracking was interrupted.
+		# Reset rather than letting the old point pull the cursor back onscreen.
+		if delta <= 0.0 or delta > 0.25:
+			_steady_hit = raw
+			_steady_velocity = Vector3.ZERO
+			_steady_raw_hit = raw
+		else:
+			# The derivative must be measured between consecutive raw samples.
+			# Measuring it against the filtered position makes accumulated filter
+			# lag look like movement and defeats One Euro's stationary cutoff.
+			var raw_velocity := (raw - _steady_raw_hit) / delta
+			var derivative_alpha := _one_euro_alpha(1.0, delta)
+			_steady_velocity = _steady_velocity.lerp(raw_velocity, derivative_alpha)
+			# Low cutoff while stationary removes controller tremor; movement raises
+			# it immediately so deliberate aiming does not inherit High's lag.
+			var cutoff := 1.2 + 8.0 * _steady_velocity.length()
+			_steady_hit = _steady_hit.lerp(raw, _one_euro_alpha(cutoff, delta))
+			_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
+		return _steady_hit
 	var factor := 0.3 if pointer_steady == 1 else 0.1
 	var dead_zone := 0.002 if pointer_steady == 1 else 0.005
 	var delta = raw - _steady_hit
 	if delta.length() < dead_zone:
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return _steady_hit
 	_steady_hit = _steady_hit.lerp(raw, factor)
+	_steady_last_usec = now_usec
+	_steady_last_frame = frame
 	return _steady_hit
 
 func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
@@ -2212,10 +2271,12 @@ func _init_xr(interface):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
 	ai_3d_speed = 0
-	# The display rate is applied by StreamManager.start_stream(), after the
-	# selected host's saved FPS has loaded. Applying the default 60 FPS mapping
-	# here would overwrite the selected host's extended refresh rate before its
-	# saved FPS setting is known.
+	# Establish the default 60fps -> 120Hz mapping before composition-layer
+	# swapchains are created. Delaying this until stream startup makes the
+	# runtime transition every live layer from 72Hz to 120Hz at once, which is
+	# measurably less stable on Quest. StreamManager applies the selected host's
+	# saved FPS again at the actual connection boundary.
+	settings_controller.apply_display_refresh_rate()
 
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the

@@ -208,10 +208,16 @@ func update_ambient_btn_state():
 			btn.modulate.a = 0.3 if tuning_disabled else 1.0
 	# Static uses the selected colour; Slow/Live derive their colour from the
 	# rendered screen edges, so allowing this control there would be misleading.
-	var color_disabled = not supported or main.ambient_mode != 1
+	var color_disabled = not supported or main.ambient_mode != 1 or main.ambient_style == main.AMBIENT_STYLE_BLUR
 	if main._ui_ambient_color_btn:
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
+	# Blur must sample an uninterrupted image edge, so its active state owns the
+	# bezel setting. The button becomes available again for every other style.
+	var blur_active = supported and main.ambient_mode > 0 and main.ambient_style == main.AMBIENT_STYLE_BLUR
+	if main._ui_bezel_btn:
+		main._ui_bezel_btn.disabled = blur_active
+		main._ui_bezel_btn.modulate.a = 0.3 if blur_active else 1.0
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:

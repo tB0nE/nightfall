@@ -352,7 +352,7 @@ func load_state():
 	else:
 		main.passthrough_enabled = false
 	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
-	main.sharpen_mode = save.get_value("screen", "sharpen_mode", 0)
+	main.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", 0), 0, main.sharpen_labels.size() - 1)
 	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
 	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):
 		main.brightness_pct = 0
@@ -371,7 +371,7 @@ func load_state():
 	if saved_steady is bool:
 		main.pointer_steady = 1 if saved_steady else 0
 	else:
-		main.pointer_steady = int(saved_steady)
+		main.pointer_steady = clampi(int(saved_steady), 0, main.pointer_steady_labels.size() - 1)
 	main.double_click_mode = clampi(save.get_value("screen", "double_click_mode", 0), 0, 1)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)

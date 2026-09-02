@@ -764,7 +764,7 @@ func cycle_cursor_mode():
 
 func cycle_steady():
 	main.pointer_steady = (main.pointer_steady + 1) % main.pointer_steady_labels.size()
-	main._steady_active = false
+	main._reset_steady_filter()
 	_save_setting(main._ui_steady_btn, main.pointer_steady_labels[main.pointer_steady])
 
 func cycle_double_click_mode():
@@ -851,14 +851,20 @@ func cycle_gamma():
 func cycle_ambient_mode():
 	main.ambient_mode = (main.ambient_mode + 1) % main.ambient_mode_labels.size()
 	_save_setting(main._ui_ambient_btn, main.ambient_mode_labels[main.ambient_mode])
+	_apply_ambient_blur_bezel_constraint()
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
 
 func cycle_ambient_style():
 	main.ambient_style = (main.ambient_style + 1) % main.ambient_style_labels.size()
 	_save_setting(main._ui_ambient_style_btn, main.ambient_style_labels[main.ambient_style])
+	_apply_ambient_blur_bezel_constraint()
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
+
+func _apply_ambient_blur_bezel_constraint():
+	if main.ambient_mode > 0 and main.ambient_style == main.AMBIENT_STYLE_BLUR and main.bezel_enabled:
+		main.screen_manager.set_bezel_enabled(false)
 
 func cycle_ambient_color():
 	main.ambient_color = (main.ambient_color + 1) % main.ambient_color_labels.size()
@@ -902,7 +908,15 @@ func apply_filter():
 	if not main.is_xr_active:
 		return
 	var filter_val = main.smooth_mode
-	var sharp_val = float(main.sharpen_mode) * 0.5
+	var runtime_sharpen_requested = main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL
+	var runtime_sharpen_active = main.comp.apply_compositor_sharpen(main.sharpen_mode) if main.comp else false
+	# Retain an application-shader fallback for desktop, stock Godot templates,
+	# and runtimes that do not advertise XR_FB_composition_layer_settings.
+	var sharp_val: float
+	if runtime_sharpen_requested:
+		sharp_val = 0.0 if runtime_sharpen_active else (0.5 if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)
+	else:
+		sharp_val = float(main.sharpen_mode) * 0.5
 	# Picture tab (2026-08-31) - percent state -> shader-unit conversion
 	# lives here, shaders themselves stay unit-agnostic (0.0/1.0/1.0
 	# neutral defaults).

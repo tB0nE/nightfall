@@ -26,7 +26,15 @@ func update_bezel_size():
 		s.update_bezel_size()
 
 func toggle_bezel():
-	main.bezel_enabled = not main.bezel_enabled
+	# Blur extends the screen's own edge pixels into the halo. A separate bezel
+	# would become a hard black sampling boundary and defeat that effect.
+	if main.ambient_mode > 0 and main.ambient_style == main.AMBIENT_STYLE_BLUR:
+		set_bezel_enabled(false)
+		return
+	set_bezel_enabled(not main.bezel_enabled)
+
+func set_bezel_enabled(enabled: bool):
+	main.bezel_enabled = enabled
 	for s in main.screens:
 		if s.bezel_mesh:
 			s.bezel_mesh.visible = main.bezel_enabled if not main.comp.in_use else false
