@@ -1,51 +1,104 @@
 shader_type canvas_item;
 
-// Manual box-filtered downscale (2026-08-19), replacing a naive single-tap
-// sample. Godot doesn't generate real mip levels for a live SubViewport
-// render target by default - comp_viewport/stream_viewport (see
-// composition_layer_manager.gd) never call generate_mipmaps or equivalent -
-// so the old filter_linear_mipmap hint here had no actual mip chain to draw
-// from and silently degraded to plain single-tap bilinear (mip 0) sampling,
-// meaning NO real anti-aliasing was happening on this downscale at all.
-// That was subtle enough to go unnoticed at 256-384px depth models, but
-// became clearly visible ("scrambled"-looking depth output) once a much
-// more aggressive downscale ratio was tried at 192px - unfiltered
-// minification aliasing/moire baked directly into the captured image fed
-// to the depth model, not a model or inference-pipeline bug (confirmed:
-// the same 192px model produced clean, coherent output on statically
-// resized test photos that never went through this shader path).
-//
-// fwidth(UV) gives the actual per-fragment UV footprint (how much UV
-// changes across one destination texel), which is the correct way to
-// determine how many source texels one destination texel should average
-// over - this adapts automatically to BOTH the live stream's native
-// resolution (changes at runtime as the host negotiates) and whichever
-// depth model's resolution (192-384px) is currently driving
-// depth_viewport's size, unlike a fixed sample spacing tuned for one ratio.
-uniform sampler2D source_tex : filter_linear, repeat_disable;
+// Downscale to the depth model's input resolution while decoding the native
+// decoder textures directly. This removes the old dependency on a separate
+// full-resolution mono YUV->RGB SubViewport; AI-3D now needs only the two
+// displayed eye viewports plus this small model-input pass.
 
-// 4x4 = 16 taps/fragment - a meaningful prefilter for the downscale ratios
-// here (native stream resolution down to 192-384px) without being
-// prohibitively expensive: depth_viewport itself is small (at most
-// 384x384), so even 16 samples/fragment is cheap on mobile GPU hardware,
-// and this pass re-renders every frame (UPDATE_ALWAYS).
+uniform sampler2D tex_y : filter_linear, repeat_disable;
+uniform sampler2D tex_u : filter_linear, repeat_disable;
+uniform sampler2D tex_v : filter_linear, repeat_disable;
+uniform int yuv_mode = 0;
+uniform int color_matrix_type = 1;
+uniform int color_range = 0;
+uniform sampler2D main_texture : source_color, filter_linear, repeat_disable;
+uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec2 tile_inset = vec2(0.002);
+
+// A 4x4 box filter avoids aliasing when reducing a full desktop frame to a
+// 192-384px model input. The pass itself is small, so these taps are much
+// cheaper than keeping another full-resolution render target alive.
 const int TAPS = 4;
 
+vec3 yuv_to_rgb(vec2 uv) {
+	// GLES already converts its external-OES decoder image into an ordinary
+	// RGBA texture before exposing it to Godot. color_matrix_type=3 marks that
+	// path, so tex_y is sampled directly without touching absent chroma planes.
+	if (color_matrix_type == 3) {
+		return texture(tex_y, uv).rgb;
+	}
+
+	float y_raw = texture(tex_y, uv).r;
+	float u_raw = 0.5;
+	float v_raw = 0.5;
+
+	if (yuv_mode == 1) {
+		ivec2 tex_size = textureSize(tex_u, 0);
+		int cx = int(uv.x * float(tex_size.x / 2));
+		int cy = int(uv.y * float(tex_size.y));
+		cx = clamp(cx, 0, tex_size.x / 2 - 1);
+		cy = clamp(cy, 0, tex_size.y - 1);
+		u_raw = texelFetch(tex_u, ivec2(cx * 2, cy), 0).r;
+		v_raw = texelFetch(tex_u, ivec2(cx * 2 + 1, cy), 0).r;
+	} else if (yuv_mode == 2) {
+		vec2 uv_val = texture(tex_u, uv).rg;
+		u_raw = uv_val.r;
+		v_raw = uv_val.g;
+	} else if (yuv_mode == 3) {
+		u_raw = texture(tex_u, uv).r;
+		v_raw = texture(tex_v, uv).r;
+	}
+
+	float y;
+	float u;
+	float v;
+	if (color_range == 0) {
+		y = (y_raw - 16.0 / 255.0) * (255.0 / 219.0);
+		u = (u_raw - 128.0 / 255.0) * (255.0 / 224.0);
+		v = (v_raw - 128.0 / 255.0) * (255.0 / 224.0);
+	} else {
+		y = y_raw;
+		u = u_raw - 0.5;
+		v = v_raw - 0.5;
+	}
+
+	vec3 rgb = vec3(0.0);
+	if (color_matrix_type == 1) {
+		rgb.r = y + 1.5748 * v;
+		rgb.g = y - 0.1873 * u - 0.4681 * v;
+		rgb.b = y + 1.8556 * u;
+	} else if (color_matrix_type == 2) {
+		rgb.r = y + 1.4746 * v;
+		rgb.g = y - 0.16455 * u - 0.57135 * v;
+		rgb.b = y + 1.8814 * u;
+	} else {
+		rgb.r = y + 1.402 * v;
+		rgb.g = y - 0.344136 * u - 0.714136 * v;
+		rgb.b = y + 1.772 * u;
+	}
+	return rgb;
+}
+
+vec2 to_frame_uv(vec2 tile_uv) {
+	return uv_region.xy + clamp(tile_uv, tile_inset, vec2(1.0) - tile_inset) * uv_region.zw;
+}
+
+vec3 sample_stream(vec2 uv) {
+	if (yuv_mode > 0) {
+		return yuv_to_rgb(uv);
+	}
+	return texture(main_texture, uv).rgb;
+}
+
 void fragment() {
-	// Full extent of one destination texel, projected back into source UV
-	// space.
 	vec2 footprint = fwidth(UV);
 	vec2 tap_step = footprint / float(TAPS);
-	vec4 sum = vec4(0.0);
+	vec3 sum = vec3(0.0);
 	for (int y = 0; y < TAPS; y++) {
 		for (int x = 0; x < TAPS; x++) {
-			// Tile TAPS x TAPS sample points evenly across the footprint,
-			// centered on UV - each individual tap is itself bilinear-
-			// filtered (filter_linear above), giving smoothing between
-			// texels on top of the box average across taps.
 			vec2 offset = tap_step * (vec2(float(x), float(y)) + 0.5) - footprint * 0.5;
-			sum += texture(source_tex, UV + offset);
+			sum += sample_stream(to_frame_uv(UV + offset));
 		}
 	}
-	COLOR = sum / float(TAPS * TAPS);
+	COLOR = vec4(sum / float(TAPS * TAPS), 1.0);
 }
