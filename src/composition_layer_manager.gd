@@ -6,9 +6,10 @@ var available: bool = false
 var in_use: bool = false
 var _last_bind_rids: Array = []
 var _last_bind_mode: Array = [0, 1, 0]
-var stats_layer: Node3D = null
 var stats_viewport: SubViewport = null
 var stats_label: Label = null
+var stats_rects: Array = []
+var stats_visible: bool = false
 
 func invalidate_yuv_cache():
 	_last_bind_rids = []
@@ -421,17 +422,10 @@ func setup():
 	setup_stats_overlay()
 
 func setup_stats_overlay():
-	# Match Moonlight Android XR's 768x512 diagnostic panel and keep it as a
-	# compositor quad. Showing diagnostics must not enable Godot's projection
-	# renderer, since that is one of the costs this panel is meant to expose.
-	stats_layer = OpenXRCompositionLayerQuad.new()
-	stats_layer.name = "PerformanceStatsLayer"
-	stats_layer.set_sort_order(1100)
-	stats_layer.set_enable_hole_punch(false)
-	stats_layer.set_alpha_blend(true)
-	stats_layer.visible = false
-	main.xr_origin.add_child(stats_layer)
-
+	# Match Moonlight Android XR's 768x512 diagnostic panel. Render it once and
+	# sample that texture inside each existing screen viewport, rather than
+	# allocating another OpenXR composition layer/swapchain. This pins the panel
+	# to the screen's top-left in mono and stereo modes and keeps projection off.
 	stats_viewport = SubViewport.new()
 	stats_viewport.name = "PerformanceStatsViewport"
 	stats_viewport.disable_3d = true
@@ -460,37 +454,61 @@ func setup_stats_overlay():
 	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	background.add_child(stats_label)
 
-	stats_layer.set_layer_viewport(stats_viewport)
-	main._log("[COMP] Performance statistics composition layer created")
+	var screen = main.primary_screen
+	var targets = [
+		{"bezel": screen.comp_bezel_rect, "viewport": screen.comp_viewport},
+		{"bezel": screen.comp_bezel_rect_left, "viewport": screen.comp_viewport_left},
+		{"bezel": screen.comp_bezel_rect_right, "viewport": screen.comp_viewport_right},
+	]
+	for target in targets:
+		if not target.bezel or not target.viewport:
+			continue
+		var rect = TextureRect.new()
+		rect.name = "PerformanceStatsOverlay"
+		rect.texture = stats_viewport.get_texture()
+		rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		rect.stretch_mode = TextureRect.STRETCH_SCALE
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rect.z_index = 100
+		rect.visible = false
+		target.bezel.add_child(rect)
+		stats_rects.append({"rect": rect, "viewport": target.viewport})
+	_layout_stats_rects()
+	main._log("[COMP] In-screen performance statistics overlay created")
 
 func set_stats_visible(enabled: bool):
-	if not stats_layer or not stats_viewport:
+	if not stats_viewport:
 		return
-	stats_layer.visible = enabled
-	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if enabled else SubViewport.UPDATE_DISABLED
+	if stats_visible == enabled:
+		return
+	stats_visible = enabled
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if enabled else SubViewport.UPDATE_DISABLED
+	for target in stats_rects:
+		target.rect.visible = enabled
 	if enabled:
-		update_stats_transform()
+		_layout_stats_rects()
 
 func update_stats_text(value: String):
 	if stats_label:
 		stats_label.text = value
+		if stats_visible:
+			stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func update_stats_transform():
-	if not stats_layer or not stats_layer.visible or not main.primary_screen:
-		return
-	var screen = main.primary_screen
-	var screen_basis = screen.screen_mesh.global_transform.basis.orthonormalized()
-	var screen_width = screen.mesh_size.x
-	var screen_height = screen.mesh_size.y
-	var overlay_width = screen_width * 0.30
-	var overlay_height = overlay_width * (512.0 / 768.0)
-	var margin = screen_width * 0.02
-	stats_layer.set_quad_size(Vector2(overlay_width, overlay_height))
-	stats_layer.global_transform.basis = screen_basis
-	stats_layer.global_position = screen.screen_mesh.global_position \
-		- screen_basis.x * (screen_width * 0.5 - overlay_width * 0.5 - margin) \
-		+ screen_basis.y * (screen_height * 0.5 - overlay_height * 0.5 - margin) \
-		+ screen_basis.z * 0.006
+	_layout_stats_rects()
+
+func _layout_stats_rects():
+	for target in stats_rects:
+		var rect: TextureRect = target.rect
+		var viewport: SubViewport = target.viewport
+		if not rect or not viewport:
+			continue
+		var margin = float(viewport.size.x) * 0.02
+		var overlay_width = float(viewport.size.x) * 0.30
+		var overlay_height = overlay_width * (512.0 / 768.0)
+		rect.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+		rect.position = Vector2(margin, margin)
+		rect.size = Vector2(overlay_width, overlay_height)
 
 func setup_background_equirect():
 	if not equirect_available:
@@ -880,6 +898,7 @@ func update_bezel():
 		return
 	for s in main.screens:
 		_update_bezel_for(s)
+	_layout_stats_rects()
 
 func _update_cylinder_params_for(s: VRScreen):
 	if not s.comp_cylinder and not s.comp_cylinder_left:

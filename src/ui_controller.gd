@@ -59,6 +59,24 @@ func on_ai_3d_toggled():
 func on_ai_3d_speed_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_speed()
+	if main.ai_3d_speed == 0:
+		main.depth_inference_frozen = false
+	update_depth_feed_btn_state()
+
+func toggle_depth_inference_frozen():
+	if main.ai_3d_speed == 0:
+		return
+	main.depth_inference_frozen = not main.depth_inference_frozen
+	update_depth_feed_btn_state()
+	main._log("[DEPTH] Diagnostic feed: %s" % ("FROZEN" if main.depth_inference_frozen else "LIVE (20 Hz)"))
+
+func update_depth_feed_btn_state():
+	if not main._ui_depth_feed_btn:
+		return
+	update_option_btn(main._ui_depth_feed_btn, "Frozen" if main.depth_inference_frozen else "Live 20Hz")
+	var disabled = main.ai_3d_speed == 0 or main.sbs_mode > 0 or main.screens.size() > 1
+	main._ui_depth_feed_btn.disabled = disabled
+	main._ui_depth_feed_btn.modulate.a = 0.3 if disabled else 1.0
 
 func on_ai_3d_debug_toggled():
 	main.auto_detect_enabled = false
@@ -100,6 +118,7 @@ func update_3d_btn_state():
 	if main._ui_3d_debug_btn:
 		main._ui_3d_debug_btn.disabled = true
 		main._ui_3d_debug_btn.visible = false
+	update_depth_feed_btn_state()
 
 func update_stats_btn_state():
 	if not main._ui_stats_btn:
@@ -619,6 +638,13 @@ func build_ui():
 	disp_row1.add_child(main._ui_3d_speed_btn)
 	main._ui_3d_btn = make_option_btn("AI Model", main.settings_controller.ai_3d_models[0].label)
 	disp_row1.add_child(main._ui_3d_btn)
+	main._ui_depth_feed_btn = make_option_btn("Depth", "Live 20Hz")
+	disp_row1.add_child(main._ui_depth_feed_btn)
+	# Five diagnostic controls share this row on the performance branch. Keep
+	# them inside the 1200px panel without changing the rest of the UI layout.
+	for btn in [main._ui_pt_btn, main._ui_sbs_btn, main._ui_3d_speed_btn, main._ui_3d_btn, main._ui_depth_feed_btn]:
+		btn.custom_minimum_size.x = 200
+		btn.add_theme_font_size_override("font_size", 22)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
 	# this every time regardless) - set here too so there's no one-frame
 	# flash of a visible "3D Debug" button before that first fires.
@@ -877,6 +903,7 @@ func build_ui():
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
 	main._ui_3d_speed_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	main._ui_depth_feed_btn.button_down.connect(func(): toggle_depth_inference_frozen())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())

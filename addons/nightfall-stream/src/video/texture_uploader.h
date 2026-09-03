@@ -12,10 +12,12 @@
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/classes/mutex.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <media/NdkImage.h>
@@ -52,11 +54,35 @@ public:
     ANativeWindow *create_android_gles_decoder_surface(int width, int height);
     void update_android_gles_external_texture();
 #endif
+    bool supports_native_depth_capture();
+    void request_native_depth_capture(int size);
+    PackedByteArray consume_native_depth_capture();
     void update_colorspace(int colorspace, int color_range);
     void perform_gpu_update();
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
+
+#ifdef __ANDROID__
+    // Raw decoder OES texture + its SurfaceTexture transform, for fast-xr's
+    // native OpenXR swapchain path to sample directly (matching moonlight-xr)
+    // instead of going through the RGBA blit this class does for the
+    // SubViewport/CompositionLayerQuad path. Both textures live in the same
+    // EGL share group, so the raw GLuint is valid across the GDExtension
+    // boundary as long as the caller is on Godot's GL thread.
+    unsigned int get_oes_texture_id() const { return gles_oes_texture_; }
+    PackedFloat32Array get_oes_transform_matrix() const;
+
+    // A GLsync (as uint64_t) signaling that this frame's updateTexImage()
+    // write to gles_oes_texture_ has completed on Godot's context. Shared
+    // objects' NAMES (textures, syncs) are valid across a share group, but
+    // content visibility across contexts is not guaranteed without explicit
+    // sync -- fast-xr samples gles_oes_texture_ from its own, different EGL
+    // context, so it must wait on this before reading. Ownership transfers
+    // out: caller consumes exactly once (glWaitSync + glDeleteSync). Returns
+    // 0 if no fence is pending (e.g. not yet rendered a frame).
+    uint64_t consume_oes_ready_fence();
+#endif
 
 protected:
     static void _bind_methods();
@@ -113,7 +139,10 @@ private:
     void _render_thread_create_android_gles_surface();
     void _render_thread_update_android_gles_texture();
     void _render_thread_destroy_android_gles_surface();
-    std::mutex gles_surface_mutex_;
+    bool _render_thread_ensure_depth_capture(int size);
+    void _render_thread_poll_depth_capture();
+    void _render_thread_issue_depth_capture(const float *matrix, int size);
+    mutable std::mutex gles_surface_mutex_;
     std::condition_variable gles_surface_cv_;
     bool gles_surface_ready_ = false;
     bool gles_surface_failed_ = false;
@@ -126,12 +155,41 @@ private:
     void *gles_transform_method_ = nullptr;
     void *gles_release_method_ = nullptr;
     unsigned int gles_oes_texture_ = 0;
+    // Cached every render-thread blit (texture_uploader.cpp), read back by
+    // get_oes_transform_matrix() from GDScript. gles_surface_mutex_ already
+    // guards the surface's readiness/lifetime; reuse it for this too rather
+    // than adding a second lock around a single 16-float array.
+    float gles_last_transform_matrix_[16]{};
+    // Set right after updateTexImage() succeeds; consumed (and cleared) by
+    // consume_oes_ready_fence(). Guarded by gles_surface_mutex_ like the
+    // transform matrix above.
+    void *gles_oes_ready_fence_ = nullptr;
     unsigned int gles_output_texture_ = 0;
     unsigned int gles_fbo_ = 0;
     unsigned int gles_blit_program_ = 0;
     int gles_video_uniform_ = -1;
     int gles_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
+
+    // The Godot Image::get_data()/Texture2D::get_image() route flushes the
+    // entire GLES render queue before returning. At a 20 Hz depth cadence it
+    // was blocking the XR frame loop for 13-21 ms per capture. Capture the
+    // decoder's external texture on the render thread instead and stage the
+    // readback through a small ring of pixel-buffer objects. Fences are
+    // polled with a zero timeout on later decoded frames, so XR submission is
+    // never made to wait for the depth pixels.
+    static constexpr int GLES_DEPTH_PBO_COUNT = 3;
+    unsigned int gles_depth_texture_ = 0;
+    unsigned int gles_depth_fbo_ = 0;
+    unsigned int gles_depth_pbos_[GLES_DEPTH_PBO_COUNT]{};
+    void *gles_depth_fences_[GLES_DEPTH_PBO_COUNT]{};
+    int gles_depth_capture_size_ = 0;
+    int gles_depth_next_pbo_ = 0;
+    std::atomic<bool> gles_depth_capture_requested_{false};
+    std::atomic<int> gles_depth_requested_size_{256};
+    mutable std::mutex gles_depth_result_mutex_;
+    std::vector<uint8_t> gles_depth_result_;
+    bool gles_depth_result_ready_ = false;
 #endif
 };
 

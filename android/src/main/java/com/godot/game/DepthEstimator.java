@@ -29,6 +29,12 @@ public class DepthEstimator {
     public static final int BACKEND_GPU = 2;
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
+    // 20 Hz target (moonlight-xr parity). With the stock-priority OpenCL
+    // delegate, a ~26 ms inference leaves roughly 24 ms before the next run.
+    // Derive each deadline from the actual worker start, rather
+    // than an older ideal deadline, so a late run cannot cause catch-up
+    // bursts. This does not claim to align work with the renderer's frame
+    // phase; inference and rendering still contend for the same GPU.
     private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
 
@@ -318,7 +324,7 @@ public class DepthEstimator {
     private long lastGpuPrepareNs;
     private long lastGpuInvokeNs;
     private long lastGpuPostprocessNs;
-    private volatile long nextGpuInferenceNs;
+    private volatile long nextDispatchNs;
 
     private float[] smoothedDepthFloat = null;
 
@@ -588,7 +594,7 @@ public class DepthEstimator {
                 Thread.yield();
             }
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             smoothedDepthFloat = null;
             rangeValid = false;
             lastPostProcessTimeNs = 0;
@@ -688,21 +694,23 @@ public class DepthEstimator {
         if (!initialized || activeGpuVariant != variant || !gpuWorkerScheduled.compareAndSet(false, true)) {
             return;
         }
-        long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());
+        long delayNs = Math.max(0L, nextDispatchNs - System.nanoTime());
         executor.schedule(() -> runScheduledGpuInference(variant), delayNs, TimeUnit.NANOSECONDS);
     }
 
     private void runScheduledGpuInference(GpuVariant variant) {
         long startNs = System.nanoTime();
-        long scheduledNs = nextGpuInferenceNs;
-        nextGpuInferenceNs = scheduledNs <= 0 || startNs - scheduledNs >= GPU_INFERENCE_INTERVAL_NS
-                ? startNs + GPU_INFERENCE_INTERVAL_NS
-                : scheduledNs + GPU_INFERENCE_INTERVAL_NS;
+        // Publish the next deadline before clearing gpuWorkerScheduled. A
+        // producer may submit while this inference is running; without this,
+        // it can observe the previous (already-expired) deadline and enqueue
+        // the next run immediately. Anchoring to this actual start keeps the
+        // maximum rate at 20 Hz without accumulating missed deadlines.
+        nextDispatchNs = startNs + GPU_INFERENCE_INTERVAL_NS;
         gpuWorkerScheduled.set(false);
 
         if (!initialized || activeGpuVariant != variant) {
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             return;
         }
 
@@ -989,10 +997,10 @@ public class DepthEstimator {
             // model's own native precision" rather than upcasting to fp32.
             gpuOptions.setPrecisionLossAllowed(true);
             gpuOptions.setInferencePreference(GpuDelegateFactory.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED);
-            // The bundled Nightfall LiteRT GPU JNI creates its Qualcomm OpenCL
-            // context with CL_PRIORITY_HINT_LOW_QCOM. OpenCL is substantially
-            // faster than LiteRT's OpenGL backend on Quest, while the context
-            // priority keeps render work ahead of inference dispatches.
+            // OpenCL is substantially faster than LiteRT's OpenGL backend on
+            // Quest. The stock LiteRT delegate uses the driver's default
+            // context priority; Nightfall's optional patched AAR instead uses
+            // CL_PRIORITY_HINT_LOW_QCOM when render-first scheduling is needed.
             gpuOptions.setForceBackend(GpuDelegateFactory.Options.GpuBackend.OPENCL);
             v.delegate = new GpuDelegate(gpuOptions);
             Interpreter.Options opts = new Interpreter.Options();

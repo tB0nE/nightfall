@@ -61,6 +61,7 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    int get_network_latency_ms() const;
     Dictionary take_performance_stats();
     bool is_display_ready() const;
 

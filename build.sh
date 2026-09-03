@@ -277,16 +277,12 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # 12 GPU<->CPU handoffs per inference that dominate the cost. See
 # DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
 # constant for the full history if revisiting.
-LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
-if [ ! -f "$LITERT_GPU_AAR" ]; then
-  echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"
-  exit 1
-fi
-# The local GPU AAR is the official LiteRT 1.4.2 artifact with only its arm64
-# JNI library replaced. Nightfall's JNI build adds Qualcomm's low-priority
-# OpenCL context hint; keeping the Java API artifact separate avoids Gradle
-# resolving the stock native library transitively alongside it.
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
+# Use stock-priority LiteRT at the required 20 Hz inference cadence. The
+# low-priority OpenCL experiment preserved 90 render FPS but stretched MiDaS
+# to ~60 ms and could not sustain 20 Hz; the remaining work is to reduce the
+# Godot render path enough for stock LiteRT's ~23-30 ms inference to coexist
+# with 90 FPS.
+sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK
