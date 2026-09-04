@@ -39,6 +39,8 @@ public:
     int get_depth_model_size();
     float get_depth_last_inference_ms();
     float get_depth_last_inference_hz();
+    float get_depth_last_age_ms();
+    int get_depth_last_skipped_frames();
     String get_device_model();
 
 protected:

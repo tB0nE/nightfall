@@ -18,6 +18,7 @@ func save_state():
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "codec_preference", main.codec_preference)
 	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
+	save.set_value("diagnostics", "performance_overlay", main.performance_overlay_enabled)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -257,6 +258,7 @@ func sync_ui_to_settings():
 		var idle_idx = main.settings_controller.idle_values.find(main.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
+		main.ui_controller.update_stats_btn_state()
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
@@ -312,6 +314,7 @@ func load_state():
 		main.pointer_steady = int(saved_steady)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
+	main.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", false)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0

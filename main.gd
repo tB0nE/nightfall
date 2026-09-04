@@ -135,6 +135,9 @@ var stats_timer: float = 0.0
 var stats_fps: float = 0.0
 var stats_frame_times: Array = []
 var stats_network_events: int = 0
+var performance_overlay_enabled: bool = false
+var performance_overlay_timer: float = 0.0
+var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
@@ -514,6 +517,8 @@ var _screen_mesh_original_mat: Material:
 		if primary_screen: primary_screen._original_mat = v
 
 var _log_lines: PackedStringArray = []
+var _log_file_initialized: bool = false
+var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
 var _ui_host_label: Label
@@ -557,6 +562,7 @@ var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button
 var _ui_center_btn: Button
+var _ui_stats_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
@@ -782,11 +788,18 @@ func _log(msg: String):
 	push_warning("NF: %s" % msg)
 
 func _flush_log():
-	var f = FileAccess.open("user://debug.log", FileAccess.WRITE)
+	if _log_lines.is_empty():
+		return
+	var mode = FileAccess.READ_WRITE if _log_file_initialized else FileAccess.WRITE
+	var f = FileAccess.open("user://debug.log", mode)
 	if f:
+		if _log_file_initialized:
+			f.seek_end()
 		for line in _log_lines:
 			f.store_line(line)
 		f.close()
+		_log_lines.clear()
+		_log_file_initialized = true
 
 func _setup_comp_layer():
 	comp = CompositionLayerManager.new(self)
@@ -1268,6 +1281,8 @@ func _bind_comp_fallback_texture(stream_tex):
 func _on_stream_started():
 	var was_restarting = _restarting_stream
 	is_streaming = true
+	performance_overlay_timer = 0.0
+	_performance_previous_window.clear()
 	_restarting_stream = false
 	_connect_timeout_pending = false
 	_reconnecting = false
@@ -2240,7 +2255,9 @@ func _process(delta):
 	if DEBUG_RENDER_MODEL_CONTROLLERS:
 		_process_render_model_controllers(delta)
 
-	if Engine.get_frames_drawn() % 120 == 0:
+	_log_flush_timer += delta
+	if _log_flush_timer >= 2.0:
+		_log_flush_timer = 0.0
 		_flush_log()
 
 	_process_button_input()
@@ -2258,6 +2275,8 @@ func _process(delta):
 	_update_hand_indicator_layers()
 	_update_grab_bar_layers()
 	_sync_comp_background()
+	if performance_overlay_enabled and comp:
+		comp.update_stats_transform()
 
 	_process_idle_activity()
 
@@ -2409,13 +2428,6 @@ func _process_hand_tracking(_delta):
 			_update_hand_tracker_transform(right_hand, right_tracker)
 		if left_tracker:
 			_update_hand_tracker_transform(left_hand, left_tracker)
-	if Engine.get_frames_drawn() % 90 == 0:
-		_log("[INPUT-DEBUG] HandsActive: %s, RightHand tracker: %s, pos: %s, rot: %s" % [
-			str(_is_using_hands),
-			str(right_hand.tracker),
-			str(right_hand.global_position),
-			str(right_hand.global_rotation)
-		])
 
 func _process_button_input():
 	if not is_xr_active:
@@ -2531,6 +2543,8 @@ func _sync_comp_background():
 
 func _process_stats(delta):
 	if not is_streaming:
+		if comp:
+			comp.set_stats_visible(false)
 		return
 	if comp.in_use:
 		var cur_filter = smooth_mode
@@ -2553,6 +2567,92 @@ func _process_stats(delta):
 		stream_manager.update_stats()
 		stats_timer = 0.0
 		stats_frame_times.clear()
+	_process_performance_overlay(delta)
+
+func toggle_performance_overlay():
+	performance_overlay_enabled = not performance_overlay_enabled
+	performance_overlay_timer = 0.0
+	_performance_previous_window.clear()
+	if stream_backend:
+		stream_backend.take_performance_stats()
+	if comp:
+		comp.set_stats_visible(performance_overlay_enabled and is_streaming)
+	if ui_controller:
+		ui_controller.update_stats_btn_state()
+	if state_manager:
+		state_manager.save_state()
+
+func _combine_performance_windows(previous: Dictionary, current: Dictionary) -> Dictionary:
+	if previous.is_empty():
+		return current.duplicate()
+	var combined = current.duplicate()
+	for key in ["elapsed_us", "total_frames", "received_frames", "rendered_frames", "network_lost_frames", "decode_time_us", "host_latency_tenths_total", "host_latency_samples"]:
+		combined[key] = int(previous.get(key, 0)) + int(current.get(key, 0))
+	var previous_min = int(previous.get("host_latency_tenths_min", 0))
+	var current_min = int(current.get("host_latency_tenths_min", 0))
+	combined["host_latency_tenths_min"] = current_min if previous_min == 0 else previous_min if current_min == 0 else mini(previous_min, current_min)
+	combined["host_latency_tenths_max"] = maxi(int(previous.get("host_latency_tenths_max", 0)), int(current.get("host_latency_tenths_max", 0)))
+	return combined
+
+func _process_performance_overlay(delta: float):
+	if not performance_overlay_enabled or not stream_backend or not comp:
+		return
+	comp.set_stats_visible(true)
+	performance_overlay_timer += delta
+	if performance_overlay_timer < 1.0:
+		return
+	performance_overlay_timer = 0.0
+	var current = stream_backend.take_performance_stats()
+	if current.is_empty():
+		return
+	var stats = _combine_performance_windows(_performance_previous_window, current)
+	_performance_previous_window = current
+	var elapsed_s = maxf(float(stats.get("elapsed_us", 0)) / 1000000.0, 0.001)
+	var total_frames = int(stats.get("total_frames", 0))
+	var received_frames = int(stats.get("received_frames", 0))
+	var rendered_frames = int(stats.get("rendered_frames", 0))
+	var lost_frames = int(stats.get("network_lost_frames", 0))
+	var total_fps = float(total_frames) / elapsed_s
+	var incoming_fps = float(received_frames) / elapsed_s
+	var rendering_fps = float(rendered_frames) / elapsed_s
+	var lost_pct = 100.0 * float(lost_frames) / float(maxi(total_frames, 1))
+	var decoder_ms = float(stats.get("decode_time_us", 0)) / 1000.0 / float(maxi(received_frames, 1))
+	var width = stream_backend.get_video_width()
+	var height = stream_backend.get_video_height()
+	var decoder_name = stream_backend.get_decoder_name()
+	if decoder_name.is_empty():
+		decoder_name = "Unknown"
+	var lines := PackedStringArray([
+		"Video stream: %dx%d %.0f FPS" % [width, height, total_fps],
+		"Decoder: %s" % decoder_name,
+		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
+		"Rendering frame rate: %.0f FPS" % rendering_fps,
+		"Frames dropped by your network connection: %.2f%%" % lost_pct,
+		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],
+	])
+	var host_samples = int(stats.get("host_latency_samples", 0))
+	if host_samples > 0:
+		lines.append("Host processing latency min/max/average: %.1f/%.1f/%.1f ms" % [
+			float(stats.get("host_latency_tenths_min", 0)) / 10.0,
+			float(stats.get("host_latency_tenths_max", 0)) / 10.0,
+			float(stats.get("host_latency_tenths_total", 0)) / 10.0 / float(host_samples),
+		])
+	lines.append("Average decoding time: %.2f ms" % decoder_ms)
+	# Moonlight XR owns its native OpenXR renderer and times the warp command
+	# buffer directly. Godot exposes no equivalent GPU timestamp to script;
+	# retain the same field explicitly as unavailable rather than substituting
+	# CPU frame time and creating a misleading comparison.
+	lines.append("Warp GPU: N/A (Godot does not expose this timestamp)")
+	if ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
+		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
+		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
+	comp.update_stats_text("\n".join(lines))
+	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% rtt=%dms decode=%.2fms depth=%.2fms" % [
+		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
+		int(stats.get("network_latency_ms", 0)), decoder_ms,
+		stream_backend.get_depth_last_inference_ms() if ai_3d_speed > 0 else 0.0,
+	])
 
 func _process_idle_timeout():
 	if not is_streaming or idle_timeout_min <= 0:

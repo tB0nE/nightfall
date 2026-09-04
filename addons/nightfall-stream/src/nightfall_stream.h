@@ -74,6 +74,7 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    Dictionary take_performance_stats();
     bool is_display_ready() const;
     String get_codec_capabilities_info() const;
 

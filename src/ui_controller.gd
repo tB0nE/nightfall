@@ -101,6 +101,15 @@ func update_3d_btn_state():
 		main._ui_3d_debug_btn.disabled = true
 		main._ui_3d_debug_btn.visible = false
 
+func update_stats_btn_state():
+	if not main._ui_stats_btn:
+		return
+	main._ui_stats_btn.text = "Stats: On" if main.performance_overlay_enabled else "Stats: Off"
+	main._ui_stats_btn.add_theme_color_override(
+		"font_color",
+		Color(0.55, 0.78, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.5)
+	)
+
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
@@ -399,6 +408,30 @@ func build_ui():
 	right_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	top_row.add_child(right_spacer)
+
+	main._ui_stats_btn = Button.new()
+	main._ui_stats_btn.text = "Stats: Off"
+	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
+	main._ui_stats_btn.custom_minimum_size = Vector2(130, 36)
+	main._ui_stats_btn.add_theme_font_size_override("font_size", 20)
+	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	main._ui_stats_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var stats_style = main._btn_style.duplicate()
+	stats_style.content_margin_left = 10
+	stats_style.content_margin_right = 10
+	stats_style.content_margin_top = 2
+	stats_style.content_margin_bottom = 2
+	stats_style.set_corner_radius_all(0)
+	var stats_hover = main._btn_hover.duplicate()
+	stats_hover.content_margin_left = 10
+	stats_hover.content_margin_right = 10
+	stats_hover.content_margin_top = 2
+	stats_hover.content_margin_bottom = 2
+	stats_hover.set_corner_radius_all(0)
+	main._ui_stats_btn.add_theme_stylebox_override("normal", stats_style)
+	main._ui_stats_btn.add_theme_stylebox_override("hover", stats_hover)
+	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
+	top_row.add_child(main._ui_stats_btn)
 
 	main._ui_exit_btn = Button.new()
 	main._ui_exit_btn.text = "Exit"
@@ -806,7 +839,9 @@ func build_ui():
 	main._ui_disconnect_btn.button_down.connect(func(): main.disconnect_stream())
 	main._ui_close_btn.button_down.connect(func(): main._toggle_ui())
 	main._ui_center_btn.button_down.connect(func(): main._reset_positions())
+	main._ui_stats_btn.button_down.connect(func(): main.toggle_performance_overlay())
 	main._ui_disconnect_btn.visible = main.is_streaming
+	update_stats_btn_state()
 	main._ui_pt_btn.button_down.connect(func(): main.settings_controller.toggle_passthrough())
 	main._ui_curve_btn.button_down.connect(func(): main.screen_manager.cycle_curvature())
 	main._ui_bg_btn.button_down.connect(func(): main.settings_controller.cycle_background())

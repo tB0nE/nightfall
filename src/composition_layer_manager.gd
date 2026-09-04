@@ -6,6 +6,9 @@ var available: bool = false
 var in_use: bool = false
 var _last_bind_rids: Array = []
 var _last_bind_mode: Array = [0, 1, 0]
+var stats_layer: Node3D = null
+var stats_viewport: SubViewport = null
+var stats_label: Label = null
 
 func invalidate_yuv_cache():
 	_last_bind_rids = []
@@ -415,6 +418,79 @@ func setup():
 	setup_background_equirect()
 
 	setup_screen(main.primary_screen, true)
+	setup_stats_overlay()
+
+func setup_stats_overlay():
+	# Match Moonlight Android XR's 768x512 diagnostic panel and keep it as a
+	# compositor quad. Showing diagnostics must not enable Godot's projection
+	# renderer, since that is one of the costs this panel is meant to expose.
+	stats_layer = OpenXRCompositionLayerQuad.new()
+	stats_layer.name = "PerformanceStatsLayer"
+	stats_layer.set_sort_order(1100)
+	stats_layer.set_enable_hole_punch(false)
+	stats_layer.set_alpha_blend(true)
+	stats_layer.visible = false
+	main.xr_origin.add_child(stats_layer)
+
+	stats_viewport = SubViewport.new()
+	stats_viewport.name = "PerformanceStatsViewport"
+	stats_viewport.disable_3d = true
+	stats_viewport.transparent_bg = true
+	stats_viewport.size = Vector2i(768, 512)
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	main.add_child(stats_viewport)
+
+	var background = ColorRect.new()
+	background.name = "Background"
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.color = Color(0, 0, 0, 0.69)
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stats_viewport.add_child(background)
+
+	stats_label = Label.new()
+	stats_label.name = "StatsText"
+	stats_label.position = Vector2(10, 8)
+	stats_label.size = Vector2(748, 496)
+	stats_label.add_theme_font_size_override("font_size", 22)
+	stats_label.add_theme_color_override("font_color", Color.WHITE)
+	stats_label.add_theme_constant_override("line_spacing", 2)
+	var mono = SystemFont.new()
+	mono.font_names = PackedStringArray(["monospace"])
+	stats_label.add_theme_font_override("font", mono)
+	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	background.add_child(stats_label)
+
+	stats_layer.set_layer_viewport(stats_viewport)
+	main._log("[COMP] Performance statistics composition layer created")
+
+func set_stats_visible(enabled: bool):
+	if not stats_layer or not stats_viewport:
+		return
+	stats_layer.visible = enabled
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if enabled else SubViewport.UPDATE_DISABLED
+	if enabled:
+		update_stats_transform()
+
+func update_stats_text(value: String):
+	if stats_label:
+		stats_label.text = value
+
+func update_stats_transform():
+	if not stats_layer or not stats_layer.visible or not main.primary_screen:
+		return
+	var screen = main.primary_screen
+	var screen_basis = screen.screen_mesh.global_transform.basis.orthonormalized()
+	var screen_width = screen.mesh_size.x
+	var screen_height = screen.mesh_size.y
+	var overlay_width = screen_width * 0.30
+	var overlay_height = overlay_width * (512.0 / 768.0)
+	var margin = screen_width * 0.02
+	stats_layer.set_quad_size(Vector2(overlay_width, overlay_height))
+	stats_layer.global_transform.basis = screen_basis
+	stats_layer.global_position = screen.screen_mesh.global_position \
+		- screen_basis.x * (screen_width * 0.5 - overlay_width * 0.5 - margin) \
+		+ screen_basis.y * (screen_height * 0.5 - overlay_height * 0.5 - margin) \
+		+ screen_basis.z * 0.006
 
 func setup_background_equirect():
 	if not equirect_available:

@@ -115,6 +115,13 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_r
         shutdown();
         return false;
     }
+    char *codec_name = nullptr;
+    if (AMediaCodec_getName(codec_, &codec_name) == AMEDIA_OK && codec_name) {
+        codec_name_ = codec_name;
+        AMediaCodec_releaseName(codec_, codec_name);
+    } else {
+        codec_name_ = mime;
+    }
 
     AMediaCodecOnAsyncNotifyCallback callbacks{};
     callbacks.onAsyncInputAvailable = &AndroidMediaCodec::_on_async_input_available;
@@ -164,7 +171,7 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_r
         return false;
     }
 
-    NF_LOG("AndroidMediaCodec", "Initialized async codec: %dx%d mime=%s", width, height, mime);
+    NF_LOG("AndroidMediaCodec", "Initialized async codec: %dx%d mime=%s name=%s", width, height, mime, codec_name_.c_str());
     return true;
 }
 
@@ -201,6 +208,7 @@ void AndroidMediaCodec::shutdown() {
         AMediaCodec_delete(codec_);
         codec_ = nullptr;
     }
+    codec_name_.clear();
 
     if (owns_external_window_ && window_) {
         ANativeWindow_release(window_);
@@ -471,7 +479,7 @@ bool AndroidMediaCodec::dequeue_frame(NativeDecodedFrame &out_frame,
             pending_output_valid_ = false;
         }
         static int external_frame_count = 0;
-        if (++external_frame_count <= 3 || external_frame_count % 120 == 0) {
+        if (++external_frame_count <= 3) {
             NF_LOG("AndroidMediaCodec", "External SurfaceTexture frame #%d: %dx%d pts=%lld",
                    external_frame_count, out_frame.width, out_frame.height,
                    (long long)out_frame.pts);
@@ -539,7 +547,7 @@ bool AndroidMediaCodec::dequeue_frame(NativeDecodedFrame &out_frame,
     }
 
     static int frame_count = 0;
-    if (++frame_count <= 5 || frame_count % 60 == 0) {
+    if (++frame_count <= 5) {
         NF_LOG("AndroidMediaCodec", "Frame ready: %dx%d pts=%lld buf=%p",
                out_frame.width, out_frame.height, (long long)out_frame.pts,
                (void *)buffer);
