@@ -47,6 +47,17 @@ func _mode() -> int:
 func _eligible() -> bool:
 	if not provider_registered or not main.is_streaming or main.screens.size() != 1:
 		return false
+	# _schedule_stream_restart() deactivates this renderer, then awaits a
+	# couple of frame boundaries before actually freeing the decoder/texture
+	# state via stop_play_stream(). process_frame() -> refresh() runs every
+	# frame regardless, so without this guard _eligible() keeps returning
+	# true through those awaits and re-activates the renderer (renderer.start())
+	# right as the decoder/OES state it reads is about to be torn down -
+	# a null-pointer GLThread crash inside NightfallStream::stop_stream()'s
+	# call chain, confirmed via adb logcat crash buffer (SIGSEGV, fault
+	# addr 0xe0, repeated across a test session with heavy setting toggling).
+	if main._restarting_stream:
+		return false
 	# Auto-detection and the optional shader filters consume the legacy RGB
 	# viewport. Fall back while they are selected instead of silently showing
 	# stale detection data or ignoring a user's picture setting.
@@ -208,6 +219,10 @@ func deactivate(restore_legacy: bool) -> void:
 			main.comp.switch_to_stereo_comp_layer()
 		else:
 			main.comp.switch_to_comp_layer()
+		# Re-sync the legacy overlay now that this renderer is no longer the
+		# one presenting it - see toggle_performance_overlay()'s comment for
+		# why the two display paths must stay mutually exclusive.
+		main.comp.set_stats_visible(main.performance_overlay_enabled and main.is_streaming)
 
 func shutdown() -> void:
 	if main.stream_backend:

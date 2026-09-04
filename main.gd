@@ -2607,8 +2607,15 @@ func toggle_performance_overlay():
 	_performance_previous_window.clear()
 	if stream_backend:
 		stream_backend.take_performance_stats()
+	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
+	# native renderer's own composited overlay quad both sample the same
+	# stats_viewport texture through independent, differently-positioned
+	# display paths - showing both at once (observed 2026-09-04 as one flat
+	# + one bent-along-the-curved-screen overlay) means whichever path isn't
+	# actually presenting is still drawing a stale/mispositioned copy.
+	var native_active := native_xr_renderer != null and native_xr_renderer.active
 	if comp:
-		comp.set_stats_visible(performance_overlay_enabled and is_streaming)
+		comp.set_stats_visible(performance_overlay_enabled and is_streaming and not native_active)
 	if native_xr_renderer:
 		native_xr_renderer.set_stats_visible(performance_overlay_enabled and is_streaming)
 	if ui_controller:
