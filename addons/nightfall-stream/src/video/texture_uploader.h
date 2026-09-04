@@ -64,7 +64,7 @@ public:
     bool consume_new_frame();
 
 #ifdef __ANDROID__
-    // Raw decoder OES texture + its SurfaceTexture transform, for fast-xr's
+    // Raw decoder OES texture + its SurfaceTexture transform, for nightfall-xr's
     // native OpenXR swapchain path to sample directly (matching moonlight-xr)
     // instead of going through the RGBA blit this class does for the
     // SubViewport/CompositionLayerQuad path. Both textures live in the same
@@ -77,11 +77,13 @@ public:
     // write to gles_oes_texture_ has completed on Godot's context. Shared
     // objects' NAMES (textures, syncs) are valid across a share group, but
     // content visibility across contexts is not guaranteed without explicit
-    // sync -- fast-xr samples gles_oes_texture_ from its own, different EGL
+    // sync -- nightfall-xr samples gles_oes_texture_ from its own, different EGL
     // context, so it must wait on this before reading. Ownership transfers
     // out: caller consumes exactly once (glWaitSync + glDeleteSync). Returns
     // 0 if no fence is pending (e.g. not yet rendered a frame).
     uint64_t consume_oes_ready_fence();
+    void set_native_direct_mode(bool enabled) { native_direct_mode_.store(enabled); }
+    unsigned int get_native_depth_guide_texture_id() const { return gles_depth_texture_; }
 #endif
 
 protected:
@@ -164,6 +166,10 @@ private:
     // consume_oes_ready_fence(). Guarded by gles_surface_mutex_ like the
     // transform matrix above.
     void *gles_oes_ready_fence_ = nullptr;
+    // When the native OpenXR composition provider is presenting the OES
+    // decoder texture directly, do not also pay for the legacy full-size
+    // OES->RGBA copy. The small depth-capture draw/PBO remains active.
+    std::atomic<bool> native_direct_mode_{false};
     unsigned int gles_output_texture_ = 0;
     unsigned int gles_fbo_ = 0;
     unsigned int gles_blit_program_ = 0;

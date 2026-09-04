@@ -27,7 +27,11 @@ for arg in "$@"; do
   esac
 done
 
-GODOT="/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"
+# Export with the editor version matching the installed 4.7.stable template
+# metadata. The Android runtime library is still the patched engine copied into
+# that template; the patched editor is only needed when regenerating the custom
+# godot-cpp API used to compile nightfall-xr.
+GODOT="${NIGHTFALL_GODOT_EDITOR:-/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64}"
 JAVA_HOME="/home/linuxbrew/.linuxbrew/opt/openjdk@17"
 TEMPLATES="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/android_source.zip"
 LINUX_TEMPLATE_DEBUG="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_debug.x86_64"
@@ -152,6 +156,12 @@ APPRUN
   rm -f "$PCK_PATH"
   exit 0
 fi
+
+# Build the Android OpenXR composition provider before export. It is kept as
+# a separate GDExtension because the generic vcpkg godot-cpp API omits the
+# OpenXR module classes it derives from. Linux keeps using the legacy Godot
+# composition-layer path and must not require the Android NDK.
+bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" release
 
 if [ "$PRESET" = "NightfallRelease" ]; then
   if [ ! -f .env ]; then

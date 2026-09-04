@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- **Godot 4.7 Beta 2** (editor + export templates)
-- **Android NDK 27.0.12077973**
+- **Godot 4.7 stable** (editor + custom export templates)
+- **Android NDK 29.0.14206865**
 - **JDK 17**
 - **vcpkg** (for GDExtension dependency management)
 - **Ninja** (build system, used by CMake)
@@ -84,6 +84,33 @@ ninja -C build/linux-release
 
 Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh` from `models/` - see `models/README.md`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `models/`.
 
+### Native OpenXR renderer (Quest/GLES)
+
+Nightfall's fast presentation path is a separate GDExtension in
+`extensions/nightfall-xr`. It samples MediaCodec's external OES texture
+directly, renders both eyes into one double-wide OpenXR swapchain, and submits
+two eye-specific sub-images through Godot's existing OpenXR frame loop. The
+legacy Godot composition-layer path remains the automatic fallback for Linux,
+multi-monitor layouts, diagnostic depth views, unsupported renderers, and
+startup failures.
+
+`build.sh` builds this extension automatically for Android. Its build needs a
+`godot-cpp` checkout generated from the matching patched engine's extension API
+(default `/tmp/godot-cpp-custom`) and the matching engine source (default
+`/tmp/nightfall-godot-sharpen`). Override these with
+`NIGHTFALL_GODOT_CPP`/`NIGHTFALL_GODOT_SOURCE` when necessary. To build it
+directly:
+
+```bash
+extensions/nightfall-xr/build_android.sh release
+```
+
+The patched editor is used to generate the custom `godot-cpp` API, but APK
+export uses the official 4.7 stable editor by default so its version matches
+the installed `4.7.stable` template metadata. The Android runtime library
+inside that template remains the patched engine. Set `NIGHTFALL_GODOT_EDITOR`
+only when exporting against a differently-versioned template set.
+
 ### Patched Godot Engine (Quest only)
 
 The Quest's zero-copy GPU decode pipeline requires a custom Godot engine build with Vulkan Android Hardware Buffer (AHB) import support. The patch adds two RenderingDevice methods: `texture_create_from_android_hardware_buffer` and `texture_get_ycbcr_sampler`.
@@ -138,7 +165,7 @@ What `build.sh` does:
 1. Wipes `android/build/` and extracts Godot Android template
 2. Copies `GodotApp.java` and `DepthEstimator.java`
 3. Copies TFLite models from `models/` to assets (see `models/README.md`)
-4. Patches `build.gradle` with LiteRT 1.4.2 and Nightfall's GPU AAR
+4. Patches `build.gradle` with the stock LiteRT 1.4.2 CPU/GPU dependencies
 5. Copies Meta OpenXR vendor plugin AAR
 6. Exports APK via Godot headless
 7. Cleans up `android/build/` (prevents Godot editor duplicate class errors)
@@ -175,18 +202,14 @@ This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
 quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
 
-### Nightfall LiteRT GPU AAR
+### LiteRT GPU runtime
 
-Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`; they do not rebuild LiteRT. This is the official LiteRT GPU 1.4.2 AAR with only its arm64 JNI library replaced. The replacement creates the Adreno OpenCL context with Qualcomm's low-priority hint so XR rendering is scheduled ahead of depth inference.
-
-To regenerate it:
-
-1. Check out TensorFlow 2.17.0 and apply `android/patches/litert-qcom-low-priority-opencl.patch`.
-2. Configure Bazel 6.5.0 with Android NDK 25.2.9519653.
-3. Build `//tensorflow/lite/java:libtensorflowlite_gpu_jni.so` with `--config=android_arm64`.
-4. Replace `jni/arm64-v8a/libtensorflowlite_gpu_jni.so` in the official `com.google.ai.edge.litert:litert-gpu:1.4.2` AAR and remove its other ABI directories.
-
-The JNI exports must match the official library before replacing the checked-in AAR.
+Normal Android builds use the stock `com.google.ai.edge.litert:litert-gpu:1.4.2`
+runtime. The older low-priority Qualcomm OpenCL experiment remains under
+`android/patches/` for historical comparison, but it is not part of the normal
+build: it protected the legacy render loop by roughly doubling inference time.
+The native double-wide renderer is designed to leave enough GPU headroom for
+stock LiteRT's approximately 20 Hz inference cadence.
 
 ## 3. Deploy to Quest
 

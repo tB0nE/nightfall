@@ -294,6 +294,7 @@ var input_handler: InputHandler
 var ui_controller: UIController
 var auto_detect: AutoDetect
 var depth_estimator: DepthEstimatorModule
+var native_xr_renderer: NativeXrRendererManager
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
 var screen_manager: ScreenManager
@@ -942,7 +943,7 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing and not (native_xr_renderer and native_xr_renderer.active)
 		if on_screen and (pad_on_screen or tp_capturing):
 			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
@@ -1478,6 +1479,8 @@ func _update_comp_layer_size():
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
 	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " restarting=" + str(_restarting_stream) + " reconnecting=" + str(_reconnecting) + " msg=" + str(msg) + " err=" + str(err_code))
+	if native_xr_renderer:
+		native_xr_renderer.deactivate(false)
 	if _auto_connect:
 		_auto_connect = false
 		return
@@ -1605,6 +1608,8 @@ func _ready():
 		return
 
 	_init_xr(interface)
+	if native_xr_renderer:
+		native_xr_renderer.setup()
 	_init_backgrounds_and_comp_layer()
 	await get_tree().create_timer(0.5).timeout
 	screen_mesh.extra_cull_margin = 10.0
@@ -1633,6 +1638,7 @@ func _init_modules():
 	ui_controller = UIController.new(self)
 	auto_detect = AutoDetect.new(self)
 	depth_estimator = DepthEstimatorModule.new(self)
+	native_xr_renderer = NativeXrRendererManager.new(self)
 	welcome_screen = WelcomeScreen.new(self)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
@@ -2591,8 +2597,11 @@ func _process_stats(delta):
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
 	stats_app_frames += 1
-	if stream_backend and stream_backend.consume_new_frame():
+	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
+	if new_video_frame:
 		stats_video_updates += 1
+	if native_xr_renderer:
+		native_xr_renderer.process_frame(new_video_frame)
 	stats_sample_timer += delta
 	if stats_sample_timer >= 1.0:
 		stats_fps = float(stats_app_frames) / stats_sample_timer
@@ -2614,6 +2623,8 @@ func toggle_performance_overlay():
 		stream_backend.take_performance_stats()
 	if comp:
 		comp.set_stats_visible(performance_overlay_enabled and is_streaming)
+	if native_xr_renderer:
+		native_xr_renderer.set_stats_visible(performance_overlay_enabled and is_streaming)
 	if ui_controller:
 		ui_controller.update_stats_btn_state()
 	if state_manager:
@@ -2681,7 +2692,8 @@ func _process_performance_overlay(delta: float):
 	# buffer directly. Godot exposes no equivalent GPU timestamp to script;
 	# retain the same field explicitly as unavailable rather than substituting
 	# CPU frame time and creating a misleading comparison.
-	lines.append("Warp GPU: N/A (Godot does not expose this timestamp)")
+	var native_warp_ms := native_xr_renderer.get_warp_gpu_ms() if native_xr_renderer else 0.0
+	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
 	if ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if depth_inference_frozen:
 			lines.append("Depth inference: FROZEN (stereo warp remains active)")
@@ -2690,6 +2702,8 @@ func _process_performance_overlay(delta: float):
 			lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 			lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))
+	if native_xr_renderer:
+		native_xr_renderer.request_stats_overlay_update()
 	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% rtt=%dms decode=%.2fms depth=%.2fms" % [
 		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
 		int(stats.get("network_latency_ms", 0)), decoder_ms,
@@ -2708,6 +2722,8 @@ func _process_idle_timeout():
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
+		if native_xr_renderer:
+			native_xr_renderer.shutdown()
 
 func _input(event):
 	input_handler.handle_input(event)
