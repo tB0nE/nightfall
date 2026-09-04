@@ -845,53 +845,46 @@ func _update_bezel_for(s: VRScreen):
 		{"bezel": s.comp_bezel_rect_left, "yuv": s.comp_yuv_rect_left, "vp": s.comp_viewport_left, "cyl": s.comp_cylinder_left},
 		{"bezel": s.comp_bezel_rect_right, "yuv": s.comp_yuv_rect_right, "vp": s.comp_viewport_right, "cyl": s.comp_cylinder_right},
 	]
-	if main.bezel_enabled and in_use:
-		var px = 8
-		var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
-		var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
-		for t in triplet:
-			if not t.bezel:
-				continue
-			t.bezel.color = Color(0, 0, 0, 1)
-			t.bezel.anchors_preset = 15
-			t.bezel.offset_left = 0
-			t.bezel.offset_top = 0
-			t.bezel.offset_right = 0
-			t.bezel.offset_bottom = 0
-			t.yuv.offset_left = px
-			t.yuv.offset_top = px
-			t.yuv.offset_right = -px
-			t.yuv.offset_bottom = -px
-			t.yuv.anchor_left = 0.0
-			t.yuv.anchor_top = 0.0
-			t.yuv.anchor_right = 1.0
-			t.yuv.anchor_bottom = 1.0
-			t.yuv.anchors_preset = 0
-			var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
-			if t.vp.size != bezel_size:
-				t.vp.size = bezel_size
-			if t.cyl and t.cyl.visible:
-				t.cyl.set_aspect_ratio(bezel_x / bezel_y)
-	else:
-		for t in triplet:
-			if not t.bezel:
-				continue
-			t.bezel.color = Color(0, 0, 0, 0)
-			t.bezel.anchors_preset = 15
-			t.bezel.offset_left = 0
-			t.bezel.offset_top = 0
-			t.bezel.offset_right = 0
-			t.bezel.offset_bottom = 0
-			t.yuv.offset_left = 0
-			t.yuv.offset_top = 0
-			t.yuv.offset_right = 0
-			t.yuv.offset_bottom = 0
-			t.yuv.anchors_preset = 15
-			var content_size = Vector2i(base_w, base_h)
-			if t.vp.size != content_size:
-				t.vp.size = content_size
-			if t.cyl and t.cyl.visible:
-				t.cyl.set_aspect_ratio(s.mesh_size.x / s.mesh_size.y)
+	# Always allocate the bezel-padded viewport size/aspect and only toggle
+	# the border's alpha, rather than flipping t.vp.size between content_size
+	# and bezel_size on/off (2026-09-05) - toggling bezel while streaming
+	# reliably crashed with the exact same signature (SIGSEGV, fault addr
+	# 0xe0, null pointer) as _set_comp_quad_hidden()'s documented swapchain
+	# race above: resizing a SubViewport that backs an OpenXRCompositionLayer
+	# forces Godot to tear down and recreate that layer's swapchain, which
+	# can race in-flight render commands. Keeping the size (and therefore the
+	# swapchain) constant across a bezel toggle avoids that resize entirely;
+	# a genuine resolution change (comp_base_size changing) still resizes
+	# normally via the guard below; only the padding is now unconditional.
+	# Visual cost: an ~8px transparent margin around the video when the
+	# bezel is off, instead of the video filling the quad edge-to-edge.
+	var px = 8
+	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
+	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
+	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
+	var show_border = main.bezel_enabled and in_use
+	for t in triplet:
+		if not t.bezel:
+			continue
+		t.bezel.color = Color(0, 0, 0, 1 if show_border else 0)
+		t.bezel.anchors_preset = 15
+		t.bezel.offset_left = 0
+		t.bezel.offset_top = 0
+		t.bezel.offset_right = 0
+		t.bezel.offset_bottom = 0
+		t.yuv.offset_left = px
+		t.yuv.offset_top = px
+		t.yuv.offset_right = -px
+		t.yuv.offset_bottom = -px
+		t.yuv.anchor_left = 0.0
+		t.yuv.anchor_top = 0.0
+		t.yuv.anchor_right = 1.0
+		t.yuv.anchor_bottom = 1.0
+		t.yuv.anchors_preset = 0
+		if t.vp.size != bezel_size:
+			t.vp.size = bezel_size
+		if t.cyl and t.cyl.visible:
+			t.cyl.set_aspect_ratio(bezel_x / bezel_y)
 
 func update_bezel():
 	if not main.primary_screen or not main.primary_screen.comp_yuv_rect:
