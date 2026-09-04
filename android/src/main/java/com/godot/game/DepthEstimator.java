@@ -289,6 +289,14 @@ public class DepthEstimator {
         final String label;
         final String assetFile;
         final int inputSize;
+        // Per-model temporal/range smoothing time constants (2026-09-04) -
+        // see postProcess()'s depthTauSeconds/rangeTauSeconds comment for
+        // why this needs to differ per model rather than staying global.
+        // Defaults (3-arg constructor) match every model's existing,
+        // MiDaS-tuned behavior exactly - only ZipDepth registers with the
+        // 5-arg constructor to override them.
+        final float depthTauSeconds;
+        final float rangeTauSeconds;
         Interpreter interp;
         GpuDelegate delegate;
         ByteBuffer inputBuf;
@@ -298,9 +306,15 @@ public class DepthEstimator {
         String failureReason = "";
 
         GpuVariant(String label, String assetFile, int inputSize) {
+            this(label, assetFile, inputSize, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
+        }
+
+        GpuVariant(String label, String assetFile, int inputSize, float depthTauSeconds, float rangeTauSeconds) {
             this.label = label;
             this.assetFile = assetFile;
             this.inputSize = inputSize;
+            this.depthTauSeconds = depthTauSeconds;
+            this.rangeTauSeconds = rangeTauSeconds;
         }
     }
 
@@ -509,7 +523,16 @@ public class DepthEstimator {
             // GPU-only - cpuInterpreterFor()/normalizeModelIndex() below
             // fall back to plain MiDaS-256 CPU if the GPU delegate fails,
             // same as every other GPU-first index here.
-            gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE));
+            // Short tau pair (2026-09-04, see GpuVariant's own comment):
+            // ZipDepth is clean and deterministic enough that MiDaS's ~0.16s
+            // depth tau just reads as lag/motion-blur rather than hiding any
+            // real per-frame noise. 0.02s still damps single-frame flicker
+            // (alpha_eff ~0.92 at the 20Hz submit cadence) without the
+            // multi-frame smear; range tau shortened proportionally so the
+            // contrast-stretch bounds track the now-fast-updating values
+            // instead of dragging behind them.
+            gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
 
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
@@ -1237,7 +1260,8 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         long postprocessStartNs = System.nanoTime();
-        byte[] result = postProcess(extractFloatOutput(v.outputBuf, v.inputSize * v.inputSize), v.inputSize, false);
+        byte[] result = postProcess(extractFloatOutput(v.outputBuf, v.inputSize * v.inputSize), v.inputSize, false,
+                DEFAULT_PERCENTILE_CLIP, v.depthTauSeconds, v.rangeTauSeconds);
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
     }
@@ -1329,7 +1353,7 @@ public class DepthEstimator {
     // at the source (see each call site), and this logic downstream is
     // identical either way once it's a plain float[].
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur) {
-        return postProcess(raw, size, dilateAndBlur, DEFAULT_PERCENTILE_CLIP);
+        return postProcess(raw, size, dilateAndBlur, DEFAULT_PERCENTILE_CLIP, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
     }
 
     // percentileClip: how much of the raw output's histogram tails to trim
@@ -1346,6 +1370,21 @@ public class DepthEstimator {
     // threshold constants passed into an existing histogram scan, no
     // measurable added compute, and doesn't touch MiDaS/DA's own call sites.
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur, float percentileClip) {
+        return postProcess(raw, size, dilateAndBlur, percentileClip, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
+    }
+
+    // depthTauSeconds/rangeTauSeconds: exposed per-call (2026-09-04) for
+    // ZipDepth-GPU specifically - both were tuned solely for MiDaS's own
+    // noise/cadence (see the tau-derivation comment above DEPTH_TAU_SECONDS)
+    // and applied globally regardless of which model actually produced the
+    // frame. A clean, fast, deterministic model like ZipDepth doesn't have
+    // MiDaS's frame-to-frame jitter to hide, so the same ~0.16s depth tau
+    // just reads as unwanted motion blur/lag (reported 2026-09-04: "the
+    // depthmap seems to blur into each other every frame"). GpuVariant now
+    // carries its own tau pair; every other call site keeps passing the
+    // global constants via the overloads above, unchanged.
+    private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur, float percentileClip,
+            float depthTauSeconds, float rangeTauSeconds) {
         int count = size * size;
 
         long now = System.nanoTime();
@@ -1356,7 +1395,7 @@ public class DepthEstimator {
         // the opposite case (a long stall making the very next update jump
         // by an enormous, saturated alpha instead of just converging fully,
         // which happens anyway once dt exceeds a few tau's worth of time).
-        float dt = lastPostProcessTimeNs == 0 ? DEPTH_TAU_SECONDS
+        float dt = lastPostProcessTimeNs == 0 ? depthTauSeconds
                 : Math.max(1f / 60f, Math.min((now - lastPostProcessTimeNs) / 1_000_000_000f, 1.0f));
         lastPostProcessTimeNs = now;
 
@@ -1366,7 +1405,7 @@ public class DepthEstimator {
             smoothHi = loHi[1];
             rangeValid = true;
         } else {
-            float rangeAlpha = 1f - (float) Math.exp(-dt / RANGE_TAU_SECONDS);
+            float rangeAlpha = 1f - (float) Math.exp(-dt / rangeTauSeconds);
             smoothLo += rangeAlpha * (loHi[0] - smoothLo);
             smoothHi += rangeAlpha * (loHi[1] - smoothHi);
         }
@@ -1383,7 +1422,7 @@ public class DepthEstimator {
             float[] dilated = dilate(normalized, size, 6);
             preSmooth = separableBoxBlur(dilated, size, 14);
         }
-        float[] smoothed = temporalSmooth(preSmooth, size, dt);
+        float[] smoothed = temporalSmooth(preSmooth, size, dt, depthTauSeconds);
 
         byte[] depthBytes = new byte[count];
         for (int i = 0; i < count; i++) {
@@ -1520,14 +1559,14 @@ public class DepthEstimator {
     // background) that happened to get a weak first estimate stayed weak
     // forever. A rate that never truly reaches zero (dt-scaled or not) keeps
     // denoising even when nothing on screen is moving.
-    private float[] temporalSmooth(float[] newDepth, int size, float dt) {
+    private float[] temporalSmooth(float[] newDepth, int size, float dt, float depthTauSeconds) {
         int len = size * size;
         if (smoothedDepthFloat == null) {
             smoothedDepthFloat = newDepth.clone();
             return newDepth;
         }
 
-        float depthAlpha = 1f - (float) Math.exp(-dt / DEPTH_TAU_SECONDS);
+        float depthAlpha = 1f - (float) Math.exp(-dt / depthTauSeconds);
         float[] result = new float[len];
         for (int i = 0; i < len; i++) {
             float prev = smoothedDepthFloat[i];
