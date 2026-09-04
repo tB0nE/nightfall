@@ -12,6 +12,7 @@
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/classes/mutex.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -61,6 +62,29 @@ public:
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
+
+#ifdef __ANDROID__
+    // Raw decoder OES texture + its SurfaceTexture transform, for nightfall-xr's
+    // native OpenXR swapchain path to sample directly (matching moonlight-xr)
+    // instead of going through the RGBA blit this class does for the
+    // SubViewport/CompositionLayerQuad path. Both textures live in the same
+    // EGL share group, so the raw GLuint is valid across the GDExtension
+    // boundary as long as the caller is on Godot's GL thread.
+    unsigned int get_oes_texture_id() const { return gles_oes_texture_; }
+    PackedFloat32Array get_oes_transform_matrix() const;
+
+    // A GLsync (as uint64_t) signaling that this frame's updateTexImage()
+    // write to gles_oes_texture_ has completed on Godot's context. Shared
+    // objects' NAMES (textures, syncs) are valid across a share group, but
+    // content visibility across contexts is not guaranteed without explicit
+    // sync -- nightfall-xr samples gles_oes_texture_ from its own, different EGL
+    // context, so it must wait on this before reading. Ownership transfers
+    // out: caller consumes exactly once (glWaitSync + glDeleteSync). Returns
+    // 0 if no fence is pending (e.g. not yet rendered a frame).
+    uint64_t consume_oes_ready_fence();
+    void set_native_direct_mode(bool enabled) { native_direct_mode_.store(enabled); }
+    unsigned int get_native_depth_guide_texture_id() const { return gles_depth_texture_; }
+#endif
 
 protected:
     static void _bind_methods();
@@ -120,7 +144,7 @@ private:
     bool _render_thread_ensure_depth_capture(int size);
     void _render_thread_poll_depth_capture();
     void _render_thread_issue_depth_capture(const float *matrix, int size);
-    std::mutex gles_surface_mutex_;
+    mutable std::mutex gles_surface_mutex_;
     std::condition_variable gles_surface_cv_;
     bool gles_surface_ready_ = false;
     bool gles_surface_failed_ = false;
@@ -133,6 +157,19 @@ private:
     void *gles_transform_method_ = nullptr;
     void *gles_release_method_ = nullptr;
     unsigned int gles_oes_texture_ = 0;
+    // Cached every render-thread blit (texture_uploader.cpp), read back by
+    // get_oes_transform_matrix() from GDScript. gles_surface_mutex_ already
+    // guards the surface's readiness/lifetime; reuse it for this too rather
+    // than adding a second lock around a single 16-float array.
+    float gles_last_transform_matrix_[16]{};
+    // Set right after updateTexImage() succeeds; consumed (and cleared) by
+    // consume_oes_ready_fence(). Guarded by gles_surface_mutex_ like the
+    // transform matrix above.
+    void *gles_oes_ready_fence_ = nullptr;
+    // When the native OpenXR composition provider is presenting the OES
+    // decoder texture directly, do not also pay for the legacy full-size
+    // OES->RGBA copy. The small depth-capture draw/PBO remains active.
+    std::atomic<bool> native_direct_mode_{false};
     unsigned int gles_output_texture_ = 0;
     unsigned int gles_fbo_ = 0;
     unsigned int gles_blit_program_ = 0;
@@ -156,7 +193,7 @@ private:
     int gles_depth_next_pbo_ = 0;
     std::atomic<bool> gles_depth_capture_requested_{false};
     std::atomic<int> gles_depth_requested_size_{256};
-    std::mutex gles_depth_result_mutex_;
+    mutable std::mutex gles_depth_result_mutex_;
     std::vector<uint8_t> gles_depth_result_;
     bool gles_depth_result_ready_ = false;
 #endif

@@ -658,17 +658,28 @@ func apply_display_refresh_rate():
 	if best == 0.0:
 		available.sort()
 		best = available[available.size() - 1]
-	interface.set_display_refresh_rate(best)
+	# Changing the OpenXR display rate tears down/recreates runtime-owned
+	# surfaces on Quest. Avoid doing that when the requested rate is already
+	# active -- especially during a stream restart where native and Godot GLES
+	# resources have only just been rebuilt.
+	var current: float = interface.get_display_refresh_rate()
+	if absf(current - best) > 0.5:
+		interface.set_display_refresh_rate(best)
+		main._log("[REFRESH] Set headset to %.0fHz (target %.0fHz for %dfps)" % [best, target_hz, main.stream_fps])
+	else:
+		main._log("[REFRESH] Headset already at %.0fHz for %dfps" % [current, main.stream_fps])
 	main.display_refresh_rate = best
 	Engine.max_fps = 0
-	main._log("[REFRESH] Set headset to %.0fHz (target %.0fHz for %dfps)" % [best, target_hz, main.stream_fps])
 
 func cycle_fps():
 	var rates = [30, 60, 72, 90, 120]
 	var idx = rates.find(main.stream_fps)
 	main.stream_fps = rates[(idx + 1) % rates.size()]
 	_save_setting(main._ui_fps_btn, "%d" % main.stream_fps)
-	_schedule_stream_restart()
+	if main.is_streaming:
+		_schedule_stream_restart()
+	else:
+		apply_display_refresh_rate()
 
 func cycle_resolution():
 	if main.is_polaris_host:
@@ -765,8 +776,13 @@ func _schedule_stream_restart():
 		return
 	_restart_pending = false
 	main._log("[RESTART] Restarting stream")
-	apply_display_refresh_rate()
 	main._restarting_stream = true
+	# The native renderer owns an OpenXR swapchain and a shared EGL context.
+	# Stop it before changing the display rate or destroying decoder textures;
+	# otherwise the runtime can recreate its display surface while either
+	# renderer still references the old one, which crashes Quest's GLThread.
+	if main.native_xr_renderer:
+		main.native_xr_renderer.deactivate(false)
 	# Stop the composition layer shader from referencing the current session's
 	# texture BEFORE tearing the connection down. stop_play_stream() triggers
 	# native decoder cleanup, which frees the underlying GPU texture/uniform
@@ -783,6 +799,7 @@ func _schedule_stream_restart():
 	await main.get_tree().process_frame
 	main.stream_backend.stop_play_stream()
 	await main.get_tree().create_timer(0.5).timeout
+	apply_display_refresh_rate()
 	main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
 
 func toggle_hand_tracking():

@@ -6,6 +6,7 @@ var depth_viewport: SubViewport
 var depth_target: ColorRect
 var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
+var depth_revision: int = 0
 var enabled: bool = false
 var submit_timer: float = 0.0
 # 20Hz, matching Gilleece/moonlight-android-xr's own cadence comment ("depth
@@ -48,6 +49,7 @@ var _gpu_boost_active: bool = false
 var _gpu_boost_refresh_timer: float = 0.0
 var _native_depth_capture_active: bool = false
 var _direct_stream_source_bound: bool = false
+var _native_renderer_active: bool = false
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -332,15 +334,33 @@ func _update_mono_capture_requirement():
 	# The mono viewport is the visible output in normal 2D mode and must remain
 	# active there. In stereo modes it exists only as the legacy depth fallback.
 	if main.comp.in_use and main.settings_controller.get_stereo_mode() > 0:
-		var needs_fallback = enabled and not _direct_stream_source_bound
+		var needs_fallback = enabled and not _direct_stream_source_bound and not _native_renderer_active
 		main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if needs_fallback else SubViewport.UPDATE_DISABLED
+
+func set_native_renderer_active(value: bool) -> void:
+	if _native_renderer_active == value:
+		return
+	_native_renderer_active = value
+	_update_render_pass_modes()
+	_update_mono_capture_requirement()
+
+func _update_render_pass_modes() -> void:
+	if depth_viewport:
+		depth_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if enabled and not _native_renderer_active else SubViewport.UPDATE_DISABLED
+	var warp_mode := SubViewport.UPDATE_DISABLED
+	if _warp_passes_active and not _native_renderer_active:
+		warp_mode = SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS
+	if upsample_viewport:
+		upsample_viewport.render_target_update_mode = warp_mode
+	if offset_viewport:
+		offset_viewport.render_target_update_mode = warp_mode
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
 	_update_mono_capture_requirement()
 	if not val or main.settings_controller.get_depth_backend_index() != 2:
 		_set_gpu_performance_hint(false)
-	if depth_viewport:
+	if depth_viewport and not _native_renderer_active:
 		# Tried throttling this to UPDATE_ONCE at submit_interval's 20Hz
 		# instead of UPDATE_ALWAYS (2026-08-18) on the theory that
 		# re-rendering the downscale every render frame for 20Hz-consumed
@@ -365,11 +385,7 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		_: _pass_divisor = PASS_DIVISOR
 
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)
-	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
-	if upsample_viewport:
-		upsample_viewport.render_target_update_mode = mode
-	if offset_viewport:
-		offset_viewport.render_target_update_mode = mode
+	_update_render_pass_modes()
 
 func _set_gpu_performance_hint(use_boost: bool, force: bool = false):
 	if OS.get_name() != "Android" or (_gpu_boost_active == use_boost and not force):
@@ -412,7 +428,7 @@ func process(delta: float):
 		_backend_status_timer = 0.0
 		main.settings_controller.refresh_depth_backend_status(true)
 
-	if _warp_passes_active and _warp_throttled:
+	if _warp_passes_active and _warp_throttled and not _native_renderer_active:
 		_warp_frame_counter += 1
 		var period: int = WARP_NEWTON_PERIOD[_warp_tier]
 		_push_warp_newton_steps(1 if (_warp_frame_counter % period == 0) else 0)
@@ -466,6 +482,7 @@ func process(delta: float):
 		if depth_bytes != null and depth_bytes.size() == model_size * model_size:
 			var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
 			depth_texture.update(depth_image)
+			depth_revision += 1
 			_perf_updates += 1
 
 	_perf_window += delta

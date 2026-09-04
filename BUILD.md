@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- **Godot 4.7 Beta 2** (editor + export templates)
-- **Android NDK 27.0.12077973**
+- **Godot 4.7 stable** (editor + custom export templates)
+- **Android NDK 29.0.14206865**
 - **JDK 17**
 - **vcpkg** (for GDExtension dependency management)
 - **Ninja** (build system, used by CMake)
@@ -83,6 +83,33 @@ ninja -C build/linux-release
 ```
 
 Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh` from `models/` - see `models/README.md`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `models/`.
+
+### Native OpenXR renderer (Quest/GLES)
+
+Nightfall's fast presentation path is a separate GDExtension in
+`extensions/nightfall-xr`. It samples MediaCodec's external OES texture
+directly, renders both eyes into one double-wide OpenXR swapchain, and submits
+two eye-specific sub-images through Godot's existing OpenXR frame loop. The
+legacy Godot composition-layer path remains the automatic fallback for Linux,
+multi-monitor layouts, diagnostic depth views, unsupported renderers, and
+startup failures.
+
+`build.sh` builds this extension automatically for Android. Its build needs a
+`godot-cpp` checkout generated from the matching patched engine's extension API
+(default `/tmp/godot-cpp-custom`) and the matching engine source (default
+`/tmp/nightfall-godot-sharpen`). Override these with
+`NIGHTFALL_GODOT_CPP`/`NIGHTFALL_GODOT_SOURCE` when necessary. To build it
+directly:
+
+```bash
+extensions/nightfall-xr/build_android.sh release
+```
+
+The patched editor is used to generate the custom `godot-cpp` API, but APK
+export uses the official 4.7 stable editor by default so its version matches
+the installed `4.7.stable` template metadata. The Android runtime library
+inside that template remains the patched engine. Set `NIGHTFALL_GODOT_EDITOR`
+only when exporting against a differently-versioned template set.
 
 ### Patched Godot Engine (Quest only)
 

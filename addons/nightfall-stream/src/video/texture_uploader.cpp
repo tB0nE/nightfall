@@ -1056,27 +1056,34 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         return;
     }
     env->GetFloatArrayRegion(java_matrix, 0, 16, matrix);
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        memcpy(gles_last_transform_matrix_, matrix, sizeof(matrix));
+    }
     GLint old_fbo = 0;
     GLint old_viewport[4]{};
     GLint old_program = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
     glGetIntegerv(GL_VIEWPORT, old_viewport);
     glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
-    glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        NF_LOGE("TextureUploader", "GLES external output framebuffer incomplete");
-        glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
-        return;
+    GLenum draw_error = GL_NO_ERROR;
+    if (!native_direct_mode_.load()) {
+        glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            NF_LOGE("TextureUploader", "GLES external output framebuffer incomplete");
+            glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+            return;
+        }
+        glViewport(0, 0, gles_surface_width_, gles_surface_height_);
+        glUseProgram(gles_blit_program_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
+        glUniform1i(gles_video_uniform_, 0);
+        glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        draw_error = glGetError();
     }
-    glViewport(0, 0, gles_surface_width_, gles_surface_height_);
-    glUseProgram(gles_blit_program_);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
-    glUniform1i(gles_video_uniform_, 0);
-    glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    const GLenum draw_error = glGetError();
 
     // Retire previously queued PBOs without waiting. A new request is issued
     // only after the normal decoder blit, while its OES texture and transform
@@ -1084,6 +1091,19 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     _render_thread_poll_depth_capture();
     if (gles_depth_capture_requested_.exchange(false)) {
         _render_thread_issue_depth_capture(matrix, gles_depth_requested_size_.load());
+    }
+
+    // The consumer samples both the OES frame and (when AI-3D is active) the
+    // native depth-guide texture from a different shared EGL context. Insert
+    // the fence after all writes, then flush so the other context can observe
+    // and wait on it without a CPU-side stall.
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        if (gles_oes_ready_fence_) {
+            glDeleteSync(reinterpret_cast<GLsync>(gles_oes_ready_fence_));
+        }
+        gles_oes_ready_fence_ = reinterpret_cast<void *>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+        glFlush();
     }
 
     glUseProgram(old_program);
@@ -1095,7 +1115,8 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     }
     static int completed_updates = 0;
     if (++completed_updates <= 3) {
-        NF_LOG("TextureUploader", "Completed GLES external blit #%d", completed_updates);
+        NF_LOG("TextureUploader", "Completed GLES external update #%d (%s)", completed_updates,
+            native_direct_mode_.load() ? "native-direct" : "legacy-blit");
     }
     new_frame_available_.store(true);
 }
@@ -1250,6 +1271,9 @@ void TextureUploader::_render_thread_cleanup() {
         rd = nullptr;
     }
     use_shader_conversion = false;
+#ifdef __ANDROID__
+    native_direct_mode_.store(false);
+#endif
 }
 
 #ifdef __ANDROID__
@@ -1274,6 +1298,19 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     gles_update_method_ = nullptr;
     gles_transform_method_ = nullptr;
     gles_release_method_ = nullptr;
+    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
+        if (gles_depth_fences_[i]) {
+            glDeleteSync(reinterpret_cast<GLsync>(gles_depth_fences_[i]));
+            gles_depth_fences_[i] = nullptr;
+        }
+    }
+    if (gles_oes_ready_fence_) {
+        glDeleteSync(reinterpret_cast<GLsync>(gles_oes_ready_fence_));
+        gles_oes_ready_fence_ = nullptr;
+    }
+    if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
+    if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
+    if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
     if (gles_fbo_) glDeleteFramebuffers(1, &gles_fbo_);
     if (gles_output_texture_) glDeleteTextures(1, &gles_output_texture_);
     if (gles_oes_texture_) glDeleteTextures(1, &gles_oes_texture_);
@@ -1284,15 +1321,6 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     gles_blit_program_ = 0;
     gles_video_uniform_ = -1;
     gles_matrix_uniform_ = -1;
-    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
-        if (gles_depth_fences_[i]) {
-            glDeleteSync(reinterpret_cast<GLsync>(gles_depth_fences_[i]));
-            gles_depth_fences_[i] = nullptr;
-        }
-    }
-    if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
-    if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
-    if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
     std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
     gles_depth_fbo_ = 0;
     gles_depth_texture_ = 0;
@@ -1351,8 +1379,34 @@ void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("supports_native_depth_capture"), &TextureUploader::supports_native_depth_capture);
     ClassDB::bind_method(D_METHOD("request_native_depth_capture", "size"), &TextureUploader::request_native_depth_capture);
     ClassDB::bind_method(D_METHOD("consume_native_depth_capture"), &TextureUploader::consume_native_depth_capture);
+#ifdef __ANDROID__
+    ClassDB::bind_method(D_METHOD("get_oes_texture_id"), &TextureUploader::get_oes_texture_id);
+    ClassDB::bind_method(D_METHOD("get_oes_transform_matrix"), &TextureUploader::get_oes_transform_matrix);
+    ClassDB::bind_method(D_METHOD("consume_oes_ready_fence"), &TextureUploader::consume_oes_ready_fence);
+    ClassDB::bind_method(D_METHOD("set_native_direct_mode", "enabled"), &TextureUploader::set_native_direct_mode);
+    ClassDB::bind_method(D_METHOD("get_native_depth_guide_texture_id"), &TextureUploader::get_native_depth_guide_texture_id);
+#endif
 }
 
 bool TextureUploader::consume_new_frame() {
     return new_frame_available_.exchange(false);
 }
+
+#ifdef __ANDROID__
+PackedFloat32Array TextureUploader::get_oes_transform_matrix() const {
+    PackedFloat32Array out;
+    out.resize(16);
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        memcpy(out.ptrw(), gles_last_transform_matrix_, sizeof(gles_last_transform_matrix_));
+    }
+    return out;
+}
+
+uint64_t TextureUploader::consume_oes_ready_fence() {
+    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    uint64_t fence = reinterpret_cast<uint64_t>(gles_oes_ready_fence_);
+    gles_oes_ready_fence_ = nullptr;
+    return fence;
+}
+#endif

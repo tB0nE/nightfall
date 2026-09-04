@@ -344,6 +344,44 @@ func consume_new_frame() -> bool:
 			return uploader.consume_new_frame()
 	return false
 
+# Android/GLES direct-render path. These values belong to the latest
+# SurfaceTexture image and are consumed by NightfallXrRenderer without a
+# full-resolution Godot SubViewport conversion.
+func get_oes_texture_id() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_oes_texture_id"):
+			return uploader.get_oes_texture_id()
+	return 0
+
+func get_oes_transform_matrix() -> PackedFloat32Array:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_oes_transform_matrix"):
+			return uploader.get_oes_transform_matrix()
+	return PackedFloat32Array()
+
+# Ownership of the returned GLsync transfers to NightfallXrRenderer.
+func get_oes_ready_fence() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("consume_oes_ready_fence"):
+			return uploader.consume_oes_ready_fence()
+	return 0
+
+func set_native_direct_mode(enabled: bool) -> void:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("set_native_direct_mode"):
+			uploader.set_native_direct_mode(enabled)
+
+func get_native_depth_guide_texture_id() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_native_depth_guide_texture_id"):
+			return uploader.get_native_depth_guide_texture_id()
+	return 0
+
 # True only once the CURRENT session's first decoded frame has actually been
 # wired into the shader material's tex_y (native StreamConnection::display_wired_).
 # A shader material's tex_y parameter can hold a non-null Texture2DRD/RID that
