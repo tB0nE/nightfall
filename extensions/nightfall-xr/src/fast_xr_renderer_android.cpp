@@ -80,6 +80,22 @@ static const char *FRAGMENT_SRC =
 		"    else {\n"
 		"        tc.x -= u_disparity * (d - u_convergence);\n"
 		"    }\n"
+		// Defensive clamp (2026-09-04): the occlusion search above falls back
+		// to -disparity * (depth - convergence) when it finds no root in its
+		// 2-tap Newton refinement, which happens far more often when depth is
+		// momentarily stale/garbage (e.g. a frame or two right after an AI-3D
+		// speed/model switch, before the pipeline catches up). Because
+		// disparity's sign is fixed per eye (+separation for eye 0/left,
+		// -separation for eye 1/right), a bad depth value walks tc.x outside
+		// [0,1] in a specific direction for one eye only - and Android's
+		// external-OES sampler (u_texture below) is documented/observed to
+		// return black for out-of-range UVs rather than clamping like a
+		// normal 2D texture would. Reported symptom: only the left eye's
+		// screen content goes solid black, right eye and the separately
+		// composited cursor unaffected, while AI-3D is on; recovers instantly
+		// once AI-3D is turned off. Clamping here is correct regardless of
+		// the exact upstream cause of a bad tc.x/tc.y.
+		"    tc = clamp(tc, 0.0, 1.0);\n"
 		"    if (u_stereoMode == 1) {\n"
 		"        tc.x = (u_eyeIndex < 0.5) ? tc.x * 0.5 : tc.x * 0.5 + 0.5;\n"
 		"    } else if (u_stereoMode == 2) {\n"
