@@ -188,7 +188,7 @@ needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
 missing-file error if one isn't there rather than silently shipping an incomplete
 build.
 
-Depth Anything V2 has a real conversion script (the others don't yet - see
+Depth Anything V2 and ZipDepth have reproducible conversion scripts (see
 `models/README.md`):
 
 ```bash
@@ -196,20 +196,34 @@ Depth Anything V2 has a real conversion script (the others don't yet - see
 pip install onnx2tf sng4onnx onnxsim
 
 python3 tools/convert_depth_anything_v2.py
+
+# Quest GPU model. Builds the sharper standard/NPU hybrid by default.
+python3 tools/convert_zipdepth.py --force
 ```
 
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
 quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
+ZipDepth's Adreno-safe graph rewrites and validation procedure are documented
+in [`doc/zipdepth-quest-gpu.md`](doc/zipdepth-quest-gpu.md).
 
 ### LiteRT GPU runtime
 
-Normal Android builds use the stock `com.google.ai.edge.litert:litert-gpu:1.4.2`
-runtime. The older low-priority Qualcomm OpenCL experiment remains under
-`android/patches/` for historical comparison, but it is not part of the normal
-build: it protected the legacy render loop by roughly doubling inference time.
-The native double-wide renderer is designed to leave enough GPU headroom for
-stock LiteRT's approximately 20 Hz inference cadence.
+Normal Android builds use `android/libs/litert-gpu-nightfall-1.4.2.aar`, a
+LiteRT 1.4.2 GPU delegate patched to select either a low-priority Qualcomm
+OpenCL context (`Stream`, the default) or the driver's normal context
+(`Default`) at runtime. Changing the AI 3D tab's GPU Priority setting recreates
+only the GPU delegate/interpreter; it does not restart the stream or app. With
+the native double-wide renderer, Stream priority protects the 90 Hz render
+cadence while MiDaS-256 inference remains around 30-35 ms. The source patch is retained at
+`android/patches/litert-qcom-low-priority-opencl.patch`.
+
+For performance A/B testing, pass `--stock-litert` to use Google's unpatched
+`com.google.ai.edge.litert:litert-gpu:1.4.2` dependency instead:
+
+```bash
+./build.sh --release --stock-litert
+```
 
 ## 3. Deploy to Quest
 

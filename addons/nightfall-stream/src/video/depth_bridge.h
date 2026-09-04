@@ -33,6 +33,7 @@ public:
     PackedByteArray get_depth_map();
     void set_depth_model(int model_index);
     void configure_depth(int model_index, int requested_backend);
+    void set_depth_gpu_priority(int priority);
     int get_depth_backend_capabilities(int model_index);
     int get_effective_depth_backend();
     String get_depth_backend_status();

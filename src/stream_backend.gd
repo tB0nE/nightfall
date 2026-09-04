@@ -215,6 +215,12 @@ func configure_depth(model_id: int, requested_backend: int):
 		if db:
 			db.configure_depth(model_id, requested_backend)
 
+func set_depth_gpu_priority(priority: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("set_depth_gpu_priority"):
+			db.set_depth_gpu_priority(priority)
+
 func get_depth_backend_capabilities(model_id: int) -> int:
 	if _v2:
 		var db = _v2.get_depth_bridge()

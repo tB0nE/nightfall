@@ -198,6 +198,33 @@ void DepthBridge::configure_depth(int model_index, int requested_backend) {
 #endif
 }
 
+void DepthBridge::set_depth_gpu_priority(int priority) {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: no JNIEnv");
+        return;
+    }
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: FindClass failed");
+        env->ExceptionClear();
+        return;
+    }
+    jmethodID method = env->GetStaticMethodID(app_class, "setDepthGpuPriority", "(I)V");
+    if (!method) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: GetStaticMethodID failed");
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return;
+    }
+    env->CallStaticVoidMethod(app_class, method, (jint)priority);
+    env->DeleteLocalRef(app_class);
+#else
+    (void)priority;
+#endif
+}
+
 int DepthBridge::get_depth_backend_capabilities(int model_index) {
 #ifdef __ANDROID__
     JNIEnv *env = get_jni_env();
@@ -423,6 +450,7 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_map"), &DepthBridge::get_depth_map);
     ClassDB::bind_method(D_METHOD("set_depth_model", "model_index"), &DepthBridge::set_depth_model);
     ClassDB::bind_method(D_METHOD("configure_depth", "model_index", "requested_backend"), &DepthBridge::configure_depth);
+    ClassDB::bind_method(D_METHOD("set_depth_gpu_priority", "priority"), &DepthBridge::set_depth_gpu_priority);
     ClassDB::bind_method(D_METHOD("get_depth_backend_capabilities", "model_index"), &DepthBridge::get_depth_backend_capabilities);
     ClassDB::bind_method(D_METHOD("get_effective_depth_backend"), &DepthBridge::get_effective_depth_backend);
     ClassDB::bind_method(D_METHOD("get_depth_backend_status"), &DepthBridge::get_depth_backend_status);

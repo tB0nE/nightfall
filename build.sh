@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 PRESET="NightfallDev"
 OUTPUT="Nightfall-Android-arm64-v8a-debug.apk"
 PLATFORM="android"
+USE_STOCK_LITERT=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -14,13 +15,15 @@ for arg in "$@"; do
     --debug)   PRESET="NightfallDev";     OUTPUT="Nightfall-Android-arm64-v8a-debug.apk" ;;
     --linux)   PLATFORM="linux"; OUTPUT="Nightfall-Linux-x86_64" ;;
     --appimage) PLATFORM="appimage"; OUTPUT="Nightfall-x86_64.AppImage" ;;
+    --stock-litert) USE_STOCK_LITERT=1 ;;
     --install) INSTALL=1 ;;
     --help|-h)
-      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--install]"
+      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--stock-litert] [--install]"
       echo "  --debug     Export debug APK (default)"
       echo "  --release   Export release APK (requires .env keystore config)"
       echo "  --linux     Export Linux x86_64 binary"
       echo "  --appimage  Export Linux x86_64 AppImage (implies --release for Linux)"
+      echo "  --stock-litert  Use stock-priority LiteRT GPU instead of the default low-priority Quest build"
       echo "  --install   Install APK via adb after export (Android only)"
       exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
@@ -34,6 +37,7 @@ done
 GODOT="${NIGHTFALL_GODOT_EDITOR:-/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64}"
 JAVA_HOME="/home/linuxbrew/.linuxbrew/opt/openjdk@17"
 TEMPLATES="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/android_source.zip"
+LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
 LINUX_TEMPLATE_DEBUG="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_debug.x86_64"
 LINUX_TEMPLATE_RELEASE="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_release.x86_64"
 
@@ -287,12 +291,31 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # 12 GPU<->CPU handoffs per inference that dominate the cost. See
 # DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
 # constant for the full history if revisiting.
-# Use stock-priority LiteRT at the required 20 Hz inference cadence. The
-# low-priority OpenCL experiment preserved 90 render FPS but stretched MiDaS
-# to ~60 ms and could not sustain 20 Hz; the remaining work is to reduce the
-# Godot render path enough for stock LiteRT's ~23-30 ms inference to coexist
-# with 90 FPS.
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
+# ZipDepth-GPU (2026-09-04) - the real fix for the DA-V2-GPU problem above:
+# a 6.1M-param pure-CNN distilled from DA-V2-Large (see DepthEstimator.java's
+# MODEL_ZIPDEPTH_*_GPU comment), so no ViT ops to force GPU<->CPU handoffs.
+# Built by tools/convert_zipdepth.py. GPU-only for now (no CPU/int8 variant
+# yet, by request). 192/256 variants were also built and tested but dropped
+# (2026-09-04) - ZipDepth was only ever trained at 384x384 (unlike MiDaS-192,
+# which is independently trained/calibrated at that size, not a resize), so
+# 192/256 are just 384's weights outside their trained distribution -
+# confirmed via tools/model_tester/ to look noticeably worse. Only 384 ships.
+cp "$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite" android/build/nightfallAssets/
+# Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
+# single-pass renderer leaves enough GPU headroom for MiDaS to complete in
+# roughly 30-35 ms. This protects stream/render cadence from inference bursts.
+# Keep --stock-litert as an explicit A/B and fallback path.
+if [ "$USE_STOCK_LITERT" = "1" ]; then
+  echo "Using stock-priority LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
+else
+  if [ ! -f "$LITERT_GPU_AAR" ]; then
+    echo "Error: low-priority LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+    exit 1
+  fi
+  echo "Using low-priority Nightfall LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
+fi
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

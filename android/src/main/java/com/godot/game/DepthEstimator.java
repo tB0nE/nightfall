@@ -2,6 +2,8 @@ package com.godot.game;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import org.tensorflow.lite.Interpreter;
@@ -29,6 +31,8 @@ public class DepthEstimator {
     public static final int BACKEND_GPU = 2;
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
+    public static final int GPU_PRIORITY_STREAM = 0;
+    public static final int GPU_PRIORITY_DEFAULT = 1;
     // 20 Hz target (moonlight-xr parity). With the stock-priority OpenCL
     // delegate, a ~26 ms inference leaves roughly 24 ms before the next run.
     // Derive each deadline from the actual worker start, rather
@@ -214,6 +218,57 @@ public class DepthEstimator {
     //   OPENGL doesn't change which ops are supported); would need real
     //   model surgery (replacing the unsupported ops) to be worth revisiting.
 
+    // ZipDepth-GPU (2026-09-04) - the "real model surgery" angle from the
+    // DA-V2-196-GPU note above: ZipDepth (github.com/fabiotosi92/ZipDepth,
+    // ECCV 2026) is a 6.1M-param pure-CNN (RepVGG + Strip Pooling/SE/Global-
+    // Context attention, no softmax/matmul/gather anywhere) distilled from
+    // Depth Anything V2 Large across 14.1M images/17 domains - same "smarter"
+    // depth judgment as DA-V2, none of the ViT ops that killed its GPU
+    // delegate perf. Converted via tools/convert_zipdepth.py from the
+    // standard checkpoint's sharper backbone/decoder weights combined with
+    // the "_npu" checkpoint's unfold-free upsampling head (the standard
+    // checkpoint's torch.nn.Unfold lowers poorly on mobile runtimes).
+    // The export also materializes the strip/channel/global attention maps
+    // before element-wise ADD/MUL: Quest 3's Adreno OpenCL delegate produced
+    // a scene-independent gradient for the legal implicit-broadcast form,
+    // despite claiming every op. With explicit nearest expansion, exact
+    // captured-input GPU output matches desktop CPU to sub-1e-6 error. See
+    // doc/zipdepth-quest-gpu.md for the evidence and reproduction steps.
+    // ZipDepth is a plain /32-stride CNN (no
+    // ViT-patch constraint), so unlike DA-V2's odd 196/252 these land on
+    // round numbers matching the MiDaS lineup exactly. Deliberately built
+    // WITHOUT onnx2tf's -ofgd (--optimization_for_gpu_delegate) flag - the
+    // op composition is already 100% native GPU-delegate ops with nothing
+    // for -ofgd to legitimately replace, and empirically -ofgd introduces a
+    // real numerical bug for this graph (verified against the onnxruntime
+    // reference: with -ofgd, output diverges sharply and the depth map is
+    // visibly striped/broken; without it, output matches the ONNX reference
+    // to ~1e-6 max abs diff). Same NHWC/float32-I/O/no-external-
+    // normalization properties as MIDAS_GPU above (ZipDepth bakes ImageNet
+    // mean/std normalization into the graph itself, same as DA-V2/MiDaS).
+    // Built with onnx2tf's -tb tf_converter backend (not the default
+    // flatbuffer_direct) specifically for its weight-only float16
+    // quantization - same fp16-weights/float32-I-O split MIDAS_GPU uses,
+    // roughly halving file size vs. a naive float32 export with no
+    // execution-precision difference (the GPU delegate already runs fp16
+    // internally either way via setPrecisionLossAllowed(true) below).
+    // TFLite's own GPU delegate compatibility analyzer
+    // (tf.lite.experimental.Analyzer.analyze(..., gpu_compatibility=True))
+    // confirms compatibility. CPU/int8 variant deliberately not built yet
+    // (GPU-first, by request). 192/256 variants were also built and tested
+    // (2026-09-04) but dropped, not silently removed - keep this history so
+    // neither gets re-attempted the same way without a new angle: ZipDepth
+    // was only ever trained at 384x384 (every number in its paper's
+    // benchmark table is measured there), and unlike MiDaS-192 (an
+    // independently trained/calibrated 192px model, not a resize of the
+    // 256px one) ZipDepth has no dedicated lower-resolution training - 192/
+    // 256 are just 384's weights looking at a smaller image outside their
+    // trained distribution. Confirmed via tools/model_tester/: 384 looks
+    // close to DA-V2 quality, but 192/256 degraded enough to not be worth
+    // offering as real choices (192 especially).
+    private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
+    private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
+
     private Interpreter tfliteMidas;
     private Interpreter tfliteMidas192;
     private Interpreter tfliteDA196;
@@ -285,6 +340,8 @@ public class DepthEstimator {
     private volatile int requestedBackend = BACKEND_AUTO;
     private volatile int effectiveBackend = BACKEND_CPU;
     private volatile String backendStatus = "";
+    private volatile int gpuPriority = GPU_PRIORITY_STREAM;
+    private volatile boolean gpuReconfigurePending = false;
 
     private static final class PendingFrame {
         final byte[] pixels;
@@ -333,6 +390,7 @@ public class DepthEstimator {
     public synchronized boolean initialize(Context context) {
         if (initialized) return true;
         appContext = context.getApplicationContext();
+        applyGpuPriorityEnvironment(gpuPriority);
 
         try {
             // midas-midas-v2-w8a8.tflite ("w8a8" = 8-bit weights AND
@@ -453,6 +511,11 @@ public class DepthEstimator {
             // single-model MiDaS-256-GPU deferred-load pattern.
             gpuVariants.put(3, new GpuVariant("MiDaS-256-GPU", MODEL_MIDAS_GPU, MIDAS_GPU_INPUT_SIZE));
             gpuVariants.put(10, new GpuVariant("MiDaS-192-GPU", MODEL_MIDAS_192_GPU, MIDAS_192_GPU_INPUT_SIZE));
+            // ZipDepth-GPU: no CPU counterpart exists yet, so this index is
+            // GPU-only - cpuInterpreterFor()/normalizeModelIndex() below
+            // fall back to plain MiDaS-256 CPU if the GPU delegate fails,
+            // same as every other GPU-first index here.
+            gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE));
 
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
@@ -514,6 +577,99 @@ public class DepthEstimator {
         return lastInferenceHz;
     }
 
+    private void applyGpuPriorityEnvironment(int priority) {
+        String value = priority == GPU_PRIORITY_DEFAULT ? "default" : "stream";
+        try {
+            // Process-local environment shared with LiteRT's native JNI
+            // library. The patched CreateCLContext() reads this immediately
+            // before creating its Qualcomm OpenCL context.
+            Os.setenv("NIGHTFALL_LITERT_GPU_PRIORITY", value, true);
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Failed to set GPU priority environment", e);
+        }
+    }
+
+    public void setGpuPriority(int priority) {
+        final int selected = priority == GPU_PRIORITY_DEFAULT
+                ? GPU_PRIORITY_DEFAULT : GPU_PRIORITY_STREAM;
+        synchronized (this) {
+            applyGpuPriorityEnvironment(selected);
+            if (gpuPriority == selected) {
+                Log.i(TAG, "GPU priority already " + gpuPriorityName(selected));
+                return;
+            }
+            gpuPriority = selected;
+            boolean hasCreatedOrAttemptedDelegate = false;
+            for (GpuVariant variant : gpuVariants.values()) {
+                if (variant.loadAttempted || variant.interp != null || variant.delegate != null) {
+                    hasCreatedOrAttemptedDelegate = true;
+                    break;
+                }
+            }
+            if (!hasCreatedOrAttemptedDelegate) {
+                // No OpenCL context exists yet, so the next lazy GPU load can
+                // simply consume the new environment value without a reset.
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; it will apply when the delegate first loads");
+                return;
+            }
+            gpuReconfigurePending = true;
+            // Stop producers from scheduling more work against the old
+            // delegate. Any already-running job completes before the reset
+            // task because the executor has only one worker.
+            activeGpuVariant = null;
+            latestGpuFrame.set(null);
+            nextDispatchNs = 0;
+        }
+
+        executor.execute(() -> {
+            synchronized (DepthEstimator.this) {
+                for (GpuVariant variant : gpuVariants.values()) {
+                    releaseGpuVariant(variant);
+                }
+
+                int modelIndex = normalizeModelIndex(requestedModelIndex);
+                GpuVariant requestedVariant = gpuVariants.get(modelIndex);
+                boolean useGpu = requestedBackend != BACKEND_CPU
+                        && requestedVariant != null
+                        && !requestedVariant.permanentlyUnavailable;
+                activeInterpreter = cpuInterpreterFor(modelIndex);
+                activeModelIndex = modelIndex;
+                activeGpuVariant = useGpu ? requestedVariant : null;
+                effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+                backendStatus = "";
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                gpuReconfigurePending = false;
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; delegate will reload on the next depth frame");
+            }
+        });
+    }
+
+    private static String gpuPriorityName(int priority) {
+        return priority == GPU_PRIORITY_DEFAULT ? "Default" : "Stream";
+    }
+
+    private static void releaseGpuVariant(GpuVariant variant) {
+        // Must run on the inference executor: LiteRT GPU delegates are bound
+        // to the thread on which they were created and invoked.
+        if (variant.interp != null) {
+            variant.interp.close();
+            variant.interp = null;
+        }
+        if (variant.delegate != null) {
+            variant.delegate.close();
+            variant.delegate = null;
+        }
+        variant.inputBuf = null;
+        variant.outputBuf = null;
+        variant.loadAttempted = false;
+        variant.permanentlyUnavailable = false;
+        variant.failureReason = "";
+    }
+
     public synchronized void configureDepth(int modelIndex, int backend) {
         if (!initialized) return;
         requestedModelIndex = modelIndex;
@@ -565,7 +721,7 @@ public class DepthEstimator {
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -615,6 +771,7 @@ public class DepthEstimator {
             case 8: return "YOLO26-Depth-N-320";
             case 10: return "MiDaS-192";
             case 11: return "Depth Anything V2-196";
+            case 14: return "ZipDepth-384";
             default: return "MiDaS-256";
         }
     }
@@ -624,7 +781,7 @@ public class DepthEstimator {
     }
 
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
-        if (!initialized || activeInterpreter == null) return;
+        if (!initialized || activeInterpreter == null || gpuReconfigurePending) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
@@ -1400,14 +1557,7 @@ public class DepthEstimator {
             tfliteYoloS = null;
         }
         for (GpuVariant v : gpuVariants.values()) {
-            if (v.interp != null) {
-                v.interp.close();
-                v.interp = null;
-            }
-            if (v.delegate != null) {
-                v.delegate.close();
-                v.delegate = null;
-            }
+            releaseGpuVariant(v);
         }
         gpuVariants.clear();
         activeGpuVariant = null;
@@ -1442,6 +1592,9 @@ public class DepthEstimator {
         }
         if (activeModelIndex == 11) {
             return DA_196_INPUT_SIZE;
+        }
+        if (activeModelIndex == 14) {
+            return ZIPDEPTH_384_GPU_INPUT_SIZE;
         }
         return OUTPUT_SIZE;
     }

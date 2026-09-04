@@ -148,6 +148,27 @@ def infer_yolo(interp, rgb01: np.ndarray, size: int) -> np.ndarray:
     return raw
 
 
+def infer_zipdepth(interp, rgb01: np.ndarray, size: int) -> np.ndarray:
+    # NHWC, plain float32 I/O - ImageNet mean/std normalization is baked into
+    # the graph itself (see DepthEstimator.java's MODEL_ZIPDEPTH_*_GPU
+    # comment), same convention as MiDaS-GPU/depth_anything's GPU exports, so
+    # this script sends the same plain 0..1 pixel data every other family
+    # gets. Unlike depth_anything, ZipDepth is a plain /32-stride CNN with no
+    # ViT patch-size constraint, so its declared input shape is always a
+    # clean NHWC (1,size,size,3) - no ambiguous-shape handling needed. Output
+    # tensor is (1,1,size,size) (NOT (1,size,size,1)) per onnx2tf's chosen
+    # layout for this graph's final op - doesn't matter for a single-channel
+    # map, both reshape identically to (size, size) (confirmed during
+    # conversion verification, tools/convert_zipdepth.py).
+    in_detail = interp.get_input_details()[0]
+    out_detail = interp.get_output_details()[0]
+    input_data = rgb01.reshape(1, size, size, 3).astype(np.float32)
+    interp.set_tensor(in_detail["index"], input_data)
+    interp.invoke()
+    out = interp.get_tensor(out_detail["index"]).astype(np.float32)
+    return out.reshape(size, size)
+
+
 def infer_depth_anything(interp, rgb01: np.ndarray) -> np.ndarray:
     # Builds the same NHWC sequential byte order DepthEstimator.java writes
     # (row-major H,W,C), then reshapes into whatever shape THIS model
@@ -281,8 +302,10 @@ def family_for(model_key: str) -> str:
         return "depth_anything"
     if model_key.startswith("yolo26"):
         return "yolo"
+    if model_key.startswith("zipdepth"):
+        return "zipdepth"
     raise ValueError(f"Can't infer family for model key '{model_key}' - "
-                      f"expected it to start with midas/depth_anything/yolo26")
+                      f"expected it to start with midas/depth_anything/yolo26/zipdepth")
 
 
 def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.Image):
@@ -319,6 +342,11 @@ def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.I
         # break a "last underscore token is the size" parse.
         size = int(interp.get_input_details()[0]["shape"][2])
         rgb = resize_rgb(source_img, size)
+    elif family == "zipdepth":
+        # NHWC like depth_anything, but no ViT patch-size ambiguity - just
+        # read size straight off the input tensor's H dim.
+        size = int(interp.get_input_details()[0]["shape"][1])
+        rgb = resize_rgb(source_img, size)
     else:
         raise AssertionError
 
@@ -330,6 +358,8 @@ def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.I
             raw = infer_depth_anything(interp, rgb)
         elif family == "yolo":
             raw = infer_yolo(interp, rgb, size)
+        elif family == "zipdepth":
+            raw = infer_zipdepth(interp, rgb, size)
     except Exception as e:
         result["error"] = f"invoke failed: {e}"
         return result
