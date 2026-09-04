@@ -4,7 +4,8 @@
   "percentile_clip": {
     "midas": 0.02,
     "depth_anything": 0.02,
-    "yolo": 0.02
+    "yolo": 0.02,
+    "zipdepth": 0.02
   },
   "hist_bins": 512,
   "depth_anything_dilate_radius": 0,
@@ -82,6 +83,11 @@
       "enabled": true,
       "path": "yolo26s-depth-768-w8a32.tflite",
       "_note": "YOLO26-depth SMALL w8a32 variant of yolo26s_256_w8a32 (see its note) at 768x768 - exported the same way. Also fixes small's original static-int8 low-texture collapse: verified non-degenerate output on nightfall_shot.png, nightfall_github_banner.png, and demo01.jpg at this resolution. At 768, visual character (see yolo26s_w8a32_verification/) shows clean, sharp object silhouette edges (fine detail on e.g. a dog's ear/fur outline, an ornament on a table) with no visible stair-stepping/blocking artifacts."
+    },
+    "zipdepth_384": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-gpu.tflite",
+      "_note": "ZipDepth (github.com/fabiotosi92/ZipDepth, ECCV 2026, MIT) - 6.1M-param pure-CNN (RepVGG + Strip Pooling/SE/Global-Context attention) distilled from Depth Anything V2 Large across 14.1M images/17 domains. Built via tools/convert_zipdepth.py from the repo's own NPU checkpoint, onnx2tf -tb tf_converter backend (proper weight-only float16 quantization, float32 I/O). Deployed on Android as a GPU-only variant (DepthEstimator.java's MODEL_ZIPDEPTH_384_GPU) - no CPU/int8 build yet, so this CPU-path test just runs the same float32-I/O file XNNPACK does on desktop, same as depth_anything's GPU-style entries. 384 = ZipDepth's native/trained resolution (all paper benchmark numbers are at this size) - 192/256 variants were also tested here but dropped (2026-09-04, see tools/convert_zipdepth.py's docstring): ZipDepth has no dedicated lower-resolution training the way MiDaS-192 does, and it showed."
     }
   }
 }

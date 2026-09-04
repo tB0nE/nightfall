@@ -188,7 +188,7 @@ needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
 missing-file error if one isn't there rather than silently shipping an incomplete
 build.
 
-Depth Anything V2 has a real conversion script (the others don't yet - see
+Depth Anything V2 and ZipDepth have reproducible conversion scripts (see
 `models/README.md`):
 
 ```bash
@@ -196,11 +196,16 @@ Depth Anything V2 has a real conversion script (the others don't yet - see
 pip install onnx2tf sng4onnx onnxsim
 
 python3 tools/convert_depth_anything_v2.py
+
+# Quest GPU model. Builds the sharper standard/NPU hybrid by default.
+python3 tools/convert_zipdepth.py --force
 ```
 
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
 quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
+ZipDepth's Adreno-safe graph rewrites and validation procedure are documented
+in [`doc/zipdepth-quest-gpu.md`](doc/zipdepth-quest-gpu.md).
 
 ### Nightfall LiteRT GPU AAR
 

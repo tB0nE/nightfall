@@ -70,6 +70,7 @@ var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
 var ai_3d_models: Array = [
 	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
+	{"label": "ZipDepth-384-GPU", "java_index": 14, "gpu": true},
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},

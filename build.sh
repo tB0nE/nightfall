@@ -290,6 +290,16 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # 12 GPU<->CPU handoffs per inference that dominate the cost. See
 # DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
 # constant for the full history if revisiting.
+# ZipDepth-GPU (2026-09-04) - the real fix for the DA-V2-GPU problem above:
+# a 6.1M-param pure-CNN distilled from DA-V2-Large (see DepthEstimator.java's
+# MODEL_ZIPDEPTH_*_GPU comment), so no ViT ops to force GPU<->CPU handoffs.
+# Built by tools/convert_zipdepth.py. GPU-only for now (no CPU/int8 variant
+# yet, by request). 192/256 variants were also built and tested but dropped
+# (2026-09-04) - ZipDepth was only ever trained at 384x384 (unlike MiDaS-192,
+# which is independently trained/calibrated at that size, not a resize), so
+# 192/256 are just 384's weights outside their trained distribution -
+# confirmed via tools/model_tester/ to look noticeably worse. Only 384 ships.
+cp "$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite" android/build/nightfallAssets/
 # Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
 # single-pass renderer leaves enough GPU headroom for MiDaS to complete in
 # roughly 30-35 ms. This protects stream/render cadence from inference bursts.
