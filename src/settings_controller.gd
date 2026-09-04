@@ -402,19 +402,10 @@ func apply_stereo():
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.ai_3d_speed > 0 else 0
 		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
-		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
-		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
-		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
-		# comp_viewport_left/right - but that mono viewport is depth capture's
-		# ONLY semantically correct source (see bind_stream_texture()'s own
-		# comment for why comp_viewport_left doesn't work). Force it back to
-		# UPDATE_ALWAYS whenever depth capture needs it, undoing that disable
-		# every time this runs (switch_to_stereo_comp_layer() re-disables it
-		# on every call, so this has to re-assert every time too, not once).
-		if mode >= 3:
-			if main.primary_screen and main.primary_screen.comp_viewport:
-				main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-			main.depth_estimator.bind_stream_texture()
+		# Direct decoder textures feed the small depth-input viewport without a
+		# third full-resolution mono render. refresh_stream_source() keeps the
+		# old mono path available only when a backend cannot expose those textures.
+		main.depth_estimator.refresh_stream_source()
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
 	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
 	# comment above) - it comes straight from main.ai_3d_model. Modes

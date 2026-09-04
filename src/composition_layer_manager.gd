@@ -1062,6 +1062,8 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 		um.set_shader_parameter("yuv_mode", yuv_mode)
 		um.set_shader_parameter("color_matrix_type", cmt)
 		um.set_shader_parameter("color_range", cr)
+	if main.depth_estimator:
+		main.depth_estimator.bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode, cmt, cr)
 	_dots_active = false
 	main._log("[COMP] YUV textures bound to composition layer shader (mode=%d)" % yuv_mode)
 
@@ -1072,6 +1074,8 @@ func bind_fallback_texture(stream_tex):
 				continue
 			mat.set_shader_parameter("main_texture", stream_tex)
 			mat.set_shader_parameter("yuv_mode", 0)
+	if main.depth_estimator:
+		main.depth_estimator.bind_stream_texture()
 
 func switch_to_comp_layer():
 	if not available:

@@ -47,6 +47,7 @@ var _perf_updates: int = 0
 var _gpu_boost_active: bool = false
 var _gpu_boost_refresh_timer: float = 0.0
 var _native_depth_capture_active: bool = false
+var _direct_stream_source_bound: bool = false
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -240,8 +241,11 @@ func _resize_warp_passes():
 	# gather shader will warp. Kept outside the resize early-return below
 	# since the primary screen's region can change independently of the
 	# stream's own resolution (e.g. a monitor-selection change).
-	if upsample_mat and main.primary_screen:
-		upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
+	if main.primary_screen:
+		if depth_target_mat:
+			depth_target_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
+		if upsample_mat:
+			upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
 
 	if not main.primary_screen or not main.stream_viewport:
 		return
@@ -283,31 +287,57 @@ func sync_model_size():
 	depth_texture.set_image(img)
 
 func bind_stream_texture():
-	if not depth_target:
+	if not depth_target_mat:
 		return
-	# comp.in_use (switch_to_stereo_comp_layer() active) EXPLICITLY sets
-	# primary_screen.comp_viewport (the mono viewport) to UPDATE_DISABLED in
-	# favor of comp_viewport_left/right - depth capture used to silently
-	# freeze on whatever the mono viewport last rendered before switching to
-	# stereo (often mid-welcome-screen), feeding MiDaS a single stale frame
-	# forever instead of live video (fixed by forcing it back to
-	# UPDATE_ALWAYS in settings_controller.gd's apply_stereo() whenever
-	# depth is enabled). comp_viewport_left is NOT a valid depth-capture
-	# source: it's rendered by comp_shader_mat_left, the SAME material
-	# whose stereo_mode we set to 7/8/9 for the DMap debug views - sourcing
-	# depth capture from it would mean depth_guide_texture circularly
-	# depends on its own output (DMap modes) or MiDaS sees the
-	# already-warped stereo image instead of plain video (warp modes 5/6,
-	# compounding distortion frame over frame). The mono comp_viewport
-	# (comp_shader_mat, permanently stereo_mode=0) is the only semantically
-	# correct source.
+	# Compatibility path for a backend that cannot expose decoder textures.
+	# In composition mode this needs the plain mono viewport, but unlike the
+	# old path it is enabled only while this fallback is actually in use.
+	var was_direct = _direct_stream_source_bound
+	_direct_stream_source_bound = false
+	var source_tex = null
 	if main.comp.in_use and main.primary_screen and main.primary_screen.comp_viewport:
-		depth_target_mat.set_shader_parameter("source_tex", main.primary_screen.comp_viewport.get_texture())
+		source_tex = main.primary_screen.comp_viewport.get_texture()
 	elif main.stream_viewport:
-		depth_target_mat.set_shader_parameter("source_tex", main.stream_viewport.get_texture())
+		source_tex = main.stream_viewport.get_texture()
+	depth_target_mat.set_shader_parameter("main_texture", source_tex)
+	depth_target_mat.set_shader_parameter("yuv_mode", 0)
+	_update_mono_capture_requirement()
+	if was_direct:
+		main._log("[DEPTH] Decoder textures unavailable; mono capture fallback enabled")
+
+func bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt: int, cr: int):
+	if not depth_target_mat:
+		return
+	var was_direct = _direct_stream_source_bound
+	depth_target_mat.set_shader_parameter("tex_y", tex_y)
+	depth_target_mat.set_shader_parameter("tex_u", tex_u)
+	depth_target_mat.set_shader_parameter("tex_v", tex_v)
+	depth_target_mat.set_shader_parameter("yuv_mode", yuv_mode)
+	depth_target_mat.set_shader_parameter("color_matrix_type", cmt)
+	depth_target_mat.set_shader_parameter("color_range", cr)
+	_direct_stream_source_bound = true
+	_update_mono_capture_requirement()
+	if not was_direct:
+		main._log("[DEPTH] Direct decoder source bound; redundant mono capture disabled")
+
+func refresh_stream_source():
+	if _direct_stream_source_bound:
+		_update_mono_capture_requirement()
+	else:
+		bind_stream_texture()
+
+func _update_mono_capture_requirement():
+	if not main.primary_screen or not main.primary_screen.comp_viewport or not main.settings_controller:
+		return
+	# The mono viewport is the visible output in normal 2D mode and must remain
+	# active there. In stereo modes it exists only as the legacy depth fallback.
+	if main.comp.in_use and main.settings_controller.get_stereo_mode() > 0:
+		var needs_fallback = enabled and not _direct_stream_source_bound
+		main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if needs_fallback else SubViewport.UPDATE_DISABLED
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
+	_update_mono_capture_requirement()
 	if not val or main.settings_controller.get_depth_backend_index() != 2:
 		_set_gpu_performance_hint(false)
 	if depth_viewport:
