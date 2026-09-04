@@ -40,6 +40,7 @@ const GPU_BOOST_REFRESH_INTERVAL := 15.0
 var model_size: int = 256
 var _poll_timer: float = 0.0
 var _backend_status_timer: float = 0.0
+var _size_mismatch_log_timer: float = 0.0
 var _perf_window: float = 0.0
 var _perf_capture_usec: int = 0
 var _perf_submit_usec: int = 0
@@ -469,6 +470,17 @@ func process(delta: float):
 				var capture_start = Time.get_ticks_usec()
 				var img = depth_viewport.get_texture().get_image()
 				if img != null and not img.is_empty():
+					# Godot Images are top-left-origin while SubViewport's GPU
+					# framebuffer readback via get_texture().get_image() comes
+					# back bottom-left-origin (same GLES/Compatibility-renderer
+					# quirk native_xr_renderer.gd's stats-overlay capture already
+					# works around with this identical flip_y() call) - without
+					# this, the model's input (and therefore its whole output
+					# depth map) is vertically flipped, even though a live GPU
+					# sample of the same depth_viewport texture (depth_guide_texture,
+					# used by the DMap-Input debug view) looks correct, since that
+					# path never goes through this CPU readback at all.
+					img.flip_y()
 					var data = img.get_data()
 					_perf_capture_usec += Time.get_ticks_usec() - capture_start
 					if data.size() > 0:
@@ -484,6 +496,18 @@ func process(delta: float):
 			depth_texture.update(depth_image)
 			depth_revision += 1
 			_perf_updates += 1
+		elif depth_bytes != null and depth_bytes.size() > 0:
+			# Diagnostic (2026-09-04) for a "depth map doesn't correspond to
+			# the frame" report - a mismatch here means the Java side's
+			# actual output size (whatever model is really active there)
+			# disagrees with GDScript's model_size (from get_depth_model_size()),
+			# so this frame's depth_texture update is silently skipped and
+			# the view keeps showing the last-good (now stale/wrong) data
+			# instead. Throttled to avoid spamming every frame while stuck.
+			_size_mismatch_log_timer += delta
+			if _size_mismatch_log_timer >= 1.0:
+				_size_mismatch_log_timer = 0.0
+				main._log("[DEPTH] Size mismatch: got %d bytes, expected %d (model_size=%d) - texture update skipped" % [depth_bytes.size(), model_size * model_size, model_size])
 
 	_perf_window += delta
 	if _perf_window >= 1.0:

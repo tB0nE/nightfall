@@ -356,14 +356,27 @@ void fragment() {
 		// that path reads a precomputed upsampled_depth_texture while this
 		// one recomputes bilateral_depth() inline, since this shader has no
 		// equivalent precomputed pass to read from.
+		// DEBUG DISPLAY ONLY (2026-09-04): depth_texture's data is currently
+		// vertically flipped relative to the screen (root cause still being
+		// tracked down - the real warp above is affected too, just far less
+		// visibly since it only uses depth to compute a horizontal shift,
+		// never displays the value directly). Flipping the UV fed into
+		// bilateral_depth() here - and ONLY here, not at the real warp's own
+		// call sites above - undoes that for this heatmap so it's usable for
+		// visual comparison again. hi_color's internal hi-res hi_color/gcol
+		// bilateral weighting is correspondingly a little off (this function
+		// isn't normally called with a pre-flipped uv), but this call only
+		// ever consumes the returned depth value, not hi_color itself, so
+		// that doesn't affect what's displayed here.
 		float dlo, dhi;
-		float d = bilateral_depth(uv, dlo, dhi);
+		float d = bilateral_depth(vec2(uv.x, 1.0 - uv.y), dlo, dhi);
 		ALBEDO = heatmap(d);
 	}
 	else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
 		// actual 256x256 output), no bilateral upsample applied.
-		float d = texture(depth_texture, uv).r;
+		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
+		float d = texture(depth_texture, vec2(uv.x, 1.0 - uv.y)).r;
 		ALBEDO = heatmap(d);
 	}
 	else if (stereo_mode == 9) {

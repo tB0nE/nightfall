@@ -295,7 +295,14 @@ void fragment() {
 	// modes 1-6 still need to fall through to the normal color-sampling
 	// block below, which this must skip instead.
 	if (stereo_mode == 7) {
-		float d = texture(upsampled_depth_texture, tile_uv).r;
+		// DEBUG DISPLAY ONLY (2026-09-04): depth_texture (and therefore the
+		// upsampled_depth_texture pass derived from it) is currently
+		// vertically flipped relative to the screen - root cause still
+		// being tracked down. Flipped here so the heatmap is usable for
+		// visual comparison again; the real warp's own upsampled_depth_texture
+		// reads above (the disparity search feeding mode 5/6) are untouched,
+		// so this doesn't change what's actually displayed in normal 3D mode.
+		float d = texture(upsampled_depth_texture, vec2(tile_uv.x, 1.0 - tile_uv.y)).r;
 		COLOR = vec4(heatmap(d), 1.0);
 	} else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
@@ -307,7 +314,8 @@ void fragment() {
 		// upsampled_depth_texture (both cover UV 0..1 = the full cropped
 		// frame 1:1), just coarser since it's the raw 256x256 grid instead
 		// of the quarter-native-res upsample.
-		float d = texture(depth_texture, tile_uv).r;
+		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
+		float d = texture(depth_texture, vec2(tile_uv.x, 1.0 - tile_uv.y)).r;
 		COLOR = vec4(heatmap(d), 1.0);
 	} else if (stereo_mode == 9) {
 		// MiDaS-DMap-Input: the literal color image fed to the model, no

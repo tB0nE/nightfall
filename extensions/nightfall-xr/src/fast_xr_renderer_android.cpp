@@ -101,10 +101,21 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"uniform float u_sigmaR;\n"
 		"uniform float u_sharp;\n"
 		"out vec4 fragColor;\n"
-		"const float N = 256.0;\n"
 		"const float SIGMA_S = 1.5;\n"
 		"const float FLAT = 0.05;\n"
 		"void main() {\n"
+		// N used to be hardcoded to 256.0, matching the only GPU depth model
+		// that existed when this native renderer was written (MiDaS-256-GPU).
+		// Any other resolution (MiDaS-192, ZipDepth-384, ...) silently
+		// indexed/clamped against the wrong grid: too-small textures got
+		// smeared against a too-large assumed bound (visibly broken edges),
+		// too-large textures only ever had their top-left N x N corner
+		// sampled and stretched across the whole frame (looks like a
+		// featureless gradient - no real depth structure survives). Read the
+		// real bound texture size instead, same as OFFSET_FRAGMENT_SRC below
+		// already does via textureSize(), and the legacy GDScript path's
+		// bilateral_depth() (stereo_screen.gdshader) has always done.
+		"    float N = float(textureSize(u_depth, 0).x);\n"
 		"    vec3 hi = texture(u_texture, (u_texmatrix * vec4(v_plain, 0.0, 1.0)).xy).rgb;\n"
 		"    vec2 lp = v_plain * N - 0.5;\n"
 		"    ivec2 base = ivec2(floor(lp));\n"
