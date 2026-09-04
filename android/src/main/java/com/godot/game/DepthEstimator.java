@@ -743,6 +743,7 @@ public class DepthEstimator {
             while (isInferencing.get()) {
                 Thread.yield();
             }
+            GpuVariant previousVariant = activeGpuVariant;
             latestGpuFrame.set(null);
             nextDispatchNs = 0;
             smoothedDepthFloat = null;
@@ -753,6 +754,27 @@ public class DepthEstimator {
             activeGpuVariant = variant;
             String modelName = modelNameFor(modelIndex) + (variant != null ? " (GPU)" : "");
             Log.i(TAG, "Switched to model " + modelName);
+            // The previous model's GPU delegate/interpreter was never being
+            // released on a plain model switch - only setGpuPriority()'s
+            // full reset did this. Every GPU model ever selected in a
+            // session stayed resident (its own live OpenCL context, compiled
+            // kernels, GPU memory for weights/activations) even though only
+            // activeGpuVariant's is ever invoked, degrading the ACTIVE
+            // model's throughput to a fraction of its solo speed as more
+            // dormant contexts piled up (reported 2026-09-04: fine on a cold
+            // start with one model, 2-3x slower after switching between
+            // models). Must run on the inference executor - GPU delegates
+            // are bound to the thread that created/invoked them, same as
+            // releaseGpuVariant()'s other call site in setGpuPriority().
+            if (previousVariant != null && previousVariant != variant) {
+                executor.execute(() -> {
+                    synchronized (DepthEstimator.this) {
+                        if (previousVariant != activeGpuVariant) {
+                            releaseGpuVariant(previousVariant);
+                        }
+                    }
+                });
+            }
         }
     }
 
