@@ -583,6 +583,9 @@ void NightfallXrRenderer::stop_stream() {
 	depth_cache_valid = false;
 	rendered_depth_revision = UINT64_MAX;
 	rendered_depth_separation = -1.0f;
+	layer_frame_counter = 0;
+	eye_last_queried_frame[0] = 0;
+	eye_last_queried_frame[1] = 0;
 	if (swapchain != XR_NULL_HANDLE) {
 		pfn_xrDestroySwapchain(swapchain);
 		swapchain = XR_NULL_HANDLE;
@@ -660,6 +663,25 @@ bool NightfallXrRenderer::is_started() const {
 
 bool NightfallXrRenderer::has_rendered_frame() const {
 	return ever_rendered;
+}
+
+bool NightfallXrRenderer::has_stale_eye_layer() const {
+	// Require enough history that both eyes have plausibly been queried at
+	// least once (avoids a false positive during the first few frames after
+	// start(), before layer_frame_counter has run past the threshold).
+	if (layer_frame_counter < STALE_EYE_FRAME_THRESHOLD) {
+		return false;
+	}
+	for (int eye = 0; eye < 2; eye++) {
+		if (eye_last_queried_frame[eye] == 0) {
+			// Never queried yet -- startup, not a stall.
+			continue;
+		}
+		if (layer_frame_counter - eye_last_queried_frame[eye] > STALE_EYE_FRAME_THRESHOLD) {
+			return true;
+		}
+	}
+	return false;
 }
 
 bool NightfallXrRenderer::supports_cylinder() const {
@@ -916,6 +938,7 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 
 int32_t NightfallXrRenderer::_get_composition_layer_count() {
 	maybe_render_pending_frame();
+	++layer_frame_counter;
 	int32_t count = ever_rendered ? ((overlay_visible && overlay_has_content && overlay_swapchain != XR_NULL_HANDLE) ? 3 : 2) : 0;
 	#ifdef NIGHTFALL_DEBUG
 	static int calls = 0;
@@ -951,6 +974,7 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 
 	if (p_index < 2) {
 		int eye = p_index;
+		eye_last_queried_frame[eye] = layer_frame_counter;
 		int half = pending_eye_swap ? (1 - eye) : eye;
 
 		XrSwapchainSubImage sub_image{};

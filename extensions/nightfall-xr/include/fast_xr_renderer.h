@@ -71,6 +71,13 @@ public:
 	bool is_started() const;
 	bool has_rendered_frame() const;
 	bool supports_cylinder() const;
+	// True when one eye's composition layer hasn't actually been re-queried
+	// by Godot for several consecutive frames while the other eye keeps
+	// being queried normally -- the signature of a per-eye freeze (stale
+	// pose/subImage resubmitted, or dropped, at the OpenXR layer-collection
+	// level) rather than a shared-texture content problem, since both eyes
+	// read the same double-wide swapchain image. See eye_last_queried_frame.
+	bool has_stale_eye_layer() const;
 	void set_geometry(const Transform3D &p_transform, float p_width, float p_height,
 			int p_curvature, float p_radius, float p_central_angle, int p_sort_order,
 			bool p_bezel_enabled);
@@ -293,6 +300,17 @@ private:
 	float pending_central_angle = 0.75f;
 	int pending_sort_order = 1;
 	bool pending_bezel_enabled = true;
+
+	// Incremented once per _get_composition_layer_count() call (confirmed
+	// reliably called exactly once per frame); eye_last_queried_frame[eye]
+	// records the counter value as of that eye's last _get_composition_layer()
+	// call. If layer_frame_counter pulls more than STALE_EYE_FRAME_THRESHOLD
+	// ahead of one eye's entry while the other eye's stays current, Godot (or
+	// the OpenXR runtime beneath it) has stopped asking us for that eye's
+	// layer -- see has_stale_eye_layer().
+	uint64_t layer_frame_counter = 0;
+	uint64_t eye_last_queried_frame[2] = { 0, 0 };
+	static constexpr uint64_t STALE_EYE_FRAME_THRESHOLD = 8;
 
 	// Rebuilt each _get_composition_layer() call from the pending_* pose
 	// params (cheap struct fills); must be member storage since Godot reads

@@ -16,6 +16,9 @@ var _last_size := Vector2i.ZERO
 var _last_mode := -1
 var _last_eligible := false
 var _stats_upload_delay := -1
+var _stale_recovery_until_msec := 0
+
+const STALE_EYE_RECOVERY_MSEC := 2000
 
 func _init(owner: Node3D) -> void:
 	main = owner
@@ -57,6 +60,21 @@ func _eligible() -> bool:
 	# call chain, confirmed via adb logcat crash buffer (SIGSEGV, fault
 	# addr 0xe0, repeated across a test session with heavy setting toggling).
 	if main._restarting_stream:
+		return false
+	# A per-eye freeze -- stale pose/subImage resubmitted at the OpenXR
+	# layer-collection level while the other eye keeps updating normally --
+	# has been observed on-device, triggered by head rotation and unrelated
+	# to any setting change (see has_stale_eye_layer()'s C++ comment for the
+	# detection mechanism). The legacy renderer doesn't submit per-eye
+	# composition layers, so it isn't subject to this. Rather than leave the
+	# affected eye stuck indefinitely, fall back to legacy for a cooldown
+	# window and then let this renderer resume automatically -- a transient
+	# outage instead of a stuck frame.
+	if active and renderer.has_stale_eye_layer():
+		_stale_recovery_until_msec = Time.get_ticks_msec() + STALE_EYE_RECOVERY_MSEC
+		main._log("[NATIVE-XR] Stale eye layer detected; falling back to legacy renderer for %dms" % STALE_EYE_RECOVERY_MSEC)
+		return false
+	if Time.get_ticks_msec() < _stale_recovery_until_msec:
 		return false
 	# Auto-detection and the optional shader filters consume the legacy RGB
 	# viewport. Fall back while they are selected instead of silently showing
