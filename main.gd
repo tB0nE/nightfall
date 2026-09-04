@@ -72,6 +72,7 @@ var sbs_mode: int = 0
 # get_stereo_mode() for how they combine.
 var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
 var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
+var ai_3d_gpu_priority: int = 0 # 0=Stream (low-priority OpenCL), 1=Default driver priority
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 var depth_inference_frozen: bool = false # Temporary performance diagnostic; never persisted.
 var is_xr_active: bool = false
@@ -553,6 +554,7 @@ var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_depth_feed_btn: Button
+var _ui_3d_priority_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -2706,6 +2708,7 @@ func _process_performance_overlay(delta: float):
 			lines.append("Depth inference: FROZEN (stereo warp remains active)")
 		else:
 			lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
+			lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[ai_3d_gpu_priority])
 			lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 			lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))
@@ -2794,7 +2797,7 @@ var _ui_saved_offset: Vector3 = Vector3.ZERO
 var _ui_saved_rot_y: float = 0.0
 var _ui_saved_rot_x: float = 0.0
 var _ui_has_saved_offset: bool = false
-const UI_MAX_HEAD_DISTANCE := 1.5
+const UI_MAX_HEAD_DISTANCE := 5.0
 const UI_MIN_HEAD_DISTANCE := 0.35
 const UI_MIN_FORWARD_DOT := 0.15
 
