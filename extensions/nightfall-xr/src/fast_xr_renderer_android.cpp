@@ -993,6 +993,13 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 	overlay_layer.subImage.imageArrayIndex = 0;
 	overlay_layer.space = space;
 	Transform3D overlay_xf = pending_transform;
+	// For a cylinder pending_transform is its center of curvature, not the
+	// visible screen surface. The overlay is a flat tangent quad, so recover
+	// the screen-center transform before applying its local top-left offset.
+	if (pending_curvature > 0 && cylinder_supported) {
+		const Vector3 screen_forward = -overlay_xf.basis.get_column(2);
+		overlay_xf.origin += screen_forward * pending_radius;
+	}
 	XRServer *overlay_xr_server = XRServer::get_singleton();
 	if (overlay_xr_server != nullptr) {
 		overlay_xf = overlay_xr_server->get_reference_frame().inverse() * overlay_xf;
@@ -1050,6 +1057,9 @@ void NightfallXrRenderer::upload_overlay(PackedByteArray p_pixels, int p_width, 
 
 		XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		pfn_xrReleaseSwapchainImage(overlay_swapchain, &release_info);
+		if (!overlay_has_content) {
+			XR_LOG("Performance overlay texture uploaded");
+		}
 		overlay_has_content = true;
 	}
 

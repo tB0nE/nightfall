@@ -83,9 +83,12 @@ func refresh() -> void:
 	_last_mode = mode
 	_last_eligible = true
 	_sync_geometry()
-	# Keep the legacy layer alive until the native swapchain has successfully
-	# rendered one frame. This prevents a black transition if startup fails.
-	if renderer.has_rendered_frame() and not legacy_disabled:
+	# Hand off immediately after the native swapchain is ready. Keeping the
+	# legacy Texture2DRD proxies alive while a restarted decoder is replacing
+	# their backing textures can make Godot's GLThread dereference a null
+	# remap target. The native renderer simply remains black until its first
+	# decoder frame arrives, normally less than one display interval later.
+	if not legacy_disabled:
 		main.stream_backend.set_native_direct_mode(true)
 		if main.depth_estimator:
 			main.depth_estimator.set_native_renderer_active(true)
@@ -130,8 +133,9 @@ func process_frame(new_frame: bool) -> void:
 		return
 	var oes_id: int = main.stream_backend.get_oes_texture_id()
 	if oes_id == 0:
-		failure_reason = "decoder OES texture unavailable"
-		deactivate(true)
+		# This is normal during decoder startup/restart. Retain the prepared
+		# native swapchain and wait for the first published OES frame instead
+		# of thrashing back into the legacy renderer.
 		return
 	var mode := _mode()
 	var depth_id := 0
@@ -181,6 +185,9 @@ func _process_stats_upload() -> void:
 		image.convert(Image.FORMAT_RGBA8)
 	if image.get_size() != Vector2i(768, 512):
 		image.resize(768, 512)
+	# Godot Images are top-left-origin while glTexSubImage2D feeds the OpenXR
+	# overlay texture bottom-left-origin data.
+	image.flip_y()
 	renderer.upload_overlay(image.get_data(), 768, 512)
 
 func deactivate(restore_legacy: bool) -> void:

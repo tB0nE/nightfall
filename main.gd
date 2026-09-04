@@ -1029,7 +1029,12 @@ func _update_cursor_layer():
 				if circle: circle.visible = false
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
 					comp_cursor_viewport.size = Vector2i(40, 64)
-				var cursor_quad_size = Vector2(0.064 * dist_scale, 0.064 * dist_scale) if RenderingServer.get_current_rendering_method() == "gl_compatibility" else Vector2(0.04 * dist_scale, 0.064 * dist_scale)
+				# The old GLES path embedded the screen pointer in each video
+				# viewport, so its separate cursor quad used a deliberately square
+				# fallback. The native video path exposes this 40x64 pointer quad;
+				# preserve that texture's natural aspect ratio.
+				var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale) if native_screen_cursor or RenderingServer.get_current_rendering_method() != "gl_compatibility" else Vector2(0.064 * dist_scale, 0.064 * dist_scale)
 				comp_cursor.set_quad_size(cursor_quad_size)
 				comp_cursor.global_position = hit_point + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
@@ -1300,6 +1305,10 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
+	# Per-host settings (including FPS) are loaded after XR initialization.
+	# Apply the selected rate here, before the native stream swapchain starts,
+	# so a saved 90fps stream cannot remain on the boot default of 72Hz.
+	settings_controller.apply_display_refresh_rate()
 	var was_restarting = _restarting_stream
 	is_streaming = true
 	stats_timer = 0.0
@@ -2157,8 +2166,6 @@ func _init_xr(interface):
 	sbs_mode = 0
 	ai_3d_speed = 0
 
-	settings_controller.apply_display_refresh_rate()
-
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the
 	# real video texture bindings are already refreshed by their own paths
@@ -2879,7 +2886,11 @@ func _sync_parity_interaction_viewports():
 	# These two cursors are only needed for the separately composited menu and
 	# keyboard. Screen pointing uses the cursor embedded in the eye viewports.
 	var panel_visible = ui_visible or (virtual_keyboard and virtual_keyboard.visible)
-	_set_viewport_active(comp_cursor_viewport, panel_visible)
+	# Native video does not embed the pointer in a Godot video viewport, so
+	# its independently composited cursor texture must keep updating even
+	# while the menu and keyboard are hidden.
+	var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+	_set_viewport_active(comp_cursor_viewport, panel_visible or native_screen_cursor)
 	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
