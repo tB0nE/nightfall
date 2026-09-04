@@ -204,9 +204,15 @@ quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
 
 ### Nightfall LiteRT GPU AAR
 
-Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`; they do not rebuild LiteRT. This is the official LiteRT GPU 1.4.2 AAR with only its arm64 JNI library replaced. The replacement creates the Adreno OpenCL context with Qualcomm's low-priority hint so XR rendering is scheduled ahead of depth inference.
+Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`, a LiteRT 1.4.2 GPU delegate patched to select either a low-priority Qualcomm OpenCL context (`Stream`, the default) or the driver's normal context (`Default`) at runtime. Changing the AI 3D tab's GPU Priority setting recreates only the GPU delegate/interpreter; it does not restart the stream or app. With the native double-wide renderer, Stream priority protects the 90 Hz render cadence while MiDaS-256 inference remains around 30-35 ms.
 
-To regenerate it:
+For performance A/B testing, pass `--stock-litert` to use Google's unpatched `com.google.ai.edge.litert:litert-gpu:1.4.2` dependency instead:
+
+```bash
+./build.sh --release --stock-litert
+```
+
+To regenerate the patched AAR:
 
 1. Check out TensorFlow 2.17.0 and apply `android/patches/litert-qcom-low-priority-opencl.patch`.
 2. Configure Bazel 6.5.0 with Android NDK 25.2.9519653.

@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 PRESET="NightfallDev"
 OUTPUT="Nightfall-Android-arm64-v8a-debug.apk"
 PLATFORM="android"
+USE_STOCK_LITERT=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -14,13 +15,15 @@ for arg in "$@"; do
     --debug)   PRESET="NightfallDev";     OUTPUT="Nightfall-Android-arm64-v8a-debug.apk" ;;
     --linux)   PLATFORM="linux"; OUTPUT="Nightfall-Linux-x86_64" ;;
     --appimage) PLATFORM="appimage"; OUTPUT="Nightfall-x86_64.AppImage" ;;
+    --stock-litert) USE_STOCK_LITERT=1 ;;
     --install) INSTALL=1 ;;
     --help|-h)
-      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--install]"
+      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--stock-litert] [--install]"
       echo "  --debug     Export debug APK (default)"
       echo "  --release   Export release APK (requires .env keystore config)"
       echo "  --linux     Export Linux x86_64 binary"
       echo "  --appimage  Export Linux x86_64 AppImage (implies --release for Linux)"
+      echo "  --stock-litert  Use stock-priority LiteRT GPU instead of the default low-priority Quest build"
       echo "  --install   Install APK via adb after export (Android only)"
       exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
@@ -287,16 +290,22 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # 12 GPU<->CPU handoffs per inference that dominate the cost. See
 # DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
 # constant for the full history if revisiting.
+# Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
+# single-pass renderer leaves enough GPU headroom for MiDaS to complete in
+# roughly 30-35 ms. This protects stream/render cadence from inference bursts.
+# Keep --stock-litert as an explicit A/B and fallback path.
 LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
-if [ ! -f "$LITERT_GPU_AAR" ]; then
-  echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"
-  exit 1
+if [ "$USE_STOCK_LITERT" = "1" ]; then
+  echo "Using stock-priority LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
+else
+  if [ ! -f "$LITERT_GPU_AAR" ]; then
+    echo "Error: low-priority LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+    exit 1
+  fi
+  echo "Using low-priority Nightfall LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
 fi
-# The local GPU AAR is the official LiteRT 1.4.2 artifact with only its arm64
-# JNI library replaced. Nightfall's JNI build adds Qualcomm's low-priority
-# OpenCL context hint; keeping the Java API artifact separate avoids Gradle
-# resolving the stock native library transitively alongside it.
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

@@ -64,6 +64,9 @@ func on_ai_3d_debug_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_debug()
 
+func on_ai_3d_priority_toggled():
+	main.settings_controller.cycle_ai_3d_gpu_priority()
+
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
@@ -90,16 +93,17 @@ func update_3d_btn_state():
 	if main._ui_3d_btn:
 		main._ui_3d_btn.disabled = sub_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0
-	# Hidden again (2026-08-20) - the 2026-08-19 re-enable (for on-device
-	# DMap inspection while comparing depth models) was only meant for that
-	# comparison work and got shipped to main by accident. Not folded into
-	# sub_disabled above since that's meant to reflect "would be usable if
-	# AI-3D were on," and this one's just off regardless. Godot's
-	# Button.disabled blocks button_down from firing regardless of
-	# visibility, so this still stays fully non-interactive too.
+	if main._ui_3d_priority_btn:
+		var priority_disabled = disabled or main.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or OS.get_name() != "Android"
+		main._ui_3d_priority_btn.disabled = priority_disabled
+		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
+	# Re-enabled (2026-09-04) for on-device DMap inspection while comparing
+	# depth models - visible/interactive again, same disabled rule as the
+	# model button above (meaningless with AI-3D off or SBS active).
 	if main._ui_3d_debug_btn:
-		main._ui_3d_debug_btn.disabled = true
-		main._ui_3d_debug_btn.visible = false
+		main._ui_3d_debug_btn.visible = true
+		main._ui_3d_debug_btn.disabled = sub_disabled
+		main._ui_3d_debug_btn.modulate.a = 0.3 if sub_disabled else 1.0
 
 func update_stats_btn_state():
 	if not main._ui_stats_btn:
@@ -596,11 +600,21 @@ func build_ui():
 	disp_row1.add_child(main._ui_3d_btn)
 	# Hidden until update_3d_btn_state() runs (which also happens to set
 	# this every time regardless) - set here too so there's no one-frame
-	# flash of a visible "3D Debug" button before that first fires.
+	# flash of a visible "3D Debug" button before that first fires. Placed
+	# before GPU Priority (2026-09-04) - it was last in the row and unsized,
+	# so it ran off the edge of the panel instead of the fixed-width button
+	# after it.
 	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
 	main._ui_3d_debug_btn.disabled = true
 	main._ui_3d_debug_btn.visible = false
 	disp_row1.add_child(main._ui_3d_debug_btn)
+	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+	disp_row1.add_child(main._ui_3d_priority_btn)
+	# AI/display controls share this row on the performance branch. Keep
+	# them inside the 1200px panel without changing the rest of the UI layout.
+	for btn in [main._ui_pt_btn, main._ui_sbs_btn, main._ui_3d_speed_btn, main._ui_3d_btn, main._ui_3d_debug_btn, main._ui_3d_priority_btn]:
+		btn.custom_minimum_size.x = 180
+		btn.add_theme_font_size_override("font_size", 20)
 
 	var disp_gap1 = Control.new()
 	disp_gap1.custom_minimum_size = Vector2(0, 20)
@@ -851,6 +865,7 @@ func build_ui():
 	main._ui_3d_speed_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
+	main._ui_3d_priority_btn.button_down.connect(func(): on_ai_3d_priority_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
 	main._ui_apply_preset_btn.button_down.connect(func(): _on_apply_preset_pressed())

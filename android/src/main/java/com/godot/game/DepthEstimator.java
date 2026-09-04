@@ -2,6 +2,8 @@ package com.godot.game;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import org.tensorflow.lite.Interpreter;
@@ -29,6 +31,8 @@ public class DepthEstimator {
     public static final int BACKEND_GPU = 2;
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
+    public static final int GPU_PRIORITY_STREAM = 0;
+    public static final int GPU_PRIORITY_DEFAULT = 1;
     private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
 
@@ -279,6 +283,8 @@ public class DepthEstimator {
     private volatile int requestedBackend = BACKEND_AUTO;
     private volatile int effectiveBackend = BACKEND_CPU;
     private volatile String backendStatus = "";
+    private volatile int gpuPriority = GPU_PRIORITY_STREAM;
+    private volatile boolean gpuReconfigurePending = false;
 
     private static final class PendingFrame {
         final byte[] pixels;
@@ -327,6 +333,7 @@ public class DepthEstimator {
     public synchronized boolean initialize(Context context) {
         if (initialized) return true;
         appContext = context.getApplicationContext();
+        applyGpuPriorityEnvironment(gpuPriority);
 
         try {
             // midas-midas-v2-w8a8.tflite ("w8a8" = 8-bit weights AND
@@ -508,6 +515,99 @@ public class DepthEstimator {
         return lastInferenceHz;
     }
 
+    private void applyGpuPriorityEnvironment(int priority) {
+        String value = priority == GPU_PRIORITY_DEFAULT ? "default" : "stream";
+        try {
+            // Process-local environment shared with LiteRT's native JNI
+            // library. The patched CreateCLContext() reads this immediately
+            // before creating its Qualcomm OpenCL context.
+            Os.setenv("NIGHTFALL_LITERT_GPU_PRIORITY", value, true);
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Failed to set GPU priority environment", e);
+        }
+    }
+
+    public void setGpuPriority(int priority) {
+        final int selected = priority == GPU_PRIORITY_DEFAULT
+                ? GPU_PRIORITY_DEFAULT : GPU_PRIORITY_STREAM;
+        synchronized (this) {
+            applyGpuPriorityEnvironment(selected);
+            if (gpuPriority == selected) {
+                Log.i(TAG, "GPU priority already " + gpuPriorityName(selected));
+                return;
+            }
+            gpuPriority = selected;
+            boolean hasCreatedOrAttemptedDelegate = false;
+            for (GpuVariant variant : gpuVariants.values()) {
+                if (variant.loadAttempted || variant.interp != null || variant.delegate != null) {
+                    hasCreatedOrAttemptedDelegate = true;
+                    break;
+                }
+            }
+            if (!hasCreatedOrAttemptedDelegate) {
+                // No OpenCL context exists yet, so the next lazy GPU load can
+                // simply consume the new environment value without a reset.
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; it will apply when the delegate first loads");
+                return;
+            }
+            gpuReconfigurePending = true;
+            // Stop producers from scheduling more work against the old
+            // delegate. Any already-running job completes before the reset
+            // task because the executor has only one worker.
+            activeGpuVariant = null;
+            latestGpuFrame.set(null);
+            nextDispatchNs = 0;
+        }
+
+        executor.execute(() -> {
+            synchronized (DepthEstimator.this) {
+                for (GpuVariant variant : gpuVariants.values()) {
+                    releaseGpuVariant(variant);
+                }
+
+                int modelIndex = normalizeModelIndex(requestedModelIndex);
+                GpuVariant requestedVariant = gpuVariants.get(modelIndex);
+                boolean useGpu = requestedBackend != BACKEND_CPU
+                        && requestedVariant != null
+                        && !requestedVariant.permanentlyUnavailable;
+                activeInterpreter = cpuInterpreterFor(modelIndex);
+                activeModelIndex = modelIndex;
+                activeGpuVariant = useGpu ? requestedVariant : null;
+                effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+                backendStatus = "";
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                gpuReconfigurePending = false;
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; delegate will reload on the next depth frame");
+            }
+        });
+    }
+
+    private static String gpuPriorityName(int priority) {
+        return priority == GPU_PRIORITY_DEFAULT ? "Default" : "Stream";
+    }
+
+    private static void releaseGpuVariant(GpuVariant variant) {
+        // Must run on the inference executor: LiteRT GPU delegates are bound
+        // to the thread on which they were created and invoked.
+        if (variant.interp != null) {
+            variant.interp.close();
+            variant.interp = null;
+        }
+        if (variant.delegate != null) {
+            variant.delegate.close();
+            variant.delegate = null;
+        }
+        variant.inputBuf = null;
+        variant.outputBuf = null;
+        variant.loadAttempted = false;
+        variant.permanentlyUnavailable = false;
+        variant.failureReason = "";
+    }
+
     public synchronized void configureDepth(int modelIndex, int backend) {
         if (!initialized) return;
         requestedModelIndex = modelIndex;
@@ -618,7 +718,7 @@ public class DepthEstimator {
     }
 
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
-        if (!initialized || activeInterpreter == null) return;
+        if (!initialized || activeInterpreter == null || gpuReconfigurePending) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
@@ -1394,14 +1494,7 @@ public class DepthEstimator {
             tfliteYoloS = null;
         }
         for (GpuVariant v : gpuVariants.values()) {
-            if (v.interp != null) {
-                v.interp.close();
-                v.interp = null;
-            }
-            if (v.delegate != null) {
-                v.delegate.close();
-                v.delegate = null;
-            }
+            releaseGpuVariant(v);
         }
         gpuVariants.clear();
         activeGpuVariant = null;

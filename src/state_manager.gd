@@ -19,6 +19,7 @@ func save_state():
 	save.set_value("screen", "codec_preference", main.codec_preference)
 	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
 	save.set_value("diagnostics", "performance_overlay", main.performance_overlay_enabled)
+	save.set_value("ai_3d", "gpu_priority", main.ai_3d_gpu_priority)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -251,6 +252,7 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_3d_priority_btn, main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
 		main.ui_controller.update_codec_btn()
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
@@ -277,6 +279,7 @@ func load_state():
 		main._log("[STATE] load failed or not found, applying default curvature and syncing...")
 		main.screen_manager.apply_curvature()
 		sync_ui_to_settings()
+		main.settings_controller.apply_depth_gpu_priority(false)
 		return
 
 	main.bezel_enabled = save.get_value("screen", "bezel", true)
@@ -315,6 +318,7 @@ func load_state():
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
 	main.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", false)
+	main.ai_3d_gpu_priority = clampi(save.get_value("ai_3d", "gpu_priority", 0), 0, 1)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0
@@ -348,3 +352,4 @@ func load_state():
 		main.stream_backend._v2.set_auto_reconnect(main.auto_reconnect_enabled)
 
 	sync_ui_to_settings()
+	main.settings_controller.apply_depth_gpu_priority(false)

@@ -66,6 +66,7 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # 2026-08-20 for the YOLO26-S/MiDaS-GPU/YOLO26-N-resolution/7-way-lineup
 # history that produced the roster below.
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
+var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
 var ai_3d_models: Array = [
 	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
@@ -265,6 +266,24 @@ func cycle_ai_3d_model():
 	main.ai_3d_model = next
 	_save_setting(main._ui_3d_btn, ai_3d_models[main.ai_3d_model].label)
 	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_gpu_priority():
+	if OS.get_name() != "Android":
+		return
+	main.ai_3d_gpu_priority = (main.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size()
+	_save_setting(main._ui_3d_priority_btn, ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+	apply_depth_gpu_priority(true)
+
+func apply_depth_gpu_priority(notify: bool = false):
+	if OS.get_name() != "Android" or not main.stream_backend:
+		return
+	if not main.stream_backend.has_method("set_depth_gpu_priority"):
+		return
+	main.stream_backend.set_depth_gpu_priority(main.ai_3d_gpu_priority)
+	var label: String = ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority]
+	main._log("[DEPTH] GPU priority selected: %s" % label)
+	if notify and main.ui_controller:
+		main.ui_controller.set_status("Depth GPU priority: %s (reloading inference)" % label)
 
 # Maps main.ai_3d_model (the persisted UI selection, an index into
 # ai_3d_models) to DepthEstimator's real Java-side model index. Under Auto

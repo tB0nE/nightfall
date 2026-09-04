@@ -103,6 +103,12 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static void setDepthGpuPriority(int priority) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.setGpuPriority(priority);
+		}
+	}
+
 	public static int getDepthBackendCapabilities(int modelIndex) {
 		return depthEstimator != null ? depthEstimator.getBackendCapabilities(modelIndex) : 1;
 	}
