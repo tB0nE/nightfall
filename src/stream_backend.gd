@@ -193,6 +193,11 @@ func get_last_frame_latency() -> int:
 		return _v2.get_last_frame_latency_us()
 	return 0
 
+func get_network_latency_ms() -> int:
+	if _v2 and _v2.has_method("get_network_latency_ms"):
+		return _v2.get_network_latency_ms()
+	return -1
+
 func take_performance_stats() -> Dictionary:
 	if _v2 and _v2.has_method("take_performance_stats"):
 		return _v2.take_performance_stats()
@@ -236,6 +241,27 @@ func submit_depth_frame(data: PackedByteArray, w: int, h: int):
 		var db = _v2.get_depth_bridge()
 		if db:
 			db.submit_depth_frame(data, w, h)
+
+func supports_native_depth_capture() -> bool:
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return false
+	var uploader = _v2.get_texture_uploader()
+	return uploader != null and uploader.has_method("supports_native_depth_capture") and uploader.supports_native_depth_capture()
+
+func request_native_depth_capture(size: int):
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("request_native_depth_capture"):
+		uploader.request_native_depth_capture(size)
+
+func consume_native_depth_capture() -> PackedByteArray:
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return PackedByteArray()
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("consume_native_depth_capture"):
+		return uploader.consume_native_depth_capture()
+	return PackedByteArray()
 
 func get_depth_map() -> PackedByteArray:
 	if _v2:

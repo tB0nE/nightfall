@@ -357,6 +357,11 @@ int NightfallStream::get_last_frame_latency_us() const {
     return 0;
 }
 
+int NightfallStream::get_network_latency_ms() const {
+    if (stream_connection_) return stream_connection_->get_network_latency_ms();
+    return -1;
+}
+
 Dictionary NightfallStream::take_performance_stats() {
     if (stream_connection_) return stream_connection_->take_performance_stats();
     return Dictionary();
@@ -628,6 +633,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &NightfallStream::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &NightfallStream::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &NightfallStream::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &NightfallStream::get_network_latency_ms);
     ClassDB::bind_method(D_METHOD("take_performance_stats"), &NightfallStream::take_performance_stats);
     ClassDB::bind_method(D_METHOD("is_display_ready"), &NightfallStream::is_display_ready);
     ClassDB::bind_method(D_METHOD("get_codec_capabilities_info"), &NightfallStream::get_codec_capabilities_info);

@@ -318,7 +318,7 @@ public class DepthEstimator {
     private long lastGpuPrepareNs;
     private long lastGpuInvokeNs;
     private long lastGpuPostprocessNs;
-    private volatile long nextGpuInferenceNs;
+    private volatile long nextDispatchNs;
 
     private float[] smoothedDepthFloat = null;
 
@@ -588,7 +588,7 @@ public class DepthEstimator {
                 Thread.yield();
             }
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             smoothedDepthFloat = null;
             rangeValid = false;
             lastPostProcessTimeNs = 0;
@@ -688,21 +688,23 @@ public class DepthEstimator {
         if (!initialized || activeGpuVariant != variant || !gpuWorkerScheduled.compareAndSet(false, true)) {
             return;
         }
-        long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());
+        long delayNs = Math.max(0L, nextDispatchNs - System.nanoTime());
         executor.schedule(() -> runScheduledGpuInference(variant), delayNs, TimeUnit.NANOSECONDS);
     }
 
     private void runScheduledGpuInference(GpuVariant variant) {
         long startNs = System.nanoTime();
-        long scheduledNs = nextGpuInferenceNs;
-        nextGpuInferenceNs = scheduledNs <= 0 || startNs - scheduledNs >= GPU_INFERENCE_INTERVAL_NS
-                ? startNs + GPU_INFERENCE_INTERVAL_NS
-                : scheduledNs + GPU_INFERENCE_INTERVAL_NS;
+        // Publish the next deadline before clearing gpuWorkerScheduled. A
+        // producer may submit while this inference is running; without this,
+        // it can observe the previous (already-expired) deadline and enqueue
+        // the next run immediately. Anchoring to this actual start keeps the
+        // maximum rate at 20 Hz without accumulating missed deadlines.
+        nextDispatchNs = startNs + GPU_INFERENCE_INTERVAL_NS;
         gpuWorkerScheduled.set(false);
 
         if (!initialized || activeGpuVariant != variant) {
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             return;
         }
 

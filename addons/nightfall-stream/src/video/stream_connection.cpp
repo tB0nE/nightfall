@@ -1905,6 +1905,15 @@ int StreamConnection::get_last_frame_latency_us() const {
     return last_frame_latency_us_.load();
 }
 
+int StreamConnection::get_network_latency_ms() const {
+    uint32_t rtt = 0;
+    uint32_t variance = 0;
+    if (is_streaming_.load() && LiGetEstimatedRttInfo(&rtt, &variance)) {
+        return (int)rtt;
+    }
+    return -1;
+}
+
 void StreamConnection::_reset_performance_stats() {
     std::lock_guard<std::mutex> lock(performance_stats_mutex_);
     performance_stats_ = PerformanceStatsWindow{};
@@ -2053,6 +2062,7 @@ void StreamConnection::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &StreamConnection::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &StreamConnection::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &StreamConnection::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &StreamConnection::get_network_latency_ms);
     ClassDB::bind_method(D_METHOD("take_performance_stats"), &StreamConnection::take_performance_stats);
     ClassDB::bind_method(D_METHOD("is_display_ready"), &StreamConnection::is_display_ready);
     ClassDB::bind_method(D_METHOD("get_decoder_name"), &StreamConnection::get_decoder_name);

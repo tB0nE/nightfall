@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <media/NdkImage.h>
@@ -52,6 +53,9 @@ public:
     ANativeWindow *create_android_gles_decoder_surface(int width, int height);
     void update_android_gles_external_texture();
 #endif
+    bool supports_native_depth_capture();
+    void request_native_depth_capture(int size);
+    PackedByteArray consume_native_depth_capture();
     void update_colorspace(int colorspace, int color_range);
     void perform_gpu_update();
 
@@ -113,6 +117,9 @@ private:
     void _render_thread_create_android_gles_surface();
     void _render_thread_update_android_gles_texture();
     void _render_thread_destroy_android_gles_surface();
+    bool _render_thread_ensure_depth_capture(int size);
+    void _render_thread_poll_depth_capture();
+    void _render_thread_issue_depth_capture(const float *matrix, int size);
     std::mutex gles_surface_mutex_;
     std::condition_variable gles_surface_cv_;
     bool gles_surface_ready_ = false;
@@ -132,6 +139,26 @@ private:
     int gles_video_uniform_ = -1;
     int gles_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
+
+    // The Godot Image::get_data()/Texture2D::get_image() route flushes the
+    // entire GLES render queue before returning. At a 20 Hz depth cadence it
+    // was blocking the XR frame loop for 13-21 ms per capture. Capture the
+    // decoder's external texture on the render thread instead and stage the
+    // readback through a small ring of pixel-buffer objects. Fences are
+    // polled with a zero timeout on later decoded frames, so XR submission is
+    // never made to wait for the depth pixels.
+    static constexpr int GLES_DEPTH_PBO_COUNT = 3;
+    unsigned int gles_depth_texture_ = 0;
+    unsigned int gles_depth_fbo_ = 0;
+    unsigned int gles_depth_pbos_[GLES_DEPTH_PBO_COUNT]{};
+    void *gles_depth_fences_[GLES_DEPTH_PBO_COUNT]{};
+    int gles_depth_capture_size_ = 0;
+    int gles_depth_next_pbo_ = 0;
+    std::atomic<bool> gles_depth_capture_requested_{false};
+    std::atomic<int> gles_depth_requested_size_{256};
+    std::mutex gles_depth_result_mutex_;
+    std::vector<uint8_t> gles_depth_result_;
+    bool gles_depth_result_ready_ = false;
 #endif
 };
 

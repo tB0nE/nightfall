@@ -133,7 +133,10 @@ var grid_mode_enabled: bool = true
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
-var stats_frame_times: Array = []
+var stats_video_update_fps: float = 0.0
+var stats_sample_timer: float = 0.0
+var stats_app_frames: int = 0
+var stats_video_updates: int = 0
 var stats_network_events: int = 0
 var performance_overlay_enabled: bool = false
 var performance_overlay_timer: float = 0.0
@@ -1127,9 +1130,14 @@ func _update_marker_layers(_delta: float):
 	if not comp_marker_right and not comp_marker_left:
 		return
 	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
-		_set_comp_quad_hidden(comp_marker_right, true)
-		_set_comp_quad_hidden(comp_marker_left, true)
+		for layer in [comp_marker_right, comp_marker_left]:
+			_set_comp_quad_hidden(layer, true)
+			if layer:
+				_set_viewport_active(layer.get_layer_viewport(), false)
 		return
+	for layer in [comp_marker_right, comp_marker_left]:
+		if layer:
+			_set_viewport_active(layer.get_layer_viewport(), true)
 	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
 	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
 
@@ -1281,6 +1289,12 @@ func _bind_comp_fallback_texture(stream_tex):
 func _on_stream_started():
 	var was_restarting = _restarting_stream
 	is_streaming = true
+	stats_timer = 0.0
+	stats_sample_timer = 0.0
+	stats_app_frames = 0
+	stats_video_updates = 0
+	stats_fps = 0.0
+	stats_video_update_fps = 0.0
 	performance_overlay_timer = 0.0
 	_performance_previous_window.clear()
 	_restarting_stream = false
@@ -1687,6 +1701,7 @@ func _init_ui():
 
 	ui_controller.build_ui()
 	welcome_screen.build_welcome_ui()
+	_set_viewport_active(ui_viewport, false)
 
 	%IPInput.gui_input.connect(func(e): ui_controller.on_ipinput_gui_input(e))
 	ui_controller.setup_numpad()
@@ -2270,13 +2285,12 @@ func _process(delta):
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_sync_interaction_viewports()
 	_update_laser_layers()
 	_update_marker_layers(delta)
 	_update_hand_indicator_layers()
 	_update_grab_bar_layers()
 	_sync_comp_background()
-	if performance_overlay_enabled and comp:
-		comp.update_stats_transform()
 
 	_process_idle_activity()
 
@@ -2555,18 +2569,20 @@ func _process_stats(delta):
 			_cached_sharpen = cur_sharpen
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
-	stats_frame_times.append(delta)
+	stats_app_frames += 1
+	if stream_backend and stream_backend.consume_new_frame():
+		stats_video_updates += 1
+	stats_sample_timer += delta
+	if stats_sample_timer >= 1.0:
+		stats_fps = float(stats_app_frames) / stats_sample_timer
+		stats_video_update_fps = float(stats_video_updates) / stats_sample_timer
+		stats_sample_timer = 0.0
+		stats_app_frames = 0
+		stats_video_updates = 0
 	stats_timer += delta
 	if stats_timer >= 0.1:
-		var avg = 0.0
-		for t in stats_frame_times:
-			avg += t
-		if stats_frame_times.size() > 0:
-			avg /= stats_frame_times.size()
-		stats_fps = 1.0 / avg if avg > 0 else 0.0
 		stream_manager.update_stats()
 		stats_timer = 0.0
-		stats_frame_times.clear()
 	_process_performance_overlay(delta)
 
 func toggle_performance_overlay():
@@ -2627,6 +2643,8 @@ func _process_performance_overlay(delta: float):
 		"Decoder: %s" % decoder_name,
 		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
 		"Rendering frame rate: %.0f FPS" % rendering_fps,
+		"Nightfall application frame rate: %.1f FPS" % stats_fps,
+		"Nightfall video texture update rate: %.1f FPS" % stats_video_update_fps,
 		"Frames dropped by your network connection: %.2f%%" % lost_pct,
 		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],
 	])
@@ -2674,6 +2692,7 @@ func _input(event):
 
 func _toggle_ui():
 	ui_visible = not ui_visible
+	_set_viewport_active(ui_viewport, ui_visible)
 	if ui_visible:
 		if state_manager:
 			state_manager.sync_ui_to_settings()
@@ -2774,6 +2793,7 @@ func _save_ui_offset():
 	_ui_has_saved_offset = true
 
 func _set_ui_visible(vis: bool):
+	_set_viewport_active(ui_viewport, vis)
 	ui_panel_3d.visible = vis
 	var area = ui_panel_3d.get_node_or_null("Area3D")
 	if area:
@@ -2791,6 +2811,20 @@ func _set_ui_visible(vis: bool):
 			_save_ui_offset()
 	elif is_xr_active:
 		_save_ui_offset()
+
+func _set_viewport_active(viewport: SubViewport, active: bool):
+	if not viewport:
+		return
+	var wanted = SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
+	if viewport.render_target_update_mode != wanted:
+		viewport.render_target_update_mode = wanted
+
+func _sync_interaction_viewports():
+	# These two cursors are only needed for the separately composited menu and
+	# keyboard. Screen pointing uses the cursor embedded in the eye viewports.
+	var panel_visible = ui_visible or (virtual_keyboard and virtual_keyboard.visible)
+	_set_viewport_active(comp_cursor_viewport, panel_visible)
+	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	var strength = clampf((low_freq + high_freq) / 510.0, 0.0, 1.0)
@@ -3070,9 +3104,14 @@ func _update_hand_indicator_layers():
 	if not comp_hand_right and not comp_hand_left:
 		return
 	if not DEBUG_COMP_HANDS or not comp.in_use or not is_xr_active or not _is_using_hands:
-		_set_comp_quad_hidden(comp_hand_right, true)
-		_set_comp_quad_hidden(comp_hand_left, true)
+		for layer in [comp_hand_right, comp_hand_left]:
+			_set_comp_quad_hidden(layer, true)
+			if layer:
+				_set_viewport_active(layer.get_layer_viewport(), false)
 		return
+	for layer in [comp_hand_right, comp_hand_left]:
+		if layer:
+			_set_viewport_active(layer.get_layer_viewport(), true)
 	var right_tracker = XRServer.get_tracker("/user/hand_tracker/right")
 	var left_tracker = XRServer.get_tracker("/user/hand_tracker/left")
 	_update_one_hand_indicator(comp_hand_right, comp_hand_right_triangle, right_tracker)

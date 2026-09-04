@@ -566,7 +566,6 @@ func update_stats():
 		_setup_v2_yuv_rect()
 	_update_yuv_shader_params()
 	main.comp.bind_yuv_textures()  # Re-bind after compute pipeline may have updated tex_y
-	var new_frame = _b().consume_new_frame()
 	var vw = _b().get_video_width()
 	var vh = _b().get_video_height()
 	# Local-capture mode (2026-08-21 fix) - the negotiated RTSP video stream
@@ -598,16 +597,13 @@ func update_stats():
 	var ip = main.get_node("%IPInput").text
 	var ip_display = ip if not ip.is_empty() else "?"
 	var dropped = _b().get_frames_dropped()
-	var decoded = _b().get_frames_decoded()
-	var latency_ms = _b().get_last_frame_latency() / 1000.0
+	var network_latency_ms = _b().get_network_latency_ms()
 	var bitrate_mbps = bitrate / 1000.0
 	var refresh_hz = main.display_refresh_rate
 	var codec_name = main.codec_labels[main.codec_preference] if main.codec_preference < main.codec_labels.size() else "?"
-	if decoded > 0 and not new_frame:
-		main._log("[STREAM] Frames decoded=%d but no new frame consumed!" % decoded)
 	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(main.stream_fps) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
-	txt += " \u2022 " + str(int(latency_ms)) + "ms"
-	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 " + str(int(main.stats_fps)) + "fps"
+	txt += " \u2022 Net:" + (str(network_latency_ms) + "ms" if network_latency_ms >= 0 else "?")
+	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.stats_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
 	# Live GPU-depth-inference readout (2026-08-25) - added for the

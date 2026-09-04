@@ -46,6 +46,7 @@ var _perf_submitted: int = 0
 var _perf_updates: int = 0
 var _gpu_boost_active: bool = false
 var _gpu_boost_refresh_timer: float = 0.0
+var _native_depth_capture_active: bool = false
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -392,20 +393,43 @@ func process(delta: float):
 			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 	if main.stream_backend.has_method("submit_depth_frame"):
+		var native_capture_available: bool = (
+			_platform == "Android"
+			and main.stream_backend.has_method("supports_native_depth_capture")
+			and main.stream_backend.supports_native_depth_capture()
+		)
+		if native_capture_available != _native_depth_capture_active:
+			_native_depth_capture_active = native_capture_available
+			main._log("[DEPTH] Capture path: %s" % ("native GLES async" if native_capture_available else "Godot viewport fallback"))
+
+		# Polling a completed PBO only copies an already-signalled 256x256
+		# result. The GLES render thread never waits for it; if a transfer is
+		# late, the latest-frame policy simply picks it up on a later frame.
+		if native_capture_available:
+			var native_data: PackedByteArray = main.stream_backend.consume_native_depth_capture()
+			if native_data.size() == model_size * model_size * 4:
+				var native_submit_start = Time.get_ticks_usec()
+				main.stream_backend.submit_depth_frame(native_data, model_size, model_size)
+				_perf_submit_usec += Time.get_ticks_usec() - native_submit_start
+				_perf_submitted += 1
+
 		submit_timer += delta
 		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.settings_controller.get_depth_backend_index() == 2 and OS.get_name() == "Android" else submit_interval
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
-			var capture_start = Time.get_ticks_usec()
-			var img = depth_viewport.get_texture().get_image()
-			if img != null and not img.is_empty():
-				var data = img.get_data()
-				_perf_capture_usec += Time.get_ticks_usec() - capture_start
-				if data.size() > 0:
-					var submit_start = Time.get_ticks_usec()
-					main.stream_backend.submit_depth_frame(data, model_size, model_size)
-					_perf_submit_usec += Time.get_ticks_usec() - submit_start
-					_perf_submitted += 1
+			if native_capture_available:
+				main.stream_backend.request_native_depth_capture(model_size)
+			else:
+				var capture_start = Time.get_ticks_usec()
+				var img = depth_viewport.get_texture().get_image()
+				if img != null and not img.is_empty():
+					var data = img.get_data()
+					_perf_capture_usec += Time.get_ticks_usec() - capture_start
+					if data.size() > 0:
+						var submit_start = Time.get_ticks_usec()
+						main.stream_backend.submit_depth_frame(data, model_size, model_size)
+						_perf_submit_usec += Time.get_ticks_usec() - submit_start
+						_perf_submitted += 1
 
 	if main.stream_backend.has_method("get_depth_map"):
 		var depth_bytes = main.stream_backend.get_depth_map()
@@ -418,7 +442,8 @@ func process(delta: float):
 	if _perf_window >= 1.0:
 		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
-		print("[DEPTH-PERF] capture=%.2fms submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_ms, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
+		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
+		print("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_value, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
 		_perf_window = 0.0
 		_perf_capture_usec = 0
 		_perf_submit_usec = 0
