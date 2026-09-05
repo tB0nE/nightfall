@@ -81,6 +81,16 @@ func _eligible() -> bool:
 	# stale detection data or ignoring a user's picture setting.
 	if main.auto_detect_enabled or main.smooth_mode != 0 or main.sharpen_mode != 0:
 		return false
+	# HDR tonemapping (composition_layer_manager.gd's _apply_video_shader_state())
+	# is implemented as a shader variant on the legacy ShaderMaterial/
+	# yuv_display_hdr.gdshader blit path. This renderer's native-direct mode
+	# samples the raw decoder OES texture straight in the XR compositor,
+	# bypassing that shader entirely - merged as-is, an HDR stream would just
+	# look washed out/wrong-gamma with no error. Fall back to legacy whenever
+	# a non-SDR transfer function is negotiated, same as the other unsupported-
+	# configuration guards on this list.
+	if main.comp and main.comp._current_color_transfer_type != 0:
+		return false
 	var mode := _mode()
 	if mode >= 7 and mode <= 9:
 		return false
