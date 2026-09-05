@@ -20,7 +20,7 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_stale_eye_layer"), &NightfallXrRenderer::has_stale_eye_layer);
 	ClassDB::bind_method(D_METHOD("supports_cylinder"), &NightfallXrRenderer::supports_cylinder);
 	ClassDB::bind_method(D_METHOD("set_geometry", "transform", "width", "height", "curvature", "radius", "central_angle", "sort_order", "bezel_enabled"), &NightfallXrRenderer::set_geometry);
-	ClassDB::bind_method(D_METHOD("submit_frame", "new_frame", "oes_texture_id", "depth_texture_id", "depth_guide_texture_id", "tex_matrix", "distance", "quad_width", "head_locked", "separation", "eye_swap", "passthrough", "oes_fence", "stereo_mode", "depth_revision"), &NightfallXrRenderer::submit_frame, DEFVAL(0), DEFVAL(0));
+	ClassDB::bind_method(D_METHOD("submit_frame", "new_frame", "oes_texture_id", "depth_texture_id", "depth_guide_texture_id", "tex_matrix", "distance", "quad_width", "head_locked", "separation", "eye_swap", "passthrough", "oes_fence", "stereo_mode", "depth_revision", "color_transfer_type"), &NightfallXrRenderer::submit_frame, DEFVAL(0), DEFVAL(0), DEFVAL(0));
 	ClassDB::bind_method(D_METHOD("upload_overlay", "pixels", "width", "height"), &NightfallXrRenderer::upload_overlay);
 	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &NightfallXrRenderer::set_overlay_visible);
 	ClassDB::bind_method(D_METHOD("get_warp_gpu_ms"), &NightfallXrRenderer::get_warp_gpu_ms);
@@ -207,7 +207,7 @@ bool NightfallXrRenderer::has_rendered_frame() const { return false; }
 bool NightfallXrRenderer::has_stale_eye_layer() const { return false; }
 bool NightfallXrRenderer::supports_cylinder() const { return false; }
 void NightfallXrRenderer::set_geometry(const Transform3D &, float, float, int, float, float, int, bool) {}
-void NightfallXrRenderer::submit_frame(bool, uint32_t, uint32_t, uint32_t, PackedFloat32Array, float, float, bool, float, bool, bool, uint64_t, int, uint64_t) {}
+void NightfallXrRenderer::submit_frame(bool, uint32_t, uint32_t, uint32_t, PackedFloat32Array, float, float, bool, float, bool, bool, uint64_t, int, uint64_t, int) {}
 void NightfallXrRenderer::upload_overlay(PackedByteArray, int, int) {}
 void NightfallXrRenderer::set_overlay_visible(bool) {}
 float NightfallXrRenderer::get_warp_gpu_ms() { return 0.0f; }

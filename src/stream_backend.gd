@@ -384,6 +384,15 @@ func get_oes_texture_id() -> int:
 			return uploader.get_oes_texture_id()
 	return 0
 
+# Authoritative decoder transfer function: 0=SDR, 1=PQ/ST 2084, 2=HLG.
+# Kept beside the OES accessors because the value describes those raw samples.
+func get_color_transfer_type() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_color_transfer_type"):
+			return uploader.get_color_transfer_type()
+	return 0
+
 func get_oes_transform_matrix() -> PackedFloat32Array:
 	if _v2:
 		var uploader = _v2.get_texture_uploader()

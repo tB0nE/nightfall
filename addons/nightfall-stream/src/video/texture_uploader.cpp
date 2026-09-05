@@ -1415,6 +1415,7 @@ PackedByteArray TextureUploader::consume_native_depth_capture() {
 void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range", "color_transfer"), &TextureUploader::setup, DEFVAL(0));
     ClassDB::bind_method(D_METHOD("update_color_transfer", "color_transfer"), &TextureUploader::update_color_transfer);
+    ClassDB::bind_method(D_METHOD("get_color_transfer_type"), &TextureUploader::get_color_transfer_type);
     ClassDB::bind_method(D_METHOD("cleanup"), &TextureUploader::cleanup);
     ClassDB::bind_method(D_METHOD("get_shader_material"), &TextureUploader::get_shader_material);
     ClassDB::bind_method(D_METHOD("perform_gpu_update"), &TextureUploader::perform_gpu_update);

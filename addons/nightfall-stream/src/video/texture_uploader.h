@@ -43,6 +43,9 @@ public:
     void setup_bgra(int width, int height);
     void ensure_shader_material();
     void set_active(bool nv12); // Main-thread flags for shader conversion + NV12 mode
+    // 0 = SDR, 1 = PQ/ST 2084, 2 = HLG. Atomic because decoder/protocol
+    // callbacks update it while the main thread feeds the native XR renderer.
+    int get_color_transfer_type() const { return current_color_transfer_type_.load(); }
     void set_texture_from_native_rid(RID p_tex_rid, int p_width, int p_height); // Zero-copy GPU texture import
     void cleanup();
     void update_from_frame(AVFrame *frame);

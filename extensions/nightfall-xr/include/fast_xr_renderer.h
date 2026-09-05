@@ -98,11 +98,14 @@ public:
 	// texture write has completed on Godot's context, or 0 if none -- see
 	// Ownership transfers in: consumed
 	// (glWaitSync + glDeleteSync) exactly once, in render_video_frame().
+	// color_transfer_type describes the raw OES samples: 0=SDR, 1=PQ/ST 2084,
+	// 2=HLG. It selects a separately compiled warp program; HDR code is never
+	// part of the SDR program's instruction/register footprint.
 	void submit_frame(bool p_new_frame, uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, PackedFloat32Array p_tex_matrix, float p_distance,
 			float p_quad_width, bool p_head_locked, float p_separation, bool p_eye_swap,
 			bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode = 0,
-			uint64_t p_depth_revision = 0);
+			uint64_t p_depth_revision = 0, int p_color_transfer_type = 0);
 
 	void upload_overlay(PackedByteArray p_pixels, int p_width, int p_height);
 	void set_overlay_visible(bool p_visible);
@@ -245,11 +248,24 @@ private:
 	int output_height = 0;
 
 	GLuint warp_program = 0;
-	GLint u_texmatrix = -1, u_disparity = -1, u_tint = -1, u_occlusion = -1;
-	GLint u_eye_index = -1, u_convergence = -1, u_disp_texels = -1;
-	GLint u_low_res_width = -1, u_frame_width = -1;
-	GLint u_debug_solid = -1;
-	GLint u_stereo_mode = -1;
+	GLuint hdr_warp_program = 0;
+	struct WarpUniforms {
+		GLint texmatrix = -1;
+		GLint disparity = -1;
+		GLint occlusion = -1;
+		GLint eye_index = -1;
+		GLint convergence = -1;
+		GLint disp_texels = -1;
+		GLint low_res_width = -1;
+		GLint frame_width = -1;
+		GLint debug_solid = -1;
+		GLint stereo_mode = -1;
+		GLint color_transfer = -1;
+		GLint hdr_lut = -1;
+	};
+	WarpUniforms warp_uniforms;
+	WarpUniforms hdr_warp_uniforms;
+	GLuint hdr_lut_texture = 0;
 	GLuint warp_fbo = 0;
 	bool debug_solid_color = false;
 
@@ -288,6 +304,8 @@ private:
 	bool pending_eye_swap = false;
 	bool pending_passthrough = false;
 	int pending_stereo_mode = 0;
+	int pending_color_transfer_type = 0;
+	int rendered_color_transfer_type = -1;
 	uint64_t pending_depth_revision = 0;
 	uint64_t rendered_depth_revision = UINT64_MAX;
 	float rendered_depth_separation = -1.0f;

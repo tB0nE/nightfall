@@ -2,6 +2,7 @@
 
 #include "fast_xr_renderer.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -104,6 +105,125 @@ static const char *FRAGMENT_SRC =
 		"    }\n"
 		"    fragColor = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy);\n"
 		"}\n";
+
+// Deliberately separate from FRAGMENT_SRC. A runtime HDR branch in the SDR
+// program previously increased the hot shader's compiled instruction/register
+// footprint even on SDR streams. Only this program contains transfer decoding,
+// gamut conversion, tonemapping, and LUT sampling.
+static const char *HDR_FRAGMENT_SRC =
+		"#version 300 es\n"
+		"#extension GL_OES_EGL_image_external_essl3 : require\n"
+		"precision highp float;\n"
+		"precision highp int;\n"
+		"in vec2 v_plain;\n"
+		"uniform samplerExternalOES u_texture;\n"
+		"uniform sampler2D u_depth;\n"
+		"uniform sampler2D u_offsets;\n"
+		"uniform sampler2D u_hdrLut;\n"
+		"uniform mat4 u_texmatrix;\n"
+		"uniform float u_disparity;\n"
+		"uniform float u_occlusion;\n"
+		"uniform float u_eyeIndex;\n"
+		"uniform float u_convergence;\n"
+		"uniform float u_dispTexels;\n"
+		"uniform float u_lowResWidth;\n"
+		"uniform float u_frameWidth;\n"
+		"uniform float u_debugSolid;\n"
+		"uniform int u_stereoMode;\n"
+		"uniform int u_colorTransfer;\n"
+		"out vec4 fragColor;\n"
+		// Explicit interpolation makes GL_R32F filtering requirements irrelevant.
+		"float hdrLutSample(float value, int row) {\n"
+		"    float pos = clamp(value, 0.0, 1.0) * 255.0;\n"
+		"    int x0 = int(floor(pos));\n"
+		"    int x1 = min(x0 + 1, 255);\n"
+		"    float f = fract(pos);\n"
+		"    float a = texelFetch(u_hdrLut, ivec2(x0, row), 0).r;\n"
+		"    float b = texelFetch(u_hdrLut, ivec2(x1, row), 0).r;\n"
+		"    return mix(a, b, f);\n"
+		"}\n"
+		"vec3 bt2020ToBt709(vec3 c) {\n"
+		"    return vec3(\n"
+		"        1.6604910 * c.r - 0.5876411 * c.g - 0.0728499 * c.b,\n"
+		"       -0.1245505 * c.r + 1.1328999 * c.g - 0.0083494 * c.b,\n"
+		"       -0.0181508 * c.r - 0.1005789 * c.g + 1.1187297 * c.b);\n"
+		"}\n"
+		"vec3 tonemapHdrLinear(vec3 c) {\n"
+		"    float l = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"
+		"    if (l <= 0.0001) return c;\n"
+		"    float lOut = l / (1.0 + l);\n"
+		"    return c * (lOut / l);\n"
+		"}\n"
+		"vec3 hdrToSdr(vec3 rgb) {\n"
+		"    int decodeRow = (u_colorTransfer == 1) ? 0 : 1;\n"
+		"    vec3 linear = vec3(\n"
+		"        hdrLutSample(rgb.r, decodeRow),\n"
+		"        hdrLutSample(rgb.g, decodeRow),\n"
+		"        hdrLutSample(rgb.b, decodeRow));\n"
+		"    linear = tonemapHdrLinear(bt2020ToBt709(linear));\n"
+		"    return vec3(\n"
+		"        hdrLutSample(linear.r, 2),\n"
+		"        hdrLutSample(linear.g, 2),\n"
+		"        hdrLutSample(linear.b, 2));\n"
+		"}\n"
+		"void main() {\n"
+		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
+		"    float d = texture(u_depth, v_plain).a;\n"
+		"    vec2 tc = v_plain;\n"
+		"    if (u_occlusion > 0.5) {\n"
+		"        int reach = int(ceil(abs(u_dispTexels)\n"
+		"                        * max(u_convergence, 1.0 - u_convergence))) + 2;\n"
+		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
+		"        tc.x = v_plain.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
+		"        float h = 1.0 / u_frameWidth;\n"
+		"        for (int i = 0; i < 2; i++) {\n"
+		"            float d0 = texture(u_depth, vec2(tc.x, v_plain.y)).a;\n"
+		"            float dm = texture(u_depth, vec2(tc.x - h, v_plain.y)).a;\n"
+		"            float dp = texture(u_depth, vec2(tc.x + h, v_plain.y)).a;\n"
+		"            float e = (tc.x - v_plain.x) + u_disparity * (d0 - u_convergence);\n"
+		"            float slope = 1.0 + u_disparity * (dp - dm) / (2.0 * h);\n"
+		"            if (abs(slope) < 0.25) slope = 0.25;\n"
+		"            tc.x -= clamp(e / slope, -4.0 * h, 4.0 * h);\n"
+		"        }\n"
+		"    } else {\n"
+		"        tc.x -= u_disparity * (d - u_convergence);\n"
+		"    }\n"
+		"    tc = clamp(tc, 0.0, 1.0);\n"
+		"    if (u_stereoMode == 1) {\n"
+		"        tc.x = (u_eyeIndex < 0.5) ? tc.x * 0.5 : tc.x * 0.5 + 0.5;\n"
+		"    } else if (u_stereoMode == 2) {\n"
+		"        tc = (u_eyeIndex < 0.5) ? vec2(tc.x * 0.5, tc.y * 0.5 + 0.25)\n"
+		"                                      : vec2(tc.x * 0.5 + 0.5, tc.y * 0.5 + 0.25);\n"
+		"    }\n"
+		"    vec3 encoded = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy).rgb;\n"
+		"    fragColor = vec4(hdrToSdr(encoded), 1.0);\n"
+		"}\n";
+
+static float pq_decode_lut(float e) {
+	constexpr float m1 = 0.1593017578125f;
+	constexpr float m2 = 78.84375f;
+	constexpr float c1 = 0.8359375f;
+	constexpr float c2 = 18.8515625f;
+	constexpr float c3 = 18.6875f;
+	float ep = std::pow(e, 1.0f / m2);
+	float num = std::fmax(ep - c1, 0.0f);
+	float den = std::fmax(c2 - c3 * ep, 1.0e-6f);
+	return std::pow(num / den, 1.0f / m1) / 0.0203f;
+}
+
+static float hlg_decode_lut(float e) {
+	constexpr float a = 0.17883277f;
+	constexpr float b = 1.0f - 4.0f * a;
+	const float c = 0.5f - a * std::log(4.0f * a);
+	float scene = e < 0.5f ? (e * e) / 3.0f : (std::exp((e - c) / a) + b) / 12.0f;
+	return std::pow(std::fmax(scene, 0.0f), 1.2f) / 0.203f;
+}
+
+static float srgb_encode_lut(float c) {
+	c = std::fmin(std::fmax(c, 0.0f), 1.0f);
+	return c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+}
 
 static const char *UPSAMPLE_FRAGMENT_SRC =
 		"#version 300 es\n"
@@ -502,24 +622,66 @@ bool NightfallXrRenderer::init_swapchain() {
 }
 
 bool NightfallXrRenderer::init_gl() {
+	auto configure_warp_uniforms = [](GLuint program, WarpUniforms &uniforms, bool hdr) {
+		uniforms.texmatrix = glGetUniformLocation(program, "u_texmatrix");
+		uniforms.disparity = glGetUniformLocation(program, "u_disparity");
+		uniforms.occlusion = glGetUniformLocation(program, "u_occlusion");
+		uniforms.eye_index = glGetUniformLocation(program, "u_eyeIndex");
+		uniforms.convergence = glGetUniformLocation(program, "u_convergence");
+		uniforms.disp_texels = glGetUniformLocation(program, "u_dispTexels");
+		uniforms.low_res_width = glGetUniformLocation(program, "u_lowResWidth");
+		uniforms.frame_width = glGetUniformLocation(program, "u_frameWidth");
+		uniforms.debug_solid = glGetUniformLocation(program, "u_debugSolid");
+		uniforms.stereo_mode = glGetUniformLocation(program, "u_stereoMode");
+		glUseProgram(program);
+		glUniform1i(glGetUniformLocation(program, "u_texture"), 0);
+		glUniform1i(glGetUniformLocation(program, "u_depth"), 1);
+		glUniform1i(glGetUniformLocation(program, "u_offsets"), 2);
+		if (hdr) {
+			uniforms.color_transfer = glGetUniformLocation(program, "u_colorTransfer");
+			uniforms.hdr_lut = glGetUniformLocation(program, "u_hdrLut");
+			glUniform1i(uniforms.hdr_lut, 3);
+		}
+	};
+
 	warp_program = link_program(FRAGMENT_SRC);
 	if (warp_program == 0) {
 		return false;
 	}
-	u_texmatrix = glGetUniformLocation(warp_program, "u_texmatrix");
-	u_disparity = glGetUniformLocation(warp_program, "u_disparity");
-	u_occlusion = glGetUniformLocation(warp_program, "u_occlusion");
-	u_eye_index = glGetUniformLocation(warp_program, "u_eyeIndex");
-	u_convergence = glGetUniformLocation(warp_program, "u_convergence");
-	u_disp_texels = glGetUniformLocation(warp_program, "u_dispTexels");
-	u_low_res_width = glGetUniformLocation(warp_program, "u_lowResWidth");
-	u_frame_width = glGetUniformLocation(warp_program, "u_frameWidth");
-	u_debug_solid = glGetUniformLocation(warp_program, "u_debugSolid");
-	u_stereo_mode = glGetUniformLocation(warp_program, "u_stereoMode");
-	glUseProgram(warp_program);
-	glUniform1i(glGetUniformLocation(warp_program, "u_texture"), 0);
-	glUniform1i(glGetUniformLocation(warp_program, "u_depth"), 1);
-	glUniform1i(glGetUniformLocation(warp_program, "u_offsets"), 2);
+	configure_warp_uniforms(warp_program, warp_uniforms, false);
+
+	hdr_warp_program = link_program(HDR_FRAGMENT_SRC);
+	if (hdr_warp_program == 0) {
+		XR_LOGE("Failed to compile native HDR warp program");
+		return false;
+	}
+	configure_warp_uniforms(hdr_warp_program, hdr_warp_uniforms, true);
+
+	float hdr_lut_data[256 * 3];
+	for (int x = 0; x < 256; x++) {
+		float e = static_cast<float>(x) / 255.0f;
+		hdr_lut_data[x] = pq_decode_lut(e);
+		hdr_lut_data[256 + x] = hlg_decode_lut(e);
+		hdr_lut_data[512 + x] = srgb_encode_lut(e);
+	}
+	// Discard a bounded number of earlier optional-driver state errors before
+	// validating the LUT. Do not spin forever if a lost context reports a
+	// persistent error.
+	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; i++) {
+	}
+	glGenTextures(1, &hdr_lut_texture);
+	glBindTexture(GL_TEXTURE_2D, hdr_lut_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 256, 3, 0, GL_RED, GL_FLOAT, hdr_lut_data);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	GLenum lut_error = glGetError();
+	if (hdr_lut_texture == 0 || lut_error != GL_NO_ERROR) {
+		XR_LOGE("Failed to create native HDR LUT texture (GL error=0x%x)", lut_error);
+		return false;
+	}
+	XR_LOG("Native HDR warp program and 256x3 LUT ready");
 
 	upsample_program = link_program(UPSAMPLE_FRAGMENT_SRC);
 	if (upsample_program == 0) {
@@ -574,6 +736,8 @@ bool NightfallXrRenderer::init_gl() {
 void NightfallXrRenderer::stop_stream() {
 	pending_new_frame = false;
 	ever_rendered = false;
+	pending_color_transfer_type = 0;
+	rendered_color_transfer_type = -1;
 	depth_cache_valid = false;
 	rendered_depth_revision = UINT64_MAX;
 	rendered_depth_separation = -1.0f;
@@ -616,13 +780,15 @@ void NightfallXrRenderer::stop_stream() {
 			if (offset_fbo) glDeleteFramebuffers(1, &offset_fbo);
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
+			if (hdr_lut_texture) glDeleteTextures(1, &hdr_lut_texture);
 			if (warp_program) glDeleteProgram(warp_program);
+			if (hdr_warp_program) glDeleteProgram(hdr_warp_program);
 			if (upsample_program) glDeleteProgram(upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
 		}
 		warp_fbo = upsample_fbo = offset_fbo = 0;
-		upsample_texture = offset_texture = 0;
-		warp_program = upsample_program = offset_program = 0;
+		upsample_texture = offset_texture = hdr_lut_texture = 0;
+		warp_program = hdr_warp_program = upsample_program = offset_program = 0;
 		eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
 		if (egl_pbuffer != EGL_NO_SURFACE) {
 			eglDestroySurface(egl_display, egl_pbuffer);
@@ -783,7 +949,17 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
 	}
 
-	glUseProgram(warp_program);
+	bool use_hdr = pending_color_transfer_type == 1 || pending_color_transfer_type == 2;
+	GLuint active_warp_program = use_hdr ? hdr_warp_program : warp_program;
+	WarpUniforms &uniforms = use_hdr ? hdr_warp_uniforms : warp_uniforms;
+	glUseProgram(active_warp_program);
+	if (rendered_color_transfer_type != pending_color_transfer_type) {
+		const char *transfer_name = pending_color_transfer_type == 1 ? "PQ"
+				: (pending_color_transfer_type == 2 ? "HLG" : "SDR");
+		XR_LOG("Video transfer changed: %s; native %s warp program active",
+				transfer_name, use_hdr ? "HDR" : "SDR");
+		rendered_color_transfer_type = pending_color_transfer_type;
+	}
 	if (pending_bezel_enabled) {
 		glViewport(0, 0, output_width * 2, output_height);
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -795,14 +971,19 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	glBindTexture(GL_TEXTURE_2D, upsampling ? upsample_texture : p_depth_texture_id);
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, offset_texture);
-	glUniformMatrix4fv(u_texmatrix, 1, GL_FALSE, p_tex_matrix);
-	glUniform1f(u_debug_solid, debug_solid_color ? 1.0f : 0.0f);
-	glUniform1f(u_occlusion, p_occluding ? 1.0f : 0.0f);
-	glUniform1f(u_convergence, 0.5f);
-	glUniform1f(u_disp_texels, p_separation * upsample_width);
-	glUniform1f(u_low_res_width, (float)upsample_width);
-	glUniform1f(u_frame_width, (float)video_width);
-	glUniform1i(u_stereo_mode, pending_stereo_mode);
+	if (use_hdr) {
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(GL_TEXTURE_2D, hdr_lut_texture);
+		glUniform1i(uniforms.color_transfer, pending_color_transfer_type);
+	}
+	glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, p_tex_matrix);
+	glUniform1f(uniforms.debug_solid, debug_solid_color ? 1.0f : 0.0f);
+	glUniform1f(uniforms.occlusion, p_occluding ? 1.0f : 0.0f);
+	glUniform1f(uniforms.convergence, 0.5f);
+	glUniform1f(uniforms.disp_texels, p_separation * upsample_width);
+	glUniform1f(uniforms.low_res_width, (float)upsample_width);
+	glUniform1f(uniforms.frame_width, (float)video_width);
+	glUniform1i(uniforms.stereo_mode, pending_stereo_mode);
 
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
 	glEnableVertexAttribArray(0);
@@ -816,8 +997,8 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glViewport(eye * output_width + inset, inset,
 				output_width - inset * 2, output_height - inset * 2);
 		float disparity = (eye == 0) ? p_separation : -p_separation;
-		glUniform1f(u_disparity, disparity);
-		glUniform1f(u_eye_index, (float)eye);
+		glUniform1f(uniforms.disparity, disparity);
+		glUniform1f(uniforms.eye_index, (float)eye);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
 
@@ -833,7 +1014,8 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, PackedFloat32Array p_tex_matrix, float p_distance,
 		float p_quad_width, bool p_head_locked, float p_separation, bool p_eye_swap,
-		bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode, uint64_t p_depth_revision) {
+		bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode, uint64_t p_depth_revision,
+		int p_color_transfer_type) {
 	pending_new_frame = p_new_frame;
 	pending_oes_texture_id = p_oes_texture_id;
 	pending_depth_texture_id = p_depth_texture_id;
@@ -849,6 +1031,8 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 	pending_eye_swap = p_eye_swap;
 	pending_passthrough = p_passthrough;
 	pending_stereo_mode = p_stereo_mode;
+	pending_color_transfer_type = (p_color_transfer_type == 1 || p_color_transfer_type == 2)
+			? p_color_transfer_type : 0;
 	pending_depth_revision = p_depth_revision;
 	if (pending_oes_fence != 0) {
 		// submit_frame() runs on the script thread, where no GL context is
