@@ -248,8 +248,10 @@ public class DepthEstimator {
     // internally either way via setPrecisionLossAllowed(true) below).
     // TFLite's own GPU delegate compatibility analyzer
     // (tf.lite.experimental.Analyzer.analyze(..., gpu_compatibility=True))
-    // confirms compatibility. CPU/int8 variant deliberately not built yet
-    // (GPU-first, by request). 192/256 variants were also built and tested
+    // confirms compatibility. The later CPU counterpart uses the exact
+    // standard convex head rather than this hybrid head; it remains
+    // float32-compute/fp16-weight for the first performance measurement,
+    // not int8. 192/256 variants were also built and tested
     // (2026-09-04) but dropped, not silently removed - keep this history so
     // neither gets re-attempted the same way without a new angle: ZipDepth
     // was only ever trained at 384x384 (every number in its paper's
@@ -257,11 +259,20 @@ public class DepthEstimator {
     // independently trained/calibrated 192px model, not a resize of the
     // 256px one) ZipDepth has no dedicated lower-resolution training - 192/
     // 256 are just 384's weights looking at a smaller image outside their
-    // trained distribution. Confirmed via tools/model_tester/: 384 looks
+    // trained distribution. MiDaS-192 also reuses its larger model's weights
+    // (with separate int8 calibration), but happens to tolerate that lower
+    // inference resolution much better. Confirmed via tools/model_tester/: 384 looks
     // close to DA-V2 quality, but 192/256 degraded enough to not be worth
     // offering as real choices (192 especially).
     private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
+    // CPU counterpart uses the standard checkpoint's full learned convex
+    // upsampling head. The original torch.nn.Unfold is expressed as portable
+    // TFLite ops, but the output is numerically equivalent to the standard
+    // checkpoint rather than the cheaper NPU-head hybrid used on the GPU.
+    private static final String MODEL_ZIPDEPTH_384_CPU = "zipdepth-base-384-cpu.tflite";
     private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
+    private static final String MODEL_ZIPDEPTH_512X288_GPU = "zipdepth-base-512x288-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_672X384_GPU = "zipdepth-base-672x384-gpu.tflite";
 
     private Interpreter tfliteMidas;
     private Interpreter tfliteMidas192;
@@ -271,6 +282,7 @@ public class DepthEstimator {
     private Interpreter tfliteYoloN320;
     private Interpreter tfliteYoloN384;
     private Interpreter tfliteYoloS;
+    private Interpreter tfliteZipDepth384;
 
     // Generic GPU-backed model slot (2026-08-24, replacing the original
     // single-model-hardcoded MiDaS-256-GPU-only fields) - one GpuVariant per
@@ -288,7 +300,8 @@ public class DepthEstimator {
     private static final class GpuVariant {
         final String label;
         final String assetFile;
-        final int inputSize;
+        final int inputWidth;
+        final int inputHeight;
         // Per-model temporal/range smoothing time constants (2026-09-04) -
         // see postProcess()'s depthTauSeconds/rangeTauSeconds comment for
         // why this needs to differ per model rather than staying global.
@@ -306,13 +319,19 @@ public class DepthEstimator {
         String failureReason = "";
 
         GpuVariant(String label, String assetFile, int inputSize) {
-            this(label, assetFile, inputSize, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
+            this(label, assetFile, inputSize, inputSize, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
         }
 
         GpuVariant(String label, String assetFile, int inputSize, float depthTauSeconds, float rangeTauSeconds) {
+            this(label, assetFile, inputSize, inputSize, depthTauSeconds, rangeTauSeconds);
+        }
+
+        GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
+                float depthTauSeconds, float rangeTauSeconds) {
             this.label = label;
             this.assetFile = assetFile;
-            this.inputSize = inputSize;
+            this.inputWidth = inputWidth;
+            this.inputHeight = inputHeight;
             this.depthTauSeconds = depthTauSeconds;
             this.rangeTauSeconds = rangeTauSeconds;
         }
@@ -342,6 +361,8 @@ public class DepthEstimator {
     private ByteBuffer outputBufferYoloN384;
     private ByteBuffer inputBufferYoloS;
     private ByteBuffer outputBufferYoloS;
+    private ByteBuffer inputBufferZipDepth384;
+    private ByteBuffer outputBufferZipDepth384;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
     private volatile int requestedModelIndex = 3;
@@ -454,6 +475,12 @@ public class DepthEstimator {
                     .order(ByteOrder.nativeOrder());
             outputBufferYoloS = ByteBuffer.allocateDirect(1 * YOLO_S_INPUT_SIZE * YOLO_S_INPUT_SIZE * 1 * 4)
                     .order(ByteOrder.nativeOrder());
+            inputBufferZipDepth384 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 3 * 4)
+                    .order(ByteOrder.nativeOrder());
+            outputBufferZipDepth384 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 4)
+                    .order(ByteOrder.nativeOrder());
 
             tfliteMidas = loadInterpreter(MODEL_MIDAS);
 
@@ -513,16 +540,22 @@ public class DepthEstimator {
                 tfliteYoloS = null;
             }
 
+            try {
+                tfliteZipDepth384 = loadCpuInterpreter(MODEL_ZIPDEPTH_384_CPU);
+                Log.i(TAG, "ZipDepth-384 full-head CPU model loaded");
+            } catch (Exception e) {
+                Log.w(TAG, "ZipDepth-384 full-head CPU model not available", e);
+                tfliteZipDepth384 = null;
+            }
+
             // GPU variants are lazy-loaded on first actual use (see
             // ensureGpuVariantLoaded()), not eagerly here - just registering
             // the slot/asset-filename/input-size, same as the original
             // single-model MiDaS-256-GPU deferred-load pattern.
             gpuVariants.put(3, new GpuVariant("MiDaS-256-GPU", MODEL_MIDAS_GPU, MIDAS_GPU_INPUT_SIZE));
             gpuVariants.put(10, new GpuVariant("MiDaS-192-GPU", MODEL_MIDAS_192_GPU, MIDAS_192_GPU_INPUT_SIZE));
-            // ZipDepth-GPU: no CPU counterpart exists yet, so this index is
-            // GPU-only - cpuInterpreterFor()/normalizeModelIndex() below
-            // fall back to plain MiDaS-256 CPU if the GPU delegate fails,
-            // same as every other GPU-first index here.
+            // ZipDepth-384 has a full-standard-head CPU counterpart;
+            // rectangular experiments remain GPU-only for now.
             // Short tau pair (2026-09-04, see GpuVariant's own comment):
             // ZipDepth is clean and deterministic enough that MiDaS's ~0.16s
             // depth tau just reads as lag/motion-blur rather than hiding any
@@ -533,6 +566,10 @@ public class DepthEstimator {
             // instead of dragging behind them.
             gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
                     0.02f, 0.1f));
+            gpuVariants.put(15, new GpuVariant("ZipDepth-512x288-GPU", MODEL_ZIPDEPTH_512X288_GPU, 512, 288,
+                    0.02f, 0.1f));
+            gpuVariants.put(16, new GpuVariant("ZipDepth-672x384-GPU", MODEL_ZIPDEPTH_672X384_GPU, 672, 384,
+                    0.02f, 0.1f));
 
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
@@ -540,7 +577,8 @@ public class DepthEstimator {
             Log.i(TAG, "Initialized successfully (MiDaS=" + (tfliteMidas != null) + ", MiDaS192=" + (tfliteMidas192 != null)
                     + ", DA196=" + (tfliteDA196 != null) + ", DA252=" + (tfliteDA252 != null)
                     + ", YoloN256=" + (tfliteYoloN256 != null) + ", YoloN320=" + (tfliteYoloN320 != null)
-                    + ", YoloN384=" + (tfliteYoloN384 != null) + ", YoloS=" + (tfliteYoloS != null) + ")");
+                    + ", YoloN384=" + (tfliteYoloN384 != null) + ", YoloS=" + (tfliteYoloS != null)
+                    + ", ZipDepth384CPU=" + (tfliteZipDepth384 != null) + ")");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize", e);
@@ -563,6 +601,15 @@ public class DepthEstimator {
             opts.setNumThreads(4);
             return new Interpreter(buffer, opts);
         }
+    }
+
+    private Interpreter loadCpuInterpreter(String modelFile) throws IOException {
+        MappedByteBuffer buffer = loadModelFile(modelFile);
+        Interpreter.Options opts = new Interpreter.Options();
+        opts.setUseNNAPI(false);
+        opts.setUseXNNPACK(true);
+        opts.setNumThreads(4);
+        return new Interpreter(buffer, opts);
     }
 
     public void setActiveModel(int modelIndex) {
@@ -733,12 +780,13 @@ public class DepthEstimator {
         if (modelIndex == 8 && tfliteYoloN320 != null) return tfliteYoloN320;
         if (modelIndex == 10 && tfliteMidas192 != null) return tfliteMidas192;
         if (modelIndex == 11 && tfliteDA196 != null) return tfliteDA196;
+        if (modelIndex == 14 && tfliteZipDepth384 != null) return tfliteZipDepth384;
         return tfliteMidas;
     }
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -811,6 +859,8 @@ public class DepthEstimator {
             case 10: return "MiDaS-192";
             case 11: return "Depth Anything V2-196";
             case 14: return "ZipDepth-384";
+            case 15: return "ZipDepth-512x288";
+            case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
         }
     }
@@ -879,11 +929,41 @@ public class DepthEstimator {
                     frameCopy, width, height);
         } else if (modelIdx == 11) {
             return runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 14 && tfliteZipDepth384 != null) {
+            return runInferenceZipDepthCpu(frameCopy, width, height);
         } else {
             return runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
                     MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
                     frameCopy, width, height);
         }
+    }
+
+    private byte[] runInferenceZipDepthCpu(byte[] rgbaPixels, int width, int height) {
+        inputBufferZipDepth384.rewind();
+        outputBufferZipDepth384.rewind();
+
+        int size = ZIPDEPTH_384_GPU_INPUT_SIZE;
+        int srcRowBytes = width * 4;
+        float scaleX = (float) width / size;
+        float scaleY = (float) height / size;
+        for (int y = 0; y < size; y++) {
+            int srcY = Math.min((int) (y * scaleY), height - 1);
+            int srcRowOff = srcY * srcRowBytes;
+            for (int x = 0; x < size; x++) {
+                int srcX = Math.min((int) (x * scaleX), width - 1);
+                int srcIdx = srcRowOff + srcX * 4;
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+            }
+        }
+        inputBufferZipDepth384.rewind();
+
+        tfliteZipDepth384.run(inputBufferZipDepth384, outputBufferZipDepth384);
+        outputBufferZipDepth384.rewind();
+        return postProcess(
+                extractFloatOutput(outputBufferZipDepth384, size * size),
+                size, size, false, DEFAULT_PERCENTILE_CLIP, 0.02f, 0.1f);
     }
 
     private void scheduleGpuInference(GpuVariant variant) {
@@ -1182,9 +1262,9 @@ public class DepthEstimator {
         if (v.loadAttempted) return;
         v.loadAttempted = true;
         try {
-            v.inputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 3 * 4)
+            v.inputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 3 * 4)
                     .order(ByteOrder.nativeOrder());
-            v.outputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 1 * 4)
+            v.outputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 4)
                     .order(ByteOrder.nativeOrder());
             MappedByteBuffer buffer = loadModelFile(v.assetFile);
             GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
@@ -1237,13 +1317,13 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         int srcRowBytes = width * 4;
-        float scaleX = (float) width / v.inputSize;
-        float scaleY = (float) height / v.inputSize;
+        float scaleX = (float) width / v.inputWidth;
+        float scaleY = (float) height / v.inputHeight;
 
-        for (int y = 0; y < v.inputSize; y++) {
+        for (int y = 0; y < v.inputHeight; y++) {
             int srcY = Math.min((int) (y * scaleY), height - 1);
             int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < v.inputSize; x++) {
+            for (int x = 0; x < v.inputWidth; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
                 v.inputBuf.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
@@ -1260,8 +1340,10 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         long postprocessStartNs = System.nanoTime();
-        byte[] result = postProcess(extractFloatOutput(v.outputBuf, v.inputSize * v.inputSize), v.inputSize, false,
-                DEFAULT_PERCENTILE_CLIP, v.depthTauSeconds, v.rangeTauSeconds);
+        int outputCount = v.inputWidth * v.inputHeight;
+        byte[] result = postProcess(extractFloatOutput(v.outputBuf, outputCount),
+                v.inputWidth, v.inputHeight, false, DEFAULT_PERCENTILE_CLIP,
+                v.depthTauSeconds, v.rangeTauSeconds);
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
     }
@@ -1385,7 +1467,13 @@ public class DepthEstimator {
     // global constants via the overloads above, unchanged.
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur, float percentileClip,
             float depthTauSeconds, float rangeTauSeconds) {
-        int count = size * size;
+        return postProcess(raw, size, size, dilateAndBlur, percentileClip,
+                depthTauSeconds, rangeTauSeconds);
+    }
+
+    private byte[] postProcess(float[] raw, int width, int height, boolean dilateAndBlur,
+            float percentileClip, float depthTauSeconds, float rangeTauSeconds) {
+        int count = width * height;
 
         long now = System.nanoTime();
         // Clamped to [1/60, 1.0]s - the lower bound guards against a
@@ -1419,10 +1507,10 @@ public class DepthEstimator {
 
         float[] preSmooth = normalized;
         if (dilateAndBlur) {
-            float[] dilated = dilate(normalized, size, 6);
-            preSmooth = separableBoxBlur(dilated, size, 14);
+            float[] dilated = dilate(normalized, width, height, 6);
+            preSmooth = separableBoxBlur(dilated, width, height, 14);
         }
-        float[] smoothed = temporalSmooth(preSmooth, size, dt, depthTauSeconds);
+        float[] smoothed = temporalSmooth(preSmooth, count, dt, depthTauSeconds);
 
         byte[] depthBytes = new byte[count];
         for (int i = 0; i < count; i++) {
@@ -1484,64 +1572,64 @@ public class DepthEstimator {
         return new float[]{robustLo, robustHi};
     }
 
-    private float[] dilate(float[] depth, int size, int radius) {
+    private float[] dilate(float[] depth, int width, int height, int radius) {
         float[] horizontal = new float[depth.length];
-        for (int y = 0; y < size; y++) {
-            for (int x = 0; x < size; x++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
                 float maxVal = 0.0f;
                 for (int dx = -radius; dx <= radius; dx++) {
-                    int nx = Math.min(Math.max(x + dx, 0), size - 1);
-                    float v = depth[y * size + nx];
+                    int nx = Math.min(Math.max(x + dx, 0), width - 1);
+                    float v = depth[y * width + nx];
                     if (v > maxVal) maxVal = v;
                 }
-                horizontal[y * size + x] = maxVal;
+                horizontal[y * width + x] = maxVal;
             }
         }
         float[] result = new float[depth.length];
-        for (int y = 0; y < size; y++) {
-            for (int x = 0; x < size; x++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
                 float maxVal = 0.0f;
                 for (int dy = -radius; dy <= radius; dy++) {
-                    int ny = Math.min(Math.max(y + dy, 0), size - 1);
-                    float v = horizontal[ny * size + x];
+                    int ny = Math.min(Math.max(y + dy, 0), height - 1);
+                    float v = horizontal[ny * width + x];
                     if (v > maxVal) maxVal = v;
                 }
-                result[y * size + x] = maxVal;
+                result[y * width + x] = maxVal;
             }
         }
         return result;
     }
 
-    private float[] separableBoxBlur(float[] depth, int size, int radius) {
+    private float[] separableBoxBlur(float[] depth, int width, int height, int radius) {
         float[] horizontal = new float[depth.length];
         int diam = radius * 2 + 1;
-        for (int y = 0; y < size; y++) {
+        for (int y = 0; y < height; y++) {
             float sum = 0.0f;
             for (int x = -radius; x <= radius; x++) {
-                int nx = Math.min(Math.max(x, 0), size - 1);
-                sum += depth[y * size + nx];
+                int nx = Math.min(Math.max(x, 0), width - 1);
+                sum += depth[y * width + nx];
             }
-            horizontal[y * size + 0] = sum / diam;
-            for (int x = 1; x < size; x++) {
-                int addX = Math.min(x + radius, size - 1);
+            horizontal[y * width] = sum / diam;
+            for (int x = 1; x < width; x++) {
+                int addX = Math.min(x + radius, width - 1);
                 int remX = Math.max(x - radius - 1, 0);
-                sum += depth[y * size + addX] - depth[y * size + remX];
-                horizontal[y * size + x] = sum / diam;
+                sum += depth[y * width + addX] - depth[y * width + remX];
+                horizontal[y * width + x] = sum / diam;
             }
         }
         float[] result = new float[depth.length];
-        for (int x = 0; x < size; x++) {
+        for (int x = 0; x < width; x++) {
             float sum = 0.0f;
             for (int y = -radius; y <= radius; y++) {
-                int ny = Math.min(Math.max(y, 0), size - 1);
-                sum += horizontal[ny * size + x];
+                int ny = Math.min(Math.max(y, 0), height - 1);
+                sum += horizontal[ny * width + x];
             }
-            result[0 * size + x] = sum / diam;
-            for (int y = 1; y < size; y++) {
-                int addY = Math.min(y + radius, size - 1);
+            result[x] = sum / diam;
+            for (int y = 1; y < height; y++) {
+                int addY = Math.min(y + radius, height - 1);
                 int remY = Math.max(y - radius - 1, 0);
-                sum += horizontal[addY * size + x] - horizontal[remY * size + x];
-                result[y * size + x] = sum / diam;
+                sum += horizontal[addY * width + x] - horizontal[remY * width + x];
+                result[y * width + x] = sum / diam;
             }
         }
         return result;
@@ -1559,9 +1647,8 @@ public class DepthEstimator {
     // background) that happened to get a weak first estimate stayed weak
     // forever. A rate that never truly reaches zero (dt-scaled or not) keeps
     // denoising even when nothing on screen is moving.
-    private float[] temporalSmooth(float[] newDepth, int size, float dt, float depthTauSeconds) {
-        int len = size * size;
-        if (smoothedDepthFloat == null) {
+    private float[] temporalSmooth(float[] newDepth, int len, float dt, float depthTauSeconds) {
+        if (smoothedDepthFloat == null || smoothedDepthFloat.length != len) {
             smoothedDepthFloat = newDepth.clone();
             return newDepth;
         }
@@ -1611,6 +1698,10 @@ public class DepthEstimator {
             tfliteYoloS.close();
             tfliteYoloS = null;
         }
+        if (tfliteZipDepth384 != null) {
+            tfliteZipDepth384.close();
+            tfliteZipDepth384 = null;
+        }
         for (GpuVariant v : gpuVariants.values()) {
             releaseGpuVariant(v);
         }
@@ -1626,7 +1717,7 @@ public class DepthEstimator {
     // has to reflect activeModelIndex rather than a single fixed constant.
     // Every YOLO26-N variant and -S run at different resolutions from each
     // other, not just from MiDaS/DA.
-    public int getModelSize() {
+    private int getCpuModelSize() {
         if (activeModelIndex == 1) {
             return DA_252_INPUT_SIZE;
         }
@@ -1648,10 +1739,27 @@ public class DepthEstimator {
         if (activeModelIndex == 11) {
             return DA_196_INPUT_SIZE;
         }
-        if (activeModelIndex == 14) {
+        if (activeModelIndex == 14 && tfliteZipDepth384 != null) {
             return ZIPDEPTH_384_GPU_INPUT_SIZE;
         }
         return OUTPUT_SIZE;
+    }
+
+    public int getModelWidth() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.inputWidth : getCpuModelSize();
+    }
+
+    public int getModelHeight() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.inputHeight : getCpuModelSize();
+    }
+
+    // Kept for older native callers; square models return their normal size,
+    // while rectangular models return the width. New code must use both
+    // getModelWidth() and getModelHeight().
+    public int getModelSize() {
+        return getModelWidth();
     }
 
     public boolean isInitialized() {

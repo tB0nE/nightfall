@@ -306,13 +306,13 @@ void fragment() {
 		COLOR = vec4(heatmap(d), 1.0);
 	} else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
-		// actual 256x256 output, before depth_upsample.gdshader's joint
+		// actual native-resolution output, before depth_upsample.gdshader's joint
 		// bilateral filter touches it) - lets us tell apart "the model
 		// itself produced this" from "the upsample/warp pass invented
 		// this", when DMap shows content that doesn't correspond to
 		// anything on the real desktop. Same UV mapping as
 		// upsampled_depth_texture (both cover UV 0..1 = the full cropped
-		// frame 1:1), just coarser since it's the raw 256x256 grid instead
+		// frame 1:1), just coarser since it's the raw model grid instead
 		// of the quarter-native-res upsample.
 		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
 		float d = texture(depth_texture, vec2(tile_uv.x, 1.0 - tile_uv.y)).r;

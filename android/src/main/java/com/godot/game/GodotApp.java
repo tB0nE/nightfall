@@ -128,6 +128,20 @@ public class GodotApp extends GodotActivity {
 		return 256;
 	}
 
+	public static int getDepthModelWidth() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelWidth();
+		}
+		return 256;
+	}
+
+	public static int getDepthModelHeight() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelHeight();
+		}
+		return 256;
+	}
+
 	public static float getDepthLastInferenceMs() {
 		return depthEstimator != null ? depthEstimator.getLastInferenceMs() : 0f;
 	}

@@ -88,6 +88,21 @@
       "enabled": true,
       "path": "../../models/zipdepth-base-384-gpu.tflite",
       "_note": "ZipDepth (github.com/fabiotosi92/ZipDepth, ECCV 2026, MIT) - 6.1M-param pure-CNN (RepVGG + Strip Pooling/SE/Global-Context attention) distilled from Depth Anything V2 Large across 14.1M images/17 domains. Built via tools/convert_zipdepth.py from the repo's own NPU checkpoint, onnx2tf -tb tf_converter backend (proper weight-only float16 quantization, float32 I/O). Deployed on Android as a GPU-only variant (DepthEstimator.java's MODEL_ZIPDEPTH_384_GPU) - no CPU/int8 build yet, so this CPU-path test just runs the same float32-I/O file XNNPACK does on desktop, same as depth_anything's GPU-style entries. 384 = ZipDepth's native/trained resolution (all paper benchmark numbers are at this size) - 192/256 variants were also tested here but dropped (2026-09-04, see tools/convert_zipdepth.py's docstring): ZipDepth has no dedicated lower-resolution training the way MiDaS-192 does, and it showed."
+    },
+    "zipdepth_384_standard_mobile": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-standard-mobile-gpu.tflite",
+      "_note": "Experimental exact rewrite of ZipDepth's sharper standard convex head. Replaces torch.nn.Unfold with a fixed nine-neighbor convolution while retaining the pretrained standard mask predictor, softmax weighting, and subpixel output. This is a no-training quality test and is not the production model."
+    },
+    "zipdepth_512x288": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-512x288-gpu.tflite",
+      "_note": "Experimental widescreen inference-shape export using the same hybrid weights and Adreno-safe graph as ZipDepth-384. 512x288 has exactly the same pixel count as 384x384."
+    },
+    "zipdepth_672x384": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-672x384-gpu.tflite",
+      "_note": "Experimental widescreen inference-shape export using the same hybrid weights and Adreno-safe graph as ZipDepth-384. 672x384 has approximately the same pixel count as a 512x512 export."
     }
   }
 }

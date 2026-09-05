@@ -324,6 +324,48 @@ int DepthBridge::get_depth_model_size() {
 #endif
 }
 
+int DepthBridge::get_depth_model_width() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_size();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelWidth", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint width = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)width;
+#else
+    return 256;
+#endif
+}
+
+int DepthBridge::get_depth_model_height() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_size();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelHeight", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint height = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)height;
+#else
+    return 256;
+#endif
+}
+
 // Both getters (2026-08-25) mirror DepthEstimator.java's own "Perf:" logcat
 // line exactly (same volatile fields, updated at the same point) - added so
 // a GDScript status-bar readout can show live inference timing without
@@ -455,6 +497,8 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_effective_depth_backend"), &DepthBridge::get_effective_depth_backend);
     ClassDB::bind_method(D_METHOD("get_depth_backend_status"), &DepthBridge::get_depth_backend_status);
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
+    ClassDB::bind_method(D_METHOD("get_depth_model_width"), &DepthBridge::get_depth_model_width);
+    ClassDB::bind_method(D_METHOD("get_depth_model_height"), &DepthBridge::get_depth_model_height);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
     ClassDB::bind_method(D_METHOD("get_depth_last_age_ms"), &DepthBridge::get_depth_last_age_ms);

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Convert ZipDepth-Base to a TFLite float16-weight GPU-delegate model for
-Nightfall, at 384px (ZipDepth's native/trained resolution).  The default
+Convert ZipDepth-Base to TFLite float16-weight GPU-delegate models for
+Nightfall. The default is 384x384 (ZipDepth's native/trained resolution). The
+``--shape WIDTHxHEIGHT`` option exports experimental rectangular variants. The default
 hybrid uses the standard checkpoint's sharper backbone/decoder with the NPU
 checkpoint's mobile-safe upsampling head.
 
@@ -15,14 +16,13 @@ ViT-block GPU<->CPU handoffs, see quest3_gpu_acceleration_limits memory).
 
 192/256 were also built and visually compared here (tools/model_tester/) but
 dropped (2026-09-04): every number in ZipDepth's own paper is measured at
-384x384, and unlike MiDaS-192 (independently trained/calibrated at that size,
-not a resize of the 256px model) ZipDepth has no dedicated lower-resolution
-training - 192/256 are just the 384 weights looking at a smaller image
-outside their trained distribution, and it showed (192 especially). Add
-sizes back to the SIZES tuple below if revisiting.
+384x384. ZipDepth has no dedicated lower-resolution training, so 192/256 are
+just the 384 weights looking at a smaller image outside their trained
+distribution, and it showed (192 especially).
 
 Usage:
     python3 tools/convert_zipdepth.py
+    python3 tools/convert_zipdepth.py --shape 512x288 --shape 672x384
 
 Output:
     models/zipdepth-base-384-gpu.tflite
@@ -43,7 +43,7 @@ CKPT_URL = "https://github.com/fabiotosi92/ZipDepth/raw/main/checkpoints/zipdept
 CKPT_PATH = os.path.join(REPO_DIR, "checkpoints", "zipdepth_base_npu.pth")
 STANDARD_CKPT_URL = "https://github.com/fabiotosi92/ZipDepth/raw/main/checkpoints/zipdepth_base.pth"
 STANDARD_CKPT_PATH = os.path.join(REPO_DIR, "checkpoints", "zipdepth_base.pth")
-SIZES = (384,)
+DEFAULT_SHAPES = ((384, 384),)
 
 PYTHON = os.environ.get("NIGHTFALL_MODEL_PYTHON", sys.executable)
 
@@ -89,19 +89,49 @@ def download_checkpoint(weights_mode="hybrid"):
         urllib.request.urlretrieve(url, path)
 
 
-def export_onnx(force=False, head_mode="full", weights_mode="hybrid"):
+def head_suffix(head_mode):
+    return "_standard_mobile" if head_mode == "standard-mobile" else ""
+
+
+def model_stem(width, height, head_mode="full"):
+    shape = str(width) if width == height else f"{width}x{height}"
+    return f"zipdepth_base_{shape}{head_suffix(head_mode)}"
+
+
+def model_filename(width, height, head_mode="full"):
+    size = str(width) if width == height else f"{width}x{height}"
+    suffix = "-standard-mobile" if head_mode == "standard-mobile" else ""
+    return f"zipdepth-base-{size}{suffix}-gpu.tflite"
+
+
+def parse_shape(value):
+    try:
+        width_text, height_text = value.lower().split("x", 1)
+        width, height = int(width_text), int(height_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("shape must be WIDTHxHEIGHT") from exc
+    if width <= 0 or height <= 0 or width % 32 or height % 32:
+        raise argparse.ArgumentTypeError(
+            "ZipDepth width and height must be positive multiples of 32"
+        )
+    return width, height
+
+
+def export_onnx(shapes, force=False, head_mode="full", weights_mode="hybrid"):
     onnx_dir = os.path.join(REPO_DIR, "onnx_export")
     os.makedirs(onnx_dir, exist_ok=True)
-    for size in SIZES:
-        out_path = os.path.join(onnx_dir, f"zipdepth_base_{size}.onnx")
+    for width, height in shapes:
+        stem = model_stem(width, height, head_mode)
+        out_path = os.path.join(onnx_dir, f"{stem}.onnx")
         if os.path.exists(out_path) and not force:
-            print(f"ONNX {size}px already exists at {out_path}")
+            print(f"ONNX {width}x{height} already exists at {out_path}")
             continue
-        print(f"Exporting GPU-safe ONNX at {size}x{size}...")
+        print(f"Exporting GPU-safe ONNX at {width}x{height}...")
         command = [
             PYTHON, os.path.join(SCRIPT_DIR, "export_zipdepth_gpu_safe.py"),
             "--ckpt", CKPT_PATH,
-            "--size", str(size),
+            "--width", str(width),
+            "--height", str(height),
             "--head-mode", head_mode,
             "--output", out_path,
         ]
@@ -110,18 +140,19 @@ def export_onnx(force=False, head_mode="full", weights_mode="hybrid"):
         subprocess.check_call(command, cwd=PROJECT_DIR)
 
 
-def convert_tflite(force=False):
+def convert_tflite(shapes, force=False, head_mode="full"):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for size in SIZES:
-        out_model = os.path.join(OUTPUT_DIR, f"zipdepth-base-{size}-gpu.tflite")
+    for width, height in shapes:
+        stem = model_stem(width, height, head_mode)
+        out_model = os.path.join(OUTPUT_DIR, model_filename(width, height, head_mode))
         if os.path.exists(out_model) and not force:
-            print(f"TFLite {size}px already exists at {out_model}")
+            print(f"TFLite {width}x{height} already exists at {out_model}")
             continue
 
-        onnx_path = os.path.join(REPO_DIR, "onnx_export", f"zipdepth_base_{size}.onnx")
-        tflite_dir = os.path.join(REPO_DIR, f"tflite_{size}")
+        onnx_path = os.path.join(REPO_DIR, "onnx_export", f"{stem}.onnx")
+        tflite_dir = os.path.join(REPO_DIR, f"tflite_{width}x{height}")
 
-        print(f"Converting {size}px ONNX -> TFLite...")
+        print(f"Converting {width}x{height} ONNX -> TFLite...")
         # NOTE: deliberately NOT passing -ofgd (--optimization_for_gpu_delegate).
         # ZipDepth's op composition (Conv/Add/Mul/Relu/Sigmoid/BatchNorm/
         # Pool/Resize - verified via onnx2tf's own op-count table, zero
@@ -165,14 +196,14 @@ def convert_tflite(force=False):
             "-osd",  # output signature defs / tensor correspondence report
         ])
 
-        src = os.path.join(tflite_dir, f"zipdepth_base_{size}_float16.tflite")
+        src = os.path.join(tflite_dir, f"{stem}_float16.tflite")
         import shutil
         shutil.copy2(src, out_model)
         size_mb = os.path.getsize(out_model) / (1024 * 1024)
         print(f"Copied {src} -> {out_model} ({size_mb:.1f} MB)")
 
 
-def verify():
+def verify(shapes, head_mode="full"):
     import numpy as np
     from PIL import Image
     from ai_edge_litert.interpreter import Interpreter
@@ -180,16 +211,16 @@ def verify():
     example_img = os.path.join(REPO_DIR, "assets", "examples", "im0.jpg")
     img = Image.open(example_img).convert("RGB") if os.path.exists(example_img) else None
 
-    for size in SIZES:
-        model_path = os.path.join(OUTPUT_DIR, f"zipdepth-base-{size}-gpu.tflite")
+    for width, height in shapes:
+        model_path = os.path.join(OUTPUT_DIR, model_filename(width, height, head_mode))
         interp = Interpreter(model_path=model_path)
         interp.allocate_tensors()
         in_d = interp.get_input_details()[0]
         out_d = interp.get_output_details()[0]
-        print(f"{size}px: input={in_d['shape']}/{in_d['dtype']}  output={out_d['shape']}/{out_d['dtype']}")
+        print(f"{width}x{height}: input={in_d['shape']}/{in_d['dtype']}  output={out_d['shape']}/{out_d['dtype']}")
 
         if img is not None:
-            resized = img.resize((size, size), Image.BILINEAR)
+            resized = img.resize((width, height), Image.BILINEAR)
             arr = (np.asarray(resized).astype(np.float32) / 255.0)[None, ...]
             interp.set_tensor(in_d["index"], arr)
             interp.invoke()
@@ -204,6 +235,14 @@ def verify():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--shape",
+        action="append",
+        type=parse_shape,
+        dest="shapes",
+        metavar="WIDTHxHEIGHT",
+        help="input shape to export; repeat for multiple models (default: 384x384)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="regenerate ONNX and TFLite outputs even when they already exist",
@@ -213,6 +252,7 @@ def main():
         choices=(
             "full",
             "bilinear",
+            "standard-mobile",
             "encoder-mosaic",
             "stage2-mosaic",
             "decoder-mosaic",
@@ -227,17 +267,23 @@ def main():
         help="use the NPU weights or the sharper standard weights with the NPU head",
     )
     args = parser.parse_args()
+    shapes = tuple(dict.fromkeys(args.shapes or DEFAULT_SHAPES))
     install_deps()
     clone_repo()
     download_checkpoint(args.weights_mode)
     export_onnx(
+        shapes,
         force=args.force,
         head_mode=args.head_mode,
         weights_mode=args.weights_mode,
     )
-    convert_tflite(force=args.force)
-    verify()
-    print(f"\nDone! Model at: {OUTPUT_DIR}/zipdepth-base-384-gpu.tflite")
+    convert_tflite(shapes, force=args.force, head_mode=args.head_mode)
+    verify(shapes, head_mode=args.head_mode)
+    print("\nDone! Models:")
+    for width, height in shapes:
+        print(
+            f"  {os.path.join(OUTPUT_DIR, model_filename(width, height, args.head_mode))}"
+        )
 
 
 if __name__ == "__main__":

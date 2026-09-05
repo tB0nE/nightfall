@@ -3,7 +3,7 @@ shader_type canvas_item;
 // Runs once per frame (not per eye) at a modest fraction of the stream's own
 // resolution - see depth_estimator.gd for the sizing. Ported from
 // Gilleece/moonlight-android-xr's xr_renderer.c UPSAMPLE_FRAGMENT_SRC: a
-// joint bilateral upsample of the depth model's raw 256x256 output, guided
+// joint bilateral upsample of the depth model's raw native-resolution output, guided
 // by the real decoded color frame, so depth edges snap to color edges
 // instead of the raw output's blurry ones (which is what made small objects
 // like a taskbar icon or a clock widget stretch/warp instead of standing
@@ -113,8 +113,8 @@ vec3 sample_stream(vec2 uv) {
 void fragment() {
 	vec3 hi = sample_stream(to_frame_uv(UV));
 	ivec2 low_sz = textureSize(depth_texture, 0);
-	float n = float(low_sz.x);
-	vec2 lp = UV * n - 0.5;
+	vec2 low_size = vec2(low_sz);
+	vec2 lp = UV * low_size - 0.5;
 	ivec2 base = ivec2(floor(lp));
 
 	float num = 0.0;
@@ -123,7 +123,7 @@ void fragment() {
 	float dhi = 0.0;
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
-			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(n) - 1));
+			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), low_sz - ivec2(1));
 			float s = texelFetch(depth_texture, q, 0).r;
 			vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
 			vec2 off = vec2(q) - lp;

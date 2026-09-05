@@ -42,12 +42,14 @@ def _checkpoint_state(checkpoint: Path) -> dict[str, torch.Tensor]:
 
 
 def load_model(
-    checkpoint: Path, backbone_checkpoint: Path | None = None
+    checkpoint: Path,
+    backbone_checkpoint: Path | None = None,
+    upsample_unfold: bool = False,
 ) -> nn.Module:
     model = create_model(
         variant="base",
         global_mode="balanced",
-        upsample_unfold=False,
+        upsample_unfold=upsample_unfold,
     )
     state_dict = _checkpoint_state(checkpoint)
     if backbone_checkpoint is not None:
@@ -85,11 +87,10 @@ def load_model(
 
 
 def _factor_for(size: int) -> int:
-    """Choose a small exact factor; ZipDepth's fixed maps use only 2s and 3s."""
-    if size % 2 == 0:
-        return 2
-    if size % 3 == 0:
-        return 3
+    """Choose a small exact factor for staged spatial reductions."""
+    for factor in (2, 3, 5, 7):
+        if size % factor == 0:
+            return factor
     raise ValueError(f"Cannot exactly decompose spatial reduction of size {size}")
 
 
@@ -105,9 +106,11 @@ def staged_mean(x: torch.Tensor, reduce_height: bool, reduce_width: bool) -> tor
     return x
 
 
-def patch_export_graph(model: nn.Module, input_size: int, gpu_safe: bool) -> None:
+def patch_export_graph(
+    model: nn.Module, input_height: int, input_width: int, gpu_safe: bool
+) -> None:
     """Apply ZipDepth's deployed export substitutions, optionally decomposed."""
-    stage3_size = input_size // 16
+    stage3_shape = (input_height // 16, input_width // 16)
 
     for module in model.modules():
         if type(module).__name__ == "GlobalContextBlock":
@@ -119,8 +122,8 @@ def patch_export_graph(model: nn.Module, input_size: int, gpu_safe: bool) -> Non
                     )
                     return x + context
             else:
-                def forward_global(self_m, x, size=stage3_size):
-                    context = F.avg_pool2d(x, kernel_size=(size, size))
+                def forward_global(self_m, x, size=stage3_shape):
+                    context = F.avg_pool2d(x, kernel_size=size)
                     return x + self_m.transform(context)
             module.forward = types.MethodType(forward_global, module)
 
@@ -155,9 +158,9 @@ def patch_export_graph(model: nn.Module, input_size: int, gpu_safe: bool) -> Non
 
     cross_scale = model.encoder.cross_scale
 
-    def forward_cross_scale(self_m, x_high, x_low, size=stage3_size):
+    def forward_cross_scale(self_m, x_high, x_low, size=stage3_shape):
         low_up = F.interpolate(
-            self_m.low_to_high(x_low), size=(size, size), mode="nearest"
+            self_m.low_to_high(x_low), size=size, mode="nearest"
         )
         high_down = F.avg_pool2d(self_m.high_to_low(x_high), 2, 2)
         return x_high + low_up * 0.3, x_low + high_down * 0.3
@@ -165,9 +168,11 @@ def patch_export_graph(model: nn.Module, input_size: int, gpu_safe: bool) -> Non
     cross_scale.forward = types.MethodType(forward_cross_scale, cross_scale)
 
 
-def verify_equivalence(reference: nn.Module, candidate: nn.Module, size: int) -> None:
+def verify_equivalence(
+    reference: nn.Module, candidate: nn.Module, height: int, width: int
+) -> None:
     torch.manual_seed(0)
-    sample = torch.rand(1, 3, size, size)
+    sample = torch.rand(1, 3, height, width)
     with torch.no_grad():
         expected = reference(sample)
         actual = candidate(sample)
@@ -195,9 +200,79 @@ def bypass_npu_upsampling_head(model: nn.Module) -> None:
     upsampler.forward = types.MethodType(forward_bilinear, upsampler)
 
 
-def report_head_difference(reference: nn.Module, candidate: nn.Module, size: int) -> None:
+def rewrite_standard_upsampling_head(model: nn.Module) -> None:
+    """Replace ``unfold`` with an equivalent fixed one-hot convolution.
+
+    The standard ZipDepth head learns four independent 3x3 convex kernels for
+    every half-resolution pixel.  ``torch.nn.Unfold`` only supplies the nine
+    neighboring scalar depth values to those kernels; it has no learned
+    parameters.  A convolution with nine one-hot 3x3 filters supplies the same
+    values using an operator that mobile GPU delegates handle much better.
+
+    The four weighted sums are written out explicitly so every MUL has equal
+    input shapes.  This avoids the implicit spatial/channel broadcasting that
+    is known to compute incorrectly on the Quest 3 Adreno OpenCL delegate.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-mobile rewrite requires the standard unfold head")
+
+    def forward_mobile(self_m, feat, depth):
+        batch, _, height, width = depth.shape
+        scale = self_m.scale
+
+        mask = self_m.mask_pred(feat)
+        mask = mask.view(batch, 9, scale * scale, height, width)
+        mask = F.softmax(mask / self_m.temperature, dim=1)
+
+        # F.unfold() enumerates a 3x3 neighborhood in row-major order.  These
+        # fixed filters produce the identical nine channels.  Preserve the
+        # upstream replicate-padding behavior at the one-pixel image border.
+        kernels = depth.new_zeros((9, 1, 3, 3))
+        for index in range(9):
+            kernels[index, 0, index // 3, index % 3] = 1.0
+        depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+        neighbors = F.conv2d(depth_pad, kernels)
+
+        subpixels = []
+        for index in range(scale * scale):
+            weights = mask[:, :, index, :, :]
+            subpixels.append((weights * neighbors).sum(dim=1, keepdim=True))
+        up = torch.cat(subpixels, dim=1)
+        return F.relu(F.pixel_shuffle(up, scale))
+
+    upsampler.forward = types.MethodType(forward_mobile, upsampler)
+
+
+def report_standard_head_equivalence(
+    reference: nn.Module, candidate: nn.Module, height: int, width: int
+) -> None:
+    """Require the rewritten standard head to preserve the pretrained model."""
+    torch.manual_seed(2)
+    sample = torch.rand(1, 3, height, width)
+    with torch.no_grad():
+        expected = reference(sample)
+        actual = candidate(sample)
+    difference = (expected - actual).abs()
+    max_error = float(difference.max())
+    mean_error = float(difference.mean())
+    correlation = float(
+        torch.corrcoef(torch.stack((expected.flatten(), actual.flatten())))[0, 1]
+    )
+    print(
+        "Standard mobile-head equivalence: "
+        f"max={max_error:.9g}, mean={mean_error:.9g}, "
+        f"correlation={correlation:.9g}"
+    )
+    if max_error > 1e-5:
+        raise RuntimeError("mobile rewrite changed the standard ZipDepth head")
+
+
+def report_head_difference(
+    reference: nn.Module, candidate: nn.Module, height: int, width: int
+) -> None:
     torch.manual_seed(1)
-    sample = torch.rand(1, 3, size, size)
+    sample = torch.rand(1, 3, height, width)
     with torch.no_grad():
         expected = reference(sample)
         actual = candidate(sample)
@@ -370,8 +445,10 @@ class DecoderMosaic(nn.Module):
         return torch.cat((top, bottom), dim=2)
 
 
-def export_onnx(model: nn.Module, size: int, output: Path, opset: int) -> None:
-    dummy = torch.randn(1, 3, size, size)
+def export_onnx(
+    model: nn.Module, height: int, width: int, output: Path, opset: int
+) -> None:
+    dummy = torch.randn(1, 3, height, width)
     raw_output = output.with_name(output.stem + "_raw.onnx")
     with torch.no_grad():
         torch.onnx.export(
@@ -404,7 +481,13 @@ def main() -> None:
         type=Path,
         help="optionally use compatible weights from the sharper standard checkpoint",
     )
-    parser.add_argument("--size", type=int, default=384)
+    parser.add_argument(
+        "--size",
+        type=int,
+        help="legacy square input size; cannot be combined with width/height",
+    )
+    parser.add_argument("--width", type=int)
+    parser.add_argument("--height", type=int)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument(
@@ -412,6 +495,7 @@ def main() -> None:
         choices=(
             "full",
             "bilinear",
+            "standard-mobile",
             "encoder-mosaic",
             "stage2-mosaic",
             "decoder-mosaic",
@@ -421,15 +505,35 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    reference = load_model(args.ckpt, args.backbone_ckpt)
+    if args.size is not None and (args.width is not None or args.height is not None):
+        parser.error("--size cannot be combined with --width or --height")
+    if (args.width is None) != (args.height is None):
+        parser.error("--width and --height must be provided together")
+    if args.size is not None:
+        width = height = args.size
+    elif args.width is not None:
+        width, height = args.width, args.height
+    else:
+        width = height = 384
+    if width % 32 or height % 32:
+        parser.error("ZipDepth export dimensions must both be multiples of 32")
+
+    if args.head_mode == "standard-mobile":
+        standard_checkpoint = args.backbone_ckpt or args.ckpt
+        reference = load_model(standard_checkpoint, upsample_unfold=True)
+    else:
+        reference = load_model(args.ckpt, args.backbone_ckpt)
     candidate = copy.deepcopy(reference)
-    patch_export_graph(reference, args.size, gpu_safe=False)
-    patch_export_graph(candidate, args.size, gpu_safe=True)
-    verify_equivalence(reference, candidate, args.size)
-    if args.head_mode == "bilinear":
+    patch_export_graph(reference, height, width, gpu_safe=False)
+    patch_export_graph(candidate, height, width, gpu_safe=True)
+    verify_equivalence(reference, candidate, height, width)
+    if args.head_mode == "standard-mobile":
+        rewrite_standard_upsampling_head(candidate)
+        report_standard_head_equivalence(reference, candidate, height, width)
+    elif args.head_mode == "bilinear":
         full_head = copy.deepcopy(candidate)
         bypass_npu_upsampling_head(candidate)
-        report_head_difference(full_head, candidate, args.size)
+        report_head_difference(full_head, candidate, height, width)
     elif args.head_mode == "encoder-mosaic":
         candidate = EncoderMosaic(candidate).eval()
     elif args.head_mode == "stage2-mosaic":
@@ -437,7 +541,7 @@ def main() -> None:
     elif args.head_mode == "decoder-mosaic":
         candidate = DecoderMosaic(candidate).eval()
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    export_onnx(candidate, args.size, args.output, args.opset)
+    export_onnx(candidate, height, width, args.output, args.opset)
 
 
 if __name__ == "__main__":

@@ -164,8 +164,11 @@ non-empty.
 
 Keep these constraints when changing the export:
 
-- Use 384x384. ZipDepth was trained/benchmarked at 384; the tested 192 and 256
-  resizes lost too much quality.
+- Treat 384x384 as the production baseline. ZipDepth was trained/benchmarked
+  at 384; the tested 192 and 256 square resizes lost too much quality.
+- Experimental rectangular shapes must use dimensions divisible by 32 and
+  must be revalidated on the Quest GPU. Generate the current 512x288 and
+  672x384 experiments with repeated `--shape WIDTHxHEIGHT` options.
 - Do not pass onnx2tf's `-ofgd`. For this graph it caused CPU-visible numeric
   divergence and striped output despite its name implying a GPU improvement.
 - Use `-tb tf_converter`. This produces weight-only float16 models with

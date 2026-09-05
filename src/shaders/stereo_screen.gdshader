@@ -148,9 +148,9 @@ vec3 heatmap(float t) {
 // instead of using it to warp.
 float bilateral_depth(vec2 uv, out float dlo, out float dhi) {
 	ivec2 low_sz = textureSize(depth_texture, 0);
-	float n = float(low_sz.x);
+	vec2 low_size = vec2(low_sz);
 	vec3 hi_color = sample_stream(uv);
-	vec2 lp = uv * n - 0.5;
+	vec2 lp = uv * low_size - 0.5;
 	ivec2 base = ivec2(floor(lp));
 
 	float num = 0.0;
@@ -159,7 +159,7 @@ float bilateral_depth(vec2 uv, out float dlo, out float dhi) {
 	dhi = 0.0;
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
-			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(n) - 1));
+			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), low_sz - ivec2(1));
 			float s = texelFetch(depth_texture, q, 0).r;
 			vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
 			vec2 off = vec2(q) - lp;
@@ -297,10 +297,11 @@ void fragment() {
 		// only quality this path has.
 		float parallax = 0.042;
 		ivec2 low_sz = textureSize(depth_texture, 0);
-		float n = float(low_sz.x);
-		float texel = 1.0 / n;
+		vec2 low_size = vec2(low_sz);
+		float low_width = low_size.x;
+		float texel = 1.0 / low_width;
 
-		vec2 lp = uv * n - 0.5;
+		vec2 lp = uv * low_size - 0.5;
 		ivec2 base = ivec2(floor(lp));
 
 		float dlo, dhi;
@@ -321,15 +322,15 @@ void fragment() {
 		// matches the reference implementation's design) and keep whichever
 		// crossing has the nearest (largest) depth - the surface that wins
 		// the occlusion.
-		int reach = int(ceil(parallax * n * max(convergence, 1.0 - convergence))) + 2;
+		int reach = int(ceil(parallax * low_width * max(convergence, 1.0 - convergence))) + 2;
 		float best_off = eye_sign * -parallax * (depth_here - convergence);
 		float best_depth = -1.0;
-		ivec2 prev_q = clamp(base + ivec2(-reach, 0), ivec2(0), ivec2(int(n) - 1));
+		ivec2 prev_q = clamp(base + ivec2(-reach, 0), ivec2(0), low_sz - ivec2(1));
 		float prev_depth = texelFetch(depth_texture, prev_q, 0).r;
 		float prev_t = float(-reach) * texel;
 		float prev_err = prev_t + eye_sign * parallax * (prev_depth - convergence);
 		for (int t = -reach + 1; t <= reach; t++) {
-			ivec2 q = clamp(base + ivec2(t, 0), ivec2(0), ivec2(int(n) - 1));
+			ivec2 q = clamp(base + ivec2(t, 0), ivec2(0), low_sz - ivec2(1));
 			float cur_depth = texelFetch(depth_texture, q, 0).r;
 			float cur_t = float(t) * texel;
 			float cur_err = cur_t + eye_sign * parallax * (cur_depth - convergence);
@@ -374,7 +375,7 @@ void fragment() {
 	}
 	else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
-		// actual 256x256 output), no bilateral upsample applied.
+		// actual native-resolution output), no bilateral upsample applied.
 		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
 		float d = texture(depth_texture, vec2(uv.x, 1.0 - uv.y)).r;
 		ALBEDO = heatmap(d);

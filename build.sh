@@ -293,13 +293,35 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # ZipDepth-GPU (2026-09-04) - the real fix for the DA-V2-GPU problem above:
 # a 6.1M-param pure-CNN distilled from DA-V2-Large (see DepthEstimator.java's
 # MODEL_ZIPDEPTH_*_GPU comment), so no ViT ops to force GPU<->CPU handoffs.
-# Built by tools/convert_zipdepth.py. GPU-only for now (no CPU/int8 variant
-# yet, by request). 192/256 variants were also built and tested but dropped
+# Built by tools/convert_zipdepth.py. The hybrid remains the GPU model; an
+# exact full-standard-head CPU counterpart is bundled separately below for
+# measurement. 192/256 variants were also built and tested but dropped
 # (2026-09-04) - ZipDepth was only ever trained at 384x384 (unlike MiDaS-192,
 # which is independently trained/calibrated at that size, not a resize), so
 # 192/256 are just 384's weights outside their trained distribution -
 # confirmed via tools/model_tester/ to look noticeably worse. Only 384 ships.
-cp "$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite" android/build/nightfallAssets/
+ZIPDEPTH_384_MODEL="${NIGHTFALL_ZIPDEPTH_384_MODEL:-$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite}"
+if [ ! -f "$ZIPDEPTH_384_MODEL" ]; then
+  echo "Error: ZipDepth-384 model not found at $ZIPDEPTH_384_MODEL"
+  exit 1
+fi
+echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
+cp "$ZIPDEPTH_384_MODEL" android/build/nightfallAssets/zipdepth-base-384-gpu.tflite
+# The full standard convex head is too costly on Adreno's generic LiteRT GPU
+# kernels, but is still valuable as ZipDepth-384's explicit CPU counterpart.
+# The source filename records how it was exported; the graph itself is normal
+# delegate-agnostic TFLite with float32 I/O and weight-only fp16 quantization.
+ZIPDEPTH_384_CPU_MODEL="$SCRIPT_DIR/models/zipdepth-base-384-standard-mobile-gpu.tflite"
+if [ ! -f "$ZIPDEPTH_384_CPU_MODEL" ]; then
+  echo "Error: ZipDepth-384 full-head CPU model not found at $ZIPDEPTH_384_CPU_MODEL"
+  exit 1
+fi
+cp "$ZIPDEPTH_384_CPU_MODEL" android/build/nightfallAssets/zipdepth-base-384-cpu.tflite
+# Experimental aspect-preserving ZipDepth exports. These deliberately use
+# the same proven hybrid weights and Adreno-safe graph as the 384 model; they
+# are bundled separately for on-device quality/performance comparison.
+cp "$SCRIPT_DIR/models/zipdepth-base-512x288-gpu.tflite" android/build/nightfallAssets/
+cp "$SCRIPT_DIR/models/zipdepth-base-672x384-gpu.tflite" android/build/nightfallAssets/
 # Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
 # single-pass renderer leaves enough GPU headroom for MiDaS to complete in
 # roughly 30-35 ms. This protects stream/render cadence from inference bursts.

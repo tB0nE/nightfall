@@ -55,7 +55,7 @@ public:
     void update_android_gles_external_texture();
 #endif
     bool supports_native_depth_capture();
-    void request_native_depth_capture(int size);
+    void request_native_depth_capture(int width, int height);
     PackedByteArray consume_native_depth_capture();
     void update_colorspace(int colorspace, int color_range);
     void perform_gpu_update();
@@ -141,9 +141,9 @@ private:
     void _render_thread_create_android_gles_surface();
     void _render_thread_update_android_gles_texture();
     void _render_thread_destroy_android_gles_surface();
-    bool _render_thread_ensure_depth_capture(int size);
+    bool _render_thread_ensure_depth_capture(int width, int height);
     void _render_thread_poll_depth_capture();
-    void _render_thread_issue_depth_capture(const float *matrix, int size);
+    void _render_thread_issue_depth_capture(const float *matrix, int width, int height);
     mutable std::mutex gles_surface_mutex_;
     std::condition_variable gles_surface_cv_;
     bool gles_surface_ready_ = false;
@@ -189,10 +189,12 @@ private:
     unsigned int gles_depth_fbo_ = 0;
     unsigned int gles_depth_pbos_[GLES_DEPTH_PBO_COUNT]{};
     void *gles_depth_fences_[GLES_DEPTH_PBO_COUNT]{};
-    int gles_depth_capture_size_ = 0;
+    int gles_depth_capture_width_ = 0;
+    int gles_depth_capture_height_ = 0;
     int gles_depth_next_pbo_ = 0;
     std::atomic<bool> gles_depth_capture_requested_{false};
-    std::atomic<int> gles_depth_requested_size_{256};
+    std::atomic<int> gles_depth_requested_width_{256};
+    std::atomic<int> gles_depth_requested_height_{256};
     mutable std::mutex gles_depth_result_mutex_;
     std::vector<uint8_t> gles_depth_result_;
     bool gles_depth_result_ready_ = false;

@@ -38,6 +38,8 @@ public:
     int get_effective_depth_backend();
     String get_depth_backend_status();
     int get_depth_model_size();
+    int get_depth_model_width();
+    int get_depth_model_height();
     float get_depth_last_inference_ms();
     float get_depth_last_inference_hz();
     float get_depth_last_age_ms();

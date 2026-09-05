@@ -74,6 +74,8 @@ var ai_3d_models: Array = [
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
+	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true},
+	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 
@@ -452,8 +454,8 @@ func apply_stereo():
 	# errors at the exact moment of a model switch, and reported as
 	# "sometimes stops loading the depth map" after switching models.
 	# configure_depth() above must still run first - sync_model_size()
-	# reads get_depth_model_size(), which only reflects the new model once
-	# the Java side has been reconfigured.
+	# reads get_depth_model_width()/get_depth_model_height(), which only
+	# reflect the new model once the Java side has been reconfigured.
 	if mode >= 3 and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
 		if main.depth_estimator.depth_texture:

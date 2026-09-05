@@ -25,7 +25,10 @@ Every model here shares the same downstream pipeline (`DepthEstimator.java`'s
 | `yolo26n-depth-384-w8a32.tflite` | ~5.5MB | YOLO26-Depth-N-384 (CPU, w8a32) | Same export, 384px input. |
 | `depth-anything-v2-small-196.tflite` | ~25MB | Depth Anything V2 Small-196 (CPU, int8) | See "Depth Anything V2" below. 196 = 14×14 (ViT-S patch-14 multiple), ~192px target. |
 | `depth-anything-v2-small-252.tflite` | ~25MB | Depth Anything V2 Small-252 (CPU, int8) | Same conversion, 252 = 14×18, ~256px target. |
-| `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | See "ZipDepth-GPU" below. Standard checkpoint backbone/decoder plus the mobile-safe NPU head; 384 is ZipDepth's native/trained resolution and the only size shipped. |
+| `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | Standard checkpoint backbone/decoder plus the mobile-safe NPU head. |
+| `zipdepth-base-384-standard-mobile-gpu.tflite` | ~12MB | ZipDepth-384 Standard Full Head (CPU test, fp16 weights) | Numerically equivalent portable rewrite of the standard checkpoint's learned convex head. Bundled as `zipdepth-base-384-cpu.tflite`; despite the source filename, TFLite models are delegate-agnostic. |
+| `zipdepth-base-512x288-gpu.tflite` | ~12MB | ZipDepth-512x288 Hybrid (GPU, experimental) | Aspect-preserving test at the same pixel count as 384x384. |
+| `zipdepth-base-672x384-gpu.tflite` | ~12MB | ZipDepth-672x384 Hybrid (GPU, experimental) | Aspect-preserving test at approximately the same pixel count as 512x512. |
 | `yolo26s-depth-int8.tflite` | ~13MB | YOLO26-Depth-S (dormant) | **Not bundled by `build.sh`, not selectable in the UI.** Kept here only for future revival work - its int8 quantization proved fragile on real desktop-UI-style low-texture content. Not required for a normal build. |
 
 ## Acquiring each model
@@ -121,13 +124,23 @@ reference - normal fp16 quantization noise - and confirmed GPU-delegate-
 compatible via TFLite's own `Analyzer.analyze(gpu_compatibility=True)`).
 GPU-only for now - no CPU/int8 variant yet.
 
-Only 384 (ZipDepth's native/trained resolution) ships - 192 and 256 were also
+The production choice remains 384 (ZipDepth's native/trained resolution). Two
+experimental widescreen inference shapes can be generated together with:
+
+```bash
+python3 tools/convert_zipdepth.py --shape 512x288 --shape 672x384
+```
+
+These reuse the 384-trained weights; they are inference-shape experiments,
+not separately trained checkpoints. The 512x288 model has the same pixel
+count as 384x384, while 672x384 is approximately equivalent to 512x512.
+
+Square 192 and 256 models were also
 built and visually compared via `tools/model_tester/`, but dropped
 (2026-09-04): every number in ZipDepth's own paper is measured at 384x384,
-and unlike MiDaS-192 (independently trained/calibrated at that size, not a
-resize of the 256px model) ZipDepth has no dedicated lower-resolution
-training - 192/256 are just the 384 weights looking at a smaller image
-outside their trained distribution, and it showed (192 especially).
+and ZipDepth has no dedicated lower-resolution training. The 192/256 exports
+are just the 384 weights operating outside their trained distribution, and
+the quality loss was visible (192 especially).
 
 ### YOLO26-Depth-S (`yolo26s-depth-int8.tflite`, dormant/optional)
 

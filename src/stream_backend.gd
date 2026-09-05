@@ -254,12 +254,12 @@ func supports_native_depth_capture() -> bool:
 	var uploader = _v2.get_texture_uploader()
 	return uploader != null and uploader.has_method("supports_native_depth_capture") and uploader.supports_native_depth_capture()
 
-func request_native_depth_capture(size: int):
+func request_native_depth_capture(width: int, height: int):
 	if not _v2 or not _v2.has_method("get_texture_uploader"):
 		return
 	var uploader = _v2.get_texture_uploader()
 	if uploader != null and uploader.has_method("request_native_depth_capture"):
-		uploader.request_native_depth_capture(size)
+		uploader.request_native_depth_capture(width, height)
 
 func consume_native_depth_capture() -> PackedByteArray:
 	if not _v2 or not _v2.has_method("get_texture_uploader"):
@@ -280,6 +280,24 @@ func get_depth_model_size() -> int:
 	if _v2:
 		var db = _v2.get_depth_bridge()
 		if db:
+			return db.get_depth_model_size()
+	return 256
+
+func get_depth_model_width() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_width"):
+				return db.get_depth_model_width()
+			return db.get_depth_model_size()
+	return 256
+
+func get_depth_model_height() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_height"):
+				return db.get_depth_model_height()
 			return db.get_depth_model_size()
 	return 256
 

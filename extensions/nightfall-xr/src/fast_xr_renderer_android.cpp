@@ -120,20 +120,14 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"const float SIGMA_S = 1.5;\n"
 		"const float FLAT = 0.05;\n"
 		"void main() {\n"
-		// N used to be hardcoded to 256.0, matching the only GPU depth model
-		// that existed when this native renderer was written (MiDaS-256-GPU).
-		// Any other resolution (MiDaS-192, ZipDepth-384, ...) silently
-		// indexed/clamped against the wrong grid: too-small textures got
-		// smeared against a too-large assumed bound (visibly broken edges),
-		// too-large textures only ever had their top-left N x N corner
-		// sampled and stretched across the whole frame (looks like a
-		// featureless gradient - no real depth structure survives). Read the
-		// real bound texture size instead, same as OFFSET_FRAGMENT_SRC below
-		// already does via textureSize(), and the legacy GDScript path's
-		// bilateral_depth() (stereo_screen.gdshader) has always done.
-		"    float N = float(textureSize(u_depth, 0).x);\n"
+		// This grid was originally represented by one scalar N: first a
+		// hardcoded 256, then the texture width. Both only work for square
+		// models. Using width for Y sends rectangular maps past their last real
+		// row and clamps the processed result there, so preserve both dimensions.
+		"    ivec2 lowSizeI = textureSize(u_depth, 0);\n"
+		"    vec2 lowSize = vec2(lowSizeI);\n"
 		"    vec3 hi = texture(u_texture, (u_texmatrix * vec4(v_plain, 0.0, 1.0)).xy).rgb;\n"
-		"    vec2 lp = v_plain * N - 0.5;\n"
+		"    vec2 lp = v_plain * lowSize - 0.5;\n"
 		"    ivec2 base = ivec2(floor(lp));\n"
 		"    float num = 0.0;\n"
 		"    float den = 0.0;\n"
@@ -141,7 +135,7 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"    float dhi = 0.0;\n"
 		"    for (int dy = -2; dy <= 2; dy++) {\n"
 		"        for (int dx = -2; dx <= 2; dx++) {\n"
-		"            ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(N) - 1));\n"
+		"            ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), lowSizeI - ivec2(1));\n"
 		// u_depth (DepthEstimatorModule's raw MiDaS output, Image.FORMAT_L8) holds pure
 		// depth in .r -- unlike xr_renderer.c's own depth texture, which
 		// packs a colour guide into .rgb and depth into .a, ours never does,

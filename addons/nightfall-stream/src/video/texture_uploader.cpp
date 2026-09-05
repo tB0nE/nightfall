@@ -880,9 +880,10 @@ void TextureUploader::update_android_gles_external_texture() {
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
 }
 
-bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
-    if (size <= 0 || !gles_surface_ready_) return false;
-    if (gles_depth_capture_size_ == size && gles_depth_texture_ && gles_depth_fbo_ &&
+bool TextureUploader::_render_thread_ensure_depth_capture(int width, int height) {
+    if (width <= 0 || height <= 0 || !gles_surface_ready_) return false;
+    if (gles_depth_capture_width_ == width && gles_depth_capture_height_ == height &&
+        gles_depth_texture_ && gles_depth_fbo_ &&
         gles_depth_pbos_[0]) {
         return true;
     }
@@ -899,8 +900,14 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
     std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
     gles_depth_fbo_ = 0;
     gles_depth_texture_ = 0;
-    gles_depth_capture_size_ = 0;
+    gles_depth_capture_width_ = 0;
+    gles_depth_capture_height_ = 0;
     gles_depth_next_pbo_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(gles_depth_result_mutex_);
+        gles_depth_result_.clear();
+        gles_depth_result_ready_ = false;
+    }
 
     GLint old_fbo = 0;
     GLint old_texture = 0;
@@ -915,7 +922,7 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
     glGenFramebuffers(1, &gles_depth_fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, gles_depth_fbo_);
@@ -924,7 +931,7 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
     const bool framebuffer_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 
     glGenBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
-    const GLsizeiptr byte_count = static_cast<GLsizeiptr>(size) * size * 4;
+    const GLsizeiptr byte_count = static_cast<GLsizeiptr>(width) * height * 4;
     for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[i]);
         glBufferData(GL_PIXEL_PACK_BUFFER, byte_count, nullptr, GL_STREAM_READ);
@@ -935,7 +942,7 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
     glBindTexture(GL_TEXTURE_2D, old_texture);
 
     if (!framebuffer_ok || glGetError() != GL_NO_ERROR) {
-        NF_LOGE("TextureUploader", "Unable to initialize async GLES depth capture at %dx%d", size, size);
+        NF_LOGE("TextureUploader", "Unable to initialize async GLES depth capture at %dx%d", width, height);
         if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
         if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
         if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
@@ -945,16 +952,17 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int size) {
         return false;
     }
 
-    gles_depth_capture_size_ = size;
+    gles_depth_capture_width_ = width;
+    gles_depth_capture_height_ = height;
     NF_LOG("TextureUploader", "Async GLES depth capture ready: %dx%d (%d PBOs)",
-           size, size, GLES_DEPTH_PBO_COUNT);
+           width, height, GLES_DEPTH_PBO_COUNT);
     return true;
 }
 
 void TextureUploader::_render_thread_poll_depth_capture() {
-    if (gles_depth_capture_size_ <= 0) return;
-    const size_t row_bytes = static_cast<size_t>(gles_depth_capture_size_) * 4;
-    const size_t byte_count = row_bytes * gles_depth_capture_size_;
+    if (gles_depth_capture_width_ <= 0 || gles_depth_capture_height_ <= 0) return;
+    const size_t row_bytes = static_cast<size_t>(gles_depth_capture_width_) * 4;
+    const size_t byte_count = row_bytes * gles_depth_capture_height_;
     GLint old_pack_buffer = 0;
     glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &old_pack_buffer);
 
@@ -977,9 +985,9 @@ void TextureUploader::_render_thread_poll_depth_capture() {
             // glReadPixels returns the framebuffer bottom row first; keep the
             // same top-down byte layout previously returned by Image::get_data().
             std::vector<uint8_t> pixels(byte_count);
-            for (int y = 0; y < gles_depth_capture_size_; ++y) {
+            for (int y = 0; y < gles_depth_capture_height_; ++y) {
                 std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
-                            mapped + static_cast<size_t>(gles_depth_capture_size_ - 1 - y) * row_bytes,
+                            mapped + static_cast<size_t>(gles_depth_capture_height_ - 1 - y) * row_bytes,
                             row_bytes);
             }
             glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
@@ -995,8 +1003,8 @@ void TextureUploader::_render_thread_poll_depth_capture() {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, old_pack_buffer);
 }
 
-void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, int size) {
-    if (!_render_thread_ensure_depth_capture(size)) return;
+void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, int width, int height) {
+    if (!_render_thread_ensure_depth_capture(width, height)) return;
 
     int slot = -1;
     for (int offset = 0; offset < GLES_DEPTH_PBO_COUNT; ++offset) {
@@ -1015,7 +1023,7 @@ void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, in
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, gles_depth_fbo_);
-    glViewport(0, 0, size, size);
+    glViewport(0, 0, width, height);
     glUseProgram(gles_blit_program_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
@@ -1024,7 +1032,7 @@ void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, in
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[slot]);
-    glReadPixels(0, 0, size, size, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     gles_depth_fences_[slot] = reinterpret_cast<void *>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
     gles_depth_next_pbo_ = (slot + 1) % GLES_DEPTH_PBO_COUNT;
@@ -1090,7 +1098,8 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     // are already current on this render thread.
     _render_thread_poll_depth_capture();
     if (gles_depth_capture_requested_.exchange(false)) {
-        _render_thread_issue_depth_capture(matrix, gles_depth_requested_size_.load());
+        _render_thread_issue_depth_capture(matrix, gles_depth_requested_width_.load(),
+                gles_depth_requested_height_.load());
     }
 
     // The consumer samples both the OES frame and (when AI-3D is active) the
@@ -1324,7 +1333,8 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
     gles_depth_fbo_ = 0;
     gles_depth_texture_ = 0;
-    gles_depth_capture_size_ = 0;
+    gles_depth_capture_width_ = 0;
+    gles_depth_capture_height_ = 0;
     gles_depth_next_pbo_ = 0;
     gles_depth_capture_requested_.store(false);
     {
@@ -1348,13 +1358,15 @@ bool TextureUploader::supports_native_depth_capture() {
 #endif
 }
 
-void TextureUploader::request_native_depth_capture(int size) {
+void TextureUploader::request_native_depth_capture(int width, int height) {
 #ifdef __ANDROID__
-    if (size <= 0 || size > 1024) return;
-    gles_depth_requested_size_.store(size);
+    if (width <= 0 || width > 1024 || height <= 0 || height > 1024) return;
+    gles_depth_requested_width_.store(width);
+    gles_depth_requested_height_.store(height);
     gles_depth_capture_requested_.store(true);
 #else
-    (void)size;
+    (void)width;
+    (void)height;
 #endif
 }
 
@@ -1377,7 +1389,7 @@ void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("perform_gpu_update"), &TextureUploader::perform_gpu_update);
     ClassDB::bind_method(D_METHOD("consume_new_frame"), &TextureUploader::consume_new_frame);
     ClassDB::bind_method(D_METHOD("supports_native_depth_capture"), &TextureUploader::supports_native_depth_capture);
-    ClassDB::bind_method(D_METHOD("request_native_depth_capture", "size"), &TextureUploader::request_native_depth_capture);
+    ClassDB::bind_method(D_METHOD("request_native_depth_capture", "width", "height"), &TextureUploader::request_native_depth_capture);
     ClassDB::bind_method(D_METHOD("consume_native_depth_capture"), &TextureUploader::consume_native_depth_capture);
 #ifdef __ANDROID__
     ClassDB::bind_method(D_METHOD("get_oes_texture_id"), &TextureUploader::get_oes_texture_id);

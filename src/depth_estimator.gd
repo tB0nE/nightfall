@@ -28,16 +28,12 @@ var submit_interval: float = 0.05
 # paying for synchronous GPU readbacks which the latest-frame mailbox discards.
 const GPU_FRAME_PUBLISH_INTERVAL := 0.05
 const GPU_BOOST_REFRESH_INTERVAL := 15.0
-# Native output resolution of whichever model is currently active in
-# DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
-# (see YOLO_INPUT_SIZE there). No longer a fixed constant: sync_model_size()
-# below queries DepthEstimator.java's getModelSize() (via depth_bridge.cpp's
-# JNI get_depth_model_size()) whenever settings_controller.gd's apply_stereo()
-# switches the active model, and resizes depth_viewport/depth_texture to
-# match - both submit_depth_frame() and the get_depth_map() size-match check
-# in process() below depend on this being correct for the CURRENTLY active
-# model, not just MiDaS.
-var model_size: int = 256
+# Native output dimensions of whichever model is currently active in
+# DepthEstimator.java. No longer assumed square: sync_model_size() queries
+# width and height whenever settings_controller.gd switches the active model,
+# then resizes depth_viewport/depth_texture to match.
+var model_width: int = 256
+var model_height: int = 256
 var _poll_timer: float = 0.0
 var _backend_status_timer: float = 0.0
 var _size_mismatch_log_timer: float = 0.0
@@ -143,7 +139,7 @@ func setup():
 		return
 	depth_viewport = SubViewport.new()
 	depth_viewport.name = "DepthViewport"
-	depth_viewport.size = Vector2i(model_size, model_size)
+	depth_viewport.size = Vector2i(model_width, model_height)
 	depth_viewport.disable_3d = true
 	depth_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	depth_viewport.transparent_bg = true
@@ -167,7 +163,7 @@ func setup():
 	depth_viewport.add_child(depth_target)
 	main.add_child(depth_viewport)
 
-	var img = Image.create(model_size, model_size, false, Image.FORMAT_L8)
+	var img = Image.create(model_width, model_height, false, Image.FORMAT_L8)
 	depth_texture = ImageTexture.create_from_image(img)
 
 	_setup_warp_passes()
@@ -270,8 +266,9 @@ func _resize_warp_passes():
 # Called from settings_controller.gd's apply_stereo() right after
 # stream_backend.configure_depth() switches the active Java-side model -
 # switchActiveModel() busy-waits out any in-flight inference before returning,
-# so getModelSize() is already correct for the new model by the time this
-# runs. Resizes depth_viewport (the capture source fed INTO the model) and
+# so getModelWidth()/getModelHeight() are already correct for the new model
+# by the time this runs. Resizes depth_viewport (the capture source fed INTO
+# the model) and
 # recreates depth_texture's image (the model's OUTPUT, read back via
 # get_depth_map()) in place via set_image() rather than a new ImageTexture -
 # every consumer (primary_screen, comp_shader_mat_left/right) already holds
@@ -281,12 +278,16 @@ func _resize_warp_passes():
 func sync_model_size():
 	if not main.stream_backend or not depth_viewport or not depth_texture:
 		return
-	var new_size = main.stream_backend.get_depth_model_size()
-	if new_size <= 0 or new_size == model_size:
+	var new_width = main.stream_backend.get_depth_model_width()
+	var new_height = main.stream_backend.get_depth_model_height()
+	if new_width <= 0 or new_height <= 0:
 		return
-	model_size = new_size
-	depth_viewport.size = Vector2i(model_size, model_size)
-	var img = Image.create(model_size, model_size, false, Image.FORMAT_L8)
+	if new_width == model_width and new_height == model_height:
+		return
+	model_width = new_width
+	model_height = new_height
+	depth_viewport.size = Vector2i(model_width, model_height)
+	var img = Image.create(model_width, model_height, false, Image.FORMAT_L8)
 	depth_texture.set_image(img)
 
 func bind_stream_texture():
@@ -449,14 +450,14 @@ func process(delta: float):
 			_native_depth_capture_active = native_capture_available
 			main._log("[DEPTH] Capture path: %s" % ("native GLES async" if native_capture_available else "Godot viewport fallback"))
 
-		# Polling a completed PBO only copies an already-signalled 256x256
+		# Polling a completed PBO only copies an already-signalled model-sized
 		# result. The GLES render thread never waits for it; if a transfer is
 		# late, the latest-frame policy simply picks it up on a later frame.
 		if native_capture_available:
 			var native_data: PackedByteArray = main.stream_backend.consume_native_depth_capture()
-			if native_data.size() == model_size * model_size * 4:
+			if native_data.size() == model_width * model_height * 4:
 				var native_submit_start = Time.get_ticks_usec()
-				main.stream_backend.submit_depth_frame(native_data, model_size, model_size)
+				main.stream_backend.submit_depth_frame(native_data, model_width, model_height)
 				_perf_submit_usec += Time.get_ticks_usec() - native_submit_start
 				_perf_submitted += 1
 
@@ -465,7 +466,7 @@ func process(delta: float):
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			if native_capture_available:
-				main.stream_backend.request_native_depth_capture(model_size)
+				main.stream_backend.request_native_depth_capture(model_width, model_height)
 			else:
 				var capture_start = Time.get_ticks_usec()
 				var img = depth_viewport.get_texture().get_image()
@@ -485,14 +486,14 @@ func process(delta: float):
 					_perf_capture_usec += Time.get_ticks_usec() - capture_start
 					if data.size() > 0:
 						var submit_start = Time.get_ticks_usec()
-						main.stream_backend.submit_depth_frame(data, model_size, model_size)
+						main.stream_backend.submit_depth_frame(data, model_width, model_height)
 						_perf_submit_usec += Time.get_ticks_usec() - submit_start
 						_perf_submitted += 1
 
 	if main.stream_backend.has_method("get_depth_map"):
 		var depth_bytes = main.stream_backend.get_depth_map()
-		if depth_bytes != null and depth_bytes.size() == model_size * model_size:
-			var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
+		if depth_bytes != null and depth_bytes.size() == model_width * model_height:
+			var depth_image = Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, depth_bytes)
 			depth_texture.update(depth_image)
 			depth_revision += 1
 			_perf_updates += 1
@@ -500,14 +501,14 @@ func process(delta: float):
 			# Diagnostic (2026-09-04) for a "depth map doesn't correspond to
 			# the frame" report - a mismatch here means the Java side's
 			# actual output size (whatever model is really active there)
-			# disagrees with GDScript's model_size (from get_depth_model_size()),
+			# disagrees with GDScript's model dimensions,
 			# so this frame's depth_texture update is silently skipped and
 			# the view keeps showing the last-good (now stale/wrong) data
 			# instead. Throttled to avoid spamming every frame while stuck.
 			_size_mismatch_log_timer += delta
 			if _size_mismatch_log_timer >= 1.0:
 				_size_mismatch_log_timer = 0.0
-				main._log("[DEPTH] Size mismatch: got %d bytes, expected %d (model_size=%d) - texture update skipped" % [depth_bytes.size(), model_size * model_size, model_size])
+				main._log("[DEPTH] Size mismatch: got %d bytes, expected %d (model=%dx%d) - texture update skipped" % [depth_bytes.size(), model_width * model_height, model_width, model_height])
 
 	_perf_window += delta
 	if _perf_window >= 1.0:
