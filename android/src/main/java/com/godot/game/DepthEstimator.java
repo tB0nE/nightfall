@@ -251,9 +251,10 @@ public class DepthEstimator {
     // TFLite's own GPU delegate compatibility analyzer
     // (tf.lite.experimental.Analyzer.analyze(..., gpu_compatibility=True))
     // confirms compatibility. The later CPU counterpart uses the exact
-    // standard convex head rather than this hybrid head; it remains
-    // float32-compute/fp16-weight for the first performance measurement,
-    // not int8. 192/256 variants were also built and tested
+    // standard convex head rather than this hybrid head. Its deployable
+    // quantization is w8a32: int8 weights with float32 activations and I/O.
+    // A true w8a8 conversion was tested and rejected after severe output
+    // collapse in desktop validation. 192/256 variants were also built and tested
     // (2026-09-04) but dropped, not silently removed - keep this history so
     // neither gets re-attempted the same way without a new angle: ZipDepth
     // was only ever trained at 384x384 (every number in its paper's
@@ -269,8 +270,9 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
-    // TFLite ops, but the output is numerically equivalent to the standard
-    // checkpoint rather than the cheaper NPU-head hybrid used on the GPU.
+    // TFLite ops. This w8a32 export keeps float32 activations and I/O while
+    // quantizing weights to int8; it closely tracks the float reference without
+    // the severe degradation seen when ZipDepth activations are also int8.
     private static final String MODEL_ZIPDEPTH_384_CPU = "zipdepth-base-384-cpu.tflite";
     private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
     private static final String MODEL_ZIPDEPTH_512X288_GPU = "zipdepth-base-512x288-gpu.tflite";

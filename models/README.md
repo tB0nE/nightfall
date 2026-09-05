@@ -26,7 +26,8 @@ Every model here shares the same downstream pipeline (`DepthEstimator.java`'s
 | `depth-anything-v2-small-196.tflite` | ~25MB | Depth Anything V2 Small-196 (CPU, int8) | See "Depth Anything V2" below. 196 = 14×14 (ViT-S patch-14 multiple), ~192px target. |
 | `depth-anything-v2-small-252.tflite` | ~25MB | Depth Anything V2 Small-252 (CPU, int8) | Same conversion, 252 = 14×18, ~256px target. |
 | `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | Standard checkpoint backbone/decoder plus the mobile-safe NPU head. |
-| `zipdepth-base-384-standard-mobile-gpu.tflite` | ~12MB | ZipDepth-384 Standard Full Head (CPU test, fp16 weights) | Numerically equivalent portable rewrite of the standard checkpoint's learned convex head. Bundled as `zipdepth-base-384-cpu.tflite`; despite the source filename, TFLite models are delegate-agnostic. |
+| `zipdepth-base-384-standard-mobile-gpu.tflite` | ~12MB | ZipDepth-384 Standard Full Head (float reference) | Portable rewrite of the standard checkpoint's learned convex head. Used as the conversion/validation reference; not bundled. |
+| `zipdepth-base-384-standard-w8a32.tflite` | ~6MB | ZipDepth-384 Standard Full Head (CPU, w8a32) | INT8 weights with float32 activations/I/O. Bundled as `zipdepth-base-384-cpu.tflite`. Full w8a8 was rejected after severe numerical degradation in representative-scene validation. |
 | `zipdepth-base-512x288-gpu.tflite` | ~12MB | ZipDepth-512x288 Hybrid (GPU, experimental) | Aspect-preserving test at the same pixel count as 384x384. |
 | `zipdepth-base-672x384-gpu.tflite` | ~12MB | ZipDepth-672x384 Hybrid (GPU, experimental) | Aspect-preserving test at approximately the same pixel count as 512x512. |
 | `yolo26s-depth-int8.tflite` | ~13MB | YOLO26-Depth-S (dormant) | **Not bundled by `build.sh`, not selectable in the UI.** Kept here only for future revival work - its int8 quantization proved fragile on real desktop-UI-style low-texture content. Not required for a normal build. |
@@ -122,7 +123,20 @@ MiDaS-GPU's own convention and roughly halving file size vs. a naive float32
 export (verified: I/O still float32, output within ~2-5e-4 of the ONNX
 reference - normal fp16 quantization noise - and confirmed GPU-delegate-
 compatible via TFLite's own `Analyzer.analyze(gpu_compatibility=True)`).
-GPU-only for now - no CPU/int8 variant yet.
+The standard full-head CPU variant is produced from
+`tools/ZipDepth/tflite_384x384` with:
+
+```bash
+python3 tools/quantize_zipdepth_cpu.py
+```
+
+The default is W8A32: INT8 weights with float32 activations and I/O. Validation
+against the float reference over 30 representative scenes measured mean raw
+correlation `0.987300` and mean robust-normalized MAE `0.030090`. A strict W8A8
+attempt (INT8 weights and activations, still with float model boundaries) was
+only `0.646310` mean correlation and visibly collapsed on some scenes, so it is
+deliberately not bundled. Revisit full integer quantization only with QAT or
+selective activation quantization and the same validation set.
 
 The production choice remains 384 (ZipDepth's native/trained resolution). Two
 experimental widescreen inference shapes can be generated together with:

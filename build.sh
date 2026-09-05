@@ -309,9 +309,10 @@ echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
 cp "$ZIPDEPTH_384_MODEL" android/build/nightfallAssets/zipdepth-base-384-gpu.tflite
 # The full standard convex head is too costly on Adreno's generic LiteRT GPU
 # kernels, but is still valuable as ZipDepth-384's explicit CPU counterpart.
-# The source filename records how it was exported; the graph itself is normal
-# delegate-agnostic TFLite with float32 I/O and weight-only fp16 quantization.
-ZIPDEPTH_384_CPU_MODEL="$SCRIPT_DIR/models/zipdepth-base-384-standard-mobile-gpu.tflite"
+# The graph is delegate-agnostic TFLite. It uses w8a32 quantization: int8
+# weights with float32 activations and I/O. Full w8a8 was tested and rejected
+# because ZipDepth's output collapsed numerically on representative scenes.
+ZIPDEPTH_384_CPU_MODEL="$SCRIPT_DIR/models/zipdepth-base-384-standard-w8a32.tflite"
 if [ ! -f "$ZIPDEPTH_384_CPU_MODEL" ]; then
   echo "Error: ZipDepth-384 full-head CPU model not found at $ZIPDEPTH_384_CPU_MODEL"
   exit 1

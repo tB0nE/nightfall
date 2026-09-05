@@ -91,6 +91,11 @@ var ai_3d_models: Array = [
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
 	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true},
 	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true},
+	# Keep this appended so existing persisted indices for the experimental
+	# widescreen GPU models do not change. Type=CPU includes it in the model
+	# cycle; it shares Java index 14 with the GPU entry above, while Type selects
+	# the full-head W8A32/XNNPACK interpreter instead of the GPU delegate.
+	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 const AI3D_BACKEND_CPU := 1
