@@ -12,7 +12,6 @@ func save_state():
 	save.set_value("screen", "curvature", main.curvature)
 	save.set_value("screen", "passthrough_enabled", main.passthrough_enabled)
 	save.set_value("screen", "background_mode", main.background_mode)
-	save.set_value("screen", "smooth_mode", main.smooth_mode)
 	save.set_value("screen", "sharpen_mode", main.sharpen_mode)
 	save.set_value("screen", "brightness_pct", main.brightness_pct)
 	save.set_value("screen", "contrast_pct", main.contrast_pct)
@@ -289,7 +288,6 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_render_btn, main.smooth_labels[clampi(main.smooth_mode, 0, main.smooth_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
 		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
@@ -356,7 +354,6 @@ func load_state():
 			main.background_mode = old
 	else:
 		main.passthrough_enabled = false
-	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
 	main.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", 0), 0, main.sharpen_labels.size() - 1)
 	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
 	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):

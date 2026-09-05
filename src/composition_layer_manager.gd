@@ -1645,7 +1645,7 @@ func switch_to_mesh_rendering():
 				# setting this on a secondary would show a quartered slice of
 				# the wrong content instead of that screen's own picture.
 				mat.set_shader_parameter("stereo_mode", mode if scr == main.primary_screen else 0)
-				mat.set_shader_parameter("filter_mode", main.smooth_mode)
+				mat.set_shader_parameter("filter_mode", 0)
 				var shader_sharpen = float(main.sharpen_mode) * 0.016
 				if main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL:
 					shader_sharpen = 0.0 if runtime_sharpen_active else (0.5 if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)

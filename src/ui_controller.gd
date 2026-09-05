@@ -974,8 +974,6 @@ func build_ui():
 
 	main._ui_sharpen_btn = make_option_btn("Sharpen", main.sharpen_labels[0])
 	picture_row2.add_child(main._ui_sharpen_btn)
-	main._ui_render_btn = make_option_btn("Blur", main.smooth_labels[0])
-	picture_row2.add_child(main._ui_render_btn)
 	main._ui_bezel_btn = make_option_btn("Bezel", "On")
 	picture_row2.add_child(main._ui_bezel_btn)
 
@@ -1130,7 +1128,6 @@ func build_ui():
 	main._ui_res_btn.button_down.connect(func(): main.settings_controller.cycle_resolution())
 	main._ui_fps_btn.button_down.connect(func(): main.settings_controller.cycle_fps())
 	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
-	main._ui_render_btn.button_down.connect(func(): main.settings_controller.cycle_smooth_mode())
 	main._ui_sharpen_btn.button_down.connect(func(): main.settings_controller.cycle_sharpen_mode())
 	main._ui_brightness_btn.button_down.connect(func(): main.settings_controller.cycle_brightness())
 	main._ui_contrast_btn.button_down.connect(func(): main.settings_controller.cycle_contrast())

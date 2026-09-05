@@ -772,11 +772,6 @@ func _hide_all_backgrounds():
 			bg.visible = false
 			bg.emitting = false
 
-func cycle_smooth_mode():
-	main.smooth_mode = (main.smooth_mode + 1) % main.smooth_labels.size()
-	_save_setting(main._ui_render_btn, main.smooth_labels[main.smooth_mode])
-	apply_filter()
-
 func cycle_cursor_mode():
 	main.cursor_mode = (main.cursor_mode + 1) % main.cursor_labels.size()
 	_save_setting(main._ui_cursor_btn, main.cursor_labels[main.cursor_mode])
@@ -926,7 +921,10 @@ func toggle_host_cursor():
 func apply_filter():
 	if not main.is_xr_active:
 		return
-	var filter_val = main.smooth_mode
+	# The standalone Blur control was removed. Keep the legacy shader uniform
+	# neutral; its neighbourhood taps remain available only for shader-sharpen
+	# fallback on runtimes without compositor sharpening.
+	var filter_val = 0
 	var runtime_sharpen_requested = main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL
 	var runtime_sharpen_active = main.comp.apply_compositor_sharpen(main.sharpen_mode) if main.comp else false
 	# Retain an application-shader fallback for desktop, stock Godot templates,

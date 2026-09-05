@@ -498,6 +498,10 @@ bool NightfallXrRenderer::register_provider() {
 		for (uint32_t i = 0; i < ext_count; i++) {
 			if (strcmp(exts[i].extensionName, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME) == 0) {
 				cylinder_supported = true;
+			} else if (strcmp(exts[i].extensionName, XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME) == 0) {
+				// The patched Godot composition-layer extension requests this before
+				// instance creation, so availability here also means it was enabled.
+				compositor_sharpening_supported = true;
 			}
 		}
 		::free(exts);
@@ -505,7 +509,8 @@ bool NightfallXrRenderer::register_provider() {
 
 	api->register_composition_layer_provider(this);
 	registered_as_layer_provider = true;
-	XR_LOG("nightfall-xr registered as composition layer provider (cylinder=%d)", cylinder_supported);
+	XR_LOG("nightfall-xr registered as composition layer provider (cylinder=%d compositor_sharpening=%d)",
+			cylinder_supported, compositor_sharpening_supported);
 	return true;
 }
 
@@ -971,6 +976,10 @@ bool NightfallXrRenderer::supports_cylinder() const {
 	return cylinder_supported;
 }
 
+bool NightfallXrRenderer::supports_compositor_sharpening() const {
+	return compositor_sharpening_supported;
+}
+
 void NightfallXrRenderer::set_geometry(const Transform3D &p_transform, float p_width, float p_height,
 		int p_curvature, float p_radius, float p_central_angle, int p_sort_order,
 		bool p_bezel_enabled) {
@@ -982,6 +991,15 @@ void NightfallXrRenderer::set_geometry(const Transform3D &p_transform, float p_w
 	pending_central_angle = p_central_angle;
 	pending_sort_order = p_sort_order;
 	pending_bezel_enabled = p_bezel_enabled;
+}
+
+void NightfallXrRenderer::set_compositor_sharpening(int p_mode) {
+	int mode = p_mode == 2 ? 2 : (p_mode == 1 ? 1 : 0);
+	if (mode == pending_compositor_sharpening) {
+		return;
+	}
+	pending_compositor_sharpening = mode;
+	XR_LOG("Native compositor sharpening: %s", mode == 2 ? "quality" : (mode == 1 ? "normal" : "off"));
 }
 
 void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
@@ -1388,10 +1406,22 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		pose.orientation = { (float)q.x, (float)q.y, (float)q.z, (float)q.w };
 		pose.position = { (float)xf.origin.x, (float)xf.origin.y, (float)xf.origin.z };
 
+		const void *layer_next = nullptr;
+		if (compositor_sharpening_supported && pending_compositor_sharpening > 0) {
+			XrCompositionLayerSettingsFB *settings = &compositor_settings[eye];
+			memset(settings, 0, sizeof(*settings));
+			settings->type = XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB;
+			settings->layerFlags = pending_compositor_sharpening == 2
+					? XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB
+					: XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
+			layer_next = settings;
+		}
+
 		if (pending_curvature > 0 && cylinder_supported) {
 			XrCompositionLayerCylinderKHR *cylinder = &cylinder_layers[eye];
 			memset(cylinder, 0, sizeof(*cylinder));
 			cylinder->type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
+			cylinder->next = layer_next;
 			cylinder->eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
 			cylinder->subImage = sub_image;
 			cylinder->space = space;
@@ -1407,6 +1437,7 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		XrCompositionLayerQuad *quad = &quad_layers[eye];
 		memset(quad, 0, sizeof(*quad));
 		quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+		quad->next = layer_next;
 		quad->eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
 		quad->subImage = sub_image;
 		quad->space = space;

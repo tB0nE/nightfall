@@ -98,6 +98,9 @@ AI separation/convergence and Picture-tab brightness/contrast/gamma are
 implemented directly in this path. Reactive ambient modes consume an
 asynchronous 32x32 sample of its final left-eye output, so enabling ambient
 lighting does not restore a full-resolution legacy video pass.
+The Picture tab's Runtime sharpening modes also remain on this path and use
+`XR_FB_composition_layer_settings`; percentage-based shader sharpening retains
+the legacy fallback path for comparison and unsupported runtimes.
 
 `build.sh` builds this extension automatically for Android. Its build needs a
 `godot-cpp` checkout generated from the matching patched engine's extension API

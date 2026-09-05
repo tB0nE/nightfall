@@ -73,6 +73,7 @@ public:
 	bool is_started() const;
 	bool has_rendered_frame() const;
 	bool supports_cylinder() const;
+	bool supports_compositor_sharpening() const;
 	// True when one eye's composition layer hasn't actually been re-queried
 	// by Godot for several consecutive frames while the other eye keeps
 	// being queried normally -- the signature of a per-eye freeze (stale
@@ -83,6 +84,9 @@ public:
 	void set_geometry(const Transform3D &p_transform, float p_width, float p_height,
 			int p_curvature, float p_radius, float p_central_angle, int p_sort_order,
 			bool p_bezel_enabled);
+	// 0=None, 1=normal sharpening, 2=quality sharpening. This is applied by
+	// the OpenXR runtime after composition, with no video-shader sampling cost.
+	void set_compositor_sharpening(int p_mode);
 
 	// Called every GDScript _process() tick with the latest frame's
 	// parameters; actual GL rendering happens later, in _on_pre_render().
@@ -310,6 +314,7 @@ private:
 
 	bool srgb_write_control = false;
 	bool cylinder_supported = false;
+	bool compositor_sharpening_supported = false;
 	bool ever_rendered = false;
 	bool registered_as_layer_provider = false;
 
@@ -352,6 +357,7 @@ private:
 	float pending_central_angle = 0.75f;
 	int pending_sort_order = 1;
 	bool pending_bezel_enabled = true;
+	int pending_compositor_sharpening = 0;
 
 	// Incremented once per _get_composition_layer_count() call (confirmed
 	// reliably called exactly once per frame); eye_last_queried_frame[eye]
@@ -369,6 +375,7 @@ private:
 	// the returned pointer back out after this call returns.
 	XrCompositionLayerQuad quad_layers[2]{};
 	XrCompositionLayerCylinderKHR cylinder_layers[2]{};
+	XrCompositionLayerSettingsFB compositor_settings[2]{};
 	XrCompositionLayerQuad overlay_layer{};
 
 	// Resolved via get_openxr_api()->get_instance_proc_addr(), matching how

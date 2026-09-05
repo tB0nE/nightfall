@@ -47,6 +47,13 @@ func setup() -> void:
 func _mode() -> int:
 	return main.settings_controller.get_stereo_mode() if main.settings_controller else 0
 
+func _native_compositor_sharpening() -> int:
+	if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL:
+		return 1
+	if main.sharpen_mode == main.SHARPEN_RUNTIME_QUALITY:
+		return 2
+	return 0
+
 func _eligible() -> bool:
 	if not provider_registered or not main.is_streaming or main.screens.size() != 1:
 		return false
@@ -76,10 +83,15 @@ func _eligible() -> bool:
 		return false
 	if Time.get_ticks_msec() < _stale_recovery_until_msec:
 		return false
-	# Auto-detection and the optional shader filters consume the legacy RGB
-	# viewport. Fall back while they are selected instead of silently showing
-	# stale detection data or ignoring a user's picture setting.
-	if main.auto_detect_enabled or main.smooth_mode != 0 or main.sharpen_mode != 0:
+	# Auto-detection and shader-based sharpening consume the legacy RGB
+	# viewport. Runtime compositor sharpening is attached directly to our own
+	# OpenXR layers and therefore remains eligible for the fast path.
+	if main.auto_detect_enabled:
+		return false
+	var native_sharpening := _native_compositor_sharpening()
+	if main.sharpen_mode != 0 and native_sharpening == 0:
+		return false
+	if native_sharpening > 0 and not renderer.supports_compositor_sharpening():
 		return false
 	var mode := _mode()
 	if mode >= 7 and mode <= 9:
@@ -144,6 +156,7 @@ func _sync_geometry() -> void:
 	var sort_order := clampi(int((10.0 - view_dist) * 10.0), 1, 100)
 	renderer.set_geometry(transform, screen.mesh_size.x, screen.mesh_size.y,
 			screen.curvature, radius, central_angle, sort_order, main.bezel_enabled)
+	renderer.set_compositor_sharpening(_native_compositor_sharpening())
 
 func _disable_legacy_video() -> void:
 	var screen = main.primary_screen

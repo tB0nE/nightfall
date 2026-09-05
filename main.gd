@@ -202,9 +202,7 @@ var curvature: int:
 	set(v):
 		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
-var smooth_mode: int = 0
 var sharpen_mode: int = 0
-var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
 const SHARPEN_RUNTIME_NORMAL := 6
 const SHARPEN_RUNTIME_QUALITY := 7
 # Keep the existing shader modes in their original saved-state slots for a
@@ -237,7 +235,6 @@ var _mesh_size: Vector2:
 	set(v):
 		if primary_screen: primary_screen.mesh_size = v
 var stream_fps: int = 60
-var _cached_filter_mode: int = -1
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
 # host_resolution is the actual WxH about to be (or last) requested from the
@@ -633,7 +630,6 @@ var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_host_cursor_btn: Button
-var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
 var _ui_brightness_btn: Button
@@ -2763,11 +2759,9 @@ func _process_stats(delta):
 			comp.set_stats_visible(false)
 		return
 	if comp.in_use:
-		var cur_filter = smooth_mode
 		var cur_sharpen = float(sharpen_mode) * 0.5
 		var cur_blur_scale = get_blur_scale(primary_screen)
-		if cur_filter != _cached_filter_mode or cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
-			_cached_filter_mode = cur_filter
+		if cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
 			_cached_sharpen = cur_sharpen
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
