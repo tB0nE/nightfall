@@ -4,7 +4,10 @@ This Android-only GDExtension submits Nightfall's video as two OpenXR quad (or
 cylinder) composition layers backed by one double-wide swapchain. Each eye is
 drawn directly from MediaCodec's external OES texture. AI depth is upsampled
 and warped in the same native GLES pass, avoiding the two full-resolution Godot
-SubViewports used by the compatibility path.
+SubViewports used by the compatibility path. The native shader variants also
+apply AI separation/convergence, HDR tonemapping, and Picture-tab grading. A
+32x32 asynchronous readback of the finished left-eye image supplies reactive
+ambient lighting without re-enabling either legacy video viewport.
 
 The extension is an `OpenXRExtensionWrapperExtension` registered as a
 composition-layer provider. It deliberately does not call `xrWaitFrame`,

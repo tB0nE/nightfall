@@ -121,6 +121,8 @@ func refresh() -> void:
 		main.stream_backend.set_native_direct_mode(true)
 		if main.depth_estimator:
 			main.depth_estimator.set_native_renderer_active(true)
+		if main.comp:
+			main.comp.clear_native_ambient_sample()
 		_disable_legacy_video()
 		legacy_disabled = true
 		renderer.set_overlay_visible(main.performance_overlay_enabled)
@@ -158,6 +160,7 @@ func _disable_legacy_video() -> void:
 func process_frame(new_frame: bool) -> void:
 	refresh()
 	_process_stats_upload()
+	_process_ambient_sample()
 	if not active or not new_frame:
 		return
 	var oes_id: int = main.stream_backend.get_oes_texture_id()
@@ -176,17 +179,32 @@ func process_frame(new_frame: bool) -> void:
 			guide_id = main.stream_backend.get_native_depth_guide_texture_id()
 			if guide_id != 0:
 				depth_id = RenderingServer.texture_get_native_handle(depth.depth_texture.get_rid())
-				separation = depth._pass_parallax
+				separation = depth._pass_parallax * (main.ai_3d_separation_pct / 100.0)
+	var convergence: float = float(main.ai_3d_convergence_pct) / 100.0
 	var matrix: PackedFloat32Array = main.stream_backend.get_oes_transform_matrix()
 	if matrix.size() < 16:
 		return
 	var fence: int = main.stream_backend.get_oes_ready_fence()
 	var color_transfer: int = main.stream_backend.get_color_transfer_type()
+	var brightness: float = float(main.brightness_pct) / 100.0
+	var contrast: float = float(main.contrast_pct) / 100.0
+	var gamma: float = float(main.gamma_pct) / 100.0
 	renderer.submit_frame(true, oes_id, depth_id, guide_id, matrix,
 			3.0, main.primary_screen.mesh_size.x, false, separation,
 			false, main.passthrough_enabled, fence, mode,
 			main.depth_estimator.depth_revision if main.depth_estimator else 0,
-			color_transfer)
+			color_transfer, convergence, brightness, contrast, gamma)
+
+func request_ambient_sample() -> void:
+	if active and stream_started and renderer:
+		renderer.request_ambient_sample()
+
+func _process_ambient_sample() -> void:
+	if not active or not stream_started or not renderer or not main.comp:
+		return
+	var pixels: PackedByteArray = renderer.consume_ambient_sample()
+	if pixels.size() == 32 * 32 * 4:
+		main.comp.update_native_ambient_sample(pixels, 32, 32)
 
 func request_stats_overlay_update() -> void:
 	if active:
@@ -229,6 +247,8 @@ func deactivate(restore_legacy: bool) -> void:
 	active = false
 	legacy_disabled = false
 	_stats_upload_delay = -1
+	if main.comp:
+		main.comp.clear_native_ambient_sample()
 	if stream_started and renderer:
 		renderer.stop_stream()
 	stream_started = false
@@ -252,6 +272,8 @@ func shutdown() -> void:
 	active = false
 	legacy_disabled = false
 	stream_started = false
+	if main.comp:
+		main.comp.clear_native_ambient_sample()
 	if renderer:
 		renderer.shutdown()
 	renderer = null

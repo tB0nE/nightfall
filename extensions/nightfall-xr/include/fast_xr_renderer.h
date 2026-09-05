@@ -10,6 +10,8 @@
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
+#include <atomic>
+#include <mutex>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -100,15 +102,24 @@ public:
 	// (glWaitSync + glDeleteSync) exactly once, in render_video_frame().
 	// color_transfer_type describes the raw OES samples: 0=SDR, 1=PQ/ST 2084,
 	// 2=HLG. It selects a separately compiled warp program; HDR code is never
-	// part of the SDR program's instruction/register footprint.
+	// part of the SDR program's instruction/register footprint. Non-neutral
+	// Picture values similarly select a separate SDR shader variant, while
+	// convergence and separation remain cheap warp uniforms.
 	void submit_frame(bool p_new_frame, uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, PackedFloat32Array p_tex_matrix, float p_distance,
 			float p_quad_width, bool p_head_locked, float p_separation, bool p_eye_swap,
 			bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode = 0,
-			uint64_t p_depth_revision = 0, int p_color_transfer_type = 0);
+			uint64_t p_depth_revision = 0, int p_color_transfer_type = 0,
+			float p_convergence = 0.5f, float p_brightness = 0.0f,
+			float p_contrast = 1.0f, float p_gamma = 1.0f);
 
 	void upload_overlay(PackedByteArray p_pixels, int p_width, int p_height);
 	void set_overlay_visible(bool p_visible);
+	// Requests a tiny asynchronous sample of the final native left-eye image
+	// for the ambient-light layer. consume_ambient_sample() returns an empty
+	// array until a requested GPU readback has completed.
+	void request_ambient_sample();
+	PackedByteArray consume_ambient_sample();
 
 	// Debug: force the warp shader to output solid magenta instead of
 	// sampling the OES texture, to isolate "can the composition-layer
@@ -248,6 +259,7 @@ private:
 	int output_height = 0;
 
 	GLuint warp_program = 0;
+	GLuint picture_warp_program = 0;
 	GLuint hdr_warp_program = 0;
 	struct WarpUniforms {
 		GLint texmatrix = -1;
@@ -262,12 +274,29 @@ private:
 		GLint stereo_mode = -1;
 		GLint color_transfer = -1;
 		GLint hdr_lut = -1;
+		GLint brightness = -1;
+		GLint contrast = -1;
+		GLint gamma = -1;
 	};
 	WarpUniforms warp_uniforms;
+	WarpUniforms picture_warp_uniforms;
 	WarpUniforms hdr_warp_uniforms;
 	GLuint hdr_lut_texture = 0;
 	GLuint warp_fbo = 0;
 	bool debug_solid_color = false;
+
+	static constexpr int AMBIENT_SAMPLE_WIDTH = 32;
+	static constexpr int AMBIENT_SAMPLE_HEIGHT = 32;
+	static constexpr int AMBIENT_SAMPLE_PBO_COUNT = 2;
+	GLuint ambient_sample_texture = 0;
+	GLuint ambient_sample_fbo = 0;
+	GLuint ambient_sample_pbos[AMBIENT_SAMPLE_PBO_COUNT]{};
+	GLsync ambient_sample_fences[AMBIENT_SAMPLE_PBO_COUNT]{};
+	int ambient_sample_next_pbo = 0;
+	std::atomic<bool> ambient_sample_requested{ false };
+	std::mutex ambient_sample_result_mutex;
+	std::vector<uint8_t> ambient_sample_result;
+	bool ambient_sample_result_ready = false;
 
 	GLuint upsample_program = 0;
 	GLint u_upsample_texmatrix = -1, u_upsample_sigma = -1, u_upsample_sharp = -1;
@@ -301,14 +330,19 @@ private:
 	float pending_quad_width = 3.0f;
 	bool pending_head_locked = false;
 	float pending_separation = 0.0f;
+	float pending_convergence = 0.5f;
 	bool pending_eye_swap = false;
 	bool pending_passthrough = false;
 	int pending_stereo_mode = 0;
 	int pending_color_transfer_type = 0;
 	int rendered_color_transfer_type = -1;
+	float pending_brightness = 0.0f;
+	float pending_contrast = 1.0f;
+	float pending_gamma = 1.0f;
 	uint64_t pending_depth_revision = 0;
 	uint64_t rendered_depth_revision = UINT64_MAX;
 	float rendered_depth_separation = -1.0f;
+	float rendered_depth_convergence = -1.0f;
 	bool depth_cache_valid = false;
 	Transform3D pending_transform;
 	float pending_width = 3.0f;
@@ -356,10 +390,12 @@ private:
 	void maybe_render_pending_frame();
 	void render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
-			bool p_occluding);
+			float p_convergence, bool p_occluding);
 	void run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix);
-	void run_offset_search(float p_separation);
+	void run_offset_search(float p_separation, float p_convergence);
+	void poll_ambient_sample();
+	bool issue_ambient_sample();
 #endif
 };
 

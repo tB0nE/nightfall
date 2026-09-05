@@ -1,8 +1,9 @@
 shader_type canvas_item;
 
 // This shader runs only in the small ambient-light SubViewport. It samples
-// the already-rendered screen viewport rather than duplicating the hot YUV,
-// HDR, or AI-depth paths.
+// a 32x32 copy of the already-rendered screen rather than duplicating the hot
+// YUV, HDR, or AI-depth paths. That copy comes from either the legacy viewport
+// or the native renderer's asynchronous final-image sample.
 uniform sampler2D source_texture : source_color, filter_linear, repeat_disable;
 uniform bool reactive = false;
 uniform int style_mode = 0; // 0 = glow, 1 = neon, 2 = both, 3 = blurred edge

@@ -31,6 +31,10 @@ var _ambient_rect: ColorRect = null
 var _ambient_material: ShaderMaterial = null
 var _ambient_source_viewport: SubViewport = null
 var _ambient_source_texture: Texture2D = null
+var _ambient_native_source_texture: ImageTexture = null
+var _ambient_native_sample_revision := 0
+var _ambient_native_applied_revision := -1
+var _ambient_native_static_waiting := false
 var _ambient_native_supported := false
 var _ambient_support_logged := false
 var _ambient_dirty := true
@@ -733,9 +737,24 @@ func apply_compositor_sharpen(mode: int) -> bool:
 	_last_compositor_sharpen_supported = supported
 	return requested and supported and in_use
 
-func _prepare_ambient_sample_update():
+func _prepare_ambient_sample_update() -> bool:
+	if main.native_xr_renderer and main.native_xr_renderer.active:
+		main.native_xr_renderer.request_ambient_sample()
+		# Do not redraw from the now-disabled legacy viewport while the first
+		# asynchronous native sample is still in flight.
+		if not _ambient_native_source_texture:
+			_ambient_native_static_waiting = main.ambient_mode == 1
+			return false
+		# Static Blur must wait for a newly requested sample after a settings
+		# change, rather than immediately redrawing the previous frozen sample.
+		if main.ambient_mode == 1:
+			if _ambient_native_sample_revision == _ambient_native_applied_revision:
+				_ambient_native_static_waiting = true
+				return false
+			_ambient_native_applied_revision = _ambient_native_sample_revision
+			_ambient_native_static_waiting = false
 	if not _ambient_sample_rect or not _ambient_sample_viewport:
-		return
+		return false
 	if not _ambient_sample_seeded:
 		# First frame replaces the cleared target so startup is never dark.
 		_ambient_sample_rect.modulate = Color.WHITE
@@ -747,6 +766,33 @@ func _prepare_ambient_sample_update():
 		# because it only receives ten samples per second.
 		var blend = 0.35 if main.ambient_mode == 2 else 0.12
 		_ambient_sample_rect.modulate = Color(1.0, 1.0, 1.0, blend)
+	return true
+
+func update_native_ambient_sample(pixels: PackedByteArray, width: int, height: int):
+	if pixels.size() != width * height * 4 or width <= 0 or height <= 0:
+		return
+	var image := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, pixels)
+	# GLES readback uses a bottom-left origin; Godot textures use top-left.
+	image.flip_y()
+	var first_sample := _ambient_native_source_texture == null
+	if first_sample:
+		_ambient_native_source_texture = ImageTexture.create_from_image(image)
+	else:
+		_ambient_native_source_texture.update(image)
+	_ambient_native_sample_revision += 1
+	if first_sample or _ambient_source_texture != _ambient_native_source_texture:
+		_refresh_ambient_source(true)
+	if first_sample or _ambient_native_static_waiting:
+		_ambient_dirty = true
+
+func clear_native_ambient_sample():
+	var had_native_source := _ambient_native_source_texture != null
+	_ambient_native_source_texture = null
+	_ambient_native_sample_revision = 0
+	_ambient_native_applied_revision = -1
+	_ambient_native_static_waiting = false
+	if had_native_source:
+		_refresh_ambient_source(true)
 
 func _ambient_static_color() -> Color:
 	var colors := [
@@ -768,13 +814,18 @@ func _ambient_intensity() -> float:
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
 		return
-	var source: SubViewport = main.primary_screen.comp_viewport
-	var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
-	if stereo > 0 and main.primary_screen.comp_viewport_left:
-		# A single both-eye halo is intentional. The left-eye composited output
-		# is a stable representative source and avoids a second ambient layer.
-		source = main.primary_screen.comp_viewport_left
-	var source_texture: Texture2D = source.get_texture()
+	var source: SubViewport = null
+	var source_texture: Texture2D = null
+	if main.native_xr_renderer and main.native_xr_renderer.active and _ambient_native_source_texture:
+		source_texture = _ambient_native_source_texture
+	else:
+		source = main.primary_screen.comp_viewport
+		var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
+		if stereo > 0 and main.primary_screen.comp_viewport_left:
+			# A single both-eye halo is intentional. The left-eye composited output
+			# is a stable representative source and avoids a second ambient layer.
+			source = main.primary_screen.comp_viewport_left
+		source_texture = source.get_texture()
 	if force or source != _ambient_source_viewport or source_texture != _ambient_source_texture:
 		_ambient_source_viewport = source
 		_ambient_source_texture = source_texture
@@ -844,8 +895,9 @@ func process_ambient(delta: float):
 	match main.ambient_mode:
 		1: # Static: redraw only after a setting/geometry change.
 			if _ambient_dirty:
+				if main.ambient_style == main.AMBIENT_STYLE_BLUR and not _prepare_ambient_sample_update():
+					return
 				if main.ambient_style == main.AMBIENT_STYLE_BLUR:
-					_prepare_ambient_sample_update()
 					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
@@ -853,12 +905,14 @@ func process_ambient(delta: float):
 			_ambient_slow_elapsed += delta
 			if _ambient_dirty or _ambient_slow_elapsed >= AMBIENT_SLOW_INTERVAL_SEC:
 				_ambient_slow_elapsed = fmod(_ambient_slow_elapsed, AMBIENT_SLOW_INTERVAL_SEC)
-				_prepare_ambient_sample_update()
+				if not _prepare_ambient_sample_update():
+					return
 				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 		3: # Live: useful as the visual/performance comparison ceiling.
-			_prepare_ambient_sample_update()
+			if not _prepare_ambient_sample_update():
+				return
 			if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
 				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 			if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:

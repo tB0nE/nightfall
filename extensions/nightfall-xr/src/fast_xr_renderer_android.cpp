@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 
 #include <android/log.h>
 #include <GLES2/gl2ext.h>
@@ -54,6 +55,15 @@ static const char *FRAGMENT_SRC =
 		"uniform float u_frameWidth;\n"
 		"uniform float u_debugSolid;\n"
 		"uniform int u_stereoMode;\n"
+		"#ifdef NIGHTFALL_PICTURE\n"
+		"uniform float u_brightness;\n"
+		"uniform float u_contrast;\n"
+		"uniform float u_gamma;\n"
+		"vec3 applyPicture(vec3 c) {\n"
+		"    c = (c - 0.5) * u_contrast + 0.5 + u_brightness;\n"
+		"    return pow(max(c, vec3(0.0)), vec3(1.0 / u_gamma));\n"
+		"}\n"
+		"#endif\n"
 		"out vec4 fragColor;\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
@@ -103,7 +113,12 @@ static const char *FRAGMENT_SRC =
 		"        tc = (u_eyeIndex < 0.5) ? vec2(tc.x * 0.5, tc.y * 0.5 + 0.25)\n"
 		"                                      : vec2(tc.x * 0.5 + 0.5, tc.y * 0.5 + 0.25);\n"
 		"    }\n"
+		"#ifdef NIGHTFALL_PICTURE\n"
+		"    vec3 color = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy).rgb;\n"
+		"    fragColor = vec4(applyPicture(color), 1.0);\n"
+		"#else\n"
 		"    fragColor = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy);\n"
+		"#endif\n"
 		"}\n";
 
 // Deliberately separate from FRAGMENT_SRC. A runtime HDR branch in the SDR
@@ -131,6 +146,9 @@ static const char *HDR_FRAGMENT_SRC =
 		"uniform float u_debugSolid;\n"
 		"uniform int u_stereoMode;\n"
 		"uniform int u_colorTransfer;\n"
+		"uniform float u_brightness;\n"
+		"uniform float u_contrast;\n"
+		"uniform float u_gamma;\n"
 		"out vec4 fragColor;\n"
 		// Explicit interpolation makes GL_R32F filtering requirements irrelevant.
 		"float hdrLutSample(float value, int row) {\n"
@@ -166,6 +184,10 @@ static const char *HDR_FRAGMENT_SRC =
 		"        hdrLutSample(linear.g, 2),\n"
 		"        hdrLutSample(linear.b, 2));\n"
 		"}\n"
+		"vec3 applyPicture(vec3 c) {\n"
+		"    c = (c - 0.5) * u_contrast + 0.5 + u_brightness;\n"
+		"    return pow(max(c, vec3(0.0)), vec3(1.0 / u_gamma));\n"
+		"}\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
 		"    float d = texture(u_depth, v_plain).a;\n"
@@ -197,7 +219,7 @@ static const char *HDR_FRAGMENT_SRC =
 		"                                      : vec2(tc.x * 0.5 + 0.5, tc.y * 0.5 + 0.25);\n"
 		"    }\n"
 		"    vec3 encoded = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy).rgb;\n"
-		"    fragColor = vec4(hdrToSdr(encoded), 1.0);\n"
+		"    fragColor = vec4(applyPicture(hdrToSdr(encoded)), 1.0);\n"
 		"}\n";
 
 static float pq_decode_lut(float e) {
@@ -354,9 +376,24 @@ static bool check_xr(XrResult p_res, const char *p_what) {
 	return true;
 }
 
-static GLuint compile_shader(GLenum p_type, const char *p_src) {
+static GLuint compile_shader(GLenum p_type, const char *p_src, const char *p_defines = nullptr) {
 	GLuint shader = glCreateShader(p_type);
-	glShaderSource(shader, 1, &p_src, nullptr);
+	if (p_defines != nullptr) {
+		// GLSL requires #version to be the first directive. Insert optional
+		// compile-time variants immediately after its first line so the neutral
+		// SDR program completely preprocesses Picture grading out of existence.
+		const char *body = strchr(p_src, '\n');
+		if (body != nullptr) {
+			body++;
+			const char *sources[] = { p_src, p_defines, body };
+			GLint lengths[] = { static_cast<GLint>(body - p_src), -1, -1 };
+			glShaderSource(shader, 3, sources, lengths);
+		} else {
+			glShaderSource(shader, 1, &p_src, nullptr);
+		}
+	} else {
+		glShaderSource(shader, 1, &p_src, nullptr);
+	}
 	glCompileShader(shader);
 	GLint ok = 0;
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
@@ -370,9 +407,9 @@ static GLuint compile_shader(GLenum p_type, const char *p_src) {
 	return shader;
 }
 
-static GLuint link_program(const char *p_fragment_src) {
+static GLuint link_program(const char *p_fragment_src, const char *p_fragment_defines = nullptr) {
 	GLuint vs = compile_shader(GL_VERTEX_SHADER, VERTEX_SRC);
-	GLuint fs = compile_shader(GL_FRAGMENT_SHADER, p_fragment_src);
+	GLuint fs = compile_shader(GL_FRAGMENT_SHADER, p_fragment_src, p_fragment_defines);
 	if (vs == 0 || fs == 0) {
 		return 0;
 	}
@@ -622,7 +659,7 @@ bool NightfallXrRenderer::init_swapchain() {
 }
 
 bool NightfallXrRenderer::init_gl() {
-	auto configure_warp_uniforms = [](GLuint program, WarpUniforms &uniforms, bool hdr) {
+	auto configure_warp_uniforms = [](GLuint program, WarpUniforms &uniforms, bool hdr, bool picture) {
 		uniforms.texmatrix = glGetUniformLocation(program, "u_texmatrix");
 		uniforms.disparity = glGetUniformLocation(program, "u_disparity");
 		uniforms.occlusion = glGetUniformLocation(program, "u_occlusion");
@@ -642,20 +679,32 @@ bool NightfallXrRenderer::init_gl() {
 			uniforms.hdr_lut = glGetUniformLocation(program, "u_hdrLut");
 			glUniform1i(uniforms.hdr_lut, 3);
 		}
+		if (picture) {
+			uniforms.brightness = glGetUniformLocation(program, "u_brightness");
+			uniforms.contrast = glGetUniformLocation(program, "u_contrast");
+			uniforms.gamma = glGetUniformLocation(program, "u_gamma");
+		}
 	};
 
 	warp_program = link_program(FRAGMENT_SRC);
 	if (warp_program == 0) {
 		return false;
 	}
-	configure_warp_uniforms(warp_program, warp_uniforms, false);
+	configure_warp_uniforms(warp_program, warp_uniforms, false, false);
+
+	picture_warp_program = link_program(FRAGMENT_SRC, "#define NIGHTFALL_PICTURE 1\n");
+	if (picture_warp_program == 0) {
+		XR_LOGE("Failed to compile native Picture warp program");
+		return false;
+	}
+	configure_warp_uniforms(picture_warp_program, picture_warp_uniforms, false, true);
 
 	hdr_warp_program = link_program(HDR_FRAGMENT_SRC);
 	if (hdr_warp_program == 0) {
 		XR_LOGE("Failed to compile native HDR warp program");
 		return false;
 	}
-	configure_warp_uniforms(hdr_warp_program, hdr_warp_uniforms, true);
+	configure_warp_uniforms(hdr_warp_program, hdr_warp_uniforms, true, true);
 
 	float hdr_lut_data[256 * 3];
 	for (int x = 0; x < 256; x++) {
@@ -727,6 +776,36 @@ bool NightfallXrRenderer::init_gl() {
 
 	glGenFramebuffers(1, &warp_fbo);
 
+	// Ambient lighting consumes only this 32x32 copy of the already-rendered
+	// native image. The PBO ring keeps its readback off the critical draw path:
+	// we map a buffer only after its fence reports completion on a later frame.
+	glGenTextures(1, &ambient_sample_texture);
+	glBindTexture(GL_TEXTURE_2D, ambient_sample_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, AMBIENT_SAMPLE_WIDTH,
+			AMBIENT_SAMPLE_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glGenFramebuffers(1, &ambient_sample_fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, ambient_sample_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+			ambient_sample_texture, 0);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		XR_LOGE("Failed to create native ambient sample framebuffer");
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		return false;
+	}
+	glGenBuffers(AMBIENT_SAMPLE_PBO_COUNT, ambient_sample_pbos);
+	for (int i = 0; i < AMBIENT_SAMPLE_PBO_COUNT; i++) {
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, ambient_sample_pbos[i]);
+		glBufferData(GL_PIXEL_PACK_BUFFER,
+				AMBIENT_SAMPLE_WIDTH * AMBIENT_SAMPLE_HEIGHT * 4,
+				nullptr, GL_STREAM_READ);
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
 	const char *gl_exts = (const char *)glGetString(GL_EXTENSIONS);
 	srgb_write_control = gl_exts != nullptr && strstr(gl_exts, "GL_EXT_sRGB_write_control") != nullptr;
 
@@ -736,11 +815,21 @@ bool NightfallXrRenderer::init_gl() {
 void NightfallXrRenderer::stop_stream() {
 	pending_new_frame = false;
 	ever_rendered = false;
+	ambient_sample_requested.store(false, std::memory_order_release);
+	{
+		std::lock_guard<std::mutex> lock(ambient_sample_result_mutex);
+		ambient_sample_result.clear();
+		ambient_sample_result_ready = false;
+	}
 	pending_color_transfer_type = 0;
 	rendered_color_transfer_type = -1;
+	pending_brightness = 0.0f;
+	pending_contrast = 1.0f;
+	pending_gamma = 1.0f;
 	depth_cache_valid = false;
 	rendered_depth_revision = UINT64_MAX;
 	rendered_depth_separation = -1.0f;
+	rendered_depth_convergence = -1.0f;
 	layer_frame_counter = 0;
 	eye_last_queried_frame[0] = 0;
 	eye_last_queried_frame[1] = 0;
@@ -767,6 +856,12 @@ void NightfallXrRenderer::stop_stream() {
 		EGLSurface restore_read = eglGetCurrentSurface(EGL_READ);
 		if (egl_context != EGL_NO_CONTEXT && egl_pbuffer != EGL_NO_SURFACE) {
 			eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context);
+			for (int i = 0; i < AMBIENT_SAMPLE_PBO_COUNT; i++) {
+				if (ambient_sample_fences[i] != nullptr) {
+					glDeleteSync(ambient_sample_fences[i]);
+					ambient_sample_fences[i] = nullptr;
+				}
+			}
 			if (pending_oes_fence != 0) {
 				glDeleteSync(reinterpret_cast<GLsync>(pending_oes_fence));
 				pending_oes_fence = 0;
@@ -776,19 +871,27 @@ void NightfallXrRenderer::stop_stream() {
 			}
 			superseded_oes_fences.clear();
 			if (warp_fbo) glDeleteFramebuffers(1, &warp_fbo);
+			if (ambient_sample_fbo) glDeleteFramebuffers(1, &ambient_sample_fbo);
 			if (upsample_fbo) glDeleteFramebuffers(1, &upsample_fbo);
 			if (offset_fbo) glDeleteFramebuffers(1, &offset_fbo);
+			if (ambient_sample_pbos[0] || ambient_sample_pbos[1]) {
+				glDeleteBuffers(AMBIENT_SAMPLE_PBO_COUNT, ambient_sample_pbos);
+			}
+			if (ambient_sample_texture) glDeleteTextures(1, &ambient_sample_texture);
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
 			if (hdr_lut_texture) glDeleteTextures(1, &hdr_lut_texture);
 			if (warp_program) glDeleteProgram(warp_program);
+			if (picture_warp_program) glDeleteProgram(picture_warp_program);
 			if (hdr_warp_program) glDeleteProgram(hdr_warp_program);
 			if (upsample_program) glDeleteProgram(upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
 		}
-		warp_fbo = upsample_fbo = offset_fbo = 0;
-		upsample_texture = offset_texture = hdr_lut_texture = 0;
-		warp_program = hdr_warp_program = upsample_program = offset_program = 0;
+		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = 0;
+		ambient_sample_pbos[0] = ambient_sample_pbos[1] = 0;
+		ambient_sample_next_pbo = 0;
+		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = 0;
+		warp_program = picture_warp_program = hdr_warp_program = upsample_program = offset_program = 0;
 		eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
 		if (egl_pbuffer != EGL_NO_SURFACE) {
 			eglDestroySurface(egl_display, egl_pbuffer);
@@ -815,6 +918,26 @@ void NightfallXrRenderer::shutdown() {
 
 void NightfallXrRenderer::stop() {
 	shutdown();
+}
+
+void NightfallXrRenderer::request_ambient_sample() {
+	if (swapchain != XR_NULL_HANDLE) {
+		ambient_sample_requested.store(true, std::memory_order_release);
+	}
+}
+
+PackedByteArray NightfallXrRenderer::consume_ambient_sample() {
+	PackedByteArray result;
+	std::lock_guard<std::mutex> lock(ambient_sample_result_mutex);
+	if (!ambient_sample_result_ready) {
+		return result;
+	}
+	result.resize(static_cast<int64_t>(ambient_sample_result.size()));
+	if (!ambient_sample_result.empty()) {
+		memcpy(result.ptrw(), ambient_sample_result.data(), ambient_sample_result.size());
+	}
+	ambient_sample_result_ready = false;
+	return result;
 }
 
 bool NightfallXrRenderer::is_started() const {
@@ -883,7 +1006,7 @@ void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_dep
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
-void NightfallXrRenderer::run_offset_search(float p_separation) {
+void NightfallXrRenderer::run_offset_search(float p_separation, float p_convergence) {
 	glBindFramebuffer(GL_FRAMEBUFFER, offset_fbo);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, offset_texture, 0);
 	glViewport(0, 0, upsample_width, upsample_height);
@@ -891,7 +1014,7 @@ void NightfallXrRenderer::run_offset_search(float p_separation) {
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, upsample_texture);
 	glUniform1f(u_offset_disp, p_separation * upsample_width);
-	glUniform1f(u_offset_conv, 0.5f);
+	glUniform1f(u_offset_conv, p_convergence);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
@@ -899,9 +1022,74 @@ void NightfallXrRenderer::run_offset_search(float p_separation) {
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
+void NightfallXrRenderer::poll_ambient_sample() {
+	const size_t byte_count = AMBIENT_SAMPLE_WIDTH * AMBIENT_SAMPLE_HEIGHT * 4;
+	for (int i = 0; i < AMBIENT_SAMPLE_PBO_COUNT; i++) {
+		if (ambient_sample_fences[i] == nullptr) {
+			continue;
+		}
+		GLenum status = glClientWaitSync(ambient_sample_fences[i], 0, 0);
+		if (status == GL_WAIT_FAILED) {
+			XR_LOGE("Native ambient readback fence wait failed: 0x%x", glGetError());
+			glDeleteSync(ambient_sample_fences[i]);
+			ambient_sample_fences[i] = nullptr;
+			continue;
+		}
+		if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+			continue;
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, ambient_sample_pbos[i]);
+		void *mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, byte_count, GL_MAP_READ_BIT);
+		if (mapped != nullptr) {
+			std::vector<uint8_t> sample(byte_count);
+			memcpy(sample.data(), mapped, byte_count);
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+			std::lock_guard<std::mutex> lock(ambient_sample_result_mutex);
+			ambient_sample_result = std::move(sample);
+			ambient_sample_result_ready = true;
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+		glDeleteSync(ambient_sample_fences[i]);
+		ambient_sample_fences[i] = nullptr;
+	}
+}
+
+bool NightfallXrRenderer::issue_ambient_sample() {
+	int slot = -1;
+	for (int offset = 0; offset < AMBIENT_SAMPLE_PBO_COUNT; offset++) {
+		int candidate = (ambient_sample_next_pbo + offset) % AMBIENT_SAMPLE_PBO_COUNT;
+		if (ambient_sample_fences[candidate] == nullptr) {
+			slot = candidate;
+			break;
+		}
+	}
+	if (slot < 0) {
+		return false;
+	}
+
+	// Exclude the fixed 8px native bezel so it cannot tint the edge sample.
+	const int inset = pending_bezel_enabled ? 8 : 0;
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, warp_fbo);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ambient_sample_fbo);
+	glBlitFramebuffer(inset, inset, output_width - inset, output_height - inset,
+			0, 0, AMBIENT_SAMPLE_WIDTH, AMBIENT_SAMPLE_HEIGHT,
+			GL_COLOR_BUFFER_BIT, GL_LINEAR);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, ambient_sample_fbo);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, ambient_sample_pbos[slot]);
+	glReadPixels(0, 0, AMBIENT_SAMPLE_WIDTH, AMBIENT_SAMPLE_HEIGHT,
+			GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	ambient_sample_fences[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	ambient_sample_next_pbo = (slot + 1) % AMBIENT_SAMPLE_PBO_COUNT;
+	return ambient_sample_fences[slot] != nullptr;
+}
+
 void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
-		bool p_occluding) {
+		float p_convergence, bool p_occluding) {
 	// Must run first, with egl_context already current (true here) and
 	// before any sampling of p_oes_texture_id (run_upsample() below samples
 	// it too): waits for TextureUploader's updateTexImage() write -- on
@@ -920,6 +1108,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glDeleteSync(reinterpret_cast<GLsync>(pending_oes_fence));
 		pending_oes_fence = 0;
 	}
+	poll_ambient_sample();
 
 	bool has_depth = p_depth_texture_id != 0 && p_depth_guide_texture_id != 0;
 	bool refresh_depth = has_depth && (!depth_cache_valid || pending_depth_revision != rendered_depth_revision);
@@ -929,9 +1118,11 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		rendered_depth_revision = pending_depth_revision;
 	}
 	bool upsampling = has_depth && depth_cache_valid;
-	if (upsampling && p_occluding && (refresh_depth || p_separation != rendered_depth_separation)) {
-		run_offset_search(p_separation);
+	if (upsampling && p_occluding && (refresh_depth || p_separation != rendered_depth_separation ||
+			p_convergence != rendered_depth_convergence)) {
+		run_offset_search(p_separation, p_convergence);
 		rendered_depth_separation = p_separation;
+		rendered_depth_convergence = p_convergence;
 	}
 
 	uint32_t image_index = 0;
@@ -950,8 +1141,13 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	}
 
 	bool use_hdr = pending_color_transfer_type == 1 || pending_color_transfer_type == 2;
-	GLuint active_warp_program = use_hdr ? hdr_warp_program : warp_program;
-	WarpUniforms &uniforms = use_hdr ? hdr_warp_uniforms : warp_uniforms;
+	bool use_picture = std::fabs(pending_brightness) > 0.0001f ||
+			std::fabs(pending_contrast - 1.0f) > 0.0001f ||
+			std::fabs(pending_gamma - 1.0f) > 0.0001f;
+	GLuint active_warp_program = use_hdr ? hdr_warp_program
+			: (use_picture ? picture_warp_program : warp_program);
+	WarpUniforms &uniforms = use_hdr ? hdr_warp_uniforms
+			: (use_picture ? picture_warp_uniforms : warp_uniforms);
 	glUseProgram(active_warp_program);
 	if (rendered_color_transfer_type != pending_color_transfer_type) {
 		const char *transfer_name = pending_color_transfer_type == 1 ? "PQ"
@@ -976,10 +1172,15 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glBindTexture(GL_TEXTURE_2D, hdr_lut_texture);
 		glUniform1i(uniforms.color_transfer, pending_color_transfer_type);
 	}
+	if (use_hdr || use_picture) {
+		glUniform1f(uniforms.brightness, pending_brightness);
+		glUniform1f(uniforms.contrast, pending_contrast);
+		glUniform1f(uniforms.gamma, pending_gamma);
+	}
 	glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, p_tex_matrix);
 	glUniform1f(uniforms.debug_solid, debug_solid_color ? 1.0f : 0.0f);
 	glUniform1f(uniforms.occlusion, p_occluding ? 1.0f : 0.0f);
-	glUniform1f(uniforms.convergence, 0.5f);
+	glUniform1f(uniforms.convergence, p_convergence);
 	glUniform1f(uniforms.disp_texels, p_separation * upsample_width);
 	glUniform1f(uniforms.low_res_width, (float)upsample_width);
 	glUniform1f(uniforms.frame_width, (float)video_width);
@@ -1001,6 +1202,12 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glUniform1f(uniforms.eye_index, (float)eye);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
+	if (ambient_sample_requested.exchange(false, std::memory_order_acq_rel) &&
+			!issue_ambient_sample()) {
+		// Both readback buffers are still in flight. Retain one coalesced request
+		// and retry after a later frame frees a slot.
+		ambient_sample_requested.store(true, std::memory_order_release);
+	}
 
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
@@ -1015,7 +1222,8 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 		uint32_t p_depth_guide_texture_id, PackedFloat32Array p_tex_matrix, float p_distance,
 		float p_quad_width, bool p_head_locked, float p_separation, bool p_eye_swap,
 		bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode, uint64_t p_depth_revision,
-		int p_color_transfer_type) {
+		int p_color_transfer_type, float p_convergence, float p_brightness,
+		float p_contrast, float p_gamma) {
 	pending_new_frame = p_new_frame;
 	pending_oes_texture_id = p_oes_texture_id;
 	pending_depth_texture_id = p_depth_texture_id;
@@ -1028,11 +1236,15 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 	pending_quad_width = p_quad_width;
 	pending_head_locked = p_head_locked;
 	pending_separation = p_separation;
+	pending_convergence = std::fmin(std::fmax(p_convergence, 0.0f), 1.0f);
 	pending_eye_swap = p_eye_swap;
 	pending_passthrough = p_passthrough;
 	pending_stereo_mode = p_stereo_mode;
 	pending_color_transfer_type = (p_color_transfer_type == 1 || p_color_transfer_type == 2)
 			? p_color_transfer_type : 0;
+	pending_brightness = std::fmin(std::fmax(p_brightness, -1.0f), 1.0f);
+	pending_contrast = std::fmin(std::fmax(p_contrast, 0.01f), 4.0f);
+	pending_gamma = std::fmin(std::fmax(p_gamma, 0.01f), 4.0f);
 	pending_depth_revision = p_depth_revision;
 	if (pending_oes_fence != 0) {
 		// submit_frame() runs on the script thread, where no GL context is
@@ -1108,7 +1320,7 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 	}
 	superseded_oes_fences.clear();
 	render_video_frame(pending_oes_texture_id, pending_depth_texture_id, pending_depth_guide_texture_id,
-			pending_tex_matrix, pending_separation, occluding);
+			pending_tex_matrix, pending_separation, pending_convergence, occluding);
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("maybe_render_pending_frame: restoring Godot's EGL context/surface failed: %d", eglGetError());
 	}

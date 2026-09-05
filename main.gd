@@ -1145,6 +1145,17 @@ func _update_cursor_layer():
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
 			var to_cam = (xr_camera.global_position - hit_point).normalized()
+			# The native renderer cannot embed the pointer into its video texture,
+			# so apply the AI-3D cursor calibration to this independent composition
+			# layer in world space. Convert the legacy branch's exact pixel offset
+			# into screen metres so Left/Default/Right remain resolution-independent.
+			var native_ai_cursor_offset := Vector3.ZERO
+			if on_screen and stereo >= 3 and native_xr_renderer and native_xr_renderer.active and hovered_screen:
+				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
+				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
+				var correction_px := float(ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				var screen_right := hovered_screen.global_transform.basis.x.normalized()
+				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			var screen_dist = xr_camera.global_position.distance_to(screen_mesh.global_position)
 			var cursor_dist = xr_camera.global_position.distance_to(hit_point)
 			var dist_scale = cursor_dist / screen_dist
@@ -1157,7 +1168,7 @@ func _update_cursor_layer():
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
 					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
+				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 			elif on_screen:
@@ -1172,7 +1183,7 @@ func _update_cursor_layer():
 				var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
 				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale) if native_screen_cursor or RenderingServer.get_current_rendering_method() != "gl_compatibility" else Vector2(0.064 * dist_scale, 0.064 * dist_scale)
 				comp_cursor.set_quad_size(cursor_quad_size)
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
+				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 				var right = comp_cursor.global_transform.basis.x
