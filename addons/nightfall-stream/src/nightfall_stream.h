@@ -103,6 +103,7 @@ private:
     void _on_connection_status_update(int status);
     void _on_log_message(const String &message);
     void _on_h264_hw_upgraded();
+    void _on_hdr_mode_changed(bool hdr_enabled, const Dictionary &metadata);
     void _on_controller_rumble(int controller, int low_freq, int high_freq);
     void _on_controller_trigger_rumble(int controller, int left_motor, int right_motor);
 

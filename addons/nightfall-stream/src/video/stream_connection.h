@@ -104,6 +104,7 @@ private:
     void _reset_performance_stats();
 
     AVColorSpace _resolve_frame_colorspace(AVFrame *frame) const;
+    int _resolve_frame_transfer(AVFrame *frame) const;
 
     static bool _extract_h264_sps_pps(const uint8_t *data, int size,
                                        uint8_t **sps, int *sps_size,
@@ -166,6 +167,7 @@ private:
     int active_video_format_ = 0;
     AVColorSpace current_colorspace_ = AVCOL_SPC_BT709;
     AVColorRange current_color_range_ = AVCOL_RANGE_UNSPECIFIED;
+    int current_color_transfer_ = 0;
     bool local_capture_mode_ = false;
 #ifdef __ANDROID__
     struct CachedAhbImport {

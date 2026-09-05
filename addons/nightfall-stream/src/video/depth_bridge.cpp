@@ -225,6 +225,36 @@ void DepthBridge::set_depth_gpu_priority(int priority) {
 #endif
 }
 
+// AI 3D tab's Hz Cap control (2026-08-28) - same JNI shape as
+// configure_depth() above, just a single-int void setter. No Linux
+// equivalent yet (MidasDepthEngine has no rate-limiting of its own to
+// target) - silently a no-op there, matching this file's other Android-
+// only bridge methods' platform fallback convention.
+void DepthBridge::set_depth_hz_cap(int hz) {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return;
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        env->ExceptionClear();
+        return;
+    }
+
+    jmethodID method = env->GetStaticMethodID(app_class, "setDepthHzCap", "(I)V");
+    if (!method) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return;
+    }
+
+    env->CallStaticVoidMethod(app_class, method, (jint)hz);
+    env->DeleteLocalRef(app_class);
+#else
+    (void)hz;
+#endif
+}
+
 int DepthBridge::get_depth_backend_capabilities(int model_index) {
 #ifdef __ANDROID__
     JNIEnv *env = get_jni_env();
@@ -493,6 +523,7 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_depth_model", "model_index"), &DepthBridge::set_depth_model);
     ClassDB::bind_method(D_METHOD("configure_depth", "model_index", "requested_backend"), &DepthBridge::configure_depth);
     ClassDB::bind_method(D_METHOD("set_depth_gpu_priority", "priority"), &DepthBridge::set_depth_gpu_priority);
+    ClassDB::bind_method(D_METHOD("set_depth_hz_cap", "hz"), &DepthBridge::set_depth_hz_cap);
     ClassDB::bind_method(D_METHOD("get_depth_backend_capabilities", "model_index"), &DepthBridge::get_depth_backend_capabilities);
     ClassDB::bind_method(D_METHOD("get_effective_depth_backend"), &DepthBridge::get_effective_depth_backend);
     ClassDB::bind_method(D_METHOD("get_depth_backend_status"), &DepthBridge::get_depth_backend_status);

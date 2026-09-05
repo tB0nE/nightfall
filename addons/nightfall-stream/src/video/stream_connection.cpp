@@ -1067,6 +1067,11 @@ void StreamConnection::_cb_connection_status_update(int connectionStatus) {
 void StreamConnection::_cb_set_hdr_mode(bool hdrEnabled) {
     auto *self = active_instance_;
     if (self) {
+        // Native Android decoding (both GLES SurfaceTexture and Vulkan AHB)
+        // bypasses the AVFrame path used by _resolve_frame_transfer(). The
+        // Moonlight protocol callback is therefore the authoritative HDR10
+        // transfer signal for those paths. Sunshine HDR streaming is PQ/ST2084.
+        self->uploader_->update_color_transfer(hdrEnabled ? 1 : 0);
         Dictionary metadata;
         if (hdrEnabled) {
             SS_HDR_METADATA hdr_data;
@@ -1154,6 +1159,18 @@ AVColorSpace StreamConnection::_resolve_frame_colorspace(AVFrame *frame) const {
     }
 
     return declared;
+}
+
+// 0 = SDR/BT.709 gamma (default), 1 = PQ/ST 2084 (HDR10), 2 = HLG.
+// Drives yuv_display.gdshader's/stereo_screen.gdshader's color_transfer_type
+// uniform, which selects the inverse-EOTF + tonemap step needed to render
+// HDR streams without the "blown out to white" look SDR-gamma display of
+// PQ/HLG samples produces.
+int StreamConnection::_resolve_frame_transfer(AVFrame *frame) const {
+    if (!frame) return 0;
+    if (frame->color_trc == AVCOL_TRC_SMPTE2084) return 1;
+    if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) return 2;
+    return 0;
 }
 
 void StreamConnection::_connection_thread_func() {
@@ -1488,10 +1505,11 @@ void StreamConnection::_decode_thread_func() {
                         pkt->size >= (int)(sizeof(RawFrameHeader) + expected_y + expected_uv)) {
                         _record_rendered_frame(pkt->pts);
 
-                        if (current_colorspace_ != AVCOL_SPC_BT709) {
+                        if (current_colorspace_ != AVCOL_SPC_BT709 || current_color_transfer_ != 0) {
                             current_colorspace_ = AVCOL_SPC_BT709;
                             current_color_range_ = AVCOL_RANGE_UNSPECIFIED;
-                            uploader_->update_colorspace((int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED);
+                            current_color_transfer_ = 0;
+                            uploader_->update_colorspace((int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED, 0);
                         }
 
                         const uint8_t *payload = pkt->data + sizeof(RawFrameHeader);
@@ -1666,10 +1684,12 @@ void StreamConnection::_decode_thread_func() {
 
                 AVColorSpace frame_cs = _resolve_frame_colorspace(final_frame);
                 AVColorRange frame_cr = (AVColorRange)final_frame->color_range;
-                if (frame_cs != current_colorspace_ || frame_cr != current_color_range_) {
+                int frame_trc = _resolve_frame_transfer(final_frame);
+                if (frame_cs != current_colorspace_ || frame_cr != current_color_range_ || frame_trc != current_color_transfer_) {
                     current_colorspace_ = frame_cs;
                     current_color_range_ = frame_cr;
-                    uploader_->update_colorspace((int)frame_cs, (int)frame_cr);
+                    current_color_transfer_ = frame_trc;
+                    uploader_->update_colorspace((int)frame_cs, (int)frame_cr, frame_trc);
                 }
 
                 if (!used_ahb) {

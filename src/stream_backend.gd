@@ -221,6 +221,12 @@ func set_depth_gpu_priority(priority: int):
 		if db and db.has_method("set_depth_gpu_priority"):
 			db.set_depth_gpu_priority(priority)
 
+func set_depth_hz_cap(hz: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			db.set_depth_hz_cap(hz)
+
 func get_depth_backend_capabilities(model_id: int) -> int:
 	if _v2:
 		var db = _v2.get_depth_bridge()

@@ -69,11 +69,50 @@ var is_streaming: bool = false
 var sbs_mode: int = 0
 # Collapsed (2026-08-24) to two independent axes - see
 # settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
-# get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
+# get_stereo_mode() for how they combine. Split across a main-page On/Off
+# toggle and a dedicated "AI 3D" tab (2026-08-28) - ai_3d_speed itself is
+# UNCHANGED (still the single source of truth everywhere else in the
+# codebase), just driven by two different UI controls now: the main page
+# toggle flips it between 0 and ai_3d_last_mode, while the tab's own "3D
+# Mode" control cycles 1-3 directly and keeps ai_3d_last_mode in sync - see
+# settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
+var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
 var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
 var ai_3d_gpu_priority: int = 0 # 0=Stream (low-priority OpenCL), 1=Default driver priority
+var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
+# GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
+# only meaningful when that model actually has a GPU variant
+# (ai_3d_models[idx].gpu_available); DA-V2-252 has none, so this is
+# silently ignored (forced CPU) when it's selected - see
+# settings_controller.gd's get_depth_backend_index(). Values match
+# DepthBridge's own BACKEND_CPU=1/BACKEND_GPU=2 constants directly, no
+# separate mapping needed.
+var ai_3d_backend_pref: int = 2 # 1=CPU, 2=GPU
+# Depth-inference update-rate cap, in Hz - "more for experimentation" per
+# the user's own framing, so it's a straightforward pass-through to the
+# Java inference loop (see DepthBridge::set_depth_hz_cap()), not something
+# that changes the visual algorithm. Ignored under Auto (which always
+# targets a fixed 20Hz) - see settings_controller.gd's get_effective_hz_cap().
+var ai_3d_hz_cap: int = 20
+# Percentage multiplier on top of the depth-warp shaders' own tuned base
+# separation values (yuv_display.gdshader's mode5_parallax=0.006,
+# stereo_screen.gdshader's own copy=0.042) - NOT one shared absolute value,
+# since those two rendering paths were independently tuned to different
+# magnitudes for the same visual effect. See settings_controller.gd's
+# _push_ai3d_effect_uniforms()/depth_estimator.gd's set_separation_pct().
+var ai_3d_separation_pct: int = 100
+# Percentage-as-depth-fraction (30-70, maps directly to 0.30-0.70) for the
+# warp shaders' "convergence" uniform - the depth value that renders with
+# zero parallax (the "screen plane"). Declared in every depth-warp shader
+# already, default 0.5, but never actually driven from GDScript until this
+# - see _push_ai3d_effect_uniforms().
+var ai_3d_convergence_pct: int = 50
+# Horizontal correction for the cursor drawn over AI-warped video. Stored as
+# -1/0/1 (Left/Default/Right). The calibrated Default is one 12px-at-1080p
+# step right of the original position. Presentation only: raycast and host
+# click coordinates stay unchanged.
+var ai_3d_cursor_position: int = 0
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -166,7 +205,31 @@ var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
 var smooth_mode: int = 0
 var sharpen_mode: int = 0
 var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
-var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
+const SHARPEN_RUNTIME_NORMAL := 6
+const SHARPEN_RUNTIME_QUALITY := 7
+# Keep the existing shader modes in their original saved-state slots for a
+# direct A/B comparison. The two runtime modes bypass those expensive video
+# neighbourhood samples when the OpenXR extension is available.
+var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime", "Runtime Quality"]
+# Picture tab (2026-08-31) - brightness/contrast/gamma grade applied as a
+# final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
+# shader variant) - see settings_controller.gd's apply_filter() for the
+# percent->shader-uniform mapping and each shader's apply_picture().
+var brightness_pct: int = 0 # -20..20, step 10 (additive)
+var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
+var gamma_pct: int = 100 # 50..150, step 25 (exponent)
+# Ambient screen lighting is a separate low-resolution composition layer,
+# so it stays out of the main YUV/HDR/AI-3D shader path. Reactive modes use
+# the already-rendered primary screen as their colour source.
+var ambient_mode: int = 0
+var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
+const AMBIENT_STYLE_BLUR := 3
+var ambient_style: int = 0
+var ambient_style_labels: Array = ["Glow", "Neon", "Both", "Blur"]
+var ambient_color: int = 0
+var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
+var ambient_intensity: int = 1
+var ambient_intensity_labels: Array = ["Low", "Medium", "High"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
@@ -222,6 +285,7 @@ var resolution_scale_options: Array = RESOLUTION_PRESETS
 # Quest 2 user reported AI-3D tanking performance; see settings_controller.
 # gd's QUEST2_AUTO_TABLE and main.gd's QUEST2_MAX_RESOLUTION.
 var device_is_quest2: bool = false
+var device_is_quest3: bool = false
 # See device_is_quest2's comment. Quest 2's own per-eye display resolution
 # (~1832x1920) is already below Quest 3's, so there's no real benefit
 # requesting more than this regardless of AI-3D state - applied in
@@ -253,11 +317,20 @@ var display_refresh_rate: float = 72.0
 var cursor_mode: int = 1
 var cursor_labels: Array = ["Circle", "Pointer"]
 var pointer_steady: int = 1
-var pointer_steady_labels: Array = ["Off", "Low", "High"]
+var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
+# Touch-controller double-click gesture. Standard leaves host-side recognition
+# untouched; Chord maps a near-simultaneous trigger+grip press to two left
+# clicks. Hand tracking always retains its normal pinch-twice behaviour.
+var double_click_mode: int = 0
+var double_click_mode_labels: Array = ["Standard", "Chord"]
 var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
 var _steady_factor: float = 0.3
 var _steady_dead_zone: float = 0.002
+var _steady_velocity: Vector3 = Vector3.ZERO
+var _steady_raw_hit: Vector3 = Vector3.ZERO
+var _steady_last_usec: int = 0
+var _steady_last_frame: int = -1
 var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
@@ -544,6 +617,14 @@ var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_3d_priority_btn: Button
+# AI 3D tab (2026-08-28) - see ui_controller.gd's build_ui() for layout.
+var _ui_3d_mode_btn: Button
+var _ui_3d_type_btn: Button
+var _ui_3d_hz_cap_btn: Button
+var _ui_3d_separation_btn: Button
+var _ui_3d_convergence_btn: Button
+var _ui_3d_cursor_position_btn: Button
+var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -554,9 +635,18 @@ var _ui_quick_start_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
+# Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
+var _ui_brightness_btn: Button
+var _ui_contrast_btn: Button
+var _ui_gamma_btn: Button
+var _ui_ambient_btn: Button
+var _ui_ambient_style_btn: Button
+var _ui_ambient_color_btn: Button
+var _ui_ambient_intensity_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
+var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
 var auto_reconnect_enabled: bool = true
 var _reconnecting: bool = false
@@ -845,20 +935,69 @@ func get_blur_scale(s: VRScreen) -> float:
 		return 1.0
 	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
 
+func _reset_steady_filter():
+	_steady_active = false
+	_steady_velocity = Vector3.ZERO
+	_steady_raw_hit = Vector3.ZERO
+	_steady_last_usec = 0
+	_steady_last_frame = -1
+
+func _one_euro_alpha(cutoff_hz: float, delta: float) -> float:
+	var tau := 1.0 / (TAU * maxf(cutoff_hz, 0.001))
+	return 1.0 / (1.0 + tau / maxf(delta, 0.000001))
+
 func _get_steady_hit(raw: Vector3) -> Vector3:
 	if pointer_steady == 0 or not is_xr_active:
-		_steady_active = false
+		_reset_steady_filter()
 		return raw
+	var frame := Engine.get_process_frames()
+	# Several interaction paths ask for the same ray hit in one frame. Advancing
+	# a time-based filter for every caller would make its response depend on UI
+	# state rather than elapsed time.
+	if _steady_active and frame == _steady_last_frame:
+		return _steady_hit
+	var now_usec := Time.get_ticks_usec()
 	if not _steady_active:
 		_steady_hit = raw
 		_steady_active = true
+		_steady_velocity = Vector3.ZERO
+		_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return raw
+	if pointer_steady == 3:
+		var delta := float(now_usec - _steady_last_usec) / 1000000.0
+		# A long gap means the ray left the screen or tracking was interrupted.
+		# Reset rather than letting the old point pull the cursor back onscreen.
+		if delta <= 0.0 or delta > 0.25:
+			_steady_hit = raw
+			_steady_velocity = Vector3.ZERO
+			_steady_raw_hit = raw
+		else:
+			# The derivative must be measured between consecutive raw samples.
+			# Measuring it against the filtered position makes accumulated filter
+			# lag look like movement and defeats One Euro's stationary cutoff.
+			var raw_velocity := (raw - _steady_raw_hit) / delta
+			var derivative_alpha := _one_euro_alpha(1.0, delta)
+			_steady_velocity = _steady_velocity.lerp(raw_velocity, derivative_alpha)
+			# Low cutoff while stationary removes controller tremor; movement raises
+			# it immediately so deliberate aiming does not inherit High's lag.
+			var cutoff := 1.2 + 8.0 * _steady_velocity.length()
+			_steady_hit = _steady_hit.lerp(raw, _one_euro_alpha(cutoff, delta))
+			_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
+		return _steady_hit
 	var factor := 0.3 if pointer_steady == 1 else 0.1
 	var dead_zone := 0.002 if pointer_steady == 1 else 0.005
 	var delta = raw - _steady_hit
 	if delta.length() < dead_zone:
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return _steady_hit
 	_steady_hit = _steady_hit.lerp(raw, factor)
+	_steady_last_usec = now_usec
+	_steady_last_frame = frame
 	return _steady_hit
 
 func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
@@ -961,6 +1100,13 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
+			# Correct the visible cursor independently of the real click point.
+			# One step is 12 pixels at 1080p and scales with stream height so the
+			# apparent adjustment stays consistent at other resolutions.
+			if stereo >= 3:
+				# New Left/Default/Right correspond to the old Default/Right/
+				# Right+ positions respectively, hence the +1 calibration step.
+				cx += (ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 			_set_comp_quad_hidden(comp_cursor, true)
 			if pointer_cursor:
 				pointer_cursor.visible = false
@@ -1678,6 +1824,14 @@ func _init_android_setup():
 	sbs_mode = clampi(sbs_mode, 0, 2)
 	ai_3d_model = clampi(ai_3d_model, 0, 4)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
+	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
+	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
+	if not [12, 15, 20, 30].has(ai_3d_hz_cap):
+		ai_3d_hz_cap = 20
+	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
+		ai_3d_separation_pct = 100
+	if not [30, 40, 50, 60, 70].has(ai_3d_convergence_pct):
+		ai_3d_convergence_pct = 50
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
@@ -2049,7 +2203,8 @@ func _init_stream_backend():
 		# generation), see GodotApp.java's getDeviceModel() comment.
 		var device_codename = stream_backend.get_device_model()
 		device_is_quest2 = device_codename.to_lower() == "hollywood"
-		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s" % [device_codename, str(device_is_quest2)])
+		device_is_quest3 = device_codename.to_lower() == "eureka"
+		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s device_is_quest3=%s" % [device_codename, str(device_is_quest2), str(device_is_quest3)])
 	_client_codec_support = stream_backend.probe_all_video_formats()
 	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s" % [
 		str(_client_codec_support.get("h264", false)),
@@ -2085,6 +2240,19 @@ func _init_stream_backend():
 		v2_node.h264_hw_upgraded.connect(func():
 			_bind_yuv_textures()
 			_log("[H264] HW upgrade: re-bound YUV textures for NV12")
+		)
+	if v2_node.has_signal("hdr_mode_changed"):
+		v2_node.hdr_mode_changed.connect(func(enabled: bool, metadata: Dictionary):
+			_log("[HDR] Protocol mode changed: enabled=%s metadata=%s" % [str(enabled), str(metadata)])
+			# The native callback persists transfer metadata immediately, then
+			# applies it on the render thread. Rebind on this frame and once more
+			# after a rendered frame so either ordering updates the composition
+			# shader variant without relying on stream-start retry timing.
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
+			await get_tree().process_frame
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
 		)
 	if v2_node.has_signal("controller_rumble"):
 		v2_node.controller_rumble.connect(func(controller, low_freq, high_freq):
@@ -2150,6 +2318,12 @@ func _init_xr(interface):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
 	ai_3d_speed = 0
+	# Establish the default 60fps -> 120Hz mapping before composition-layer
+	# swapchains are created. Delaying this until stream startup makes the
+	# runtime transition every live layer from 72Hz to 120Hz at once, which is
+	# measurably less stable on Quest. StreamManager applies the selected host's
+	# saved FPS again at the actual connection boundary.
+	settings_controller.apply_display_refresh_rate()
 
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the
@@ -2306,6 +2480,8 @@ func _process(delta):
 	_update_hand_indicator_layers()
 	_update_grab_bar_layers()
 	_sync_comp_background()
+	if comp:
+		comp.process_ambient(delta)
 
 	_process_idle_activity()
 

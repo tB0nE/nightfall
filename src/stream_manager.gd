@@ -30,11 +30,18 @@ var _current_app_id: int = -1
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
 	_current_host_id = host_id
 	_current_app_id = app_id
-	# The FPS preference is host-specific and is loaded after OpenXR boots.
-	# Select the matching headset refresh rate before the decoder and native
-	# OpenXR swapchain allocate any GLES resources; changing it afterward can
-	# recreate Quest's runtime surface underneath those resources.
-	main.settings_controller.apply_display_refresh_rate()
+	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
+	# setup. Apply it again at the actual connection boundary so a saved
+	# 144/165/200/207 FPS selection is reflected both on the panel and in
+	# client_refresh_rate_x100 before the Moonlight session is configured.
+	# Awaited (2026-09-05, merge) - apply_display_refresh_rate() is now async
+	# (verifies the requested rate actually took before returning). Select
+	# the headset's refresh rate before the decoder and native OpenXR
+	# swapchain allocate any GLES resources; changing it afterward can
+	# recreate Quest's runtime surface underneath those resources - the
+	# function's own target_already_active check avoids re-requesting a rate
+	# that's already active, which is what protects that ordering here.
+	await main.settings_controller.apply_display_refresh_rate()
 	# forced_resolution set means this call IS the one-shot correction retry itself -
 	# don't reset the guard there, or a host that never matches would loop forever.
 	if forced_resolution == Vector2i.ZERO:

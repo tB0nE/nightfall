@@ -113,7 +113,7 @@ only when exporting against a differently-versioned template set.
 
 ### Patched Godot Engine (Quest only)
 
-The Quest's zero-copy GPU decode pipeline requires a custom Godot engine build with Vulkan Android Hardware Buffer (AHB) import support. The patch adds two RenderingDevice methods: `texture_create_from_android_hardware_buffer` and `texture_get_ycbcr_sampler`.
+The Quest build uses a custom Godot engine. Its patches provide Vulkan Android Hardware Buffer (AHB) import support, projectionless OpenXR lifecycle support, and per-layer compositor filtering through `XR_FB_composition_layer_settings`. The compositor-filter patch exposes supersampling and sharpening controls on Godot's quad/cylinder composition-layer nodes; Nightfall uses the sharpening modes while retaining its shader implementation as a fallback.
 
 **You must build BOTH debug and release templates** and place them in the export templates directory. Without the release template, the release APK will silently fall back to the unpatched engine and show a black screen.
 
@@ -124,6 +124,7 @@ cd /tmp/godot
 git apply /path/to/moonlight-quest/patches/godot-4.7-ahb.patch
 git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless.patch
 git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless-lifecycle.patch
+git apply /path/to/moonlight-quest/patches/godot-4.7-compositor-filter.patch
 
 # Build debug template
 scons platform=android target=template_debug arch=arm64 -j$(nproc)

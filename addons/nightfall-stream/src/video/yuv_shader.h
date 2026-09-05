@@ -12,6 +12,9 @@ uniform bool is_semi_planar;
 uniform bool is_nv12_rd;
 uniform int color_matrix_type;
 uniform int color_range;
+// Metadata carrier read back by composition_layer_manager.gd. Conversion is
+// intentionally performed by its separate HDR display shader, not here.
+uniform int color_transfer_type;
 uniform bool swap_uv;
 
 void fragment() {

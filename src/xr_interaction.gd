@@ -9,6 +9,11 @@ var _pinch_start_time: float = 0.0
 var _pinch_start_pos: Vector2 = Vector2.ZERO
 var _pinch_start_screen: VRScreen = null
 var _click_pending_release: bool = false
+var _trigger_was_pressed: bool = false
+var _grip_was_pressed: bool = false
+var _trigger_press_msec: int = -1
+var _grip_press_msec: int = -1
+var _double_click_chord_active: bool = false
 var _corner_resize_started: bool = false
 var _auto_primary: String = ""
 var _auto_reset_timer: float = 0.0
@@ -28,6 +33,11 @@ var _primary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _secondary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _ui_button_states: Array = []
 var _last_ui_style: Dictionary = {}
+
+# Chord mode waits this long before committing a grip to right-click, giving a
+# near-simultaneous trigger press time to turn the pair into an explicit
+# double-click. This stays below the existing 150 ms tap-vs-drag threshold.
+const DOUBLE_CLICK_CHORD_MSEC := 80
 
 func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
@@ -158,6 +168,32 @@ func _is_now_gripping() -> bool:
 		return true
 	return false
 
+func _position_stream_pointer(active_raycast: RayCast3D) -> bool:
+	if not active_raycast or not active_raycast.is_colliding():
+		return false
+	var col = active_raycast.get_collider()
+	var target = PointerTarget.resolve(col) if col else {"role": &""}
+	if target.role != &"screen":
+		return false
+	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
+	var uv = target.screen.hit_point_to_uv(hit_pos)
+	var uv_x = uv.x
+	if main.settings_controller.get_stereo_mode() >= 3:
+		var shift = _compute_parallax_shift(uv_x)
+		uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
+	var host_pt = main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
+	var ref = main.layout.host_ref()
+	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
+	return true
+
+func _send_double_click_chord(active_raycast: RayCast3D) -> bool:
+	if not _position_stream_pointer(active_raycast):
+		return false
+	for _click in range(2):
+		main.stream_backend.send_mouse_button_event(7, 1)
+		main.stream_backend.send_mouse_button_event(8, 1)
+	return true
+
 func handle_pointer_interaction():
 	_update_active_hand()
 	_update_on_screen_tracking()
@@ -167,9 +203,41 @@ func handle_pointer_interaction():
 
 	_primary_ui_pixel = Vector2(-1, -1)
 
-	var is_now_clicking = _is_now_clicking()
+	var raw_clicking = _is_now_clicking()
+	var is_gripping = _is_now_gripping()
+	var now_msec = Time.get_ticks_msec()
+	var trigger_pressed_edge = raw_clicking and not _trigger_was_pressed
+	var grip_pressed_edge = is_gripping and not _grip_was_pressed
+	var grip_released_edge = not is_gripping and _grip_was_pressed
+	if trigger_pressed_edge:
+		_trigger_press_msec = now_msec
+	if grip_pressed_edge:
+		_grip_press_msec = now_msec
+
+	var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
+	var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
+	var chord_enabled = main.double_click_mode == 1 and not main._is_using_hands \
+		and main.is_streaming and not pad_blocking and not tp_blocking
+	if chord_enabled and not _double_click_chord_active and raw_clicking and is_gripping \
+	and _trigger_press_msec >= 0 and _grip_press_msec >= 0 \
+	and absi(_trigger_press_msec - _grip_press_msec) <= DOUBLE_CLICK_CHORD_MSEC \
+	and not main.was_clicking and not main.was_right_clicking:
+		if _send_double_click_chord(active_raycast):
+			_double_click_chord_active = true
+			_click_pending_release = false
+			_pinch_start_screen = null
+	var chord_completed_this_frame = _double_click_chord_active and not raw_clicking and not is_gripping
+	if chord_completed_this_frame:
+		_double_click_chord_active = false
+
+	# Store the physical edges before any of the target-specific branches below
+	# can return. While a chord is active, suppress the ordinary trigger path
+	# until both controls have been released.
+	_trigger_was_pressed = raw_clicking
+	_grip_was_pressed = is_gripping
+	var is_now_clicking = raw_clicking and not _double_click_chord_active
 	if is_now_clicking and not main.was_clicking and not _click_pending_release:
-		_pinch_start_time = Time.get_ticks_msec()
+		_pinch_start_time = now_msec
 		var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 		var t0 = PointerTarget.resolve(col) if col else {"role": &""}
 		if t0.role == &"screen":
@@ -187,10 +255,14 @@ func handle_pointer_interaction():
 		main.controller_mapper.check_toggle()
 
 	if main.is_xr_active and main.is_streaming:
-		var is_gripping = _is_now_gripping()
-		var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
-		var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
-		if not pad_blocking and not tp_blocking and is_gripping and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
+		var right_click_ready = is_gripping and not _double_click_chord_active
+		if chord_enabled:
+			# Give a newly pressed grip 80 ms to become a chord. Also avoid
+			# starting a right-click while trigger is held outside the window;
+			# it can begin normally if grip remains held after trigger releases.
+			right_click_ready = right_click_ready and not raw_clicking \
+				and now_msec - _grip_press_msec > DOUBLE_CLICK_CHORD_MSEC
+		if not pad_blocking and not tp_blocking and right_click_ready and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
 			if t1.role == &"screen":
@@ -210,6 +282,16 @@ func handle_pointer_interaction():
 		elif not is_gripping and main.was_right_clicking:
 			main.stream_backend.send_mouse_button_event(8, 3)
 			main.was_right_clicking = false
+		elif chord_enabled and grip_released_edge and not chord_completed_this_frame \
+		and not _double_click_chord_active \
+		and not raw_clicking and now_msec - _grip_press_msec <= DOUBLE_CLICK_CHORD_MSEC \
+		and main.right_click_cooldown <= 0.0:
+			# Preserve very quick standalone grip taps that release during the
+			# detection window: emit a complete right-click on release.
+			_position_stream_pointer(active_raycast)
+			main.stream_backend.send_mouse_button_event(7, 3)
+			main.stream_backend.send_mouse_button_event(8, 3)
+			main.right_click_cooldown = 0.5
 
 	for s in main.screens:
 		s.grab_bar.visible = true
