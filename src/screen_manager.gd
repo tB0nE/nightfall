@@ -98,7 +98,22 @@ func cycle_curvature():
 		s.curvature = main.curvature
 		s.apply_curvature()
 	main.settings_controller.reflow_grid_screens()
-	if main.comp.in_use:
+	# comp.in_use reflects whichever composition layer was last explicitly
+	# switched to, not whether legacy is the renderer actually presenting
+	# right now - it stays stale (true) from an earlier fallback (e.g. a
+	# has_stale_eye_layer() cooldown) even after native_xr_renderer.gd's own
+	# refresh() has since silently reclaimed the display and disabled the
+	# legacy viewports again. Calling switch_to_comp_layer() here while
+	# native is the one actually active reactivates the legacy composition
+	# layer's own OpenXR swapchain with nothing to ever disable it again
+	# (legacy_disabled only gets cleared by deactivate(), which this doesn't
+	# call) - a second, permanently-live composition layer fighting the
+	# native one over the same screen, seen on-device as one eye going black/
+	# frozen right after a curvature change. Native's own _sync_geometry()
+	# already re-syncs curvature into its layer every frame regardless, so
+	# this call is only ever needed when legacy is genuinely presenting.
+	var native_active = main.native_xr_renderer != null and main.native_xr_renderer.active
+	if main.comp.in_use and not native_active:
 		main.comp.switch_to_comp_layer()
 	main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[main.curvature])
 	main.state_manager.save_state()
