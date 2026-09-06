@@ -127,6 +127,12 @@ const PICTURE_GAMMA_VALUES: Array = [50, 75, 100, 125, 150]
 # hardware, then verifies them and falls back to the runtime's reported list.
 const STREAM_FPS_RATES: Array = [30, 60, 72, 90, 120, 144, 165, 200, 207]
 const QUEST3_REFRESH_REQUEST_MAX := 207.0
+# The Quest runtime recreates display surfaces asynchronously after accepting
+# a refresh-rate request. Do not allocate/resize any stream GLES resources
+# until that transition has completed. A fixed post-request settling window is
+# intentional: get_display_refresh_rate() can report the new value before the
+# Android surface transition itself has finished.
+const REFRESH_SURFACE_SETTLE_SEC := 0.35
 
 # Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
 # vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
@@ -605,12 +611,33 @@ func _schedule_ai_3d_commit():
 
 func apply_stereo():
 	var mode = get_stereo_mode()
-	if main.comp.available:
+	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
+	# decoder reports the new stream's video size (normally within a frame or
+	# two of _on_stream_started(), which calls this), calling
+	# _disable_legacy_video() to turn comp_viewport's update mode back off.
+	# Unconditionally switching to the legacy composition layer here first -
+	# on every single connect/restart, not just ones legacy actually ends up
+	# serving - re-acquires that OpenXRCompositionLayerQuad's own OpenXR
+	# swapchain for the brief window in between, racing whatever teardown/
+	# recreate it was left in by the *previous* native-active session. That
+	# race, not anything resolution-specific, is what was producing the
+	# repeatable fault-addr-0xe0 GLThread SIGSEGV on resolution/refresh-rate
+	# changes (confirmed via on-device logging: comp_viewport's own size
+	# never lined up with crash/no-crash, but this activation window is
+	# common to every case that crashed). Skip it here when native rendering
+	# is eligible for the new config - can_render_current_config() is the
+	# same static check native_xr_renderer.gd's own _eligible() uses, so this
+	# stays in sync with whatever it decides moments later. If native
+	# rendering then fails to actually start, deactivate(true)'s own
+	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
+	# covers activating legacy properly.
+	var native_will_render = main.native_xr_renderer != null and main.native_xr_renderer.can_render_current_config()
+	if main.comp.available and not native_will_render:
 		if mode > 0:
 			main.comp.switch_to_stereo_comp_layer()
 		else:
 			main.comp.switch_to_comp_layer()
-	else:
+	elif not main.comp.available:
 		if mode > 0 and main.comp.in_use:
 			main.comp.switch_to_mesh_rendering()
 		elif mode == 0 and not main.comp.in_use and main.is_streaming:
@@ -970,12 +997,12 @@ func apply_filter():
 				cm.set_shader_parameter("contrast", contrast_val)
 				cm.set_shader_parameter("gamma", gamma_val)
 
-func apply_display_refresh_rate():
+func apply_display_refresh_rate() -> bool:
 	if not main.is_xr_active:
-		return
+		return false
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
-		return
+		return false
 	_refresh_request_seq += 1
 	var request_seq = _refresh_request_seq
 	var target_hz: float = float(main.stream_fps)
@@ -992,7 +1019,7 @@ func apply_display_refresh_rate():
 	if available.is_empty():
 		main._log("[REFRESH] No available refresh rates reported")
 		main.display_refresh_rate = target_hz
-		return
+		return false
 	available.sort()
 	var current_hz: float = interface.get_display_refresh_rate()
 	main._log("[REFRESH] Runtime rates=%s current=%.0fHz target=%.0fHz" % [str(available), current_hz, target_hz])
@@ -1010,9 +1037,9 @@ func apply_display_refresh_rate():
 		# Request the unlisted rate directly, then verify it and fall back to
 		# the reported list on older/currently-limited runtime versions.
 		interface.set_display_refresh_rate(target_hz)
-		await main.get_tree().create_timer(0.20).timeout
+		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
 		if request_seq != _refresh_request_seq:
-			return
+			return false
 		var applied_hz: float = interface.get_display_refresh_rate()
 		if absf(applied_hz - target_hz) < 0.6:
 			best = applied_hz
@@ -1020,9 +1047,15 @@ func apply_display_refresh_rate():
 			best = _reported_refresh_fallback(available, target_hz)
 			interface.set_display_refresh_rate(best)
 			main._log("[REFRESH] Quest 3 rejected unlisted %.0fHz (actual %.0fHz); using reported %.0fHz" % [target_hz, applied_hz, best])
+			await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
+			if request_seq != _refresh_request_seq:
+				return false
 	else:
 		best = _reported_refresh_fallback(available, target_hz)
 		interface.set_display_refresh_rate(best)
+		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
+		if request_seq != _refresh_request_seq:
+			return false
 	main.display_refresh_rate = best
 	# 2026-08-29: capping render fps to the stream's own fps again (was
 	# uncapped since 8ffa8fe, 2026-05-05, "remove 60fps cap causing Quest ASW
@@ -1035,6 +1068,7 @@ func apply_display_refresh_rate():
 		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.stream_fps, main.stream_fps])
 	else:
 		main._log("[REFRESH] %.0fHz unavailable; fell back to reported %.0fHz for %dfps stream, capped render to %dfps" % [target_hz, best, main.stream_fps, main.stream_fps])
+	return true
 
 func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	var best := 0.0
@@ -1179,8 +1213,10 @@ func _schedule_stream_restart():
 	await main.get_tree().process_frame
 	main.stream_backend.stop_play_stream()
 	await main.get_tree().create_timer(0.5).timeout
-	apply_display_refresh_rate()
-	main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
+	# start_stream() is the single owner of refresh application at a connection
+	# boundary. It awaits the Quest surface transition before resizing Godot
+	# viewports or creating decoder/native-renderer resources.
+	await main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
 
 func toggle_hand_tracking():
 	main.tracking_mode = (main.tracking_mode + 1) % 2
