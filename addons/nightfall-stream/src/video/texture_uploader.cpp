@@ -894,13 +894,29 @@ void TextureUploader::update_android_gles_external_texture() {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return;
     std::lock_guard<std::mutex> lock(gles_surface_mutex_);
-    if (!gles_surface_ready_ || gles_update_queued_) return;
+    ++gles_decode_call_count_;
+    if (!gles_surface_ready_ || gles_update_queued_) {
+        if (gles_surface_ready_) ++gles_decode_coalesced_count_;
+        if (gles_decode_call_count_ >= 120) {
+            NF_LOG("TextureUploader", "Decode-thread GLES request rate: %d calls, %d coalesced (render thread busy)",
+                    gles_decode_call_count_, gles_decode_coalesced_count_);
+            gles_decode_call_count_ = 0;
+            gles_decode_coalesced_count_ = 0;
+        }
+        return;
+    }
     gles_update_queued_ = true;
     static int queued_updates = 0;
     if (++queued_updates <= 3) {
         NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_updates);
     }
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
+    if (gles_decode_call_count_ >= 120) {
+        NF_LOG("TextureUploader", "Decode-thread GLES request rate: %d calls, %d coalesced (render thread busy)",
+                gles_decode_call_count_, gles_decode_coalesced_count_);
+        gles_decode_call_count_ = 0;
+        gles_decode_coalesced_count_ = 0;
+    }
 }
 
 bool TextureUploader::_render_thread_ensure_depth_capture(int width, int height) {
@@ -1061,7 +1077,14 @@ void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, in
     gles_depth_next_pbo_ = (slot + 1) % GLES_DEPTH_PBO_COUNT;
 }
 
+namespace {
+inline double ms_between(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
+} // namespace
+
 void TextureUploader::_render_thread_update_android_gles_texture() {
+    const auto t_frame_start = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         gles_update_queued_ = false;
@@ -1073,7 +1096,9 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     auto update = reinterpret_cast<jmethodID>(gles_update_method_);
     auto transform = reinterpret_cast<jmethodID>(gles_transform_method_);
     auto java_matrix = reinterpret_cast<jfloatArray>(gles_transform_matrix_java_);
+    const auto t_update_start = std::chrono::steady_clock::now();
     env->CallVoidMethod((jobject)gles_surface_texture_java_, update);
+    const auto t_update_end = std::chrono::steady_clock::now();
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         static int update_failures = 0;
@@ -1081,24 +1106,45 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         return;
     }
     float matrix[16]{};
+    const auto t_transform_start = std::chrono::steady_clock::now();
     env->CallVoidMethod((jobject)gles_surface_texture_java_, transform, java_matrix);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         return;
     }
     env->GetFloatArrayRegion(java_matrix, 0, 16, matrix);
+    const auto t_transform_end = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         memcpy(gles_last_transform_matrix_, matrix, sizeof(matrix));
     }
+    // native_direct_mode_ skips the legacy blit entirely (the native XR
+    // renderer samples gles_oes_texture_ directly), so the FBO/program/
+    // viewport save-restore around it is pure overhead in that mode -
+    // 3 glGetIntegerv calls (framebuffer/program bindings are notoriously
+    // not cheap client-side reads on most GL drivers) plus 3 matching
+    // no-op restores, every single frame, for state nothing touched.
+    // Skip it there. _render_thread_issue_depth_capture() below also
+    // dirties this same state (leaves gles_depth_fbo_/gles_blit_program_
+    // bound without restoring), so still save/restore whenever a depth
+    // capture will actually be issued this call, direct mode or not -
+    // consumed once, upfront, so this decision and the later exchange()
+    // that gates the actual call can never disagree.
+    const bool direct_mode = native_direct_mode_.load();
+    const bool issue_depth_capture = gles_depth_capture_requested_.exchange(false);
+    const bool needs_gl_state = !direct_mode || issue_depth_capture;
+
     GLint old_fbo = 0;
     GLint old_viewport[4]{};
     GLint old_program = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
-    glGetIntegerv(GL_VIEWPORT, old_viewport);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
+    if (needs_gl_state) {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
+        glGetIntegerv(GL_VIEWPORT, old_viewport);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
+    }
     GLenum draw_error = GL_NO_ERROR;
-    if (!native_direct_mode_.load()) {
+    const auto t_blit_start = std::chrono::steady_clock::now();
+    if (!direct_mode) {
         glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -1115,12 +1161,13 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         draw_error = glGetError();
     }
+    const auto t_blit_end = std::chrono::steady_clock::now();
 
     // Retire previously queued PBOs without waiting. A new request is issued
     // only after the normal decoder blit, while its OES texture and transform
     // are already current on this render thread.
     _render_thread_poll_depth_capture();
-    if (gles_depth_capture_requested_.exchange(false)) {
+    if (issue_depth_capture) {
         _render_thread_issue_depth_capture(matrix, gles_depth_requested_width_.load(),
                 gles_depth_requested_height_.load());
     }
@@ -1129,6 +1176,7 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     // native depth-guide texture from a different shared EGL context. Insert
     // the fence after all writes, then flush so the other context can observe
     // and wait on it without a CPU-side stall.
+    const auto t_fence_start = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         if (gles_oes_ready_fence_) {
@@ -1137,10 +1185,13 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         gles_oes_ready_fence_ = reinterpret_cast<void *>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
         glFlush();
     }
+    const auto t_fence_end = std::chrono::steady_clock::now();
 
-    glUseProgram(old_program);
-    glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
-    glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
+    if (needs_gl_state) {
+        glUseProgram(old_program);
+        glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+        glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
+    }
     if (draw_error != GL_NO_ERROR) {
         NF_LOGE("TextureUploader", "GLES external blit failed: 0x%x", draw_error);
         return;
@@ -1151,6 +1202,40 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
             native_direct_mode_.load() ? "native-direct" : "legacy-blit");
     }
     new_frame_available_.store(true);
+
+    // Diagnostic timing (2026-09-06, see texture_uploader.h's comment on
+    // gles_timing_sum_*) - only successful completions count, so a spell of
+    // early-returns above doesn't skew the average with N/A-cost error paths.
+    const auto t_frame_end = std::chrono::steady_clock::now();
+    gles_timing_sum_update_ms_ += ms_between(t_update_start, t_update_end);
+    gles_timing_sum_transform_ms_ += ms_between(t_transform_start, t_transform_end);
+    if (!direct_mode) {
+        gles_timing_sum_blit_ms_ += ms_between(t_blit_start, t_blit_end);
+        ++gles_timing_blit_count_;
+    }
+    gles_timing_sum_fence_ms_ += ms_between(t_fence_start, t_fence_end);
+    gles_timing_sum_total_ms_ += ms_between(t_frame_start, t_frame_end);
+    ++gles_timing_count_;
+    if (gles_timing_count_ >= 120) {
+        NF_LOG("TextureUploader",
+                "GLES update timing avg over %d frames: total=%.3fms updateTexImage=%.3fms "
+                "getTransform=%.3fms blit=%.3fms(n=%d) fence/flush=%.3fms (%s)",
+                gles_timing_count_,
+                gles_timing_sum_total_ms_ / gles_timing_count_,
+                gles_timing_sum_update_ms_ / gles_timing_count_,
+                gles_timing_sum_transform_ms_ / gles_timing_count_,
+                gles_timing_blit_count_ > 0 ? gles_timing_sum_blit_ms_ / gles_timing_blit_count_ : 0.0,
+                gles_timing_blit_count_,
+                gles_timing_sum_fence_ms_ / gles_timing_count_,
+                direct_mode ? "native-direct" : "legacy-blit");
+        gles_timing_sum_update_ms_ = 0.0;
+        gles_timing_sum_transform_ms_ = 0.0;
+        gles_timing_sum_blit_ms_ = 0.0;
+        gles_timing_sum_fence_ms_ = 0.0;
+        gles_timing_sum_total_ms_ = 0.0;
+        gles_timing_count_ = 0;
+        gles_timing_blit_count_ = 0;
+    }
 }
 
 void TextureUploader::update_from_android_image(AImage *image, int width, int height) {

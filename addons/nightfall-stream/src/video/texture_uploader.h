@@ -186,6 +186,38 @@ private:
     int gles_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
 
+    // Per-stage wall-clock cost of _render_thread_update_android_gles_texture()
+    // (2026-09-06) - added to settle whether a texture-update shortfall at a
+    // given refresh rate is pure budget math against a fixed per-frame cost,
+    // or something gets measurably slower at a specific rate (e.g. Quest 3's
+    // newer >120Hz "unlisted rate" tier vs its long-standing native 120Hz).
+    // Logged/reset periodically in _render_thread_update_android_gles_texture()
+    // itself. Render-thread-only (this function never runs concurrently with
+    // itself), so plain accumulators are safe without extra locking.
+    double gles_timing_sum_update_ms_ = 0.0;
+    double gles_timing_sum_transform_ms_ = 0.0;
+    double gles_timing_sum_blit_ms_ = 0.0;
+    double gles_timing_sum_fence_ms_ = 0.0;
+    double gles_timing_sum_total_ms_ = 0.0;
+    int gles_timing_count_ = 0;
+    int gles_timing_blit_count_ = 0;
+
+    // Decode-thread call-rate counters (2026-09-06) - update_android_gles_
+    // external_texture() is called once per dequeued decoder frame, so this
+    // tells us how often the decode thread actually *tries* to request a
+    // texture update, and how many of those get coalesced away because the
+    // render thread hasn't drained the previous request yet
+    // (gles_update_queued_ still true). Compared against the render-thread
+    // completion rate implied by the gles_timing_* log above: if this call
+    // rate is itself capped below the target Hz, the bottleneck is upstream
+    // of the render thread (decoder output or the decode loop); if this call
+    // rate hits the full target Hz but most calls get coalesced, the render
+    // thread's own queue-drain rate is the bottleneck instead. Decode-thread-
+    // only (this function never runs concurrently with itself), guarded by
+    // gles_surface_mutex_ anyway since the function already holds it.
+    int gles_decode_call_count_ = 0;
+    int gles_decode_coalesced_count_ = 0;
+
     // The Godot Image::get_data()/Texture2D::get_image() route flushes the
     // entire GLES render queue before returning. At a 20 Hz depth cadence it
     // was blocking the XR frame loop for 13-21 ms per capture. Capture the
