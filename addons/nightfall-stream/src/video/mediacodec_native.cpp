@@ -41,7 +41,7 @@ void AndroidMediaCodec::_reset_event_state() {
     async_error_ = AMEDIA_OK;
 }
 
-bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_readback,
+bool AndroidMediaCodec::init(const char *mime, int width, int height, int frame_rate, bool cpu_readback,
                              ANativeWindow *external_output_window,
                              EventNotifier event_notifier) {
     shutdown();
@@ -109,54 +109,97 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_r
         }
     }
 
-    codec_ = AMediaCodec_createDecoderByType(mime);
-    if (!codec_) {
-        NF_LOGE("AndroidMediaCodec", "AMediaCodec_createDecoderByType failed for %s", mime);
-        shutdown();
-        return false;
-    }
-    char *codec_name = nullptr;
-    if (AMediaCodec_getName(codec_, &codec_name) == AMEDIA_OK && codec_name) {
-        codec_name_ = codec_name;
-        AMediaCodec_releaseName(codec_, codec_name);
-    } else {
-        codec_name_ = mime;
-    }
-
     AMediaCodecOnAsyncNotifyCallback callbacks{};
     callbacks.onAsyncInputAvailable = &AndroidMediaCodec::_on_async_input_available;
     callbacks.onAsyncOutputAvailable = &AndroidMediaCodec::_on_async_output_available;
     callbacks.onAsyncFormatChanged = &AndroidMediaCodec::_on_async_format_changed;
     callbacks.onAsyncError = &AndroidMediaCodec::_on_async_error;
-    status = AMediaCodec_setAsyncNotifyCallback(codec_, callbacks, this);
-    if (status != AMEDIA_OK) {
-        NF_LOGE("AndroidMediaCodec", "AMediaCodec_setAsyncNotifyCallback failed: %d", status);
-        shutdown();
-        return false;
+
+    // Moonlight Android supplies the stream rate and asks Qualcomm decoders to
+    // operate at their maximum rate. Without these hints, Quest 3's codec was
+    // empirically accepting 144 compressed frames/s but producing only about
+    // 120 output buffers/s. Vendor keys are best-effort: rebuild the codec with
+    // progressively safer formats if configure() rejects any of them.
+    struct DecoderTuning {
+        bool official_low_latency;
+        bool max_operating_rate;
+        bool qti_picture_order;
+        bool qti_low_latency;
+        const char *label;
+    };
+    const DecoderTuning tuning_attempts[] = {
+        {true,  true,  true,  true,  "full"},
+        {true,  true,  false, true,  "qti-low-latency"},
+        {true,  true,  false, false, "standard-low-latency+max-rate"},
+        {true,  false, false, false, "standard-low-latency"},
+        {false, false, false, false, "frame-rate-only"},
+    };
+
+    bool configured = false;
+    const char *accepted_tuning = nullptr;
+    for (const DecoderTuning &tuning : tuning_attempts) {
+        codec_ = AMediaCodec_createDecoderByType(mime);
+        if (!codec_) {
+            NF_LOGE("AndroidMediaCodec", "AMediaCodec_createDecoderByType failed for %s", mime);
+            break;
+        }
+
+        char *codec_name = nullptr;
+        if (AMediaCodec_getName(codec_, &codec_name) == AMEDIA_OK && codec_name) {
+            codec_name_ = codec_name;
+            AMediaCodec_releaseName(codec_, codec_name);
+        } else {
+            codec_name_ = mime;
+        }
+
+        status = AMediaCodec_setAsyncNotifyCallback(codec_, callbacks, this);
+        if (status != AMEDIA_OK) {
+            NF_LOGE("AndroidMediaCodec", "AMediaCodec_setAsyncNotifyCallback failed: %d", status);
+            AMediaCodec_delete(codec_);
+            codec_ = nullptr;
+            break;
+        }
+
+        const bool is_qti = codec_name_.find("qti") != std::string::npos ||
+                            codec_name_.find("qcom") != std::string::npos;
+        AMediaFormat *format = AMediaFormat_new();
+        AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mime);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
+        AMediaFormat_setInt32(format, "frame-rate", frame_rate);
+        if (tuning.official_low_latency) {
+            AMediaFormat_setInt32(format, "low-latency", 1);
+        }
+        if (tuning.max_operating_rate) {
+            AMediaFormat_setInt32(format, "operating-rate", 32767);
+        }
+        if (is_qti && tuning.qti_picture_order) {
+            AMediaFormat_setInt32(format, "vendor.qti-ext-dec-picture-order.enable", 1);
+        }
+        if (is_qti && tuning.qti_low_latency) {
+            AMediaFormat_setInt32(format, "vendor.qti-ext-dec-low-latency.enable", 1);
+        }
+
+        // This is a max COMPRESSED input buffer size, not a raw frame size.
+        // Keep ample headroom for large keyframes at high bitrates.
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, width * height * 3);
+
+        status = AMediaCodec_configure(codec_, format, window_, nullptr, 0);
+        AMediaFormat_delete(format);
+        if (status == AMEDIA_OK) {
+            configured = true;
+            accepted_tuning = tuning.label;
+            break;
+        }
+
+        NF_LOGE("AndroidMediaCodec", "configure rejected tuning=%s status=%d; retrying",
+                tuning.label, status);
+        AMediaCodec_delete(codec_);
+        codec_ = nullptr;
     }
 
-    AMediaFormat *format = AMediaFormat_new();
-    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mime);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
-    // This is a max COMPRESSED input buffer size, not a raw frame size - width*height
-    // (1 byte/pixel) is a tight budget for a single frame, and codec-agnostic code
-    // like this doesn't account for H264 needing more bits than HEVC to hit the same
-    // quality at the same bitrate, so a large H264 keyframe is more likely to exceed
-    // it than an equivalent HEVC one at the identical resolution. feed_packet() below
-    // silently drops (returns FeedResult::ERROR for) any packet too big for the
-    // buffer AMediaCodec_getInputBuffer() actually hands back, with no retry/recovery
-    // - repeatedly losing keyframes this way would look exactly like the codec-specific
-    // stalls seen testing H264 at resolutions where HEVC (smaller compressed frames at
-    // the same target bitrate) was fine. Untested hypothesis as of 2026-08-07; widen the
-    // budget well past a bare per-pixel guess and confirm live whether this was the
-    // real cause before assuming the earlier "H264 axis limit" conclusion was right.
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, width * height * 3);
-
-    status = AMediaCodec_configure(codec_, format, window_, nullptr, 0);
-    AMediaFormat_delete(format);
-    if (status != AMEDIA_OK) {
-        NF_LOGE("AndroidMediaCodec", "AMediaCodec_configure failed: %d", status);
+    if (!configured || !codec_) {
+        NF_LOGE("AndroidMediaCodec", "AMediaCodec_configure failed for every tuning profile");
         shutdown();
         return false;
     }
@@ -171,7 +214,9 @@ bool AndroidMediaCodec::init(const char *mime, int width, int height, bool cpu_r
         return false;
     }
 
-    NF_LOG("AndroidMediaCodec", "Initialized async codec: %dx%d mime=%s name=%s", width, height, mime, codec_name_.c_str());
+    NF_LOG("AndroidMediaCodec", "Initialized async codec: %dx%d@%d mime=%s name=%s tuning=%s",
+           width, height, frame_rate, mime, codec_name_.c_str(),
+           accepted_tuning ? accepted_tuning : "unknown");
     return true;
 }
 

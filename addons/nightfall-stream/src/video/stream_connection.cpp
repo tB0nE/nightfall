@@ -763,7 +763,7 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
                 return -1;
             }
         }
-        if (new_codec->init(mime, width, height, !supports_ahb_import,
+        if (new_codec->init(mime, width, height, redrawRate, !supports_ahb_import,
                             gles_decoder_surface, notify_decode_thread)) {
             NF_LOG("StreamConnection", "Native MediaCodec created: %dx%d mime=%s", width, height, mime);
             self->_replace_native_codec(new_codec);
@@ -1225,6 +1225,15 @@ void StreamConnection::_decode_thread_func() {
 #ifdef __ANDROID__
     bool native_input_blocked = false;
 #endif
+    // Diagnostic (2026-09-06): distinguishes "the outer loop isn't waking up
+    // often enough" from "dequeue_frame() genuinely isn't producing frames
+    // fast enough" - see TextureUploader's parallel decode-thread request-rate
+    // counter, which already showed the request rate into the render thread
+    // capped around ~110-120/sec regardless of a 144/165Hz target. Logged
+    // together every 120 successful dequeues so the three numbers line up.
+    int outer_loop_iterations = 0;
+    int dequeue_attempts = 0;
+    int dequeue_successes = 0;
 
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -1235,6 +1244,7 @@ void StreamConnection::_decode_thread_func() {
     }
 
     while (true) {
+        ++outer_loop_iterations;
         queued_unit.reset();
         pkt = nullptr;
         {
@@ -1330,13 +1340,37 @@ void StreamConnection::_decode_thread_func() {
                 }
             }
 
-            // Output indices and image availability arrive via callbacks. A
-            // zero timeout drains all work already ready without stalling input.
+            // Output indices and image availability arrive via callbacks
+            // (AndroidMediaCodec::_on_async_output_available() fires
+            // notify_decode_thread() - which sets native_codec_event_ and
+            // wakes queue_cv_ - on every single decoded frame), so a zero
+            // timeout here correctly drains all work already ready without
+            // stalling input; this loop will be woken again the moment the
+            // next frame lands regardless. The non-AHB (GLES/native-direct)
+            // path used to get 5000us instead of 0 here (2026-09-06 fix) -
+            // that stale blocking wait added a ~5ms floor to every outer-loop
+            // cycle once the drain loop ran dry, which the event-driven wake
+            // makes entirely unnecessary. Measured effect: decode-thread
+            // throughput was capped at ~110-120 frames/sec regardless of
+            // target Hz (verified via this function's own counters logged
+            // just below) - a fixed per-cycle cost that ate a shrinking
+            // fraction of budget as target Hz rose, worst at 144/165Hz.
             NativeDecodedFrame frame;
-            RenderingDevice *initial_rd = RenderingServer::get_singleton()
-                ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-            const int64_t frame_timeout_us = supports_android_hardware_buffer_import(initial_rd) ? 0 : 5000;
-            while (codec->dequeue_frame(frame, frame_timeout_us)) {
+            const int64_t frame_timeout_us = 0;
+            while (true) {
+                ++dequeue_attempts;
+                if (!codec->dequeue_frame(frame, frame_timeout_us)) break;
+                ++dequeue_successes;
+                if (dequeue_successes >= 120) {
+                    NF_LOG("StreamConnection",
+                            "Decode-thread loop rate: %d outer iterations, %d dequeue attempts, "
+                            "%d dequeue successes (frame_timeout_us=%lld)",
+                            outer_loop_iterations, dequeue_attempts, dequeue_successes,
+                            (long long)frame_timeout_us);
+                    outer_loop_iterations = 0;
+                    dequeue_attempts = 0;
+                    dequeue_successes = 0;
+                }
                 RenderingDevice *rd = RenderingServer::get_singleton()
                     ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
                 const bool supports_ahb_import = supports_android_hardware_buffer_import(rd);

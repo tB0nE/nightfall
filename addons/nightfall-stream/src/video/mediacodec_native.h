@@ -41,7 +41,7 @@ public:
     AndroidMediaCodec();
     ~AndroidMediaCodec();
 
-    bool init(const char *mime, int width, int height, bool cpu_readback,
+    bool init(const char *mime, int width, int height, int frame_rate, bool cpu_readback,
               ANativeWindow *external_output_window = nullptr,
               EventNotifier event_notifier = {});
     void shutdown();
