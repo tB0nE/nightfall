@@ -5,12 +5,16 @@ var main: Node3D
 var bitrate: int = 20000
 var _v2_yuv_rect: ColorRect = null
 var local_capture_mode: bool = false
+var current_stream_size := Vector2i(1920, 1080)
 
 func _init(owner: Node3D):
 	main = owner
 
 func _b() -> StreamBackend:
 	return main.stream_backend
+
+func get_current_stream_size() -> Vector2i:
+	return current_stream_size
 
 func _is_local_host(ip: String) -> bool:
 	if ip == "127.0.0.1" or ip == "::1" or ip.to_lower() == "localhost":
@@ -89,6 +93,8 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
 		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
+		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
+			bitrate_ref.x, bitrate_ref.y, main.stream_fps, float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
@@ -303,30 +309,83 @@ func _on_v2_launch_response(response: Dictionary):
 
 	var ip = response.get("ip", "")
 	_b().start_stream_v2(ip, server_info, stream_config, false)
-	main._log("[STREAM] start_stream called (%dx%d@%d %dMbps)" % [w, h, fps, br])
+	main._log("[STREAM] start_stream called (%dx%d@%d %.1fMbps)" % [w, h, fps, float(br) / 1000.0])
 
-# Scales linearly against a fixed reference ratio (3840x2160 @ 80000 kbps)
-# instead of the old fixed pixel-count buckets - so it also scales correctly
-# ABOVE 4K (a future multi-monitor layout's total pixel count can exceed a
-# single 4K screen's) and smoothly below it (1080p, 720p, etc.), rather than
-# jumping between a handful of fixed tiers with cliffs at each boundary (a
-# cliff like this is what caused MiDaS-Fast/-Fastest's resolution cap to
-# ALSO cut bitrate in half, see compute_requested_resolution()'s
-# apply_midas_cap param). main.bitrate_idx >= 0 (the manual override) never
-# calls this at all - see start_stream()'s own check.
-const AUTO_BITRATE_REF_PIXELS := 3840 * 2160
-const AUTO_BITRATE_REF_KBPS := 80000
+# Moonlight's baseline bitrate table at 30 FPS. Values between anchors are
+# linearly interpolated by pixel count, avoiding quality cliffs for scaled and
+# ultrawide resolutions. Values beyond the table clamp to its endpoints, as in
+# Moonlight Android/Qt; a multi-monitor canvas should not make Auto request an
+# unbounded bitrate.
+const AUTO_BITRATE_RESOLUTION_TABLE := [
+	{"pixels": 640 * 360, "mbps_30": 1.0},
+	{"pixels": 854 * 480, "mbps_30": 2.0},
+	{"pixels": 1280 * 720, "mbps_30": 5.0},
+	{"pixels": 1920 * 1080, "mbps_30": 10.0},
+	{"pixels": 2560 * 1440, "mbps_30": 20.0},
+	{"pixels": 3840 * 2160, "mbps_30": 40.0},
+]
+
+# Explicit entries for every selectable stream FPS. Preserve roughly the same
+# bits per frame above 60 FPS: Moonlight's generic sqrt rule produced only
+# 15 Mbps at 720p144 and visibly broke down in motion on Quest. The final
+# bitrate is capped at the highest value exposed by Nightfall's manual bitrate
+# control so high-resolution/high-rate combinations remain realistic for Wi-Fi.
+const AUTO_BITRATE_FPS_FACTORS := {
+	30: 1.000000,
+	60: 2.000000,
+	72: 2.400000,
+	90: 3.000000,
+	120: 4.000000,
+	144: 4.800000,
+	165: 5.500000,
+	200: 6.666667,
+	207: 6.900000,
+}
 const AUTO_BITRATE_MIN_KBPS := 1000
+const AUTO_BITRATE_MAX_KBPS := 120000
 
 func _auto_bitrate(w: int, h: int) -> int:
 	var pixels = w * h
-	var kbps = int(AUTO_BITRATE_REF_KBPS * float(pixels) / float(AUTO_BITRATE_REF_PIXELS))
-	return maxi(kbps, AUTO_BITRATE_MIN_KBPS)
+	var resolution_mbps: float = AUTO_BITRATE_RESOLUTION_TABLE[0]["mbps_30"]
+	if pixels >= AUTO_BITRATE_RESOLUTION_TABLE[-1]["pixels"]:
+		resolution_mbps = AUTO_BITRATE_RESOLUTION_TABLE[-1]["mbps_30"]
+	else:
+		for i in range(1, AUTO_BITRATE_RESOLUTION_TABLE.size()):
+			var upper: Dictionary = AUTO_BITRATE_RESOLUTION_TABLE[i]
+			if pixels > upper["pixels"]:
+				continue
+			var lower: Dictionary = AUTO_BITRATE_RESOLUTION_TABLE[i - 1]
+			var span_pixels: float = float(upper["pixels"] - lower["pixels"])
+			var weight: float = float(pixels - lower["pixels"]) / span_pixels
+			resolution_mbps = lerpf(lower["mbps_30"], upper["mbps_30"], clampf(weight, 0.0, 1.0))
+			break
+	var fps_factor: float = AUTO_BITRATE_FPS_FACTORS.get(main.stream_fps, 2.0)
+	# Match Moonlight's whole-Mbps rounding so the result remains readable and
+	# stable across tiny custom-resolution changes.
+	var kbps := int(round(resolution_mbps * fps_factor)) * 1000
+	return clampi(kbps, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS)
 
 func resize_stream_viewport(w: int, h: int):
 	var stream_size = Vector2i(w, h)
-	if main.stream_viewport.size != stream_size:
+	# A SubViewport assigned to an OpenXRCompositionLayer owns a compositor
+	# swapchain. Resizing it while the OpenXR session is running can race an
+	# in-flight layer submission; on Quest this is a repeatable GLThread
+	# SIGSEGV at address 0xe0. The native renderer does not sample these legacy
+	# composition buffers, so preserve their existing allocation across a
+	# native-path restart. Keeping comp_base_size unchanged also prevents the
+	# stream-started apply_stereo() -> update_bezel() call from resizing them a
+	# second time. Legacy-only configurations still use the normal path below.
+	var preserve_legacy_composition: bool = (
+		main._restarting_stream
+		and main.native_xr_renderer != null
+		and main.native_xr_renderer.can_render_current_config()
+	)
+	current_stream_size = stream_size
+	if not preserve_legacy_composition and main.stream_viewport.size != stream_size:
+		main._log("[STREAM] Resizing source viewport %s -> %s" % [str(main.stream_viewport.size), str(stream_size)])
 		main.stream_viewport.size = stream_size
+	elif preserve_legacy_composition and main.stream_viewport.size != stream_size:
+		main._log("[STREAM] Preserving source render target during native restart (logical size %s)" % str(stream_size))
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
 		_v2_yuv_rect.custom_minimum_size = Vector2(w, h)
@@ -341,18 +400,21 @@ func resize_stream_viewport(w: int, h: int):
 	# this session were about resizing SubViewports (they were about
 	# repeatedly toggling a composition layer's `.visible`), so there's no
 	# known reason left to keep this GLES-specific.
-	for s in main.screens:
-		s.comp_base_size = stream_size
-		var comp_size = stream_size
-		if main.bezel_enabled and main.comp.in_use:
-			comp_size += Vector2i(16, 16)
-		if s.comp_viewport and s.comp_viewport.size != comp_size:
-			s.comp_viewport.size = comp_size
-		if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
-			s.comp_viewport_left.size = comp_size
-		if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
-			s.comp_viewport_right.size = comp_size
-	main.comp.update_bezel()
+	if preserve_legacy_composition:
+		main._log("[STREAM] Preserving dormant legacy composition buffers during native restart (requested %s)" % str(stream_size))
+	else:
+		for s in main.screens:
+			s.comp_base_size = stream_size
+			var comp_size = stream_size
+			if main.bezel_enabled and main.comp.in_use:
+				comp_size += Vector2i(16, 16)
+			if s.comp_viewport and s.comp_viewport.size != comp_size:
+				s.comp_viewport.size = comp_size
+			if s.comp_viewport_left and s.comp_viewport_left.size != comp_size:
+				s.comp_viewport_left.size = comp_size
+			if s.comp_viewport_right and s.comp_viewport_right.size != comp_size:
+				s.comp_viewport_right.size = comp_size
+		main.comp.update_bezel()
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)
 	var new_frame = Vector2i(w, h)
@@ -596,13 +658,13 @@ func update_stats():
 		var rw = int(region.get("width", 0))
 		var rh = int(region.get("height", 0))
 		if rw > 0 and rh > 0:
-			var cur_local = main.stream_viewport.size
+			var cur_local = current_stream_size
 			if cur_local.x != rw or cur_local.y != rh:
 				resize_stream_viewport(rw, rh)
 	else:
 		if vw == 0 or vh == 0:
 			return
-		var cur_size = main.stream_viewport.size
+		var cur_size = current_stream_size
 		if cur_size.x != vw or cur_size.y != vh:
 			resize_stream_viewport(vw, vh)
 	var hw = "HW" if _b().is_hw_decode() else "SW"

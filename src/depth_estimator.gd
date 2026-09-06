@@ -254,7 +254,8 @@ func _resize_warp_passes():
 	if not main.primary_screen or not main.stream_viewport:
 		return
 	var uv = main.primary_screen.uv_region
-	var src = Vector2i(int(float(main.stream_viewport.size.x) * uv.z), int(float(main.stream_viewport.size.y) * uv.w))
+	var stream_size: Vector2i = main.stream_manager.get_current_stream_size() if main.stream_manager else main.stream_viewport.size
+	var src = Vector2i(int(float(stream_size.x) * uv.z), int(float(stream_size.y) * uv.w))
 	if src.x <= 0 or src.y <= 0:
 		return
 	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
