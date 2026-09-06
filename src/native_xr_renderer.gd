@@ -54,8 +54,28 @@ func _native_compositor_sharpening() -> int:
 		return 2
 	return 0
 
+func can_render_current_config() -> bool:
+	if not provider_registered or main.screens.size() != 1:
+		return false
+	# Auto-detection and shader-based sharpening consume the legacy RGB
+	# viewport. Runtime compositor sharpening is attached directly to our own
+	# OpenXR layers and therefore remains eligible for the fast path.
+	if main.auto_detect_enabled:
+		return false
+	var native_sharpening := _native_compositor_sharpening()
+	if main.sharpen_mode != 0 and native_sharpening == 0:
+		return false
+	if native_sharpening > 0 and not renderer.supports_compositor_sharpening():
+		return false
+	var mode := _mode()
+	if mode >= 7 and mode <= 9:
+		return false
+	if main.primary_screen and main.primary_screen.curvature > 0 and not renderer.supports_cylinder():
+		return false
+	return true
+
 func _eligible() -> bool:
-	if not provider_registered or not main.is_streaming or main.screens.size() != 1:
+	if not main.is_streaming or not can_render_current_config():
 		return false
 	# _schedule_stream_restart() deactivates this renderer, then awaits a
 	# couple of frame boundaries before actually freeing the decoder/texture
@@ -83,24 +103,20 @@ func _eligible() -> bool:
 		return false
 	if Time.get_ticks_msec() < _stale_recovery_until_msec:
 		return false
-	# Auto-detection and shader-based sharpening consume the legacy RGB
-	# viewport. Runtime compositor sharpening is attached directly to our own
-	# OpenXR layers and therefore remains eligible for the fast path.
-	if main.auto_detect_enabled:
-		return false
-	var native_sharpening := _native_compositor_sharpening()
-	if main.sharpen_mode != 0 and native_sharpening == 0:
-		return false
-	if native_sharpening > 0 and not renderer.supports_compositor_sharpening():
-		return false
-	var mode := _mode()
-	if mode >= 7 and mode <= 9:
-		return false
-	if main.primary_screen and main.primary_screen.curvature > 0 and not renderer.supports_cylinder():
-		return false
 	return true
 
 func refresh() -> void:
+	# A resolution/refresh-rate change defers its actual swapchain rebuild by
+	# a few frames (see start()'s C++ comment) rather than tearing it down
+	# synchronously; if that deferred rebuild failed, the swapchain is gone
+	# and this renderer can't recover on its own -- fall back like a normal
+	# start() failure.
+	if active and renderer.consume_pending_resize_failure():
+		failure_reason = "swapchain rebuild failed after resolution change"
+		main._log("[NATIVE-XR] Deferred resize rebuild failed; falling back to legacy renderer")
+		deactivate(true)
+		_last_eligible = false
+		return
 	var eligible := _eligible()
 	if not eligible:
 		if active:

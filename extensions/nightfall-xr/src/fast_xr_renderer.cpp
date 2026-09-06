@@ -18,6 +18,7 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_started"), &NightfallXrRenderer::is_started);
 	ClassDB::bind_method(D_METHOD("has_rendered_frame"), &NightfallXrRenderer::has_rendered_frame);
 	ClassDB::bind_method(D_METHOD("has_stale_eye_layer"), &NightfallXrRenderer::has_stale_eye_layer);
+	ClassDB::bind_method(D_METHOD("consume_pending_resize_failure"), &NightfallXrRenderer::consume_pending_resize_failure);
 	ClassDB::bind_method(D_METHOD("supports_cylinder"), &NightfallXrRenderer::supports_cylinder);
 	ClassDB::bind_method(D_METHOD("supports_compositor_sharpening"), &NightfallXrRenderer::supports_compositor_sharpening);
 	ClassDB::bind_method(D_METHOD("set_geometry", "transform", "width", "height", "curvature", "radius", "central_angle", "sort_order", "bezel_enabled"), &NightfallXrRenderer::set_geometry);
@@ -209,6 +210,7 @@ void NightfallXrRenderer::stop() {}
 bool NightfallXrRenderer::is_started() const { return false; }
 bool NightfallXrRenderer::has_rendered_frame() const { return false; }
 bool NightfallXrRenderer::has_stale_eye_layer() const { return false; }
+bool NightfallXrRenderer::consume_pending_resize_failure() { return false; }
 bool NightfallXrRenderer::supports_cylinder() const { return false; }
 bool NightfallXrRenderer::supports_compositor_sharpening() const { return false; }
 void NightfallXrRenderer::set_geometry(const Transform3D &, float, float, int, float, float, int, bool) {}

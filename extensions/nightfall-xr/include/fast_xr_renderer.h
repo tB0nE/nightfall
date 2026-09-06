@@ -81,6 +81,10 @@ public:
 	// level) rather than a shared-texture content problem, since both eyes
 	// read the same double-wide swapchain image. See eye_last_queried_frame.
 	bool has_stale_eye_layer() const;
+	// True when the deferred swapchain rebuild triggered by a resolution
+	// change (see start()'s comment) failed. Polled once; reading it clears
+	// it, matching consume_new_frame()'s style elsewhere in this codebase.
+	bool consume_pending_resize_failure();
 	void set_geometry(const Transform3D &p_transform, float p_width, float p_height,
 			int p_curvature, float p_radius, float p_central_angle, int p_sort_order,
 			bool p_bezel_enabled);
@@ -318,6 +322,26 @@ private:
 	bool ever_rendered = false;
 	bool registered_as_layer_provider = false;
 
+	// Per-stage wall-clock cost of the native render path (2026-09-06) -
+	// get_warp_gpu_ms() below is a stub (GPU timer queries were dropped as
+	// out of scope), so this is the only timing data available for this path.
+	// Added to check whether render-thread cost here (as opposed to the
+	// decode-thread frame_timeout_us fix in stream_connection.cpp) explains
+	// the residual gap between app fps and the app's own new-frame-observed
+	// rate once decode-thread throughput was confirmed to track target Hz
+	// exactly. Render-thread-only (maybe_render_pending_frame() is never
+	// re-entered while already running), plain accumulators are safe.
+	double xr_timing_sum_egl_in_ms = 0.0;
+	double xr_timing_sum_fence_ambient_ms = 0.0;
+	double xr_timing_sum_depth_ms = 0.0;
+	double xr_timing_sum_acquire_wait_ms = 0.0;
+	double xr_timing_sum_draw_ms = 0.0;
+	double xr_timing_sum_release_ms = 0.0;
+	double xr_timing_sum_egl_out_ms = 0.0;
+	double xr_timing_sum_total_ms = 0.0;
+	int xr_timing_count = 0;
+	int xr_timing_depth_count = 0;
+
 	// Latest params from submit_frame(), consumed by _on_pre_render().
 	bool pending_new_frame = false;
 	uint32_t pending_oes_texture_id = 0;
@@ -370,6 +394,22 @@ private:
 	uint64_t eye_last_queried_frame[2] = { 0, 0 };
 	static constexpr uint64_t STALE_EYE_FRAME_THRESHOLD = 8;
 
+	// start() used to destroy and rebuild the swapchain synchronously on a
+	// resolution/refresh-rate change, with nothing ensuring the compositor
+	// had finished presenting from the old swapchain's images first -- the
+	// root cause traced for the recurring fault-addr-0xe0 SIGSEGVs on
+	// resize. Instead, start() now just arms this and returns immediately;
+	// _get_composition_layer_count() (confirmed to run exactly once per
+	// frame) reports zero layers for RESIZE_DRAIN_FRAME_COUNT frames first,
+	// giving the compositor a clean window with nothing pending against the
+	// old swapchain, then performs the actual destroy+rebuild itself.
+	static constexpr int RESIZE_DRAIN_FRAME_COUNT = 3;
+	bool pending_resize_requested = false;
+	int pending_resize_width = 0;
+	int pending_resize_height = 0;
+	int resize_drain_frames_remaining = 0;
+	bool pending_resize_failed = false;
+
 	// Rebuilt each _get_composition_layer() call from the pending_* pose
 	// params (cheap struct fills); must be member storage since Godot reads
 	// the returned pointer back out after this call returns.
@@ -395,6 +435,7 @@ private:
 	bool init_swapchain();
 	bool init_gl();
 	void maybe_render_pending_frame();
+	void perform_pending_resize_rebuild();
 	void render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
 			float p_convergence, bool p_occluding);

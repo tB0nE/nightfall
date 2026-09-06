@@ -2,6 +2,7 @@
 
 #include "fast_xr_renderer.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +23,12 @@
 #endif
 
 using namespace godot;
+
+namespace {
+inline double ms_between(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+	return std::chrono::duration<double, std::milli>(b - a).count();
+}
+} // namespace
 
 // Ported near-verbatim from moonlight-android-xr's xr_renderer.c (FRAGMENT_SRC /
 // UPSAMPLE_FRAGMENT_SRC / OFFSET_FRAGMENT_SRC) so the visual result and
@@ -520,10 +527,45 @@ bool NightfallXrRenderer::start(int p_video_width, int p_video_height) {
 		return false;
 	}
 	if (swapchain != XR_NULL_HANDLE) {
+		// Don't destroy+rebuild the swapchain synchronously here: nothing
+		// ensures the compositor has actually finished presenting from it
+		// yet, and destroying it out from under a still-pending present is
+		// the root cause traced for the recurring fault-addr-0xe0 SIGSEGVs
+		// on resolution/refresh-rate changes. Arm the drain instead and
+		// return immediately -- native_xr_renderer.gd's refresh() only calls
+		// start() again if the requested size changes again, so it's safe to
+		// report success now and let _get_composition_layer_count() perform
+		// the actual rebuild once the compositor has had a few zero-layer
+		// frames with nothing outstanding against the old swapchain.
+		if (pending_resize_requested) {
+			if (video_width == p_video_width && video_height == p_video_height) {
+				// Reverted back to the size we're still actually running at
+				// before the drain completed -- cancel the rebuild instead
+				// of tearing down a swapchain that already matches.
+				pending_resize_requested = false;
+				resize_drain_frames_remaining = 0;
+				return true;
+			}
+			if (pending_resize_width != p_video_width || pending_resize_height != p_video_height) {
+				// Superseded by a newer request before the drain finished;
+				// retarget it and restart the countdown.
+				pending_resize_width = p_video_width;
+				pending_resize_height = p_video_height;
+				resize_drain_frames_remaining = RESIZE_DRAIN_FRAME_COUNT;
+			}
+			return true;
+		}
 		if (video_width == p_video_width && video_height == p_video_height) {
 			return true;
 		}
-		stop_stream();
+		pending_resize_requested = true;
+		pending_resize_width = p_video_width;
+		pending_resize_height = p_video_height;
+		resize_drain_frames_remaining = RESIZE_DRAIN_FRAME_COUNT;
+		pending_resize_failed = false;
+		XR_LOG("nightfall-xr deferring swapchain rebuild for resize to %dx%d (draining %d frames)",
+				p_video_width, p_video_height, RESIZE_DRAIN_FRAME_COUNT);
+		return true;
 	}
 	video_width = p_video_width;
 	video_height = p_video_height;
@@ -838,29 +880,47 @@ void NightfallXrRenderer::stop_stream() {
 	layer_frame_counter = 0;
 	eye_last_queried_frame[0] = 0;
 	eye_last_queried_frame[1] = 0;
-	if (swapchain != XR_NULL_HANDLE) {
-		pfn_xrDestroySwapchain(swapchain);
-		swapchain = XR_NULL_HANDLE;
-	}
-	::free(swapchain_images);
-	swapchain_images = nullptr;
-	if (overlay_swapchain != XR_NULL_HANDLE) {
-		pfn_xrDestroySwapchain(overlay_swapchain);
-		overlay_swapchain = XR_NULL_HANDLE;
-	}
-	::free(overlay_images);
-	overlay_images = nullptr;
-	overlay_has_content = false;
-	overlay_visible = false;
-
-	// xr_instance/xr_session/xr_space are Godot's, never destroyed here.
-
+	// Meta's GLES runtime imports swapchain images into whichever EGL context
+	// is current when xrEnumerateSwapchainImages() runs. It requires that same
+	// context to be current when xrDestroySwapchain() releases those imports.
+	// start()/init_swapchain() run under our shared context, while stop_stream()
+	// is normally entered from Godot's render thread with Godot's context
+	// current. Destroying the swapchains before switching contexts produced:
+	//
+	//   DestroyImportedTextureResourcesGLES: must be called with the same
+	//   EGLContext current ... when ImportTextureSwapChain was called
+	//
+	// followed by a repeatable null dereference in Godot's GLThread on every
+	// resolution/FPS restart. Capture the caller's current state first, switch
+	// once, and perform both the OpenXR and GL cleanup under the owner context.
+	EGLContext restore_context = EGL_NO_CONTEXT;
+	EGLSurface restore_draw = EGL_NO_SURFACE;
+	EGLSurface restore_read = EGL_NO_SURFACE;
+	bool cleanup_context_current = false;
 	if (egl_display != EGL_NO_DISPLAY) {
-		EGLContext restore_context = eglGetCurrentContext();
-		EGLSurface restore_draw = eglGetCurrentSurface(EGL_DRAW);
-		EGLSurface restore_read = eglGetCurrentSurface(EGL_READ);
+		restore_context = eglGetCurrentContext();
+		restore_draw = eglGetCurrentSurface(EGL_DRAW);
+		restore_read = eglGetCurrentSurface(EGL_READ);
 		if (egl_context != EGL_NO_CONTEXT && egl_pbuffer != EGL_NO_SURFACE) {
-			eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context);
+			cleanup_context_current = eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context) == EGL_TRUE;
+			if (!cleanup_context_current) {
+				XR_LOGE("Failed to make native cleanup context current: %d", eglGetError());
+			}
+		}
+	}
+
+	if (cleanup_context_current) {
+		if (swapchain != XR_NULL_HANDLE) {
+			pfn_xrDestroySwapchain(swapchain);
+			swapchain = XR_NULL_HANDLE;
+		}
+		if (overlay_swapchain != XR_NULL_HANDLE) {
+			pfn_xrDestroySwapchain(overlay_swapchain);
+			overlay_swapchain = XR_NULL_HANDLE;
+		}
+
+		// xr_instance/xr_session/xr_space are Godot's, never destroyed here.
+		if (egl_context != EGL_NO_CONTEXT && egl_pbuffer != EGL_NO_SURFACE) {
 			for (int i = 0; i < AMBIENT_SAMPLE_PBO_COUNT; i++) {
 				if (ambient_sample_fences[i] != nullptr) {
 					glDeleteSync(ambient_sample_fences[i]);
@@ -892,12 +952,35 @@ void NightfallXrRenderer::stop_stream() {
 			if (upsample_program) glDeleteProgram(upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
 		}
+	} else {
+		// Calling xrDestroySwapchain under the wrong context crashes the Meta
+		// runtime. If the owning context is already unavailable, leave the
+		// runtime resources for session teardown rather than risking process
+		// corruption; clear our handles so a later stream can initialize cleanly.
+		if (swapchain != XR_NULL_HANDLE || overlay_swapchain != XR_NULL_HANDLE) {
+			XR_LOGE("Native cleanup context unavailable; deferring swapchain resource release to session teardown");
+		}
+		swapchain = XR_NULL_HANDLE;
+		overlay_swapchain = XR_NULL_HANDLE;
+	}
+	::free(swapchain_images);
+	swapchain_images = nullptr;
+	::free(overlay_images);
+	overlay_images = nullptr;
+	swapchain_image_count = 0;
+	overlay_image_count = 0;
+	overlay_has_content = false;
+	overlay_visible = false;
+
+	if (egl_display != EGL_NO_DISPLAY) {
 		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = 0;
 		ambient_sample_pbos[0] = ambient_sample_pbos[1] = 0;
 		ambient_sample_next_pbo = 0;
 		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = 0;
 		warp_program = picture_warp_program = hdr_warp_program = upsample_program = offset_program = 0;
-		eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
+		if (cleanup_context_current) {
+			eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
+		}
 		if (egl_pbuffer != EGL_NO_SURFACE) {
 			eglDestroySurface(egl_display, egl_pbuffer);
 			egl_pbuffer = EGL_NO_SURFACE;
@@ -970,6 +1053,12 @@ bool NightfallXrRenderer::has_stale_eye_layer() const {
 		}
 	}
 	return false;
+}
+
+bool NightfallXrRenderer::consume_pending_resize_failure() {
+	bool failed = pending_resize_failed;
+	pending_resize_failed = false;
+	return failed;
 }
 
 bool NightfallXrRenderer::supports_cylinder() const {
@@ -1108,6 +1197,7 @@ bool NightfallXrRenderer::issue_ambient_sample() {
 void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
 		float p_convergence, bool p_occluding) {
+	const auto t_frame_start = std::chrono::steady_clock::now();
 	// Must run first, with egl_context already current (true here) and
 	// before any sampling of p_oes_texture_id (run_upsample() below samples
 	// it too): waits for TextureUploader's updateTexImage() write -- on
@@ -1127,13 +1217,16 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		pending_oes_fence = 0;
 	}
 	poll_ambient_sample();
+	const auto t_fence_ambient_done = std::chrono::steady_clock::now();
 
 	bool has_depth = p_depth_texture_id != 0 && p_depth_guide_texture_id != 0;
 	bool refresh_depth = has_depth && (!depth_cache_valid || pending_depth_revision != rendered_depth_revision);
+	bool did_depth_work = false;
 	if (refresh_depth) {
 		run_upsample(p_oes_texture_id, p_depth_texture_id, p_depth_guide_texture_id, p_tex_matrix);
 		depth_cache_valid = true;
 		rendered_depth_revision = pending_depth_revision;
+		did_depth_work = true;
 	}
 	bool upsampling = has_depth && depth_cache_valid;
 	if (upsampling && p_occluding && (refresh_depth || p_separation != rendered_depth_separation ||
@@ -1141,7 +1234,9 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		run_offset_search(p_separation, p_convergence);
 		rendered_depth_separation = p_separation;
 		rendered_depth_convergence = p_convergence;
+		did_depth_work = true;
 	}
+	const auto t_depth_done = std::chrono::steady_clock::now();
 
 	uint32_t image_index = 0;
 	XrSwapchainImageAcquireInfo acquire_info = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -1151,6 +1246,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	XrSwapchainImageWaitInfo wait_info = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
 	wait_info.timeout = XR_INFINITE_DURATION;
 	pfn_xrWaitSwapchainImage(swapchain, &wait_info);
+	const auto t_acquire_wait_done = std::chrono::steady_clock::now();
 
 	glBindFramebuffer(GL_FRAMEBUFFER, warp_fbo);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, swapchain_images[image_index].image, 0);
@@ -1226,11 +1322,24 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		// and retry after a later frame frees a slot.
 		ambient_sample_requested.store(true, std::memory_order_release);
 	}
+	const auto t_draw_done = std::chrono::steady_clock::now();
 
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 	pfn_xrReleaseSwapchainImage(swapchain, &release_info);
 	ever_rendered = true;
+	const auto t_frame_end = std::chrono::steady_clock::now();
+
+	xr_timing_sum_fence_ambient_ms += ms_between(t_frame_start, t_fence_ambient_done);
+	if (did_depth_work) {
+		xr_timing_sum_depth_ms += ms_between(t_fence_ambient_done, t_depth_done);
+		++xr_timing_depth_count;
+	}
+	xr_timing_sum_acquire_wait_ms += ms_between(t_depth_done, t_acquire_wait_done);
+	xr_timing_sum_draw_ms += ms_between(t_acquire_wait_done, t_draw_done);
+	xr_timing_sum_release_ms += ms_between(t_draw_done, t_frame_end);
+	xr_timing_sum_total_ms += ms_between(t_frame_start, t_frame_end);
+	++xr_timing_count;
 }
 
 // Just caches the frame's params; _on_pre_render() does the actual GL work
@@ -1329,22 +1438,87 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 	// context/surfaces straight back so its own subsequent GL calls this
 	// frame (and every future call into us) keep working. See init_egl()'s
 	// comment for why this matters.
+	const auto t_egl_in_start = std::chrono::steady_clock::now();
 	if (!eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context)) {
 		XR_LOGE("maybe_render_pending_frame: activating native EGL context failed: %d", eglGetError());
 		return;
 	}
+	const auto t_egl_in_end = std::chrono::steady_clock::now();
 	for (uint64_t fence : superseded_oes_fences) {
 		glDeleteSync(reinterpret_cast<GLsync>(fence));
 	}
 	superseded_oes_fences.clear();
 	render_video_frame(pending_oes_texture_id, pending_depth_texture_id, pending_depth_guide_texture_id,
 			pending_tex_matrix, pending_separation, pending_convergence, occluding);
+	const auto t_egl_out_start = std::chrono::steady_clock::now();
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("maybe_render_pending_frame: restoring Godot's EGL context/surface failed: %d", eglGetError());
 	}
+	const auto t_egl_out_end = std::chrono::steady_clock::now();
+	xr_timing_sum_egl_in_ms += ms_between(t_egl_in_start, t_egl_in_end);
+	xr_timing_sum_egl_out_ms += ms_between(t_egl_out_start, t_egl_out_end);
+	if (xr_timing_count >= 120) {
+		double n = (double)xr_timing_count;
+		XR_LOG("Native render timing avg over %d frames: total=%.3fms egl_in=%.3fms "
+				"fence/ambient=%.3fms depth=%.3fms(n=%d) acquire/wait=%.3fms draw=%.3fms "
+				"release=%.3fms egl_out=%.3fms",
+				xr_timing_count,
+				(xr_timing_sum_total_ms + xr_timing_sum_egl_in_ms + xr_timing_sum_egl_out_ms) / n,
+				xr_timing_sum_egl_in_ms / n,
+				xr_timing_sum_fence_ambient_ms / n,
+				xr_timing_depth_count > 0 ? xr_timing_sum_depth_ms / xr_timing_depth_count : 0.0,
+				xr_timing_depth_count,
+				xr_timing_sum_acquire_wait_ms / n,
+				xr_timing_sum_draw_ms / n,
+				xr_timing_sum_release_ms / n,
+				xr_timing_sum_egl_out_ms / n);
+		xr_timing_sum_egl_in_ms = 0.0;
+		xr_timing_sum_fence_ambient_ms = 0.0;
+		xr_timing_sum_depth_ms = 0.0;
+		xr_timing_sum_acquire_wait_ms = 0.0;
+		xr_timing_sum_draw_ms = 0.0;
+		xr_timing_sum_release_ms = 0.0;
+		xr_timing_sum_egl_out_ms = 0.0;
+		xr_timing_sum_total_ms = 0.0;
+		xr_timing_count = 0;
+		xr_timing_depth_count = 0;
+	}
+}
+
+// Runs the destroy+rebuild that start() deferred, once resize_drain_frames_remaining
+// (counted down in _get_composition_layer_count()) has given the compositor a
+// few frames with zero layers -- nothing outstanding against the old
+// swapchain -- before it's destroyed. Same threading assumptions as the
+// synchronous path it replaces: _get_composition_layer_count() runs on
+// Godot's render thread with Godot's own EGL context current (see
+// init_egl()'s comment), which is exactly what init_egl()/init_swapchain()/
+// init_gl() need.
+void NightfallXrRenderer::perform_pending_resize_rebuild() {
+	pending_resize_requested = false;
+	stop_stream();
+	video_width = pending_resize_width;
+	video_height = pending_resize_height;
+	output_width = video_width + 16;
+	output_height = video_height + 16;
+	if (!init_egl() || !init_swapchain() || !init_gl()) {
+		stop_stream();
+		pending_resize_failed = true;
+		XR_LOGE("nightfall-xr deferred resize rebuild failed at %dx%d", video_width, video_height);
+		return;
+	}
+	eglMakeCurrent(egl_display, godot_draw_surface, godot_read_surface, godot_context);
+	XR_LOG("nightfall-xr swapchain rebuilt after deferred resize, now %dx%d", video_width, video_height);
 }
 
 int32_t NightfallXrRenderer::_get_composition_layer_count() {
+	if (pending_resize_requested) {
+		if (resize_drain_frames_remaining > 0) {
+			--resize_drain_frames_remaining;
+			++layer_frame_counter;
+			return 0;
+		}
+		perform_pending_resize_rebuild();
+	}
 	maybe_render_pending_frame();
 	++layer_frame_counter;
 	int32_t count = ever_rendered ? ((overlay_visible && overlay_has_content && overlay_swapchain != XR_NULL_HANDLE) ? 3 : 2) : 0;
