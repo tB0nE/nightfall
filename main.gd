@@ -929,7 +929,8 @@ var _comp_base_size: Vector2i:
 func get_blur_scale(s: VRScreen) -> float:
 	if _xr_render_width <= 0:
 		return 1.0
-	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
+	var source_size: Vector2i = stream_manager.get_current_stream_size() if stream_manager else stream_viewport.size
+	return (s.uv_region.z * float(source_size.x)) / float(_xr_render_width)
 
 func _reset_steady_filter():
 	_steady_active = false
@@ -1448,10 +1449,10 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
-	# Per-host settings (including FPS) are loaded after XR initialization.
-	# Apply the selected rate here, before the native stream swapchain starts,
-	# so a saved 90fps stream cannot remain on the boot default of 72Hz.
-	settings_controller.apply_display_refresh_rate()
+	# The selected display rate was already applied and awaited by
+	# StreamManager.start_stream() before decoder and native swapchain setup.
+	# Do not request it again here: a display transition racing newly-created
+	# GLES resources crashes the Quest GL thread.
 	var was_restarting = _restarting_stream
 	is_streaming = true
 	stats_timer = 0.0
@@ -1760,6 +1761,10 @@ func _ready():
 	_init_xr(interface)
 	if native_xr_renderer:
 		native_xr_renderer.setup()
+	# Composition providers must be registered before the OpenXR session starts.
+	# Only after registration may the refresh transition settle before layer and
+	# stream swapchains are allocated.
+	await settings_controller.apply_display_refresh_rate()
 	_init_backgrounds_and_comp_layer()
 	await get_tree().create_timer(0.5).timeout
 	screen_mesh.extra_cull_margin = 10.0
@@ -2110,7 +2115,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 	if comp.available:
 		comp.setup_screen(s, with_stereo)
 		if is_streaming and stream_viewport:
-			var stream_size = stream_viewport.size
+			var stream_size: Vector2i = stream_manager.get_current_stream_size() if stream_manager else stream_viewport.size
 			if stream_size.x > 0 and stream_size.y > 0:
 				s.comp_viewport.size = stream_size
 				s.comp_base_size = stream_size
@@ -2330,7 +2335,9 @@ func _init_xr(interface):
 	# runtime transition every live layer from 72Hz to 120Hz at once, which is
 	# measurably less stable on Quest. StreamManager applies the selected host's
 	# saved FPS again at the actual connection boundary.
-	settings_controller.apply_display_refresh_rate()
+	# Applied and awaited by _ready() immediately after native-provider setup.
+	# Yielding here would let OpenXR start its session first, after which provider
+	# registration is rejected for the lifetime of this launch.
 
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the
@@ -2775,6 +2782,17 @@ func _process_stats(delta):
 	if stats_sample_timer >= 1.0:
 		stats_fps = float(stats_app_frames) / stats_sample_timer
 		stats_video_update_fps = float(stats_video_updates) / stats_sample_timer
+		# Diagnostic (2026-09-06): stats_video_update_fps is inherently capped
+		# at stats_fps (consume_new_frame() can report at most one "yes" per
+		# script tick, no matter how many render-thread completions happened
+		# since the last tick) - now that decode-thread throughput and native
+		# render cost are both confirmed to track target Hz closely, this
+		# checks whether the script tick rate itself (stats_fps) is also
+		# hitting target, and exactly how close video_update_fps tracks it.
+		_log("[STATS] app=%.1ffps video_update=%.1ffps (%.1f%% of app) frames=%d/%d" % [
+			stats_fps, stats_video_update_fps,
+			100.0 * stats_video_update_fps / maxf(stats_fps, 0.001),
+			stats_video_updates, stats_app_frames])
 		stats_sample_timer = 0.0
 		stats_app_frames = 0
 		stats_video_updates = 0
@@ -2836,6 +2854,8 @@ func _process_performance_overlay(delta: float):
 	var received_frames = int(stats.get("received_frames", 0))
 	var rendered_frames = int(stats.get("rendered_frames", 0))
 	var lost_frames = int(stats.get("network_lost_frames", 0))
+	var decoder_queue_drops = int(stats.get("decoder_queue_drops", 0))
+	var decoder_queue_size = int(stats.get("decoder_queue_size", 0))
 	var total_fps = float(total_frames) / elapsed_s
 	var incoming_fps = float(received_frames) / elapsed_s
 	var rendering_fps = float(rendered_frames) / elapsed_s
@@ -2854,6 +2874,7 @@ func _process_performance_overlay(delta: float):
 		"Nightfall application frame rate: %.1f FPS" % stats_fps,
 		"Nightfall video texture update rate: %.1f FPS" % stats_video_update_fps,
 		"Frames dropped by your network connection: %.2f%%" % lost_pct,
+		"Decoder queue drops: %d (queued: %d)" % [decoder_queue_drops, decoder_queue_size],
 		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],
 	])
 	var host_samples = int(stats.get("host_latency_samples", 0))
@@ -2878,8 +2899,9 @@ func _process_performance_overlay(delta: float):
 	comp.update_stats_text("\n".join(lines))
 	if native_xr_renderer:
 		native_xr_renderer.request_stats_overlay_update()
-	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% rtt=%dms decode=%.2fms depth=%.2fms" % [
+	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% queue_drops=%d queued=%d rtt=%dms decode=%.2fms depth=%.2fms" % [
 		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
+		decoder_queue_drops, decoder_queue_size,
 		int(stats.get("network_latency_ms", 0)), decoder_ms,
 		stream_backend.get_depth_last_inference_ms() if ai_3d_speed > 0 else 0.0,
 	])

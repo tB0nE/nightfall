@@ -23,6 +23,11 @@ const AMBIENT_LAYER_SCALE := 1.30
 const AMBIENT_SAMPLE_SIZE := 32
 const AMBIENT_VIEWPORT_LONG_EDGE := 256
 const AMBIENT_SLOW_INTERVAL_SEC := 0.10
+# Live mode used to sample every script tick (up to 144-207Hz on the
+# refresh-rate tiers this branch now supports) - ambient light doesn't
+# need anywhere near that to look smooth, and it was the one ambient mode
+# with no throttle at all. Capped the same way Slow already was.
+const AMBIENT_LIVE_INTERVAL_SEC := 1.0 / 72.0
 var _ambient_layer: Node3D = null
 var _ambient_sample_viewport: SubViewport = null
 var _ambient_sample_rect: TextureRect = null
@@ -39,6 +44,7 @@ var _ambient_native_supported := false
 var _ambient_support_logged := false
 var _ambient_dirty := true
 var _ambient_slow_elapsed := 0.0
+var _ambient_live_elapsed := 0.0
 var _ambient_sample_seeded := false
 var _last_compositor_sharpen_mode := -1
 var _last_compositor_sharpen_supported := false
@@ -910,13 +916,20 @@ func process_ambient(delta: float):
 				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
-		3: # Live: useful as the visual/performance comparison ceiling.
-			if not _prepare_ambient_sample_update():
-				return
-			if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
-				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-			if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
-				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		3: # Live: sample at 72 Hz - plenty for ambient light, and no longer
+			# ties the native readback (glBlitFramebuffer + glReadPixels + PBO
+			# fence, see NightfallXrRenderer::issue_ambient_sample()) to every
+			# single script tick at whatever refresh rate is selected.
+			_ambient_live_elapsed += delta
+			if _ambient_dirty or _ambient_live_elapsed >= AMBIENT_LIVE_INTERVAL_SEC:
+				_ambient_live_elapsed = fmod(_ambient_live_elapsed, AMBIENT_LIVE_INTERVAL_SEC)
+				if not _prepare_ambient_sample_update():
+					return
+				if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
+					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
+					_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
 
 func _update_ambient_geometry():
 	if not _ambient_layer or not _ambient_viewport or not main.primary_screen:
