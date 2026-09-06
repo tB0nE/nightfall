@@ -115,7 +115,7 @@ func load_host_state(ip: String):
 			main.ai_3d_last_mode = clampi(save.get_value(ip, "ai_3d_last_mode", 1), 1, 3)
 			main.ai_3d_backend_pref = 1 if save.get_value(ip, "ai_3d_backend_pref", 2) == 1 else 2
 			main.ai_3d_hz_cap = save.get_value(ip, "ai_3d_hz_cap", 20)
-			if not [12, 15, 20, 30].has(main.ai_3d_hz_cap):
+			if not [12, 15, 20, 30, 40].has(main.ai_3d_hz_cap):
 				main.ai_3d_hz_cap = 20
 			main.ai_3d_separation_pct = save.get_value(ip, "ai_3d_separation_pct", 100)
 			if not [50, 75, 100, 125, 150].has(main.ai_3d_separation_pct):

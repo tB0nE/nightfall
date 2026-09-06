@@ -1838,7 +1838,7 @@ func _init_android_setup():
 	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
 	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
 	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
-	if not [12, 15, 20, 30].has(ai_3d_hz_cap):
+	if not [12, 15, 20, 30, 40].has(ai_3d_hz_cap):
 		ai_3d_hz_cap = 20
 	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
 		ai_3d_separation_pct = 100
