@@ -8,12 +8,14 @@ var _tab_control: Control
 var _tab_monitors: Control
 var _tab_ai3d: Control
 var _tab_picture: Control
+var _tab_advanced: Control
 var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
 var _tab_btn_monitors: Button
 var _tab_btn_ai3d: Button
 var _tab_btn_picture: Button
+var _tab_btn_advanced: Button
 var _preset_row: HBoxContainer
 var _current_tab: int = 0
 
@@ -133,11 +135,19 @@ func update_3d_btn_state():
 	if main._ui_3d_speed_btn:
 		main._ui_3d_speed_btn.disabled = disabled
 		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
+	# Type/Model/3D Mode are hidden entirely on Android (see
+	# settings_controller.gd's ai3d_options_locked() comment) - Standard/GPU/
+	# ZipDepth-384-GPU are enforced at the state level regardless of these
+	# buttons, but hiding (paired with .disabled, matching 3D Debug's own
+	# hide-and-disable pattern below) keeps a locked control from offering a
+	# choice that does nothing.
+	var locked = main.settings_controller.ai3d_options_locked()
 	# 3D Mode: greyed whenever AI-3D itself is off - unlike Type/Model/Hz
 	# Cap below, NOT additionally greyed under Auto, since it's the only
 	# control that can switch OUT of Auto.
-	var mode_disabled = disabled or main.ai_3d_speed == 0
+	var mode_disabled = disabled or main.ai_3d_speed == 0 or locked
 	if main._ui_3d_mode_btn:
+		main._ui_3d_mode_btn.visible = not locked
 		main._ui_3d_mode_btn.disabled = mode_disabled
 		main._ui_3d_mode_btn.modulate.a = 0.3 if mode_disabled else 1.0
 	# Model/Hz Cap are additionally meaningless (and disabled) whenever AI-3D
@@ -145,7 +155,7 @@ func update_3d_btn_state():
 	# 2026-08-28 to Hz Cap) - main.ai_3d_model/ai_3d_hz_cap are frozen/
 	# irrelevant while Auto overrides them (see get_depth_model_index()/
 	# get_effective_hz_cap()).
-	var sub_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1
+	var sub_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1 or locked
 	# Type is NOT included above (2026-08-30) - Auto was always meant to let
 	# you pick GPU or CPU yourself (GPU as the default), not force GPU
 	# unconditionally - only tier+model are the table's job. Only greys with
@@ -153,11 +163,13 @@ func update_3d_btn_state():
 	# same as effect_disabled below. See get_depth_backend_index()'s Auto
 	# branch, which now reads main.ai_3d_backend_pref instead of hardcoding
 	# GPU.
-	var type_disabled = disabled or main.ai_3d_speed == 0
+	var type_disabled = disabled or main.ai_3d_speed == 0 or locked
 	if main._ui_3d_type_btn:
+		main._ui_3d_type_btn.visible = not locked
 		main._ui_3d_type_btn.disabled = type_disabled
 		main._ui_3d_type_btn.modulate.a = 0.3 if type_disabled else 1.0
 	if main._ui_3d_btn:
+		main._ui_3d_btn.visible = not locked
 		main._ui_3d_btn.disabled = sub_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0
 	if main._ui_3d_priority_btn:
@@ -202,10 +214,10 @@ func update_3d_btn_state():
 func update_stats_btn_state():
 	if not main._ui_stats_btn:
 		return
-	main._ui_stats_btn.text = "Stats: On" if main.performance_overlay_enabled else "Stats: Off"
+	update_option_btn(main._ui_stats_btn, "On" if main.performance_overlay_enabled else "Off")
 	main._ui_stats_btn.add_theme_color_override(
 		"font_color",
-		Color(0.55, 0.78, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.5)
+		Color(0.55, 0.78, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.85)
 	)
 
 func update_ambient_btn_state():
@@ -391,6 +403,7 @@ func switch_tab(tab: int):
 	if _tab_monitors: _tab_monitors.visible = (tab == 3)
 	if _tab_ai3d: _tab_ai3d.visible = (tab == 4)
 	if _tab_picture: _tab_picture.visible = (tab == 5)
+	if _tab_advanced: _tab_advanced.visible = (tab == 6)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -419,6 +432,10 @@ func switch_tab(tab: int):
 		_tab_btn_picture.add_theme_stylebox_override("normal", tab_active_style if tab == 5 else tab_inactive_style)
 		_tab_btn_picture.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 5 else Color(1, 1, 1, 0.5))
+	if _tab_btn_advanced:
+		_tab_btn_advanced.add_theme_stylebox_override("normal", tab_active_style if tab == 6 else tab_inactive_style)
+		_tab_btn_advanced.add_theme_stylebox_override("hover", tab_active_style)
+		_tab_btn_advanced.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 6 else Color(1, 1, 1, 0.5))
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
@@ -544,30 +561,6 @@ func build_ui():
 	right_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	top_row.add_child(right_spacer)
-
-	main._ui_stats_btn = Button.new()
-	main._ui_stats_btn.text = "Stats: Off"
-	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
-	main._ui_stats_btn.custom_minimum_size = Vector2(130, 36)
-	main._ui_stats_btn.add_theme_font_size_override("font_size", 20)
-	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	main._ui_stats_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
-	var stats_style = main._btn_style.duplicate()
-	stats_style.content_margin_left = 10
-	stats_style.content_margin_right = 10
-	stats_style.content_margin_top = 2
-	stats_style.content_margin_bottom = 2
-	stats_style.set_corner_radius_all(0)
-	var stats_hover = main._btn_hover.duplicate()
-	stats_hover.content_margin_left = 10
-	stats_hover.content_margin_right = 10
-	stats_hover.content_margin_top = 2
-	stats_hover.content_margin_bottom = 2
-	stats_hover.set_corner_radius_all(0)
-	main._ui_stats_btn.add_theme_stylebox_override("normal", stats_style)
-	main._ui_stats_btn.add_theme_stylebox_override("hover", stats_hover)
-	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
-	top_row.add_child(main._ui_stats_btn)
 
 	main._ui_exit_btn = Button.new()
 	main._ui_exit_btn.text = "Exit"
@@ -718,6 +711,14 @@ func build_ui():
 	_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	tab_bar.add_child(_tab_btn_picture)
 
+	_tab_btn_advanced = Button.new()
+	_tab_btn_advanced.text = "Advanced"
+	_tab_btn_advanced.focus_mode = Control.FOCUS_NONE
+	_tab_btn_advanced.custom_minimum_size = Vector2(160, 44)
+	_tab_btn_advanced.add_theme_font_size_override("font_size", 22)
+	_tab_btn_advanced.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	tab_bar.add_child(_tab_btn_advanced)
+
 	var tab_margin = Control.new()
 	tab_margin.custom_minimum_size = Vector2(0, 12)
 	tab_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -746,23 +747,11 @@ func build_ui():
 	# Model, and everything else moved to the dedicated AI 3D tab below.
 	main._ui_3d_speed_btn = make_option_btn("AI 3D", "Off")
 	disp_row1.add_child(main._ui_3d_speed_btn)
-	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
-	disp_row1.add_child(main._ui_ambient_btn)
-	# Hidden until update_3d_btn_state() runs (which also happens to set
-	# this every time regardless) - set here too so there's no one-frame
-	# flash of a visible "3D Debug" button before that first fires. Placed
-	# before GPU Priority (2026-09-04) - it was last in the row and unsized,
-	# so it ran off the edge of the panel instead of the fixed-width button
-	# after it.
-	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
-	main._ui_3d_debug_btn.disabled = true
-	main._ui_3d_debug_btn.visible = false
-	disp_row1.add_child(main._ui_3d_debug_btn)
-	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
-	disp_row1.add_child(main._ui_3d_priority_btn)
+	main._ui_curve_btn = make_option_btn("Curve", "Flat")
+	disp_row1.add_child(main._ui_curve_btn)
 	# AI/display controls share this row on the performance branch. Keep
 	# them inside the 1200px panel without changing the rest of the UI layout.
-	for btn in [main._ui_pt_btn, main._ui_sbs_btn, main._ui_3d_speed_btn, main._ui_3d_btn, main._ui_3d_debug_btn, main._ui_3d_priority_btn]:
+	for btn in [main._ui_pt_btn, main._ui_sbs_btn, main._ui_3d_speed_btn, main._ui_curve_btn]:
 		btn.custom_minimum_size.x = 180
 		btn.add_theme_font_size_override("font_size", 20)
 
@@ -780,10 +769,10 @@ func build_ui():
 	disp_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_display.add_child(disp_row2)
 
-	main._ui_curve_btn = make_option_btn("Curve", "Flat")
-	disp_row2.add_child(main._ui_curve_btn)
 	main._ui_bg_btn = make_option_btn("Background", "Black")
 	disp_row2.add_child(main._ui_bg_btn)
+	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
+	disp_row2.add_child(main._ui_ambient_btn)
 	main._ui_ambient_style_btn = make_display_tuning_btn("Style", "Glow")
 	disp_row2.add_child(main._ui_ambient_style_btn)
 	main._ui_ambient_color_btn = make_display_tuning_btn("Colour", "White")
@@ -832,10 +821,8 @@ func build_ui():
 
 	main._ui_codec_btn = make_option_btn("Codec", "HEVC")
 	stream_row2.add_child(main._ui_codec_btn)
-	main._ui_reconnect_btn = make_option_btn("Auto-Reconnect", "On")
-	stream_row2.add_child(main._ui_reconnect_btn)
-	main._ui_idle_btn = make_option_btn("Idle Disconnect", "Off")
-	stream_row2.add_child(main._ui_idle_btn)
+	main._ui_stats_btn = make_option_btn("Stats", "Off")
+	stream_row2.add_child(main._ui_stats_btn)
 	main._ui_quick_start_btn = make_option_btn("Quick Start", "Off")
 	stream_row2.add_child(main._ui_quick_start_btn)
 
@@ -904,13 +891,20 @@ func build_ui():
 	_tab_ai3d.add_child(ai3d_row1)
 
 	main._ui_3d_mode_btn = make_option_btn("3D Mode", "Auto")
+	# Hidden on Android (updated for real by update_3d_btn_state(), which
+	# also runs during this same init - set here too so there's no
+	# one-frame flash before that first fires, matching 3D Debug's own
+	# construction-time pattern below).
+	main._ui_3d_mode_btn.visible = not main.settings_controller.ai3d_options_locked()
 	ai3d_row1.add_child(main._ui_3d_mode_btn)
 	main._ui_3d_type_btn = make_option_btn("Type", "GPU")
+	main._ui_3d_type_btn.visible = not main.settings_controller.ai3d_options_locked()
 	ai3d_row1.add_child(main._ui_3d_type_btn)
 	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
+	main._ui_3d_btn.visible = not main.settings_controller.ai3d_options_locked()
 	ai3d_row1.add_child(main._ui_3d_btn)
-	main._ui_3d_reset_btn = make_action_btn("Reset")
-	ai3d_row1.add_child(main._ui_3d_reset_btn)
+	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+	ai3d_row1.add_child(main._ui_3d_priority_btn)
 
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.custom_minimum_size = Vector2(0, 20)
@@ -1035,6 +1029,51 @@ func build_ui():
 	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
+	_tab_advanced = VBoxContainer.new()
+	_tab_advanced.name = "TabAdvanced"
+	_tab_advanced.add_theme_constant_override("separation", 0)
+	_tab_advanced.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_advanced.visible = false
+	vbox.add_child(_tab_advanced)
+
+	var advanced_row1 = HBoxContainer.new()
+	advanced_row1.name = "AdvancedRow1"
+	advanced_row1.add_theme_constant_override("separation", 12)
+	advanced_row1.alignment = BoxContainer.ALIGNMENT_CENTER
+	advanced_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	advanced_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	advanced_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_advanced.add_child(advanced_row1)
+
+	main._ui_reconnect_btn = make_option_btn("Auto-Reconnect", "On")
+	advanced_row1.add_child(main._ui_reconnect_btn)
+	main._ui_idle_btn = make_option_btn("Idle Disconnect", "Off")
+	advanced_row1.add_child(main._ui_idle_btn)
+
+	var advanced_gap1 = Control.new()
+	advanced_gap1.custom_minimum_size = Vector2(0, 20)
+	advanced_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_advanced.add_child(advanced_gap1)
+
+	var advanced_row2 = HBoxContainer.new()
+	advanced_row2.name = "AdvancedRow2"
+	advanced_row2.add_theme_constant_override("separation", 12)
+	advanced_row2.alignment = BoxContainer.ALIGNMENT_CENTER
+	advanced_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	advanced_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	advanced_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_advanced.add_child(advanced_row2)
+
+	# Hidden until update_3d_btn_state() runs (which also happens to set
+	# this every time regardless) - set here too so there's no one-frame
+	# flash of a visible "3D Debug" button before that first fires.
+	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+	main._ui_3d_debug_btn.disabled = true
+	main._ui_3d_debug_btn.visible = false
+	advanced_row2.add_child(main._ui_3d_debug_btn)
+	main._ui_3d_reset_btn = make_action_btn("Reset")
+	advanced_row2.add_child(main._ui_3d_reset_btn)
+
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
 	main._ui_status_label.text = "Ready"
@@ -1150,6 +1189,7 @@ func build_ui():
 	_tab_btn_monitors.button_down.connect(func(): switch_tab(3))
 	_tab_btn_ai3d.button_down.connect(func(): switch_tab(4))
 	_tab_btn_picture.button_down.connect(func(): switch_tab(5))
+	_tab_btn_advanced.button_down.connect(func(): switch_tab(6))
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
