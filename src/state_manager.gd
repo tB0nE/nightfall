@@ -207,6 +207,11 @@ func load_host_state(ip: String):
 	# a no-op otherwise. Covers every branch above in one place rather than
 	# repeating it in each.
 	main.settings_controller.normalize_ai_3d_model_for_type()
+	# Same "covers every branch above in one place" reasoning as
+	# normalize_ai_3d_model_for_type() just above - Android locks Type/Model/
+	# 3D Mode to GPU/ZipDepth-384-GPU/Standard regardless of what any branch
+	# above (including old-format migrations) landed on. No-op on Linux.
+	main.settings_controller.enforce_ai3d_platform_lock()
 	# update_stereo_shader() (2026-08-28 - replaces a hand-duplicated copy of
 	# its own logic that lived here, "since this doesn't call that function
 	# directly" per its own old comment) already sets the stereo_mode

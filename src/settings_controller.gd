@@ -310,7 +310,7 @@ func toggle_ai_3d_enabled():
 # whenever ai_3d_speed==0, but guarded here too since a disabled Button
 # still technically has this connected.
 func cycle_ai_3d_mode():
-	if not _ai_3d_supported():
+	if not _ai_3d_supported() or ai3d_options_locked():
 		return
 	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
 		return
@@ -348,7 +348,7 @@ func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
 # current selection doesn't belong to it (e.g. switching CPU->GPU while
 # DA-V2-252 was selected).
 func cycle_ai_3d_type():
-	if not _ai_3d_supported():
+	if not _ai_3d_supported() or ai3d_options_locked():
 		return
 	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
 		return
@@ -440,6 +440,7 @@ func reset_ai_3d_effect_settings():
 	main.ai_3d_separation_pct = 100
 	main.ai_3d_convergence_pct = 50
 	main.ai_3d_cursor_position = 0
+	enforce_ai3d_platform_lock()
 	main.state_manager.save_state()
 	main.ui_controller.update_stereo_shader()
 	_schedule_ai_3d_commit()
@@ -447,7 +448,7 @@ func reset_ai_3d_effect_settings():
 # Cycles only within the entries matching the current Type
 # (main.ai_3d_backend_pref) - see _ai_3d_model_indices_for_type() above.
 func cycle_ai_3d_model():
-	if not _ai_3d_supported():
+	if not _ai_3d_supported() or ai3d_options_locked():
 		return
 	if main.sbs_mode > 0 or main.ai_3d_speed == 0 or main.ai_3d_speed == 1:
 		return
@@ -486,6 +487,43 @@ func normalize_ai_3d_model_for_type():
 	var candidates = _ai_3d_model_indices_for_type(main.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if not candidates.is_empty() and not candidates.has(main.ai_3d_model):
 		main.ai_3d_model = candidates[0]
+
+# AI-3D Type/Model/3D-Mode are locked to GPU/ZipDepth-384-GPU/Standard on
+# Android (2026-09-07) - ZipDepth-384-GPU replaces MiDaS as strictly better
+# in every way tested, and Auto/Fast's tier and resolution-cap thresholds in
+# AUTO_TABLE above were empirically benchmarked around MiDaS's specific
+# speed, not ZipDepth's, so leaving them reachable would apply stale
+# calibration to a different model rather than actually saving anything -
+# Standard is simply forced instead until AUTO_TABLE is re-benchmarked
+# against ZipDepth. build.sh only bundles zipdepth-base-384-gpu.tflite for
+# Android (MiDaS/DA-V2/CPU-backend/experimental-widescreen models are
+# commented out there, not deleted, so this can be reverted by uncommenting
+# those cp lines and this lock together). Linux keeps every model/tier
+# selectable - it never had ZipDepth support to begin with (native
+# MidasDepthEngine only), so this lock would remove capability there for no
+# corresponding size/perf win.
+func ai3d_options_locked() -> bool:
+	return OS.get_name() == "Android"
+
+func _locked_ai3d_model_index() -> int:
+	for i in range(ai_3d_models.size()):
+		if ai_3d_models[i].label == "ZipDepth-384-GPU":
+			return i
+	return 0
+
+# Called after loading persisted state (any format/migration branch - see
+# load_host_state()'s own comment) and by reset_ai_3d_effect_settings(), so
+# a save file from before this lock existed (or Reset's own MiDaS/Auto
+# defaults) can never leave Android pointed at a model that isn't actually
+# bundled. No-op on Linux.
+func enforce_ai3d_platform_lock():
+	if not ai3d_options_locked():
+		return
+	main.ai_3d_backend_pref = AI3D_BACKEND_GPU
+	main.ai_3d_model = _locked_ai3d_model_index()
+	main.ai_3d_last_mode = 3
+	if main.ai_3d_speed != 0:
+		main.ai_3d_speed = 3
 
 # Maps main.ai_3d_model (the persisted UI selection, an index into
 # ai_3d_models) to DepthEstimator's real Java-side model index. Under Auto

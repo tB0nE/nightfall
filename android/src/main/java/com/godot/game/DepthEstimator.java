@@ -489,7 +489,22 @@ public class DepthEstimator {
                     ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 4)
                     .order(ByteOrder.nativeOrder());
 
-            tfliteMidas = loadInterpreter(MODEL_MIDAS);
+            // Unlike every model below, this was never wrapped in its own
+            // try/catch - it was always bundled, so a missing file here used
+            // to be an actual bug worth crashing loudly on. Now that
+            // Android's build deliberately drops it (2026-09-07, see
+            // build.sh's nightfallAssets comment / settings_controller.gd's
+            // ai3d_options_locked()), an uncaught exception here would abort
+            // this whole init function before it ever reaches ZipDepth-384-
+            // GPU's own gpuVariants registration further down - silently
+            // breaking AI-3D entirely rather than just this one model.
+            try {
+                tfliteMidas = loadInterpreter(MODEL_MIDAS);
+                Log.i(TAG, "MiDaS model loaded");
+            } catch (Exception e) {
+                Log.w(TAG, "MiDaS model not available", e);
+                tfliteMidas = null;
+            }
 
             try {
                 tfliteMidas192 = loadInterpreter(MODEL_MIDAS_192);

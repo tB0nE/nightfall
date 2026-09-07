@@ -1834,10 +1834,17 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 4)
+	ai_3d_model = clampi(ai_3d_model, 0, settings_controller.ai_3d_models.size() - 1)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
 	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
 	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
+	# Runs before any per-host state (state_manager.gd's load_host_state()
+	# has its own call for that, and its own comment) - also covers a
+	# brand-new install/host, which never reaches that call at all (see
+	# load_host_state()'s early return when the host has no saved section
+	# yet), so a fresh Android install can't boot pointed at ai_3d_model's
+	# compiled-in default (MiDaS-256-GPU, not bundled there).
+	settings_controller.enforce_ai3d_platform_lock()
 	if not [12, 15, 20, 30, 40].has(ai_3d_hz_cap):
 		ai_3d_hz_cap = 20
 	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
