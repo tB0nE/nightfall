@@ -1,0 +1,223 @@
+diff --git a/modules/openxr/extensions/openxr_composition_layer_extension.cpp b/modules/openxr/extensions/openxr_composition_layer_extension.cpp
+index 6bcff21..7144a84 100644
+--- a/modules/openxr/extensions/openxr_composition_layer_extension.cpp
++++ b/modules/openxr/extensions/openxr_composition_layer_extension.cpp
+@@ -88,6 +88,7 @@ OPENXR_LAYER_FUNC1_IMPL(set_max_anisotropy, float);
+ OPENXR_LAYER_FUNC1_IMPL(set_border_color, const Color &);
+ OPENXR_LAYER_FUNC1_IMPL(set_pose_space, PoseSpace);
+ OPENXR_LAYER_FUNC1_IMPL(set_eye_visibility, EyeVisibility);
++OPENXR_LAYER_FUNC1_IMPL(set_compositor_filter, CompositorFilter);
+ 
+ OPENXR_LAYER_FUNC1_IMPL(set_quad_size, const Size2 &);
+ 
+@@ -122,6 +123,7 @@ HashMap<String, bool *> OpenXRCompositionLayerExtension::get_requested_extension
+ 
+ 	request_extensions[XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME] = &cylinder_ext_available;
+ 	request_extensions[XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME] = &equirect_ext_available;
++	request_extensions[XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME] = &composition_layer_settings_ext_available;
+ 
+ #ifdef ANDROID_ENABLED
+ 	request_extensions[XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME] = &android_surface_ext_available;
+@@ -648,7 +650,33 @@ XrCompositionLayerBaseHeader *OpenXRCompositionLayerExtension::CompositionLayer:
+ 				next_pointer = np;
+ 			}
+ 		}
+-		composition_layer.next = next_pointer;
++		extension_next_pointer = next_pointer;
++	}
++
++	composition_layer.next = extension_next_pointer;
++	if (composition_layer_extension->composition_layer_settings_ext_available && compositor_filter != COMPOSITOR_FILTER_NONE) {
++		XrCompositionLayerSettingsFlagsFB flags = 0;
++		switch (compositor_filter) {
++			case COMPOSITOR_FILTER_SUPERSAMPLING:
++				flags = XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB;
++				break;
++			case COMPOSITOR_FILTER_QUALITY_SUPERSAMPLING:
++				flags = XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SUPER_SAMPLING_BIT_FB;
++				break;
++			case COMPOSITOR_FILTER_SHARPENING:
++				flags = XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
++				break;
++			case COMPOSITOR_FILTER_QUALITY_SHARPENING:
++				flags = XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB;
++				break;
++			default:
++				break;
++		}
++		if (flags != 0) {
++			compositor_filter_settings.next = composition_layer.next;
++			compositor_filter_settings.layerFlags = flags;
++			composition_layer.next = &compositor_filter_settings;
++		}
+ 	}
+ 
+ 	return &composition_layer;
+diff --git a/modules/openxr/extensions/openxr_composition_layer_extension.h b/modules/openxr/extensions/openxr_composition_layer_extension.h
+index 22b12ae..e22f91d 100644
+--- a/modules/openxr/extensions/openxr_composition_layer_extension.h
++++ b/modules/openxr/extensions/openxr_composition_layer_extension.h
+@@ -91,6 +91,15 @@ public:
+ 		EYE_VISIBILITY_RIGHT,
+ 	};
+ 
++	// Must be identical to CompositorFilter in OpenXRCompositionLayer.
++	enum CompositorFilter {
++		COMPOSITOR_FILTER_NONE,
++		COMPOSITOR_FILTER_SUPERSAMPLING,
++		COMPOSITOR_FILTER_QUALITY_SUPERSAMPLING,
++		COMPOSITOR_FILTER_SHARPENING,
++		COMPOSITOR_FILTER_QUALITY_SHARPENING,
++	};
++
+ 	enum PoseSpace {
+ 		POSE_WORLD_LOCKED,
+ 		POSE_HEAD_LOCKED,
+@@ -164,6 +173,7 @@ public:
+ 	OPENXR_LAYER_FUNC1_DECL(set_border_color, const Color &);
+ 	OPENXR_LAYER_FUNC1_DECL(set_pose_space, PoseSpace);
+ 	OPENXR_LAYER_FUNC1_DECL(set_eye_visibility, EyeVisibility);
++	OPENXR_LAYER_FUNC1_DECL(set_compositor_filter, CompositorFilter);
+ 
+ 	OPENXR_LAYER_FUNC1_DECL(set_quad_size, const Size2 &);
+ 
+@@ -183,6 +193,7 @@ public:
+ 
+ 	bool is_available(XrStructureType p_which);
+ 	bool is_android_surface_swapchain_available() { return android_surface_ext_available; }
++	bool is_compositor_filter_available() const { return composition_layer_settings_ext_available; }
+ 
+ private:
+ 	static OpenXRCompositionLayerExtension *singleton;
+@@ -190,6 +201,7 @@ private:
+ 	bool cylinder_ext_available = false;
+ 	bool equirect_ext_available = false;
+ 	bool android_surface_ext_available = false;
++	bool composition_layer_settings_ext_available = false;
+ 
+ 	void _composition_layer_free_rt(RID p_layer);
+ 	void _composition_layer_register_rt(RID p_layer);
+@@ -214,6 +226,13 @@ private:
+ 		bool alpha_blend = false;
+ 		Dictionary extension_property_values;
+ 		bool extension_property_values_changed = true;
++		void *extension_next_pointer = nullptr;
++		CompositorFilter compositor_filter = COMPOSITOR_FILTER_NONE;
++		XrCompositionLayerSettingsFB compositor_filter_settings = {
++			XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB,
++			nullptr,
++			0,
++		};
+ 
+ 		struct {
+ 			RID viewport;
+@@ -262,6 +281,7 @@ private:
+ 		void set_border_color(const Color &p_color);
+ 		void set_pose_space(PoseSpace p_pose_space);
+ 		void set_eye_visibility(EyeVisibility p_eye_visibility);
++		void set_compositor_filter(CompositorFilter p_filter) { compositor_filter = p_filter; }
+ 
+ 		void set_quad_size(const Size2 &p_size);
+ 
+@@ -302,3 +322,4 @@ VARIANT_ENUM_CAST(OpenXRCompositionLayerExtension::Wrap);
+ VARIANT_ENUM_CAST(OpenXRCompositionLayerExtension::Swizzle);
+ VARIANT_ENUM_CAST(OpenXRCompositionLayerExtension::PoseSpace);
+ VARIANT_ENUM_CAST(OpenXRCompositionLayerExtension::EyeVisibility);
++VARIANT_ENUM_CAST(OpenXRCompositionLayerExtension::CompositorFilter);
+diff --git a/modules/openxr/scene/openxr_composition_layer.cpp b/modules/openxr/scene/openxr_composition_layer.cpp
+index 852eeab..9d9054b 100644
+--- a/modules/openxr/scene/openxr_composition_layer.cpp
++++ b/modules/openxr/scene/openxr_composition_layer.cpp
+@@ -151,6 +151,9 @@ void OpenXRCompositionLayer::_bind_methods() {
+ 
+ 	ClassDB::bind_method(D_METHOD("set_eye_visibility", "eye_visibility"), &OpenXRCompositionLayer::set_eye_visibility);
+ 	ClassDB::bind_method(D_METHOD("get_eye_visibility"), &OpenXRCompositionLayer::get_eye_visibility);
++	ClassDB::bind_method(D_METHOD("set_compositor_filter", "filter"), &OpenXRCompositionLayer::set_compositor_filter);
++	ClassDB::bind_method(D_METHOD("get_compositor_filter"), &OpenXRCompositionLayer::get_compositor_filter);
++	ClassDB::bind_method(D_METHOD("is_compositor_filter_supported"), &OpenXRCompositionLayer::is_compositor_filter_supported);
+ 
+ 	ClassDB::bind_method(D_METHOD("intersects_ray", "origin", "direction"), &OpenXRCompositionLayer::intersects_ray);
+ 
+@@ -162,6 +165,7 @@ void OpenXRCompositionLayer::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "alpha_blend", PROPERTY_HINT_NONE, ""), "set_alpha_blend", "get_alpha_blend");
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "enable_hole_punch", PROPERTY_HINT_NONE, ""), "set_enable_hole_punch", "get_enable_hole_punch");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "eye_visibility", PROPERTY_HINT_ENUM, "Both,Left,Right"), "set_eye_visibility", "get_eye_visibility");
++	ADD_PROPERTY(PropertyInfo(Variant::INT, "compositor_filter", PROPERTY_HINT_ENUM, "None,Supersampling,Quality Supersampling,Sharpening,Quality Sharpening"), "set_compositor_filter", "get_compositor_filter");
+ 
+ 	ADD_GROUP("Swapchain State", "swapchain_state_");
+ 	ADD_PROPERTY(PropertyInfo(Variant::INT, "swapchain_state_min_filter", PROPERTY_HINT_ENUM, "Nearest,Linear,Cubic"), "set_min_filter", "get_min_filter");
+@@ -201,6 +205,30 @@ void OpenXRCompositionLayer::_bind_methods() {
+ 	BIND_ENUM_CONSTANT(EYE_VISIBILITY_BOTH);
+ 	BIND_ENUM_CONSTANT(EYE_VISIBILITY_LEFT);
+ 	BIND_ENUM_CONSTANT(EYE_VISIBILITY_RIGHT);
++
++	BIND_ENUM_CONSTANT(COMPOSITOR_FILTER_NONE);
++	BIND_ENUM_CONSTANT(COMPOSITOR_FILTER_SUPERSAMPLING);
++	BIND_ENUM_CONSTANT(COMPOSITOR_FILTER_QUALITY_SUPERSAMPLING);
++	BIND_ENUM_CONSTANT(COMPOSITOR_FILTER_SHARPENING);
++	BIND_ENUM_CONSTANT(COMPOSITOR_FILTER_QUALITY_SHARPENING);
++}
++
++void OpenXRCompositionLayer::set_compositor_filter(CompositorFilter p_filter) {
++	if (compositor_filter == p_filter) {
++		return;
++	}
++	compositor_filter = p_filter;
++	if (composition_layer_extension && composition_layer.is_valid()) {
++		composition_layer_extension->composition_layer_set_compositor_filter(composition_layer, (OpenXRCompositionLayerExtension::CompositorFilter)p_filter);
++	}
++}
++
++OpenXRCompositionLayer::CompositorFilter OpenXRCompositionLayer::get_compositor_filter() const {
++	return compositor_filter;
++}
++
++bool OpenXRCompositionLayer::is_compositor_filter_supported() const {
++	return composition_layer_extension && composition_layer_extension->is_compositor_filter_available();
+ }
+ 
+ bool OpenXRCompositionLayer::_should_use_fallback_node() {
+diff --git a/modules/openxr/scene/openxr_composition_layer.h b/modules/openxr/scene/openxr_composition_layer.h
+index b4ea026..4dfef3e 100644
+--- a/modules/openxr/scene/openxr_composition_layer.h
++++ b/modules/openxr/scene/openxr_composition_layer.h
+@@ -86,6 +86,15 @@ public:
+ 		EYE_VISIBILITY_RIGHT,
+ 	};
+ 
++	// Must be identical to CompositorFilter in OpenXRCompositionLayerExtension.
++	enum CompositorFilter {
++		COMPOSITOR_FILTER_NONE,
++		COMPOSITOR_FILTER_SUPERSAMPLING,
++		COMPOSITOR_FILTER_QUALITY_SUPERSAMPLING,
++		COMPOSITOR_FILTER_SHARPENING,
++		COMPOSITOR_FILTER_QUALITY_SHARPENING,
++	};
++
+ protected:
+ 	RID composition_layer;
+ 
+@@ -115,6 +124,7 @@ private:
+ 	float max_anisotropy = 1.0;
+ 	Color border_color = { 0.0, 0.0, 0.0, 0.0 };
+ 	EyeVisibility eye_visibility = EYE_VISIBILITY_BOTH;
++	CompositorFilter compositor_filter = COMPOSITOR_FILTER_NONE;
+ 
+ 	bool _should_use_fallback_node();
+ 	void _create_fallback_node();
+@@ -217,6 +227,10 @@ public:
+ 	void set_eye_visibility(EyeVisibility p_eye_visibility);
+ 	EyeVisibility get_eye_visibility() const;
+ 
++	void set_compositor_filter(CompositorFilter p_filter);
++	CompositorFilter get_compositor_filter() const;
++	bool is_compositor_filter_supported() const;
++
+ 	virtual PackedStringArray get_configuration_warnings() const override;
+ 
+ 	virtual Vector2 intersects_ray(const Vector3 &p_origin, const Vector3 &p_direction) const;
+@@ -229,3 +243,4 @@ VARIANT_ENUM_CAST(OpenXRCompositionLayer::MipmapMode)
+ VARIANT_ENUM_CAST(OpenXRCompositionLayer::Wrap)
+ VARIANT_ENUM_CAST(OpenXRCompositionLayer::Swizzle)
+ VARIANT_ENUM_CAST(OpenXRCompositionLayer::EyeVisibility)
++VARIANT_ENUM_CAST(OpenXRCompositionLayer::CompositorFilter)

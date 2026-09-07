@@ -690,6 +690,7 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
     }
 
     self->active_video_format_ = videoFormat;
+    self->_reset_performance_stats();
     NF_LOG("StreamConnection", "Decoder setup: format=0x%x %dx%d@%dfps local_capture=%d", videoFormat, width, height, redrawRate, self->local_capture_mode_);
 
     if (self->local_capture_mode_) {
@@ -762,7 +763,7 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
                 return -1;
             }
         }
-        if (new_codec->init(mime, width, height, !supports_ahb_import,
+        if (new_codec->init(mime, width, height, redrawRate, !supports_ahb_import,
                             gles_decoder_surface, notify_decode_thread)) {
             NF_LOG("StreamConnection", "Native MediaCodec created: %dx%d mime=%s", width, height, mime);
             self->_replace_native_codec(new_codec);
@@ -919,7 +920,13 @@ int StreamConnection::_cb_submit_decode_unit(PDECODE_UNIT decodeUnit) {
         entry = entry->next;
     }
 
-    pkt->pts = decodeUnit->presentationTimeUs;
+    // Moonlight Android uses the time the complete frame entered the decoder
+    // queue as MediaCodec PTS. The output preserves it, giving a frame-exact
+    // queue+decode duration even when several frames are in flight. The old
+    // global last_submit_time_us_ paired output with whichever frame happened
+    // to arrive most recently and substantially under-reported latency at high
+    // frame rates.
+    pkt->pts = (int64_t)decodeUnit->enqueueTimeUs;
 
 #if defined(__ANDROID__)
     {
@@ -939,9 +946,36 @@ int StreamConnection::_cb_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     }
 #endif
 
-    auto now = std::chrono::steady_clock::now();
-    auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
-    self->last_submit_time_us_.store(now_us);
+    {
+        std::lock_guard<std::mutex> stats_lock(self->performance_stats_mutex_);
+        auto &stats = self->performance_stats_;
+        if (stats.started_us == 0) {
+            stats.started_us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+        if (stats.last_frame_number != 0 && decodeUnit->frameNumber != stats.last_frame_number &&
+            decodeUnit->frameNumber != stats.last_frame_number + 1) {
+            const int gap = decodeUnit->frameNumber - stats.last_frame_number - 1;
+            if (gap > 0) {
+                stats.network_lost_frames += (uint64_t)gap;
+                stats.total_frames += (uint64_t)gap;
+            }
+        }
+        stats.last_frame_number = decodeUnit->frameNumber;
+        stats.received_frames++;
+        stats.total_frames++;
+        if (decodeUnit->frameHostProcessingLatency != 0) {
+            const uint16_t latency = decodeUnit->frameHostProcessingLatency;
+            stats.host_latency_tenths_total += latency;
+            stats.host_latency_samples++;
+            if (stats.host_latency_tenths_min == 0 || latency < stats.host_latency_tenths_min) {
+                stats.host_latency_tenths_min = latency;
+            }
+            if (latency > stats.host_latency_tenths_max) {
+                stats.host_latency_tenths_max = latency;
+            }
+        }
+    }
 
     DecodeUnitQueue::DecodeUnit queued_unit;
     queued_unit.packet.reset(pkt);
@@ -1033,6 +1067,11 @@ void StreamConnection::_cb_connection_status_update(int connectionStatus) {
 void StreamConnection::_cb_set_hdr_mode(bool hdrEnabled) {
     auto *self = active_instance_;
     if (self) {
+        // Native Android decoding (both GLES SurfaceTexture and Vulkan AHB)
+        // bypasses the AVFrame path used by _resolve_frame_transfer(). The
+        // Moonlight protocol callback is therefore the authoritative HDR10
+        // transfer signal for those paths. Sunshine HDR streaming is PQ/ST2084.
+        self->uploader_->update_color_transfer(hdrEnabled ? 1 : 0);
         Dictionary metadata;
         if (hdrEnabled) {
             SS_HDR_METADATA hdr_data;
@@ -1122,6 +1161,18 @@ AVColorSpace StreamConnection::_resolve_frame_colorspace(AVFrame *frame) const {
     return declared;
 }
 
+// 0 = SDR/BT.709 gamma (default), 1 = PQ/ST 2084 (HDR10), 2 = HLG.
+// Drives yuv_display.gdshader's/stereo_screen.gdshader's color_transfer_type
+// uniform, which selects the inverse-EOTF + tonemap step needed to render
+// HDR streams without the "blown out to white" look SDR-gamma display of
+// PQ/HLG samples produces.
+int StreamConnection::_resolve_frame_transfer(AVFrame *frame) const {
+    if (!frame) return 0;
+    if (frame->color_trc == AVCOL_TRC_SMPTE2084) return 1;
+    if (frame->color_trc == AVCOL_TRC_ARIB_STD_B67) return 2;
+    return 0;
+}
+
 void StreamConnection::_connection_thread_func() {
     DECODER_RENDERER_CALLBACKS drCallbacks{};
     LiInitializeVideoCallbacks(&drCallbacks);
@@ -1174,6 +1225,15 @@ void StreamConnection::_decode_thread_func() {
 #ifdef __ANDROID__
     bool native_input_blocked = false;
 #endif
+    // Diagnostic (2026-09-06): distinguishes "the outer loop isn't waking up
+    // often enough" from "dequeue_frame() genuinely isn't producing frames
+    // fast enough" - see TextureUploader's parallel decode-thread request-rate
+    // counter, which already showed the request rate into the render thread
+    // capped around ~110-120/sec regardless of a 144/165Hz target. Logged
+    // together every 120 successful dequeues so the three numbers line up.
+    int outer_loop_iterations = 0;
+    int dequeue_attempts = 0;
+    int dequeue_successes = 0;
 
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -1184,6 +1244,7 @@ void StreamConnection::_decode_thread_func() {
     }
 
     while (true) {
+        ++outer_loop_iterations;
         queued_unit.reset();
         pkt = nullptr;
         {
@@ -1279,13 +1340,37 @@ void StreamConnection::_decode_thread_func() {
                 }
             }
 
-            // Output indices and image availability arrive via callbacks. A
-            // zero timeout drains all work already ready without stalling input.
+            // Output indices and image availability arrive via callbacks
+            // (AndroidMediaCodec::_on_async_output_available() fires
+            // notify_decode_thread() - which sets native_codec_event_ and
+            // wakes queue_cv_ - on every single decoded frame), so a zero
+            // timeout here correctly drains all work already ready without
+            // stalling input; this loop will be woken again the moment the
+            // next frame lands regardless. The non-AHB (GLES/native-direct)
+            // path used to get 5000us instead of 0 here (2026-09-06 fix) -
+            // that stale blocking wait added a ~5ms floor to every outer-loop
+            // cycle once the drain loop ran dry, which the event-driven wake
+            // makes entirely unnecessary. Measured effect: decode-thread
+            // throughput was capped at ~110-120 frames/sec regardless of
+            // target Hz (verified via this function's own counters logged
+            // just below) - a fixed per-cycle cost that ate a shrinking
+            // fraction of budget as target Hz rose, worst at 144/165Hz.
             NativeDecodedFrame frame;
-            RenderingDevice *initial_rd = RenderingServer::get_singleton()
-                ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
-            const int64_t frame_timeout_us = supports_android_hardware_buffer_import(initial_rd) ? 0 : 5000;
-            while (codec->dequeue_frame(frame, frame_timeout_us)) {
+            const int64_t frame_timeout_us = 0;
+            while (true) {
+                ++dequeue_attempts;
+                if (!codec->dequeue_frame(frame, frame_timeout_us)) break;
+                ++dequeue_successes;
+                if (dequeue_successes >= 120) {
+                    NF_LOG("StreamConnection",
+                            "Decode-thread loop rate: %d outer iterations, %d dequeue attempts, "
+                            "%d dequeue successes (frame_timeout_us=%lld)",
+                            outer_loop_iterations, dequeue_attempts, dequeue_successes,
+                            (long long)frame_timeout_us);
+                    outer_loop_iterations = 0;
+                    dequeue_attempts = 0;
+                    dequeue_successes = 0;
+                }
                 RenderingDevice *rd = RenderingServer::get_singleton()
                     ? RenderingServer::get_singleton()->get_rendering_device() : nullptr;
                 const bool supports_ahb_import = supports_android_hardware_buffer_import(rd);
@@ -1302,17 +1387,7 @@ void StreamConnection::_decode_thread_func() {
                         } else {
                             uploader_->update_from_android_image(frame.image, frame.width, frame.height);
                         }
-                        frames_decoded_.fetch_add(1);
-                        // GLES path (no AHB import support) never recorded
-                        // latency - the AHB branch below does this after its
-                        // own decode/upload, but this branch returned early
-                        // via `continue` before reaching it, leaving
-                        // last_frame_latency_us_ permanently 0 under GLES.
-                        auto decode_done = std::chrono::steady_clock::now();
-                        auto decode_done_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_done.time_since_epoch()).count();
-                        int64_t submit_us = last_submit_time_us_.load();
-                        if (submit_us > 0 && decode_done_us > submit_us)
-                            last_frame_latency_us_.store((int)(decode_done_us - submit_us));
+                        _record_rendered_frame(frame.pts);
                     }
                     codec->release_frame(frame);
                     continue;
@@ -1431,16 +1506,10 @@ void StreamConnection::_decode_thread_func() {
                 static int q_log = 0;
                 if (++q_log <= 3) NF_LOG("VCONN", "CALL queued rt=%d", q_log);
 
-                frames_decoded_.fetch_add(1);
+                _record_rendered_frame(frame.pts);
                 static int log_count = 0;
                 if (++log_count <= 10)
                     NF_LOG("VCONN", "Queued compute dispatch %dx%d frame=%d", frame.width, frame.height, log_count);
-
-                auto decode_done = std::chrono::steady_clock::now();
-                auto decode_done_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_done.time_since_epoch()).count();
-                int64_t submit_us = last_submit_time_us_.load();
-                if (submit_us > 0 && decode_done_us > submit_us)
-                    last_frame_latency_us_.store((int)(decode_done_us - submit_us));
 
                 codec->release_frame(frame);
             }
@@ -1468,19 +1537,13 @@ void StreamConnection::_decode_thread_func() {
                     uint32_t expected_uv = (uint32_t)w * (h / 2);
                     if (hdr.y_size == expected_y && hdr.uv_size == expected_uv &&
                         pkt->size >= (int)(sizeof(RawFrameHeader) + expected_y + expected_uv)) {
-                        frames_decoded_.fetch_add(1);
+                        _record_rendered_frame(pkt->pts);
 
-                        auto decode_done = std::chrono::steady_clock::now();
-                        auto decode_done_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_done.time_since_epoch()).count();
-                        int64_t submit_us = last_submit_time_us_.load();
-                        if (submit_us > 0 && decode_done_us > submit_us) {
-                            last_frame_latency_us_.store((int)(decode_done_us - submit_us));
-                        }
-
-                        if (current_colorspace_ != AVCOL_SPC_BT709) {
+                        if (current_colorspace_ != AVCOL_SPC_BT709 || current_color_transfer_ != 0) {
                             current_colorspace_ = AVCOL_SPC_BT709;
                             current_color_range_ = AVCOL_RANGE_UNSPECIFIED;
-                            uploader_->update_colorspace((int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED);
+                            current_color_transfer_ = 0;
+                            uploader_->update_colorspace((int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED, 0);
                         }
 
                         const uint8_t *payload = pkt->data + sizeof(RawFrameHeader);
@@ -1577,14 +1640,8 @@ void StreamConnection::_decode_thread_func() {
                     }
                 }
 
-                auto frame_count = frames_decoded_.fetch_add(1) + 1;
-
-                auto decode_done = std::chrono::steady_clock::now();
-                auto decode_done_us = std::chrono::duration_cast<std::chrono::microseconds>(decode_done.time_since_epoch()).count();
-                int64_t submit_us = last_submit_time_us_.load();
-                if (submit_us > 0 && decode_done_us > submit_us) {
-                    last_frame_latency_us_.store((int)(decode_done_us - submit_us));
-                }
+                _record_rendered_frame(tmp->pts);
+                auto frame_count = frames_decoded_.load();
 
                 AVFrame *final_frame = tmp;
                 AVFrame *sw_frame = nullptr;
@@ -1661,10 +1718,12 @@ void StreamConnection::_decode_thread_func() {
 
                 AVColorSpace frame_cs = _resolve_frame_colorspace(final_frame);
                 AVColorRange frame_cr = (AVColorRange)final_frame->color_range;
-                if (frame_cs != current_colorspace_ || frame_cr != current_color_range_) {
+                int frame_trc = _resolve_frame_transfer(final_frame);
+                if (frame_cs != current_colorspace_ || frame_cr != current_color_range_ || frame_trc != current_color_transfer_) {
                     current_colorspace_ = frame_cs;
                     current_color_range_ = frame_cr;
-                    uploader_->update_colorspace((int)frame_cs, (int)frame_cr);
+                    current_color_transfer_ = frame_trc;
+                    uploader_->update_colorspace((int)frame_cs, (int)frame_cr, frame_trc);
                 }
 
                 if (!used_ahb) {
@@ -1900,6 +1959,82 @@ int StreamConnection::get_last_frame_latency_us() const {
     return last_frame_latency_us_.load();
 }
 
+int StreamConnection::get_network_latency_ms() const {
+    uint32_t rtt = 0;
+    uint32_t variance = 0;
+    if (is_streaming_.load() && LiGetEstimatedRttInfo(&rtt, &variance)) {
+        return (int)rtt;
+    }
+    return -1;
+}
+
+void StreamConnection::_reset_performance_stats() {
+    std::lock_guard<std::mutex> lock(performance_stats_mutex_);
+    performance_stats_ = PerformanceStatsWindow{};
+    performance_stats_.started_us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    frames_decoded_.store(0);
+    frames_dropped_.store(0);
+    last_frame_latency_us_.store(0);
+}
+
+void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
+    const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t decode_us = now_us - frame_enqueue_time_us;
+    // Same outlier policy as Moonlight Android: invalid timestamps and decoder
+    // stalls over a second don't poison the rolling average.
+    if (decode_us < 0 || decode_us >= 1000000) {
+        decode_us = 0;
+    } else {
+        last_frame_latency_us_.store((int)decode_us);
+    }
+    frames_decoded_.fetch_add(1);
+    std::lock_guard<std::mutex> lock(performance_stats_mutex_);
+    performance_stats_.rendered_frames++;
+    performance_stats_.decode_time_us += (uint64_t)decode_us;
+}
+
+Dictionary StreamConnection::take_performance_stats() {
+    Dictionary result;
+    const uint64_t now_us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    {
+        std::lock_guard<std::mutex> lock(performance_stats_mutex_);
+        const uint64_t started_us = performance_stats_.started_us != 0 ? performance_stats_.started_us : now_us;
+        result["elapsed_us"] = (int64_t)(now_us - started_us);
+        result["total_frames"] = (int64_t)performance_stats_.total_frames;
+        result["received_frames"] = (int64_t)performance_stats_.received_frames;
+        result["rendered_frames"] = (int64_t)performance_stats_.rendered_frames;
+        result["network_lost_frames"] = (int64_t)performance_stats_.network_lost_frames;
+        result["decode_time_us"] = (int64_t)performance_stats_.decode_time_us;
+        result["host_latency_tenths_total"] = (int64_t)performance_stats_.host_latency_tenths_total;
+        result["host_latency_samples"] = (int64_t)performance_stats_.host_latency_samples;
+        result["host_latency_tenths_min"] = (int)performance_stats_.host_latency_tenths_min;
+        result["host_latency_tenths_max"] = (int)performance_stats_.host_latency_tenths_max;
+
+        // Keep frame continuity across display windows while draining every
+        // accumulator used to calculate rates and averages.
+        const int last_frame_number = performance_stats_.last_frame_number;
+        performance_stats_ = PerformanceStatsWindow{};
+        performance_stats_.started_us = now_us;
+        performance_stats_.last_frame_number = last_frame_number;
+    }
+
+    uint32_t rtt = 0;
+    uint32_t variance = 0;
+    if (is_streaming_.load() && LiGetEstimatedRttInfo(&rtt, &variance)) {
+        result["network_latency_ms"] = (int)rtt;
+        result["network_variance_ms"] = (int)variance;
+    } else {
+        result["network_latency_ms"] = 0;
+        result["network_variance_ms"] = 0;
+    }
+    result["decoder_queue_drops"] = frames_dropped_.load();
+    result["decoder_queue_size"] = get_decode_queue_size();
+    return result;
+}
+
 bool StreamConnection::is_display_ready() const {
 #ifdef __ANDROID__
     return display_wired_.load();
@@ -1909,6 +2044,10 @@ bool StreamConnection::is_display_ready() const {
 }
 
 String StreamConnection::get_decoder_name() const {
+#ifdef __ANDROID__
+    std::shared_ptr<AndroidMediaCodec> codec = _get_native_codec();
+    if (codec && !codec->get_name().empty()) return String::utf8(codec->get_name().c_str());
+#endif
     if (decoder_.is_valid()) return decoder_->get_decoder_name();
     return "";
 }
@@ -1977,6 +2116,8 @@ void StreamConnection::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &StreamConnection::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &StreamConnection::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &StreamConnection::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &StreamConnection::get_network_latency_ms);
+    ClassDB::bind_method(D_METHOD("take_performance_stats"), &StreamConnection::take_performance_stats);
     ClassDB::bind_method(D_METHOD("is_display_ready"), &StreamConnection::is_display_ready);
     ClassDB::bind_method(D_METHOD("get_decoder_name"), &StreamConnection::get_decoder_name);
     ClassDB::bind_method(D_METHOD("get_video_width"), &StreamConnection::get_video_width);

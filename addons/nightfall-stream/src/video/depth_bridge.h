@@ -33,12 +33,18 @@ public:
     PackedByteArray get_depth_map();
     void set_depth_model(int model_index);
     void configure_depth(int model_index, int requested_backend);
+    void set_depth_gpu_priority(int priority);
+    void set_depth_hz_cap(int hz);
     int get_depth_backend_capabilities(int model_index);
     int get_effective_depth_backend();
     String get_depth_backend_status();
     int get_depth_model_size();
+    int get_depth_model_width();
+    int get_depth_model_height();
     float get_depth_last_inference_ms();
     float get_depth_last_inference_hz();
+    float get_depth_last_age_ms();
+    int get_depth_last_skipped_frames();
     String get_device_model();
 
 protected:

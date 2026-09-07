@@ -65,6 +65,8 @@ func _set_collision_active(active: bool):
 
 func _hide_initially():
 	visible = false
+	if viewport:
+		viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_set_collision_active(false)
 
 func _setup_grab_bar(parent_vp: SubViewport, bar_height: int = 38, offset_top: int = -79, offset_bottom: int = -37, radius: int = 19):
@@ -139,6 +141,8 @@ func toggle():
 			_has_saved_offset = true
 		_save_offset()
 	visible = new_vis
+	if viewport:
+		viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if new_vis else SubViewport.UPDATE_DISABLED
 	_set_collision_active(new_vis)
 	if not new_vis:
 		_on_hide()

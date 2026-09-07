@@ -198,6 +198,63 @@ void DepthBridge::configure_depth(int model_index, int requested_backend) {
 #endif
 }
 
+void DepthBridge::set_depth_gpu_priority(int priority) {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: no JNIEnv");
+        return;
+    }
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: FindClass failed");
+        env->ExceptionClear();
+        return;
+    }
+    jmethodID method = env->GetStaticMethodID(app_class, "setDepthGpuPriority", "(I)V");
+    if (!method) {
+        __android_log_print(ANDROID_LOG_ERROR, "DepthBridge", "set_depth_gpu_priority: GetStaticMethodID failed");
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return;
+    }
+    env->CallStaticVoidMethod(app_class, method, (jint)priority);
+    env->DeleteLocalRef(app_class);
+#else
+    (void)priority;
+#endif
+}
+
+// AI 3D tab's Hz Cap control (2026-08-28) - same JNI shape as
+// configure_depth() above, just a single-int void setter. No Linux
+// equivalent yet (MidasDepthEngine has no rate-limiting of its own to
+// target) - silently a no-op there, matching this file's other Android-
+// only bridge methods' platform fallback convention.
+void DepthBridge::set_depth_hz_cap(int hz) {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return;
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) {
+        env->ExceptionClear();
+        return;
+    }
+
+    jmethodID method = env->GetStaticMethodID(app_class, "setDepthHzCap", "(I)V");
+    if (!method) {
+        env->ExceptionClear();
+        env->DeleteLocalRef(app_class);
+        return;
+    }
+
+    env->CallStaticVoidMethod(app_class, method, (jint)hz);
+    env->DeleteLocalRef(app_class);
+#else
+    (void)hz;
+#endif
+}
+
 int DepthBridge::get_depth_backend_capabilities(int model_index) {
 #ifdef __ANDROID__
     JNIEnv *env = get_jni_env();
@@ -297,6 +354,48 @@ int DepthBridge::get_depth_model_size() {
 #endif
 }
 
+int DepthBridge::get_depth_model_width() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_size();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelWidth", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint width = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)width;
+#else
+    return 256;
+#endif
+}
+
+int DepthBridge::get_depth_model_height() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_size();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelHeight", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint height = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)height;
+#else
+    return 256;
+#endif
+}
+
 // Both getters (2026-08-25) mirror DepthEstimator.java's own "Perf:" logcat
 // line exactly (same volatile fields, updated at the same point) - added so
 // a GDScript status-bar readout can show live inference timing without
@@ -348,6 +447,44 @@ float DepthBridge::get_depth_last_inference_hz() {
 #endif
 }
 
+float DepthBridge::get_depth_last_age_ms() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0.0f;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0.0f;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastAgeMs", "()F");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0.0f;
+    }
+    jfloat value = env->CallStaticFloatMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (float)value;
+#else
+    return 0.0f;
+#endif
+}
+
+int DepthBridge::get_depth_last_skipped_frames() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return 0;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 0;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthLastSkippedFrames", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 0;
+    }
+    jint value = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)value;
+#else
+    return 0;
+#endif
+}
+
 // Headset model string (2026-08-27) - see GodotApp.java's getDeviceModel()
 // comment. Same JNI call pattern as the getters above; Linux/other
 // platforms return an empty string, which callers treat the same as "not a
@@ -385,11 +522,17 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_map"), &DepthBridge::get_depth_map);
     ClassDB::bind_method(D_METHOD("set_depth_model", "model_index"), &DepthBridge::set_depth_model);
     ClassDB::bind_method(D_METHOD("configure_depth", "model_index", "requested_backend"), &DepthBridge::configure_depth);
+    ClassDB::bind_method(D_METHOD("set_depth_gpu_priority", "priority"), &DepthBridge::set_depth_gpu_priority);
+    ClassDB::bind_method(D_METHOD("set_depth_hz_cap", "hz"), &DepthBridge::set_depth_hz_cap);
     ClassDB::bind_method(D_METHOD("get_depth_backend_capabilities", "model_index"), &DepthBridge::get_depth_backend_capabilities);
     ClassDB::bind_method(D_METHOD("get_effective_depth_backend"), &DepthBridge::get_effective_depth_backend);
     ClassDB::bind_method(D_METHOD("get_depth_backend_status"), &DepthBridge::get_depth_backend_status);
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
+    ClassDB::bind_method(D_METHOD("get_depth_model_width"), &DepthBridge::get_depth_model_width);
+    ClassDB::bind_method(D_METHOD("get_depth_model_height"), &DepthBridge::get_depth_model_height);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
+    ClassDB::bind_method(D_METHOD("get_depth_last_age_ms"), &DepthBridge::get_depth_last_age_ms);
+    ClassDB::bind_method(D_METHOD("get_depth_last_skipped_frames"), &DepthBridge::get_depth_last_skipped_frames);
     ClassDB::bind_method(D_METHOD("get_device_model"), &DepthBridge::get_device_model);
 }

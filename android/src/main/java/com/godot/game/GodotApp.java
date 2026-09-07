@@ -103,6 +103,18 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static void setDepthGpuPriority(int priority) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.setGpuPriority(priority);
+		}
+	}
+
+	public static void setDepthHzCap(int hz) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.setHzCap(hz);
+		}
+	}
+
 	public static int getDepthBackendCapabilities(int modelIndex) {
 		return depthEstimator != null ? depthEstimator.getBackendCapabilities(modelIndex) : 1;
 	}
@@ -122,12 +134,34 @@ public class GodotApp extends GodotActivity {
 		return 256;
 	}
 
+	public static int getDepthModelWidth() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelWidth();
+		}
+		return 256;
+	}
+
+	public static int getDepthModelHeight() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelHeight();
+		}
+		return 256;
+	}
+
 	public static float getDepthLastInferenceMs() {
 		return depthEstimator != null ? depthEstimator.getLastInferenceMs() : 0f;
 	}
 
 	public static float getDepthLastInferenceHz() {
 		return depthEstimator != null ? depthEstimator.getLastInferenceHz() : 0f;
+	}
+
+	public static float getDepthLastAgeMs() {
+		return depthEstimator != null ? depthEstimator.getLastDepthAgeMs() : 0f;
+	}
+
+	public static int getDepthLastSkippedFrames() {
+		return depthEstimator != null ? depthEstimator.getLastDepthSkippedFrames() : 0;
 	}
 
 	// Headset device codename (e.g. "hollywood" for Quest 2, "eureka" for

@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 PRESET="NightfallDev"
 OUTPUT="Nightfall-Android-arm64-v8a-debug.apk"
 PLATFORM="android"
+USE_STOCK_LITERT=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -14,20 +15,26 @@ for arg in "$@"; do
     --debug)   PRESET="NightfallDev";     OUTPUT="Nightfall-Android-arm64-v8a-debug.apk" ;;
     --linux)   PLATFORM="linux"; OUTPUT="Nightfall-Linux-x86_64" ;;
     --appimage) PLATFORM="appimage"; OUTPUT="Nightfall-x86_64.AppImage" ;;
+    --stock-litert) USE_STOCK_LITERT=1 ;;
     --install) INSTALL=1 ;;
     --help|-h)
-      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--install]"
+      echo "Usage: $0 [--debug|--release] [--linux|--appimage] [--stock-litert] [--install]"
       echo "  --debug     Export debug APK (default)"
       echo "  --release   Export release APK (requires .env keystore config)"
       echo "  --linux     Export Linux x86_64 binary"
       echo "  --appimage  Export Linux x86_64 AppImage (implies --release for Linux)"
+      echo "  --stock-litert  Use stock-priority LiteRT GPU instead of the default low-priority Quest build"
       echo "  --install   Install APK via adb after export (Android only)"
       exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
 
-GODOT="/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"
+# Export with the editor version matching the installed 4.7.stable template
+# metadata. The Android runtime library is still the patched engine copied into
+# that template; the patched editor is only needed when regenerating the custom
+# godot-cpp API used to compile nightfall-xr.
+GODOT="${NIGHTFALL_GODOT_EDITOR:-/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64}"
 JAVA_HOME="/home/linuxbrew/.linuxbrew/opt/openjdk@17"
 TEMPLATES="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/android_source.zip"
 LINUX_TEMPLATE_DEBUG="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_debug.x86_64"
@@ -153,6 +160,12 @@ APPRUN
   exit 0
 fi
 
+# Build the Android OpenXR composition provider before export. It is kept as
+# a separate GDExtension because the generic vcpkg godot-cpp API omits the
+# OpenXR module classes it derives from. Linux keeps using the legacy Godot
+# composition-layer path and must not require the Android NDK.
+bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" release
+
 if [ "$PRESET" = "NightfallRelease" ]; then
   if [ ! -f .env ]; then
     echo "Error: .env not found (copy .env.example and fill in keystore credentials)"
@@ -210,14 +223,28 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # android/src/main/assets/ (2026-08-24) - see the matching comment in the
 # Linux depth_models block above.
 mkdir -p android/build/nightfallAssets
-cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
-cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
+# MiDaS (GPU and CPU) and DA-V2-252 REMOVED from Android bundling
+# (2026-09-07) - ZipDepth-384-GPU is strictly better in every way tested, so
+# there's no reason left to ship these here (they're still real, correct
+# models - DepthEstimator.java still attempts to load them, harmless with no
+# asset present, same soft-fail pattern already established for YOLO26/
+# DA-V2-196-GPU below). Also dropped Android's CPU inference path
+# entirely (too slow to be worth its share of APK size on this hardware) -
+# see settings_controller.gd's ai3d_options_locked(). Re-enable by
+# uncommenting the cp lines below (MiDaS/DA-V2, and ZipDepth's own CPU/
+# experimental-widescreen variants further down) together with removing that
+# lock function's Android check. Linux is untouched - it never had ZipDepth
+# support to begin with, so none of this bundling logic applies there (see
+# the Linux depth_models block above, which still copies its original three
+# models unconditionally).
+# cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
+# cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
 # MiDaS-small re-exported/re-calibrated at 192x192 (2026-08-20) - an
 # independently-calibrated sibling of the 256px model above, not just a
 # resize (own scale/zero_point, see DepthEstimator.java's MIDAS_192_*
 # constants). Now the default landing spot right after Off (see
 # settings_controller.gd's ai_3d_model_labels comment).
-cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
+# cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
 # MiDaS-192-GPU (2026-08-24) - same onnx2tf -ofgd -kt input recipe that
 # produced the working 256px GPU export (see midas-v21-small-256-gpu.tflite's
 # own history), just re-run against the ONNX graph's input resized to
@@ -245,7 +272,7 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallA
 # export that fails to load (same root cause as this comment's own
 # fp16-I/O history above). Result: 33.2MB, verified same float32 I/O +
 # fp16-weight tensor pattern as the reference model, non-degenerate output.
-cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
+# cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
 # YOLO26-depth (nano, all resolutions) and YOLO26-N-384-GPU REMOVED from
 # selection (2026-08-25) - the w8a32 nano CPU lineup and a fresh
 # NHWC/CNN-dominated GPU export were both tried, but the GPU delegate never
@@ -269,7 +296,7 @@ cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAs
 # bundled at all, as a curiosity/future-hardware placeholder rather than
 # a genuinely usable option today. 252 kept over 196 as the higher-quality
 # of the two.
-cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
+# cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
 # DA-V2-196-GPU tried (2026-08-25), REMOVED from selection - the GPU
 # delegate loaded and produced correct output (same onnx2tf -kt input fix
 # as the CPU models above), but only at ~2.8Hz vs. MiDaS-GPU's ~15-20Hz -
@@ -277,16 +304,57 @@ cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfa
 # 12 GPU<->CPU handoffs per inference that dominate the cost. See
 # DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
 # constant for the full history if revisiting.
-LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
-if [ ! -f "$LITERT_GPU_AAR" ]; then
-  echo "Error: patched LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+# ZipDepth-GPU (2026-09-04) - the real fix for the DA-V2-GPU problem above:
+# a 6.1M-param pure-CNN distilled from DA-V2-Large (see DepthEstimator.java's
+# MODEL_ZIPDEPTH_*_GPU comment), so no ViT ops to force GPU<->CPU handoffs.
+# Built by tools/convert_zipdepth.py. The hybrid remains the GPU model; an
+# exact full-standard-head CPU counterpart is bundled separately below for
+# measurement. 192/256 variants were also built and tested but dropped
+# (2026-09-04) - ZipDepth was only ever trained at 384x384 (unlike MiDaS-192,
+# which is independently trained/calibrated at that size, not a resize), so
+# 192/256 are just 384's weights outside their trained distribution -
+# confirmed via tools/model_tester/ to look noticeably worse. Only 384 ships.
+ZIPDEPTH_384_MODEL="${NIGHTFALL_ZIPDEPTH_384_MODEL:-$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite}"
+if [ ! -f "$ZIPDEPTH_384_MODEL" ]; then
+  echo "Error: ZipDepth-384 model not found at $ZIPDEPTH_384_MODEL"
   exit 1
 fi
-# The local GPU AAR is the official LiteRT 1.4.2 artifact with only its arm64
-# JNI library replaced. Nightfall's JNI build adds Qualcomm's low-priority
-# OpenCL context hint; keeping the Java API artifact separate avoids Gradle
-# resolving the stock native library transitively alongside it.
-sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
+echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
+cp "$ZIPDEPTH_384_MODEL" android/build/nightfallAssets/zipdepth-base-384-gpu.tflite
+# The full standard convex head is too costly on Adreno's generic LiteRT GPU
+# kernels, but is still valuable as ZipDepth-384's explicit CPU counterpart.
+# The graph is delegate-agnostic TFLite. It uses w8a32 quantization: int8
+# weights with float32 activations and I/O. Full w8a8 was tested and rejected
+# because ZipDepth's output collapsed numerically on representative scenes.
+# ZipDepth-384's CPU counterpart and the experimental aspect-preserving
+# widescreen exports REMOVED from Android bundling (2026-09-07), same
+# reasoning/re-enable path as the MiDaS/DA-V2 block above - the CPU model is
+# Android's dropped CPU path, and the widescreen variants are unreachable
+# now that Model selection is locked/hidden there.
+# ZIPDEPTH_384_CPU_MODEL="$SCRIPT_DIR/models/zipdepth-base-384-standard-w8a32.tflite"
+# if [ ! -f "$ZIPDEPTH_384_CPU_MODEL" ]; then
+#   echo "Error: ZipDepth-384 full-head CPU model not found at $ZIPDEPTH_384_CPU_MODEL"
+#   exit 1
+# fi
+# cp "$ZIPDEPTH_384_CPU_MODEL" android/build/nightfallAssets/zipdepth-base-384-cpu.tflite
+# cp "$SCRIPT_DIR/models/zipdepth-base-512x288-gpu.tflite" android/build/nightfallAssets/
+# cp "$SCRIPT_DIR/models/zipdepth-base-672x384-gpu.tflite" android/build/nightfallAssets/
+# Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
+# single-pass renderer leaves enough GPU headroom for MiDaS to complete in
+# roughly 30-35 ms. This protects stream/render cadence from inference bursts.
+# Keep --stock-litert as an explicit A/B and fallback path.
+LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
+if [ "$USE_STOCK_LITERT" = "1" ]; then
+  echo "Using stock-priority LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
+else
+  if [ ! -f "$LITERT_GPU_AAR" ]; then
+    echo "Error: low-priority LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+    exit 1
+  fi
+  echo "Using low-priority Nightfall LiteRT GPU 1.4.2"
+  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
+fi
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires
 # the entry be stored uncompressed in the APK

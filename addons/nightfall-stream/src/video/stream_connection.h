@@ -61,6 +61,8 @@ public:
     int get_frames_decoded() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
+    int get_network_latency_ms() const;
+    Dictionary take_performance_stats();
     bool is_display_ready() const;
 
     String get_decoder_name() const;
@@ -98,8 +100,11 @@ private:
     void _connection_thread_func();
     void _decode_thread_func();
     void _clear_packet_queue();
+    void _record_rendered_frame(int64_t frame_enqueue_time_us);
+    void _reset_performance_stats();
 
     AVColorSpace _resolve_frame_colorspace(AVFrame *frame) const;
+    int _resolve_frame_transfer(AVFrame *frame) const;
 
     static bool _extract_h264_sps_pps(const uint8_t *data, int size,
                                        uint8_t **sps, int *sps_size,
@@ -126,7 +131,24 @@ private:
     std::atomic<int> frames_dropped_{0};
     std::atomic<int> frames_decoded_{0};
     std::atomic<int> last_frame_latency_us_{0};
-    std::atomic<int64_t> last_submit_time_us_{0};
+
+    // Moonlight Android-compatible performance window. Network submission and
+    // decoder output happen on different threads, so the window is protected
+    // as one unit and drained atomically by take_performance_stats().
+    struct PerformanceStatsWindow {
+        uint64_t started_us = 0;
+        uint64_t total_frames = 0;
+        uint64_t received_frames = 0;
+        uint64_t rendered_frames = 0;
+        uint64_t network_lost_frames = 0;
+        uint64_t decode_time_us = 0;
+        uint64_t host_latency_tenths_total = 0;
+        uint64_t host_latency_samples = 0;
+        uint16_t host_latency_tenths_min = 0;
+        uint16_t host_latency_tenths_max = 0;
+        int last_frame_number = 0;
+    } performance_stats_;
+    mutable std::mutex performance_stats_mutex_;
 
     DecodeUnitQueue packet_queue_;
     mutable std::mutex queue_mutex_;
@@ -145,6 +167,7 @@ private:
     int active_video_format_ = 0;
     AVColorSpace current_colorspace_ = AVCOL_SPC_BT709;
     AVColorRange current_color_range_ = AVCOL_RANGE_UNSPECIFIED;
+    int current_color_transfer_ = 0;
     bool local_capture_mode_ = false;
 #ifdef __ANDROID__
     struct CachedAhbImport {

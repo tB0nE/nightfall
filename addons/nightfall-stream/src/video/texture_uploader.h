@@ -12,10 +12,12 @@
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/classes/mutex.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <media/NdkImage.h>
@@ -37,10 +39,13 @@ public:
     TextureUploader();
     ~TextureUploader();
 
-    void setup(int width, int height, int format, int colorspace, int color_range);
+    void setup(int width, int height, int format, int colorspace, int color_range, int color_transfer = 0);
     void setup_bgra(int width, int height);
     void ensure_shader_material();
     void set_active(bool nv12); // Main-thread flags for shader conversion + NV12 mode
+    // 0 = SDR, 1 = PQ/ST 2084, 2 = HLG. Atomic because decoder/protocol
+    // callbacks update it while the main thread feeds the native XR renderer.
+    int get_color_transfer_type() const { return current_color_transfer_type_.load(); }
     void set_texture_from_native_rid(RID p_tex_rid, int p_width, int p_height); // Zero-copy GPU texture import
     void cleanup();
     void update_from_frame(AVFrame *frame);
@@ -52,20 +57,51 @@ public:
     ANativeWindow *create_android_gles_decoder_surface(int width, int height);
     void update_android_gles_external_texture();
 #endif
-    void update_colorspace(int colorspace, int color_range);
+    bool supports_native_depth_capture();
+    void request_native_depth_capture(int width, int height);
+    PackedByteArray consume_native_depth_capture();
+    void update_colorspace(int colorspace, int color_range, int color_transfer = 0);
+    // Protocol-level transfer metadata for native Android decoder paths which
+    // never expose an AVFrame (GLES SurfaceTexture and Vulkan AHB compute).
+    // Persisted independently from the material so it survives setup races.
+    void update_color_transfer(int color_transfer);
     void perform_gpu_update();
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
 
+#ifdef __ANDROID__
+    // Raw decoder OES texture + its SurfaceTexture transform, for nightfall-xr's
+    // native OpenXR swapchain path to sample directly (matching moonlight-xr)
+    // instead of going through the RGBA blit this class does for the
+    // SubViewport/CompositionLayerQuad path. Both textures live in the same
+    // EGL share group, so the raw GLuint is valid across the GDExtension
+    // boundary as long as the caller is on Godot's GL thread.
+    unsigned int get_oes_texture_id() const { return gles_oes_texture_; }
+    PackedFloat32Array get_oes_transform_matrix() const;
+
+    // A GLsync (as uint64_t) signaling that this frame's updateTexImage()
+    // write to gles_oes_texture_ has completed on Godot's context. Shared
+    // objects' NAMES (textures, syncs) are valid across a share group, but
+    // content visibility across contexts is not guaranteed without explicit
+    // sync -- nightfall-xr samples gles_oes_texture_ from its own, different EGL
+    // context, so it must wait on this before reading. Ownership transfers
+    // out: caller consumes exactly once (glWaitSync + glDeleteSync). Returns
+    // 0 if no fence is pending (e.g. not yet rendered a frame).
+    uint64_t consume_oes_ready_fence();
+    void set_native_direct_mode(bool enabled) { native_direct_mode_.store(enabled); }
+    unsigned int get_native_depth_guide_texture_id() const { return gles_depth_texture_; }
+#endif
+
 protected:
     static void _bind_methods();
 
 private:
-    void _render_thread_setup(int width, int height, int format, int colorspace, int color_range);
+    void _render_thread_setup(int width, int height, int format, int colorspace, int color_range, int color_transfer);
     void _render_thread_setup_bgra(int width, int height);
     void _render_thread_import_native(RID p_tex_rid, int p_width, int p_height);
     void _render_thread_cleanup();
+    void _render_thread_apply_color_transfer();
     void _render_thread_import_native_rt(); // Zero-arg version for call_on_render_thread (no .bind RID issues)
 
     RenderingDevice *rd = nullptr;
@@ -104,6 +140,7 @@ private:
     bool is_nv12 = false;
     std::atomic<bool> pending_gpu_update{false};
     std::atomic<bool> new_frame_available_{false};
+    std::atomic<int> current_color_transfer_type_{0};
     Ref<Mutex> texture_mutex;
 
     int current_width = 0;
@@ -113,7 +150,10 @@ private:
     void _render_thread_create_android_gles_surface();
     void _render_thread_update_android_gles_texture();
     void _render_thread_destroy_android_gles_surface();
-    std::mutex gles_surface_mutex_;
+    bool _render_thread_ensure_depth_capture(int width, int height);
+    void _render_thread_poll_depth_capture();
+    void _render_thread_issue_depth_capture(const float *matrix, int width, int height);
+    mutable std::mutex gles_surface_mutex_;
     std::condition_variable gles_surface_cv_;
     bool gles_surface_ready_ = false;
     bool gles_surface_failed_ = false;
@@ -121,11 +161,84 @@ private:
     int gles_surface_height_ = 0;
     ANativeWindow *gles_decoder_window_ = nullptr;
     void *gles_surface_texture_java_ = nullptr;
+    void *gles_transform_matrix_java_ = nullptr;
+    void *gles_update_method_ = nullptr;
+    void *gles_transform_method_ = nullptr;
+    void *gles_release_method_ = nullptr;
     unsigned int gles_oes_texture_ = 0;
+    // Cached every render-thread blit (texture_uploader.cpp), read back by
+    // get_oes_transform_matrix() from GDScript. gles_surface_mutex_ already
+    // guards the surface's readiness/lifetime; reuse it for this too rather
+    // than adding a second lock around a single 16-float array.
+    float gles_last_transform_matrix_[16]{};
+    // Set right after updateTexImage() succeeds; consumed (and cleared) by
+    // consume_oes_ready_fence(). Guarded by gles_surface_mutex_ like the
+    // transform matrix above.
+    void *gles_oes_ready_fence_ = nullptr;
+    // When the native OpenXR composition provider is presenting the OES
+    // decoder texture directly, do not also pay for the legacy full-size
+    // OES->RGBA copy. The small depth-capture draw/PBO remains active.
+    std::atomic<bool> native_direct_mode_{false};
     unsigned int gles_output_texture_ = 0;
     unsigned int gles_fbo_ = 0;
     unsigned int gles_blit_program_ = 0;
+    int gles_video_uniform_ = -1;
+    int gles_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
+
+    // Per-stage wall-clock cost of _render_thread_update_android_gles_texture()
+    // (2026-09-06) - added to settle whether a texture-update shortfall at a
+    // given refresh rate is pure budget math against a fixed per-frame cost,
+    // or something gets measurably slower at a specific rate (e.g. Quest 3's
+    // newer >120Hz "unlisted rate" tier vs its long-standing native 120Hz).
+    // Logged/reset periodically in _render_thread_update_android_gles_texture()
+    // itself. Render-thread-only (this function never runs concurrently with
+    // itself), so plain accumulators are safe without extra locking.
+    double gles_timing_sum_update_ms_ = 0.0;
+    double gles_timing_sum_transform_ms_ = 0.0;
+    double gles_timing_sum_blit_ms_ = 0.0;
+    double gles_timing_sum_fence_ms_ = 0.0;
+    double gles_timing_sum_total_ms_ = 0.0;
+    int gles_timing_count_ = 0;
+    int gles_timing_blit_count_ = 0;
+
+    // Decode-thread call-rate counters (2026-09-06) - update_android_gles_
+    // external_texture() is called once per dequeued decoder frame, so this
+    // tells us how often the decode thread actually *tries* to request a
+    // texture update, and how many of those get coalesced away because the
+    // render thread hasn't drained the previous request yet
+    // (gles_update_queued_ still true). Compared against the render-thread
+    // completion rate implied by the gles_timing_* log above: if this call
+    // rate is itself capped below the target Hz, the bottleneck is upstream
+    // of the render thread (decoder output or the decode loop); if this call
+    // rate hits the full target Hz but most calls get coalesced, the render
+    // thread's own queue-drain rate is the bottleneck instead. Decode-thread-
+    // only (this function never runs concurrently with itself), guarded by
+    // gles_surface_mutex_ anyway since the function already holds it.
+    int gles_decode_call_count_ = 0;
+    int gles_decode_coalesced_count_ = 0;
+
+    // The Godot Image::get_data()/Texture2D::get_image() route flushes the
+    // entire GLES render queue before returning. At a 20 Hz depth cadence it
+    // was blocking the XR frame loop for 13-21 ms per capture. Capture the
+    // decoder's external texture on the render thread instead and stage the
+    // readback through a small ring of pixel-buffer objects. Fences are
+    // polled with a zero timeout on later decoded frames, so XR submission is
+    // never made to wait for the depth pixels.
+    static constexpr int GLES_DEPTH_PBO_COUNT = 3;
+    unsigned int gles_depth_texture_ = 0;
+    unsigned int gles_depth_fbo_ = 0;
+    unsigned int gles_depth_pbos_[GLES_DEPTH_PBO_COUNT]{};
+    void *gles_depth_fences_[GLES_DEPTH_PBO_COUNT]{};
+    int gles_depth_capture_width_ = 0;
+    int gles_depth_capture_height_ = 0;
+    int gles_depth_next_pbo_ = 0;
+    std::atomic<bool> gles_depth_capture_requested_{false};
+    std::atomic<int> gles_depth_requested_width_{256};
+    std::atomic<int> gles_depth_requested_height_{256};
+    mutable std::mutex gles_depth_result_mutex_;
+    std::vector<uint8_t> gles_depth_result_;
+    bool gles_depth_result_ready_ = false;
 #endif
 };
 

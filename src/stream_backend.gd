@@ -193,6 +193,16 @@ func get_last_frame_latency() -> int:
 		return _v2.get_last_frame_latency_us()
 	return 0
 
+func get_network_latency_ms() -> int:
+	if _v2 and _v2.has_method("get_network_latency_ms"):
+		return _v2.get_network_latency_ms()
+	return -1
+
+func take_performance_stats() -> Dictionary:
+	if _v2 and _v2.has_method("take_performance_stats"):
+		return _v2.take_performance_stats()
+	return {}
+
 func set_depth_model(model_id: int):
 	if _v2:
 		var db = _v2.get_depth_bridge()
@@ -204,6 +214,18 @@ func configure_depth(model_id: int, requested_backend: int):
 		var db = _v2.get_depth_bridge()
 		if db:
 			db.configure_depth(model_id, requested_backend)
+
+func set_depth_gpu_priority(priority: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("set_depth_gpu_priority"):
+			db.set_depth_gpu_priority(priority)
+
+func set_depth_hz_cap(hz: int):
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			db.set_depth_hz_cap(hz)
 
 func get_depth_backend_capabilities(model_id: int) -> int:
 	if _v2:
@@ -232,6 +254,27 @@ func submit_depth_frame(data: PackedByteArray, w: int, h: int):
 		if db:
 			db.submit_depth_frame(data, w, h)
 
+func supports_native_depth_capture() -> bool:
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return false
+	var uploader = _v2.get_texture_uploader()
+	return uploader != null and uploader.has_method("supports_native_depth_capture") and uploader.supports_native_depth_capture()
+
+func request_native_depth_capture(width: int, height: int):
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("request_native_depth_capture"):
+		uploader.request_native_depth_capture(width, height)
+
+func consume_native_depth_capture() -> PackedByteArray:
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return PackedByteArray()
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("consume_native_depth_capture"):
+		return uploader.consume_native_depth_capture()
+	return PackedByteArray()
+
 func get_depth_map() -> PackedByteArray:
 	if _v2:
 		var db = _v2.get_depth_bridge()
@@ -243,6 +286,24 @@ func get_depth_model_size() -> int:
 	if _v2:
 		var db = _v2.get_depth_bridge()
 		if db:
+			return db.get_depth_model_size()
+	return 256
+
+func get_depth_model_width() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_width"):
+				return db.get_depth_model_width()
+			return db.get_depth_model_size()
+	return 256
+
+func get_depth_model_height() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_height"):
+				return db.get_depth_model_height()
 			return db.get_depth_model_size()
 	return 256
 
@@ -259,6 +320,20 @@ func get_depth_last_inference_hz() -> float:
 		if db:
 			return db.get_depth_last_inference_hz()
 	return 0.0
+
+func get_depth_last_age_ms() -> float:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("get_depth_last_age_ms"):
+			return db.get_depth_last_age_ms()
+	return 0.0
+
+func get_depth_last_skipped_frames() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db and db.has_method("get_depth_last_skipped_frames"):
+			return db.get_depth_last_skipped_frames()
+	return 0
 
 func get_device_model() -> String:
 	if _v2:
@@ -298,6 +373,53 @@ func consume_new_frame() -> bool:
 		if uploader:
 			return uploader.consume_new_frame()
 	return false
+
+# Android/GLES direct-render path. These values belong to the latest
+# SurfaceTexture image and are consumed by NightfallXrRenderer without a
+# full-resolution Godot SubViewport conversion.
+func get_oes_texture_id() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_oes_texture_id"):
+			return uploader.get_oes_texture_id()
+	return 0
+
+# Authoritative decoder transfer function: 0=SDR, 1=PQ/ST 2084, 2=HLG.
+# Kept beside the OES accessors because the value describes those raw samples.
+func get_color_transfer_type() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_color_transfer_type"):
+			return uploader.get_color_transfer_type()
+	return 0
+
+func get_oes_transform_matrix() -> PackedFloat32Array:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_oes_transform_matrix"):
+			return uploader.get_oes_transform_matrix()
+	return PackedFloat32Array()
+
+# Ownership of the returned GLsync transfers to NightfallXrRenderer.
+func get_oes_ready_fence() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("consume_oes_ready_fence"):
+			return uploader.consume_oes_ready_fence()
+	return 0
+
+func set_native_direct_mode(enabled: bool) -> void:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("set_native_direct_mode"):
+			uploader.set_native_direct_mode(enabled)
+
+func get_native_depth_guide_texture_id() -> int:
+	if _v2:
+		var uploader = _v2.get_texture_uploader()
+		if uploader and uploader.has_method("get_native_depth_guide_texture_id"):
+			return uploader.get_native_depth_guide_texture_id()
+	return 0
 
 # True only once the CURRENT session's first decoded frame has actually been
 # wired into the shader material's tex_y (native StreamConnection::display_wired_).

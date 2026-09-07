@@ -2,6 +2,8 @@ package com.godot.game;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.system.ErrnoException;
+import android.system.Os;
 import android.util.Log;
 
 import org.tensorflow.lite.Interpreter;
@@ -29,7 +31,11 @@ public class DepthEstimator {
     public static final int BACKEND_GPU = 2;
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
-    private static final long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
+    public static final int GPU_PRIORITY_STREAM = 0;
+    public static final int GPU_PRIORITY_DEFAULT = 1;
+    // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
+    // 50ms/20Hz default unchanged, see setHzCap() below.
+    private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
     private static final int OUTPUT_SIZE = 256;
 
     private static final String MODEL_MIDAS = "midas-midas-v2-w8a8.tflite";
@@ -208,6 +214,70 @@ public class DepthEstimator {
     //   OPENGL doesn't change which ops are supported); would need real
     //   model surgery (replacing the unsupported ops) to be worth revisiting.
 
+    // ZipDepth-GPU (2026-09-04) - the "real model surgery" angle from the
+    // DA-V2-196-GPU note above: ZipDepth (github.com/fabiotosi92/ZipDepth,
+    // ECCV 2026) is a 6.1M-param pure-CNN (RepVGG + Strip Pooling/SE/Global-
+    // Context attention, no softmax/matmul/gather anywhere) distilled from
+    // Depth Anything V2 Large across 14.1M images/17 domains - same "smarter"
+    // depth judgment as DA-V2, none of the ViT ops that killed its GPU
+    // delegate perf. Converted via tools/convert_zipdepth.py from the
+    // standard checkpoint's sharper backbone/decoder weights combined with
+    // the "_npu" checkpoint's unfold-free upsampling head (the standard
+    // checkpoint's torch.nn.Unfold lowers poorly on mobile runtimes).
+    // The export also materializes the strip/channel/global attention maps
+    // before element-wise ADD/MUL: Quest 3's Adreno OpenCL delegate produced
+    // a scene-independent gradient for the legal implicit-broadcast form,
+    // despite claiming every op. With explicit nearest expansion, exact
+    // captured-input GPU output matches desktop CPU to sub-1e-6 error. See
+    // doc/zipdepth-quest-gpu.md for the evidence and reproduction steps.
+    // ZipDepth is a plain /32-stride CNN (no
+    // ViT-patch constraint), so unlike DA-V2's odd 196/252 these land on
+    // round numbers matching the MiDaS lineup exactly. Deliberately built
+    // WITHOUT onnx2tf's -ofgd (--optimization_for_gpu_delegate) flag - the
+    // op composition is already 100% native GPU-delegate ops with nothing
+    // for -ofgd to legitimately replace, and empirically -ofgd introduces a
+    // real numerical bug for this graph (verified against the onnxruntime
+    // reference: with -ofgd, output diverges sharply and the depth map is
+    // visibly striped/broken; without it, output matches the ONNX reference
+    // to ~1e-6 max abs diff). Same NHWC/float32-I/O/no-external-
+    // normalization properties as MIDAS_GPU above (ZipDepth bakes ImageNet
+    // mean/std normalization into the graph itself, same as DA-V2/MiDaS).
+    // Built with onnx2tf's -tb tf_converter backend (not the default
+    // flatbuffer_direct) specifically for its weight-only float16
+    // quantization - same fp16-weights/float32-I-O split MIDAS_GPU uses,
+    // roughly halving file size vs. a naive float32 export with no
+    // execution-precision difference (the GPU delegate already runs fp16
+    // internally either way via setPrecisionLossAllowed(true) below).
+    // TFLite's own GPU delegate compatibility analyzer
+    // (tf.lite.experimental.Analyzer.analyze(..., gpu_compatibility=True))
+    // confirms compatibility. The later CPU counterpart uses the exact
+    // standard convex head rather than this hybrid head. Its deployable
+    // quantization is w8a32: int8 weights with float32 activations and I/O.
+    // A true w8a8 conversion was tested and rejected after severe output
+    // collapse in desktop validation. 192/256 variants were also built and tested
+    // (2026-09-04) but dropped, not silently removed - keep this history so
+    // neither gets re-attempted the same way without a new angle: ZipDepth
+    // was only ever trained at 384x384 (every number in its paper's
+    // benchmark table is measured there), and unlike MiDaS-192 (an
+    // independently trained/calibrated 192px model, not a resize of the
+    // 256px one) ZipDepth has no dedicated lower-resolution training - 192/
+    // 256 are just 384's weights looking at a smaller image outside their
+    // trained distribution. MiDaS-192 also reuses its larger model's weights
+    // (with separate int8 calibration), but happens to tolerate that lower
+    // inference resolution much better. Confirmed via tools/model_tester/: 384 looks
+    // close to DA-V2 quality, but 192/256 degraded enough to not be worth
+    // offering as real choices (192 especially).
+    private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
+    // CPU counterpart uses the standard checkpoint's full learned convex
+    // upsampling head. The original torch.nn.Unfold is expressed as portable
+    // TFLite ops. This w8a32 export keeps float32 activations and I/O while
+    // quantizing weights to int8; it closely tracks the float reference without
+    // the severe degradation seen when ZipDepth activations are also int8.
+    private static final String MODEL_ZIPDEPTH_384_CPU = "zipdepth-base-384-cpu.tflite";
+    private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
+    private static final String MODEL_ZIPDEPTH_512X288_GPU = "zipdepth-base-512x288-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_672X384_GPU = "zipdepth-base-672x384-gpu.tflite";
+
     private Interpreter tfliteMidas;
     private Interpreter tfliteMidas192;
     private Interpreter tfliteDA196;
@@ -216,6 +286,7 @@ public class DepthEstimator {
     private Interpreter tfliteYoloN320;
     private Interpreter tfliteYoloN384;
     private Interpreter tfliteYoloS;
+    private Interpreter tfliteZipDepth384;
 
     // Generic GPU-backed model slot (2026-08-24, replacing the original
     // single-model-hardcoded MiDaS-256-GPU-only fields) - one GpuVariant per
@@ -233,19 +304,46 @@ public class DepthEstimator {
     private static final class GpuVariant {
         final String label;
         final String assetFile;
-        final int inputSize;
+        final int inputWidth;
+        final int inputHeight;
+        // Per-model temporal/range smoothing time constants (2026-09-04) -
+        // see postProcess()'s depthTauSeconds/rangeTauSeconds comment for
+        // why this needs to differ per model rather than staying global.
+        // Defaults (3-arg constructor) match every model's existing,
+        // MiDaS-tuned behavior exactly - only ZipDepth registers with the
+        // 5-arg constructor to override them.
+        final float depthTauSeconds;
+        final float rangeTauSeconds;
         Interpreter interp;
         GpuDelegate delegate;
         ByteBuffer inputBuf;
         ByteBuffer outputBuf;
         boolean loadAttempted;
-        boolean permanentlyUnavailable;
+        // Prevent repeated configureDepth() calls from queueing duplicate
+        // startup preloads before the first worker task begins.
+        volatile boolean preloadScheduled;
+        // Written by the inference executor and read by the submission/UI
+        // threads, so failure must become visible without relying on an
+        // unrelated synchronized call.
+        volatile boolean permanentlyUnavailable;
         String failureReason = "";
 
         GpuVariant(String label, String assetFile, int inputSize) {
+            this(label, assetFile, inputSize, inputSize, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
+        }
+
+        GpuVariant(String label, String assetFile, int inputSize, float depthTauSeconds, float rangeTauSeconds) {
+            this(label, assetFile, inputSize, inputSize, depthTauSeconds, rangeTauSeconds);
+        }
+
+        GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
+                float depthTauSeconds, float rangeTauSeconds) {
             this.label = label;
             this.assetFile = assetFile;
-            this.inputSize = inputSize;
+            this.inputWidth = inputWidth;
+            this.inputHeight = inputHeight;
+            this.depthTauSeconds = depthTauSeconds;
+            this.rangeTauSeconds = rangeTauSeconds;
         }
     }
 
@@ -273,22 +371,28 @@ public class DepthEstimator {
     private ByteBuffer outputBufferYoloN384;
     private ByteBuffer inputBufferYoloS;
     private ByteBuffer outputBufferYoloS;
+    private ByteBuffer inputBufferZipDepth384;
+    private ByteBuffer outputBufferZipDepth384;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
     private volatile int requestedModelIndex = 3;
     private volatile int requestedBackend = BACKEND_AUTO;
     private volatile int effectiveBackend = BACKEND_CPU;
     private volatile String backendStatus = "";
+    private volatile int gpuPriority = GPU_PRIORITY_STREAM;
+    private volatile boolean gpuReconfigurePending = false;
 
     private static final class PendingFrame {
         final byte[] pixels;
         final int width;
         final int height;
+        final long captureNs;
 
-        PendingFrame(byte[] pixels, int width, int height) {
+        PendingFrame(byte[] pixels, int width, int height, long captureNs) {
             this.pixels = pixels;
             this.width = width;
             this.height = height;
+            this.captureNs = captureNs;
         }
     }
 
@@ -311,10 +415,12 @@ public class DepthEstimator {
     // sync with logcat's own "Perf:" lines rather than sampling mid-window.
     private volatile float lastInferenceInvokeMs = 0f;
     private volatile float lastInferenceHz = 0f;
+    private volatile long latestDepthCaptureNs = 0L;
+    private volatile long lastDepthSkippedFrames = 0L;
     private long lastGpuPrepareNs;
     private long lastGpuInvokeNs;
     private long lastGpuPostprocessNs;
-    private volatile long nextGpuInferenceNs;
+    private volatile long nextDispatchNs;
 
     private float[] smoothedDepthFloat = null;
 
@@ -323,6 +429,7 @@ public class DepthEstimator {
     public synchronized boolean initialize(Context context) {
         if (initialized) return true;
         appContext = context.getApplicationContext();
+        applyGpuPriorityEnvironment(gpuPriority);
 
         try {
             // midas-midas-v2-w8a8.tflite ("w8a8" = 8-bit weights AND
@@ -378,8 +485,29 @@ public class DepthEstimator {
                     .order(ByteOrder.nativeOrder());
             outputBufferYoloS = ByteBuffer.allocateDirect(1 * YOLO_S_INPUT_SIZE * YOLO_S_INPUT_SIZE * 1 * 4)
                     .order(ByteOrder.nativeOrder());
+            inputBufferZipDepth384 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 3 * 4)
+                    .order(ByteOrder.nativeOrder());
+            outputBufferZipDepth384 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 4)
+                    .order(ByteOrder.nativeOrder());
 
-            tfliteMidas = loadInterpreter(MODEL_MIDAS);
+            // Unlike every model below, this was never wrapped in its own
+            // try/catch - it was always bundled, so a missing file here used
+            // to be an actual bug worth crashing loudly on. Now that
+            // Android's build deliberately drops it (2026-09-07, see
+            // build.sh's nightfallAssets comment / settings_controller.gd's
+            // ai3d_options_locked()), an uncaught exception here would abort
+            // this whole init function before it ever reaches ZipDepth-384-
+            // GPU's own gpuVariants registration further down - silently
+            // breaking AI-3D entirely rather than just this one model.
+            try {
+                tfliteMidas = loadInterpreter(MODEL_MIDAS);
+                Log.i(TAG, "MiDaS model loaded");
+            } catch (Exception e) {
+                Log.w(TAG, "MiDaS model not available", e);
+                tfliteMidas = null;
+            }
 
             try {
                 tfliteMidas192 = loadInterpreter(MODEL_MIDAS_192);
@@ -437,12 +565,36 @@ public class DepthEstimator {
                 tfliteYoloS = null;
             }
 
+            try {
+                tfliteZipDepth384 = loadCpuInterpreter(MODEL_ZIPDEPTH_384_CPU);
+                Log.i(TAG, "ZipDepth-384 full-head CPU model loaded");
+            } catch (Exception e) {
+                Log.w(TAG, "ZipDepth-384 full-head CPU model not available", e);
+                tfliteZipDepth384 = null;
+            }
+
             // GPU variants are lazy-loaded on first actual use (see
             // ensureGpuVariantLoaded()), not eagerly here - just registering
             // the slot/asset-filename/input-size, same as the original
             // single-model MiDaS-256-GPU deferred-load pattern.
             gpuVariants.put(3, new GpuVariant("MiDaS-256-GPU", MODEL_MIDAS_GPU, MIDAS_GPU_INPUT_SIZE));
             gpuVariants.put(10, new GpuVariant("MiDaS-192-GPU", MODEL_MIDAS_192_GPU, MIDAS_192_GPU_INPUT_SIZE));
+            // ZipDepth-384 has a full-standard-head CPU counterpart;
+            // rectangular experiments remain GPU-only for now.
+            // Short tau pair (2026-09-04, see GpuVariant's own comment):
+            // ZipDepth is clean and deterministic enough that MiDaS's ~0.16s
+            // depth tau just reads as lag/motion-blur rather than hiding any
+            // real per-frame noise. 0.02s still damps single-frame flicker
+            // (alpha_eff ~0.92 at the 20Hz submit cadence) without the
+            // multi-frame smear; range tau shortened proportionally so the
+            // contrast-stretch bounds track the now-fast-updating values
+            // instead of dragging behind them.
+            gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
+            gpuVariants.put(15, new GpuVariant("ZipDepth-512x288-GPU", MODEL_ZIPDEPTH_512X288_GPU, 512, 288,
+                    0.02f, 0.1f));
+            gpuVariants.put(16, new GpuVariant("ZipDepth-672x384-GPU", MODEL_ZIPDEPTH_672X384_GPU, 672, 384,
+                    0.02f, 0.1f));
 
             activeInterpreter = tfliteMidas;
             activeModelIndex = 3;
@@ -450,7 +602,8 @@ public class DepthEstimator {
             Log.i(TAG, "Initialized successfully (MiDaS=" + (tfliteMidas != null) + ", MiDaS192=" + (tfliteMidas192 != null)
                     + ", DA196=" + (tfliteDA196 != null) + ", DA252=" + (tfliteDA252 != null)
                     + ", YoloN256=" + (tfliteYoloN256 != null) + ", YoloN320=" + (tfliteYoloN320 != null)
-                    + ", YoloN384=" + (tfliteYoloN384 != null) + ", YoloS=" + (tfliteYoloS != null) + ")");
+                    + ", YoloN384=" + (tfliteYoloN384 != null) + ", YoloS=" + (tfliteYoloS != null)
+                    + ", ZipDepth384CPU=" + (tfliteZipDepth384 != null) + ")");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize", e);
@@ -473,6 +626,15 @@ public class DepthEstimator {
             opts.setNumThreads(4);
             return new Interpreter(buffer, opts);
         }
+    }
+
+    private Interpreter loadCpuInterpreter(String modelFile) throws IOException {
+        MappedByteBuffer buffer = loadModelFile(modelFile);
+        Interpreter.Options opts = new Interpreter.Options();
+        opts.setUseNNAPI(false);
+        opts.setUseXNNPACK(true);
+        opts.setNumThreads(4);
+        return new Interpreter(buffer, opts);
     }
 
     public void setActiveModel(int modelIndex) {
@@ -504,24 +666,211 @@ public class DepthEstimator {
         return lastInferenceHz;
     }
 
+    private void applyGpuPriorityEnvironment(int priority) {
+        String value = priority == GPU_PRIORITY_DEFAULT ? "default" : "stream";
+        try {
+            // Process-local environment shared with LiteRT's native JNI
+            // library. The patched CreateCLContext() reads this immediately
+            // before creating its Qualcomm OpenCL context.
+            Os.setenv("NIGHTFALL_LITERT_GPU_PRIORITY", value, true);
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Failed to set GPU priority environment", e);
+        }
+    }
+
+    public void setGpuPriority(int priority) {
+        final int selected = priority == GPU_PRIORITY_DEFAULT
+                ? GPU_PRIORITY_DEFAULT : GPU_PRIORITY_STREAM;
+        synchronized (this) {
+            applyGpuPriorityEnvironment(selected);
+            if (gpuPriority == selected) {
+                Log.i(TAG, "GPU priority already " + gpuPriorityName(selected));
+                return;
+            }
+            gpuPriority = selected;
+            boolean hasCreatedOrAttemptedDelegate = false;
+            for (GpuVariant variant : gpuVariants.values()) {
+                if (variant.loadAttempted || variant.interp != null || variant.delegate != null) {
+                    hasCreatedOrAttemptedDelegate = true;
+                    break;
+                }
+            }
+            if (!hasCreatedOrAttemptedDelegate) {
+                // No OpenCL context exists yet, so the next lazy GPU load can
+                // simply consume the new environment value without a reset.
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; it will apply when the delegate first loads");
+                return;
+            }
+            gpuReconfigurePending = true;
+            // Stop producers from scheduling more work against the old
+            // delegate. Any already-running job completes before the reset
+            // task because the executor has only one worker.
+            activeGpuVariant = null;
+            latestGpuFrame.set(null);
+            nextDispatchNs = 0;
+        }
+
+        executor.execute(() -> {
+            synchronized (DepthEstimator.this) {
+                for (GpuVariant variant : gpuVariants.values()) {
+                    releaseGpuVariant(variant);
+                }
+
+                int modelIndex = normalizeModelIndex(requestedModelIndex);
+                GpuVariant requestedVariant = gpuVariants.get(modelIndex);
+                boolean useGpu = requestedBackend != BACKEND_CPU
+                        && requestedVariant != null
+                        && !requestedVariant.permanentlyUnavailable;
+                activeInterpreter = cpuInterpreterFor(modelIndex);
+                activeModelIndex = modelIndex;
+                activeGpuVariant = useGpu ? requestedVariant : null;
+                effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+                backendStatus = "";
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                gpuReconfigurePending = false;
+                Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
+                        + "; preloading delegate on the inference worker");
+                // Android ships ZipDepth-384 as its sole depth model. Keep it
+                // resident even if AI-3D is currently off, so enabling it or
+                // starting a host that has it saved never recompiles mid-stream.
+                scheduleGpuVariantPreload(gpuVariants.get(14));
+            }
+        });
+    }
+
+    private static String gpuPriorityName(int priority) {
+        return priority == GPU_PRIORITY_DEFAULT ? "Default" : "Stream";
+    }
+
+    private static void releaseGpuVariant(GpuVariant variant) {
+        // Must run on the inference executor: LiteRT GPU delegates are bound
+        // to the thread on which they were created and invoked.
+        if (variant.interp != null) {
+            variant.interp.close();
+            variant.interp = null;
+        }
+        if (variant.delegate != null) {
+            variant.delegate.close();
+            variant.delegate = null;
+        }
+        variant.inputBuf = null;
+        variant.outputBuf = null;
+        variant.loadAttempted = false;
+        variant.preloadScheduled = false;
+        variant.permanentlyUnavailable = false;
+        variant.failureReason = "";
+    }
+
+    // GPU delegates must be created and invoked on the same thread. Preload
+    // and warm the selected model on the existing single inference worker as
+    // soon as settings configure it, instead of compiling it while the first
+    // video frames are already being presented. This remains asynchronous to
+    // app startup and inherits the selected low/default OpenCL priority.
+    private void scheduleGpuVariantPreload(GpuVariant variant) {
+        if (variant == null || variant.interp != null || variant.loadAttempted
+                || variant.permanentlyUnavailable || variant.preloadScheduled) {
+            return;
+        }
+        variant.preloadScheduled = true;
+        Log.i(TAG, "Preloading " + variant.label + " on inference worker");
+        executor.execute(() -> {
+            try {
+                if (!initialized || gpuReconfigurePending) {
+                    return;
+                }
+                ensureGpuVariantLoaded(variant);
+                if (variant.interp == null) {
+                    markGpuVariantUnavailable(variant);
+                    return;
+                }
+
+                // Force one delegate invocation so graph compilation, working
+                // buffers, and first-dispatch costs are paid before streaming.
+                variant.inputBuf.rewind();
+                while (variant.inputBuf.remaining() >= 4) {
+                    variant.inputBuf.putFloat(0f);
+                }
+                variant.inputBuf.rewind();
+                variant.outputBuf.rewind();
+                long warmStartNs = System.nanoTime();
+                variant.interp.run(variant.inputBuf, variant.outputBuf);
+                variant.inputBuf.rewind();
+                variant.outputBuf.rewind();
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "%s preload and warm-up complete in %.1fms",
+                        variant.label, (System.nanoTime() - warmStartNs) / 1_000_000.0f));
+            } catch (Exception e) {
+                Log.e(TAG, variant.label + " startup warm-up failed", e);
+                String failureReason = "GPU warm-up failed: " + e.getClass().getSimpleName();
+                releaseGpuVariant(variant);
+                variant.failureReason = failureReason;
+                markGpuVariantUnavailable(variant);
+            } finally {
+                variant.preloadScheduled = false;
+            }
+        });
+    }
+
+    private void markGpuVariantUnavailable(GpuVariant variant) {
+        String reason = variant.failureReason.isEmpty()
+                ? "GPU delegate initialization failed"
+                : variant.failureReason;
+        variant.permanentlyUnavailable = true;
+        variant.failureReason = reason;
+        backendStatus = reason + " - AI-3D depth stopped (not falling back to CPU)";
+        Log.e(TAG, reason + "; AI-3D depth stopped for this session, not falling back to CPU");
+    }
+
+    // AI 3D tab's Hz Cap control (2026-08-28) - re-targets the GPU
+    // inference loop's own clock (see GPU_INFERENCE_INTERVAL_NS above).
+    // Silently ignored for hz <= 0 rather than throwing - callers (see
+    // DepthBridge::set_depth_hz_cap()) already clamp to a fixed value set,
+    // but this stays defensive at the boundary regardless.
+    public synchronized void setHzCap(int hz) {
+        if (hz > 0) {
+            GPU_INFERENCE_INTERVAL_NS = 1_000_000_000L / hz;
+        }
+    }
+
     public synchronized void configureDepth(int modelIndex, int backend) {
         if (!initialized) return;
         requestedModelIndex = modelIndex;
         requestedBackend = backend >= BACKEND_AUTO && backend <= BACKEND_GPU ? backend : BACKEND_AUTO;
 
-        boolean gpuSupported = (getBackendCapabilities(modelIndex) & BACKEND_CAP_GPU) != 0;
-        boolean useGpu = requestedBackend != BACKEND_CPU && gpuSupported;
-        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        // 2026-08-30: gpuVariantExists (does this model have a GPU variant AT
+        // ALL) is deliberately separate from getBackendCapabilities()'s old
+        // gpuSupported check (which folded "no variant was ever built" and
+        // "variant exists but failed at runtime" into the same CPU
+        // substitution) - a model with no GPU variant is a real capability
+        // constraint (CPU is the only option that ever existed), but a
+        // variant that failed at runtime should NOT silently switch to CPU
+        // (see runScheduledGpuInference()'s "fail visibly" comment) - useGpu
+        // stays true for a permanently-failed variant so submitFrame() keeps
+        // routing into the (already-failed, no-retry) GPU path instead of
+        // quietly running CPU under a still-"GPU" label.
         GpuVariant requestedVariant = gpuVariants.get(modelIndex);
-        if (requestedBackend == BACKEND_GPU && !gpuSupported) {
-            backendStatus = requestedVariant != null && requestedVariant.permanentlyUnavailable && !requestedVariant.failureReason.isEmpty()
-                    ? requestedVariant.failureReason
-                    : "GPU depth is unavailable for this model; using CPU";
+        boolean gpuVariantExists = requestedVariant != null;
+        boolean useGpu = requestedBackend != BACKEND_CPU && gpuVariantExists;
+        effectiveBackend = useGpu ? BACKEND_GPU : BACKEND_CPU;
+        if (requestedBackend == BACKEND_GPU && !gpuVariantExists) {
+            backendStatus = "GPU depth is unavailable for this model; using CPU";
+        } else if (requestedBackend == BACKEND_GPU && requestedVariant.permanentlyUnavailable) {
+            backendStatus = requestedVariant.failureReason.isEmpty()
+                    ? "GPU delegate initialization failed - AI-3D depth stopped (not falling back to CPU)"
+                    : requestedVariant.failureReason;
         } else {
             backendStatus = "";
         }
 
         switchActiveModel(modelIndex, useGpu);
+        // The streamlined Android package always uses this model when AI-3D
+        // is enabled. configureDepth() is first called after persisted GPU
+        // priority has been applied, making this the earliest safe point to
+        // preload without creating a context at the wrong priority.
+        scheduleGpuVariantPreload(gpuVariants.get(14));
         Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
                 + " requested=" + backendName(requestedBackend)
                 + " effective=" + backendName(effectiveBackend)
@@ -550,12 +899,13 @@ public class DepthEstimator {
         if (modelIndex == 8 && tfliteYoloN320 != null) return tfliteYoloN320;
         if (modelIndex == 10 && tfliteMidas192 != null) return tfliteMidas192;
         if (modelIndex == 11 && tfliteDA196 != null) return tfliteDA196;
+        if (modelIndex == 14 && tfliteZipDepth384 != null) return tfliteZipDepth384;
         return tfliteMidas;
     }
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -571,20 +921,17 @@ public class DepthEstimator {
         if (!initialized) return;
         modelIndex = normalizeModelIndex(modelIndex);
         Interpreter target = cpuInterpreterFor(modelIndex);
-        // The requested GPU variant (if any) - lazy-loaded on first actual
-        // inference (see ensureGpuVariantLoaded()), not here, so v.interp is
-        // legitimately still null the first time this switch happens.
-        // activeInterpreter (the CPU target resolved above) only exists to
-        // satisfy submitFrame()'s "is anything loaded at all" check in that
-        // case, not to select which inference method runs - that's driven by
-        // activeGpuVariant being non-null, checked in submitFrame() below.
+        // The requested GPU variant (if any). Its delegate is created on the
+        // inference worker below; activeInterpreter remains strictly the CPU
+        // fallback/selection and may legitimately be null in the GPU-only APK.
         GpuVariant variant = useGpu ? gpuVariants.get(modelIndex) : null;
         if (activeModelIndex != modelIndex || activeGpuVariant != variant) {
             while (isInferencing.get()) {
                 Thread.yield();
             }
+            GpuVariant previousVariant = activeGpuVariant;
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             smoothedDepthFloat = null;
             rangeValid = false;
             lastPostProcessTimeNs = 0;
@@ -593,6 +940,30 @@ public class DepthEstimator {
             activeGpuVariant = variant;
             String modelName = modelNameFor(modelIndex) + (variant != null ? " (GPU)" : "");
             Log.i(TAG, "Switched to model " + modelName);
+            // The previous model's GPU delegate/interpreter was never being
+            // released on a plain model switch - only setGpuPriority()'s
+            // full reset did this. Every GPU model ever selected in a
+            // session stayed resident (its own live OpenCL context, compiled
+            // kernels, GPU memory for weights/activations) even though only
+            // activeGpuVariant's is ever invoked, degrading the ACTIVE
+            // model's throughput to a fraction of its solo speed as more
+            // dormant contexts piled up (reported 2026-09-04: fine on a cold
+            // start with one model, 2-3x slower after switching between
+            // models). Must run on the inference executor - GPU delegates
+            // are bound to the thread that created/invoked them, same as
+            // releaseGpuVariant()'s other call site in setGpuPriority().
+            if (previousVariant != null && previousVariant != variant) {
+                executor.execute(() -> {
+                    synchronized (DepthEstimator.this) {
+                        if (previousVariant != activeGpuVariant) {
+                            releaseGpuVariant(previousVariant);
+                        }
+                    }
+                });
+            }
+        }
+        if (variant != null) {
+            scheduleGpuVariantPreload(variant);
         }
     }
 
@@ -605,6 +976,9 @@ public class DepthEstimator {
             case 8: return "YOLO26-Depth-N-320";
             case 10: return "MiDaS-192";
             case 11: return "Depth Anything V2-196";
+            case 14: return "ZipDepth-384";
+            case 15: return "ZipDepth-512x288";
+            case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
         }
     }
@@ -614,18 +988,29 @@ public class DepthEstimator {
     }
 
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
-        if (!initialized || activeInterpreter == null) return;
+        if (!initialized || gpuReconfigurePending) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
         if (gpuVariant != null) {
-            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height));
+            // A failed delegate is sticky for this session. Keep the requested/
+            // effective backend labeled GPU so the UI can report the actual
+            // failed choice, but do not keep allocating frames and scheduling
+            // a worker which ensureGpuVariantLoaded() has already declared
+            // permanently unavailable.
+            if (gpuVariant.permanentlyUnavailable) return;
+            PendingFrame previous = latestGpuFrame.getAndSet(new PendingFrame(rgbaPixels, width, height, System.nanoTime()));
             if (previous != null) {
                 droppedFrames.incrementAndGet();
             }
             scheduleGpuInference(gpuVariant);
             return;
         }
+        // activeInterpreter is only the CPU model. Android's streamlined APK
+        // deliberately bundles ZipDepth's GPU variant without any CPU models,
+        // so requiring this field before checking activeGpuVariant discarded
+        // every submitted frame and prevented the GPU model from lazy-loading.
+        if (activeInterpreter == null) return;
         if (!isInferencing.compareAndSet(false, true)) {
             droppedFrames.incrementAndGet();
             return;
@@ -633,11 +1018,13 @@ public class DepthEstimator {
 
         submittedFrames.incrementAndGet();
         final byte[] frameCopy = rgbaPixels;
+        final long captureNs = System.nanoTime();
         executor.submit(() -> {
             long startTime = System.nanoTime();
             try {
                 byte[] result = runCpuInference(modelIdx, frameCopy, width, height);
                 if (result != null) {
+                    latestDepthCaptureNs = captureNs;
                     latestDepthMap.set(result);
                 }
             } catch (Exception e) {
@@ -671,6 +1058,8 @@ public class DepthEstimator {
                     frameCopy, width, height);
         } else if (modelIdx == 11) {
             return runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 14 && tfliteZipDepth384 != null) {
+            return runInferenceZipDepthCpu(frameCopy, width, height);
         } else {
             return runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
                     MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
@@ -678,25 +1067,56 @@ public class DepthEstimator {
         }
     }
 
+    private byte[] runInferenceZipDepthCpu(byte[] rgbaPixels, int width, int height) {
+        inputBufferZipDepth384.rewind();
+        outputBufferZipDepth384.rewind();
+
+        int size = ZIPDEPTH_384_GPU_INPUT_SIZE;
+        int srcRowBytes = width * 4;
+        float scaleX = (float) width / size;
+        float scaleY = (float) height / size;
+        for (int y = 0; y < size; y++) {
+            int srcY = Math.min((int) (y * scaleY), height - 1);
+            int srcRowOff = srcY * srcRowBytes;
+            for (int x = 0; x < size; x++) {
+                int srcX = Math.min((int) (x * scaleX), width - 1);
+                int srcIdx = srcRowOff + srcX * 4;
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
+                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+            }
+        }
+        inputBufferZipDepth384.rewind();
+
+        tfliteZipDepth384.run(inputBufferZipDepth384, outputBufferZipDepth384);
+        outputBufferZipDepth384.rewind();
+        return postProcess(
+                extractFloatOutput(outputBufferZipDepth384, size * size),
+                size, size, false, DEFAULT_PERCENTILE_CLIP, 0.02f, 0.1f);
+    }
+
     private void scheduleGpuInference(GpuVariant variant) {
-        if (!initialized || activeGpuVariant != variant || !gpuWorkerScheduled.compareAndSet(false, true)) {
+        if (!initialized || variant.permanentlyUnavailable || activeGpuVariant != variant
+                || !gpuWorkerScheduled.compareAndSet(false, true)) {
             return;
         }
-        long delayNs = Math.max(0L, nextGpuInferenceNs - System.nanoTime());
+        long delayNs = Math.max(0L, nextDispatchNs - System.nanoTime());
         executor.schedule(() -> runScheduledGpuInference(variant), delayNs, TimeUnit.NANOSECONDS);
     }
 
     private void runScheduledGpuInference(GpuVariant variant) {
         long startNs = System.nanoTime();
-        long scheduledNs = nextGpuInferenceNs;
-        nextGpuInferenceNs = scheduledNs <= 0 || startNs - scheduledNs >= GPU_INFERENCE_INTERVAL_NS
-                ? startNs + GPU_INFERENCE_INTERVAL_NS
-                : scheduledNs + GPU_INFERENCE_INTERVAL_NS;
+        // Publish the next deadline before clearing gpuWorkerScheduled. A
+        // producer may submit while this inference is running; without this,
+        // it can observe the previous (already-expired) deadline and enqueue
+        // the next run immediately. Anchoring to this actual start keeps the
+        // maximum rate at 20 Hz without accumulating missed deadlines.
+        nextDispatchNs = startNs + GPU_INFERENCE_INTERVAL_NS;
         gpuWorkerScheduled.set(false);
 
         if (!initialized || activeGpuVariant != variant) {
             latestGpuFrame.set(null);
-            nextGpuInferenceNs = 0;
+            nextDispatchNs = 0;
             return;
         }
 
@@ -710,50 +1130,51 @@ public class DepthEstimator {
         submittedFrames.incrementAndGet();
         try {
             ensureGpuVariantLoaded(variant);
-            byte[] result;
             if (variant.interp != null) {
-                result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
+                byte[] result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
+                if (result != null) {
+                    latestDepthMap.set(result);
+                }
+                // Only record telemetry for a real, successful invocation -
+                // recording it on the failure branch below would report a
+                // misleading ~0ms/~20Hz "it's running fine" readout (status
+                // bar's AI3D:Xms/XHz) off stale lastGpu*Ns fields, exactly
+                // the kind of invisible-failure this whole change is meant
+                // to remove.
+                recordTelemetry(fallbackModelIndex, true, System.nanoTime() - startNs);
             } else {
-                // GPU delegate/model failed to load - fall back to this
-                // variant's CPU counterpart for the rest of this session (no
-                // per-frame retry). Set fallback state inline rather than via
-                // a separate helper - this IS the single-threaded inference
-                // worker itself, so there's no other in-flight inference to
-                // wait for; the surrounding try/finally already owns
-                // isInferencing.
-                String reason = variant.failureReason.isEmpty()
-                        ? "GPU delegate initialization failed"
-                        : variant.failureReason;
-                variant.permanentlyUnavailable = true;
-                variant.failureReason = reason;
-                effectiveBackend = BACKEND_CPU;
-                backendStatus = reason;
-                activeGpuVariant = null;
-                activeInterpreter = cpuInterpreterFor(fallbackModelIndex);
-                smoothedDepthFloat = null;
-                rangeValid = false;
-                lastPostProcessTimeNs = 0;
-                Log.w(TAG, reason + "; CPU depth will continue without retrying GPU this session");
-                result = runCpuInference(fallbackModelIndex, frame.pixels, frame.width, frame.height);
-            }
-            if (result != null) {
-                latestDepthMap.set(result);
+                // GPU delegate/model failed to load. No silent CPU
+                // substitution (2026-08-30, explicit user request: "no
+                // unnecessary fallbacks that aren't visible, especially on
+                // Auto") - AI-3D depth simply stops producing new frames
+                // instead of quietly switching backend out from under the
+                // "GPU" the user (or Auto) actually selected. Sticky for the
+                // rest of this session (permanentlyUnavailable, no per-frame
+                // retry) - effectiveBackend/requestedBackend deliberately
+                // left untouched so get_depth_backend_label() never has to
+                // represent a third "GPU->CPU" hybrid state; the failure is
+                // surfaced entirely through backendStatus (settings_controller.gd's
+                // refresh_depth_backend_status() shows it persistently, not
+                // just on the transition).
+                markGpuVariantUnavailable(variant);
             }
         } catch (Exception e) {
             Log.e(TAG, "Async GPU inference failed", e);
         } finally {
             isInferencing.set(false);
-            recordTelemetry(fallbackModelIndex, true, System.nanoTime() - startNs);
         }
 
-        if (latestGpuFrame.get() != null && activeGpuVariant == variant) {
+        // Don't keep rescheduling once permanently failed - variant.interp
+        // will never become non-null again this session, so this would
+        // otherwise busy-loop at the Hz cap rate doing nothing but logging.
+        if (variant.interp != null && latestGpuFrame.get() != null && activeGpuVariant == variant) {
             scheduleGpuInference(variant);
         }
     }
 
     private void recordTelemetry(int modelIndex, boolean isGpu, long durationNs) {
         long nowNs = System.nanoTime();
-        if (telemetryWindowStartNs == 0 || !isGpu) {
+        if (telemetryWindowStartNs == 0) {
             telemetryWindowStartNs = nowNs;
             telemetryTotalDurationNs = 0;
             telemetryTotalPrepareNs = 0;
@@ -762,9 +1183,17 @@ public class DepthEstimator {
             telemetryCompletedFrames = 0;
         }
         telemetryTotalDurationNs += durationNs;
-        telemetryTotalPrepareNs += lastGpuPrepareNs;
-        telemetryTotalInvokeNs += lastGpuInvokeNs;
-        telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        if (isGpu) {
+            telemetryTotalPrepareNs += lastGpuPrepareNs;
+            telemetryTotalInvokeNs += lastGpuInvokeNs;
+            telemetryTotalPostprocessNs += lastGpuPostprocessNs;
+        } else {
+            // CPU models do their preparation/invoke/postprocess inside one
+            // method, so their comparable inference figure is the measured
+            // worker duration. The old `|| !isGpu` reset above discarded the
+            // window every frame and made the public CPU statistic stay 0.
+            telemetryTotalInvokeNs += durationNs;
+        }
         telemetryCompletedFrames++;
         long elapsedNs = nowNs - telemetryWindowStartNs;
         if (elapsedNs < 1_000_000_000L) return;
@@ -772,14 +1201,16 @@ public class DepthEstimator {
         float divisor = Math.max(telemetryCompletedFrames, 1);
         lastInferenceInvokeMs = telemetryTotalInvokeNs / divisor / 1_000_000.0f;
         lastInferenceHz = telemetryCompletedFrames * 1_000_000_000.0f / elapsedNs;
+        long submitted = submittedFrames.getAndSet(0);
+        long dropped = droppedFrames.getAndSet(0);
+        lastDepthSkippedFrames = dropped;
         Log.i(TAG, String.format(java.util.Locale.US,
                 "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
-                modelNameFor(modelIndex) + "-GPU", telemetryTotalDurationNs / divisor / 1_000_000.0f,
+                modelNameFor(modelIndex) + (isGpu ? "-GPU" : "-CPU"), telemetryTotalDurationNs / divisor / 1_000_000.0f,
                 telemetryTotalPrepareNs / divisor / 1_000_000.0f,
                 lastInferenceInvokeMs,
                 telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
-                lastInferenceHz,
-                submittedFrames.getAndSet(0), droppedFrames.getAndSet(0)));
+                lastInferenceHz, submitted, dropped));
         telemetryWindowStartNs = nowNs;
         telemetryTotalDurationNs = 0;
         telemetryTotalPrepareNs = 0;
@@ -790,6 +1221,15 @@ public class DepthEstimator {
 
     public byte[] getLatestDepth() {
         return latestDepthMap.getAndSet(null);
+    }
+
+    public float getLastDepthAgeMs() {
+        long captured = latestDepthCaptureNs;
+        return captured == 0L ? 0f : (System.nanoTime() - captured) / 1_000_000.0f;
+    }
+
+    public int getLastDepthSkippedFrames() {
+        return (int)Math.min(lastDepthSkippedFrames, Integer.MAX_VALUE);
     }
 
     // real (0..1 normalized pixel) -> quantized uint8, given a specific
@@ -952,9 +1392,9 @@ public class DepthEstimator {
         if (v.loadAttempted) return;
         v.loadAttempted = true;
         try {
-            v.inputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 3 * 4)
+            v.inputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 3 * 4)
                     .order(ByteOrder.nativeOrder());
-            v.outputBuf = ByteBuffer.allocateDirect(1 * v.inputSize * v.inputSize * 1 * 4)
+            v.outputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 4)
                     .order(ByteOrder.nativeOrder());
             MappedByteBuffer buffer = loadModelFile(v.assetFile);
             GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
@@ -1007,13 +1447,13 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         int srcRowBytes = width * 4;
-        float scaleX = (float) width / v.inputSize;
-        float scaleY = (float) height / v.inputSize;
+        float scaleX = (float) width / v.inputWidth;
+        float scaleY = (float) height / v.inputHeight;
 
-        for (int y = 0; y < v.inputSize; y++) {
+        for (int y = 0; y < v.inputHeight; y++) {
             int srcY = Math.min((int) (y * scaleY), height - 1);
             int srcRowOff = srcY * srcRowBytes;
-            for (int x = 0; x < v.inputSize; x++) {
+            for (int x = 0; x < v.inputWidth; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
                 v.inputBuf.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
@@ -1030,7 +1470,10 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         long postprocessStartNs = System.nanoTime();
-        byte[] result = postProcess(extractFloatOutput(v.outputBuf, v.inputSize * v.inputSize), v.inputSize, false);
+        int outputCount = v.inputWidth * v.inputHeight;
+        byte[] result = postProcess(extractFloatOutput(v.outputBuf, outputCount),
+                v.inputWidth, v.inputHeight, false, DEFAULT_PERCENTILE_CLIP,
+                v.depthTauSeconds, v.rangeTauSeconds);
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
     }
@@ -1122,7 +1565,7 @@ public class DepthEstimator {
     // at the source (see each call site), and this logic downstream is
     // identical either way once it's a plain float[].
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur) {
-        return postProcess(raw, size, dilateAndBlur, DEFAULT_PERCENTILE_CLIP);
+        return postProcess(raw, size, dilateAndBlur, DEFAULT_PERCENTILE_CLIP, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
     }
 
     // percentileClip: how much of the raw output's histogram tails to trim
@@ -1139,7 +1582,28 @@ public class DepthEstimator {
     // threshold constants passed into an existing histogram scan, no
     // measurable added compute, and doesn't touch MiDaS/DA's own call sites.
     private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur, float percentileClip) {
-        int count = size * size;
+        return postProcess(raw, size, dilateAndBlur, percentileClip, DEPTH_TAU_SECONDS, RANGE_TAU_SECONDS);
+    }
+
+    // depthTauSeconds/rangeTauSeconds: exposed per-call (2026-09-04) for
+    // ZipDepth-GPU specifically - both were tuned solely for MiDaS's own
+    // noise/cadence (see the tau-derivation comment above DEPTH_TAU_SECONDS)
+    // and applied globally regardless of which model actually produced the
+    // frame. A clean, fast, deterministic model like ZipDepth doesn't have
+    // MiDaS's frame-to-frame jitter to hide, so the same ~0.16s depth tau
+    // just reads as unwanted motion blur/lag (reported 2026-09-04: "the
+    // depthmap seems to blur into each other every frame"). GpuVariant now
+    // carries its own tau pair; every other call site keeps passing the
+    // global constants via the overloads above, unchanged.
+    private byte[] postProcess(float[] raw, int size, boolean dilateAndBlur, float percentileClip,
+            float depthTauSeconds, float rangeTauSeconds) {
+        return postProcess(raw, size, size, dilateAndBlur, percentileClip,
+                depthTauSeconds, rangeTauSeconds);
+    }
+
+    private byte[] postProcess(float[] raw, int width, int height, boolean dilateAndBlur,
+            float percentileClip, float depthTauSeconds, float rangeTauSeconds) {
+        int count = width * height;
 
         long now = System.nanoTime();
         // Clamped to [1/60, 1.0]s - the lower bound guards against a
@@ -1149,7 +1613,7 @@ public class DepthEstimator {
         // the opposite case (a long stall making the very next update jump
         // by an enormous, saturated alpha instead of just converging fully,
         // which happens anyway once dt exceeds a few tau's worth of time).
-        float dt = lastPostProcessTimeNs == 0 ? DEPTH_TAU_SECONDS
+        float dt = lastPostProcessTimeNs == 0 ? depthTauSeconds
                 : Math.max(1f / 60f, Math.min((now - lastPostProcessTimeNs) / 1_000_000_000f, 1.0f));
         lastPostProcessTimeNs = now;
 
@@ -1159,7 +1623,7 @@ public class DepthEstimator {
             smoothHi = loHi[1];
             rangeValid = true;
         } else {
-            float rangeAlpha = 1f - (float) Math.exp(-dt / RANGE_TAU_SECONDS);
+            float rangeAlpha = 1f - (float) Math.exp(-dt / rangeTauSeconds);
             smoothLo += rangeAlpha * (loHi[0] - smoothLo);
             smoothHi += rangeAlpha * (loHi[1] - smoothHi);
         }
@@ -1173,10 +1637,10 @@ public class DepthEstimator {
 
         float[] preSmooth = normalized;
         if (dilateAndBlur) {
-            float[] dilated = dilate(normalized, size, 6);
-            preSmooth = separableBoxBlur(dilated, size, 14);
+            float[] dilated = dilate(normalized, width, height, 6);
+            preSmooth = separableBoxBlur(dilated, width, height, 14);
         }
-        float[] smoothed = temporalSmooth(preSmooth, size, dt);
+        float[] smoothed = temporalSmooth(preSmooth, count, dt, depthTauSeconds);
 
         byte[] depthBytes = new byte[count];
         for (int i = 0; i < count; i++) {
@@ -1238,64 +1702,64 @@ public class DepthEstimator {
         return new float[]{robustLo, robustHi};
     }
 
-    private float[] dilate(float[] depth, int size, int radius) {
+    private float[] dilate(float[] depth, int width, int height, int radius) {
         float[] horizontal = new float[depth.length];
-        for (int y = 0; y < size; y++) {
-            for (int x = 0; x < size; x++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
                 float maxVal = 0.0f;
                 for (int dx = -radius; dx <= radius; dx++) {
-                    int nx = Math.min(Math.max(x + dx, 0), size - 1);
-                    float v = depth[y * size + nx];
+                    int nx = Math.min(Math.max(x + dx, 0), width - 1);
+                    float v = depth[y * width + nx];
                     if (v > maxVal) maxVal = v;
                 }
-                horizontal[y * size + x] = maxVal;
+                horizontal[y * width + x] = maxVal;
             }
         }
         float[] result = new float[depth.length];
-        for (int y = 0; y < size; y++) {
-            for (int x = 0; x < size; x++) {
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
                 float maxVal = 0.0f;
                 for (int dy = -radius; dy <= radius; dy++) {
-                    int ny = Math.min(Math.max(y + dy, 0), size - 1);
-                    float v = horizontal[ny * size + x];
+                    int ny = Math.min(Math.max(y + dy, 0), height - 1);
+                    float v = horizontal[ny * width + x];
                     if (v > maxVal) maxVal = v;
                 }
-                result[y * size + x] = maxVal;
+                result[y * width + x] = maxVal;
             }
         }
         return result;
     }
 
-    private float[] separableBoxBlur(float[] depth, int size, int radius) {
+    private float[] separableBoxBlur(float[] depth, int width, int height, int radius) {
         float[] horizontal = new float[depth.length];
         int diam = radius * 2 + 1;
-        for (int y = 0; y < size; y++) {
+        for (int y = 0; y < height; y++) {
             float sum = 0.0f;
             for (int x = -radius; x <= radius; x++) {
-                int nx = Math.min(Math.max(x, 0), size - 1);
-                sum += depth[y * size + nx];
+                int nx = Math.min(Math.max(x, 0), width - 1);
+                sum += depth[y * width + nx];
             }
-            horizontal[y * size + 0] = sum / diam;
-            for (int x = 1; x < size; x++) {
-                int addX = Math.min(x + radius, size - 1);
+            horizontal[y * width] = sum / diam;
+            for (int x = 1; x < width; x++) {
+                int addX = Math.min(x + radius, width - 1);
                 int remX = Math.max(x - radius - 1, 0);
-                sum += depth[y * size + addX] - depth[y * size + remX];
-                horizontal[y * size + x] = sum / diam;
+                sum += depth[y * width + addX] - depth[y * width + remX];
+                horizontal[y * width + x] = sum / diam;
             }
         }
         float[] result = new float[depth.length];
-        for (int x = 0; x < size; x++) {
+        for (int x = 0; x < width; x++) {
             float sum = 0.0f;
             for (int y = -radius; y <= radius; y++) {
-                int ny = Math.min(Math.max(y, 0), size - 1);
-                sum += horizontal[ny * size + x];
+                int ny = Math.min(Math.max(y, 0), height - 1);
+                sum += horizontal[ny * width + x];
             }
-            result[0 * size + x] = sum / diam;
-            for (int y = 1; y < size; y++) {
-                int addY = Math.min(y + radius, size - 1);
+            result[x] = sum / diam;
+            for (int y = 1; y < height; y++) {
+                int addY = Math.min(y + radius, height - 1);
                 int remY = Math.max(y - radius - 1, 0);
-                sum += horizontal[addY * size + x] - horizontal[remY * size + x];
-                result[y * size + x] = sum / diam;
+                sum += horizontal[addY * width + x] - horizontal[remY * width + x];
+                result[y * width + x] = sum / diam;
             }
         }
         return result;
@@ -1313,14 +1777,13 @@ public class DepthEstimator {
     // background) that happened to get a weak first estimate stayed weak
     // forever. A rate that never truly reaches zero (dt-scaled or not) keeps
     // denoising even when nothing on screen is moving.
-    private float[] temporalSmooth(float[] newDepth, int size, float dt) {
-        int len = size * size;
-        if (smoothedDepthFloat == null) {
+    private float[] temporalSmooth(float[] newDepth, int len, float dt, float depthTauSeconds) {
+        if (smoothedDepthFloat == null || smoothedDepthFloat.length != len) {
             smoothedDepthFloat = newDepth.clone();
             return newDepth;
         }
 
-        float depthAlpha = 1f - (float) Math.exp(-dt / DEPTH_TAU_SECONDS);
+        float depthAlpha = 1f - (float) Math.exp(-dt / depthTauSeconds);
         float[] result = new float[len];
         for (int i = 0; i < len; i++) {
             float prev = smoothedDepthFloat[i];
@@ -1365,15 +1828,12 @@ public class DepthEstimator {
             tfliteYoloS.close();
             tfliteYoloS = null;
         }
+        if (tfliteZipDepth384 != null) {
+            tfliteZipDepth384.close();
+            tfliteZipDepth384 = null;
+        }
         for (GpuVariant v : gpuVariants.values()) {
-            if (v.interp != null) {
-                v.interp.close();
-                v.interp = null;
-            }
-            if (v.delegate != null) {
-                v.delegate.close();
-                v.delegate = null;
-            }
+            releaseGpuVariant(v);
         }
         gpuVariants.clear();
         activeGpuVariant = null;
@@ -1387,7 +1847,7 @@ public class DepthEstimator {
     // has to reflect activeModelIndex rather than a single fixed constant.
     // Every YOLO26-N variant and -S run at different resolutions from each
     // other, not just from MiDaS/DA.
-    public int getModelSize() {
+    private int getCpuModelSize() {
         if (activeModelIndex == 1) {
             return DA_252_INPUT_SIZE;
         }
@@ -1409,7 +1869,27 @@ public class DepthEstimator {
         if (activeModelIndex == 11) {
             return DA_196_INPUT_SIZE;
         }
+        if (activeModelIndex == 14 && tfliteZipDepth384 != null) {
+            return ZIPDEPTH_384_GPU_INPUT_SIZE;
+        }
         return OUTPUT_SIZE;
+    }
+
+    public int getModelWidth() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.inputWidth : getCpuModelSize();
+    }
+
+    public int getModelHeight() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.inputHeight : getCpuModelSize();
+    }
+
+    // Kept for older native callers; square models return their normal size,
+    // while rectangular models return the width. New code must use both
+    // getModelWidth() and getModelHeight().
+    public int getModelSize() {
+        return getModelWidth();
     }
 
     public boolean isInitialized() {

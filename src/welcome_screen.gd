@@ -490,6 +490,12 @@ const WELCOME_FRAME := Vector2i(1920, 1080)
 
 func show_welcome_screen(name: String):
 	main._welcome_screen = name
+	# A failed connection can navigate here while the ray is still over the
+	# previous screen. Clear the world-space cursor filter before changing the
+	# welcome viewport/layout, otherwise the rendered pointer can retain the old
+	# hit point and appear offset until the app is restarted.
+	main._reset_steady_filter()
+	main.was_clicking = false
 	# The welcome UI is rendered on the same shared mesh/material as the stream
 	# (see main.gd's comp_shader_mat main_texture reuse), and several code paths
 	# can leave that mesh in a non-16:9 state that main.layout doesn't reflect:

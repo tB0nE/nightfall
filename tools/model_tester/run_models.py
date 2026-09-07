@@ -85,10 +85,12 @@ def load_source_image(path: Path) -> np.ndarray:
     return img
 
 
-def resize_rgb(img: Image.Image, size: int) -> np.ndarray:
-    """High-quality resize to (size, size, 3) float32 RGB in 0..1 - stands in
+def resize_rgb(img: Image.Image, width: int, height: int | None = None) -> np.ndarray:
+    """High-quality resize to (height, width, 3) float32 RGB in 0..1 - stands in
     for the on-device box-filtered GPU downscale (see module docstring)."""
-    resized = img.resize((size, size), Image.LANCZOS)
+    if height is None:
+        height = width
+    resized = img.resize((width, height), Image.LANCZOS)
     return np.asarray(resized, dtype=np.float32) / 255.0
 
 
@@ -146,6 +148,26 @@ def infer_yolo(interp, rgb01: np.ndarray, size: int) -> np.ndarray:
     out = interp.get_tensor(out_detail["index"]).astype(np.float32)
     raw = -out.reshape(size, size)
     return raw
+
+
+def infer_zipdepth(interp, rgb01: np.ndarray, width: int, height: int) -> np.ndarray:
+    # NHWC, plain float32 I/O - ImageNet mean/std normalization is baked into
+    # the graph itself (see DepthEstimator.java's MODEL_ZIPDEPTH_*_GPU
+    # comment), same convention as MiDaS-GPU/depth_anything's GPU exports, so
+    # this script sends the same plain 0..1 pixel data every other family
+    # gets. Unlike depth_anything, ZipDepth is a plain /32-stride CNN with no
+    # ViT patch-size constraint, so its declared input shape is always clean
+    # NHWC (1,height,width,3). Output tensor is (1,1,height,width) per onnx2tf's chosen
+    # layout for this graph's final op - doesn't matter for a single-channel
+    # map, both reshape identically to (size, size) (confirmed during
+    # conversion verification, tools/convert_zipdepth.py).
+    in_detail = interp.get_input_details()[0]
+    out_detail = interp.get_output_details()[0]
+    input_data = rgb01.reshape(1, height, width, 3).astype(np.float32)
+    interp.set_tensor(in_detail["index"], input_data)
+    interp.invoke()
+    out = interp.get_tensor(out_detail["index"]).astype(np.float32)
+    return out.reshape(height, width)
 
 
 def infer_depth_anything(interp, rgb01: np.ndarray) -> np.ndarray:
@@ -281,8 +303,10 @@ def family_for(model_key: str) -> str:
         return "depth_anything"
     if model_key.startswith("yolo26"):
         return "yolo"
+    if model_key.startswith("zipdepth"):
+        return "zipdepth"
     raise ValueError(f"Can't infer family for model key '{model_key}' - "
-                      f"expected it to start with midas/depth_anything/yolo26")
+                      f"expected it to start with midas/depth_anything/yolo26/zipdepth")
 
 
 def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.Image):
@@ -319,6 +343,14 @@ def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.I
         # break a "last underscore token is the size" parse.
         size = int(interp.get_input_details()[0]["shape"][2])
         rgb = resize_rgb(source_img, size)
+    elif family == "zipdepth":
+        # NHWC like depth_anything, but rectangular experimental exports are
+        # valid. Read H and W independently instead of assuming H == W.
+        input_shape = interp.get_input_details()[0]["shape"]
+        height = int(input_shape[1])
+        width = int(input_shape[2])
+        size = width
+        rgb = resize_rgb(source_img, width, height)
     else:
         raise AssertionError
 
@@ -330,11 +362,13 @@ def run_one_model(model_key: str, cfg: dict, settings: dict, source_img: Image.I
             raw = infer_depth_anything(interp, rgb)
         elif family == "yolo":
             raw = infer_yolo(interp, rgb, size)
+        elif family == "zipdepth":
+            raw = infer_zipdepth(interp, rgb, width, height)
     except Exception as e:
         result["error"] = f"invoke failed: {e}"
         return result
     result["infer_time_ms"] = round((time.time() - t_infer_start) * 1000, 1)
-    result["size"] = size
+    result["size"] = f"{width}x{height}" if family == "zipdepth" and width != height else str(size)
 
     pc = settings["percentile_clip"][family]
     hist_bins = settings["hist_bins"]
@@ -398,7 +432,7 @@ def main():
     # load+infer, i.e. the full one-shot cost this script itself paid to
     # produce that model's image (relevant here since every run reloads
     # every interpreter fresh, unlike the always-warm on-device app).
-    header = f"{'model':<32} {'size':>5} {'load_ms':>8} {'infer_ms':>9} {'total_ms':>9} {'raw_min':>10} {'raw_max':>10} {'raw_mean':>10} {'raw_std':>10}"
+    header = f"{'model':<32} {'size':>9} {'load_ms':>8} {'infer_ms':>9} {'total_ms':>9} {'raw_min':>10} {'raw_max':>10} {'raw_mean':>10} {'raw_std':>10}"
     emit(header)
     emit("-" * len(header))
 
@@ -432,13 +466,13 @@ def main():
     ok_results.sort(key=lambda r: r["infer_time_ms"])
 
     for result in ok_results:
-        emit(f"{result['model']:<32} {result['size']:>5} {result['load_time_ms']:>8.1f} "
+        emit(f"{result['model']:<32} {result['size']:>9} {result['load_time_ms']:>8.1f} "
              f"{result['infer_time_ms']:>9.1f} {result['total_time_ms']:>9.1f} {result['raw_min']:>10.4f} "
              f"{result['raw_max']:>10.4f} {result['raw_mean']:>10.4f} {result['raw_std']:>10.4f}")
         summary["results"].append(result)
 
     for result in failed_results:
-        emit(f"{result['model']:<32} {'':>5} {'':>8} {'':>9} {'':>9}  FAILED: {result['error']}")
+        emit(f"{result['model']:<32} {'':>9} {'':>8} {'':>9} {'':>9}  FAILED: {result['error']}")
         summary["results"].append({k: v for k, v in result.items() if k != "_normalized"})
 
     run_wall_ms = round((time.time() - run_wall_start) * 1000, 1)

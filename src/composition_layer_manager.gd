@@ -5,11 +5,138 @@ var main
 var available: bool = false
 var in_use: bool = false
 var _last_bind_rids: Array = []
-var _last_bind_mode: Array = [0, 1, 0]
+var _last_bind_mode: Array = [0, 1, 0, 0]
+var stats_viewport: SubViewport = null
+var stats_label: Label = null
+var stats_rects: Array = []
+var stats_visible: bool = false
+var _sdr_shader: Shader = null
+var _sdr_picture_shader: Shader = null
+var _hdr_shader: Shader = null
+var _hdr_lut: ImageTexture = null
+var _current_color_transfer_type: int = 0
+
+# Primary-screen ambient lighting is deliberately isolated in one small,
+# alpha-blended compositor layer. It never changes the main screen layer's
+# opaque blend mode or any of the YUV/HDR/AI-depth shaders.
+const AMBIENT_LAYER_SCALE := 1.30
+const AMBIENT_SAMPLE_SIZE := 32
+const AMBIENT_VIEWPORT_LONG_EDGE := 256
+const AMBIENT_SLOW_INTERVAL_SEC := 0.10
+# Live mode used to sample every script tick (up to 144-207Hz on the
+# refresh-rate tiers this branch now supports) - ambient light doesn't
+# need anywhere near that to look smooth, and it was the one ambient mode
+# with no throttle at all. Capped the same way Slow already was.
+const AMBIENT_LIVE_INTERVAL_SEC := 1.0 / 72.0
+var _ambient_layer: Node3D = null
+var _ambient_sample_viewport: SubViewport = null
+var _ambient_sample_rect: TextureRect = null
+var _ambient_viewport: SubViewport = null
+var _ambient_rect: ColorRect = null
+var _ambient_material: ShaderMaterial = null
+var _ambient_source_viewport: SubViewport = null
+var _ambient_source_texture: Texture2D = null
+var _ambient_native_source_texture: ImageTexture = null
+var _ambient_native_sample_revision := 0
+var _ambient_native_applied_revision := -1
+var _ambient_native_static_waiting := false
+var _ambient_native_supported := false
+var _ambient_support_logged := false
+var _ambient_dirty := true
+var _ambient_slow_elapsed := 0.0
+var _ambient_live_elapsed := 0.0
+var _ambient_sample_seeded := false
+var _last_compositor_sharpen_mode := -1
+var _last_compositor_sharpen_supported := false
+
+func _get_sdr_shader() -> Shader:
+	if not _sdr_shader:
+		_sdr_shader = load("res://src/shaders/yuv_display.gdshader")
+	return _sdr_shader
+
+func _get_sdr_picture_shader() -> Shader:
+	if not _sdr_picture_shader:
+		_sdr_picture_shader = load("res://src/shaders/yuv_display_picture.gdshader")
+	return _sdr_picture_shader
+
+func _get_hdr_shader() -> Shader:
+	if not _hdr_shader:
+		_hdr_shader = load("res://src/shaders/yuv_display_hdr.gdshader")
+	return _hdr_shader
+
+# ST 2084 (PQ) inverse EOTF -> linear, normalized so 203 nits (the standard
+# PQ SDR reference-white anchor, ITU-R BT.2408) = 1.0.
+func _pq_decode(e: float) -> float:
+	var m1 = 0.1593017578125
+	var m2 = 78.84375
+	var c1 = 0.8359375
+	var c2 = 18.8515625
+	var c3 = 18.6875
+	var ep = pow(e, 1.0 / m2)
+	var num = maxf(ep - c1, 0.0)
+	var den = maxf(c2 - c3 * ep, 1e-6)
+	var linear = pow(num / den, 1.0 / m1) # 0..1 represents 0..10000 nits
+	return linear / 0.0203 # 203/10000
+
+# ARIB STD-B67 (HLG) inverse OETF composed with its system-gamma OOTF (fixed
+# 1.2, BT.2100's nominal value for a ~1000 nit reference display), normalized
+# so 203 nits of HLG's ~1000 nit nominal peak = 1.0.
+func _hlg_decode(e: float) -> float:
+	var a = 0.17883277
+	var b = 1.0 - 4.0 * a
+	var c = 0.5 - a * log(4.0 * a)
+	var scene = ((e * e) / 3.0) if (e < 0.5) else ((exp((e - c) / a) + b) / 12.0)
+	var ootf = pow(maxf(scene, 0.0), 1.2)
+	return ootf / 0.203 # 203/1000
+
+func _srgb_encode(c: float) -> float:
+	c = clampf(c, 0.0, 1.0)
+	if c <= 0.0031308:
+		return c * 12.92
+	return 1.055 * pow(c, 1.0 / 2.4) - 0.055
+
+# 256 wide (LUT input resolution) x 3 tall - row 0 = PQ decode, row 1 = HLG
+# decode, row 2 = linear->sRGB encode (see yuv_display_hdr.gdshader's own
+# comment on hdr_eotf_lut for why: trades per-pixel pow()/exp() calls for
+# texture fetches). Built once, lazily, on first use - 768 total evaluations,
+# not a per-frame cost.
+func _get_hdr_lut() -> ImageTexture:
+	if _hdr_lut:
+		return _hdr_lut
+	var img = Image.create(256, 3, false, Image.FORMAT_RF)
+	for x in range(256):
+		var e = float(x) / 255.0
+		img.set_pixel(x, 0, Color(_pq_decode(e), 0.0, 0.0))
+		img.set_pixel(x, 1, Color(_hlg_decode(e), 0.0, 0.0))
+		img.set_pixel(x, 2, Color(_srgb_encode(e), 0.0, 0.0))
+	_hdr_lut = ImageTexture.create_from_image(img)
+	return _hdr_lut
+
+# Select a compiled shader variant instead of making HDR and picture grading
+# runtime branches in the always-hot SDR/AI-depth shader. Check each material
+# rather than caching one global state: screen/layout rebuilds can introduce
+# fresh materials without changing the stream's transfer type.
+func _apply_video_shader_state(color_transfer_type: int):
+	_current_color_transfer_type = color_transfer_type
+	var picture_adjusted = main.brightness_pct != 0 or main.contrast_pct != 100 or main.gamma_pct != 100
+	var shader: Shader
+	if color_transfer_type != 0:
+		shader = _get_hdr_shader()
+	elif picture_adjusted:
+		shader = _get_sdr_picture_shader()
+	else:
+		shader = _get_sdr_shader()
+	for s in main.screens:
+		for mat in get_shader_mats(s):
+			if mat and mat.shader != shader:
+				mat.shader = shader
+
+func refresh_picture_shader_state():
+	_apply_video_shader_state(_current_color_transfer_type)
 
 func invalidate_yuv_cache():
 	_last_bind_rids = []
-	_last_bind_mode = [0, 1, 0]
+	_last_bind_mode = [0, 1, 0, 0]
 
 # set_shader_parameter("tex_y", ...) is fed either a Texture wrapper (the
 # direct multi-plane YUV/AHB import path) or a raw RID (StreamConnection's
@@ -415,6 +542,412 @@ func setup():
 	setup_background_equirect()
 
 	setup_screen(main.primary_screen, true)
+	setup_stats_overlay()
+
+func setup_stats_overlay():
+	# Match Moonlight Android XR's 768x512 diagnostic panel. Render it once and
+	# sample that texture inside each existing screen viewport, rather than
+	# allocating another OpenXR composition layer/swapchain. This pins the panel
+	# to the screen's top-left in mono and stereo modes and keeps projection off.
+	stats_viewport = SubViewport.new()
+	stats_viewport.name = "PerformanceStatsViewport"
+	stats_viewport.disable_3d = true
+	stats_viewport.transparent_bg = true
+	stats_viewport.size = Vector2i(768, 512)
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	main.add_child(stats_viewport)
+
+	var background = ColorRect.new()
+	background.name = "Background"
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.color = Color(0, 0, 0, 0.69)
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stats_viewport.add_child(background)
+
+	stats_label = Label.new()
+	stats_label.name = "StatsText"
+	stats_label.position = Vector2(10, 8)
+	stats_label.size = Vector2(748, 496)
+	stats_label.add_theme_font_size_override("font_size", 22)
+	stats_label.add_theme_color_override("font_color", Color.WHITE)
+	stats_label.add_theme_constant_override("line_spacing", 2)
+	var mono = SystemFont.new()
+	mono.font_names = PackedStringArray(["monospace"])
+	stats_label.add_theme_font_override("font", mono)
+	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	background.add_child(stats_label)
+
+	var screen = main.primary_screen
+	var targets = [
+		{"bezel": screen.comp_bezel_rect, "viewport": screen.comp_viewport},
+		{"bezel": screen.comp_bezel_rect_left, "viewport": screen.comp_viewport_left},
+		{"bezel": screen.comp_bezel_rect_right, "viewport": screen.comp_viewport_right},
+	]
+	for target in targets:
+		if not target.bezel or not target.viewport:
+			continue
+		var rect = TextureRect.new()
+		rect.name = "PerformanceStatsOverlay"
+		rect.texture = stats_viewport.get_texture()
+		rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		rect.stretch_mode = TextureRect.STRETCH_SCALE
+		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rect.z_index = 100
+		rect.visible = false
+		target.bezel.add_child(rect)
+		stats_rects.append({"rect": rect, "viewport": target.viewport})
+	_layout_stats_rects()
+	main._log("[COMP] In-screen performance statistics overlay created")
+
+func set_stats_visible(enabled: bool):
+	if not stats_viewport:
+		return
+	if stats_visible == enabled:
+		return
+	stats_visible = enabled
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if enabled else SubViewport.UPDATE_DISABLED
+	for target in stats_rects:
+		target.rect.visible = enabled
+	if enabled:
+		_layout_stats_rects()
+
+func update_stats_text(value: String):
+	if stats_label:
+		stats_label.text = value
+		if stats_visible:
+			stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+func update_stats_transform():
+	_layout_stats_rects()
+
+func _layout_stats_rects():
+	for target in stats_rects:
+		var rect: TextureRect = target.rect
+		var viewport: SubViewport = target.viewport
+		if not rect or not viewport:
+			continue
+		var margin = float(viewport.size.x) * 0.02
+		var overlay_width = float(viewport.size.x) * 0.30
+		var overlay_height = overlay_width * (512.0 / 768.0)
+		rect.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+		rect.position = Vector2(margin, margin)
+		rect.size = Vector2(overlay_width, overlay_height)
+
+func _setup_ambient_layer() -> bool:
+	if _ambient_layer and _ambient_material:
+		return true
+	if not available or not main.primary_screen:
+		return false
+	# All ambient cylinders use the same OpenXR layer type as the primary
+	# screen, so its already-created layer is a zero-allocation support probe.
+	# Do not create an ambient node or swapchain while the feature is Off.
+	if not main.primary_screen.comp_cylinder or not main.primary_screen.comp_cylinder.is_natively_supported():
+		if not _ambient_support_logged:
+			main._log("[AMBIENT] Native cylinder layers unavailable - ambient lighting disabled")
+			_ambient_support_logged = true
+		return false
+
+	_ambient_layer = OpenXRCompositionLayerCylinder.new()
+	_ambient_layer.name = "CompAmbientLayer"
+	_ambient_layer.set_sort_order(0)
+	_ambient_layer.set_enable_hole_punch(false)
+	_ambient_layer.set_alpha_blend(true)
+	_ambient_layer.visible = false
+	main.xr_origin.add_child(_ambient_layer)
+	_ambient_native_supported = _ambient_layer.is_natively_supported()
+	if not _ambient_native_supported:
+		main._log("[AMBIENT] Ambient cylinder not natively supported - ambient lighting disabled")
+		_ambient_support_logged = true
+		_ambient_layer.queue_free()
+		_ambient_layer = null
+		return false
+
+	# Reduce the already-rendered screen to a deliberately coarse colour map
+	# before producing the halo. Besides making the glow read as light rather
+	# than a duplicate picture, this keeps every later blur/filter lookup inside
+	# a tiny, cache-friendly texture instead of repeatedly sampling a 4K frame.
+	_ambient_sample_viewport = SubViewport.new()
+	_ambient_sample_viewport.name = "AmbientColorSampleViewport"
+	_ambient_sample_viewport.disable_3d = true
+	_ambient_sample_viewport.transparent_bg = false
+	_ambient_sample_viewport.size = Vector2i(AMBIENT_SAMPLE_SIZE, AMBIENT_SAMPLE_SIZE)
+	_ambient_sample_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ONCE
+	_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	main.add_child(_ambient_sample_viewport)
+
+	_ambient_sample_rect = TextureRect.new()
+	_ambient_sample_rect.name = "AmbientColorSample"
+	_ambient_sample_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_ambient_sample_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_ambient_sample_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	_ambient_sample_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	_ambient_sample_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ambient_sample_viewport.add_child(_ambient_sample_rect)
+
+	_ambient_viewport = SubViewport.new()
+	_ambient_viewport.name = "CompAmbientViewport"
+	_ambient_viewport.disable_3d = true
+	_ambient_viewport.transparent_bg = true
+	_ambient_viewport.size = Vector2i(AMBIENT_VIEWPORT_LONG_EDGE, 180)
+	_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	main.add_child(_ambient_viewport)
+
+	_ambient_rect = ColorRect.new()
+	_ambient_rect.name = "AmbientHalo"
+	_ambient_rect.anchors_preset = 15
+	_ambient_rect.anchor_right = 1.0
+	_ambient_rect.anchor_bottom = 1.0
+	_ambient_rect.grow_horizontal = 2
+	_ambient_rect.grow_vertical = 2
+	_ambient_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ambient_material = ShaderMaterial.new()
+	_ambient_material.shader = load("res://src/shaders/ambient_halo.gdshader")
+	_ambient_material.set_shader_parameter("source_texture", _ambient_sample_viewport.get_texture())
+	_ambient_rect.material = _ambient_material
+	_ambient_viewport.add_child(_ambient_rect)
+
+	_ambient_layer.set_layer_viewport(_ambient_viewport)
+	_update_ambient_geometry()
+	main._log("[AMBIENT] 32x32 colour sample and low-resolution composition layer created on demand")
+	return true
+
+func ambient_supported() -> bool:
+	if _ambient_layer:
+		return _ambient_native_supported
+	return available and main.primary_screen != null and main.primary_screen.comp_cylinder != null and main.primary_screen.comp_cylinder.is_natively_supported()
+
+func apply_compositor_sharpen(mode: int) -> bool:
+	var requested = mode >= main.SHARPEN_RUNTIME_NORMAL
+	# Values exposed by the patched OpenXRCompositionLayer engine class:
+	# 0=None, 3=normal sharpening, 4=quality sharpening.
+	var compositor_filter = 0
+	if mode == main.SHARPEN_RUNTIME_NORMAL:
+		compositor_filter = 3
+	elif mode == main.SHARPEN_RUNTIME_QUALITY:
+		compositor_filter = 4
+	var supported = false
+	for s in main.screens:
+		for layer in [s.comp_cylinder, s.comp_cylinder_left, s.comp_cylinder_right]:
+			if not layer or not layer.has_method("set_compositor_filter"):
+				continue
+			if layer.has_method("is_compositor_filter_supported") and layer.is_compositor_filter_supported():
+				supported = true
+			layer.set_compositor_filter(compositor_filter)
+	var first_probe = _last_compositor_sharpen_mode < 0
+	if mode != _last_compositor_sharpen_mode or supported != _last_compositor_sharpen_supported:
+		if requested:
+			main._log("[SHARPEN] Runtime compositor sharpening %s (%s)" % ["Quality" if mode == main.SHARPEN_RUNTIME_QUALITY else "Normal", "active" if supported else "unsupported; using shader fallback"])
+		elif first_probe:
+			main._log("[SHARPEN] Runtime compositor sharpening is %s" % ("available" if supported else "unavailable"))
+	_last_compositor_sharpen_mode = mode
+	_last_compositor_sharpen_supported = supported
+	return requested and supported and in_use
+
+func _prepare_ambient_sample_update() -> bool:
+	if main.native_xr_renderer and main.native_xr_renderer.active:
+		main.native_xr_renderer.request_ambient_sample()
+		# Do not redraw from the now-disabled legacy viewport while the first
+		# asynchronous native sample is still in flight.
+		if not _ambient_native_source_texture:
+			_ambient_native_static_waiting = main.ambient_mode == 1
+			return false
+		# Static mode must wait for a newly requested sample after a settings
+		# change, rather than immediately redrawing the previous frozen sample.
+		if main.ambient_mode == 1:
+			if _ambient_native_sample_revision == _ambient_native_applied_revision:
+				_ambient_native_static_waiting = true
+				return false
+			_ambient_native_applied_revision = _ambient_native_sample_revision
+			_ambient_native_static_waiting = false
+	if not _ambient_sample_rect or not _ambient_sample_viewport:
+		return false
+	if not _ambient_sample_seeded:
+		# First frame replaces the cleared target so startup is never dark.
+		_ambient_sample_rect.modulate = Color.WHITE
+		_ambient_sample_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ONCE
+		_ambient_sample_seeded = true
+	else:
+		# Preserve the previous 32x32 target and alpha-blend the new frame over
+		# it. Live converges in roughly ten frames; Slow uses a stronger blend
+		# because it only receives ten samples per second.
+		var blend = 0.35 if main.ambient_mode == 2 else 0.12
+		_ambient_sample_rect.modulate = Color(1.0, 1.0, 1.0, blend)
+	return true
+
+func update_native_ambient_sample(pixels: PackedByteArray, width: int, height: int):
+	if pixels.size() != width * height * 4 or width <= 0 or height <= 0:
+		return
+	var image := Image.create_from_data(width, height, false, Image.FORMAT_RGBA8, pixels)
+	# GLES readback uses a bottom-left origin; Godot textures use top-left.
+	image.flip_y()
+	var first_sample := _ambient_native_source_texture == null
+	if first_sample:
+		_ambient_native_source_texture = ImageTexture.create_from_image(image)
+	else:
+		_ambient_native_source_texture.update(image)
+	_ambient_native_sample_revision += 1
+	if first_sample or _ambient_source_texture != _ambient_native_source_texture:
+		_refresh_ambient_source(true)
+	if first_sample or _ambient_native_static_waiting:
+		_ambient_dirty = true
+
+func clear_native_ambient_sample():
+	var had_native_source := _ambient_native_source_texture != null
+	_ambient_native_source_texture = null
+	_ambient_native_sample_revision = 0
+	_ambient_native_applied_revision = -1
+	_ambient_native_static_waiting = false
+	if had_native_source:
+		_refresh_ambient_source(true)
+
+func _ambient_static_color() -> Color:
+	var colors := [
+		Color(1.0, 1.0, 1.0),
+		Color(1.0, 0.72, 0.45),
+		Color(1.0, 0.12, 0.08),
+		Color(0.20, 1.0, 0.25),
+		Color(0.15, 0.45, 1.0),
+		Color(0.72, 0.20, 1.0),
+	]
+	return colors[clampi(main.ambient_color, 0, colors.size() - 1)]
+
+func _ambient_intensity() -> float:
+	# Static remains Medium; screen-reactive Slow/Live need the stronger High
+	# preset so their changing colours remain clearly visible around the panel.
+	return 0.35 if main.ambient_mode >= 2 else 0.20
+
+func _refresh_ambient_source(force: bool = false):
+	if not _ambient_material or not main.primary_screen:
+		return
+	var source: SubViewport = null
+	var source_texture: Texture2D = null
+	if main.native_xr_renderer and main.native_xr_renderer.active and _ambient_native_source_texture:
+		source_texture = _ambient_native_source_texture
+	else:
+		source = main.primary_screen.comp_viewport
+		var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
+		if stereo > 0 and main.primary_screen.comp_viewport_left:
+			# A single both-eye halo is intentional. The left-eye composited output
+			# is a stable representative source and avoids a second ambient layer.
+			source = main.primary_screen.comp_viewport_left
+		source_texture = source.get_texture()
+	if force or source != _ambient_source_viewport or source_texture != _ambient_source_texture:
+		_ambient_source_viewport = source
+		_ambient_source_texture = source_texture
+		if _ambient_sample_rect:
+			_ambient_sample_rect.texture = source_texture
+			_ambient_sample_rect.modulate = Color.WHITE
+		if _ambient_sample_viewport:
+			_ambient_sample_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ONCE
+		_ambient_sample_seeded = false
+		_ambient_dirty = true
+
+func apply_ambient_settings():
+	main.ambient_mode = clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)
+	main.ambient_color = clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)
+	if main.ambient_mode == 0:
+		_disable_ambient()
+		return
+	if not _ambient_material and not _setup_ambient_layer():
+		return
+	_ambient_material.set_shader_parameter("reactive", main.ambient_mode >= 2)
+	_ambient_material.set_shader_parameter("static_color", _ambient_static_color())
+	_ambient_material.set_shader_parameter("intensity", _ambient_intensity())
+	_ambient_slow_elapsed = 0.0
+	_ambient_dirty = true
+	# The source viewport can resize/reallocate its render target when a stream
+	# starts. Rebind explicitly on every mode/settings change instead of relying
+	# on the SubViewport object identity remaining sufficient.
+	_refresh_ambient_source(true)
+	var intensity_label = "High" if main.ambient_mode >= 2 else "Medium"
+	main._log("[AMBIENT] Mode=%s intensity=%s (Glow)" % [main.ambient_mode_labels[main.ambient_mode], intensity_label])
+
+func _disable_ambient():
+	# Avoid needlessly touching composition-layer visibility every frame while
+	# Off/disconnected; layer visibility transitions can rebuild swapchains.
+	if _ambient_layer and _ambient_layer.visible:
+		_ambient_layer.visible = false
+	if _ambient_viewport and _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if _ambient_sample_viewport and _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
+		_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if _ambient_sample_viewport:
+		_ambient_sample_viewport.render_target_clear_mode = SubViewport.CLEAR_MODE_ONCE
+	_ambient_sample_seeded = false
+
+func process_ambient(delta: float):
+	if main.ambient_mode == 0:
+		_disable_ambient()
+		return
+	if not _ambient_viewport and not _setup_ambient_layer():
+		return
+	if not ambient_supported() or not _ambient_viewport:
+		return
+	var should_show = available and in_use and main.is_streaming and main.ambient_mode > 0
+	if not should_show:
+		_disable_ambient()
+		return
+	if not _ambient_layer.visible:
+		_ambient_layer.visible = true
+		_update_ambient_geometry()
+		_ambient_dirty = true
+	# Also detects a primary-screen or stereo-mode change while the layer is
+	# already visible; the uniform is only touched when the source changes.
+	_refresh_ambient_source()
+
+	match main.ambient_mode:
+		1: # Static: redraw only after a setting/geometry change.
+			if _ambient_dirty:
+				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
+		2: # Slow: sample the screen at 10 Hz.
+			_ambient_slow_elapsed += delta
+			if _ambient_dirty or _ambient_slow_elapsed >= AMBIENT_SLOW_INTERVAL_SEC:
+				_ambient_slow_elapsed = fmod(_ambient_slow_elapsed, AMBIENT_SLOW_INTERVAL_SEC)
+				if not _prepare_ambient_sample_update():
+					return
+				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
+		3: # Live: sample at 72 Hz - plenty for ambient light, and no longer
+			# ties the native readback (glBlitFramebuffer + glReadPixels + PBO
+			# fence, see NightfallXrRenderer::issue_ambient_sample()) to every
+			# single script tick at whatever refresh rate is selected.
+			_ambient_live_elapsed += delta
+			if _ambient_dirty or _ambient_live_elapsed >= AMBIENT_LIVE_INTERVAL_SEC:
+				_ambient_live_elapsed = fmod(_ambient_live_elapsed, AMBIENT_LIVE_INTERVAL_SEC)
+				if not _prepare_ambient_sample_update():
+					return
+				if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
+					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
+					_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+				_ambient_dirty = false
+
+func _update_ambient_geometry():
+	if not _ambient_layer or not _ambient_viewport or not main.primary_screen:
+		return
+	var s = main.primary_screen
+	var expanded_size: Vector2 = s.mesh_size * AMBIENT_LAYER_SCALE
+	var aspect = expanded_size.x / maxf(expanded_size.y, 0.001)
+	var viewport_size: Vector2i
+	if aspect >= 1.0:
+		viewport_size = Vector2i(AMBIENT_VIEWPORT_LONG_EDGE, maxi(64, roundi(AMBIENT_VIEWPORT_LONG_EDGE / aspect)))
+	else:
+		viewport_size = Vector2i(maxi(64, roundi(AMBIENT_VIEWPORT_LONG_EDGE * aspect)), AMBIENT_VIEWPORT_LONG_EDGE)
+	if _ambient_viewport.size != viewport_size:
+		_ambient_viewport.size = viewport_size
+		_ambient_dirty = true
+
+	var radius = maxf(s._comp_cyl_radius, 0.001)
+	var view_dist = maxf((s.global_position - main.xr_camera.global_position).length(), 0.5)
+	var screen_sort = clampi(int((10.0 - view_dist) * 10), 1, 100)
+	_ambient_layer.set_sort_order(maxi(0, screen_sort - 1))
+	_ambient_layer.set_radius(radius)
+	_ambient_layer.set_central_angle(expanded_size.x / radius)
+	_ambient_layer.set_aspect_ratio(aspect)
+	_ambient_layer.global_position = s._comp_cyl_center
+	_ambient_layer.global_rotation = s.global_rotation
 
 func setup_background_equirect():
 	if not equirect_available:
@@ -751,59 +1284,53 @@ func _update_bezel_for(s: VRScreen):
 		{"bezel": s.comp_bezel_rect_left, "yuv": s.comp_yuv_rect_left, "vp": s.comp_viewport_left, "cyl": s.comp_cylinder_left},
 		{"bezel": s.comp_bezel_rect_right, "yuv": s.comp_yuv_rect_right, "vp": s.comp_viewport_right, "cyl": s.comp_cylinder_right},
 	]
-	if main.bezel_enabled and in_use:
-		var px = 8
-		var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
-		var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
-		for t in triplet:
-			if not t.bezel:
-				continue
-			t.bezel.color = Color(0, 0, 0, 1)
-			t.bezel.anchors_preset = 15
-			t.bezel.offset_left = 0
-			t.bezel.offset_top = 0
-			t.bezel.offset_right = 0
-			t.bezel.offset_bottom = 0
-			t.yuv.offset_left = px
-			t.yuv.offset_top = px
-			t.yuv.offset_right = -px
-			t.yuv.offset_bottom = -px
-			t.yuv.anchor_left = 0.0
-			t.yuv.anchor_top = 0.0
-			t.yuv.anchor_right = 1.0
-			t.yuv.anchor_bottom = 1.0
-			t.yuv.anchors_preset = 0
-			var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
-			if t.vp.size != bezel_size:
-				t.vp.size = bezel_size
-			if t.cyl and t.cyl.visible:
-				t.cyl.set_aspect_ratio(bezel_x / bezel_y)
-	else:
-		for t in triplet:
-			if not t.bezel:
-				continue
-			t.bezel.color = Color(0, 0, 0, 0)
-			t.bezel.anchors_preset = 15
-			t.bezel.offset_left = 0
-			t.bezel.offset_top = 0
-			t.bezel.offset_right = 0
-			t.bezel.offset_bottom = 0
-			t.yuv.offset_left = 0
-			t.yuv.offset_top = 0
-			t.yuv.offset_right = 0
-			t.yuv.offset_bottom = 0
-			t.yuv.anchors_preset = 15
-			var content_size = Vector2i(base_w, base_h)
-			if t.vp.size != content_size:
-				t.vp.size = content_size
-			if t.cyl and t.cyl.visible:
-				t.cyl.set_aspect_ratio(s.mesh_size.x / s.mesh_size.y)
+	# Always allocate the bezel-padded viewport size/aspect and only toggle
+	# the border's alpha, rather than flipping t.vp.size between content_size
+	# and bezel_size on/off (2026-09-05) - toggling bezel while streaming
+	# reliably crashed with the exact same signature (SIGSEGV, fault addr
+	# 0xe0, null pointer) as _set_comp_quad_hidden()'s documented swapchain
+	# race above: resizing a SubViewport that backs an OpenXRCompositionLayer
+	# forces Godot to tear down and recreate that layer's swapchain, which
+	# can race in-flight render commands. Keeping the size (and therefore the
+	# swapchain) constant across a bezel toggle avoids that resize entirely;
+	# a genuine resolution change (comp_base_size changing) still resizes
+	# normally via the guard below; only the padding is now unconditional.
+	# Visual cost: an ~8px transparent margin around the video when the
+	# bezel is off, instead of the video filling the quad edge-to-edge.
+	var px = 8
+	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
+	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
+	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
+	var show_border = main.bezel_enabled and in_use
+	for t in triplet:
+		if not t.bezel:
+			continue
+		t.bezel.color = Color(0, 0, 0, 1 if show_border else 0)
+		t.bezel.anchors_preset = 15
+		t.bezel.offset_left = 0
+		t.bezel.offset_top = 0
+		t.bezel.offset_right = 0
+		t.bezel.offset_bottom = 0
+		t.yuv.offset_left = px
+		t.yuv.offset_top = px
+		t.yuv.offset_right = -px
+		t.yuv.offset_bottom = -px
+		t.yuv.anchor_left = 0.0
+		t.yuv.anchor_top = 0.0
+		t.yuv.anchor_right = 1.0
+		t.yuv.anchor_bottom = 1.0
+		t.yuv.anchors_preset = 0
+		if t.vp.size != bezel_size:
+			t.vp.size = bezel_size
+		if t.cyl and t.cyl.visible:
+			t.cyl.set_aspect_ratio(bezel_x / bezel_y)
 
 func update_bezel():
 	if not main.primary_screen or not main.primary_screen.comp_yuv_rect:
 		return
 	for s in main.screens:
 		_update_bezel_for(s)
+	_layout_stats_rects()
 
 func _update_cylinder_params_for(s: VRScreen):
 	if not s.comp_cylinder and not s.comp_cylinder_left:
@@ -830,6 +1357,8 @@ func _update_cylinder_params_for(s: VRScreen):
 			cyl.set_aspect_ratio(aspect)
 			cyl.global_position = s.global_position - screen_forward * radius
 			cyl.global_rotation = s.global_rotation
+	if s == main.primary_screen:
+		_update_ambient_geometry()
 
 func update_cylinder_params():
 	for s in main.screens:
@@ -889,6 +1418,11 @@ func bind_yuv_textures():
 	var is_semi_planar = mat.get_shader_parameter("is_semi_planar")
 	var cmt = mat.get_shader_parameter("color_matrix_type")
 	var cr = mat.get_shader_parameter("color_range")
+	# 0 = SDR, 1 = PQ, 2 = HLG - see TextureUploader::_render_thread_setup()/
+	# update_colorspace() (native) for where this actually gets set.
+	var ctt = mat.get_shader_parameter("color_transfer_type")
+	if ctt == null:
+		ctt = 0
 	# tex_y can be a non-null Texture object whose underlying RID no longer
 	# points to valid GPU memory - e.g. right after a stream restart, before
 	# the new decoder session has produced its first frame, the shader
@@ -915,7 +1449,7 @@ func bind_yuv_textures():
 		else:
 			yuv_mode_val = 3
 		var rids = [_as_rid(tex_y), _as_rid(tex_u), _as_rid(tex_v)]
-		var mode_tuple = [yuv_mode_val, cmt, cr]
+		var mode_tuple = [yuv_mode_val, cmt, cr, ctt]
 		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
 		if not in_use:
 			for s in main.screens:
@@ -927,8 +1461,8 @@ func bind_yuv_textures():
 					s.material_override.set_shader_parameter("color_range", cr)
 					s.material_override.set_shader_parameter("yuv_mode", yuv_mode_val)
 		if not unchanged:
-			main._log("[YUV] Direct YUV binding: mode=%d nv12_rd=%s semi_planar=%s" % [yuv_mode_val, str(is_nv12_rd), str(is_semi_planar)])
-			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr)
+			main._log("[YUV] Direct YUV binding: mode=%d nv12_rd=%s semi_planar=%s transfer=%d" % [yuv_mode_val, str(is_nv12_rd), str(is_semi_planar), ctt])
+			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr, ctt)
 			_last_bind_rids = rids
 			_last_bind_mode = mode_tuple
 	else:
@@ -940,7 +1474,14 @@ func bind_yuv_textures():
 					s.material_override.set_shader_parameter("yuv_mode", 0)
 		bind_fallback_texture(stream_tex)
 
-func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
+func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: int = 0):
+	# Swap the composition materials' shader resource BEFORE pushing
+	# parameters below - see yuv_display_hdr.gdshader's own comment for why
+	# this is a separate compiled shader rather than a branch in the plain
+	# one (keeps the always-hot SDR/depth-warp path free of PQ/HLG code
+	# entirely, instead of paying for it on every stream regardless of
+	# whether it's ever used).
+	_apply_video_shader_state(ctt)
 	for s in main.screens:
 		for mat in get_shader_mats(s):
 			if not mat:
@@ -951,6 +1492,9 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 			mat.set_shader_parameter("yuv_mode", yuv_mode)
 			mat.set_shader_parameter("color_matrix_type", cmt)
 			mat.set_shader_parameter("color_range", cr)
+			if ctt != 0:
+				mat.set_shader_parameter("color_transfer_type", ctt)
+				mat.set_shader_parameter("hdr_eotf_lut", _get_hdr_lut())
 		for lbl in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
 			if lbl:
 				lbl.visible = false
@@ -967,16 +1511,26 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr):
 		um.set_shader_parameter("yuv_mode", yuv_mode)
 		um.set_shader_parameter("color_matrix_type", cmt)
 		um.set_shader_parameter("color_range", cr)
+	if main.depth_estimator:
+		main.depth_estimator.bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode, cmt, cr)
 	_dots_active = false
 	main._log("[COMP] YUV textures bound to composition layer shader (mode=%d)" % yuv_mode)
 
 func bind_fallback_texture(stream_tex):
+	# This path is also used while a new decoder session has not produced a
+	# bindable direct-YUV texture yet. The HDR shader only tonemaps its direct
+	# YUV/RGB input path (yuv_mode > 0), not main_texture, so retaining it here
+	# cannot correctly process an HDR fallback and only leaks the previous
+	# session's shader state. GLES HDR fallback needs its own explicit plumbing.
+	_apply_video_shader_state(0)
 	for s in main.screens:
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue
 			mat.set_shader_parameter("main_texture", stream_tex)
 			mat.set_shader_parameter("yuv_mode", 0)
+	if main.depth_estimator:
+		main.depth_estimator.bind_stream_texture()
 
 func switch_to_comp_layer():
 	if not available:
@@ -1008,6 +1562,8 @@ func switch_to_comp_layer():
 			scr.bezel_mesh.visible = false
 	update_cylinder_params()
 	update_bezel()
+	_refresh_ambient_source()
+	_ambient_dirty = true
 
 func switch_to_stereo_comp_layer():
 	if not available:
@@ -1054,10 +1610,13 @@ func switch_to_stereo_comp_layer():
 	update_bezel()
 	if main.is_streaming:
 		bind_yuv_textures()
+	_refresh_ambient_source()
+	_ambient_dirty = true
 	main._log("[COMP] Switched to stereo composition layer (mode=%d)" % stereo)
 
 func switch_to_mesh_rendering():
 	in_use = false
+	_disable_ambient()
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if main.is_streaming else SubViewport.UPDATE_DISABLED
 	for scr in main.screens:
 		if scr.comp_cylinder: scr.comp_cylinder.visible = false
@@ -1078,6 +1637,7 @@ func switch_to_mesh_rendering():
 	if main.is_streaming:
 		main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		var mode = main.settings_controller.get_stereo_mode()
+		var runtime_sharpen_active = apply_compositor_sharpen(main.sharpen_mode)
 		for scr in main.screens:
 			var mat = scr.material_override
 			if mat:
@@ -1091,8 +1651,11 @@ func switch_to_mesh_rendering():
 				# setting this on a secondary would show a quartered slice of
 				# the wrong content instead of that screen's own picture.
 				mat.set_shader_parameter("stereo_mode", mode if scr == main.primary_screen else 0)
-				mat.set_shader_parameter("filter_mode", main.smooth_mode)
-				mat.set_shader_parameter("sharpen", float(main.sharpen_mode) * 0.016)
+				mat.set_shader_parameter("filter_mode", 0)
+				var shader_sharpen = float(main.sharpen_mode) * 0.016
+				if main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL:
+					shader_sharpen = 0.0 if runtime_sharpen_active else (0.5 if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)
+				mat.set_shader_parameter("sharpen", shader_sharpen)
 		bind_yuv_textures()
 
 func update_layer_size():

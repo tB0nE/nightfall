@@ -1,6 +1,7 @@
 #include "texture_uploader.h"
 #include "yuv_shader.h"
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <cstring>
 
 #include "nf_log.h"
 
@@ -146,14 +147,15 @@ void TextureUploader::ensure_shader_material() {
         shader_material->set_shader_parameter("is_nv12_rd", false);
         shader_material->set_shader_parameter("color_matrix_type", 3);
         shader_material->set_shader_parameter("color_range", 1);
+        shader_material->set_shader_parameter("color_transfer_type", current_color_transfer_type_.load());
         shader_material->set_shader_parameter("swap_uv", false);
     }
 }
 
-void TextureUploader::setup(int width, int height, int format, int colorspace, int color_range) {
+void TextureUploader::setup(int width, int height, int format, int colorspace, int color_range, int color_transfer) {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (rs) {
-        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_setup).bind(width, height, format, colorspace, color_range));
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_setup).bind(width, height, format, colorspace, color_range, color_transfer));
     }
 }
 
@@ -258,11 +260,12 @@ void TextureUploader::_render_thread_setup_bgra(int width, int height) {
     }
 }
 
-void TextureUploader::_render_thread_setup(int width, int height, int format, int colorspace, int color_range) {
+void TextureUploader::_render_thread_setup(int width, int height, int format, int colorspace, int color_range, int color_transfer) {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
     AVPixelFormat av_format = (AVPixelFormat)format;
     AVColorSpace av_colorspace = (AVColorSpace)colorspace;
     AVColorRange av_color_range = (AVColorRange)color_range;
+    current_color_transfer_type_.store(color_transfer);
 
     RenderingServer *rs = RenderingServer::get_singleton();
     if (rd) {
@@ -380,6 +383,7 @@ void TextureUploader::_render_thread_setup(int width, int height, int format, in
         shader_material->set_shader_parameter("is_nv12_rd", is_nv12 && rd);
         shader_material->set_shader_parameter("color_matrix_type", matrix_type);
         shader_material->set_shader_parameter("color_range", range_val);
+        shader_material->set_shader_parameter("color_transfer_type", color_transfer);
         shader_material->set_shader_parameter("swap_uv", false);
 
         if (rd) {
@@ -394,9 +398,7 @@ void TextureUploader::_render_thread_setup(int width, int height, int format, in
     }
 }
 
-void TextureUploader::update_colorspace(int colorspace, int color_range) {
-    if (!shader_material.is_valid()) return;
-
+void TextureUploader::update_colorspace(int colorspace, int color_range, int color_transfer) {
     AVColorSpace av_cs = (AVColorSpace)colorspace;
     AVColorRange av_cr = (AVColorRange)color_range;
 
@@ -408,8 +410,30 @@ void TextureUploader::update_colorspace(int colorspace, int color_range) {
 
     int range_val = (av_cr == AVCOL_RANGE_JPEG) ? 1 : 0;
 
-    shader_material->set_shader_parameter("color_matrix_type", matrix_type);
-    shader_material->set_shader_parameter("color_range", range_val);
+    current_color_transfer_type_.store(color_transfer);
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_matrix_type", matrix_type);
+        shader_material->set_shader_parameter("color_range", range_val);
+    }
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_apply_color_transfer));
+    }
+}
+
+void TextureUploader::update_color_transfer(int color_transfer) {
+    current_color_transfer_type_.store(color_transfer);
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_apply_color_transfer));
+    }
+}
+
+void TextureUploader::_render_thread_apply_color_transfer() {
+    ensure_shader_material();
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_transfer_type", current_color_transfer_type_.load());
+    }
 }
 
 void TextureUploader::update_from_frame(AVFrame *frame) {
@@ -762,7 +786,10 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
     jmethodID constructor = surface_texture_class ? env->GetMethodID(surface_texture_class, "<init>", "(I)V") : nullptr;
     jmethodID set_size = surface_texture_class ? env->GetMethodID(surface_texture_class, "setDefaultBufferSize", "(II)V") : nullptr;
-    if (!surface_texture_class || !constructor || !set_size) {
+    jmethodID update_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "updateTexImage", "()V") : nullptr;
+    jmethodID transform_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "getTransformMatrix", "([F)V") : nullptr;
+    jmethodID release_method = surface_texture_class ? env->GetMethodID(surface_texture_class, "release", "()V") : nullptr;
+    if (!surface_texture_class || !constructor || !set_size || !update_method || !transform_method || !release_method) {
         NF_LOGE("TextureUploader", "SurfaceTexture JNI methods unavailable");
         if (env->ExceptionCheck()) env->ExceptionClear();
         fail();
@@ -798,7 +825,19 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     gles_decoder_window_ = ANativeWindow_fromSurface(env, local_surface);
     env->DeleteLocalRef(local_surface);
     gles_surface_texture_java_ = env->NewGlobalRef(local_surface_texture);
+    jfloatArray local_matrix = env->NewFloatArray(16);
+    gles_transform_matrix_java_ = local_matrix ? env->NewGlobalRef(local_matrix) : nullptr;
+    if (local_matrix) env->DeleteLocalRef(local_matrix);
+    gles_update_method_ = reinterpret_cast<void *>(update_method);
+    gles_transform_method_ = reinterpret_cast<void *>(transform_method);
+    gles_release_method_ = reinterpret_cast<void *>(release_method);
     env->DeleteLocalRef(local_surface_texture);
+    env->DeleteLocalRef(surface_texture_class);
+    if (!gles_surface_texture_java_ || !gles_transform_matrix_java_) {
+        NF_LOGE("TextureUploader", "Failed to cache GLES SurfaceTexture JNI state");
+        fail();
+        return;
+    }
     if (!gles_decoder_window_) {
         NF_LOGE("TextureUploader", "ANativeWindow_fromSurface failed");
         fail();
@@ -813,6 +852,8 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glGenFramebuffers(1, &gles_fbo_);
+    gles_video_uniform_ = glGetUniformLocation(gles_blit_program_, "u_video");
+    gles_matrix_uniform_ = glGetUniformLocation(gles_blit_program_, "u_tex_matrix");
 
     RenderingServer *rs = RenderingServer::get_singleton();
     PackedByteArray placeholder_data;
@@ -853,28 +894,211 @@ void TextureUploader::update_android_gles_external_texture() {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return;
     std::lock_guard<std::mutex> lock(gles_surface_mutex_);
-    if (!gles_surface_ready_ || gles_update_queued_) return;
+    ++gles_decode_call_count_;
+    if (!gles_surface_ready_ || gles_update_queued_) {
+        if (gles_surface_ready_) ++gles_decode_coalesced_count_;
+        if (gles_decode_call_count_ >= 120) {
+            NF_LOG("TextureUploader", "Decode-thread GLES request rate: %d calls, %d coalesced (render thread busy)",
+                    gles_decode_call_count_, gles_decode_coalesced_count_);
+            gles_decode_call_count_ = 0;
+            gles_decode_coalesced_count_ = 0;
+        }
+        return;
+    }
     gles_update_queued_ = true;
     static int queued_updates = 0;
-    if (++queued_updates <= 3 || queued_updates % 120 == 0) {
+    if (++queued_updates <= 3) {
         NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_updates);
     }
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
+    if (gles_decode_call_count_ >= 120) {
+        NF_LOG("TextureUploader", "Decode-thread GLES request rate: %d calls, %d coalesced (render thread busy)",
+                gles_decode_call_count_, gles_decode_coalesced_count_);
+        gles_decode_call_count_ = 0;
+        gles_decode_coalesced_count_ = 0;
+    }
 }
 
+bool TextureUploader::_render_thread_ensure_depth_capture(int width, int height) {
+    if (width <= 0 || height <= 0 || !gles_surface_ready_) return false;
+    if (gles_depth_capture_width_ == width && gles_depth_capture_height_ == height &&
+        gles_depth_texture_ && gles_depth_fbo_ &&
+        gles_depth_pbos_[0]) {
+        return true;
+    }
+
+    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
+        if (gles_depth_fences_[i]) {
+            glDeleteSync(reinterpret_cast<GLsync>(gles_depth_fences_[i]));
+            gles_depth_fences_[i] = nullptr;
+        }
+    }
+    if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
+    if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
+    if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
+    std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
+    gles_depth_fbo_ = 0;
+    gles_depth_texture_ = 0;
+    gles_depth_capture_width_ = 0;
+    gles_depth_capture_height_ = 0;
+    gles_depth_next_pbo_ = 0;
+    {
+        std::lock_guard<std::mutex> lock(gles_depth_result_mutex_);
+        gles_depth_result_.clear();
+        gles_depth_result_ready_ = false;
+    }
+
+    GLint old_fbo = 0;
+    GLint old_texture = 0;
+    GLint old_pack_buffer = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_texture);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &old_pack_buffer);
+
+    glGenTextures(1, &gles_depth_texture_);
+    glBindTexture(GL_TEXTURE_2D, gles_depth_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
+    glGenFramebuffers(1, &gles_depth_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, gles_depth_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           gles_depth_texture_, 0);
+    const bool framebuffer_ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+
+    glGenBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
+    const GLsizeiptr byte_count = static_cast<GLsizeiptr>(width) * height * 4;
+    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, byte_count, nullptr, GL_STREAM_READ);
+    }
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, old_pack_buffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+    glBindTexture(GL_TEXTURE_2D, old_texture);
+
+    if (!framebuffer_ok || glGetError() != GL_NO_ERROR) {
+        NF_LOGE("TextureUploader", "Unable to initialize async GLES depth capture at %dx%d", width, height);
+        if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
+        if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
+        if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
+        std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
+        gles_depth_fbo_ = 0;
+        gles_depth_texture_ = 0;
+        return false;
+    }
+
+    gles_depth_capture_width_ = width;
+    gles_depth_capture_height_ = height;
+    NF_LOG("TextureUploader", "Async GLES depth capture ready: %dx%d (%d PBOs)",
+           width, height, GLES_DEPTH_PBO_COUNT);
+    return true;
+}
+
+void TextureUploader::_render_thread_poll_depth_capture() {
+    if (gles_depth_capture_width_ <= 0 || gles_depth_capture_height_ <= 0) return;
+    const size_t row_bytes = static_cast<size_t>(gles_depth_capture_width_) * 4;
+    const size_t byte_count = row_bytes * gles_depth_capture_height_;
+    GLint old_pack_buffer = 0;
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &old_pack_buffer);
+
+    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
+        if (!gles_depth_fences_[i]) continue;
+        GLsync fence = reinterpret_cast<GLsync>(gles_depth_fences_[i]);
+        GLenum wait = glClientWaitSync(fence, 0, 0);
+        if (wait != GL_ALREADY_SIGNALED && wait != GL_CONDITION_SATISFIED) {
+            if (wait == GL_WAIT_FAILED) {
+                glDeleteSync(fence);
+                gles_depth_fences_[i] = nullptr;
+            }
+            continue;
+        }
+
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[i]);
+        const uint8_t *mapped = static_cast<const uint8_t *>(
+            glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, byte_count, GL_MAP_READ_BIT));
+        if (mapped) {
+            // glReadPixels returns the framebuffer bottom row first; keep the
+            // same top-down byte layout previously returned by Image::get_data().
+            std::vector<uint8_t> pixels(byte_count);
+            for (int y = 0; y < gles_depth_capture_height_; ++y) {
+                std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
+                            mapped + static_cast<size_t>(gles_depth_capture_height_ - 1 - y) * row_bytes,
+                            row_bytes);
+            }
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            {
+                std::lock_guard<std::mutex> lock(gles_depth_result_mutex_);
+                gles_depth_result_ = std::move(pixels);
+                gles_depth_result_ready_ = true;
+            }
+        }
+        glDeleteSync(fence);
+        gles_depth_fences_[i] = nullptr;
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, old_pack_buffer);
+}
+
+void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, int width, int height) {
+    if (!_render_thread_ensure_depth_capture(width, height)) return;
+
+    int slot = -1;
+    for (int offset = 0; offset < GLES_DEPTH_PBO_COUNT; ++offset) {
+        int candidate = (gles_depth_next_pbo_ + offset) % GLES_DEPTH_PBO_COUNT;
+        if (!gles_depth_fences_[candidate]) {
+            slot = candidate;
+            break;
+        }
+    }
+    if (slot < 0) {
+        static int busy_drops = 0;
+        if (++busy_drops <= 3) {
+            NF_LOG("TextureUploader", "Async GLES depth capture skipped: all PBOs busy");
+        }
+        return;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, gles_depth_fbo_);
+    glViewport(0, 0, width, height);
+    glUseProgram(gles_blit_program_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
+    glUniform1i(gles_video_uniform_, 0);
+    glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[slot]);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    gles_depth_fences_[slot] = reinterpret_cast<void *>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+    gles_depth_next_pbo_ = (slot + 1) % GLES_DEPTH_PBO_COUNT;
+}
+
+namespace {
+inline double ms_between(std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+}
+} // namespace
+
 void TextureUploader::_render_thread_update_android_gles_texture() {
+    const auto t_frame_start = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         gles_update_queued_ = false;
     }
-    if (!gles_surface_texture_java_ || !gles_fbo_ || !gles_blit_program_) return;
+    if (!gles_surface_texture_java_ || !gles_transform_matrix_java_ || !gles_fbo_ || !gles_blit_program_) return;
     JavaVM *vm = nullptr;
     JNIEnv *env = get_gles_jni_env(vm);
-    jclass surface_texture_class = env ? env->FindClass("android/graphics/SurfaceTexture") : nullptr;
-    jmethodID update = surface_texture_class ? env->GetMethodID(surface_texture_class, "updateTexImage", "()V") : nullptr;
-    jmethodID transform = surface_texture_class ? env->GetMethodID(surface_texture_class, "getTransformMatrix", "([F)V") : nullptr;
-    if (!env || !update || !transform) return;
+    if (!env || !gles_update_method_ || !gles_transform_method_) return;
+    auto update = reinterpret_cast<jmethodID>(gles_update_method_);
+    auto transform = reinterpret_cast<jmethodID>(gles_transform_method_);
+    auto java_matrix = reinterpret_cast<jfloatArray>(gles_transform_matrix_java_);
+    const auto t_update_start = std::chrono::steady_clock::now();
     env->CallVoidMethod((jobject)gles_surface_texture_java_, update);
+    const auto t_update_end = std::chrono::steady_clock::now();
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
         static int update_failures = 0;
@@ -882,48 +1106,136 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         return;
     }
     float matrix[16]{};
-    jfloatArray java_matrix = env->NewFloatArray(16);
+    const auto t_transform_start = std::chrono::steady_clock::now();
     env->CallVoidMethod((jobject)gles_surface_texture_java_, transform, java_matrix);
     if (env->ExceptionCheck()) {
         env->ExceptionClear();
-        env->DeleteLocalRef(java_matrix);
         return;
     }
     env->GetFloatArrayRegion(java_matrix, 0, 16, matrix);
-    env->DeleteLocalRef(java_matrix);
+    const auto t_transform_end = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        memcpy(gles_last_transform_matrix_, matrix, sizeof(matrix));
+    }
+    // native_direct_mode_ skips the legacy blit entirely (the native XR
+    // renderer samples gles_oes_texture_ directly), so the FBO/program/
+    // viewport save-restore around it is pure overhead in that mode -
+    // 3 glGetIntegerv calls (framebuffer/program bindings are notoriously
+    // not cheap client-side reads on most GL drivers) plus 3 matching
+    // no-op restores, every single frame, for state nothing touched.
+    // Skip it there. _render_thread_issue_depth_capture() below also
+    // dirties this same state (leaves gles_depth_fbo_/gles_blit_program_
+    // bound without restoring), so still save/restore whenever a depth
+    // capture will actually be issued this call, direct mode or not -
+    // consumed once, upfront, so this decision and the later exchange()
+    // that gates the actual call can never disagree.
+    const bool direct_mode = native_direct_mode_.load();
+    const bool issue_depth_capture = gles_depth_capture_requested_.exchange(false);
+    const bool needs_gl_state = !direct_mode || issue_depth_capture;
+
     GLint old_fbo = 0;
     GLint old_viewport[4]{};
     GLint old_program = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
-    glGetIntegerv(GL_VIEWPORT, old_viewport);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
-    glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        NF_LOGE("TextureUploader", "GLES external output framebuffer incomplete");
-        glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
-        return;
+    if (needs_gl_state) {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &old_fbo);
+        glGetIntegerv(GL_VIEWPORT, old_viewport);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &old_program);
     }
-    glViewport(0, 0, gles_surface_width_, gles_surface_height_);
-    glUseProgram(gles_blit_program_);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
-    glUniform1i(glGetUniformLocation(gles_blit_program_, "u_video"), 0);
-    glUniformMatrix4fv(glGetUniformLocation(gles_blit_program_, "u_tex_matrix"), 1, GL_FALSE, matrix);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    const GLenum draw_error = glGetError();
-    glUseProgram(old_program);
-    glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
-    glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
+    GLenum draw_error = GL_NO_ERROR;
+    const auto t_blit_start = std::chrono::steady_clock::now();
+    if (!direct_mode) {
+        glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            NF_LOGE("TextureUploader", "GLES external output framebuffer incomplete");
+            glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+            return;
+        }
+        glViewport(0, 0, gles_surface_width_, gles_surface_height_);
+        glUseProgram(gles_blit_program_);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
+        glUniform1i(gles_video_uniform_, 0);
+        glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        draw_error = glGetError();
+    }
+    const auto t_blit_end = std::chrono::steady_clock::now();
+
+    // Retire previously queued PBOs without waiting. A new request is issued
+    // only after the normal decoder blit, while its OES texture and transform
+    // are already current on this render thread.
+    _render_thread_poll_depth_capture();
+    if (issue_depth_capture) {
+        _render_thread_issue_depth_capture(matrix, gles_depth_requested_width_.load(),
+                gles_depth_requested_height_.load());
+    }
+
+    // The consumer samples both the OES frame and (when AI-3D is active) the
+    // native depth-guide texture from a different shared EGL context. Insert
+    // the fence after all writes, then flush so the other context can observe
+    // and wait on it without a CPU-side stall.
+    const auto t_fence_start = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        if (gles_oes_ready_fence_) {
+            glDeleteSync(reinterpret_cast<GLsync>(gles_oes_ready_fence_));
+        }
+        gles_oes_ready_fence_ = reinterpret_cast<void *>(glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
+        glFlush();
+    }
+    const auto t_fence_end = std::chrono::steady_clock::now();
+
+    if (needs_gl_state) {
+        glUseProgram(old_program);
+        glBindFramebuffer(GL_FRAMEBUFFER, old_fbo);
+        glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
+    }
     if (draw_error != GL_NO_ERROR) {
         NF_LOGE("TextureUploader", "GLES external blit failed: 0x%x", draw_error);
         return;
     }
     static int completed_updates = 0;
-    if (++completed_updates <= 3 || completed_updates % 120 == 0) {
-        NF_LOG("TextureUploader", "Completed GLES external blit #%d", completed_updates);
+    if (++completed_updates <= 3) {
+        NF_LOG("TextureUploader", "Completed GLES external update #%d (%s)", completed_updates,
+            native_direct_mode_.load() ? "native-direct" : "legacy-blit");
     }
     new_frame_available_.store(true);
+
+    // Diagnostic timing (2026-09-06, see texture_uploader.h's comment on
+    // gles_timing_sum_*) - only successful completions count, so a spell of
+    // early-returns above doesn't skew the average with N/A-cost error paths.
+    const auto t_frame_end = std::chrono::steady_clock::now();
+    gles_timing_sum_update_ms_ += ms_between(t_update_start, t_update_end);
+    gles_timing_sum_transform_ms_ += ms_between(t_transform_start, t_transform_end);
+    if (!direct_mode) {
+        gles_timing_sum_blit_ms_ += ms_between(t_blit_start, t_blit_end);
+        ++gles_timing_blit_count_;
+    }
+    gles_timing_sum_fence_ms_ += ms_between(t_fence_start, t_fence_end);
+    gles_timing_sum_total_ms_ += ms_between(t_frame_start, t_frame_end);
+    ++gles_timing_count_;
+    if (gles_timing_count_ >= 120) {
+        NF_LOG("TextureUploader",
+                "GLES update timing avg over %d frames: total=%.3fms updateTexImage=%.3fms "
+                "getTransform=%.3fms blit=%.3fms(n=%d) fence/flush=%.3fms (%s)",
+                gles_timing_count_,
+                gles_timing_sum_total_ms_ / gles_timing_count_,
+                gles_timing_sum_update_ms_ / gles_timing_count_,
+                gles_timing_sum_transform_ms_ / gles_timing_count_,
+                gles_timing_blit_count_ > 0 ? gles_timing_sum_blit_ms_ / gles_timing_blit_count_ : 0.0,
+                gles_timing_blit_count_,
+                gles_timing_sum_fence_ms_ / gles_timing_count_,
+                direct_mode ? "native-direct" : "legacy-blit");
+        gles_timing_sum_update_ms_ = 0.0;
+        gles_timing_sum_transform_ms_ = 0.0;
+        gles_timing_sum_blit_ms_ = 0.0;
+        gles_timing_sum_fence_ms_ = 0.0;
+        gles_timing_sum_total_ms_ = 0.0;
+        gles_timing_count_ = 0;
+        gles_timing_blit_count_ = 0;
+    }
 }
 
 void TextureUploader::update_from_android_image(AImage *image, int width, int height) {
@@ -1049,6 +1361,10 @@ void TextureUploader::perform_gpu_update() {
 }
 
 void TextureUploader::cleanup() {
+    // HDR mode is connection-scoped. Do not let a previous session's PQ flag
+    // survive in the persistent uploader/material while the next decoder is
+    // being created (the protocol will set it again if that stream is HDR).
+    current_color_transfer_type_.store(0);
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return;
     rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_cleanup));
@@ -1056,6 +1372,9 @@ void TextureUploader::cleanup() {
 
 void TextureUploader::_render_thread_cleanup() {
     std::lock_guard<godot::Mutex> lock(*(texture_mutex.ptr()));
+    if (shader_material.is_valid()) {
+        shader_material->set_shader_parameter("color_transfer_type", 0);
+    }
 #ifdef __ANDROID__
     _render_thread_destroy_android_gles_surface();
 #endif
@@ -1076,6 +1395,9 @@ void TextureUploader::_render_thread_cleanup() {
         rd = nullptr;
     }
     use_shader_conversion = false;
+#ifdef __ANDROID__
+    native_direct_mode_.store(false);
+#endif
 }
 
 #ifdef __ANDROID__
@@ -1088,13 +1410,31 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
         gles_decoder_window_ = nullptr;
     }
     if (env && gles_surface_texture_java_) {
-        jclass surface_texture_class = env->FindClass("android/graphics/SurfaceTexture");
-        jmethodID release = surface_texture_class ? env->GetMethodID(surface_texture_class, "release", "()V") : nullptr;
+        auto release = reinterpret_cast<jmethodID>(gles_release_method_);
         if (release) env->CallVoidMethod((jobject)gles_surface_texture_java_, release);
         if (env->ExceptionCheck()) env->ExceptionClear();
         env->DeleteGlobalRef((jobject)gles_surface_texture_java_);
     }
+    if (env && gles_transform_matrix_java_)
+        env->DeleteGlobalRef((jfloatArray)gles_transform_matrix_java_);
     gles_surface_texture_java_ = nullptr;
+    gles_transform_matrix_java_ = nullptr;
+    gles_update_method_ = nullptr;
+    gles_transform_method_ = nullptr;
+    gles_release_method_ = nullptr;
+    for (int i = 0; i < GLES_DEPTH_PBO_COUNT; ++i) {
+        if (gles_depth_fences_[i]) {
+            glDeleteSync(reinterpret_cast<GLsync>(gles_depth_fences_[i]));
+            gles_depth_fences_[i] = nullptr;
+        }
+    }
+    if (gles_oes_ready_fence_) {
+        glDeleteSync(reinterpret_cast<GLsync>(gles_oes_ready_fence_));
+        gles_oes_ready_fence_ = nullptr;
+    }
+    if (gles_depth_pbos_[0]) glDeleteBuffers(GLES_DEPTH_PBO_COUNT, gles_depth_pbos_);
+    if (gles_depth_fbo_) glDeleteFramebuffers(1, &gles_depth_fbo_);
+    if (gles_depth_texture_) glDeleteTextures(1, &gles_depth_texture_);
     if (gles_fbo_) glDeleteFramebuffers(1, &gles_fbo_);
     if (gles_output_texture_) glDeleteTextures(1, &gles_output_texture_);
     if (gles_oes_texture_) glDeleteTextures(1, &gles_oes_texture_);
@@ -1103,6 +1443,20 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     gles_output_texture_ = 0;
     gles_oes_texture_ = 0;
     gles_blit_program_ = 0;
+    gles_video_uniform_ = -1;
+    gles_matrix_uniform_ = -1;
+    std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
+    gles_depth_fbo_ = 0;
+    gles_depth_texture_ = 0;
+    gles_depth_capture_width_ = 0;
+    gles_depth_capture_height_ = 0;
+    gles_depth_next_pbo_ = 0;
+    gles_depth_capture_requested_.store(false);
+    {
+        std::lock_guard<std::mutex> result_lock(gles_depth_result_mutex_);
+        gles_depth_result_.clear();
+        gles_depth_result_ready_ = false;
+    }
     std::lock_guard<std::mutex> surface_lock(gles_surface_mutex_);
     gles_surface_ready_ = false;
     gles_surface_failed_ = false;
@@ -1110,14 +1464,78 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
 }
 #endif
 
+bool TextureUploader::supports_native_depth_capture() {
+#ifdef __ANDROID__
+    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    return gles_surface_ready_ && gles_oes_texture_ != 0 && gles_blit_program_ != 0;
+#else
+    return false;
+#endif
+}
+
+void TextureUploader::request_native_depth_capture(int width, int height) {
+#ifdef __ANDROID__
+    if (width <= 0 || width > 1024 || height <= 0 || height > 1024) return;
+    gles_depth_requested_width_.store(width);
+    gles_depth_requested_height_.store(height);
+    gles_depth_capture_requested_.store(true);
+#else
+    (void)width;
+    (void)height;
+#endif
+}
+
+PackedByteArray TextureUploader::consume_native_depth_capture() {
+    PackedByteArray result;
+#ifdef __ANDROID__
+    std::lock_guard<std::mutex> lock(gles_depth_result_mutex_);
+    if (!gles_depth_result_ready_ || gles_depth_result_.empty()) return result;
+    result.resize(static_cast<int64_t>(gles_depth_result_.size()));
+    std::memcpy(result.ptrw(), gles_depth_result_.data(), gles_depth_result_.size());
+    gles_depth_result_ready_ = false;
+#endif
+    return result;
+}
+
 void TextureUploader::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range"), &TextureUploader::setup);
+    ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range", "color_transfer"), &TextureUploader::setup, DEFVAL(0));
+    ClassDB::bind_method(D_METHOD("update_color_transfer", "color_transfer"), &TextureUploader::update_color_transfer);
+    ClassDB::bind_method(D_METHOD("get_color_transfer_type"), &TextureUploader::get_color_transfer_type);
     ClassDB::bind_method(D_METHOD("cleanup"), &TextureUploader::cleanup);
     ClassDB::bind_method(D_METHOD("get_shader_material"), &TextureUploader::get_shader_material);
     ClassDB::bind_method(D_METHOD("perform_gpu_update"), &TextureUploader::perform_gpu_update);
     ClassDB::bind_method(D_METHOD("consume_new_frame"), &TextureUploader::consume_new_frame);
+    ClassDB::bind_method(D_METHOD("supports_native_depth_capture"), &TextureUploader::supports_native_depth_capture);
+    ClassDB::bind_method(D_METHOD("request_native_depth_capture", "width", "height"), &TextureUploader::request_native_depth_capture);
+    ClassDB::bind_method(D_METHOD("consume_native_depth_capture"), &TextureUploader::consume_native_depth_capture);
+#ifdef __ANDROID__
+    ClassDB::bind_method(D_METHOD("get_oes_texture_id"), &TextureUploader::get_oes_texture_id);
+    ClassDB::bind_method(D_METHOD("get_oes_transform_matrix"), &TextureUploader::get_oes_transform_matrix);
+    ClassDB::bind_method(D_METHOD("consume_oes_ready_fence"), &TextureUploader::consume_oes_ready_fence);
+    ClassDB::bind_method(D_METHOD("set_native_direct_mode", "enabled"), &TextureUploader::set_native_direct_mode);
+    ClassDB::bind_method(D_METHOD("get_native_depth_guide_texture_id"), &TextureUploader::get_native_depth_guide_texture_id);
+#endif
 }
 
 bool TextureUploader::consume_new_frame() {
     return new_frame_available_.exchange(false);
 }
+
+#ifdef __ANDROID__
+PackedFloat32Array TextureUploader::get_oes_transform_matrix() const {
+    PackedFloat32Array out;
+    out.resize(16);
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        memcpy(out.ptrw(), gles_last_transform_matrix_, sizeof(gles_last_transform_matrix_));
+    }
+    return out;
+}
+
+uint64_t TextureUploader::consume_oes_ready_fence() {
+    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    uint64_t fence = reinterpret_cast<uint64_t>(gles_oes_ready_fence_);
+    gles_oes_ready_fence_ = nullptr;
+    return fence;
+}
+#endif

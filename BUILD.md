@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- **Godot 4.7 Beta 2** (editor + export templates)
-- **Android NDK 27.0.12077973**
+- **Godot 4.7 stable** (editor + custom export templates)
+- **Android NDK 29.0.14206865**
 - **JDK 17**
 - **vcpkg** (for GDExtension dependency management)
 - **Ninja** (build system, used by CMake)
@@ -84,9 +84,44 @@ ninja -C build/linux-release
 
 Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh` from `models/` - see `models/README.md`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `models/`.
 
+### Native OpenXR renderer (Quest/GLES)
+
+Nightfall's fast presentation path is a separate GDExtension in
+`extensions/nightfall-xr`. It samples MediaCodec's external OES texture
+directly, renders both eyes into one double-wide OpenXR swapchain, and submits
+two eye-specific sub-images through Godot's existing OpenXR frame loop. The
+legacy Godot composition-layer path remains the automatic fallback for Linux,
+multi-monitor layouts, diagnostic depth views, unsupported renderers, and
+startup failures.
+
+AI separation/convergence and Picture-tab brightness/contrast/gamma are
+implemented directly in this path. Reactive ambient modes consume an
+asynchronous 32x32 sample of its final left-eye output, so enabling ambient
+lighting does not restore a full-resolution legacy video pass.
+The Picture tab's Runtime sharpening modes also remain on this path and use
+`XR_FB_composition_layer_settings`; percentage-based shader sharpening retains
+the legacy fallback path for comparison and unsupported runtimes.
+
+`build.sh` builds this extension automatically for Android. Its build needs a
+`godot-cpp` checkout generated from the matching patched engine's extension API
+(default `/tmp/godot-cpp-custom`) and the matching engine source (default
+`/tmp/nightfall-godot-sharpen`). Override these with
+`NIGHTFALL_GODOT_CPP`/`NIGHTFALL_GODOT_SOURCE` when necessary. To build it
+directly:
+
+```bash
+extensions/nightfall-xr/build_android.sh release
+```
+
+The patched editor is used to generate the custom `godot-cpp` API, but APK
+export uses the official 4.7 stable editor by default so its version matches
+the installed `4.7.stable` template metadata. The Android runtime library
+inside that template remains the patched engine. Set `NIGHTFALL_GODOT_EDITOR`
+only when exporting against a differently-versioned template set.
+
 ### Patched Godot Engine (Quest only)
 
-The Quest's zero-copy GPU decode pipeline requires a custom Godot engine build with Vulkan Android Hardware Buffer (AHB) import support. The patch adds two RenderingDevice methods: `texture_create_from_android_hardware_buffer` and `texture_get_ycbcr_sampler`.
+The Quest build uses a custom Godot engine. Its patches provide Vulkan Android Hardware Buffer (AHB) import support, projectionless OpenXR lifecycle support, and per-layer compositor filtering through `XR_FB_composition_layer_settings`. The compositor-filter patch exposes supersampling and sharpening controls on Godot's quad/cylinder composition-layer nodes; Nightfall uses the sharpening modes while retaining its shader implementation as a fallback.
 
 **You must build BOTH debug and release templates** and place them in the export templates directory. Without the release template, the release APK will silently fall back to the unpatched engine and show a black screen.
 
@@ -97,6 +132,7 @@ cd /tmp/godot
 git apply /path/to/moonlight-quest/patches/godot-4.7-ahb.patch
 git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless.patch
 git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless-lifecycle.patch
+git apply /path/to/moonlight-quest/patches/godot-4.7-compositor-filter.patch
 
 # Build debug template
 scons platform=android target=template_debug arch=arm64 -j$(nproc)
@@ -161,7 +197,7 @@ needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
 missing-file error if one isn't there rather than silently shipping an incomplete
 build.
 
-Depth Anything V2 has a real conversion script (the others don't yet - see
+Depth Anything V2 and ZipDepth have reproducible conversion scripts (see
 `models/README.md`):
 
 ```bash
@@ -169,17 +205,28 @@ Depth Anything V2 has a real conversion script (the others don't yet - see
 pip install onnx2tf sng4onnx onnxsim
 
 python3 tools/convert_depth_anything_v2.py
+
+# Quest GPU model. Builds the sharper standard/NPU hybrid by default.
+python3 tools/convert_zipdepth.py --force
 ```
 
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
 quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
+ZipDepth's Adreno-safe graph rewrites and validation procedure are documented
+in [`doc/zipdepth-quest-gpu.md`](doc/zipdepth-quest-gpu.md).
 
 ### Nightfall LiteRT GPU AAR
 
-Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`; they do not rebuild LiteRT. This is the official LiteRT GPU 1.4.2 AAR with only its arm64 JNI library replaced. The replacement creates the Adreno OpenCL context with Qualcomm's low-priority hint so XR rendering is scheduled ahead of depth inference.
+Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`, a LiteRT 1.4.2 GPU delegate patched to select either a low-priority Qualcomm OpenCL context (`Stream`, the default) or the driver's normal context (`Default`) at runtime. Changing the AI 3D tab's GPU Priority setting recreates only the GPU delegate/interpreter; it does not restart the stream or app. With the native double-wide renderer, Stream priority protects the 90 Hz render cadence while MiDaS-256 inference remains around 30-35 ms.
 
-To regenerate it:
+For performance A/B testing, pass `--stock-litert` to use Google's unpatched `com.google.ai.edge.litert:litert-gpu:1.4.2` dependency instead:
+
+```bash
+./build.sh --release --stock-litert
+```
+
+To regenerate the patched AAR:
 
 1. Check out TensorFlow 2.17.0 and apply `android/patches/litert-qcom-low-priority-opencl.patch`.
 2. Configure Bazel 6.5.0 with Android NDK 25.2.9519653.

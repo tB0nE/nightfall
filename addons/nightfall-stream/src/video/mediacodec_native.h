@@ -11,6 +11,7 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace godot {
@@ -40,7 +41,7 @@ public:
     AndroidMediaCodec();
     ~AndroidMediaCodec();
 
-    bool init(const char *mime, int width, int height, bool cpu_readback,
+    bool init(const char *mime, int width, int height, int frame_rate, bool cpu_readback,
               ANativeWindow *external_output_window = nullptr,
               EventNotifier event_notifier = {});
     void shutdown();
@@ -63,6 +64,7 @@ public:
 
     bool is_initialized() const { return codec_ != nullptr; }
     bool has_error() const { return async_error_.load() != AMEDIA_OK; }
+    const std::string &get_name() const { return codec_name_; }
 
 private:
     struct OutputEvent {
@@ -92,6 +94,7 @@ private:
     void _reset_event_state();
 
     AMediaCodec *codec_ = nullptr;
+    std::string codec_name_;
     AImageReader *reader_ = nullptr;
     ANativeWindow *window_ = nullptr;
     std::atomic<int> width_{0};

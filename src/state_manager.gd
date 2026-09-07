@@ -12,12 +12,19 @@ func save_state():
 	save.set_value("screen", "curvature", main.curvature)
 	save.set_value("screen", "passthrough_enabled", main.passthrough_enabled)
 	save.set_value("screen", "background_mode", main.background_mode)
-	save.set_value("screen", "smooth_mode", main.smooth_mode)
 	save.set_value("screen", "sharpen_mode", main.sharpen_mode)
+	save.set_value("screen", "brightness_pct", main.brightness_pct)
+	save.set_value("screen", "contrast_pct", main.contrast_pct)
+	save.set_value("screen", "gamma_pct", main.gamma_pct)
+	save.set_value("screen", "ambient_mode", main.ambient_mode)
+	save.set_value("screen", "ambient_color", main.ambient_color)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
+	save.set_value("screen", "double_click_mode", main.double_click_mode)
 	save.set_value("screen", "codec_preference", main.codec_preference)
 	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
+	save.set_value("diagnostics", "performance_overlay", main.performance_overlay_enabled)
+	save.set_value("ai_3d", "gpu_priority", main.ai_3d_gpu_priority)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
@@ -50,6 +57,14 @@ func save_host_state():
 	# marker disambiguates. See load_host_state()'s migration below.
 	save.set_value(ip, "ai_3d_speed_v2", true)
 	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
+	# AI 3D tab (2026-08-28) - new fields, no migration needed (ai_3d_models
+	# itself kept its original 5-entry indexing, see its own comment).
+	save.set_value(ip, "ai_3d_last_mode", main.ai_3d_last_mode)
+	save.set_value(ip, "ai_3d_backend_pref", main.ai_3d_backend_pref)
+	save.set_value(ip, "ai_3d_hz_cap", main.ai_3d_hz_cap)
+	save.set_value(ip, "ai_3d_separation_pct", main.ai_3d_separation_pct)
+	save.set_value(ip, "ai_3d_convergence_pct", main.ai_3d_convergence_pct)
+	save.set_value(ip, "ai_3d_cursor_position_v2", main.ai_3d_cursor_position)
 	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
 	save.set_value(ip, "double_h", main.double_h)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
@@ -75,7 +90,9 @@ func load_host_state(ip: String):
 		return
 	if not save.has_section(ip):
 		return
-	main.stream_fps = save.get_value(ip, "fps", 60)
+	main.stream_fps = int(save.get_value(ip, "fps", 60))
+	if not main.settings_controller.STREAM_FPS_RATES.has(main.stream_fps):
+		main.stream_fps = 60
 	main.resolution_scale_pct = save.get_value(ip, "resolution_scale_pct", 100)
 	if not main.resolution_scale_options.has(main.resolution_scale_pct):
 		main.resolution_scale_pct = 100
@@ -88,8 +105,28 @@ func load_host_state(ip: String):
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_speed"):
+			# ai_3d_models is back to its original 5-entry indexing (2026-08-28,
+			# see its own comment) - no migration needed here, same as before
+			# the brief 3-entry detour.
 			main.ai_3d_model = clampi(save.get_value(ip, "ai_3d_model", 0), 0, main.settings_controller.ai_3d_models.size() - 1)
 			main.ai_3d_debug = clampi(save.get_value(ip, "ai_3d_debug", 0), 0, 3)
+			main.ai_3d_last_mode = clampi(save.get_value(ip, "ai_3d_last_mode", 1), 1, 3)
+			main.ai_3d_backend_pref = 1 if save.get_value(ip, "ai_3d_backend_pref", 2) == 1 else 2
+			main.ai_3d_hz_cap = save.get_value(ip, "ai_3d_hz_cap", 20)
+			if not [12, 15, 20, 30, 40].has(main.ai_3d_hz_cap):
+				main.ai_3d_hz_cap = 20
+			main.ai_3d_separation_pct = save.get_value(ip, "ai_3d_separation_pct", 100)
+			if not [50, 75, 100, 125, 150].has(main.ai_3d_separation_pct):
+				main.ai_3d_separation_pct = 100
+			main.ai_3d_convergence_pct = save.get_value(ip, "ai_3d_convergence_pct", 50)
+			if not [30, 40, 50, 60, 70].has(main.ai_3d_convergence_pct):
+				main.ai_3d_convergence_pct = 50
+			if save.has_section_key(ip, "ai_3d_cursor_position_v2"):
+				main.ai_3d_cursor_position = clampi(save.get_value(ip, "ai_3d_cursor_position_v2", 0), -1, 1)
+			else:
+				# Migrate the short-lived seven-position control: old Default,
+				# Right, and Right+ are the new Left, Default, and Right.
+				main.ai_3d_cursor_position = clampi(save.get_value(ip, "ai_3d_cursor_position", 1) - 1, -1, 1)
 			if save.has_section_key(ip, "ai_3d_speed_v2"):
 				main.ai_3d_speed = clampi(save.get_value(ip, "ai_3d_speed", 1), 0, 3)
 			else:
@@ -161,17 +198,25 @@ func load_host_state(ip: String):
 			main.sbs_mode = 0
 			main.ai_3d_model = 2 # MiDaS-192
 			main.ai_3d_speed = 1 # Auto
-	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
-	main.ui_controller.update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
-	main.ui_controller.update_option_btn(main._ui_3d_speed_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed])
-	# Auto (ai_3d_speed==1) picks its own model - main.ai_3d_model is
-	# frozen/irrelevant then (see ui_controller.gd's update_stereo_shader(),
-	# same logic mirrored here since this doesn't call that function directly).
-	var loaded_model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
-	main.ui_controller.update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[loaded_model_idx].label)
-	main.ui_controller.update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
-	main.ui_controller.update_3d_btn_state()
+	# Model may not actually belong to the loaded Type (main.ai_3d_backend_pref) -
+	# every migration branch above (including the pre-Type-existing legacy
+	# ones, which never touch ai_3d_backend_pref at all) can land here with
+	# them disagreeing. Snaps Model to Type's first matching entry if so;
+	# a no-op otherwise. Covers every branch above in one place rather than
+	# repeating it in each.
+	main.settings_controller.normalize_ai_3d_model_for_type()
+	# Same "covers every branch above in one place" reasoning as
+	# normalize_ai_3d_model_for_type() just above - Android locks Type/Model/
+	# 3D Mode to GPU/ZipDepth-384-GPU/Standard regardless of what any branch
+	# above (including old-format migrations) landed on. No-op on Linux.
+	main.settings_controller.enforce_ai3d_platform_lock()
+	# update_stereo_shader() (2026-08-28 - replaces a hand-duplicated copy of
+	# its own logic that lived here, "since this doesn't call that function
+	# directly" per its own old comment) already sets the stereo_mode
+	# uniform, every AI-3D button label (including the new AI 3D tab's
+	# controls, which that duplicate never knew about), and
+	# update_3d_btn_state() - no reason to keep two copies of this in sync.
+	main.ui_controller.update_stereo_shader()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
@@ -246,10 +291,16 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_render_btn, main.smooth_labels[clampi(main.smooth_mode, 0, main.smooth_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.settings_controller.get_sharpen_label(main.sharpen_mode))
+		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
+		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
+		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+		main.ui_controller.update_ambient_btn_state()
+		main.ui_controller.update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_3d_priority_btn, main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
@@ -257,6 +308,7 @@ func sync_ui_to_settings():
 		var idle_idx = main.settings_controller.idle_values.find(main.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
+		main.ui_controller.update_stats_btn_state()
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
@@ -265,6 +317,8 @@ func sync_ui_to_settings():
 		main.screen_manager.update_bezel_size()
 	if main.settings_controller:
 		main.settings_controller.apply_filter()
+	if main.comp:
+		main.comp.apply_ambient_settings()
 
 func load_state():
 	MonitorPresets.write_default_presets_snapshot()
@@ -275,6 +329,7 @@ func load_state():
 		main._log("[STATE] load failed or not found, applying default curvature and syncing...")
 		main.screen_manager.apply_curvature()
 		sync_ui_to_settings()
+		main.settings_controller.apply_depth_gpu_priority(false)
 		return
 
 	main.bezel_enabled = save.get_value("screen", "bezel", true)
@@ -302,16 +357,31 @@ func load_state():
 			main.background_mode = old
 	else:
 		main.passthrough_enabled = false
-	main.smooth_mode = save.get_value("screen", "smooth_mode", save.get_value("screen", "render_mode", 0))
-	main.sharpen_mode = save.get_value("screen", "sharpen_mode", 0)
+	main.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", 0), 0, main.sharpen_labels.size() - 1)
+	if OS.get_name() == "Android" and not main.settings_controller.get_sharpen_choices().has(main.sharpen_mode):
+		main.sharpen_mode = 0
+	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
+	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):
+		main.brightness_pct = 0
+	main.contrast_pct = save.get_value("screen", "contrast_pct", 100)
+	if not [50, 75, 100, 125, 150].has(main.contrast_pct):
+		main.contrast_pct = 100
+	main.gamma_pct = save.get_value("screen", "gamma_pct", 100)
+	if not [50, 75, 100, 125, 150].has(main.gamma_pct):
+		main.gamma_pct = 100
+	main.ambient_mode = clampi(save.get_value("screen", "ambient_mode", 0), 0, main.ambient_mode_labels.size() - 1)
+	main.ambient_color = clampi(save.get_value("screen", "ambient_color", 0), 0, main.ambient_color_labels.size() - 1)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
 	var saved_steady = save.get_value("screen", "pointer_steady", 1)
 	if saved_steady is bool:
 		main.pointer_steady = 1 if saved_steady else 0
 	else:
-		main.pointer_steady = int(saved_steady)
+		main.pointer_steady = clampi(int(saved_steady), 0, main.pointer_steady_labels.size() - 1)
+	main.double_click_mode = clampi(save.get_value("screen", "double_click_mode", 0), 0, 1)
 	main.codec_preference = save.get_value("screen", "codec_preference", 1)
 	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
+	main.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", false)
+	main.ai_3d_gpu_priority = clampi(save.get_value("ai_3d", "gpu_priority", 0), 0, 1)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
 		main.tracking_mode = 1 if raw_tracking else 0
@@ -345,3 +415,4 @@ func load_state():
 		main.stream_backend._v2.set_auto_reconnect(main.auto_reconnect_enabled)
 
 	sync_ui_to_settings()
+	main.settings_controller.apply_depth_gpu_priority(false)

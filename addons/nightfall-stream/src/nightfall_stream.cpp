@@ -66,6 +66,7 @@ void NightfallStream::_ready() {
     stream_connection_->connect("connection_status_update", callable_mp(this, &NightfallStream::_on_connection_status_update));
     stream_connection_->connect("log_message", callable_mp(this, &NightfallStream::_on_log_message));
     stream_connection_->connect("h264_hw_upgraded", callable_mp(this, &NightfallStream::_on_h264_hw_upgraded));
+    stream_connection_->connect("hdr_mode_changed", callable_mp(this, &NightfallStream::_on_hdr_mode_changed));
     stream_connection_->connect("controller_rumble", callable_mp(this, &NightfallStream::_on_controller_rumble));
     stream_connection_->connect("controller_trigger_rumble", callable_mp(this, &NightfallStream::_on_controller_trigger_rumble));
 }
@@ -357,6 +358,16 @@ int NightfallStream::get_last_frame_latency_us() const {
     return 0;
 }
 
+int NightfallStream::get_network_latency_ms() const {
+    if (stream_connection_) return stream_connection_->get_network_latency_ms();
+    return -1;
+}
+
+Dictionary NightfallStream::take_performance_stats() {
+    if (stream_connection_) return stream_connection_->take_performance_stats();
+    return Dictionary();
+}
+
 bool NightfallStream::is_display_ready() const {
     if (stream_connection_) return stream_connection_->is_display_ready();
     return false;
@@ -526,6 +537,10 @@ void NightfallStream::_on_h264_hw_upgraded() {
     emit_signal("h264_hw_upgraded");
 }
 
+void NightfallStream::_on_hdr_mode_changed(bool hdr_enabled, const Dictionary &metadata) {
+    emit_signal("hdr_mode_changed", hdr_enabled, metadata);
+}
+
 void NightfallStream::_on_controller_rumble(int controller, int low_freq, int high_freq) {
     emit_signal("controller_rumble", controller, low_freq, high_freq);
 }
@@ -623,6 +638,8 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &NightfallStream::get_frames_decoded);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &NightfallStream::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &NightfallStream::get_last_frame_latency_us);
+    ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &NightfallStream::get_network_latency_ms);
+    ClassDB::bind_method(D_METHOD("take_performance_stats"), &NightfallStream::take_performance_stats);
     ClassDB::bind_method(D_METHOD("is_display_ready"), &NightfallStream::is_display_ready);
     ClassDB::bind_method(D_METHOD("get_codec_capabilities_info"), &NightfallStream::get_codec_capabilities_info);
     ClassDB::bind_method(D_METHOD("get_decoder_name"), &NightfallStream::get_decoder_name);
@@ -657,6 +674,7 @@ void NightfallStream::_bind_methods() {
     ADD_SIGNAL(MethodInfo("pair_completed", PropertyInfo(Variant::BOOL, "success"), PropertyInfo(Variant::STRING, "message")));
     ADD_SIGNAL(MethodInfo("log_message", PropertyInfo(Variant::STRING, "message")));
     ADD_SIGNAL(MethodInfo("h264_hw_upgraded"));
+    ADD_SIGNAL(MethodInfo("hdr_mode_changed", PropertyInfo(Variant::BOOL, "hdr_enabled"), PropertyInfo(Variant::DICTIONARY, "metadata")));
     ADD_SIGNAL(MethodInfo("controller_rumble", PropertyInfo(Variant::INT, "controller"), PropertyInfo(Variant::INT, "low_freq"), PropertyInfo(Variant::INT, "high_freq")));
     ADD_SIGNAL(MethodInfo("controller_trigger_rumble", PropertyInfo(Variant::INT, "controller"), PropertyInfo(Variant::INT, "left_motor"), PropertyInfo(Variant::INT, "right_motor")));
 }

@@ -6,39 +6,37 @@ var depth_viewport: SubViewport
 var depth_target: ColorRect
 var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
+var depth_revision: int = 0
 var enabled: bool = false
 var submit_timer: float = 0.0
-# 20Hz, matching Gilleece/moonlight-android-xr's own cadence comment ("depth
-# arrives at about 20Hz") and their own tuned/shipped default - trusted as
-# measured rather than re-litigated here. A 10Hz middle ground was tried
-# after the JNI depth pipeline was fixed from being silently broken (see git
-# history around 2026-08-17) to rule out this cadence as the cause of
-# DMap detail loss / GPU-NNAPI stutter observed at 20Hz, but the user
-# confirmed on-device that 20Hz gives back full DMap detail (a clock widget
-# that had disappeared) - so the stutter and detail-loss symptoms are NOT
-# from this cadence. More likely cause: depth_upsample.gdshader /
-# depth_offset.gdshader's own per-render-frame warp passes (see
-# _setup_warp_passes() below), since baseline stereo_mode 3/4 (which skips
-# those passes entirely) stays smooth even though its own postProcess does
-# MORE CPU work per call via dilate+blur. That's the next thing to fix, not
-# this value.
-var submit_interval: float = 0.05
-# The Java GPU worker owns the 20 Hz inference clock. Match it here rather than
-# paying for synchronous GPU readbacks which the latest-frame mailbox discards.
-const GPU_FRAME_PUBLISH_INTERVAL := 0.05
+# Default submit/readback rate, 20Hz - matching Gilleece/moonlight-android-xr's
+# own cadence comment ("depth arrives at about 20Hz") and their own tuned/
+# shipped default - trusted as measured rather than re-litigated here. A
+# 10Hz middle ground was tried after the JNI depth pipeline was fixed from
+# being silently broken (see git history around 2026-08-17) to rule out
+# this cadence as the cause of DMap detail loss / GPU-NNAPI stutter
+# observed at 20Hz, but the user confirmed on-device that 20Hz gives back
+# full DMap detail (a clock widget that had disappeared) - so the stutter
+# and detail-loss symptoms are NOT from this cadence. More likely cause:
+# depth_upsample.gdshader / depth_offset.gdshader's own per-render-frame
+# warp passes (see _setup_warp_passes() below), since baseline stereo_mode
+# 3/4 (which skips those passes entirely) stays smooth even though its own
+# postProcess does MORE CPU work per call via dilate+blur. That's the next
+# thing to fix, not this value. User-adjustable since 2026-08-28 (AI 3D
+# tab's Hz Cap control, main.ai_3d_hz_cap) - both this CPU-path submit rate
+# and the GPU readback cadence below now derive from
+# settings_controller.gd's get_effective_hz_cap() at the one call site in
+# process(), rather than each being a separate fixed constant.
 const GPU_BOOST_REFRESH_INTERVAL := 15.0
-# Native output resolution of whichever model is currently active in
-# DepthEstimator.java - 256 for MiDaS/Depth Anything, 768 for YOLO26-depth
-# (see YOLO_INPUT_SIZE there). No longer a fixed constant: sync_model_size()
-# below queries DepthEstimator.java's getModelSize() (via depth_bridge.cpp's
-# JNI get_depth_model_size()) whenever settings_controller.gd's apply_stereo()
-# switches the active model, and resizes depth_viewport/depth_texture to
-# match - both submit_depth_frame() and the get_depth_map() size-match check
-# in process() below depend on this being correct for the CURRENTLY active
-# model, not just MiDaS.
-var model_size: int = 256
+# Native output dimensions of whichever model is currently active in
+# DepthEstimator.java. No longer assumed square: sync_model_size() queries
+# width and height whenever settings_controller.gd switches the active model,
+# then resizes depth_viewport/depth_texture to match.
+var model_width: int = 256
+var model_height: int = 256
 var _poll_timer: float = 0.0
 var _backend_status_timer: float = 0.0
+var _size_mismatch_log_timer: float = 0.0
 var _perf_window: float = 0.0
 var _perf_capture_usec: int = 0
 var _perf_submit_usec: int = 0
@@ -46,6 +44,9 @@ var _perf_submitted: int = 0
 var _perf_updates: int = 0
 var _gpu_boost_active: bool = false
 var _gpu_boost_refresh_timer: float = 0.0
+var _native_depth_capture_active: bool = false
+var _direct_stream_source_bound: bool = false
+var _native_renderer_active: bool = false
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -113,6 +114,11 @@ var _warp_frame_counter: int = 0
 # aliasing, render-order, and GPU-contention fixes all landed first and are
 # confirmed working - this is what's left after all of that).
 var _pass_parallax: float = 0.006
+# AI 3D tab's "Stereo Separation" control (2026-08-28) - a percentage
+# multiplier applied on top of _pass_parallax above, not a replacement for
+# it, so the tuning history/comment on _pass_parallax stays meaningful as
+# the true 100% baseline. See set_separation_pct()/refresh_parallax_uniforms().
+var _separation_pct: int = 100
 var _pass_size: Vector2i = Vector2i.ZERO
 
 var _platform: String
@@ -138,7 +144,7 @@ func setup():
 		return
 	depth_viewport = SubViewport.new()
 	depth_viewport.name = "DepthViewport"
-	depth_viewport.size = Vector2i(model_size, model_size)
+	depth_viewport.size = Vector2i(model_width, model_height)
 	depth_viewport.disable_3d = true
 	depth_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	depth_viewport.transparent_bg = true
@@ -162,7 +168,7 @@ func setup():
 	depth_viewport.add_child(depth_target)
 	main.add_child(depth_viewport)
 
-	var img = Image.create(model_size, model_size, false, Image.FORMAT_L8)
+	var img = Image.create(model_width, model_height, false, Image.FORMAT_L8)
 	depth_texture = ImageTexture.create_from_image(img)
 
 	_setup_warp_passes()
@@ -239,13 +245,17 @@ func _resize_warp_passes():
 	# gather shader will warp. Kept outside the resize early-return below
 	# since the primary screen's region can change independently of the
 	# stream's own resolution (e.g. a monitor-selection change).
-	if upsample_mat and main.primary_screen:
-		upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
+	if main.primary_screen:
+		if depth_target_mat:
+			depth_target_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
+		if upsample_mat:
+			upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
 
 	if not main.primary_screen or not main.stream_viewport:
 		return
 	var uv = main.primary_screen.uv_region
-	var src = Vector2i(int(float(main.stream_viewport.size.x) * uv.z), int(float(main.stream_viewport.size.y) * uv.w))
+	var stream_size: Vector2i = main.stream_manager.get_current_stream_size() if main.stream_manager else main.stream_viewport.size
+	var src = Vector2i(int(float(stream_size.x) * uv.z), int(float(stream_size.y) * uv.w))
 	if src.x <= 0 or src.y <= 0:
 		return
 	var target = Vector2i(maxi(src.x / _pass_divisor, PASS_MIN_SIZE), maxi(src.y / _pass_divisor, PASS_MIN_SIZE))
@@ -254,16 +264,34 @@ func _resize_warp_passes():
 	_pass_size = target
 	upsample_viewport.size = target
 	offset_viewport.size = target
-	offset_mat.set_shader_parameter("disp_texels", _pass_parallax * float(target.x))
+	refresh_parallax_uniforms()
+
+# Factored out of _resize_warp_passes() (2026-08-28) so the AI 3D tab's
+# "Stereo Separation" control can force a re-push (via set_separation_pct()
+# below) without needing an actual resolution change - _resize_warp_passes()
+# only reaches this on a genuine target-size change, which a pure
+# percentage tweak never triggers on its own.
+func refresh_parallax_uniforms():
+	if not offset_mat or _pass_size == Vector2i.ZERO:
+		return
+	var effective_parallax = _pass_parallax * (_separation_pct / 100.0)
+	offset_mat.set_shader_parameter("disp_texels", effective_parallax * float(_pass_size.x))
 	for mat in [main.comp_shader_mat_left, main.comp_shader_mat_right]:
 		if mat:
-			mat.set_shader_parameter("mode5_parallax", _pass_parallax)
+			mat.set_shader_parameter("mode5_parallax", effective_parallax)
+
+func set_separation_pct(pct: int):
+	if pct == _separation_pct:
+		return
+	_separation_pct = pct
+	refresh_parallax_uniforms()
 
 # Called from settings_controller.gd's apply_stereo() right after
 # stream_backend.configure_depth() switches the active Java-side model -
 # switchActiveModel() busy-waits out any in-flight inference before returning,
-# so getModelSize() is already correct for the new model by the time this
-# runs. Resizes depth_viewport (the capture source fed INTO the model) and
+# so getModelWidth()/getModelHeight() are already correct for the new model
+# by the time this runs. Resizes depth_viewport (the capture source fed INTO
+# the model) and
 # recreates depth_texture's image (the model's OUTPUT, read back via
 # get_depth_map()) in place via set_image() rather than a new ImageTexture -
 # every consumer (primary_screen, comp_shader_mat_left/right) already holds
@@ -273,43 +301,91 @@ func _resize_warp_passes():
 func sync_model_size():
 	if not main.stream_backend or not depth_viewport or not depth_texture:
 		return
-	var new_size = main.stream_backend.get_depth_model_size()
-	if new_size <= 0 or new_size == model_size:
+	var new_width = main.stream_backend.get_depth_model_width()
+	var new_height = main.stream_backend.get_depth_model_height()
+	if new_width <= 0 or new_height <= 0:
 		return
-	model_size = new_size
-	depth_viewport.size = Vector2i(model_size, model_size)
-	var img = Image.create(model_size, model_size, false, Image.FORMAT_L8)
+	if new_width == model_width and new_height == model_height:
+		return
+	model_width = new_width
+	model_height = new_height
+	depth_viewport.size = Vector2i(model_width, model_height)
+	var img = Image.create(model_width, model_height, false, Image.FORMAT_L8)
 	depth_texture.set_image(img)
 
 func bind_stream_texture():
-	if not depth_target:
+	if not depth_target_mat:
 		return
-	# comp.in_use (switch_to_stereo_comp_layer() active) EXPLICITLY sets
-	# primary_screen.comp_viewport (the mono viewport) to UPDATE_DISABLED in
-	# favor of comp_viewport_left/right - depth capture used to silently
-	# freeze on whatever the mono viewport last rendered before switching to
-	# stereo (often mid-welcome-screen), feeding MiDaS a single stale frame
-	# forever instead of live video (fixed by forcing it back to
-	# UPDATE_ALWAYS in settings_controller.gd's apply_stereo() whenever
-	# depth is enabled). comp_viewport_left is NOT a valid depth-capture
-	# source: it's rendered by comp_shader_mat_left, the SAME material
-	# whose stereo_mode we set to 7/8/9 for the DMap debug views - sourcing
-	# depth capture from it would mean depth_guide_texture circularly
-	# depends on its own output (DMap modes) or MiDaS sees the
-	# already-warped stereo image instead of plain video (warp modes 5/6,
-	# compounding distortion frame over frame). The mono comp_viewport
-	# (comp_shader_mat, permanently stereo_mode=0) is the only semantically
-	# correct source.
+	# Compatibility path for a backend that cannot expose decoder textures.
+	# In composition mode this needs the plain mono viewport, but unlike the
+	# old path it is enabled only while this fallback is actually in use.
+	var was_direct = _direct_stream_source_bound
+	_direct_stream_source_bound = false
+	var source_tex = null
 	if main.comp.in_use and main.primary_screen and main.primary_screen.comp_viewport:
-		depth_target_mat.set_shader_parameter("source_tex", main.primary_screen.comp_viewport.get_texture())
+		source_tex = main.primary_screen.comp_viewport.get_texture()
 	elif main.stream_viewport:
-		depth_target_mat.set_shader_parameter("source_tex", main.stream_viewport.get_texture())
+		source_tex = main.stream_viewport.get_texture()
+	depth_target_mat.set_shader_parameter("main_texture", source_tex)
+	depth_target_mat.set_shader_parameter("yuv_mode", 0)
+	_update_mono_capture_requirement()
+	if was_direct:
+		main._log("[DEPTH] Decoder textures unavailable; mono capture fallback enabled")
+
+func bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt: int, cr: int):
+	if not depth_target_mat:
+		return
+	var was_direct = _direct_stream_source_bound
+	depth_target_mat.set_shader_parameter("tex_y", tex_y)
+	depth_target_mat.set_shader_parameter("tex_u", tex_u)
+	depth_target_mat.set_shader_parameter("tex_v", tex_v)
+	depth_target_mat.set_shader_parameter("yuv_mode", yuv_mode)
+	depth_target_mat.set_shader_parameter("color_matrix_type", cmt)
+	depth_target_mat.set_shader_parameter("color_range", cr)
+	_direct_stream_source_bound = true
+	_update_mono_capture_requirement()
+	if not was_direct:
+		main._log("[DEPTH] Direct decoder source bound; redundant mono capture disabled")
+
+func refresh_stream_source():
+	if _direct_stream_source_bound:
+		_update_mono_capture_requirement()
+	else:
+		bind_stream_texture()
+
+func _update_mono_capture_requirement():
+	if not main.primary_screen or not main.primary_screen.comp_viewport or not main.settings_controller:
+		return
+	# The mono viewport is the visible output in normal 2D mode and must remain
+	# active there. In stereo modes it exists only as the legacy depth fallback.
+	if main.comp.in_use and main.settings_controller.get_stereo_mode() > 0:
+		var needs_fallback = enabled and not _direct_stream_source_bound and not _native_renderer_active
+		main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if needs_fallback else SubViewport.UPDATE_DISABLED
+
+func set_native_renderer_active(value: bool) -> void:
+	if _native_renderer_active == value:
+		return
+	_native_renderer_active = value
+	_update_render_pass_modes()
+	_update_mono_capture_requirement()
+
+func _update_render_pass_modes() -> void:
+	if depth_viewport:
+		depth_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS if enabled and not _native_renderer_active else SubViewport.UPDATE_DISABLED
+	var warp_mode := SubViewport.UPDATE_DISABLED
+	if _warp_passes_active and not _native_renderer_active:
+		warp_mode = SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS
+	if upsample_viewport:
+		upsample_viewport.render_target_update_mode = warp_mode
+	if offset_viewport:
+		offset_viewport.render_target_update_mode = warp_mode
 
 func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 	enabled = val
+	_update_mono_capture_requirement()
 	if not val or main.settings_controller.get_depth_backend_index() != 2:
 		_set_gpu_performance_hint(false)
-	if depth_viewport:
+	if depth_viewport and not _native_renderer_active:
 		# Tried throttling this to UPDATE_ONCE at submit_interval's 20Hz
 		# instead of UPDATE_ALWAYS (2026-08-18) on the theory that
 		# re-rendering the downscale every render frame for 20Hz-consumed
@@ -334,11 +410,7 @@ func set_enabled(val: bool, run_warp_passes: bool = false, warp_tier: int = 0):
 		_: _pass_divisor = PASS_DIVISOR
 
 	_push_warp_newton_steps(2 if _warp_tier == 0 else 0)
-	var mode: int = (SubViewport.UPDATE_ONCE if _warp_throttled else SubViewport.UPDATE_ALWAYS) if _warp_passes_active else SubViewport.UPDATE_DISABLED
-	if upsample_viewport:
-		upsample_viewport.render_target_update_mode = mode
-	if offset_viewport:
-		offset_viewport.render_target_update_mode = mode
+	_update_render_pass_modes()
 
 func _set_gpu_performance_hint(use_boost: bool, force: bool = false):
 	if OS.get_name() != "Android" or (_gpu_boost_active == use_boost and not force):
@@ -365,7 +437,13 @@ func process(delta: float):
 	# directly - the separate 3D Backend control (2026-08-22) lets MiDaS-256
 	# (index 5) also end up running on GPU via Auto/GPU backend selection.
 	var effective_gpu = main.stream_backend and main.stream_backend.get_effective_depth_backend() == 2
-	var should_boost = enabled and effective_gpu and main.is_streaming
+	# effectiveBackend deliberately remains GPU after a delegate failure so the
+	# UI continues to describe the backend the user actually selected. A
+	# non-empty failure status is therefore the missing "is it really running"
+	# half of this decision: boost before/during normal GPU inference, but drop
+	# back to sustained-high once that GPU path has stopped for the session.
+	var backend_failed = effective_gpu and not main.stream_backend.get_depth_backend_status().is_empty()
+	var should_boost = enabled and effective_gpu and not backend_failed and main.is_streaming
 	if should_boost:
 		_gpu_boost_refresh_timer += delta
 		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
@@ -381,7 +459,7 @@ func process(delta: float):
 		_backend_status_timer = 0.0
 		main.settings_controller.refresh_depth_backend_status(true)
 
-	if _warp_passes_active and _warp_throttled:
+	if _warp_passes_active and _warp_throttled and not _native_renderer_active:
 		_warp_frame_counter += 1
 		var period: int = WARP_NEWTON_PERIOD[_warp_tier]
 		_push_warp_newton_steps(1 if (_warp_frame_counter % period == 0) else 0)
@@ -392,33 +470,87 @@ func process(delta: float):
 			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 	if main.stream_backend.has_method("submit_depth_frame"):
+		var native_capture_available: bool = (
+			_platform == "Android"
+			and main.stream_backend.has_method("supports_native_depth_capture")
+			and main.stream_backend.supports_native_depth_capture()
+		)
+		if native_capture_available != _native_depth_capture_active:
+			_native_depth_capture_active = native_capture_available
+			main._log("[DEPTH] Capture path: %s" % ("native GLES async" if native_capture_available else "Godot viewport fallback"))
+
+		# Polling a completed PBO only copies an already-signalled model-sized
+		# result. The GLES render thread never waits for it; if a transfer is
+		# late, the latest-frame policy simply picks it up on a later frame.
+		if native_capture_available:
+			var native_data: PackedByteArray = main.stream_backend.consume_native_depth_capture()
+			if native_data.size() == model_width * model_height * 4:
+				var native_submit_start = Time.get_ticks_usec()
+				main.stream_backend.submit_depth_frame(native_data, model_width, model_height)
+				_perf_submit_usec += Time.get_ticks_usec() - native_submit_start
+				_perf_submitted += 1
+
 		submit_timer += delta
-		var active_submit_interval = GPU_FRAME_PUBLISH_INTERVAL if main.settings_controller.get_depth_backend_index() == 2 and OS.get_name() == "Android" else submit_interval
+		# Both the CPU-path submit rate and the GPU readback cadence now
+		# derive from the AI 3D tab's Hz Cap (2026-08-28, was a fixed 0.05/
+		# 20Hz for both) - get_effective_hz_cap() also forces 20Hz under
+		# Auto, matching what's actually pushed to the Java inference loop
+		# (DepthBridge::set_depth_hz_cap()), so this timer and the real
+		# inference rate can never drift apart.
+		var active_submit_interval = 1.0 / maxi(main.settings_controller.get_effective_hz_cap(), 1)
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
-			var capture_start = Time.get_ticks_usec()
-			var img = depth_viewport.get_texture().get_image()
-			if img != null and not img.is_empty():
-				var data = img.get_data()
-				_perf_capture_usec += Time.get_ticks_usec() - capture_start
-				if data.size() > 0:
-					var submit_start = Time.get_ticks_usec()
-					main.stream_backend.submit_depth_frame(data, model_size, model_size)
-					_perf_submit_usec += Time.get_ticks_usec() - submit_start
-					_perf_submitted += 1
+			if native_capture_available:
+				main.stream_backend.request_native_depth_capture(model_width, model_height)
+			else:
+				var capture_start = Time.get_ticks_usec()
+				var img = depth_viewport.get_texture().get_image()
+				if img != null and not img.is_empty():
+					# Godot Images are top-left-origin while SubViewport's GPU
+					# framebuffer readback via get_texture().get_image() comes
+					# back bottom-left-origin (same GLES/Compatibility-renderer
+					# quirk native_xr_renderer.gd's stats-overlay capture already
+					# works around with this identical flip_y() call) - without
+					# this, the model's input (and therefore its whole output
+					# depth map) is vertically flipped, even though a live GPU
+					# sample of the same depth_viewport texture (depth_guide_texture,
+					# used by the DMap-Input debug view) looks correct, since that
+					# path never goes through this CPU readback at all.
+					img.flip_y()
+					var data = img.get_data()
+					_perf_capture_usec += Time.get_ticks_usec() - capture_start
+					if data.size() > 0:
+						var submit_start = Time.get_ticks_usec()
+						main.stream_backend.submit_depth_frame(data, model_width, model_height)
+						_perf_submit_usec += Time.get_ticks_usec() - submit_start
+						_perf_submitted += 1
 
 	if main.stream_backend.has_method("get_depth_map"):
 		var depth_bytes = main.stream_backend.get_depth_map()
-		if depth_bytes != null and depth_bytes.size() == model_size * model_size:
-			var depth_image = Image.create_from_data(model_size, model_size, false, Image.FORMAT_L8, depth_bytes)
+		if depth_bytes != null and depth_bytes.size() == model_width * model_height:
+			var depth_image = Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, depth_bytes)
 			depth_texture.update(depth_image)
+			depth_revision += 1
 			_perf_updates += 1
+		elif depth_bytes != null and depth_bytes.size() > 0:
+			# Diagnostic (2026-09-04) for a "depth map doesn't correspond to
+			# the frame" report - a mismatch here means the Java side's
+			# actual output size (whatever model is really active there)
+			# disagrees with GDScript's model dimensions,
+			# so this frame's depth_texture update is silently skipped and
+			# the view keeps showing the last-good (now stale/wrong) data
+			# instead. Throttled to avoid spamming every frame while stuck.
+			_size_mismatch_log_timer += delta
+			if _size_mismatch_log_timer >= 1.0:
+				_size_mismatch_log_timer = 0.0
+				main._log("[DEPTH] Size mismatch: got %d bytes, expected %d (model=%dx%d) - texture update skipped" % [depth_bytes.size(), model_width * model_height, model_width, model_height])
 
 	_perf_window += delta
 	if _perf_window >= 1.0:
 		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
-		print("[DEPTH-PERF] capture=%.2fms submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_ms, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
+		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
+		print("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_value, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
 		_perf_window = 0.0
 		_perf_capture_usec = 0
 		_perf_submit_usec = 0

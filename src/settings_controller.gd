@@ -7,6 +7,9 @@ var _restart_seq: int = 0
 var _ai_3d_commit_seq: int = 0
 var _last_effective_backend: int = -1
 var _last_backend_status: String = ""
+var _stereo_sdr_shader: Shader = null
+var _stereo_picture_shader: Shader = null
+var _refresh_request_seq: int = 0
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -40,12 +43,13 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                         benchmark matrix, not a formula - see
 #                         resolve_quality_tier()/get_auto_selection() below.
 #   ai_3d_models        - WHICH model, dictionaries of {label, java_index,
-#                         gpu}. Absorbs the old separate Backend control
-#                         (Auto/CPU/GPU) - each model entry states its own
-#                         backend directly instead of leaving it as a
-#                         separate toggle, and GPU entries are listed first
-#                         (cycle_ai_3d_model() below skips them entirely when
-#                         _gpu_depth_available() is false). YOLO26-N/
+#                         gpu_available}. Re-split back into two independent
+#                         controls (2026-08-28, AI 3D tab) - Model here and
+#                         Type (main.ai_3d_backend_pref, GPU/CPU) are now
+#                         orthogonal, matching Mode/Debug's own independence
+#                         above; gpu_available just records whether a GPU
+#                         variant exists at all for a given model (DA-V2-252
+#                         has none - see get_depth_backend_index()). YOLO26-N/
 #                         MiDaS/Depth Anything V2 all share the exact same
 #                         downstream warp/postProcess pipeline
 #                         (DepthEstimator.java's postProcess() works on a
@@ -66,14 +70,69 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # 2026-08-20 for the YOLO26-S/MiDaS-GPU/YOLO26-N-resolution/7-way-lineup
 # history that produced the roster below.
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
+var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
+# Back to its original 5-entry shape (2026-08-28, AI 3D tab - briefly
+# deduplicated to 3 entries with an independent Type control, corrected
+# after clarifying the actual request: Type doesn't just gate Model, it
+# FILTERS which entries Model cycles through - GPU shows MiDaS-256-GPU/
+# MiDaS-192-GPU, CPU shows MiDaS-192/MiDaS-256/DA-V2-252. cycle_ai_3d_model()
+# below only cycles entries whose .gpu matches main.ai_3d_backend_pref;
+# cycle_ai_3d_type() snaps main.ai_3d_model to the new Type's first entry
+# whenever the current selection doesn't match. Same order/indices as the
+# original list for MiDaS-256-GPU (0) and MiDaS-192-GPU (1), so AUTO_TABLE/
+# QUEST2_AUTO_TABLE's stored model_idx values need no changes. ZipDepth
+# entries (below) are additive on top of this same 5-entry shape.
 var ai_3d_models: Array = [
 	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
 	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
+	{"label": "ZipDepth-384-GPU", "java_index": 14, "gpu": true},
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
+	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true},
+	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true},
+	# Keep this appended so existing persisted indices for the experimental
+	# widescreen GPU models do not change. Type=CPU includes it in the model
+	# cycle; it shares Java index 14 with the GPU entry above, while Type selects
+	# the full-head W8A32/XNNPACK interpreter instead of the GPU delegate.
+	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+const AI3D_BACKEND_CPU := 1
+const AI3D_BACKEND_GPU := 2
+const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40]
+const AI3D_SEPARATION_VALUES: Array = [50, 75, 100, 125, 150]
+const AI3D_CONVERGENCE_VALUES: Array = [30, 40, 50, 60, 70]
+const AI3D_CURSOR_POSITION_LABELS: Array = ["Left", "Default", "Right"]
+# stereo_screen.gdshader's own live-path separation constant (mesh-
+# projection rendering, not the composition path yuv_display.gdshader
+# covers) - independently tuned to a different magnitude than
+# depth_estimator.gd's _pass_parallax (0.006), matching that file's own
+# comment about the two paths never having been unified. Scaled by
+# main.ai_3d_separation_pct the same way, just against its own base.
+const STEREO_SCREEN_BASE_PARALLAX := 0.042
+
+# Picture tab (2026-08-31). Brightness is additive (-20%..20%, mapped to
+# -0.2..0.2 in apply_filter()); Contrast/Gamma are multiplier/exponent-style
+# like AI3D_SEPARATION_VALUES above (50%..150% around a neutral 100%).
+const PICTURE_BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
+const PICTURE_CONTRAST_VALUES: Array = [50, 75, 100, 125, 150]
+const PICTURE_GAMMA_VALUES: Array = [50, 75, 100, 125, 150]
+
+# HorizonOS v2.7 accepts arbitrary integer display rates through 207 Hz on
+# Quest 3 using the standard API. Rates above that require developer-only
+# global display scaling, so they are deliberately not exposed here.
+# Keep the stream choices device-independent. apply_display_refresh_rate()
+# requests the unlisted standard extended rates only on known Quest 3
+# hardware, then verifies them and falls back to the runtime's reported list.
+const STREAM_FPS_RATES: Array = [30, 60, 72, 90, 120, 144, 165, 200, 207]
+const QUEST3_REFRESH_REQUEST_MAX := 207.0
+# The Quest runtime recreates display surfaces asynchronously after accepting
+# a refresh-rate request. Do not allocate/resize any stream GLES resources
+# until that transition has completed. A fixed post-request settling window is
+# intentional: get_display_refresh_rate() can report the new value before the
+# Android surface transition itself has finished.
+const REFRESH_SURFACE_SETTLE_SEC := 0.35
 
 # Auto-mode resolution classification (2026-08-25) - aspect first (ultrawide
 # vs 16:9; 2560x1080's aspect is 2.37 and 3440x1440's is 2.39, both cleanly
@@ -102,8 +161,9 @@ const AUTO_CLASS_ULTRAWIDE := [
 # but 2K-off picks 256; 21:9-2K-on picks 256 but -off picks 192) - these
 # are direct empirical judgment calls per combo. tier: 0=Standard/1=Fast
 # (matches depth_estimator.gd's warp_tier - Fastest/2 was removed the same
-# day). model_idx: index into ai_3d_models above (0=MiDaS-256-GPU,
-# 1=MiDaS-192-GPU - Auto never picks a CPU model or DA-V2). cap_px: 0 = no
+# day). model_idx: index into ai_3d_models above (0=MiDaS-256, 1=MiDaS-192
+# - Auto never picks DA-V2, and always resolves to GPU - see
+# get_depth_backend_index()). cap_px: 0 = no
 # cap, else the sqrt-pixel-budget resolution cap compute_requested_resolution()
 # applies (replaces the old flat MIDAS_FAST_MAX_PIXELS/MIDAS_FASTEST_MAX_PIXELS
 # constants, which this table's per-combo caps supersede - see main.gd).
@@ -225,10 +285,34 @@ func cycle_sbs_mode():
 func _ai_3d_supported() -> bool:
 	return OS.get_name() == "Android" or OS.get_name() == "Linux"
 
-func cycle_ai_3d_speed():
+# Main-page On/Off toggle (2026-08-28) - replaces the old direct
+# Off/Auto/Fast/Standard cycle on this button. Flips main.ai_3d_speed
+# between 0 and whichever mode was last active (main.ai_3d_last_mode,
+# kept current by cycle_ai_3d_mode() below) instead of always landing on
+# Auto - tier selection itself now lives on the AI 3D tab.
+func toggle_ai_3d_enabled():
 	if not _ai_3d_supported():
 		return
 	if main.sbs_mode > 0:
+		return
+	if main.ai_3d_speed == 0:
+		main.ai_3d_speed = main.ai_3d_last_mode
+	else:
+		main.ai_3d_last_mode = main.ai_3d_speed
+		main.ai_3d_speed = 0
+	_save_setting(main._ui_3d_speed_btn, "On" if main.ai_3d_speed != 0 else "Off")
+	main.ui_controller.update_3d_btn_state()
+	_schedule_ai_3d_commit()
+
+# AI 3D tab's "3D Mode" control (2026-08-28) - cycles Auto/Fast/Standard
+# (1-3) only; Off lives on the main page's toggle instead
+# (toggle_ai_3d_enabled() above). Greyed out via update_3d_btn_state()
+# whenever ai_3d_speed==0, but guarded here too since a disabled Button
+# still technically has this connected.
+func cycle_ai_3d_mode():
+	if not _ai_3d_supported() or ai3d_options_locked():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
 		return
 	# Only the label updates immediately - actually applying the mode
 	# (apply_stereo(), which reconfigures depth_estimator and can trigger a
@@ -236,35 +320,210 @@ func cycle_ai_3d_speed():
 	# cycle_resolution()/_schedule_stream_restart(): click through to find
 	# the setting you want, and it only commits once you stop, instead of
 	# reconfiguring/restarting on every single click along the way.
-	main.ai_3d_speed = (main.ai_3d_speed + 1) % ai_3d_speed_labels.size()
-	_save_setting(main._ui_3d_speed_btn, ai_3d_speed_labels[main.ai_3d_speed])
+	main.ai_3d_speed = (main.ai_3d_speed % 3) + 1 # 1->2->3->1 (Auto/Fast/Standard)
+	main.ai_3d_last_mode = main.ai_3d_speed
+	# Type can now change while Auto is active (2026-08-30, cycle_ai_3d_type())
+	# without touching Model (frozen/table-driven under Auto) - re-sync Model
+	# to Type here on the way OUT of Auto, in case they drifted apart while
+	# Auto was active.
+	normalize_ai_3d_model_for_type()
+	_save_setting(main._ui_3d_mode_btn, ai_3d_speed_labels[main.ai_3d_speed])
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
 
-# No live GPU-capability query exists yet (TFLite's GPU delegate availability
-# isn't probed ahead of time), so this always returns true for now - MiDaS-
-# 256-GPU already runs on both Android and Linux via the existing GPU
-# backend path (see DepthEstimator.java's ensureMidasGpuLoaded()), it's just
-# not a great choice on Quest (shares the physical GPU with Godot's Vulkan
-# renderer). Revisit once there's an actual capability check to call instead
-# of a placeholder - not a priority while this whole model list is still WIP.
-func _gpu_depth_available() -> bool:
-	return true
+# Returns the indices into ai_3d_models whose .gpu matches want_gpu -
+# shared by cycle_ai_3d_model() (cycles within the current Type's subset)
+# and cycle_ai_3d_type() (snaps Model to the new Type's subset).
+func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
+	var result: Array = []
+	for i in range(ai_3d_models.size()):
+		if ai_3d_models[i].gpu == want_gpu:
+			result.append(i)
+	return result
 
-func cycle_ai_3d_model():
+# AI 3D tab's "Type" control (2026-08-28) - filters which ai_3d_models
+# entries Model can cycle through (GPU: MiDaS-256-GPU/MiDaS-192-GPU; CPU:
+# MiDaS-192/MiDaS-256/DA-V2-252), not just a passive preference. Snaps
+# main.ai_3d_model to the new Type's first matching entry whenever the
+# current selection doesn't belong to it (e.g. switching CPU->GPU while
+# DA-V2-252 was selected).
+func cycle_ai_3d_type():
+	if not _ai_3d_supported() or ai3d_options_locked():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
+		return
+	main.ai_3d_backend_pref = AI3D_BACKEND_CPU if main.ai_3d_backend_pref == AI3D_BACKEND_GPU else AI3D_BACKEND_GPU
+	# Under Auto (2026-08-30), Model stays table-driven (AUTO_TABLE/
+	# get_auto_selection()) - main.ai_3d_model itself is frozen/irrelevant,
+	# so there's nothing to snap here; only Fast/Standard need Model kept in
+	# sync with the new Type.
+	if main.ai_3d_speed != 1:
+		var candidates = _ai_3d_model_indices_for_type(main.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+		if not candidates.is_empty() and not candidates.has(main.ai_3d_model):
+			main.ai_3d_model = candidates[0]
+	main.state_manager.save_state()
+	main.ui_controller.update_stereo_shader() # refreshes both Type's and Model's labels
+	_schedule_ai_3d_commit()
+
+# AI 3D tab's "Hz Cap" control (2026-08-28).
+func cycle_ai_3d_hz_cap():
 	if not _ai_3d_supported():
 		return
-	if main.sbs_mode > 0:
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0 or main.ai_3d_speed == 1:
 		return
-	var n = ai_3d_models.size()
-	var next = main.ai_3d_model
-	for i in range(n):
-		next = (next + 1) % n
-		if not ai_3d_models[next].gpu or _gpu_depth_available():
-			break
-	main.ai_3d_model = next
+	var idx = AI3D_HZ_CAP_VALUES.find(main.ai_3d_hz_cap)
+	main.ai_3d_hz_cap = AI3D_HZ_CAP_VALUES[(maxi(idx, 0) + 1) % AI3D_HZ_CAP_VALUES.size()]
+	_save_setting(main._ui_3d_hz_cap_btn, "%dhz" % main.ai_3d_hz_cap)
+	_schedule_ai_3d_commit()
+
+# AI 3D tab's "Stereo Separation" control (2026-08-28) - a percentage
+# multiplier on top of the warp shaders' own tuned base values (see
+# STEREO_SCREEN_BASE_PARALLAX/depth_estimator.gd's _pass_parallax), not a
+# replacement absolute value. Left live under Auto (unlike Type/Model/Hz
+# Cap) - it's a general 3D-strength tune, not something the Auto table
+# decides.
+func cycle_ai_3d_separation():
+	if not _ai_3d_supported():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
+		return
+	var idx = AI3D_SEPARATION_VALUES.find(main.ai_3d_separation_pct)
+	main.ai_3d_separation_pct = AI3D_SEPARATION_VALUES[(maxi(idx, 0) + 1) % AI3D_SEPARATION_VALUES.size()]
+	_save_setting(main._ui_3d_separation_btn, "%d%%" % main.ai_3d_separation_pct)
+	_schedule_ai_3d_commit()
+
+# AI 3D tab's "Convergence" control (2026-08-28) - maps directly to the
+# warp shaders' already-declared "convergence" uniform (0.30-0.70), which
+# was never actually driven from GDScript before this - see
+# _push_ai3d_effect_uniforms(). Left live under Auto, same reasoning as
+# Separation above.
+func cycle_ai_3d_convergence():
+	if not _ai_3d_supported():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
+		return
+	var idx = AI3D_CONVERGENCE_VALUES.find(main.ai_3d_convergence_pct)
+	main.ai_3d_convergence_pct = AI3D_CONVERGENCE_VALUES[(maxi(idx, 0) + 1) % AI3D_CONVERGENCE_VALUES.size()]
+	_save_setting(main._ui_3d_convergence_btn, "%d%%" % main.ai_3d_convergence_pct)
+	_schedule_ai_3d_commit()
+
+# Moves the rendered cursor over the AI-warped image without changing the
+# raycast or host click coordinates. This corrects visual click alignment;
+# it deliberately does not alter cursor depth/binocular disparity.
+func cycle_ai_3d_cursor_position():
+	if not _ai_3d_supported():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0:
+		return
+	main.ai_3d_cursor_position = ((clampi(main.ai_3d_cursor_position, -1, 1) + 1 + 1) % AI3D_CURSOR_POSITION_LABELS.size()) - 1
+	_save_setting(main._ui_3d_cursor_position_btn, get_ai_3d_cursor_position_label())
+
+func get_ai_3d_cursor_position_label() -> String:
+	return AI3D_CURSOR_POSITION_LABELS[clampi(main.ai_3d_cursor_position, -1, 1) + 1]
+
+# AI 3D tab's "Reset" button (2026-08-28) - restores only this tab's own
+# settings to their defaults (today's real, previously-hardcoded values -
+# see each field's own comment on main.gd). Deliberately does NOT touch
+# the main-page On/Off state: if AI-3D is currently off, it stays off, just
+# with ai_3d_last_mode reset to Auto for whenever it's turned back on; if
+# currently on, its active mode is reset to Auto too (matching "3D Mode
+# -> Auto" being one of the reset targets).
+func reset_ai_3d_effect_settings():
+	if not _ai_3d_supported():
+		return
+	main.ai_3d_last_mode = 1
+	if main.ai_3d_speed != 0:
+		main.ai_3d_speed = 1
+	main.ai_3d_backend_pref = AI3D_BACKEND_GPU
+	main.ai_3d_model = 0
+	main.ai_3d_hz_cap = 20
+	main.ai_3d_separation_pct = 100
+	main.ai_3d_convergence_pct = 50
+	main.ai_3d_cursor_position = 0
+	enforce_ai3d_platform_lock()
+	main.state_manager.save_state()
+	main.ui_controller.update_stereo_shader()
+	_schedule_ai_3d_commit()
+
+# Cycles only within the entries matching the current Type
+# (main.ai_3d_backend_pref) - see _ai_3d_model_indices_for_type() above.
+func cycle_ai_3d_model():
+	if not _ai_3d_supported() or ai3d_options_locked():
+		return
+	if main.sbs_mode > 0 or main.ai_3d_speed == 0 or main.ai_3d_speed == 1:
+		return
+	var candidates = _ai_3d_model_indices_for_type(main.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	if candidates.is_empty():
+		return
+	var pos = candidates.find(main.ai_3d_model)
+	main.ai_3d_model = candidates[(maxi(pos, -1) + 1) % candidates.size()]
 	_save_setting(main._ui_3d_btn, ai_3d_models[main.ai_3d_model].label)
 	_schedule_ai_3d_commit()
+
+func cycle_ai_3d_gpu_priority():
+	if OS.get_name() != "Android":
+		return
+	main.ai_3d_gpu_priority = (main.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size()
+	_save_setting(main._ui_3d_priority_btn, ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+	apply_depth_gpu_priority(true)
+
+func apply_depth_gpu_priority(notify: bool = false):
+	if OS.get_name() != "Android" or not main.stream_backend:
+		return
+	if not main.stream_backend.has_method("set_depth_gpu_priority"):
+		return
+	main.stream_backend.set_depth_gpu_priority(main.ai_3d_gpu_priority)
+	var label: String = ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority]
+	main._log("[DEPTH] GPU priority selected: %s" % label)
+	if notify and main.ui_controller:
+		main.ui_controller.set_status("Depth GPU priority: %s (reloading inference)" % label)
+
+# Safety net for main.ai_3d_model/ai_3d_backend_pref disagreeing (e.g. a
+# save file edited/corrupted outside the normal cycle_ai_3d_model()/
+# cycle_ai_3d_type() paths, which otherwise always keep them in sync) -
+# called after loading persisted state. Snaps Model to Type's first entry
+# if the current selection doesn't belong to it; a no-op otherwise.
+func normalize_ai_3d_model_for_type():
+	var candidates = _ai_3d_model_indices_for_type(main.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	if not candidates.is_empty() and not candidates.has(main.ai_3d_model):
+		main.ai_3d_model = candidates[0]
+
+# AI-3D Type/Model/3D-Mode are locked to GPU/ZipDepth-384-GPU/Standard on
+# Android (2026-09-07) - ZipDepth-384-GPU replaces MiDaS as strictly better
+# in every way tested, and Auto/Fast's tier and resolution-cap thresholds in
+# AUTO_TABLE above were empirically benchmarked around MiDaS's specific
+# speed, not ZipDepth's, so leaving them reachable would apply stale
+# calibration to a different model rather than actually saving anything -
+# Standard is simply forced instead until AUTO_TABLE is re-benchmarked
+# against ZipDepth. build.sh only bundles zipdepth-base-384-gpu.tflite for
+# Android (MiDaS/DA-V2/CPU-backend/experimental-widescreen models are
+# commented out there, not deleted, so this can be reverted by uncommenting
+# those cp lines and this lock together). Linux keeps every model/tier
+# selectable - it never had ZipDepth support to begin with (native
+# MidasDepthEngine only), so this lock would remove capability there for no
+# corresponding size/perf win.
+func ai3d_options_locked() -> bool:
+	return OS.get_name() == "Android"
+
+func _locked_ai3d_model_index() -> int:
+	for i in range(ai_3d_models.size()):
+		if ai_3d_models[i].label == "ZipDepth-384-GPU":
+			return i
+	return 0
+
+# Called after loading persisted state (any format/migration branch - see
+# load_host_state()'s own comment) and by reset_ai_3d_effect_settings(), so
+# a save file from before this lock existed (or Reset's own MiDaS/Auto
+# defaults) can never leave Android pointed at a model that isn't actually
+# bundled. No-op on Linux.
+func enforce_ai3d_platform_lock():
+	if not ai3d_options_locked():
+		return
+	main.ai_3d_backend_pref = AI3D_BACKEND_GPU
+	main.ai_3d_model = _locked_ai3d_model_index()
+	main.ai_3d_last_mode = 3
+	if main.ai_3d_speed != 0:
+		main.ai_3d_speed = 3
 
 # Maps main.ai_3d_model (the persisted UI selection, an index into
 # ai_3d_models) to DepthEstimator's real Java-side model index. Under Auto
@@ -277,43 +536,61 @@ func get_depth_model_index() -> int:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.ai_3d_model].java_index
 
-# The backend to actually request from configure_depth() - comes straight
-# from the selected model entry now (see ai_3d_models above), not a separate
-# user-facing toggle.
+# The backend to actually request from configure_depth() (2026-08-28 -
+# now driven by main.ai_3d_backend_pref, the "Type" control). Model is
+# always kept filtered to match Type by cycle_ai_3d_model()/
+# cycle_ai_3d_type(), so main.ai_3d_backend_pref and
+# ai_3d_models[main.ai_3d_model].gpu can never disagree - no need to
+# fall back based on the model's own .gpu flag here.
 func get_depth_backend_index() -> int:
 	if main.ai_3d_speed == 0:
-		return 1 # CPU (irrelevant, AI-3D is off)
-	var idx = get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
-	return 2 if ai_3d_models[idx].gpu else 1
+		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	# 2026-08-30: Auto follows the Type control the same as Fast/Standard do -
+	# it was never meant to force GPU unconditionally, just default to it
+	# (main.ai_3d_backend_pref's own default value). AUTO_TABLE's model_idx
+	# entries (0/1, the "-GPU"-labeled rows) resolve to the exact same
+	# java_index as their CPU-labeled counterparts (2/3) - GPU vs CPU is
+	# entirely this return value's job, not which model_idx AUTO_TABLE
+	# picked, so honoring Type here needs no AUTO_TABLE change.
+	return main.ai_3d_backend_pref
 
+# AI 3D tab's Hz Cap control ignores itself under Auto (which always
+# targets a fixed 20Hz) - see cycle_ai_3d_hz_cap()'s own comment. Used both
+# for the button's displayed label and the actual value pushed to the
+# Java inference loop, so they can never disagree.
+func get_effective_hz_cap() -> int:
+	return 20 if main.ai_3d_speed == 1 else main.ai_3d_hz_cap
+
+# 2026-08-30: only ever "GPU" or "CPU" now - no silent runtime GPU->CPU
+# substitution to represent as a third hybrid state (see
+# runScheduledGpuInference()/configureDepth() in DepthEstimator.java, and
+# refresh_depth_backend_status() below for how a GPU failure is surfaced
+# instead: a persistent status message, not a quiet backend swap).
 func get_depth_backend_label() -> String:
-	var effective = 1
-	if main.stream_backend and main.stream_backend.has_method("get_effective_depth_backend"):
-		effective = main.stream_backend.get_effective_depth_backend()
-	var requested = get_depth_backend_index()
-	if requested == 2:
-		return "GPU" if effective == 2 else "GPU→CPU"
-	return "CPU"
+	return "GPU" if get_depth_backend_index() == AI3D_BACKEND_GPU else "CPU"
 
+# A non-empty backend_status while GPU is requested means GPU depth failed
+# and (per 2026-08-30's "fail visibly, no fallback" request) is simply not
+# producing frames - not that it silently switched to CPU. Shown as a
+# persistent status message for as long as the failure lasts, not just a
+# one-off transition blip, so it stays visible the whole time it's true
+# (matters most for Auto, which now defaults to GPU but never used to
+# surface this at all).
 func refresh_depth_backend_status(notify_transition: bool = false):
 	if not main.stream_backend:
 		return
-	var effective = main.stream_backend.get_effective_depth_backend()
 	var status = main.stream_backend.get_depth_backend_status()
 	var requested = get_depth_backend_index()
-	var fallback = not status.is_empty() and effective == 1 and requested != 1
-	var was_fallback = not _last_backend_status.is_empty() and _last_effective_backend == 1
-	if notify_transition and fallback and (not was_fallback or status != _last_backend_status):
-		main._log("[DEPTH] Backend fallback: " + status)
+	var failed = not status.is_empty() and requested == AI3D_BACKEND_GPU
+	if notify_transition and failed and status != _last_backend_status:
+		main._log("[DEPTH] GPU depth failed: " + status)
 		if main.ui_controller:
 			main.ui_controller.set_status(status)
-	elif notify_transition and was_fallback and not fallback:
-		var ended = "GPU depth fallback ended (%s)" % get_depth_backend_label()
-		main._log("[DEPTH] " + ended)
+	elif notify_transition and not failed and not _last_backend_status.is_empty():
+		main._log("[DEPTH] GPU depth recovered")
 		if main.ui_controller:
-			main.ui_controller.set_status(ended)
-	_last_effective_backend = effective
-	_last_backend_status = status if fallback else ""
+			main.ui_controller.set_status("GPU depth recovered")
+	_last_backend_status = status if failed else ""
 
 func cycle_ai_3d_debug():
 	if not _ai_3d_supported():
@@ -372,12 +649,33 @@ func _schedule_ai_3d_commit():
 
 func apply_stereo():
 	var mode = get_stereo_mode()
-	if main.comp.available:
+	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
+	# decoder reports the new stream's video size (normally within a frame or
+	# two of _on_stream_started(), which calls this), calling
+	# _disable_legacy_video() to turn comp_viewport's update mode back off.
+	# Unconditionally switching to the legacy composition layer here first -
+	# on every single connect/restart, not just ones legacy actually ends up
+	# serving - re-acquires that OpenXRCompositionLayerQuad's own OpenXR
+	# swapchain for the brief window in between, racing whatever teardown/
+	# recreate it was left in by the *previous* native-active session. That
+	# race, not anything resolution-specific, is what was producing the
+	# repeatable fault-addr-0xe0 GLThread SIGSEGV on resolution/refresh-rate
+	# changes (confirmed via on-device logging: comp_viewport's own size
+	# never lined up with crash/no-crash, but this activation window is
+	# common to every case that crashed). Skip it here when native rendering
+	# is eligible for the new config - can_render_current_config() is the
+	# same static check native_xr_renderer.gd's own _eligible() uses, so this
+	# stays in sync with whatever it decides moments later. If native
+	# rendering then fails to actually start, deactivate(true)'s own
+	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
+	# covers activating legacy properly.
+	var native_will_render = main.native_xr_renderer != null and main.native_xr_renderer.can_render_current_config()
+	if main.comp.available and not native_will_render:
 		if mode > 0:
 			main.comp.switch_to_stereo_comp_layer()
 		else:
 			main.comp.switch_to_comp_layer()
-	else:
+	elif not main.comp.available:
 		if mode > 0 and main.comp.in_use:
 			main.comp.switch_to_mesh_rendering()
 		elif mode == 0 and not main.comp.in_use and main.is_streaming:
@@ -402,19 +700,10 @@ func apply_stereo():
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.ai_3d_speed > 0 else 0
 		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
-		# switch_to_stereo_comp_layer() (called just above) unconditionally sets
-		# primary_screen.comp_viewport (the mono viewport, comp_shader_mat's
-		# always-stereo_mode=0 output) to UPDATE_DISABLED in favor of
-		# comp_viewport_left/right - but that mono viewport is depth capture's
-		# ONLY semantically correct source (see bind_stream_texture()'s own
-		# comment for why comp_viewport_left doesn't work). Force it back to
-		# UPDATE_ALWAYS whenever depth capture needs it, undoing that disable
-		# every time this runs (switch_to_stereo_comp_layer() re-disables it
-		# on every call, so this has to re-assert every time too, not once).
-		if mode >= 3:
-			if main.primary_screen and main.primary_screen.comp_viewport:
-				main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-			main.depth_estimator.bind_stream_texture()
+		# Direct decoder textures feed the small depth-input viewport without a
+		# third full-resolution mono render. refresh_stream_source() keeps the
+		# old mono path available only when a backend cannot expose those textures.
+		main.depth_estimator.refresh_stream_source()
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
 	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
 	# comment above) - it comes straight from main.ai_3d_model. Modes
@@ -429,6 +718,7 @@ func apply_stereo():
 	# share one depth_texture/ImageTexture.
 	var model_idx = get_depth_model_index() if mode >= 3 else 0
 	main.stream_backend.configure_depth(model_idx, get_depth_backend_index())
+	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	refresh_depth_backend_status(true)
 	# sync_model_size() (2026-08-27 - moved BEFORE the texture-capture block
 	# below, was after) resizes depth_viewport in place, which recreates
@@ -441,10 +731,11 @@ func apply_stereo():
 	# errors at the exact moment of a model switch, and reported as
 	# "sometimes stops loading the depth map" after switching models.
 	# configure_depth() above must still run first - sync_model_size()
-	# reads get_depth_model_size(), which only reflects the new model once
-	# the Java side has been reconfigured.
+	# reads get_depth_model_width()/get_depth_model_height(), which only
+	# reflect the new model once the Java side has been reconfigured.
 	if mode >= 3 and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
+		main.depth_estimator.set_separation_pct(main.ai_3d_separation_pct)
 		if main.depth_estimator.depth_texture:
 			var de = main.depth_estimator
 			var upsampled_tex = de.upsample_viewport.get_texture() if de.upsample_viewport else null
@@ -460,6 +751,26 @@ func apply_stereo():
 				main.comp_shader_mat_right.set_shader_parameter("upsampled_depth_texture", upsampled_tex)
 				main.comp_shader_mat_right.set_shader_parameter("offset_texture", offset_tex)
 				main.comp_shader_mat_right.set_shader_parameter("depth_guide_texture", guide_tex)
+	_push_ai3d_effect_uniforms()
+
+# Pushes Stereo Separation/Convergence to every material that reads them -
+# unconditional (not gated on mode >= 3) so a value change while AI-3D is
+# off is already correct the instant it's turned back on. mode5_parallax on
+# comp_shader_mat_left/right is handled separately by depth_estimator.gd's
+# set_separation_pct() above (it needs _pass_size, which only depth_
+# estimator.gd tracks) - this covers stereo_screen.gdshader's own
+# independently-tuned copy plus convergence everywhere, including
+# depth_offset.gdshader's offset_mat, which nothing pushed to before this.
+func _push_ai3d_effect_uniforms():
+	var convergence = main.ai_3d_convergence_pct / 100.0
+	if main.screen_mesh.material_override is ShaderMaterial:
+		main.screen_mesh.material_override.set_shader_parameter("mode5_parallax", STEREO_SCREEN_BASE_PARALLAX * (main.ai_3d_separation_pct / 100.0))
+		main.screen_mesh.material_override.set_shader_parameter("convergence", convergence)
+	for mat in [main.comp_shader_mat_left, main.comp_shader_mat_right]:
+		if mat:
+			mat.set_shader_parameter("convergence", convergence)
+	if main.depth_estimator and main.depth_estimator.offset_mat:
+		main.depth_estimator.offset_mat.set_shader_parameter("convergence", convergence)
 
 func toggle_passthrough():
 	if not main.is_xr_active or not main.passthrough_supported:
@@ -526,19 +837,18 @@ func _hide_all_backgrounds():
 			bg.visible = false
 			bg.emitting = false
 
-func cycle_smooth_mode():
-	main.smooth_mode = (main.smooth_mode + 1) % main.smooth_labels.size()
-	_save_setting(main._ui_render_btn, main.smooth_labels[main.smooth_mode])
-	apply_filter()
-
 func cycle_cursor_mode():
 	main.cursor_mode = (main.cursor_mode + 1) % main.cursor_labels.size()
 	_save_setting(main._ui_cursor_btn, main.cursor_labels[main.cursor_mode])
 
 func cycle_steady():
 	main.pointer_steady = (main.pointer_steady + 1) % main.pointer_steady_labels.size()
-	main._steady_active = false
+	main._reset_steady_filter()
 	_save_setting(main._ui_steady_btn, main.pointer_steady_labels[main.pointer_steady])
+
+func cycle_double_click_mode():
+	main.double_click_mode = (main.double_click_mode + 1) % main.double_click_mode_labels.size()
+	_save_setting(main._ui_double_click_btn, main.double_click_mode_labels[main.double_click_mode])
 
 func is_codec_available(idx: int) -> bool:
 	var client_ok = false
@@ -595,9 +905,57 @@ func fallback_codec():
 		main.codec_preference = available[0] if not available.is_empty() else 0
 
 func cycle_sharpen_mode():
-	main.sharpen_mode = (main.sharpen_mode + 1) % main.sharpen_labels.size()
-	_save_setting(main._ui_sharpen_btn, main.sharpen_labels[main.sharpen_mode])
+	var choices := get_sharpen_choices()
+	var current_idx := choices.find(main.sharpen_mode)
+	main.sharpen_mode = choices[(maxi(current_idx, -1) + 1) % choices.size()]
+	_save_setting(main._ui_sharpen_btn, get_sharpen_label(main.sharpen_mode))
 	apply_filter()
+
+func get_sharpen_choices() -> Array:
+	if OS.get_name() == "Android":
+		return [0, main.SHARPEN_RUNTIME_NORMAL, main.SHARPEN_RUNTIME_QUALITY]
+	return range(main.sharpen_labels.size())
+
+func get_sharpen_label(mode: int) -> String:
+	if OS.get_name() == "Android":
+		match mode:
+			main.SHARPEN_RUNTIME_NORMAL:
+				return "Runtime"
+			main.SHARPEN_RUNTIME_QUALITY:
+				return "Runtime Quality"
+			_:
+				return "Off"
+	return main.sharpen_labels[clampi(mode, 0, main.sharpen_labels.size() - 1)]
+
+func cycle_brightness():
+	var idx = PICTURE_BRIGHTNESS_VALUES.find(main.brightness_pct)
+	main.brightness_pct = PICTURE_BRIGHTNESS_VALUES[(maxi(idx, 0) + 1) % PICTURE_BRIGHTNESS_VALUES.size()]
+	_save_setting(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
+	apply_filter()
+
+func cycle_contrast():
+	var idx = PICTURE_CONTRAST_VALUES.find(main.contrast_pct)
+	main.contrast_pct = PICTURE_CONTRAST_VALUES[(maxi(idx, 0) + 1) % PICTURE_CONTRAST_VALUES.size()]
+	_save_setting(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
+	apply_filter()
+
+func cycle_gamma():
+	var idx = PICTURE_GAMMA_VALUES.find(main.gamma_pct)
+	main.gamma_pct = PICTURE_GAMMA_VALUES[(maxi(idx, 0) + 1) % PICTURE_GAMMA_VALUES.size()]
+	_save_setting(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+	apply_filter()
+
+func cycle_ambient_mode():
+	main.ambient_mode = (main.ambient_mode + 1) % main.ambient_mode_labels.size()
+	_save_setting(main._ui_ambient_btn, main.ambient_mode_labels[main.ambient_mode])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
+
+func cycle_ambient_color():
+	main.ambient_color = (main.ambient_color + 1) % main.ambient_color_labels.size()
+	_save_setting(main._ui_ambient_color_btn, main.ambient_color_labels[main.ambient_color])
+	main.comp.apply_ambient_settings()
+	main.ui_controller.update_ambient_btn_state()
 
 func cycle_auto_reconnect():
 	main.auto_reconnect_enabled = not main.auto_reconnect_enabled
@@ -628,56 +986,152 @@ func toggle_host_cursor():
 func apply_filter():
 	if not main.is_xr_active:
 		return
-	var filter_val = main.smooth_mode
-	var sharp_val = float(main.sharpen_mode) * 0.5
+	# The standalone Blur control was removed. Keep the legacy shader uniform
+	# neutral; its neighbourhood taps remain available only for shader-sharpen
+	# fallback on runtimes without compositor sharpening.
+	var filter_val = 0
+	var runtime_sharpen_requested = main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL
+	var runtime_sharpen_active = main.comp.apply_compositor_sharpen(main.sharpen_mode) if main.comp else false
+	# Retain an application-shader fallback for desktop, stock Godot templates,
+	# and runtimes that do not advertise XR_FB_composition_layer_settings.
+	var sharp_val: float
+	if runtime_sharpen_requested:
+		sharp_val = 0.0 if runtime_sharpen_active else (0.5 if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)
+	else:
+		sharp_val = float(main.sharpen_mode) * 0.5
+	# Picture tab (2026-08-31) - percent state -> shader-unit conversion
+	# lives here, shaders themselves stay unit-agnostic (0.0/1.0/1.0
+	# neutral defaults).
+	var brightness_val = main.brightness_pct / 100.0
+	var contrast_val = main.contrast_pct / 100.0
+	var gamma_val = main.gamma_pct / 100.0
+	var picture_adjusted = main.brightness_pct != 0 or main.contrast_pct != 100 or main.gamma_pct != 100
+	# Keep pow() and the three grading uniforms out of the default mesh and
+	# composition shader programs. Shader swaps only occur when crossing the
+	# neutral/adjusted boundary, not for every value within that state.
+	if not _stereo_sdr_shader:
+		_stereo_sdr_shader = load("res://src/shaders/stereo_screen.gdshader")
+	if not _stereo_picture_shader:
+		_stereo_picture_shader = load("res://src/shaders/stereo_screen_picture.gdshader")
 	var mat = main.screen_mesh.material_override
 	if mat and mat is ShaderMaterial:
+		var desired_shader = _stereo_picture_shader if picture_adjusted else _stereo_sdr_shader
+		if mat.shader != desired_shader:
+			mat.shader = desired_shader
 		mat.set_shader_parameter("filter_mode", filter_val)
 		mat.set_shader_parameter("sharpen", sharp_val)
 		mat.set_shader_parameter("blur_scale", main.get_blur_scale(main.primary_screen))
+		mat.set_shader_parameter("brightness", brightness_val)
+		mat.set_shader_parameter("contrast", contrast_val)
+		mat.set_shader_parameter("gamma", gamma_val)
+	main.comp.refresh_picture_shader_state()
 	for s in main.screens:
 		for cm in main.comp.get_shader_mats(s):
 			if cm:
 				cm.set_shader_parameter("filter_mode", filter_val)
 				cm.set_shader_parameter("sharpen", sharp_val)
 				cm.set_shader_parameter("blur_scale", main.get_blur_scale(s))
+				cm.set_shader_parameter("brightness", brightness_val)
+				cm.set_shader_parameter("contrast", contrast_val)
+				cm.set_shader_parameter("gamma", gamma_val)
 
-func apply_display_refresh_rate():
+func apply_display_refresh_rate() -> bool:
 	if not main.is_xr_active:
-		return
+		return false
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
-		return
-	var target_hz: float = 90.0
+		return false
+	_refresh_request_seq += 1
+	var request_seq = _refresh_request_seq
+	var target_hz: float = float(main.stream_fps)
 	match main.stream_fps:
 		30: target_hz = 90.0
-		60: target_hz = 72.0
-		72: target_hz = 72.0
-		90: target_hz = 90.0
-		120: target_hz = 120.0
+		# 2026-08-29: testing 120Hz again now that stereo rendering is
+		# projectionless (no more per-eye mesh reprojection cost) - this was
+		# 72.0 since 1132efd (2026-06-12), when 120Hz was too expensive for
+		# the old mesh-projection render path and caused stutter. Revert to
+		# 72.0 if that's still true here.
+		60: target_hz = 120.0
 	var available = interface.get_available_display_refresh_rates()
+	Engine.max_fps = main.stream_fps
 	if available.is_empty():
 		main._log("[REFRESH] No available refresh rates reported")
 		main.display_refresh_rate = target_hz
-		return
+		return false
+	available.sort()
+	var current_hz: float = interface.get_display_refresh_rate()
+	main._log("[REFRESH] Runtime rates=%s current=%.0fHz target=%.0fHz" % [str(available), current_hz, target_hz])
+
+	# Preserve an exact current rate. Otherwise request every Quest 3 extended
+	# target through the standard API up to the documented 207 Hz maximum;
+	# verification below selects a reported fallback if the runtime rejects it.
+	var target_already_active := absf(current_hz - target_hz) < 0.6
 	var best: float = 0.0
+	if target_already_active:
+		best = current_hz
+	elif main.device_is_quest3 and target_hz > 120.0 and target_hz <= QUEST3_REFRESH_REQUEST_MAX:
+		# Meta deprecated the enumeration API; HorizonOS still returns only
+		# legacy presets even though Quest 3 accepts arbitrary integer rates.
+		# Request the unlisted rate directly, then verify it and fall back to
+		# the reported list on older/currently-limited runtime versions.
+		interface.set_display_refresh_rate(target_hz)
+		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
+		if request_seq != _refresh_request_seq:
+			return false
+		var applied_hz: float = interface.get_display_refresh_rate()
+		if absf(applied_hz - target_hz) < 0.6:
+			best = applied_hz
+		else:
+			best = _reported_refresh_fallback(available, target_hz)
+			interface.set_display_refresh_rate(best)
+			main._log("[REFRESH] Quest 3 rejected unlisted %.0fHz (actual %.0fHz); using reported %.0fHz" % [target_hz, applied_hz, best])
+			await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
+			if request_seq != _refresh_request_seq:
+				return false
+	else:
+		best = _reported_refresh_fallback(available, target_hz)
+		interface.set_display_refresh_rate(best)
+		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
+		if request_seq != _refresh_request_seq:
+			return false
+	main.display_refresh_rate = best
+	# 2026-08-29: capping render fps to the stream's own fps again (was
+	# uncapped since 8ffa8fe, 2026-05-05, "remove 60fps cap causing Quest ASW
+	# reprojection blur") - testing whether that ASW blur was a symptom of
+	# the old mesh-projection render path specifically, now that rendering
+	# is projectionless. Revert to 0 (uncapped) if the blur is still there.
+	if target_already_active:
+		main._log("[REFRESH] Preserved active %.0fHz for %dfps, capped render to %dfps" % [best, main.stream_fps, main.stream_fps])
+	elif absf(best - target_hz) < 0.6:
+		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.stream_fps, main.stream_fps])
+	else:
+		main._log("[REFRESH] %.0fHz unavailable; fell back to reported %.0fHz for %dfps stream, capped render to %dfps" % [target_hz, best, main.stream_fps, main.stream_fps])
+	return true
+
+func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
+	var best := 0.0
 	for rate in available:
 		if rate >= target_hz and (best == 0.0 or rate < best):
 			best = rate
 	if best == 0.0:
-		available.sort()
 		best = available[available.size() - 1]
-	interface.set_display_refresh_rate(best)
-	main.display_refresh_rate = best
-	Engine.max_fps = 0
-	main._log("[REFRESH] Set headset to %.0fHz (target %.0fHz for %dfps)" % [best, target_hz, main.stream_fps])
+	# Changing the OpenXR display rate tears down/recreates runtime-owned
+	# surfaces on Quest, which can race a stream restart's just-rebuilt native
+	# and Godot GLES resources. That protection now lives in the caller,
+	# apply_display_refresh_rate()'s target_already_active check above (computed
+	# once, before either set_display_refresh_rate() call site) - this helper
+	# only computes which rate to fall back to, it doesn't apply anything.
+	return best
 
 func cycle_fps():
-	var rates = [30, 60, 72, 90, 120]
-	var idx = rates.find(main.stream_fps)
-	main.stream_fps = rates[(idx + 1) % rates.size()]
+	var idx = STREAM_FPS_RATES.find(main.stream_fps)
+	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
+	main.stream_fps = STREAM_FPS_RATES[next_idx]
 	_save_setting(main._ui_fps_btn, "%d" % main.stream_fps)
-	_schedule_stream_restart()
+	if main.is_streaming:
+		_schedule_stream_restart()
+	else:
+		apply_display_refresh_rate()
 
 func cycle_resolution():
 	if main.is_polaris_host:
@@ -774,8 +1228,13 @@ func _schedule_stream_restart():
 		return
 	_restart_pending = false
 	main._log("[RESTART] Restarting stream")
-	apply_display_refresh_rate()
 	main._restarting_stream = true
+	# The native renderer owns an OpenXR swapchain and a shared EGL context.
+	# Stop it before changing the display rate or destroying decoder textures;
+	# otherwise the runtime can recreate its display surface while either
+	# renderer still references the old one, which crashes Quest's GLThread.
+	if main.native_xr_renderer:
+		main.native_xr_renderer.deactivate(false)
 	# Stop the composition layer shader from referencing the current session's
 	# texture BEFORE tearing the connection down. stop_play_stream() triggers
 	# native decoder cleanup, which frees the underlying GPU texture/uniform
@@ -792,7 +1251,10 @@ func _schedule_stream_restart():
 	await main.get_tree().process_frame
 	main.stream_backend.stop_play_stream()
 	await main.get_tree().create_timer(0.5).timeout
-	main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
+	# start_stream() is the single owner of refresh application at a connection
+	# boundary. It awaits the Quest surface transition before resizing Godot
+	# viewports or creating decoder/native-renderer resources.
+	await main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
 
 func toggle_hand_tracking():
 	main.tracking_mode = (main.tracking_mode + 1) % 2

@@ -69,10 +69,50 @@ var is_streaming: bool = false
 var sbs_mode: int = 0
 # Collapsed (2026-08-24) to two independent axes - see
 # settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
-# get_stereo_mode() for how they combine.
-var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256-GPU, MiDaS-192, MiDaS-256, YOLO26-N-256/320/384, DA-V2-196/252)
+# get_stereo_mode() for how they combine. Split across a main-page On/Off
+# toggle and a dedicated "AI 3D" tab (2026-08-28) - ai_3d_speed itself is
+# UNCHANGED (still the single source of truth everywhere else in the
+# codebase), just driven by two different UI controls now: the main page
+# toggle flips it between 0 and ai_3d_last_mode, while the tab's own "3D
+# Mode" control cycles 1-3 directly and keeps ai_3d_last_mode in sync - see
+# settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
+var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
 var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
+var ai_3d_gpu_priority: int = 0 # 0=Stream (low-priority OpenCL), 1=Default driver priority
+var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
+# GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
+# only meaningful when that model actually has a GPU variant
+# (ai_3d_models[idx].gpu_available); DA-V2-252 has none, so this is
+# silently ignored (forced CPU) when it's selected - see
+# settings_controller.gd's get_depth_backend_index(). Values match
+# DepthBridge's own BACKEND_CPU=1/BACKEND_GPU=2 constants directly, no
+# separate mapping needed.
+var ai_3d_backend_pref: int = 2 # 1=CPU, 2=GPU
+# Depth-inference update-rate cap, in Hz - "more for experimentation" per
+# the user's own framing, so it's a straightforward pass-through to the
+# Java inference loop (see DepthBridge::set_depth_hz_cap()), not something
+# that changes the visual algorithm. Ignored under Auto (which always
+# targets a fixed 20Hz) - see settings_controller.gd's get_effective_hz_cap().
+var ai_3d_hz_cap: int = 20
+# Percentage multiplier on top of the depth-warp shaders' own tuned base
+# separation values (yuv_display.gdshader's mode5_parallax=0.006,
+# stereo_screen.gdshader's own copy=0.042) - NOT one shared absolute value,
+# since those two rendering paths were independently tuned to different
+# magnitudes for the same visual effect. See settings_controller.gd's
+# _push_ai3d_effect_uniforms()/depth_estimator.gd's set_separation_pct().
+var ai_3d_separation_pct: int = 100
+# Percentage-as-depth-fraction (30-70, maps directly to 0.30-0.70) for the
+# warp shaders' "convergence" uniform - the depth value that renders with
+# zero parallax (the "screen plane"). Declared in every depth-warp shader
+# already, default 0.5, but never actually driven from GDScript until this
+# - see _push_ai3d_effect_uniforms().
+var ai_3d_convergence_pct: int = 50
+# Horizontal correction for the cursor drawn over AI-warped video. Stored as
+# -1/0/1 (Left/Default/Right). The calibrated Default is one 12px-at-1080p
+# step right of the original position. Presentation only: raycast and host
+# click coordinates stay unchanged.
+var ai_3d_cursor_position: int = 0
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -133,8 +173,14 @@ var grid_mode_enabled: bool = true
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
-var stats_frame_times: Array = []
+var stats_video_update_fps: float = 0.0
+var stats_sample_timer: float = 0.0
+var stats_app_frames: int = 0
+var stats_video_updates: int = 0
 var stats_network_events: int = 0
+var performance_overlay_enabled: bool = false
+var performance_overlay_timer: float = 0.0
+var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
@@ -156,10 +202,27 @@ var curvature: int:
 	set(v):
 		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
-var smooth_mode: int = 0
 var sharpen_mode: int = 0
-var smooth_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
-var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%"]
+const SHARPEN_RUNTIME_NORMAL := 6
+const SHARPEN_RUNTIME_QUALITY := 7
+# Keep the existing shader modes in their original saved-state slots for a
+# direct A/B comparison. The two runtime modes bypass those expensive video
+# neighbourhood samples when the OpenXR extension is available.
+var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime", "Runtime Quality"]
+# Picture tab (2026-08-31) - brightness/contrast/gamma grade applied as a
+# final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
+# shader variant) - see settings_controller.gd's apply_filter() for the
+# percent->shader-uniform mapping and each shader's apply_picture().
+var brightness_pct: int = 0 # -20..20, step 10 (additive)
+var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
+var gamma_pct: int = 100 # 50..150, step 25 (exponent)
+# Ambient screen lighting is a separate low-resolution composition layer,
+# so it stays out of the main YUV/HDR/AI-3D shader path. Reactive modes use
+# the already-rendered primary screen as their colour source.
+var ambient_mode: int = 0
+var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
+var ambient_color: int = 0
+var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
@@ -167,7 +230,6 @@ var _mesh_size: Vector2:
 	set(v):
 		if primary_screen: primary_screen.mesh_size = v
 var stream_fps: int = 60
-var _cached_filter_mode: int = -1
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
 # host_resolution is the actual WxH about to be (or last) requested from the
@@ -215,6 +277,7 @@ var resolution_scale_options: Array = RESOLUTION_PRESETS
 # Quest 2 user reported AI-3D tanking performance; see settings_controller.
 # gd's QUEST2_AUTO_TABLE and main.gd's QUEST2_MAX_RESOLUTION.
 var device_is_quest2: bool = false
+var device_is_quest3: bool = false
 # See device_is_quest2's comment. Quest 2's own per-eye display resolution
 # (~1832x1920) is already below Quest 3's, so there's no real benefit
 # requesting more than this regardless of AI-3D state - applied in
@@ -246,11 +309,20 @@ var display_refresh_rate: float = 72.0
 var cursor_mode: int = 1
 var cursor_labels: Array = ["Circle", "Pointer"]
 var pointer_steady: int = 1
-var pointer_steady_labels: Array = ["Off", "Low", "High"]
+var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
+# Touch-controller double-click gesture. Standard leaves host-side recognition
+# untouched; Chord maps a near-simultaneous trigger+grip press to two left
+# clicks. Hand tracking always retains its normal pinch-twice behaviour.
+var double_click_mode: int = 0
+var double_click_mode_labels: Array = ["Standard", "Chord"]
 var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
 var _steady_factor: float = 0.3
 var _steady_dead_zone: float = 0.002
+var _steady_velocity: Vector3 = Vector3.ZERO
+var _steady_raw_hit: Vector3 = Vector3.ZERO
+var _steady_last_usec: int = 0
+var _steady_last_frame: int = -1
 var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
@@ -284,6 +356,7 @@ var input_handler: InputHandler
 var ui_controller: UIController
 var auto_detect: AutoDetect
 var depth_estimator: DepthEstimatorModule
+var native_xr_renderer: NativeXrRendererManager
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
 var screen_manager: ScreenManager
@@ -514,6 +587,8 @@ var _screen_mesh_original_mat: Material:
 		if primary_screen: primary_screen._original_mat = v
 
 var _log_lines: PackedStringArray = []
+var _log_file_initialized: bool = false
+var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
 var _ui_host_label: Label
@@ -533,6 +608,15 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
+var _ui_3d_priority_btn: Button
+# AI 3D tab (2026-08-28) - see ui_controller.gd's build_ui() for layout.
+var _ui_3d_mode_btn: Button
+var _ui_3d_type_btn: Button
+var _ui_3d_hz_cap_btn: Button
+var _ui_3d_separation_btn: Button
+var _ui_3d_convergence_btn: Button
+var _ui_3d_cursor_position_btn: Button
+var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
 var _ui_bitrate_btn: Button
@@ -541,11 +625,17 @@ var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_host_cursor_btn: Button
-var _ui_render_btn: Button
 var _ui_sharpen_btn: Button
+# Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
+var _ui_brightness_btn: Button
+var _ui_contrast_btn: Button
+var _ui_gamma_btn: Button
+var _ui_ambient_btn: Button
+var _ui_ambient_color_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
+var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
 var auto_reconnect_enabled: bool = true
 var _reconnecting: bool = false
@@ -557,6 +647,7 @@ var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button
 var _ui_center_btn: Button
+var _ui_stats_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
@@ -782,11 +873,18 @@ func _log(msg: String):
 	push_warning("NF: %s" % msg)
 
 func _flush_log():
-	var f = FileAccess.open("user://debug.log", FileAccess.WRITE)
+	if _log_lines.is_empty():
+		return
+	var mode = FileAccess.READ_WRITE if _log_file_initialized else FileAccess.WRITE
+	var f = FileAccess.open("user://debug.log", mode)
 	if f:
+		if _log_file_initialized:
+			f.seek_end()
 		for line in _log_lines:
 			f.store_line(line)
 		f.close()
+		_log_lines.clear()
+		_log_file_initialized = true
 
 func _setup_comp_layer():
 	comp = CompositionLayerManager.new(self)
@@ -824,22 +922,72 @@ var _comp_base_size: Vector2i:
 func get_blur_scale(s: VRScreen) -> float:
 	if _xr_render_width <= 0:
 		return 1.0
-	return (s.uv_region.z * float(stream_viewport.size.x)) / float(_xr_render_width)
+	var source_size: Vector2i = stream_manager.get_current_stream_size() if stream_manager else stream_viewport.size
+	return (s.uv_region.z * float(source_size.x)) / float(_xr_render_width)
+
+func _reset_steady_filter():
+	_steady_active = false
+	_steady_velocity = Vector3.ZERO
+	_steady_raw_hit = Vector3.ZERO
+	_steady_last_usec = 0
+	_steady_last_frame = -1
+
+func _one_euro_alpha(cutoff_hz: float, delta: float) -> float:
+	var tau := 1.0 / (TAU * maxf(cutoff_hz, 0.001))
+	return 1.0 / (1.0 + tau / maxf(delta, 0.000001))
 
 func _get_steady_hit(raw: Vector3) -> Vector3:
 	if pointer_steady == 0 or not is_xr_active:
-		_steady_active = false
+		_reset_steady_filter()
 		return raw
+	var frame := Engine.get_process_frames()
+	# Several interaction paths ask for the same ray hit in one frame. Advancing
+	# a time-based filter for every caller would make its response depend on UI
+	# state rather than elapsed time.
+	if _steady_active and frame == _steady_last_frame:
+		return _steady_hit
+	var now_usec := Time.get_ticks_usec()
 	if not _steady_active:
 		_steady_hit = raw
 		_steady_active = true
+		_steady_velocity = Vector3.ZERO
+		_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return raw
+	if pointer_steady == 3:
+		var delta := float(now_usec - _steady_last_usec) / 1000000.0
+		# A long gap means the ray left the screen or tracking was interrupted.
+		# Reset rather than letting the old point pull the cursor back onscreen.
+		if delta <= 0.0 or delta > 0.25:
+			_steady_hit = raw
+			_steady_velocity = Vector3.ZERO
+			_steady_raw_hit = raw
+		else:
+			# The derivative must be measured between consecutive raw samples.
+			# Measuring it against the filtered position makes accumulated filter
+			# lag look like movement and defeats One Euro's stationary cutoff.
+			var raw_velocity := (raw - _steady_raw_hit) / delta
+			var derivative_alpha := _one_euro_alpha(1.0, delta)
+			_steady_velocity = _steady_velocity.lerp(raw_velocity, derivative_alpha)
+			# Low cutoff while stationary removes controller tremor; movement raises
+			# it immediately so deliberate aiming does not inherit High's lag.
+			var cutoff := 1.2 + 8.0 * _steady_velocity.length()
+			_steady_hit = _steady_hit.lerp(raw, _one_euro_alpha(cutoff, delta))
+			_steady_raw_hit = raw
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
+		return _steady_hit
 	var factor := 0.3 if pointer_steady == 1 else 0.1
 	var dead_zone := 0.002 if pointer_steady == 1 else 0.005
 	var delta = raw - _steady_hit
 	if delta.length() < dead_zone:
+		_steady_last_usec = now_usec
+		_steady_last_frame = frame
 		return _steady_hit
 	_steady_hit = _steady_hit.lerp(raw, factor)
+	_steady_last_usec = now_usec
+	_steady_last_frame = frame
 	return _steady_hit
 
 func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
@@ -914,7 +1062,7 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing and not (native_xr_renderer and native_xr_renderer.active)
 		if on_screen and (pad_on_screen or tp_capturing):
 			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
@@ -942,6 +1090,13 @@ func _update_cursor_layer():
 			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
 			var cx = bezel_px + uv.x * base_w
 			var cy = bezel_px + uv.y * base_h
+			# Correct the visible cursor independently of the real click point.
+			# One step is 12 pixels at 1080p and scales with stream height so the
+			# apparent adjustment stays consistent at other resolutions.
+			if stereo >= 3:
+				# New Left/Default/Right correspond to the old Default/Right/
+				# Right+ positions respectively, hence the +1 calibration step.
+				cx += (ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 			_set_comp_quad_hidden(comp_cursor, true)
 			if pointer_cursor:
 				pointer_cursor.visible = false
@@ -980,6 +1135,17 @@ func _update_cursor_layer():
 			_hide_all_stream_cursors()
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
 			var to_cam = (xr_camera.global_position - hit_point).normalized()
+			# The native renderer cannot embed the pointer into its video texture,
+			# so apply the AI-3D cursor calibration to this independent composition
+			# layer in world space. Convert the legacy branch's exact pixel offset
+			# into screen metres so Left/Default/Right remain resolution-independent.
+			var native_ai_cursor_offset := Vector3.ZERO
+			if on_screen and stereo >= 3 and native_xr_renderer and native_xr_renderer.active and hovered_screen:
+				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
+				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
+				var correction_px := float(ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				var screen_right := hovered_screen.global_transform.basis.x.normalized()
+				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			var screen_dist = xr_camera.global_position.distance_to(screen_mesh.global_position)
 			var cursor_dist = xr_camera.global_position.distance_to(hit_point)
 			var dist_scale = cursor_dist / screen_dist
@@ -992,7 +1158,7 @@ func _update_cursor_layer():
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
 					comp_cursor_viewport.size = Vector2i(256, 256)
 				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
+				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 			elif on_screen:
@@ -1000,9 +1166,14 @@ func _update_cursor_layer():
 				if circle: circle.visible = false
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
 					comp_cursor_viewport.size = Vector2i(40, 64)
-				var cursor_quad_size = Vector2(0.064 * dist_scale, 0.064 * dist_scale) if RenderingServer.get_current_rendering_method() == "gl_compatibility" else Vector2(0.04 * dist_scale, 0.064 * dist_scale)
+				# The old GLES path embedded the screen pointer in each video
+				# viewport, so its separate cursor quad used a deliberately square
+				# fallback. The native video path exposes this 40x64 pointer quad;
+				# preserve that texture's natural aspect ratio.
+				var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale) if native_screen_cursor or RenderingServer.get_current_rendering_method() != "gl_compatibility" else Vector2(0.064 * dist_scale, 0.064 * dist_scale)
 				comp_cursor.set_quad_size(cursor_quad_size)
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
+				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
 				comp_cursor.rotate_object_local(Vector3.UP, PI)
 				var right = comp_cursor.global_transform.basis.x
@@ -1114,9 +1285,14 @@ func _update_marker_layers(_delta: float):
 	if not comp_marker_right and not comp_marker_left:
 		return
 	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
-		_set_comp_quad_hidden(comp_marker_right, true)
-		_set_comp_quad_hidden(comp_marker_left, true)
+		for layer in [comp_marker_right, comp_marker_left]:
+			_set_comp_quad_hidden(layer, true)
+			if layer:
+				_set_viewport_active(layer.get_layer_viewport(), false)
 		return
+	for layer in [comp_marker_right, comp_marker_left]:
+		if layer:
+			_set_viewport_active(layer.get_layer_viewport(), true)
 	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
 	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
 
@@ -1243,11 +1419,24 @@ func start_connect_timeout():
 func _on_connect_timeout():
 	if not _connect_timeout_pending:
 		return
-	_connect_timeout_pending = false
 	_log("[CONNECT] Connection timed out")
-	ui_controller.set_status("Failed to connect (timeout)")
-	welcome_screen.reset_connect_button()
 	stream_backend.stop_play_stream()
+	restore_after_failed_connect("Failed to connect (timeout)")
+
+func restore_after_failed_connect(status_msg: String, welcome_name: String = "server"):
+	# start_stream() resizes the shared source/composition viewports before the
+	# asynchronous launch request is sent. If that request fails, no decoder was
+	# started and therefore no stream_terminated signal arrives to run the normal
+	# disconnect cleanup. Leaving comp_base_size at the attempted stream size
+	# makes the 1920x1080 welcome cursor use the wrong pixel coordinate space.
+	# Treat this as a complete non-streaming transition, including cancelling the
+	# still-armed Connect timeout and clearing restart state so the viewport reset
+	# below cannot take the native-restart preserve path.
+	_connect_timeout_pending = false
+	_restarting_stream = false
+	_reconnecting = false
+	is_streaming = false
+	_full_disconnect_cleanup(status_msg, welcome_name)
 
 func _bind_yuv_textures():
 	comp.bind_yuv_textures()
@@ -1266,8 +1455,20 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
+	# The selected display rate was already applied and awaited by
+	# StreamManager.start_stream() before decoder and native swapchain setup.
+	# Do not request it again here: a display transition racing newly-created
+	# GLES resources crashes the Quest GL thread.
 	var was_restarting = _restarting_stream
 	is_streaming = true
+	stats_timer = 0.0
+	stats_sample_timer = 0.0
+	stats_app_frames = 0
+	stats_video_updates = 0
+	stats_fps = 0.0
+	stats_video_update_fps = 0.0
+	performance_overlay_timer = 0.0
+	_performance_previous_window.clear()
 	_restarting_stream = false
 	_connect_timeout_pending = false
 	_reconnecting = false
@@ -1437,6 +1638,8 @@ func _update_comp_layer_size():
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
 	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " restarting=" + str(_restarting_stream) + " reconnecting=" + str(_reconnecting) + " msg=" + str(msg) + " err=" + str(err_code))
+	if native_xr_renderer:
+		native_xr_renderer.deactivate(false)
 	if _auto_connect:
 		_auto_connect = false
 		return
@@ -1461,7 +1664,7 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 	is_streaming = false
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
-func _full_disconnect_cleanup(status_msg: String):
+func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
 	_connect_timeout_pending = false
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
@@ -1470,7 +1673,7 @@ func _full_disconnect_cleanup(status_msg: String):
 	ui_controller.set_status(status_msg)
 	ui_controller.set_disconnect_visible(false)
 	_log("[STREAM] Full disconnect: %s" % status_msg)
-	welcome_screen.show_welcome_screen("welcome")
+	welcome_screen.show_welcome_screen(welcome_name)
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_clear_comp_yuv_textures()
 	# _clear_comp_yuv_textures() shows the ". . ." loading indicator (meant
@@ -1562,6 +1765,12 @@ func _ready():
 		return
 
 	_init_xr(interface)
+	if native_xr_renderer:
+		native_xr_renderer.setup()
+	# Composition providers must be registered before the OpenXR session starts.
+	# Only after registration may the refresh transition settle before layer and
+	# stream swapchains are allocated.
+	await settings_controller.apply_display_refresh_rate()
 	_init_backgrounds_and_comp_layer()
 	await get_tree().create_timer(0.5).timeout
 	screen_mesh.extra_cull_margin = 10.0
@@ -1590,6 +1799,7 @@ func _init_modules():
 	ui_controller = UIController.new(self)
 	auto_detect = AutoDetect.new(self)
 	depth_estimator = DepthEstimatorModule.new(self)
+	native_xr_renderer = NativeXrRendererManager.new(self)
 	welcome_screen = WelcomeScreen.new(self)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
@@ -1630,8 +1840,23 @@ func _init_android_setup():
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
 	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, 4)
+	ai_3d_model = clampi(ai_3d_model, 0, settings_controller.ai_3d_models.size() - 1)
 	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
+	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
+	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
+	# Runs before any per-host state (state_manager.gd's load_host_state()
+	# has its own call for that, and its own comment) - also covers a
+	# brand-new install/host, which never reaches that call at all (see
+	# load_host_state()'s early return when the host has no saved section
+	# yet), so a fresh Android install can't boot pointed at ai_3d_model's
+	# compiled-in default (MiDaS-256-GPU, not bundled there).
+	settings_controller.enforce_ai3d_platform_lock()
+	if not [12, 15, 20, 30, 40].has(ai_3d_hz_cap):
+		ai_3d_hz_cap = 20
+	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
+		ai_3d_separation_pct = 100
+	if not [30, 40, 50, 60, 70].has(ai_3d_convergence_pct):
+		ai_3d_convergence_pct = 50
 	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
@@ -1672,6 +1897,7 @@ func _init_ui():
 
 	ui_controller.build_ui()
 	welcome_screen.build_welcome_ui()
+	_set_viewport_active(ui_viewport, false)
 
 	%IPInput.gui_input.connect(func(e): ui_controller.on_ipinput_gui_input(e))
 	ui_controller.setup_numpad()
@@ -1902,7 +2128,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 	if comp.available:
 		comp.setup_screen(s, with_stereo)
 		if is_streaming and stream_viewport:
-			var stream_size = stream_viewport.size
+			var stream_size: Vector2i = stream_manager.get_current_stream_size() if stream_manager else stream_viewport.size
 			if stream_size.x > 0 and stream_size.y > 0:
 				s.comp_viewport.size = stream_size
 				s.comp_base_size = stream_size
@@ -2002,7 +2228,8 @@ func _init_stream_backend():
 		# generation), see GodotApp.java's getDeviceModel() comment.
 		var device_codename = stream_backend.get_device_model()
 		device_is_quest2 = device_codename.to_lower() == "hollywood"
-		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s" % [device_codename, str(device_is_quest2)])
+		device_is_quest3 = device_codename.to_lower() == "eureka"
+		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s device_is_quest3=%s" % [device_codename, str(device_is_quest2), str(device_is_quest3)])
 	_client_codec_support = stream_backend.probe_all_video_formats()
 	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s" % [
 		str(_client_codec_support.get("h264", false)),
@@ -2038,6 +2265,19 @@ func _init_stream_backend():
 		v2_node.h264_hw_upgraded.connect(func():
 			_bind_yuv_textures()
 			_log("[H264] HW upgrade: re-bound YUV textures for NV12")
+		)
+	if v2_node.has_signal("hdr_mode_changed"):
+		v2_node.hdr_mode_changed.connect(func(enabled: bool, metadata: Dictionary):
+			_log("[HDR] Protocol mode changed: enabled=%s metadata=%s" % [str(enabled), str(metadata)])
+			# The native callback persists transfer metadata immediately, then
+			# applies it on the render thread. Rebind on this frame and once more
+			# after a rendered frame so either ordering updates the composition
+			# shader variant without relying on stream-start retry timing.
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
+			await get_tree().process_frame
+			comp.invalidate_yuv_cache()
+			_bind_yuv_textures()
 		)
 	if v2_node.has_signal("controller_rumble"):
 		v2_node.controller_rumble.connect(func(controller, low_freq, high_freq):
@@ -2103,8 +2343,14 @@ func _init_xr(interface):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	sbs_mode = 0
 	ai_3d_speed = 0
-
-	settings_controller.apply_display_refresh_rate()
+	# Establish the default 60fps -> 120Hz mapping before composition-layer
+	# swapchains are created. Delaying this until stream startup makes the
+	# runtime transition every live layer from 72Hz to 120Hz at once, which is
+	# measurably less stable on Quest. StreamManager applies the selected host's
+	# saved FPS again at the actual connection boundary.
+	# Applied and awaited by _ready() immediately after native-provider setup.
+	# Yielding here would let OpenXR start its session first, after which provider
+	# registration is rejected for the lifetime of this launch.
 
 func _on_user_presence_changed(is_present: bool):
 	# Only the welcome screen depends on this - once actually streaming, the
@@ -2240,7 +2486,9 @@ func _process(delta):
 	if DEBUG_RENDER_MODEL_CONTROLLERS:
 		_process_render_model_controllers(delta)
 
-	if Engine.get_frames_drawn() % 120 == 0:
+	_log_flush_timer += delta
+	if _log_flush_timer >= 2.0:
+		_log_flush_timer = 0.0
 		_flush_log()
 
 	_process_button_input()
@@ -2253,11 +2501,14 @@ func _process(delta):
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_sync_interaction_viewports()
 	_update_laser_layers()
 	_update_marker_layers(delta)
 	_update_hand_indicator_layers()
 	_update_grab_bar_layers()
 	_sync_comp_background()
+	if comp:
+		comp.process_ambient(delta)
 
 	_process_idle_activity()
 
@@ -2409,13 +2660,6 @@ func _process_hand_tracking(_delta):
 			_update_hand_tracker_transform(right_hand, right_tracker)
 		if left_tracker:
 			_update_hand_tracker_transform(left_hand, left_tracker)
-	if Engine.get_frames_drawn() % 90 == 0:
-		_log("[INPUT-DEBUG] HandsActive: %s, RightHand tracker: %s, pos: %s, rot: %s" % [
-			str(_is_using_hands),
-			str(right_hand.tracker),
-			str(right_hand.global_position),
-			str(right_hand.global_rotation)
-		])
 
 func _process_button_input():
 	if not is_xr_active:
@@ -2531,28 +2775,149 @@ func _sync_comp_background():
 
 func _process_stats(delta):
 	if not is_streaming:
+		if comp:
+			comp.set_stats_visible(false)
 		return
 	if comp.in_use:
-		var cur_filter = smooth_mode
 		var cur_sharpen = float(sharpen_mode) * 0.5
 		var cur_blur_scale = get_blur_scale(primary_screen)
-		if cur_filter != _cached_filter_mode or cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
-			_cached_filter_mode = cur_filter
+		if cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
 			_cached_sharpen = cur_sharpen
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
-	stats_frame_times.append(delta)
+	stats_app_frames += 1
+	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
+	if new_video_frame:
+		stats_video_updates += 1
+	if native_xr_renderer:
+		native_xr_renderer.process_frame(new_video_frame)
+	stats_sample_timer += delta
+	if stats_sample_timer >= 1.0:
+		stats_fps = float(stats_app_frames) / stats_sample_timer
+		stats_video_update_fps = float(stats_video_updates) / stats_sample_timer
+		# Diagnostic (2026-09-06): stats_video_update_fps is inherently capped
+		# at stats_fps (consume_new_frame() can report at most one "yes" per
+		# script tick, no matter how many render-thread completions happened
+		# since the last tick) - now that decode-thread throughput and native
+		# render cost are both confirmed to track target Hz closely, this
+		# checks whether the script tick rate itself (stats_fps) is also
+		# hitting target, and exactly how close video_update_fps tracks it.
+		_log("[STATS] app=%.1ffps video_update=%.1ffps (%.1f%% of app) frames=%d/%d" % [
+			stats_fps, stats_video_update_fps,
+			100.0 * stats_video_update_fps / maxf(stats_fps, 0.001),
+			stats_video_updates, stats_app_frames])
+		stats_sample_timer = 0.0
+		stats_app_frames = 0
+		stats_video_updates = 0
 	stats_timer += delta
 	if stats_timer >= 0.1:
-		var avg = 0.0
-		for t in stats_frame_times:
-			avg += t
-		if stats_frame_times.size() > 0:
-			avg /= stats_frame_times.size()
-		stats_fps = 1.0 / avg if avg > 0 else 0.0
 		stream_manager.update_stats()
 		stats_timer = 0.0
-		stats_frame_times.clear()
+	_process_performance_overlay(delta)
+
+func toggle_performance_overlay():
+	performance_overlay_enabled = not performance_overlay_enabled
+	performance_overlay_timer = 0.0
+	_performance_previous_window.clear()
+	if stream_backend:
+		stream_backend.take_performance_stats()
+	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
+	# native renderer's own composited overlay quad both sample the same
+	# stats_viewport texture through independent, differently-positioned
+	# display paths - showing both at once (observed 2026-09-04 as one flat
+	# + one bent-along-the-curved-screen overlay) means whichever path isn't
+	# actually presenting is still drawing a stale/mispositioned copy.
+	var native_active := native_xr_renderer != null and native_xr_renderer.active
+	if comp:
+		comp.set_stats_visible(performance_overlay_enabled and is_streaming and not native_active)
+	if native_xr_renderer:
+		native_xr_renderer.set_stats_visible(performance_overlay_enabled and is_streaming)
+	if ui_controller:
+		ui_controller.update_stats_btn_state()
+	if state_manager:
+		state_manager.save_state()
+
+func _combine_performance_windows(previous: Dictionary, current: Dictionary) -> Dictionary:
+	if previous.is_empty():
+		return current.duplicate()
+	var combined = current.duplicate()
+	for key in ["elapsed_us", "total_frames", "received_frames", "rendered_frames", "network_lost_frames", "decode_time_us", "host_latency_tenths_total", "host_latency_samples"]:
+		combined[key] = int(previous.get(key, 0)) + int(current.get(key, 0))
+	var previous_min = int(previous.get("host_latency_tenths_min", 0))
+	var current_min = int(current.get("host_latency_tenths_min", 0))
+	combined["host_latency_tenths_min"] = current_min if previous_min == 0 else previous_min if current_min == 0 else mini(previous_min, current_min)
+	combined["host_latency_tenths_max"] = maxi(int(previous.get("host_latency_tenths_max", 0)), int(current.get("host_latency_tenths_max", 0)))
+	return combined
+
+func _process_performance_overlay(delta: float):
+	if not performance_overlay_enabled or not stream_backend or not comp:
+		return
+	comp.set_stats_visible(true)
+	performance_overlay_timer += delta
+	if performance_overlay_timer < 1.0:
+		return
+	performance_overlay_timer = 0.0
+	var current = stream_backend.take_performance_stats()
+	if current.is_empty():
+		return
+	var stats = _combine_performance_windows(_performance_previous_window, current)
+	_performance_previous_window = current
+	var elapsed_s = maxf(float(stats.get("elapsed_us", 0)) / 1000000.0, 0.001)
+	var total_frames = int(stats.get("total_frames", 0))
+	var received_frames = int(stats.get("received_frames", 0))
+	var rendered_frames = int(stats.get("rendered_frames", 0))
+	var lost_frames = int(stats.get("network_lost_frames", 0))
+	var decoder_queue_drops = int(stats.get("decoder_queue_drops", 0))
+	var decoder_queue_size = int(stats.get("decoder_queue_size", 0))
+	var total_fps = float(total_frames) / elapsed_s
+	var incoming_fps = float(received_frames) / elapsed_s
+	var rendering_fps = float(rendered_frames) / elapsed_s
+	var lost_pct = 100.0 * float(lost_frames) / float(maxi(total_frames, 1))
+	var decoder_ms = float(stats.get("decode_time_us", 0)) / 1000.0 / float(maxi(received_frames, 1))
+	var width = stream_backend.get_video_width()
+	var height = stream_backend.get_video_height()
+	var decoder_name = stream_backend.get_decoder_name()
+	if decoder_name.is_empty():
+		decoder_name = "Unknown"
+	var lines := PackedStringArray([
+		"Video stream: %dx%d %.0f FPS" % [width, height, total_fps],
+		"Decoder: %s" % decoder_name,
+		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
+		"Rendering frame rate: %.0f FPS" % rendering_fps,
+		"Nightfall application frame rate: %.1f FPS" % stats_fps,
+		"Nightfall video texture update rate: %.1f FPS" % stats_video_update_fps,
+		"Frames dropped by your network connection: %.2f%%" % lost_pct,
+		"Decoder queue drops: %d (queued: %d)" % [decoder_queue_drops, decoder_queue_size],
+		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],
+	])
+	var host_samples = int(stats.get("host_latency_samples", 0))
+	if host_samples > 0:
+		lines.append("Host processing latency min/max/average: %.1f/%.1f/%.1f ms" % [
+			float(stats.get("host_latency_tenths_min", 0)) / 10.0,
+			float(stats.get("host_latency_tenths_max", 0)) / 10.0,
+			float(stats.get("host_latency_tenths_total", 0)) / 10.0 / float(host_samples),
+		])
+	lines.append("Average decoding time: %.2f ms" % decoder_ms)
+	# Moonlight XR owns its native OpenXR renderer and times the warp command
+	# buffer directly. Godot exposes no equivalent GPU timestamp to script;
+	# retain the same field explicitly as unavailable rather than substituting
+	# CPU frame time and creating a misleading comparison.
+	var native_warp_ms := native_xr_renderer.get_warp_gpu_ms() if native_xr_renderer else 0.0
+	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
+	if ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
+		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[ai_3d_gpu_priority])
+		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
+		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
+	comp.update_stats_text("\n".join(lines))
+	if native_xr_renderer:
+		native_xr_renderer.request_stats_overlay_update()
+	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% queue_drops=%d queued=%d rtt=%dms decode=%.2fms depth=%.2fms" % [
+		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
+		decoder_queue_drops, decoder_queue_size,
+		int(stats.get("network_latency_ms", 0)), decoder_ms,
+		stream_backend.get_depth_last_inference_ms() if ai_3d_speed > 0 else 0.0,
+	])
 
 func _process_idle_timeout():
 	if not is_streaming or idle_timeout_min <= 0:
@@ -2566,6 +2931,8 @@ func _process_idle_timeout():
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
+		if native_xr_renderer:
+			native_xr_renderer.shutdown()
 
 func _input(event):
 	input_handler.handle_input(event)
@@ -2574,6 +2941,7 @@ func _input(event):
 
 func _toggle_ui():
 	ui_visible = not ui_visible
+	_set_viewport_active(ui_viewport, ui_visible)
 	if ui_visible:
 		if state_manager:
 			state_manager.sync_ui_to_settings()
@@ -2674,6 +3042,7 @@ func _save_ui_offset():
 	_ui_has_saved_offset = true
 
 func _set_ui_visible(vis: bool):
+	_set_viewport_active(ui_viewport, vis)
 	ui_panel_3d.visible = vis
 	var area = ui_panel_3d.get_node_or_null("Area3D")
 	if area:
@@ -2691,6 +3060,24 @@ func _set_ui_visible(vis: bool):
 			_save_ui_offset()
 	elif is_xr_active:
 		_save_ui_offset()
+
+func _set_viewport_active(viewport: SubViewport, active: bool):
+	if not viewport:
+		return
+	var wanted = SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
+	if viewport.render_target_update_mode != wanted:
+		viewport.render_target_update_mode = wanted
+
+func _sync_interaction_viewports():
+	# These two cursors are only needed for the separately composited menu and
+	# keyboard. Screen pointing uses the cursor embedded in the eye viewports.
+	var panel_visible = ui_visible or (virtual_keyboard and virtual_keyboard.visible)
+	# Native video does not embed the pointer in a Godot video viewport, so
+	# its independently composited cursor texture must keep updating even
+	# while the menu and keyboard are hidden.
+	var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+	_set_viewport_active(comp_cursor_viewport, panel_visible or native_screen_cursor)
+	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	var strength = clampf((low_freq + high_freq) / 510.0, 0.0, 1.0)
@@ -2970,9 +3357,14 @@ func _update_hand_indicator_layers():
 	if not comp_hand_right and not comp_hand_left:
 		return
 	if not DEBUG_COMP_HANDS or not comp.in_use or not is_xr_active or not _is_using_hands:
-		_set_comp_quad_hidden(comp_hand_right, true)
-		_set_comp_quad_hidden(comp_hand_left, true)
+		for layer in [comp_hand_right, comp_hand_left]:
+			_set_comp_quad_hidden(layer, true)
+			if layer:
+				_set_viewport_active(layer.get_layer_viewport(), false)
 		return
+	for layer in [comp_hand_right, comp_hand_left]:
+		if layer:
+			_set_viewport_active(layer.get_layer_viewport(), true)
 	var right_tracker = XRServer.get_tracker("/user/hand_tracker/right")
 	var left_tracker = XRServer.get_tracker("/user/hand_tracker/left")
 	_update_one_hand_indicator(comp_hand_right, comp_hand_right_triangle, right_tracker)
