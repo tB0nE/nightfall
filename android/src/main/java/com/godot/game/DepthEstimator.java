@@ -319,6 +319,9 @@ public class DepthEstimator {
         ByteBuffer inputBuf;
         ByteBuffer outputBuf;
         boolean loadAttempted;
+        // Prevent repeated configureDepth() calls from queueing duplicate
+        // startup preloads before the first worker task begins.
+        volatile boolean preloadScheduled;
         // Written by the inference executor and read by the submission/UI
         // threads, so failure must become visible without relying on an
         // unrelated synchronized call.
@@ -729,7 +732,11 @@ public class DepthEstimator {
                 lastPostProcessTimeNs = 0;
                 gpuReconfigurePending = false;
                 Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
-                        + "; delegate will reload on the next depth frame");
+                        + "; preloading delegate on the inference worker");
+                // Android ships ZipDepth-384 as its sole depth model. Keep it
+                // resident even if AI-3D is currently off, so enabling it or
+                // starting a host that has it saved never recompiles mid-stream.
+                scheduleGpuVariantPreload(gpuVariants.get(14));
             }
         });
     }
@@ -752,8 +759,69 @@ public class DepthEstimator {
         variant.inputBuf = null;
         variant.outputBuf = null;
         variant.loadAttempted = false;
+        variant.preloadScheduled = false;
         variant.permanentlyUnavailable = false;
         variant.failureReason = "";
+    }
+
+    // GPU delegates must be created and invoked on the same thread. Preload
+    // and warm the selected model on the existing single inference worker as
+    // soon as settings configure it, instead of compiling it while the first
+    // video frames are already being presented. This remains asynchronous to
+    // app startup and inherits the selected low/default OpenCL priority.
+    private void scheduleGpuVariantPreload(GpuVariant variant) {
+        if (variant == null || variant.interp != null || variant.loadAttempted
+                || variant.permanentlyUnavailable || variant.preloadScheduled) {
+            return;
+        }
+        variant.preloadScheduled = true;
+        Log.i(TAG, "Preloading " + variant.label + " on inference worker");
+        executor.execute(() -> {
+            try {
+                if (!initialized || gpuReconfigurePending) {
+                    return;
+                }
+                ensureGpuVariantLoaded(variant);
+                if (variant.interp == null) {
+                    markGpuVariantUnavailable(variant);
+                    return;
+                }
+
+                // Force one delegate invocation so graph compilation, working
+                // buffers, and first-dispatch costs are paid before streaming.
+                variant.inputBuf.rewind();
+                while (variant.inputBuf.remaining() >= 4) {
+                    variant.inputBuf.putFloat(0f);
+                }
+                variant.inputBuf.rewind();
+                variant.outputBuf.rewind();
+                long warmStartNs = System.nanoTime();
+                variant.interp.run(variant.inputBuf, variant.outputBuf);
+                variant.inputBuf.rewind();
+                variant.outputBuf.rewind();
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "%s preload and warm-up complete in %.1fms",
+                        variant.label, (System.nanoTime() - warmStartNs) / 1_000_000.0f));
+            } catch (Exception e) {
+                Log.e(TAG, variant.label + " startup warm-up failed", e);
+                String failureReason = "GPU warm-up failed: " + e.getClass().getSimpleName();
+                releaseGpuVariant(variant);
+                variant.failureReason = failureReason;
+                markGpuVariantUnavailable(variant);
+            } finally {
+                variant.preloadScheduled = false;
+            }
+        });
+    }
+
+    private void markGpuVariantUnavailable(GpuVariant variant) {
+        String reason = variant.failureReason.isEmpty()
+                ? "GPU delegate initialization failed"
+                : variant.failureReason;
+        variant.permanentlyUnavailable = true;
+        variant.failureReason = reason;
+        backendStatus = reason + " - AI-3D depth stopped (not falling back to CPU)";
+        Log.e(TAG, reason + "; AI-3D depth stopped for this session, not falling back to CPU");
     }
 
     // AI 3D tab's Hz Cap control (2026-08-28) - re-targets the GPU
@@ -798,6 +866,11 @@ public class DepthEstimator {
         }
 
         switchActiveModel(modelIndex, useGpu);
+        // The streamlined Android package always uses this model when AI-3D
+        // is enabled. configureDepth() is first called after persisted GPU
+        // priority has been applied, making this the earliest safe point to
+        // preload without creating a context at the wrong priority.
+        scheduleGpuVariantPreload(gpuVariants.get(14));
         Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
                 + " requested=" + backendName(requestedBackend)
                 + " effective=" + backendName(effectiveBackend)
@@ -848,13 +921,9 @@ public class DepthEstimator {
         if (!initialized) return;
         modelIndex = normalizeModelIndex(modelIndex);
         Interpreter target = cpuInterpreterFor(modelIndex);
-        // The requested GPU variant (if any) - lazy-loaded on first actual
-        // inference (see ensureGpuVariantLoaded()), not here, so v.interp is
-        // legitimately still null the first time this switch happens.
-        // activeInterpreter (the CPU target resolved above) only exists to
-        // satisfy submitFrame()'s "is anything loaded at all" check in that
-        // case, not to select which inference method runs - that's driven by
-        // activeGpuVariant being non-null, checked in submitFrame() below.
+        // The requested GPU variant (if any). Its delegate is created on the
+        // inference worker below; activeInterpreter remains strictly the CPU
+        // fallback/selection and may legitimately be null in the GPU-only APK.
         GpuVariant variant = useGpu ? gpuVariants.get(modelIndex) : null;
         if (activeModelIndex != modelIndex || activeGpuVariant != variant) {
             while (isInferencing.get()) {
@@ -892,6 +961,9 @@ public class DepthEstimator {
                     }
                 });
             }
+        }
+        if (variant != null) {
+            scheduleGpuVariantPreload(variant);
         }
     }
 
@@ -1084,13 +1156,7 @@ public class DepthEstimator {
                 // surfaced entirely through backendStatus (settings_controller.gd's
                 // refresh_depth_backend_status() shows it persistently, not
                 // just on the transition).
-                String reason = variant.failureReason.isEmpty()
-                        ? "GPU delegate initialization failed"
-                        : variant.failureReason;
-                variant.permanentlyUnavailable = true;
-                variant.failureReason = reason;
-                backendStatus = reason + " - AI-3D depth stopped (not falling back to CPU)";
-                Log.e(TAG, reason + "; AI-3D depth stopped for this session, not falling back to CPU");
+                markGpuVariantUnavailable(variant);
             }
         } catch (Exception e) {
             Log.e(TAG, "Async GPU inference failed", e);

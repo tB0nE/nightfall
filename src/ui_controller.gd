@@ -213,7 +213,7 @@ func update_stats_btn_state():
 	main._ui_stats_btn.text = "Stats"
 	main._ui_stats_btn.add_theme_color_override(
 		"font_color",
-		Color(0.35, 0.65, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.85)
+		Color(0.35, 0.65, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.5)
 	)
 
 func update_ambient_btn_state():
@@ -527,7 +527,7 @@ func build_ui():
 	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_stats_btn.custom_minimum_size = Vector2(100, 36)
 	main._ui_stats_btn.add_theme_font_size_override("font_size", 22)
-	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	main._ui_stats_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
 	var stats_style = main._btn_style.duplicate()
 	stats_style.content_margin_left = 12
@@ -535,12 +535,14 @@ func build_ui():
 	stats_style.content_margin_top = 2
 	stats_style.content_margin_bottom = 2
 	stats_style.set_corner_radius_all(0)
+	stats_style.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
 	var stats_hover = main._btn_hover.duplicate()
 	stats_hover.content_margin_left = 12
 	stats_hover.content_margin_right = 12
 	stats_hover.content_margin_top = 2
 	stats_hover.content_margin_bottom = 2
 	stats_hover.set_corner_radius_all(0)
+	stats_hover.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
 	main._ui_stats_btn.add_theme_stylebox_override("normal", stats_style)
 	main._ui_stats_btn.add_theme_stylebox_override("hover", stats_hover)
 	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
