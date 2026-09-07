@@ -142,6 +142,13 @@ func update_3d_btn_state():
 	# hide-and-disable pattern below) keeps a locked control from offering a
 	# choice that does nothing.
 	var locked = main.settings_controller.ai3d_options_locked()
+	if _tab_ai3d:
+		var ai3d_row1 = _tab_ai3d.get_node_or_null("Ai3dRow1")
+		var ai3d_gap1 = _tab_ai3d.get_node_or_null("Ai3dGap1")
+		if ai3d_row1:
+			ai3d_row1.visible = true
+		if ai3d_gap1:
+			ai3d_gap1.visible = true
 	# 3D Mode: greyed whenever AI-3D itself is off - unlike Type/Model/Hz
 	# Cap below, NOT additionally greyed under Auto, since it's the only
 	# control that can switch OUT of Auto.
@@ -223,30 +230,18 @@ func update_stats_btn_state():
 func update_ambient_btn_state():
 	var supported = main.comp != null and main.comp.ambient_supported()
 	update_option_btn(main._ui_ambient_btn, main.ambient_mode_labels[clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)])
-	update_option_btn(main._ui_ambient_style_btn, main.ambient_style_labels[clampi(main.ambient_style, 0, main.ambient_style_labels.size() - 1)])
 	update_option_btn(main._ui_ambient_color_btn, main.ambient_color_labels[clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)])
-	update_option_btn(main._ui_ambient_intensity_btn, main.ambient_intensity_labels[clampi(main.ambient_intensity, 0, main.ambient_intensity_labels.size() - 1)])
 
 	if main._ui_ambient_btn:
 		main._ui_ambient_btn.disabled = not supported
 		main._ui_ambient_btn.modulate.a = 1.0 if supported else 0.3
 	var tuning_disabled = not supported or main.ambient_mode == 0
-	for btn in [main._ui_ambient_style_btn, main._ui_ambient_intensity_btn]:
-		if btn:
-			btn.disabled = tuning_disabled
-			btn.modulate.a = 0.3 if tuning_disabled else 1.0
 	# Static uses the selected colour; Slow/Live derive their colour from the
 	# rendered screen edges, so allowing this control there would be misleading.
-	var color_disabled = not supported or main.ambient_mode != 1 or main.ambient_style == main.AMBIENT_STYLE_BLUR
+	var color_disabled = not supported or main.ambient_mode != 1
 	if main._ui_ambient_color_btn:
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
-	# Blur must sample an uninterrupted image edge, so its active state owns the
-	# bezel setting. The button becomes available again for every other style.
-	var blur_active = supported and main.ambient_mode > 0 and main.ambient_style == main.AMBIENT_STYLE_BLUR
-	if main._ui_bezel_btn:
-		main._ui_bezel_btn.disabled = blur_active
-		main._ui_bezel_btn.modulate.a = 0.3 if blur_active else 1.0
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
@@ -395,14 +390,14 @@ func update_ui():
 	main.get_node("%Laser").visible = main.is_xr_active
 
 func switch_tab(tab: int):
-	var entering_monitors_tab = (tab == 3 and _current_tab != 3)
+	var entering_monitors_tab = (tab == 5 and _current_tab != 5)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
 	if _tab_control: _tab_control.visible = (tab == 2)
-	if _tab_monitors: _tab_monitors.visible = (tab == 3)
-	if _tab_ai3d: _tab_ai3d.visible = (tab == 4)
-	if _tab_picture: _tab_picture.visible = (tab == 5)
+	if _tab_monitors: _tab_monitors.visible = (tab == 5)
+	if _tab_ai3d: _tab_ai3d.visible = (tab == 3)
+	if _tab_picture: _tab_picture.visible = (tab == 4)
 	if _tab_advanced: _tab_advanced.visible = (tab == 6)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
@@ -421,17 +416,17 @@ func switch_tab(tab: int):
 		_tab_btn_control.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 2 else Color(1, 1, 1, 0.5))
 	if _tab_btn_monitors:
-		_tab_btn_monitors.add_theme_stylebox_override("normal", tab_active_style if tab == 3 else tab_inactive_style)
+		_tab_btn_monitors.add_theme_stylebox_override("normal", tab_active_style if tab == 5 else tab_inactive_style)
 		_tab_btn_monitors.add_theme_stylebox_override("hover", tab_active_style)
-		_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 3 else Color(1, 1, 1, 0.5))
+		_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 5 else Color(1, 1, 1, 0.5))
 	if _tab_btn_ai3d:
-		_tab_btn_ai3d.add_theme_stylebox_override("normal", tab_active_style if tab == 4 else tab_inactive_style)
+		_tab_btn_ai3d.add_theme_stylebox_override("normal", tab_active_style if tab == 3 else tab_inactive_style)
 		_tab_btn_ai3d.add_theme_stylebox_override("hover", tab_active_style)
-		_tab_btn_ai3d.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 4 else Color(1, 1, 1, 0.5))
+		_tab_btn_ai3d.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 3 else Color(1, 1, 1, 0.5))
 	if _tab_btn_picture:
-		_tab_btn_picture.add_theme_stylebox_override("normal", tab_active_style if tab == 5 else tab_inactive_style)
+		_tab_btn_picture.add_theme_stylebox_override("normal", tab_active_style if tab == 4 else tab_inactive_style)
 		_tab_btn_picture.add_theme_stylebox_override("hover", tab_active_style)
-		_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 5 else Color(1, 1, 1, 0.5))
+		_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 4 else Color(1, 1, 1, 0.5))
 	if _tab_btn_advanced:
 		_tab_btn_advanced.add_theme_stylebox_override("normal", tab_active_style if tab == 6 else tab_inactive_style)
 		_tab_btn_advanced.add_theme_stylebox_override("hover", tab_active_style)
@@ -439,7 +434,7 @@ func switch_tab(tab: int):
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
-	if tab == 3:
+	if tab == 5:
 		if entering_monitors_tab:
 			main.settings_controller.sync_staged_from_current_layout()
 		update_monitor_tab()
@@ -686,7 +681,7 @@ func build_ui():
 	# (composition_layer_manager.gd, vr_screen.gd, screen_layout.gd etc.) is
 	# still fully wired up and depended on by AI-3D itself, this just greys
 	# out the tab/button (stays visible, so users can see the feature exists
-	# but isn't ready yet) so it isn't user-facing. switch_tab(3) is ONLY
+	# but isn't ready yet) so it isn't user-facing. switch_tab(5) is ONLY
 	# ever reached via this button's own click handler below (no other call
 	# site), and Godot's Button.disabled blocks button_down from firing, so
 	# disabling it fully disables reachability too. Set .disabled = false
@@ -710,6 +705,9 @@ func build_ui():
 	_tab_btn_picture.add_theme_font_size_override("font_size", 22)
 	_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	tab_bar.add_child(_tab_btn_picture)
+	# Keep the disabled Monitors feature visible, but place it immediately
+	# before Advanced in the user-facing tab order.
+	tab_bar.move_child(_tab_btn_monitors, tab_bar.get_child_count())
 
 	_tab_btn_advanced = Button.new()
 	_tab_btn_advanced.text = "Advanced"
@@ -773,12 +771,10 @@ func build_ui():
 	disp_row2.add_child(main._ui_bg_btn)
 	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
 	disp_row2.add_child(main._ui_ambient_btn)
-	main._ui_ambient_style_btn = make_display_tuning_btn("Style", "Glow")
-	disp_row2.add_child(main._ui_ambient_style_btn)
 	main._ui_ambient_color_btn = make_display_tuning_btn("Colour", "White")
 	disp_row2.add_child(main._ui_ambient_color_btn)
-	main._ui_ambient_intensity_btn = make_display_tuning_btn("Intensity", "Medium")
-	disp_row2.add_child(main._ui_ambient_intensity_btn)
+	main._ui_bezel_btn = make_option_btn("Bezel", "On")
+	disp_row2.add_child(main._ui_bezel_btn)
 
 	_tab_stream = VBoxContainer.new()
 	_tab_stream.name = "TabStream"
@@ -895,19 +891,24 @@ func build_ui():
 	# also runs during this same init - set here too so there's no
 	# one-frame flash before that first fires, matching 3D Debug's own
 	# construction-time pattern below).
-	main._ui_3d_mode_btn.visible = not main.settings_controller.ai3d_options_locked()
+	var ai3d_options_locked = main.settings_controller.ai3d_options_locked()
+	ai3d_row1.visible = not ai3d_options_locked
+	main._ui_3d_mode_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_mode_btn)
 	main._ui_3d_type_btn = make_option_btn("Type", "GPU")
-	main._ui_3d_type_btn.visible = not main.settings_controller.ai3d_options_locked()
+	main._ui_3d_type_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_type_btn)
 	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
-	main._ui_3d_btn.visible = not main.settings_controller.ai3d_options_locked()
+	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
 	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
-	ai3d_row1.add_child(main._ui_3d_priority_btn)
+	if not ai3d_options_locked:
+		ai3d_row1.add_child(main._ui_3d_priority_btn)
 
 	var ai3d_gap1 = Control.new()
+	ai3d_gap1.name = "Ai3dGap1"
 	ai3d_gap1.custom_minimum_size = Vector2(0, 20)
+	ai3d_gap1.visible = not ai3d_options_locked
 	ai3d_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_ai3d.add_child(ai3d_gap1)
 
@@ -928,6 +929,12 @@ func build_ui():
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
 	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
+	if ai3d_options_locked:
+		# Android locks Mode/Type/Model, leaving two controls for row 1 and
+		# three for row 2. Keep the layout at four buttons or fewer per row.
+		ai3d_row2.remove_child(main._ui_3d_hz_cap_btn)
+		ai3d_row1.add_child(main._ui_3d_priority_btn)
+		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
 
 	_tab_picture = VBoxContainer.new()
 	_tab_picture.name = "TabPicture"
@@ -966,10 +973,8 @@ func build_ui():
 	picture_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_picture.add_child(picture_row2)
 
-	main._ui_sharpen_btn = make_option_btn("Sharpen", main.sharpen_labels[0])
+	main._ui_sharpen_btn = make_option_btn("Sharpen", main.settings_controller.get_sharpen_label(main.sharpen_mode))
 	picture_row2.add_child(main._ui_sharpen_btn)
-	main._ui_bezel_btn = make_option_btn("Bezel", "On")
-	picture_row2.add_child(main._ui_bezel_btn)
 
 	_tab_monitors = VBoxContainer.new()
 	_tab_monitors.name = "TabMonitors"
@@ -1141,9 +1146,7 @@ func build_ui():
 	main._ui_curve_btn.button_down.connect(func(): main.screen_manager.cycle_curvature())
 	main._ui_bg_btn.button_down.connect(func(): main.settings_controller.cycle_background())
 	main._ui_ambient_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_mode())
-	main._ui_ambient_style_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_style())
 	main._ui_ambient_color_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_color())
-	main._ui_ambient_intensity_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_intensity())
 	main._ui_bezel_btn.button_down.connect(func(): main.screen_manager.toggle_bezel())
 	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
 	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
@@ -1186,9 +1189,9 @@ func build_ui():
 	_tab_btn_display.button_down.connect(func(): switch_tab(0))
 	_tab_btn_stream.button_down.connect(func(): switch_tab(1))
 	_tab_btn_control.button_down.connect(func(): switch_tab(2))
-	_tab_btn_monitors.button_down.connect(func(): switch_tab(3))
-	_tab_btn_ai3d.button_down.connect(func(): switch_tab(4))
-	_tab_btn_picture.button_down.connect(func(): switch_tab(5))
+	_tab_btn_monitors.button_down.connect(func(): switch_tab(5))
+	_tab_btn_ai3d.button_down.connect(func(): switch_tab(3))
+	_tab_btn_picture.button_down.connect(func(): switch_tab(4))
 	_tab_btn_advanced.button_down.connect(func(): switch_tab(6))
 	switch_tab(0)
 	update_ctrl_mode_btn()

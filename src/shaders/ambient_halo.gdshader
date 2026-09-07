@@ -6,7 +6,6 @@ shader_type canvas_item;
 // or the native renderer's asynchronous final-image sample.
 uniform sampler2D source_texture : source_color, filter_linear, repeat_disable;
 uniform bool reactive = false;
-uniform int style_mode = 0; // 0 = glow, 1 = neon, 2 = both, 3 = blurred edge
 uniform vec4 static_color : source_color = vec4(1.0);
 uniform float intensity : hint_range(0.0, 1.0) = 0.35;
 
@@ -37,22 +36,6 @@ vec3 sample_edge_color(vec2 source_uv) {
 	return mix(mix(c11, c01, g0.x), mix(c10, c00, g0.x), g0.y);
 }
 
-vec3 sample_blurred_edge_color(vec2 source_uv) {
-	// Nine taps now all land in the tiny 32x32 colour map, never in the
-	// full-resolution YUV/HDR/AI-3D screen texture.
-	vec2 d = vec2(0.055, 0.085);
-	vec3 c = texture(source_texture, source_uv).rgb * 4.0;
-	c += texture(source_texture, clamp(source_uv + vec2(-d.x, 0.0), vec2(0.0), vec2(1.0))).rgb * 2.0;
-	c += texture(source_texture, clamp(source_uv + vec2(d.x, 0.0), vec2(0.0), vec2(1.0))).rgb * 2.0;
-	c += texture(source_texture, clamp(source_uv + vec2(0.0, -d.y), vec2(0.0), vec2(1.0))).rgb * 2.0;
-	c += texture(source_texture, clamp(source_uv + vec2(0.0, d.y), vec2(0.0), vec2(1.0))).rgb * 2.0;
-	c += texture(source_texture, clamp(source_uv + vec2(-d.x, -d.y), vec2(0.0), vec2(1.0))).rgb;
-	c += texture(source_texture, clamp(source_uv + vec2(d.x, -d.y), vec2(0.0), vec2(1.0))).rgb;
-	c += texture(source_texture, clamp(source_uv + vec2(-d.x, d.y), vec2(0.0), vec2(1.0))).rgb;
-	c += texture(source_texture, clamp(source_uv + vec2(d.x, d.y), vec2(0.0), vec2(1.0))).rgb;
-	return c * 0.0625;
-}
-
 void fragment() {
 	vec2 inner_half = vec2(0.5 / LAYER_SCALE);
 	vec2 inner_min = vec2(0.5) - inner_half;
@@ -66,29 +49,13 @@ void fragment() {
 	vec2 margin = vec2(0.5) - inner_half;
 	float edge_distance = length(outside / max(margin, vec2(0.0001)));
 	float glow = pow(clamp(1.0 - edge_distance, 0.0, 1.0), 1.65);
-	float neon = 1.0 - smoothstep(0.0, 0.10, edge_distance);
-
 	float alpha = glow;
-	if (style_mode == 1) {
-		alpha = neon;
-	} else if (style_mode == 2) {
-		alpha = max(glow * 0.72, neon);
-	} else if (style_mode == 3) {
-		// A softer, broader falloff makes the blurred screen edge appear to
-		// continue naturally into the surrounding glow.
-		alpha = pow(clamp(1.0 - edge_distance, 0.0, 1.0), 1.15);
-	}
 	alpha *= intensity * outside_mask;
 
 	// Sample a short distance inside the picture rather than its exact outer
 	// pixel. Black desktop borders/letterboxing otherwise make reactive modes
 	// look disabled even while the source is updating correctly.
 	vec2 source_uv = mix(vec2(0.055), vec2(0.945), clamp((UV - inner_min) / inner_size, vec2(0.0), vec2(1.0)));
-	vec3 color;
-	if (style_mode == 3) {
-		color = sample_blurred_edge_color(source_uv);
-	} else {
-		color = reactive ? sample_edge_color(source_uv) : static_color.rgb;
-	}
+	vec3 color = reactive ? sample_edge_color(source_uv) : static_color.rgb;
 	COLOR = vec4(color, alpha);
 }

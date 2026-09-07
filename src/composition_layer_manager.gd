@@ -751,7 +751,7 @@ func _prepare_ambient_sample_update() -> bool:
 		if not _ambient_native_source_texture:
 			_ambient_native_static_waiting = main.ambient_mode == 1
 			return false
-		# Static Blur must wait for a newly requested sample after a settings
+		# Static mode must wait for a newly requested sample after a settings
 		# change, rather than immediately redrawing the previous frozen sample.
 		if main.ambient_mode == 1:
 			if _ambient_native_sample_revision == _ambient_native_applied_revision:
@@ -812,10 +812,8 @@ func _ambient_static_color() -> Color:
 	return colors[clampi(main.ambient_color, 0, colors.size() - 1)]
 
 func _ambient_intensity() -> float:
-	# Retuned for the broader Blur style as well as the original styles:
-	# previous Low -> Medium, previous Medium -> High, plus a gentler new Low.
-	var intensities := [0.10, 0.20, 0.35]
-	return intensities[clampi(main.ambient_intensity, 0, intensities.size() - 1)]
+	# Ambient always uses the Glow rendering path at fixed medium intensity.
+	return 0.20
 
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
@@ -845,16 +843,13 @@ func _refresh_ambient_source(force: bool = false):
 
 func apply_ambient_settings():
 	main.ambient_mode = clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)
-	main.ambient_style = clampi(main.ambient_style, 0, main.ambient_style_labels.size() - 1)
 	main.ambient_color = clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)
-	main.ambient_intensity = clampi(main.ambient_intensity, 0, main.ambient_intensity_labels.size() - 1)
 	if main.ambient_mode == 0:
 		_disable_ambient()
 		return
 	if not _ambient_material and not _setup_ambient_layer():
 		return
 	_ambient_material.set_shader_parameter("reactive", main.ambient_mode >= 2)
-	_ambient_material.set_shader_parameter("style_mode", main.ambient_style)
 	_ambient_material.set_shader_parameter("static_color", _ambient_static_color())
 	_ambient_material.set_shader_parameter("intensity", _ambient_intensity())
 	_ambient_slow_elapsed = 0.0
@@ -863,7 +858,7 @@ func apply_ambient_settings():
 	# starts. Rebind explicitly on every mode/settings change instead of relying
 	# on the SubViewport object identity remaining sufficient.
 	_refresh_ambient_source(true)
-	main._log("[AMBIENT] Mode=%s style=%s intensity=%s" % [main.ambient_mode_labels[main.ambient_mode], main.ambient_style_labels[main.ambient_style], main.ambient_intensity_labels[main.ambient_intensity]])
+	main._log("[AMBIENT] Mode=%s intensity=Medium (Glow)" % main.ambient_mode_labels[main.ambient_mode])
 
 func _disable_ambient():
 	# Avoid needlessly touching composition-layer visibility every frame while
@@ -901,10 +896,6 @@ func process_ambient(delta: float):
 	match main.ambient_mode:
 		1: # Static: redraw only after a setting/geometry change.
 			if _ambient_dirty:
-				if main.ambient_style == main.AMBIENT_STYLE_BLUR and not _prepare_ambient_sample_update():
-					return
-				if main.ambient_style == main.AMBIENT_STYLE_BLUR:
-					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 		2: # Slow: sample the screen at 10 Hz.

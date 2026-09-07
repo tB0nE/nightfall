@@ -905,9 +905,27 @@ func fallback_codec():
 		main.codec_preference = available[0] if not available.is_empty() else 0
 
 func cycle_sharpen_mode():
-	main.sharpen_mode = (main.sharpen_mode + 1) % main.sharpen_labels.size()
-	_save_setting(main._ui_sharpen_btn, main.sharpen_labels[main.sharpen_mode])
+	var choices := get_sharpen_choices()
+	var current_idx := choices.find(main.sharpen_mode)
+	main.sharpen_mode = choices[(maxi(current_idx, -1) + 1) % choices.size()]
+	_save_setting(main._ui_sharpen_btn, get_sharpen_label(main.sharpen_mode))
 	apply_filter()
+
+func get_sharpen_choices() -> Array:
+	if OS.get_name() == "Android":
+		return [0, main.SHARPEN_RUNTIME_NORMAL, main.SHARPEN_RUNTIME_QUALITY]
+	return range(main.sharpen_labels.size())
+
+func get_sharpen_label(mode: int) -> String:
+	if OS.get_name() == "Android":
+		match mode:
+			main.SHARPEN_RUNTIME_NORMAL:
+				return "Runtime"
+			main.SHARPEN_RUNTIME_QUALITY:
+				return "Runtime Quality"
+			_:
+				return "Off"
+	return main.sharpen_labels[clampi(mode, 0, main.sharpen_labels.size() - 1)]
 
 func cycle_brightness():
 	var idx = PICTURE_BRIGHTNESS_VALUES.find(main.brightness_pct)
@@ -930,30 +948,12 @@ func cycle_gamma():
 func cycle_ambient_mode():
 	main.ambient_mode = (main.ambient_mode + 1) % main.ambient_mode_labels.size()
 	_save_setting(main._ui_ambient_btn, main.ambient_mode_labels[main.ambient_mode])
-	_apply_ambient_blur_bezel_constraint()
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
-
-func cycle_ambient_style():
-	main.ambient_style = (main.ambient_style + 1) % main.ambient_style_labels.size()
-	_save_setting(main._ui_ambient_style_btn, main.ambient_style_labels[main.ambient_style])
-	_apply_ambient_blur_bezel_constraint()
-	main.comp.apply_ambient_settings()
-	main.ui_controller.update_ambient_btn_state()
-
-func _apply_ambient_blur_bezel_constraint():
-	if main.ambient_mode > 0 and main.ambient_style == main.AMBIENT_STYLE_BLUR and main.bezel_enabled:
-		main.screen_manager.set_bezel_enabled(false)
 
 func cycle_ambient_color():
 	main.ambient_color = (main.ambient_color + 1) % main.ambient_color_labels.size()
 	_save_setting(main._ui_ambient_color_btn, main.ambient_color_labels[main.ambient_color])
-	main.comp.apply_ambient_settings()
-	main.ui_controller.update_ambient_btn_state()
-
-func cycle_ambient_intensity():
-	main.ambient_intensity = (main.ambient_intensity + 1) % main.ambient_intensity_labels.size()
-	_save_setting(main._ui_ambient_intensity_btn, main.ambient_intensity_labels[main.ambient_intensity])
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
 

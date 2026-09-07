@@ -17,9 +17,7 @@ func save_state():
 	save.set_value("screen", "contrast_pct", main.contrast_pct)
 	save.set_value("screen", "gamma_pct", main.gamma_pct)
 	save.set_value("screen", "ambient_mode", main.ambient_mode)
-	save.set_value("screen", "ambient_style", main.ambient_style)
 	save.set_value("screen", "ambient_color", main.ambient_color)
-	save.set_value("screen", "ambient_intensity", main.ambient_intensity)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "double_click_mode", main.double_click_mode)
@@ -293,7 +291,7 @@ func sync_ui_to_settings():
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.sharpen_labels[clampi(main.sharpen_mode, 0, main.sharpen_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.settings_controller.get_sharpen_label(main.sharpen_mode))
 		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
 		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
 		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
@@ -360,6 +358,8 @@ func load_state():
 	else:
 		main.passthrough_enabled = false
 	main.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", 0), 0, main.sharpen_labels.size() - 1)
+	if OS.get_name() == "Android" and not main.settings_controller.get_sharpen_choices().has(main.sharpen_mode):
+		main.sharpen_mode = 0
 	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
 	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):
 		main.brightness_pct = 0
@@ -370,9 +370,7 @@ func load_state():
 	if not [50, 75, 100, 125, 150].has(main.gamma_pct):
 		main.gamma_pct = 100
 	main.ambient_mode = clampi(save.get_value("screen", "ambient_mode", 0), 0, main.ambient_mode_labels.size() - 1)
-	main.ambient_style = clampi(save.get_value("screen", "ambient_style", 0), 0, main.ambient_style_labels.size() - 1)
 	main.ambient_color = clampi(save.get_value("screen", "ambient_color", 0), 0, main.ambient_color_labels.size() - 1)
-	main.ambient_intensity = clampi(save.get_value("screen", "ambient_intensity", 1), 0, main.ambient_intensity_labels.size() - 1)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
 	var saved_steady = save.get_value("screen", "pointer_steady", 1)
 	if saved_steady is bool:

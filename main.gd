@@ -221,13 +221,8 @@ var gamma_pct: int = 100 # 50..150, step 25 (exponent)
 # the already-rendered primary screen as their colour source.
 var ambient_mode: int = 0
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
-const AMBIENT_STYLE_BLUR := 3
-var ambient_style: int = 0
-var ambient_style_labels: Array = ["Glow", "Neon", "Both", "Blur"]
 var ambient_color: int = 0
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
-var ambient_intensity: int = 1
-var ambient_intensity_labels: Array = ["Low", "Medium", "High"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
@@ -636,9 +631,7 @@ var _ui_brightness_btn: Button
 var _ui_contrast_btn: Button
 var _ui_gamma_btn: Button
 var _ui_ambient_btn: Button
-var _ui_ambient_style_btn: Button
 var _ui_ambient_color_btn: Button
-var _ui_ambient_intensity_btn: Button
 var _ui_ctrl_mode_btn: Button
 var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
