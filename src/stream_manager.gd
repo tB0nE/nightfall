@@ -170,6 +170,12 @@ func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# establish_stream() failed before a decoder session existed, so there
+		# will be no stream_terminated callback to restore the welcome viewport.
+		# Undo start_stream()'s eager resolution change here; otherwise the
+		# welcome UI is 1920x1080 while its composition cursor still maps against
+		# the attempted stream resolution.
+		main.restore_after_failed_connect("Launch failed: " + str(msg))
 		if msg.find("Session URL not found") != -1:
 			main._log("[PAIR] Launch failed due to stale pairing, re-pairing...")
 			var ip = ""
@@ -194,7 +200,6 @@ func _on_v2_launch_response(response: Dictionary):
 			main.welcome_screen.show_welcome_screen("server")
 		else:
 			main._ui_status_label.text = "Launch failed: " + str(msg)
-			main.welcome_screen.show_welcome_screen("server")
 		return
 
 	var server_info = {}

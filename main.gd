@@ -1419,11 +1419,24 @@ func start_connect_timeout():
 func _on_connect_timeout():
 	if not _connect_timeout_pending:
 		return
-	_connect_timeout_pending = false
 	_log("[CONNECT] Connection timed out")
-	ui_controller.set_status("Failed to connect (timeout)")
-	welcome_screen.reset_connect_button()
 	stream_backend.stop_play_stream()
+	restore_after_failed_connect("Failed to connect (timeout)")
+
+func restore_after_failed_connect(status_msg: String, welcome_name: String = "server"):
+	# start_stream() resizes the shared source/composition viewports before the
+	# asynchronous launch request is sent. If that request fails, no decoder was
+	# started and therefore no stream_terminated signal arrives to run the normal
+	# disconnect cleanup. Leaving comp_base_size at the attempted stream size
+	# makes the 1920x1080 welcome cursor use the wrong pixel coordinate space.
+	# Treat this as a complete non-streaming transition, including cancelling the
+	# still-armed Connect timeout and clearing restart state so the viewport reset
+	# below cannot take the native-restart preserve path.
+	_connect_timeout_pending = false
+	_restarting_stream = false
+	_reconnecting = false
+	is_streaming = false
+	_full_disconnect_cleanup(status_msg, welcome_name)
 
 func _bind_yuv_textures():
 	comp.bind_yuv_textures()
@@ -1651,7 +1664,7 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 	is_streaming = false
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
-func _full_disconnect_cleanup(status_msg: String):
+func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
 	_connect_timeout_pending = false
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
@@ -1660,7 +1673,7 @@ func _full_disconnect_cleanup(status_msg: String):
 	ui_controller.set_status(status_msg)
 	ui_controller.set_disconnect_visible(false)
 	_log("[STREAM] Full disconnect: %s" % status_msg)
-	welcome_screen.show_welcome_screen("welcome")
+	welcome_screen.show_welcome_screen(welcome_name)
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_clear_comp_yuv_textures()
 	# _clear_comp_yuv_textures() shows the ". . ." loading indicator (meant
