@@ -916,7 +916,7 @@ public class DepthEstimator {
     }
 
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
-        if (!initialized || activeInterpreter == null || gpuReconfigurePending) return;
+        if (!initialized || gpuReconfigurePending) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
@@ -934,6 +934,11 @@ public class DepthEstimator {
             scheduleGpuInference(gpuVariant);
             return;
         }
+        // activeInterpreter is only the CPU model. Android's streamlined APK
+        // deliberately bundles ZipDepth's GPU variant without any CPU models,
+        // so requiring this field before checking activeGpuVariant discarded
+        // every submitted frame and prevented the GPU model from lazy-loading.
+        if (activeInterpreter == null) return;
         if (!isInferencing.compareAndSet(false, true)) {
             droppedFrames.incrementAndGet();
             return;

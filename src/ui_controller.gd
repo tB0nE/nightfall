@@ -157,12 +157,11 @@ func update_3d_btn_state():
 		main._ui_3d_mode_btn.visible = not locked
 		main._ui_3d_mode_btn.disabled = mode_disabled
 		main._ui_3d_mode_btn.modulate.a = 0.3 if mode_disabled else 1.0
-	# Model/Hz Cap are additionally meaningless (and disabled) whenever AI-3D
-	# itself is off, OR Auto is picking them itself (2025-08-25, extended
-	# 2026-08-28 to Hz Cap) - main.ai_3d_model/ai_3d_hz_cap are frozen/
-	# irrelevant while Auto overrides them (see get_depth_model_index()/
-	# get_effective_hz_cap()).
-	var sub_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1 or locked
+	# Model and Hz Cap are meaningless whenever AI-3D is off or Auto is
+	# choosing them. Android's platform lock applies only to Model: Standard is
+	# enforced there, but its explicit Hz Cap remains user-adjustable.
+	var model_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1 or locked
+	var hz_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1
 	# Type is NOT included above (2026-08-30) - Auto was always meant to let
 	# you pick GPU or CPU yourself (GPU as the default), not force GPU
 	# unconditionally - only tier+model are the table's job. Only greys with
@@ -177,15 +176,15 @@ func update_3d_btn_state():
 		main._ui_3d_type_btn.modulate.a = 0.3 if type_disabled else 1.0
 	if main._ui_3d_btn:
 		main._ui_3d_btn.visible = not locked
-		main._ui_3d_btn.disabled = sub_disabled
-		main._ui_3d_btn.modulate.a = 0.3 if sub_disabled else 1.0
+		main._ui_3d_btn.disabled = model_disabled
+		main._ui_3d_btn.modulate.a = 0.3 if model_disabled else 1.0
 	if main._ui_3d_priority_btn:
 		var priority_disabled = disabled or main.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or OS.get_name() != "Android"
 		main._ui_3d_priority_btn.disabled = priority_disabled
 		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
 	if main._ui_3d_hz_cap_btn:
-		main._ui_3d_hz_cap_btn.disabled = sub_disabled
-		main._ui_3d_hz_cap_btn.modulate.a = 0.3 if sub_disabled else 1.0
+		main._ui_3d_hz_cap_btn.disabled = hz_disabled
+		main._ui_3d_hz_cap_btn.modulate.a = 0.3 if hz_disabled else 1.0
 	# Separation/Convergence/Cursor Position stay live under Auto - they're
 	# visual tuning controls, not something the Auto table decides. They grey
 	# out whenever AI-3D itself is off; Cursor Position also has no rendering
@@ -200,31 +199,21 @@ func update_3d_btn_state():
 	if main._ui_3d_cursor_position_btn:
 		main._ui_3d_cursor_position_btn.disabled = effect_disabled
 		main._ui_3d_cursor_position_btn.modulate.a = 0.3 if effect_disabled else 1.0
-	# Reset (2026-08-28) - always usable regardless of ai_3d_speed/Auto
-	# state (it's a getback-to-safe-defaults action), only greyed by the
-	# same base sbs/multi-screen conflict everything else on this tab has.
-	if main._ui_3d_reset_btn:
-		main._ui_3d_reset_btn.disabled = disabled
-		main._ui_3d_reset_btn.modulate.a = 0.3 if disabled else 1.0
-	# Hidden again (2026-08-20) - the 2026-08-19 re-enable (for on-device
-	# DMap inspection while comparing depth models) was only meant for that
-	# comparison work and got shipped to main by accident. Not folded into
-	# sub_disabled above since that's meant to reflect "would be usable if
-	# AI-3D were on," and this one's just off regardless. Godot's
-	# Button.disabled blocks button_down from firing regardless of
-	# visibility, so this still stays fully non-interactive too.
+	# Debug views depend on AI-3D producing depth, but are independent of the
+	# Android model/type/mode lock. The lock hides selectors that cannot be
+	# changed on Android; it must not disable this diagnostic control too.
 	if main._ui_3d_debug_btn:
 		main._ui_3d_debug_btn.visible = true
-		main._ui_3d_debug_btn.disabled = sub_disabled
-		main._ui_3d_debug_btn.modulate.a = 0.3 if sub_disabled else 1.0
+		main._ui_3d_debug_btn.disabled = effect_disabled
+		main._ui_3d_debug_btn.modulate.a = 0.3 if effect_disabled else 1.0
 
 func update_stats_btn_state():
 	if not main._ui_stats_btn:
 		return
-	update_option_btn(main._ui_stats_btn, "On" if main.performance_overlay_enabled else "Off")
+	main._ui_stats_btn.text = "Stats"
 	main._ui_stats_btn.add_theme_color_override(
 		"font_color",
-		Color(0.55, 0.78, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.85)
+		Color(0.35, 0.65, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.85)
 	)
 
 func update_ambient_btn_state():
@@ -533,6 +522,30 @@ func build_ui():
 	main._ui_center_btn.add_theme_stylebox_override("pressed", center_hover)
 	top_row.add_child(main._ui_center_btn)
 
+	main._ui_stats_btn = Button.new()
+	main._ui_stats_btn.text = "Stats"
+	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
+	main._ui_stats_btn.custom_minimum_size = Vector2(100, 36)
+	main._ui_stats_btn.add_theme_font_size_override("font_size", 22)
+	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	main._ui_stats_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var stats_style = main._btn_style.duplicate()
+	stats_style.content_margin_left = 12
+	stats_style.content_margin_right = 12
+	stats_style.content_margin_top = 2
+	stats_style.content_margin_bottom = 2
+	stats_style.set_corner_radius_all(0)
+	var stats_hover = main._btn_hover.duplicate()
+	stats_hover.content_margin_left = 12
+	stats_hover.content_margin_right = 12
+	stats_hover.content_margin_top = 2
+	stats_hover.content_margin_bottom = 2
+	stats_hover.set_corner_radius_all(0)
+	main._ui_stats_btn.add_theme_stylebox_override("normal", stats_style)
+	main._ui_stats_btn.add_theme_stylebox_override("hover", stats_hover)
+	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
+	top_row.add_child(main._ui_stats_btn)
+
 	main._ui_host_label = Label.new()
 	main._ui_host_label.name = "HostLabel"
 	main._ui_host_label.add_theme_font_size_override("font_size", 26)
@@ -715,6 +728,10 @@ func build_ui():
 	_tab_btn_advanced.custom_minimum_size = Vector2(160, 44)
 	_tab_btn_advanced.add_theme_font_size_override("font_size", 22)
 	_tab_btn_advanced.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	# Kept constructed and wired for future settings migrations, but not
+	# currently exposed in the tab bar.
+	_tab_btn_advanced.visible = false
+	_tab_btn_advanced.disabled = true
 	tab_bar.add_child(_tab_btn_advanced)
 
 	var tab_margin = Control.new()
@@ -747,11 +764,6 @@ func build_ui():
 	disp_row1.add_child(main._ui_3d_speed_btn)
 	main._ui_curve_btn = make_option_btn("Curve", "Flat")
 	disp_row1.add_child(main._ui_curve_btn)
-	# AI/display controls share this row on the performance branch. Keep
-	# them inside the 1200px panel without changing the rest of the UI layout.
-	for btn in [main._ui_pt_btn, main._ui_sbs_btn, main._ui_3d_speed_btn, main._ui_curve_btn]:
-		btn.custom_minimum_size.x = 180
-		btn.add_theme_font_size_override("font_size", 20)
 
 	var disp_gap1 = Control.new()
 	disp_gap1.custom_minimum_size = Vector2(0, 20)
@@ -771,7 +783,7 @@ func build_ui():
 	disp_row2.add_child(main._ui_bg_btn)
 	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
 	disp_row2.add_child(main._ui_ambient_btn)
-	main._ui_ambient_color_btn = make_display_tuning_btn("Colour", "White")
+	main._ui_ambient_color_btn = make_option_btn("Colour", "White")
 	disp_row2.add_child(main._ui_ambient_color_btn)
 	main._ui_bezel_btn = make_option_btn("Bezel", "On")
 	disp_row2.add_child(main._ui_bezel_btn)
@@ -817,8 +829,6 @@ func build_ui():
 
 	main._ui_codec_btn = make_option_btn("Codec", "HEVC")
 	stream_row2.add_child(main._ui_codec_btn)
-	main._ui_stats_btn = make_option_btn("Stats", "Off")
-	stream_row2.add_child(main._ui_stats_btn)
 	main._ui_quick_start_btn = make_option_btn("Quick Start", "Off")
 	stream_row2.add_child(main._ui_quick_start_btn)
 
@@ -1076,8 +1086,6 @@ func build_ui():
 	main._ui_3d_debug_btn.disabled = true
 	main._ui_3d_debug_btn.visible = false
 	advanced_row2.add_child(main._ui_3d_debug_btn)
-	main._ui_3d_reset_btn = make_action_btn("Reset")
-	advanced_row2.add_child(main._ui_3d_reset_btn)
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -1158,7 +1166,6 @@ func build_ui():
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
 	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
-	main._ui_3d_reset_btn.button_down.connect(func(): on_ai_3d_reset_pressed())
 	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_3d_priority_btn.button_down.connect(func(): on_ai_3d_priority_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
@@ -1217,12 +1224,6 @@ func make_option_btn(label_text: String, value_text: String) -> Button:
 	btn.add_theme_stylebox_override("pressed", pressed_style)
 	btn.custom_minimum_size = Vector2(250, 132)
 	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	return btn
-
-func make_display_tuning_btn(label_text: String, value_text: String) -> Button:
-	var btn = make_option_btn(label_text, value_text)
-	btn.custom_minimum_size = Vector2(190, 132)
-	btn.add_theme_font_size_override("font_size", 22)
 	return btn
 
 # Shorter variant of make_option_btn() for the Monitors tab, which packs 3

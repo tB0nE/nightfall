@@ -812,8 +812,9 @@ func _ambient_static_color() -> Color:
 	return colors[clampi(main.ambient_color, 0, colors.size() - 1)]
 
 func _ambient_intensity() -> float:
-	# Ambient always uses the Glow rendering path at fixed medium intensity.
-	return 0.20
+	# Static remains Medium; screen-reactive Slow/Live need the stronger High
+	# preset so their changing colours remain clearly visible around the panel.
+	return 0.35 if main.ambient_mode >= 2 else 0.20
 
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
@@ -858,7 +859,8 @@ func apply_ambient_settings():
 	# starts. Rebind explicitly on every mode/settings change instead of relying
 	# on the SubViewport object identity remaining sufficient.
 	_refresh_ambient_source(true)
-	main._log("[AMBIENT] Mode=%s intensity=Medium (Glow)" % main.ambient_mode_labels[main.ambient_mode])
+	var intensity_label = "High" if main.ambient_mode >= 2 else "Medium"
+	main._log("[AMBIENT] Mode=%s intensity=%s (Glow)" % [main.ambient_mode_labels[main.ambient_mode], intensity_label])
 
 func _disable_ambient():
 	# Avoid needlessly touching composition-layer visibility every frame while
