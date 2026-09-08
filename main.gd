@@ -1,6 +1,7 @@
 extends Node3D
 
 var settings: AppSettings = AppSettings.new()
+var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
 
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
@@ -55,7 +56,6 @@ var _available_apps: Array = []
 var _welcome_screen: String = "welcome"
 var _pair_pin: String = ""
 var _connecting_ip: String = ""
-var _connect_timeout_pending: bool = false
 var _auto_connect: bool = false
 # Whether the host is drawing its own cursor into the captured frame (Polaris-only:
 # a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
@@ -63,10 +63,10 @@ var _auto_connect: bool = false
 # since a version-string heuristic already burned us once for microphone detection.
 var host_cursor_visible: bool = false
 var _host_cursor_toggle_supported: bool = false
-var _restarting_stream: bool = false
 var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
-var is_streaming: bool = false
+var is_streaming: bool:
+	get: return session_lifecycle.media_active
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -568,7 +568,6 @@ var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
 var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
-var _reconnecting: bool = false
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
@@ -1337,16 +1336,17 @@ func exit_app():
 	get_tree().quit()
 
 func disconnect_stream():
+	session_lifecycle.request_disconnect()
 	if current_host_id >= 0:
 		stream_backend.cancel_host_stream(current_host_id)
 	stream_backend.stop_play_stream()
 
 func start_connect_timeout():
-	_connect_timeout_pending = true
+	session_lifecycle.arm_connect_timeout()
 	get_tree().create_timer(10.0).timeout.connect(_on_connect_timeout)
 
 func _on_connect_timeout():
-	if not _connect_timeout_pending:
+	if not session_lifecycle.connect_timeout_pending:
 		return
 	_log("[CONNECT] Connection timed out")
 	stream_backend.stop_play_stream()
@@ -1361,10 +1361,7 @@ func restore_after_failed_connect(status_msg: String, welcome_name: String = "se
 	# Treat this as a complete non-streaming transition, including cancelling the
 	# still-armed Connect timeout and clearing restart state so the viewport reset
 	# below cannot take the native-restart preserve path.
-	_connect_timeout_pending = false
-	_restarting_stream = false
-	_reconnecting = false
-	is_streaming = false
+	session_lifecycle.fail()
 	_full_disconnect_cleanup(status_msg, welcome_name)
 
 func _bind_yuv_textures():
@@ -1388,8 +1385,7 @@ func _on_stream_started():
 	# StreamManager.start_stream() before decoder and native swapchain setup.
 	# Do not request it again here: a display transition racing newly-created
 	# GLES resources crashes the Quest GL thread.
-	var was_restarting = _restarting_stream
-	is_streaming = true
+	var was_restarting := session_lifecycle.stream_started()
 	stats_timer = 0.0
 	stats_sample_timer = 0.0
 	stats_app_frames = 0
@@ -1398,9 +1394,6 @@ func _on_stream_started():
 	stats_video_update_fps = 0.0
 	performance_overlay_timer = 0.0
 	_performance_previous_window.clear()
-	_restarting_stream = false
-	_connect_timeout_pending = false
-	_reconnecting = false
 	_last_activity_time = Time.get_ticks_msec() / 1000.0
 	ui_controller.set_status("Connecting...")
 	ui_controller.update_host_label()
@@ -1502,7 +1495,7 @@ func _on_stream_started():
 			var retry_app_id = _selected_app_id
 			var retry_resolution = host_resolution
 			_log("[LAYOUT] Trimming to primary-only on first connect (host defaulted to %d monitors)" % enabled_at_connect.size())
-			_restarting_stream = true
+			session_lifecycle.request_restart()
 			_clear_comp_yuv_textures()
 			await get_tree().process_frame
 			await get_tree().process_frame
@@ -1541,7 +1534,7 @@ func _on_stream_started():
 			var retry_resolution = compute_requested_resolution()
 			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
 				str(layout.frame_size), str(retry_resolution), settings.host.resolution_scale_pct])
-			_restarting_stream = true
+			session_lifecycle.request_restart()
 			# See settings_controller.gd's _schedule_stream_restart() for why this
 			# has to happen (and yield a frame) before stop_play_stream(), not after.
 			_clear_comp_yuv_textures()
@@ -1566,14 +1559,15 @@ func _update_comp_layer_size():
 	comp.update_layer_size()
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
-	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " restarting=" + str(_restarting_stream) + " reconnecting=" + str(_reconnecting) + " msg=" + str(msg) + " err=" + str(err_code))
+	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
 	if native_xr_renderer:
 		native_xr_renderer.deactivate(false)
 	if _auto_connect:
 		_auto_connect = false
+		session_lifecycle.stream_terminated(false, err_code)
 		return
-	if _restarting_stream:
-		is_streaming = false
+	if session_lifecycle.is_restarting():
+		session_lifecycle.stream_terminated(false, err_code)
 		_server_codec_support = {}
 		ui_controller.update_codec_btn()
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
@@ -1586,15 +1580,14 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 		return
 	if settings.auto_reconnect_enabled and err_code != 0:
 		_log("[RECONNECT] Keeping stream alive for auto-reconnect")
-		is_streaming = false
+		session_lifecycle.stream_terminated(true, err_code)
 		ui_controller.set_status("Connection lost, reconnecting...")
 		return
-	_reconnecting = false
-	is_streaming = false
+	session_lifecycle.stream_terminated(false, err_code)
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
-	_connect_timeout_pending = false
+	session_lifecycle.finish_cleanup()
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
 	ui_controller.update_codec_btn()
@@ -1648,6 +1641,7 @@ func _clear_comp_yuv_textures():
 	comp.clear_yuv_textures()
 
 func _ready():
+	session_lifecycle.phase_changed.connect(_on_session_phase_changed)
 	_log("=== Nightfall started ===")
 	Engine.max_fps = 0
 
@@ -1720,6 +1714,12 @@ func _ready():
 		left_hand.pose = "aim"
 
 	_post_ready_check.call_deferred()
+
+func _on_session_phase_changed(previous: int, current: int) -> void:
+	_log("[SESSION] %s -> %s" % [
+		SessionLifecycle.Phase.keys()[previous].to_lower(),
+		SessionLifecycle.Phase.keys()[current].to_lower(),
+	])
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
@@ -2180,13 +2180,13 @@ func _init_stream_backend():
 		)
 	if v2_node.has_signal("reconnect_scheduled"):
 		v2_node.reconnect_scheduled.connect(func(attempt, max_attempts, delay_ms):
-			_reconnecting = true
+			session_lifecycle.reconnect_scheduled()
 			ui_controller.set_status("Reconnecting %d/%d in %ds..." % [attempt, max_attempts, delay_ms / 1000])
 			_log("[RECONNECT] Attempt %d/%d in %dms" % [attempt, max_attempts, delay_ms])
 		)
 	if v2_node.has_signal("reconnect_failed"):
 		v2_node.reconnect_failed.connect(func():
-			_reconnecting = false
+			session_lifecycle.fail()
 			_log("[RECONNECT] All attempts failed")
 			_full_disconnect_cleanup("Reconnect failed")
 		)
@@ -2362,6 +2362,7 @@ func _init_textures_and_ui():
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	ui_controller.update_ui()
 	ui_controller.update_stereo_shader()
+	session_lifecycle.show_server_selection()
 
 func _try_auto_connect():
 	var saved_ip = parse_ip_port(%IPInput.text)[0]

@@ -32,6 +32,7 @@ var _current_host_id: int = -1
 var _current_app_id: int = -1
 
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	main.session_lifecycle.begin_connect()
 	_current_host_id = host_id
 	_current_app_id = app_id
 	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
@@ -381,7 +382,7 @@ func resize_stream_viewport(w: int, h: int):
 	# stream-started apply_stereo() -> update_bezel() call from resizing them a
 	# second time. Legacy-only configurations still use the normal path below.
 	var preserve_legacy_composition: bool = (
-		main._restarting_stream
+		main.session_lifecycle.is_restarting()
 		and main.native_xr_renderer != null
 		and main.native_xr_renderer.can_render_current_config()
 	)

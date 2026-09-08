@@ -86,7 +86,7 @@ func _eligible() -> bool:
 	# a null-pointer GLThread crash inside NightfallStream::stop_stream()'s
 	# call chain, confirmed via adb logcat crash buffer (SIGSEGV, fault
 	# addr 0xe0, repeated across a test session with heavy setting toggling).
-	if main._restarting_stream:
+	if main.session_lifecycle.is_restarting():
 		return false
 	# A per-eye freeze -- stale pose/subImage resubmitted at the OpenXR
 	# layer-collection level while the other eye keeps updating normally --

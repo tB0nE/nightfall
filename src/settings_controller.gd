@@ -1230,7 +1230,7 @@ func _schedule_stream_restart():
 		return
 	_restart_pending = false
 	main._log("[RESTART] Restarting stream")
-	main._restarting_stream = true
+	main.session_lifecycle.request_restart()
 	# The native renderer owns an OpenXR swapchain and a shared EGL context.
 	# Stop it before changing the display rate or destroying decoder textures;
 	# otherwise the runtime can recreate its display surface while either

@@ -55,6 +55,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 4. Application lifecycle
 
+> Status: In progress on `refactor/session-lifecycle`. Connection intent, media
+> activity, and timeout state now have one explicit lifecycle model.
+
 - Model boot, server selection, connecting, streaming, reconnecting, failed,
   and disconnecting as explicit states.
 - Extract session, screen registry, XR scene, input routing, and telemetry

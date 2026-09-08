@@ -33,6 +33,7 @@ the build/deployment entry point.
 ## Architecture notes
 
 - [Settings ownership](architecture/settings-ownership.md)
+- [Session lifecycle](architecture/session-lifecycle.md)
 - [Multi-monitor encode budget and layout](architecture/multi-monitor-encode-budget-and-layout.md)
 
 ## Document lifecycle
