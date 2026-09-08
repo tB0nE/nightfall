@@ -26,14 +26,14 @@ func update_bezel_size():
 		s.update_bezel_size()
 
 func toggle_bezel():
-	set_bezel_enabled(not main.bezel_enabled)
+	set_bezel_enabled(not main.settings.bezel_enabled)
 
 func set_bezel_enabled(enabled: bool):
-	main.bezel_enabled = enabled
+	main.settings.bezel_enabled = enabled
 	for s in main.screens:
 		if s.bezel_mesh:
-			s.bezel_mesh.visible = main.bezel_enabled if not main.comp.in_use else false
-	main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.bezel_enabled else "Off")
+			s.bezel_mesh.visible = main.settings.bezel_enabled if not main.comp.in_use else false
+	main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
 	main.comp.update_bezel()
 	main.state_manager.save_state()
 

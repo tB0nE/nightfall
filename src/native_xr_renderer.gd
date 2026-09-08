@@ -48,9 +48,9 @@ func _mode() -> int:
 	return main.settings_controller.get_stereo_mode() if main.settings_controller else 0
 
 func _native_compositor_sharpening() -> int:
-	if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL:
+	if main.settings.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL:
 		return 1
-	if main.sharpen_mode == main.SHARPEN_RUNTIME_QUALITY:
+	if main.settings.sharpen_mode == main.SHARPEN_RUNTIME_QUALITY:
 		return 2
 	return 0
 
@@ -63,7 +63,7 @@ func can_render_current_config() -> bool:
 	if main.auto_detect_enabled:
 		return false
 	var native_sharpening := _native_compositor_sharpening()
-	if main.sharpen_mode != 0 and native_sharpening == 0:
+	if main.settings.sharpen_mode != 0 and native_sharpening == 0:
 		return false
 	if native_sharpening > 0 and not renderer.supports_compositor_sharpening():
 		return false
@@ -153,8 +153,8 @@ func refresh() -> void:
 			main.comp.clear_native_ambient_sample()
 		_disable_legacy_video()
 		legacy_disabled = true
-		renderer.set_overlay_visible(main.performance_overlay_enabled)
-		if main.performance_overlay_enabled:
+		renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
+		if main.settings.performance_overlay_enabled:
 			request_stats_overlay_update()
 		main._log("[NATIVE-XR] Native renderer active; legacy full-resolution passes disabled")
 
@@ -171,7 +171,7 @@ func _sync_geometry() -> void:
 	var view_dist := maxf((screen.global_position - main.xr_camera.global_position).length(), 0.5)
 	var sort_order := clampi(int((10.0 - view_dist) * 10.0), 1, 100)
 	renderer.set_geometry(transform, screen.mesh_size.x, screen.mesh_size.y,
-			screen.curvature, radius, central_angle, sort_order, main.bezel_enabled)
+			screen.curvature, radius, central_angle, sort_order, main.settings.bezel_enabled)
 	renderer.set_compositor_sharpening(_native_compositor_sharpening())
 
 func _disable_legacy_video() -> void:
@@ -208,19 +208,19 @@ func process_frame(new_frame: bool) -> void:
 			guide_id = main.stream_backend.get_native_depth_guide_texture_id()
 			if guide_id != 0:
 				depth_id = RenderingServer.texture_get_native_handle(depth.depth_texture.get_rid())
-				separation = depth._pass_parallax * (main.ai_3d_separation_pct / 100.0)
-	var convergence: float = float(main.ai_3d_convergence_pct) / 100.0
+				separation = depth._pass_parallax * (main.settings.host.ai_3d_separation_pct / 100.0)
+	var convergence: float = float(main.settings.host.ai_3d_convergence_pct) / 100.0
 	var matrix: PackedFloat32Array = main.stream_backend.get_oes_transform_matrix()
 	if matrix.size() < 16:
 		return
 	var fence: int = main.stream_backend.get_oes_ready_fence()
 	var color_transfer: int = main.stream_backend.get_color_transfer_type()
-	var brightness: float = float(main.brightness_pct) / 100.0
-	var contrast: float = float(main.contrast_pct) / 100.0
-	var gamma: float = float(main.gamma_pct) / 100.0
+	var brightness: float = float(main.settings.brightness_pct) / 100.0
+	var contrast: float = float(main.settings.contrast_pct) / 100.0
+	var gamma: float = float(main.settings.gamma_pct) / 100.0
 	renderer.submit_frame(true, oes_id, depth_id, guide_id, matrix,
 			3.0, main.primary_screen.mesh_size.x, false, separation,
-			false, main.passthrough_enabled, fence, mode,
+			false, main.settings.passthrough_enabled, fence, mode,
 			main.depth_estimator.depth_revision if main.depth_estimator else 0,
 			color_transfer, convergence, brightness, contrast, gamma)
 
@@ -238,7 +238,7 @@ func _process_ambient_sample() -> void:
 func request_stats_overlay_update() -> void:
 	if active:
 		if renderer and stream_started:
-			renderer.set_overlay_visible(main.performance_overlay_enabled)
+			renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
 		_stats_upload_delay = 1
 
 func set_stats_visible(value: bool) -> void:
@@ -291,7 +291,7 @@ func deactivate(restore_legacy: bool) -> void:
 		# Re-sync the legacy overlay now that this renderer is no longer the
 		# one presenting it - see toggle_performance_overlay()'s comment for
 		# why the two display paths must stay mutually exclusive.
-		main.comp.set_stats_visible(main.performance_overlay_enabled and main.is_streaming)
+		main.comp.set_stats_visible(main.settings.performance_overlay_enabled and main.is_streaming)
 
 func shutdown() -> void:
 	if main.stream_backend:

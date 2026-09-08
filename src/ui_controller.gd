@@ -105,33 +105,33 @@ func on_ai_3d_priority_toggled():
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
-	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.sbs_mode])
+	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.settings.host.sbs_mode])
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
-	update_option_btn(main._ui_3d_speed_btn, "On" if main.ai_3d_speed != 0 else "Off")
-	# Shows main.ai_3d_last_mode while Off (disabled/greyed, but still
+	update_option_btn(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
+	# Shows main.settings.host.ai_3d_last_mode while Off (disabled/greyed, but still
 	# reflects what the main-page toggle will restore to when turned back on).
-	update_option_btn(main._ui_3d_mode_btn, main.settings_controller.ai_3d_speed_labels[main.ai_3d_speed if main.ai_3d_speed != 0 else main.ai_3d_last_mode])
+	update_option_btn(main._ui_3d_mode_btn, main.settings_controller.ai_3d_speed_labels[main.settings.host.ai_3d_speed if main.settings.host.ai_3d_speed != 0 else main.settings.host.ai_3d_last_mode])
 	# get_depth_backend_label() already resolves Auto/no-GPU-variant
 	# fallback correctly (see settings_controller.gd's get_depth_backend_index()) -
 	# no separate Auto-display special-casing needed here.
 	update_option_btn(main._ui_3d_type_btn, main.settings_controller.get_depth_backend_label())
-	# Under Auto (ai_3d_speed==1) main.ai_3d_model is frozen/irrelevant - show
+	# Under Auto (ai_3d_speed==1) main.settings.host.ai_3d_model is frozen/irrelevant - show
 	# whichever model AUTO_TABLE actually picked instead (see
 	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
-	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.ai_3d_speed == 1 else main.ai_3d_model
+	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
 	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
-	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.ai_3d_separation_pct)
-	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.ai_3d_convergence_pct)
+	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
+	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
-	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.ai_3d_debug])
+	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
-	var disabled = main.sbs_mode > 0 or main.screens.size() > 1
+	var disabled = main.settings.host.sbs_mode > 0 or main.screens.size() > 1
 	if main._ui_3d_speed_btn:
 		main._ui_3d_speed_btn.disabled = disabled
 		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
@@ -152,7 +152,7 @@ func update_3d_btn_state():
 	# 3D Mode: greyed whenever AI-3D itself is off - unlike Type/Model/Hz
 	# Cap below, NOT additionally greyed under Auto, since it's the only
 	# control that can switch OUT of Auto.
-	var mode_disabled = disabled or main.ai_3d_speed == 0 or locked
+	var mode_disabled = disabled or main.settings.host.ai_3d_speed == 0 or locked
 	if main._ui_3d_mode_btn:
 		main._ui_3d_mode_btn.visible = not locked
 		main._ui_3d_mode_btn.disabled = mode_disabled
@@ -160,16 +160,16 @@ func update_3d_btn_state():
 	# Model and Hz Cap are meaningless whenever AI-3D is off or Auto is
 	# choosing them. Android's platform lock applies only to Model: Standard is
 	# enforced there, but its explicit Hz Cap remains user-adjustable.
-	var model_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1 or locked
-	var hz_disabled = disabled or main.ai_3d_speed == 0 or main.ai_3d_speed == 1
+	var model_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1 or locked
+	var hz_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1
 	# Type is NOT included above (2026-08-30) - Auto was always meant to let
 	# you pick GPU or CPU yourself (GPU as the default), not force GPU
 	# unconditionally - only tier+model are the table's job. Only greys with
 	# the same base conditions Mode itself uses (AI-3D off / sbs conflict),
 	# same as effect_disabled below. See get_depth_backend_index()'s Auto
-	# branch, which now reads main.ai_3d_backend_pref instead of hardcoding
+	# branch, which now reads main.settings.host.ai_3d_backend_pref instead of hardcoding
 	# GPU.
-	var type_disabled = disabled or main.ai_3d_speed == 0 or locked
+	var type_disabled = disabled or main.settings.host.ai_3d_speed == 0 or locked
 	if main._ui_3d_type_btn:
 		main._ui_3d_type_btn.visible = not locked
 		main._ui_3d_type_btn.disabled = type_disabled
@@ -179,7 +179,7 @@ func update_3d_btn_state():
 		main._ui_3d_btn.disabled = model_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if model_disabled else 1.0
 	if main._ui_3d_priority_btn:
-		var priority_disabled = disabled or main.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available()
+		var priority_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available()
 		main._ui_3d_priority_btn.disabled = priority_disabled
 		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
 	if main._ui_3d_hz_cap_btn:
@@ -189,7 +189,7 @@ func update_3d_btn_state():
 	# visual tuning controls, not something the Auto table decides. They grey
 	# out whenever AI-3D itself is off; Cursor Position also has no rendering
 	# effect outside the AI stereo modes (see main.gd's cursor update).
-	var effect_disabled = disabled or main.ai_3d_speed == 0
+	var effect_disabled = disabled or main.settings.host.ai_3d_speed == 0
 	if main._ui_3d_separation_btn:
 		main._ui_3d_separation_btn.disabled = effect_disabled
 		main._ui_3d_separation_btn.modulate.a = 0.3 if effect_disabled else 1.0
@@ -213,21 +213,21 @@ func update_stats_btn_state():
 	main._ui_stats_btn.text = "Stats"
 	main._ui_stats_btn.add_theme_color_override(
 		"font_color",
-		Color(0.35, 0.65, 1.0, 1.0) if main.performance_overlay_enabled else Color(1, 1, 1, 0.5)
+		Color(0.35, 0.65, 1.0, 1.0) if main.settings.performance_overlay_enabled else Color(1, 1, 1, 0.5)
 	)
 
 func update_ambient_btn_state():
 	var supported = main.comp != null and main.comp.ambient_supported()
-	update_option_btn(main._ui_ambient_btn, main.ambient_mode_labels[clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)])
-	update_option_btn(main._ui_ambient_color_btn, main.ambient_color_labels[clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)])
+	update_option_btn(main._ui_ambient_btn, main.ambient_mode_labels[clampi(main.settings.ambient_mode, 0, main.ambient_mode_labels.size() - 1)])
+	update_option_btn(main._ui_ambient_color_btn, main.ambient_color_labels[clampi(main.settings.ambient_color, 0, main.ambient_color_labels.size() - 1)])
 
 	if main._ui_ambient_btn:
 		main._ui_ambient_btn.disabled = not supported
 		main._ui_ambient_btn.modulate.a = 1.0 if supported else 0.3
-	var tuning_disabled = not supported or main.ambient_mode == 0
+	var tuning_disabled = not supported or main.settings.ambient_mode == 0
 	# Static uses the selected colour; Slow/Live derive their colour from the
 	# rendered screen edges, so allowing this control there would be misleading.
-	var color_disabled = not supported or main.ambient_mode != 1
+	var color_disabled = not supported or main.settings.ambient_mode != 1
 	if main._ui_ambient_color_btn:
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
@@ -237,7 +237,7 @@ func update_monitor_tab():
 		return
 	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
 	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
-	update_option_btn(main._ui_grid_mode_btn, "On" if main.grid_mode_enabled else "Off")
+	update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
 	var selected_preset = MonitorPresets.find_preset(String(main._staged_preset_id)) if selected else {}
@@ -248,7 +248,7 @@ func update_monitor_tab():
 	# than let it look interactive and silently no-op (or restart the stream
 	# for a change that can never actually take effect). Revisit once/if
 	# non-Polaris multi-monitor selection is supported.
-	var polaris = main.is_polaris_host
+	var polaris = main.settings.host.is_polaris_host
 	main._ui_monitors_btn.disabled = not polaris
 	main._ui_virtual_monitors_btn.disabled = not polaris
 	main._ui_apply_preset_btn.disabled = not polaris
@@ -707,7 +707,7 @@ func build_ui():
 	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
 	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
-	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
+	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 
@@ -745,7 +745,7 @@ func build_ui():
 	_tab_picture = _build_menu_tab(
 		vbox,
 		MenuSchema.get_tab(&"picture"),
-		{&"_ui_sharpen_btn": main.settings_controller.get_sharpen_label(main.sharpen_mode)}
+		{&"_ui_sharpen_btn": main.settings_controller.get_sharpen_label(main.settings.sharpen_mode)}
 	)
 
 	_tab_monitors = VBoxContainer.new()
@@ -1063,7 +1063,7 @@ func update_option_btn(btn: Button, value: String):
 		btn.text = parts[0] + "\n" + value
 
 func update_codec_btn():
-	main.ui_controller.update_option_btn(main._ui_codec_btn, main.codec_labels[main.codec_preference])
+	main.ui_controller.update_option_btn(main._ui_codec_btn, main.codec_labels[main.settings.codec_preference])
 
 func update_ctrl_mode_btn():
 	if main._ui_ctrl_mode_btn and main.controller_mapper:

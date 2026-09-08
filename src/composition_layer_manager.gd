@@ -118,7 +118,7 @@ func _get_hdr_lut() -> ImageTexture:
 # fresh materials without changing the stream's transfer type.
 func _apply_video_shader_state(color_transfer_type: int):
 	_current_color_transfer_type = color_transfer_type
-	var picture_adjusted = main.brightness_pct != 0 or main.contrast_pct != 100 or main.gamma_pct != 100
+	var picture_adjusted = main.settings.brightness_pct != 0 or main.settings.contrast_pct != 100 or main.settings.gamma_pct != 100
 	var shader: Shader
 	if color_transfer_type != 0:
 		shader = _get_hdr_shader()
@@ -749,11 +749,11 @@ func _prepare_ambient_sample_update() -> bool:
 		# Do not redraw from the now-disabled legacy viewport while the first
 		# asynchronous native sample is still in flight.
 		if not _ambient_native_source_texture:
-			_ambient_native_static_waiting = main.ambient_mode == 1
+			_ambient_native_static_waiting = main.settings.ambient_mode == 1
 			return false
 		# Static mode must wait for a newly requested sample after a settings
 		# change, rather than immediately redrawing the previous frozen sample.
-		if main.ambient_mode == 1:
+		if main.settings.ambient_mode == 1:
 			if _ambient_native_sample_revision == _ambient_native_applied_revision:
 				_ambient_native_static_waiting = true
 				return false
@@ -770,7 +770,7 @@ func _prepare_ambient_sample_update() -> bool:
 		# Preserve the previous 32x32 target and alpha-blend the new frame over
 		# it. Live converges in roughly ten frames; Slow uses a stronger blend
 		# because it only receives ten samples per second.
-		var blend = 0.35 if main.ambient_mode == 2 else 0.12
+		var blend = 0.35 if main.settings.ambient_mode == 2 else 0.12
 		_ambient_sample_rect.modulate = Color(1.0, 1.0, 1.0, blend)
 	return true
 
@@ -809,12 +809,12 @@ func _ambient_static_color() -> Color:
 		Color(0.15, 0.45, 1.0),
 		Color(0.72, 0.20, 1.0),
 	]
-	return colors[clampi(main.ambient_color, 0, colors.size() - 1)]
+	return colors[clampi(main.settings.ambient_color, 0, colors.size() - 1)]
 
 func _ambient_intensity() -> float:
 	# Static remains Medium; screen-reactive Slow/Live need the stronger High
 	# preset so their changing colours remain clearly visible around the panel.
-	return 0.35 if main.ambient_mode >= 2 else 0.20
+	return 0.35 if main.settings.ambient_mode >= 2 else 0.20
 
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
@@ -843,14 +843,14 @@ func _refresh_ambient_source(force: bool = false):
 		_ambient_dirty = true
 
 func apply_ambient_settings():
-	main.ambient_mode = clampi(main.ambient_mode, 0, main.ambient_mode_labels.size() - 1)
-	main.ambient_color = clampi(main.ambient_color, 0, main.ambient_color_labels.size() - 1)
-	if main.ambient_mode == 0:
+	main.settings.ambient_mode = clampi(main.settings.ambient_mode, 0, main.ambient_mode_labels.size() - 1)
+	main.settings.ambient_color = clampi(main.settings.ambient_color, 0, main.ambient_color_labels.size() - 1)
+	if main.settings.ambient_mode == 0:
 		_disable_ambient()
 		return
 	if not _ambient_material and not _setup_ambient_layer():
 		return
-	_ambient_material.set_shader_parameter("reactive", main.ambient_mode >= 2)
+	_ambient_material.set_shader_parameter("reactive", main.settings.ambient_mode >= 2)
 	_ambient_material.set_shader_parameter("static_color", _ambient_static_color())
 	_ambient_material.set_shader_parameter("intensity", _ambient_intensity())
 	_ambient_slow_elapsed = 0.0
@@ -859,8 +859,8 @@ func apply_ambient_settings():
 	# starts. Rebind explicitly on every mode/settings change instead of relying
 	# on the SubViewport object identity remaining sufficient.
 	_refresh_ambient_source(true)
-	var intensity_label = "High" if main.ambient_mode >= 2 else "Medium"
-	main._log("[AMBIENT] Mode=%s intensity=%s (Glow)" % [main.ambient_mode_labels[main.ambient_mode], intensity_label])
+	var intensity_label = "High" if main.settings.ambient_mode >= 2 else "Medium"
+	main._log("[AMBIENT] Mode=%s intensity=%s (Glow)" % [main.ambient_mode_labels[main.settings.ambient_mode], intensity_label])
 
 func _disable_ambient():
 	# Avoid needlessly touching composition-layer visibility every frame while
@@ -876,14 +876,14 @@ func _disable_ambient():
 	_ambient_sample_seeded = false
 
 func process_ambient(delta: float):
-	if main.ambient_mode == 0:
+	if main.settings.ambient_mode == 0:
 		_disable_ambient()
 		return
 	if not _ambient_viewport and not _setup_ambient_layer():
 		return
 	if not ambient_supported() or not _ambient_viewport:
 		return
-	var should_show = available and in_use and main.is_streaming and main.ambient_mode > 0
+	var should_show = available and in_use and main.is_streaming and main.settings.ambient_mode > 0
 	if not should_show:
 		_disable_ambient()
 		return
@@ -895,7 +895,7 @@ func process_ambient(delta: float):
 	# already visible; the uniform is only touched when the source changes.
 	_refresh_ambient_source()
 
-	match main.ambient_mode:
+	match main.settings.ambient_mode:
 		1: # Static: redraw only after a setting/geometry change.
 			if _ambient_dirty:
 				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -1301,7 +1301,7 @@ func _update_bezel_for(s: VRScreen):
 	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
 	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
 	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
-	var show_border = main.bezel_enabled and in_use
+	var show_border = main.settings.bezel_enabled and in_use
 	for t in triplet:
 		if not t.bezel:
 			continue
@@ -1625,7 +1625,7 @@ func switch_to_mesh_rendering():
 		if scr.comp_viewport:
 			scr.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if scr.bezel_mesh:
-			scr.bezel_mesh.visible = main.bezel_enabled
+			scr.bezel_mesh.visible = main.settings.bezel_enabled
 	if main.comp_ui: main.comp_ui.visible = false
 	if main.comp_kb: main.comp_kb.visible = false
 	if main.comp_cursor: main.comp_cursor.visible = false
@@ -1637,7 +1637,7 @@ func switch_to_mesh_rendering():
 	if main.is_streaming:
 		main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		var mode = main.settings_controller.get_stereo_mode()
-		var runtime_sharpen_active = apply_compositor_sharpen(main.sharpen_mode)
+		var runtime_sharpen_active = apply_compositor_sharpen(main.settings.sharpen_mode)
 		for scr in main.screens:
 			var mat = scr.material_override
 			if mat:
@@ -1652,9 +1652,9 @@ func switch_to_mesh_rendering():
 				# the wrong content instead of that screen's own picture.
 				mat.set_shader_parameter("stereo_mode", mode if scr == main.primary_screen else 0)
 				mat.set_shader_parameter("filter_mode", 0)
-				var shader_sharpen = float(main.sharpen_mode) * 0.016
-				if main.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL:
-					shader_sharpen = 0.0 if runtime_sharpen_active else (0.5 if main.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)
+				var shader_sharpen = float(main.settings.sharpen_mode) * 0.016
+				if main.settings.sharpen_mode >= main.SHARPEN_RUNTIME_NORMAL:
+					shader_sharpen = 0.0 if runtime_sharpen_active else (0.5 if main.settings.sharpen_mode == main.SHARPEN_RUNTIME_NORMAL else 1.0)
 				mat.set_shader_parameter("sharpen", shader_sharpen)
 		bind_yuv_textures()
 

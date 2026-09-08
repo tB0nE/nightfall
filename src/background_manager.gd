@@ -10,7 +10,7 @@ func create_backgrounds():
 	_create_ash()
 	_create_snow()
 	_create_data()
-	var active_bg = main.background_mode - 1
+	var active_bg = main.settings.background_mode - 1
 	for i in range(main.bg_names.size()):
 		var bg = main.get_node_or_null(main.bg_names[i])
 		if bg:
