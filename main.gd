@@ -1,6 +1,8 @@
 extends Node3D
 
 var settings: AppSettings = AppSettings.new()
+var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
+var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
@@ -55,18 +57,16 @@ var _available_apps: Array = []
 var _welcome_screen: String = "welcome"
 var _pair_pin: String = ""
 var _connecting_ip: String = ""
-var _connect_timeout_pending: bool = false
-var _auto_connect: bool = false
 # Whether the host is drawing its own cursor into the captured frame (Polaris-only:
 # a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
 # Support is detected per-connection from the launch response, not guessed up front,
 # since a version-string heuristic already burned us once for microphone detection.
 var host_cursor_visible: bool = false
 var _host_cursor_toggle_supported: bool = false
-var _restarting_stream: bool = false
 var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
-var is_streaming: bool = false
+var is_streaming: bool:
+	get: return session_lifecycle.media_active
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -123,15 +123,6 @@ var grab_start_node_euler: Vector3 = Vector3.ZERO
 var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
 var grab_group_start_transforms: Dictionary = {}
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
-var stats_timer: float = 0.0
-var stats_fps: float = 0.0
-var stats_video_update_fps: float = 0.0
-var stats_sample_timer: float = 0.0
-var stats_app_frames: int = 0
-var stats_video_updates: int = 0
-var stats_network_events: int = 0
-var performance_overlay_timer: float = 0.0
-var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
@@ -265,8 +256,11 @@ var corner_handles: Array:
 var grabbed_corner_idx: int = -1
 var grabbed_corner_screen: VRScreen = null
 var corner_anchor_world: Vector3 = Vector3.ZERO
-var screens: Array[VRScreen] = []
-var primary_screen: VRScreen = null
+var screen_registry: ScreenRegistry = ScreenRegistry.new()
+var screens: Array[VRScreen]:
+	get: return screen_registry.screens
+var primary_screen: VRScreen:
+	get: return screen_registry.primary
 var layout: ScreenLayout = null
 
 # Staging state for the Monitors tab's Row1 (counts) + Row2 (preset) - Apply
@@ -568,7 +562,6 @@ var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
 var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
-var _reconnecting: bool = false
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
@@ -1337,16 +1330,17 @@ func exit_app():
 	get_tree().quit()
 
 func disconnect_stream():
+	session_lifecycle.request_disconnect()
 	if current_host_id >= 0:
 		stream_backend.cancel_host_stream(current_host_id)
 	stream_backend.stop_play_stream()
 
 func start_connect_timeout():
-	_connect_timeout_pending = true
+	session_lifecycle.arm_connect_timeout()
 	get_tree().create_timer(10.0).timeout.connect(_on_connect_timeout)
 
 func _on_connect_timeout():
-	if not _connect_timeout_pending:
+	if not session_lifecycle.connect_timeout_pending:
 		return
 	_log("[CONNECT] Connection timed out")
 	stream_backend.stop_play_stream()
@@ -1361,10 +1355,7 @@ func restore_after_failed_connect(status_msg: String, welcome_name: String = "se
 	# Treat this as a complete non-streaming transition, including cancelling the
 	# still-armed Connect timeout and clearing restart state so the viewport reset
 	# below cannot take the native-restart preserve path.
-	_connect_timeout_pending = false
-	_restarting_stream = false
-	_reconnecting = false
-	is_streaming = false
+	session_lifecycle.fail()
 	_full_disconnect_cleanup(status_msg, welcome_name)
 
 func _bind_yuv_textures():
@@ -1388,19 +1379,8 @@ func _on_stream_started():
 	# StreamManager.start_stream() before decoder and native swapchain setup.
 	# Do not request it again here: a display transition racing newly-created
 	# GLES resources crashes the Quest GL thread.
-	var was_restarting = _restarting_stream
-	is_streaming = true
-	stats_timer = 0.0
-	stats_sample_timer = 0.0
-	stats_app_frames = 0
-	stats_video_updates = 0
-	stats_fps = 0.0
-	stats_video_update_fps = 0.0
-	performance_overlay_timer = 0.0
-	_performance_previous_window.clear()
-	_restarting_stream = false
-	_connect_timeout_pending = false
-	_reconnecting = false
+	var was_restarting := session_lifecycle.stream_started()
+	telemetry.reset_session()
 	_last_activity_time = Time.get_ticks_msec() / 1000.0
 	ui_controller.set_status("Connecting...")
 	ui_controller.update_host_label()
@@ -1502,7 +1482,7 @@ func _on_stream_started():
 			var retry_app_id = _selected_app_id
 			var retry_resolution = host_resolution
 			_log("[LAYOUT] Trimming to primary-only on first connect (host defaulted to %d monitors)" % enabled_at_connect.size())
-			_restarting_stream = true
+			session_lifecycle.request_restart()
 			_clear_comp_yuv_textures()
 			await get_tree().process_frame
 			await get_tree().process_frame
@@ -1541,7 +1521,7 @@ func _on_stream_started():
 			var retry_resolution = compute_requested_resolution()
 			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
 				str(layout.frame_size), str(retry_resolution), settings.host.resolution_scale_pct])
-			_restarting_stream = true
+			session_lifecycle.request_restart()
 			# See settings_controller.gd's _schedule_stream_restart() for why this
 			# has to happen (and yield a frame) before stop_play_stream(), not after.
 			_clear_comp_yuv_textures()
@@ -1566,14 +1546,11 @@ func _update_comp_layer_size():
 	comp.update_layer_size()
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
-	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " restarting=" + str(_restarting_stream) + " reconnecting=" + str(_reconnecting) + " msg=" + str(msg) + " err=" + str(err_code))
+	_log("[NF] _on_stream_terminated: phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
 	if native_xr_renderer:
 		native_xr_renderer.deactivate(false)
-	if _auto_connect:
-		_auto_connect = false
-		return
-	if _restarting_stream:
-		is_streaming = false
+	if session_lifecycle.is_restarting():
+		session_lifecycle.stream_terminated(false, err_code)
 		_server_codec_support = {}
 		ui_controller.update_codec_btn()
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
@@ -1586,15 +1563,14 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 		return
 	if settings.auto_reconnect_enabled and err_code != 0:
 		_log("[RECONNECT] Keeping stream alive for auto-reconnect")
-		is_streaming = false
+		session_lifecycle.stream_terminated(true, err_code)
 		ui_controller.set_status("Connection lost, reconnecting...")
 		return
-	_reconnecting = false
-	is_streaming = false
+	session_lifecycle.stream_terminated(false, err_code)
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
-	_connect_timeout_pending = false
+	session_lifecycle.finish_cleanup()
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
 	ui_controller.update_codec_btn()
@@ -1648,6 +1624,7 @@ func _clear_comp_yuv_textures():
 	comp.clear_yuv_textures()
 
 func _ready():
+	session_lifecycle.phase_changed.connect(_on_session_phase_changed)
 	_log("=== Nightfall started ===")
 	Engine.max_fps = 0
 
@@ -1707,7 +1684,7 @@ func _ready():
 	_init_post_xr()
 	_init_textures_and_ui()
 
-	if _auto_connect or settings.quick_start_enabled:
+	if settings.quick_start_enabled:
 		_try_auto_connect()
 
 	Input.joy_connection_changed.connect(func(device, connected):
@@ -1720,6 +1697,12 @@ func _ready():
 		left_hand.pose = "aim"
 
 	_post_ready_check.call_deferred()
+
+func _on_session_phase_changed(previous: int, current: int) -> void:
+	_log("[SESSION] %s -> %s" % [
+		SessionLifecycle.Phase.keys()[previous].to_lower(),
+		SessionLifecycle.Phase.keys()[current].to_lower(),
+	])
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
@@ -1813,8 +1796,7 @@ func _init_ui():
 	virtual_keyboard.build()
 
 	screen_mesh.setup(self, &"m0")
-	screens = [screen_mesh]
-	primary_screen = screen_mesh
+	screen_registry.initialize(screen_mesh)
 	primary_screen.grid_pos = Vector2i(3, 1)
 	layout = ScreenLayout.single(Vector2i(1920, 1080))
 	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
@@ -1833,7 +1815,7 @@ func _init_ui():
 	ui_controller.refresh_ui_buttons()
 
 const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
-const MAX_SCREENS := 4
+const MAX_SCREENS := ScreenRegistry.MAX_SCREENS
 # Gap between adjacent screen edges, in meters. Shared with MonitorGrid so
 # grid-mode spacing and add_screen()'s free-placement spacing can't drift apart.
 const SCREEN_GAP := 0.05
@@ -1974,7 +1956,7 @@ func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, a
 	return best
 
 func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
-	if screens.size() >= MAX_SCREENS:
+	if not screen_registry.can_add():
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
 	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
@@ -2061,7 +2043,10 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 			if stream_size.x > 0 and stream_size.y > 0:
 				s.comp_viewport.size = stream_size
 				s.comp_base_size = stream_size
-	screens.append(s)
+	if not screen_registry.add(s):
+		push_error("Screen registry rejected prepared screen %s" % String(monitor_id))
+		s.queue_free()
+		return null
 	_log("[SCREEN] Added screen %s (total=%d)" % [String(monitor_id), screens.size()])
 	if comp.available and comp.in_use and s.comp_cylinder:
 		s.comp_cylinder.visible = true
@@ -2087,7 +2072,8 @@ func remove_screen(monitor_id: StringName) -> void:
 			if s == primary_screen:
 				_log("[SCREEN] Refusing to remove the primary screen %s" % String(monitor_id))
 				return
-			screens.remove_at(i)
+			if not screen_registry.remove(s):
+				return
 			if comp.available:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
@@ -2180,13 +2166,13 @@ func _init_stream_backend():
 		)
 	if v2_node.has_signal("reconnect_scheduled"):
 		v2_node.reconnect_scheduled.connect(func(attempt, max_attempts, delay_ms):
-			_reconnecting = true
+			session_lifecycle.reconnect_scheduled()
 			ui_controller.set_status("Reconnecting %d/%d in %ds..." % [attempt, max_attempts, delay_ms / 1000])
 			_log("[RECONNECT] Attempt %d/%d in %dms" % [attempt, max_attempts, delay_ms])
 		)
 	if v2_node.has_signal("reconnect_failed"):
 		v2_node.reconnect_failed.connect(func():
-			_reconnecting = false
+			session_lifecycle.fail()
 			_log("[RECONNECT] All attempts failed")
 			_full_disconnect_cleanup("Reconnect failed")
 		)
@@ -2216,11 +2202,6 @@ func _init_stream_backend():
 		v2_node.controller_trigger_rumble.connect(func(controller, left_motor, right_motor):
 			_trigger_haptic(controller, left_motor, right_motor)
 		)
-	v2_node.log_message.connect(func(msg):
-		if "dropped" in msg or "Unrecoverable" in msg or "Waiting for IDR" in msg:
-			stats_network_events += 1
-	)
-
 func _init_xr(interface):
 	var render_size = interface.get_render_target_size()
 	_xr_render_width = int(render_size.x)
@@ -2362,6 +2343,7 @@ func _init_textures_and_ui():
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	ui_controller.update_ui()
 	ui_controller.update_stereo_shader()
+	session_lifecycle.show_server_selection()
 
 func _try_auto_connect():
 	var saved_ip = parse_ip_port(%IPInput.text)[0]
@@ -2396,7 +2378,6 @@ func _try_auto_connect():
 				current_host_id = host_id
 				%IPInput.text = host_ip
 				_log("[AUTO-CONNECT] Auto-connecting to host_id=%d ip=%s" % [host_id, host_ip])
-				_auto_connect = false
 				await get_tree().create_timer(1.0).timeout
 				stream_manager.start_stream(host_id, _selected_app_id)
 
@@ -2714,40 +2695,29 @@ func _process_stats(delta):
 			_cached_sharpen = cur_sharpen
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
-	stats_app_frames += 1
 	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
-	if new_video_frame:
-		stats_video_updates += 1
 	if native_xr_renderer:
 		native_xr_renderer.process_frame(new_video_frame)
-	stats_sample_timer += delta
-	if stats_sample_timer >= 1.0:
-		stats_fps = float(stats_app_frames) / stats_sample_timer
-		stats_video_update_fps = float(stats_video_updates) / stats_sample_timer
-		# Diagnostic (2026-09-06): stats_video_update_fps is inherently capped
-		# at stats_fps (consume_new_frame() can report at most one "yes" per
+	var frame_sample := telemetry.record_frame(delta, new_video_frame)
+	if not frame_sample.is_empty():
+		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
+		# FPS (consume_new_frame() can report at most one "yes" per
 		# script tick, no matter how many render-thread completions happened
 		# since the last tick) - now that decode-thread throughput and native
 		# render cost are both confirmed to track target Hz closely, this
-		# checks whether the script tick rate itself (stats_fps) is also
+		# checks whether the script tick rate itself is also
 		# hitting target, and exactly how close video_update_fps tracks it.
 		_log("[STATS] app=%.1ffps video_update=%.1ffps (%.1f%% of app) frames=%d/%d" % [
-			stats_fps, stats_video_update_fps,
-			100.0 * stats_video_update_fps / maxf(stats_fps, 0.001),
-			stats_video_updates, stats_app_frames])
-		stats_sample_timer = 0.0
-		stats_app_frames = 0
-		stats_video_updates = 0
-	stats_timer += delta
-	if stats_timer >= 0.1:
+			frame_sample["app_fps"], frame_sample["video_update_fps"],
+			100.0 * frame_sample["video_update_fps"] / maxf(frame_sample["app_fps"], 0.001),
+			frame_sample["video_updates"], frame_sample["app_frames"]])
+	if telemetry.status_update_due(delta):
 		stream_manager.update_stats()
-		stats_timer = 0.0
 	_process_performance_overlay(delta)
 
 func toggle_performance_overlay():
 	settings.performance_overlay_enabled = not settings.performance_overlay_enabled
-	performance_overlay_timer = 0.0
-	_performance_previous_window.clear()
+	telemetry.reset_overlay()
 	if stream_backend:
 		stream_backend.take_performance_stats()
 	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
@@ -2766,31 +2736,16 @@ func toggle_performance_overlay():
 	if state_manager:
 		state_manager.save_state()
 
-func _combine_performance_windows(previous: Dictionary, current: Dictionary) -> Dictionary:
-	if previous.is_empty():
-		return current.duplicate()
-	var combined = current.duplicate()
-	for key in ["elapsed_us", "total_frames", "received_frames", "rendered_frames", "network_lost_frames", "decode_time_us", "host_latency_tenths_total", "host_latency_samples"]:
-		combined[key] = int(previous.get(key, 0)) + int(current.get(key, 0))
-	var previous_min = int(previous.get("host_latency_tenths_min", 0))
-	var current_min = int(current.get("host_latency_tenths_min", 0))
-	combined["host_latency_tenths_min"] = current_min if previous_min == 0 else previous_min if current_min == 0 else mini(previous_min, current_min)
-	combined["host_latency_tenths_max"] = maxi(int(previous.get("host_latency_tenths_max", 0)), int(current.get("host_latency_tenths_max", 0)))
-	return combined
-
 func _process_performance_overlay(delta: float):
 	if not settings.performance_overlay_enabled or not stream_backend or not comp:
 		return
 	comp.set_stats_visible(true)
-	performance_overlay_timer += delta
-	if performance_overlay_timer < 1.0:
+	if not telemetry.overlay_update_due(delta):
 		return
-	performance_overlay_timer = 0.0
 	var current = stream_backend.take_performance_stats()
 	if current.is_empty():
 		return
-	var stats = _combine_performance_windows(_performance_previous_window, current)
-	_performance_previous_window = current
+	var stats = telemetry.combine_performance_window(current)
 	var elapsed_s = maxf(float(stats.get("elapsed_us", 0)) / 1000000.0, 0.001)
 	var total_frames = int(stats.get("total_frames", 0))
 	var received_frames = int(stats.get("received_frames", 0))
@@ -2813,8 +2768,8 @@ func _process_performance_overlay(delta: float):
 		"Decoder: %s" % decoder_name,
 		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
 		"Rendering frame rate: %.0f FPS" % rendering_fps,
-		"Nightfall application frame rate: %.1f FPS" % stats_fps,
-		"Nightfall video texture update rate: %.1f FPS" % stats_video_update_fps,
+		"Nightfall application frame rate: %.1f FPS" % telemetry.app_fps,
+		"Nightfall video texture update rate: %.1f FPS" % telemetry.video_update_fps,
 		"Frames dropped by your network connection: %.2f%%" % lost_pct,
 		"Decoder queue drops: %d (queued: %d)" % [decoder_queue_drops, decoder_queue_size],
 		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],
@@ -2940,7 +2895,8 @@ func set_primary_screen(s: VRScreen) -> void:
 	var world_transforms := {}
 	for p in panels:
 		world_transforms[p] = p.global_transform
-	primary_screen = s
+	if not screen_registry.set_primary(s):
+		return
 	for p in panels:
 		p.global_transform = world_transforms[p]
 		if p == ui_panel_3d:
@@ -3193,7 +3149,7 @@ func _create_contact_dot():
 	shared_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	shared_mat.albedo_color = Color(1, 1, 1, 0.2)
 	shared_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	shared_mat.render_priority = 200
+	shared_mat.render_priority = 127
 	shared_mat.no_depth_test = true
 
 	contact_dot = _make_contact_dot(shared_mat)

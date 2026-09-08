@@ -24,7 +24,10 @@ mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 tests=(
 	"test/test_app_settings.gd"
 	"test/test_menu_schema.gd"
+	"test/test_performance_telemetry.gd"
+	"test/test_session_lifecycle.gd"
 	"test/test_monitor_grid.gd"
+	"test/test_screen_registry.gd"
 	"test/test_screen_layout.gd"
 	"test/test_monitor_presets.gd"
 )

@@ -32,6 +32,7 @@ var _current_host_id: int = -1
 var _current_app_id: int = -1
 
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	main.session_lifecycle.begin_connect()
 	_current_host_id = host_id
 	_current_app_id = app_id
 	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
@@ -381,7 +382,7 @@ func resize_stream_viewport(w: int, h: int):
 	# stream-started apply_stereo() -> update_bezel() call from resizing them a
 	# second time. Legacy-only configurations still use the normal path below.
 	var preserve_legacy_composition: bool = (
-		main._restarting_stream
+		main.session_lifecycle.is_restarting()
 		and main.native_xr_renderer != null
 		and main.native_xr_renderer.can_render_current_config()
 	)
@@ -682,7 +683,7 @@ func update_stats():
 	var codec_name = main.codec_labels[main.settings.codec_preference] if main.settings.codec_preference < main.codec_labels.size() else "?"
 	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(main.settings.host.stream_fps) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
 	txt += " \u2022 Net:" + (str(network_latency_ms) + "ms" if network_latency_ms >= 0 else "?")
-	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.stats_fps))) + "fps"
+	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
 	# Live GPU-depth-inference readout (2026-08-25) - added for the
