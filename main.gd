@@ -1,5 +1,7 @@
 extends Node3D
 
+var settings: AppSettings = AppSettings.new()
+
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
 @onready var ui_viewport = %UIViewport
@@ -186,14 +188,20 @@ var _performance_previous_window: Dictionary = {}
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
 # AUTO_TABLE already accounts for it directly in its tier/model picks.
-var passthrough_enabled: bool = false
+var passthrough_enabled: bool:
+	get: return settings.passthrough_enabled
+	set(value): settings.passthrough_enabled = value
 var passthrough_supported: bool = false
-var background_mode: int = 0
+var background_mode: int:
+	get: return settings.background_mode
+	set(value): settings.background_mode = value
 var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
 var bg_names: Array = ["Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
-var bezel_enabled: bool = true
+var bezel_enabled: bool:
+	get: return settings.bezel_enabled
+	set(value): settings.bezel_enabled = value
 var bezel_mesh: MeshInstance3D:
 	get: return primary_screen.bezel_mesh if primary_screen else null
 	set(v):
@@ -203,7 +211,9 @@ var curvature: int:
 	set(v):
 		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
-var sharpen_mode: int = 0
+var sharpen_mode: int:
+	get: return settings.sharpen_mode
+	set(value): settings.sharpen_mode = value
 const SHARPEN_RUNTIME_NORMAL := 6
 const SHARPEN_RUNTIME_QUALITY := 7
 # Keep the existing shader modes in their original saved-state slots for a
@@ -214,15 +224,25 @@ var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime",
 # final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
 # shader variant) - see settings_controller.gd's apply_filter() for the
 # percent->shader-uniform mapping and each shader's apply_picture().
-var brightness_pct: int = 0 # -20..20, step 10 (additive)
-var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
-var gamma_pct: int = 100 # 50..150, step 25 (exponent)
+var brightness_pct: int: # -20..20, step 10 (additive)
+	get: return settings.brightness_pct
+	set(value): settings.brightness_pct = value
+var contrast_pct: int: # 50..150, step 25 (multiplier around midpoint)
+	get: return settings.contrast_pct
+	set(value): settings.contrast_pct = value
+var gamma_pct: int: # 50..150, step 25 (exponent)
+	get: return settings.gamma_pct
+	set(value): settings.gamma_pct = value
 # Ambient screen lighting is a separate low-resolution composition layer,
 # so it stays out of the main YUV/HDR/AI-3D shader path. Reactive modes use
 # the already-rendered primary screen as their colour source.
-var ambient_mode: int = 0
+var ambient_mode: int:
+	get: return settings.ambient_mode
+	set(value): settings.ambient_mode = value
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
-var ambient_color: int = 0
+var ambient_color: int:
+	get: return settings.ambient_color
+	set(value): settings.ambient_color = value
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064

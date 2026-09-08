@@ -22,6 +22,7 @@ fi
 mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
+	"test/test_app_settings.gd"
 	"test/test_monitor_grid.gd"
 	"test/test_screen_layout.gd"
 	"test/test_monitor_presets.gd"

@@ -8,16 +8,17 @@ func _init(owner: Node3D):
 
 func save_state():
 	var save = ConfigFile.new()
-	save.set_value("screen", "bezel", main.bezel_enabled)
+	save.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
+	save.set_value("screen", "bezel", main.settings.bezel_enabled)
 	save.set_value("screen", "curvature", main.curvature)
-	save.set_value("screen", "passthrough_enabled", main.passthrough_enabled)
-	save.set_value("screen", "background_mode", main.background_mode)
-	save.set_value("screen", "sharpen_mode", main.sharpen_mode)
-	save.set_value("screen", "brightness_pct", main.brightness_pct)
-	save.set_value("screen", "contrast_pct", main.contrast_pct)
-	save.set_value("screen", "gamma_pct", main.gamma_pct)
-	save.set_value("screen", "ambient_mode", main.ambient_mode)
-	save.set_value("screen", "ambient_color", main.ambient_color)
+	save.set_value("screen", "passthrough_enabled", main.settings.passthrough_enabled)
+	save.set_value("screen", "background_mode", main.settings.background_mode)
+	save.set_value("screen", "sharpen_mode", main.settings.sharpen_mode)
+	save.set_value("screen", "brightness_pct", main.settings.brightness_pct)
+	save.set_value("screen", "contrast_pct", main.settings.contrast_pct)
+	save.set_value("screen", "gamma_pct", main.settings.gamma_pct)
+	save.set_value("screen", "ambient_mode", main.settings.ambient_mode)
+	save.set_value("screen", "ambient_color", main.settings.ambient_color)
 	save.set_value("screen", "cursor_mode", main.cursor_mode)
 	save.set_value("screen", "pointer_steady", main.pointer_steady)
 	save.set_value("screen", "double_click_mode", main.double_click_mode)
@@ -332,9 +333,9 @@ func load_state():
 		main.settings_controller.apply_depth_gpu_priority(false)
 		return
 
-	main.bezel_enabled = save.get_value("screen", "bezel", true)
+	main.settings.bezel_enabled = save.get_value("screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
 	main.curvature = save.get_value("screen", "curvature", 2)
-	main.background_mode = save.get_value("screen", "background_mode", 0)
+	main.settings.background_mode = save.get_value("screen", "background_mode", AppSettings.DEFAULT_BACKGROUND_MODE)
 	# "passthrough_enabled" is the current format, always written by
 	# save_state() - prefer it whenever present. The old "passthrough" int key
 	# (0=on, 1-5=off with a specific background) predates that and is never
@@ -345,32 +346,32 @@ func load_state():
 	# that's never been touched by the current format at all.
 	if save.has_section_key("screen", "passthrough_enabled"):
 		var raw_saved = save.get_value("screen", "passthrough_enabled", false)
-		main.passthrough_enabled = raw_saved and main.passthrough_supported
+		main.settings.passthrough_enabled = raw_saved and main.passthrough_supported
 		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
 	elif save.has_section_key("screen", "passthrough"):
 		var old = clampi(save.get_value("screen", "passthrough", 0), 0, 5)
 		if main.passthrough_supported:
-			main.passthrough_enabled = (old == 0)
-			main.background_mode = maxi(old - 1, 0)
+			main.settings.passthrough_enabled = (old == 0)
+			main.settings.background_mode = maxi(old - 1, 0)
 		else:
-			main.passthrough_enabled = false
-			main.background_mode = old
+			main.settings.passthrough_enabled = false
+			main.settings.background_mode = old
 	else:
-		main.passthrough_enabled = false
-	main.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", 0), 0, main.sharpen_labels.size() - 1)
-	if OS.get_name() == "Android" and not main.settings_controller.get_sharpen_choices().has(main.sharpen_mode):
-		main.sharpen_mode = 0
-	main.brightness_pct = save.get_value("screen", "brightness_pct", 0)
-	if not [-20, -10, 0, 10, 20].has(main.brightness_pct):
-		main.brightness_pct = 0
-	main.contrast_pct = save.get_value("screen", "contrast_pct", 100)
-	if not [50, 75, 100, 125, 150].has(main.contrast_pct):
-		main.contrast_pct = 100
-	main.gamma_pct = save.get_value("screen", "gamma_pct", 100)
-	if not [50, 75, 100, 125, 150].has(main.gamma_pct):
-		main.gamma_pct = 100
-	main.ambient_mode = clampi(save.get_value("screen", "ambient_mode", 0), 0, main.ambient_mode_labels.size() - 1)
-	main.ambient_color = clampi(save.get_value("screen", "ambient_color", 0), 0, main.ambient_color_labels.size() - 1)
+		main.settings.passthrough_enabled = AppSettings.DEFAULT_PASSTHROUGH_ENABLED
+	main.settings.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", AppSettings.DEFAULT_SHARPEN_MODE), 0, main.sharpen_labels.size() - 1)
+	if OS.get_name() == "Android" and not main.settings_controller.get_sharpen_choices().has(main.settings.sharpen_mode):
+		main.settings.sharpen_mode = AppSettings.DEFAULT_SHARPEN_MODE
+	main.settings.brightness_pct = save.get_value("screen", "brightness_pct", AppSettings.DEFAULT_BRIGHTNESS_PCT)
+	if not [-20, -10, 0, 10, 20].has(main.settings.brightness_pct):
+		main.settings.brightness_pct = AppSettings.DEFAULT_BRIGHTNESS_PCT
+	main.settings.contrast_pct = save.get_value("screen", "contrast_pct", AppSettings.DEFAULT_CONTRAST_PCT)
+	if not [50, 75, 100, 125, 150].has(main.settings.contrast_pct):
+		main.settings.contrast_pct = AppSettings.DEFAULT_CONTRAST_PCT
+	main.settings.gamma_pct = save.get_value("screen", "gamma_pct", AppSettings.DEFAULT_GAMMA_PCT)
+	if not [50, 75, 100, 125, 150].has(main.settings.gamma_pct):
+		main.settings.gamma_pct = AppSettings.DEFAULT_GAMMA_PCT
+	main.settings.ambient_mode = clampi(save.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, main.ambient_mode_labels.size() - 1)
+	main.settings.ambient_color = clampi(save.get_value("screen", "ambient_color", AppSettings.DEFAULT_AMBIENT_COLOR), 0, main.ambient_color_labels.size() - 1)
 	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
 	var saved_steady = save.get_value("screen", "pointer_steady", 1)
 	if saved_steady is bool:
