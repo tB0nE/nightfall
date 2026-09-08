@@ -186,28 +186,32 @@ What `build.sh` does:
 1. Builds the matching debug or release native OpenXR extension
 2. Verifies and injects the cached patched Godot runtime
 3. Wipes `android/build/` and extracts the Godot Android source template
-4. Copies `GodotApp.java`, `DepthEstimator.java`, and the selected TFLite model
+4. Copies `GodotApp.java`, `DepthEstimator.java`, and stages the selected TFLite model
 5. Verifies the custom LiteRT AAR checksum and patches the Gradle dependencies
 6. Copies the Meta OpenXR vendor plugin AAR
 7. Exports the APK via Godot headless
 8. Cleans up `android/build/` and optionally installs via ADB
 
+The compatibility entry point delegates focused work to scripts under
+`tools/build_support/`: `package_android_models.sh` owns the Android model
+manifest, `deploy_android.sh` validates and installs an APK, and
+`extensions/nightfall-xr/build_android.sh` owns the native-XR extension build.
+
 For Linux AppImage (`--appimage`):
 1. Builds Linux .so in Ubuntu 22.04 Docker container (glibc 2.35 compat, skips if .so already exists)
 2. Exports PCK via Godot headless (using Android preset workaround)
-2. Assembles Linux binary from release template + PCK
-3. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
-4. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
+3. Assembles Linux binary from release template + PCK
+4. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
+5. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
 
 ### Depth models
 
-`build.sh` bundles a set of `.tflite` depth-estimation models from `models/` into
-both the Android APK and the Linux binary - none of them are committed to git
-(`.gitignore`'s `/models/*.tflite`), so you need them present locally before
-building. See **`models/README.md`** for the full manifest (every file `build.sh`
-needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
-missing-file error if one isn't there rather than silently shipping an incomplete
-build.
+Android bundles only ZipDepth-384-GPU. Linux bundles its existing MiDaS-256,
+MiDaS-192, and Depth Anything V2-252 models. The `.tflite` files come from
+`models/` and are not committed (`.gitignore`'s `/models/*.tflite`), so the
+platform-specific files must exist locally before building. See
+**`models/README.md`** for the full manifest and acquisition/conversion notes;
+the packaging scripts fail instead of silently shipping a missing model.
 
 Depth Anything V2 and ZipDepth have reproducible conversion scripts (see
 `models/README.md`):

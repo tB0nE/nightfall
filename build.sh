@@ -241,127 +241,8 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 # for the full manifest and how to obtain each file), not
 # android/src/main/assets/ (2026-08-24) - see the matching comment in the
 # Linux depth_models block above.
-mkdir -p android/build/nightfallAssets
-# MiDaS (GPU and CPU) and DA-V2-252 REMOVED from Android bundling
-# (2026-09-07) - ZipDepth-384-GPU is strictly better in every way tested, so
-# there's no reason left to ship these here (they're still real, correct
-# models - DepthEstimator.java still attempts to load them, harmless with no
-# asset present, same soft-fail pattern already established for YOLO26/
-# DA-V2-196-GPU below). Also dropped Android's CPU inference path
-# entirely (too slow to be worth its share of APK size on this hardware) -
-# see settings_controller.gd's ai3d_options_locked(). Re-enable by
-# uncommenting the cp lines below (MiDaS/DA-V2, and ZipDepth's own CPU/
-# experimental-widescreen variants further down) together with removing that
-# lock function's Android check. Linux is untouched - it never had ZipDepth
-# support to begin with, so none of this bundling logic applies there (see
-# the Linux depth_models block above, which still copies its original three
-# models unconditionally).
-# cp "$SCRIPT_DIR/models/midas-midas-v2-w8a8.tflite" android/build/nightfallAssets/
-# cp "$SCRIPT_DIR/models/midas-v21-small-256-gpu.tflite" android/build/nightfallAssets/
-# MiDaS-small re-exported/re-calibrated at 192x192 (2026-08-20) - an
-# independently-calibrated sibling of the 256px model above, not just a
-# resize (own scale/zero_point, see DepthEstimator.java's MIDAS_192_*
-# constants). Now the default landing spot right after Off (see
-# settings_controller.gd's ai_3d_model_labels comment).
-# cp "$SCRIPT_DIR/models/midas-v21-small-192-int8.tflite" android/build/nightfallAssets/
-# MiDaS-192-GPU (2026-08-24) - same onnx2tf -ofgd -kt input recipe that
-# produced the working 256px GPU export (see midas-v21-small-256-gpu.tflite's
-# own history), just re-run against the ONNX graph's input resized to
-# 192x192 - MiDaS-small's Resize ops use relative scale factors, not
-# hardcoded absolute sizes, so it's resolution-agnostic. Verified clean
-# 73 CONV_2D/24 DEPTHWISE_CONV_2D/5 RESIZE_BILINEAR graph (matches the
-# 256px model's op composition exactly) and non-degenerate real inference
-# output before bundling. This is the float32-I/O sibling of that export
-# (NOT onnx2tf's literal-fp16-tensor output) - confirmed on-device the
-# fp16-I/O version fails identically to the 256px model's own documented
-# history ("(CONV_2D) failed to prepare, Node number 3"); the GPU delegate
-# still runs at fp16 precision internally via setPrecisionLossAllowed(true)
-# in DepthEstimator.java, it just needs a float32 tensor boundary.
-# Re-quantized (2026-08-25) - the first bundled version was a plain
-# all-float32 export (64MB), nearly 2x the reference 256px model (33MB)
-# despite the smaller input, because that 256px asset was never built by
-# this project - it's an externally-sourced export that already used
-# TFLite's standard weight-only float16 quantization internally (fp16
-# CONV weights, float32 I/O boundary - the same technique
-# setPrecisionLossAllowed(true) exploits at the delegate level). Applied
-# the same technique here directly via tf.lite.TFLiteConverter
-# (optimizations=[DEFAULT], target_spec.supported_types=[float16]) against
-# the SavedModel onnx2tf's tf_converter backend produces - onnx2tf's own
-# "_float16.tflite" sibling isn't this; it's a literal fp16 I/O boundary
-# export that fails to load (same root cause as this comment's own
-# fp16-I/O history above). Result: 33.2MB, verified same float32 I/O +
-# fp16-weight tensor pattern as the reference model, non-degenerate output.
-# cp "$SCRIPT_DIR/models/midas-v21-small-192-gpu.tflite" android/build/nightfallAssets/
-# YOLO26-depth (nano, all resolutions) and YOLO26-N-384-GPU REMOVED from
-# selection (2026-08-25) - the w8a32 nano CPU lineup and a fresh
-# NHWC/CNN-dominated GPU export were both tried, but the GPU delegate never
-# loaded on-device ("Failed to apply delegates") and the CPU lineup wasn't
-# worth keeping bundled without it. Same soft-fail pattern as YOLO26-S
-# below: DepthEstimator.java still attempts to load these (harmless, no
-# asset present) and the files stay in models/ untouched if revisited.
-# Depth Anything V2 Small, REVIVED (2026-08-20) - the originally-deployed
-# fp16 asset was fully dead code (never loaded on this CPU path at all: an
-# "input_type == kTfLiteFloat32 ... was not true" failure on every attempt,
-# same class of bug MiDaS-GPU's fp16 export originally hit), so this isn't
-# "re-bundling a working but retired model" - it's a genuinely new
-# capability. Re-converted via onnx2tf -kt input (fixes a layout-mangling
-# bug that made every prior export produce spatially incoherent output)
-# and shipped with dilate/blur post-processing OFF (was hardcoded on) -
-# see DepthEstimator.java's MODEL_DA_196/252 comment for both fixes' full
-# history. DA-V2-196 REMOVED from selection (2026-08-25, kept as loading
-# code only, same soft-fail pattern as YOLO26-S) - both DA-V2 resolutions
-# are impractically slow on real streaming content (CPU-only, no viable
-# GPU path - see DA-V2-196-GPU's history below), so only one is kept
-# bundled at all, as a curiosity/future-hardware placeholder rather than
-# a genuinely usable option today. 252 kept over 196 as the higher-quality
-# of the two.
-# cp "$SCRIPT_DIR/models/depth-anything-v2-small-252.tflite" android/build/nightfallAssets/
-# DA-V2-196-GPU tried (2026-08-25), REMOVED from selection - the GPU
-# delegate loaded and produced correct output (same onnx2tf -kt input fix
-# as the CPU models above), but only at ~2.8Hz vs. MiDaS-GPU's ~15-20Hz -
-# DA-V2's ViT backbone repeats an unsupported-op region 12 times, forcing
-# 12 GPU<->CPU handoffs per inference that dominate the cost. See
-# DepthEstimator.java's comment near the (removed) MODEL_DA_196_GPU
-# constant for the full history if revisiting.
-# ZipDepth-GPU (2026-09-04) - the real fix for the DA-V2-GPU problem above:
-# a 6.1M-param pure-CNN distilled from DA-V2-Large (see DepthEstimator.java's
-# MODEL_ZIPDEPTH_*_GPU comment), so no ViT ops to force GPU<->CPU handoffs.
-# Built by tools/convert_zipdepth.py. The hybrid remains the GPU model; an
-# exact full-standard-head CPU counterpart is bundled separately below for
-# measurement. 192/256 variants were also built and tested but dropped
-# (2026-09-04) - ZipDepth was only ever trained at 384x384 (unlike MiDaS-192,
-# which is independently trained/calibrated at that size, not a resize), so
-# 192/256 are just 384's weights outside their trained distribution -
-# confirmed via tools/model_tester/ to look noticeably worse. Only 384 ships.
-ZIPDEPTH_384_MODEL="${NIGHTFALL_ZIPDEPTH_384_MODEL:-$SCRIPT_DIR/models/zipdepth-base-384-gpu.tflite}"
-if [ ! -f "$ZIPDEPTH_384_MODEL" ]; then
-  echo "Error: ZipDepth-384 model not found at $ZIPDEPTH_384_MODEL"
-  exit 1
-fi
-echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
-cp "$ZIPDEPTH_384_MODEL" android/build/nightfallAssets/zipdepth-base-384-gpu.tflite
-# The full standard convex head is too costly on Adreno's generic LiteRT GPU
-# kernels, but is still valuable as ZipDepth-384's explicit CPU counterpart.
-# The graph is delegate-agnostic TFLite. It uses w8a32 quantization: int8
-# weights with float32 activations and I/O. Full w8a8 was tested and rejected
-# because ZipDepth's output collapsed numerically on representative scenes.
-# ZipDepth-384's CPU counterpart and the experimental aspect-preserving
-# widescreen exports REMOVED from Android bundling (2026-09-07), same
-# reasoning/re-enable path as the MiDaS/DA-V2 block above - the CPU model is
-# Android's dropped CPU path, and the widescreen variants are unreachable
-# now that Model selection is locked/hidden there.
-# ZIPDEPTH_384_CPU_MODEL="$SCRIPT_DIR/models/zipdepth-base-384-standard-w8a32.tflite"
-# if [ ! -f "$ZIPDEPTH_384_CPU_MODEL" ]; then
-#   echo "Error: ZipDepth-384 full-head CPU model not found at $ZIPDEPTH_384_CPU_MODEL"
-#   exit 1
-# fi
-# cp "$ZIPDEPTH_384_CPU_MODEL" android/build/nightfallAssets/zipdepth-base-384-cpu.tflite
-# cp "$SCRIPT_DIR/models/zipdepth-base-512x288-gpu.tflite" android/build/nightfallAssets/
-# cp "$SCRIPT_DIR/models/zipdepth-base-672x384-gpu.tflite" android/build/nightfallAssets/
-# Prefer Nightfall's low-priority Qualcomm OpenCL context now that the native
-# single-pass renderer leaves enough GPU headroom for MiDaS to complete in
-# roughly 30-35 ms. This protects stream/render cadence from inference bursts.
-# Keep --stock-litert as an explicit A/B and fallback path.
+bash "$SCRIPT_DIR/tools/build_support/package_android_models.sh" \
+  "$SCRIPT_DIR/android/build/nightfallAssets"
 LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
 if [ "$USE_STOCK_LITERT" = "1" ]; then
   echo "Using stock-priority LiteRT GPU 1.4.2"
@@ -411,7 +292,5 @@ rm -rf "$SCRIPT_DIR/android/build"
 rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 
 if [ "${INSTALL:-0}" = "1" ]; then
-  echo "Installing on device..."
-  adb install -r "$OUTPUT"
-  echo "Done!"
+  bash "$SCRIPT_DIR/tools/build_support/deploy_android.sh" "$SCRIPT_DIR/$OUTPUT"
 fi
