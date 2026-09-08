@@ -58,6 +58,25 @@ func _init(owner: Node3D):
 	main = owner
 	_kbm_profile = _KBM_DEFAULT.duplicate()
 
+func write_settings(config: ConfigFile) -> void:
+	config.set_value("controller", "active", active)
+	config.set_value("controller", "ctrl_type", ctrl_type)
+	config.set_value("controller", "btn_toggle", btn_toggle)
+	config.set_value("controller", "primary_hand", primary_hand)
+
+func read_settings(config: ConfigFile) -> void:
+	if config.has_section_key("controller", "active"):
+		active = config.get_value("controller", "active", false)
+		ctrl_type = clampi(config.get_value("controller", "ctrl_type", CtrlType.GAMEPAD), 0, 2)
+	else:
+		# Preserve the legacy mapping exactly: 0=off, 1=PAD-ABXY, 2=PAD-HAND.
+		var old_mode := clampi(config.get_value("controller", "mode", 0), 0, 2)
+		active = old_mode != 0
+		if active:
+			ctrl_type = CtrlType.PAD_ABXY if old_mode == 1 else CtrlType.GAMEPAD
+	btn_toggle = clampi(config.get_value("controller", "btn_toggle", BtnToggle.TILT), 0, 2)
+	primary_hand = clampi(config.get_value("controller", "primary_hand", PrimaryHand.RIGHT), 0, 2)
+
 func _process(_delta):
 	if not main.is_streaming or not main.is_xr_active or not active:
 		if _kb_held.size() > 0:

@@ -1,5 +1,7 @@
 extends Node3D
 
+var settings: AppSettings = AppSettings.new()
+
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
 @onready var ui_viewport = %UIViewport
@@ -19,7 +21,7 @@ func _get_mdns():
 	return mdns
 
 func get_is_hand_tracking() -> bool:
-	if tracking_mode != 1:
+	if settings.tracking_mode != 1:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -28,7 +30,7 @@ func get_is_hand_tracking() -> bool:
 	return false
 
 func get_hand_tracking_has_data() -> bool:
-	if tracking_mode != 1:
+	if settings.tracking_mode != 1:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -55,7 +57,6 @@ var _pair_pin: String = ""
 var _connecting_ip: String = ""
 var _connect_timeout_pending: bool = false
 var _auto_connect: bool = false
-var quick_start_enabled: bool = false
 # Whether the host is drawing its own cursor into the captured frame (Polaris-only:
 # a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
 # Support is detected per-connection from the launch response, not guessed up front,
@@ -66,53 +67,6 @@ var _restarting_stream: bool = false
 var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
-var sbs_mode: int = 0
-# Collapsed (2026-08-24) to two independent axes - see
-# settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
-# get_stereo_mode() for how they combine. Split across a main-page On/Off
-# toggle and a dedicated "AI 3D" tab (2026-08-28) - ai_3d_speed itself is
-# UNCHANGED (still the single source of truth everywhere else in the
-# codebase), just driven by two different UI controls now: the main page
-# toggle flips it between 0 and ai_3d_last_mode, while the tab's own "3D
-# Mode" control cycles 1-3 directly and keeps ai_3d_last_mode in sync - see
-# settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
-var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
-var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
-var ai_3d_gpu_priority: int = 0 # 0=Stream (low-priority OpenCL), 1=Default driver priority
-var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
-var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
-# GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
-# only meaningful when that model actually has a GPU variant
-# (ai_3d_models[idx].gpu_available); DA-V2-252 has none, so this is
-# silently ignored (forced CPU) when it's selected - see
-# settings_controller.gd's get_depth_backend_index(). Values match
-# DepthBridge's own BACKEND_CPU=1/BACKEND_GPU=2 constants directly, no
-# separate mapping needed.
-var ai_3d_backend_pref: int = 2 # 1=CPU, 2=GPU
-# Depth-inference update-rate cap, in Hz - "more for experimentation" per
-# the user's own framing, so it's a straightforward pass-through to the
-# Java inference loop (see DepthBridge::set_depth_hz_cap()), not something
-# that changes the visual algorithm. Ignored under Auto (which always
-# targets a fixed 20Hz) - see settings_controller.gd's get_effective_hz_cap().
-var ai_3d_hz_cap: int = 20
-# Percentage multiplier on top of the depth-warp shaders' own tuned base
-# separation values (yuv_display.gdshader's mode5_parallax=0.006,
-# stereo_screen.gdshader's own copy=0.042) - NOT one shared absolute value,
-# since those two rendering paths were independently tuned to different
-# magnitudes for the same visual effect. See settings_controller.gd's
-# _push_ai3d_effect_uniforms()/depth_estimator.gd's set_separation_pct().
-var ai_3d_separation_pct: int = 100
-# Percentage-as-depth-fraction (30-70, maps directly to 0.30-0.70) for the
-# warp shaders' "convergence" uniform - the depth value that renders with
-# zero parallax (the "screen plane"). Declared in every depth-warp shader
-# already, default 0.5, but never actually driven from GDScript until this
-# - see _push_ai3d_effect_uniforms().
-var ai_3d_convergence_pct: int = 50
-# Horizontal correction for the cursor drawn over AI-warped video. Stored as
-# -1/0/1 (Left/Default/Right). The calibrated Default is one 12px-at-1080p
-# step right of the original position. Presentation only: raycast and host
-# click coordinates stay unchanged.
-var ai_3d_cursor_position: int = 0
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -125,7 +79,6 @@ var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
 
 var _is_using_hands: bool = false
-var tracking_mode: int = 0
 var tracking_labels: Array = ["Off", "Hands"]
 
 # OS/runtime controller render models (2026-08-25, see the archived
@@ -158,7 +111,6 @@ var auto_detect_running: bool = false
 var detection_history: Array = []
 var mouse_sensitivity: float = 0.002
 var grabbed_node: Node3D = null
-var pipewire_restore_token: String = ""
 var grab_distance: float = 0.0
 var grab_offset: Vector3 = Vector3.ZERO
 var grabbed_bar: MeshInstance3D = null
@@ -170,7 +122,6 @@ var grab_start_node_basis: Basis = Basis()
 var grab_start_node_euler: Vector3 = Vector3.ZERO
 var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
 var grab_group_start_transforms: Dictionary = {}
-var grid_mode_enabled: bool = true
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
@@ -179,21 +130,17 @@ var stats_sample_timer: float = 0.0
 var stats_app_frames: int = 0
 var stats_video_updates: int = 0
 var stats_network_events: int = 0
-var performance_overlay_enabled: bool = false
 var performance_overlay_timer: float = 0.0
 var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
 # AUTO_TABLE already accounts for it directly in its tier/model picks.
-var passthrough_enabled: bool = false
 var passthrough_supported: bool = false
-var background_mode: int = 0
 var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
 var bg_names: Array = ["Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
-var bezel_enabled: bool = true
 var bezel_mesh: MeshInstance3D:
 	get: return primary_screen.bezel_mesh if primary_screen else null
 	set(v):
@@ -203,7 +150,6 @@ var curvature: int:
 	set(v):
 		if primary_screen: primary_screen.curvature = v
 var curvature_labels: Array = ["Flat", "Slight Curve", "Curved"]
-var sharpen_mode: int = 0
 const SHARPEN_RUNTIME_NORMAL := 6
 const SHARPEN_RUNTIME_QUALITY := 7
 # Keep the existing shader modes in their original saved-state slots for a
@@ -214,15 +160,10 @@ var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime",
 # final step after YUV->RGB conversion (and after HDR tonemap, on the HDR
 # shader variant) - see settings_controller.gd's apply_filter() for the
 # percent->shader-uniform mapping and each shader's apply_picture().
-var brightness_pct: int = 0 # -20..20, step 10 (additive)
-var contrast_pct: int = 100 # 50..150, step 25 (multiplier around midpoint)
-var gamma_pct: int = 100 # 50..150, step 25 (exponent)
 # Ambient screen lighting is a separate low-resolution composition layer,
 # so it stays out of the main YUV/HDR/AI-3D shader path. Reactive modes use
 # the already-rendered primary screen as their colour source.
-var ambient_mode: int = 0
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
-var ambient_color: int = 0
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var _xr_base_render_scale: float = 1.0
 var _xr_render_width: int = 2064
@@ -230,12 +171,11 @@ var _mesh_size: Vector2:
 	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
 	set(v):
 		if primary_screen: primary_screen.mesh_size = v
-var stream_fps: int = 60
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
 # host_resolution is the actual WxH about to be (or last) requested from the
-# host - computed as native_resolution * resolution_scale_pct / 100, not set
-# directly. It always matches whatever the host's real desktop/composite
+# host - computed from the selected host's native size and resolution scale,
+# not set directly. It always matches whatever the host's real desktop/composite
 # shape is (single monitor or multi-monitor composite alike), instead of a
 # fixed target size that would force the host to letterbox/squeeze a
 # mismatched-aspect composite to fit.
@@ -245,8 +185,6 @@ var host_resolution: Vector2i = Vector2i(1920, 1080)
 # width/height for hosts without one). Cached per-host in host_state.cfg so a
 # repeat connection can request the correctly-scaled resolution on the first
 # try instead of needing the mismatch-triggered reconnect every time.
-var native_resolution: Vector2i = Vector2i(1920, 1080)
-var resolution_scale_pct: int = 100
 const RESOLUTION_PRESETS: Array = [100, 90, 80, 70, 60, 50]
 # Kept around for state_manager.gd's old-save-file validation fallback; the UI
 # itself now uses compute_resolution_options() instead of this static list -
@@ -260,10 +198,10 @@ var resolution_scale_options: Array = RESOLUTION_PRESETS
 # other GameStream-compatible host (Sunshine, GFE, etc.) is client-driven -
 # there is no equivalent "ask the host its resolution" mechanism at all, the
 # client is expected to just request what it wants and the host adapts to
-# match - so native_resolution has nothing real to hold for them and the
+# match. The cached native resolution has nothing real to hold for them, so the
 # percentage system's "MAX"/percent labels would just describe the wrong
 # thing (confirmed: reported "1080p" against a real 2560x1440 Sunshine
-# display, because native_resolution never left its 1920x1080 fallback).
+# display, because the cached value never left its 1920x1080 fallback).
 # Defaults false (the old fixed-list picker) so a host that hasn't been probed
 # yet - or a probe that's still in flight - never shows a percentage of a
 # guess as if it meant something.
@@ -285,15 +223,13 @@ var device_is_quest3: bool = false
 # compute_requested_resolution() as a hard ceiling before any other cap.
 const QUEST2_MAX_RESOLUTION := Vector2i(1920, 1080)
 
-var is_polaris_host: bool = false
 # The pre-percentage fixed-resolution picker, used for any non-Polaris host
-# (see is_polaris_host above) - the user picks what they actually want
+# (see the Polaris detection comment above) - the user picks what they actually want
 # instead of the client trying to detect anything, matching how Sunshine
 # itself expects to be driven. Untouched by the H264/HEVC dimension/pixel
 # caps in compute_max_resolution_pct() below - every entry here is well
 # under all of those caps on its own (largest is 3840x2160), so there's
 # nothing to filter for the single-screen case this picker is used for.
-var resolution_idx: int = 1
 var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(2560, 1080), Vector2i(3440, 1440)]
 # 21:9 split into two tiers (2026-08-20, GitHub issue #17) - was a single
 # 3440x1440 entry, which meant there was no way to request a 21:9 source at a
@@ -301,20 +237,15 @@ var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(25
 # already gets). 2560x1080 (UWFHD, 64:27) and 3440x1440 (UWQHD, 43:18) are
 # the two real, common ultrawide monitor resolutions - not arbitrary picks.
 var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9 HD", "21:9 2K"]
-var double_h: bool = false
-var bitrate_idx: int = -1
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
 var bitrate_labels: Array = ["Auto", "5", "10", "15", "20", "30", "40", "50", "60", "80", "100", "120"]
 var display_refresh_rate: float = 72.0
 
-var cursor_mode: int = 1
 var cursor_labels: Array = ["Circle", "Pointer"]
-var pointer_steady: int = 1
 var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
 # Touch-controller double-click gesture. Standard leaves host-side recognition
 # untouched; Chord maps a near-simultaneous trigger+grip press to two left
 # clicks. Hand tracking always retains its normal pinch-twice behaviour.
-var double_click_mode: int = 0
 var double_click_mode_labels: Array = ["Standard", "Chord"]
 var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
@@ -324,7 +255,6 @@ var _steady_velocity: Vector3 = Vector3.ZERO
 var _steady_raw_hit: Vector3 = Vector3.ZERO
 var _steady_last_usec: int = 0
 var _steady_last_frame: int = -1
-var codec_preference: int = 1
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
@@ -638,9 +568,7 @@ var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
 var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
-var auto_reconnect_enabled: bool = true
 var _reconnecting: bool = false
-var idle_timeout_min: int = 0
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
@@ -721,7 +649,7 @@ const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 # stream_manager.gd's _auto_bitrate() now scales from the UNCAPPED
 # resolution). Root cause found 2026-08-18: these caps were width/height
 # pairs, aspect-scaled with min(target_w/w, target_h/h) - on a WIDE source
-# (native_resolution here is a 2.96:1 multi-monitor composite, not 16:9),
+# (the native size here can be a 2.96:1 multi-monitor composite, not 16:9),
 # the width dimension binds first, so "cap to 2560x1440" actually produced
 # 2560x864 (2.21M px) instead of the 3.69M px the "1440p" label implied -
 # confirmed directly: manually selecting 1440p and letting Fastest's cap
@@ -732,18 +660,18 @@ const HEVC_MAX_SUSTAINED_PIXELS = 21233664
 # below, which doesn't have this problem because it already works in pixels.
 const MIDAS_RES_CAP_ENABLED := true
 
-# The highest resolution_scale_pct that keeps compute_requested_resolution()'s
+# The highest resolution scale that keeps compute_requested_resolution()'s
 # result under every constraint that applies to the given codec at the
-# current native_resolution, i.e. the point past which compute_requested_resolution()
+# current native size, i.e. the point past which compute_requested_resolution()
 # would otherwise silently downscale further than the requested percentage
 # implied. Used to build the UI's resolution option list (compute_resolution_options())
 # so a user can never select a percentage compute_requested_resolution() would
 # have quietly overridden anyway.
 func compute_max_resolution_pct(codec: int) -> int:
-	if native_resolution.x <= 0 or native_resolution.y <= 0:
+	if settings.host.native_resolution.x <= 0 or settings.host.native_resolution.y <= 0:
 		return 100
-	var nw = float(native_resolution.x)
-	var nh = float(native_resolution.y)
+	var nw = float(settings.host.native_resolution.x)
+	var nh = float(settings.host.native_resolution.y)
 	var max_pct = 100.0
 	if codec == 0:
 		max_pct = minf(max_pct, 100.0 * H264_MAX_DIMENSION / maxf(nw, nh))
@@ -759,7 +687,7 @@ func compute_max_resolution_pct(codec: int) -> int:
 # would otherwise have sat above an unreachable ceiling - so there's never an
 # option in the list that silently does something other than what its label says.
 func compute_resolution_options() -> Array:
-	var max_pct = compute_max_resolution_pct(codec_preference)
+	var max_pct = compute_max_resolution_pct(settings.codec_preference)
 	var opts: Array = [max_pct]
 	for p in RESOLUTION_PRESETS:
 		if p < max_pct:
@@ -769,11 +697,11 @@ func compute_resolution_options() -> Array:
 func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	var w: int
 	var h: int
-	if is_polaris_host:
-		w = int(native_resolution.x * resolution_scale_pct / 100.0)
-		h = int(native_resolution.y * resolution_scale_pct / 100.0)
+	if settings.host.is_polaris_host:
+		w = int(settings.host.native_resolution.x * settings.host.resolution_scale_pct / 100.0)
+		h = int(settings.host.native_resolution.y * settings.host.resolution_scale_pct / 100.0)
 	else:
-		var res: Vector2i = resolutions[resolution_idx]
+		var res: Vector2i = resolutions[settings.host.resolution_idx]
 		w = res.x
 		h = res.y
 	# H.264 hardware decoders on this class of mobile SoC commonly cap out at 4096px
@@ -784,11 +712,11 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	# fine. Scale both dimensions down together to preserve aspect ratio rather than
 	# only clamping the offending one, which would mismatch the server's capture
 	# aspect and trigger its own letterbox/pillarbox scaling instead.
-	if codec_preference == 0 and (w > H264_MAX_DIMENSION or h > H264_MAX_DIMENSION):
+	if settings.codec_preference == 0 and (w > H264_MAX_DIMENSION or h > H264_MAX_DIMENSION):
 		var scale = minf(float(H264_MAX_DIMENSION) / w, float(H264_MAX_DIMENSION) / h)
 		w = int(w * scale)
 		h = int(h * scale)
-	elif codec_preference == 1:
+	elif settings.codec_preference == 1:
 		var scale = 1.0
 		if w > HEVC_MAX_DIMENSION or h > HEVC_MAX_DIMENSION:
 			scale = minf(scale, minf(float(HEVC_MAX_DIMENSION) / w, float(HEVC_MAX_DIMENSION) / h))
@@ -813,8 +741,8 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 		w = int(w * quest2_scale)
 		h = int(h * quest2_scale)
 	# MiDaS-Fast only - see MIDAS_RES_CAP_ENABLED's comment above. Keyed off
-	# the actually-active stereo mode (accounts for sbs_mode overriding
-	# ai_3d_speed/model/debug, same as settings_controller.get_stereo_mode()
+	# the actually-active stereo mode (accounts for settings.host.sbs_mode overriding
+	# settings.host.ai_3d_speed/model/debug, same as settings_controller.get_stereo_mode()
 	# itself), not those raw fields directly. Caps by total pixel budget
 	# (like HEVC_MAX_TOTAL_PIXELS above), NOT a width/height pair scaled by
 	# min(target_w/w, target_h/h) - that approach silently delivered far
@@ -829,7 +757,7 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	#
 	# cap_px comes from settings_controller.gd's AUTO_TABLE UNCONDITIONALLY
 	# whenever the resulting tier is Fast (stereo_mode 10) - not gated on
-	# ai_3d_speed==1 - so a MANUAL Fast selection gets the same per-combo cap
+	# settings.host.ai_3d_speed==1 - so a MANUAL Fast selection gets the same per-combo cap
 	# Auto's own Fast pick would use at that resolution/passthrough combo,
 	# matching this cap's pre-2026-08-25 behavior of applying to manual Fast
 	# too (it just used one flat constant then instead of a per-combo table).
@@ -938,7 +866,7 @@ func _one_euro_alpha(cutoff_hz: float, delta: float) -> float:
 	return 1.0 / (1.0 + tau / maxf(delta, 0.000001))
 
 func _get_steady_hit(raw: Vector3) -> Vector3:
-	if pointer_steady == 0 or not is_xr_active:
+	if settings.pointer_steady == 0 or not is_xr_active:
 		_reset_steady_filter()
 		return raw
 	var frame := Engine.get_process_frames()
@@ -956,7 +884,7 @@ func _get_steady_hit(raw: Vector3) -> Vector3:
 		_steady_last_usec = now_usec
 		_steady_last_frame = frame
 		return raw
-	if pointer_steady == 3:
+	if settings.pointer_steady == 3:
 		var delta := float(now_usec - _steady_last_usec) / 1000000.0
 		# A long gap means the ray left the screen or tracking was interrupted.
 		# Reset rather than letting the old point pull the cursor back onscreen.
@@ -979,8 +907,8 @@ func _get_steady_hit(raw: Vector3) -> Vector3:
 		_steady_last_usec = now_usec
 		_steady_last_frame = frame
 		return _steady_hit
-	var factor := 0.3 if pointer_steady == 1 else 0.1
-	var dead_zone := 0.002 if pointer_steady == 1 else 0.005
+	var factor := 0.3 if settings.pointer_steady == 1 else 0.1
+	var dead_zone := 0.002 if settings.pointer_steady == 1 else 0.005
 	var delta = raw - _steady_hit
 	if delta.length() < dead_zone:
 		_steady_last_usec = now_usec
@@ -998,7 +926,7 @@ func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
 func _show_stream_cursor(cursor: TextureRect, circle: ColorRect, cx: float, cy: float, cursor_px: int):
-	if cursor_mode == 0:
+	if settings.cursor_mode == 0:
 		if cursor: cursor.visible = false
 		if circle:
 			circle.visible = true
@@ -1081,7 +1009,7 @@ func _update_cursor_layer():
 					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
 					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
 			var uv = hovered_screen.hit_point_to_uv(hit_point)
-			var bezel_px = 8 if bezel_enabled else 0
+			var bezel_px = 8 if settings.bezel_enabled else 0
 			var base_w = hovered_screen.comp_base_size.x
 			var base_h = hovered_screen.comp_base_size.y
 			# cx/cy position the cursor in the comp viewport's own pixel space,
@@ -1097,7 +1025,7 @@ func _update_cursor_layer():
 			if stereo >= 3:
 				# New Left/Default/Right correspond to the old Default/Right/
 				# Right+ positions respectively, hence the +1 calibration step.
-				cx += (ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				cx += (settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 			_set_comp_quad_hidden(comp_cursor, true)
 			if pointer_cursor:
 				pointer_cursor.visible = false
@@ -1144,7 +1072,7 @@ func _update_cursor_layer():
 			if on_screen and stereo >= 3 and native_xr_renderer and native_xr_renderer.active and hovered_screen:
 				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
 				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
-				var correction_px := float(ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			var screen_dist = xr_camera.global_position.distance_to(screen_mesh.global_position)
@@ -1153,7 +1081,7 @@ func _update_cursor_layer():
 			var pointer = comp_cursor_viewport.get_node_or_null("PointerTexture")
 			var circle = comp_cursor_viewport.get_node_or_null("CircleTexture")
 			var cursor_size = 0.035 * dist_scale if on_screen else 0.035
-			if cursor_mode == 0:
+			if settings.cursor_mode == 0:
 				if pointer: pointer.visible = false
 				if circle: circle.visible = true
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
@@ -1526,12 +1454,12 @@ func _on_stream_started():
 		_ui_has_saved_offset = false
 		if comp_ui:
 			comp_ui.visible = false
-	if passthrough_enabled:
+	if settings.passthrough_enabled:
 		_hide_all_backgrounds()
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
 	stream_backend.send_controller_arrival(0, 1, 1, all_btn_flags, 0x01|0x02)
 
-	# The host's real desktop can be a very different shape than native_resolution
+	# The host's real desktop can be a very different shape than settings.host.native_resolution
 	# assumed (first-ever connection to a host, or its desktop layout changed since
 	# last time) - requesting the wrong aspect makes the host letterbox/squeeze its
 	# real composite to fit. Reconnect once at the correctly-scaled size instead, so
@@ -1566,7 +1494,7 @@ func _on_stream_started():
 					m.enabled = false
 			settings_controller.apply_screen_layout(layout)
 			if primary_m:
-				native_resolution = primary_m.frame_rect.size
+				settings.host.native_resolution = primary_m.frame_rect.size
 			host_resolution = compute_requested_resolution()
 			settings_controller.refresh_resolution_btn_label()
 			stream_manager._resolution_retry_done = true
@@ -1584,15 +1512,15 @@ func _on_stream_started():
 			return
 
 	# Polaris-only: this whole comparison is "does the manifest-reported real
-	# desktop size match what native_resolution assumed" - meaningless (and,
+	# desktop size match what settings.host.native_resolution assumed" - meaningless (and,
 	# confirmed live, actively harmful) for any host that never populates a
 	# real manifest, since layout.frame_size then never reflects this actual
 	# connection at all. Against a Sunshine host this fired repeatedly every
 	# single connect, restarting over and over chasing a comparison that could
 	# never converge - each restart also being a real cost (see
 	# stream_connection.cpp's deferred-free GPU resource queue).
-	if is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != native_resolution:
-		native_resolution = layout.frame_size
+	if settings.host.is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != settings.host.native_resolution:
+		settings.host.native_resolution = layout.frame_size
 		settings_controller.refresh_resolution_btn_label()
 		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
 		# blocked the retry for exactly the case that needs it most: removing/
@@ -1612,7 +1540,7 @@ func _on_stream_started():
 			var retry_app_id = _selected_app_id
 			var retry_resolution = compute_requested_resolution()
 			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
-				str(layout.frame_size), str(retry_resolution), resolution_scale_pct])
+				str(layout.frame_size), str(retry_resolution), settings.host.resolution_scale_pct])
 			_restarting_stream = true
 			# See settings_controller.gd's _schedule_stream_restart() for why this
 			# has to happen (and yield a frame) before stop_play_stream(), not after.
@@ -1656,7 +1584,7 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 			screen_mesh.material_override.set_shader_parameter("tex_u", null)
 			screen_mesh.material_override.set_shader_parameter("tex_v", null)
 		return
-	if auto_reconnect_enabled and err_code != 0:
+	if settings.auto_reconnect_enabled and err_code != 0:
 		_log("[RECONNECT] Keeping stream alive for auto-reconnect")
 		is_streaming = false
 		ui_controller.set_status("Connection lost, reconnecting...")
@@ -1712,7 +1640,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	if comp_ui:
 		comp_ui.visible = false
 	welcome_screen.reset_connect_button()
-	settings_controller.apply_passthrough(passthrough_enabled)
+	settings_controller.apply_passthrough(settings.passthrough_enabled)
 	welcome_screen.update_welcome_info()
 	stream_manager.resize_stream_viewport(1920, 1080)
 
@@ -1779,7 +1707,7 @@ func _ready():
 	_init_post_xr()
 	_init_textures_and_ui()
 
-	if _auto_connect or quick_start_enabled:
+	if _auto_connect or settings.quick_start_enabled:
 		_try_auto_connect()
 
 	Input.joy_connection_changed.connect(func(device, connected):
@@ -1840,25 +1768,25 @@ func _init_android_setup():
 				_setup_render_model_controllers()
 		_prepare_fade_materials("right")
 		_prepare_fade_materials("left")
-	sbs_mode = clampi(sbs_mode, 0, 2)
-	ai_3d_model = clampi(ai_3d_model, 0, settings_controller.ai_3d_models.size() - 1)
-	ai_3d_speed = clampi(ai_3d_speed, 0, 3)
-	ai_3d_last_mode = clampi(ai_3d_last_mode, 1, 3)
-	ai_3d_backend_pref = 1 if ai_3d_backend_pref == 1 else 2
+	settings.host.sbs_mode = clampi(settings.host.sbs_mode, 0, 2)
+	settings.host.ai_3d_model = clampi(settings.host.ai_3d_model, 0, settings_controller.ai_3d_models.size() - 1)
+	settings.host.ai_3d_speed = clampi(settings.host.ai_3d_speed, 0, 3)
+	settings.host.ai_3d_last_mode = clampi(settings.host.ai_3d_last_mode, 1, 3)
+	settings.host.ai_3d_backend_pref = 1 if settings.host.ai_3d_backend_pref == 1 else 2
 	# Runs before any per-host state (state_manager.gd's load_host_state()
 	# has its own call for that, and its own comment) - also covers a
 	# brand-new install/host, which never reaches that call at all (see
 	# load_host_state()'s early return when the host has no saved section
-	# yet), so a fresh Android install can't boot pointed at ai_3d_model's
+	# yet), so a fresh Android install can't boot pointed at settings.host.ai_3d_model's
 	# compiled-in default (MiDaS-256-GPU, not bundled there).
 	settings_controller.enforce_ai3d_platform_lock()
-	if not [12, 15, 20, 30, 40].has(ai_3d_hz_cap):
-		ai_3d_hz_cap = 20
-	if not [50, 75, 100, 125, 150].has(ai_3d_separation_pct):
-		ai_3d_separation_pct = 100
-	if not [30, 40, 50, 60, 70].has(ai_3d_convergence_pct):
-		ai_3d_convergence_pct = 50
-	ai_3d_debug = clampi(ai_3d_debug, 0, 3)
+	if not [12, 15, 20, 30, 40].has(settings.host.ai_3d_hz_cap):
+		settings.host.ai_3d_hz_cap = 20
+	if not [50, 75, 100, 125, 150].has(settings.host.ai_3d_separation_pct):
+		settings.host.ai_3d_separation_pct = 100
+	if not [30, 40, 50, 60, 70].has(settings.host.ai_3d_convergence_pct):
+		settings.host.ai_3d_convergence_pct = 50
+	settings.host.ai_3d_debug = clampi(settings.host.ai_3d_debug, 0, 3)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -2217,7 +2145,7 @@ func _init_stream_backend():
 		return
 	var v2_node = ClassDB.instantiate("NightfallStream")
 	add_child(v2_node)
-	v2_node.set_auto_reconnect(auto_reconnect_enabled)
+	v2_node.set_auto_reconnect(settings.auto_reconnect_enabled)
 	v2_node.set_max_reconnect_attempts(5)
 	v2_node.set_reconnect_delay_ms(2000)
 	stream_backend = StreamBackend.new(v2_node)
@@ -2247,7 +2175,7 @@ func _init_stream_backend():
 	if v2_node.has_signal("restore_token_updated"):
 		v2_node.restore_token_updated.connect(func(tok):
 			_log("[PORTAL] Storing new restore token: " + tok)
-			pipewire_restore_token = tok
+			settings.pipewire_restore_token = tok
 			state_manager.save_state()
 		)
 	if v2_node.has_signal("reconnect_scheduled"):
@@ -2342,8 +2270,8 @@ func _init_xr(interface):
 	# already correctly bound.
 	if interface.has_signal("user_presence_changed"):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
-	sbs_mode = 0
-	ai_3d_speed = 0
+	settings.host.sbs_mode = 0
+	settings.host.ai_3d_speed = 0
 	# Establish the default 60fps -> 120Hz mapping before composition-layer
 	# swapchains are created. Delaying this until stream startup makes the
 	# runtime transition every live layer from 72Hz to 120Hz at once, which is
@@ -2373,7 +2301,7 @@ func _init_post_xr():
 	if comp.available:
 		_switch_to_comp_layer()
 
-	settings_controller.apply_passthrough(passthrough_enabled)
+	settings_controller.apply_passthrough(settings.passthrough_enabled)
 
 	ui_visible = false
 	_set_ui_visible(false)
@@ -2519,7 +2447,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and ai_3d_speed > 0 and comp.in_use:
+		if depth_estimator.depth_texture and settings.host.ai_3d_speed > 0 and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)
@@ -2705,7 +2633,7 @@ func _process_input_release():
 			input_handler.release_stream_mouse()
 
 func _process_idle_activity():
-	if not is_streaming or idle_timeout_min <= 0:
+	if not is_streaming or settings.idle_timeout_min <= 0:
 		return
 	if right_hand:
 		var trigger = right_hand.get_float("trigger")
@@ -2737,7 +2665,7 @@ func _process_background_follow():
 		comp_bg_equirect.global_position = xr_camera.global_position
 
 # Keeps comp_bg_capture_instance in sync with the currently selected
-# background (background_mode) and shows/hides comp_bg_equirect to match
+# background (settings.background_mode) and shows/hides comp_bg_equirect to match
 # whether an environment background should currently be visible (passthrough
 # off, a background selected, in composition mode). Called from
 # apply_background()/apply_passthrough() on real transitions, and also every
@@ -2749,8 +2677,8 @@ func _process_background_follow():
 func _sync_comp_background():
 	if not comp_bg_equirect or not comp_bg_capture_viewport:
 		return
-	var bg_idx = background_mode - 1
-	var want_visible = DEBUG_COMP_BG_EQUIRECT and comp.available and comp.in_use and is_xr_active and not passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
+	var bg_idx = settings.background_mode - 1
+	var want_visible = DEBUG_COMP_BG_EQUIRECT and comp.available and comp.in_use and is_xr_active and not settings.passthrough_enabled and bg_idx >= 0 and bg_idx < bg_names.size()
 	if not want_visible:
 		if comp_bg_equirect.visible:
 			comp_bg_equirect.visible = false
@@ -2780,7 +2708,7 @@ func _process_stats(delta):
 			comp.set_stats_visible(false)
 		return
 	if comp.in_use:
-		var cur_sharpen = float(sharpen_mode) * 0.5
+		var cur_sharpen = float(settings.sharpen_mode) * 0.5
 		var cur_blur_scale = get_blur_scale(primary_screen)
 		if cur_sharpen != _cached_sharpen or cur_blur_scale != _cached_blur_scale:
 			_cached_sharpen = cur_sharpen
@@ -2817,7 +2745,7 @@ func _process_stats(delta):
 	_process_performance_overlay(delta)
 
 func toggle_performance_overlay():
-	performance_overlay_enabled = not performance_overlay_enabled
+	settings.performance_overlay_enabled = not settings.performance_overlay_enabled
 	performance_overlay_timer = 0.0
 	_performance_previous_window.clear()
 	if stream_backend:
@@ -2830,9 +2758,9 @@ func toggle_performance_overlay():
 	# actually presenting is still drawing a stale/mispositioned copy.
 	var native_active := native_xr_renderer != null and native_xr_renderer.active
 	if comp:
-		comp.set_stats_visible(performance_overlay_enabled and is_streaming and not native_active)
+		comp.set_stats_visible(settings.performance_overlay_enabled and is_streaming and not native_active)
 	if native_xr_renderer:
-		native_xr_renderer.set_stats_visible(performance_overlay_enabled and is_streaming)
+		native_xr_renderer.set_stats_visible(settings.performance_overlay_enabled and is_streaming)
 	if ui_controller:
 		ui_controller.update_stats_btn_state()
 	if state_manager:
@@ -2851,7 +2779,7 @@ func _combine_performance_windows(previous: Dictionary, current: Dictionary) -> 
 	return combined
 
 func _process_performance_overlay(delta: float):
-	if not performance_overlay_enabled or not stream_backend or not comp:
+	if not settings.performance_overlay_enabled or not stream_backend or not comp:
 		return
 	comp.set_stats_visible(true)
 	performance_overlay_timer += delta
@@ -2905,9 +2833,9 @@ func _process_performance_overlay(delta: float):
 	# CPU frame time and creating a misleading comparison.
 	var native_warp_ms := native_xr_renderer.get_warp_gpu_ms() if native_xr_renderer else 0.0
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
-	if ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
-		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[ai_3d_gpu_priority])
+		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))
@@ -2917,15 +2845,15 @@ func _process_performance_overlay(delta: float):
 		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
 		decoder_queue_drops, decoder_queue_size,
 		int(stats.get("network_latency_ms", 0)), decoder_ms,
-		stream_backend.get_depth_last_inference_ms() if ai_3d_speed > 0 else 0.0,
+		stream_backend.get_depth_last_inference_ms() if settings.host.ai_3d_speed > 0 else 0.0,
 	])
 
 func _process_idle_timeout():
-	if not is_streaming or idle_timeout_min <= 0:
+	if not is_streaming or settings.idle_timeout_min <= 0:
 		return
 	var now = Time.get_ticks_msec() / 1000.0
-	if now - _last_activity_time > idle_timeout_min * 60.0:
-		_log("[IDLE] Idle timeout (%d min), disconnecting" % idle_timeout_min)
+	if now - _last_activity_time > settings.idle_timeout_min * 60.0:
+		_log("[IDLE] Idle timeout (%d min), disconnecting" % settings.idle_timeout_min)
 		disconnect_stream()
 		_full_disconnect_cleanup("Idle timeout")
 
@@ -2958,7 +2886,7 @@ func _toggle_ui():
 					ui_material.albedo_color = Color(1, 1, 1, 0.001)
 			else:
 				ui_panel_3d.visible = false
-			if bezel_enabled:
+			if settings.bezel_enabled:
 				comp_bezel_rect.color = Color(0, 0, 0, 0)
 				if comp_bezel_rect_left:
 					comp_bezel_rect_left.color = Color(0, 0, 0, 0)
@@ -2985,7 +2913,7 @@ func _toggle_ui():
 		var area = ui_panel_3d.get_node_or_null("Area3D")
 		if area:
 			area.process_mode = Node.PROCESS_MODE_DISABLED
-		if comp.in_use and bezel_enabled:
+		if comp.in_use and settings.bezel_enabled:
 			comp_bezel_rect.color = Color(0, 0, 0, 1)
 			if comp_bezel_rect_left:
 				comp_bezel_rect_left.color = Color(0, 0, 0, 1)

@@ -28,7 +28,7 @@ func _init(owner: Node3D):
 	main = owner
 
 func handle_input(event: InputEvent):
-	if main.is_xr_active and main.tracking_mode == 2:
+	if main.is_xr_active and main.settings.tracking_mode == 2:
 		if event is InputEventKey:
 			if event.keycode == KEY_VOLUMEUP or event.keycode == KEY_VOLUMEDOWN:
 				main.get_viewport().set_input_as_handled()

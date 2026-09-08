@@ -216,7 +216,7 @@ func handle_pointer_interaction():
 
 	var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
-	var chord_enabled = main.double_click_mode == 1 and not main._is_using_hands \
+	var chord_enabled = main.settings.double_click_mode == 1 and not main._is_using_hands \
 		and main.is_streaming and not pad_blocking and not tp_blocking
 	if chord_enabled and not _double_click_chord_active and raw_clicking and is_gripping \
 	and _trigger_press_msec >= 0 and _grip_press_msec >= 0 \
@@ -375,7 +375,7 @@ func handle_pointer_interaction():
 		var hit_point = main._get_steady_hit(raw_hit) if on_screen else raw_hit
 		var col_normal = active_raycast.get_collision_normal()
 		var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_point).normalized() * 0.025
-		if main.cursor_mode == 0 or not on_screen or hide_on_screen:
+		if main.settings.cursor_mode == 0 or not on_screen or hide_on_screen:
 			if main.contact_dot:
 				main.contact_dot.global_position = hit_point + dot_offset
 				main.contact_dot.visible = not hide_on_screen
@@ -872,7 +872,7 @@ func handle_grab():
 	# block above, which is what "primary moves the whole grid" reduces to).
 	# Secondaries snap live, every frame, to the nearest valid grid cell to
 	# wherever they're currently being dragged - not just once on release.
-	if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen and main.grid_mode_enabled and main.grabbed_node.grid_mode:
+	if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen and main.settings.grid_mode_enabled and main.grabbed_node.grid_mode:
 		_apply_live_grid_snap(main.grabbed_node)
 
 	if main.grabbed_node is VRScreen:
@@ -886,8 +886,8 @@ func handle_grab():
 		# Grid Mode off, it becomes grid_mode=false (free) and is left alone by
 		# the grid system until it's grabbed again with Grid Mode on.
 		if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen:
-			main.grabbed_node.grid_mode = main.grid_mode_enabled
-			if main.grid_mode_enabled and main.grab_snap_candidate.x >= 0:
+			main.grabbed_node.grid_mode = main.settings.grid_mode_enabled
+			if main.settings.grid_mode_enabled and main.grab_snap_candidate.x >= 0:
 				main.grabbed_node.grid_pos = main.grab_snap_candidate
 			main.grab_snap_candidate = Vector2i(-1, -1)
 		if main.grabbed_bar:

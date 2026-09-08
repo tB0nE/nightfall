@@ -30,7 +30,7 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 2. Reproducible builds and basic CI
 
-> Status: Implemented on `build/reproducible-native-xr`; pending review/merge.
+> Status: Implemented and merged in PR #27.
 
 - Keep `build.sh` as a compatibility entry point while extracting focused
   Android, Linux, native-XR, model-packaging, and deployment scripts.
@@ -41,6 +41,10 @@ behavioral refactors should be separate commits or pull requests.
   documentation-link checks.
 
 ### 3. Settings and menu ownership
+
+> Status: Implemented on `refactor/settings-ownership`. Typed app/host stores,
+> platform policy, persistence codecs, declarative menu construction, and direct
+> typed-store consumption are complete.
 
 - Introduce one typed settings store with defaults and versioned migrations.
 - Separate settings data, platform policy, persistence, UI presentation, and

@@ -23,7 +23,7 @@ var submit_timer: float = 0.0
 # 3/4 (which skips those passes entirely) stays smooth even though its own
 # postProcess does MORE CPU work per call via dilate+blur. That's the next
 # thing to fix, not this value. User-adjustable since 2026-08-28 (AI 3D
-# tab's Hz Cap control, main.ai_3d_hz_cap) - both this CPU-path submit rate
+# tab's Hz Cap control, main.settings.host.ai_3d_hz_cap) - both this CPU-path submit rate
 # and the GPU readback cadence below now derive from
 # settings_controller.gd's get_effective_hz_cap() at the one call site in
 # process(), rather than each being a separate fixed constant.
@@ -222,9 +222,9 @@ func _setup_warp_passes():
 	_resize_warp_passes()
 
 # Sized off the REAL decoded stream resolution (2026-08-20, was
-# main.native_resolution) rather than a fixed constant, so the passes track
+# main.settings.host.native_resolution) rather than a fixed constant, so the passes track
 # resolution changes/restarts. Cheap to call every frame - it's a no-op once
-# the size matches. main.native_resolution is ONLY ever updated from a real
+# the size matches. main.settings.host.native_resolution is ONLY ever updated from a real
 # host manifest (Polaris hosts) - Sunshine/GameStream hosts never send one,
 # so for them it just stays at whatever stale value was last loaded from
 # saved state (a previous host/session), completely disconnected from
@@ -550,7 +550,7 @@ func process(delta: float):
 		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
-		print("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_value, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.ai_3d_model])
+		print("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_value, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.settings.host.ai_3d_model])
 		_perf_window = 0.0
 		_perf_capture_usec = 0
 		_perf_submit_usec = 0

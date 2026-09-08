@@ -63,7 +63,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		main._log("[STREAM] Localhost detected! Enabling local capture mode (%s)" % ("Wayland" if OS.get_environment("WAYLAND_DISPLAY") else "X11"))
 		_b().set_local_capture_mode(true)
 		if _b()._v2 and _b()._v2.has_method("set_restore_token"):
-			_b()._v2.set_restore_token(main.pipewire_restore_token)
+			_b()._v2.set_restore_token(main.settings.pipewire_restore_token)
 	else:
 		_b().set_local_capture_mode(false)
 
@@ -73,12 +73,12 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		w = forced_resolution.x
 		h = forced_resolution.y
 		main._log("[STREAM] Reconnecting with corrected resolution %dx%d (was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
-	elif main.double_h:
+	elif main.settings.host.double_h:
 		w *= 2
 
-	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.stream_fps, str(local_capture_mode)])
-	if main.bitrate_idx >= 0:
-		bitrate = main.bitrates[main.bitrate_idx] * 1000
+	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.settings.host.stream_fps, str(local_capture_mode)])
+	if main.settings.host.bitrate_idx >= 0:
+		bitrate = main.bitrates[main.settings.host.bitrate_idx] * 1000
 	else:
 		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
 		# above - w/h can be reduced by the MiDaS-Fast resolution cap
@@ -94,7 +94,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		var bitrate_ref = main.compute_requested_resolution(false)
 		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
-			bitrate_ref.x, bitrate_ref.y, main.stream_fps, float(bitrate) / 1000.0])
+			bitrate_ref.x, bitrate_ref.y, main.settings.host.stream_fps, float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
@@ -119,7 +119,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		options["width"] = w
 		options["height"] = h
-		options["fps"] = main.stream_fps
+		options["fps"] = main.settings.host.stream_fps
 		options["bitrate"] = bitrate
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
@@ -217,7 +217,7 @@ func _on_v2_launch_response(response: Dictionary):
 		str(main._server_codec_support.get("hevc", false)),
 		str(main._server_codec_support.get("av1", false)),
 		str(main._server_codec_support.get("raw", false))])
-	if not main.settings_controller.is_codec_available(main.codec_preference):
+	if not main.settings_controller.is_codec_available(main.settings.codec_preference):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
 	server_info["rtsp_session_url"] = response.get("session_url", "")
@@ -226,7 +226,7 @@ func _on_v2_launch_response(response: Dictionary):
 
 	var w = response.get("width", 1920)
 	var h = response.get("height", 1080)
-	var fps = main.stream_fps
+	var fps = main.settings.host.stream_fps
 	var br = response.get("bitrate", 20000)
 
 	var stream_config = {}
@@ -245,7 +245,7 @@ func _on_v2_launch_response(response: Dictionary):
 	stream_config["packet_size"] = response.get("packet_size", 1024)
 	stream_config["streaming_remotely"] = response.get("streaming_remotely", 2)
 	stream_config["audio_configuration"] = response.get("audio_configuration", 0x0302CA)
-	var codec_pref = main.codec_preference
+	var codec_pref = main.settings.codec_preference
 	if codec_pref == 3:
 		stream_config["supported_video_formats"] = 0x10000
 	else:
@@ -364,7 +364,7 @@ func _auto_bitrate(w: int, h: int) -> int:
 			var weight: float = float(pixels - lower["pixels"]) / span_pixels
 			resolution_mbps = lerpf(lower["mbps_30"], upper["mbps_30"], clampf(weight, 0.0, 1.0))
 			break
-	var fps_factor: float = AUTO_BITRATE_FPS_FACTORS.get(main.stream_fps, 2.0)
+	var fps_factor: float = AUTO_BITRATE_FPS_FACTORS.get(main.settings.host.stream_fps, 2.0)
 	# Match Moonlight's whole-Mbps rounding so the result remains readable and
 	# stable across tiny custom-resolution changes.
 	var kbps := int(round(resolution_mbps * fps_factor)) * 1000
@@ -411,7 +411,7 @@ func resize_stream_viewport(w: int, h: int):
 		for s in main.screens:
 			s.comp_base_size = stream_size
 			var comp_size = stream_size
-			if main.bezel_enabled and main.comp.in_use:
+			if main.settings.bezel_enabled and main.comp.in_use:
 				comp_size += Vector2i(16, 16)
 			if s.comp_viewport and s.comp_viewport.size != comp_size:
 				s.comp_viewport.size = comp_size
@@ -679,8 +679,8 @@ func update_stats():
 	var network_latency_ms = _b().get_network_latency_ms()
 	var bitrate_mbps = bitrate / 1000.0
 	var refresh_hz = main.display_refresh_rate
-	var codec_name = main.codec_labels[main.codec_preference] if main.codec_preference < main.codec_labels.size() else "?"
-	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(main.stream_fps) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
+	var codec_name = main.codec_labels[main.settings.codec_preference] if main.settings.codec_preference < main.codec_labels.size() else "?"
+	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(main.settings.host.stream_fps) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
 	txt += " \u2022 Net:" + (str(network_latency_ms) + "ms" if network_latency_ms >= 0 else "?")
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.stats_fps))) + "fps"
 	if dropped > 0:
