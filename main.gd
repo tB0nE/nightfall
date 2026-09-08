@@ -293,15 +293,20 @@ var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
+var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 
-var comp_cursor: Node3D = null
+var comp_cursor: Node3D:
+	get: return composition_pointers.cursor_layer
 var comp_ui: Node3D:
 	get: return composition_panels.ui_layer
 var comp_kb: Node3D:
 	get: return composition_panels.keyboard_layer
-var comp_cursor_viewport: SubViewport = null
-var left_comp_cursor_layer: Node3D = null
-var left_comp_cursor_viewport: SubViewport = null
+var comp_cursor_viewport: SubViewport:
+	get: return composition_pointers.cursor_viewport
+var left_comp_cursor_layer: Node3D:
+	get: return composition_pointers.secondary_cursor_layer
+var left_comp_cursor_viewport: SubViewport:
+	get: return composition_pointers.secondary_cursor_viewport
 
 # Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
 # composition-space additions (laser/grab-bar/corners/background-equirect,

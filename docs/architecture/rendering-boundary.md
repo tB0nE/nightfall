@@ -23,3 +23,7 @@ call sites are migrated incrementally.
 `CompositionEnvironmentLayer` similarly owns the environment's equirect layer,
 3D capture viewport, and capture camera. Background selection and particle
 instance synchronization remain in the application coordinator for now.
+
+`CompositionPointerLayers` owns the primary pointer quad and the secondary-hand
+cursor quad together with their small 2D viewports. Pointer hit testing and
+world-space positioning remain in the interaction modules.

@@ -976,75 +976,8 @@ func setup_background_equirect():
 	# actual technical reason to skip it - just an oversight from GLES's
 	# first pass. Moved above the gl_compatibility/else split so both paths
 	# reach it, instead of duplicating it into the GLES branch above.
-	main.comp_cursor = OpenXRCompositionLayerQuad.new()
-	main.comp_cursor.name = "CompCursorLayer"
-	main.comp_cursor.set_sort_order(999)
-	main.comp_cursor.set_enable_hole_punch(false)
-	main.comp_cursor.set_alpha_blend(true)
-	main.comp_cursor.set_quad_size(Vector2(0.04, 0.04))
-	main.comp_cursor.visible = false
-	main.xr_origin.add_child(main.comp_cursor)
-
-	main.comp_cursor_viewport = SubViewport.new()
-	main.comp_cursor_viewport.name = "CompCursorViewport"
-	main.comp_cursor_viewport.disable_3d = true
-	main.comp_cursor_viewport.transparent_bg = true
-	main.comp_cursor_viewport.size = Vector2i(40, 64)
-	main.comp_cursor_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(main.comp_cursor_viewport)
-
-	var pointer_tex = TextureRect.new()
-	pointer_tex.name = "PointerTexture"
-	pointer_tex.anchors_preset = 15
-	pointer_tex.anchor_right = 1.0
-	pointer_tex.anchor_bottom = 1.0
-	pointer_tex.expand_mode = 1
-	pointer_tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	pointer_tex.texture = load("res://src/assets/mouse_pointer_01.png")
-	main.comp_cursor_viewport.add_child(pointer_tex)
-
-	var circle = ColorRect.new()
-	circle.name = "CircleTexture"
-	circle.anchors_preset = 15
-	circle.anchor_right = 1.0
-	circle.anchor_bottom = 1.0
-	var circle_mat = ShaderMaterial.new()
-	circle_mat.shader = preload("res://src/shaders/circle_cursor.gdshader")
-	circle.material = circle_mat
-	circle.visible = false
-	main.comp_cursor_viewport.add_child(circle)
-
-	main.comp_cursor.set_layer_viewport(main.comp_cursor_viewport)
+	main.composition_pointers.setup(main, main.xr_origin)
 	main._log("[COMP] Cursor composition layer created")
-
-	main.left_comp_cursor_layer = OpenXRCompositionLayerQuad.new()
-	main.left_comp_cursor_layer.name = "LeftCompCursorLayer"
-	main.left_comp_cursor_layer.set_sort_order(999)
-	main.left_comp_cursor_layer.set_enable_hole_punch(false)
-	main.left_comp_cursor_layer.set_alpha_blend(true)
-	main.left_comp_cursor_layer.set_quad_size(Vector2(0.035, 0.035))
-	main.left_comp_cursor_layer.visible = false
-	main.xr_origin.add_child(main.left_comp_cursor_layer)
-
-	main.left_comp_cursor_viewport = SubViewport.new()
-	main.left_comp_cursor_viewport.name = "LeftCompCursorViewport"
-	main.left_comp_cursor_viewport.disable_3d = true
-	main.left_comp_cursor_viewport.transparent_bg = true
-	main.left_comp_cursor_viewport.size = Vector2i(256, 256)
-	main.left_comp_cursor_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(main.left_comp_cursor_viewport)
-
-	var left_circle = ColorRect.new()
-	left_circle.name = "CircleTexture"
-	left_circle.anchors_preset = 15
-	left_circle.anchor_right = 1.0
-	left_circle.anchor_bottom = 1.0
-	var left_circle_mat = ShaderMaterial.new()
-	left_circle_mat.shader = preload("res://src/shaders/circle_cursor.gdshader")
-	left_circle.material = left_circle_mat
-	main.left_comp_cursor_viewport.add_child(left_circle)
-
-	main.left_comp_cursor_layer.set_layer_viewport(main.left_comp_cursor_viewport)
 	main._log("[COMP] Left cursor composition layer created")
 
 	# Controller ray indicators - see main.gd's comp_laser_right/left comment
