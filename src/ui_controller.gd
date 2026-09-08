@@ -662,225 +662,19 @@ func build_ui():
 	tab_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(tab_bar)
 
-	_tab_btn_display = Button.new()
-	_tab_btn_display.text = "Display"
-	_tab_btn_display.focus_mode = Control.FOCUS_NONE
-	_tab_btn_display.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_display.add_theme_font_size_override("font_size", 22)
-	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0))
-	tab_bar.add_child(_tab_btn_display)
-
-	_tab_btn_stream = Button.new()
-	_tab_btn_stream.text = "Stream"
-	_tab_btn_stream.focus_mode = Control.FOCUS_NONE
-	_tab_btn_stream.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_stream.add_theme_font_size_override("font_size", 22)
-	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	tab_bar.add_child(_tab_btn_stream)
-
-	_tab_btn_control = Button.new()
-	_tab_btn_control.text = "Control"
-	_tab_btn_control.focus_mode = Control.FOCUS_NONE
-	_tab_btn_control.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_control.add_theme_font_size_override("font_size", 22)
-	_tab_btn_control.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	tab_bar.add_child(_tab_btn_control)
-
-	_tab_btn_monitors = Button.new()
-	_tab_btn_monitors.text = "Monitors"
-	_tab_btn_monitors.focus_mode = Control.FOCUS_NONE
-	_tab_btn_monitors.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_monitors.add_theme_font_size_override("font_size", 22)
-	_tab_btn_monitors.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	# Disabled (2026-08-18), not removed - the underlying multi-monitor code
-	# (composition_layer_manager.gd, vr_screen.gd, screen_layout.gd etc.) is
-	# still fully wired up and depended on by AI-3D itself, this just greys
-	# out the tab/button (stays visible, so users can see the feature exists
-	# but isn't ready yet) so it isn't user-facing. switch_tab(5) is ONLY
-	# ever reached via this button's own click handler below (no other call
-	# site), and Godot's Button.disabled blocks button_down from firing, so
-	# disabling it fully disables reachability too. Set .disabled = false
-	# again to bring the tab back.
-	_tab_btn_monitors.disabled = true
-	_tab_btn_monitors.modulate.a = 0.3
-	tab_bar.add_child(_tab_btn_monitors)
-
-	_tab_btn_ai3d = Button.new()
-	_tab_btn_ai3d.text = "AI 3D"
-	_tab_btn_ai3d.focus_mode = Control.FOCUS_NONE
-	_tab_btn_ai3d.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_ai3d.add_theme_font_size_override("font_size", 22)
-	_tab_btn_ai3d.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	tab_bar.add_child(_tab_btn_ai3d)
-
-	_tab_btn_picture = Button.new()
-	_tab_btn_picture.text = "Picture"
-	_tab_btn_picture.focus_mode = Control.FOCUS_NONE
-	_tab_btn_picture.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_picture.add_theme_font_size_override("font_size", 22)
-	_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	tab_bar.add_child(_tab_btn_picture)
-	# Keep the disabled Monitors feature visible, but place it immediately
-	# before Advanced in the user-facing tab order.
-	tab_bar.move_child(_tab_btn_monitors, tab_bar.get_child_count())
-
-	_tab_btn_advanced = Button.new()
-	_tab_btn_advanced.text = "Advanced"
-	_tab_btn_advanced.focus_mode = Control.FOCUS_NONE
-	_tab_btn_advanced.custom_minimum_size = Vector2(160, 44)
-	_tab_btn_advanced.add_theme_font_size_override("font_size", 22)
-	_tab_btn_advanced.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	# Kept constructed and wired for future settings migrations, but not
-	# currently exposed in the tab bar.
-	_tab_btn_advanced.visible = false
-	_tab_btn_advanced.disabled = true
-	tab_bar.add_child(_tab_btn_advanced)
+	_build_tab_buttons(tab_bar)
 
 	var tab_margin = Control.new()
 	tab_margin.custom_minimum_size = Vector2(0, 12)
 	tab_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(tab_margin)
 
-	_tab_display = VBoxContainer.new()
-	_tab_display.name = "TabDisplay"
-	_tab_display.add_theme_constant_override("separation", 0)
-	_tab_display.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	vbox.add_child(_tab_display)
-
-	var disp_row1 = HBoxContainer.new()
-	disp_row1.name = "DispRow1"
-	disp_row1.add_theme_constant_override("separation", 12)
-	disp_row1.alignment = BoxContainer.ALIGNMENT_CENTER
-	disp_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	disp_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	disp_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_display.add_child(disp_row1)
-
-	main._ui_pt_btn = make_option_btn("Passthrough", "On")
-	disp_row1.add_child(main._ui_pt_btn)
-	main._ui_sbs_btn = make_option_btn("SBS", "Off")
-	disp_row1.add_child(main._ui_sbs_btn)
-	# Plain On/Off toggle (2026-08-28) - tier selection (Auto/Fast/Standard),
-	# Model, and everything else moved to the dedicated AI 3D tab below.
-	main._ui_3d_speed_btn = make_option_btn("AI 3D", "Off")
-	disp_row1.add_child(main._ui_3d_speed_btn)
-	main._ui_curve_btn = make_option_btn("Curve", "Flat")
-	disp_row1.add_child(main._ui_curve_btn)
-
-	var disp_gap1 = Control.new()
-	disp_gap1.custom_minimum_size = Vector2(0, 20)
-	disp_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_display.add_child(disp_gap1)
-
-	var disp_row2 = HBoxContainer.new()
-	disp_row2.name = "DispRow2"
-	disp_row2.add_theme_constant_override("separation", 12)
-	disp_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	disp_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	disp_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	disp_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_display.add_child(disp_row2)
-
-	main._ui_bg_btn = make_option_btn("Background", "Black")
-	disp_row2.add_child(main._ui_bg_btn)
-	main._ui_ambient_btn = make_option_btn("Ambient", "Off")
-	disp_row2.add_child(main._ui_ambient_btn)
-	main._ui_ambient_color_btn = make_option_btn("Colour", "White")
-	disp_row2.add_child(main._ui_ambient_color_btn)
-	main._ui_bezel_btn = make_option_btn("Bezel", "On")
-	disp_row2.add_child(main._ui_bezel_btn)
-
-	_tab_stream = VBoxContainer.new()
-	_tab_stream.name = "TabStream"
-	_tab_stream.add_theme_constant_override("separation", 0)
-	_tab_stream.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_stream.visible = false
-	vbox.add_child(_tab_stream)
-
-	var stream_row1 = HBoxContainer.new()
-	stream_row1.name = "StreamRow1"
-	stream_row1.add_theme_constant_override("separation", 12)
-	stream_row1.alignment = BoxContainer.ALIGNMENT_CENTER
-	stream_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	stream_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	stream_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_stream.add_child(stream_row1)
-
-	main._ui_res_btn = make_option_btn("Resolution", "100%")
-	stream_row1.add_child(main._ui_res_btn)
-	main._ui_fps_btn = make_option_btn("FPS", "60")
-	stream_row1.add_child(main._ui_fps_btn)
-	main._ui_bitrate_btn = make_option_btn("Bitrate", "Auto")
-	stream_row1.add_child(main._ui_bitrate_btn)
-	main._ui_host_cursor_btn = make_option_btn("Host Cursor", "Off")
-	stream_row1.add_child(main._ui_host_cursor_btn)
-
-	var stream_gap1 = Control.new()
-	stream_gap1.custom_minimum_size = Vector2(0, 20)
-	stream_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_stream.add_child(stream_gap1)
-
-	var stream_row2 = HBoxContainer.new()
-	stream_row2.name = "StreamRow2"
-	stream_row2.add_theme_constant_override("separation", 12)
-	stream_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	stream_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	stream_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	stream_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_stream.add_child(stream_row2)
-
-	main._ui_codec_btn = make_option_btn("Codec", "HEVC")
-	stream_row2.add_child(main._ui_codec_btn)
-	main._ui_quick_start_btn = make_option_btn("Quick Start", "Off")
-	stream_row2.add_child(main._ui_quick_start_btn)
-
-	_tab_control = VBoxContainer.new()
-	_tab_control.name = "TabControl"
-	_tab_control.add_theme_constant_override("separation", 0)
-	_tab_control.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_control.visible = false
-	vbox.add_child(_tab_control)
-
-	var control_row1 = HBoxContainer.new()
-	control_row1.name = "ControlRow1"
-	control_row1.add_theme_constant_override("separation", 12)
-	control_row1.alignment = BoxContainer.ALIGNMENT_CENTER
-	control_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	control_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	control_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_control.add_child(control_row1)
-
-	main._ui_cursor_btn = make_option_btn("Cursor Type", "Circle")
-	control_row1.add_child(main._ui_cursor_btn)
-	main._ui_steady_btn = make_option_btn("Cursor Steady", "Low")
-	control_row1.add_child(main._ui_steady_btn)
-	main._ui_hand_tracking_btn = make_option_btn("Tracking", "Off")
-	control_row1.add_child(main._ui_hand_tracking_btn)
-	main._ui_double_click_btn = make_option_btn("Double Click", "Standard")
-	control_row1.add_child(main._ui_double_click_btn)
-
-	var control_gap1 = Control.new()
-	control_gap1.custom_minimum_size = Vector2(0, 20)
-	control_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_control.add_child(control_gap1)
-
-	var control_row2 = HBoxContainer.new()
-	control_row2.name = "ControlRow2"
-	control_row2.add_theme_constant_override("separation", 12)
-	control_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	control_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	control_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	control_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_control.add_child(control_row2)
-
-	main._ui_ctrl_mode_btn = make_option_btn("Mapping", "Off")
-	control_row2.add_child(main._ui_ctrl_mode_btn)
-	main._ui_ctrl_type_btn = make_option_btn("Device Mode", "PAD-HAND")
-	control_row2.add_child(main._ui_ctrl_type_btn)
-	main._ui_btn_toggle_btn = make_option_btn("Alternate Mode", "Head")
-	control_row2.add_child(main._ui_btn_toggle_btn)
-	main._ui_primary_btn = make_option_btn("Primary Hand", "Right")
-	control_row2.add_child(main._ui_primary_btn)
+	# Uniform option grids are data-driven. AI 3D and Monitors remain custom
+	# below because their rows are rearranged dynamically or contain non-option
+	# controls.
+	_tab_display = _build_menu_tab(vbox, MenuSchema.get_tab(&"display"))
+	_tab_stream = _build_menu_tab(vbox, MenuSchema.get_tab(&"stream"))
+	_tab_control = _build_menu_tab(vbox, MenuSchema.get_tab(&"control"))
 
 	_tab_ai3d = VBoxContainer.new()
 	_tab_ai3d.name = "TabAi3d"
@@ -948,45 +742,11 @@ func build_ui():
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
 
-	_tab_picture = VBoxContainer.new()
-	_tab_picture.name = "TabPicture"
-	_tab_picture.add_theme_constant_override("separation", 0)
-	_tab_picture.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_picture.visible = false
-	vbox.add_child(_tab_picture)
-
-	var picture_row1 = HBoxContainer.new()
-	picture_row1.name = "PictureRow1"
-	picture_row1.add_theme_constant_override("separation", 12)
-	picture_row1.alignment = BoxContainer.ALIGNMENT_CENTER
-	picture_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	picture_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	picture_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_picture.add_child(picture_row1)
-
-	main._ui_brightness_btn = make_option_btn("Brightness", "+0%")
-	picture_row1.add_child(main._ui_brightness_btn)
-	main._ui_contrast_btn = make_option_btn("Contrast", "100%")
-	picture_row1.add_child(main._ui_contrast_btn)
-	main._ui_gamma_btn = make_option_btn("Gamma", "100%")
-	picture_row1.add_child(main._ui_gamma_btn)
-
-	var picture_gap1 = Control.new()
-	picture_gap1.custom_minimum_size = Vector2(0, 20)
-	picture_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_picture.add_child(picture_gap1)
-
-	var picture_row2 = HBoxContainer.new()
-	picture_row2.name = "PictureRow2"
-	picture_row2.add_theme_constant_override("separation", 12)
-	picture_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	picture_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	picture_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	picture_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_picture.add_child(picture_row2)
-
-	main._ui_sharpen_btn = make_option_btn("Sharpen", main.settings_controller.get_sharpen_label(main.sharpen_mode))
-	picture_row2.add_child(main._ui_sharpen_btn)
+	_tab_picture = _build_menu_tab(
+		vbox,
+		MenuSchema.get_tab(&"picture"),
+		{&"_ui_sharpen_btn": main.settings_controller.get_sharpen_label(main.sharpen_mode)}
+	)
 
 	_tab_monitors = VBoxContainer.new()
 	_tab_monitors.name = "TabMonitors"
@@ -1046,48 +806,7 @@ func build_ui():
 	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
-	_tab_advanced = VBoxContainer.new()
-	_tab_advanced.name = "TabAdvanced"
-	_tab_advanced.add_theme_constant_override("separation", 0)
-	_tab_advanced.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_advanced.visible = false
-	vbox.add_child(_tab_advanced)
-
-	var advanced_row1 = HBoxContainer.new()
-	advanced_row1.name = "AdvancedRow1"
-	advanced_row1.add_theme_constant_override("separation", 12)
-	advanced_row1.alignment = BoxContainer.ALIGNMENT_CENTER
-	advanced_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	advanced_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	advanced_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_advanced.add_child(advanced_row1)
-
-	main._ui_reconnect_btn = make_option_btn("Auto-Reconnect", "On")
-	advanced_row1.add_child(main._ui_reconnect_btn)
-	main._ui_idle_btn = make_option_btn("Idle Disconnect", "Off")
-	advanced_row1.add_child(main._ui_idle_btn)
-
-	var advanced_gap1 = Control.new()
-	advanced_gap1.custom_minimum_size = Vector2(0, 20)
-	advanced_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_advanced.add_child(advanced_gap1)
-
-	var advanced_row2 = HBoxContainer.new()
-	advanced_row2.name = "AdvancedRow2"
-	advanced_row2.add_theme_constant_override("separation", 12)
-	advanced_row2.alignment = BoxContainer.ALIGNMENT_CENTER
-	advanced_row2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	advanced_row2.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	advanced_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_advanced.add_child(advanced_row2)
-
-	# Hidden until update_3d_btn_state() runs (which also happens to set
-	# this every time regardless) - set here too so there's no one-frame
-	# flash of a visible "3D Debug" button before that first fires.
-	main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
-	main._ui_3d_debug_btn.disabled = true
-	main._ui_3d_debug_btn.visible = false
-	advanced_row2.add_child(main._ui_3d_debug_btn)
+	_tab_advanced = _build_menu_tab(vbox, MenuSchema.get_tab(&"advanced"))
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -1152,15 +871,6 @@ func build_ui():
 	main._ui_stats_btn.button_down.connect(func(): main.toggle_performance_overlay())
 	main._ui_disconnect_btn.visible = main.is_streaming
 	update_stats_btn_state()
-	main._ui_pt_btn.button_down.connect(func(): main.settings_controller.toggle_passthrough())
-	main._ui_curve_btn.button_down.connect(func(): main.screen_manager.cycle_curvature())
-	main._ui_bg_btn.button_down.connect(func(): main.settings_controller.cycle_background())
-	main._ui_ambient_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_mode())
-	main._ui_ambient_color_btn.button_down.connect(func(): main.settings_controller.cycle_ambient_color())
-	main._ui_bezel_btn.button_down.connect(func(): main.screen_manager.toggle_bezel())
-	main._ui_hand_tracking_btn.button_down.connect(func(): main.settings_controller.toggle_hand_tracking())
-	main._ui_sbs_btn.button_down.connect(func(): on_sbs_toggled())
-	main._ui_3d_speed_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_mode_btn.button_down.connect(func(): on_ai_3d_mode_toggled())
 	main._ui_3d_type_btn.button_down.connect(func(): on_ai_3d_type_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
@@ -1168,7 +878,6 @@ func build_ui():
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
 	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
-	main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	main._ui_3d_priority_btn.button_down.connect(func(): on_ai_3d_priority_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())
@@ -1176,32 +885,6 @@ func build_ui():
 	main._ui_save_preset_btn.button_down.connect(func(): _on_save_preset_pressed())
 	main._ui_remove_preset_btn.button_down.connect(func(): _on_remove_preset_pressed())
 	main._ui_grid_mode_btn.button_down.connect(func(): main.settings_controller.toggle_grid_mode())
-	main._ui_res_btn.button_down.connect(func(): main.settings_controller.cycle_resolution())
-	main._ui_fps_btn.button_down.connect(func(): main.settings_controller.cycle_fps())
-	main._ui_bitrate_btn.button_down.connect(func(): main.settings_controller.cycle_bitrate())
-	main._ui_sharpen_btn.button_down.connect(func(): main.settings_controller.cycle_sharpen_mode())
-	main._ui_brightness_btn.button_down.connect(func(): main.settings_controller.cycle_brightness())
-	main._ui_contrast_btn.button_down.connect(func(): main.settings_controller.cycle_contrast())
-	main._ui_gamma_btn.button_down.connect(func(): main.settings_controller.cycle_gamma())
-	main._ui_cursor_btn.button_down.connect(func(): main.settings_controller.cycle_cursor_mode())
-	main._ui_steady_btn.button_down.connect(func(): main.settings_controller.cycle_steady())
-	main._ui_double_click_btn.button_down.connect(func(): main.settings_controller.cycle_double_click_mode())
-	main._ui_codec_btn.button_down.connect(func(): main.settings_controller.cycle_codec())
-	main._ui_ctrl_mode_btn.button_down.connect(func(): main.controller_mapper.check_toggle_ui())
-	main._ui_ctrl_type_btn.button_down.connect(func(): main.controller_mapper.cycle_type())
-	main._ui_btn_toggle_btn.button_down.connect(func(): main.controller_mapper.cycle_btn_toggle())
-	main._ui_primary_btn.button_down.connect(func(): main.controller_mapper.cycle_primary_hand())
-	main._ui_reconnect_btn.button_down.connect(func(): main.settings_controller.cycle_auto_reconnect())
-	main._ui_quick_start_btn.button_down.connect(func(): main.settings_controller.cycle_quick_start())
-	main._ui_idle_btn.button_down.connect(func(): main.settings_controller.cycle_idle_timeout())
-	main._ui_host_cursor_btn.button_down.connect(func(): main.settings_controller.toggle_host_cursor())
-	_tab_btn_display.button_down.connect(func(): switch_tab(0))
-	_tab_btn_stream.button_down.connect(func(): switch_tab(1))
-	_tab_btn_control.button_down.connect(func(): switch_tab(2))
-	_tab_btn_monitors.button_down.connect(func(): switch_tab(5))
-	_tab_btn_ai3d.button_down.connect(func(): switch_tab(3))
-	_tab_btn_picture.button_down.connect(func(): switch_tab(4))
-	_tab_btn_advanced.button_down.connect(func(): switch_tab(6))
 	switch_tab(0)
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
@@ -1211,6 +894,83 @@ func build_ui():
 	var ui_buttons = []
 	_collect_buttons(root, ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
+
+func _build_tab_buttons(parent: HBoxContainer) -> void:
+	for definition in MenuSchema.get_tab_buttons():
+		var button := Button.new()
+		button.text = definition["label"]
+		button.focus_mode = Control.FOCUS_NONE
+		button.custom_minimum_size = Vector2(160, 44)
+		button.add_theme_font_size_override("font_size", 22)
+		button.add_theme_color_override(
+			"font_color",
+			Color(1, 1, 1, 1.0) if definition["index"] == 0 else Color(1, 1, 1, 0.5)
+		)
+		button.visible = definition["visible"]
+		button.disabled = definition["disabled"]
+		button.modulate.a = definition["alpha"]
+		set(definition["field"], button)
+		parent.add_child(button)
+		button.button_down.connect(switch_tab.bind(definition["index"]))
+
+func _build_menu_tab(
+	parent: VBoxContainer,
+	schema: Dictionary,
+	value_overrides: Dictionary = {}
+) -> VBoxContainer:
+	var tab := VBoxContainer.new()
+	tab.name = schema["node_name"]
+	tab.add_theme_constant_override("separation", 0)
+	tab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tab.visible = schema["id"] == &"display"
+	parent.add_child(tab)
+
+	var rows: Array = schema["rows"]
+	for row_index in rows.size():
+		if row_index > 0:
+			var gap := Control.new()
+			gap.custom_minimum_size = Vector2(0, 20)
+			gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			tab.add_child(gap)
+		var row_schema: Dictionary = rows[row_index]
+		var row := HBoxContainer.new()
+		row.name = row_schema["node_name"]
+		row.add_theme_constant_override("separation", 12)
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tab.add_child(row)
+		for option in row_schema["options"]:
+			var field: StringName = option["field"]
+			var value: String = value_overrides.get(field, option["value"])
+			var button := make_option_btn(option["label"], value)
+			button.visible = option["visible"]
+			button.disabled = option["disabled"]
+			main.set(field, button)
+			row.add_child(button)
+			_connect_menu_action(button, option)
+	return tab
+
+func _connect_menu_action(button: Button, option: Dictionary) -> void:
+	var target := _menu_action_target(option["target"])
+	var action: StringName = option["action"]
+	if target == null or not target.has_method(action):
+		push_error("Invalid menu action %s.%s" % [option["target"], action])
+		return
+	button.button_down.connect(Callable(target, action))
+
+func _menu_action_target(target: StringName) -> Object:
+	match target:
+		MenuSchema.TARGET_UI:
+			return self
+		MenuSchema.TARGET_SETTINGS:
+			return main.settings_controller
+		MenuSchema.TARGET_SCREEN:
+			return main.screen_manager
+		MenuSchema.TARGET_CONTROLLER:
+			return main.controller_mapper
+	return null
 
 func make_option_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()

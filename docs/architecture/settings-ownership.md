@@ -24,25 +24,28 @@ checks in UI and persistence code.
 
 ## Persistence
 
-`src/state_manager.gd` currently serializes the typed stores and owns compatibility
+`src/settings_persistence.gd` encodes the typed stores and owns compatibility
 migrations for historical config formats. New formats write explicit app and host
-schema versions. The next extraction should move encoding and migrations into a
-dedicated persistence codec while leaving runtime application in `StateManager`.
+schema versions. `StateManager` coordinates file and host selection around that
+codec, while `ControllerMapper` owns its narrow controller-settings format.
 
 ## Presentation and effects
 
-- `src/ui_controller.gd` creates controls and presents current values.
+- `src/menu_schema.gd` describes the ordinary menu tabs, rows, options, and
+  command routes without holding runtime renderer or stream objects.
+- `src/ui_controller.gd` renders that schema, creates the specialized AI 3D and
+  Monitors controls, and presents current values.
 - `src/settings_controller.gd` handles user commands and applies runtime effects.
 - Renderer, stream, depth, and screen modules own the effects themselves.
 
-The UI should eventually consume declarative option descriptions. A description
-may identify a setting and command, but must not contain renderer or stream
-objects.
+Keep specialized layouts imperative only when their structure genuinely changes
+at runtime. AI 3D rearranges controls under Android policy, while Monitors mixes
+option, action, and generated preset controls; the uniform tabs should remain in
+the declarative schema.
 
 ## Migration order
 
-1. Extract app/host config encoding and legacy migrations from `StateManager`.
-2. Move controller-mapping persistence behind a narrow controller settings API.
-3. Convert menu construction to declarative tab/row/option descriptions.
-4. Replace remaining `main.gd` compatibility properties with direct typed-store
+1. Replace remaining `main.gd` compatibility properties with direct typed-store
    dependencies.
+2. Move runtime setting effects behind narrower module APIs where they still
+   reach through `main`.

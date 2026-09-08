@@ -42,9 +42,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 3. Settings and menu ownership
 
-> Status: In progress on `refactor/settings-ownership`. Typed app/host stores and
-> centralized platform policy are implemented; persistence-codec and declarative
-> menu work remain.
+> Status: In progress on `refactor/settings-ownership`. Typed app/host stores,
+> platform policy, persistence codecs, and declarative menu construction are
+> implemented; compatibility-property migration remains.
 
 - Introduce one typed settings store with defaults and versioned migrations.
 - Separate settings data, platform policy, persistence, UI presentation, and
