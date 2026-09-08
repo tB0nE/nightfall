@@ -30,6 +30,11 @@ the build/deployment entry point.
 - [Feature pipeline](plans/active/feature-pipeline.md)
 - [Future-feature research](plans/active/future-features.md)
 
+## Architecture notes
+
+- [Settings ownership](architecture/settings-ownership.md)
+- [Multi-monitor encode budget and layout](architecture/multi-monitor-encode-budget-and-layout.md)
+
 ## Document lifecycle
 
 New plans must include a status near the title: `Active proposal`, `Active`,
