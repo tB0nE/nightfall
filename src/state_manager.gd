@@ -44,30 +44,32 @@ func save_host_state():
 		return
 	var save = ConfigFile.new()
 	save.load("user://host_state.cfg")
-	save.set_value(ip, "fps", main.stream_fps)
-	save.set_value(ip, "resolution_scale_pct", main.resolution_scale_pct)
-	save.set_value(ip, "native_resolution", [main.native_resolution.x, main.native_resolution.y])
-	save.set_value(ip, "is_polaris_host", main.is_polaris_host)
-	save.set_value(ip, "resolution_idx", main.resolution_idx)
-	save.set_value(ip, "sbs_mode", main.sbs_mode)
-	save.set_value(ip, "ai_3d_model", main.ai_3d_model)
-	save.set_value(ip, "ai_3d_speed", main.ai_3d_speed)
+	var host: HostSettings = main.settings.host
+	save.set_value(ip, "host_settings_version", HostSettings.HOST_STATE_VERSION)
+	save.set_value(ip, "fps", host.stream_fps)
+	save.set_value(ip, "resolution_scale_pct", host.resolution_scale_pct)
+	save.set_value(ip, "native_resolution", [host.native_resolution.x, host.native_resolution.y])
+	save.set_value(ip, "is_polaris_host", host.is_polaris_host)
+	save.set_value(ip, "resolution_idx", host.resolution_idx)
+	save.set_value(ip, "sbs_mode", host.sbs_mode)
+	save.set_value(ip, "ai_3d_model", host.ai_3d_model)
+	save.set_value(ip, "ai_3d_speed", host.ai_3d_speed)
 	# Marks the post-Fastest-removal ai_3d_speed range (0-3, was 0-4) -
 	# 2026-08-25. The key name is unchanged so has_section_key(ip,
 	# "ai_3d_speed") alone can't tell an old-range save from a new one; this
 	# marker disambiguates. See load_host_state()'s migration below.
 	save.set_value(ip, "ai_3d_speed_v2", true)
-	save.set_value(ip, "ai_3d_debug", main.ai_3d_debug)
+	save.set_value(ip, "ai_3d_debug", host.ai_3d_debug)
 	# AI 3D tab (2026-08-28) - new fields, no migration needed (ai_3d_models
 	# itself kept its original 5-entry indexing, see its own comment).
-	save.set_value(ip, "ai_3d_last_mode", main.ai_3d_last_mode)
-	save.set_value(ip, "ai_3d_backend_pref", main.ai_3d_backend_pref)
-	save.set_value(ip, "ai_3d_hz_cap", main.ai_3d_hz_cap)
-	save.set_value(ip, "ai_3d_separation_pct", main.ai_3d_separation_pct)
-	save.set_value(ip, "ai_3d_convergence_pct", main.ai_3d_convergence_pct)
-	save.set_value(ip, "ai_3d_cursor_position_v2", main.ai_3d_cursor_position)
-	save.set_value(ip, "bitrate_idx", main.bitrate_idx)
-	save.set_value(ip, "double_h", main.double_h)
+	save.set_value(ip, "ai_3d_last_mode", host.ai_3d_last_mode)
+	save.set_value(ip, "ai_3d_backend_pref", host.ai_3d_backend_pref)
+	save.set_value(ip, "ai_3d_hz_cap", host.ai_3d_hz_cap)
+	save.set_value(ip, "ai_3d_separation_pct", host.ai_3d_separation_pct)
+	save.set_value(ip, "ai_3d_convergence_pct", host.ai_3d_convergence_pct)
+	save.set_value(ip, "ai_3d_cursor_position_v2", host.ai_3d_cursor_position)
+	save.set_value(ip, "bitrate_idx", host.bitrate_idx)
+	save.set_value(ip, "double_h", host.double_h)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
 	var placements := []
 	for s in main.screens:
@@ -91,18 +93,19 @@ func load_host_state(ip: String):
 		return
 	if not save.has_section(ip):
 		return
-	main.stream_fps = int(save.get_value(ip, "fps", 60))
-	if not main.settings_controller.STREAM_FPS_RATES.has(main.stream_fps):
-		main.stream_fps = 60
-	main.resolution_scale_pct = save.get_value(ip, "resolution_scale_pct", 100)
-	if not main.resolution_scale_options.has(main.resolution_scale_pct):
-		main.resolution_scale_pct = 100
+	var host: HostSettings = main.settings.host
+	host.stream_fps = int(save.get_value(ip, "fps", 60))
+	if not main.settings_controller.STREAM_FPS_RATES.has(host.stream_fps):
+		host.stream_fps = 60
+	host.resolution_scale_pct = save.get_value(ip, "resolution_scale_pct", 100)
+	if not main.resolution_scale_options.has(host.resolution_scale_pct):
+		host.resolution_scale_pct = 100
 	var native_arr = save.get_value(ip, "native_resolution", [1920, 1080])
-	main.native_resolution = Vector2i(native_arr[0], native_arr[1])
-	main.is_polaris_host = save.get_value(ip, "is_polaris_host", false)
-	main.resolution_idx = clampi(save.get_value(ip, "resolution_idx", 1), 0, main.resolutions.size() - 1)
-	main.bitrate_idx = save.get_value(ip, "bitrate_idx", -1)
-	main.double_h = save.get_value(ip, "double_h", false)
+	host.native_resolution = Vector2i(native_arr[0], native_arr[1])
+	host.is_polaris_host = save.get_value(ip, "is_polaris_host", false)
+	host.resolution_idx = clampi(save.get_value(ip, "resolution_idx", 1), 0, main.resolutions.size() - 1)
+	host.bitrate_idx = save.get_value(ip, "bitrate_idx", -1)
+	host.double_h = save.get_value(ip, "double_h", false)
 	if save.has_section_key(ip, "sbs_mode"):
 		main.sbs_mode = clampi(save.get_value(ip, "sbs_mode", 0), 0, 2)
 		if save.has_section_key(ip, "ai_3d_speed"):

@@ -70,7 +70,9 @@ var _restarting_stream: bool = false
 var _did_initial_monitor_trim: bool = false
 var _stream_start_seq: int = 0
 var is_streaming: bool = false
-var sbs_mode: int = 0
+var sbs_mode: int:
+	get: return settings.host.sbs_mode
+	set(value): settings.host.sbs_mode = value
 # Collapsed (2026-08-24) to two independent axes - see
 # settings_controller.gd's ai_3d_speed_labels/ai_3d_models and
 # get_stereo_mode() for how they combine. Split across a main-page On/Off
@@ -80,13 +82,21 @@ var sbs_mode: int = 0
 # toggle flips it between 0 and ai_3d_last_mode, while the tab's own "3D
 # Mode" control cycles 1-3 directly and keeps ai_3d_last_mode in sync - see
 # settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
-var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
-var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
+var ai_3d_model: int: # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
+	get: return settings.host.ai_3d_model
+	set(value): settings.host.ai_3d_model = value
+var ai_3d_speed: int: # 0=Off, 1=Auto, 2=Fast, 3=Standard
+	get: return settings.host.ai_3d_speed
+	set(value): settings.host.ai_3d_speed = value
 var ai_3d_gpu_priority: int: # 0=Stream (low-priority OpenCL), 1=Default driver priority
 	get: return settings.ai_3d_gpu_priority
 	set(value): settings.ai_3d_gpu_priority = value
-var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
-var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
+var ai_3d_last_mode: int: # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
+	get: return settings.host.ai_3d_last_mode
+	set(value): settings.host.ai_3d_last_mode = value
+var ai_3d_debug: int: # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
+	get: return settings.host.ai_3d_debug
+	set(value): settings.host.ai_3d_debug = value
 # GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
 # only meaningful when that model actually has a GPU variant
 # (ai_3d_models[idx].gpu_available); DA-V2-252 has none, so this is
@@ -94,31 +104,41 @@ var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 # settings_controller.gd's get_depth_backend_index(). Values match
 # DepthBridge's own BACKEND_CPU=1/BACKEND_GPU=2 constants directly, no
 # separate mapping needed.
-var ai_3d_backend_pref: int = 2 # 1=CPU, 2=GPU
+var ai_3d_backend_pref: int: # 1=CPU, 2=GPU
+	get: return settings.host.ai_3d_backend_pref
+	set(value): settings.host.ai_3d_backend_pref = value
 # Depth-inference update-rate cap, in Hz - "more for experimentation" per
 # the user's own framing, so it's a straightforward pass-through to the
 # Java inference loop (see DepthBridge::set_depth_hz_cap()), not something
 # that changes the visual algorithm. Ignored under Auto (which always
 # targets a fixed 20Hz) - see settings_controller.gd's get_effective_hz_cap().
-var ai_3d_hz_cap: int = 20
+var ai_3d_hz_cap: int:
+	get: return settings.host.ai_3d_hz_cap
+	set(value): settings.host.ai_3d_hz_cap = value
 # Percentage multiplier on top of the depth-warp shaders' own tuned base
 # separation values (yuv_display.gdshader's mode5_parallax=0.006,
 # stereo_screen.gdshader's own copy=0.042) - NOT one shared absolute value,
 # since those two rendering paths were independently tuned to different
 # magnitudes for the same visual effect. See settings_controller.gd's
 # _push_ai3d_effect_uniforms()/depth_estimator.gd's set_separation_pct().
-var ai_3d_separation_pct: int = 100
+var ai_3d_separation_pct: int:
+	get: return settings.host.ai_3d_separation_pct
+	set(value): settings.host.ai_3d_separation_pct = value
 # Percentage-as-depth-fraction (30-70, maps directly to 0.30-0.70) for the
 # warp shaders' "convergence" uniform - the depth value that renders with
 # zero parallax (the "screen plane"). Declared in every depth-warp shader
 # already, default 0.5, but never actually driven from GDScript until this
 # - see _push_ai3d_effect_uniforms().
-var ai_3d_convergence_pct: int = 50
+var ai_3d_convergence_pct: int:
+	get: return settings.host.ai_3d_convergence_pct
+	set(value): settings.host.ai_3d_convergence_pct = value
 # Horizontal correction for the cursor drawn over AI-warped video. Stored as
 # -1/0/1 (Left/Default/Right). The calibrated Default is one 12px-at-1080p
 # step right of the original position. Presentation only: raycast and host
 # click coordinates stay unchanged.
-var ai_3d_cursor_position: int = 0
+var ai_3d_cursor_position: int:
+	get: return settings.host.ai_3d_cursor_position
+	set(value): settings.host.ai_3d_cursor_position = value
 var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
@@ -262,7 +282,9 @@ var _mesh_size: Vector2:
 	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
 	set(v):
 		if primary_screen: primary_screen.mesh_size = v
-var stream_fps: int = 60
+var stream_fps: int:
+	get: return settings.host.stream_fps
+	set(value): settings.host.stream_fps = value
 var _cached_sharpen: float = -1.0
 var _cached_blur_scale: float = -1.0
 # host_resolution is the actual WxH about to be (or last) requested from the
@@ -277,8 +299,12 @@ var host_resolution: Vector2i = Vector2i(1920, 1080)
 # width/height for hosts without one). Cached per-host in host_state.cfg so a
 # repeat connection can request the correctly-scaled resolution on the first
 # try instead of needing the mismatch-triggered reconnect every time.
-var native_resolution: Vector2i = Vector2i(1920, 1080)
-var resolution_scale_pct: int = 100
+var native_resolution: Vector2i:
+	get: return settings.host.native_resolution
+	set(value): settings.host.native_resolution = value
+var resolution_scale_pct: int:
+	get: return settings.host.resolution_scale_pct
+	set(value): settings.host.resolution_scale_pct = value
 const RESOLUTION_PRESETS: Array = [100, 90, 80, 70, 60, 50]
 # Kept around for state_manager.gd's old-save-file validation fallback; the UI
 # itself now uses compute_resolution_options() instead of this static list -
@@ -317,7 +343,9 @@ var device_is_quest3: bool = false
 # compute_requested_resolution() as a hard ceiling before any other cap.
 const QUEST2_MAX_RESOLUTION := Vector2i(1920, 1080)
 
-var is_polaris_host: bool = false
+var is_polaris_host: bool:
+	get: return settings.host.is_polaris_host
+	set(value): settings.host.is_polaris_host = value
 # The pre-percentage fixed-resolution picker, used for any non-Polaris host
 # (see is_polaris_host above) - the user picks what they actually want
 # instead of the client trying to detect anything, matching how Sunshine
@@ -325,7 +353,9 @@ var is_polaris_host: bool = false
 # caps in compute_max_resolution_pct() below - every entry here is well
 # under all of those caps on its own (largest is 3840x2160), so there's
 # nothing to filter for the single-screen case this picker is used for.
-var resolution_idx: int = 1
+var resolution_idx: int:
+	get: return settings.host.resolution_idx
+	set(value): settings.host.resolution_idx = value
 var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(2560, 1440), Vector2i(3840, 2160), Vector2i(1600, 1200), Vector2i(2560, 1080), Vector2i(3440, 1440)]
 # 21:9 split into two tiers (2026-08-20, GitHub issue #17) - was a single
 # 3440x1440 entry, which meant there was no way to request a 21:9 source at a
@@ -333,8 +363,12 @@ var resolutions: Array = [Vector2i(1280, 720), Vector2i(1920, 1080), Vector2i(25
 # already gets). 2560x1080 (UWFHD, 64:27) and 3440x1440 (UWQHD, 43:18) are
 # the two real, common ultrawide monitor resolutions - not arbitrary picks.
 var resolution_labels: Array = ["720", "HD", "2K", "4K", "4:3", "21:9 HD", "21:9 2K"]
-var double_h: bool = false
-var bitrate_idx: int = -1
+var double_h: bool:
+	get: return settings.host.double_h
+	set(value): settings.host.double_h = value
+var bitrate_idx: int:
+	get: return settings.host.bitrate_idx
+	set(value): settings.host.bitrate_idx = value
 var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
 var bitrate_labels: Array = ["Auto", "5", "10", "15", "20", "30", "40", "50", "60", "80", "100", "120"]
 var display_refresh_rate: float = 72.0

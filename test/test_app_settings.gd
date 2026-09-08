@@ -4,6 +4,7 @@ func _init():
 	_test_display_defaults()
 	_test_display_reset()
 	_test_general_defaults_and_reset()
+	_test_host_defaults()
 	print("All app_settings tests passed")
 	quit()
 
@@ -18,6 +19,26 @@ func _test_display_defaults() -> void:
 	assert(settings.gamma_pct == 100)
 	assert(settings.ambient_mode == 0)
 	assert(settings.ambient_color == 0)
+
+func _test_host_defaults() -> void:
+	var host := AppSettings.new().host
+	assert(host.stream_fps == 60)
+	assert(host.resolution_scale_pct == 100)
+	assert(host.native_resolution == Vector2i(1920, 1080))
+	assert(not host.is_polaris_host)
+	assert(host.resolution_idx == 1)
+	assert(host.bitrate_idx == -1)
+	assert(not host.double_h)
+	assert(host.sbs_mode == 0)
+	assert(host.ai_3d_model == 0)
+	assert(host.ai_3d_speed == 0)
+	assert(host.ai_3d_debug == 0)
+	assert(host.ai_3d_last_mode == 1)
+	assert(host.ai_3d_backend_pref == 2)
+	assert(host.ai_3d_hz_cap == 20)
+	assert(host.ai_3d_separation_pct == 100)
+	assert(host.ai_3d_convergence_pct == 50)
+	assert(host.ai_3d_cursor_position == 0)
 
 func _test_general_defaults_and_reset() -> void:
 	var settings := AppSettings.new()

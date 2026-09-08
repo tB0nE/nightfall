@@ -10,6 +10,8 @@ extends RefCounted
 
 const APP_STATE_VERSION := 1
 
+var host: HostSettings = HostSettings.new()
+
 const DEFAULT_BEZEL_ENABLED := true
 const DEFAULT_PASSTHROUGH_ENABLED := false
 const DEFAULT_BACKGROUND_MODE := 0
