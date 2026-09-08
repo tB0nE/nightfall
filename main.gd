@@ -3149,7 +3149,7 @@ func _create_contact_dot():
 	shared_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	shared_mat.albedo_color = Color(1, 1, 1, 0.2)
 	shared_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	shared_mat.render_priority = 200
+	shared_mat.render_priority = 127
 	shared_mat.no_depth_test = true
 
 	contact_dot = _make_contact_dot(shared_mat)

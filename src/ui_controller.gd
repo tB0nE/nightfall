@@ -1037,7 +1037,7 @@ func make_action_btn(text: String) -> Button:
 func _collect_buttons(node: Control, result: Array):
 	if node is Button:
 		var btn: Button = node
-		var norm = btn.get_meta("dual_hover_norm", null)
+		var norm = btn.get_meta("dual_hover_norm") if btn.has_meta("dual_hover_norm") else null
 		if norm == null:
 			norm = btn.get_theme_stylebox("normal")
 			btn.set_meta("dual_hover_norm", norm)
