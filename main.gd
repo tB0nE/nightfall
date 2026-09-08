@@ -290,10 +290,13 @@ var state_manager: StateManager
 var controller_mapper: ControllerMapper
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
+var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 
 var comp_cursor: Node3D = null
-var comp_ui: Node3D = null
-var comp_kb: Node3D = null
+var comp_ui: Node3D:
+	get: return composition_panels.ui_layer
+var comp_kb: Node3D:
+	get: return composition_panels.keyboard_layer
 var comp_cursor_viewport: SubViewport = null
 var left_comp_cursor_layer: Node3D = null
 var left_comp_cursor_viewport: SubViewport = null

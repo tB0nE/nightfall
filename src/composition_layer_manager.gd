@@ -995,26 +995,10 @@ func setup_background_equirect():
 	main.comp_bg_equirect.set_layer_viewport(main.comp_bg_capture_viewport)
 	main._log("[COMP] Environment-background equirect composition layer created")
 
-	main.comp_ui = OpenXRCompositionLayerQuad.new()
-	main.comp_ui.name = "CompUILayer"
-	main.comp_ui.set_sort_order(1000)
-	main.comp_ui.set_enable_hole_punch(false)
-	main.comp_ui.set_alpha_blend(true)
-	main.comp_ui.set_quad_size(main._ui_mesh_size)
-	main.comp_ui.visible = false
-	main.xr_origin.add_child(main.comp_ui)
-	main.comp_ui.set_layer_viewport(main.ui_viewport)
+	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport, main._ui_mesh_size)
 	main._log("[COMP] UI composition layer created")
 	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-		main.comp_kb = OpenXRCompositionLayerQuad.new()
-		main.comp_kb.name = "CompKBLayer"
-		main.comp_kb.set_sort_order(999)
-		main.comp_kb.set_enable_hole_punch(false)
-		main.comp_kb.set_alpha_blend(true)
-		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-		main.comp_kb.visible = false
-		main.xr_origin.add_child(main.comp_kb)
-		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")
 
 	# Cursor layers (2026-08-24) - previously created only for the non-GLES
@@ -1250,15 +1234,7 @@ func setup_background_equirect():
 	# double-creating (and leaking the first one's viewport/quad) now that
 	# cursor creation above runs unconditionally for both paths.
 	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-		main.comp_kb = OpenXRCompositionLayerQuad.new()
-		main.comp_kb.name = "CompKBLayer"
-		main.comp_kb.set_sort_order(999)
-		main.comp_kb.set_enable_hole_punch(false)
-		main.comp_kb.set_alpha_blend(true)
-		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-		main.comp_kb.visible = false
-		main.xr_origin.add_child(main.comp_kb)
-		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")
 
 	available = true
