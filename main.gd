@@ -57,7 +57,6 @@ var _available_apps: Array = []
 var _welcome_screen: String = "welcome"
 var _pair_pin: String = ""
 var _connecting_ip: String = ""
-var _auto_connect: bool = false
 # Whether the host is drawing its own cursor into the captured frame (Polaris-only:
 # a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
 # Support is detected per-connection from the launch response, not guessed up front,
@@ -1544,13 +1543,9 @@ func _update_comp_layer_size():
 	comp.update_layer_size()
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
-	_log("[NF] _on_stream_terminated: auto=" + str(_auto_connect) + " phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
+	_log("[NF] _on_stream_terminated: phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
 	if native_xr_renderer:
 		native_xr_renderer.deactivate(false)
-	if _auto_connect:
-		_auto_connect = false
-		session_lifecycle.stream_terminated(false, err_code)
-		return
 	if session_lifecycle.is_restarting():
 		session_lifecycle.stream_terminated(false, err_code)
 		_server_codec_support = {}
@@ -1686,7 +1681,7 @@ func _ready():
 	_init_post_xr()
 	_init_textures_and_ui()
 
-	if _auto_connect or settings.quick_start_enabled:
+	if settings.quick_start_enabled:
 		_try_auto_connect()
 
 	Input.joy_connection_changed.connect(func(device, connected):
@@ -2377,7 +2372,6 @@ func _try_auto_connect():
 				current_host_id = host_id
 				%IPInput.text = host_ip
 				_log("[AUTO-CONNECT] Auto-connecting to host_id=%d ip=%s" % [host_id, host_ip])
-				_auto_connect = false
 				await get_tree().create_timer(1.0).timeout
 				stream_manager.start_stream(host_id, _selected_app_id)
 
