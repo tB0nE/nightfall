@@ -193,9 +193,10 @@ What `build.sh` does:
 8. Cleans up `android/build/` and optionally installs via ADB
 
 The compatibility entry point delegates focused work to scripts under
-`tools/build_support/`: `package_android_models.sh` owns the Android model
-manifest, `deploy_android.sh` validates and installs an APK, and
-`extensions/nightfall-xr/build_android.sh` owns the native-XR extension build.
+`tools/build_support/`: `build_android.sh` and `build_linux.sh` own platform
+packaging, `package_android_models.sh` owns the Android model manifest, and
+`deploy_android.sh` validates and installs an APK. The native-XR extension keeps
+its own `extensions/nightfall-xr/build_android.sh` entry point.
 
 For Linux AppImage (`--appimage`):
 1. Builds Linux .so in Ubuntu 22.04 Docker container (glibc 2.35 compat, skips if .so already exists)
