@@ -3183,15 +3183,21 @@ func _setup_render_model_controllers():
 	if not ClassDB.class_exists("OpenXRFbRenderModel"):
 		_log("[CTRLMODEL] OpenXRFbRenderModel not available in this Godot build")
 		return
+	# Resolve the vendor enum through ClassDB so the project can still be parsed
+	# by a stock Godot editor when the optional vendor binary is not installed.
+	var right_model_type := ClassDB.class_get_integer_constant(
+		"OpenXRFbRenderModel", "MODEL_CONTROLLER_RIGHT")
+	var left_model_type := ClassDB.class_get_integer_constant(
+		"OpenXRFbRenderModel", "MODEL_CONTROLLER_LEFT")
 	right_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
 	right_render_model.name = "RightRenderModel"
-	right_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_RIGHT
+	right_render_model.render_model_type = right_model_type
 	xr_origin.add_child(right_render_model)
 	right_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(true))
 
 	left_render_model = ClassDB.instantiate("OpenXRFbRenderModel")
 	left_render_model.name = "LeftRenderModel"
-	left_render_model.render_model_type = OpenXRFbRenderModel.MODEL_CONTROLLER_LEFT
+	left_render_model.render_model_type = left_model_type
 	xr_origin.add_child(left_render_model)
 	left_render_model.openxr_fb_render_model_loaded.connect(_on_render_model_loaded.bind(false))
 	_log("[CTRLMODEL] OpenXRFbRenderModel nodes created, waiting on load signal")
