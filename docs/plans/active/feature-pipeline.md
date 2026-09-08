@@ -1,5 +1,7 @@
 # Feature Pipeline
 
+> Status: Active backlog
+
 Items on hold pending user testing and prioritization.
 
 ## 1. Zero-copy VAAPI Texture Import
@@ -15,7 +17,8 @@ Items on hold pending user testing and prioritization.
 ## 3. Sunshine Raw Frame Passthrough
 - **Impact**: For localhost/same-machine streaming; NV12 frames sent raw without HEVC encode/decode; eliminates generation loss
 - **Approach**: Custom Moonlight codec ID 0x80; Sunshine patch to send raw NV12; Nightfall receives and displays directly
-- **Blocker**: Requires patching Sunshine; see `.opencode/plans/sunshine-raw-frame-patch.md`
+- **Blocker**: Requires patching Sunshine; see
+  [`sunshine-raw-frame-passthrough.md`](sunshine-raw-frame-passthrough.md).
 
 ## 4. Per-eye Pointer
 - **Impact**: Pointer rendered at correct depth per eye in stereo modes

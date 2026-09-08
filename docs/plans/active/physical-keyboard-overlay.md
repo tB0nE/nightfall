@@ -1,5 +1,7 @@
 # Physical Keyboard Overlay Plan
 
+> Status: Active proposal
+
 ## Objective
 
 Add an optional Quest 3/3S feature that detects one real keyboard and places a

@@ -4,10 +4,10 @@
 
 # Nightfall
 
-**VR-first GameStream client for Meta Quest and Linux PCVR.**
+**Native OpenXR GameStream client for Meta Quest and Linux PCVR.**
 
-Stream your PC games into a virtual living room - repositionable screens, stereoscopic 3D,
-passthrough, and AI depth estimation, all built native on Godot 4.7 and OpenXR.
+Stream your PC games and desktop to a configurable screen in VR, with
+stereoscopic 3D, passthrough, ambient lighting, and real-time AI depth.
 
 [![Stars](https://img.shields.io/github/stars/tB0nE/nightfall?style=for-the-badge&color=7c73ff&labelColor=1a1a2e)](https://github.com/tB0nE/nightfall/stargazers)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge&color=4c5265&labelColor=1a1a2e)](LICENSE)
@@ -21,24 +21,31 @@ passthrough, and AI depth estimation, all built native on Godot 4.7 and OpenXR.
 
 ## Features
 
-- **VR-native streaming** - floating screen in 3D space with grab bars, corner resize, and curvature options
-- **HEVC hardware decoding** - NDK MediaCodec pipeline for low-latency H.265 on Quest 3/3S; VAAPI HEVC decode on Linux
-- **AI Stereoscopic 3D** - real-time AI depth conversion via MiDaS turns any 2D game into stereoscopic 3D, no server-side setup required (Quest only)
-- **SBS support** - Stretch and Crop modes for native side-by-side 3D content; quick-toggle via right thumbstick click
-- **Controller mapping** - PAD mode maps Quest controllers to an Xbox controller; KBM mode keeps the pointer for mouse aim while binding movement to WASD and actions to keyboard keys
-- **Virtual keyboard with trackpad** - floating keyboard for text input, plus an integrated trackpad for relative mouse control with trigger/grip for left/right click
-- **Head-angle-aware positioning** - screen, menu, and keyboard position relative to where you're looking; works standing, sitting, or lying down
-- **Shader smoothing & sharpening** - Gaussian blur plus CAS adaptive sharpening on the stream
-- **Flexible stream configuration** - resolution presets (720p–4K including 4:3 and 21:9), 30–120 FPS, auto or manual bitrate, auto display refresh rate matching
-- **Touch-style pointer** - laser pointer with trigger-to-click, grip for right-click, thumbstick scroll; circle or arrow cursor with optional steady mode
-- **Passthrough** - see your real room with the stream floating in front of you
-- **Curved screen** - toggle curvature from the menu; flat, slight curve, or full wrap with optional bezel
-- **Quest Touch Plus models** - real controller models instead of placeholder boxes (Quest only)
-- **Hand tracking** - navigate and interact without controllers using Quest hand tracking (Quest only)
-- **Linux PCVR** - AppImage release for WiVRn/Monado with passthrough, composition layers, and SBS support
-- **X11 local capture** - low-latency screen capture for streaming the Linux desktop to itself without a network
-- **Compatibility** - works with any GameStream-compatible server
-- **Ease of use** - pair and connect in seconds; AI 3D requires no additional server-side configuration
+- **AI stereoscopic 3D** - real-time depth conversion turns ordinary 2D games
+  into stereoscopic 3D without server-side processing. Android uses the fast,
+  mobile-optimized ZipDepth-384 GPU model; Linux retains its native selectable
+  depth models.
+- **SBS support** - Stretch and Crop modes for native side-by-side content,
+  with a quick toggle on the right thumbstick.
+- **Flexible stream configuration** - 720p through 4K presets, including 4:3
+  and 21:9, auto or manual bitrate, and stream rates from 30 to 207 FPS where
+  supported by the host, headset, and OpenXR runtime.
+- **Controller mapping** - PAD-HAND and PAD-ABXY gamepad layouts, plus a KBM
+  mode that maps Quest controls to mouse and keyboard input.
+- **VR-native display controls** - reposition, resize, curve, and recenter the
+  screen, with an independently controlled bezel.
+- **Virtual keyboard and trackpad** - type and control a relative mouse from a
+  floating VR panel.
+- **Hand tracking** - navigate and interact without controllers on supported
+  Meta Quest headsets.
+- **HDR streaming** - HDR10/PQ and HLG streams are tonemapped by the native
+  renderer on Quest.
+- **Ambient lighting** - a lightweight halo around the screen with Off,
+  Static, Slow, and Live modes. Static mode includes selectable colours.
+- **Linux PCVR** - WiVRn/Monado support with composition layers, SBS, native AI
+  depth, and same-machine local capture through PipeWire/Wayland or X11.
+- **GameStream compatibility** - connects to Sunshine, Apollo, Polaris, and
+  other compatible hosts.
 
 <div align="center">
 <img src="src/assets/nightfall_shot.png" width="720" alt="Nightfall running on Quest" />
@@ -46,17 +53,27 @@ passthrough, and AI depth estimation, all built native on Godot 4.7 and OpenXR.
 
 ## Why Nightfall
 
-There is no native Moonlight client on the Quest. Existing options like Moonlight Android and Artemis run as flat Android apps - they work inside a 2D window, not in XR/VR space. This means you can't use Quest-native features like stereoscopic SBS rendering, AI-powered 3D depth conversion, or passthrough while streaming. You're staring at a flat panel in a flat app, same as any phone screen.
+Nightfall was designed from scratch as a high-performance, highly customizable,
+VR-first GameStream client. It is built around a configurable OpenXR display
+rather than an Android window, with local AI depth conversion, SBS rendering,
+passthrough, ambient lighting, picture controls, and Linux PCVR support as
+first-class features.
 
-Nightfall is built from scratch as a native OpenXR application. The stream lives in 3D space - you can grab it, curve it, resize it, and place it wherever you want. AI depth estimation turns any 2D game into stereoscopic 3D in real-time, something flat clients simply cannot do because they don't have per-eye rendering access.
+The stream lives in 3D space: grab it, curve it, resize it, or place it wherever
+you want.
 
-Beyond gaming there is potential for Nightfall to become a useful streaming client for productivity too. With compatibility as it's strength, any server - Windows, Mac, or Linux - becomes a serious desktop streaming tool. Pull up your IDE, terminal, or browser on a massive virtual screen with passthrough so you can still see your desk.
+Nightfall is useful beyond gaming too. With compatibility as its strength, a
+Windows, macOS, or Linux host can become a large virtual desktop. Passthrough
+keeps your keyboard and desk visible while you work.
 
 ### Roadmap
 
-- **Wide mode for SBS** - when dynamic virtual desktop creation is supported, create a double-width desktop so SBS content renders at full per-eye resolution
-- **SBS auto-detection** - automatically detect side-by-side content and switch modes, then restore previous setting when SBS ends
-- **Server processing layer** - a companion app running on the Sunshine server that offloads processing from the headset, similar to WiVRn's architecture; potential for significant quality and performance gains
+- Port the Android optimizations to the Linux version
+- Multiple monitors (70% complete)
+- An improved version of ZipDepth optimized for sharper edges and widescreen ratios
+- Safely reintroduce 3D objects and environments without affecting performance
+- Resolve Vibepollo pairing issues
+- Improve hand tracking
 
 ## Usage and Requirements
 
@@ -69,6 +86,7 @@ Nightfall streams from any GameStream-compatible server on your local network:
 - **[Polaris](https://github.com/papi-ux/polaris)** - lightweight GameStream server for macOS and Linux
 
 Setup:
+
 1. Install and configure Sunshine on your PC
 2. Open the Sunshine web UI at `https://<your-pc-ip>:47990`
 3. Create a username and password
@@ -76,20 +94,35 @@ Setup:
 
 ### Client (Quest)
 
-1. Sideload Nightfall onto your Quest 3 or 3S (via SideQuest, ADB, or [Obtainium](https://github.com/ImranR98/Obtainium))
-2. Launch the app - you'll see the welcome screen
-3. Select a server from auto-discovered hosts, or press **Select Server** to enter an IP address manually
-4. Press **Connect** to pair and start the stream
-5. Enter the displayed PIN in your server's web UI
-6. The stream starts automatically
+Quest 3 and 3S are the primary development targets. Quest 2 is supported with a
+lower resolution ceiling and less performance headroom, particularly when AI
+3D and passthrough are enabled together.
+
+1. Download the Android APK from the [latest release](https://github.com/tB0nE/nightfall/releases/latest)
+2. Sideload it with SideQuest, ADB, or [Obtainium](https://github.com/ImranR98/Obtainium)
+3. Launch Nightfall to open the welcome screen
+4. Select an automatically discovered server, or press **Select Server** to enter an address manually
+5. Press **Connect**
+6. If this is the first connection, enter Nightfall's displayed PIN in the host's web interface
+7. The stream starts automatically after pairing
 
 ### Client (Linux PCVR)
 
-1. Download the `Nightfall-x86_64.AppImage` from the [latest release](https://github.com/tB0nE/nightfall/releases/latest)
-2. Ensure [WiVRn](https://github.com/WiVRn/WiVRn) is running on your PC with your headset connected
-3. Run `chmod +x Nightfall-x86_64.AppImage && ./Nightfall-x86_64.AppImage`
-4. The app launches into VR via WiVRn/Monado OpenXR runtime
-5. Controls and streaming work the same as Quest (AI 3D not available on Linux yet)
+The Linux client is supported in source, but **v0.7.8 does not include a Linux
+binary**. The application changed substantially during the native-renderer
+performance work and the Linux release needs another validation pass before a
+new AppImage is published.
+
+To build the current Linux client:
+
+1. Install and start [WiVRn](https://github.com/WiVRn/WiVRn) or another compatible Monado OpenXR setup
+2. Follow the Linux prerequisites in [BUILD.md](BUILD.md)
+3. Run `./build.sh --appimage`
+4. Start the generated `Nightfall-x86_64.AppImage`
+
+Linux supports the normal streaming controls, SBS, passthrough when exposed by
+the runtime, and native CPU AI-depth models. It does not use Android's
+ZipDepth/GPU or native GLES renderer paths.
 
 ### Controls
 
@@ -107,18 +140,32 @@ Setup:
 
 #### Controller Modes
 
-Toggle the controller mapper with **both thumbstick clicks** or the **Ctrl** button in the menu. Cycle between PAD and KBM with the **Type** button.
+Toggle controller mapping with **both thumbstick clicks** or the **Mapping**
+button in the Control tab. The **Device Mode** setting cycles through three
+layouts:
 
-**PAD mode** - Quest controllers emulate an Xbox controller:
+- **PAD-HAND** - the original gamepad layout, with face-button roles divided
+  between the left and right controllers.
+- **PAD-ABXY** - follows the physical A/B/X/Y labels; alternate mode changes
+  that hand's pair into D-pad directions.
+- **KBM** - keeps pointer control active and maps controller inputs to keyboard
+  and mouse actions.
+
+For the PAD modes:
+
 | Input | Action |
 |---|---|
-| **Thumbsticks** | Left/right stick |
-| **Triggers** | Left/right trigger |
-| **Grips** | Left/right bumper |
-| **A/B/X/Y** | Face buttons (D-pad when controllers near head) |
+| **Thumbsticks** | Xbox left/right sticks |
+| **Triggers** | Left/right triggers |
+| **Grips** | Left/right bumpers |
+| **Face buttons** | Xbox face buttons or D-pad, depending on layout and alternate mode |
 | **Menu buttons** | Start / Back |
 
-**KBM mode** - Mouse pointer stays active, buttons map to keyboard:
+**Alternate Mode** controls how the secondary face-button mapping is engaged:
+Head, Tilt, or None. **Primary Hand** can be Right, Left, or Auto.
+
+For the default KBM profile:
+
 | Input | Action |
 |---|---|
 | **Left thumbstick** | WASD movement |
@@ -131,6 +178,10 @@ Toggle the controller mapper with **both thumbstick clicks** or the **Ctrl** but
 | **Left menu** | Esc |
 | **Right menu** | Tab |
 | **Right thumbstick Y** | Scroll |
+
+The Control tab also provides Circle/Pointer cursor selection, Off/Low/High/One
+Euro cursor stabilization, Standard/Chord double-click behavior, and optional
+hand tracking.
 
 #### Keyboard Trackpad
 
@@ -154,37 +205,29 @@ See [BUILD.md](BUILD.md) for full build instructions including:
 - Linux binary and AppImage export
 - Quest deployment via ADB
 
+Architecture notes, active plans, research, and historical implementation
+documents are indexed in [docs/README.md](docs/README.md).
+
 Quick start (Android):
 
 ```bash
-# 1. Build the GDExtension
-cd addons/nightfall-stream
-cmake --preset android
-ninja -C build/android
+# Optimized APK
+./build.sh --release
 
-# 2. Export the APK
-./build.sh --debug
-
-# 3. Install to Quest
-adb install -r Nightfall-Android-arm64-v8a-debug.apk
+# Optimized APK and install to a connected headset
+./build.sh --release --install
 ```
 
 Quick start (Linux AppImage):
 
 ```bash
-# 1. Build the GDExtension
-cd addons/nightfall-stream
-VCPKG_ROOT=~/Development/Personal/vcpkg VCPKG_DEFAULT_TRIPLET=x64-linux \
-  cmake --preset linux -DCMAKE_BUILD_TYPE=Release
-ninja -C build/linux-release
-
-# 2. Export the AppImage
 ./build.sh --appimage
 ```
 
 > [!WARNING]
-> Always use cmake + ninja to build the GDExtension. Manual clang++ compilation produces `.so` files
-> that depend on `libc++_shared.so`, which isn't in the APK and causes `UnsatisfiedLinkError` crashes.
+> Quest release builds require Nightfall's patched Godot Android templates and
+> matching native-XR bindings. Follow [BUILD.md](BUILD.md) before building from
+> a fresh checkout. Do not compile either GDExtension manually with `clang++`.
 
 ## Donate
 

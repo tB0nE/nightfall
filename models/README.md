@@ -76,7 +76,7 @@ for the exact invocation. Produces both the 196 and 252 sizes.
 
 Has a real conversion script: `tools/convert_zipdepth.py`. The complete Quest
 GPU investigation and reusable model-porting guidance are in
-[`doc/zipdepth-quest-gpu.md`](../doc/zipdepth-quest-gpu.md).
+[`docs/guides/zipdepth-quest-gpu.md`](../docs/guides/zipdepth-quest-gpu.md).
 [ZipDepth](https://github.com/fabiotosi92/ZipDepth)
 (ECCV 2026, MIT) is a 6.1M-param pure-CNN (RepVGG blocks + Strip Pooling/SE/
 Global-Context attention, convex-upsampling FPN decoder) distilled from Depth

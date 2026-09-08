@@ -318,7 +318,11 @@ Run identical stream/filter settings across: (1) passthrough off + layer alpha o
 - **FFmpeg decoder configuration**: already sensible — `AV_CODEC_FLAG_LOW_DELAY` and `AV_CODEC_FLAG2_FAST` are set (`ffmpeg_decoder.cpp:129-133`) with thread count = cores−1 for software decode (`:162-171`).
 - **Audio pipeline**: Opus → miniaudio with an SPSC ring buffer (`src/audio/`); small fixed cost, not examined further.
 - **Background starfield particles**: `visible = false` outside the background-effect mode and capped at `fixed_fps = 30` (`main.gd:1815-1824`).
-- **The old "YUV SubViewport then mesh shader" doc** (`doc/4k-performance-optimization.md`) is partly stale for the comp-layer path: current code binds Y/UV textures into the display shader and disables `stream_viewport` in comp mode. The full-resolution-SubViewport concern survives, amended by F3 (the viewport is actually fixed 1080p).
+- **The old "YUV SubViewport then mesh shader" doc**
+  (`../plans/4k-performance-optimization.md`) is partly stale for the comp-layer
+  path: current code binds Y/UV textures into the display shader and disables
+  `stream_viewport` in comp mode. The full-resolution-SubViewport concern
+  survives, amended by F3 (the viewport is actually fixed 1080p).
 
 ## Recommended roadmap
 
@@ -364,6 +368,6 @@ If, after Phase 0-1, 4K+passthrough is still over budget, treat it as a Phase-3 
 
 ## Useful files and artifacts
 
-- Existing repo doc: `doc/4k-performance-optimization.md` (partly stale; see above)
-- This analysis: `doc/performance-hypotheses-2026-07-08-fable.md`
+- Existing archived plan: `../plans/4k-performance-optimization.md` (partly stale; see above)
+- This analysis: `docs/archive/investigations/performance-hypotheses-2026-07-08.md`
 - Relevant commits: `d6cba05` (frame pacing added), `1132efd` (frame pacing removed, 2026-06-12)
