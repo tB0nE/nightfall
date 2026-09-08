@@ -300,7 +300,12 @@ Both Android presets can coexist on the same device since they use different pac
 Run the pure GDScript layout and preset tests with:
 
 ```bash
+test/check_gdscript_parse.sh
 test/run_gdscript_tests.sh
+test/run_native_unit_tests.sh
+tools/quality/check_shell_scripts.sh
+python3 tools/quality/check_markdown_links.py
+python3 tools/quality/check_generated_files.py
 ```
 
 The runner isolates `user://` data under `/tmp`, supplies a writable log path,
@@ -308,7 +313,11 @@ and treats GDScript assertion messages as failures even when Godot exits with
 status zero. Set `NIGHTFALL_GODOT_EDITOR` if Godot 4.7 is installed elsewhere.
 
 Native desktop tests are built through CMake/CTest in
-`addons/nightfall-stream` when `BUILD_TESTING` is enabled.
+`addons/nightfall-stream` when `BUILD_TESTING` is enabled. The lightweight
+native runner above builds the decode-queue unit test directly against the
+installed FFmpeg development libraries. GitHub Actions runs these checks on
+pull requests and pushes to `main`; the patched-engine and complete APK builds
+remain explicit release checks because they are too large for every change.
 
 ## Key Architecture Notes
 
