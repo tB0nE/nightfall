@@ -11,9 +11,8 @@ another field directly to `main.gd`.
 - `ScreenLayout`, `VRScreen`, and monitor preset types continue to own structured
   monitor layout and placement data.
 
-`main.gd` temporarily exposes compatibility properties for code that has not yet
-been migrated. Those properties delegate to `AppSettings`; they must not gain
-independent defaults or storage.
+Runtime modules and `main.gd` read these typed stores directly. Setting values
+must not be mirrored as independent fields on the application coordinator.
 
 ## Platform policy
 
@@ -43,9 +42,8 @@ at runtime. AI 3D rearranges controls under Android policy, while Monitors mixes
 option, action, and generated preset controls; the uniform tabs should remain in
 the declarative schema.
 
-## Migration order
+## Next boundary
 
-1. Replace remaining `main.gd` compatibility properties with direct typed-store
-   dependencies.
-2. Move runtime setting effects behind narrower module APIs where they still
-   reach through `main`.
+Move runtime setting effects behind narrower module APIs where they still reach
+through `main`. The typed store remains data-only while those APIs own side
+effects.

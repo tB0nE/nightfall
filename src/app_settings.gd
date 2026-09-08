@@ -5,8 +5,7 @@ extends RefCounted
 ##
 ## Runtime controllers may react to these values, but this object deliberately
 ## owns no UI nodes, renderer objects, persistence paths, or platform checks.
-## Settings are moving here one group at a time so existing behavior can remain
-## stable while main.gd compatibility properties are retired gradually.
+## Runtime code reads this store directly; main.gd does not mirror these values.
 
 const APP_STATE_VERSION := 1
 
