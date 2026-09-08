@@ -27,6 +27,7 @@ tests=(
 	"test/test_performance_telemetry.gd"
 	"test/test_session_lifecycle.gd"
 	"test/test_monitor_grid.gd"
+	"test/test_screen_registry.gd"
 	"test/test_screen_layout.gd"
 	"test/test_monitor_presets.gd"
 )

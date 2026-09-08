@@ -56,7 +56,8 @@ behavioral refactors should be separate commits or pull requests.
 ### 4. Application lifecycle
 
 > Status: In progress on `refactor/session-lifecycle`. Connection intent, media
-> activity, timeout state, and performance sampling now have explicit owners.
+> activity, timeout state, performance sampling, and the active-screen registry
+> now have explicit owners.
 
 - Model boot, server selection, connecting, streaming, reconnecting, failed,
   and disconnecting as explicit states.

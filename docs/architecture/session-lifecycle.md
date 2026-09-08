@@ -44,3 +44,12 @@ native performance windows. It is data-only: `main.gd` still decides when to
 consume decoder frames, while composition and native-XR modules still present the
 resulting overlay. This keeps counters and timing state out of the application
 coordinator without coupling telemetry to a renderer.
+
+## Screen registry
+
+`ScreenRegistry` owns the active-screen collection, its four-screen limit, and
+which registered screen is primary. `main.gd` still creates and destroys scene
+nodes and renderer resources; the registry deliberately contains no OpenXR or
+composition-layer behavior. Read-only compatibility properties on `main.gd`
+keep existing rendering consumers stable while their dependencies are narrowed
+in later phases.

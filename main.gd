@@ -256,8 +256,11 @@ var corner_handles: Array:
 var grabbed_corner_idx: int = -1
 var grabbed_corner_screen: VRScreen = null
 var corner_anchor_world: Vector3 = Vector3.ZERO
-var screens: Array[VRScreen] = []
-var primary_screen: VRScreen = null
+var screen_registry: ScreenRegistry = ScreenRegistry.new()
+var screens: Array[VRScreen]:
+	get: return screen_registry.screens
+var primary_screen: VRScreen:
+	get: return screen_registry.primary
 var layout: ScreenLayout = null
 
 # Staging state for the Monitors tab's Row1 (counts) + Row2 (preset) - Apply
@@ -1793,8 +1796,7 @@ func _init_ui():
 	virtual_keyboard.build()
 
 	screen_mesh.setup(self, &"m0")
-	screens = [screen_mesh]
-	primary_screen = screen_mesh
+	screen_registry.initialize(screen_mesh)
 	primary_screen.grid_pos = Vector2i(3, 1)
 	layout = ScreenLayout.single(Vector2i(1920, 1080))
 	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
@@ -1813,7 +1815,7 @@ func _init_ui():
 	ui_controller.refresh_ui_buttons()
 
 const VR_SCREEN_SCENE := preload("res://src/vr_screen.tscn")
-const MAX_SCREENS := 4
+const MAX_SCREENS := ScreenRegistry.MAX_SCREENS
 # Gap between adjacent screen edges, in meters. Shared with MonitorGrid so
 # grid-mode spacing and add_screen()'s free-placement spacing can't drift apart.
 const SCREEN_GAP := 0.05
@@ -1954,7 +1956,7 @@ func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, a
 	return best
 
 func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
-	if screens.size() >= MAX_SCREENS:
+	if not screen_registry.can_add():
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
 	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
@@ -2041,7 +2043,10 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 			if stream_size.x > 0 and stream_size.y > 0:
 				s.comp_viewport.size = stream_size
 				s.comp_base_size = stream_size
-	screens.append(s)
+	if not screen_registry.add(s):
+		push_error("Screen registry rejected prepared screen %s" % String(monitor_id))
+		s.queue_free()
+		return null
 	_log("[SCREEN] Added screen %s (total=%d)" % [String(monitor_id), screens.size()])
 	if comp.available and comp.in_use and s.comp_cylinder:
 		s.comp_cylinder.visible = true
@@ -2067,7 +2072,8 @@ func remove_screen(monitor_id: StringName) -> void:
 			if s == primary_screen:
 				_log("[SCREEN] Refusing to remove the primary screen %s" % String(monitor_id))
 				return
-			screens.remove_at(i)
+			if not screen_registry.remove(s):
+				return
 			if comp.available:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
@@ -2889,7 +2895,8 @@ func set_primary_screen(s: VRScreen) -> void:
 	var world_transforms := {}
 	for p in panels:
 		world_transforms[p] = p.global_transform
-	primary_screen = s
+	if not screen_registry.set_primary(s):
+		return
 	for p in panels:
 		p.global_transform = world_transforms[p]
 		if p == ui_panel_3d:
