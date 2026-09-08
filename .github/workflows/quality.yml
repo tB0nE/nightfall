@@ -1,0 +1,54 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repository:
+    name: Repository checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell scripts
+        run: tools/quality/check_shell_scripts.sh
+      - name: Check Markdown links
+        run: python3 tools/quality/check_markdown_links.py
+      - name: Check generated files
+        run: python3 tools/quality/check_generated_files.py
+
+  gdscript:
+    name: GDScript
+    runs-on: ubuntu-24.04
+    env:
+      GODOT_ARCHIVE_SHA256: 0b1a6c54c2c619c12e169fe9241edda4b81080b519451cec2984bf0d2c6cb73c
+      GODOT_URL: https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_linux.x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - name: Download pinned Godot
+        run: |
+          curl --fail --location --output godot.zip "$GODOT_URL"
+          echo "$GODOT_ARCHIVE_SHA256  godot.zip" | sha256sum --check
+          unzip -q godot.zip -d .ci-godot
+          chmod +x .ci-godot/Godot_v4.7-stable_linux.x86_64
+          echo "NIGHTFALL_GODOT_EDITOR=$PWD/.ci-godot/Godot_v4.7-stable_linux.x86_64" >> "$GITHUB_ENV"
+      - name: Parse GDScript
+        run: test/check_gdscript_parse.sh
+      - name: Run GDScript tests
+        run: test/run_gdscript_tests.sh
+
+  native-unit:
+    name: Native unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install compiler and FFmpeg headers
+        run: sudo apt-get update && sudo apt-get install --yes g++ pkg-config libavcodec-dev libavutil-dev
+      - name: Run native unit tests
+        run: test/run_native_unit_tests.sh

@@ -102,54 +102,66 @@ The Picture tab's Runtime sharpening modes also remain on this path and use
 `XR_FB_composition_layer_settings`; percentage-based shader sharpening retains
 the legacy fallback path for comparison and unsupported runtimes.
 
-`build.sh` builds this extension automatically for Android. Its build needs a
-`godot-cpp` checkout generated from the matching patched engine's extension API
-(default `/tmp/godot-cpp-custom`) and the matching engine source (default
-`/tmp/nightfall-godot-sharpen`). Override these with
-`NIGHTFALL_GODOT_CPP`/`NIGHTFALL_GODOT_SOURCE` when necessary. To build it
-directly:
+`build.sh` builds this extension automatically for Android. Prepare its pinned
+toolchain once from the project root:
 
 ```bash
+tools/build_support/bootstrap_native_xr.sh
+```
+
+The bootstrap clones immutable Godot and godot-cpp commits, applies all four
+patches in order, builds a patched editor, generates matching OpenXR-aware C++
+bindings, and builds both Android runtime variants. The output persists in the
+ignored `.build-cache/native-xr/` directory instead of `/tmp`, so a reboot or
+temporary-file cleanup does not break the next APK build. Use
+`--sources-only` to validate the pinned revisions and patch set without doing
+the long compilation.
+
+The inputs are recorded in
+`tools/build_support/native_xr_versions.sh`. The current pins are Godot
+`5b4e0cb0fd279832bbdd69fed5354d4e5ad26f88` (4.7 stable), godot-cpp
+`05057de73de4b99f114d36c40d84ca46926c0e25`, and Android NDK
+`29.0.14206865`. Set `ANDROID_HOME` if the SDK is not in the default location.
+The cache root and individual source trees can be overridden with
+`NIGHTFALL_NATIVE_XR_CACHE`, `NIGHTFALL_GODOT_SOURCE`, and
+`NIGHTFALL_GODOT_CPP`.
+
+`build.sh` finds an editor named `godot` on `PATH` and otherwise retains the
+historical local default. Override it with `NIGHTFALL_GODOT_EDITOR`. Export
+templates are read from the standard XDG Godot data directory; use
+`NIGHTFALL_GODOT_TEMPLATE_DIR` or `NIGHTFALL_ANDROID_SOURCE_TEMPLATE` for a
+different installation. `NIGHTFALL_JAVA_HOME` selects JDK 17 when `JAVA_HOME`
+is not already set.
+
+To rebuild only the extension after bootstrapping:
+
+```bash
+extensions/nightfall-xr/build_android.sh debug
 extensions/nightfall-xr/build_android.sh release
 ```
 
-The patched editor is used to generate the custom `godot-cpp` API, but APK
-export uses the official 4.7 stable editor by default so its version matches
-the installed `4.7.stable` template metadata. The Android runtime library
-inside that template remains the patched engine. Set `NIGHTFALL_GODOT_EDITOR`
-only when exporting against a differently-versioned template set.
+Debug and release builds now use matching godot-cpp and GDExtension targets.
+The patched editor is only used to generate the custom bindings. APK export
+continues to use the official 4.7 stable editor and `android_source.zip`, then
+`build.sh` injects the matching cached patched runtime into the extracted
+project.
 
 ### Patched Godot Engine (Quest only)
 
 The Quest build uses a custom Godot engine. Its patches provide Vulkan Android Hardware Buffer (AHB) import support, projectionless OpenXR lifecycle support, and per-layer compositor filtering through `XR_FB_composition_layer_settings`. The compositor-filter patch exposes supersampling and sharpening controls on Godot's quad/cylinder composition-layer nodes; Nightfall uses the sharpening modes while retaining its shader implementation as a fallback.
 
-**You must build BOTH debug and release templates** and place them in the export templates directory. Without the release template, the release APK will silently fall back to the unpatched engine and show a black screen.
+The bootstrap command above is the supported way to create the patched engine.
+For reference, it applies these source-controlled patches to the pinned Godot
+commit:
 
-```bash
-# Clone Godot 4.7 and apply the patch
-git clone -b 4.7 https://github.com/godotengine/godot.git /tmp/godot
-cd /tmp/godot
-git apply /path/to/moonlight-quest/patches/godot-4.7-ahb.patch
-git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless.patch
-git apply /path/to/moonlight-quest/patches/godot-4.7-projectionless-lifecycle.patch
-git apply /path/to/moonlight-quest/patches/godot-4.7-compositor-filter.patch
+- `godot-4.7-ahb.patch`
+- `godot-4.7-projectionless.patch`
+- `godot-4.7-projectionless-lifecycle.patch`
+- `godot-4.7-compositor-filter.patch`
 
-# Build debug template
-scons platform=android target=template_debug arch=arm64 -j$(nproc)
-cp bin/libgodot.android.template_debug.arm64.so \
-   ~/.local/share/godot/export_templates/4.7.stable/android_debug_arm64.so
-
-# Build release template
-scons platform=android target=template_release arch=arm64 -j$(nproc)
-cp platform/android/java/lib/libs/release/arm64-v8a/libgodot_android.so \
-   ~/.local/share/godot/export_templates/4.7.stable/android_release_arm64.so
-```
-
-> **Note**: The release template output is moved by scons to `platform/android/java/lib/libs/release/arm64-v8a/` — copy it from there, not from `bin/`.
-
-> **Note**: `build.sh` also copies the patched `.so` (from `addons/nightfall-stream/bin/android/libgodot_android.so`) into the extracted Gradle project during export as a safety net. Keep this file in sync with the template.
-
-The required Android SDK/NDK paths are auto-detected if `ANDROID_HOME` is configured in the Godot editor settings (stored in `~/.config/godot/editor_settings-4.7.tres`).
+`build.sh` refuses to package an APK if the expected patched runtime is absent;
+it no longer silently falls back to a stock runtime. An externally managed
+runtime can be selected explicitly with `NIGHTFALL_GODOT_ANDROID_RUNTIME`.
 
 ## 2. Export the APK
 
@@ -171,31 +183,36 @@ The `build.sh` script handles everything:
 ```
 
 What `build.sh` does:
-1. Wipes `android/build/` and extracts Godot Android template
-2. Copies `GodotApp.java` and `DepthEstimator.java`
-3. Copies TFLite models from `models/` to assets (see `models/README.md`)
-4. Patches `build.gradle` with LiteRT 1.4.2 and Nightfall's GPU AAR
-5. Copies Meta OpenXR vendor plugin AAR
-6. Exports APK via Godot headless
-7. Cleans up `android/build/` (prevents Godot editor duplicate class errors)
-8. Optionally installs via ADB
+1. Builds the matching debug or release native OpenXR extension
+2. Verifies and injects the cached patched Godot runtime
+3. Wipes `android/build/` and extracts the Godot Android source template
+4. Copies `GodotApp.java`, `DepthEstimator.java`, and stages the selected TFLite model
+5. Verifies the custom LiteRT AAR checksum and patches the Gradle dependencies
+6. Copies the Meta OpenXR vendor plugin AAR
+7. Exports the APK via Godot headless
+8. Cleans up `android/build/` and optionally installs via ADB
+
+The compatibility entry point delegates focused work to scripts under
+`tools/build_support/`: `build_android.sh` and `build_linux.sh` own platform
+packaging, `package_android_models.sh` owns the Android model manifest, and
+`deploy_android.sh` validates and installs an APK. The native-XR extension keeps
+its own `extensions/nightfall-xr/build_android.sh` entry point.
 
 For Linux AppImage (`--appimage`):
 1. Builds Linux .so in Ubuntu 22.04 Docker container (glibc 2.35 compat, skips if .so already exists)
 2. Exports PCK via Godot headless (using Android preset workaround)
-2. Assembles Linux binary from release template + PCK
-3. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
-4. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
+3. Assembles Linux binary from release template + PCK
+4. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
+5. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
 
 ### Depth models
 
-`build.sh` bundles a set of `.tflite` depth-estimation models from `models/` into
-both the Android APK and the Linux binary - none of them are committed to git
-(`.gitignore`'s `/models/*.tflite`), so you need them present locally before
-building. See **`models/README.md`** for the full manifest (every file `build.sh`
-needs, its size, and how to obtain/convert it) - `build.sh` will fail with a
-missing-file error if one isn't there rather than silently shipping an incomplete
-build.
+Android bundles only ZipDepth-384-GPU. Linux bundles its existing MiDaS-256,
+MiDaS-192, and Depth Anything V2-252 models. The `.tflite` files come from
+`models/` and are not committed (`.gitignore`'s `/models/*.tflite`), so the
+platform-specific files must exist locally before building. See
+**`models/README.md`** for the full manifest and acquisition/conversion notes;
+the packaging scripts fail instead of silently shipping a missing model.
 
 Depth Anything V2 and ZipDepth have reproducible conversion scripts (see
 `models/README.md`):
@@ -288,7 +305,12 @@ Both Android presets can coexist on the same device since they use different pac
 Run the pure GDScript layout and preset tests with:
 
 ```bash
+test/check_gdscript_parse.sh
 test/run_gdscript_tests.sh
+test/run_native_unit_tests.sh
+tools/quality/check_shell_scripts.sh
+python3 tools/quality/check_markdown_links.py
+python3 tools/quality/check_generated_files.py
 ```
 
 The runner isolates `user://` data under `/tmp`, supplies a writable log path,
@@ -296,7 +318,11 @@ and treats GDScript assertion messages as failures even when Godot exits with
 status zero. Set `NIGHTFALL_GODOT_EDITOR` if Godot 4.7 is installed elsewhere.
 
 Native desktop tests are built through CMake/CTest in
-`addons/nightfall-stream` when `BUILD_TESTING` is enabled.
+`addons/nightfall-stream` when `BUILD_TESTING` is enabled. The lightweight
+native runner above builds the decode-queue unit test directly against the
+installed FFmpeg development libraries. GitHub Actions runs these checks on
+pull requests and pushes to `main`; the patched-engine and complete APK builds
+remain explicit release checks because they are too large for every change.
 
 ## Key Architecture Notes
 

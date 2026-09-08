@@ -19,15 +19,26 @@ frame loop.
 
 ## Build requirements
 
-- The patched Godot source tree, defaulting to
-  `/tmp/nightfall-godot-sharpen`.
-- A matching `godot-cpp` tree generated from that engine's extension API,
-  defaulting to `/tmp/godot-cpp-custom`.
-- Android NDK 29, defaulting to the SDK path used by `build.sh`.
+- The pinned patched Godot source tree.
+- A pinned `godot-cpp` tree generated from that engine's extension API.
+- Android NDK 29.0.14206865.
 
-Build the release library with:
+Create all of these persistent inputs from the project root with:
 
 ```bash
+tools/build_support/bootstrap_native_xr.sh
+```
+
+The generated sources, bindings, and Android runtimes live under the ignored
+`.build-cache/native-xr/` directory. Upstream commits and the NDK version are
+recorded in `tools/build_support/native_xr_versions.sh`; no native-XR build
+input defaults to `/tmp`. Set `ANDROID_HOME` when the Android SDK is installed
+outside the default path.
+
+Build an individual extension variant with:
+
+```bash
+extensions/nightfall-xr/build_android.sh debug
 extensions/nightfall-xr/build_android.sh release
 ```
 
@@ -37,7 +48,9 @@ build directories are intentionally ignored by Git. The small
 like the existing nightfall-stream descriptor) so a fresh checkout knows which
 library to package.
 
-`build.sh --release` builds this extension automatically before exporting the
-APK. The app retains the original Godot renderer as a runtime fallback for
-Linux, multiple monitors, diagnostic depth modes, optional picture filters,
-and `--nf-legacy-video`.
+`build.sh --debug` and `build.sh --release` build the matching extension
+variant automatically before exporting the APK. Packaging fails if the
+matching patched Godot runtime is unavailable, preventing accidental stock
+engine builds. The app retains the original Godot renderer as a runtime
+fallback for Linux, multiple monitors, diagnostic depth modes, optional
+picture filters, and `--nf-legacy-video`.

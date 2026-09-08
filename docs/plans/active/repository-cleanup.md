@@ -30,6 +30,8 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 2. Reproducible builds and basic CI
 
+> Status: Implemented on `build/reproducible-native-xr`; pending review/merge.
+
 - Keep `build.sh` as a compatibility entry point while extracting focused
   Android, Linux, native-XR, model-packaging, and deployment scripts.
 - Pin the custom Godot checkout and generated bindings; rebuild them outside

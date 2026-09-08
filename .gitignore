@@ -92,5 +92,6 @@ Nightfall-Linux.pck
 Nightfall.AppDir/
 /depth_models/
 /.linux-build-cache/
+/.build-cache/
 /tmp/nf_deps/
 /log.txt

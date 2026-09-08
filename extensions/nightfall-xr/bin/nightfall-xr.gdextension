@@ -6,5 +6,5 @@ reloadable = true
 
 [libraries]
 
-android.arm64.single.debug = "./android/libnightfall-xr.android.template_release.arm64.so"
+android.arm64.single.debug = "./android/libnightfall-xr.android.template_debug.arm64.so"
 android.arm64.single.release = "./android/libnightfall-xr.android.template_release.arm64.so"
