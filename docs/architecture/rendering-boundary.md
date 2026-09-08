@@ -7,10 +7,10 @@ Nightfall currently supports three video presentation paths:
   as the Android fallback;
 - the native Android OpenXR renderer, used for eligible single-screen streams.
 
-`CompositionLayerManager` still coordinates the legacy video path while
-`NativeXrRendererManager` owns the native swapchain and frame submission. Phase
-5 will put path selection behind one renderer-facing contract before changing
-either implementation's resource lifetime.
+`VideoPresentation` is the renderer-facing selection contract. It resolves mesh,
+legacy mono, legacy stereo, and native paths, then delegates transitions and
+per-frame work to `CompositionLayerManager` or `NativeXrRendererManager`.
+Resource allocation and teardown remain inside those implementations.
 
 ## Composition overlays
 

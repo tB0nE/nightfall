@@ -383,8 +383,8 @@ func resize_stream_viewport(w: int, h: int):
 	# second time. Legacy-only configurations still use the normal path below.
 	var preserve_legacy_composition: bool = (
 		main.session_lifecycle.is_restarting()
-		and main.native_xr_renderer != null
-		and main.native_xr_renderer.can_render_current_config()
+		and main.video_presentation != null
+		and main.video_presentation.can_render_native()
 	)
 	current_stream_size = stream_size
 	if not preserve_legacy_composition and main.stream_viewport.size != stream_size:

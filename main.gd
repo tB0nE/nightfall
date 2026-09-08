@@ -282,6 +282,7 @@ var ui_controller: UIController
 var auto_detect: AutoDetect
 var depth_estimator: DepthEstimatorModule
 var native_xr_renderer: NativeXrRendererManager
+var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
 var screen_manager: ScreenManager
@@ -813,6 +814,7 @@ func _flush_log():
 
 func _setup_comp_layer():
 	comp = CompositionLayerManager.new(self)
+	video_presentation.set_legacy_renderer(comp)
 	comp.setup()
 
 func _update_comp_bezel():
@@ -987,7 +989,7 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing and not (native_xr_renderer and native_xr_renderer.active)
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing and not video_presentation.is_native_active()
 		if on_screen and (pad_on_screen or tp_capturing):
 			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
@@ -1065,7 +1067,7 @@ func _update_cursor_layer():
 			# layer in world space. Convert the legacy branch's exact pixel offset
 			# into screen metres so Left/Default/Right remain resolution-independent.
 			var native_ai_cursor_offset := Vector3.ZERO
-			if on_screen and stereo >= 3 and native_xr_renderer and native_xr_renderer.active and hovered_screen:
+			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen:
 				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
 				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
 				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
@@ -1095,7 +1097,7 @@ func _update_cursor_layer():
 				# viewport, so its separate cursor quad used a deliberately square
 				# fallback. The native video path exposes this 40x64 pointer quad;
 				# preserve that texture's natural aspect ratio.
-				var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+				var native_screen_cursor := video_presentation.is_native_active()
 				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale) if native_screen_cursor or RenderingServer.get_current_rendering_method() != "gl_compatibility" else Vector2(0.064 * dist_scale, 0.064 * dist_scale)
 				comp_cursor.set_quad_size(cursor_quad_size)
 				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
@@ -1550,8 +1552,8 @@ func _update_comp_layer_size():
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
 	_log("[NF] _on_stream_terminated: phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
-	if native_xr_renderer:
-		native_xr_renderer.deactivate(false)
+	if video_presentation:
+		video_presentation.deactivate_native(false)
 	if session_lifecycle.is_restarting():
 		session_lifecycle.stream_terminated(false, err_code)
 		_server_codec_support = {}
@@ -1674,8 +1676,7 @@ func _ready():
 		return
 
 	_init_xr(interface)
-	if native_xr_renderer:
-		native_xr_renderer.setup()
+	video_presentation.setup_native()
 	# Composition providers must be registered before the OpenXR session starts.
 	# Only after registration may the refresh transition settle before layer and
 	# stream swapchains are allocated.
@@ -1715,6 +1716,7 @@ func _init_modules():
 	auto_detect = AutoDetect.new(self)
 	depth_estimator = DepthEstimatorModule.new(self)
 	native_xr_renderer = NativeXrRendererManager.new(self)
+	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
@@ -2699,8 +2701,8 @@ func _process_stats(delta):
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
 	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
-	if native_xr_renderer:
-		native_xr_renderer.process_frame(new_video_frame)
+	if video_presentation:
+		video_presentation.process_frame(new_video_frame)
 	var frame_sample := telemetry.record_frame(delta, new_video_frame)
 	if not frame_sample.is_empty():
 		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
@@ -2729,11 +2731,10 @@ func toggle_performance_overlay():
 	# display paths - showing both at once (observed 2026-09-04 as one flat
 	# + one bent-along-the-curved-screen overlay) means whichever path isn't
 	# actually presenting is still drawing a stale/mispositioned copy.
-	var native_active := native_xr_renderer != null and native_xr_renderer.active
+	var native_active := video_presentation.is_native_active()
 	if comp:
 		comp.set_stats_visible(settings.performance_overlay_enabled and is_streaming and not native_active)
-	if native_xr_renderer:
-		native_xr_renderer.set_stats_visible(settings.performance_overlay_enabled and is_streaming)
+	video_presentation.set_stats_visible(settings.performance_overlay_enabled and is_streaming)
 	if ui_controller:
 		ui_controller.update_stats_btn_state()
 	if state_manager:
@@ -2789,7 +2790,7 @@ func _process_performance_overlay(delta: float):
 	# buffer directly. Godot exposes no equivalent GPU timestamp to script;
 	# retain the same field explicitly as unavailable rather than substituting
 	# CPU frame time and creating a misleading comparison.
-	var native_warp_ms := native_xr_renderer.get_warp_gpu_ms() if native_xr_renderer else 0.0
+	var native_warp_ms := video_presentation.get_warp_gpu_ms()
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
@@ -2797,8 +2798,7 @@ func _process_performance_overlay(delta: float):
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))
-	if native_xr_renderer:
-		native_xr_renderer.request_stats_overlay_update()
+	video_presentation.request_stats_overlay_update()
 	_log("[PERF] %dx%d stream=%.1f incoming=%.1f render=%.1f lost=%.2f%% queue_drops=%d queued=%d rtt=%dms decode=%.2fms depth=%.2fms" % [
 		width, height, total_fps, incoming_fps, rendering_fps, lost_pct,
 		decoder_queue_drops, decoder_queue_size,
@@ -2818,8 +2818,7 @@ func _process_idle_timeout():
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
-		if native_xr_renderer:
-			native_xr_renderer.shutdown()
+		video_presentation.shutdown()
 
 func _input(event):
 	input_handler.handle_input(event)
@@ -2963,7 +2962,7 @@ func _sync_interaction_viewports():
 	# Native video does not embed the pointer in a Godot video viewport, so
 	# its independently composited cursor texture must keep updating even
 	# while the menu and keyboard are hidden.
-	var native_screen_cursor := native_xr_renderer != null and native_xr_renderer.active
+	var native_screen_cursor := video_presentation.is_native_active()
 	_set_viewport_active(comp_cursor_viewport, panel_visible or native_screen_cursor)
 	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
 

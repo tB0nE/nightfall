@@ -107,7 +107,7 @@ func cycle_curvature():
 	# frozen right after a curvature change. Native's own _sync_geometry()
 	# already re-syncs curvature into its layer every frame regardless, so
 	# this call is only ever needed when legacy is genuinely presenting.
-	var native_active = main.native_xr_renderer != null and main.native_xr_renderer.active
+	var native_active = main.video_presentation != null and main.video_presentation.is_native_active()
 	if main.comp.in_use and not native_active:
 		main.comp.switch_to_comp_layer()
 	main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[main.curvature])

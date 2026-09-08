@@ -744,8 +744,8 @@ func apply_compositor_sharpen(mode: int) -> bool:
 	return requested and supported and in_use
 
 func _prepare_ambient_sample_update() -> bool:
-	if main.native_xr_renderer and main.native_xr_renderer.active:
-		main.native_xr_renderer.request_ambient_sample()
+	if main.video_presentation and main.video_presentation.is_native_active():
+		main.video_presentation.request_ambient_sample()
 		# Do not redraw from the now-disabled legacy viewport while the first
 		# asynchronous native sample is still in flight.
 		if not _ambient_native_source_texture:
@@ -821,7 +821,7 @@ func _refresh_ambient_source(force: bool = false):
 		return
 	var source: SubViewport = null
 	var source_texture: Texture2D = null
-	if main.native_xr_renderer and main.native_xr_renderer.active and _ambient_native_source_texture:
+	if main.video_presentation and main.video_presentation.is_native_active() and _ambient_native_source_texture:
 		source_texture = _ambient_native_source_texture
 	else:
 		source = main.primary_screen.comp_viewport

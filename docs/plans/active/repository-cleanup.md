@@ -69,8 +69,8 @@ behavioral refactors should be separate commits or pull requests.
 ### 5. Rendering boundary
 
 > Status: In progress on `refactor/rendering-boundary`. UI and keyboard
-> composition layers now have a narrow resource owner separate from legacy
-> video presentation.
+> composition layers now have a narrow resource owner, and video-path selection
+> is explicit behind `VideoPresentation`.
 
 - Define one renderer-facing contract for mesh, legacy composition-layer, and
   native OpenXR implementations.
