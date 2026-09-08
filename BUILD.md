@@ -283,6 +283,21 @@ adb install -r Nightfall-Android-arm64-v8a-debug.apk
 
 Both Android presets can coexist on the same device since they use different package names. The Linux preset is not usable directly (Godot headless doesn't register LinuxBSD export platform); `build.sh --appimage` works around this via PCK export.
 
+## Tests
+
+Run the pure GDScript layout and preset tests with:
+
+```bash
+test/run_gdscript_tests.sh
+```
+
+The runner isolates `user://` data under `/tmp`, supplies a writable log path,
+and treats GDScript assertion messages as failures even when Godot exits with
+status zero. Set `NIGHTFALL_GODOT_EDITOR` if Godot 4.7 is installed elsewhere.
+
+Native desktop tests are built through CMake/CTest in
+`addons/nightfall-stream` when `BUILD_TESTING` is enabled.
+
 ## Key Architecture Notes
 
 - **GDExtension Source**: `addons/nightfall-stream/src/`
