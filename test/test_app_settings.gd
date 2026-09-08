@@ -5,6 +5,7 @@ func _init():
 	_test_display_reset()
 	_test_general_defaults_and_reset()
 	_test_host_defaults()
+	_test_platform_policy()
 	print("All app_settings tests passed")
 	quit()
 
@@ -39,6 +40,19 @@ func _test_host_defaults() -> void:
 	assert(host.ai_3d_separation_pct == 100)
 	assert(host.ai_3d_convergence_pct == 50)
 	assert(host.ai_3d_cursor_position == 0)
+
+func _test_platform_policy() -> void:
+	assert(SettingsPlatformPolicy.ai3d_options_locked("Android"))
+	assert(not SettingsPlatformPolicy.ai3d_options_locked("Linux"))
+	assert(SettingsPlatformPolicy.depth_gpu_priority_available("Android"))
+	assert(not SettingsPlatformPolicy.depth_gpu_priority_available("Linux"))
+	var labels := ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime", "Runtime Quality"]
+	assert(SettingsPlatformPolicy.sharpen_choices("Android", 6, 7, labels.size()) == [0, 6, 7])
+	assert(SettingsPlatformPolicy.sharpen_choices("Linux", 6, 7, labels.size()) == range(8))
+	assert(SettingsPlatformPolicy.sharpen_label("Android", 6, 6, 7, labels) == "Runtime")
+	assert(SettingsPlatformPolicy.sharpen_label("Android", 7, 6, 7, labels) == "Runtime Quality")
+	assert(SettingsPlatformPolicy.sharpen_label("Android", 4, 6, 7, labels) == "Off")
+	assert(SettingsPlatformPolicy.sharpen_label("Linux", 4, 6, 7, labels) == "40%")
 
 func _test_general_defaults_and_reset() -> void:
 	var settings := AppSettings.new()

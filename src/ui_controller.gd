@@ -179,7 +179,7 @@ func update_3d_btn_state():
 		main._ui_3d_btn.disabled = model_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if model_disabled else 1.0
 	if main._ui_3d_priority_btn:
-		var priority_disabled = disabled or main.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or OS.get_name() != "Android"
+		var priority_disabled = disabled or main.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available()
 		main._ui_3d_priority_btn.disabled = priority_disabled
 		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
 	if main._ui_3d_hz_cap_btn:

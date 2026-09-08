@@ -461,14 +461,14 @@ func cycle_ai_3d_model():
 	_schedule_ai_3d_commit()
 
 func cycle_ai_3d_gpu_priority():
-	if OS.get_name() != "Android":
+	if not depth_gpu_priority_available():
 		return
 	main.ai_3d_gpu_priority = (main.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size()
 	_save_setting(main._ui_3d_priority_btn, ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
 	apply_depth_gpu_priority(true)
 
 func apply_depth_gpu_priority(notify: bool = false):
-	if OS.get_name() != "Android" or not main.stream_backend:
+	if not depth_gpu_priority_available() or not main.stream_backend:
 		return
 	if not main.stream_backend.has_method("set_depth_gpu_priority"):
 		return
@@ -503,7 +503,10 @@ func normalize_ai_3d_model_for_type():
 # MidasDepthEngine only), so this lock would remove capability there for no
 # corresponding size/perf win.
 func ai3d_options_locked() -> bool:
-	return OS.get_name() == "Android"
+	return SettingsPlatformPolicy.ai3d_options_locked()
+
+func depth_gpu_priority_available() -> bool:
+	return SettingsPlatformPolicy.depth_gpu_priority_available()
 
 func _locked_ai3d_model_index() -> int:
 	for i in range(ai_3d_models.size()):
@@ -912,20 +915,19 @@ func cycle_sharpen_mode():
 	apply_filter()
 
 func get_sharpen_choices() -> Array:
-	if OS.get_name() == "Android":
-		return [0, main.SHARPEN_RUNTIME_NORMAL, main.SHARPEN_RUNTIME_QUALITY]
-	return range(main.sharpen_labels.size())
+	return SettingsPlatformPolicy.sharpen_choices(
+		OS.get_name(),
+		main.SHARPEN_RUNTIME_NORMAL,
+		main.SHARPEN_RUNTIME_QUALITY,
+		main.sharpen_labels.size())
 
 func get_sharpen_label(mode: int) -> String:
-	if OS.get_name() == "Android":
-		match mode:
-			main.SHARPEN_RUNTIME_NORMAL:
-				return "Runtime"
-			main.SHARPEN_RUNTIME_QUALITY:
-				return "Runtime Quality"
-			_:
-				return "Off"
-	return main.sharpen_labels[clampi(mode, 0, main.sharpen_labels.size() - 1)]
+	return SettingsPlatformPolicy.sharpen_label(
+		OS.get_name(),
+		mode,
+		main.SHARPEN_RUNTIME_NORMAL,
+		main.SHARPEN_RUNTIME_QUALITY,
+		main.sharpen_labels)
 
 func cycle_brightness():
 	var idx = PICTURE_BRIGHTNESS_VALUES.find(main.brightness_pct)
