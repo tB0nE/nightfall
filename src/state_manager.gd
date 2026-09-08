@@ -8,33 +8,12 @@ func _init(owner: Node3D):
 
 func save_state():
 	var save = ConfigFile.new()
-	save.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
-	save.set_value("screen", "bezel", main.settings.bezel_enabled)
+	SettingsPersistence.write_app(save, main.settings)
 	save.set_value("screen", "curvature", main.curvature)
-	save.set_value("screen", "passthrough_enabled", main.settings.passthrough_enabled)
-	save.set_value("screen", "background_mode", main.settings.background_mode)
-	save.set_value("screen", "sharpen_mode", main.settings.sharpen_mode)
-	save.set_value("screen", "brightness_pct", main.settings.brightness_pct)
-	save.set_value("screen", "contrast_pct", main.settings.contrast_pct)
-	save.set_value("screen", "gamma_pct", main.settings.gamma_pct)
-	save.set_value("screen", "ambient_mode", main.settings.ambient_mode)
-	save.set_value("screen", "ambient_color", main.settings.ambient_color)
-	save.set_value("screen", "cursor_mode", main.settings.cursor_mode)
-	save.set_value("screen", "pointer_steady", main.settings.pointer_steady)
-	save.set_value("screen", "double_click_mode", main.settings.double_click_mode)
-	save.set_value("screen", "codec_preference", main.settings.codec_preference)
-	save.set_value("screen", "grid_mode_enabled", main.settings.grid_mode_enabled)
-	save.set_value("diagnostics", "performance_overlay", main.settings.performance_overlay_enabled)
-	save.set_value("ai_3d", "gpu_priority", main.settings.ai_3d_gpu_priority)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
 	save.set_value("controller", "primary_hand", main.controller_mapper.primary_hand)
-	save.set_value("controller", "hand_tracking_enabled", main.settings.tracking_mode)
-	save.set_value("stream", "auto_reconnect", main.settings.auto_reconnect_enabled)
-	save.set_value("stream", "quick_start", main.settings.quick_start_enabled)
-	save.set_value("stream", "idle_timeout_min", main.settings.idle_timeout_min)
-	save.set_value("local_capture", "restore_token", main.settings.pipewire_restore_token)
 	save.save("user://app_state.cfg")
 	save_host_state()
 
@@ -336,61 +315,16 @@ func load_state():
 		main.settings_controller.apply_depth_gpu_priority(false)
 		return
 
-	main.settings.bezel_enabled = save.get_value("screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
+	var load_info := SettingsPersistence.read_app(
+		save,
+		main.settings,
+		main.passthrough_supported,
+		main.settings_controller.get_sharpen_choices())
 	main.curvature = save.get_value("screen", "curvature", 2)
-	main.settings.background_mode = save.get_value("screen", "background_mode", AppSettings.DEFAULT_BACKGROUND_MODE)
-	# "passthrough_enabled" is the current format, always written by
-	# save_state() - prefer it whenever present. The old "passthrough" int key
-	# (0=on, 1-5=off with a specific background) predates that and is never
-	# written or cleared anymore, so a save file that has both (any file
-	# saved by a current build that started from an old one) would otherwise
-	# have this permanently prioritize a stale value no toggle can ever
-	# change. Only fall back to it as a one-time migration for a save file
-	# that's never been touched by the current format at all.
-	if save.has_section_key("screen", "passthrough_enabled"):
-		var raw_saved = save.get_value("screen", "passthrough_enabled", false)
-		main.settings.passthrough_enabled = raw_saved and main.passthrough_supported
+	# Keep the existing diagnostic while migration details stay in the codec.
+	if load_info.current_passthrough_value != null:
+		var raw_saved = load_info.current_passthrough_value
 		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
-	elif save.has_section_key("screen", "passthrough"):
-		var old = clampi(save.get_value("screen", "passthrough", 0), 0, 5)
-		if main.passthrough_supported:
-			main.settings.passthrough_enabled = (old == 0)
-			main.settings.background_mode = maxi(old - 1, 0)
-		else:
-			main.settings.passthrough_enabled = false
-			main.settings.background_mode = old
-	else:
-		main.settings.passthrough_enabled = AppSettings.DEFAULT_PASSTHROUGH_ENABLED
-	main.settings.sharpen_mode = clampi(save.get_value("screen", "sharpen_mode", AppSettings.DEFAULT_SHARPEN_MODE), 0, main.sharpen_labels.size() - 1)
-	if OS.get_name() == "Android" and not main.settings_controller.get_sharpen_choices().has(main.settings.sharpen_mode):
-		main.settings.sharpen_mode = AppSettings.DEFAULT_SHARPEN_MODE
-	main.settings.brightness_pct = save.get_value("screen", "brightness_pct", AppSettings.DEFAULT_BRIGHTNESS_PCT)
-	if not [-20, -10, 0, 10, 20].has(main.settings.brightness_pct):
-		main.settings.brightness_pct = AppSettings.DEFAULT_BRIGHTNESS_PCT
-	main.settings.contrast_pct = save.get_value("screen", "contrast_pct", AppSettings.DEFAULT_CONTRAST_PCT)
-	if not [50, 75, 100, 125, 150].has(main.settings.contrast_pct):
-		main.settings.contrast_pct = AppSettings.DEFAULT_CONTRAST_PCT
-	main.settings.gamma_pct = save.get_value("screen", "gamma_pct", AppSettings.DEFAULT_GAMMA_PCT)
-	if not [50, 75, 100, 125, 150].has(main.settings.gamma_pct):
-		main.settings.gamma_pct = AppSettings.DEFAULT_GAMMA_PCT
-	main.settings.ambient_mode = clampi(save.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, main.ambient_mode_labels.size() - 1)
-	main.settings.ambient_color = clampi(save.get_value("screen", "ambient_color", AppSettings.DEFAULT_AMBIENT_COLOR), 0, main.ambient_color_labels.size() - 1)
-	main.settings.cursor_mode = save.get_value("screen", "cursor_mode", AppSettings.DEFAULT_CURSOR_MODE)
-	var saved_steady = save.get_value("screen", "pointer_steady", AppSettings.DEFAULT_POINTER_STEADY)
-	if saved_steady is bool:
-		main.settings.pointer_steady = 1 if saved_steady else 0
-	else:
-		main.settings.pointer_steady = clampi(int(saved_steady), 0, main.pointer_steady_labels.size() - 1)
-	main.settings.double_click_mode = clampi(save.get_value("screen", "double_click_mode", AppSettings.DEFAULT_DOUBLE_CLICK_MODE), 0, 1)
-	main.settings.codec_preference = save.get_value("screen", "codec_preference", AppSettings.DEFAULT_CODEC_PREFERENCE)
-	main.settings.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", AppSettings.DEFAULT_GRID_MODE_ENABLED)
-	main.settings.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", AppSettings.DEFAULT_PERFORMANCE_OVERLAY_ENABLED)
-	main.settings.ai_3d_gpu_priority = clampi(save.get_value("ai_3d", "gpu_priority", AppSettings.DEFAULT_AI_3D_GPU_PRIORITY), 0, 1)
-	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
-	if raw_tracking is bool:
-		main.settings.tracking_mode = 1 if raw_tracking else 0
-	else:
-		main.settings.tracking_mode = int(raw_tracking)
 	if main.controller_mapper:
 		if save.has_section_key("controller", "active"):
 			main.controller_mapper.active = save.get_value("controller", "active", false)
@@ -411,10 +345,6 @@ func load_state():
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
 	main.screen_manager.apply_curvature()
-	main.settings.auto_reconnect_enabled = save.get_value("stream", "auto_reconnect", AppSettings.DEFAULT_AUTO_RECONNECT_ENABLED)
-	main.settings.quick_start_enabled = save.get_value("stream", "quick_start", AppSettings.DEFAULT_QUICK_START_ENABLED)
-	main.settings.idle_timeout_min = save.get_value("stream", "idle_timeout_min", AppSettings.DEFAULT_IDLE_TIMEOUT_MIN)
-	main.settings.pipewire_restore_token = save.get_value("local_capture", "restore_token", AppSettings.DEFAULT_PIPEWIRE_RESTORE_TOKEN)
 	if main.stream_backend and main.stream_backend._v2:
 		main.stream_backend._v2.set_auto_reconnect(main.auto_reconnect_enabled)
 
