@@ -83,7 +83,6 @@ addons/nightfall-stream/build/
 addons/nightfall-stream/build_android/
 openxr_action_map.tres
 *.unstripped
-STEREO_COMP_LAYER_PLAN.md
 
 # Nightfall build outputs
 Nightfall-*.apk
@@ -94,6 +93,4 @@ Nightfall.AppDir/
 /depth_models/
 /.linux-build-cache/
 /tmp/nf_deps/
-/docs/
 /log.txt
-/sunshine-raw-frame-patch.md

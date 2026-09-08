@@ -229,7 +229,7 @@ public class DepthEstimator {
     // a scene-independent gradient for the legal implicit-broadcast form,
     // despite claiming every op. With explicit nearest expansion, exact
     // captured-input GPU output matches desktop CPU to sub-1e-6 error. See
-    // doc/zipdepth-quest-gpu.md for the evidence and reproduction steps.
+    // docs/guides/zipdepth-quest-gpu.md for the evidence and reproduction steps.
     // ZipDepth is a plain /32-stride CNN (no
     // ViT-patch constraint), so unlike DA-V2's odd 196/252 these land on
     // round numbers matching the MiDaS lineup exactly. Deliberately built

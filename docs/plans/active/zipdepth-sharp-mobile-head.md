@@ -356,7 +356,8 @@ Run the complete conversion ladder for each selected shape:
    thermal throttling.
 
 Reuse the explicit-attention-map and staged-reduction rewrites documented in
-`doc/zipdepth-quest-gpu.md`. Treat a single delegated kernel as necessary but
+[`../../guides/zipdepth-quest-gpu.md`](../../guides/zipdepth-quest-gpu.md).
+Treat a single delegated kernel as necessary but
 not sufficient evidence; numerical comparison is mandatory.
 
 Initial correctness thresholds should be at least as strict as the current

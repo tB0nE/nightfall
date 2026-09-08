@@ -1,5 +1,7 @@
 # 180° SBS / 360° SBS VR Video Mode
 
+> Status: Active proposal
+
 ## What It Is
 
 Current Nightfall SBS modes (Stretch/Crop) split the frame left/right and display each eye's half on a **flat/curved screen**. This is for 3D movies — stereoscopic depth but you're still looking at a screen.

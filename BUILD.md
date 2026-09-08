@@ -214,7 +214,7 @@ This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
 quantized TFLite via `onnx2tf -kt input`. Output goes to `models/`.
 ZipDepth's Adreno-safe graph rewrites and validation procedure are documented
-in [`doc/zipdepth-quest-gpu.md`](doc/zipdepth-quest-gpu.md).
+in [`docs/guides/zipdepth-quest-gpu.md`](docs/guides/zipdepth-quest-gpu.md).
 
 ### Nightfall LiteRT GPU AAR
 
@@ -244,34 +244,31 @@ adb install -r Nightfall-Android-arm64-v8a-debug.apk
 ## Project Structure
 
 ```
-├── main.gd              # Coordinator: state, _ready, _process, _input, XR setup
-├── main.tscn            # Scene tree
-├── build.sh             # Build script (export + install)
-├── project.godot        # Godot project config
-├── export_presets.cfg   # Debug + Release Android export presets
+├── main.gd                  # Application root and top-level lifecycle
+├── main.tscn                # Main Godot scene
+├── build.sh                 # Android/Linux build, package, and install entry point
+├── project.godot            # Godot project configuration
+├── export_presets.cfg       # Android and Linux export presets
 ├── src/
-│   ├── shaders/
-│   │   ├── stereo_screen.gdshader    # 2D + SBS Stretch + SBS Crop + AI 3D DIBR shader
-│   │   ├── star.gdshader             # Star particle shader (color tints + flicker)
-│   │   ├── keyboard_screen.gdshader  # DEPRECATED (broken with ViewportTexture)
-│   │   └── composite_screen.gdshader # DEPRECATED (composite mode removed)
-│   ├── stream_manager.gd     # Pairing, streaming lifecycle, audio, texture binding, stats
-│   ├── xr_interaction.gd     # Raycasts, grab bars, corner resize, UI clicks
-│   ├── input_handler.gd      # Keyboard/mouse/controller forwarding, stream mouse capture
-│   ├── ui_controller.gd      # Numpad, mode toggle, stereo shader, UI updates
-│   ├── auto_detect.gd        # SBS auto-detection logic
-│   ├── depth_estimator.gd    # AI 3D: SubViewport capture, JNI depth pipeline, texture update
-│   ├── virtual_keyboard.gd   # Full QWERTY keyboard overlay
-│   ├── openxr_action_map.tres  # OpenXR controller bindings
-│   └── assets/               # nightfall_icon_v1.png, pc_icon.svg, backgrounds
+│   ├── *_manager.gd          # Stream, screen, state, background, and XR managers
+│   ├── *_controller.gd       # Settings and UI behavior
+│   ├── native_xr_renderer.gd # GDScript bridge to the native renderer
+│   ├── vr_screen.gd/.tscn    # Per-monitor screen implementation
+│   ├── shaders/              # Mesh/composition/depth shader variants and includes
+│   └── assets/               # UI, background, and branding assets
 ├── addons/
-│   ├── nightfall-stream/      # GDExtension (built from source)
-│   └── godotopenxrvendors/    # Meta OpenXR vendor plugin v5.0.0
+│   ├── nightfall-stream/     # Streaming/decode GDExtension source
+│   └── godotopenxrvendors/   # Installed Meta OpenXR vendor plugin (gitignored)
+├── extensions/nightfall-xr/       # Native Android OpenXR renderer source
 ├── android/
-│   └── src/main/
-│       ├── java/com/godot/game/  # GodotApp.java, DepthEstimator.java
-│       └── assets/               # controllers/ (non-model assets); depth models live in models/, not here
-├── models/                    # Depth model .tflite files (gitignored, see models/README.md)
+│   ├── src/main/java/         # Godot Android entry point and depth inference
+│   ├── libs/                  # Patched LiteRT GPU AAR
+│   └── patches/               # LiteRT patch provenance
+├── models/                        # Local depth models (weights are gitignored)
+├── tools/                         # Model conversion and comparison tools
+├── test/                          # GDScript and native tests/harnesses
+├── docs/                          # Architecture, guides, plans, research, and archive
+├── patches/                       # Godot engine patches
 ├── BUILD.md
 └── README.md
 ```
@@ -297,4 +294,6 @@ Both Android presets can coexist on the same device since they use different pac
 - **AI 3D Async Pipeline**: `submit_depth_frame()` submits frames to a Java ExecutorService (non-blocking). `get_depth_map()` returns the latest cached result instantly via `AtomicReference`. Main thread never blocks on inference.
 - **Build Cleanup**: `build.sh` removes `android/build/` after export to prevent Godot from scanning stale `.gdc`/`.gdextension` artifacts which cause duplicate class registration errors.
 - **Full Rebuild Required**: All `.cpp` files must be recompiled together when `stream_core.h` changes. Partial rebuilds cause class layout mismatches (ODR violation) leading to SIGSEGV in audio init.
-- **Module Architecture**: `main.gd` is a thin coordinator holding shared state. Logic is split into `src/` modules (RefCounted classes) that receive a reference to the main node.
+- **Module Architecture**: `main.gd` is the application root and currently owns
+  shared state used by `src/` modules. Reducing that coupling is tracked in
+  `docs/plans/active/repository-cleanup.md`.

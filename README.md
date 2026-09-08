@@ -154,6 +154,9 @@ See [BUILD.md](BUILD.md) for full build instructions including:
 - Linux binary and AppImage export
 - Quest deployment via ADB
 
+Architecture notes, active plans, research, and historical implementation
+documents are indexed in [docs/README.md](docs/README.md).
+
 Quick start (Android):
 
 ```bash

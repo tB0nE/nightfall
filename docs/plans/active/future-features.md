@@ -1,5 +1,7 @@
 # Future Features - Research Notes
 
+> Status: Active backlog
+
 ## 5. Custom Skybox Backgrounds
 
 **Goal**: Load user-provided 360°/equirectangular images as environment backgrounds (replacing or supplementing the starfield).

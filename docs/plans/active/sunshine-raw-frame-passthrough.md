@@ -1,5 +1,7 @@
 # Sunshine Raw Frame Passthrough Patch Plan
 
+> Status: Active proposal; requires coordinated Sunshine changes
+
 ## Goal
 Add a "raw frame" encoder to Sunshine that streams uncompressed NV12 frames over the network (or localhost) instead of HEVC/H.264 encoding. This eliminates encode latency and generation loss on the first hop, critical for setups where Nightfall runs on the same machine as Sunshine (e.g., PCVR via WiVRn).
 

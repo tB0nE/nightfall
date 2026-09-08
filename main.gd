@@ -128,7 +128,8 @@ var _is_using_hands: bool = false
 var tracking_mode: int = 0
 var tracking_labels: Array = ["Off", "Hands"]
 
-# OS/runtime controller render models (2026-08-25, docs/gles-quest-projectionless-plan.md's
+# OS/runtime controller render models (2026-08-25, see the archived
+# docs/archive/plans/gles-quest-projectionless.md plan's
 # "Controller and hand experiment" section) - OpenXRFbRenderModel wraps
 # XR_FB_render_model, letting the runtime hand us its own real controller
 # mesh instead of the bundled MetaQuestTouchPlus FBX (_load_controller_models()
@@ -673,7 +674,7 @@ var _btn_hover: StyleBoxFlat
 const H264_MAX_DIMENSION = 4032
 # Confirmed via on-device MediaCodec capability query (getSupportedWidths/
 # getSupportedHeights against real candidate resolutions - see
-# docs/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
+# docs/architecture/multi-monitor-encode-budget-and-layout.md): HEVC on this hardware is
 # dual-limited, not just axis-limited - each dimension independently caps at
 # 8192px, AND the total canvas is separately capped at ~138,240 macroblocks
 # (16x16 each) regardless of aspect. A 4-monitor row can hit the axis cap

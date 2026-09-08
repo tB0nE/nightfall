@@ -264,7 +264,7 @@ are stable:
 - explicit materialization of attention-map broadcasts for Adreno OpenCL;
 - conversion and GPU-safe export tools;
 - desktop/on-device comparison tooling;
-- `doc/zipdepth-quest-gpu.md` and model documentation.
+- `../../guides/zipdepth-quest-gpu.md` and model documentation.
 
 Remove temporary captures and diagnostic dumps. Verify the production
 precision setting. Keep model failure behavior consistent with current `main`;
