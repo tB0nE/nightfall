@@ -10,6 +10,7 @@ func _init():
 	_test_legacy_app_migrations()
 	_test_host_persistence_round_trip()
 	_test_legacy_host_migrations()
+	_test_controller_settings_persistence()
 	print("All app_settings tests passed")
 	quit()
 
@@ -191,6 +192,31 @@ func _test_legacy_host_migrations() -> void:
 	assert(flat.sbs_mode == 0)
 	assert(flat.ai_3d_model == 2)
 	assert(flat.ai_3d_speed == 1)
+
+func _test_controller_settings_persistence() -> void:
+	var owner := Node3D.new()
+	var source := ControllerMapper.new(owner)
+	source.active = true
+	source.ctrl_type = ControllerMapper.CtrlType.PAD_ABXY
+	source.btn_toggle = ControllerMapper.BtnToggle.NONE
+	source.primary_hand = ControllerMapper.PrimaryHand.AUTO
+	var config := ConfigFile.new()
+	source.write_settings(config)
+	var loaded := ControllerMapper.new(owner)
+	loaded.read_settings(config)
+	assert(loaded.active)
+	assert(loaded.ctrl_type == ControllerMapper.CtrlType.PAD_ABXY)
+	assert(loaded.btn_toggle == ControllerMapper.BtnToggle.NONE)
+	assert(loaded.primary_hand == ControllerMapper.PrimaryHand.AUTO)
+
+	var legacy := ConfigFile.new()
+	legacy.set_value("controller", "mode", 1)
+	loaded.read_settings(legacy)
+	assert(loaded.active)
+	assert(loaded.ctrl_type == ControllerMapper.CtrlType.PAD_ABXY)
+	source.free()
+	loaded.free()
+	owner.free()
 
 func _test_general_defaults_and_reset() -> void:
 	var settings := AppSettings.new()

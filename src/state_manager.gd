@@ -10,10 +10,7 @@ func save_state():
 	var save = ConfigFile.new()
 	SettingsPersistence.write_app(save, main.settings)
 	save.set_value("screen", "curvature", main.curvature)
-	save.set_value("controller", "active", main.controller_mapper.active)
-	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
-	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
-	save.set_value("controller", "primary_hand", main.controller_mapper.primary_hand)
+	main.controller_mapper.write_settings(save)
 	save.save("user://app_state.cfg")
 	save_host_state()
 
@@ -201,21 +198,10 @@ func load_state():
 		var raw_saved = load_info.current_passthrough_value
 		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
 	if main.controller_mapper:
-		if save.has_section_key("controller", "active"):
-			main.controller_mapper.active = save.get_value("controller", "active", false)
-			main.controller_mapper.ctrl_type = clampi(save.get_value("controller", "ctrl_type", 0), 0, 2)
-		else:
-			var old_mode = clampi(save.get_value("controller", "mode", 0), 0, 2)
-			if old_mode == 0:
-				main.controller_mapper.active = false
-			else:
-				main.controller_mapper.active = true
-				main.controller_mapper.ctrl_type = 1 if old_mode == 1 else 0
+		main.controller_mapper.read_settings(save)
 		if main.ui_controller:
 			main.ui_controller.update_ctrl_mode_btn()
 			main.ui_controller.update_ctrl_type_btn()
-		main.controller_mapper.btn_toggle = clampi(save.get_value("controller", "btn_toggle", 1), 0, 2)
-		main.controller_mapper.primary_hand = clampi(save.get_value("controller", "primary_hand", 0), 0, 2)
 		if main.ui_controller:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
