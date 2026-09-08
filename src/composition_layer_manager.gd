@@ -744,8 +744,8 @@ func apply_compositor_sharpen(mode: int) -> bool:
 	return requested and supported and in_use
 
 func _prepare_ambient_sample_update() -> bool:
-	if main.native_xr_renderer and main.native_xr_renderer.active:
-		main.native_xr_renderer.request_ambient_sample()
+	if main.video_presentation and main.video_presentation.is_native_active():
+		main.video_presentation.request_ambient_sample()
 		# Do not redraw from the now-disabled legacy viewport while the first
 		# asynchronous native sample is still in flight.
 		if not _ambient_native_source_texture:
@@ -821,7 +821,7 @@ func _refresh_ambient_source(force: bool = false):
 		return
 	var source: SubViewport = null
 	var source_texture: Texture2D = null
-	if main.native_xr_renderer and main.native_xr_renderer.active and _ambient_native_source_texture:
+	if main.video_presentation and main.video_presentation.is_native_active() and _ambient_native_source_texture:
 		source_texture = _ambient_native_source_texture
 	else:
 		source = main.primary_screen.comp_viewport
@@ -954,67 +954,15 @@ func setup_background_equirect():
 		main._log("[COMP] OpenXRCompositionLayerEquirect not available - environment backgrounds won't show in projectionless mode")
 		return
 
-	main.comp_bg_equirect = OpenXRCompositionLayerEquirect.new()
-	main.comp_bg_equirect.name = "CompBgEquirect"
-	main.comp_bg_equirect.set_sort_order(-100)
-	main.comp_bg_equirect.set_radius(40.0)
-	main.comp_bg_equirect.set_central_horizontal_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG))
-	main.comp_bg_equirect.set_upper_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
-	main.comp_bg_equirect.set_lower_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
-	main.comp_bg_equirect.visible = false
-	main.xr_origin.add_child(main.comp_bg_equirect)
-	if not main.comp_bg_equirect.is_natively_supported():
+	if not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
 		main._log("[COMP] OpenXRCompositionLayerEquirect not natively supported on this runtime - environment backgrounds won't show in projectionless mode")
-		main.comp_bg_equirect.queue_free()
-		main.comp_bg_equirect = null
 		return
-
-	main.comp_bg_capture_viewport = SubViewport.new()
-	main.comp_bg_capture_viewport.name = "CompBgCaptureViewport"
-	main.comp_bg_capture_viewport.disable_3d = false
-	main.comp_bg_capture_viewport.own_world_3d = true
-	main.comp_bg_capture_viewport.transparent_bg = false
-	main.comp_bg_capture_viewport.size = Vector2i(1024, 1024)
-	main.comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(main.comp_bg_capture_viewport)
-
-	var bg_env = WorldEnvironment.new()
-	bg_env.name = "CaptureEnvironment"
-	var env = Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0, 0, 0, 1)
-	bg_env.environment = env
-	main.comp_bg_capture_viewport.add_child(bg_env)
-
-	main.comp_bg_capture_camera = Camera3D.new()
-	main.comp_bg_capture_camera.name = "CaptureCamera"
-	main.comp_bg_capture_camera.fov = main.BG_CAPTURE_FOV_DEG
-	main.comp_bg_capture_camera.current = true
-	main.comp_bg_capture_viewport.add_child(main.comp_bg_capture_camera)
-
-	main.comp_bg_equirect.set_layer_viewport(main.comp_bg_capture_viewport)
 	main._log("[COMP] Environment-background equirect composition layer created")
 
-	main.comp_ui = OpenXRCompositionLayerQuad.new()
-	main.comp_ui.name = "CompUILayer"
-	main.comp_ui.set_sort_order(1000)
-	main.comp_ui.set_enable_hole_punch(false)
-	main.comp_ui.set_alpha_blend(true)
-	main.comp_ui.set_quad_size(main._ui_mesh_size)
-	main.comp_ui.visible = false
-	main.xr_origin.add_child(main.comp_ui)
-	main.comp_ui.set_layer_viewport(main.ui_viewport)
+	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport, main._ui_mesh_size)
 	main._log("[COMP] UI composition layer created")
 	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
-		main.comp_kb = OpenXRCompositionLayerQuad.new()
-		main.comp_kb.name = "CompKBLayer"
-		main.comp_kb.set_sort_order(999)
-		main.comp_kb.set_enable_hole_punch(false)
-		main.comp_kb.set_alpha_blend(true)
-		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-		main.comp_kb.visible = false
-		main.xr_origin.add_child(main.comp_kb)
-		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")
 
 	# Cursor layers (2026-08-24) - previously created only for the non-GLES
@@ -1250,15 +1198,7 @@ func setup_background_equirect():
 	# double-creating (and leaking the first one's viewport/quad) now that
 	# cursor creation above runs unconditionally for both paths.
 	if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-		main.comp_kb = OpenXRCompositionLayerQuad.new()
-		main.comp_kb.name = "CompKBLayer"
-		main.comp_kb.set_sort_order(999)
-		main.comp_kb.set_enable_hole_punch(false)
-		main.comp_kb.set_alpha_blend(true)
-		main.comp_kb.set_quad_size(main.virtual_keyboard.mesh_size)
-		main.comp_kb.visible = false
-		main.xr_origin.add_child(main.comp_kb)
-		main.comp_kb.set_layer_viewport(main.virtual_keyboard.viewport)
+		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")
 
 	available = true

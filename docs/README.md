@@ -34,6 +34,7 @@ the build/deployment entry point.
 
 - [Settings ownership](architecture/settings-ownership.md)
 - [Session lifecycle](architecture/session-lifecycle.md)
+- [Rendering boundary](architecture/rendering-boundary.md)
 - [Multi-monitor encode budget and layout](architecture/multi-monitor-encode-budget-and-layout.md)
 
 ## Document lifecycle

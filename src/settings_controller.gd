@@ -672,17 +672,7 @@ func apply_stereo():
 	# rendering then fails to actually start, deactivate(true)'s own
 	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
 	# covers activating legacy properly.
-	var native_will_render = main.native_xr_renderer != null and main.native_xr_renderer.can_render_current_config()
-	if main.comp.available and not native_will_render:
-		if mode > 0:
-			main.comp.switch_to_stereo_comp_layer()
-		else:
-			main.comp.switch_to_comp_layer()
-	elif not main.comp.available:
-		if mode > 0 and main.comp.in_use:
-			main.comp.switch_to_mesh_rendering()
-		elif mode == 0 and not main.comp.in_use and main.is_streaming:
-			main.comp.switch_to_comp_layer()
+	main.video_presentation.apply_mode(mode, main.is_streaming)
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
 	if main.depth_estimator:
@@ -1235,8 +1225,8 @@ func _schedule_stream_restart():
 	# Stop it before changing the display rate or destroying decoder textures;
 	# otherwise the runtime can recreate its display surface while either
 	# renderer still references the old one, which crashes Quest's GLThread.
-	if main.native_xr_renderer:
-		main.native_xr_renderer.deactivate(false)
+	if main.video_presentation:
+		main.video_presentation.deactivate_native(false)
 	# Stop the composition layer shader from referencing the current session's
 	# texture BEFORE tearing the connection down. stop_play_stream() triggers
 	# native decoder cleanup, which frees the underlying GPU texture/uniform
