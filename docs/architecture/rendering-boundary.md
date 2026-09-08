@@ -19,3 +19,7 @@ resource type. `CompositionPanelLayers` owns the UI and keyboard layer nodes and
 accepts only their OpenXR parent, viewport, and geometry. Compatibility getters
 on `main.gd` preserve existing positioning and visibility consumers while those
 call sites are migrated incrementally.
+
+`CompositionEnvironmentLayer` similarly owns the environment's equirect layer,
+3D capture viewport, and capture camera. Background selection and particle
+instance synchronization remain in the application coordinator for now.

@@ -292,6 +292,7 @@ var controller_mapper: ControllerMapper
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
+var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
 
 var comp_cursor: Node3D = null
 var comp_ui: Node3D:
@@ -402,9 +403,12 @@ const HAND_INDICATOR_SIZE := 0.32
 # wide-but-partial angular range (BG_CAPTURE_FOV_DEG) rather than claiming
 # full 360 coverage - turning far enough away may show black instead of
 # the effect, unlike the original always-surrounding particle system.
-var comp_bg_equirect: Node3D = null
-var comp_bg_capture_viewport: SubViewport = null
-var comp_bg_capture_camera: Camera3D = null
+var comp_bg_equirect: Node3D:
+	get: return composition_environment.layer
+var comp_bg_capture_viewport: SubViewport:
+	get: return composition_environment.capture_viewport
+var comp_bg_capture_camera: Camera3D:
+	get: return composition_environment.capture_camera
 var comp_bg_capture_instance: GPUParticles3D = null
 var comp_bg_capture_index: int = -1
 const BG_CAPTURE_FOV_DEG := 160.0

@@ -954,45 +954,9 @@ func setup_background_equirect():
 		main._log("[COMP] OpenXRCompositionLayerEquirect not available - environment backgrounds won't show in projectionless mode")
 		return
 
-	main.comp_bg_equirect = OpenXRCompositionLayerEquirect.new()
-	main.comp_bg_equirect.name = "CompBgEquirect"
-	main.comp_bg_equirect.set_sort_order(-100)
-	main.comp_bg_equirect.set_radius(40.0)
-	main.comp_bg_equirect.set_central_horizontal_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG))
-	main.comp_bg_equirect.set_upper_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
-	main.comp_bg_equirect.set_lower_vertical_angle(deg_to_rad(main.BG_EQUIRECT_ANGLE_DEG * 0.5))
-	main.comp_bg_equirect.visible = false
-	main.xr_origin.add_child(main.comp_bg_equirect)
-	if not main.comp_bg_equirect.is_natively_supported():
+	if not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
 		main._log("[COMP] OpenXRCompositionLayerEquirect not natively supported on this runtime - environment backgrounds won't show in projectionless mode")
-		main.comp_bg_equirect.queue_free()
-		main.comp_bg_equirect = null
 		return
-
-	main.comp_bg_capture_viewport = SubViewport.new()
-	main.comp_bg_capture_viewport.name = "CompBgCaptureViewport"
-	main.comp_bg_capture_viewport.disable_3d = false
-	main.comp_bg_capture_viewport.own_world_3d = true
-	main.comp_bg_capture_viewport.transparent_bg = false
-	main.comp_bg_capture_viewport.size = Vector2i(1024, 1024)
-	main.comp_bg_capture_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(main.comp_bg_capture_viewport)
-
-	var bg_env = WorldEnvironment.new()
-	bg_env.name = "CaptureEnvironment"
-	var env = Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0, 0, 0, 1)
-	bg_env.environment = env
-	main.comp_bg_capture_viewport.add_child(bg_env)
-
-	main.comp_bg_capture_camera = Camera3D.new()
-	main.comp_bg_capture_camera.name = "CaptureCamera"
-	main.comp_bg_capture_camera.fov = main.BG_CAPTURE_FOV_DEG
-	main.comp_bg_capture_camera.current = true
-	main.comp_bg_capture_viewport.add_child(main.comp_bg_capture_camera)
-
-	main.comp_bg_equirect.set_layer_viewport(main.comp_bg_capture_viewport)
 	main._log("[COMP] Environment-background equirect composition layer created")
 
 	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport, main._ui_mesh_size)
