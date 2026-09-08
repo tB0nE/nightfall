@@ -54,7 +54,7 @@ func load_host_state(ip: String):
 		main.resolution_scale_options,
 		main.resolutions.size(),
 		main.settings_controller.ai_3d_models.size())
-	# Model may not actually belong to the loaded Type (main.ai_3d_backend_pref) -
+	# Model may not actually belong to the loaded Type (main.settings.host.ai_3d_backend_pref) -
 	# persistence-codec migrations (including pre-Type legacy formats) can land here with
 	# them disagreeing. Snaps Model to Type's first matching entry if so;
 	# a no-op otherwise. Covers every branch above in one place rather than
@@ -72,11 +72,11 @@ func load_host_state(ip: String):
 	# controls, which that duplicate never knew about), and
 	# update_3d_btn_state() - no reason to keep two copies of this in sync.
 	main.ui_controller.update_stereo_shader()
-	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.stream_fps)
+	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
 	main.ui_controller.update_monitor_tab()
-	var bitrate_label = main.bitrate_labels[main.bitrate_idx + 1] if main.bitrate_idx >= 0 else "Auto"
+	var bitrate_label = main.bitrate_labels[main.settings.host.bitrate_idx + 1] if main.settings.host.bitrate_idx >= 0 else "Auto"
 	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label)
 	main.settings_controller.apply_stereo()
 	if main.depth_estimator:
@@ -139,28 +139,28 @@ func load_host_state(ip: String):
 
 func sync_ui_to_settings():
 	if main.bezel_mesh:
-		main.bezel_mesh.visible = main.bezel_enabled and not main.comp.in_use
+		main.bezel_mesh.visible = main.settings.bezel_enabled and not main.comp.in_use
 	if main.ui_controller:
-		main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.bezel_enabled else "Off")
-		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_labels[clampi(main.tracking_mode, 0, main.tracking_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_labels[clampi(main.settings.tracking_mode, 0, main.tracking_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.passthrough_enabled else "Off")
-		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.background_mode, 0, main.background_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.settings_controller.get_sharpen_label(main.sharpen_mode))
-		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.brightness_pct)
-		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.contrast_pct)
-		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.gamma_pct)
+		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.settings.passthrough_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.settings.background_mode, 0, main.background_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_sharpen_btn, main.settings_controller.get_sharpen_label(main.settings.sharpen_mode))
+		main.ui_controller.update_option_btn(main._ui_brightness_btn, "%+d%%" % main.settings.brightness_pct)
+		main.ui_controller.update_option_btn(main._ui_contrast_btn, "%d%%" % main.settings.contrast_pct)
+		main.ui_controller.update_option_btn(main._ui_gamma_btn, "%d%%" % main.settings.gamma_pct)
 		main.ui_controller.update_ambient_btn_state()
 		main.ui_controller.update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
-		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.cursor_mode, 0, main.cursor_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
-		main.ui_controller.update_option_btn(main._ui_3d_priority_btn, main.settings_controller.ai_3d_gpu_priority_labels[main.ai_3d_gpu_priority])
-		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_cursor_btn, main.cursor_labels[clampi(main.settings.cursor_mode, 0, main.cursor_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_steady_btn, main.pointer_steady_labels[clampi(main.settings.pointer_steady, 0, main.pointer_steady_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_3d_priority_btn, main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
+		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.settings.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
-		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.auto_reconnect_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
-			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.quick_start_enabled else "Off")
-		var idle_idx = main.settings_controller.idle_values.find(main.idle_timeout_min)
+			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
+		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
 		main.ui_controller.update_stats_btn_state()
@@ -196,7 +196,7 @@ func load_state():
 	# Keep the existing diagnostic while migration details stay in the codec.
 	if load_info.current_passthrough_value != null:
 		var raw_saved = load_info.current_passthrough_value
-		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.passthrough_enabled)])
+		main._log("[PASSTHROUGH] load_state: raw_saved=%s passthrough_supported=%s -> passthrough_enabled=%s" % [str(raw_saved), str(main.passthrough_supported), str(main.settings.passthrough_enabled)])
 	if main.controller_mapper:
 		main.controller_mapper.read_settings(save)
 		if main.ui_controller:
@@ -207,7 +207,7 @@ func load_state():
 			main.ui_controller.update_primary_btn()
 	main.screen_manager.apply_curvature()
 	if main.stream_backend and main.stream_backend._v2:
-		main.stream_backend._v2.set_auto_reconnect(main.auto_reconnect_enabled)
+		main.stream_backend._v2.set_auto_reconnect(main.settings.auto_reconnect_enabled)
 
 	sync_ui_to_settings()
 	main.settings_controller.apply_depth_gpu_priority(false)
