@@ -888,18 +888,27 @@ func process_ambient(delta: float):
 		_disable_ambient()
 		return
 	if not _ambient_layer.visible:
-		_ambient_layer.visible = true
 		_update_ambient_geometry()
+		# A SubViewport attached to an OpenXR composition layer must keep a
+		# stable render target while the layer is submitted. UPDATE_ONCE falls
+		# back to UPDATE_DISABLED after each draw; on Quest that made Godot
+		# destroy and recreate this layer's swapchain on every ambient tick
+		# (10 Hz in Slow mode), eventually leaving teardown to crash in the GL
+		# thread. The output is only 256 pixels on its long edge, so keep this
+		# inexpensive halo pass alive and throttle the 32x32 source sampling
+		# below instead.
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		_ambient_layer.visible = true
 		_ambient_dirty = true
+	elif _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	# Also detects a primary-screen or stereo-mode change while the layer is
 	# already visible; the uniform is only touched when the source changes.
 	_refresh_ambient_source()
 
 	match main.settings.ambient_mode:
-		1: # Static: redraw only after a setting/geometry change.
-			if _ambient_dirty:
-				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				_ambient_dirty = false
+		1: # Static colour; the tiny layer target stays resident while visible.
+			_ambient_dirty = false
 		2: # Slow: sample the screen at 10 Hz.
 			_ambient_slow_elapsed += delta
 			if _ambient_dirty or _ambient_slow_elapsed >= AMBIENT_SLOW_INTERVAL_SEC:
@@ -907,7 +916,6 @@ func process_ambient(delta: float):
 				if not _prepare_ambient_sample_update():
 					return
 				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 		3: # Live: sample at 72 Hz - plenty for ambient light, and no longer
 			# ties the native readback (glBlitFramebuffer + glReadPixels + PBO
@@ -920,8 +928,6 @@ func process_ambient(delta: float):
 					return
 				if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
 					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
-					_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 
 func _update_ambient_geometry():
