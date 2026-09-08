@@ -3,6 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+# shellcheck source=tools/build_support/native_xr_versions.sh
+source "$SCRIPT_DIR/tools/build_support/native_xr_versions.sh"
 
 PRESET="NightfallDev"
 OUTPUT="Nightfall-Android-arm64-v8a-debug.apk"
@@ -34,11 +36,17 @@ done
 # metadata. The Android runtime library is still the patched engine copied into
 # that template; the patched editor is only needed when regenerating the custom
 # godot-cpp API used to compile nightfall-xr.
-GODOT="${NIGHTFALL_GODOT_EDITOR:-/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64}"
-JAVA_HOME="/home/linuxbrew/.linuxbrew/opt/openjdk@17"
-TEMPLATES="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/android_source.zip"
-LINUX_TEMPLATE_DEBUG="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_debug.x86_64"
-LINUX_TEMPLATE_RELEASE="/var/home/tyrone/.local/share/godot/export_templates/4.7.stable/linux_release.x86_64"
+DEFAULT_GODOT_EDITOR="/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"
+if command -v godot >/dev/null 2>&1; then
+  DEFAULT_GODOT_EDITOR="$(command -v godot)"
+fi
+GODOT="${NIGHTFALL_GODOT_EDITOR:-$DEFAULT_GODOT_EDITOR}"
+JAVA_HOME="${NIGHTFALL_JAVA_HOME:-${JAVA_HOME:-/home/linuxbrew/.linuxbrew/opt/openjdk@17}}"
+GODOT_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/godot"
+GODOT_TEMPLATE_DIR="${NIGHTFALL_GODOT_TEMPLATE_DIR:-$GODOT_DATA_HOME/export_templates/$NIGHTFALL_GODOT_TEMPLATE_VERSION}"
+TEMPLATES="${NIGHTFALL_ANDROID_SOURCE_TEMPLATE:-$GODOT_TEMPLATE_DIR/android_source.zip}"
+LINUX_TEMPLATE_DEBUG="$GODOT_TEMPLATE_DIR/linux_debug.x86_64"
+LINUX_TEMPLATE_RELEASE="$GODOT_TEMPLATE_DIR/linux_release.x86_64"
 
 CONFIG="export_presets.cfg"
 CONFIG_BACKUP="export_presets.cfg.bak"
@@ -164,7 +172,19 @@ fi
 # a separate GDExtension because the generic vcpkg godot-cpp API omits the
 # OpenXR module classes it derives from. Linux keeps using the legacy Godot
 # composition-layer path and must not require the Android NDK.
-bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" release
+NATIVE_XR_TARGET="debug"
+if [ "$PRESET" = "NightfallRelease" ]; then
+  NATIVE_XR_TARGET="release"
+fi
+bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" "$NATIVE_XR_TARGET"
+
+NATIVE_XR_CACHE="${NIGHTFALL_NATIVE_XR_CACHE:-$SCRIPT_DIR/.build-cache/native-xr}"
+PATCHED_GODOT_RUNTIME="${NIGHTFALL_GODOT_ANDROID_RUNTIME:-$NATIVE_XR_CACHE/templates/$NIGHTFALL_GODOT_TEMPLATE_VERSION/android_${NATIVE_XR_TARGET}_arm64.so}"
+if [ ! -f "$PATCHED_GODOT_RUNTIME" ]; then
+  echo "Error: patched Godot Android runtime not found at $PATCHED_GODOT_RUNTIME"
+  echo "Run tools/build_support/bootstrap_native_xr.sh first."
+  exit 1
+fi
 
 if [ "$PRESET" = "NightfallRelease" ]; then
   if [ ! -f .env ]; then
@@ -204,10 +224,9 @@ sed -i '/tools:targetApi="29" \/>/a\
             android:value="1" />' src/main/AndroidManifest.xml
 # Replace Godot .so with patched version (AHB Vulkan patch for Quest)
 # Cover all locations the Gradle build might pick up the .so from
-cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" aar_extract/jni/arm64-v8a/libgodot_android.so 2>/dev/null || true
+cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
 mkdir -p libs/release/arm64-v8a libs/debug/arm64-v8a
-cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" libs/release/arm64-v8a/libgodot_android.so 2>/dev/null || true
-cp "$SCRIPT_DIR/addons/nightfall-stream/bin/android/libgodot_android.so" libs/debug/arm64-v8a/libgodot_android.so 2>/dev/null || true
+cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
 cd "$SCRIPT_DIR"
 cp android/src/main/java/com/godot/game/GodotApp.java android/build/src/main/java/com/godot/game/GodotApp.java
 cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/main/java/com/godot/game/DepthEstimator.java
@@ -350,6 +369,10 @@ if [ "$USE_STOCK_LITERT" = "1" ]; then
 else
   if [ ! -f "$LITERT_GPU_AAR" ]; then
     echo "Error: low-priority LiteRT GPU AAR not found at $LITERT_GPU_AAR"
+    exit 1
+  fi
+  if ! echo "$NIGHTFALL_LITERT_GPU_AAR_SHA256  $LITERT_GPU_AAR" | sha256sum --check --status; then
+    echo "Error: checksum mismatch for $LITERT_GPU_AAR"
     exit 1
   fi
   echo "Using low-priority Nightfall LiteRT GPU 1.4.2"
