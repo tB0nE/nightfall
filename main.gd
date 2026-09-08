@@ -2,6 +2,7 @@ extends Node3D
 
 var settings: AppSettings = AppSettings.new()
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
+var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 
 @onready var screen_mesh = $MeshInstance3D
 @onready var ui_panel_3d = %UIPanel3D
@@ -123,15 +124,6 @@ var grab_start_node_euler: Vector3 = Vector3.ZERO
 var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
 var grab_group_start_transforms: Dictionary = {}
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
-var stats_timer: float = 0.0
-var stats_fps: float = 0.0
-var stats_video_update_fps: float = 0.0
-var stats_sample_timer: float = 0.0
-var stats_app_frames: int = 0
-var stats_video_updates: int = 0
-var stats_network_events: int = 0
-var performance_overlay_timer: float = 0.0
-var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
 # by the system compositor, confirmed via on-device benchmark 2026-08-25) -
 # no in-app UI disclaimer for this by design; settings_controller.gd's
@@ -1386,14 +1378,7 @@ func _on_stream_started():
 	# Do not request it again here: a display transition racing newly-created
 	# GLES resources crashes the Quest GL thread.
 	var was_restarting := session_lifecycle.stream_started()
-	stats_timer = 0.0
-	stats_sample_timer = 0.0
-	stats_app_frames = 0
-	stats_video_updates = 0
-	stats_fps = 0.0
-	stats_video_update_fps = 0.0
-	performance_overlay_timer = 0.0
-	_performance_previous_window.clear()
+	telemetry.reset_session()
 	_last_activity_time = Time.get_ticks_msec() / 1000.0
 	ui_controller.set_status("Connecting...")
 	ui_controller.update_host_label()
@@ -2216,11 +2201,6 @@ func _init_stream_backend():
 		v2_node.controller_trigger_rumble.connect(func(controller, left_motor, right_motor):
 			_trigger_haptic(controller, left_motor, right_motor)
 		)
-	v2_node.log_message.connect(func(msg):
-		if "dropped" in msg or "Unrecoverable" in msg or "Waiting for IDR" in msg:
-			stats_network_events += 1
-	)
-
 func _init_xr(interface):
 	var render_size = interface.get_render_target_size()
 	_xr_render_width = int(render_size.x)
@@ -2715,40 +2695,29 @@ func _process_stats(delta):
 			_cached_sharpen = cur_sharpen
 			_cached_blur_scale = cur_blur_scale
 			settings_controller.apply_filter()
-	stats_app_frames += 1
 	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
-	if new_video_frame:
-		stats_video_updates += 1
 	if native_xr_renderer:
 		native_xr_renderer.process_frame(new_video_frame)
-	stats_sample_timer += delta
-	if stats_sample_timer >= 1.0:
-		stats_fps = float(stats_app_frames) / stats_sample_timer
-		stats_video_update_fps = float(stats_video_updates) / stats_sample_timer
-		# Diagnostic (2026-09-06): stats_video_update_fps is inherently capped
-		# at stats_fps (consume_new_frame() can report at most one "yes" per
+	var frame_sample := telemetry.record_frame(delta, new_video_frame)
+	if not frame_sample.is_empty():
+		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
+		# FPS (consume_new_frame() can report at most one "yes" per
 		# script tick, no matter how many render-thread completions happened
 		# since the last tick) - now that decode-thread throughput and native
 		# render cost are both confirmed to track target Hz closely, this
-		# checks whether the script tick rate itself (stats_fps) is also
+		# checks whether the script tick rate itself is also
 		# hitting target, and exactly how close video_update_fps tracks it.
 		_log("[STATS] app=%.1ffps video_update=%.1ffps (%.1f%% of app) frames=%d/%d" % [
-			stats_fps, stats_video_update_fps,
-			100.0 * stats_video_update_fps / maxf(stats_fps, 0.001),
-			stats_video_updates, stats_app_frames])
-		stats_sample_timer = 0.0
-		stats_app_frames = 0
-		stats_video_updates = 0
-	stats_timer += delta
-	if stats_timer >= 0.1:
+			frame_sample["app_fps"], frame_sample["video_update_fps"],
+			100.0 * frame_sample["video_update_fps"] / maxf(frame_sample["app_fps"], 0.001),
+			frame_sample["video_updates"], frame_sample["app_frames"]])
+	if telemetry.status_update_due(delta):
 		stream_manager.update_stats()
-		stats_timer = 0.0
 	_process_performance_overlay(delta)
 
 func toggle_performance_overlay():
 	settings.performance_overlay_enabled = not settings.performance_overlay_enabled
-	performance_overlay_timer = 0.0
-	_performance_previous_window.clear()
+	telemetry.reset_overlay()
 	if stream_backend:
 		stream_backend.take_performance_stats()
 	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
@@ -2767,31 +2736,16 @@ func toggle_performance_overlay():
 	if state_manager:
 		state_manager.save_state()
 
-func _combine_performance_windows(previous: Dictionary, current: Dictionary) -> Dictionary:
-	if previous.is_empty():
-		return current.duplicate()
-	var combined = current.duplicate()
-	for key in ["elapsed_us", "total_frames", "received_frames", "rendered_frames", "network_lost_frames", "decode_time_us", "host_latency_tenths_total", "host_latency_samples"]:
-		combined[key] = int(previous.get(key, 0)) + int(current.get(key, 0))
-	var previous_min = int(previous.get("host_latency_tenths_min", 0))
-	var current_min = int(current.get("host_latency_tenths_min", 0))
-	combined["host_latency_tenths_min"] = current_min if previous_min == 0 else previous_min if current_min == 0 else mini(previous_min, current_min)
-	combined["host_latency_tenths_max"] = maxi(int(previous.get("host_latency_tenths_max", 0)), int(current.get("host_latency_tenths_max", 0)))
-	return combined
-
 func _process_performance_overlay(delta: float):
 	if not settings.performance_overlay_enabled or not stream_backend or not comp:
 		return
 	comp.set_stats_visible(true)
-	performance_overlay_timer += delta
-	if performance_overlay_timer < 1.0:
+	if not telemetry.overlay_update_due(delta):
 		return
-	performance_overlay_timer = 0.0
 	var current = stream_backend.take_performance_stats()
 	if current.is_empty():
 		return
-	var stats = _combine_performance_windows(_performance_previous_window, current)
-	_performance_previous_window = current
+	var stats = telemetry.combine_performance_window(current)
 	var elapsed_s = maxf(float(stats.get("elapsed_us", 0)) / 1000000.0, 0.001)
 	var total_frames = int(stats.get("total_frames", 0))
 	var received_frames = int(stats.get("received_frames", 0))
@@ -2814,8 +2768,8 @@ func _process_performance_overlay(delta: float):
 		"Decoder: %s" % decoder_name,
 		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
 		"Rendering frame rate: %.0f FPS" % rendering_fps,
-		"Nightfall application frame rate: %.1f FPS" % stats_fps,
-		"Nightfall video texture update rate: %.1f FPS" % stats_video_update_fps,
+		"Nightfall application frame rate: %.1f FPS" % telemetry.app_fps,
+		"Nightfall video texture update rate: %.1f FPS" % telemetry.video_update_fps,
 		"Frames dropped by your network connection: %.2f%%" % lost_pct,
 		"Decoder queue drops: %d (queued: %d)" % [decoder_queue_drops, decoder_queue_size],
 		"Average network latency: %d ms (variance: %d ms)" % [int(stats.get("network_latency_ms", 0)), int(stats.get("network_variance_ms", 0))],

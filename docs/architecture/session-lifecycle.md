@@ -36,3 +36,11 @@ uses `main.is_streaming`, a read-only view of `media_active`.
 Resource cleanup remains in the modules that own those resources. Lifecycle
 transitions describe intent and ordering but do not destroy decoder or OpenXR
 objects themselves.
+
+## Telemetry
+
+`PerformanceTelemetry` owns frame/update sampling intervals and combines adjacent
+native performance windows. It is data-only: `main.gd` still decides when to
+consume decoder frames, while composition and native-XR modules still present the
+resulting overlay. This keeps counters and timing state out of the application
+coordinator without coupling telemetry to a renderer.
