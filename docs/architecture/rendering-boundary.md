@@ -27,3 +27,7 @@ instance synchronization remain in the application coordinator for now.
 `CompositionPointerLayers` owns the primary pointer quad and the secondary-hand
 cursor quad together with their small 2D viewports. Pointer hit testing and
 world-space positioning remain in the interaction modules.
+
+`CompositionControllerRays` owns both controller-ray layers, their backing
+viewports, and the generated capsule-gradient texture. Ray pose and visibility
+remain driven by the existing XR interaction state.

@@ -294,6 +294,7 @@ var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
+var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
 
 var comp_cursor: Node3D:
 	get: return composition_pointers.cursor_layer
@@ -335,10 +336,14 @@ const DEBUG_COMP_HANDS := true
 # 0.4m CapsuleMesh under HandRayCast, see main.tscn) is invisible whenever
 # comp.in_use is true. These are lightweight composition-layer equivalents -
 # see _update_laser_layers().
-var comp_laser_right: Node3D = null
-var comp_laser_right_viewport: SubViewport = null
-var comp_laser_left: Node3D = null
-var comp_laser_left_viewport: SubViewport = null
+var comp_laser_right: Node3D:
+	get: return composition_controller_rays.right_layer
+var comp_laser_right_viewport: SubViewport:
+	get: return composition_controller_rays.right_viewport
+var comp_laser_left: Node3D:
+	get: return composition_controller_rays.left_layer
+var comp_laser_left_viewport: SubViewport:
+	get: return composition_controller_rays.left_viewport
 const LASER_QUAD_LENGTH := 0.4
 const LASER_QUAD_WIDTH := 0.003
 const LASER_START_OFFSET := 0.06
@@ -3391,36 +3396,4 @@ func _make_laser_gradient() -> ImageTexture:
 	for y in range(256):
 		var a = 1.0 - float(y) / 255.0
 		img.set_pixel(0, y, Color(1, 1, 1, a))
-	return ImageTexture.create_from_image(img)
-
-# Separate from _make_laser_gradient() (2026-08-24) - that one is shared with
-# the real 3D "Laser" CapsuleMesh's material (normal projection mode), which
-# already looks right; this is only for the composition-space quad
-# replacement, which needed actual pixel width to render rounded end caps
-# (a capsule/stadium alpha mask - matching the real Laser's own CapsuleMesh
-# shape - combined with the existing length-fade gradient), unlike the
-# original's 1px-wide texture that had no room for horizontal shaping.
-func _make_comp_laser_texture(width: int, height: int) -> ImageTexture:
-	var img = Image.create(width, height, false, Image.FORMAT_RGBA8)
-	var cap_r = float(width) * 0.5
-	var half_w = float(width) * 0.5
-	var body_top = cap_r
-	var body_bottom = float(height - 1) - cap_r
-	for y in range(height):
-		var fade = 1.0 - float(y) / float(height - 1)
-		var fy = float(y)
-		for x in range(width):
-			var nx = float(x) - (float(width) - 1.0) * 0.5
-			var shape_alpha = 0.0
-			if fy < body_top:
-				var dy = body_top - fy
-				var dist = sqrt(nx * nx + dy * dy)
-				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
-			elif fy > body_bottom:
-				var dy = fy - body_bottom
-				var dist = sqrt(nx * nx + dy * dy)
-				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
-			else:
-				shape_alpha = clampf(half_w - absf(nx) + 0.5, 0.0, 1.0)
-			img.set_pixel(x, y, Color(1, 1, 1, fade * shape_alpha))
 	return ImageTexture.create_from_image(img)
