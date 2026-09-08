@@ -19,22 +19,22 @@ func save_state():
 	save.set_value("screen", "gamma_pct", main.settings.gamma_pct)
 	save.set_value("screen", "ambient_mode", main.settings.ambient_mode)
 	save.set_value("screen", "ambient_color", main.settings.ambient_color)
-	save.set_value("screen", "cursor_mode", main.cursor_mode)
-	save.set_value("screen", "pointer_steady", main.pointer_steady)
-	save.set_value("screen", "double_click_mode", main.double_click_mode)
-	save.set_value("screen", "codec_preference", main.codec_preference)
-	save.set_value("screen", "grid_mode_enabled", main.grid_mode_enabled)
-	save.set_value("diagnostics", "performance_overlay", main.performance_overlay_enabled)
-	save.set_value("ai_3d", "gpu_priority", main.ai_3d_gpu_priority)
+	save.set_value("screen", "cursor_mode", main.settings.cursor_mode)
+	save.set_value("screen", "pointer_steady", main.settings.pointer_steady)
+	save.set_value("screen", "double_click_mode", main.settings.double_click_mode)
+	save.set_value("screen", "codec_preference", main.settings.codec_preference)
+	save.set_value("screen", "grid_mode_enabled", main.settings.grid_mode_enabled)
+	save.set_value("diagnostics", "performance_overlay", main.settings.performance_overlay_enabled)
+	save.set_value("ai_3d", "gpu_priority", main.settings.ai_3d_gpu_priority)
 	save.set_value("controller", "active", main.controller_mapper.active)
 	save.set_value("controller", "ctrl_type", main.controller_mapper.ctrl_type)
 	save.set_value("controller", "btn_toggle", main.controller_mapper.btn_toggle)
 	save.set_value("controller", "primary_hand", main.controller_mapper.primary_hand)
-	save.set_value("controller", "hand_tracking_enabled", main.tracking_mode)
-	save.set_value("stream", "auto_reconnect", main.auto_reconnect_enabled)
-	save.set_value("stream", "quick_start", main.quick_start_enabled)
-	save.set_value("stream", "idle_timeout_min", main.idle_timeout_min)
-	save.set_value("local_capture", "restore_token", main.pipewire_restore_token)
+	save.set_value("controller", "hand_tracking_enabled", main.settings.tracking_mode)
+	save.set_value("stream", "auto_reconnect", main.settings.auto_reconnect_enabled)
+	save.set_value("stream", "quick_start", main.settings.quick_start_enabled)
+	save.set_value("stream", "idle_timeout_min", main.settings.idle_timeout_min)
+	save.set_value("local_capture", "restore_token", main.settings.pipewire_restore_token)
 	save.save("user://app_state.cfg")
 	save_host_state()
 
@@ -372,22 +372,22 @@ func load_state():
 		main.settings.gamma_pct = AppSettings.DEFAULT_GAMMA_PCT
 	main.settings.ambient_mode = clampi(save.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, main.ambient_mode_labels.size() - 1)
 	main.settings.ambient_color = clampi(save.get_value("screen", "ambient_color", AppSettings.DEFAULT_AMBIENT_COLOR), 0, main.ambient_color_labels.size() - 1)
-	main.cursor_mode = save.get_value("screen", "cursor_mode", 1)
-	var saved_steady = save.get_value("screen", "pointer_steady", 1)
+	main.settings.cursor_mode = save.get_value("screen", "cursor_mode", AppSettings.DEFAULT_CURSOR_MODE)
+	var saved_steady = save.get_value("screen", "pointer_steady", AppSettings.DEFAULT_POINTER_STEADY)
 	if saved_steady is bool:
-		main.pointer_steady = 1 if saved_steady else 0
+		main.settings.pointer_steady = 1 if saved_steady else 0
 	else:
-		main.pointer_steady = clampi(int(saved_steady), 0, main.pointer_steady_labels.size() - 1)
-	main.double_click_mode = clampi(save.get_value("screen", "double_click_mode", 0), 0, 1)
-	main.codec_preference = save.get_value("screen", "codec_preference", 1)
-	main.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", true)
-	main.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", false)
-	main.ai_3d_gpu_priority = clampi(save.get_value("ai_3d", "gpu_priority", 0), 0, 1)
+		main.settings.pointer_steady = clampi(int(saved_steady), 0, main.pointer_steady_labels.size() - 1)
+	main.settings.double_click_mode = clampi(save.get_value("screen", "double_click_mode", AppSettings.DEFAULT_DOUBLE_CLICK_MODE), 0, 1)
+	main.settings.codec_preference = save.get_value("screen", "codec_preference", AppSettings.DEFAULT_CODEC_PREFERENCE)
+	main.settings.grid_mode_enabled = save.get_value("screen", "grid_mode_enabled", AppSettings.DEFAULT_GRID_MODE_ENABLED)
+	main.settings.performance_overlay_enabled = save.get_value("diagnostics", "performance_overlay", AppSettings.DEFAULT_PERFORMANCE_OVERLAY_ENABLED)
+	main.settings.ai_3d_gpu_priority = clampi(save.get_value("ai_3d", "gpu_priority", AppSettings.DEFAULT_AI_3D_GPU_PRIORITY), 0, 1)
 	var raw_tracking = save.get_value("controller", "hand_tracking_enabled", 0)
 	if raw_tracking is bool:
-		main.tracking_mode = 1 if raw_tracking else 0
+		main.settings.tracking_mode = 1 if raw_tracking else 0
 	else:
-		main.tracking_mode = int(raw_tracking)
+		main.settings.tracking_mode = int(raw_tracking)
 	if main.controller_mapper:
 		if save.has_section_key("controller", "active"):
 			main.controller_mapper.active = save.get_value("controller", "active", false)
@@ -408,10 +408,10 @@ func load_state():
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
 	main.screen_manager.apply_curvature()
-	main.auto_reconnect_enabled = save.get_value("stream", "auto_reconnect", true)
-	main.quick_start_enabled = save.get_value("stream", "quick_start", false)
-	main.idle_timeout_min = save.get_value("stream", "idle_timeout_min", 0)
-	main.pipewire_restore_token = save.get_value("local_capture", "restore_token", "")
+	main.settings.auto_reconnect_enabled = save.get_value("stream", "auto_reconnect", AppSettings.DEFAULT_AUTO_RECONNECT_ENABLED)
+	main.settings.quick_start_enabled = save.get_value("stream", "quick_start", AppSettings.DEFAULT_QUICK_START_ENABLED)
+	main.settings.idle_timeout_min = save.get_value("stream", "idle_timeout_min", AppSettings.DEFAULT_IDLE_TIMEOUT_MIN)
+	main.settings.pipewire_restore_token = save.get_value("local_capture", "restore_token", AppSettings.DEFAULT_PIPEWIRE_RESTORE_TOKEN)
 	if main.stream_backend and main.stream_backend._v2:
 		main.stream_backend._v2.set_auto_reconnect(main.auto_reconnect_enabled)
 

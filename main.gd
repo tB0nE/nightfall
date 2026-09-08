@@ -57,7 +57,9 @@ var _pair_pin: String = ""
 var _connecting_ip: String = ""
 var _connect_timeout_pending: bool = false
 var _auto_connect: bool = false
-var quick_start_enabled: bool = false
+var quick_start_enabled: bool:
+	get: return settings.quick_start_enabled
+	set(value): settings.quick_start_enabled = value
 # Whether the host is drawing its own cursor into the captured frame (Polaris-only:
 # a POST /polaris/v1/session/cursor endpoint neither Sunshine nor Apollo expose today).
 # Support is detected per-connection from the launch response, not guessed up front,
@@ -80,7 +82,9 @@ var sbs_mode: int = 0
 # settings_controller.gd's toggle_ai_3d_enabled()/cycle_ai_3d_mode().
 var ai_3d_model: int = 0 # index into settings_controller.ai_3d_models (MiDaS-256, MiDaS-192, DA-V2-252)
 var ai_3d_speed: int = 0 # 0=Off, 1=Auto, 2=Fast, 3=Standard
-var ai_3d_gpu_priority: int = 0 # 0=Stream (low-priority OpenCL), 1=Default driver priority
+var ai_3d_gpu_priority: int: # 0=Stream (low-priority OpenCL), 1=Default driver priority
+	get: return settings.ai_3d_gpu_priority
+	set(value): settings.ai_3d_gpu_priority = value
 var ai_3d_last_mode: int = 1 # 1-3, whichever mode was last active - see toggle_ai_3d_enabled() above
 var ai_3d_debug: int = 0 # 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input
 # GPU/CPU preference for whichever model is selected (main.ai_3d_model) -
@@ -127,7 +131,9 @@ var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
 
 var _is_using_hands: bool = false
-var tracking_mode: int = 0
+var tracking_mode: int:
+	get: return settings.tracking_mode
+	set(value): settings.tracking_mode = value
 var tracking_labels: Array = ["Off", "Hands"]
 
 # OS/runtime controller render models (2026-08-25, see the archived
@@ -160,7 +166,9 @@ var auto_detect_running: bool = false
 var detection_history: Array = []
 var mouse_sensitivity: float = 0.002
 var grabbed_node: Node3D = null
-var pipewire_restore_token: String = ""
+var pipewire_restore_token: String:
+	get: return settings.pipewire_restore_token
+	set(value): settings.pipewire_restore_token = value
 var grab_distance: float = 0.0
 var grab_offset: Vector3 = Vector3.ZERO
 var grabbed_bar: MeshInstance3D = null
@@ -172,7 +180,9 @@ var grab_start_node_basis: Basis = Basis()
 var grab_start_node_euler: Vector3 = Vector3.ZERO
 var grab_start_primary_transform: Transform3D = Transform3D.IDENTITY
 var grab_group_start_transforms: Dictionary = {}
-var grid_mode_enabled: bool = true
+var grid_mode_enabled: bool:
+	get: return settings.grid_mode_enabled
+	set(value): settings.grid_mode_enabled = value
 var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 var stats_timer: float = 0.0
 var stats_fps: float = 0.0
@@ -181,7 +191,9 @@ var stats_sample_timer: float = 0.0
 var stats_app_frames: int = 0
 var stats_video_updates: int = 0
 var stats_network_events: int = 0
-var performance_overlay_enabled: bool = false
+var performance_overlay_enabled: bool:
+	get: return settings.performance_overlay_enabled
+	set(value): settings.performance_overlay_enabled = value
 var performance_overlay_timer: float = 0.0
 var _performance_previous_window: Dictionary = {}
 # Passthrough is real extra GPU cost (native OpenXR alpha-blend, composited
@@ -327,14 +339,20 @@ var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
 var bitrate_labels: Array = ["Auto", "5", "10", "15", "20", "30", "40", "50", "60", "80", "100", "120"]
 var display_refresh_rate: float = 72.0
 
-var cursor_mode: int = 1
+var cursor_mode: int:
+	get: return settings.cursor_mode
+	set(value): settings.cursor_mode = value
 var cursor_labels: Array = ["Circle", "Pointer"]
-var pointer_steady: int = 1
+var pointer_steady: int:
+	get: return settings.pointer_steady
+	set(value): settings.pointer_steady = value
 var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
 # Touch-controller double-click gesture. Standard leaves host-side recognition
 # untouched; Chord maps a near-simultaneous trigger+grip press to two left
 # clicks. Hand tracking always retains its normal pinch-twice behaviour.
-var double_click_mode: int = 0
+var double_click_mode: int:
+	get: return settings.double_click_mode
+	set(value): settings.double_click_mode = value
 var double_click_mode_labels: Array = ["Standard", "Chord"]
 var _steady_hit: Vector3 = Vector3.ZERO
 var _steady_active: bool = false
@@ -344,7 +362,9 @@ var _steady_velocity: Vector3 = Vector3.ZERO
 var _steady_raw_hit: Vector3 = Vector3.ZERO
 var _steady_last_usec: int = 0
 var _steady_last_frame: int = -1
-var codec_preference: int = 1
+var codec_preference: int:
+	get: return settings.codec_preference
+	set(value): settings.codec_preference = value
 var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
@@ -658,9 +678,13 @@ var _ui_cursor_btn: Button
 var _ui_steady_btn: Button
 var _ui_double_click_btn: Button
 var _ui_codec_btn: Button
-var auto_reconnect_enabled: bool = true
+var auto_reconnect_enabled: bool:
+	get: return settings.auto_reconnect_enabled
+	set(value): settings.auto_reconnect_enabled = value
 var _reconnecting: bool = false
-var idle_timeout_min: int = 0
+var idle_timeout_min: int:
+	get: return settings.idle_timeout_min
+	set(value): settings.idle_timeout_min = value
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
