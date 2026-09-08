@@ -8,6 +8,8 @@ func _init():
 	_test_platform_policy()
 	_test_app_persistence_round_trip()
 	_test_legacy_app_migrations()
+	_test_host_persistence_round_trip()
+	_test_legacy_host_migrations()
 	print("All app_settings tests passed")
 	quit()
 
@@ -124,6 +126,71 @@ func _test_legacy_app_migrations() -> void:
 	assert(settings.contrast_pct == 100)
 	assert(settings.gamma_pct == 100)
 	assert(settings.sharpen_mode == 0)
+
+func _test_host_persistence_round_trip() -> void:
+	var source := HostSettings.new()
+	source.stream_fps = 120
+	source.resolution_scale_pct = 70
+	source.native_resolution = Vector2i(3840, 2160)
+	source.is_polaris_host = true
+	source.resolution_idx = 3
+	source.bitrate_idx = 7
+	source.double_h = true
+	source.sbs_mode = 2
+	source.ai_3d_model = 4
+	source.ai_3d_speed = 3
+	source.ai_3d_debug = 2
+	source.ai_3d_last_mode = 3
+	source.ai_3d_backend_pref = 1
+	source.ai_3d_hz_cap = 30
+	source.ai_3d_separation_pct = 125
+	source.ai_3d_convergence_pct = 60
+	source.ai_3d_cursor_position = -1
+	var config := ConfigFile.new()
+	SettingsPersistence.write_host(config, "host", source)
+	assert(config.get_value("host", "host_settings_version") == HostSettings.HOST_STATE_VERSION)
+
+	var loaded := HostSettings.new()
+	SettingsPersistence.read_host(
+		config, "host", loaded, [30, 60, 120], [100, 70, 50], 7, 5)
+	assert(loaded.stream_fps == 120)
+	assert(loaded.resolution_scale_pct == 70)
+	assert(loaded.native_resolution == Vector2i(3840, 2160))
+	assert(loaded.is_polaris_host)
+	assert(loaded.resolution_idx == 3)
+	assert(loaded.bitrate_idx == 7)
+	assert(loaded.double_h)
+	assert(loaded.sbs_mode == 2)
+	assert(loaded.ai_3d_model == 4)
+	assert(loaded.ai_3d_speed == 3)
+	assert(loaded.ai_3d_debug == 2)
+	assert(loaded.ai_3d_last_mode == 3)
+	assert(loaded.ai_3d_backend_pref == 1)
+	assert(loaded.ai_3d_hz_cap == 30)
+	assert(loaded.ai_3d_separation_pct == 125)
+	assert(loaded.ai_3d_convergence_pct == 60)
+	assert(loaded.ai_3d_cursor_position == -1)
+
+func _test_legacy_host_migrations() -> void:
+	var config := ConfigFile.new()
+	config.set_value("old-speed", "sbs_mode", 0)
+	config.set_value("old-speed", "ai_3d_model", 2)
+	config.set_value("old-speed", "ai_3d_speed", 4)
+	config.set_value("old-speed", "ai_3d_cursor_position", 2)
+	config.set_value("old-speed", "ai_3d_hz_cap", 99)
+	var old_speed := HostSettings.new()
+	SettingsPersistence.read_host(
+		config, "old-speed", old_speed, [30, 60], [100], 7, 5)
+	assert(old_speed.ai_3d_speed == 3)
+	assert(old_speed.ai_3d_cursor_position == 1)
+	assert(old_speed.ai_3d_hz_cap == 20)
+
+	config.set_value("flat", "stereo_mode", 4)
+	var flat := HostSettings.new()
+	SettingsPersistence.read_host(config, "flat", flat, [30, 60], [100], 7, 5)
+	assert(flat.sbs_mode == 0)
+	assert(flat.ai_3d_model == 2)
+	assert(flat.ai_3d_speed == 1)
 
 func _test_general_defaults_and_reset() -> void:
 	var settings := AppSettings.new()
