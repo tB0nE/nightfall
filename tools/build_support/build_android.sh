@@ -24,6 +24,29 @@ TEMPLATES="${NIGHTFALL_ANDROID_SOURCE_TEMPLATE:-$GODOT_TEMPLATE_DIR/android_sour
 CONFIG="export_presets.cfg"
 CONFIG_BACKUP="export_presets.cfg.bak"
 
+# The Godot export packages the prebuilt streaming GDExtension. Refuse to
+# silently ship an older binary when its native sources changed; otherwise new
+# methods can appear in GDScript while being absent from the installed .so.
+STREAM_VARIANT="debug"
+if [ "$PRESET" = "NightfallRelease" ]; then
+  STREAM_VARIANT="release"
+fi
+STREAM_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libnightfall-stream.android.template_${STREAM_VARIANT}.arm64.so"
+if [ ! -f "$STREAM_LIBRARY" ]; then
+  echo "Error: Android streaming GDExtension not found at $STREAM_LIBRARY"
+  echo "Build it first using the Android instructions in BUILD.md."
+  exit 1
+fi
+STREAM_SOURCE_NEWER="$(find \
+  "$SCRIPT_DIR/addons/nightfall-stream/src" \
+  "$SCRIPT_DIR/addons/nightfall-stream/CMakeLists.txt" \
+  -type f -newer "$STREAM_LIBRARY" -print -quit)"
+if [ -n "$STREAM_SOURCE_NEWER" ]; then
+  echo "Error: Android streaming GDExtension is stale (newer source: $STREAM_SOURCE_NEWER)"
+  echo "Rebuild the $STREAM_VARIANT streaming GDExtension using BUILD.md, then retry."
+  exit 1
+fi
+
 # Build the Android OpenXR composition provider before export. It is kept as
 # a separate GDExtension because the generic vcpkg godot-cpp API omits the
 # OpenXR module classes it derives from. Linux keeps using the legacy Godot

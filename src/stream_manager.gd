@@ -642,6 +642,10 @@ func update_stats():
 		return
 	if not main._ui_status_label:
 		return
+	# Leave short user-facing confirmations readable. Important lifecycle
+	# messages are written through their own paths and can still replace them.
+	if main.ui_controller and main.ui_controller.is_temporary_status_active():
+		return
 	if not _v2_yuv_rect:
 		_setup_v2_yuv_rect()
 	_update_yuv_shader_params()

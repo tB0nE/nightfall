@@ -26,6 +26,7 @@ class FakeNativeRenderer:
 func _init():
 	_test_path_resolution()
 	_test_path_application()
+	_test_cursor_path()
 	print("All video_presentation tests passed")
 	quit()
 
@@ -60,3 +61,9 @@ func _test_path_application() -> void:
 	legacy.in_use = false
 	assert(presentation.apply_mode(0, true) == VideoPresentation.Path.MESH)
 	assert(legacy.calls == ["mono"])
+
+func _test_cursor_path() -> void:
+	assert(not VideoPresentation.uses_independent_screen_cursor(false, false))
+	assert(VideoPresentation.uses_independent_screen_cursor(true, false))
+	assert(VideoPresentation.uses_independent_screen_cursor(false, true))
+	assert(VideoPresentation.uses_independent_screen_cursor(true, true))
