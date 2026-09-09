@@ -18,6 +18,7 @@ public class GodotApp extends GodotActivity {
 	public static String jniResult = "NOT_RUN";
 	public static DepthEstimator depthEstimator;
 	public static WifiManager.MulticastLock multicastLock;
+	private static Context appContext;
 
 	static {
 		if (BuildConfig.FLAVOR.equals("mono")) {
@@ -45,10 +46,10 @@ public class GodotApp extends GodotActivity {
 				multicastLock = wifi.createMulticastLock("nightfall-mdns");
 				multicastLock.setReferenceCounted(false);
 				multicastLock.acquire();
-				Log.i("GODOT", "MulticastLock acquired for mDNS discovery");
+				DiagnosticLog.info("GODOT", "MulticastLock acquired for mDNS discovery");
 			}
 		} catch (Exception e) {
-			Log.e("GODOT", "Failed to acquire MulticastLock: " + e.getMessage());
+			DiagnosticLog.error("GODOT", "Failed to acquire MulticastLock", e);
 		}
 	}
 
@@ -66,16 +67,24 @@ public class GodotApp extends GodotActivity {
 		SplashScreen.installSplashScreen(this);
 		EdgeToEdge.enable(this);
 		super.onCreate(savedInstanceState);
-		setAndroidContext(getApplicationContext());
-		acquireMulticastLock(getApplicationContext());
+		appContext = getApplicationContext();
+		DiagnosticLog.initialize(appContext);
+		DiagnosticLog.info("GODOT", "Native library initialization: " + jniResult);
+		setAndroidContext(appContext);
+		acquireMulticastLock(appContext);
 		depthEstimator = new DepthEstimator();
-		depthEstimator.initialize(getApplicationContext());
-		Log.i("GODOT", "DepthEstimator initialized: " + depthEstimator.isInitialized());
+		depthEstimator.initialize(appContext);
+		DiagnosticLog.info("GODOT", "DepthEstimator initialized: " + depthEstimator.isInitialized());
 		try {
 			java.io.FileOutputStream fos = openFileOutput("jni_result.txt", MODE_PRIVATE);
 			fos.write(jniResult.getBytes());
 			fos.close();
 		} catch (Exception ignored) {}
+	}
+
+	public static String exportDiagnostics() {
+		if (appContext == null) return "ERROR: Nightfall context unavailable";
+		return DiagnosticLog.export(appContext);
 	}
 
 	public static void submitDepthFrame(byte[] pixels, int w, int h) {

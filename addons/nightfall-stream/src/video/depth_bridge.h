@@ -46,6 +46,7 @@ public:
     float get_depth_last_age_ms();
     int get_depth_last_skipped_frames();
     String get_device_model();
+    String export_diagnostics();
 
 protected:
     static void _bind_methods();

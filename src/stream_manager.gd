@@ -497,7 +497,7 @@ func on_pair_pressed():
 		main._ui_status_label.text = "Pairing with " + ip + "..."
 		main._log("[PAIR] Starting pair with %s:%d..." % [ip, pair_port])
 		var pin = _b().start_pair(ip, pair_port)
-		main._log("[PAIR] start_pair returned: %s (type=%s)" % [str(pin), str(typeof(pin))])
+		main._log("[PAIR] start_pair completed (result type=%s)" % str(typeof(pin)))
 		if str(pin) == "" or str(pin) == "0":
 			main._ui_status_label.text = "Failed to connect to " + ip
 			main._log("[PAIR] FAILED - no pin returned")

@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.util.Log;
+import com.godot.game.diagnostics.Log;
 
 import org.tensorflow.lite.Interpreter;
 import org.tensorflow.lite.gpu.GpuDelegate;
@@ -802,7 +802,7 @@ public class DepthEstimator {
                 Log.i(TAG, String.format(java.util.Locale.US,
                         "%s preload and warm-up complete in %.1fms",
                         variant.label, (System.nanoTime() - warmStartNs) / 1_000_000.0f));
-            } catch (Exception e) {
+            } catch (Exception | LinkageError e) {
                 Log.e(TAG, variant.label + " startup warm-up failed", e);
                 String failureReason = "GPU warm-up failed: " + e.getClass().getSimpleName();
                 releaseGpuVariant(variant);
@@ -1391,12 +1391,17 @@ public class DepthEstimator {
     private void ensureGpuVariantLoaded(GpuVariant v) {
         if (v.loadAttempted) return;
         v.loadAttempted = true;
+        long loadStartNs = System.nanoTime();
         try {
             v.inputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 3 * 4)
                     .order(ByteOrder.nativeOrder());
             v.outputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 4)
                     .order(ByteOrder.nativeOrder());
             MappedByteBuffer buffer = loadModelFile(v.assetFile);
+            long mappedNs = System.nanoTime();
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "%s asset mapped: %d bytes in %.1fms",
+                    v.label, buffer.capacity(), (mappedNs - loadStartNs) / 1_000_000.0f));
             GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
             // Matches Gilleece/moonlight-android-xr's own config - the model
             // is fp16, so allowing precision loss just means "run at the
@@ -1412,8 +1417,10 @@ public class DepthEstimator {
             Interpreter.Options opts = new Interpreter.Options();
             opts.addDelegate(v.delegate);
             v.interp = new Interpreter(buffer, opts);
-            Log.i(TAG, v.label + " model loaded with GPU delegate");
-        } catch (Exception e) {
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "%s model loaded with GPU delegate in %.1fms",
+                    v.label, (System.nanoTime() - mappedNs) / 1_000_000.0f));
+        } catch (Exception | LinkageError e) {
             Log.w(TAG, v.label + " model/GPU delegate not available", e);
             v.failureReason = "GPU delegate initialization failed: " + e.getClass().getSimpleName();
             v.interp = null;
@@ -1897,11 +1904,12 @@ public class DepthEstimator {
     }
 
     private MappedByteBuffer loadModelFile(String filename) throws IOException {
-        AssetFileDescriptor fd = appContext.getAssets().openFd(filename);
-        FileInputStream is = new FileInputStream(fd.getFileDescriptor());
-        FileChannel ch = is.getChannel();
-        long offset = fd.getStartOffset();
-        long length = fd.getDeclaredLength();
-        return ch.map(FileChannel.MapMode.READ_ONLY, offset, length);
+        try (AssetFileDescriptor fd = appContext.getAssets().openFd(filename);
+             FileInputStream is = new FileInputStream(fd.getFileDescriptor())) {
+            FileChannel ch = is.getChannel();
+            long offset = fd.getStartOffset();
+            long length = fd.getDeclaredLength();
+            return ch.map(FileChannel.MapMode.READ_ONLY, offset, length);
+        }
     }
 }

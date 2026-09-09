@@ -522,6 +522,32 @@ func build_ui():
 	main._ui_center_btn.add_theme_stylebox_override("pressed", center_hover)
 	top_row.add_child(main._ui_center_btn)
 
+	main._ui_log_btn = Button.new()
+	main._ui_log_btn.text = "\u2193"
+	main._ui_log_btn.tooltip_text = "Export diagnostic log"
+	main._ui_log_btn.focus_mode = Control.FOCUS_NONE
+	main._ui_log_btn.custom_minimum_size = Vector2(60, 36)
+	main._ui_log_btn.add_theme_font_size_override("font_size", 24)
+	main._ui_log_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	main._ui_log_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var log_style = main._btn_style.duplicate()
+	log_style.content_margin_left = 10
+	log_style.content_margin_right = 10
+	log_style.content_margin_top = 2
+	log_style.content_margin_bottom = 2
+	log_style.set_corner_radius_all(0)
+	var log_hover = main._btn_hover.duplicate()
+	log_hover.content_margin_left = 10
+	log_hover.content_margin_right = 10
+	log_hover.content_margin_top = 2
+	log_hover.content_margin_bottom = 2
+	log_hover.set_corner_radius_all(0)
+	main._ui_log_btn.add_theme_stylebox_override("normal", log_style)
+	main._ui_log_btn.add_theme_stylebox_override("hover", log_hover)
+	main._ui_log_btn.add_theme_stylebox_override("pressed", log_hover)
+	main._ui_log_btn.visible = OS.get_name() == "Android"
+	top_row.add_child(main._ui_log_btn)
+
 	main._ui_stats_btn = Button.new()
 	main._ui_stats_btn.text = "Stats"
 	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
@@ -868,6 +894,7 @@ func build_ui():
 	main._ui_disconnect_btn.button_down.connect(func(): main.disconnect_stream())
 	main._ui_close_btn.button_down.connect(func(): main._toggle_ui())
 	main._ui_center_btn.button_down.connect(func(): main._reset_positions())
+	main._ui_log_btn.button_down.connect(func(): main.export_diagnostics())
 	main._ui_stats_btn.button_down.connect(func(): main.toggle_performance_overlay())
 	main._ui_disconnect_btn.visible = main.is_streaming
 	update_stats_btn_state()

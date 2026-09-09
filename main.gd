@@ -519,8 +519,12 @@ var _screen_mesh_original_mat: Material:
 	set(v):
 		if primary_screen: primary_screen._original_mat = v
 
+const LOG_CURRENT_PATH := "user://nightfall-current.log"
+const LOG_PREVIOUS_PATH := "user://nightfall-previous.log"
+const LEGACY_LOG_PATH := "user://debug.log"
 var _log_lines: PackedStringArray = []
 var _log_file_initialized: bool = false
+var _log_session_rotated: bool = false
 var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
@@ -577,6 +581,7 @@ var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button
 var _ui_center_btn: Button
+var _ui_log_btn: Button
 var _ui_stats_btn: Button
 
 var _btn_style: StyleBoxFlat
@@ -799,14 +804,29 @@ func parse_ip_port(text: String) -> Array:
 	return [ip_part, port]
 
 func _log(msg: String):
-	_log_lines.append(msg)
+	_log_lines.append("[%s] %s" % [Time.get_datetime_string_from_system(false, true), msg])
 	push_warning("NF: %s" % msg)
+
+func _rotate_session_log():
+	if _log_session_rotated:
+		return
+	_log_session_rotated = true
+	var current_path = ProjectSettings.globalize_path(LOG_CURRENT_PATH)
+	var previous_path = ProjectSettings.globalize_path(LOG_PREVIOUS_PATH)
+	if FileAccess.file_exists(previous_path):
+		DirAccess.remove_absolute(previous_path)
+	if FileAccess.file_exists(current_path):
+		DirAccess.rename_absolute(current_path, previous_path)
+	elif FileAccess.file_exists(LEGACY_LOG_PATH):
+		# Preserve the final pre-rotation session once when upgrading.
+		DirAccess.rename_absolute(ProjectSettings.globalize_path(LEGACY_LOG_PATH), previous_path)
 
 func _flush_log():
 	if _log_lines.is_empty():
 		return
+	_rotate_session_log()
 	var mode = FileAccess.READ_WRITE if _log_file_initialized else FileAccess.WRITE
-	var f = FileAccess.open("user://debug.log", mode)
+	var f = FileAccess.open(LOG_CURRENT_PATH, mode)
 	if f:
 		if _log_file_initialized:
 			f.seek_end()
@@ -815,6 +835,23 @@ func _flush_log():
 		f.close()
 		_log_lines.clear()
 		_log_file_initialized = true
+
+func export_diagnostics():
+	var device_codename = stream_backend.get_device_model() if stream_backend else "unknown"
+	_log("[DIAGNOSTICS] Export requested: phase=%s streaming=%s device=%s requested_resolution=%s fps=%d codec=%d ai3d_mode=%d model=%d backend=%d priority=%d hz_cap=%d" % [
+		session_lifecycle.phase_name() if session_lifecycle else "unknown",
+		str(is_streaming), device_codename, str(compute_requested_resolution(false)),
+		settings.host.stream_fps, settings.codec_preference, settings.host.ai_3d_speed,
+		settings.host.ai_3d_model, settings.host.ai_3d_backend_pref,
+		settings.ai_3d_gpu_priority, settings.host.ai_3d_hz_cap])
+	_flush_log()
+	var result = stream_backend.export_diagnostics() if stream_backend else "ERROR: Streaming backend unavailable"
+	if result.begins_with("ERROR:"):
+		ui_controller.set_status("Log export failed")
+		_log("[DIAGNOSTICS] %s" % result)
+	else:
+		ui_controller.set_status("Saved: %s" % result)
+		_log("[DIAGNOSTICS] Saved to %s" % result)
 
 func _setup_comp_layer():
 	comp = CompositionLayerManager.new(self)
@@ -2161,6 +2198,10 @@ func _init_stream_backend():
 		str(_client_codec_support.get("av1", false)),
 		str(_client_codec_support.get("raw", true))])
 	v2_node.pair_completed.connect(func(s, m): stream_manager.on_pair_completed(s, m))
+	if v2_node.has_signal("log_message"):
+		v2_node.log_message.connect(func(message: String):
+			_log("[MOONLIGHT] %s" % message)
+		)
 	v2_node.stream_started.connect(func():
 		_on_stream_started()
 	)
@@ -2169,7 +2210,7 @@ func _init_stream_backend():
 	)
 	if v2_node.has_signal("restore_token_updated"):
 		v2_node.restore_token_updated.connect(func(tok):
-			_log("[PORTAL] Storing new restore token: " + tok)
+			_log("[PORTAL] Restore token updated")
 			settings.pipewire_restore_token = tok
 			state_manager.save_state()
 		)
