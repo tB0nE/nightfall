@@ -990,45 +990,10 @@ func setup_background_equirect():
 		Vector2(main.LASER_QUAD_WIDTH, main.LASER_QUAD_LENGTH))
 	main._log("[COMP] Controller ray composition layers created")
 
-	# Persistent controller position markers (2026-08-25) - the ray above only
-	# shows while the raycast is in an active pointing posture (raycast.enabled),
-	# so a resting/idle controller has no projectionless indicator at all. This
-	# is a small always-on dot shown at the tracked controller position whenever
-	# XRController3D.get_is_active() is true, independent of pointing posture -
-	# see main.gd's _update_marker_layers().
-	for side in ["right", "left"]:
-		var marker_layer = OpenXRCompositionLayerQuad.new()
-		marker_layer.name = "CompMarker%sLayer" % side.capitalize()
-		marker_layer.set_sort_order(998)
-		marker_layer.set_enable_hole_punch(false)
-		marker_layer.set_alpha_blend(true)
-		marker_layer.set_quad_size(Vector2(0.03, 0.03))
-		marker_layer.visible = false
-		main.xr_origin.add_child(marker_layer)
-
-		var marker_viewport = SubViewport.new()
-		marker_viewport.name = "CompMarker%sViewport" % side.capitalize()
-		marker_viewport.disable_3d = true
-		marker_viewport.transparent_bg = true
-		marker_viewport.size = Vector2i(64, 64)
-		marker_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-		main.add_child(marker_viewport)
-
-		var marker_circle = _make_cursor_circle_rect()
-		marker_circle.name = "MarkerCircle"
-		marker_circle.anchors_preset = 15
-		marker_circle.anchor_right = 1.0
-		marker_circle.anchor_bottom = 1.0
-		marker_circle.visible = true
-		marker_viewport.add_child(marker_circle)
-
-		marker_layer.set_layer_viewport(marker_viewport)
-		if side == "right":
-			main.comp_marker_right = marker_layer
-			main.comp_marker_right_circle = marker_circle
-		else:
-			main.comp_marker_left = marker_layer
-			main.comp_marker_left_circle = marker_circle
+	# Persistent controller position markers (2026-08-25) complement the ray
+	# layers: they remain visible while a controller is resting and the active
+	# pointing ray is hidden. Pose and visibility stay in main.gd for now.
+	main.composition_controller_markers.setup(main, main.xr_origin)
 	main._log("[COMP] Controller position marker composition layers created")
 
 	# Composite-only hand indicators (2026-08-27) - see main.gd's

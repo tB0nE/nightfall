@@ -295,6 +295,7 @@ var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
+var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
 
 var comp_cursor: Node3D:
 	get: return composition_pointers.cursor_layer
@@ -352,10 +353,14 @@ const LASER_START_OFFSET := 0.06
 # Inverse of the laser above: hidden while actively pointing/held (laser is
 # showing instead), and a faint always-on marker while resting/put down so
 # it can still be located.
-var comp_marker_right: Node3D = null
-var comp_marker_left: Node3D = null
-var comp_marker_right_circle: ColorRect = null
-var comp_marker_left_circle: ColorRect = null
+var comp_marker_right: Node3D:
+	get: return composition_controller_markers.right_layer
+var comp_marker_left: Node3D:
+	get: return composition_controller_markers.left_layer
+var comp_marker_right_circle: ColorRect:
+	get: return composition_controller_markers.right_circle
+var comp_marker_left_circle: ColorRect:
+	get: return composition_controller_markers.left_circle
 const MARKER_IDLE_ALPHA := 0.16
 
 # Composition-space hand indicator (2026-08-27) - see _update_hand_indicator_
