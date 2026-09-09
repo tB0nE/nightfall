@@ -25,6 +25,13 @@ static func resolve_path(composition_available: bool, native_eligible: bool, ste
 		return Path.NATIVE
 	return Path.LEGACY_STEREO if stereo_mode > 0 else Path.LEGACY_MONO
 
+static func uses_independent_screen_cursor(composition_active: bool, native_active: bool) -> bool:
+	# A single cursor layer survives mono/stereo presentation changes. Moving
+	# between that layer and cursors embedded in the video viewports leaves the
+	# outgoing viewport hidden or disabled for a frame and proved unreliable on
+	# Quest GLES. Keep one route for every composition-backed video mode.
+	return composition_active or native_active
+
 func requested_path(stereo_mode: int) -> Path:
 	return resolve_path(
 		legacy_renderer != null and legacy_renderer.available,

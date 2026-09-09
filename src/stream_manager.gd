@@ -497,7 +497,7 @@ func on_pair_pressed():
 		main._ui_status_label.text = "Pairing with " + ip + "..."
 		main._log("[PAIR] Starting pair with %s:%d..." % [ip, pair_port])
 		var pin = _b().start_pair(ip, pair_port)
-		main._log("[PAIR] start_pair returned: %s (type=%s)" % [str(pin), str(typeof(pin))])
+		main._log("[PAIR] start_pair completed (result type=%s)" % str(typeof(pin)))
 		if str(pin) == "" or str(pin) == "0":
 			main._ui_status_label.text = "Failed to connect to " + ip
 			main._log("[PAIR] FAILED - no pin returned")
@@ -641,6 +641,10 @@ func update_stats():
 	if not main.is_streaming:
 		return
 	if not main._ui_status_label:
+		return
+	# Leave short user-facing confirmations readable. Important lifecycle
+	# messages are written through their own paths and can still replace them.
+	if main.ui_controller and main.ui_controller.is_temporary_status_active():
 		return
 	if not _v2_yuv_rect:
 		_setup_v2_yuv_rect()

@@ -254,40 +254,19 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 	s.comp_grab_bar_viewport.name = "CompGrabBarViewport_%s" % s.monitor_id
 	s.comp_grab_bar_viewport.disable_3d = true
 	s.comp_grab_bar_viewport.transparent_bg = true
-	# Aspect matches the quad_size set in main.gd's _update_grab_bar_layers()
-	# (ms.x*0.134 x ms.x*0.009, ~14.9:1) - a mismatched viewport aspect would
-	# stretch the panel non-uniformly onto the quad.
-	s.comp_grab_bar_viewport.size = Vector2i(256, 18)
+	# The primary screen's four shortcut icons share this existing layer with
+	# the grab bar. This is intentionally one wider transparent viewport, not
+	# four more OpenXR layers. Secondary screens render only the centered bar.
+	s.comp_grab_bar_viewport.size = ScreenShortcutBar.COMP_VIEWPORT_SIZE
+	# Keep the render target resident while this composition layer is active.
+	# UPDATE_ONCE repeatedly tears down/recreates it as hover state changes on
+	# GLES, producing texture_free errors on Quest.
 	s.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	main.add_child(s.comp_grab_bar_viewport)
-
-	# PanelContainer + StyleBoxFlat (2026-08-24, replacing an earlier
-	# hand-rolled pixel-SDF pill texture) - reuses the exact same technique
-	# the menu/keyboard's own "CompGrabBar" already uses (see
-	# vr_panel_base.gd's _setup_grab_bar()), a small corner radius relative
-	# to the bar's height for a rounded-rectangle "bar" look, not a full
-	# stadium/pill. Also matters more now that the visual quad is much
-	# thinner than the collision hitbox (see _update_grab_bar_layers()) -
-	# a small fixed pixel radius reads correctly at that thinner aspect,
-	# where the earlier radius-scales-with-height approach didn't.
-	var grab_bar_panel = PanelContainer.new()
-	grab_bar_panel.name = "GrabBarPanel"
-	grab_bar_panel.anchors_preset = 15
-	grab_bar_panel.anchor_right = 1.0
-	grab_bar_panel.anchor_bottom = 1.0
-	var grab_bar_style = StyleBoxFlat.new()
-	# 0.05 idle alpha, matching the corner handles' same idle/hover/grabbed
-	# dynamics (2026-08-24) - xr_interaction.gd's _set_grab_bar_color() now
-	# mirrors the real dynamic alpha (0.01/0.05/0.15/0.3/0.4 depending on
-	# state) onto this stylebox every time it changes; this is just the
-	# initial value before the first such call.
-	grab_bar_style.bg_color = Color(1, 1, 1, 0.05)
-	grab_bar_style.set_corner_radius_all(6)
-	grab_bar_panel.add_theme_stylebox_override("panel", grab_bar_style)
-	s.comp_grab_bar_viewport.add_child(grab_bar_panel)
+	main.screen_shortcuts.populate_composition_viewport(s, s.comp_grab_bar_viewport)
 
 	s.comp_grab_bar.set_layer_viewport(s.comp_grab_bar_viewport)
-	main._log("[COMP] Grab-bar composition layer created (%s)" % s.monitor_id)
+	main._log("[COMP] Grab-bar/shortcut composition layer created (%s)" % s.monitor_id)
 
 	# Corner-handle visuals (2026-08-24) - see VRScreen's comp_corner_layers
 	# comment. Reuses VRScreen._make_corner_texture() directly (the exact
@@ -888,18 +867,23 @@ func process_ambient(delta: float):
 		_disable_ambient()
 		return
 	if not _ambient_layer.visible:
-		_ambient_layer.visible = true
 		_update_ambient_geometry()
+		# Keep the composition layer's render target resident while it is
+		# submitted. UPDATE_ONCE drops back to UPDATE_DISABLED after every draw;
+		# on Quest that destroyed and recreated this 256px swapchain on every
+		# ambient tick and eventually corrupted GLES teardown state.
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		_ambient_layer.visible = true
 		_ambient_dirty = true
+	elif _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
+		_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	# Also detects a primary-screen or stereo-mode change while the layer is
 	# already visible; the uniform is only touched when the source changes.
 	_refresh_ambient_source()
 
 	match main.settings.ambient_mode:
-		1: # Static: redraw only after a setting/geometry change.
-			if _ambient_dirty:
-				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				_ambient_dirty = false
+		1: # Static colour; the tiny layer target stays resident while visible.
+			_ambient_dirty = false
 		2: # Slow: sample the screen at 10 Hz.
 			_ambient_slow_elapsed += delta
 			if _ambient_dirty or _ambient_slow_elapsed >= AMBIENT_SLOW_INTERVAL_SEC:
@@ -907,7 +891,6 @@ func process_ambient(delta: float):
 				if not _prepare_ambient_sample_update():
 					return
 				_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 		3: # Live: sample at 72 Hz - plenty for ambient light, and no longer
 			# ties the native readback (glBlitFramebuffer + glReadPixels + PBO
@@ -920,8 +903,6 @@ func process_ambient(delta: float):
 					return
 				if _ambient_sample_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
 					_ambient_sample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
-				if _ambient_viewport.render_target_update_mode != SubViewport.UPDATE_ONCE:
-					_ambient_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 				_ambient_dirty = false
 
 func _update_ambient_geometry():
@@ -961,6 +942,11 @@ func setup_background_equirect():
 
 	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport, main._ui_mesh_size)
 	main._log("[COMP] UI composition layer created")
+	main.composition_panels.setup_tooltip(
+		main.xr_origin,
+		main.ui_controller.get_tooltip_viewport(),
+		UIController.TOOLTIP_QUAD_SIZE)
+	main._log("[COMP] Tooltip composition layer created")
 	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")

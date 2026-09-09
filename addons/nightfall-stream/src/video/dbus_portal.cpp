@@ -262,7 +262,7 @@ bool DBusPortal::select_sources(const std::string &restore_token) {
             sd_bus_message_append(req, "{sv}", "persist_mode", "u", 2); // 2 = until revoked
             if (!restore_token.empty()) {
                 sd_bus_message_append(req, "{sv}", "restore_token", "s", restore_token.c_str());
-                NF_LOG("DBusPortal", "Passing restore token: %s", restore_token.c_str());
+                NF_LOG("DBusPortal", "Passing saved restore token");
             }
         }
         sd_bus_message_close_container(req);

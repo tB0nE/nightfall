@@ -71,7 +71,7 @@ String NightfallComputerManager::start_pair(String ip, int port) {
 
     pair_start_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     pair_state = PAIR_STAGE_0_PREFLIGHT;
-    NF_LOG("NightfallPair", "Pairing starting, pin=%s", pair_pin.utf8().get_data());
+    NF_LOG("NightfallPair", "Pairing starting with generated PIN");
     _step_pair();
 
     return pair_pin;

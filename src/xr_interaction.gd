@@ -33,6 +33,7 @@ var _primary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _secondary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _ui_button_states: Array = []
 var _last_ui_style: Dictionary = {}
+var _screen_shortcut_press_active: bool = false
 
 # Chord mode waits this long before committing a grip to right-click, giving a
 # near-simultaneous trigger press time to turn the pair into an explicit
@@ -236,6 +237,27 @@ func handle_pointer_interaction():
 	_trigger_was_pressed = raw_clicking
 	_grip_was_pressed = is_gripping
 	var is_now_clicking = raw_clicking and not _double_click_chord_active
+	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
+	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
+	if _screen_shortcut_press_active:
+		if on_primary_shortcut:
+			main.screen_shortcuts.set_hover(shortcut_target.action)
+		if not is_now_clicking:
+			_screen_shortcut_press_active = false
+			main.was_clicking = false
+		else:
+			return
+	if on_primary_shortcut:
+		pointer_on_ui = true
+		main.screen_shortcuts.set_hover(shortcut_target.action)
+		if is_now_clicking and not main.was_clicking:
+			_screen_shortcut_press_active = true
+			main.was_clicking = true
+			main.screen_shortcuts.log_hit(shortcut_target.screen, shortcut_target.action, active_raycast.get_collision_point())
+			main.screen_shortcuts.invoke(shortcut_target.action)
+		elif not is_now_clicking:
+			main.was_clicking = false
+		return
 	if is_now_clicking and not main.was_clicking and not _click_pending_release:
 		_pinch_start_time = now_msec
 		var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
@@ -671,6 +693,8 @@ func _update_on_screen_tracking():
 	_left_on_screen = _is_hand_on_screen("left")
 
 func process_pointer_frame(delta: float):
+	if main.screen_shortcuts:
+		main.screen_shortcuts.begin_pointer_frame()
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
@@ -678,6 +702,9 @@ func process_pointer_frame(delta: float):
 		handle_pointer_interaction()
 	_process_other_hand_ui()
 	_apply_ui_hover_states()
+	if main.screen_shortcuts:
+		for screen in main.screens:
+			main.screen_shortcuts.refresh_visuals(screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast
@@ -808,7 +835,11 @@ func _hide_other_hand_ui():
 
 func _apply_ui_hover_states():
 	if not main.ui_visible:
+		if main.ui_controller:
+			main.ui_controller.clear_tooltip()
 		return
+	var primary_tooltip_target: Button = null
+	var secondary_tooltip_target: Button = null
 	for entry in _ui_button_states:
 		# _ui_button_states is only refreshed by explicit populate_ui_buttons()
 		# calls (UI init, tab rebuilds); it's not kept in sync with every place
@@ -821,11 +852,21 @@ func _apply_ui_hover_states():
 		var btn: Button = entry["btn"]
 		if not btn.is_visible_in_tree():
 			continue
-		var hovered = _point_in_ui_rect(_primary_ui_pixel, btn) or _point_in_ui_rect(_secondary_ui_pixel, btn)
+		var primary_hovered := _point_in_ui_rect(_primary_ui_pixel, btn)
+		var secondary_hovered := _point_in_ui_rect(_secondary_ui_pixel, btn)
+		var hovered := primary_hovered or secondary_hovered
+		if primary_hovered and primary_tooltip_target == null:
+			primary_tooltip_target = btn
+		elif secondary_hovered and secondary_tooltip_target == null:
+			secondary_tooltip_target = btn
 		var use_style = entry["hover"] if hovered else entry["norm"]
 		if _last_ui_style.get(btn) != use_style:
 			_last_ui_style[btn] = use_style
 			btn.add_theme_stylebox_override("normal", use_style)
+	if main.ui_controller:
+		main.ui_controller.set_hovered_tooltip(
+			primary_tooltip_target if primary_tooltip_target != null else secondary_tooltip_target
+		)
 
 func _point_in_ui_rect(p: Vector2, btn: Button) -> bool:
 	if p.x < 0 or p.y < 0:
@@ -969,7 +1010,9 @@ func _bar_base_color(screen: VRScreen) -> Color:
 	return PRIMARY_BAR_COLOR if screen == main.primary_screen else Color.WHITE
 
 func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
-	bar.material_override.albedo_color = Color(color.r, color.g, color.b, alpha)
+	var desired_color = Color(color.r, color.g, color.b, alpha)
+	if bar.material_override.albedo_color != desired_color:
+		bar.material_override.albedo_color = desired_color
 	# Mirror onto the composition-space equivalent (2026-08-24) - same
 	# pattern as _set_corner_color(). grab_bar is a %-unique-named node
 	# from VRScreen's own packed scene, not necessarily a direct child, so
@@ -981,10 +1024,11 @@ func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 		var panel = screen.comp_grab_bar_viewport.find_child("GrabBarPanel", true, false)
 		if panel:
 			var style = panel.get_theme_stylebox("panel") as StyleBoxFlat
-			if style:
+			if style and style.bg_color != desired_color:
 				style = style.duplicate()
-				style.bg_color = Color(color.r, color.g, color.b, alpha)
+				style.bg_color = desired_color
 				panel.add_theme_stylebox_override("panel", style)
+				screen.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
 func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var c = Color(color.r, color.g, color.b, alpha)

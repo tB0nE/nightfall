@@ -289,6 +289,7 @@ var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
 var controller_mapper: ControllerMapper
+var screen_shortcuts: ScreenShortcutBar
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
@@ -519,12 +520,15 @@ var _screen_mesh_original_mat: Material:
 	set(v):
 		if primary_screen: primary_screen._original_mat = v
 
+const LOG_CURRENT_PATH := "user://nightfall-current.log"
+const LOG_PREVIOUS_PATH := "user://nightfall-previous.log"
+const LEGACY_LOG_PATH := "user://debug.log"
 var _log_lines: PackedStringArray = []
 var _log_file_initialized: bool = false
+var _log_session_rotated: bool = false
 var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
-var _ui_host_label: Label
 var _ui_status_label: Label
 var _ui_pt_btn: Button
 var _ui_bg_btn: Button
@@ -577,6 +581,7 @@ var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button
 var _ui_center_btn: Button
+var _ui_log_btn: Button
 var _ui_stats_btn: Button
 
 var _btn_style: StyleBoxFlat
@@ -799,14 +804,29 @@ func parse_ip_port(text: String) -> Array:
 	return [ip_part, port]
 
 func _log(msg: String):
-	_log_lines.append(msg)
+	_log_lines.append("[%s] %s" % [Time.get_datetime_string_from_system(false, true), msg])
 	push_warning("NF: %s" % msg)
+
+func _rotate_session_log():
+	if _log_session_rotated:
+		return
+	_log_session_rotated = true
+	var current_path = ProjectSettings.globalize_path(LOG_CURRENT_PATH)
+	var previous_path = ProjectSettings.globalize_path(LOG_PREVIOUS_PATH)
+	if FileAccess.file_exists(previous_path):
+		DirAccess.remove_absolute(previous_path)
+	if FileAccess.file_exists(current_path):
+		DirAccess.rename_absolute(current_path, previous_path)
+	elif FileAccess.file_exists(LEGACY_LOG_PATH):
+		# Preserve the final pre-rotation session once when upgrading.
+		DirAccess.rename_absolute(ProjectSettings.globalize_path(LEGACY_LOG_PATH), previous_path)
 
 func _flush_log():
 	if _log_lines.is_empty():
 		return
+	_rotate_session_log()
 	var mode = FileAccess.READ_WRITE if _log_file_initialized else FileAccess.WRITE
-	var f = FileAccess.open("user://debug.log", mode)
+	var f = FileAccess.open(LOG_CURRENT_PATH, mode)
 	if f:
 		if _log_file_initialized:
 			f.seek_end()
@@ -815,6 +835,23 @@ func _flush_log():
 		f.close()
 		_log_lines.clear()
 		_log_file_initialized = true
+
+func export_diagnostics():
+	var device_codename = stream_backend.get_device_model() if stream_backend else "unknown"
+	_log("[DIAGNOSTICS] Export requested: phase=%s streaming=%s device=%s requested_resolution=%s fps=%d codec=%d ai3d_mode=%d model=%d backend=%d priority=%d hz_cap=%d" % [
+		session_lifecycle.phase_name() if session_lifecycle else "unknown",
+		str(is_streaming), device_codename, str(compute_requested_resolution(false)),
+		settings.host.stream_fps, settings.codec_preference, settings.host.ai_3d_speed,
+		settings.host.ai_3d_model, settings.host.ai_3d_backend_pref,
+		settings.ai_3d_gpu_priority, settings.host.ai_3d_hz_cap])
+	_flush_log()
+	var result = stream_backend.export_diagnostics() if stream_backend else "ERROR: Streaming backend unavailable"
+	if result.begins_with("ERROR:"):
+		ui_controller.show_temporary_status("Log export failed", 1.0)
+		_log("[DIAGNOSTICS] %s" % result)
+	else:
+		ui_controller.show_temporary_status("Log downloaded to %s" % result, 1.0)
+		_log("[DIAGNOSTICS] Saved to %s" % result)
 
 func _setup_comp_layer():
 	comp = CompositionLayerManager.new(self)
@@ -993,7 +1030,13 @@ func _update_cursor_layer():
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
-		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing and not video_presentation.is_native_active()
+		# Keep the screen cursor in one composition layer across mono, SBS, and
+		# native presentation. Switching between embedded eye-viewport cursors and
+		# this layer made the pointer disappear after returning from SBS.
+		var independent_cursor = VideoPresentation.uses_independent_screen_cursor(
+			comp.in_use, video_presentation.is_native_active())
+		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing \
+			and not independent_cursor
 		if on_screen and (pad_on_screen or tp_capturing):
 			_set_comp_quad_hidden(comp_cursor, true)
 			_hide_all_stream_cursors()
@@ -1097,12 +1140,10 @@ func _update_cursor_layer():
 				if circle: circle.visible = false
 				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
 					comp_cursor_viewport.size = Vector2i(40, 64)
-				# The old GLES path embedded the screen pointer in each video
-				# viewport, so its separate cursor quad used a deliberately square
-				# fallback. The native video path exposes this 40x64 pointer quad;
-				# preserve that texture's natural aspect ratio.
-				var native_screen_cursor := video_presentation.is_native_active()
-				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale) if native_screen_cursor or RenderingServer.get_current_rendering_method() != "gl_compatibility" else Vector2(0.064 * dist_scale, 0.064 * dist_scale)
+				# The backing pointer texture is 40x64. Preserve that physical aspect
+				# for every screen presentation path; the old square GLES fallback is
+				# what made the independently composited SBS cursor look stretched.
+				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale)
 				comp_cursor.set_quad_size(cursor_quad_size)
 				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
 				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
@@ -1131,6 +1172,8 @@ func _update_cursor_layer():
 	if comp_ui and comp_ui.visible:
 		comp_ui.global_position = ui_panel_3d.global_position
 		comp_ui.global_rotation = ui_panel_3d.global_rotation
+	if ui_controller:
+		ui_controller.sync_tooltip_surface()
 	if comp_kb and virtual_keyboard and virtual_keyboard.visible:
 		comp_kb.global_position = virtual_keyboard.global_position
 		comp_kb.global_rotation = virtual_keyboard.global_rotation
@@ -1276,12 +1319,20 @@ func _update_grab_bar_layers():
 				bar_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
 			continue
 		var ms = s.mesh_size
-		# Matches the real grab_bar CylinderMesh's own length/diameter
-		# (vr_screen.gd's grab_h/grab_r*2) - NOT the larger collision
-		# hitbox size (ms.x*0.134, ms.y*0.079), which made this look like
-		# a chunky pill instead of a thin bar.
-		s.comp_grab_bar.set_quad_size(Vector2(ms.x * 0.134, ms.x * 0.009))
-		s.comp_grab_bar.global_rotation = s.grab_bar.global_rotation
+		# The transparent outer area carries the primary screen's four shortcut
+		# icons while the same layer remains a plain centered bar on secondary
+		# screens. Keeping this combined avoids four extra OpenXR layers.
+		s.comp_grab_bar.set_quad_size(Vector2(
+			ms.x * ScreenShortcutBar.STRIP_WIDTH_RATIO,
+			ms.x * ScreenShortcutBar.STRIP_HEIGHT_RATIO,
+		))
+		# Use the screen basis directly. The physical CylinderMesh grab bar is
+		# rotated 90 degrees because its length runs along local Y; copying that
+		# transform and adding another 90 degrees left this textured quad at 180
+		# degrees. A plain bar hid the mistake, but asymmetric shortcut artwork
+		# appeared upside-down and its left/right visuals no longer matched the
+		# screen-space physics targets.
+		s.comp_grab_bar.global_rotation = s.global_rotation
 		# Direct copy, no extra offset (2026-08-24) - the "move closer to
 		# the screen" adjustment now happens at the source (vr_screen.gd's
 		# update_corner_positions(), which also moves the real Area3D
@@ -1289,17 +1340,10 @@ func _update_grab_bar_layers():
 		# visual-only version left the hitbox behind at the old position,
 		# making the bar hard to find/grab where it visually appeared.
 		s.comp_grab_bar.global_position = s.grab_bar.global_position
-		# grab_bar's own length runs along its local Y (CylinderMesh's
-		# default height axis), but quad_size.x (this quad's local X) is
-		# where the length was set above - an extra 90 degree in-plane
-		# rotation around the quad's own normal reconciles the two
-		# conventions (confirmed needed on-device, reported as "rotated 90
-		# degrees" without it).
-		s.comp_grab_bar.rotate_object_local(Vector3.FORWARD, PI / 2.0)
-		var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
-		if bar_vp2 and bar_vp2.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
-			bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if not s.comp_grab_bar.visible:
+			var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
+			if bar_vp2:
+				bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 			s.comp_grab_bar.visible = true
 
 # Mirrors each of a screen's real corner_handles (already curve/resize-aware
@@ -1392,7 +1436,6 @@ func _on_stream_started():
 	telemetry.reset_session()
 	_last_activity_time = Time.get_ticks_msec() / 1000.0
 	ui_controller.set_status("Connecting...")
-	ui_controller.update_host_label()
 	welcome_screen.reset_connect_button()
 	ui_controller.set_disconnect_visible(true)
 	_log("[STREAM] Connection started!")
@@ -1727,6 +1770,7 @@ func _init_modules():
 	state_manager = StateManager.new(self)
 	controller_mapper = ControllerMapper.new(self)
 	add_child(controller_mapper)
+	screen_shortcuts = ScreenShortcutBar.new(self)
 
 func _init_android_setup():
 	# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
@@ -1806,6 +1850,7 @@ func _init_ui():
 
 	screen_mesh.setup(self, &"m0")
 	screen_registry.initialize(screen_mesh)
+	screen_shortcuts.setup_screen(screen_mesh)
 	primary_screen.grid_pos = Vector2i(3, 1)
 	layout = ScreenLayout.single(Vector2i(1920, 1080))
 	primary_screen.apply_monitor(layout.get_primary(), layout.frame_size)
@@ -2043,6 +2088,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 			s.global_position = anchor - rotated_near_offset
 			_face_camera(s, cam_pos, false)
 	screen_manager.create_corner_handles_for(s)
+	screen_shortcuts.setup_screen(s)
 	screen_manager.create_bezel_for(s)
 	s.apply_curvature()
 	if comp.available:
@@ -2161,6 +2207,10 @@ func _init_stream_backend():
 		str(_client_codec_support.get("av1", false)),
 		str(_client_codec_support.get("raw", true))])
 	v2_node.pair_completed.connect(func(s, m): stream_manager.on_pair_completed(s, m))
+	if v2_node.has_signal("log_message"):
+		v2_node.log_message.connect(func(message: String):
+			_log("[MOONLIGHT] %s" % message)
+		)
 	v2_node.stream_started.connect(func():
 		_on_stream_started()
 	)
@@ -2169,7 +2219,7 @@ func _init_stream_backend():
 	)
 	if v2_node.has_signal("restore_token_updated"):
 		v2_node.restore_token_updated.connect(func(tok):
-			_log("[PORTAL] Storing new restore token: " + tok)
+			_log("[PORTAL] Restore token updated")
 			settings.pipewire_restore_token = tok
 			state_manager.save_state()
 		)
@@ -2340,7 +2390,6 @@ func _init_textures_and_ui():
 							break
 				if current_host_id >= 0:
 					settings_controller.detect_polaris_host(saved_host_ip, current_host_id)
-				ui_controller.update_host_label()
 				welcome_screen.update_welcome_info()
 
 	stream_manager.bind_texture()
@@ -2429,8 +2478,6 @@ func _process(delta):
 	if comp:
 		comp.process_ambient(delta)
 
-	_process_idle_activity()
-
 	_process_background_follow()
 
 	auto_detect.process(delta)
@@ -2445,8 +2492,6 @@ func _process(delta):
 				comp_shader_mat_right.set_shader_parameter("depth_texture", dt)
 
 	_process_stats(delta)
-
-	_process_idle_timeout()
 
 	if grabbed_node:
 		xr_interaction.handle_grab()
@@ -2586,18 +2631,18 @@ func _process_button_input():
 	if not controller_mapper or not controller_mapper.is_active():
 		var b_pressed = right_hand.is_button_pressed("by_button")
 		if b_pressed and not _was_b_pressed:
-			_toggle_ui()
+			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_MENU)
 		_was_b_pressed = b_pressed
 		var a_pressed = right_hand.is_button_pressed("ax_button")
 		if a_pressed and not _was_a_pressed:
-			virtual_keyboard.toggle()
+			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_KEYBOARD)
 		_was_a_pressed = a_pressed
 		var r_stick_click = right_hand.is_button_pressed("primary_click")
 		var l_stick_click = left_hand.is_button_pressed("primary_click") if left_hand else false
 		if r_stick_click and not _was_r_stick_click and not l_stick_click:
 			var tp_exited = virtual_keyboard and virtual_keyboard.thumbstick_exit_flag
 			if not virtual_keyboard or (not virtual_keyboard.trackpad_active and not tp_exited):
-				settings_controller.cycle_sbs_mode()
+				screen_shortcuts.invoke(ScreenShortcutBar.ACTION_SBS)
 		if not r_stick_click:
 			if virtual_keyboard:
 				virtual_keyboard.thumbstick_exit_flag = false
@@ -2817,7 +2862,9 @@ func _process_idle_timeout():
 	if now - _last_activity_time > settings.idle_timeout_min * 60.0:
 		_log("[IDLE] Idle timeout (%d min), disconnecting" % settings.idle_timeout_min)
 		disconnect_stream()
-		_full_disconnect_cleanup("Idle timeout")
+		# stop_stream() emits stream_terminated synchronously; that callback owns
+		# the one full-disconnect cleanup. Calling it again here double-tore down
+		# the welcome/composition state.
 
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -2903,6 +2950,9 @@ func set_primary_screen(s: VRScreen) -> void:
 		world_transforms[p] = p.global_transform
 	if not screen_registry.set_primary(s):
 		return
+	for screen in screens:
+		screen.update_shortcut_positions()
+		screen_shortcuts.refresh_visuals(screen)
 	for p in panels:
 		p.global_transform = world_transforms[p]
 		if p == ui_panel_3d:
@@ -2934,6 +2984,8 @@ func _save_ui_offset():
 
 func _set_ui_visible(vis: bool):
 	_set_viewport_active(ui_viewport, vis)
+	if not vis and ui_controller:
+		ui_controller.clear_tooltip()
 	ui_panel_3d.visible = vis
 	var area = ui_panel_3d.get_node_or_null("Area3D")
 	if area:
@@ -2966,8 +3018,9 @@ func _sync_interaction_viewports():
 	# Native video does not embed the pointer in a Godot video viewport, so
 	# its independently composited cursor texture must keep updating even
 	# while the menu and keyboard are hidden.
-	var native_screen_cursor := video_presentation.is_native_active()
-	_set_viewport_active(comp_cursor_viewport, panel_visible or native_screen_cursor)
+	var independent_screen_cursor := VideoPresentation.uses_independent_screen_cursor(
+		comp.in_use, video_presentation.is_native_active())
+	_set_viewport_active(comp_cursor_viewport, panel_visible or independent_screen_cursor)
 	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
