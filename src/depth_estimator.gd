@@ -550,7 +550,13 @@ func process(delta: float):
 		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
-		print("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d" % [capture_value, submit_ms, float(_perf_submitted) / _perf_window, float(_perf_updates) / _perf_window, main.settings.host.ai_3d_model])
+		var backend_status = main.stream_backend.get_depth_backend_status()
+		main._log("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d size=%dx%d backend=%d status='%s'" % [
+			capture_value, submit_ms, float(_perf_submitted) / _perf_window,
+			float(_perf_updates) / _perf_window, main.settings.host.ai_3d_model,
+			model_width, model_height, main.stream_backend.get_effective_depth_backend(),
+			backend_status if not backend_status.is_empty() else "ok",
+		])
 		_perf_window = 0.0
 		_perf_capture_usec = 0
 		_perf_submit_usec = 0

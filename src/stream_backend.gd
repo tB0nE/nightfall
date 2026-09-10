@@ -85,6 +85,14 @@ func get_local_capture_region() -> Dictionary:
 		return _v2.get_local_capture_region()
 	return {}
 
+func export_diagnostics() -> String:
+	if not _v2:
+		return "ERROR: Streaming backend unavailable"
+	var depth_bridge = _v2.get_depth_bridge()
+	if not depth_bridge or not depth_bridge.has_method("export_diagnostics"):
+		return "ERROR: Diagnostic exporter unavailable"
+	return depth_bridge.export_diagnostics()
+
 func stop_play_stream():
 	if _v2:
 		_v2.stop_stream()

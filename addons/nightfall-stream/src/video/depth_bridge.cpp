@@ -517,6 +517,39 @@ String DepthBridge::get_device_model() {
 #endif
 }
 
+String DepthBridge::export_diagnostics() {
+#ifdef __ANDROID__
+    JNIEnv *env = get_jni_env();
+    if (!env) return "ERROR: Android JNI unavailable";
+
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return "ERROR: GodotApp class unavailable";
+
+    jmethodID method = env->GetStaticMethodID(app_class, "exportDiagnostics", "()Ljava/lang/String;");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return "ERROR: Diagnostic exporter unavailable";
+    }
+
+    jstring jresult = (jstring)env->CallStaticObjectMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return "ERROR: Diagnostic export raised a Java exception";
+    }
+    if (!jresult) return "ERROR: Diagnostic export returned no result";
+
+    const char *chars = env->GetStringUTFChars(jresult, nullptr);
+    String result = String::utf8(chars);
+    env->ReleaseStringUTFChars(jresult, chars);
+    env->DeleteLocalRef(jresult);
+    return result;
+#else
+    return "ERROR: Diagnostic export is only available on Android";
+#endif
+}
+
 void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("submit_depth_frame", "frame_data", "width", "height"), &DepthBridge::submit_depth_frame);
     ClassDB::bind_method(D_METHOD("get_depth_map"), &DepthBridge::get_depth_map);
@@ -535,4 +568,5 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_last_age_ms"), &DepthBridge::get_depth_last_age_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_skipped_frames"), &DepthBridge::get_depth_last_skipped_frames);
     ClassDB::bind_method(D_METHOD("get_device_model"), &DepthBridge::get_device_model);
+    ClassDB::bind_method(D_METHOD("export_diagnostics"), &DepthBridge::export_diagnostics);
 }

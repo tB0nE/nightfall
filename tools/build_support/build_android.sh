@@ -24,6 +24,29 @@ TEMPLATES="${NIGHTFALL_ANDROID_SOURCE_TEMPLATE:-$GODOT_TEMPLATE_DIR/android_sour
 CONFIG="export_presets.cfg"
 CONFIG_BACKUP="export_presets.cfg.bak"
 
+# The Godot export packages the prebuilt streaming GDExtension. Refuse to
+# silently ship an older binary when its native sources changed; otherwise new
+# methods can appear in GDScript while being absent from the installed .so.
+STREAM_VARIANT="debug"
+if [ "$PRESET" = "NightfallRelease" ]; then
+  STREAM_VARIANT="release"
+fi
+STREAM_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libnightfall-stream.android.template_${STREAM_VARIANT}.arm64.so"
+if [ ! -f "$STREAM_LIBRARY" ]; then
+  echo "Error: Android streaming GDExtension not found at $STREAM_LIBRARY"
+  echo "Build it first using the Android instructions in BUILD.md."
+  exit 1
+fi
+STREAM_SOURCE_NEWER="$(find \
+  "$SCRIPT_DIR/addons/nightfall-stream/src" \
+  "$SCRIPT_DIR/addons/nightfall-stream/CMakeLists.txt" \
+  -type f -newer "$STREAM_LIBRARY" -print -quit)"
+if [ -n "$STREAM_SOURCE_NEWER" ]; then
+  echo "Error: Android streaming GDExtension is stale (newer source: $STREAM_SOURCE_NEWER)"
+  echo "Rebuild the $STREAM_VARIANT streaming GDExtension using BUILD.md, then retry."
+  exit 1
+fi
+
 # Build the Android OpenXR composition provider before export. It is kept as
 # a separate GDExtension because the generic vcpkg godot-cpp API omits the
 # OpenXR module classes it derives from. Linux keeps using the legacy Godot
@@ -86,6 +109,9 @@ cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.s
 cd "$SCRIPT_DIR"
 cp android/src/main/java/com/godot/game/GodotApp.java android/build/src/main/java/com/godot/game/GodotApp.java
 cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/main/java/com/godot/game/DepthEstimator.java
+cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/main/java/com/godot/game/DiagnosticLog.java
+mkdir -p android/build/src/main/java/com/godot/game/diagnostics
+cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from
 # scratch right before invoking gradle (EditorExportPlatformAndroid::_clear_assets_directory(),
 # platform/android/export/export_plugin.cpp) - it's the directory Godot writes its own

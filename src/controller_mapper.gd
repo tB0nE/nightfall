@@ -110,13 +110,7 @@ func check_toggle():
 		r_click = main.right_hand.is_button_pressed("primary_click")
 	var both = l_click and r_click
 	if both and not _was_both_sticks:
-		if active:
-			_deactivate()
-		else:
-			_activate()
-		main.state_manager.save_state()
-		if main.ui_controller:
-			main.ui_controller.update_ctrl_mode_btn()
+		main.screen_shortcuts.invoke(ScreenShortcutBar.ACTION_PAD)
 	_was_both_sticks = both
 
 func check_toggle_ui():

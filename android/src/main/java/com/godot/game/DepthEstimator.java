@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.util.Log;
+import com.godot.game.diagnostics.Log;
 
 import org.tensorflow.lite.Interpreter;
 import org.tensorflow.lite.gpu.GpuDelegate;
@@ -319,9 +319,6 @@ public class DepthEstimator {
         ByteBuffer inputBuf;
         ByteBuffer outputBuf;
         boolean loadAttempted;
-        // Prevent repeated configureDepth() calls from queueing duplicate
-        // startup preloads before the first worker task begins.
-        volatile boolean preloadScheduled;
         // Written by the inference executor and read by the submission/UI
         // threads, so failure must become visible without relying on an
         // unrelated synchronized call.
@@ -732,11 +729,7 @@ public class DepthEstimator {
                 lastPostProcessTimeNs = 0;
                 gpuReconfigurePending = false;
                 Log.i(TAG, "GPU priority changed to " + gpuPriorityName(selected)
-                        + "; preloading delegate on the inference worker");
-                // Android ships ZipDepth-384 as its sole depth model. Keep it
-                // resident even if AI-3D is currently off, so enabling it or
-                // starting a host that has it saved never recompiles mid-stream.
-                scheduleGpuVariantPreload(gpuVariants.get(14));
+                        + "; delegate will reload on the next AI-3D frame");
             }
         });
     }
@@ -759,59 +752,8 @@ public class DepthEstimator {
         variant.inputBuf = null;
         variant.outputBuf = null;
         variant.loadAttempted = false;
-        variant.preloadScheduled = false;
         variant.permanentlyUnavailable = false;
         variant.failureReason = "";
-    }
-
-    // GPU delegates must be created and invoked on the same thread. Preload
-    // and warm the selected model on the existing single inference worker as
-    // soon as settings configure it, instead of compiling it while the first
-    // video frames are already being presented. This remains asynchronous to
-    // app startup and inherits the selected low/default OpenCL priority.
-    private void scheduleGpuVariantPreload(GpuVariant variant) {
-        if (variant == null || variant.interp != null || variant.loadAttempted
-                || variant.permanentlyUnavailable || variant.preloadScheduled) {
-            return;
-        }
-        variant.preloadScheduled = true;
-        Log.i(TAG, "Preloading " + variant.label + " on inference worker");
-        executor.execute(() -> {
-            try {
-                if (!initialized || gpuReconfigurePending) {
-                    return;
-                }
-                ensureGpuVariantLoaded(variant);
-                if (variant.interp == null) {
-                    markGpuVariantUnavailable(variant);
-                    return;
-                }
-
-                // Force one delegate invocation so graph compilation, working
-                // buffers, and first-dispatch costs are paid before streaming.
-                variant.inputBuf.rewind();
-                while (variant.inputBuf.remaining() >= 4) {
-                    variant.inputBuf.putFloat(0f);
-                }
-                variant.inputBuf.rewind();
-                variant.outputBuf.rewind();
-                long warmStartNs = System.nanoTime();
-                variant.interp.run(variant.inputBuf, variant.outputBuf);
-                variant.inputBuf.rewind();
-                variant.outputBuf.rewind();
-                Log.i(TAG, String.format(java.util.Locale.US,
-                        "%s preload and warm-up complete in %.1fms",
-                        variant.label, (System.nanoTime() - warmStartNs) / 1_000_000.0f));
-            } catch (Exception e) {
-                Log.e(TAG, variant.label + " startup warm-up failed", e);
-                String failureReason = "GPU warm-up failed: " + e.getClass().getSimpleName();
-                releaseGpuVariant(variant);
-                variant.failureReason = failureReason;
-                markGpuVariantUnavailable(variant);
-            } finally {
-                variant.preloadScheduled = false;
-            }
-        });
     }
 
     private void markGpuVariantUnavailable(GpuVariant variant) {
@@ -866,11 +808,10 @@ public class DepthEstimator {
         }
 
         switchActiveModel(modelIndex, useGpu);
-        // The streamlined Android package always uses this model when AI-3D
-        // is enabled. configureDepth() is first called after persisted GPU
-        // priority has been applied, making this the earliest safe point to
-        // preload without creating a context at the wrong priority.
-        scheduleGpuVariantPreload(gpuVariants.get(14));
+        // Deliberately do not load the GPU delegate here. configureDepth() is
+        // also called while persisted settings are restored at app startup.
+        // The first submitted AI-3D stream frame reaches
+        // runScheduledGpuInference(), which lazily loads ZipDepth there.
         Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
                 + " requested=" + backendName(requestedBackend)
                 + " effective=" + backendName(effectiveBackend)
@@ -921,9 +862,10 @@ public class DepthEstimator {
         if (!initialized) return;
         modelIndex = normalizeModelIndex(modelIndex);
         Interpreter target = cpuInterpreterFor(modelIndex);
-        // The requested GPU variant (if any). Its delegate is created on the
-        // inference worker below; activeInterpreter remains strictly the CPU
-        // fallback/selection and may legitimately be null in the GPU-only APK.
+        // The requested GPU variant (if any). Its delegate is created lazily
+        // by the first submitted AI-3D frame; activeInterpreter remains
+        // strictly the CPU fallback/selection and may legitimately be null
+        // in the GPU-only APK.
         GpuVariant variant = useGpu ? gpuVariants.get(modelIndex) : null;
         if (activeModelIndex != modelIndex || activeGpuVariant != variant) {
             while (isInferencing.get()) {
@@ -961,9 +903,6 @@ public class DepthEstimator {
                     }
                 });
             }
-        }
-        if (variant != null) {
-            scheduleGpuVariantPreload(variant);
         }
     }
 
@@ -1391,12 +1330,17 @@ public class DepthEstimator {
     private void ensureGpuVariantLoaded(GpuVariant v) {
         if (v.loadAttempted) return;
         v.loadAttempted = true;
+        long loadStartNs = System.nanoTime();
         try {
             v.inputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 3 * 4)
                     .order(ByteOrder.nativeOrder());
             v.outputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 4)
                     .order(ByteOrder.nativeOrder());
             MappedByteBuffer buffer = loadModelFile(v.assetFile);
+            long mappedNs = System.nanoTime();
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "%s asset mapped: %d bytes in %.1fms",
+                    v.label, buffer.capacity(), (mappedNs - loadStartNs) / 1_000_000.0f));
             GpuDelegateFactory.Options gpuOptions = new GpuDelegateFactory.Options();
             // Matches Gilleece/moonlight-android-xr's own config - the model
             // is fp16, so allowing precision loss just means "run at the
@@ -1412,8 +1356,10 @@ public class DepthEstimator {
             Interpreter.Options opts = new Interpreter.Options();
             opts.addDelegate(v.delegate);
             v.interp = new Interpreter(buffer, opts);
-            Log.i(TAG, v.label + " model loaded with GPU delegate");
-        } catch (Exception e) {
+            Log.i(TAG, String.format(java.util.Locale.US,
+                    "%s model loaded with GPU delegate in %.1fms",
+                    v.label, (System.nanoTime() - mappedNs) / 1_000_000.0f));
+        } catch (Exception | LinkageError e) {
             Log.w(TAG, v.label + " model/GPU delegate not available", e);
             v.failureReason = "GPU delegate initialization failed: " + e.getClass().getSimpleName();
             v.interp = null;
@@ -1897,11 +1843,12 @@ public class DepthEstimator {
     }
 
     private MappedByteBuffer loadModelFile(String filename) throws IOException {
-        AssetFileDescriptor fd = appContext.getAssets().openFd(filename);
-        FileInputStream is = new FileInputStream(fd.getFileDescriptor());
-        FileChannel ch = is.getChannel();
-        long offset = fd.getStartOffset();
-        long length = fd.getDeclaredLength();
-        return ch.map(FileChannel.MapMode.READ_ONLY, offset, length);
+        try (AssetFileDescriptor fd = appContext.getAssets().openFd(filename);
+             FileInputStream is = new FileInputStream(fd.getFileDescriptor())) {
+            FileChannel ch = is.getChannel();
+            long offset = fd.getStartOffset();
+            long length = fd.getDeclaredLength();
+            return ch.map(FileChannel.MapMode.READ_ONLY, offset, length);
+        }
     }
 }

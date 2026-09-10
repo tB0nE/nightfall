@@ -754,7 +754,7 @@ func start_pair(ip: String):
 	var host_port: int = parsed[1]
 	main._log("[PAIR] Starting pair with %s:%d..." % [host_ip, host_port])
 	var pin = main.stream_backend.start_pair(host_ip, host_port)
-	main._log("[PAIR] start_pair returned: %s" % str(pin))
+	main._log("[PAIR] start_pair completed")
 	if str(pin) == "" or str(pin) == "0":
 		main._log("[PAIR] FAILED - no pin returned")
 		return

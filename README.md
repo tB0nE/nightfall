@@ -106,6 +106,12 @@ lower resolution ceiling and less performance headroom, particularly when AI
 6. If this is the first connection, enter Nightfall's displayed PIN in the host's web interface
 7. The stream starts automatically after pairing
 
+For support logs, press the **↓** button beside **Stats**. Nightfall saves a
+timestamped report to `Download/Nightfall` on the headset. The report includes
+the current and previous app sessions so it can be exported after reopening
+Nightfall following a crash. Review it before sharing: host names and network
+addresses may be included.
+
 ### Client (Linux PCVR)
 
 The Linux client is supported in source, but **v0.7.8 does not include a Linux

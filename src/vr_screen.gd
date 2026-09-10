@@ -72,6 +72,9 @@ var comp_stream_cursor_circle_right: ColorRect = null
 # visual. See main.gd's _update_grab_bar_layers().
 var comp_grab_bar: Node3D = null
 var comp_grab_bar_viewport: SubViewport = null
+var shortcut_buttons: Dictionary = {}
+var shortcut_areas: Dictionary = {}
+var comp_shortcut_icons: Dictionary = {}
 
 # Composition-space corner-handle indicators (2026-08-24) - same rationale
 # as comp_grab_bar: corner_handles are plain 3D scene nodes (MeshInstance3D
@@ -226,7 +229,40 @@ func update_corner_positions():
 	if grab_area:
 		var grab_shape = grab_area.get_node_or_null("CollisionShape3D")
 		if grab_shape and grab_shape.shape is BoxShape3D:
-			grab_shape.shape.size = Vector3(ms.x * 0.134, ms.y * 0.079, 0.1)
+			# ScreenGrabBar is rotated 90 degrees in the scene so its CylinderMesh
+			# local Y axis runs horizontally. Match that transform here: local Y
+			# is the visible bar width and local X is its vertical hit height.
+			grab_shape.shape.size = Vector3(ms.y * 0.079, ms.x * 0.134, 0.1)
+	update_shortcut_positions()
+
+func update_shortcut_positions() -> void:
+	if shortcut_buttons.is_empty():
+		return
+	var icon_size = mesh_size.x * ScreenShortcutBar.ICON_SIZE_RATIO
+	var hit_size = mesh_size.x * ScreenShortcutBar.HIT_SIZE_RATIO
+	for action in ScreenShortcutBar.VISIBLE_ACTIONS:
+		var icon = shortcut_buttons.get(action) as MeshInstance3D
+		if not icon:
+			continue
+		var show = self == main.primary_screen
+		icon.visible = show
+		icon.position = Vector3(
+			mesh_size.x * ScreenShortcutBar._action_x_ratio(action),
+			grab_bar.position.y,
+			0.002,
+		)
+		if icon.mesh is QuadMesh:
+			icon.mesh.size = Vector2(icon_size, icon_size)
+		var area = shortcut_areas.get(action) as Area3D
+		if not area:
+			continue
+		area.position = icon.position
+		var collision = area.get_node_or_null("CollisionShape3D") as CollisionShape3D
+		if collision and collision.shape is BoxShape3D:
+			collision.shape.size = Vector3(hit_size, hit_size, 0.1)
+			collision.set_deferred("disabled", not show)
+		area.monitoring = show
+		area.monitorable = show
 
 func create_bezel():
 	bezel_mesh = MeshInstance3D.new()

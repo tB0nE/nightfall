@@ -18,14 +18,149 @@ var _tab_btn_picture: Button
 var _tab_btn_advanced: Button
 var _preset_row: HBoxContainer
 var _current_tab: int = 0
+var _temporary_status_generation: int = 0
+var _temporary_status_active: bool = false
+var _tooltip_panel: PanelContainer
+var _tooltip_label: Label
+var _tooltip_viewport: SubViewport
+var _tooltip_mesh: MeshInstance3D
+var _tooltip_candidate: Button
+var _tooltip_visible_target: Button
+var _tooltip_generation: int = 0
 
 const PRESET_CARD_SIZE := Vector2(96, 62)
 const PRESET_DIAGRAM_SIZE := Vector2(84, 42)
 const PRESET_PRIMARY_COLOR := Color(0.55, 0.78, 1.0, 0.9)
 const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
+const TOOLTIP_META := &"nightfall_tooltip"
+const TOOLTIP_DELAY_SEC := 0.55
+const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
+const TOOLTIP_QUAD_SIZE := Vector2(1.0, 0.064)
+const TOOLTIP_LOCAL_OFFSET := Vector3(0, 0.36, 0)
 
 func _init(owner: Node3D):
 	main = owner
+
+func set_hovered_tooltip(button: Button) -> void:
+	if button != null and (not is_instance_valid(button) or not button.is_visible_in_tree()):
+		button = null
+	if button != null and String(button.get_meta(TOOLTIP_META, "")).is_empty():
+		button = null
+	if button == _tooltip_candidate:
+		return
+	_tooltip_candidate = button
+	_tooltip_generation += 1
+	var generation := _tooltip_generation
+	if button == null:
+		_hide_tooltip()
+		return
+	if _tooltip_visible_target != null:
+		_show_tooltip(button)
+		return
+	await main.get_tree().create_timer(TOOLTIP_DELAY_SEC).timeout
+	if generation != _tooltip_generation or button != _tooltip_candidate:
+		return
+	if not is_instance_valid(button) or not button.is_visible_in_tree() or not main.ui_visible:
+		return
+	_show_tooltip(button)
+
+func clear_tooltip() -> void:
+	_tooltip_candidate = null
+	_tooltip_generation += 1
+	_hide_tooltip()
+
+func _show_tooltip(button: Button) -> void:
+	if not _tooltip_panel or not _tooltip_label:
+		return
+	var tooltip := String(button.get_meta(TOOLTIP_META, ""))
+	if tooltip.is_empty():
+		_hide_tooltip()
+		return
+	_tooltip_visible_target = button
+	_tooltip_label.text = tooltip
+	_tooltip_panel.visible = true
+	sync_tooltip_surface()
+
+func _hide_tooltip() -> void:
+	_tooltip_visible_target = null
+	if _tooltip_panel:
+		_tooltip_panel.visible = false
+	if _tooltip_mesh:
+		_tooltip_mesh.visible = false
+
+func _set_button_tooltip(button: Button, tooltip: String) -> Button:
+	button.set_meta(TOOLTIP_META, tooltip)
+	# Suppress Godot's separate desktop tooltip; Nightfall renders one shared
+	# bar for both mouse and projected XR pointers.
+	button.tooltip_text = ""
+	return button
+
+func get_tooltip_viewport() -> SubViewport:
+	return _tooltip_viewport
+
+func sync_tooltip_surface() -> void:
+	if not _tooltip_mesh:
+		return
+	var tooltip_layer = main.composition_panels.tooltip_layer if main.composition_panels else null
+	var showing: bool = _tooltip_panel != null and _tooltip_panel.visible and main.ui_visible
+	var use_composition: bool = main.comp != null and main.comp.in_use and tooltip_layer != null
+	_tooltip_mesh.visible = showing and not use_composition
+	if tooltip_layer:
+		if use_composition:
+			tooltip_layer.global_transform = _tooltip_mesh.global_transform
+
+func _build_tooltip_surface() -> void:
+	_tooltip_viewport = SubViewport.new()
+	_tooltip_viewport.name = "TooltipViewport"
+	_tooltip_viewport.disable_3d = true
+	_tooltip_viewport.transparent_bg = true
+	_tooltip_viewport.size = TOOLTIP_VIEWPORT_SIZE
+	# Keep this render target alive for the OpenXR session. Toggling the viewport
+	# or its composition layer on every hover destroys and recreates its
+	# swapchain, which can race the Quest GLES compositor and crash the app.
+	# Tooltip visibility is represented by transparent viewport content instead.
+	_tooltip_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	main.add_child(_tooltip_viewport)
+
+	_tooltip_panel = PanelContainer.new()
+	_tooltip_panel.name = "TooltipBar"
+	_tooltip_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tooltip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var tooltip_style := StyleBoxFlat.new()
+	tooltip_style.bg_color = Color(0.06, 0.06, 0.10, 0.45)
+	tooltip_style.set_corner_radius_all(30)
+	tooltip_style.content_margin_left = 24
+	tooltip_style.content_margin_right = 24
+	tooltip_style.content_margin_top = 8
+	tooltip_style.content_margin_bottom = 8
+	_tooltip_panel.add_theme_stylebox_override("panel", tooltip_style)
+	_tooltip_label = Label.new()
+	_tooltip_label.add_theme_font_size_override("font_size", 24)
+	_tooltip_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	_tooltip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_tooltip_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_tooltip_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_tooltip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tooltip_panel.add_child(_tooltip_label)
+	_tooltip_panel.visible = false
+	_tooltip_viewport.add_child(_tooltip_panel)
+
+	_tooltip_mesh = MeshInstance3D.new()
+	_tooltip_mesh.name = "TooltipSurface"
+	var quad := QuadMesh.new()
+	quad.size = TOOLTIP_QUAD_SIZE
+	_tooltip_mesh.mesh = quad
+	_tooltip_mesh.position = TOOLTIP_LOCAL_OFFSET
+	var material := StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.no_depth_test = true
+	material.render_priority = 126
+	material.albedo_texture = _tooltip_viewport.get_texture()
+	_tooltip_mesh.material_override = material
+	_tooltip_mesh.visible = false
+	# No Area3D or collision shape: this surface can never intercept a menu ray.
+	main.ui_panel_3d.add_child(_tooltip_mesh)
 
 # ":" added (2026-08-26) so an optional custom port can be typed directly
 # into %IPInput as "ip:port" - see main.gd's parse_ip_port().
@@ -312,6 +447,7 @@ func _refresh_preset_row():
 # secondaries.
 func _build_preset_card(preset: Dictionary, is_selected: bool) -> Button:
 	var card = Button.new()
+	_set_button_tooltip(card, "Select this monitor layout preset.")
 	card.focus_mode = Control.FOCUS_NONE
 	card.text = ""
 	card.custom_minimum_size = PRESET_CARD_SIZE
@@ -379,6 +515,7 @@ func update_ui():
 	main.get_node("%Laser").visible = main.is_xr_active
 
 func switch_tab(tab: int):
+	clear_tooltip()
 	var entering_monitors_tab = (tab == 5 and _current_tab != 5)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
@@ -433,6 +570,7 @@ func switch_tab(tab: int):
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
 
 func build_ui():
+	clear_tooltip()
 	main.ui_panel_3d.mesh.size = main._ui_mesh_size
 	main.ui_viewport.size = main._ui_viewport_size
 	var col_shape = main.ui_panel_3d.get_node("Area3D/CollisionShape3D")
@@ -443,6 +581,7 @@ func build_ui():
 	for child in root.get_children():
 		if child.name != "IPInput" and child.name != "Numpad":
 			child.queue_free()
+	_build_tooltip_surface()
 
 	main._btn_style = StyleBoxFlat.new()
 	main._btn_style.bg_color = Color(1, 1, 1, 0.06)
@@ -491,12 +630,17 @@ func build_ui():
 
 	var top_row = HBoxContainer.new()
 	top_row.name = "TopRow"
+	# The removed host label used to contribute a 60px minimum height, which
+	# implicitly kept every toolbar button at this height. Preserve that layout
+	# explicitly now that the duplicate host text is gone.
+	top_row.custom_minimum_size = Vector2(0, 60)
 	top_row.add_theme_constant_override("separation", 0)
 	top_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(top_row)
 
 	main._ui_center_btn = Button.new()
 	main._ui_center_btn.text = "\u25C9"
+	_set_button_tooltip(main._ui_center_btn, "Return the menu and screens to their default positions.")
 	main._ui_center_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_center_btn.custom_minimum_size = Vector2(60, 36)
 	main._ui_center_btn.add_theme_font_size_override("font_size", 22)
@@ -522,8 +666,35 @@ func build_ui():
 	main._ui_center_btn.add_theme_stylebox_override("pressed", center_hover)
 	top_row.add_child(main._ui_center_btn)
 
+	main._ui_log_btn = Button.new()
+	main._ui_log_btn.text = "\u2193"
+	_set_button_tooltip(main._ui_log_btn, "Save diagnostic logs to Download/Nightfall.")
+	main._ui_log_btn.focus_mode = Control.FOCUS_NONE
+	main._ui_log_btn.custom_minimum_size = Vector2(60, 36)
+	main._ui_log_btn.add_theme_font_size_override("font_size", 24)
+	main._ui_log_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+	main._ui_log_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
+	var log_style = main._btn_style.duplicate()
+	log_style.content_margin_left = 10
+	log_style.content_margin_right = 10
+	log_style.content_margin_top = 2
+	log_style.content_margin_bottom = 2
+	log_style.set_corner_radius_all(0)
+	var log_hover = main._btn_hover.duplicate()
+	log_hover.content_margin_left = 10
+	log_hover.content_margin_right = 10
+	log_hover.content_margin_top = 2
+	log_hover.content_margin_bottom = 2
+	log_hover.set_corner_radius_all(0)
+	main._ui_log_btn.add_theme_stylebox_override("normal", log_style)
+	main._ui_log_btn.add_theme_stylebox_override("hover", log_hover)
+	main._ui_log_btn.add_theme_stylebox_override("pressed", log_hover)
+	main._ui_log_btn.visible = OS.get_name() == "Android"
+	top_row.add_child(main._ui_log_btn)
+
 	main._ui_stats_btn = Button.new()
 	main._ui_stats_btn.text = "Stats"
+	_set_button_tooltip(main._ui_stats_btn, "Show or hide live stream performance statistics.")
 	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_stats_btn.custom_minimum_size = Vector2(100, 36)
 	main._ui_stats_btn.add_theme_font_size_override("font_size", 22)
@@ -548,20 +719,6 @@ func build_ui():
 	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
 	top_row.add_child(main._ui_stats_btn)
 
-	main._ui_host_label = Label.new()
-	main._ui_host_label.name = "HostLabel"
-	main._ui_host_label.add_theme_font_size_override("font_size", 26)
-	main._ui_host_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
-	main._ui_host_label.custom_minimum_size = Vector2(0, 60)
-	main._ui_host_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	main._ui_host_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	var host_pad = Control.new()
-	host_pad.custom_minimum_size = Vector2(24, 0)
-	host_pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	top_row.add_child(host_pad)
-	top_row.add_child(main._ui_host_label)
-
 	var left_spacer = Control.new()
 	left_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	left_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -574,6 +731,7 @@ func build_ui():
 
 	main._ui_exit_btn = Button.new()
 	main._ui_exit_btn.text = "Exit"
+	_set_button_tooltip(main._ui_exit_btn, "Close Nightfall.")
 	main._ui_exit_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_exit_btn.custom_minimum_size = Vector2(100, 36)
 	main._ui_exit_btn.add_theme_font_size_override("font_size", 22)
@@ -600,6 +758,7 @@ func build_ui():
 
 	main._ui_disconnect_btn = Button.new()
 	main._ui_disconnect_btn.text = "Disconnect"
+	_set_button_tooltip(main._ui_disconnect_btn, "End the current stream and return to server selection.")
 	main._ui_disconnect_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_disconnect_btn.custom_minimum_size = Vector2(140, 36)
 	main._ui_disconnect_btn.add_theme_font_size_override("font_size", 22)
@@ -625,6 +784,7 @@ func build_ui():
 
 	main._ui_close_btn = Button.new()
 	main._ui_close_btn.text = "\u2715"
+	_set_button_tooltip(main._ui_close_btn, "Close the settings menu.")
 	main._ui_close_btn.focus_mode = Control.FOCUS_NONE
 	main._ui_close_btn.custom_minimum_size = Vector2(60, 36)
 	main._ui_close_btn.add_theme_font_size_override("font_size", 22)
@@ -693,6 +853,7 @@ func build_ui():
 	_tab_ai3d.add_child(ai3d_row1)
 
 	main._ui_3d_mode_btn = make_option_btn("3D Mode", "Auto")
+	_set_button_tooltip(main._ui_3d_mode_btn, "Choose the AI 3D performance mode.")
 	# Hidden on Android (updated for real by update_3d_btn_state(), which
 	# also runs during this same init - set here too so there's no
 	# one-frame flash before that first fires, matching 3D Debug's own
@@ -702,12 +863,15 @@ func build_ui():
 	main._ui_3d_mode_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_mode_btn)
 	main._ui_3d_type_btn = make_option_btn("Type", "GPU")
+	_set_button_tooltip(main._ui_3d_type_btn, "Choose whether depth inference runs on the CPU or GPU.")
 	main._ui_3d_type_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_type_btn)
 	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
+	_set_button_tooltip(main._ui_3d_btn, "Choose the depth-estimation model.")
 	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
 	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
+	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 
@@ -728,12 +892,16 @@ func build_ui():
 	_tab_ai3d.add_child(ai3d_row2)
 
 	main._ui_3d_hz_cap_btn = make_option_btn("Hz Cap", "20hz")
+	_set_button_tooltip(main._ui_3d_hz_cap_btn, "Limit how often the depth model runs each second.")
 	ai3d_row2.add_child(main._ui_3d_hz_cap_btn)
 	main._ui_3d_separation_btn = make_option_btn("Separation", "100%")
+	_set_button_tooltip(main._ui_3d_separation_btn, "Adjust the perceived strength of the stereoscopic depth.")
 	ai3d_row2.add_child(main._ui_3d_separation_btn)
 	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50%")
+	_set_button_tooltip(main._ui_3d_convergence_btn, "Adjust the depth plane where the left and right views meet.")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
+	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
 	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
 	if ai3d_options_locked:
 		# Android locks Mode/Type/Model, leaving two controls for row 1 and
@@ -765,8 +933,10 @@ func build_ui():
 	_tab_monitors.add_child(mon_row1)
 
 	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
+	_set_button_tooltip(main._ui_monitors_btn, "Choose how many physical host monitors are displayed.")
 	mon_row1.add_child(main._ui_monitors_btn)
 	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
+	_set_button_tooltip(main._ui_virtual_monitors_btn, "Choose how many virtual monitors are created.")
 	mon_row1.add_child(main._ui_virtual_monitors_btn)
 
 	var mon_gap1 = Control.new()
@@ -798,12 +968,16 @@ func build_ui():
 	_tab_monitors.add_child(mon_actions_row1)
 
 	main._ui_apply_preset_btn = make_action_btn("Apply")
+	_set_button_tooltip(main._ui_apply_preset_btn, "Apply the selected monitor layout.")
 	mon_actions_row1.add_child(main._ui_apply_preset_btn)
 	main._ui_save_preset_btn = make_action_btn("Save")
+	_set_button_tooltip(main._ui_save_preset_btn, "Save the current layout as a preset.")
 	mon_actions_row1.add_child(main._ui_save_preset_btn)
 	main._ui_remove_preset_btn = make_action_btn("Remove")
+	_set_button_tooltip(main._ui_remove_preset_btn, "Delete the selected custom preset.")
 	mon_actions_row1.add_child(main._ui_remove_preset_btn)
 	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
+	_set_button_tooltip(main._ui_grid_mode_btn, "Arrange screens using the monitor grid.")
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
 	_tab_advanced = _build_menu_tab(vbox, MenuSchema.get_tab(&"advanced"))
@@ -868,6 +1042,7 @@ func build_ui():
 	main._ui_disconnect_btn.button_down.connect(func(): main.disconnect_stream())
 	main._ui_close_btn.button_down.connect(func(): main._toggle_ui())
 	main._ui_center_btn.button_down.connect(func(): main._reset_positions())
+	main._ui_log_btn.button_down.connect(func(): main.export_diagnostics())
 	main._ui_stats_btn.button_down.connect(func(): main.toggle_performance_overlay())
 	main._ui_disconnect_btn.visible = main.is_streaming
 	update_stats_btn_state()
@@ -889,7 +1064,6 @@ func build_ui():
 	update_ctrl_mode_btn()
 	update_ctrl_type_btn()
 	update_host_cursor_btn_state()
-	update_host_label()
 
 	var ui_buttons = []
 	_collect_buttons(root, ui_buttons)
@@ -899,6 +1073,7 @@ func _build_tab_buttons(parent: HBoxContainer) -> void:
 	for definition in MenuSchema.get_tab_buttons():
 		var button := Button.new()
 		button.text = definition["label"]
+		_set_button_tooltip(button, definition["tooltip"])
 		button.focus_mode = Control.FOCUS_NONE
 		button.custom_minimum_size = Vector2(160, 44)
 		button.add_theme_font_size_override("font_size", 22)
@@ -945,6 +1120,7 @@ func _build_menu_tab(
 			var field: StringName = option["field"]
 			var value: String = value_overrides.get(field, option["value"])
 			var button := make_option_btn(option["label"], value)
+			_set_button_tooltip(button, option["tooltip"])
 			button.visible = option["visible"]
 			button.disabled = option["disabled"]
 			main.set(field, button)
@@ -1093,25 +1269,6 @@ func update_primary_btn():
 	if main._ui_primary_btn and main.controller_mapper:
 		update_option_btn(main._ui_primary_btn, main.controller_mapper.primary_labels[main.controller_mapper.primary_hand])
 
-func update_host_label():
-	if not main.is_streaming:
-		if main._ui_host_label:
-			main._ui_host_label.text = "Not connected"
-		return
-	if main._ui_host_label:
-		if not main._last_hostname.is_empty():
-			main._ui_host_label.text = main._last_hostname
-		else:
-			var ip = main.parse_ip_port(main.get_node("%IPInput").text)[0]
-			var host_name = ""
-			for h in main.stream_backend.get_config_manager().get_hosts():
-				if h.has("localaddress") and h.localaddress == ip:
-					var hname = h.get("hostname", "")
-					if hname != ip and not hname.is_empty():
-						host_name = hname
-					break
-			main._ui_host_label.text = host_name if not host_name.is_empty() else ip
-
 func make_indicator_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()
 	btn.focus_mode = Control.FOCUS_NONE
@@ -1144,6 +1301,26 @@ func set_status(text: String):
 		if text.length() > STATUS_TEXT_MAX_LEN:
 			text = text.substr(0, STATUS_TEXT_MAX_LEN - 1) + "…"
 		main._ui_status_label.text = text
+
+func show_temporary_status(text: String, duration: float = 1.0) -> void:
+	if not main._ui_status_label:
+		return
+	var previous_text: String = str(main._ui_status_label.text)
+	_temporary_status_generation += 1
+	var generation := _temporary_status_generation
+	_temporary_status_active = true
+	set_status(text)
+	var displayed_text: String = str(main._ui_status_label.text)
+	await main.get_tree().create_timer(duration).timeout
+	# Preserve any connection/error update that arrived during the confirmation.
+	if generation == _temporary_status_generation \
+			and main._ui_status_label and main._ui_status_label.text == displayed_text:
+		main._ui_status_label.text = previous_text
+	if generation == _temporary_status_generation:
+		_temporary_status_active = false
+
+func is_temporary_status_active() -> bool:
+	return _temporary_status_active
 
 func set_disconnect_visible(vis: bool):
 	if main._ui_disconnect_btn:

@@ -9,6 +9,12 @@ func _init():
 	assert(_option_count(&"control") == 8)
 	assert(_option_count(&"picture") == 4)
 	assert(_option_count(&"advanced") == 3)
+	for tab_button in MenuSchema.get_tab_buttons():
+		assert(not String(tab_button["tooltip"]).is_empty())
+	for tab in MenuSchema.get_tabs():
+		for row in tab["rows"]:
+			for option in row["options"]:
+				assert(not String(option["tooltip"]).is_empty())
 	var debug_option: Dictionary = MenuSchema.get_tab(&"advanced")["rows"][1]["options"][0]
 	assert(not debug_option["visible"])
 	assert(debug_option["disabled"])
