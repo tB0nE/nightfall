@@ -333,24 +333,6 @@ const DEBUG_COMP_CORNERS := true
 const DEBUG_COMP_MARKER := true
 const DEBUG_COMP_HANDS := true
 
-# Composition-space controller ray indicators (2026-08-24, GLES projectionless
-# polish) - projectionless mode (submit_projection_layer=false) never renders
-# the normal 3D scene at all, so the real "Laser" MeshInstance3D (a fixed
-# 0.4m CapsuleMesh under HandRayCast, see main.tscn) is invisible whenever
-# comp.in_use is true. These are lightweight composition-layer equivalents -
-# see _update_laser_layers().
-var comp_laser_right: Node3D:
-	get: return composition_controller_rays.right_layer
-var comp_laser_right_viewport: SubViewport:
-	get: return composition_controller_rays.right_viewport
-var comp_laser_left: Node3D:
-	get: return composition_controller_rays.left_layer
-var comp_laser_left_viewport: SubViewport:
-	get: return composition_controller_rays.left_viewport
-const LASER_QUAD_LENGTH := 0.4
-const LASER_QUAD_WIDTH := 0.003
-const LASER_START_OFFSET := 0.06
-
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
 # (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
@@ -1149,69 +1131,13 @@ func _update_cursor_layer():
 		if virtual_keyboard and not virtual_keyboard.mesh_instance.visible:
 			_restore_kb_material()
 
-# Composition-space controller ray indicators (2026-08-24) - see
-# comp_laser_right/left's declaration comment. Only active in projectionless
-# mode (comp.in_use) - the real 3D "Laser" mesh under HandRayCast already
-# works fine in normal projection mode, so showing both would double up.
-# Fixed-length (LASER_QUAD_LENGTH), not stretched to the raycast hit
-# distance, matching the real Laser's own fixed 0.4m CapsuleMesh (main.tscn).
 func _update_laser_layers():
-	if not comp_laser_right and not comp_laser_left:
-		return
-	if not DEBUG_COMP_LASER:
-		if comp_laser_right_viewport and comp_laser_right_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-			comp_laser_right_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		if comp_laser_left_viewport and comp_laser_left_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-			comp_laser_left_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		_set_comp_quad_hidden(comp_laser_right, true)
-		_set_comp_quad_hidden(comp_laser_left, true)
-		return
-	if not comp.in_use or not is_xr_active:
-		_set_comp_quad_hidden(comp_laser_right, true)
-		_set_comp_quad_hidden(comp_laser_left, true)
-		return
-	_update_one_laser_layer(comp_laser_right, hand_raycast)
-	_update_one_laser_layer(comp_laser_left, left_hand_raycast)
-
-func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
-	if not layer:
-		return
-	# raycast.enabled (not XRController3D.get_is_active()) is this codebase's
-	# real "is this hand currently in an active pointing posture" signal -
-	# see _apply_hand_rest()/HAND_REST_THRESHOLD, toggled the same way for
-	# both physical controllers and hand-tracking. get_is_active() reflects
-	# OpenXR controller-pose activity specifically and stays false during
-	# hand-tracking, which silently hid this indicator entirely for anyone
-	# not holding physical controllers.
-	if not raycast or not raycast.enabled:
-		_set_comp_quad_hidden(layer, true)
-		return
-	var ray_origin = raycast.global_position
-	var ray_dir = -raycast.global_transform.basis.z.normalized()
-	var to_cam = (xr_camera.global_position - ray_origin).normalized()
-	# quad_size.y (the gradient's fade axis) maps to the basis' local Y, so Y
-	# must be the ray direction. Z (the quad's face normal) is derived to
-	# point roughly toward the camera - a "billboard around the ray axis"
-	# rather than a full billboard, which would tilt the ray off its real
-	# direction. X falls out of Y and Z via the standard right-handed
-	# cross-product basis (x = y.cross(z)), not chosen independently.
-	var z_axis = to_cam - to_cam.project(ray_dir)
-	if z_axis.length() < 0.001:
-		z_axis = layer.global_transform.basis.z
-	z_axis = z_axis.normalized()
-	var x_axis = ray_dir.cross(z_axis).normalized()
-	z_axis = x_axis.cross(ray_dir).normalized()
-	layer.global_transform.basis = Basis(x_axis, ray_dir, z_axis)
-	# LASER_START_OFFSET shifts the whole segment away from the hand rather
-	# than starting right at the raycast origin - purely cosmetic (avoids
-	# the beam appearing to emerge from inside the hand/controller model).
-	layer.global_position = ray_origin + ray_dir * (LASER_START_OFFSET + LASER_QUAD_LENGTH * 0.5)
-	# _set_comp_quad_hidden() shrinks quad_size to hide - restore the real
-	# size every time we show, since hiding happens unconditionally at
-	# startup (before comp.in_use/is_xr_active are true) and nothing else
-	# ever restores it otherwise.
-	layer.set_quad_size(Vector2(LASER_QUAD_WIDTH, LASER_QUAD_LENGTH))
-	layer.visible = true
+	composition_controller_rays.update(
+		DEBUG_COMP_LASER,
+		comp.in_use and is_xr_active,
+		xr_camera.global_position,
+		hand_raycast,
+		left_hand_raycast)
 
 func _update_marker_layers(_delta: float):
 	composition_controller_markers.update(
