@@ -298,6 +298,7 @@ var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.ne
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
 var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
+var composition_screen_controls: CompositionScreenControls = CompositionScreenControls.new()
 
 var comp_cursor: Node3D:
 	get: return composition_pointers.cursor_layer
@@ -320,8 +321,8 @@ var left_comp_cursor_viewport: SubViewport:
 # AND its backing SubViewport's render_target_update_mode (UPDATE_ALWAYS
 # viewports render every frame regardless of the layer's own visibility, so
 # hiding alone doesn't stop the GPU cost) - see
-# _update_laser_layers()/_update_grab_bar_layers()/_update_corner_layers()/
-# _sync_comp_background(). Toggle one at a time and rebuild; remove once the
+# _update_laser_layers()/_update_grab_bar_layers()/_sync_comp_background().
+# Toggle one at a time and rebuild; remove once the
 # regression is isolated (see the diagnosis plan). Confirmed 2026-08-24 the
 # regression was a debug-build-vs-release-build artifact, not caused by any
 # of these - release build hits ~19.5-20.2Hz with all four enabled. Kept
@@ -1152,86 +1153,12 @@ func _update_marker_layers(_delta: float):
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
-# Mirrors each screen's real (invisible-under-projectionless) grab_bar
-# transform/size onto its composition-space equivalent every frame. Not
-# billboarded - grab_bar lies flat in the screen's own plane, so this is a
-# direct copy, no basis/orientation math needed (unlike the laser).
 func _update_grab_bar_layers():
-	for s in screens:
-		_update_corner_layers(s)
-		if not s.comp_grab_bar:
-			continue
-		if not DEBUG_COMP_GRAB_BAR or not comp.in_use:
-			# A rare, one-time transition (stereo mode / mesh-rendering
-			# fallback switch), not a per-frame toggle - safe, unlike the
-			# cursor/laser's old every-frame hide/show that caused the
-			# swapchain crash.
-			if s.comp_grab_bar.visible:
-				s.comp_grab_bar.visible = false
-			var bar_vp = s.comp_grab_bar.get_layer_viewport()
-			if bar_vp and bar_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-				bar_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
-			continue
-		var ms = s.mesh_size
-		# The transparent outer area carries the primary screen's four shortcut
-		# icons while the same layer remains a plain centered bar on secondary
-		# screens. Keeping this combined avoids four extra OpenXR layers.
-		s.comp_grab_bar.set_quad_size(Vector2(
-			ms.x * ScreenShortcutBar.STRIP_WIDTH_RATIO,
-			ms.x * ScreenShortcutBar.STRIP_HEIGHT_RATIO,
-		))
-		# Use the screen basis directly. The physical CylinderMesh grab bar is
-		# rotated 90 degrees because its length runs along local Y; copying that
-		# transform and adding another 90 degrees left this textured quad at 180
-		# degrees. A plain bar hid the mistake, but asymmetric shortcut artwork
-		# appeared upside-down and its left/right visuals no longer matched the
-		# screen-space physics targets.
-		s.comp_grab_bar.global_rotation = s.global_rotation
-		# Direct copy, no extra offset (2026-08-24) - the "move closer to
-		# the screen" adjustment now happens at the source (vr_screen.gd's
-		# update_corner_positions(), which also moves the real Area3D
-		# hitbox) rather than as a visual-only offset here. An earlier
-		# visual-only version left the hitbox behind at the old position,
-		# making the bar hard to find/grab where it visually appeared.
-		s.comp_grab_bar.global_position = s.grab_bar.global_position
-		if not s.comp_grab_bar.visible:
-			var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
-			if bar_vp2:
-				bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-			s.comp_grab_bar.visible = true
-
-# Mirrors each of a screen's real corner_handles (already curve/resize-aware
-# via VRScreen.update_corner_positions() - see get_cylinder_radius()/
-# _comp_cyl_radius) onto their composition-space equivalents every frame.
-# No curve math duplicated here - just copying the real handle's already-
-# correct global transform and size, same approach as the grab bar.
-func _update_corner_layers(s: VRScreen):
-	if s.comp_corner_layers.is_empty():
-		return
-	if not DEBUG_COMP_CORNERS or not comp.in_use:
-		for layer in s.comp_corner_layers:
-			if not layer:
-				continue
-			if layer.visible:
-				layer.visible = false
-			var corner_vp = layer.get_layer_viewport()
-			if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-				corner_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		return
-	var corner_size = s.mesh_size.x * 0.027
-	for i in range(s.comp_corner_layers.size()):
-		var layer = s.comp_corner_layers[i]
-		if not layer or i >= s.corner_handles.size():
-			continue
-		var handle = s.corner_handles[i]
-		layer.set_quad_size(Vector2(corner_size, corner_size))
-		layer.global_position = handle.global_position
-		layer.global_rotation = handle.global_rotation
-		var corner_vp = layer.get_layer_viewport()
-		if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
-			corner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-		if not layer.visible:
-			layer.visible = true
+	composition_screen_controls.update(
+		screens,
+		comp.in_use,
+		DEBUG_COMP_GRAB_BAR,
+		DEBUG_COMP_CORNERS)
 
 func exit_app():
 	get_tree().quit()

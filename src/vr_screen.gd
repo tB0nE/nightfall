@@ -69,7 +69,7 @@ var comp_stream_cursor_circle_right: ColorRect = null
 # were (plain 3D scene nodes never reach the compositor when
 # submit_projection_layer=false). Its Area3D grab interaction is unaffected
 # (physics doesn't depend on rendering) - this only adds the missing
-# visual. See main.gd's _update_grab_bar_layers().
+# visual. See CompositionScreenControls.
 var comp_grab_bar: Node3D = null
 var comp_grab_bar_viewport: SubViewport = null
 var shortcut_buttons: Dictionary = {}
@@ -81,7 +81,7 @@ var comp_shortcut_icons: Dictionary = {}
 # with an L-bracket texture, see create_corner_handles()), invisible under
 # projectionless mode. Parallel arrays indexed the same as corner_handles
 # (top-left/top-right/bottom-left/bottom-right) - see main.gd's
-# _update_grab_bar_layers() (also drives these) and xr_interaction.gd's
+# CompositionScreenControls (also drives these) and xr_interaction.gd's
 # _set_corner_color() (mirrors hover/click alpha onto comp_corner_rects).
 var comp_corner_layers: Array = []
 var comp_corner_rects: Array = []
@@ -214,7 +214,7 @@ func update_corner_positions():
 		handle.rotation.y = -a
 	# Halved (2026-08-24, was the full grab_bar_off gap) - moves the real
 	# grab_bar (and its Area3D hitbox) closer to the screen edge, not just
-	# its composition-space visual (main.gd's _update_grab_bar_layers()
+	# its composition-space visual (CompositionScreenControls
 	# mirrors this position directly) - keeping both in sync was the point;
 	# an earlier attempt that only offset the visual left the hitbox
 	# behind, making it hard to find/grab.
