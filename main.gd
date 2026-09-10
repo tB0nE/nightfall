@@ -984,21 +984,17 @@ func _update_cursor_layer():
 			pointer_cursor.visible = false
 		if contact_dot:
 			contact_dot.visible = false
-	if comp_ui and comp_ui.visible:
-		comp_ui.global_position = ui_panel_3d.global_position
-		comp_ui.global_rotation = ui_panel_3d.global_rotation
+
+func _sync_composition_panels():
+	if not comp.in_use:
+		return
 	if ui_controller:
 		ui_controller.sync_tooltip_surface()
-	if comp_kb and virtual_keyboard and virtual_keyboard.visible:
-		comp_kb.global_position = virtual_keyboard.global_position
-		comp_kb.global_rotation = virtual_keyboard.global_rotation
-		comp_kb.visible = true
-		if virtual_keyboard.mesh_instance.visible:
+	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
+	match keyboard_action:
+		CompositionPanelLayers.KeyboardMaterialAction.MAKE_TRANSPARENT:
 			_make_kb_transparent()
-	else:
-		if comp_kb:
-			comp_kb.visible = false
-		if virtual_keyboard and not virtual_keyboard.mesh_instance.visible:
+		CompositionPanelLayers.KeyboardMaterialAction.RESTORE:
 			_restore_kb_material()
 
 func _update_laser_layers():
@@ -2119,6 +2115,7 @@ func _process(delta):
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_sync_composition_panels()
 	_sync_interaction_viewports()
 	_update_laser_layers()
 	_update_marker_layers(delta)
