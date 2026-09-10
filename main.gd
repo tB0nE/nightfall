@@ -365,47 +365,6 @@ var comp_marker_left_circle: ColorRect:
 	get: return composition_controller_markers.left_circle
 const MARKER_IDLE_ALPHA := 0.16
 
-# Composition-space hand indicator (2026-08-27) - see _update_hand_indicator_
-# layers(). First attempt at this was a full 25-joint/24-bone skeleton
-# rendered as a real 3D scene into an offscreen SubViewport every frame
-# (same technique as comp_bg_capture_viewport) - reported as "tanking
-# performance" even throttled to 14fps, so pulled back out entirely. This
-# is deliberately as cheap as the controller markers just below: a single
-# flat triangle icon per hand (src/shaders/inverted_triangle.gdshader), no
-# offscreen 3D scene/camera at all - but unlike the markers, the quad is NOT
-# simply billboarded to the camera and the triangle is NOT a fixed shape.
-# Both are driven live from three real joints (WRIST, and the INDEX/PINKY
-# PHALANX_PROXIMAL joints as the two visible "knuckle" points - NOT the
-# METACARPAL joints, which sit near the wrist/thumb-base and read as the
-# wrong knuckle entirely, confirmed on-device) every frame - see
-# _update_one_hand_indicator(). comp_hand_right_triangle/left_triangle are
-# the ColorRect nodes whose ShaderMaterial gets the live point_a/b/c
-# uniforms; comp_hand_right/left are the composition quads themselves.
-var comp_hand_right: Node3D:
-	get: return composition_hand_indicators.right_layer
-var comp_hand_left: Node3D:
-	get: return composition_hand_indicators.left_layer
-var comp_hand_right_triangle: ColorRect:
-	get: return composition_hand_indicators.right_triangle
-var comp_hand_left_triangle: ColorRect:
-	get: return composition_hand_indicators.left_triangle
-# Fixed quad size (2026-08-27) - _update_one_hand_indicator() only ever
-# repositions/reorients the quad, never resizes it - simpler than
-# continuously resizing, and quad_size changes are exactly what
-# _set_comp_quad_hidden() already (ab)uses for hide/show, so keeping it
-# fixed also avoids any interaction between that and a "real" dynamic size.
-# 0.32m, not the original 0.14m (2026-08-27 fix) - the UV projection
-# divides the real wrist-to-knuckle distance by this value directly (see
-# _update_one_hand_indicator()), so it needs to be at least DOUBLE the
-# largest real joint distance from the wrist for that distance to land
-# within the quad's UV [0,1] range at all. A real wrist-to-index-knuckle
-# distance is commonly 8-11cm, comfortably exceeding 0.14's own half-width
-# of 7cm - confirmed as the actual cause of "half the triangle missing"
-# (the index vertex was being clipped off the edge of the quad). 0.32
-# gives a 16cm half-width, safely covering real hands with margin; making
-# the quad physically bigger doesn't make the visible triangle any bigger -
-# everything outside the triangle is fully transparent - it just gives the
-# real joint-driven shape room to not clip.
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
 # (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
@@ -3313,116 +3272,10 @@ func _create_snow():
 func _create_data():
 	bg_manager._create_data()
 
-# Composite-only hand indicators (2026-08-27, replacing the expensive
-# viewport-capture hand skeleton) - same cost profile as
-# _update_one_marker_layer() (see above): a small procedurally-shaded quad,
-# no offscreen 3D scene or capture camera involved at all. Unlike the
-# markers, though, the quad's own orientation and the triangle's three
-# shader-uniform vertices are both recomputed live every frame from three
-# real joints (WRIST, INDEX/PINKY PHALANX_PROXIMAL knuckle joints) - see
-# _update_one_hand_indicator().
 func _update_hand_indicator_layers():
-	if not comp_hand_right and not comp_hand_left:
-		return
-	if not DEBUG_COMP_HANDS or not comp.in_use or not is_xr_active or not _is_using_hands:
-		for layer in [comp_hand_right, comp_hand_left]:
-			_set_comp_quad_hidden(layer, true)
-			if layer:
-				_set_viewport_active(layer.get_layer_viewport(), false)
-		return
-	for layer in [comp_hand_right, comp_hand_left]:
-		if layer:
-			_set_viewport_active(layer.get_layer_viewport(), true)
-	var right_tracker = XRServer.get_tracker("/user/hand_tracker/right")
-	var left_tracker = XRServer.get_tracker("/user/hand_tracker/left")
-	_update_one_hand_indicator(comp_hand_right, comp_hand_right_triangle, right_tracker)
-	_update_one_hand_indicator(comp_hand_left, comp_hand_left_triangle, left_tracker)
-
-# Builds the quad's plane directly from the hand's own three joints, rather
-# than billboarding to the camera like the markers/laser do - this is what
-# makes the triangle actually track hand orientation/shape in real time
-# instead of just following wrist position with a fixed icon.
-func _update_one_hand_indicator(layer: Node3D, triangle: ColorRect, tracker: XRHandTracker):
-	if not layer or not triangle:
-		return
-	if not tracker or not (tracker is XRHandTracker):
-		_set_comp_quad_hidden(layer, true)
-		return
-	const TRACKED := XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
-	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & TRACKED) != 0
-	var index_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL) & TRACKED) != 0
-	var pinky_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL) & TRACKED) != 0
-	if not (wrist_ok and index_ok and pinky_ok):
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	var wrist_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
-	var index_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL).origin
-	var pinky_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL).origin
-
-	var to_index = index_pos - wrist_pos
-	var to_pinky = pinky_pos - wrist_pos
-	if to_index.length_squared() < 0.0001 or to_pinky.length_squared() < 0.0001:
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	# Orthonormal basis for the hand's own plane (Gram-Schmidt from the two
-	# knuckle directions), not the camera - x_axis/y_axis span the plane the
-	# triangle is drawn in, z_axis is its face normal. Degeneracy check is
-	# done on NORMALIZED directions (2026-08-27, was on the raw cross
-	# product before, which is |to_index|*|to_pinky|*sin(angle) - since
-	# metacarpal joints sit only a few cm from the wrist, that magnitude is
-	# tiny even at a healthy ~30 degree real hand spread, so the raw check
-	# rejected ordinary poses every single frame - "not seeing the triangle
-	# at all" turned out to be exactly this, confirmed via [HANDIND] logs
-	# showing "degenerate cross product" on every frame with real tracked
-	# joints). The normalized cross product is just sin(angle), scale-
-	# independent - 0.0004 here is sin(angle) < 0.02, i.e. angle < ~1.1
-	# degrees, only rejecting genuinely near-collinear moments.
-	var x_axis = to_index.normalized()
-	var raw_normal = x_axis.cross(to_pinky.normalized())
-	if raw_normal.length_squared() < 0.0004:
-		_set_comp_quad_hidden(layer, true) # index/pinky/wrist briefly collinear
-		return
-	raw_normal = raw_normal.normalized()
-	# The compositor renders this quad single-sided - pick whichever normal
-	# direction faces the viewer (palm-up vs palm-down) BEFORE deriving
-	# y_axis from it (2026-08-27 fix - previously flipped z_axis/y_axis
-	# AFTER y_axis was already built from the other sign, which could leave
-	# the projection below effectively mirrored depending on viewing angle:
-	# reported as the pinky point reading as the thumb knuckle instead.
-	# Deciding the final sign first and deriving y_axis from THAT removes
-	# the possibility entirely, at the cost of the triangle occasionally
-	# appearing mirrored left/right rather than anatomically exact when the
-	# hand rotates - cheap and correct often enough for an indicator, not a
-	# concern for a real hand mesh).
-	var z_axis = raw_normal if raw_normal.dot(xr_camera.global_position - wrist_pos) >= 0.0 else -raw_normal
-	var y_axis = z_axis.cross(x_axis).normalized()
-	x_axis = y_axis.cross(z_axis) # re-orthogonalize against the final y_axis
-
-	layer.global_transform = Transform3D(Basis(x_axis, y_axis, z_axis), wrist_pos)
-	layer.set_quad_size(Vector2(CompositionHandIndicators.QUAD_SIZE, CompositionHandIndicators.QUAD_SIZE))
-	layer.visible = true
-
-	# Project each joint into the quad's own local 2D plane (wrist is the
-	# origin by construction) and convert to UV [0,1] for the shader -
-	# inverted_triangle.gdshader's point_a/b/c. Confirmed on-device
-	# (2026-08-27) that the V-axis sign here reads backwards relative to
-	# y_axis's real 3D direction - pinky consistently landed mirrored to
-	# the opposite side (reading as the thumb knuckle). Negated ONLY for
-	# this 2D projection, not for y_axis itself (still used un-negated for
-	# the quad's actual 3D orientation below/above) - index sits exactly on
-	# the V=0.5 centerline by construction (to_index has zero y_axis
-	# component), so this only ever affects pinky's rendered side, not the
-	# quad's real-world placement.
-	var half = CompositionHandIndicators.QUAD_SIZE
-	var wrist_uv = Vector2(0.5, 0.5)
-	var index_uv = Vector2(x_axis.dot(to_index), -y_axis.dot(to_index)) / half + wrist_uv
-	var pinky_uv = Vector2(x_axis.dot(to_pinky), -y_axis.dot(to_pinky)) / half + wrist_uv
-	var mat: ShaderMaterial = triangle.material
-	mat.set_shader_parameter("point_a", index_uv)
-	mat.set_shader_parameter("point_b", wrist_uv)
-	mat.set_shader_parameter("point_c", pinky_uv)
+	composition_hand_indicators.update(
+		DEBUG_COMP_HANDS and comp.in_use and is_xr_active and _is_using_hands,
+		xr_camera.global_position)
 
 func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTracker):
 	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & 8) != 0
