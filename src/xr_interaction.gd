@@ -383,8 +383,7 @@ func handle_pointer_interaction():
 			main.contact_dot.visible = false
 		if main.pointer_cursor:
 			main.pointer_cursor.visible = false
-		if main.comp_cursor:
-			main.comp_cursor.visible = false
+		main.composition_pointers.hide_primary()
 		right_laser.visible = false
 		if left_laser:
 			left_laser.visible = false
@@ -403,8 +402,8 @@ func handle_pointer_interaction():
 				main.contact_dot.visible = not hide_on_screen
 			if main.pointer_cursor:
 				main.pointer_cursor.visible = false
-			if main.comp_cursor and hide_on_screen:
-				main.comp_cursor.visible = false
+			if hide_on_screen:
+				main.composition_pointers.hide_primary()
 		else:
 			if main.pointer_cursor:
 				main.pointer_cursor.global_position = hit_point
@@ -766,11 +765,7 @@ func _process_other_hand_ui():
 	if main.left_contact_dot:
 		main.left_contact_dot.visible = false
 	if main.comp.in_use and main.left_comp_cursor_layer:
-		var to_cam = (main.xr_camera.global_position - hit_pos).normalized()
-		main.left_comp_cursor_layer.global_position = hit_pos + to_cam * 0.002
-		main.left_comp_cursor_layer.look_at(main.left_comp_cursor_layer.global_position + to_cam, Vector3.UP)
-		main.left_comp_cursor_layer.rotate_object_local(Vector3.UP, PI)
-		main.left_comp_cursor_layer.visible = true
+		main.composition_pointers.show_secondary(hit_pos, main.xr_camera.global_position)
 		if main.left_comp_cursor:
 			main.left_comp_cursor.visible = false
 	elif main.left_comp_cursor:
@@ -830,8 +825,7 @@ func _hide_other_hand_ui():
 		main.left_contact_dot.visible = false
 	if main.left_comp_cursor:
 		main.left_comp_cursor.visible = false
-	if main.left_comp_cursor_layer:
-		main.left_comp_cursor_layer.visible = false
+	main.composition_pointers.hide_secondary()
 
 func _apply_ui_hover_states():
 	if not main.ui_visible:

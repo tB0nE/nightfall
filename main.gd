@@ -910,58 +910,10 @@ func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
 func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
-func _show_stream_cursor(cursor: TextureRect, circle: ColorRect, cx: float, cy: float, cursor_px: int):
-	if settings.cursor_mode == 0:
-		if cursor: cursor.visible = false
-		if circle:
-			circle.visible = true
-			circle.position = Vector2(cx - cursor_px * 0.5, cy - cursor_px * 0.5)
-			circle.size = Vector2(cursor_px, cursor_px)
-	else:
-		if circle: circle.visible = false
-		if cursor:
-			cursor.visible = true
-			cursor.position = Vector2(cx, cy)
-			cursor.size = Vector2(cursor_px, cursor_px * 1.6)
-
-func _hide_stream_cursor(cursor: TextureRect, circle: ColorRect):
-	if cursor: cursor.visible = false
-	if circle: circle.visible = false
-
-func _hide_all_stream_cursors():
-	for s in screens:
-		_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
-		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
-		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
-
-# Hides an OpenXRCompositionLayerQuad WITHOUT toggling its `visible`
-# property (2026-08-24) - under GLES specifically, repeatedly flipping
-# `visible` false/true on these every frame (as the cursor/laser hides and
-# shows while the raycast target moves on/off a screen, very frequent
-# during a grab-bar/corner drag) was found to repeatedly tear down and
-# recreate the layer's swapchain (confirmed via logcat: repeated
-# "CreateSwapChain: ... 40 64" matching comp_cursor_viewport's exact size,
-# each followed by "Condition t->is_render_target is true" in texture_free/
-# texture_remap_proxies) - a race between that teardown/recreate and
-# in-flight render commands eventually SIGSEGVs in the GLES3 backend.
-# Shrinking quad_size to near-zero instead achieves the same visual result
-# (nothing meaningful to see) without touching the swapchain at all -
-# set_quad_size() is a pure world-space geometry parameter, unlike the
-# viewport's own pixel size, so it doesn't trigger texture reallocation.
-# `visible` itself is set true exactly once (whenever comp.in_use first
-# becomes true) and never set false again.
-func _set_comp_quad_hidden(layer: Node3D, hidden: bool):
-	if not layer:
-		return
-	if hidden:
-		layer.set_quad_size(Vector2(0.0001, 0.0001))
-	elif not layer.visible:
-		layer.visible = true
-
 func _update_cursor_layer():
 	if not comp.in_use:
-		_set_comp_quad_hidden(comp_cursor, true)
-		_hide_all_stream_cursors()
+		composition_pointers.hide_primary()
+		composition_pointers.hide_all_embedded(screens)
 		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
@@ -984,77 +936,27 @@ func _update_cursor_layer():
 		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing \
 			and not independent_cursor
 		if on_screen and (pad_on_screen or tp_capturing):
-			_set_comp_quad_hidden(comp_cursor, true)
-			_hide_all_stream_cursors()
+			composition_pointers.hide_primary()
+			composition_pointers.hide_all_embedded(screens)
 		elif use_embedded_cursor and on_screen:
-			# Only hovered_screen gets shown below - explicitly hide every other
-			# screen's cursor the instant the hover target changes, rather than
-			# leaving whichever screen was PREVIOUSLY hovered showing its last
-			# cursor position until something else happens to call
-			# _hide_all_stream_cursors() (e.g. the ray briefly leaving every
-			# screen entirely) - that gap is what let two cursors show at once
-			# when moving straight from one screen to another.
-			for s in screens:
-				if s != hovered_screen:
-					_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
-					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
-					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
-			var uv = hovered_screen.hit_point_to_uv(hit_point)
-			var bezel_px = 8 if settings.bezel_enabled else 0
-			var base_w = hovered_screen.comp_base_size.x
-			var base_h = hovered_screen.comp_base_size.y
-			# cx/cy position the cursor in the comp viewport's own pixel space,
-			# which is sized to the real stream resolution - a fixed pixel size
-			# here shrinks/grows on screen as that resolution changes. Scale
-			# against a 1080p baseline instead (same approach as the loading dots).
-			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
-			var cx = bezel_px + uv.x * base_w
-			var cy = bezel_px + uv.y * base_h
-			# Correct the visible cursor independently of the real click point.
-			# One step is 12 pixels at 1080p and scales with stream height so the
-			# apparent adjustment stays consistent at other resolutions.
-			if stereo >= 3:
-				# New Left/Default/Right correspond to the old Default/Right/
-				# Right+ positions respectively, hence the +1 calibration step.
-				cx += (settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
-			_set_comp_quad_hidden(comp_cursor, true)
+			composition_pointers.hide_primary()
 			if pointer_cursor:
 				pointer_cursor.visible = false
 			if contact_dot:
 				contact_dot.visible = false
-			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
-			if stereo > 0 and hovered_screen == primary_screen:
-				var left_cx = cx
-				if stereo == 5 or stereo == 6 or stereo == 10 or stereo == 11:
-					# This hand-tuned pop was calibrated against the old, much
-					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
-					# the same ratio for the real occlusion-aware warp's
-					# actual, much smaller calibrated parallax
-					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
-					# than reused verbatim, or the cursor pops far more than
-					# anything actually in the depth-warped video. Modes
-					# 5/6/10/11 (MiDaS-Std/-Fast/-Fastest) all share the
-					# exact same warp pipeline/parallax magnitude - only the
-					# pre-pass resolution/throttling differs between them
-					# (see depth_estimator.gd's warp_tier), not the parallax
-					# itself. 10/11 were missing from this condition
-					# (2026-08-18 fix) and fell through to the elif below,
-					# getting the old crude mode's un-scaled offset - about
-					# 7x too large for their actual warp magnitude, which is
-					# what made the cursor "float" uncomfortably on the
-					# tiers most people actually use.
-					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
-				elif stereo >= 3:
-					left_cx += 0.015 * base_w
-				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
-				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
-			else:
-				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
-				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
+			composition_pointers.show_embedded(
+				hovered_screen,
+				screens,
+				hit_point,
+				settings.bezel_enabled,
+				settings.cursor_mode,
+				stereo,
+				settings.host.ai_3d_cursor_position,
+				depth_estimator._pass_parallax if depth_estimator else 0.0,
+				primary_screen)
 		elif comp_cursor:
-			_hide_all_stream_cursors()
+			composition_pointers.hide_all_embedded(screens)
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
-			var to_cam = (xr_camera.global_position - hit_point).normalized()
 			# The native renderer cannot embed the pointer into its video texture,
 			# so apply the AI-3D cursor calibration to this independent composition
 			# layer in world space. Convert the legacy branch's exact pixel offset
@@ -1066,50 +968,17 @@ func _update_cursor_layer():
 				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
-			var screen_dist = xr_camera.global_position.distance_to(screen_mesh.global_position)
-			var cursor_dist = xr_camera.global_position.distance_to(hit_point)
-			var dist_scale = cursor_dist / screen_dist
-			var pointer = comp_cursor_viewport.get_node_or_null("PointerTexture")
-			var circle = comp_cursor_viewport.get_node_or_null("CircleTexture")
-			var cursor_size = 0.035 * dist_scale if on_screen else 0.035
-			if settings.cursor_mode == 0:
-				if pointer: pointer.visible = false
-				if circle: circle.visible = true
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(256, 256)
-				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
-				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-			elif on_screen:
-				if pointer: pointer.visible = true
-				if circle: circle.visible = false
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(40, 64)
-				# The backing pointer texture is 40x64. Preserve that physical aspect
-				# for every screen presentation path; the old square GLES fallback is
-				# what made the independently composited SBS cursor look stretched.
-				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale)
-				comp_cursor.set_quad_size(cursor_quad_size)
-				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-				var right = comp_cursor.global_transform.basis.x
-				var up = comp_cursor.global_transform.basis.y
-				comp_cursor.global_position += right * 0.02 - up * 0.032
-			else:
-				if pointer: pointer.visible = false
-				if circle: circle.visible = true
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(256, 256)
-				comp_cursor.set_quad_size(Vector2(0.035, 0.035))
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-			comp_cursor.visible = true
+			composition_pointers.show_primary(
+				hit_point,
+				surf_normal,
+				xr_camera.global_position,
+				screen_mesh.global_position,
+				on_screen,
+				settings.cursor_mode,
+				native_ai_cursor_offset)
 	else:
-		_set_comp_quad_hidden(comp_cursor, true)
-		_hide_all_stream_cursors()
+		composition_pointers.hide_primary()
+		composition_pointers.hide_all_embedded(screens)
 	if comp_cursor:
 		if pointer_cursor:
 			pointer_cursor.visible = false

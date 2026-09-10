@@ -926,8 +926,8 @@ func _update_bezel_for(s: VRScreen):
 	# the border's alpha, rather than flipping t.vp.size between content_size
 	# and bezel_size on/off (2026-09-05) - toggling bezel while streaming
 	# reliably crashed with the exact same signature (SIGSEGV, fault addr
-	# 0xe0, null pointer) as _set_comp_quad_hidden()'s documented swapchain
-	# race above: resizing a SubViewport that backs an OpenXRCompositionLayer
+	# 0xe0, null pointer) as the pointer layer's documented swapchain race:
+	# resizing a SubViewport that backs an OpenXRCompositionLayer
 	# forces Godot to tear down and recreate that layer's swapchain, which
 	# can race in-flight render commands. Keeping the size (and therefore the
 	# swapchain) constant across a bezel toggle avoids that resize entirely;
