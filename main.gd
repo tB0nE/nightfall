@@ -351,20 +351,6 @@ const LASER_QUAD_LENGTH := 0.4
 const LASER_QUAD_WIDTH := 0.003
 const LASER_START_OFFSET := 0.06
 
-# Persistent controller position markers - see _update_marker_layers().
-# Inverse of the laser above: hidden while actively pointing/held (laser is
-# showing instead), and a faint always-on marker while resting/put down so
-# it can still be located.
-var comp_marker_right: Node3D:
-	get: return composition_controller_markers.right_layer
-var comp_marker_left: Node3D:
-	get: return composition_controller_markers.left_layer
-var comp_marker_right_circle: ColorRect:
-	get: return composition_controller_markers.right_circle
-var comp_marker_left_circle: ColorRect:
-	get: return composition_controller_markers.left_circle
-const MARKER_IDLE_ALPHA := 0.16
-
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
 # (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
@@ -1227,50 +1213,15 @@ func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
 	layer.set_quad_size(Vector2(LASER_QUAD_WIDTH, LASER_QUAD_LENGTH))
 	layer.visible = true
 
-# Persistent controller position markers (2026-08-25) - complements
-# _update_laser_layers() above. Inverse of the laser's own visibility:
-# hidden while actively pointing (raycast.enabled - the laser is showing
-# instead), and a faint always-visible dot while resting/put down so it can
-# still be located at a glance.
 func _update_marker_layers(_delta: float):
-	if not comp_marker_right and not comp_marker_left:
-		return
-	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
-		for layer in [comp_marker_right, comp_marker_left]:
-			_set_comp_quad_hidden(layer, true)
-			if layer:
-				_set_viewport_active(layer.get_layer_viewport(), false)
-		return
-	for layer in [comp_marker_right, comp_marker_left]:
-		if layer:
-			_set_viewport_active(layer.get_layer_viewport(), true)
-	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
-	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
-
-func _update_one_marker_layer(layer: Node3D, circle: ColorRect, hand: XRController3D, raycast: RayCast3D):
-	if not layer or not hand:
-		return
-
-	# raycast.enabled is this codebase's real "actively pointing/held" signal
-	# (see _update_one_laser_layer's own comment) - not get_is_active(),
-	# which stays true for the whole session regardless of pickup/put-down
-	# and can lag behind a freshly-booted or just-picked-up controller by a
-	# few frames. Not gating on get_is_active() at all (2026-08-25) - a
-	# controller untouched since boot still has a last-known/default
-	# transform to show a marker at, and always updating position here
-	# every frame (rather than skipping while "inactive") avoids the marker
-	# appearing frozen for a moment right after pickup.
-	if raycast and raycast.enabled:
-		# Actively pointing - the laser is showing, hide the marker.
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	layer.global_transform.basis = xr_camera.global_transform.basis
-	layer.global_position = hand.global_position
-	layer.set_quad_size(Vector2(0.03, 0.03))
-	if circle and circle.material:
-		circle.material.set_shader_parameter("alpha_mult", MARKER_IDLE_ALPHA)
-	layer.visible = true
+	composition_controller_markers.update(
+		DEBUG_COMP_MARKER and comp.in_use and is_xr_active,
+		xr_camera.global_transform.basis,
+		right_hand,
+		left_hand,
+		right_hand_resting,
+		left_hand_resting,
+		_is_using_hands)
 
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
@@ -2588,9 +2539,28 @@ func _process_hand_tracking(_delta):
 	if hands_active != _is_using_hands:
 		_is_using_hands = hands_active
 		if _is_using_hands:
+			# The controller nodes below are about to be overwritten with hand
+			# joints. Preserve the physical controllers' last positions for their
+			# resting markers, and ensure both hand pointers are available even if
+			# controller-idle detection had disabled one of their shared raycasts.
+			composition_controller_markers.capture_controller_positions(right_hand, left_hand)
+			if hand_raycast:
+				hand_raycast.enabled = true
+			if left_hand_raycast:
+				left_hand_raycast.enabled = true
 			_log("[INPUT] Hand Tracking active, hiding controller models")
 			_set_controller_models_visible(false)
 		else:
+			# Controllers have taken ownership of these nodes/rays again. Restart
+			# inactivity detection from an unambiguous active state.
+			right_hand_resting = false
+			left_hand_resting = false
+			xr_interaction._right_inactive_time = 0.0
+			xr_interaction._left_inactive_time = 0.0
+			if hand_raycast:
+				hand_raycast.enabled = true
+			if left_hand_raycast:
+				left_hand_raycast.enabled = true
 			_log("[INPUT] Controllers active, showing controller models")
 			_set_controller_models_visible(true)
 

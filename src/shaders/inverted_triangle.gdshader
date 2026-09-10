@@ -1,8 +1,8 @@
 shader_type canvas_item;
 
-// Same alpha_mult convention as circle_cursor.gdshader (main.gd's
-// MARKER_IDLE_ALPHA etc) - COLOR is fully overwritten below, so node
-// .modulate has no effect; this uniform is the only opacity control.
+// Same alpha_mult convention as circle_cursor.gdshader. COLOR is fully
+// overwritten below, so node .modulate has no effect; this uniform is the
+// only opacity control.
 uniform float alpha_mult : hint_range(0.0, 1.0) = 1.0;
 
 // Live triangle vertices in UV space [0,1]^2 - set every frame by
