@@ -297,6 +297,7 @@ var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmen
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
+var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
 
 var comp_cursor: Node3D:
 	get: return composition_pointers.cursor_layer
@@ -380,10 +381,14 @@ const MARKER_IDLE_ALPHA := 0.16
 # _update_one_hand_indicator(). comp_hand_right_triangle/left_triangle are
 # the ColorRect nodes whose ShaderMaterial gets the live point_a/b/c
 # uniforms; comp_hand_right/left are the composition quads themselves.
-var comp_hand_right: Node3D = null
-var comp_hand_left: Node3D = null
-var comp_hand_right_triangle: ColorRect = null
-var comp_hand_left_triangle: ColorRect = null
+var comp_hand_right: Node3D:
+	get: return composition_hand_indicators.right_layer
+var comp_hand_left: Node3D:
+	get: return composition_hand_indicators.left_layer
+var comp_hand_right_triangle: ColorRect:
+	get: return composition_hand_indicators.right_triangle
+var comp_hand_left_triangle: ColorRect:
+	get: return composition_hand_indicators.left_triangle
 # Fixed quad size (2026-08-27) - _update_one_hand_indicator() only ever
 # repositions/reorients the quad, never resizes it - simpler than
 # continuously resizing, and quad_size changes are exactly what
@@ -401,8 +406,6 @@ var comp_hand_left_triangle: ColorRect = null
 # the quad physically bigger doesn't make the visible triangle any bigger -
 # everything outside the triangle is fully transparent - it just gives the
 # real joint-driven shape room to not clip.
-const HAND_INDICATOR_SIZE := 0.32
-
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
 # (Ash/Snow/Data, background_manager.gd) are real GPUParticles3D
@@ -3398,7 +3401,7 @@ func _update_one_hand_indicator(layer: Node3D, triangle: ColorRect, tracker: XRH
 	x_axis = y_axis.cross(z_axis) # re-orthogonalize against the final y_axis
 
 	layer.global_transform = Transform3D(Basis(x_axis, y_axis, z_axis), wrist_pos)
-	layer.set_quad_size(Vector2(HAND_INDICATOR_SIZE, HAND_INDICATOR_SIZE))
+	layer.set_quad_size(Vector2(CompositionHandIndicators.QUAD_SIZE, CompositionHandIndicators.QUAD_SIZE))
 	layer.visible = true
 
 	# Project each joint into the quad's own local 2D plane (wrist is the
@@ -3412,7 +3415,7 @@ func _update_one_hand_indicator(layer: Node3D, triangle: ColorRect, tracker: XRH
 	# the V=0.5 centerline by construction (to_index has zero y_axis
 	# component), so this only ever affects pinky's rendered side, not the
 	# quad's real-world placement.
-	var half = HAND_INDICATOR_SIZE
+	var half = CompositionHandIndicators.QUAD_SIZE
 	var wrist_uv = Vector2(0.5, 0.5)
 	var index_uv = Vector2(x_axis.dot(to_index), -y_axis.dot(to_index)) / half + wrist_uv
 	var pinky_uv = Vector2(x_axis.dot(to_pinky), -y_axis.dot(to_pinky)) / half + wrist_uv
