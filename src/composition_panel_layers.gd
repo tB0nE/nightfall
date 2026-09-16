@@ -33,6 +33,30 @@ func setup_tooltip(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2)
 	# instead of changing layer visibility on every pointer transition.
 	tooltip_layer.visible = true
 
+func has_ui() -> bool:
+	return ui_layer != null
+
+func show_ui(source: Node3D) -> void:
+	if not ui_layer:
+		return
+	if source:
+		ui_layer.global_position = source.global_position
+		ui_layer.global_rotation = source.global_rotation
+	ui_layer.visible = true
+
+func hide_ui() -> void:
+	if ui_layer:
+		ui_layer.visible = false
+
+func deactivate() -> void:
+	# Mesh/composition switching is a rare renderer transition, so fully hiding
+	# these layers here is intentional. Rapid tooltip visibility remains encoded
+	# in transparent viewport content and never toggles its stable layer.
+	if ui_layer:
+		ui_layer.visible = false
+	if keyboard_layer:
+		keyboard_layer.visible = false
+
 func sync_transforms(ui_source: Node3D, keyboard) -> KeyboardMaterialAction:
 	if ui_layer and ui_layer.visible and ui_source:
 		ui_layer.global_position = ui_source.global_position

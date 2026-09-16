@@ -764,7 +764,7 @@ func _process_other_hand_ui():
 	var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_pos).normalized() * 0.025
 	if main.left_contact_dot:
 		main.left_contact_dot.visible = false
-	if main.comp.in_use and main.left_comp_cursor_layer:
+	if main.comp.in_use and main.composition_pointers.has_secondary():
 		main.composition_pointers.show_secondary(hit_pos, main.xr_camera.global_position)
 		if main.left_comp_cursor:
 			main.left_comp_cursor.visible = false

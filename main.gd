@@ -300,19 +300,6 @@ var composition_controller_markers: CompositionControllerMarkers = CompositionCo
 var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
 var composition_screen_controls: CompositionScreenControls = CompositionScreenControls.new()
 
-var comp_cursor: Node3D:
-	get: return composition_pointers.cursor_layer
-var comp_ui: Node3D:
-	get: return composition_panels.ui_layer
-var comp_kb: Node3D:
-	get: return composition_panels.keyboard_layer
-var comp_cursor_viewport: SubViewport:
-	get: return composition_pointers.cursor_viewport
-var left_comp_cursor_layer: Node3D:
-	get: return composition_pointers.secondary_cursor_layer
-var left_comp_cursor_viewport: SubViewport:
-	get: return composition_pointers.secondary_cursor_viewport
-
 # Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
 # composition-space additions (laser/grab-bar/corners/background-equirect,
 # all added this session) is contending with the GLES GPU TFLite delegate
@@ -954,7 +941,7 @@ func _update_cursor_layer():
 				settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
 				primary_screen)
-		elif comp_cursor:
+		elif composition_pointers.has_primary():
 			composition_pointers.hide_all_embedded(screens)
 			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
 			# The native renderer cannot embed the pointer into its video texture,
@@ -979,7 +966,7 @@ func _update_cursor_layer():
 	else:
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
-	if comp_cursor:
+	if composition_pointers.has_primary():
 		if pointer_cursor:
 			pointer_cursor.visible = false
 		if contact_dot:
@@ -1130,8 +1117,7 @@ func _on_stream_started():
 		ui_visible = false
 		_set_ui_visible(false)
 		_ui_has_saved_offset = false
-		if comp_ui:
-			comp_ui.visible = false
+		composition_panels.hide_ui()
 	if settings.passthrough_enabled:
 		_hide_all_backgrounds()
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
@@ -1311,8 +1297,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	audio_player.stop()
 	ui_visible = false
 	_set_ui_visible(false)
-	if comp_ui:
-		comp_ui.visible = false
+	composition_panels.hide_ui()
 	welcome_screen.reset_connect_button()
 	settings_controller.apply_passthrough(settings.passthrough_enabled)
 	welcome_screen.update_welcome_info()
@@ -2373,7 +2358,8 @@ func _process_background_follow():
 # frame from _process() as a safety net (e.g. entering/leaving composition
 # mode without touching background/passthrough settings) - safe because the
 # work below only runs on an actual state change (bg_idx/want_visible), and
-# unlike comp_cursor this never repeatedly toggles comp_bg_equirect.visible
+# Unlike the pointer layers, this never repeatedly toggles the composition
+# background's visibility.
 # once shown, so it doesn't hit the swapchain-teardown crash from earlier.
 func _sync_comp_background():
 	if not comp_bg_equirect or not comp_bg_capture_viewport:
@@ -2549,10 +2535,8 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings()
 		_set_ui_position()
-		if comp.in_use and comp_ui:
-			comp_ui.visible = true
-			comp_ui.global_position = ui_panel_3d.global_position
-			comp_ui.global_rotation = ui_panel_3d.global_rotation
+		if comp.in_use and composition_panels.has_ui():
+			composition_panels.show_ui(ui_panel_3d)
 			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 				ui_panel_3d.visible = true
 				var ui_material = ui_panel_3d.material_override as StandardMaterial3D
@@ -2577,8 +2561,7 @@ func _toggle_ui():
 		if area:
 			area.process_mode = Node.PROCESS_MODE_INHERIT
 	else:
-		if comp_ui:
-			comp_ui.visible = false
+		composition_panels.hide_ui()
 		var ui_material = ui_panel_3d.material_override as StandardMaterial3D
 		if ui_material:
 			ui_material.albedo_color = Color(1, 1, 1, 1)
@@ -2686,8 +2669,9 @@ func _sync_interaction_viewports():
 	# while the menu and keyboard are hidden.
 	var independent_screen_cursor := VideoPresentation.uses_independent_screen_cursor(
 		comp.in_use, video_presentation.is_native_active())
-	_set_viewport_active(comp_cursor_viewport, panel_visible or independent_screen_cursor)
-	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
+	composition_pointers.sync_viewports(
+		panel_visible or independent_screen_cursor,
+		panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	var strength = clampf((low_freq + high_freq) / 510.0, 0.0, 1.0)

@@ -867,7 +867,7 @@ func setup_background_equirect():
 	# though the cursor-update logic in main.gd's _update_cursor_layer()
 	# already had GLES-specific quad-sizing branches for them (see its
 	# RenderingServer.get_current_rendering_method() == "gl_compatibility"
-	# checks) - that code was dead/unreachable since comp_cursor was always
+	# checks) - that code was dead/unreachable since the pointer layer was always
 	# null under GLES. Nothing in this creation code is Vulkan-specific
 	# (plain SubViewport + TextureRect/ColorRect + shader), so there was no
 	# actual technical reason to skip it - just an oversight from GLES's
@@ -891,7 +891,7 @@ func setup_background_equirect():
 	main.composition_hand_indicators.setup(main, main.xr_origin)
 	main._log("[COMP] Hand indicator composition layers created")
 
-	# GLES already created its own comp_kb above (different sort order/log,
+	# GLES already created its keyboard layer above (different sort order/log,
 	# same overall shape) - only create the non-GLES variant here to avoid
 	# double-creating (and leaking the first one's viewport/quad) now that
 	# cursor creation above runs unconditionally for both paths.
@@ -1264,10 +1264,8 @@ func switch_to_mesh_rendering():
 			scr.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if scr.bezel_mesh:
 			scr.bezel_mesh.visible = main.settings.bezel_enabled
-	if main.comp_ui: main.comp_ui.visible = false
-	if main.comp_kb: main.comp_kb.visible = false
-	if main.comp_cursor: main.comp_cursor.visible = false
-	if main.left_comp_cursor_layer: main.left_comp_cursor_layer.visible = false
+	main.composition_panels.deactivate()
+	main.composition_pointers.deactivate()
 	restore_screen_material()
 	restore_ui_material()
 	restore_kb_material()

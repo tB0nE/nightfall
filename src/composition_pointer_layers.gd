@@ -42,6 +42,24 @@ func hide_primary() -> void:
 func hide_secondary() -> void:
 	_set_hidden(secondary_cursor_layer)
 
+func has_primary() -> bool:
+	return cursor_layer != null
+
+func has_secondary() -> bool:
+	return secondary_cursor_layer != null
+
+func sync_viewports(primary_active: bool, secondary_active: bool) -> void:
+	_set_viewport_active(cursor_viewport, primary_active)
+	_set_viewport_active(secondary_cursor_viewport, secondary_active)
+
+func deactivate() -> void:
+	# Renderer switching is a rare transition, unlike per-frame pointer hiding,
+	# so fully remove both layers from composition at this boundary.
+	if cursor_layer:
+		cursor_layer.visible = false
+	if secondary_cursor_layer:
+		secondary_cursor_layer.visible = false
+
 func hide_all_embedded(screens: Array) -> void:
 	for screen in screens:
 		_hide_embedded_pair(screen.comp_stream_cursor, screen.comp_stream_cursor_circle)
@@ -169,6 +187,13 @@ func _set_hidden(layer: Node3D) -> void:
 		# Do not toggle visibility during normal pointer movement: that destroys
 		# and recreates the OpenXR swapchain repeatedly under GLES.
 		layer.set_quad_size(Vector2(0.0001, 0.0001))
+
+func _set_viewport_active(viewport: SubViewport, active: bool) -> void:
+	if not viewport:
+		return
+	var wanted := SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
+	if viewport.render_target_update_mode != wanted:
+		viewport.render_target_update_mode = wanted
 
 func _make_layer(layer_name: String, quad_size: Vector2) -> Node3D:
 	var layer = OpenXRCompositionLayerQuad.new()
