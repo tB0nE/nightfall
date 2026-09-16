@@ -381,16 +381,19 @@ func resize_stream_viewport(w: int, h: int):
 	# native-path restart. Keeping comp_base_size unchanged also prevents the
 	# stream-started apply_stereo() -> update_bezel() call from resizing them a
 	# second time. Legacy-only configurations still use the normal path below.
-	var preserve_legacy_composition: bool = (
-		main.session_lifecycle.is_restarting()
-		and main.video_presentation != null
+	var native_path: bool = main.video_presentation != null \
 		and main.video_presentation.can_render_native()
-	)
+	var preserve_source_render_target: bool = \
+		main.session_lifecycle.is_restarting() and native_path
+	# Initial native connects arrive from the visible 1920x1080 welcome layer.
+	# Preserve that legacy allocation too: the native path never samples it,
+	# and resizing an attached OpenXR SubViewport is the 0xe0 GLThread crash.
+	var preserve_legacy_composition: bool = native_path
 	current_stream_size = stream_size
-	if not preserve_legacy_composition and main.stream_viewport.size != stream_size:
+	if not preserve_source_render_target and main.stream_viewport.size != stream_size:
 		main._log("[STREAM] Resizing source viewport %s -> %s" % [str(main.stream_viewport.size), str(stream_size)])
 		main.stream_viewport.size = stream_size
-	elif preserve_legacy_composition and main.stream_viewport.size != stream_size:
+	elif preserve_source_render_target and main.stream_viewport.size != stream_size:
 		main._log("[STREAM] Preserving source render target during native restart (logical size %s)" % str(stream_size))
 	main.stream_target.custom_minimum_size = Vector2(w, h)
 	if _v2_yuv_rect:
@@ -407,7 +410,7 @@ func resize_stream_viewport(w: int, h: int):
 	# repeatedly toggling a composition layer's `.visible`), so there's no
 	# known reason left to keep this GLES-specific.
 	if preserve_legacy_composition:
-		main._log("[STREAM] Preserving dormant legacy composition buffers during native restart (requested %s)" % str(stream_size))
+		main._log("[STREAM] Preserving dormant legacy composition buffers for native path (requested %s)" % str(stream_size))
 	else:
 		for s in main.screens:
 			s.comp_base_size = stream_size

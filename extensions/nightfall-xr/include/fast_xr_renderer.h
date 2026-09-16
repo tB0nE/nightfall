@@ -122,7 +122,8 @@ public:
 			bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode = 0,
 			uint64_t p_depth_revision = 0, int p_color_transfer_type = 0,
 			float p_convergence = 0.5f, float p_brightness = 0.0f,
-			float p_contrast = 1.0f, float p_gamma = 1.0f);
+			float p_contrast = 1.0f, float p_gamma = 1.0f,
+			int p_depth_process_stage = 5);
 
 	void upload_overlay(PackedByteArray p_pixels, int p_width, int p_height);
 	void set_overlay_visible(bool p_visible);
@@ -286,6 +287,7 @@ private:
 		GLint frame_width = -1;
 		GLint debug_solid = -1;
 		GLint stereo_mode = -1;
+		GLint depth_process_stage = -1;
 		GLint color_transfer = -1;
 		GLint hdr_lut = -1;
 		GLint brightness = -1;
@@ -391,10 +393,13 @@ private:
 	float pending_brightness = 0.0f;
 	float pending_contrast = 1.0f;
 	float pending_gamma = 1.0f;
+	int pending_depth_process_stage = 5;
 	uint64_t pending_depth_revision = 0;
 	uint64_t rendered_depth_revision = UINT64_MAX;
 	float rendered_depth_separation = -1.0f;
 	float rendered_depth_convergence = -1.0f;
+	int rendered_depth_process_stage = -1;
+	int rendered_upsample_process_stage = -1;
 	bool depth_cache_valid = false;
 	Transform3D pending_transform;
 	float pending_width = 3.0f;
@@ -461,10 +466,10 @@ private:
 	void perform_pending_resize_rebuild();
 	void render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
-			float p_convergence, bool p_occluding);
+			float p_convergence, bool p_occluding, int p_depth_process_stage);
 	void run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix,
-			bool p_texture_2d = false);
+			bool p_texture_2d = false, bool p_color_guided = true);
 	void run_offset_search(float p_separation, float p_convergence);
 	bool ensure_depth_sync_ring();
 	uint32_t capture_depth_sync_frame(uint32_t p_oes_texture_id,

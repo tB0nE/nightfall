@@ -23,7 +23,7 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("supports_compositor_sharpening"), &NightfallXrRenderer::supports_compositor_sharpening);
 	ClassDB::bind_method(D_METHOD("set_geometry", "transform", "width", "height", "curvature", "radius", "central_angle", "sort_order", "bezel_enabled"), &NightfallXrRenderer::set_geometry);
 	ClassDB::bind_method(D_METHOD("set_compositor_sharpening", "mode"), &NightfallXrRenderer::set_compositor_sharpening);
-	ClassDB::bind_method(D_METHOD("submit_frame", "new_frame", "oes_texture_id", "depth_texture_id", "depth_guide_texture_id", "tex_matrix", "distance", "quad_width", "head_locked", "separation", "eye_swap", "passthrough", "oes_fence", "stereo_mode", "depth_revision", "color_transfer_type", "convergence", "brightness", "contrast", "gamma"), &NightfallXrRenderer::submit_frame, DEFVAL(0), DEFVAL(0), DEFVAL(0), DEFVAL(0.5), DEFVAL(0.0), DEFVAL(1.0), DEFVAL(1.0));
+	ClassDB::bind_method(D_METHOD("submit_frame", "new_frame", "oes_texture_id", "depth_texture_id", "depth_guide_texture_id", "tex_matrix", "distance", "quad_width", "head_locked", "separation", "eye_swap", "passthrough", "oes_fence", "stereo_mode", "depth_revision", "color_transfer_type", "convergence", "brightness", "contrast", "gamma", "depth_process_stage"), &NightfallXrRenderer::submit_frame, DEFVAL(0), DEFVAL(0), DEFVAL(0), DEFVAL(0.5), DEFVAL(0.0), DEFVAL(1.0), DEFVAL(1.0), DEFVAL(5));
 	ClassDB::bind_method(D_METHOD("set_depth_sync", "enabled", "delay_frames"), &NightfallXrRenderer::set_depth_sync);
 	ClassDB::bind_method(D_METHOD("upload_overlay", "pixels", "width", "height"), &NightfallXrRenderer::upload_overlay);
 	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &NightfallXrRenderer::set_overlay_visible);
@@ -217,7 +217,7 @@ bool NightfallXrRenderer::supports_compositor_sharpening() const { return false;
 void NightfallXrRenderer::set_geometry(const Transform3D &, float, float, int, float, float, int, bool) {}
 void NightfallXrRenderer::set_compositor_sharpening(int) {}
 void NightfallXrRenderer::set_depth_sync(bool, int) {}
-void NightfallXrRenderer::submit_frame(bool, uint32_t, uint32_t, uint32_t, PackedFloat32Array, float, float, bool, float, bool, bool, uint64_t, int, uint64_t, int, float, float, float, float) {}
+void NightfallXrRenderer::submit_frame(bool, uint32_t, uint32_t, uint32_t, PackedFloat32Array, float, float, bool, float, bool, bool, uint64_t, int, uint64_t, int, float, float, float, float, int) {}
 void NightfallXrRenderer::upload_overlay(PackedByteArray, int, int) {}
 void NightfallXrRenderer::set_overlay_visible(bool) {}
 void NightfallXrRenderer::request_ambient_sample() {}

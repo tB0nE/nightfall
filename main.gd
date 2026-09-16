@@ -480,6 +480,7 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
+var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button
 # AI 3D tab (2026-08-28) - see ui_controller.gd's build_ui() for layout.
 var _ui_3d_mode_btn: Button
@@ -1082,6 +1083,7 @@ func _on_stream_started():
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	stream_manager.bind_texture()
+	var native_expected := video_presentation.can_render_native()
 	# bind_yuv_textures() skips rebinding the composition-layer cylinder's
 	# shader when the decoder's texture RIDs "look unchanged" from the last
 	# bind - a real optimization for the steady-state per-frame case, but
@@ -1090,9 +1092,9 @@ func _on_stream_started():
 	# the actual texture is a fresh one, leaving the cylinder showing a
 	# stale/blank frame while decode stats keep updating normally. A stream
 	# genuinely (re)starting here should always force a real rebind.
-	if comp.available:
+	if comp.available and not native_expected:
 		comp.invalidate_yuv_cache()
-	_bind_yuv_textures()
+		_bind_yuv_textures()
 	# The decoder's shader material is reused across a restart, not recreated -
 	# right here, right at connection start, it can still be holding a
 	# reference to the just-torn-down previous session's (now GPU-invalid)
@@ -1104,7 +1106,10 @@ func _on_stream_started():
 	# few times shortly after connecting, by which point the new session's
 	# first real frame should have landed.
 	_stream_start_seq += 1
-	_retry_yuv_bind(_stream_start_seq)
+	if not native_expected:
+		_retry_yuv_bind(_stream_start_seq)
+	else:
+		_log("[NATIVE-XR] Skipping legacy decoder-texture bind during native connect")
 	# Was an unconditional _switch_to_comp_layer() (plain/mono), which reset
 	# AI-3D/SBS to 2D on EVERY (re)connect, silently, with nothing re-
 	# applying the real mode afterward unless the user happened to touch a

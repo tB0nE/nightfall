@@ -675,6 +675,36 @@ void main() {
 }
 )";
 
+// The full-resolution display copy above should remain a single sample. Depth
+// capture is a very different operation: reducing a desktop frame to the
+// model's 384x384 input without a real minification filter aliases text and
+// other sub-model-pixel detail according to its position on the sampling grid.
+// Match depth_downscale.gdshader's established 4x4 footprint average on the
+// asynchronous native path. Each tap is still bilinear-filtered by the OES
+// sampler, and this shader runs only for requested model-input captures.
+const char *GLES_DEPTH_CAPTURE_FRAGMENT_SHADER = R"(
+#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+uniform samplerExternalOES u_video;
+in vec2 v_uv;
+out vec4 frag_color;
+const int TAPS = 4;
+void main() {
+    vec2 footprint = fwidth(v_uv);
+    vec2 tap_step = footprint / float(TAPS);
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < TAPS; ++y) {
+        for (int x = 0; x < TAPS; ++x) {
+            vec2 offset = tap_step * (vec2(float(x), float(y)) + 0.5)
+                    - footprint * 0.5;
+            sum += texture(u_video, clamp(v_uv + offset, 0.0, 1.0)).rgb;
+        }
+    }
+    frag_color = vec4(sum / float(TAPS * TAPS), 1.0);
+}
+)";
+
 GLuint compile_gles_shader(GLenum type, const char *source) {
     GLuint shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, nullptr);
@@ -752,9 +782,11 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
 
     GLuint vertex = compile_gles_shader(GL_VERTEX_SHADER, GLES_EXTERNAL_VERTEX_SHADER);
     GLuint fragment = compile_gles_shader(GL_FRAGMENT_SHADER, GLES_EXTERNAL_FRAGMENT_SHADER);
-    if (!vertex || !fragment) {
+    GLuint depth_fragment = compile_gles_shader(GL_FRAGMENT_SHADER, GLES_DEPTH_CAPTURE_FRAGMENT_SHADER);
+    if (!vertex || !fragment || !depth_fragment) {
         if (vertex) glDeleteShader(vertex);
         if (fragment) glDeleteShader(fragment);
+        if (depth_fragment) glDeleteShader(depth_fragment);
         fail();
         return;
     }
@@ -762,8 +794,6 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     glAttachShader(gles_blit_program_, vertex);
     glAttachShader(gles_blit_program_, fragment);
     glLinkProgram(gles_blit_program_);
-    glDeleteShader(vertex);
-    glDeleteShader(fragment);
     GLint linked = GL_FALSE;
     glGetProgramiv(gles_blit_program_, GL_LINK_STATUS, &linked);
     if (linked != GL_TRUE) {
@@ -771,6 +801,30 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
         glGetProgramInfoLog(gles_blit_program_, sizeof(log), nullptr, log);
         NF_LOGE("TextureUploader", "GLES external blit link failed: %s", log);
         glDeleteProgram(gles_blit_program_);
+        gles_blit_program_ = 0;
+        glDeleteShader(vertex);
+        glDeleteShader(fragment);
+        glDeleteShader(depth_fragment);
+        fail();
+        return;
+    }
+
+    gles_depth_program_ = glCreateProgram();
+    glAttachShader(gles_depth_program_, vertex);
+    glAttachShader(gles_depth_program_, depth_fragment);
+    glLinkProgram(gles_depth_program_);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+    glDeleteShader(depth_fragment);
+    linked = GL_FALSE;
+    glGetProgramiv(gles_depth_program_, GL_LINK_STATUS, &linked);
+    if (linked != GL_TRUE) {
+        char log[512]{};
+        glGetProgramInfoLog(gles_depth_program_, sizeof(log), nullptr, log);
+        NF_LOGE("TextureUploader", "GLES depth capture link failed: %s", log);
+        glDeleteProgram(gles_depth_program_);
+        glDeleteProgram(gles_blit_program_);
+        gles_depth_program_ = 0;
         gles_blit_program_ = 0;
         fail();
         return;
@@ -854,6 +908,8 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
     glGenFramebuffers(1, &gles_fbo_);
     gles_video_uniform_ = glGetUniformLocation(gles_blit_program_, "u_video");
     gles_matrix_uniform_ = glGetUniformLocation(gles_blit_program_, "u_tex_matrix");
+    gles_depth_video_uniform_ = glGetUniformLocation(gles_depth_program_, "u_video");
+    gles_depth_matrix_uniform_ = glGetUniformLocation(gles_depth_program_, "u_tex_matrix");
 
     RenderingServer *rs = RenderingServer::get_singleton();
     PackedByteArray placeholder_data;
@@ -993,7 +1049,7 @@ bool TextureUploader::_render_thread_ensure_depth_capture(int width, int height)
 
     gles_depth_capture_width_ = width;
     gles_depth_capture_height_ = height;
-    NF_LOG("TextureUploader", "Async GLES depth capture ready: %dx%d (%d PBOs)",
+    NF_LOG("TextureUploader", "Async GLES depth capture ready: %dx%d (%d PBOs, 4x4 prefilter)",
            width, height, GLES_DEPTH_PBO_COUNT);
     return true;
 }
@@ -1063,11 +1119,11 @@ void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, in
 
     glBindFramebuffer(GL_FRAMEBUFFER, gles_depth_fbo_);
     glViewport(0, 0, width, height);
-    glUseProgram(gles_blit_program_);
+    glUseProgram(gles_depth_program_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
-    glUniform1i(gles_video_uniform_, 0);
-    glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
+    glUniform1i(gles_depth_video_uniform_, 0);
+    glUniformMatrix4fv(gles_depth_matrix_uniform_, 1, GL_FALSE, matrix);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[slot]);
@@ -1402,7 +1458,8 @@ void TextureUploader::_render_thread_cleanup() {
 
 #ifdef __ANDROID__
 void TextureUploader::_render_thread_destroy_android_gles_surface() {
-    if (!gles_decoder_window_ && !gles_surface_texture_java_ && !gles_blit_program_) return;
+    if (!gles_decoder_window_ && !gles_surface_texture_java_ &&
+            !gles_blit_program_ && !gles_depth_program_) return;
     JavaVM *vm = nullptr;
     JNIEnv *env = get_gles_jni_env(vm);
     if (gles_decoder_window_) {
@@ -1439,12 +1496,16 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     if (gles_output_texture_) glDeleteTextures(1, &gles_output_texture_);
     if (gles_oes_texture_) glDeleteTextures(1, &gles_oes_texture_);
     if (gles_blit_program_) glDeleteProgram(gles_blit_program_);
+    if (gles_depth_program_) glDeleteProgram(gles_depth_program_);
     gles_fbo_ = 0;
     gles_output_texture_ = 0;
     gles_oes_texture_ = 0;
     gles_blit_program_ = 0;
+    gles_depth_program_ = 0;
     gles_video_uniform_ = -1;
     gles_matrix_uniform_ = -1;
+    gles_depth_video_uniform_ = -1;
+    gles_depth_matrix_uniform_ = -1;
     std::memset(gles_depth_pbos_, 0, sizeof(gles_depth_pbos_));
     gles_depth_fbo_ = 0;
     gles_depth_texture_ = 0;
@@ -1467,7 +1528,8 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
 bool TextureUploader::supports_native_depth_capture() {
 #ifdef __ANDROID__
     std::lock_guard<std::mutex> lock(gles_surface_mutex_);
-    return gles_surface_ready_ && gles_oes_texture_ != 0 && gles_blit_program_ != 0;
+    return gles_surface_ready_ && gles_oes_texture_ != 0 &&
+            gles_blit_program_ != 0 && gles_depth_program_ != 0;
 #else
     return false;
 #endif

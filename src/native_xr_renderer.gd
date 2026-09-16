@@ -250,7 +250,8 @@ func process_frame(new_frame: bool) -> void:
 			3.0, main.primary_screen.mesh_size.x, false, separation,
 			false, main.settings.passthrough_enabled, fence, mode,
 			main.depth_estimator.depth_revision if main.depth_estimator else 0,
-			color_transfer, convergence, brightness, contrast, gamma)
+			color_transfer, convergence, brightness, contrast, gamma,
+			main.settings.host.ai_3d_process_debug)
 	_force_redraw = false
 
 func request_redraw() -> void:
@@ -320,6 +321,8 @@ func deactivate(restore_legacy: bool) -> void:
 			main.comp.switch_to_stereo_comp_layer()
 		else:
 			main.comp.switch_to_comp_layer()
+		main.comp.invalidate_yuv_cache()
+		main._bind_yuv_textures()
 		# Re-sync the legacy overlay now that this renderer is no longer the
 		# one presenting it - see toggle_performance_overlay()'s comment for
 		# why the two display paths must stay mutually exclusive.

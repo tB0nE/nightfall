@@ -22,6 +22,8 @@ var ai_3d_model: int = 0
 var ai_3d_speed: int = 0
 ## 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input.
 var ai_3d_debug: int = 0
+## Android warp diagnostic: 0=Off, 1=Raw, 2=Spatial, 3=Guided, 4=Occlusion, 5=Full.
+var ai_3d_process_debug: int = 5
 ## Last active AI-3D mode, used when the display toggle is turned back on.
 var ai_3d_last_mode: int = 1
 ## Matches DepthBridge's 1=CPU and 2=GPU values.
