@@ -114,7 +114,7 @@ addresses may be included.
 
 ### Client (Linux PCVR)
 
-The Linux client is supported in source, but **v0.7.8 does not include a Linux
+The Linux client is supported in source, but **v0.7.9 does not include a Linux
 binary**. The application changed substantially during the native-renderer
 performance work and the Linux release needs another validation pass before a
 new AppImage is published.
