@@ -37,6 +37,9 @@ const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
 const TOOLTIP_QUAD_SIZE := Vector2(1.0, 0.064)
 const TOOLTIP_LOCAL_OFFSET := Vector3(0, 0.36, 0)
+# Keep the AI depth inspection controls available for future troubleshooting
+# without exposing them in release UI.
+const SHOW_AI3D_DIAGNOSTICS := false
 
 func _init(owner: Node3D):
 	main = owner
@@ -895,6 +898,7 @@ func build_ui():
 	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
 	if OS.get_name() == "Android":
 		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
+	if OS.get_name() == "Android" and SHOW_AI3D_DIAGNOSTICS:
 		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
 		_set_button_tooltip(main._ui_3d_debug_btn,
 			"Inspect the processed depth map, raw model output, or model input.")
@@ -928,7 +932,7 @@ func build_ui():
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
 	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
 	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
-	if OS.get_name() == "Android":
+	if OS.get_name() == "Android" and SHOW_AI3D_DIAGNOSTICS:
 		main._ui_3d_process_debug_btn = make_option_btn("3D Process", "Full")
 		_set_button_tooltip(main._ui_3d_process_debug_btn,
 			"Progressively enable the AI 3D warp stages for troubleshooting.")

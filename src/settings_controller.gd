@@ -550,6 +550,10 @@ func enforce_ai3d_platform_lock():
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 	main.settings.host.ai_3d_model = _locked_ai3d_model_index()
 	main.settings.host.ai_3d_last_mode = 3
+	# Diagnostic selectors are hidden in Android releases. Always restore
+	# production rendering in case a development build persisted another stage.
+	main.settings.host.ai_3d_debug = 0
+	main.settings.host.ai_3d_process_debug = 5
 	if main.settings.host.ai_3d_speed != 0:
 		main.settings.host.ai_3d_speed = 3
 
