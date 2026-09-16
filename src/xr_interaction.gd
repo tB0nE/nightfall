@@ -1014,15 +1014,8 @@ func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var screen = bar.get_parent()
 	while screen and not (screen is VRScreen):
 		screen = screen.get_parent()
-	if screen is VRScreen and screen.comp_grab_bar_viewport:
-		var panel = screen.comp_grab_bar_viewport.find_child("GrabBarPanel", true, false)
-		if panel:
-			var style = panel.get_theme_stylebox("panel") as StyleBoxFlat
-			if style and style.bg_color != desired_color:
-				style = style.duplicate()
-				style.bg_color = desired_color
-				panel.add_theme_stylebox_override("panel", style)
-				screen.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if screen is VRScreen:
+		main.composition_screen_controls.set_grab_bar_color(screen, desired_color)
 
 func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var c = Color(color.r, color.g, color.b, alpha)
@@ -1031,16 +1024,15 @@ func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0)
 	for child in handle.get_children():
 		if child is MeshInstance3D:
 			child.material_override.albedo_color = c
-	# Mirror onto the composition-space equivalent (2026-08-24) - see
-	# VRScreen's comp_corner_layers/comp_corner_rects comment. modulate.a on
-	# a TextureRect child inside an already-visible viewport is the same
+	# Mirror onto the composition-space equivalent. CompositionScreenControls
+	# applies modulate.a to the viewport's corner TextureRect. Changing a child
+	# inside an already-visible viewport is the same
 	# safe category as the per-screen stream cursors (not the composition
 	# layer's own `visible` toggling that caused the earlier crash).
 	var screen = handle.get_parent()
 	if screen is VRScreen and handle.has_meta(&"nf_corner_idx"):
 		var idx: int = handle.get_meta(&"nf_corner_idx")
-		if idx >= 0 and idx < screen.comp_corner_rects.size() and screen.comp_corner_rects[idx]:
-			screen.comp_corner_rects[idx].modulate.a = alpha
+		main.composition_screen_controls.set_corner_alpha(screen, idx, alpha)
 
 func _compute_parallax_shift(uv_x: float) -> float:
 	if not main.depth_estimator or not main.depth_estimator.depth_texture:

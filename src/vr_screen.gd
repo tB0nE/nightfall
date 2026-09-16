@@ -82,7 +82,7 @@ var comp_shortcut_icons: Dictionary = {}
 # projectionless mode. Parallel arrays indexed the same as corner_handles
 # (top-left/top-right/bottom-left/bottom-right) - see main.gd's
 # CompositionScreenControls (also drives these) and xr_interaction.gd's
-# _set_corner_color() (mirrors hover/click alpha onto comp_corner_rects).
+# CompositionScreenControls mirrors hover/click alpha onto comp_corner_rects.
 var comp_corner_layers: Array = []
 var comp_corner_rects: Array = []
 var comp_layer: Node3D = null

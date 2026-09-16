@@ -101,13 +101,11 @@ func get_tooltip_viewport() -> SubViewport:
 func sync_tooltip_surface() -> void:
 	if not _tooltip_mesh:
 		return
-	var tooltip_layer = main.composition_panels.tooltip_layer if main.composition_panels else null
 	var showing: bool = _tooltip_panel != null and _tooltip_panel.visible and main.ui_visible
-	var use_composition: bool = main.comp != null and main.comp.in_use and tooltip_layer != null
-	_tooltip_mesh.visible = showing and not use_composition
-	if tooltip_layer:
-		if use_composition:
-			tooltip_layer.global_transform = _tooltip_mesh.global_transform
+	main.composition_panels.sync_tooltip_surface(
+		_tooltip_mesh,
+		showing,
+		main.comp != null and main.comp.in_use)
 
 func _build_tooltip_surface() -> void:
 	_tooltip_viewport = SubViewport.new()

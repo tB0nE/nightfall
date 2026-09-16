@@ -41,6 +41,28 @@ func update(screens: Array, active: bool, grab_bars_enabled: bool,
 		_update_corners(screen, active and corners_enabled)
 		_update_grab_bar(screen, active and grab_bars_enabled)
 
+func set_grab_bar_color(screen: VRScreen, color: Color) -> void:
+	if not screen or not screen.comp_grab_bar_viewport:
+		return
+	var panel := screen.comp_grab_bar_viewport.find_child(
+		"GrabBarPanel", true, false) as PanelContainer
+	if not panel:
+		return
+	var style := panel.get_theme_stylebox("panel") as StyleBoxFlat
+	if not style or style.bg_color == color:
+		return
+	style = style.duplicate()
+	style.bg_color = color
+	panel.add_theme_stylebox_override("panel", style)
+	screen.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+
+func set_corner_alpha(screen: VRScreen, corner_index: int, alpha: float) -> void:
+	if not screen or corner_index < 0 or corner_index >= screen.comp_corner_rects.size():
+		return
+	var rect = screen.comp_corner_rects[corner_index]
+	if rect:
+		rect.modulate.a = alpha
+
 func _update_grab_bar(screen: VRScreen, active: bool) -> void:
 	var layer := screen.comp_grab_bar
 	if not layer:

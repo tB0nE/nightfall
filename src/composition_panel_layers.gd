@@ -57,6 +57,15 @@ func deactivate() -> void:
 	if keyboard_layer:
 		keyboard_layer.visible = false
 
+func sync_tooltip_surface(mesh: Node3D, showing: bool,
+		composition_active: bool) -> void:
+	if not mesh:
+		return
+	var use_composition := composition_active and tooltip_layer != null
+	mesh.visible = showing and not use_composition
+	if use_composition:
+		tooltip_layer.global_transform = mesh.global_transform
+
 func sync_transforms(ui_source: Node3D, keyboard) -> KeyboardMaterialAction:
 	if ui_layer and ui_layer.visible and ui_source:
 		ui_layer.global_position = ui_source.global_position
