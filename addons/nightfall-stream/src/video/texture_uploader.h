@@ -184,6 +184,11 @@ private:
     unsigned int gles_blit_program_ = 0;
     int gles_video_uniform_ = -1;
     int gles_matrix_uniform_ = -1;
+    // Separate from the full-resolution blit so the 16-tap model-input
+    // prefilter never adds cost or blur to normal video presentation.
+    unsigned int gles_depth_program_ = 0;
+    int gles_depth_video_uniform_ = -1;
+    int gles_depth_matrix_uniform_ = -1;
     bool gles_update_queued_ = false;
 
     // Per-stage wall-clock cost of _render_thread_update_android_gles_texture()

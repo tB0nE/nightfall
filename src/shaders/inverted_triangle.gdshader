@@ -1,14 +1,13 @@
 shader_type canvas_item;
 
-// Same alpha_mult convention as circle_cursor.gdshader (main.gd's
-// MARKER_IDLE_ALPHA etc) - COLOR is fully overwritten below, so node
-// .modulate has no effect; this uniform is the only opacity control.
+// Same alpha_mult convention as circle_cursor.gdshader. COLOR is fully
+// overwritten below, so node .modulate has no effect; this uniform is the
+// only opacity control.
 uniform float alpha_mult : hint_range(0.0, 1.0) = 1.0;
 
-// Live triangle vertices in UV space [0,1]^2 (2026-08-27) - set every frame
-// by main.gd's _update_one_hand_indicator() from the wrist and two
-// knuckle joints' real projected positions, replacing the original fixed
-// triangle shape. Defaults here only matter before the first real update.
+// Live triangle vertices in UV space [0,1]^2 - set every frame by
+// CompositionHandIndicators from the wrist and two knuckle joints' projected
+// positions. Defaults here only matter before the first tracked update.
 uniform vec2 point_a = vec2(0.12, 0.12);
 uniform vec2 point_b = vec2(0.5, 0.88);
 uniform vec2 point_c = vec2(0.88, 0.12);

@@ -69,7 +69,7 @@ var comp_stream_cursor_circle_right: ColorRect = null
 # were (plain 3D scene nodes never reach the compositor when
 # submit_projection_layer=false). Its Area3D grab interaction is unaffected
 # (physics doesn't depend on rendering) - this only adds the missing
-# visual. See main.gd's _update_grab_bar_layers().
+# visual. See CompositionScreenControls.
 var comp_grab_bar: Node3D = null
 var comp_grab_bar_viewport: SubViewport = null
 var shortcut_buttons: Dictionary = {}
@@ -81,8 +81,8 @@ var comp_shortcut_icons: Dictionary = {}
 # with an L-bracket texture, see create_corner_handles()), invisible under
 # projectionless mode. Parallel arrays indexed the same as corner_handles
 # (top-left/top-right/bottom-left/bottom-right) - see main.gd's
-# _update_grab_bar_layers() (also drives these) and xr_interaction.gd's
-# _set_corner_color() (mirrors hover/click alpha onto comp_corner_rects).
+# CompositionScreenControls (also drives these) and xr_interaction.gd's
+# CompositionScreenControls mirrors hover/click alpha onto comp_corner_rects.
 var comp_corner_layers: Array = []
 var comp_corner_rects: Array = []
 var comp_layer: Node3D = null
@@ -214,7 +214,7 @@ func update_corner_positions():
 		handle.rotation.y = -a
 	# Halved (2026-08-24, was the full grab_bar_off gap) - moves the real
 	# grab_bar (and its Area3D hitbox) closer to the screen edge, not just
-	# its composition-space visual (main.gd's _update_grab_bar_layers()
+	# its composition-space visual (CompositionScreenControls
 	# mirrors this position directly) - keeping both in sync was the point;
 	# an earlier attempt that only offset the visual left the hitbox
 	# behind, making it hard to find/grab.
@@ -502,7 +502,11 @@ func get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
 		return screen_forward
 	var cyl_center = global_position - screen_forward * _comp_cyl_radius
 	var to_hit = hit_point - cyl_center
-	to_hit.y = 0.0
+	# Cylinder curvature is horizontal in the screen's own basis. Removing the
+	# screen-up component keeps the tangent correct when a screen is pitched or
+	# rolled; clearing world Y produced a skewed normal away from screen centre.
+	var screen_up := global_transform.basis.y.normalized()
+	to_hit -= screen_up * to_hit.dot(screen_up)
 	if to_hit.length() < 0.001:
 		return screen_forward
 	return to_hit.normalized()

@@ -294,15 +294,13 @@ var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
-
-var comp_cursor: Node3D = null
-var comp_ui: Node3D:
-	get: return composition_panels.ui_layer
-var comp_kb: Node3D:
-	get: return composition_panels.keyboard_layer
-var comp_cursor_viewport: SubViewport = null
-var left_comp_cursor_layer: Node3D = null
-var left_comp_cursor_viewport: SubViewport = null
+var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
+var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
+var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
+var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
+var composition_screen_controls: CompositionScreenControls = CompositionScreenControls.new()
+var _xr_resume_refresh_attempts := 0
+var _xr_resume_refresh_wait_frames := 0
 
 # Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
 # composition-space additions (laser/grab-bar/corners/background-equirect,
@@ -312,8 +310,8 @@ var left_comp_cursor_viewport: SubViewport = null
 # AND its backing SubViewport's render_target_update_mode (UPDATE_ALWAYS
 # viewports render every frame regardless of the layer's own visibility, so
 # hiding alone doesn't stop the GPU cost) - see
-# _update_laser_layers()/_update_grab_bar_layers()/_update_corner_layers()/
-# _sync_comp_background(). Toggle one at a time and rebuild; remove once the
+# _update_laser_layers()/_update_grab_bar_layers()/_sync_comp_background().
+# Toggle one at a time and rebuild; remove once the
 # regression is isolated (see the diagnosis plan). Confirmed 2026-08-24 the
 # regression was a debug-build-vs-release-build artifact, not caused by any
 # of these - release build hits ~19.5-20.2Hz with all four enabled. Kept
@@ -324,69 +322,6 @@ const DEBUG_COMP_GRAB_BAR := true
 const DEBUG_COMP_CORNERS := true
 const DEBUG_COMP_MARKER := true
 const DEBUG_COMP_HANDS := true
-
-# Composition-space controller ray indicators (2026-08-24, GLES projectionless
-# polish) - projectionless mode (submit_projection_layer=false) never renders
-# the normal 3D scene at all, so the real "Laser" MeshInstance3D (a fixed
-# 0.4m CapsuleMesh under HandRayCast, see main.tscn) is invisible whenever
-# comp.in_use is true. These are lightweight composition-layer equivalents -
-# see _update_laser_layers().
-var comp_laser_right: Node3D = null
-var comp_laser_right_viewport: SubViewport = null
-var comp_laser_left: Node3D = null
-var comp_laser_left_viewport: SubViewport = null
-const LASER_QUAD_LENGTH := 0.4
-const LASER_QUAD_WIDTH := 0.003
-const LASER_START_OFFSET := 0.06
-
-# Persistent controller position markers - see _update_marker_layers().
-# Inverse of the laser above: hidden while actively pointing/held (laser is
-# showing instead), and a faint always-on marker while resting/put down so
-# it can still be located.
-var comp_marker_right: Node3D = null
-var comp_marker_left: Node3D = null
-var comp_marker_right_circle: ColorRect = null
-var comp_marker_left_circle: ColorRect = null
-const MARKER_IDLE_ALPHA := 0.16
-
-# Composition-space hand indicator (2026-08-27) - see _update_hand_indicator_
-# layers(). First attempt at this was a full 25-joint/24-bone skeleton
-# rendered as a real 3D scene into an offscreen SubViewport every frame
-# (same technique as comp_bg_capture_viewport) - reported as "tanking
-# performance" even throttled to 14fps, so pulled back out entirely. This
-# is deliberately as cheap as the controller markers just below: a single
-# flat triangle icon per hand (src/shaders/inverted_triangle.gdshader), no
-# offscreen 3D scene/camera at all - but unlike the markers, the quad is NOT
-# simply billboarded to the camera and the triangle is NOT a fixed shape.
-# Both are driven live from three real joints (WRIST, and the INDEX/PINKY
-# PHALANX_PROXIMAL joints as the two visible "knuckle" points - NOT the
-# METACARPAL joints, which sit near the wrist/thumb-base and read as the
-# wrong knuckle entirely, confirmed on-device) every frame - see
-# _update_one_hand_indicator(). comp_hand_right_triangle/left_triangle are
-# the ColorRect nodes whose ShaderMaterial gets the live point_a/b/c
-# uniforms; comp_hand_right/left are the composition quads themselves.
-var comp_hand_right: Node3D = null
-var comp_hand_left: Node3D = null
-var comp_hand_right_triangle: ColorRect = null
-var comp_hand_left_triangle: ColorRect = null
-# Fixed quad size (2026-08-27) - _update_one_hand_indicator() only ever
-# repositions/reorients the quad, never resizes it - simpler than
-# continuously resizing, and quad_size changes are exactly what
-# _set_comp_quad_hidden() already (ab)uses for hide/show, so keeping it
-# fixed also avoids any interaction between that and a "real" dynamic size.
-# 0.32m, not the original 0.14m (2026-08-27 fix) - the UV projection
-# divides the real wrist-to-knuckle distance by this value directly (see
-# _update_one_hand_indicator()), so it needs to be at least DOUBLE the
-# largest real joint distance from the wrist for that distance to land
-# within the quad's UV [0,1] range at all. A real wrist-to-index-knuckle
-# distance is commonly 8-11cm, comfortably exceeding 0.14's own half-width
-# of 7cm - confirmed as the actual cause of "half the triangle missing"
-# (the index vertex was being clipped off the edge of the quad). 0.32
-# gives a 16cm half-width, safely covering real hands with margin; making
-# the quad physically bigger doesn't make the visible triangle any bigger -
-# everything outside the triangle is fully transparent - it just gives the
-# real joint-driven shape room to not clip.
-const HAND_INDICATOR_SIZE := 0.32
 
 # Composition-space environment-background replacement (2026-08-24,
 # GLES projectionless polish) - the ambient particle backgrounds
@@ -545,6 +480,7 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_debug_btn: Button
+var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button
 # AI 3D tab (2026-08-28) - see ui_controller.gd's build_ui() for layout.
 var _ui_3d_mode_btn: Button
@@ -553,6 +489,7 @@ var _ui_3d_hz_cap_btn: Button
 var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
+var _ui_3d_depth_sync_btn: Button
 var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -964,58 +901,10 @@ func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
 func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
-func _show_stream_cursor(cursor: TextureRect, circle: ColorRect, cx: float, cy: float, cursor_px: int):
-	if settings.cursor_mode == 0:
-		if cursor: cursor.visible = false
-		if circle:
-			circle.visible = true
-			circle.position = Vector2(cx - cursor_px * 0.5, cy - cursor_px * 0.5)
-			circle.size = Vector2(cursor_px, cursor_px)
-	else:
-		if circle: circle.visible = false
-		if cursor:
-			cursor.visible = true
-			cursor.position = Vector2(cx, cy)
-			cursor.size = Vector2(cursor_px, cursor_px * 1.6)
-
-func _hide_stream_cursor(cursor: TextureRect, circle: ColorRect):
-	if cursor: cursor.visible = false
-	if circle: circle.visible = false
-
-func _hide_all_stream_cursors():
-	for s in screens:
-		_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
-		_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
-		_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
-
-# Hides an OpenXRCompositionLayerQuad WITHOUT toggling its `visible`
-# property (2026-08-24) - under GLES specifically, repeatedly flipping
-# `visible` false/true on these every frame (as the cursor/laser hides and
-# shows while the raycast target moves on/off a screen, very frequent
-# during a grab-bar/corner drag) was found to repeatedly tear down and
-# recreate the layer's swapchain (confirmed via logcat: repeated
-# "CreateSwapChain: ... 40 64" matching comp_cursor_viewport's exact size,
-# each followed by "Condition t->is_render_target is true" in texture_free/
-# texture_remap_proxies) - a race between that teardown/recreate and
-# in-flight render commands eventually SIGSEGVs in the GLES3 backend.
-# Shrinking quad_size to near-zero instead achieves the same visual result
-# (nothing meaningful to see) without touching the swapchain at all -
-# set_quad_size() is a pure world-space geometry parameter, unlike the
-# viewport's own pixel size, so it doesn't trigger texture reallocation.
-# `visible` itself is set true exactly once (whenever comp.in_use first
-# becomes true) and never set false again.
-func _set_comp_quad_hidden(layer: Node3D, hidden: bool):
-	if not layer:
-		return
-	if hidden:
-		layer.set_quad_size(Vector2(0.0001, 0.0001))
-	elif not layer.visible:
-		layer.visible = true
-
 func _update_cursor_layer():
 	if not comp.in_use:
-		_set_comp_quad_hidden(comp_cursor, true)
-		_hide_all_stream_cursors()
+		composition_pointers.hide_primary()
+		composition_pointers.hide_all_embedded(screens)
 		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
@@ -1038,77 +927,29 @@ func _update_cursor_layer():
 		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing \
 			and not independent_cursor
 		if on_screen and (pad_on_screen or tp_capturing):
-			_set_comp_quad_hidden(comp_cursor, true)
-			_hide_all_stream_cursors()
+			composition_pointers.hide_primary()
+			composition_pointers.hide_all_embedded(screens)
 		elif use_embedded_cursor and on_screen:
-			# Only hovered_screen gets shown below - explicitly hide every other
-			# screen's cursor the instant the hover target changes, rather than
-			# leaving whichever screen was PREVIOUSLY hovered showing its last
-			# cursor position until something else happens to call
-			# _hide_all_stream_cursors() (e.g. the ray briefly leaving every
-			# screen entirely) - that gap is what let two cursors show at once
-			# when moving straight from one screen to another.
-			for s in screens:
-				if s != hovered_screen:
-					_hide_stream_cursor(s.comp_stream_cursor, s.comp_stream_cursor_circle)
-					_hide_stream_cursor(s.comp_stream_cursor_left, s.comp_stream_cursor_circle_left)
-					_hide_stream_cursor(s.comp_stream_cursor_right, s.comp_stream_cursor_circle_right)
-			var uv = hovered_screen.hit_point_to_uv(hit_point)
-			var bezel_px = 8 if settings.bezel_enabled else 0
-			var base_w = hovered_screen.comp_base_size.x
-			var base_h = hovered_screen.comp_base_size.y
-			# cx/cy position the cursor in the comp viewport's own pixel space,
-			# which is sized to the real stream resolution - a fixed pixel size
-			# here shrinks/grows on screen as that resolution changes. Scale
-			# against a 1080p baseline instead (same approach as the loading dots).
-			var cursor_px = maxi(1, int(48.0 * base_h / 1080.0))
-			var cx = bezel_px + uv.x * base_w
-			var cy = bezel_px + uv.y * base_h
-			# Correct the visible cursor independently of the real click point.
-			# One step is 12 pixels at 1080p and scales with stream height so the
-			# apparent adjustment stays consistent at other resolutions.
-			if stereo >= 3:
-				# New Left/Default/Right correspond to the old Default/Right/
-				# Right+ positions respectively, hence the +1 calibration step.
-				cx += (settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
-			_set_comp_quad_hidden(comp_cursor, true)
+			composition_pointers.hide_primary()
 			if pointer_cursor:
 				pointer_cursor.visible = false
 			if contact_dot:
 				contact_dot.visible = false
-			_show_stream_cursor(hovered_screen.comp_stream_cursor, hovered_screen.comp_stream_cursor_circle, cx, cy, cursor_px)
-			if stereo > 0 and hovered_screen == primary_screen:
-				var left_cx = cx
-				if stereo == 5 or stereo == 6 or stereo == 10 or stereo == 11:
-					# This hand-tuned pop was calibrated against the old, much
-					# weaker mode 3/4 warp (parallax ~0.042) - scaled down by
-					# the same ratio for the real occlusion-aware warp's
-					# actual, much smaller calibrated parallax
-					# (depth_estimator.gd's _pass_parallax, ~0.006) rather
-					# than reused verbatim, or the cursor pops far more than
-					# anything actually in the depth-warped video. Modes
-					# 5/6/10/11 (MiDaS-Std/-Fast/-Fastest) all share the
-					# exact same warp pipeline/parallax magnitude - only the
-					# pre-pass resolution/throttling differs between them
-					# (see depth_estimator.gd's warp_tier), not the parallax
-					# itself. 10/11 were missing from this condition
-					# (2026-08-18 fix) and fell through to the elif below,
-					# getting the old crude mode's un-scaled offset - about
-					# 7x too large for their actual warp magnitude, which is
-					# what made the cursor "float" uncomfortably on the
-					# tiers most people actually use.
-					left_cx += (0.015 / 0.042) * depth_estimator._pass_parallax * base_w
-				elif stereo >= 3:
-					left_cx += 0.015 * base_w
-				_show_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left, left_cx, cy, cursor_px)
-				_show_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right, cx, cy, cursor_px)
-			else:
-				_hide_stream_cursor(hovered_screen.comp_stream_cursor_left, hovered_screen.comp_stream_cursor_circle_left)
-				_hide_stream_cursor(hovered_screen.comp_stream_cursor_right, hovered_screen.comp_stream_cursor_circle_right)
-		elif comp_cursor:
-			_hide_all_stream_cursors()
-			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
-			var to_cam = (xr_camera.global_position - hit_point).normalized()
+			composition_pointers.show_embedded(
+				hovered_screen,
+				screens,
+				hit_point,
+				settings.bezel_enabled,
+				settings.cursor_mode,
+				stereo,
+				settings.host.ai_3d_cursor_position,
+				depth_estimator._pass_parallax if depth_estimator else 0.0,
+				primary_screen)
+		elif composition_pointers.has_primary():
+			composition_pointers.hide_all_embedded(screens)
+			var surf_normal = hovered_screen.get_cylinder_normal_at(hit_point) \
+				if on_screen and hovered_screen \
+				else (xr_camera.global_position - hit_point).normalized()
 			# The native renderer cannot embed the pointer into its video texture,
 			# so apply the AI-3D cursor calibration to this independent composition
 			# layer in world space. Convert the legacy branch's exact pixel offset
@@ -1120,264 +961,63 @@ func _update_cursor_layer():
 				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
-			var screen_dist = xr_camera.global_position.distance_to(screen_mesh.global_position)
-			var cursor_dist = xr_camera.global_position.distance_to(hit_point)
-			var dist_scale = cursor_dist / screen_dist
-			var pointer = comp_cursor_viewport.get_node_or_null("PointerTexture")
-			var circle = comp_cursor_viewport.get_node_or_null("CircleTexture")
-			var cursor_size = 0.035 * dist_scale if on_screen else 0.035
-			if settings.cursor_mode == 0:
-				if pointer: pointer.visible = false
-				if circle: circle.visible = true
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(256, 256)
-				comp_cursor.set_quad_size(Vector2(cursor_size, cursor_size))
-				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-			elif on_screen:
-				if pointer: pointer.visible = true
-				if circle: circle.visible = false
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(40, 64)
-				# The backing pointer texture is 40x64. Preserve that physical aspect
-				# for every screen presentation path; the old square GLES fallback is
-				# what made the independently composited SBS cursor look stretched.
-				var cursor_quad_size = Vector2(0.04 * dist_scale, 0.064 * dist_scale)
-				comp_cursor.set_quad_size(cursor_quad_size)
-				comp_cursor.global_position = hit_point + native_ai_cursor_offset + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-				var right = comp_cursor.global_transform.basis.x
-				var up = comp_cursor.global_transform.basis.y
-				comp_cursor.global_position += right * 0.02 - up * 0.032
-			else:
-				if pointer: pointer.visible = false
-				if circle: circle.visible = true
-				if RenderingServer.get_current_rendering_method() != "gl_compatibility":
-					comp_cursor_viewport.size = Vector2i(256, 256)
-				comp_cursor.set_quad_size(Vector2(0.035, 0.035))
-				comp_cursor.global_position = hit_point + surf_normal * 0.002
-				comp_cursor.look_at(comp_cursor.global_position + to_cam, Vector3.UP)
-				comp_cursor.rotate_object_local(Vector3.UP, PI)
-			comp_cursor.visible = true
+			composition_pointers.show_primary(
+				hit_point,
+				surf_normal,
+				xr_camera.global_position,
+				hovered_screen.global_position if hovered_screen else hit_point,
+				on_screen,
+				settings.cursor_mode,
+				native_ai_cursor_offset)
 	else:
-		_set_comp_quad_hidden(comp_cursor, true)
-		_hide_all_stream_cursors()
-	if comp_cursor:
+		composition_pointers.hide_primary()
+		composition_pointers.hide_all_embedded(screens)
+	if composition_pointers.has_primary():
 		if pointer_cursor:
 			pointer_cursor.visible = false
 		if contact_dot:
 			contact_dot.visible = false
-	if comp_ui and comp_ui.visible:
-		comp_ui.global_position = ui_panel_3d.global_position
-		comp_ui.global_rotation = ui_panel_3d.global_rotation
+
+func _sync_composition_panels():
+	if not comp.in_use:
+		return
 	if ui_controller:
 		ui_controller.sync_tooltip_surface()
-	if comp_kb and virtual_keyboard and virtual_keyboard.visible:
-		comp_kb.global_position = virtual_keyboard.global_position
-		comp_kb.global_rotation = virtual_keyboard.global_rotation
-		comp_kb.visible = true
-		if virtual_keyboard.mesh_instance.visible:
+	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
+	match keyboard_action:
+		CompositionPanelLayers.KeyboardMaterialAction.MAKE_TRANSPARENT:
 			_make_kb_transparent()
-	else:
-		if comp_kb:
-			comp_kb.visible = false
-		if virtual_keyboard and not virtual_keyboard.mesh_instance.visible:
+		CompositionPanelLayers.KeyboardMaterialAction.RESTORE:
 			_restore_kb_material()
 
-# Composition-space controller ray indicators (2026-08-24) - see
-# comp_laser_right/left's declaration comment. Only active in projectionless
-# mode (comp.in_use) - the real 3D "Laser" mesh under HandRayCast already
-# works fine in normal projection mode, so showing both would double up.
-# Fixed-length (LASER_QUAD_LENGTH), not stretched to the raycast hit
-# distance, matching the real Laser's own fixed 0.4m CapsuleMesh (main.tscn).
 func _update_laser_layers():
-	if not comp_laser_right and not comp_laser_left:
-		return
-	if not DEBUG_COMP_LASER:
-		if comp_laser_right_viewport and comp_laser_right_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-			comp_laser_right_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		if comp_laser_left_viewport and comp_laser_left_viewport.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-			comp_laser_left_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		_set_comp_quad_hidden(comp_laser_right, true)
-		_set_comp_quad_hidden(comp_laser_left, true)
-		return
-	if not comp.in_use or not is_xr_active:
-		_set_comp_quad_hidden(comp_laser_right, true)
-		_set_comp_quad_hidden(comp_laser_left, true)
-		return
-	_update_one_laser_layer(comp_laser_right, hand_raycast)
-	_update_one_laser_layer(comp_laser_left, left_hand_raycast)
+	composition_controller_rays.update(
+		DEBUG_COMP_LASER,
+		comp.in_use and is_xr_active,
+		xr_camera.global_position,
+		hand_raycast,
+		left_hand_raycast)
 
-func _update_one_laser_layer(layer: Node3D, raycast: RayCast3D):
-	if not layer:
-		return
-	# raycast.enabled (not XRController3D.get_is_active()) is this codebase's
-	# real "is this hand currently in an active pointing posture" signal -
-	# see _apply_hand_rest()/HAND_REST_THRESHOLD, toggled the same way for
-	# both physical controllers and hand-tracking. get_is_active() reflects
-	# OpenXR controller-pose activity specifically and stays false during
-	# hand-tracking, which silently hid this indicator entirely for anyone
-	# not holding physical controllers.
-	if not raycast or not raycast.enabled:
-		_set_comp_quad_hidden(layer, true)
-		return
-	var ray_origin = raycast.global_position
-	var ray_dir = -raycast.global_transform.basis.z.normalized()
-	var to_cam = (xr_camera.global_position - ray_origin).normalized()
-	# quad_size.y (the gradient's fade axis) maps to the basis' local Y, so Y
-	# must be the ray direction. Z (the quad's face normal) is derived to
-	# point roughly toward the camera - a "billboard around the ray axis"
-	# rather than a full billboard, which would tilt the ray off its real
-	# direction. X falls out of Y and Z via the standard right-handed
-	# cross-product basis (x = y.cross(z)), not chosen independently.
-	var z_axis = to_cam - to_cam.project(ray_dir)
-	if z_axis.length() < 0.001:
-		z_axis = layer.global_transform.basis.z
-	z_axis = z_axis.normalized()
-	var x_axis = ray_dir.cross(z_axis).normalized()
-	z_axis = x_axis.cross(ray_dir).normalized()
-	layer.global_transform.basis = Basis(x_axis, ray_dir, z_axis)
-	# LASER_START_OFFSET shifts the whole segment away from the hand rather
-	# than starting right at the raycast origin - purely cosmetic (avoids
-	# the beam appearing to emerge from inside the hand/controller model).
-	layer.global_position = ray_origin + ray_dir * (LASER_START_OFFSET + LASER_QUAD_LENGTH * 0.5)
-	# _set_comp_quad_hidden() shrinks quad_size to hide - restore the real
-	# size every time we show, since hiding happens unconditionally at
-	# startup (before comp.in_use/is_xr_active are true) and nothing else
-	# ever restores it otherwise.
-	layer.set_quad_size(Vector2(LASER_QUAD_WIDTH, LASER_QUAD_LENGTH))
-	layer.visible = true
-
-# Persistent controller position markers (2026-08-25) - complements
-# _update_laser_layers() above. Inverse of the laser's own visibility:
-# hidden while actively pointing (raycast.enabled - the laser is showing
-# instead), and a faint always-visible dot while resting/put down so it can
-# still be located at a glance.
 func _update_marker_layers(_delta: float):
-	if not comp_marker_right and not comp_marker_left:
-		return
-	if not DEBUG_COMP_MARKER or not comp.in_use or not is_xr_active:
-		for layer in [comp_marker_right, comp_marker_left]:
-			_set_comp_quad_hidden(layer, true)
-			if layer:
-				_set_viewport_active(layer.get_layer_viewport(), false)
-		return
-	for layer in [comp_marker_right, comp_marker_left]:
-		if layer:
-			_set_viewport_active(layer.get_layer_viewport(), true)
-	_update_one_marker_layer(comp_marker_right, comp_marker_right_circle, right_hand, hand_raycast)
-	_update_one_marker_layer(comp_marker_left, comp_marker_left_circle, left_hand, left_hand_raycast)
-
-func _update_one_marker_layer(layer: Node3D, circle: ColorRect, hand: XRController3D, raycast: RayCast3D):
-	if not layer or not hand:
-		return
-
-	# raycast.enabled is this codebase's real "actively pointing/held" signal
-	# (see _update_one_laser_layer's own comment) - not get_is_active(),
-	# which stays true for the whole session regardless of pickup/put-down
-	# and can lag behind a freshly-booted or just-picked-up controller by a
-	# few frames. Not gating on get_is_active() at all (2026-08-25) - a
-	# controller untouched since boot still has a last-known/default
-	# transform to show a marker at, and always updating position here
-	# every frame (rather than skipping while "inactive") avoids the marker
-	# appearing frozen for a moment right after pickup.
-	if raycast and raycast.enabled:
-		# Actively pointing - the laser is showing, hide the marker.
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	layer.global_transform.basis = xr_camera.global_transform.basis
-	layer.global_position = hand.global_position
-	layer.set_quad_size(Vector2(0.03, 0.03))
-	if circle and circle.material:
-		circle.material.set_shader_parameter("alpha_mult", MARKER_IDLE_ALPHA)
-	layer.visible = true
+	composition_controller_markers.update(
+		DEBUG_COMP_MARKER and comp.in_use and is_xr_active,
+		xr_camera.global_transform.basis,
+		right_hand,
+		left_hand,
+		right_hand_resting,
+		left_hand_resting,
+		_is_using_hands)
 
 func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
-# Mirrors each screen's real (invisible-under-projectionless) grab_bar
-# transform/size onto its composition-space equivalent every frame. Not
-# billboarded - grab_bar lies flat in the screen's own plane, so this is a
-# direct copy, no basis/orientation math needed (unlike the laser).
 func _update_grab_bar_layers():
-	for s in screens:
-		_update_corner_layers(s)
-		if not s.comp_grab_bar:
-			continue
-		if not DEBUG_COMP_GRAB_BAR or not comp.in_use:
-			# A rare, one-time transition (stereo mode / mesh-rendering
-			# fallback switch), not a per-frame toggle - safe, unlike the
-			# cursor/laser's old every-frame hide/show that caused the
-			# swapchain crash.
-			if s.comp_grab_bar.visible:
-				s.comp_grab_bar.visible = false
-			var bar_vp = s.comp_grab_bar.get_layer_viewport()
-			if bar_vp and bar_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-				bar_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
-			continue
-		var ms = s.mesh_size
-		# The transparent outer area carries the primary screen's four shortcut
-		# icons while the same layer remains a plain centered bar on secondary
-		# screens. Keeping this combined avoids four extra OpenXR layers.
-		s.comp_grab_bar.set_quad_size(Vector2(
-			ms.x * ScreenShortcutBar.STRIP_WIDTH_RATIO,
-			ms.x * ScreenShortcutBar.STRIP_HEIGHT_RATIO,
-		))
-		# Use the screen basis directly. The physical CylinderMesh grab bar is
-		# rotated 90 degrees because its length runs along local Y; copying that
-		# transform and adding another 90 degrees left this textured quad at 180
-		# degrees. A plain bar hid the mistake, but asymmetric shortcut artwork
-		# appeared upside-down and its left/right visuals no longer matched the
-		# screen-space physics targets.
-		s.comp_grab_bar.global_rotation = s.global_rotation
-		# Direct copy, no extra offset (2026-08-24) - the "move closer to
-		# the screen" adjustment now happens at the source (vr_screen.gd's
-		# update_corner_positions(), which also moves the real Area3D
-		# hitbox) rather than as a visual-only offset here. An earlier
-		# visual-only version left the hitbox behind at the old position,
-		# making the bar hard to find/grab where it visually appeared.
-		s.comp_grab_bar.global_position = s.grab_bar.global_position
-		if not s.comp_grab_bar.visible:
-			var bar_vp2 = s.comp_grab_bar.get_layer_viewport()
-			if bar_vp2:
-				bar_vp2.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-			s.comp_grab_bar.visible = true
-
-# Mirrors each of a screen's real corner_handles (already curve/resize-aware
-# via VRScreen.update_corner_positions() - see get_cylinder_radius()/
-# _comp_cyl_radius) onto their composition-space equivalents every frame.
-# No curve math duplicated here - just copying the real handle's already-
-# correct global transform and size, same approach as the grab bar.
-func _update_corner_layers(s: VRScreen):
-	if s.comp_corner_layers.is_empty():
-		return
-	if not DEBUG_COMP_CORNERS or not comp.in_use:
-		for layer in s.comp_corner_layers:
-			if not layer:
-				continue
-			if layer.visible:
-				layer.visible = false
-			var corner_vp = layer.get_layer_viewport()
-			if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_DISABLED:
-				corner_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
-		return
-	var corner_size = s.mesh_size.x * 0.027
-	for i in range(s.comp_corner_layers.size()):
-		var layer = s.comp_corner_layers[i]
-		if not layer or i >= s.corner_handles.size():
-			continue
-		var handle = s.corner_handles[i]
-		layer.set_quad_size(Vector2(corner_size, corner_size))
-		layer.global_position = handle.global_position
-		layer.global_rotation = handle.global_rotation
-		var corner_vp = layer.get_layer_viewport()
-		if corner_vp and corner_vp.render_target_update_mode != SubViewport.UPDATE_ALWAYS:
-			corner_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-		if not layer.visible:
-			layer.visible = true
+	composition_screen_controls.update(
+		screens,
+		comp.in_use,
+		DEBUG_COMP_GRAB_BAR,
+		DEBUG_COMP_CORNERS,
+		screen_shortcuts.revealed_screen if screen_shortcuts else null)
 
 func exit_app():
 	get_tree().quit()
@@ -1443,6 +1083,7 @@ func _on_stream_started():
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	stream_manager.bind_texture()
+	var native_expected := video_presentation.can_render_native()
 	# bind_yuv_textures() skips rebinding the composition-layer cylinder's
 	# shader when the decoder's texture RIDs "look unchanged" from the last
 	# bind - a real optimization for the steady-state per-frame case, but
@@ -1451,9 +1092,9 @@ func _on_stream_started():
 	# the actual texture is a fresh one, leaving the cylinder showing a
 	# stale/blank frame while decode stats keep updating normally. A stream
 	# genuinely (re)starting here should always force a real rebind.
-	if comp.available:
+	if comp.available and not native_expected:
 		comp.invalidate_yuv_cache()
-	_bind_yuv_textures()
+		_bind_yuv_textures()
 	# The decoder's shader material is reused across a restart, not recreated -
 	# right here, right at connection start, it can still be holding a
 	# reference to the just-torn-down previous session's (now GPU-invalid)
@@ -1465,7 +1106,10 @@ func _on_stream_started():
 	# few times shortly after connecting, by which point the new session's
 	# first real frame should have landed.
 	_stream_start_seq += 1
-	_retry_yuv_bind(_stream_start_seq)
+	if not native_expected:
+		_retry_yuv_bind(_stream_start_seq)
+	else:
+		_log("[NATIVE-XR] Skipping legacy decoder-texture bind during native connect")
 	# Was an unconditional _switch_to_comp_layer() (plain/mono), which reset
 	# AI-3D/SBS to 2D on EVERY (re)connect, silently, with nothing re-
 	# applying the real mode afterward unless the user happened to touch a
@@ -1484,8 +1128,7 @@ func _on_stream_started():
 		ui_visible = false
 		_set_ui_visible(false)
 		_ui_has_saved_offset = false
-		if comp_ui:
-			comp_ui.visible = false
+		composition_panels.hide_ui()
 	if settings.passthrough_enabled:
 		_hide_all_backgrounds()
 	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
@@ -1665,8 +1308,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	audio_player.stop()
 	ui_visible = false
 	_set_ui_visible(false)
-	if comp_ui:
-		comp_ui.visible = false
+	composition_panels.hide_ui()
 	welcome_screen.reset_connect_button()
 	settings_controller.apply_passthrough(settings.passthrough_enabled)
 	welcome_screen.update_welcome_info()
@@ -2322,12 +1964,41 @@ func _init_xr(interface):
 	# registration is rejected for the lifetime of this launch.
 
 func _on_user_presence_changed(is_present: bool):
-	# Only the welcome screen depends on this - once actually streaming, the
-	# real video texture bindings are already refreshed by their own paths
-	# (_on_stream_started() et al) and re-running connect_welcome_texture()
-	# here would incorrectly stomp them back to the welcome viewport.
-	if is_present and comp and comp.available and not is_streaming:
-		comp.connect_welcome_texture()
+	if not is_present:
+		return
+	_schedule_xr_surface_refresh("headset present")
+
+func _schedule_xr_surface_refresh(reason: String) -> void:
+	# Activity resume and user-presence signals can arrive before Godot has
+	# recreated its Android EGL surface and composition-layer swapchains. Retry
+	# across several rendered frames instead of betting the screen on one early
+	# callback. Menu and keyboard use independent layers, which is why they can
+	# survive while only the main screen disappears.
+	_xr_resume_refresh_attempts = 3
+	_xr_resume_refresh_wait_frames = 1
+	_log("[XR] Scheduled composition refresh: %s" % reason)
+
+func _process_xr_surface_refresh() -> void:
+	if _xr_resume_refresh_attempts <= 0:
+		return
+	_xr_resume_refresh_wait_frames -= 1
+	if _xr_resume_refresh_wait_frames > 0:
+		return
+	_xr_resume_refresh_attempts -= 1
+	_xr_resume_refresh_wait_frames = 4
+	if is_streaming:
+		if native_xr_renderer and native_xr_renderer.active:
+			native_xr_renderer.request_redraw()
+		else:
+			_bind_yuv_textures()
+	else:
+		# Rebind the welcome texture and reassert the mono layer after Godot has
+		# rebuilt its viewport swapchain following Android activity resume.
+		if comp and comp.available:
+			comp.connect_welcome_texture()
+			if comp.in_use:
+				comp.switch_to_comp_layer()
+	_log("[XR] Composition refresh attempt completed (%d remaining)" % _xr_resume_refresh_attempts)
 
 func _init_backgrounds_and_comp_layer():
 	_create_backgrounds()
@@ -2465,10 +2136,12 @@ func _process(delta):
 		right_click_cooldown -= delta
 
 	_process_input_release()
+	_process_xr_surface_refresh()
 
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
+	_sync_composition_panels()
 	_sync_interaction_viewports()
 	_update_laser_layers()
 	_update_marker_layers(delta)
@@ -2569,9 +2242,14 @@ func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 		return true
 	return false
 
-const HAND_REST_THRESHOLD := 2.0
+const HAND_REST_THRESHOLD := 4.0
 var right_hand_resting: bool = false
 var left_hand_resting: bool = false
+
+func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
+	if not raycast or not raycast.enabled or not raycast.is_colliding():
+		return false
+	return PointerTarget.resolve(raycast.get_collider()).role == &"screen"
 
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
@@ -2586,8 +2264,13 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
-	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
-	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
+	# Keep menu, keyboard, grab-bar, and shortcut pointers available regardless
+	# of controller stillness. Once a ray has gone to rest over stream content,
+	# preserve that state until physical controller activity wakes it again.
+	var right_can_rest := right_hand_resting or _raycast_points_at_stream(hand_raycast)
+	var left_can_rest := left_hand_resting or _raycast_points_at_stream(left_hand_raycast)
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD and right_can_rest)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD and left_can_rest)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
 	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
@@ -2611,9 +2294,28 @@ func _process_hand_tracking(_delta):
 	if hands_active != _is_using_hands:
 		_is_using_hands = hands_active
 		if _is_using_hands:
+			# The controller nodes below are about to be overwritten with hand
+			# joints. Preserve the physical controllers' last positions for their
+			# resting markers, and ensure both hand pointers are available even if
+			# controller-idle detection had disabled one of their shared raycasts.
+			composition_controller_markers.capture_controller_positions(right_hand, left_hand)
+			if hand_raycast:
+				hand_raycast.enabled = true
+			if left_hand_raycast:
+				left_hand_raycast.enabled = true
 			_log("[INPUT] Hand Tracking active, hiding controller models")
 			_set_controller_models_visible(false)
 		else:
+			# Controllers have taken ownership of these nodes/rays again. Restart
+			# inactivity detection from an unambiguous active state.
+			right_hand_resting = false
+			left_hand_resting = false
+			xr_interaction._right_inactive_time = 0.0
+			xr_interaction._left_inactive_time = 0.0
+			if hand_raycast:
+				hand_raycast.enabled = true
+			if left_hand_raycast:
+				left_hand_raycast.enabled = true
 			_log("[INPUT] Controllers active, showing controller models")
 			_set_controller_models_visible(true)
 
@@ -2707,7 +2409,8 @@ func _process_background_follow():
 # frame from _process() as a safety net (e.g. entering/leaving composition
 # mode without touching background/passthrough settings) - safe because the
 # work below only runs on an actual state change (bg_idx/want_visible), and
-# unlike comp_cursor this never repeatedly toggles comp_bg_equirect.visible
+# Unlike the pointer layers, this never repeatedly toggles the composition
+# background's visibility.
 # once shown, so it doesn't hit the swapchain-teardown crash from earlier.
 func _sync_comp_background():
 	if not comp_bg_equirect or not comp_bg_capture_viewport:
@@ -2870,6 +2573,8 @@ func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
 		video_presentation.shutdown()
+	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
 	input_handler.handle_input(event)
@@ -2883,10 +2588,8 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings()
 		_set_ui_position()
-		if comp.in_use and comp_ui:
-			comp_ui.visible = true
-			comp_ui.global_position = ui_panel_3d.global_position
-			comp_ui.global_rotation = ui_panel_3d.global_rotation
+		if comp.in_use and composition_panels.has_ui():
+			composition_panels.show_ui(ui_panel_3d)
 			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 				ui_panel_3d.visible = true
 				var ui_material = ui_panel_3d.material_override as StandardMaterial3D
@@ -2911,8 +2614,7 @@ func _toggle_ui():
 		if area:
 			area.process_mode = Node.PROCESS_MODE_INHERIT
 	else:
-		if comp_ui:
-			comp_ui.visible = false
+		composition_panels.hide_ui()
 		var ui_material = ui_panel_3d.material_override as StandardMaterial3D
 		if ui_material:
 			ui_material.albedo_color = Color(1, 1, 1, 1)
@@ -3020,8 +2722,9 @@ func _sync_interaction_viewports():
 	# while the menu and keyboard are hidden.
 	var independent_screen_cursor := VideoPresentation.uses_independent_screen_cursor(
 		comp.in_use, video_presentation.is_native_active())
-	_set_viewport_active(comp_cursor_viewport, panel_visible or independent_screen_cursor)
-	_set_viewport_active(left_comp_cursor_viewport, panel_visible)
+	composition_pointers.sync_viewports(
+		panel_visible or independent_screen_cursor,
+		panel_visible)
 
 func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	var strength = clampf((low_freq + high_freq) / 510.0, 0.0, 1.0)
@@ -3295,116 +2998,10 @@ func _create_snow():
 func _create_data():
 	bg_manager._create_data()
 
-# Composite-only hand indicators (2026-08-27, replacing the expensive
-# viewport-capture hand skeleton) - same cost profile as
-# _update_one_marker_layer() (see above): a small procedurally-shaded quad,
-# no offscreen 3D scene or capture camera involved at all. Unlike the
-# markers, though, the quad's own orientation and the triangle's three
-# shader-uniform vertices are both recomputed live every frame from three
-# real joints (WRIST, INDEX/PINKY PHALANX_PROXIMAL knuckle joints) - see
-# _update_one_hand_indicator().
 func _update_hand_indicator_layers():
-	if not comp_hand_right and not comp_hand_left:
-		return
-	if not DEBUG_COMP_HANDS or not comp.in_use or not is_xr_active or not _is_using_hands:
-		for layer in [comp_hand_right, comp_hand_left]:
-			_set_comp_quad_hidden(layer, true)
-			if layer:
-				_set_viewport_active(layer.get_layer_viewport(), false)
-		return
-	for layer in [comp_hand_right, comp_hand_left]:
-		if layer:
-			_set_viewport_active(layer.get_layer_viewport(), true)
-	var right_tracker = XRServer.get_tracker("/user/hand_tracker/right")
-	var left_tracker = XRServer.get_tracker("/user/hand_tracker/left")
-	_update_one_hand_indicator(comp_hand_right, comp_hand_right_triangle, right_tracker)
-	_update_one_hand_indicator(comp_hand_left, comp_hand_left_triangle, left_tracker)
-
-# Builds the quad's plane directly from the hand's own three joints, rather
-# than billboarding to the camera like the markers/laser do - this is what
-# makes the triangle actually track hand orientation/shape in real time
-# instead of just following wrist position with a fixed icon.
-func _update_one_hand_indicator(layer: Node3D, triangle: ColorRect, tracker: XRHandTracker):
-	if not layer or not triangle:
-		return
-	if not tracker or not (tracker is XRHandTracker):
-		_set_comp_quad_hidden(layer, true)
-		return
-	const TRACKED := XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
-	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & TRACKED) != 0
-	var index_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL) & TRACKED) != 0
-	var pinky_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL) & TRACKED) != 0
-	if not (wrist_ok and index_ok and pinky_ok):
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	var wrist_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
-	var index_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL).origin
-	var pinky_pos = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL).origin
-
-	var to_index = index_pos - wrist_pos
-	var to_pinky = pinky_pos - wrist_pos
-	if to_index.length_squared() < 0.0001 or to_pinky.length_squared() < 0.0001:
-		_set_comp_quad_hidden(layer, true)
-		return
-
-	# Orthonormal basis for the hand's own plane (Gram-Schmidt from the two
-	# knuckle directions), not the camera - x_axis/y_axis span the plane the
-	# triangle is drawn in, z_axis is its face normal. Degeneracy check is
-	# done on NORMALIZED directions (2026-08-27, was on the raw cross
-	# product before, which is |to_index|*|to_pinky|*sin(angle) - since
-	# metacarpal joints sit only a few cm from the wrist, that magnitude is
-	# tiny even at a healthy ~30 degree real hand spread, so the raw check
-	# rejected ordinary poses every single frame - "not seeing the triangle
-	# at all" turned out to be exactly this, confirmed via [HANDIND] logs
-	# showing "degenerate cross product" on every frame with real tracked
-	# joints). The normalized cross product is just sin(angle), scale-
-	# independent - 0.0004 here is sin(angle) < 0.02, i.e. angle < ~1.1
-	# degrees, only rejecting genuinely near-collinear moments.
-	var x_axis = to_index.normalized()
-	var raw_normal = x_axis.cross(to_pinky.normalized())
-	if raw_normal.length_squared() < 0.0004:
-		_set_comp_quad_hidden(layer, true) # index/pinky/wrist briefly collinear
-		return
-	raw_normal = raw_normal.normalized()
-	# The compositor renders this quad single-sided - pick whichever normal
-	# direction faces the viewer (palm-up vs palm-down) BEFORE deriving
-	# y_axis from it (2026-08-27 fix - previously flipped z_axis/y_axis
-	# AFTER y_axis was already built from the other sign, which could leave
-	# the projection below effectively mirrored depending on viewing angle:
-	# reported as the pinky point reading as the thumb knuckle instead.
-	# Deciding the final sign first and deriving y_axis from THAT removes
-	# the possibility entirely, at the cost of the triangle occasionally
-	# appearing mirrored left/right rather than anatomically exact when the
-	# hand rotates - cheap and correct often enough for an indicator, not a
-	# concern for a real hand mesh).
-	var z_axis = raw_normal if raw_normal.dot(xr_camera.global_position - wrist_pos) >= 0.0 else -raw_normal
-	var y_axis = z_axis.cross(x_axis).normalized()
-	x_axis = y_axis.cross(z_axis) # re-orthogonalize against the final y_axis
-
-	layer.global_transform = Transform3D(Basis(x_axis, y_axis, z_axis), wrist_pos)
-	layer.set_quad_size(Vector2(HAND_INDICATOR_SIZE, HAND_INDICATOR_SIZE))
-	layer.visible = true
-
-	# Project each joint into the quad's own local 2D plane (wrist is the
-	# origin by construction) and convert to UV [0,1] for the shader -
-	# inverted_triangle.gdshader's point_a/b/c. Confirmed on-device
-	# (2026-08-27) that the V-axis sign here reads backwards relative to
-	# y_axis's real 3D direction - pinky consistently landed mirrored to
-	# the opposite side (reading as the thumb knuckle). Negated ONLY for
-	# this 2D projection, not for y_axis itself (still used un-negated for
-	# the quad's actual 3D orientation below/above) - index sits exactly on
-	# the V=0.5 centerline by construction (to_index has zero y_axis
-	# component), so this only ever affects pinky's rendered side, not the
-	# quad's real-world placement.
-	var half = HAND_INDICATOR_SIZE
-	var wrist_uv = Vector2(0.5, 0.5)
-	var index_uv = Vector2(x_axis.dot(to_index), -y_axis.dot(to_index)) / half + wrist_uv
-	var pinky_uv = Vector2(x_axis.dot(to_pinky), -y_axis.dot(to_pinky)) / half + wrist_uv
-	var mat: ShaderMaterial = triangle.material
-	mat.set_shader_parameter("point_a", index_uv)
-	mat.set_shader_parameter("point_b", wrist_uv)
-	mat.set_shader_parameter("point_c", pinky_uv)
+	composition_hand_indicators.update(
+		DEBUG_COMP_HANDS and comp.in_use and is_xr_active and _is_using_hands,
+		xr_camera.global_position)
 
 func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTracker):
 	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & 8) != 0
@@ -3439,36 +3036,4 @@ func _make_laser_gradient() -> ImageTexture:
 	for y in range(256):
 		var a = 1.0 - float(y) / 255.0
 		img.set_pixel(0, y, Color(1, 1, 1, a))
-	return ImageTexture.create_from_image(img)
-
-# Separate from _make_laser_gradient() (2026-08-24) - that one is shared with
-# the real 3D "Laser" CapsuleMesh's material (normal projection mode), which
-# already looks right; this is only for the composition-space quad
-# replacement, which needed actual pixel width to render rounded end caps
-# (a capsule/stadium alpha mask - matching the real Laser's own CapsuleMesh
-# shape - combined with the existing length-fade gradient), unlike the
-# original's 1px-wide texture that had no room for horizontal shaping.
-func _make_comp_laser_texture(width: int, height: int) -> ImageTexture:
-	var img = Image.create(width, height, false, Image.FORMAT_RGBA8)
-	var cap_r = float(width) * 0.5
-	var half_w = float(width) * 0.5
-	var body_top = cap_r
-	var body_bottom = float(height - 1) - cap_r
-	for y in range(height):
-		var fade = 1.0 - float(y) / float(height - 1)
-		var fy = float(y)
-		for x in range(width):
-			var nx = float(x) - (float(width) - 1.0) * 0.5
-			var shape_alpha = 0.0
-			if fy < body_top:
-				var dy = body_top - fy
-				var dist = sqrt(nx * nx + dy * dy)
-				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
-			elif fy > body_bottom:
-				var dy = fy - body_bottom
-				var dist = sqrt(nx * nx + dy * dy)
-				shape_alpha = clampf(cap_r - dist + 0.5, 0.0, 1.0)
-			else:
-				shape_alpha = clampf(half_w - absf(nx) + 0.5, 0.0, 1.0)
-			img.set_pixel(x, y, Color(1, 1, 1, fade * shape_alpha))
 	return ImageTexture.create_from_image(img)

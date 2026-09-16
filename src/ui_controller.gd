@@ -101,13 +101,11 @@ func get_tooltip_viewport() -> SubViewport:
 func sync_tooltip_surface() -> void:
 	if not _tooltip_mesh:
 		return
-	var tooltip_layer = main.composition_panels.tooltip_layer if main.composition_panels else null
 	var showing: bool = _tooltip_panel != null and _tooltip_panel.visible and main.ui_visible
-	var use_composition: bool = main.comp != null and main.comp.in_use and tooltip_layer != null
-	_tooltip_mesh.visible = showing and not use_composition
-	if tooltip_layer:
-		if use_composition:
-			tooltip_layer.global_transform = _tooltip_mesh.global_transform
+	main.composition_panels.sync_tooltip_surface(
+		_tooltip_mesh,
+		showing,
+		main.comp != null and main.comp.in_use)
 
 func _build_tooltip_surface() -> void:
 	_tooltip_viewport = SubViewport.new()
@@ -227,12 +225,20 @@ func on_ai_3d_cursor_position_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_cursor_position()
 
+func on_ai_3d_depth_sync_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.toggle_ai_3d_depth_sync()
+
 func on_ai_3d_reset_pressed():
 	main.settings_controller.reset_ai_3d_effect_settings()
 
 func on_ai_3d_debug_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_debug()
+
+func on_ai_3d_process_debug_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.cycle_ai_3d_process_debug()
 
 func on_ai_3d_priority_toggled():
 	main.settings_controller.cycle_ai_3d_gpu_priority()
@@ -262,7 +268,11 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
 	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
+	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
+	if main._ui_3d_process_debug_btn:
+		update_option_btn(main._ui_3d_process_debug_btn,
+			main.settings_controller.ai_3d_process_debug_labels[main.settings.host.ai_3d_process_debug])
 	update_3d_btn_state()
 
 func update_3d_btn_state():
@@ -334,6 +344,9 @@ func update_3d_btn_state():
 	if main._ui_3d_cursor_position_btn:
 		main._ui_3d_cursor_position_btn.disabled = effect_disabled
 		main._ui_3d_cursor_position_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	if main._ui_3d_depth_sync_btn:
+		main._ui_3d_depth_sync_btn.disabled = effect_disabled
+		main._ui_3d_depth_sync_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	# Debug views depend on AI-3D producing depth, but are independent of the
 	# Android model/type/mode lock. The lock hides selectors that cannot be
 	# changed on Android; it must not disable this diagnostic control too.
@@ -341,6 +354,9 @@ func update_3d_btn_state():
 		main._ui_3d_debug_btn.visible = true
 		main._ui_3d_debug_btn.disabled = effect_disabled
 		main._ui_3d_debug_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	if main._ui_3d_process_debug_btn:
+		main._ui_3d_process_debug_btn.disabled = effect_disabled
+		main._ui_3d_process_debug_btn.modulate.a = 0.3 if effect_disabled else 1.0
 
 func update_stats_btn_state():
 	if not main._ui_stats_btn:
@@ -874,6 +890,15 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
+	main._ui_3d_depth_sync_btn = make_option_btn("Depth Sync", "Off")
+	_set_button_tooltip(main._ui_3d_depth_sync_btn, "Delay video slightly so it matches the frame used by AI depth inference.")
+	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
+	if OS.get_name() == "Android":
+		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
+		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+		_set_button_tooltip(main._ui_3d_debug_btn,
+			"Inspect the processed depth map, raw model output, or model input.")
+		ai3d_row1.add_child(main._ui_3d_debug_btn)
 
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.name = "Ai3dGap1"
@@ -903,6 +928,11 @@ func build_ui():
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
 	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
 	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
+	if OS.get_name() == "Android":
+		main._ui_3d_process_debug_btn = make_option_btn("3D Process", "Full")
+		_set_button_tooltip(main._ui_3d_process_debug_btn,
+			"Progressively enable the AI 3D warp stages for troubleshooting.")
+		ai3d_row2.add_child(main._ui_3d_process_debug_btn)
 	if ai3d_options_locked:
 		# Android locks Mode/Type/Model, leaving two controls for row 1 and
 		# three for row 2. Keep the layout at four buttons or fewer per row.
@@ -1053,6 +1083,11 @@ func build_ui():
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
 	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
+	main._ui_3d_depth_sync_btn.button_down.connect(func(): on_ai_3d_depth_sync_toggled())
+	if main._ui_3d_debug_btn and OS.get_name() == "Android":
+		main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
+	if main._ui_3d_process_debug_btn:
+		main._ui_3d_process_debug_btn.button_down.connect(func(): on_ai_3d_process_debug_toggled())
 	main._ui_3d_priority_btn.button_down.connect(func(): on_ai_3d_priority_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())

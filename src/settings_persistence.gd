@@ -125,12 +125,15 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	# Distinguishes the current four-value speed range from the historical five-value range.
 	config.set_value(section, "ai_3d_speed_v2", true)
 	config.set_value(section, "ai_3d_debug", host.ai_3d_debug)
+	config.set_value(section, "ai_3d_process_debug", host.ai_3d_process_debug)
+	config.set_value(section, "ai_3d_process_debug_v2", true)
 	config.set_value(section, "ai_3d_last_mode", host.ai_3d_last_mode)
 	config.set_value(section, "ai_3d_backend_pref", host.ai_3d_backend_pref)
 	config.set_value(section, "ai_3d_hz_cap", host.ai_3d_hz_cap)
 	config.set_value(section, "ai_3d_separation_pct", host.ai_3d_separation_pct)
 	config.set_value(section, "ai_3d_convergence_pct", host.ai_3d_convergence_pct)
 	config.set_value(section, "ai_3d_cursor_position_v2", host.ai_3d_cursor_position)
+	config.set_value(section, "ai_3d_depth_sync", host.ai_3d_depth_sync)
 	config.set_value(section, "bitrate_idx", host.bitrate_idx)
 	config.set_value(section, "double_h", host.double_h)
 
@@ -162,6 +165,9 @@ static func read_host(
 			# the brief 3-entry detour.
 			host.ai_3d_model = clampi(config.get_value(section, "ai_3d_model", 0), 0, ai_model_count - 1)
 			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 3)
+			var process_stage = clampi(config.get_value(section, "ai_3d_process_debug", 5), 0, 5)
+			host.ai_3d_process_debug = process_stage if config.has_section_key(section, "ai_3d_process_debug_v2") \
+				else (process_stage + 1 if process_stage >= 2 else process_stage)
 			host.ai_3d_last_mode = clampi(config.get_value(section, "ai_3d_last_mode", 1), 1, 3)
 			host.ai_3d_backend_pref = 1 if config.get_value(section, "ai_3d_backend_pref", 2) == 1 else 2
 			host.ai_3d_hz_cap = config.get_value(section, "ai_3d_hz_cap", 20)
@@ -179,6 +185,7 @@ static func read_host(
 				# Migrate the short-lived seven-position control: old Default,
 				# Right, and Right+ are the new Left, Default, and Right.
 				host.ai_3d_cursor_position = clampi(config.get_value(section, "ai_3d_cursor_position", 1) - 1, -1, 1)
+			host.ai_3d_depth_sync = bool(config.get_value(section, "ai_3d_depth_sync", false))
 			if config.has_section_key(section, "ai_3d_speed_v2"):
 				host.ai_3d_speed = clampi(config.get_value(section, "ai_3d_speed", 1), 0, 3)
 			else:
@@ -204,6 +211,9 @@ static func read_host(
 			var old_model = clampi(config.get_value(section, "ai_3d_model", 0), 0, 8)
 			var old_quality = clampi(config.get_value(section, "ai_3d_quality", 0), 0, 3)
 			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 3)
+			var process_stage = clampi(config.get_value(section, "ai_3d_process_debug", 5), 0, 5)
+			host.ai_3d_process_debug = process_stage if config.has_section_key(section, "ai_3d_process_debug_v2") \
+				else (process_stage + 1 if process_stage >= 2 else process_stage)
 			if old_model == 0:
 				host.ai_3d_speed = 0
 				host.ai_3d_model = 0

@@ -98,6 +98,7 @@ var ai_3d_models: Array = [
 	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
 const AI3D_BACKEND_CPU := 1
 const AI3D_BACKEND_GPU := 2
 const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40]
@@ -271,10 +272,13 @@ func _save_setting(btn: Button, label: String):
 	main.state_manager.save_state()
 
 func cycle_sbs_mode():
+	var previous_mode: int = main.settings.host.sbs_mode
 	main.settings.host.sbs_mode = (main.settings.host.sbs_mode + 1) % 3
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.settings.host.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()
+	main._log("[SBS] Mode changed: %s -> %s" % [
+		sbs_labels[previous_mode], sbs_labels[main.settings.host.sbs_mode]])
 	if main.settings.host.sbs_mode > 0 and main.screens.size() > 1:
 		main._ui_status_label.text = "SBS applies to primary screen only"
 
@@ -421,6 +425,25 @@ func cycle_ai_3d_cursor_position():
 func get_ai_3d_cursor_position_label() -> String:
 	return AI3D_CURSOR_POSITION_LABELS[clampi(main.settings.host.ai_3d_cursor_position, -1, 1) + 1]
 
+func toggle_ai_3d_depth_sync():
+	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
+			or main.settings.host.ai_3d_speed == 0:
+		return
+	main.settings.host.ai_3d_depth_sync = not main.settings.host.ai_3d_depth_sync
+	_save_setting(main._ui_3d_depth_sync_btn,
+		"On" if main.settings.host.ai_3d_depth_sync else "Off")
+
+func cycle_ai_3d_process_debug():
+	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
+			or main.settings.host.ai_3d_speed == 0:
+		return
+	main.settings.host.ai_3d_process_debug = \
+		(main.settings.host.ai_3d_process_debug + 1) % ai_3d_process_debug_labels.size()
+	_save_setting(main._ui_3d_process_debug_btn,
+		ai_3d_process_debug_labels[main.settings.host.ai_3d_process_debug])
+	if main.native_xr_renderer:
+		main.native_xr_renderer.request_redraw()
+
 # AI 3D tab's "Reset" button (2026-08-28) - restores only this tab's own
 # settings to their defaults (today's real, previously-hardcoded values -
 # see each field's own comment on main.gd). Deliberately does NOT touch
@@ -440,6 +463,8 @@ func reset_ai_3d_effect_settings():
 	main.settings.host.ai_3d_separation_pct = 100
 	main.settings.host.ai_3d_convergence_pct = 50
 	main.settings.host.ai_3d_cursor_position = 0
+	main.settings.host.ai_3d_depth_sync = false
+	main.settings.host.ai_3d_process_debug = 5
 	enforce_ai3d_platform_lock()
 	main.state_manager.save_state()
 	main.ui_controller.update_stereo_shader()

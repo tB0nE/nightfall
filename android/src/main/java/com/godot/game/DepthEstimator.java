@@ -1072,6 +1072,7 @@ public class DepthEstimator {
             if (variant.interp != null) {
                 byte[] result = runInferenceGpu(variant, frame.pixels, frame.width, frame.height);
                 if (result != null) {
+                    latestDepthCaptureNs = frame.captureNs;
                     latestDepthMap.set(result);
                 }
                 // Only record telemetry for a real, successful invocation -

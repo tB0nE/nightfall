@@ -317,8 +317,10 @@ func handle_pointer_interaction():
 
 	for s in main.screens:
 		s.grab_bar.visible = true
+		var controls_revealed: bool = main.screen_shortcuts != null \
+			and main.screen_shortcuts.controls_are_revealed(s)
 		for ch in s.corner_handles:
-			ch.visible = false
+			ch.visible = controls_revealed
 			var ch_area = ch.get_node_or_null("Area3D")
 			if ch_area:
 				ch_area.monitoring = false
@@ -383,8 +385,7 @@ func handle_pointer_interaction():
 			main.contact_dot.visible = false
 		if main.pointer_cursor:
 			main.pointer_cursor.visible = false
-		if main.comp_cursor:
-			main.comp_cursor.visible = false
+		main.composition_pointers.hide_primary()
 		right_laser.visible = false
 		if left_laser:
 			left_laser.visible = false
@@ -403,13 +404,14 @@ func handle_pointer_interaction():
 				main.contact_dot.visible = not hide_on_screen
 			if main.pointer_cursor:
 				main.pointer_cursor.visible = false
-			if main.comp_cursor and hide_on_screen:
-				main.comp_cursor.visible = false
+			if hide_on_screen:
+				main.composition_pointers.hide_primary()
 		else:
 			if main.pointer_cursor:
 				main.pointer_cursor.global_position = hit_point
-				var to_cam = (main.xr_camera.global_position - hit_point).normalized()
-				main.pointer_cursor.look_at(main.pointer_cursor.global_position + to_cam, Vector3.UP)
+				var surface_normal: Vector3 = t_hover.screen.get_cylinder_normal_at(hit_point) \
+					if t_hover.screen else (main.xr_camera.global_position - hit_point).normalized()
+				main.pointer_cursor.look_at(main.pointer_cursor.global_position + surface_normal, Vector3.UP)
 				main.pointer_cursor.rotate_object_local(Vector3.UP, PI)
 				var face = -main.pointer_cursor.global_transform.basis.z
 				var right = main.pointer_cursor.global_transform.basis.x
@@ -694,10 +696,11 @@ func _update_on_screen_tracking():
 
 func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
-		main.screen_shortcuts.begin_pointer_frame()
+		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
+	_reveal_contextual_screen_controls()
 	if not main.mouse_captured_by_stream:
 		handle_pointer_interaction()
 	_process_other_hand_ui()
@@ -705,6 +708,22 @@ func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
 		for screen in main.screens:
 			main.screen_shortcuts.refresh_visuals(screen)
+
+func _reveal_contextual_screen_controls() -> void:
+	if not main.screen_shortcuts:
+		return
+	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
+		return
+	if main.grabbed_node is VRScreen:
+		main.screen_shortcuts.reveal_controls(main.grabbed_node)
+		return
+	var raycast := get_active_raycast()
+	if not raycast or not raycast.is_colliding():
+		return
+	var target := PointerTarget.resolve(raycast.get_collider())
+	if target.role in [&"grab_bar", &"corner", &"screen_shortcut"]:
+		main.screen_shortcuts.reveal_controls(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast
@@ -765,12 +784,8 @@ func _process_other_hand_ui():
 	var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_pos).normalized() * 0.025
 	if main.left_contact_dot:
 		main.left_contact_dot.visible = false
-	if main.comp.in_use and main.left_comp_cursor_layer:
-		var to_cam = (main.xr_camera.global_position - hit_pos).normalized()
-		main.left_comp_cursor_layer.global_position = hit_pos + to_cam * 0.002
-		main.left_comp_cursor_layer.look_at(main.left_comp_cursor_layer.global_position + to_cam, Vector3.UP)
-		main.left_comp_cursor_layer.rotate_object_local(Vector3.UP, PI)
-		main.left_comp_cursor_layer.visible = true
+	if main.comp.in_use and main.composition_pointers.has_secondary():
+		main.composition_pointers.show_secondary(hit_pos, main.xr_camera.global_position)
 		if main.left_comp_cursor:
 			main.left_comp_cursor.visible = false
 	elif main.left_comp_cursor:
@@ -830,8 +845,7 @@ func _hide_other_hand_ui():
 		main.left_contact_dot.visible = false
 	if main.left_comp_cursor:
 		main.left_comp_cursor.visible = false
-	if main.left_comp_cursor_layer:
-		main.left_comp_cursor_layer.visible = false
+	main.composition_pointers.hide_secondary()
 
 func _apply_ui_hover_states():
 	if not main.ui_visible:
@@ -1020,15 +1034,8 @@ func _set_grab_bar_color(bar: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var screen = bar.get_parent()
 	while screen and not (screen is VRScreen):
 		screen = screen.get_parent()
-	if screen is VRScreen and screen.comp_grab_bar_viewport:
-		var panel = screen.comp_grab_bar_viewport.find_child("GrabBarPanel", true, false)
-		if panel:
-			var style = panel.get_theme_stylebox("panel") as StyleBoxFlat
-			if style and style.bg_color != desired_color:
-				style = style.duplicate()
-				style.bg_color = desired_color
-				panel.add_theme_stylebox_override("panel", style)
-				screen.comp_grab_bar_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	if screen is VRScreen:
+		main.composition_screen_controls.set_grab_bar_color(screen, desired_color)
 
 func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0):
 	var c = Color(color.r, color.g, color.b, alpha)
@@ -1037,16 +1044,15 @@ func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0)
 	for child in handle.get_children():
 		if child is MeshInstance3D:
 			child.material_override.albedo_color = c
-	# Mirror onto the composition-space equivalent (2026-08-24) - see
-	# VRScreen's comp_corner_layers/comp_corner_rects comment. modulate.a on
-	# a TextureRect child inside an already-visible viewport is the same
+	# Mirror onto the composition-space equivalent. CompositionScreenControls
+	# applies modulate.a to the viewport's corner TextureRect. Changing a child
+	# inside an already-visible viewport is the same
 	# safe category as the per-screen stream cursors (not the composition
 	# layer's own `visible` toggling that caused the earlier crash).
 	var screen = handle.get_parent()
 	if screen is VRScreen and handle.has_meta(&"nf_corner_idx"):
 		var idx: int = handle.get_meta(&"nf_corner_idx")
-		if idx >= 0 and idx < screen.comp_corner_rects.size() and screen.comp_corner_rects[idx]:
-			screen.comp_corner_rects[idx].modulate.a = alpha
+		main.composition_screen_controls.set_corner_alpha(screen, idx, alpha)
 
 func _compute_parallax_shift(uv_x: float) -> float:
 	if not main.depth_estimator or not main.depth_estimator.depth_texture:

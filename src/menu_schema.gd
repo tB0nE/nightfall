@@ -124,7 +124,10 @@ static func get_tabs() -> Array:
 			},
 			{
 				"node_name": &"AdvancedRow2",
-				"options": [
+				# Android exposes this diagnostic directly on the AI 3D tab.
+				# Retain the hidden Advanced copy on desktop for now so its
+				# existing menu structure remains unchanged.
+				"options": [] if OS.get_name() == "Android" else [
 					_option(&"_ui_3d_debug_btn", "3D Debug", "Off", "Display intermediate AI depth data for troubleshooting.", TARGET_UI, &"on_ai_3d_debug_toggled", false, true),
 				],
 			},

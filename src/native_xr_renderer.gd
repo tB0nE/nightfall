@@ -17,8 +17,15 @@ var _last_mode := -1
 var _last_eligible := false
 var _stats_upload_delay := -1
 var _stale_recovery_until_msec := 0
+var _force_redraw := false
 
 const STALE_EYE_RECOVERY_MSEC := 2000
+
+static func depth_sync_delay_frames(depth_age_ms: float, stream_fps: int,
+		native_capture_active: bool) -> int:
+	var frame_ms := 1000.0 / maxf(float(stream_fps), 1.0)
+	var capture_frames := 1 if native_capture_active else 0
+	return clampi(roundi(maxf(depth_age_ms, 0.0) / frame_ms) + capture_frames, 1, 2)
 
 func _init(owner: Node3D) -> void:
 	main = owner
@@ -127,6 +134,7 @@ func refresh() -> void:
 	if size.x <= 0 or size.y <= 0:
 		return
 	var mode := _mode()
+	var mode_changed := mode != _last_mode
 	if not stream_started or size != _last_size:
 		if not renderer.start(size.x, size.y):
 			failure_reason = "swapchain or GLES initialization failed"
@@ -137,6 +145,13 @@ func refresh() -> void:
 		_last_size = size
 		main._log("[NATIVE-XR] Native stream renderer ready at %dx%d" % [size.x, size.y])
 	active = true
+	if mode_changed:
+		# A presentation-mode change is not itself a decoded video frame. Force
+		# one native draw so SBS/AI-3D changes cannot leave the last swapchain
+		# image displayed indefinitely while consume_new_frame() is quiet.
+		_force_redraw = true
+		if _last_mode >= 0:
+			main._log("[NATIVE-XR] Presentation mode changed: %d -> %d" % [_last_mode, mode])
 	_last_mode = mode
 	_last_eligible = true
 	_sync_geometry()
@@ -190,7 +205,7 @@ func process_frame(new_frame: bool) -> void:
 	refresh()
 	_process_stats_upload()
 	_process_ambient_sample()
-	if not active or not new_frame:
+	if not active or (not new_frame and not _force_redraw):
 		return
 	var oes_id: int = main.stream_backend.get_oes_texture_id()
 	if oes_id == 0:
@@ -218,11 +233,29 @@ func process_frame(new_frame: bool) -> void:
 	var brightness: float = float(main.settings.brightness_pct) / 100.0
 	var contrast: float = float(main.settings.contrast_pct) / 100.0
 	var gamma: float = float(main.settings.gamma_pct) / 100.0
+	var depth_sync_enabled: bool = main.settings.host.ai_3d_depth_sync \
+		and mode in [6, 10, 11]
+	var delay_frames := 1
+	if depth_sync_enabled and main.depth_estimator:
+		# Match the retained colour frame to the measured age of the newest
+		# depth result. Native capture completes through a PBO on the following
+		# render tick, before Java's inference clock starts, so account for that
+		# additional frame here. The ring is deliberately bounded to two frames.
+		delay_frames = depth_sync_delay_frames(
+			main.depth_estimator.depth_source_age_ms,
+			main.settings.host.stream_fps,
+			main.depth_estimator._native_depth_capture_active)
+	renderer.set_depth_sync(depth_sync_enabled, delay_frames)
 	renderer.submit_frame(true, oes_id, depth_id, guide_id, matrix,
 			3.0, main.primary_screen.mesh_size.x, false, separation,
 			false, main.settings.passthrough_enabled, fence, mode,
 			main.depth_estimator.depth_revision if main.depth_estimator else 0,
-			color_transfer, convergence, brightness, contrast, gamma)
+			color_transfer, convergence, brightness, contrast, gamma,
+			main.settings.host.ai_3d_process_debug)
+	_force_redraw = false
+
+func request_redraw() -> void:
+	_force_redraw = true
 
 func request_ambient_sample() -> void:
 	if active and stream_started and renderer:
@@ -288,6 +321,8 @@ func deactivate(restore_legacy: bool) -> void:
 			main.comp.switch_to_stereo_comp_layer()
 		else:
 			main.comp.switch_to_comp_layer()
+		main.comp.invalidate_yuv_cache()
+		main._bind_yuv_textures()
 		# Re-sync the legacy overlay now that this renderer is no longer the
 		# one presenting it - see toggle_performance_overlay()'s comment for
 		# why the two display paths must stay mutually exclusive.

@@ -46,10 +46,15 @@ static const char *VERTEX_SRC =
 
 static const char *FRAGMENT_SRC =
 		"#version 300 es\n"
+		"#ifndef NIGHTFALL_TEXTURE_2D\n"
 		"#extension GL_OES_EGL_image_external_essl3 : require\n"
+		"#define NIGHTFALL_SAMPLER samplerExternalOES\n"
+		"#else\n"
+		"#define NIGHTFALL_SAMPLER sampler2D\n"
+		"#endif\n"
 		"precision highp float;\n"
 		"in vec2 v_plain;\n"
-		"uniform samplerExternalOES u_texture;\n"
+		"uniform NIGHTFALL_SAMPLER u_texture;\n"
 		"uniform sampler2D u_depth;\n"
 		"uniform sampler2D u_offsets;\n"
 		"uniform mat4 u_texmatrix;\n"
@@ -62,6 +67,7 @@ static const char *FRAGMENT_SRC =
 		"uniform float u_frameWidth;\n"
 		"uniform float u_debugSolid;\n"
 		"uniform int u_stereoMode;\n"
+		"uniform int u_depthProcessStage;\n"
 		"#ifdef NIGHTFALL_PICTURE\n"
 		"uniform float u_brightness;\n"
 		"uniform float u_contrast;\n"
@@ -74,16 +80,16 @@ static const char *FRAGMENT_SRC =
 		"out vec4 fragColor;\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
-		"    float d = texture(u_depth, v_plain).a;\n"
+		"    float d = texture(u_depth, v_plain).r;\n"
 		"    vec2 tc = v_plain;\n"
-		"    if (u_occlusion > 0.5) {\n"
+		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
 		"        int reach = int(ceil(abs(u_dispTexels)\n"
 		"                        * max(u_convergence, 1.0 - u_convergence))) + 2;\n"
 		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
 		"        tc.x = v_plain.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
 		"        float h = 1.0 / u_frameWidth;\n"
-		"        for (int i = 0; i < 2; i++) {\n"
+		"        for (int i = 0; i < 2 && u_depthProcessStage >= 5; i++) {\n"
 		"            float d0 = texture(u_depth, vec2(tc.x, v_plain.y)).a;\n"
 		"            float dm = texture(u_depth, vec2(tc.x - h, v_plain.y)).a;\n"
 		"            float dp = texture(u_depth, vec2(tc.x + h, v_plain.y)).a;\n"
@@ -95,7 +101,7 @@ static const char *FRAGMENT_SRC =
 		"            tc.x -= clamp(e / slope, -4.0 * h, 4.0 * h);\n"
 		"        }\n"
 		"    }\n"
-		"    else {\n"
+		"    else if (u_depthProcessStage > 0) {\n"
 		"        tc.x -= u_disparity * (d - u_convergence);\n"
 		"    }\n"
 		// Defensive clamp (2026-09-04): the occlusion search above falls back
@@ -134,11 +140,16 @@ static const char *FRAGMENT_SRC =
 // gamut conversion, tonemapping, and LUT sampling.
 static const char *HDR_FRAGMENT_SRC =
 		"#version 300 es\n"
+		"#ifndef NIGHTFALL_TEXTURE_2D\n"
 		"#extension GL_OES_EGL_image_external_essl3 : require\n"
+		"#define NIGHTFALL_SAMPLER samplerExternalOES\n"
+		"#else\n"
+		"#define NIGHTFALL_SAMPLER sampler2D\n"
+		"#endif\n"
 		"precision highp float;\n"
 		"precision highp int;\n"
 		"in vec2 v_plain;\n"
-		"uniform samplerExternalOES u_texture;\n"
+		"uniform NIGHTFALL_SAMPLER u_texture;\n"
 		"uniform sampler2D u_depth;\n"
 		"uniform sampler2D u_offsets;\n"
 		"uniform sampler2D u_hdrLut;\n"
@@ -152,6 +163,7 @@ static const char *HDR_FRAGMENT_SRC =
 		"uniform float u_frameWidth;\n"
 		"uniform float u_debugSolid;\n"
 		"uniform int u_stereoMode;\n"
+		"uniform int u_depthProcessStage;\n"
 		"uniform int u_colorTransfer;\n"
 		"uniform float u_brightness;\n"
 		"uniform float u_contrast;\n"
@@ -197,16 +209,16 @@ static const char *HDR_FRAGMENT_SRC =
 		"}\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
-		"    float d = texture(u_depth, v_plain).a;\n"
+		"    float d = texture(u_depth, v_plain).r;\n"
 		"    vec2 tc = v_plain;\n"
-		"    if (u_occlusion > 0.5) {\n"
+		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
 		"        int reach = int(ceil(abs(u_dispTexels)\n"
 		"                        * max(u_convergence, 1.0 - u_convergence))) + 2;\n"
 		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
 		"        tc.x = v_plain.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
 		"        float h = 1.0 / u_frameWidth;\n"
-		"        for (int i = 0; i < 2; i++) {\n"
+		"        for (int i = 0; i < 2 && u_depthProcessStage >= 5; i++) {\n"
 		"            float d0 = texture(u_depth, vec2(tc.x, v_plain.y)).a;\n"
 		"            float dm = texture(u_depth, vec2(tc.x - h, v_plain.y)).a;\n"
 		"            float dp = texture(u_depth, vec2(tc.x + h, v_plain.y)).a;\n"
@@ -215,7 +227,7 @@ static const char *HDR_FRAGMENT_SRC =
 		"            if (abs(slope) < 0.25) slope = 0.25;\n"
 		"            tc.x -= clamp(e / slope, -4.0 * h, 4.0 * h);\n"
 		"        }\n"
-		"    } else {\n"
+		"    } else if (u_depthProcessStage > 0) {\n"
 		"        tc.x -= u_disparity * (d - u_convergence);\n"
 		"    }\n"
 		"    tc = clamp(tc, 0.0, 1.0);\n"
@@ -256,10 +268,15 @@ static float srgb_encode_lut(float c) {
 
 static const char *UPSAMPLE_FRAGMENT_SRC =
 		"#version 300 es\n"
+		"#ifndef NIGHTFALL_TEXTURE_2D\n"
 		"#extension GL_OES_EGL_image_external_essl3 : require\n"
+		"#define NIGHTFALL_SAMPLER samplerExternalOES\n"
+		"#else\n"
+		"#define NIGHTFALL_SAMPLER sampler2D\n"
+		"#endif\n"
 		"precision highp float;\n"
 		"in vec2 v_plain;\n"
-		"uniform samplerExternalOES u_texture;\n"
+		"uniform NIGHTFALL_SAMPLER u_texture;\n"
 		"uniform sampler2D u_depth;\n"
 		"uniform sampler2D u_depthGuide;\n"
 		"uniform mat4 u_texmatrix;\n"
@@ -275,7 +292,11 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		// row and clamps the processed result there, so preserve both dimensions.
 		"    ivec2 lowSizeI = textureSize(u_depth, 0);\n"
 		"    vec2 lowSize = vec2(lowSizeI);\n"
-		"    vec3 hi = texture(u_texture, (u_texmatrix * vec4(v_plain, 0.0, 1.0)).xy).rgb;\n"
+		// Compare like with like: both the centre guide and neighbour guide are
+		// sampled from the same prefiltered model-input texture. Comparing a
+		// sharp full-resolution video pixel against a 384x384 averaged texel
+		// transferred unsupported high-frequency text edges into the depth map.
+		"    vec3 hi = texture(u_depthGuide, v_plain).rgb;\n"
 		"    vec2 lp = v_plain * lowSize - 0.5;\n"
 		"    ivec2 base = ivec2(floor(lp));\n"
 		"    float num = 0.0;\n"
@@ -312,6 +333,18 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"        d = mix(d, snapped, u_sharp);\n"
 		"    }\n"
 		"    fragColor = vec4(d);\n"
+		"}\n";
+
+static const char *DELAY_COPY_FRAGMENT_SRC =
+		"#version 300 es\n"
+		"#extension GL_OES_EGL_image_external_essl3 : require\n"
+		"precision highp float;\n"
+		"in vec2 v_plain;\n"
+		"uniform samplerExternalOES u_texture;\n"
+		"uniform mat4 u_texmatrix;\n"
+		"out vec4 fragColor;\n"
+		"void main() {\n"
+		"    fragColor = texture(u_texture, (u_texmatrix * vec4(v_plain, 0.0, 1.0)).xy);\n"
 		"}\n";
 
 static const char *OFFSET_FRAGMENT_SRC =
@@ -717,6 +750,7 @@ bool NightfallXrRenderer::init_gl() {
 		uniforms.frame_width = glGetUniformLocation(program, "u_frameWidth");
 		uniforms.debug_solid = glGetUniformLocation(program, "u_debugSolid");
 		uniforms.stereo_mode = glGetUniformLocation(program, "u_stereoMode");
+		uniforms.depth_process_stage = glGetUniformLocation(program, "u_depthProcessStage");
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "u_texture"), 0);
 		glUniform1i(glGetUniformLocation(program, "u_depth"), 1);
@@ -752,6 +786,24 @@ bool NightfallXrRenderer::init_gl() {
 		return false;
 	}
 	configure_warp_uniforms(hdr_warp_program, hdr_warp_uniforms, true, true);
+
+	delayed_warp_program = link_program(FRAGMENT_SRC,
+			"#define NIGHTFALL_TEXTURE_2D 1\n");
+	delayed_picture_warp_program = link_program(FRAGMENT_SRC,
+			"#define NIGHTFALL_TEXTURE_2D 1\n#define NIGHTFALL_PICTURE 1\n");
+	delayed_hdr_warp_program = link_program(HDR_FRAGMENT_SRC,
+			"#define NIGHTFALL_TEXTURE_2D 1\n");
+	if (delayed_warp_program == 0 || delayed_picture_warp_program == 0 ||
+			delayed_hdr_warp_program == 0) {
+		XR_LOGE("Failed to compile depth-sync 2D warp programs; depth sync unavailable");
+		depth_sync_failed = true;
+	} else {
+		configure_warp_uniforms(delayed_warp_program, delayed_warp_uniforms, false, false);
+		configure_warp_uniforms(delayed_picture_warp_program,
+				delayed_picture_warp_uniforms, false, true);
+		configure_warp_uniforms(delayed_hdr_warp_program,
+				delayed_hdr_warp_uniforms, true, true);
+	}
 
 	float hdr_lut_data[256 * 3];
 	for (int x = 0; x < 256; x++) {
@@ -791,6 +843,29 @@ bool NightfallXrRenderer::init_gl() {
 	glUniform1i(glGetUniformLocation(upsample_program, "u_texture"), 0);
 	glUniform1i(glGetUniformLocation(upsample_program, "u_depth"), 1);
 	glUniform1i(u_upsample_depth_guide, 2);
+
+	if (!depth_sync_failed) {
+		delayed_upsample_program = link_program(UPSAMPLE_FRAGMENT_SRC,
+				"#define NIGHTFALL_TEXTURE_2D 1\n");
+		depth_sync_copy_program = link_program(DELAY_COPY_FRAGMENT_SRC);
+		if (delayed_upsample_program == 0 || depth_sync_copy_program == 0) {
+			XR_LOGE("Failed to compile depth-sync copy/upsample program; depth sync unavailable");
+			depth_sync_failed = true;
+		} else {
+			glUseProgram(delayed_upsample_program);
+			u_delayed_upsample_texmatrix = glGetUniformLocation(delayed_upsample_program, "u_texmatrix");
+			u_delayed_upsample_sigma = glGetUniformLocation(delayed_upsample_program, "u_sigmaR");
+			u_delayed_upsample_sharp = glGetUniformLocation(delayed_upsample_program, "u_sharp");
+			u_delayed_upsample_depth_guide = glGetUniformLocation(delayed_upsample_program, "u_depthGuide");
+			glUniform1i(glGetUniformLocation(delayed_upsample_program, "u_texture"), 0);
+			glUniform1i(glGetUniformLocation(delayed_upsample_program, "u_depth"), 1);
+			glUniform1i(u_delayed_upsample_depth_guide, 2);
+
+			glUseProgram(depth_sync_copy_program);
+			glUniform1i(glGetUniformLocation(depth_sync_copy_program, "u_texture"), 0);
+			u_depth_sync_copy_matrix = glGetUniformLocation(depth_sync_copy_program, "u_texmatrix");
+		}
+	}
 
 	offset_program = link_program(OFFSET_FRAGMENT_SRC);
 	if (offset_program == 0) {
@@ -861,6 +936,10 @@ bool NightfallXrRenderer::init_gl() {
 
 void NightfallXrRenderer::stop_stream() {
 	pending_new_frame = false;
+	pending_depth_sync_enabled = false;
+	depth_sync_valid_count = 0;
+	depth_sync_write_index = 0;
+	depth_sync_failed = false;
 	ever_rendered = false;
 	ambient_sample_requested.store(false, std::memory_order_release);
 	{
@@ -877,6 +956,8 @@ void NightfallXrRenderer::stop_stream() {
 	rendered_depth_revision = UINT64_MAX;
 	rendered_depth_separation = -1.0f;
 	rendered_depth_convergence = -1.0f;
+	rendered_depth_process_stage = -1;
+	rendered_upsample_process_stage = -1;
 	layer_frame_counter = 0;
 	eye_last_queried_frame[0] = 0;
 	eye_last_queried_frame[1] = 0;
@@ -939,6 +1020,7 @@ void NightfallXrRenderer::stop_stream() {
 			if (ambient_sample_fbo) glDeleteFramebuffers(1, &ambient_sample_fbo);
 			if (upsample_fbo) glDeleteFramebuffers(1, &upsample_fbo);
 			if (offset_fbo) glDeleteFramebuffers(1, &offset_fbo);
+			if (depth_sync_fbo) glDeleteFramebuffers(1, &depth_sync_fbo);
 			if (ambient_sample_pbos[0] || ambient_sample_pbos[1]) {
 				glDeleteBuffers(AMBIENT_SAMPLE_PBO_COUNT, ambient_sample_pbos);
 			}
@@ -946,11 +1028,19 @@ void NightfallXrRenderer::stop_stream() {
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
 			if (hdr_lut_texture) glDeleteTextures(1, &hdr_lut_texture);
+			if (depth_sync_textures[0]) {
+				glDeleteTextures(DEPTH_SYNC_RING_SIZE, depth_sync_textures);
+			}
 			if (warp_program) glDeleteProgram(warp_program);
 			if (picture_warp_program) glDeleteProgram(picture_warp_program);
 			if (hdr_warp_program) glDeleteProgram(hdr_warp_program);
+			if (delayed_warp_program) glDeleteProgram(delayed_warp_program);
+			if (delayed_picture_warp_program) glDeleteProgram(delayed_picture_warp_program);
+			if (delayed_hdr_warp_program) glDeleteProgram(delayed_hdr_warp_program);
 			if (upsample_program) glDeleteProgram(upsample_program);
+			if (delayed_upsample_program) glDeleteProgram(delayed_upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
+			if (depth_sync_copy_program) glDeleteProgram(depth_sync_copy_program);
 		}
 	} else {
 		// Calling xrDestroySwapchain under the wrong context crashes the Meta
@@ -973,11 +1063,14 @@ void NightfallXrRenderer::stop_stream() {
 	overlay_visible = false;
 
 	if (egl_display != EGL_NO_DISPLAY) {
-		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = 0;
+		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = depth_sync_fbo = 0;
 		ambient_sample_pbos[0] = ambient_sample_pbos[1] = 0;
 		ambient_sample_next_pbo = 0;
 		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = 0;
-		warp_program = picture_warp_program = hdr_warp_program = upsample_program = offset_program = 0;
+		std::memset(depth_sync_textures, 0, sizeof(depth_sync_textures));
+		warp_program = picture_warp_program = hdr_warp_program = 0;
+		delayed_warp_program = delayed_picture_warp_program = delayed_hdr_warp_program = 0;
+		upsample_program = delayed_upsample_program = offset_program = depth_sync_copy_program = 0;
 		if (cleanup_context_current) {
 			eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
 		}
@@ -1091,21 +1184,118 @@ void NightfallXrRenderer::set_compositor_sharpening(int p_mode) {
 	XR_LOG("Native compositor sharpening: %s", mode == 2 ? "quality" : (mode == 1 ? "normal" : "off"));
 }
 
+void NightfallXrRenderer::set_depth_sync(bool p_enabled, int p_delay_frames) {
+	if (p_enabled && depth_sync_failed) {
+		return;
+	}
+	const int clamped_delay = std::min(std::max(p_delay_frames, 1),
+			DEPTH_SYNC_RING_SIZE - 1);
+	if (p_enabled != pending_depth_sync_enabled ||
+			(p_enabled && clamped_delay != pending_depth_sync_delay_frames)) {
+		XR_LOG("Depth sync: %s%s", p_enabled ? "on" : "off",
+				p_enabled ? (clamped_delay == 1 ? " (1 frame)" : " (2 frames)") : "");
+	}
+	if (p_enabled && !pending_depth_sync_enabled) {
+		depth_sync_valid_count = 0;
+		depth_sync_write_index = 0;
+	}
+	pending_depth_sync_enabled = p_enabled;
+	pending_depth_sync_delay_frames = clamped_delay;
+}
+
+bool NightfallXrRenderer::ensure_depth_sync_ring() {
+	if (depth_sync_failed) {
+		return false;
+	}
+	if (depth_sync_textures[0] != 0) {
+		return true;
+	}
+	for (int i = 0; i < 8 && glGetError() != GL_NO_ERROR; ++i) {
+	}
+	glGenTextures(DEPTH_SYNC_RING_SIZE, depth_sync_textures);
+	for (int i = 0; i < DEPTH_SYNC_RING_SIZE; ++i) {
+		glBindTexture(GL_TEXTURE_2D, depth_sync_textures[i]);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, video_width, video_height,
+				0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	}
+	glGenFramebuffers(1, &depth_sync_fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, depth_sync_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+			depth_sync_textures[0], 0);
+	bool ready = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	if (!ready || glGetError() != GL_NO_ERROR) {
+		XR_LOGE("Failed to allocate %d-frame depth-sync ring at %dx%d",
+				DEPTH_SYNC_RING_SIZE, video_width, video_height);
+		if (depth_sync_fbo) glDeleteFramebuffers(1, &depth_sync_fbo);
+		glDeleteTextures(DEPTH_SYNC_RING_SIZE, depth_sync_textures);
+		std::memset(depth_sync_textures, 0, sizeof(depth_sync_textures));
+		depth_sync_fbo = 0;
+		depth_sync_failed = true;
+		pending_depth_sync_enabled = false;
+		return false;
+	}
+	XR_LOG("Depth sync ring ready: %d frames at %dx%d",
+			DEPTH_SYNC_RING_SIZE, video_width, video_height);
+	return true;
+}
+
+uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id,
+		const float *p_tex_matrix) {
+	if (!ensure_depth_sync_ring()) {
+		return 0;
+	}
+	const int write_slot = depth_sync_write_index;
+	glBindFramebuffer(GL_FRAMEBUFFER, depth_sync_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+			depth_sync_textures[write_slot], 0);
+	glViewport(0, 0, video_width, video_height);
+	glUseProgram(depth_sync_copy_program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, p_oes_texture_id);
+	glUniformMatrix4fv(u_depth_sync_copy_matrix, 1, GL_FALSE, p_tex_matrix);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+	glEnableVertexAttribArray(1);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+	depth_sync_write_index = (depth_sync_write_index + 1) % DEPTH_SYNC_RING_SIZE;
+	depth_sync_valid_count = std::min(depth_sync_valid_count + 1, DEPTH_SYNC_RING_SIZE);
+	const int available_delay = std::min(pending_depth_sync_delay_frames,
+			depth_sync_valid_count - 1);
+	const int selected = (write_slot - available_delay + DEPTH_SYNC_RING_SIZE)
+			% DEPTH_SYNC_RING_SIZE;
+	return depth_sync_textures[selected];
+}
+
 void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
-		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix) {
+		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, bool p_texture_2d,
+		bool p_color_guided) {
 	glBindFramebuffer(GL_FRAMEBUFFER, upsample_fbo);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, upsample_texture, 0);
 	glViewport(0, 0, upsample_width, upsample_height);
-	glUseProgram(upsample_program);
+	GLuint program = p_texture_2d ? delayed_upsample_program : upsample_program;
+	glUseProgram(program);
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, p_oes_texture_id);
+	glBindTexture(p_texture_2d ? GL_TEXTURE_2D : GL_TEXTURE_EXTERNAL_OES,
+			p_oes_texture_id);
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, p_depth_texture_id);
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, p_depth_guide_texture_id);
-	glUniformMatrix4fv(u_upsample_texmatrix, 1, GL_FALSE, p_tex_matrix);
-	glUniform1f(u_upsample_sigma, 0.25f);
-	glUniform1f(u_upsample_sharp, 0.0f);
+	glUniformMatrix4fv(p_texture_2d ? u_delayed_upsample_texmatrix : u_upsample_texmatrix,
+			1, GL_FALSE, p_tex_matrix);
+	// A very large range sigma makes the colour-range term effectively one,
+	// leaving only the 5x5 spatial Gaussian. This isolates whether fine-detail
+	// corruption comes from smoothing or from colour edges steering depth.
+	glUniform1f(p_texture_2d ? u_delayed_upsample_sigma : u_upsample_sigma,
+			p_color_guided ? 0.25f : 1000.0f);
+	glUniform1f(p_texture_2d ? u_delayed_upsample_sharp : u_upsample_sharp, 0.0f);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
@@ -1196,7 +1386,7 @@ bool NightfallXrRenderer::issue_ambient_sample() {
 
 void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
-		float p_convergence, bool p_occluding) {
+		float p_convergence, bool p_occluding, int p_depth_process_stage) {
 	const auto t_frame_start = std::chrono::steady_clock::now();
 	// Must run first, with egl_context already current (true here) and
 	// before any sampling of p_oes_texture_id (run_upsample() below samples
@@ -1218,22 +1408,50 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	}
 	poll_ambient_sample();
 	const auto t_fence_ambient_done = std::chrono::steady_clock::now();
+	static const float identity_matrix[16] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f,
+	};
+	uint32_t source_texture_id = p_oes_texture_id;
+	const float *source_matrix = p_tex_matrix;
+	bool source_is_2d = false;
+	if (pending_depth_sync_enabled) {
+		uint32_t delayed_texture = capture_depth_sync_frame(
+				p_oes_texture_id, p_tex_matrix);
+		if (delayed_texture != 0) {
+			source_texture_id = delayed_texture;
+			source_matrix = identity_matrix;
+			source_is_2d = true;
+		}
+	}
 
 	bool has_depth = p_depth_texture_id != 0 && p_depth_guide_texture_id != 0;
-	bool refresh_depth = has_depth && (!depth_cache_valid || pending_depth_revision != rendered_depth_revision);
+	bool use_upsample = has_depth && p_depth_process_stage >= 2;
+	bool refresh_depth = use_upsample && (!depth_cache_valid ||
+			pending_depth_revision != rendered_depth_revision ||
+			p_depth_process_stage != rendered_upsample_process_stage);
 	bool did_depth_work = false;
 	if (refresh_depth) {
-		run_upsample(p_oes_texture_id, p_depth_texture_id, p_depth_guide_texture_id, p_tex_matrix);
+		run_upsample(source_texture_id, p_depth_texture_id,
+				p_depth_guide_texture_id, source_matrix, source_is_2d,
+				// Guided and production modes use scale-matched colour guidance;
+				// Spatial remains an explicit un-guided comparison/fallback.
+				p_depth_process_stage >= 3);
 		depth_cache_valid = true;
 		rendered_depth_revision = pending_depth_revision;
+		rendered_upsample_process_stage = p_depth_process_stage;
 		did_depth_work = true;
 	}
-	bool upsampling = has_depth && depth_cache_valid;
+	bool upsampling = use_upsample && depth_cache_valid;
 	if (upsampling && p_occluding && (refresh_depth || p_separation != rendered_depth_separation ||
-			p_convergence != rendered_depth_convergence)) {
+			p_convergence != rendered_depth_convergence ||
+			p_depth_process_stage != rendered_depth_process_stage)) {
 		run_offset_search(p_separation, p_convergence);
 		rendered_depth_separation = p_separation;
 		rendered_depth_convergence = p_convergence;
+		rendered_depth_process_stage = p_depth_process_stage;
 		did_depth_work = true;
 	}
 	const auto t_depth_done = std::chrono::steady_clock::now();
@@ -1258,10 +1476,20 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	bool use_picture = std::fabs(pending_brightness) > 0.0001f ||
 			std::fabs(pending_contrast - 1.0f) > 0.0001f ||
 			std::fabs(pending_gamma - 1.0f) > 0.0001f;
-	GLuint active_warp_program = use_hdr ? hdr_warp_program
-			: (use_picture ? picture_warp_program : warp_program);
-	WarpUniforms &uniforms = use_hdr ? hdr_warp_uniforms
-			: (use_picture ? picture_warp_uniforms : warp_uniforms);
+	GLuint active_warp_program;
+	WarpUniforms *uniforms_ptr;
+	if (source_is_2d) {
+		active_warp_program = use_hdr ? delayed_hdr_warp_program
+				: (use_picture ? delayed_picture_warp_program : delayed_warp_program);
+		uniforms_ptr = use_hdr ? &delayed_hdr_warp_uniforms
+				: (use_picture ? &delayed_picture_warp_uniforms : &delayed_warp_uniforms);
+	} else {
+		active_warp_program = use_hdr ? hdr_warp_program
+				: (use_picture ? picture_warp_program : warp_program);
+		uniforms_ptr = use_hdr ? &hdr_warp_uniforms
+				: (use_picture ? &picture_warp_uniforms : &warp_uniforms);
+	}
+	WarpUniforms &uniforms = *uniforms_ptr;
 	glUseProgram(active_warp_program);
 	if (rendered_color_transfer_type != pending_color_transfer_type) {
 		const char *transfer_name = pending_color_transfer_type == 1 ? "PQ"
@@ -1276,7 +1504,8 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glClear(GL_COLOR_BUFFER_BIT);
 	}
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_EXTERNAL_OES, p_oes_texture_id);
+	glBindTexture(source_is_2d ? GL_TEXTURE_2D : GL_TEXTURE_EXTERNAL_OES,
+			source_texture_id);
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, upsampling ? upsample_texture : p_depth_texture_id);
 	glActiveTexture(GL_TEXTURE2);
@@ -1291,7 +1520,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glUniform1f(uniforms.contrast, pending_contrast);
 		glUniform1f(uniforms.gamma, pending_gamma);
 	}
-	glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, p_tex_matrix);
+	glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, source_matrix);
 	glUniform1f(uniforms.debug_solid, debug_solid_color ? 1.0f : 0.0f);
 	glUniform1f(uniforms.occlusion, p_occluding ? 1.0f : 0.0f);
 	glUniform1f(uniforms.convergence, p_convergence);
@@ -1299,6 +1528,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	glUniform1f(uniforms.low_res_width, (float)upsample_width);
 	glUniform1f(uniforms.frame_width, (float)video_width);
 	glUniform1i(uniforms.stereo_mode, pending_stereo_mode);
+	glUniform1i(uniforms.depth_process_stage, p_depth_process_stage);
 
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
 	glEnableVertexAttribArray(0);
@@ -1350,7 +1580,7 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 		float p_quad_width, bool p_head_locked, float p_separation, bool p_eye_swap,
 		bool p_passthrough, uint64_t p_oes_fence, int p_stereo_mode, uint64_t p_depth_revision,
 		int p_color_transfer_type, float p_convergence, float p_brightness,
-		float p_contrast, float p_gamma) {
+		float p_contrast, float p_gamma, int p_depth_process_stage) {
 	pending_new_frame = p_new_frame;
 	pending_oes_texture_id = p_oes_texture_id;
 	pending_depth_texture_id = p_depth_texture_id;
@@ -1372,6 +1602,7 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 	pending_brightness = std::fmin(std::fmax(p_brightness, -1.0f), 1.0f);
 	pending_contrast = std::fmin(std::fmax(p_contrast, 0.01f), 4.0f);
 	pending_gamma = std::fmin(std::fmax(p_gamma, 0.01f), 4.0f);
+	pending_depth_process_stage = std::min(std::max(p_depth_process_stage, 0), 5);
 	pending_depth_revision = p_depth_revision;
 	if (pending_oes_fence != 0) {
 		// submit_frame() runs on the script thread, where no GL context is
@@ -1403,7 +1634,8 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 		return;
 	}
 	pending_new_frame = false;
-	bool occluding = pending_depth_texture_id != 0 && pending_separation > 0.0f;
+	bool occluding = pending_depth_texture_id != 0 && pending_separation > 0.0f &&
+			pending_depth_process_stage >= 4;
 
 	// Query Godot's current context/surfaces fresh rather than reusing the
 	// long-lived godot_context/godot_draw_surface/godot_read_surface members
@@ -1449,7 +1681,8 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 	}
 	superseded_oes_fences.clear();
 	render_video_frame(pending_oes_texture_id, pending_depth_texture_id, pending_depth_guide_texture_id,
-			pending_tex_matrix, pending_separation, pending_convergence, occluding);
+			pending_tex_matrix, pending_separation, pending_convergence, occluding,
+			pending_depth_process_stage);
 	const auto t_egl_out_start = std::chrono::steady_clock::now();
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("maybe_render_pending_frame: restoring Godot's EGL context/surface failed: %d", eglGetError());

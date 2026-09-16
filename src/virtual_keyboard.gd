@@ -3,11 +3,12 @@ extends VRPanelBase
 
 func _init(owner: Node3D):
 	super(owner)
-	mesh_size = Vector2(1.04, 0.3)
-	viewport_size = Vector2i(2080, 600)
+	mesh_size = Vector2(1.04, 0.35)
+	viewport_size = Vector2i(2080, 700)
 var _kb_width := 1640
 var _tp_width := 440
 var _key_area_width := 1600
+const KEY_ROW_UNITS := 15.0
 var _kb_root: Control
 var _key_data: Array = []
 var _held_keys: Dictionary = {}
@@ -18,6 +19,32 @@ var _shift_on: bool = false
 var _ctrl_on: bool = false
 var _alt_on: bool = false
 var _caps_on: bool = false
+
+const SHORTCUT_COPY := -100
+const SHORTCUT_PASTE := -101
+const SHORTCUT_CUT := -102
+const SHORTCUT_UNDO := -103
+const SHORTCUT_REDO := -104
+const SHORTCUT_SELECT_ALL := -105
+const SHORTCUT_ALT_TAB := -106
+const SHORTCUT_SHOW_DESKTOP := -107
+const SHORTCUT_TASK_MANAGER := -108
+const SHORTCUT_CLOSE_WINDOW := -109
+const SHORTCUT_SECURITY := -110
+
+const SHORTCUT_CHORDS := {
+	SHORTCUT_COPY: [KEY_CTRL, KEY_C],
+	SHORTCUT_PASTE: [KEY_CTRL, KEY_V],
+	SHORTCUT_CUT: [KEY_CTRL, KEY_X],
+	SHORTCUT_UNDO: [KEY_CTRL, KEY_Z],
+	SHORTCUT_REDO: [KEY_CTRL, KEY_Y],
+	SHORTCUT_SELECT_ALL: [KEY_CTRL, KEY_A],
+	SHORTCUT_ALT_TAB: [KEY_ALT, KEY_TAB],
+	SHORTCUT_SHOW_DESKTOP: [KEY_META, KEY_D],
+	SHORTCUT_TASK_MANAGER: [KEY_CTRL, KEY_SHIFT, KEY_ESCAPE],
+	SHORTCUT_CLOSE_WINDOW: [KEY_ALT, KEY_F4],
+	SHORTCUT_SECURITY: [KEY_CTRL, KEY_ALT, KEY_DELETE],
+}
 
 var trackpad_active: bool = false
 var _trackpad_hand: XRController3D = null
@@ -32,6 +59,7 @@ var _tp_was_stick_click: bool = false
 var thumbstick_exit_flag: bool = false
 
 var _KEY_ROWS = [
+	[{"k": SHORTCUT_COPY, "l": "Copy", "w": 1.15}, {"k": SHORTCUT_PASTE, "l": "Paste", "w": 1.15}, {"k": SHORTCUT_CUT, "l": "Cut"}, {"k": SHORTCUT_UNDO, "l": "Undo", "w": 1.05}, {"k": SHORTCUT_REDO, "l": "Redo", "w": 1.05}, {"k": SHORTCUT_SELECT_ALL, "l": "Select All", "w": 1.35}, {"k": SHORTCUT_ALT_TAB, "l": "Alt+Tab", "w": 1.35}, {"k": SHORTCUT_SHOW_DESKTOP, "l": "Win+D", "w": 1.15}, {"k": SHORTCUT_TASK_MANAGER, "l": "Task Mgr", "w": 1.55}, {"k": SHORTCUT_CLOSE_WINDOW, "l": "Alt+F4", "w": 1.25}, {"k": SHORTCUT_SECURITY, "l": "Ctrl+Alt+Del", "w": 1.8}],
 	[{"k": KEY_ESCAPE, "l": "Esc", "w": 1.5}, {"k": KEY_F1, "l": "F1"}, {"k": KEY_F2, "l": "F2"}, {"k": KEY_F3, "l": "F3"}, {"k": KEY_F4, "l": "F4"}, {"k": KEY_F5, "l": "F5"}, {"k": KEY_F6, "l": "F6"}, {"k": KEY_F7, "l": "F7"}, {"k": KEY_F8, "l": "F8"}, {"k": KEY_F9, "l": "F9"}, {"k": KEY_F10, "l": "F10"}, {"k": KEY_F11, "l": "F11"}, {"k": KEY_F12, "l": "F12"}, {"k": KEY_DELETE, "l": "Del", "w": 1.5}],
 	[{"k": KEY_QUOTELEFT, "l": "`", "s": "~"}, {"k": KEY_1, "l": "1", "s": "!"}, {"k": KEY_2, "l": "2", "s": "@"}, {"k": KEY_3, "l": "3", "s": "#"}, {"k": KEY_4, "l": "4", "s": "$"}, {"k": KEY_5, "l": "5", "s": "%"}, {"k": KEY_6, "l": "6", "s": "^"}, {"k": KEY_7, "l": "7", "s": "&"}, {"k": KEY_8, "l": "8", "s": "*"}, {"k": KEY_9, "l": "9", "s": "("}, {"k": KEY_0, "l": "0", "s": ")"}, {"k": KEY_MINUS, "l": "-", "s": "_"}, {"k": KEY_EQUAL, "l": "=", "s": "+"}, {"k": KEY_BACKSPACE, "l": "Bksp", "w": 2.0}],
 	[{"k": KEY_TAB, "l": "Tab", "w": 1.5}, {"k": KEY_Q, "l": "Q"}, {"k": KEY_W, "l": "W"}, {"k": KEY_E, "l": "E"}, {"k": KEY_R, "l": "R"}, {"k": KEY_T, "l": "T"}, {"k": KEY_Y, "l": "Y"}, {"k": KEY_U, "l": "U"}, {"k": KEY_I, "l": "I"}, {"k": KEY_O, "l": "O"}, {"k": KEY_P, "l": "P"}, {"k": KEY_BRACKETLEFT, "l": "[", "s": "{"}, {"k": KEY_BRACKETRIGHT, "l": "]", "s": "}"}, {"k": KEY_BACKSLASH, "l": "\\", "s": "|", "w": 1.5}],
@@ -72,11 +100,15 @@ func _build_keys():
 	var base_w = (_key_area_width - 12 - gap * 14) / 15.0
 	for row_idx in range(_KEY_ROWS.size()):
 		var row = _KEY_ROWS[row_idx]
+		var row_units := 0.0
+		for key_data in row:
+			row_units += float(key_data.get("w", 1.0))
+		var row_width_scale := KEY_ROW_UNITS / maxf(row_units, 0.001)
 		var x = 26
 		var y = start_y + row_idx * (key_h + gap)
 		for key_idx in range(row.size()):
 			var key_data = row[key_idx]
-			var w_unit = key_data.get("w", 1.0)
+			var w_unit = float(key_data.get("w", 1.0)) * row_width_scale
 			var btn_w = w_unit * base_w + (w_unit - 1.0) * gap
 			var btn = Button.new()
 			btn.name = "Key_%d_%d" % [row_idx, key_idx]
@@ -105,7 +137,7 @@ func _build_trackpad():
 	var key_start_y = 16
 	var key_h = 72
 	var key_gap = 6
-	var key_rows = 6
+	var key_rows = _KEY_ROWS.size()
 	var keys_height = key_rows * key_h + (key_rows - 1) * key_gap
 	var tp_y = key_start_y
 	var tp_h = keys_height
@@ -246,7 +278,7 @@ func handle_pointer(pixel_pos: Vector2, clicking: bool, was_clicking: bool, hand
 		ev.pressed = true
 		viewport.push_input(ev)
 		var key_code = _key_from_pos(pixel_pos)
-		if key_code >= 0:
+		if key_code != -1:
 			_on_key_press(key_code)
 	elif not clicking and was_clicking:
 		var ev = InputEventMouseButton.new()
@@ -277,7 +309,10 @@ func handle_secondary_key(pixel_pos: Vector2, pressed: bool):
 	if pixel_pos.x >= _kb_width:
 		return
 	var key_code = _key_from_pos(pixel_pos)
-	if key_code < 0:
+	if key_code == -1:
+		return
+	if SHORTCUT_CHORDS.has(key_code):
+		_send_shortcut(key_code)
 		return
 	if key_code in [KEY_SHIFT, KEY_CTRL, KEY_ALT, KEY_CAPSLOCK]:
 		_on_key_press(key_code)
@@ -408,6 +443,9 @@ func _key_from_pos(pixel_pos: Vector2) -> int:
 	return -1
 
 func _on_key_press(key_code: int):
+	if SHORTCUT_CHORDS.has(key_code):
+		_send_shortcut(key_code)
+		return
 	if key_code == KEY_SHIFT:
 		_shift_on = not _shift_on
 		_apply_modifier_visuals()
@@ -437,6 +475,29 @@ func _on_key_press(key_code: int):
 		return
 	main.stream_backend.send_keyboard_event(key_code, 3, 0)
 	_held_keys[key_code] = true
+
+func _send_shortcut(shortcut_code: int) -> void:
+	var chord: Array = SHORTCUT_CHORDS.get(shortcut_code, [])
+	if chord.is_empty():
+		return
+	var pressed_here: Array[int] = []
+	for key_code in chord:
+		if _modifier_is_latched(key_code):
+			continue
+		main.stream_backend.send_keyboard_event(key_code, 3, 0)
+		pressed_here.append(key_code)
+	for i in range(pressed_here.size() - 1, -1, -1):
+		main.stream_backend.send_keyboard_event(pressed_here[i], 4, 0)
+
+func _modifier_is_latched(key_code: int) -> bool:
+	match key_code:
+		KEY_SHIFT:
+			return _shift_on
+		KEY_CTRL:
+			return _ctrl_on
+		KEY_ALT:
+			return _alt_on
+	return false
 
 func _on_key_release(key_code: int):
 	if key_code == KEY_SHIFT or key_code == KEY_CTRL or key_code == KEY_ALT:
