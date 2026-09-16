@@ -3,6 +3,7 @@ extends SceneTree
 func _init():
 	_test_layout_order()
 	_test_visible_actions()
+	_test_contextual_reveal_state()
 	_test_pointer_target_metadata()
 	print("All screen_shortcut_bar tests passed")
 	quit()
@@ -30,6 +31,24 @@ func _test_visible_actions() -> void:
 		ScreenShortcutBar.ACTION_SBS,
 		ScreenShortcutBar.ACTION_MENU,
 	])
+
+func _test_contextual_reveal_state() -> void:
+	var shortcuts := ScreenShortcutBar.new(Node3D.new())
+	var first := VRScreen.new()
+	var second := VRScreen.new()
+	assert(not shortcuts.controls_are_revealed(first))
+	shortcuts.reveal_controls(first)
+	assert(shortcuts.controls_are_revealed(first))
+	assert(not shortcuts.controls_are_revealed(second))
+	shortcuts.begin_pointer_frame(0.25)
+	assert(shortcuts.controls_are_revealed(first))
+	shortcuts.begin_pointer_frame(0.24)
+	assert(shortcuts.controls_are_revealed(first))
+	shortcuts.begin_pointer_frame(0.02)
+	assert(not shortcuts.controls_are_revealed(first))
+	shortcuts.main.free()
+	first.free()
+	second.free()
 
 func _test_pointer_target_metadata() -> void:
 	var screen := VRScreen.new()

@@ -106,6 +106,13 @@ func show_primary(hit_point: Vector3, surface_normal: Vector3,
 	if not cursor_layer:
 		return
 	var to_camera := (camera_position - hit_point).normalized()
+	var facing := surface_normal.normalized() if on_screen else to_camera
+	# Cylinder normals describe the tangent plane but their sign depends on the
+	# screen/cylinder transform. OpenXR quads are one-sided, and offsetting along
+	# the away-facing normal also puts the cursor behind the video layer. Keep
+	# the tangent orientation while always choosing the hemisphere facing HMD.
+	if on_screen and facing.dot(to_camera) < 0.0:
+		facing = -facing
 	var distance_scale := 1.0
 	if on_screen:
 		var screen_distance := camera_position.distance_to(screen_position)
@@ -115,12 +122,12 @@ func show_primary(hit_point: Vector3, surface_normal: Vector3,
 		_set_cursor_art(false)
 		_set_cursor_viewport_size(Vector2i(256, 256))
 		cursor_layer.set_quad_size(Vector2(0.035 * distance_scale, 0.035 * distance_scale))
-		_place_primary(hit_point + world_offset + surface_normal * 0.002, to_camera)
+		_place_primary(hit_point + world_offset + facing * 0.002, facing)
 	elif on_screen:
 		_set_cursor_art(true)
 		_set_cursor_viewport_size(Vector2i(40, 64))
 		cursor_layer.set_quad_size(Vector2(0.04 * distance_scale, 0.064 * distance_scale))
-		_place_primary(hit_point + world_offset + surface_normal * 0.002, to_camera)
+		_place_primary(hit_point + world_offset + facing * 0.002, facing)
 		var right := cursor_layer.global_transform.basis.x
 		var up := cursor_layer.global_transform.basis.y
 		cursor_layer.global_position += right * 0.02 - up * 0.032
@@ -154,9 +161,9 @@ func _set_cursor_viewport_size(wanted: Vector2i) -> void:
 	if cursor_viewport and RenderingServer.get_current_rendering_method() != "gl_compatibility":
 		cursor_viewport.size = wanted
 
-func _place_primary(position: Vector3, to_camera: Vector3) -> void:
+func _place_primary(position: Vector3, facing: Vector3) -> void:
 	cursor_layer.global_position = position
-	cursor_layer.look_at(cursor_layer.global_position + to_camera, Vector3.UP)
+	cursor_layer.look_at(cursor_layer.global_position + facing, Vector3.UP)
 	cursor_layer.rotate_object_local(Vector3.UP, PI)
 
 func _show_embedded_pair(cursor: TextureRect, circle: ColorRect, cx: float,

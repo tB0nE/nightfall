@@ -317,8 +317,10 @@ func handle_pointer_interaction():
 
 	for s in main.screens:
 		s.grab_bar.visible = true
+		var controls_revealed: bool = main.screen_shortcuts != null \
+			and main.screen_shortcuts.controls_are_revealed(s)
 		for ch in s.corner_handles:
-			ch.visible = false
+			ch.visible = controls_revealed
 			var ch_area = ch.get_node_or_null("Area3D")
 			if ch_area:
 				ch_area.monitoring = false
@@ -407,8 +409,9 @@ func handle_pointer_interaction():
 		else:
 			if main.pointer_cursor:
 				main.pointer_cursor.global_position = hit_point
-				var to_cam = (main.xr_camera.global_position - hit_point).normalized()
-				main.pointer_cursor.look_at(main.pointer_cursor.global_position + to_cam, Vector3.UP)
+				var surface_normal: Vector3 = t_hover.screen.get_cylinder_normal_at(hit_point) \
+					if t_hover.screen else (main.xr_camera.global_position - hit_point).normalized()
+				main.pointer_cursor.look_at(main.pointer_cursor.global_position + surface_normal, Vector3.UP)
 				main.pointer_cursor.rotate_object_local(Vector3.UP, PI)
 				var face = -main.pointer_cursor.global_transform.basis.z
 				var right = main.pointer_cursor.global_transform.basis.x
@@ -693,10 +696,11 @@ func _update_on_screen_tracking():
 
 func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
-		main.screen_shortcuts.begin_pointer_frame()
+		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
+	_reveal_contextual_screen_controls()
 	if not main.mouse_captured_by_stream:
 		handle_pointer_interaction()
 	_process_other_hand_ui()
@@ -704,6 +708,22 @@ func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
 		for screen in main.screens:
 			main.screen_shortcuts.refresh_visuals(screen)
+
+func _reveal_contextual_screen_controls() -> void:
+	if not main.screen_shortcuts:
+		return
+	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
+		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
+		return
+	if main.grabbed_node is VRScreen:
+		main.screen_shortcuts.reveal_controls(main.grabbed_node)
+		return
+	var raycast := get_active_raycast()
+	if not raycast or not raycast.is_colliding():
+		return
+	var target := PointerTarget.resolve(raycast.get_collider())
+	if target.role in [&"grab_bar", &"corner", &"screen_shortcut"]:
+		main.screen_shortcuts.reveal_controls(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast

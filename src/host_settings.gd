@@ -34,3 +34,5 @@ var ai_3d_separation_pct: int = 100
 var ai_3d_convergence_pct: int = 50
 ## Cursor correction over AI-warped video: -1=Left, 0=Default, 1=Right.
 var ai_3d_cursor_position: int = 0
+## Delay native Android video by the measured depth age so both represent the same frame.
+var ai_3d_depth_sync: bool = false

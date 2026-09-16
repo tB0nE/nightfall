@@ -225,6 +225,10 @@ func on_ai_3d_cursor_position_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_cursor_position()
 
+func on_ai_3d_depth_sync_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.toggle_ai_3d_depth_sync()
+
 func on_ai_3d_reset_pressed():
 	main.settings_controller.reset_ai_3d_effect_settings()
 
@@ -260,6 +264,7 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
 	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
+	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	update_3d_btn_state()
 
@@ -332,6 +337,9 @@ func update_3d_btn_state():
 	if main._ui_3d_cursor_position_btn:
 		main._ui_3d_cursor_position_btn.disabled = effect_disabled
 		main._ui_3d_cursor_position_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	if main._ui_3d_depth_sync_btn:
+		main._ui_3d_depth_sync_btn.disabled = effect_disabled
+		main._ui_3d_depth_sync_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	# Debug views depend on AI-3D producing depth, but are independent of the
 	# Android model/type/mode lock. The lock hides selectors that cannot be
 	# changed on Android; it must not disable this diagnostic control too.
@@ -872,6 +880,11 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
+	main._ui_3d_depth_sync_btn = make_option_btn("Depth Sync", "Off")
+	_set_button_tooltip(main._ui_3d_depth_sync_btn, "Delay video slightly so it matches the frame used by AI depth inference.")
+	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
+	if OS.get_name() == "Android":
+		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
 
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.name = "Ai3dGap1"
@@ -1051,6 +1064,7 @@ func build_ui():
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
 	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
+	main._ui_3d_depth_sync_btn.button_down.connect(func(): on_ai_3d_depth_sync_toggled())
 	main._ui_3d_priority_btn.button_down.connect(func(): on_ai_3d_priority_toggled())
 	main._ui_monitors_btn.button_down.connect(func(): _cycle_monitors_btn())
 	main._ui_virtual_monitors_btn.button_down.connect(func(): _cycle_virtual_btn())

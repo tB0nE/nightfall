@@ -36,9 +36,12 @@ func setup(scene_root: Node, xr_origin: Node3D, shortcuts: ScreenShortcutBar,
 		screen.comp_corner_rects[i] = rect
 
 func update(screens: Array, active: bool, grab_bars_enabled: bool,
-		corners_enabled: bool) -> void:
+		corners_enabled: bool, revealed_screen: VRScreen) -> void:
 	for screen in screens:
-		_update_corners(screen, active and corners_enabled)
+		_update_corners(
+			screen,
+			active and corners_enabled,
+			screen == revealed_screen)
 		_update_grab_bar(screen, active and grab_bars_enabled)
 
 func set_grab_bar_color(screen: VRScreen, color: Color) -> void:
@@ -81,7 +84,7 @@ func _update_grab_bar(screen: VRScreen, active: bool) -> void:
 	layer.global_position = screen.grab_bar.global_position
 	_set_layer_active(layer, true)
 
-func _update_corners(screen: VRScreen, active: bool) -> void:
+func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool) -> void:
 	if screen.comp_corner_layers.is_empty():
 		return
 	if not active:
@@ -97,6 +100,8 @@ func _update_corners(screen: VRScreen, active: bool) -> void:
 		layer.set_quad_size(Vector2(corner_size, corner_size))
 		layer.global_position = handle.global_position
 		layer.global_rotation = handle.global_rotation
+		if i < screen.comp_corner_rects.size() and screen.comp_corner_rects[i]:
+			screen.comp_corner_rects[i].visible = artwork_visible
 		_set_layer_active(layer, true)
 
 func _make_layer(layer_name: String) -> Node3D:

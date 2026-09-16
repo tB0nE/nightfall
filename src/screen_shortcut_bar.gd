@@ -34,9 +34,12 @@ const ICON_SIZE_RATIO := 0.036
 const ICON_GAP_RATIO := 0.014
 const HIT_SIZE_RATIO := 0.044
 const COMP_VIEWPORT_SIZE := Vector2i(768, 98)
+const HIDE_DELAY_SECONDS := 0.5
 
 var main: Node3D
 var hovered_action: StringName = &""
+var revealed_screen: VRScreen = null
+var _reveal_time_remaining := 0.0
 
 func _init(owner: Node3D):
 	main = owner
@@ -123,8 +126,20 @@ func populate_composition_viewport(screen: VRScreen, viewport: SubViewport) -> v
 		screen.comp_shortcut_icons[action] = rect
 	refresh_visuals(screen)
 
-func begin_pointer_frame() -> void:
+func begin_pointer_frame(delta: float = 0.0) -> void:
 	hovered_action = &""
+	if revealed_screen:
+		_reveal_time_remaining = maxf(_reveal_time_remaining - maxf(delta, 0.0), 0.0)
+		if _reveal_time_remaining <= 0.0:
+			revealed_screen = null
+
+func reveal_controls(screen: VRScreen) -> void:
+	if screen:
+		revealed_screen = screen
+		_reveal_time_remaining = HIDE_DELAY_SECONDS
+
+func controls_are_revealed(screen: VRScreen) -> bool:
+	return screen != null and screen == revealed_screen
 
 func set_hover(action: StringName) -> void:
 	hovered_action = action
@@ -132,6 +147,9 @@ func set_hover(action: StringName) -> void:
 func invoke(action: StringName) -> void:
 	match action:
 		ACTION_SBS:
+			# Match the menu SBS control: an explicit user selection takes
+			# ownership from automatic SBS detection.
+			main.auto_detect_enabled = false
 			main.settings_controller.cycle_sbs_mode()
 		ACTION_PAD:
 			main.controller_mapper.check_toggle_ui()
@@ -148,8 +166,8 @@ func refresh_visuals(screen: VRScreen) -> void:
 	if not screen:
 		return
 	var changed = false
-	var show = screen == main.primary_screen
-	var bar_rgb = PRIMARY_BAR_COLOR if show else Color.WHITE
+	var show = screen == main.primary_screen and controls_are_revealed(screen)
+	var bar_rgb = PRIMARY_BAR_COLOR if screen == main.primary_screen else Color.WHITE
 	if screen.grab_bar and screen.grab_bar.material_override:
 		var real_bar_color = screen.grab_bar.material_override.albedo_color
 		var desired_real_bar = Color(bar_rgb.r, bar_rgb.g, bar_rgb.b, real_bar_color.a)

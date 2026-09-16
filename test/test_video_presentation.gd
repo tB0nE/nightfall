@@ -27,6 +27,7 @@ func _init():
 	_test_path_resolution()
 	_test_path_application()
 	_test_cursor_path()
+	_test_depth_sync_delay()
 	print("All video_presentation tests passed")
 	quit()
 
@@ -67,3 +68,14 @@ func _test_cursor_path() -> void:
 	assert(VideoPresentation.uses_independent_screen_cursor(true, false))
 	assert(VideoPresentation.uses_independent_screen_cursor(false, true))
 	assert(VideoPresentation.uses_independent_screen_cursor(true, true))
+
+func _test_depth_sync_delay() -> void:
+	# A minimum one-frame delay keeps the retained colour ring populated.
+	assert(NativeXrRendererManager.depth_sync_delay_frames(0.0, 60, false) == 1)
+	# GPU capture itself completes one render tick after the source frame.
+	assert(NativeXrRendererManager.depth_sync_delay_frames(0.0, 90, true) == 1)
+	assert(NativeXrRendererManager.depth_sync_delay_frames(12.0, 90, true) == 2)
+	assert(NativeXrRendererManager.depth_sync_delay_frames(8.0, 120, false) == 1)
+	# The native ring intentionally bounds presentation latency to two frames.
+	assert(NativeXrRendererManager.depth_sync_delay_frames(50.0, 120, true) == 2)
+	assert(NativeXrRendererManager.depth_sync_delay_frames(-5.0, 0, false) == 1)

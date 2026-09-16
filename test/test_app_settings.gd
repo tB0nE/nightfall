@@ -42,6 +42,7 @@ func _test_host_defaults() -> void:
 	assert(host.ai_3d_last_mode == 1)
 	assert(host.ai_3d_backend_pref == 2)
 	assert(host.ai_3d_hz_cap == 20)
+	assert(not host.ai_3d_depth_sync)
 	assert(host.ai_3d_separation_pct == 100)
 	assert(host.ai_3d_convergence_pct == 50)
 	assert(host.ai_3d_cursor_position == 0)
@@ -147,6 +148,7 @@ func _test_host_persistence_round_trip() -> void:
 	source.ai_3d_separation_pct = 125
 	source.ai_3d_convergence_pct = 60
 	source.ai_3d_cursor_position = -1
+	source.ai_3d_depth_sync = true
 	var config := ConfigFile.new()
 	SettingsPersistence.write_host(config, "host", source)
 	assert(config.get_value("host", "host_settings_version") == HostSettings.HOST_STATE_VERSION)
@@ -171,6 +173,7 @@ func _test_host_persistence_round_trip() -> void:
 	assert(loaded.ai_3d_separation_pct == 125)
 	assert(loaded.ai_3d_convergence_pct == 60)
 	assert(loaded.ai_3d_cursor_position == -1)
+	assert(loaded.ai_3d_depth_sync)
 
 func _test_legacy_host_migrations() -> void:
 	var config := ConfigFile.new()

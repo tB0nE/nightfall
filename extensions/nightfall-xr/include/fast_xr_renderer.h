@@ -91,6 +91,9 @@ public:
 	// 0=None, 1=normal sharpening, 2=quality sharpening. This is applied by
 	// the OpenXR runtime after composition, with no video-shader sampling cost.
 	void set_compositor_sharpening(int p_mode);
+	// Optional AI-depth synchronization. A bounded three-texture ring retains
+	// the current and two preceding decoder frames only while this is enabled.
+	void set_depth_sync(bool p_enabled, int p_delay_frames);
 
 	// Called every GDScript _process() tick with the latest frame's
 	// parameters; actual GL rendering happens later, in _on_pre_render().
@@ -269,6 +272,9 @@ private:
 	GLuint warp_program = 0;
 	GLuint picture_warp_program = 0;
 	GLuint hdr_warp_program = 0;
+	GLuint delayed_warp_program = 0;
+	GLuint delayed_picture_warp_program = 0;
+	GLuint delayed_hdr_warp_program = 0;
 	struct WarpUniforms {
 		GLint texmatrix = -1;
 		GLint disparity = -1;
@@ -289,6 +295,9 @@ private:
 	WarpUniforms warp_uniforms;
 	WarpUniforms picture_warp_uniforms;
 	WarpUniforms hdr_warp_uniforms;
+	WarpUniforms delayed_warp_uniforms;
+	WarpUniforms delayed_picture_warp_uniforms;
+	WarpUniforms delayed_hdr_warp_uniforms;
 	GLuint hdr_lut_texture = 0;
 	GLuint warp_fbo = 0;
 	bool debug_solid_color = false;
@@ -307,14 +316,28 @@ private:
 	bool ambient_sample_result_ready = false;
 
 	GLuint upsample_program = 0;
+	GLuint delayed_upsample_program = 0;
 	GLint u_upsample_texmatrix = -1, u_upsample_sigma = -1, u_upsample_sharp = -1;
 	GLint u_upsample_depth_guide = -1;
+	GLint u_delayed_upsample_texmatrix = -1, u_delayed_upsample_sigma = -1;
+	GLint u_delayed_upsample_sharp = -1, u_delayed_upsample_depth_guide = -1;
 	GLuint upsample_texture = 0, upsample_fbo = 0;
 	int upsample_width = 0, upsample_height = 0;
 
 	GLuint offset_program = 0;
 	GLint u_offset_disp = -1, u_offset_conv = -1;
 	GLuint offset_texture = 0, offset_fbo = 0;
+
+	static constexpr int DEPTH_SYNC_RING_SIZE = 3;
+	GLuint depth_sync_textures[DEPTH_SYNC_RING_SIZE]{};
+	GLuint depth_sync_fbo = 0;
+	GLuint depth_sync_copy_program = 0;
+	GLint u_depth_sync_copy_matrix = -1;
+	int depth_sync_write_index = 0;
+	int depth_sync_valid_count = 0;
+	bool depth_sync_failed = false;
+	bool pending_depth_sync_enabled = false;
+	int pending_depth_sync_delay_frames = 1;
 
 	bool srgb_write_control = false;
 	bool cylinder_supported = false;
@@ -440,8 +463,12 @@ private:
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
 			float p_convergence, bool p_occluding);
 	void run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
-			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix);
+			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix,
+			bool p_texture_2d = false);
 	void run_offset_search(float p_separation, float p_convergence);
+	bool ensure_depth_sync_ring();
+	uint32_t capture_depth_sync_frame(uint32_t p_oes_texture_id,
+			const float *p_tex_matrix);
 	void poll_ambient_sample();
 	bool issue_ambient_sample();
 #endif

@@ -7,6 +7,7 @@ var depth_target: ColorRect
 var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
 var depth_revision: int = 0
+var depth_source_age_ms: float = 0.0
 var enabled: bool = false
 var submit_timer: float = 0.0
 # Default submit/readback rate, 20Hz - matching Gilleece/moonlight-android-xr's
@@ -528,6 +529,7 @@ func process(delta: float):
 	if main.stream_backend.has_method("get_depth_map"):
 		var depth_bytes = main.stream_backend.get_depth_map()
 		if depth_bytes != null and depth_bytes.size() == model_width * model_height:
+			depth_source_age_ms = maxf(main.stream_backend.get_depth_last_age_ms(), 0.0)
 			var depth_image = Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, depth_bytes)
 			depth_texture.update(depth_image)
 			depth_revision += 1

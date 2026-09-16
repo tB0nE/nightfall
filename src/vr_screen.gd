@@ -502,7 +502,11 @@ func get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
 		return screen_forward
 	var cyl_center = global_position - screen_forward * _comp_cyl_radius
 	var to_hit = hit_point - cyl_center
-	to_hit.y = 0.0
+	# Cylinder curvature is horizontal in the screen's own basis. Removing the
+	# screen-up component keeps the tangent correct when a screen is pitched or
+	# rolled; clearing world Y produced a skewed normal away from screen centre.
+	var screen_up := global_transform.basis.y.normalized()
+	to_hit -= screen_up * to_hit.dot(screen_up)
 	if to_hit.length() < 0.001:
 		return screen_forward
 	return to_hit.normalized()

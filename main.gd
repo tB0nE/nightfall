@@ -299,6 +299,8 @@ var composition_controller_rays: CompositionControllerRays = CompositionControll
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
 var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
 var composition_screen_controls: CompositionScreenControls = CompositionScreenControls.new()
+var _xr_resume_refresh_attempts := 0
+var _xr_resume_refresh_wait_frames := 0
 
 # Temporary on-device A/B flags (2026-08-24) to isolate which of today's new
 # composition-space additions (laser/grab-bar/corners/background-equirect,
@@ -486,6 +488,7 @@ var _ui_3d_hz_cap_btn: Button
 var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
+var _ui_3d_depth_sync_btn: Button
 var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -943,7 +946,9 @@ func _update_cursor_layer():
 				primary_screen)
 		elif composition_pointers.has_primary():
 			composition_pointers.hide_all_embedded(screens)
-			var surf_normal = _get_cylinder_normal_at(hit_point) if on_screen else (xr_camera.global_position - hit_point).normalized()
+			var surf_normal = hovered_screen.get_cylinder_normal_at(hit_point) \
+				if on_screen and hovered_screen \
+				else (xr_camera.global_position - hit_point).normalized()
 			# The native renderer cannot embed the pointer into its video texture,
 			# so apply the AI-3D cursor calibration to this independent composition
 			# layer in world space. Convert the legacy branch's exact pixel offset
@@ -959,7 +964,7 @@ func _update_cursor_layer():
 				hit_point,
 				surf_normal,
 				xr_camera.global_position,
-				screen_mesh.global_position,
+				hovered_screen.global_position if hovered_screen else hit_point,
 				on_screen,
 				settings.cursor_mode,
 				native_ai_cursor_offset)
@@ -1010,7 +1015,8 @@ func _update_grab_bar_layers():
 		screens,
 		comp.in_use,
 		DEBUG_COMP_GRAB_BAR,
-		DEBUG_COMP_CORNERS)
+		DEBUG_COMP_CORNERS,
+		screen_shortcuts.revealed_screen if screen_shortcuts else null)
 
 func exit_app():
 	get_tree().quit()
@@ -1953,12 +1959,41 @@ func _init_xr(interface):
 	# registration is rejected for the lifetime of this launch.
 
 func _on_user_presence_changed(is_present: bool):
-	# Only the welcome screen depends on this - once actually streaming, the
-	# real video texture bindings are already refreshed by their own paths
-	# (_on_stream_started() et al) and re-running connect_welcome_texture()
-	# here would incorrectly stomp them back to the welcome viewport.
-	if is_present and comp and comp.available and not is_streaming:
-		comp.connect_welcome_texture()
+	if not is_present:
+		return
+	_schedule_xr_surface_refresh("headset present")
+
+func _schedule_xr_surface_refresh(reason: String) -> void:
+	# Activity resume and user-presence signals can arrive before Godot has
+	# recreated its Android EGL surface and composition-layer swapchains. Retry
+	# across several rendered frames instead of betting the screen on one early
+	# callback. Menu and keyboard use independent layers, which is why they can
+	# survive while only the main screen disappears.
+	_xr_resume_refresh_attempts = 3
+	_xr_resume_refresh_wait_frames = 1
+	_log("[XR] Scheduled composition refresh: %s" % reason)
+
+func _process_xr_surface_refresh() -> void:
+	if _xr_resume_refresh_attempts <= 0:
+		return
+	_xr_resume_refresh_wait_frames -= 1
+	if _xr_resume_refresh_wait_frames > 0:
+		return
+	_xr_resume_refresh_attempts -= 1
+	_xr_resume_refresh_wait_frames = 4
+	if is_streaming:
+		if native_xr_renderer and native_xr_renderer.active:
+			native_xr_renderer.request_redraw()
+		else:
+			_bind_yuv_textures()
+	else:
+		# Rebind the welcome texture and reassert the mono layer after Godot has
+		# rebuilt its viewport swapchain following Android activity resume.
+		if comp and comp.available:
+			comp.connect_welcome_texture()
+			if comp.in_use:
+				comp.switch_to_comp_layer()
+	_log("[XR] Composition refresh attempt completed (%d remaining)" % _xr_resume_refresh_attempts)
 
 func _init_backgrounds_and_comp_layer():
 	_create_backgrounds()
@@ -2096,6 +2131,7 @@ func _process(delta):
 		right_click_cooldown -= delta
 
 	_process_input_release()
+	_process_xr_surface_refresh()
 
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
@@ -2201,9 +2237,14 @@ func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 		return true
 	return false
 
-const HAND_REST_THRESHOLD := 2.0
+const HAND_REST_THRESHOLD := 4.0
 var right_hand_resting: bool = false
 var left_hand_resting: bool = false
+
+func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
+	if not raycast or not raycast.enabled or not raycast.is_colliding():
+		return false
+	return PointerTarget.resolve(raycast.get_collider()).role == &"screen"
 
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
@@ -2218,8 +2259,13 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
-	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
-	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
+	# Keep menu, keyboard, grab-bar, and shortcut pointers available regardless
+	# of controller stillness. Once a ray has gone to rest over stream content,
+	# preserve that state until physical controller activity wakes it again.
+	var right_can_rest := right_hand_resting or _raycast_points_at_stream(hand_raycast)
+	var left_can_rest := left_hand_resting or _raycast_points_at_stream(left_hand_raycast)
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD and right_can_rest)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD and left_can_rest)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
 	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
@@ -2522,6 +2568,8 @@ func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
 		video_presentation.shutdown()
+	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
 	input_handler.handle_input(event)
