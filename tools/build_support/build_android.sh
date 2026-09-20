@@ -32,6 +32,11 @@ if [ "$PRESET" = "NightfallRelease" ]; then
   STREAM_VARIANT="release"
 fi
 STREAM_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libnightfall-stream.android.template_${STREAM_VARIANT}.arm64.so"
+STREAM_DESCRIPTOR="$SCRIPT_DIR/addons/nightfall-stream/bin/nightfall-stream.gdextension"
+if [ ! -f "$STREAM_DESCRIPTOR" ]; then
+  echo "Error: Android streaming GDExtension descriptor not found at $STREAM_DESCRIPTOR"
+  exit 1
+fi
 if [ ! -f "$STREAM_LIBRARY" ]; then
   echo "Error: Android streaming GDExtension not found at $STREAM_LIBRARY"
   echo "Build it first using the Android instructions in BUILD.md."
@@ -165,6 +170,10 @@ JAVA_HOME="$JAVA_HOME" "$GODOT" --headless --path "$SCRIPT_DIR" $EXPORT_FLAG "$P
 
 if [ ! -f "$OUTPUT" ]; then
   echo "Error: $OUTPUT not created"
+  exit 1
+fi
+if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libnightfall-stream.android.template_release.arm64.so" >/dev/null; then
+  echo "Error: $OUTPUT is missing the Android streaming GDExtension library" >&2
   exit 1
 fi
 
