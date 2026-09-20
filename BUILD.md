@@ -12,6 +12,9 @@
 ## 0. Install Godot Plugins
 
 Open the project in the Godot editor and install the **GodotOpenXRVendors** plugin from the Asset Library (or enable it in Project → Install Plugins). This provides Meta Quest OpenXR vendor extensions.
+The Android export requires the plugin descriptor, matching arm64 native library,
+and Meta AAR under `addons/godotopenxrvendors/`. The build now fails if any of
+these are missing; an APK without them starts but cannot offer passthrough.
 
 ## 1. Build the GDExtension
 
