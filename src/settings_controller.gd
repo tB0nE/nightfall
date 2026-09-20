@@ -651,6 +651,12 @@ func get_depth_backend_label() -> String:
 func refresh_depth_backend_status(notify_transition: bool = false):
 	if not main.stream_backend:
 		return
+	# Host settings are restored on the welcome screen, and SBS can override
+	# a saved AI-3D selection. Neither state runs depth inference, so a GPU
+	# warning from their placeholder configuration must not reach the UI.
+	if not main.is_streaming or get_stereo_mode() < 3:
+		_last_backend_status = ""
+		return
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
@@ -786,12 +792,13 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var model_idx = get_depth_model_index() if mode >= 3 else 0
+	var depth_active = mode >= 3 and main.is_streaming
+	var model_idx = get_depth_model_index() if depth_active else 0
 	if OS.get_name() == "Android":
 		var java_class := _android_depth_class()
 		if java_class:
 			java_class.setDepthGpuApi(get_ai_3d_gpu_api_effective())
-	main.stream_backend.configure_depth(model_idx, get_depth_backend_index())
+	main.stream_backend.configure_depth(model_idx, get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU)
 	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	refresh_depth_backend_status(true)
 	# sync_model_size() (2026-08-27 - moved BEFORE the texture-capture block
