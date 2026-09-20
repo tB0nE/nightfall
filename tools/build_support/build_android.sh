@@ -66,11 +66,12 @@ if [ ! -f "$PATCHED_GODOT_RUNTIME" ]; then
 fi
 
 if [ "$PRESET" = "NightfallRelease" ]; then
-  if [ ! -f .env ]; then
-    echo "Error: .env not found (copy .env.example and fill in keystore credentials)"
+  RELEASE_ENV_FILE="${NIGHTFALL_ENV_FILE:-.env}"
+  if [ ! -f "$RELEASE_ENV_FILE" ]; then
+    echo "Error: release env file not found at $RELEASE_ENV_FILE"
     exit 1
   fi
-  source .env
+  source "$RELEASE_ENV_FILE"
   if [ -z "${NIGHTFALL_KEYSTORE_PATH:-}" ] || [ -z "${NIGHTFALL_KEYSTORE_USER:-}" ] || [ -z "${NIGHTFALL_KEYSTORE_PASSWORD:-}" ]; then
     echo "Error: .env missing NIGHTFALL_KEYSTORE_PATH, NIGHTFALL_KEYSTORE_USER, or NIGHTFALL_KEYSTORE_PASSWORD"
     exit 1

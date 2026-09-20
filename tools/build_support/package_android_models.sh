@@ -10,17 +10,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ASSET_DIR="$1"
 ZIPDEPTH_384_MODEL="${NIGHTFALL_ZIPDEPTH_384_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-gpu.tflite}"
+ZIPDEPTH_256_MODEL="${NIGHTFALL_ZIPDEPTH_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-gpu.tflite}"
 
 if [[ ! -f "$ZIPDEPTH_384_MODEL" ]]; then
   echo "Error: ZipDepth-384 model not found at $ZIPDEPTH_384_MODEL" >&2
+  exit 1
+fi
+if [[ ! -f "$ZIPDEPTH_256_MODEL" ]]; then
+  echo "Error: ZipDepth-256 model not found at $ZIPDEPTH_256_MODEL" >&2
   exit 1
 fi
 
 mkdir -p "$ASSET_DIR"
 echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
 cp "$ZIPDEPTH_384_MODEL" "$ASSET_DIR/zipdepth-base-384-gpu.tflite"
+echo "Bundling ZipDepth-256 model: $ZIPDEPTH_256_MODEL"
+cp "$ZIPDEPTH_256_MODEL" "$ASSET_DIR/zipdepth-base-256-gpu.tflite"
 
-# Android intentionally ships only ZipDepth-384-GPU. The Java loader still
+# Android intentionally ships only these two ZipDepth GPU models. The Java loader still
 # soft-fails the models below so they can be re-enabled after platform policy
 # is unlocked and performance is re-benchmarked. Uncomment only the required
 # copies; see models/README.md for provenance and compatibility details.

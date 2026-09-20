@@ -479,6 +479,7 @@ var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_gpu_api_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button
@@ -1457,7 +1458,7 @@ func _init_android_setup():
 	# load_host_state()'s early return when the host has no saved section
 	# yet), so a fresh Android install can't boot pointed at settings.host.ai_3d_model's
 	# compiled-in default (MiDaS-256-GPU, not bundled there).
-	settings_controller.enforce_ai3d_platform_lock()
+	settings_controller.enforce_ai3d_platform_lock(true)
 	if not [12, 15, 20, 30, 40].has(settings.host.ai_3d_hz_cap):
 		settings.host.ai_3d_hz_cap = 20
 	if not [50, 75, 100, 125, 150].has(settings.host.ai_3d_separation_pct):
@@ -2545,6 +2546,10 @@ func _process_performance_overlay(delta: float):
 	var native_warp_ms := video_presentation.get_warp_gpu_ms()
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+		if OS.get_name() == "Android":
+			lines.append("Depth: %s / %s" % [
+				"ZipDepth-256" if settings_controller.get_depth_model_index() == 18 else "ZipDepth-384",
+				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
 		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
@@ -2731,9 +2736,9 @@ func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	if strength < 0.01:
 		return
 	if right_hand:
-		right_hand.trigger_haptic_pulse("haptic", strength, 0.05)
+		right_hand.trigger_haptic_pulse("haptic", 0.0, strength, 0.05, 0.0)
 	if left_hand:
-		left_hand.trigger_haptic_pulse("haptic", strength, 0.05)
+		left_hand.trigger_haptic_pulse("haptic", 0.0, strength, 0.05, 0.0)
 
 func _debug_log_cyl(tag: String):
 	var mesh_pos = screen_mesh.global_position if screen_mesh else Vector3.ZERO

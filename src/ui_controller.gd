@@ -198,6 +198,9 @@ func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_model()
 
+func on_ai_3d_gpu_api_toggled():
+	main.settings_controller.cycle_ai_3d_gpu_api()
+
 # Main-page On/Off toggle (2026-08-28) - was the old Off/Auto/Fast/Standard
 # cycle; that tier selection moved to on_ai_3d_mode_toggled() below.
 func on_ai_3d_speed_toggled():
@@ -263,8 +266,10 @@ func update_stereo_shader():
 	# Under Auto (ai_3d_speed==1) main.settings.host.ai_3d_model is frozen/irrelevant - show
 	# whichever model AUTO_TABLE actually picked instead (see
 	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
-	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
+	var model_idx = main.settings_controller.get_auto_selection().model_idx if OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
 	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
+	if main._ui_3d_gpu_api_btn:
+		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
@@ -283,12 +288,8 @@ func update_3d_btn_state():
 	if main._ui_3d_speed_btn:
 		main._ui_3d_speed_btn.disabled = disabled
 		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
-	# Type/Model/3D Mode are hidden entirely on Android (see
-	# settings_controller.gd's ai3d_options_locked() comment) - Standard/GPU/
-	# ZipDepth-384-GPU are enforced at the state level regardless of these
-	# buttons, but hiding (paired with .disabled, matching 3D Debug's own
-	# hide-and-disable pattern below) keeps a locked control from offering a
-	# choice that does nothing.
+	# Android retains the Standard/GPU locks, but exposes its production
+	# ZipDepth Model and GPU API selectors.
 	var locked = main.settings_controller.ai3d_options_locked()
 	if _tab_ai3d:
 		var ai3d_row1 = _tab_ai3d.get_node_or_null("Ai3dRow1")
@@ -308,7 +309,7 @@ func update_3d_btn_state():
 	# Model and Hz Cap are meaningless whenever AI-3D is off or Auto is
 	# choosing them. Android's platform lock applies only to Model: Standard is
 	# enforced there, but its explicit Hz Cap remains user-adjustable.
-	var model_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1 or locked
+	var model_disabled = disabled or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1)
 	var hz_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1
 	# Type is NOT included above (2026-08-30) - Auto was always meant to let
 	# you pick GPU or CPU yourself (GPU as the default), not force GPU
@@ -323,11 +324,15 @@ func update_3d_btn_state():
 		main._ui_3d_type_btn.disabled = type_disabled
 		main._ui_3d_type_btn.modulate.a = 0.3 if type_disabled else 1.0
 	if main._ui_3d_btn:
-		main._ui_3d_btn.visible = not locked
+		main._ui_3d_btn.visible = not locked or OS.get_name() == "Android"
 		main._ui_3d_btn.disabled = model_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if model_disabled else 1.0
+	if main._ui_3d_gpu_api_btn:
+		var api_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.is_android_ai3d_auto()
+		main._ui_3d_gpu_api_btn.disabled = api_disabled
+		main._ui_3d_gpu_api_btn.modulate.a = 0.3 if api_disabled else 1.0
 	if main._ui_3d_priority_btn:
-		var priority_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available()
+		var priority_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available() or (OS.get_name() == "Android" and main.settings_controller.get_ai_3d_gpu_api_effective() != 0)
 		main._ui_3d_priority_btn.disabled = priority_disabled
 		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
 	if main._ui_3d_hz_cap_btn:
@@ -889,6 +894,10 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_btn, "Choose the depth-estimation model.")
 	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
+	if OS.get_name() == "Android":
+		main._ui_3d_gpu_api_btn = make_option_btn("Backend", "OpenCL")
+		_set_button_tooltip(main._ui_3d_gpu_api_btn, "Choose OpenCL or OpenGL. Auto selects the backend for you.")
+		ai3d_row1.add_child(main._ui_3d_gpu_api_btn)
 	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
@@ -938,11 +947,12 @@ func build_ui():
 			"Progressively enable the AI 3D warp stages for troubleshooting.")
 		ai3d_row2.add_child(main._ui_3d_process_debug_btn)
 	if ai3d_options_locked:
-		# Android locks Mode/Type/Model, leaving two controls for row 1 and
-		# three for row 2. Keep the layout at four buttons or fewer per row.
+		# Android: Model, Backend, GPU Priority, Hz Cap / four controls below.
 		ai3d_row2.remove_child(main._ui_3d_hz_cap_btn)
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
+		ai3d_row1.remove_child(main._ui_3d_depth_sync_btn)
+		ai3d_row2.add_child(main._ui_3d_depth_sync_btn)
 
 	_tab_picture = _build_menu_tab(
 		vbox,
@@ -1083,6 +1093,8 @@ func build_ui():
 	main._ui_3d_mode_btn.button_down.connect(func(): on_ai_3d_mode_toggled())
 	main._ui_3d_type_btn.button_down.connect(func(): on_ai_3d_type_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	if main._ui_3d_gpu_api_btn:
+		main._ui_3d_gpu_api_btn.button_down.connect(func(): on_ai_3d_gpu_api_toggled())
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())

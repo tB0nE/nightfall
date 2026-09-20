@@ -183,6 +183,50 @@ def verify_equivalence(
         raise RuntimeError("GPU-safe graph rewrite changed ZipDepth output")
 
 
+def expand_unaligned_grouped_convolution(model: nn.Module) -> None:
+    """Avoid LiteRT's OpenGL-only grouped-convolution split shader gap.
+
+    The hybrid checkpoint has one 1x1 grouped convolution with four groups,
+    six input channels per group and eight output channels per group. LiteRT
+    rewrites it to SPLIT -> four convolutions -> CONCAT because six is not a
+    multiple of four, but its OpenGL backend has no SPLIT shader. An ordinary
+    convolution with block-diagonal weights is mathematically identical and
+    stays a single supported TFLite CONV_2D operation.
+    """
+    expanded = 0
+    for name, module in list(model.named_modules()):
+        if not isinstance(module, nn.Conv2d) or module.groups <= 1:
+            continue
+        if module.groups == module.in_channels:  # Native depthwise path.
+            continue
+        input_per_group = module.in_channels // module.groups
+        output_per_group = module.out_channels // module.groups
+        if input_per_group % 4 == 0 and output_per_group % 4 == 0:
+            continue
+
+        dense = nn.Conv2d(
+            module.in_channels, module.out_channels, module.kernel_size,
+            stride=module.stride, padding=module.padding,
+            dilation=module.dilation, groups=1, bias=module.bias is not None,
+            padding_mode=module.padding_mode,
+        ).to(device=module.weight.device, dtype=module.weight.dtype)
+        with torch.no_grad():
+            dense.weight.zero_()
+            for group in range(module.groups):
+                out_slice = slice(group * output_per_group, (group + 1) * output_per_group)
+                in_slice = slice(group * input_per_group, (group + 1) * input_per_group)
+                dense.weight[out_slice, in_slice].copy_(module.weight[out_slice])
+            if module.bias is not None:
+                dense.bias.copy_(module.bias)
+        parent_name, _, child_name = name.rpartition(".")
+        parent = model.get_submodule(parent_name) if parent_name else model
+        parent._modules[child_name] = dense
+        expanded += 1
+        print(f"Expanded unaligned grouped convolution: {name}")
+    if expanded != 1:
+        raise RuntimeError(f"Expected one unaligned grouped convolution, found {expanded}")
+
+
 def bypass_npu_upsampling_head(model: nn.Module) -> None:
     """Replace the learned nearest/bilinear blend with its bilinear branch."""
     upsampler = model.decoder.convex_up
@@ -526,6 +570,7 @@ def main() -> None:
     candidate = copy.deepcopy(reference)
     patch_export_graph(reference, height, width, gpu_safe=False)
     patch_export_graph(candidate, height, width, gpu_safe=True)
+    expand_unaligned_grouped_convolution(candidate)
     verify_equivalence(reference, candidate, height, width)
     if args.head_mode == "standard-mobile":
         rewrite_standard_upsampling_head(candidate)

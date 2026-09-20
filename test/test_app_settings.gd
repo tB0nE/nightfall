@@ -141,6 +141,7 @@ func _test_host_persistence_round_trip() -> void:
 	source.double_h = true
 	source.sbs_mode = 2
 	source.ai_3d_model = 4
+	source.ai_3d_gpu_api = 1
 	source.ai_3d_speed = 3
 	source.ai_3d_debug = 2
 	source.ai_3d_last_mode = 3
@@ -167,6 +168,7 @@ func _test_host_persistence_round_trip() -> void:
 	assert(loaded.double_h)
 	assert(loaded.sbs_mode == 2)
 	assert(loaded.ai_3d_model == 4)
+	assert(loaded.ai_3d_gpu_api == 1)
 	assert(loaded.ai_3d_speed == 3)
 	assert(loaded.ai_3d_debug == 2)
 	assert(loaded.ai_3d_last_mode == 3)

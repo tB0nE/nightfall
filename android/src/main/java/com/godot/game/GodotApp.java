@@ -112,6 +112,16 @@ public class GodotApp extends GodotActivity {
 		}
 	}
 
+	public static void setDepthGpuApi(int api) {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			depthEstimator.setGpuApi(api);
+		}
+	}
+
+	public static int getDepthGpuApi() {
+		return depthEstimator != null ? depthEstimator.getGpuApi() : 0;
+	}
+
 	public static void setDepthGpuPriority(int priority) {
 		if (depthEstimator != null && depthEstimator.isInitialized()) {
 			depthEstimator.setGpuPriority(priority);
