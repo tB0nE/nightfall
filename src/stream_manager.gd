@@ -314,6 +314,10 @@ func _on_v2_launch_response(response: Dictionary):
 	main.ui_controller.update_host_cursor_btn_state()
 
 	var ip = response.get("ip", "")
+	if ip.is_empty():
+		main._log("[STREAM] Launch response had no reconnectable host address")
+		main.restore_after_failed_connect("Host address missing from launch response")
+		return
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %.1fMbps)" % [w, h, fps, float(br) / 1000.0])
 

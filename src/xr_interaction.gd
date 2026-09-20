@@ -43,6 +43,54 @@ const DOUBLE_CLICK_CHORD_MSEC := 80
 func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
+func cancel_transient_interactions(reason: String = "") -> void:
+	# Tracking poses are discontinuous across headset removal or app pause.
+	# A saved drag baseline would move a screen when the next pose arrives.
+	if main.is_streaming and main.stream_backend:
+		if main.was_clicking and _pinch_start_screen != null:
+			main.stream_backend.send_mouse_button_event(8, 1)
+		if main.was_right_clicking:
+			main.stream_backend.send_mouse_button_event(8, 3)
+	if _other_hand_clicking:
+		_end_secondary_press(_secondary_ui_pixel)
+	var moved_screen = main.grabbed_node is VRScreen or main.grabbed_corner_screen != null
+	if is_instance_valid(main.grabbed_bar) and is_instance_valid(main.grabbed_node):
+		_set_grab_bar_color(main.grabbed_bar, _bar_base_color(main.grabbed_node), 0.01)
+	if is_instance_valid(main.grabbed_corner_screen):
+		if main.grabbed_corner_idx >= 0 and main.grabbed_corner_idx < main.grabbed_corner_screen.corner_handles.size():
+			_set_corner_color(main.grabbed_corner_screen.corner_handles[main.grabbed_corner_idx], Color.WHITE, 0.05)
+		if _corner_resize_started:
+			main.grabbed_corner_screen.end_corner_resize()
+	main.grabbed_node = null
+	main.grabbed_bar = null
+	main.grabbed_corner_idx = -1
+	main.grabbed_corner_screen = null
+	main.grab_start_hand_basis = Basis()
+	main.grab_start_node_basis = Basis()
+	main.grab_start_node_euler = Vector3.ZERO
+	main.grab_group_start_transforms.clear()
+	main.grab_snap_candidate = Vector2i(-1, -1)
+	main.was_clicking = false
+	main.was_right_clicking = false
+	_pinch_start_screen = null
+	_pinch_start_time = 0.0
+	_pinch_start_pos = Vector2.ZERO
+	_click_pending_release = false
+	_trigger_was_pressed = false
+	_grip_was_pressed = false
+	_trigger_press_msec = -1
+	_grip_press_msec = -1
+	_double_click_chord_active = false
+	_corner_resize_started = false
+	_screen_shortcut_press_active = false
+	_secondary_press_viewport = null
+	_secondary_press_was_keyboard = false
+	pointer_on_ui = false
+	if moved_screen and main.state_manager:
+		main.state_manager.save_state()
+	if not reason.is_empty():
+		main._log("[INPUT] Cancelled transient interactions: %s" % reason)
+
 func _init(owner: Node3D):
 	main = owner
 

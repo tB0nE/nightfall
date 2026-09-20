@@ -1966,7 +1966,11 @@ func _init_xr(interface):
 
 func _on_user_presence_changed(is_present: bool):
 	if not is_present:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("headset removed")
 		return
+	if xr_interaction:
+		xr_interaction.cancel_transient_interactions("headset present")
 	_schedule_xr_surface_refresh("headset present")
 
 func _schedule_xr_surface_refresh(reason: String) -> void:
@@ -2578,7 +2582,12 @@ func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
 		video_presentation.shutdown()
+	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("application paused")
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("application resumed")
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
