@@ -6,6 +6,10 @@ export_presets.godot
 
 # Build artifacts
 bin/
+# Keep the streaming extension manifest in Git; its compiled binaries stay ignored.
+!addons/nightfall-stream/bin/
+addons/nightfall-stream/bin/*
+!addons/nightfall-stream/bin/nightfall-stream.gdextension
 build/
 *.so
 *.dylib

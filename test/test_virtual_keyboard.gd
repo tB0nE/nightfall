@@ -11,6 +11,8 @@ func _test_shortcut_row() -> void:
 	var shortcut_row: Array = keyboard._KEY_ROWS[0]
 	assert(shortcut_row.size() == 11)
 	assert(shortcut_row[0]["k"] == VirtualKeyboard.SHORTCUT_COPY)
+	assert(shortcut_row[4]["k"] == VirtualKeyboard.SHORTCUT_INSERT)
+	assert(shortcut_row[4]["l"] == "Ins")
 	assert(shortcut_row[-1]["k"] == VirtualKeyboard.SHORTCUT_SECURITY)
 	var shortcut_units := 0.0
 	for key_data in shortcut_row:
@@ -27,6 +29,7 @@ func _test_shortcut_row() -> void:
 
 func _test_shortcut_chords() -> void:
 	assert(VirtualKeyboard.SHORTCUT_CHORDS[VirtualKeyboard.SHORTCUT_COPY] == [KEY_CTRL, KEY_C])
+	assert(VirtualKeyboard.SHORTCUT_CHORDS[VirtualKeyboard.SHORTCUT_INSERT] == [KEY_INSERT])
 	assert(VirtualKeyboard.SHORTCUT_CHORDS[VirtualKeyboard.SHORTCUT_ALT_TAB] == [KEY_ALT, KEY_TAB])
 	assert(VirtualKeyboard.SHORTCUT_CHORDS[VirtualKeyboard.SHORTCUT_CLOSE_WINDOW] == [KEY_ALT, KEY_F4])
 	assert(VirtualKeyboard.SHORTCUT_CHORDS[VirtualKeyboard.SHORTCUT_SECURITY] == [KEY_CTRL, KEY_ALT, KEY_DELETE])

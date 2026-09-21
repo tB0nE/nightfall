@@ -53,6 +53,11 @@ func _test_path_application() -> void:
 	native.eligible = true
 	assert(presentation.apply_mode(6, true) == VideoPresentation.Path.NATIVE)
 	assert(legacy.calls.is_empty())
+	# A saved SBS preference must never try to present the welcome UI through
+	# the native video path or leave an old stereo layer active before connect.
+	assert(presentation.apply_mode(1, false) == VideoPresentation.Path.LEGACY_MONO)
+	assert(legacy.calls == ["mono"])
+	legacy.calls.clear()
 	native.eligible = false
 	legacy.available = false
 	legacy.in_use = true

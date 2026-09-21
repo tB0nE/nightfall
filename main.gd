@@ -464,6 +464,8 @@ var _log_session_rotated: bool = false
 var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
+const UI_TOOLTIP_STRIP_PX := 102
+const UI_TOOLTIP_STRIP_METERS := 0.102
 var _ui_status_label: Label
 var _ui_pt_btn: Button
 var _ui_bg_btn: Button
@@ -479,6 +481,7 @@ var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
+var _ui_3d_gpu_api_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button
@@ -981,8 +984,6 @@ func _update_cursor_layer():
 func _sync_composition_panels():
 	if not comp.in_use:
 		return
-	if ui_controller:
-		ui_controller.sync_tooltip_surface()
 	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
 	match keyboard_action:
 		CompositionPanelLayers.KeyboardMaterialAction.MAKE_TRANSPARENT:
@@ -1012,6 +1013,8 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
 func _update_grab_bar_layers():
+	# The four corner visuals share one layer, leaving room for menu/keyboard
+	# while keeping their resize targets available after headset resume.
 	composition_screen_controls.update(
 		screens,
 		comp.in_use,
@@ -1457,7 +1460,7 @@ func _init_android_setup():
 	# load_host_state()'s early return when the host has no saved section
 	# yet), so a fresh Android install can't boot pointed at settings.host.ai_3d_model's
 	# compiled-in default (MiDaS-256-GPU, not bundled there).
-	settings_controller.enforce_ai3d_platform_lock()
+	settings_controller.enforce_ai3d_platform_lock(true)
 	if not [12, 15, 20, 30, 40].has(settings.host.ai_3d_hz_cap):
 		settings.host.ai_3d_hz_cap = 20
 	if not [50, 75, 100, 125, 150].has(settings.host.ai_3d_separation_pct):
@@ -1965,7 +1968,11 @@ func _init_xr(interface):
 
 func _on_user_presence_changed(is_present: bool):
 	if not is_present:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("headset removed")
 		return
+	if xr_interaction:
+		xr_interaction.cancel_transient_interactions("headset present")
 	_schedule_xr_surface_refresh("headset present")
 
 func _schedule_xr_surface_refresh(reason: String) -> void:
@@ -2477,12 +2484,8 @@ func toggle_performance_overlay():
 	telemetry.reset_overlay()
 	if stream_backend:
 		stream_backend.take_performance_stats()
-	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
-	# native renderer's own composited overlay quad both sample the same
-	# stats_viewport texture through independent, differently-positioned
-	# display paths - showing both at once (observed 2026-09-04 as one flat
-	# + one bent-along-the-curved-screen overlay) means whichever path isn't
-	# actually presenting is still drawing a stale/mispositioned copy.
+	# Only the active presentation path should draw the shared stats texture.
+	# The legacy path uses TextureRects; native blends it into its video output.
 	var native_active := video_presentation.is_native_active()
 	if comp:
 		comp.set_stats_visible(settings.performance_overlay_enabled and is_streaming and not native_active)
@@ -2545,6 +2548,10 @@ func _process_performance_overlay(delta: float):
 	var native_warp_ms := video_presentation.get_warp_gpu_ms()
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+		if OS.get_name() == "Android":
+			lines.append("Depth: %s / %s" % [
+				"ZipDepth-256" if settings_controller.get_depth_model_index() == 18 else "ZipDepth-384",
+				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
 		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
@@ -2573,7 +2580,12 @@ func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		state_manager.save_state()
 		video_presentation.shutdown()
+	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("application paused")
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if xr_interaction:
+			xr_interaction.cancel_transient_interactions("application resumed")
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
@@ -2583,10 +2595,17 @@ func _input(event):
 
 func _toggle_ui():
 	ui_visible = not ui_visible
+	_log("[UI] Menu %s (streaming=%s native=%s comp=%s ambient=%s)" % [
+		"opened" if ui_visible else "closed",
+		str(is_streaming),
+		str(video_presentation != null and video_presentation.is_native_active()),
+		str(comp != null and comp.in_use),
+		ambient_mode_labels[clampi(settings.ambient_mode, 0, ambient_mode_labels.size() - 1)],
+	])
 	_set_viewport_active(ui_viewport, ui_visible)
 	if ui_visible:
 		if state_manager:
-			state_manager.sync_ui_to_settings()
+			state_manager.sync_ui_to_settings(false)
 		_set_ui_position()
 		if comp.in_use and composition_panels.has_ui():
 			composition_panels.show_ui(ui_panel_3d)
@@ -2597,12 +2616,6 @@ func _toggle_ui():
 					ui_material.albedo_color = Color(1, 1, 1, 0.001)
 			else:
 				ui_panel_3d.visible = false
-			if settings.bezel_enabled:
-				comp_bezel_rect.color = Color(0, 0, 0, 0)
-				if comp_bezel_rect_left:
-					comp_bezel_rect_left.color = Color(0, 0, 0, 0)
-				if comp_bezel_rect_right:
-					comp_bezel_rect_right.color = Color(0, 0, 0, 0)
 		else:
 			ui_panel_3d.visible = true
 			var ui_material = ui_panel_3d.material_override as StandardMaterial3D
@@ -2623,12 +2636,6 @@ func _toggle_ui():
 		var area = ui_panel_3d.get_node_or_null("Area3D")
 		if area:
 			area.process_mode = Node.PROCESS_MODE_DISABLED
-		if comp.in_use and settings.bezel_enabled:
-			comp_bezel_rect.color = Color(0, 0, 0, 1)
-			if comp_bezel_rect_left:
-				comp_bezel_rect_left.color = Color(0, 0, 0, 1)
-			if comp_bezel_rect_right:
-				comp_bezel_rect_right.color = Color(0, 0, 0, 1)
 	ui_controller.set_disconnect_visible(is_streaming)
 
 var _ui_saved_offset: Vector3 = Vector3.ZERO
@@ -2731,9 +2738,9 @@ func _trigger_haptic(_controller: int, low_freq: int, high_freq: int):
 	if strength < 0.01:
 		return
 	if right_hand:
-		right_hand.trigger_haptic_pulse("haptic", strength, 0.05)
+		right_hand.trigger_haptic_pulse("haptic", 0.0, strength, 0.05, 0.0)
 	if left_hand:
-		left_hand.trigger_haptic_pulse("haptic", strength, 0.05)
+		left_hand.trigger_haptic_pulse("haptic", 0.0, strength, 0.05, 0.0)
 
 func _debug_log_cyl(tag: String):
 	var mesh_pos = screen_mesh.global_position if screen_mesh else Vector3.ZERO

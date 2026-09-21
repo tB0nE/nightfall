@@ -261,13 +261,15 @@ public class DepthEstimator {
     // benchmark table is measured there), and unlike MiDaS-192 (an
     // independently trained/calibrated 192px model, not a resize of the
     // 256px one) ZipDepth has no dedicated lower-resolution training - 192/
-    // 256 are just 384's weights looking at a smaller image outside their
-    // trained distribution. MiDaS-192 also reuses its larger model's weights
+    // 256 use 384's weights at a smaller input size outside their trained
+    // distribution. MiDaS-192 also reuses its larger model's weights
     // (with separate int8 calibration), but happens to tolerate that lower
     // inference resolution much better. Confirmed via tools/model_tester/: 384 looks
-    // close to DA-V2 quality, but 192/256 degraded enough to not be worth
-    // offering as real choices (192 especially).
+    // close to DA-V2 quality; 256 trades some detail for Quest 2 OpenGL
+    // compatibility. The exporter expands one grouped convolution so the
+    // OpenGL delegate can run both bundled ZipDepth models.
     private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_256_GPU = "zipdepth-base-256-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
     // TFLite ops. This w8a32 export keeps float32 activations and I/O while
@@ -275,6 +277,7 @@ public class DepthEstimator {
     // the severe degradation seen when ZipDepth activations are also int8.
     private static final String MODEL_ZIPDEPTH_384_CPU = "zipdepth-base-384-cpu.tflite";
     private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
+    private static final int ZIPDEPTH_256_GPU_INPUT_SIZE = 256;
     private static final String MODEL_ZIPDEPTH_512X288_GPU = "zipdepth-base-512x288-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_672X384_GPU = "zipdepth-base-672x384-gpu.tflite";
 
@@ -377,6 +380,7 @@ public class DepthEstimator {
     private volatile int effectiveBackend = BACKEND_CPU;
     private volatile String backendStatus = "";
     private volatile int gpuPriority = GPU_PRIORITY_STREAM;
+    private volatile int gpuApi = 0; // 0=Qualcomm OpenCL, 1=LiteRT OpenGL
     private volatile boolean gpuReconfigurePending = false;
 
     private static final class PendingFrame {
@@ -588,6 +592,8 @@ public class DepthEstimator {
             // instead of dragging behind them.
             gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
                     0.02f, 0.1f));
+            gpuVariants.put(18, new GpuVariant("ZipDepth-256-GPU", MODEL_ZIPDEPTH_256_GPU, ZIPDEPTH_256_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
             gpuVariants.put(15, new GpuVariant("ZipDepth-512x288-GPU", MODEL_ZIPDEPTH_512X288_GPU, 512, 288,
                     0.02f, 0.1f));
             gpuVariants.put(16, new GpuVariant("ZipDepth-672x384-GPU", MODEL_ZIPDEPTH_672X384_GPU, 672, 384,
@@ -734,6 +740,42 @@ public class DepthEstimator {
         });
     }
 
+    public int getGpuApi() {
+        return gpuApi;
+    }
+
+    public void setGpuApi(int api) {
+        if (api != 0 && api != 1) return;
+        synchronized (this) {
+            if (gpuApi == api) return;
+            gpuApi = api;
+            gpuReconfigurePending = true;
+            activeGpuVariant = null;
+            latestGpuFrame.set(null);
+            latestDepthMap.set(null);
+            nextDispatchNs = 0;
+        }
+        // All interpreter/delegate operations remain on the one inference
+        // thread. A queued inference finishes before this reset executes.
+        executor.execute(() -> {
+            synchronized (DepthEstimator.this) {
+                for (GpuVariant variant : gpuVariants.values()) releaseGpuVariant(variant);
+                int modelIndex = normalizeModelIndex(requestedModelIndex);
+                GpuVariant variant = gpuVariants.get(modelIndex);
+                activeModelIndex = modelIndex;
+                activeGpuVariant = requestedBackend != BACKEND_CPU ? variant : null;
+                effectiveBackend = activeGpuVariant != null ? BACKEND_GPU : BACKEND_CPU;
+                backendStatus = "";
+                smoothedDepthFloat = null;
+                rangeValid = false;
+                lastPostProcessTimeNs = 0;
+                telemetryWindowStartNs = 0;
+                gpuReconfigurePending = false;
+                Log.i(TAG, "Depth GPU API switched in-app to " + (gpuApi == 0 ? "OpenCL" : "OpenGL"));
+            }
+        });
+    }
+
     private static String gpuPriorityName(int priority) {
         return priority == GPU_PRIORITY_DEFAULT ? "Default" : "Stream";
     }
@@ -815,6 +857,7 @@ public class DepthEstimator {
         Log.i(TAG, "Depth configured: model=" + modelNameFor(modelIndex)
                 + " requested=" + backendName(requestedBackend)
                 + " effective=" + backendName(effectiveBackend)
+                + (useGpu ? " gpuApi=" + (gpuApi == 0 ? "OpenCL" : "OpenGL") : "")
                 + (backendStatus.isEmpty() ? "" : " status=" + backendStatus));
     }
 
@@ -846,7 +889,7 @@ public class DepthEstimator {
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -916,6 +959,7 @@ public class DepthEstimator {
             case 10: return "MiDaS-192";
             case 11: return "Depth Anything V2-196";
             case 14: return "ZipDepth-384";
+            case 18: return "ZipDepth-256";
             case 15: return "ZipDepth-512x288";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
@@ -1098,7 +1142,9 @@ public class DepthEstimator {
                 // just on the transition).
                 markGpuVariantUnavailable(variant);
             }
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
+            variant.failureReason = "GPU inference failed: " + e.getClass().getSimpleName();
+            markGpuVariantUnavailable(variant);
             Log.e(TAG, "Async GPU inference failed", e);
         } finally {
             isInferencing.set(false);
@@ -1145,8 +1191,10 @@ public class DepthEstimator {
         long dropped = droppedFrames.getAndSet(0);
         lastDepthSkippedFrames = dropped;
         Log.i(TAG, String.format(java.util.Locale.US,
-                "Perf: model=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
-                modelNameFor(modelIndex) + (isGpu ? "-GPU" : "-CPU"), telemetryTotalDurationNs / divisor / 1_000_000.0f,
+                "Perf: model=%s gpuApi=%s total=%.1fms prepare=%.1fms invoke=%.1fms post=%.1fms completed=%.1fHz submitted=%d dropped=%d",
+                modelNameFor(modelIndex) + (isGpu ? "-GPU" : "-CPU"),
+                isGpu ? (gpuApi == 0 ? "OpenCL" : "OpenGL") : "none",
+                telemetryTotalDurationNs / divisor / 1_000_000.0f,
                 telemetryTotalPrepareNs / divisor / 1_000_000.0f,
                 lastInferenceInvokeMs,
                 telemetryTotalPostprocessNs / divisor / 1_000_000.0f,
@@ -1352,7 +1400,10 @@ public class DepthEstimator {
             // context with CL_PRIORITY_HINT_LOW_QCOM. OpenCL is substantially
             // faster than LiteRT's OpenGL backend on Quest, while the context
             // priority keeps render work ahead of inference dispatches.
-            gpuOptions.setForceBackend(GpuDelegateFactory.Options.GpuBackend.OPENCL);
+            gpuOptions.setForceBackend(gpuApi == 1
+                    ? GpuDelegateFactory.Options.GpuBackend.OPENGL
+                    : GpuDelegateFactory.Options.GpuBackend.OPENCL);
+            Log.i(TAG, v.label + " GPU API: " + (gpuApi == 0 ? "OpenCL" : "OpenGL"));
             v.delegate = new GpuDelegate(gpuOptions);
             Interpreter.Options opts = new Interpreter.Options();
             opts.addDelegate(v.delegate);

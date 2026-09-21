@@ -22,8 +22,6 @@ var _temporary_status_generation: int = 0
 var _temporary_status_active: bool = false
 var _tooltip_panel: PanelContainer
 var _tooltip_label: Label
-var _tooltip_viewport: SubViewport
-var _tooltip_mesh: MeshInstance3D
 var _tooltip_candidate: Button
 var _tooltip_visible_target: Button
 var _tooltip_generation: int = 0
@@ -35,8 +33,6 @@ const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 const TOOLTIP_META := &"nightfall_tooltip"
 const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
-const TOOLTIP_QUAD_SIZE := Vector2(1.0, 0.064)
-const TOOLTIP_LOCAL_OFFSET := Vector3(0, 0.36, 0)
 # Keep the AI depth inspection controls available for future troubleshooting
 # without exposing them in release UI.
 const SHOW_AI3D_DIAGNOSTICS := false
@@ -82,14 +78,11 @@ func _show_tooltip(button: Button) -> void:
 	_tooltip_visible_target = button
 	_tooltip_label.text = tooltip
 	_tooltip_panel.visible = true
-	sync_tooltip_surface()
 
 func _hide_tooltip() -> void:
 	_tooltip_visible_target = null
 	if _tooltip_panel:
 		_tooltip_panel.visible = false
-	if _tooltip_mesh:
-		_tooltip_mesh.visible = false
 
 func _set_button_tooltip(button: Button, tooltip: String) -> Button:
 	button.set_meta(TOOLTIP_META, tooltip)
@@ -98,34 +91,11 @@ func _set_button_tooltip(button: Button, tooltip: String) -> Button:
 	button.tooltip_text = ""
 	return button
 
-func get_tooltip_viewport() -> SubViewport:
-	return _tooltip_viewport
-
-func sync_tooltip_surface() -> void:
-	if not _tooltip_mesh:
-		return
-	var showing: bool = _tooltip_panel != null and _tooltip_panel.visible and main.ui_visible
-	main.composition_panels.sync_tooltip_surface(
-		_tooltip_mesh,
-		showing,
-		main.comp != null and main.comp.in_use)
-
 func _build_tooltip_surface() -> void:
-	_tooltip_viewport = SubViewport.new()
-	_tooltip_viewport.name = "TooltipViewport"
-	_tooltip_viewport.disable_3d = true
-	_tooltip_viewport.transparent_bg = true
-	_tooltip_viewport.size = TOOLTIP_VIEWPORT_SIZE
-	# Keep this render target alive for the OpenXR session. Toggling the viewport
-	# or its composition layer on every hover destroys and recreates its
-	# swapchain, which can race the Quest GLES compositor and crash the app.
-	# Tooltip visibility is represented by transparent viewport content instead.
-	_tooltip_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(_tooltip_viewport)
-
 	_tooltip_panel = PanelContainer.new()
 	_tooltip_panel.name = "TooltipBar"
-	_tooltip_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tooltip_panel.position = Vector2((main._ui_viewport_size.x - TOOLTIP_VIEWPORT_SIZE.x) / 2.0, 0)
+	_tooltip_panel.size = TOOLTIP_VIEWPORT_SIZE
 	_tooltip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var tooltip_style := StyleBoxFlat.new()
 	tooltip_style.bg_color = Color(0.06, 0.06, 0.10, 0.45)
@@ -144,24 +114,9 @@ func _build_tooltip_surface() -> void:
 	_tooltip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tooltip_panel.add_child(_tooltip_label)
 	_tooltip_panel.visible = false
-	_tooltip_viewport.add_child(_tooltip_panel)
-
-	_tooltip_mesh = MeshInstance3D.new()
-	_tooltip_mesh.name = "TooltipSurface"
-	var quad := QuadMesh.new()
-	quad.size = TOOLTIP_QUAD_SIZE
-	_tooltip_mesh.mesh = quad
-	_tooltip_mesh.position = TOOLTIP_LOCAL_OFFSET
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.no_depth_test = true
-	material.render_priority = 126
-	material.albedo_texture = _tooltip_viewport.get_texture()
-	_tooltip_mesh.material_override = material
-	_tooltip_mesh.visible = false
-	# No Area3D or collision shape: this surface can never intercept a menu ray.
-	main.ui_panel_3d.add_child(_tooltip_mesh)
+	# The first 102 pixels extend above the unchanged 580px menu body. This
+	# control ignores pointer events; only the original menu body has a hitbox.
+	main.ui_viewport.add_child(_tooltip_panel)
 
 # ":" added (2026-08-26) so an optional custom port can be typed directly
 # into %IPInput as "ip:port" - see main.gd's parse_ip_port().
@@ -197,6 +152,9 @@ func on_sbs_toggled():
 func on_ai_3d_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.cycle_ai_3d_model()
+
+func on_ai_3d_gpu_api_toggled():
+	main.settings_controller.cycle_ai_3d_gpu_api()
 
 # Main-page On/Off toggle (2026-08-28) - was the old Off/Auto/Fast/Standard
 # cycle; that tier selection moved to on_ai_3d_mode_toggled() below.
@@ -248,7 +206,8 @@ func on_ai_3d_priority_toggled():
 
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
+		main.screen_mesh.material_override.set_shader_parameter("stereo_mode",
+			main.settings_controller.get_stereo_mode() if main.is_streaming else 0)
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.settings.host.sbs_mode])
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
@@ -263,8 +222,10 @@ func update_stereo_shader():
 	# Under Auto (ai_3d_speed==1) main.settings.host.ai_3d_model is frozen/irrelevant - show
 	# whichever model AUTO_TABLE actually picked instead (see
 	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
-	var model_idx = main.settings_controller.get_auto_selection().model_idx if main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
+	var model_idx = main.settings_controller.get_auto_selection().model_idx if OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
 	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
+	if main._ui_3d_gpu_api_btn:
+		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
@@ -283,12 +244,8 @@ func update_3d_btn_state():
 	if main._ui_3d_speed_btn:
 		main._ui_3d_speed_btn.disabled = disabled
 		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
-	# Type/Model/3D Mode are hidden entirely on Android (see
-	# settings_controller.gd's ai3d_options_locked() comment) - Standard/GPU/
-	# ZipDepth-384-GPU are enforced at the state level regardless of these
-	# buttons, but hiding (paired with .disabled, matching 3D Debug's own
-	# hide-and-disable pattern below) keeps a locked control from offering a
-	# choice that does nothing.
+	# Android retains the Standard/GPU locks, but exposes its production
+	# ZipDepth Model and GPU API selectors.
 	var locked = main.settings_controller.ai3d_options_locked()
 	if _tab_ai3d:
 		var ai3d_row1 = _tab_ai3d.get_node_or_null("Ai3dRow1")
@@ -308,7 +265,7 @@ func update_3d_btn_state():
 	# Model and Hz Cap are meaningless whenever AI-3D is off or Auto is
 	# choosing them. Android's platform lock applies only to Model: Standard is
 	# enforced there, but its explicit Hz Cap remains user-adjustable.
-	var model_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1 or locked
+	var model_disabled = disabled or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1)
 	var hz_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1
 	# Type is NOT included above (2026-08-30) - Auto was always meant to let
 	# you pick GPU or CPU yourself (GPU as the default), not force GPU
@@ -323,11 +280,15 @@ func update_3d_btn_state():
 		main._ui_3d_type_btn.disabled = type_disabled
 		main._ui_3d_type_btn.modulate.a = 0.3 if type_disabled else 1.0
 	if main._ui_3d_btn:
-		main._ui_3d_btn.visible = not locked
+		main._ui_3d_btn.visible = not locked or OS.get_name() == "Android"
 		main._ui_3d_btn.disabled = model_disabled
 		main._ui_3d_btn.modulate.a = 0.3 if model_disabled else 1.0
+	if main._ui_3d_gpu_api_btn:
+		var api_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.is_android_ai3d_auto()
+		main._ui_3d_gpu_api_btn.disabled = api_disabled
+		main._ui_3d_gpu_api_btn.modulate.a = 0.3 if api_disabled else 1.0
 	if main._ui_3d_priority_btn:
-		var priority_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available()
+		var priority_disabled = disabled or main.settings.host.ai_3d_speed == 0 or main.settings_controller.get_depth_backend_index() != 2 or not main.settings_controller.depth_gpu_priority_available() or (OS.get_name() == "Android" and main.settings_controller.get_ai_3d_gpu_api_effective() != 0)
 		main._ui_3d_priority_btn.disabled = priority_disabled
 		main._ui_3d_priority_btn.modulate.a = 0.3 if priority_disabled else 1.0
 	if main._ui_3d_hz_cap_btn:
@@ -590,13 +551,17 @@ func switch_tab(tab: int):
 
 func build_ui():
 	clear_tooltip()
-	main.ui_panel_3d.mesh.size = main._ui_mesh_size
-	main.ui_viewport.size = main._ui_viewport_size
+	main.ui_panel_3d.mesh.size = main._ui_mesh_size + Vector2(0, main.UI_TOOLTIP_STRIP_METERS)
+	main.ui_panel_3d.mesh.center_offset = Vector3(0, main.UI_TOOLTIP_STRIP_METERS * 0.5, 0)
+	main.ui_viewport.size = main._ui_viewport_size + Vector2i(0, main.UI_TOOLTIP_STRIP_PX)
 	var col_shape = main.ui_panel_3d.get_node("Area3D/CollisionShape3D")
 	if col_shape and col_shape.shape:
 		# Increase the hitbox size by 0.2m on width and height to make clicking much easier
 		col_shape.shape.size = Vector3(main._ui_mesh_size.x + 0.20, main._ui_mesh_size.y + 0.20, 0.05)
 	var root = main.get_node("%UIRoot")
+	root.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	root.position = Vector2(0, main.UI_TOOLTIP_STRIP_PX)
+	root.size = main._ui_viewport_size
 	for child in root.get_children():
 		if child.name != "IPInput" and child.name != "Numpad":
 			child.queue_free()
@@ -889,6 +854,10 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_btn, "Choose the depth-estimation model.")
 	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
+	if OS.get_name() == "Android":
+		main._ui_3d_gpu_api_btn = make_option_btn("Backend", "OpenCL")
+		_set_button_tooltip(main._ui_3d_gpu_api_btn, "Choose OpenCL or OpenGL. Auto selects the backend for you.")
+		ai3d_row1.add_child(main._ui_3d_gpu_api_btn)
 	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
@@ -938,11 +907,12 @@ func build_ui():
 			"Progressively enable the AI 3D warp stages for troubleshooting.")
 		ai3d_row2.add_child(main._ui_3d_process_debug_btn)
 	if ai3d_options_locked:
-		# Android locks Mode/Type/Model, leaving two controls for row 1 and
-		# three for row 2. Keep the layout at four buttons or fewer per row.
+		# Android: Model, Backend, GPU Priority, Hz Cap / four controls below.
 		ai3d_row2.remove_child(main._ui_3d_hz_cap_btn)
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
+		ai3d_row1.remove_child(main._ui_3d_depth_sync_btn)
+		ai3d_row2.add_child(main._ui_3d_depth_sync_btn)
 
 	_tab_picture = _build_menu_tab(
 		vbox,
@@ -1083,6 +1053,8 @@ func build_ui():
 	main._ui_3d_mode_btn.button_down.connect(func(): on_ai_3d_mode_toggled())
 	main._ui_3d_type_btn.button_down.connect(func(): on_ai_3d_type_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
+	if main._ui_3d_gpu_api_btn:
+		main._ui_3d_gpu_api_btn.button_down.connect(func(): on_ai_3d_gpu_api_toggled())
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())

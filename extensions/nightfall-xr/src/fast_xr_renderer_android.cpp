@@ -400,6 +400,13 @@ static const float VERTEX_DATA[] = {
 
 #define OVERLAY_WIDTH 768
 #define OVERLAY_HEIGHT 512
+static const char *OVERLAY_FRAGMENT_SRC =
+		"#version 300 es\n"
+		"precision mediump float;\n"
+		"in vec2 v_plain;\n"
+		"uniform sampler2D u_texture;\n"
+		"out vec4 fragColor;\n"
+		"void main() { fragColor = texture(u_texture, v_plain); }\n";
 #define UPSAMPLE_DIVISOR 4
 // Screen center height in the play/stage space, matching main.gd's own
 // hardcoded assumption for the stats overlay quad and XRCamera3D's fallback
@@ -721,24 +728,27 @@ bool NightfallXrRenderer::init_swapchain() {
 		return false;
 	}
 
-	XrSwapchainCreateInfo overlay_info = swap_info;
-	overlay_info.width = OVERLAY_WIDTH;
-	overlay_info.height = OVERLAY_HEIGHT;
-	if (check_xr(pfn_xrCreateSwapchain(xr_session, &overlay_info, &overlay_swapchain), "create overlay swapchain")) {
-		pfn_xrEnumerateSwapchainImages(overlay_swapchain, 0, &overlay_image_count, nullptr);
-		overlay_images = (XrSwapchainImageOpenGLESKHR *)calloc(overlay_image_count, sizeof(XrSwapchainImageOpenGLESKHR));
-		for (uint32_t i = 0; i < overlay_image_count; i++) {
-			overlay_images[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
-		}
-		pfn_xrEnumerateSwapchainImages(overlay_swapchain, overlay_image_count, &overlay_image_count, (XrSwapchainImageBaseHeader *)overlay_images);
-	} else {
-		overlay_swapchain = XR_NULL_HANDLE;
-	}
-
 	return true;
 }
 
 bool NightfallXrRenderer::init_gl() {
+	overlay_program = link_program(OVERLAY_FRAGMENT_SRC);
+	if (overlay_program == 0) {
+		XR_LOGE("Failed to compile in-screen statistics program");
+		return false;
+	}
+	glUseProgram(overlay_program);
+	glUniform1i(glGetUniformLocation(overlay_program, "u_texture"), 0);
+	glGenTextures(1, &overlay_texture);
+	glBindTexture(GL_TEXTURE_2D, overlay_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, OVERLAY_WIDTH, OVERLAY_HEIGHT,
+			0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
 	auto configure_warp_uniforms = [](GLuint program, WarpUniforms &uniforms, bool hdr, bool picture) {
 		uniforms.texmatrix = glGetUniformLocation(program, "u_texmatrix");
 		uniforms.disparity = glGetUniformLocation(program, "u_disparity");
@@ -995,10 +1005,6 @@ void NightfallXrRenderer::stop_stream() {
 			pfn_xrDestroySwapchain(swapchain);
 			swapchain = XR_NULL_HANDLE;
 		}
-		if (overlay_swapchain != XR_NULL_HANDLE) {
-			pfn_xrDestroySwapchain(overlay_swapchain);
-			overlay_swapchain = XR_NULL_HANDLE;
-		}
 
 		// xr_instance/xr_session/xr_space are Godot's, never destroyed here.
 		if (egl_context != EGL_NO_CONTEXT && egl_pbuffer != EGL_NO_SURFACE) {
@@ -1028,6 +1034,7 @@ void NightfallXrRenderer::stop_stream() {
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
 			if (hdr_lut_texture) glDeleteTextures(1, &hdr_lut_texture);
+			if (overlay_texture) glDeleteTextures(1, &overlay_texture);
 			if (depth_sync_textures[0]) {
 				glDeleteTextures(DEPTH_SYNC_RING_SIZE, depth_sync_textures);
 			}
@@ -1041,24 +1048,21 @@ void NightfallXrRenderer::stop_stream() {
 			if (delayed_upsample_program) glDeleteProgram(delayed_upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
 			if (depth_sync_copy_program) glDeleteProgram(depth_sync_copy_program);
+			if (overlay_program) glDeleteProgram(overlay_program);
 		}
 	} else {
 		// Calling xrDestroySwapchain under the wrong context crashes the Meta
 		// runtime. If the owning context is already unavailable, leave the
 		// runtime resources for session teardown rather than risking process
 		// corruption; clear our handles so a later stream can initialize cleanly.
-		if (swapchain != XR_NULL_HANDLE || overlay_swapchain != XR_NULL_HANDLE) {
+		if (swapchain != XR_NULL_HANDLE) {
 			XR_LOGE("Native cleanup context unavailable; deferring swapchain resource release to session teardown");
 		}
 		swapchain = XR_NULL_HANDLE;
-		overlay_swapchain = XR_NULL_HANDLE;
 	}
 	::free(swapchain_images);
 	swapchain_images = nullptr;
-	::free(overlay_images);
-	overlay_images = nullptr;
 	swapchain_image_count = 0;
-	overlay_image_count = 0;
 	overlay_has_content = false;
 	overlay_visible = false;
 
@@ -1066,11 +1070,11 @@ void NightfallXrRenderer::stop_stream() {
 		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = depth_sync_fbo = 0;
 		ambient_sample_pbos[0] = ambient_sample_pbos[1] = 0;
 		ambient_sample_next_pbo = 0;
-		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = 0;
+		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = overlay_texture = 0;
 		std::memset(depth_sync_textures, 0, sizeof(depth_sync_textures));
 		warp_program = picture_warp_program = hdr_warp_program = 0;
 		delayed_warp_program = delayed_picture_warp_program = delayed_hdr_warp_program = 0;
-		upsample_program = delayed_upsample_program = offset_program = depth_sync_copy_program = 0;
+		upsample_program = delayed_upsample_program = offset_program = depth_sync_copy_program = overlay_program = 0;
 		if (cleanup_context_current) {
 			eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
 		}
@@ -1546,6 +1550,22 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glUniform1f(uniforms.eye_index, (float)eye);
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
+	if (overlay_visible && overlay_has_content && overlay_texture != 0) {
+		const int overlay_w = std::max(1, (int)(output_width * 0.30f));
+		const int overlay_h = std::max(1, (int)(overlay_w * (float)OVERLAY_HEIGHT / OVERLAY_WIDTH));
+		const int margin = std::max(1, (int)(output_width * 0.02f));
+		glUseProgram(overlay_program);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, overlay_texture);
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		for (int eye = 0; eye < 2; eye++) {
+			glViewport(eye * output_width + margin,
+					output_height - margin - overlay_h, overlay_w, overlay_h);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		}
+		glDisable(GL_BLEND);
+	}
 	if (ambient_sample_requested.exchange(false, std::memory_order_acq_rel) &&
 			!issue_ambient_sample()) {
 		// Both readback buffers are still in flight. Retain one coalesced request
@@ -1754,7 +1774,7 @@ int32_t NightfallXrRenderer::_get_composition_layer_count() {
 	}
 	maybe_render_pending_frame();
 	++layer_frame_counter;
-	int32_t count = ever_rendered ? ((overlay_visible && overlay_has_content && overlay_swapchain != XR_NULL_HANDLE) ? 3 : 2) : 0;
+	int32_t count = ever_rendered ? 2 : 0;
 	#ifdef NIGHTFALL_DEBUG
 	static int calls = 0;
 	++calls;
@@ -1834,7 +1854,12 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 			cylinder->space = space;
 			cylinder->pose = pose;
 			cylinder->radius = pending_radius;
-			cylinder->centralAngle = pending_central_angle;
+			// The bezel adds pixels outside the video on both horizontal edges.
+			// Expand the cylinder arc by the same ratio as the rendered image;
+			// changing only aspectRatio stretches its height but leaves the
+			// curved bezel squeezed into the video's original arc.
+			cylinder->centralAngle = pending_central_angle *
+					(pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f);
 			const float layer_w = pending_width * (pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f);
 			const float layer_h = pending_height * (pending_bezel_enabled ? (float)output_height / (float)video_height : 1.0f);
 			cylinder->aspectRatio = layer_w / layer_h;
@@ -1854,44 +1879,7 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		return (uint64_t)(void *)quad;
 	}
 
-	// p_index == 2: overlay, only reachable when _get_composition_layer_count()
-	// returned 3. Place it in the screen's local top-left rather than at a
-	// hard-coded stage-space position so it follows screen moves and rotations.
-	float quad_height = pending_height;
-	float overlay_w = pending_quad_width * 0.30f;
-	float overlay_h = overlay_w * (float)OVERLAY_HEIGHT / (float)OVERLAY_WIDTH;
-	float margin = pending_quad_width * 0.02f;
-
-	memset(&overlay_layer, 0, sizeof(overlay_layer));
-	overlay_layer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-	overlay_layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-	overlay_layer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-	overlay_layer.subImage.swapchain = overlay_swapchain;
-	overlay_layer.subImage.imageRect.extent.width = OVERLAY_WIDTH;
-	overlay_layer.subImage.imageRect.extent.height = OVERLAY_HEIGHT;
-	overlay_layer.subImage.imageArrayIndex = 0;
-	overlay_layer.space = space;
-	Transform3D overlay_xf = pending_transform;
-	// For a cylinder pending_transform is its center of curvature, not the
-	// visible screen surface. The overlay is a flat tangent quad, so recover
-	// the screen-center transform before applying its local top-left offset.
-	if (pending_curvature > 0 && cylinder_supported) {
-		const Vector3 screen_forward = -overlay_xf.basis.get_column(2);
-		overlay_xf.origin += screen_forward * pending_radius;
-	}
-	XRServer *overlay_xr_server = XRServer::get_singleton();
-	if (overlay_xr_server != nullptr) {
-		overlay_xf = overlay_xr_server->get_reference_frame().inverse() * overlay_xf;
-	}
-	Quaternion overlay_q(overlay_xf.basis.orthonormalized());
-	Vector3 overlay_local(-pending_width * 0.5f + overlay_w * 0.5f + margin,
-			quad_height * 0.5f - overlay_h * 0.5f - margin, 0.01f);
-	Vector3 overlay_pos = overlay_xf.xform(overlay_local);
-	overlay_layer.pose.orientation = { (float)overlay_q.x, (float)overlay_q.y, (float)overlay_q.z, (float)overlay_q.w };
-	overlay_layer.pose.position = { (float)overlay_pos.x, (float)overlay_pos.y, (float)overlay_pos.z };
-	overlay_layer.size.width = overlay_w;
-	overlay_layer.size.height = overlay_h;
-	return (uint64_t)(void *)&overlay_layer;
+	return 0;
 }
 
 int32_t NightfallXrRenderer::_get_composition_layer_order(int32_t p_index) {
@@ -1903,7 +1891,7 @@ int32_t NightfallXrRenderer::_get_composition_layer_order(int32_t p_index) {
 }
 
 void NightfallXrRenderer::upload_overlay(PackedByteArray p_pixels, int p_width, int p_height) {
-	if (overlay_swapchain == XR_NULL_HANDLE || p_width != OVERLAY_WIDTH || p_height != OVERLAY_HEIGHT) {
+	if (overlay_texture == 0 || p_width != OVERLAY_WIDTH || p_height != OVERLAY_HEIGHT) {
 		return;
 	}
 	// GDScript-callable directly, so (unlike maybe_render_pending_frame(),
@@ -1923,24 +1911,13 @@ void NightfallXrRenderer::upload_overlay(PackedByteArray p_pixels, int p_width, 
 		return;
 	}
 
-	uint32_t image_index = 0;
-	XrSwapchainImageAcquireInfo acquire_info = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-	if (check_xr(pfn_xrAcquireSwapchainImage(overlay_swapchain, &acquire_info, &image_index), "acquire overlay image")) {
-		XrSwapchainImageWaitInfo wait_info = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-		wait_info.timeout = XR_INFINITE_DURATION;
-		pfn_xrWaitSwapchainImage(overlay_swapchain, &wait_info);
-
-		glBindTexture(GL_TEXTURE_2D, overlay_images[image_index].image);
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p_width, p_height, GL_RGBA, GL_UNSIGNED_BYTE, p_pixels.ptr());
-		glBindTexture(GL_TEXTURE_2D, 0);
-
-		XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-		pfn_xrReleaseSwapchainImage(overlay_swapchain, &release_info);
-		if (!overlay_has_content) {
-			XR_LOG("Performance overlay texture uploaded");
-		}
-		overlay_has_content = true;
+	glBindTexture(GL_TEXTURE_2D, overlay_texture);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p_width, p_height, GL_RGBA, GL_UNSIGNED_BYTE, p_pixels.ptr());
+	glBindTexture(GL_TEXTURE_2D, 0);
+	if (!overlay_has_content) {
+		XR_LOG("In-screen performance statistics texture uploaded");
 	}
+	overlay_has_content = true;
 
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("upload_overlay: restoring Godot's EGL context/surface failed: %d", eglGetError());

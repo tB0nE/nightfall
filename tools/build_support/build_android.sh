@@ -32,6 +32,19 @@ if [ "$PRESET" = "NightfallRelease" ]; then
   STREAM_VARIANT="release"
 fi
 STREAM_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libnightfall-stream.android.template_${STREAM_VARIANT}.arm64.so"
+STREAM_DESCRIPTOR="$SCRIPT_DIR/addons/nightfall-stream/bin/nightfall-stream.gdextension"
+META_VENDOR_ROOT="$SCRIPT_DIR/addons/godotopenxrvendors"
+META_VENDOR_AAR="$META_VENDOR_ROOT/.bin/android/$STREAM_VARIANT/godotopenxr-meta-$STREAM_VARIANT.aar"
+META_VENDOR_LIBRARY="$META_VENDOR_ROOT/.bin/android/template_${STREAM_VARIANT}/arm64/libgodotopenxrvendors.so"
+if [ ! -f "$META_VENDOR_ROOT/plugin.gdextension" ] || [ ! -f "$META_VENDOR_AAR" ] || [ ! -f "$META_VENDOR_LIBRARY" ]; then
+  echo "Error: GodotOpenXRVendors Meta plugin is incomplete at $META_VENDOR_ROOT" >&2
+  echo "Install the plugin as described in BUILD.md before exporting an Android APK." >&2
+  exit 1
+fi
+if [ ! -f "$STREAM_DESCRIPTOR" ]; then
+  echo "Error: Android streaming GDExtension descriptor not found at $STREAM_DESCRIPTOR"
+  exit 1
+fi
 if [ ! -f "$STREAM_LIBRARY" ]; then
   echo "Error: Android streaming GDExtension not found at $STREAM_LIBRARY"
   echo "Build it first using the Android instructions in BUILD.md."
@@ -66,11 +79,12 @@ if [ ! -f "$PATCHED_GODOT_RUNTIME" ]; then
 fi
 
 if [ "$PRESET" = "NightfallRelease" ]; then
-  if [ ! -f .env ]; then
-    echo "Error: .env not found (copy .env.example and fill in keystore credentials)"
+  RELEASE_ENV_FILE="${NIGHTFALL_ENV_FILE:-.env}"
+  if [ ! -f "$RELEASE_ENV_FILE" ]; then
+    echo "Error: release env file not found at $RELEASE_ENV_FILE"
     exit 1
   fi
-  source .env
+  source "$RELEASE_ENV_FILE"
   if [ -z "${NIGHTFALL_KEYSTORE_PATH:-}" ] || [ -z "${NIGHTFALL_KEYSTORE_USER:-}" ] || [ -z "${NIGHTFALL_KEYSTORE_PASSWORD:-}" ]; then
     echo "Error: .env missing NIGHTFALL_KEYSTORE_PATH, NIGHTFALL_KEYSTORE_USER, or NIGHTFALL_KEYSTORE_PASSWORD"
     exit 1
@@ -147,10 +161,10 @@ sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        mai
 sed -i '/ignoreAssetsPattern/a\            noCompress "tflite"' android/build/build.gradle
 if [ "$PRESET" = "NightfallDev" ]; then
   mkdir -p android/build/libs/debug
-  cp "$SCRIPT_DIR/addons/godotopenxrvendors/.bin/android/debug/godotopenxr-meta-debug.aar" android/build/libs/debug/ 2>/dev/null || true
+  cp "$META_VENDOR_AAR" android/build/libs/debug/
 else
   mkdir -p android/build/libs/release
-  cp "$SCRIPT_DIR/addons/godotopenxrvendors/.bin/android/release/godotopenxr-meta-release.aar" android/build/libs/release/ 2>/dev/null || true
+  cp "$META_VENDOR_AAR" android/build/libs/release/
 fi
 
 echo "Exporting $PRESET..."
@@ -164,6 +178,14 @@ JAVA_HOME="$JAVA_HOME" "$GODOT" --headless --path "$SCRIPT_DIR" $EXPORT_FLAG "$P
 
 if [ ! -f "$OUTPUT" ]; then
   echo "Error: $OUTPUT not created"
+  exit 1
+fi
+if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libnightfall-stream.android.template_release.arm64.so" >/dev/null; then
+  echo "Error: $OUTPUT is missing the Android streaming GDExtension library" >&2
+  exit 1
+fi
+if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libgodotopenxrvendors.so" >/dev/null; then
+  echo "Error: $OUTPUT is missing the Meta OpenXR vendor plugin library" >&2
   exit 1
 fi
 

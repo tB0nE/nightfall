@@ -35,6 +35,9 @@ func set_bezel_enabled(enabled: bool):
 			s.bezel_mesh.visible = main.settings.bezel_enabled if not main.comp.in_use else false
 	main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
 	main.comp.update_bezel()
+	main._log("[BEZEL] %s (streaming=%s comp=%s native=%s)" % [
+		"On" if enabled else "Off", str(main.is_streaming), str(main.comp.in_use),
+		str(main.video_presentation != null and main.video_presentation.is_native_active())])
 	main.state_manager.save_state()
 
 # GitHub issue #17 (2026-08-20): used to prefer s.monitor.frame_rect.size
@@ -93,6 +96,11 @@ func cycle_curvature():
 		s.curvature = main.curvature
 		s.apply_curvature()
 	main.settings_controller.reflow_grid_screens()
+	# Native video updates its own cylinder every frame, but the separate
+	# ambient OpenXR layer follows the legacy cylinder geometry. Refresh that
+	# geometry even when we must not reactivate the legacy video layers.
+	if main.comp.available:
+		main.comp.update_cylinder_params()
 	# comp.in_use reflects whichever composition layer was last explicitly
 	# switched to, not whether legacy is the renderer actually presenting
 	# right now - it stays stale (true) from an earlier fallback (e.g. a

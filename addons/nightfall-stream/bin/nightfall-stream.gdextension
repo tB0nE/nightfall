@@ -1,0 +1,18 @@
+[configuration]
+
+entry_symbol = "nightfall_stream_init"
+compatibility_minimum = "4.1"
+reloadable = true
+
+[libraries]
+
+linux.x86_64.single.debug = "./linux/libnightfall-stream.linux.template_debug.x86_64.so"
+linux.x86_64.single.release = "./linux/libnightfall-stream.linux.template_release.x86_64.so"
+linux.arm64.single.debug = "./linux/libnightfall-stream.linux.template_debug.arm64.so"
+linux.arm64.single.release = "./linux/libnightfall-stream.linux.template_release.arm64.so"
+
+android.arm64.single.debug = "./android/libnightfall-stream.android.template_release.arm64.so"
+android.arm64.single.release = "./android/libnightfall-stream.android.template_release.arm64.so"
+
+steamos.arm64.single.debug = "./steamos/libnightfall-stream.steamos.template_debug.arm64.so"
+steamos.arm64.single.release = "./steamos/libnightfall-stream.steamos.template_release.arm64.so"

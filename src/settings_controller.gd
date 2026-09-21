@@ -7,9 +7,11 @@ var _restart_seq: int = 0
 var _ai_3d_commit_seq: int = 0
 var _last_effective_backend: int = -1
 var _last_backend_status: String = ""
+var _auto_depth_fallback: bool = false
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
 var _refresh_request_seq: int = 0
+var _last_sbs_mode: int = 1
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -71,6 +73,10 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # history that produced the roster below.
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
 var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
+var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
+const ANDROID_MODEL_384 := 2
+const ANDROID_MODEL_AUTO := 9
+const ANDROID_MODEL_256 := 10
 # Back to its original 5-entry shape (2026-08-28, AI 3D tab - briefly
 # deduplicated to 3 entries with an independent Type control, corrected
 # after clarifying the actual request: Type doesn't just gate Model, it
@@ -96,6 +102,9 @@ var ai_3d_models: Array = [
 	# cycle; it shares Java index 14 with the GPU entry above, while Type selects
 	# the full-head W8A32/XNNPACK interpreter instead of the GPU delegate.
 	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
+	# Android-only entries appended to preserve existing saved model indices.
+	{"label": "Auto", "java_index": 14, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -272,11 +281,23 @@ func _save_setting(btn: Button, label: String):
 	main.state_manager.save_state()
 
 func cycle_sbs_mode():
+	set_sbs_mode((main.settings.host.sbs_mode + 1) % sbs_labels.size())
+
+func toggle_sbs_mode():
+	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else _last_sbs_mode)
+
+func set_sbs_mode(requested_mode: int):
 	var previous_mode: int = main.settings.host.sbs_mode
-	main.settings.host.sbs_mode = (main.settings.host.sbs_mode + 1) % 3
+	main.settings.host.sbs_mode = clampi(requested_mode, 0, sbs_labels.size() - 1)
+	if previous_mode > 0:
+		_last_sbs_mode = previous_mode
+	elif main.settings.host.sbs_mode > 0:
+		_last_sbs_mode = main.settings.host.sbs_mode
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.settings.host.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()
+	if main.screen_shortcuts:
+		main.screen_shortcuts.refresh_visuals(main.primary_screen)
 	main._log("[SBS] Mode changed: %s -> %s" % [
 		sbs_labels[previous_mode], sbs_labels[main.settings.host.sbs_mode]])
 	if main.settings.host.sbs_mode > 0 and main.screens.size() > 1:
@@ -341,6 +362,8 @@ func cycle_ai_3d_mode():
 func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
 	var result: Array = []
 	for i in range(ai_3d_models.size()):
+		if OS.get_name() == "Linux" and not ai_3d_models[i].get("linux", true):
+			continue
 		if ai_3d_models[i].gpu == want_gpu:
 			result.append(i)
 	return result
@@ -459,6 +482,7 @@ func reset_ai_3d_effect_settings():
 		main.settings.host.ai_3d_speed = 1
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 	main.settings.host.ai_3d_model = 0
+	main.settings.host.ai_3d_gpu_api = 0
 	main.settings.host.ai_3d_hz_cap = 20
 	main.settings.host.ai_3d_separation_pct = 100
 	main.settings.host.ai_3d_convergence_pct = 50
@@ -473,17 +497,42 @@ func reset_ai_3d_effect_settings():
 # Cycles only within the entries matching the current Type
 # (main.settings.host.ai_3d_backend_pref) - see _ai_3d_model_indices_for_type() above.
 func cycle_ai_3d_model():
-	if not _ai_3d_supported() or ai3d_options_locked():
+	if not _ai_3d_supported():
 		return
-	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1:
+	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_384, ANDROID_MODEL_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var pos = candidates.find(main.settings.host.ai_3d_model)
 	main.settings.host.ai_3d_model = candidates[(maxi(pos, -1) + 1) % candidates.size()]
 	_save_setting(main._ui_3d_btn, ai_3d_models[main.settings.host.ai_3d_model].label)
+	if main._ui_3d_gpu_api_btn:
+		main.ui_controller.update_option_btn(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
+	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
+
+func get_ai_3d_gpu_api_effective() -> int:
+	if is_android_ai3d_auto():
+		return 1 if _auto_depth_fallback else 0
+	return main.settings.host.ai_3d_gpu_api
+
+func is_android_ai3d_auto() -> bool:
+	return OS.get_name() == "Android" and main.settings.host.ai_3d_model == ANDROID_MODEL_AUTO
+
+func get_ai_3d_gpu_api_label() -> String:
+	return ai_3d_gpu_api_labels[get_ai_3d_gpu_api_effective()]
+
+func cycle_ai_3d_gpu_api() -> void:
+	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
+		return
+	main.settings.host.ai_3d_gpu_api = 1 - main.settings.host.ai_3d_gpu_api
+	_save_setting(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
+	_schedule_ai_3d_commit()
+
+func _android_depth_class() -> Object:
+	var wrapper: Object = Engine.get_singleton("JavaClassWrapper") if OS.get_name() == "Android" else null
+	return wrapper.wrap("com.godot.game.GodotApp") if wrapper else null
 
 func cycle_ai_3d_gpu_priority():
 	if not depth_gpu_priority_available():
@@ -544,11 +593,13 @@ func _locked_ai3d_model_index() -> int:
 # a save file from before this lock existed (or Reset's own MiDaS/Auto
 # defaults) can never leave Android pointed at a model that isn't actually
 # bundled. No-op on Linux.
-func enforce_ai3d_platform_lock():
+func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	main.settings.host.ai_3d_model = _locked_ai3d_model_index()
+	if prefer_auto or not [ANDROID_MODEL_384, ANDROID_MODEL_AUTO, ANDROID_MODEL_256].has(main.settings.host.ai_3d_model):
+		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
+	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
 	# Diagnostic selectors are hidden in Android releases. Always restore
 	# production rendering in case a development build persisted another stage.
@@ -564,6 +615,8 @@ func enforce_ai3d_platform_lock():
 func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
+	if is_android_ai3d_auto():
+		return 18 if _auto_depth_fallback else 14
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
@@ -611,7 +664,21 @@ func get_depth_backend_label() -> String:
 func refresh_depth_backend_status(notify_transition: bool = false):
 	if not main.stream_backend:
 		return
+	# Host settings are restored on the welcome screen, and SBS can override
+	# a saved AI-3D selection. Neither state runs depth inference, so a GPU
+	# warning from their placeholder configuration must not reach the UI.
+	if not main.is_streaming or get_stereo_mode() < 3:
+		_last_backend_status = ""
+		return
 	var status = main.stream_backend.get_depth_backend_status()
+	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
+		_auto_depth_fallback = true
+		main._log("[DEPTH] Auto: ZipDepth-384/OpenCL failed (%s); switching to ZipDepth-256/OpenGL for this app session" % status)
+		if main.ui_controller:
+			main.ui_controller.update_stereo_shader()
+			main.ui_controller.show_temporary_status("AI 3D fallback: ZipDepth-256 / OpenGL", 3.0)
+		apply_stereo()
+		return
 	var requested = get_depth_backend_index()
 	var failed = not status.is_empty() and requested == AI3D_BACKEND_GPU
 	if notify_transition and failed and status != _last_backend_status:
@@ -681,6 +748,7 @@ func _schedule_ai_3d_commit():
 
 func apply_stereo():
 	var mode = get_stereo_mode()
+	var display_mode = mode if main.is_streaming else 0
 	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
 	# decoder reports the new stream's video size (normally within a frame or
 	# two of _on_stream_started(), which calls this), calling
@@ -701,9 +769,9 @@ func apply_stereo():
 	# rendering then fails to actually start, deactivate(true)'s own
 	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
 	# covers activating legacy properly.
-	main.video_presentation.apply_mode(mode, main.is_streaming)
+	main.video_presentation.apply_mode(display_mode, main.is_streaming)
 	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
+		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", display_mode)
 	if main.depth_estimator:
 		# mode 7 (MiDaS-DMap) visualizes upsampled_depth_texture (the real
 		# post-upsample data the actual warp uses), so it needs the warp
@@ -738,8 +806,13 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var model_idx = get_depth_model_index() if mode >= 3 else 0
-	main.stream_backend.configure_depth(model_idx, get_depth_backend_index())
+	var depth_active = mode >= 3 and main.is_streaming
+	var model_idx = get_depth_model_index() if depth_active else 0
+	if OS.get_name() == "Android":
+		var java_class := _android_depth_class()
+		if java_class:
+			java_class.setDepthGpuApi(get_ai_3d_gpu_api_effective())
+	main.stream_backend.configure_depth(model_idx, get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU)
 	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	refresh_depth_backend_status(true)
 	# sync_model_size() (2026-08-27 - moved BEFORE the texture-capture block

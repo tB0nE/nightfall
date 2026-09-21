@@ -9,7 +9,7 @@ enum KeyboardMaterialAction {
 
 var ui_layer: Node3D = null
 var keyboard_layer: Node3D = null
-var tooltip_layer: Node3D = null
+const UI_VISUAL_OFFSET := Vector3(0, 0.051, 0)
 
 func setup_ui(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2) -> void:
 	if ui_layer:
@@ -23,16 +23,6 @@ func setup_keyboard(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2
 	keyboard_layer = _make_panel_layer("CompKBLayer", 999, quad_size, viewport)
 	xr_origin.add_child(keyboard_layer)
 
-func setup_tooltip(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2) -> void:
-	if tooltip_layer or viewport == null:
-		return
-	tooltip_layer = _make_panel_layer("CompTooltipLayer", 1001, quad_size, viewport)
-	xr_origin.add_child(tooltip_layer)
-	# Unlike the other panels, tooltips appear and disappear rapidly. Keep one
-	# stable OpenXR swapchain and hide the bar using transparent viewport content
-	# instead of changing layer visibility on every pointer transition.
-	tooltip_layer.visible = true
-
 func has_ui() -> bool:
 	return ui_layer != null
 
@@ -40,8 +30,7 @@ func show_ui(source: Node3D) -> void:
 	if not ui_layer:
 		return
 	if source:
-		ui_layer.global_position = source.global_position
-		ui_layer.global_rotation = source.global_rotation
+		ui_layer.global_transform = source.global_transform * Transform3D(Basis.IDENTITY, UI_VISUAL_OFFSET)
 	ui_layer.visible = true
 
 func hide_ui() -> void:
@@ -57,19 +46,9 @@ func deactivate() -> void:
 	if keyboard_layer:
 		keyboard_layer.visible = false
 
-func sync_tooltip_surface(mesh: Node3D, showing: bool,
-		composition_active: bool) -> void:
-	if not mesh:
-		return
-	var use_composition := composition_active and tooltip_layer != null
-	mesh.visible = showing and not use_composition
-	if use_composition:
-		tooltip_layer.global_transform = mesh.global_transform
-
 func sync_transforms(ui_source: Node3D, keyboard) -> KeyboardMaterialAction:
 	if ui_layer and ui_layer.visible and ui_source:
-		ui_layer.global_position = ui_source.global_position
-		ui_layer.global_rotation = ui_source.global_rotation
+		ui_layer.global_transform = ui_source.global_transform * Transform3D(Basis.IDENTITY, UI_VISUAL_OFFSET)
 	if keyboard_layer and keyboard and keyboard.visible:
 		keyboard_layer.global_position = keyboard.global_position
 		keyboard_layer.global_rotation = keyboard.global_rotation

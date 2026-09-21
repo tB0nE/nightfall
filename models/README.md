@@ -1,7 +1,8 @@
 # Depth model assets
 
 This directory holds the `.tflite` depth-estimation model library. Android
-currently bundles only `zipdepth-base-384-gpu.tflite` through
+currently bundles `zipdepth-base-384-gpu.tflite` and
+`zipdepth-base-256-gpu.tflite` through
 `tools/build_support/package_android_models.sh`. Linux bundles MiDaS-256,
 MiDaS-192, and Depth Anything V2-252 into `depth_models/`, where they are resolved
 relative to the executable. The remaining models are retained as conversion
@@ -27,7 +28,8 @@ Every model here shares the same downstream pipeline (`DepthEstimator.java`'s
 | `yolo26n-depth-384-w8a32.tflite` | ~5.5MB | YOLO26-Depth-N-384 (CPU, w8a32) | Same export, 384px input. |
 | `depth-anything-v2-small-196.tflite` | ~25MB | Depth Anything V2 Small-196 (CPU, int8) | See "Depth Anything V2" below. 196 = 14×14 (ViT-S patch-14 multiple), ~192px target. |
 | `depth-anything-v2-small-252.tflite` | ~25MB | Depth Anything V2 Small-252 (CPU, int8) | Bundled on Linux. Same conversion, 252 = 14×18, ~256px target. |
-| `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | The only model bundled on Android. Standard checkpoint backbone/decoder plus the mobile-safe NPU head. |
+| `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | Primary Android OpenCL model. Standard checkpoint backbone/decoder plus the mobile-safe NPU head. |
+| `zipdepth-base-256-gpu.tflite` | ~12MB | ZipDepth-256 Hybrid (GPU, fp16 weights) | Android OpenGL compatibility model, using the 384-trained weights at 256x256 input. |
 | `zipdepth-base-384-standard-mobile-gpu.tflite` | ~12MB | ZipDepth-384 Standard Full Head (float reference) | Portable rewrite of the standard checkpoint's learned convex head. Used as the conversion/validation reference; not bundled. |
 | `zipdepth-base-384-standard-w8a32.tflite` | ~6MB | ZipDepth-384 Standard Full Head (CPU, w8a32) | Not currently bundled. INT8 weights with float32 activations/I/O; full w8a8 was rejected after severe numerical degradation in representative-scene validation. |
 | `zipdepth-base-512x288-gpu.tflite` | ~12MB | ZipDepth-512x288 Hybrid (GPU, experimental) | Aspect-preserving test at the same pixel count as 384x384. |
@@ -100,10 +102,10 @@ captured frame, the resulting hybrid Quest GPU output matched desktop TFLite
 CPU output with correlation `0.99999999997`, mean absolute error `2.33e-7`, and
 maximum absolute error `5.29e-7`.
 
-Run the reproducible default conversion with:
+Generate both Android models with:
 
 ```bash
-python3 tools/convert_zipdepth.py --force
+python3 tools/convert_zipdepth.py --shape 384x384 --shape 256x256 --force
 ```
 
 Use `--weights-mode npu` only to reproduce the smoother upstream NPU-only
@@ -140,7 +142,9 @@ only `0.646310` mean correlation and visibly collapsed on some scenes, so it is
 deliberately not bundled. Revisit full integer quantization only with QAT or
 selective activation quantization and the same validation set.
 
-The production choice remains 384 (ZipDepth's native/trained resolution). Two
+The GPU-safe exporter expands one grouped convolution into an equivalent
+dense convolution so LiteRT's OpenGL backend can execute the same graph.
+Auto tries 384/OpenCL first and uses 256/OpenGL if that fails. Two
 experimental widescreen inference shapes can be generated together with:
 
 ```bash
@@ -152,10 +156,11 @@ not separately trained checkpoints. The 512x288 model has the same pixel
 count as 384x384, while 672x384 is approximately equivalent to 512x512.
 
 Square 192 and 256 models were also
-built and visually compared via `tools/model_tester/`, but dropped
-(2026-09-04): every number in ZipDepth's own paper is measured at 384x384,
-and ZipDepth has no dedicated lower-resolution training. The 192/256 exports
-are just the 384 weights operating outside their trained distribution, and
+built and visually compared via `tools/model_tester/`. The 256 export was
+selected as the Quest 2 OpenGL compatibility model; 192 remains unbundled.
+Every number in ZipDepth's paper is measured at 384x384, and ZipDepth has no
+dedicated lower-resolution training. These exports use the 384 weights
+outside their trained distribution, and
 the quality loss was visible (192 especially).
 
 ### YOLO26-Depth-S (`yolo26s-depth-int8.tflite`, dormant/optional)

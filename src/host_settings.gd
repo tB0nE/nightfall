@@ -18,6 +18,8 @@ var double_h: bool = false
 var sbs_mode: int = 0
 ## Index into SettingsController.ai_3d_models.
 var ai_3d_model: int = 0
+## Android depth GPU API: 0=OpenCL, 1=OpenGL. Ignored while Model is Auto.
+var ai_3d_gpu_api: int = 0
 ## 0=Off, 1=Auto, 2=Fast, 3=Standard.
 var ai_3d_speed: int = 0
 ## 0=Off, 1=DMap, 2=DMap-Raw, 3=DMap-Input.

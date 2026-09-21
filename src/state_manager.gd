@@ -137,8 +137,11 @@ func load_host_state(ip: String):
 		if not main.is_streaming and main.welcome_screen:
 			main.welcome_screen.show_welcome_screen(main._welcome_screen)
 
-func sync_ui_to_settings():
-	if main.bezel_mesh:
+func sync_ui_to_settings(apply_runtime: bool = true):
+	# Opening the menu only needs fresh labels. Reapplying shaders, ambient
+	# sources, and bezel geometry while a native/legacy viewport is live can
+	# disturb the GLES render targets without any setting having changed.
+	if apply_runtime and main.bezel_mesh:
 		main.bezel_mesh.visible = main.settings.bezel_enabled and not main.comp.in_use
 	if main.ui_controller:
 		main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
@@ -168,11 +171,11 @@ func sync_ui_to_settings():
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
 		main.ui_controller.update_monitor_tab()
-	if main.screen_manager:
+	if apply_runtime and main.screen_manager:
 		main.screen_manager.update_bezel_size()
-	if main.settings_controller:
+	if apply_runtime and main.settings_controller:
 		main.settings_controller.apply_filter()
-	if main.comp:
+	if apply_runtime and main.comp:
 		main.comp.apply_ambient_settings()
 
 func load_state():

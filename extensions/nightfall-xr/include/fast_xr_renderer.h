@@ -259,9 +259,8 @@ private:
 	XrSwapchainImageOpenGLESKHR *swapchain_images = nullptr;
 	int64_t swapchain_format = 0;
 
-	XrSwapchain overlay_swapchain = XR_NULL_HANDLE;
-	uint32_t overlay_image_count = 0;
-	XrSwapchainImageOpenGLESKHR *overlay_images = nullptr;
+	GLuint overlay_texture = 0;
+	GLuint overlay_program = 0;
 	bool overlay_has_content = false;
 	bool overlay_visible = false;
 
@@ -444,7 +443,6 @@ private:
 	XrCompositionLayerQuad quad_layers[2]{};
 	XrCompositionLayerCylinderKHR cylinder_layers[2]{};
 	XrCompositionLayerSettingsFB compositor_settings[2]{};
-	XrCompositionLayerQuad overlay_layer{};
 
 	// Resolved via get_openxr_api()->get_instance_proc_addr(), matching how
 	// Godot's own OpenXR module resolves every entry point (never linking

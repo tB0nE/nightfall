@@ -147,10 +147,10 @@ func set_hover(action: StringName) -> void:
 func invoke(action: StringName) -> void:
 	match action:
 		ACTION_SBS:
-			# Match the menu SBS control: an explicit user selection takes
-			# ownership from automatic SBS detection.
+			# The grab-bar icon is a quick on/off switch. The menu control still
+			# cycles Stretch/Crop when the user wants to choose a mode.
 			main.auto_detect_enabled = false
-			main.settings_controller.cycle_sbs_mode()
+			main.settings_controller.toggle_sbs_mode()
 		ACTION_PAD:
 			main.controller_mapper.check_toggle_ui()
 		ACTION_MENU:

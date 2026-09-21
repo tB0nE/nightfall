@@ -121,6 +121,7 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "resolution_idx", host.resolution_idx)
 	config.set_value(section, "sbs_mode", host.sbs_mode)
 	config.set_value(section, "ai_3d_model", host.ai_3d_model)
+	config.set_value(section, "ai_3d_gpu_api", host.ai_3d_gpu_api)
 	config.set_value(section, "ai_3d_speed", host.ai_3d_speed)
 	# Distinguishes the current four-value speed range from the historical five-value range.
 	config.set_value(section, "ai_3d_speed_v2", true)
@@ -157,6 +158,7 @@ static func read_host(
 	host.resolution_idx = clampi(config.get_value(section, "resolution_idx", 1), 0, resolution_count - 1)
 	host.bitrate_idx = config.get_value(section, "bitrate_idx", -1)
 	host.double_h = config.get_value(section, "double_h", false)
+	host.ai_3d_gpu_api = clampi(int(config.get_value(section, "ai_3d_gpu_api", 0)), 0, 1)
 	if config.has_section_key(section, "sbs_mode"):
 		host.sbs_mode = clampi(config.get_value(section, "sbs_mode", 0), 0, 2)
 		if config.has_section_key(section, "ai_3d_speed"):

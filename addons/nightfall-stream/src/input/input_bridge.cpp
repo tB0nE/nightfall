@@ -1,6 +1,7 @@
 #include "input_bridge.h"
 
 #include <Limelight.h>
+#include <godot_cpp/classes/global_constants.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -117,87 +118,92 @@ int InputBridge::godot_key_to_vk(int godot_key) {
     case 47: return 0xBF;
     case 96: return 0xC0;
 
-    case 4194305: return 0x1B;
-    case 4194306: return 0x09;
-    case 4194307: return 0x09;
-    case 4194308: return 0x08;
-    case 4194309: return 0x0D;
-    case 4194310: return 0x0D;
-    case 4194311: return 0x2E;
-    case 4194312: return 0x24;
-    case 4194313: return 0x23;
-    case 4194314: return 0x21;
-    case 4194315: return 0x22;
-    case 4194316: return 0x2D;
-    case 4194317: return 0x26;
-    case 4194318: return 0x28;
-    case 4194319: return 0x25;
-    case 4194320: return 0x27;
+    // Use Godot's named constants rather than copied enum values. The old
+    // table predated Godot's Pause/Print/SysReq/Clear additions, so every
+    // navigation key from Insert onward was translated as a different key.
+    case KEY_ESCAPE: return 0x1B;
+    case KEY_TAB:
+    case KEY_BACKTAB: return 0x09;
+    case KEY_BACKSPACE: return 0x08;
+    case KEY_ENTER:
+    case KEY_KP_ENTER: return 0x0D;
+    case KEY_INSERT: return 0x2D;
+    case KEY_DELETE: return 0x2E;
+    case KEY_PAUSE: return 0x13;
+    case KEY_PRINT:
+    case KEY_SYSREQ: return 0x2C;
+    case KEY_CLEAR: return 0x0C;
+    case KEY_HOME: return 0x24;
+    case KEY_END: return 0x23;
+    case KEY_LEFT: return 0x25;
+    case KEY_UP: return 0x26;
+    case KEY_RIGHT: return 0x27;
+    case KEY_DOWN: return 0x28;
+    case KEY_PAGEUP: return 0x21;
+    case KEY_PAGEDOWN: return 0x22;
 
-    case 4194321: return 0x10;
-    case 4194322: return 0x11;
-    case 4194323: return 0x12;
-    case 4194324: return 0x5B;
-    case 4194325: return 0x10;
-    case 4194326: return 0x11;
-    case 4194327: return 0x12;
-    case 4194328: return 0x5B;
+    case KEY_SHIFT: return 0x10;
+    case KEY_CTRL: return 0x11;
+    case KEY_ALT: return 0x12;
+    case KEY_META: return 0x5B;
+    case KEY_CAPSLOCK: return 0x14;
+    case KEY_NUMLOCK: return 0x90;
+    case KEY_SCROLLLOCK: return 0x91;
 
-    case 4194329: return 0x14;
-    case 4194330: return 0x91;
-    case 4194331: return 0x13;
+    case KEY_F1: return 0x70;
+    case KEY_F2: return 0x71;
+    case KEY_F3: return 0x72;
+    case KEY_F4: return 0x73;
+    case KEY_F5: return 0x74;
+    case KEY_F6: return 0x75;
+    case KEY_F7: return 0x76;
+    case KEY_F8: return 0x77;
+    case KEY_F9: return 0x78;
+    case KEY_F10: return 0x79;
+    case KEY_F11: return 0x7A;
+    case KEY_F12: return 0x7B;
+    case KEY_F13: return 0x7C;
+    case KEY_F14: return 0x7D;
+    case KEY_F15: return 0x7E;
+    case KEY_F16: return 0x7F;
+    case KEY_F17: return 0x80;
+    case KEY_F18: return 0x81;
+    case KEY_F19: return 0x82;
+    case KEY_F20: return 0x83;
+    case KEY_F21: return 0x84;
+    case KEY_F22: return 0x85;
+    case KEY_F23: return 0x86;
+    case KEY_F24: return 0x87;
 
-    case 4194332: return 0x70;
-    case 4194333: return 0x71;
-    case 4194334: return 0x72;
-    case 4194335: return 0x73;
-    case 4194336: return 0x74;
-    case 4194337: return 0x75;
-    case 4194338: return 0x76;
-    case 4194339: return 0x77;
-    case 4194340: return 0x78;
-    case 4194341: return 0x79;
-    case 4194342: return 0x7A;
-    case 4194343: return 0x7B;
-    case 4194344: return 0x7C;
-    case 4194345: return 0x7D;
-    case 4194346: return 0x7E;
-    case 4194347: return 0x7F;
-    case 4194348: return 0x80;
-    case 4194349: return 0x81;
-    case 4194350: return 0x82;
-    case 4194351: return 0x83;
-    case 4194352: return 0x84;
-    case 4194353: return 0x85;
-    case 4194354: return 0x86;
-    case 4194355: return 0x87;
+    case KEY_KP_0: return 0x60;
+    case KEY_KP_1: return 0x61;
+    case KEY_KP_2: return 0x62;
+    case KEY_KP_3: return 0x63;
+    case KEY_KP_4: return 0x64;
+    case KEY_KP_5: return 0x65;
+    case KEY_KP_6: return 0x66;
+    case KEY_KP_7: return 0x67;
+    case KEY_KP_8: return 0x68;
+    case KEY_KP_9: return 0x69;
+    case KEY_KP_MULTIPLY: return 0x6A;
+    case KEY_KP_ADD: return 0x6B;
+    case KEY_KP_SUBTRACT: return 0x6D;
+    case KEY_KP_PERIOD: return 0x6E;
+    case KEY_KP_DIVIDE: return 0x6F;
 
-    case 4194356: return 0x60;
-    case 4194357: return 0x61;
-    case 4194358: return 0x62;
-    case 4194359: return 0x63;
-    case 4194360: return 0x64;
-    case 4194361: return 0x65;
-    case 4194362: return 0x66;
-    case 4194363: return 0x67;
-    case 4194364: return 0x68;
-    case 4194365: return 0x69;
-    case 4194366: return 0x6A;
-    case 4194367: return 0x6B;
-    case 4194368: return 0x6C;
-    case 4194369: return 0x6D;
-    case 4194370: return 0x6E;
-    case 4194371: return 0x6F;
-    case 4194372: return 0x2E;
-    case 4194373: return 0x30;
-    case 4194374: return 0x2D;
-    case 4194375: return 0x2B;
-
-    case 4194376: return 0xAF;
-    case 4194377: return 0xAE;
-    case 4194378: return 0xAD;
-    case 4194379: return 0x20;
-    case 4194380: return 0xB0;
+    case KEY_MENU: return 0x5D;
+    case KEY_HELP: return 0x2F;
+    case KEY_BACK: return 0xA6;
+    case KEY_FORWARD: return 0xA7;
+    case KEY_REFRESH: return 0xA8;
+    case KEY_STOP: return 0xA9;
+    case KEY_VOLUMEMUTE: return 0xAD;
+    case KEY_VOLUMEDOWN: return 0xAE;
+    case KEY_VOLUMEUP: return 0xAF;
+    case KEY_MEDIANEXT: return 0xB0;
+    case KEY_MEDIAPREVIOUS: return 0xB1;
+    case KEY_MEDIASTOP: return 0xB2;
+    case KEY_MEDIAPLAY: return 0xB3;
 
     default: return 0;
     }

@@ -24,7 +24,7 @@ const SHORTCUT_COPY := -100
 const SHORTCUT_PASTE := -101
 const SHORTCUT_CUT := -102
 const SHORTCUT_UNDO := -103
-const SHORTCUT_REDO := -104
+const SHORTCUT_INSERT := -104
 const SHORTCUT_SELECT_ALL := -105
 const SHORTCUT_ALT_TAB := -106
 const SHORTCUT_SHOW_DESKTOP := -107
@@ -37,7 +37,7 @@ const SHORTCUT_CHORDS := {
 	SHORTCUT_PASTE: [KEY_CTRL, KEY_V],
 	SHORTCUT_CUT: [KEY_CTRL, KEY_X],
 	SHORTCUT_UNDO: [KEY_CTRL, KEY_Z],
-	SHORTCUT_REDO: [KEY_CTRL, KEY_Y],
+	SHORTCUT_INSERT: [KEY_INSERT],
 	SHORTCUT_SELECT_ALL: [KEY_CTRL, KEY_A],
 	SHORTCUT_ALT_TAB: [KEY_ALT, KEY_TAB],
 	SHORTCUT_SHOW_DESKTOP: [KEY_META, KEY_D],
@@ -59,7 +59,7 @@ var _tp_was_stick_click: bool = false
 var thumbstick_exit_flag: bool = false
 
 var _KEY_ROWS = [
-	[{"k": SHORTCUT_COPY, "l": "Copy", "w": 1.15}, {"k": SHORTCUT_PASTE, "l": "Paste", "w": 1.15}, {"k": SHORTCUT_CUT, "l": "Cut"}, {"k": SHORTCUT_UNDO, "l": "Undo", "w": 1.05}, {"k": SHORTCUT_REDO, "l": "Redo", "w": 1.05}, {"k": SHORTCUT_SELECT_ALL, "l": "Select All", "w": 1.35}, {"k": SHORTCUT_ALT_TAB, "l": "Alt+Tab", "w": 1.35}, {"k": SHORTCUT_SHOW_DESKTOP, "l": "Win+D", "w": 1.15}, {"k": SHORTCUT_TASK_MANAGER, "l": "Task Mgr", "w": 1.55}, {"k": SHORTCUT_CLOSE_WINDOW, "l": "Alt+F4", "w": 1.25}, {"k": SHORTCUT_SECURITY, "l": "Ctrl+Alt+Del", "w": 1.8}],
+	[{"k": SHORTCUT_COPY, "l": "Copy", "w": 1.15}, {"k": SHORTCUT_PASTE, "l": "Paste", "w": 1.15}, {"k": SHORTCUT_CUT, "l": "Cut"}, {"k": SHORTCUT_UNDO, "l": "Undo", "w": 1.05}, {"k": SHORTCUT_INSERT, "l": "Ins", "w": 1.05}, {"k": SHORTCUT_SELECT_ALL, "l": "Select All", "w": 1.35}, {"k": SHORTCUT_ALT_TAB, "l": "Alt+Tab", "w": 1.35}, {"k": SHORTCUT_SHOW_DESKTOP, "l": "Win+D", "w": 1.15}, {"k": SHORTCUT_TASK_MANAGER, "l": "Task Mgr", "w": 1.55}, {"k": SHORTCUT_CLOSE_WINDOW, "l": "Alt+F4", "w": 1.25}, {"k": SHORTCUT_SECURITY, "l": "Ctrl+Alt+Del", "w": 1.8}],
 	[{"k": KEY_ESCAPE, "l": "Esc", "w": 1.5}, {"k": KEY_F1, "l": "F1"}, {"k": KEY_F2, "l": "F2"}, {"k": KEY_F3, "l": "F3"}, {"k": KEY_F4, "l": "F4"}, {"k": KEY_F5, "l": "F5"}, {"k": KEY_F6, "l": "F6"}, {"k": KEY_F7, "l": "F7"}, {"k": KEY_F8, "l": "F8"}, {"k": KEY_F9, "l": "F9"}, {"k": KEY_F10, "l": "F10"}, {"k": KEY_F11, "l": "F11"}, {"k": KEY_F12, "l": "F12"}, {"k": KEY_DELETE, "l": "Del", "w": 1.5}],
 	[{"k": KEY_QUOTELEFT, "l": "`", "s": "~"}, {"k": KEY_1, "l": "1", "s": "!"}, {"k": KEY_2, "l": "2", "s": "@"}, {"k": KEY_3, "l": "3", "s": "#"}, {"k": KEY_4, "l": "4", "s": "$"}, {"k": KEY_5, "l": "5", "s": "%"}, {"k": KEY_6, "l": "6", "s": "^"}, {"k": KEY_7, "l": "7", "s": "&"}, {"k": KEY_8, "l": "8", "s": "*"}, {"k": KEY_9, "l": "9", "s": "("}, {"k": KEY_0, "l": "0", "s": ")"}, {"k": KEY_MINUS, "l": "-", "s": "_"}, {"k": KEY_EQUAL, "l": "=", "s": "+"}, {"k": KEY_BACKSPACE, "l": "Bksp", "w": 2.0}],
 	[{"k": KEY_TAB, "l": "Tab", "w": 1.5}, {"k": KEY_Q, "l": "Q"}, {"k": KEY_W, "l": "W"}, {"k": KEY_E, "l": "E"}, {"k": KEY_R, "l": "R"}, {"k": KEY_T, "l": "T"}, {"k": KEY_Y, "l": "Y"}, {"k": KEY_U, "l": "U"}, {"k": KEY_I, "l": "I"}, {"k": KEY_O, "l": "O"}, {"k": KEY_P, "l": "P"}, {"k": KEY_BRACKETLEFT, "l": "[", "s": "{"}, {"k": KEY_BRACKETRIGHT, "l": "]", "s": "}"}, {"k": KEY_BACKSLASH, "l": "\\", "s": "|", "w": 1.5}],

@@ -277,6 +277,7 @@ func request_stats_overlay_update() -> void:
 func set_stats_visible(value: bool) -> void:
 	if renderer and stream_started:
 		renderer.set_overlay_visible(value)
+		_force_redraw = true
 	if value:
 		request_stats_overlay_update()
 
@@ -296,10 +297,13 @@ func _process_stats_upload() -> void:
 		image.convert(Image.FORMAT_RGBA8)
 	if image.get_size() != Vector2i(768, 512):
 		image.resize(768, 512)
-	# Godot Images are top-left-origin while glTexSubImage2D feeds the OpenXR
-	# overlay texture bottom-left-origin data.
+	# Godot Images are top-left-origin while glTexSubImage2D feeds the native
+	# in-screen stats texture bottom-left-origin data.
 	image.flip_y()
 	renderer.upload_overlay(image.get_data(), 768, 512)
+	# Unlike the former XR quad, these pixels now live in the video swapchain.
+	# A paused/static stream needs one draw to reveal the updated text.
+	_force_redraw = true
 
 func deactivate(restore_legacy: bool) -> void:
 	if main.stream_backend:
