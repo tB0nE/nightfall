@@ -287,6 +287,17 @@ func handle_pointer_interaction():
 	var is_now_clicking = raw_clicking and not _double_click_chord_active
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
+	# A drag started on the grab bar/corner owns this press until release.
+	# The ray can pass over a shortcut as the screen moves underneath it, and
+	# was_clicking may be cleared by another target branch during that motion.
+	# Never interpret such a held press as a new shortcut click.
+	if main.grabbed_node or main.grabbed_corner_idx >= 0:
+		if main.screen_shortcuts:
+			main.screen_shortcuts.set_hover(&"")
+		if not is_now_clicking:
+			main.was_clicking = false
+			_click_pending_release = false
+		return
 	if _screen_shortcut_press_active:
 		if on_primary_shortcut:
 			main.screen_shortcuts.set_hover(shortcut_target.action)
@@ -504,7 +515,8 @@ func handle_pointer_interaction():
 			var half_h = main._ui_mesh_size.y / 2.0
 			var nx = clampf((local_pos.x / half_w + 1.0) / 2.0, 0.0, 1.0)
 			var ny = clampf(1.0 - (local_pos.y / half_h + 1.0) / 2.0, 0.0, 1.0)
-			var pixel_pos = Vector2(nx * main._ui_viewport_size.x, ny * main._ui_viewport_size.y)
+			var pixel_pos = Vector2(nx * main._ui_viewport_size.x,
+				ny * main._ui_viewport_size.y + main.UI_TOOLTIP_STRIP_PX)
 			_primary_ui_pixel = pixel_pos
 
 			var is_grab_bar = _is_ui_grab_bar(pixel_pos)
@@ -818,6 +830,8 @@ func _process_other_hand_ui():
 	var ny = clampf(1.0 - (local_pos.y / half_h + 1.0) / 2.0, 0.0, 1.0)
 	var vp_size = main._ui_viewport_size if panel == main.ui_panel_3d else (main.virtual_keyboard.viewport_size if main.virtual_keyboard else Vector2i(800, 400))
 	var pixel_pos = Vector2(nx * vp_size.x, ny * vp_size.y)
+	if panel == main.ui_panel_3d:
+		pixel_pos.y += main.UI_TOOLTIP_STRIP_PX
 
 	if panel == main.ui_panel_3d:
 		_secondary_ui_pixel = pixel_pos

@@ -32,15 +32,18 @@ static func uses_independent_screen_cursor(composition_active: bool, native_acti
 	# Quest GLES. Keep one route for every composition-backed video mode.
 	return composition_active or native_active
 
-func requested_path(stereo_mode: int) -> Path:
+func requested_path(stereo_mode: int, media_active: bool = true) -> Path:
+	# The welcome image is ordinary mono UI, even if the next stream is
+	# configured for SBS. Native video cannot present it before a decoder
+	# exists, and selecting that path here left pre-stream SBS changes inert.
 	return resolve_path(
 		legacy_renderer != null and legacy_renderer.available,
-		can_render_native(),
-		stereo_mode,
+		media_active and can_render_native(),
+		stereo_mode if media_active else 0,
 	)
 
 func apply_mode(stereo_mode: int, media_active: bool) -> Path:
-	var path := requested_path(stereo_mode)
+	var path := requested_path(stereo_mode, media_active)
 	match path:
 		Path.NATIVE:
 			# NativeXrRendererManager activates itself after the decoder exposes

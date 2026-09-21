@@ -236,7 +236,7 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 
 	main.composition_screen_controls.setup(main, main.xr_origin, main.screen_shortcuts, s)
 	main._log("[COMP] Grab-bar/shortcut composition layer created (%s)" % s.monitor_id)
-	main._log("[COMP] Corner-handle composition layers created (%s)" % s.monitor_id)
+	main._log("[COMP] Combined corner-handle composition layer created (%s)" % s.monitor_id)
 
 	if not with_stereo:
 		return
@@ -769,7 +769,11 @@ func process_ambient(delta: float):
 		return
 	if not ambient_supported() or not _ambient_viewport:
 		return
-	var should_show = available and in_use and main.is_streaming and main.settings.ambient_mode > 0
+	# The welcome UI is already rendered through the same primary composition
+	# viewport as the stream. Keep the halo available before connecting (and
+	# after disconnecting) so Static can be previewed and Slow/Live can sample
+	# the welcome image without starting the native video sampling path.
+	var should_show = available and in_use and main.settings.ambient_mode > 0
 	if not should_show:
 		_disable_ambient()
 		return
@@ -851,13 +855,9 @@ func setup_background_equirect():
 		return
 	main._log("[COMP] Environment-background equirect composition layer created")
 
-	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport, main._ui_mesh_size)
+	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport,
+		main._ui_mesh_size + Vector2(0, main.UI_TOOLTIP_STRIP_METERS))
 	main._log("[COMP] UI composition layer created")
-	main.composition_panels.setup_tooltip(
-		main.xr_origin,
-		main.ui_controller.get_tooltip_viewport(),
-		UIController.TOOLTIP_QUAD_SIZE)
-	main._log("[COMP] Tooltip composition layer created")
 	if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 		main.composition_panels.setup_keyboard(main.xr_origin, main.virtual_keyboard.viewport, main.virtual_keyboard.mesh_size)
 		main._log("[COMP] Keyboard composition layer created")
@@ -933,13 +933,15 @@ func _update_bezel_for(s: VRScreen):
 	# swapchain) constant across a bezel toggle avoids that resize entirely;
 	# a genuine resolution change (comp_base_size changing) still resizes
 	# normally via the guard below; only the padding is now unconditional.
-	# Visual cost: an ~8px transparent margin around the video when the
-	# bezel is off, instead of the video filling the quad edge-to-edge.
+	# The legacy OpenXR layer ignores viewport alpha, so a transparent margin
+	# still looks black. With the bezel off, fill the fixed padding with the
+	# image instead; only the ColorRect/inset changes, never the swapchain.
 	var px = 8
 	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
 	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
 	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
 	var show_border = main.settings.bezel_enabled and in_use
+	var inset = px if show_border else 0
 	for t in triplet:
 		if not t.bezel:
 			continue
@@ -949,15 +951,14 @@ func _update_bezel_for(s: VRScreen):
 		t.bezel.offset_top = 0
 		t.bezel.offset_right = 0
 		t.bezel.offset_bottom = 0
-		t.yuv.offset_left = px
-		t.yuv.offset_top = px
-		t.yuv.offset_right = -px
-		t.yuv.offset_bottom = -px
-		t.yuv.anchor_left = 0.0
-		t.yuv.anchor_top = 0.0
-		t.yuv.anchor_right = 1.0
-		t.yuv.anchor_bottom = 1.0
-		t.yuv.anchors_preset = 0
+		# Keep the video rectangle anchored to all four sides of the bezel.
+		# PRESET_TOP_LEFT after setting the inset discarded the full-width
+		# anchors, so welcome content could cover the border on resize.
+		t.yuv.set_anchors_preset(Control.PRESET_FULL_RECT)
+		t.yuv.offset_left = inset
+		t.yuv.offset_top = inset
+		t.yuv.offset_right = -inset
+		t.yuv.offset_bottom = -inset
 		if t.vp.size != bezel_size:
 			t.vp.size = bezel_size
 		if t.cyl and t.cyl.visible:
@@ -1175,8 +1176,14 @@ func switch_to_comp_layer():
 		in_use = false
 		main._log("[COMP] Not available, using mesh rendering")
 		return
+	# The saved SBS/AI-3D preference is allowed to remain selected on the
+	# welcome screen, but the welcome screen itself is always mono.  A delayed
+	# AI-3D commit can arrive after disconnect; using get_stereo_mode() here
+	# would reactivate the old stereo OpenXR layers while no stream exists.
+	# That stale layer transition was observed immediately before the Quest GL
+	# thread null-dereference crash.
 	var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
-	if stereo > 0:
+	if main.is_streaming and stereo > 0:
 		switch_to_stereo_comp_layer()
 		return
 	in_use = true

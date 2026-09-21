@@ -464,6 +464,8 @@ var _log_session_rotated: bool = false
 var _log_flush_timer: float = 0.0
 var _ui_viewport_size := Vector2i(1200, 580)
 var _ui_mesh_size := Vector2(1.20, 0.58)
+const UI_TOOLTIP_STRIP_PX := 102
+const UI_TOOLTIP_STRIP_METERS := 0.102
 var _ui_status_label: Label
 var _ui_pt_btn: Button
 var _ui_bg_btn: Button
@@ -982,8 +984,6 @@ func _update_cursor_layer():
 func _sync_composition_panels():
 	if not comp.in_use:
 		return
-	if ui_controller:
-		ui_controller.sync_tooltip_surface()
 	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
 	match keyboard_action:
 		CompositionPanelLayers.KeyboardMaterialAction.MAKE_TRANSPARENT:
@@ -1013,6 +1013,8 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
 func _update_grab_bar_layers():
+	# The four corner visuals share one layer, leaving room for menu/keyboard
+	# while keeping their resize targets available after headset resume.
 	composition_screen_controls.update(
 		screens,
 		comp.in_use,
@@ -2482,12 +2484,8 @@ func toggle_performance_overlay():
 	telemetry.reset_overlay()
 	if stream_backend:
 		stream_backend.take_performance_stats()
-	# Mutually exclusive: the legacy in-screen TextureRect overlay and the
-	# native renderer's own composited overlay quad both sample the same
-	# stats_viewport texture through independent, differently-positioned
-	# display paths - showing both at once (observed 2026-09-04 as one flat
-	# + one bent-along-the-curved-screen overlay) means whichever path isn't
-	# actually presenting is still drawing a stale/mispositioned copy.
+	# Only the active presentation path should draw the shared stats texture.
+	# The legacy path uses TextureRects; native blends it into its video output.
 	var native_active := video_presentation.is_native_active()
 	if comp:
 		comp.set_stats_visible(settings.performance_overlay_enabled and is_streaming and not native_active)
@@ -2597,10 +2595,17 @@ func _input(event):
 
 func _toggle_ui():
 	ui_visible = not ui_visible
+	_log("[UI] Menu %s (streaming=%s native=%s comp=%s ambient=%s)" % [
+		"opened" if ui_visible else "closed",
+		str(is_streaming),
+		str(video_presentation != null and video_presentation.is_native_active()),
+		str(comp != null and comp.in_use),
+		ambient_mode_labels[clampi(settings.ambient_mode, 0, ambient_mode_labels.size() - 1)],
+	])
 	_set_viewport_active(ui_viewport, ui_visible)
 	if ui_visible:
 		if state_manager:
-			state_manager.sync_ui_to_settings()
+			state_manager.sync_ui_to_settings(false)
 		_set_ui_position()
 		if comp.in_use and composition_panels.has_ui():
 			composition_panels.show_ui(ui_panel_3d)
@@ -2611,12 +2616,6 @@ func _toggle_ui():
 					ui_material.albedo_color = Color(1, 1, 1, 0.001)
 			else:
 				ui_panel_3d.visible = false
-			if settings.bezel_enabled:
-				comp_bezel_rect.color = Color(0, 0, 0, 0)
-				if comp_bezel_rect_left:
-					comp_bezel_rect_left.color = Color(0, 0, 0, 0)
-				if comp_bezel_rect_right:
-					comp_bezel_rect_right.color = Color(0, 0, 0, 0)
 		else:
 			ui_panel_3d.visible = true
 			var ui_material = ui_panel_3d.material_override as StandardMaterial3D
@@ -2637,12 +2636,6 @@ func _toggle_ui():
 		var area = ui_panel_3d.get_node_or_null("Area3D")
 		if area:
 			area.process_mode = Node.PROCESS_MODE_DISABLED
-		if comp.in_use and settings.bezel_enabled:
-			comp_bezel_rect.color = Color(0, 0, 0, 1)
-			if comp_bezel_rect_left:
-				comp_bezel_rect_left.color = Color(0, 0, 0, 1)
-			if comp_bezel_rect_right:
-				comp_bezel_rect_right.color = Color(0, 0, 0, 1)
 	ui_controller.set_disconnect_visible(is_streaming)
 
 var _ui_saved_offset: Vector3 = Vector3.ZERO

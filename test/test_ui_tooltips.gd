@@ -2,6 +2,8 @@ extends SceneTree
 
 class FakeMain extends Node3D:
 	var ui_visible := true
+	var _ui_viewport_size := Vector2i(1200, 580)
+	var ui_viewport: SubViewport
 
 func _init():
 	call_deferred("_run")
@@ -9,15 +11,14 @@ func _init():
 func _run():
 	var main := FakeMain.new()
 	root.add_child(main)
+	main.ui_viewport = SubViewport.new()
+	main.ui_viewport.size = Vector2i(1200, 682)
+	main.add_child(main.ui_viewport)
 	var controller := UIController.new(main)
-	controller._tooltip_panel = PanelContainer.new()
-	controller._tooltip_label = Label.new()
-	controller._tooltip_panel.add_child(controller._tooltip_label)
-	main.add_child(controller._tooltip_panel)
-	controller._tooltip_panel.visible = false
-	controller._tooltip_viewport = SubViewport.new()
-	controller._tooltip_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(controller._tooltip_viewport)
+	controller._build_tooltip_surface()
+	assert(controller._tooltip_panel.get_parent() == main.ui_viewport)
+	assert(controller._tooltip_panel.position == Vector2(100, 0))
+	assert(controller._tooltip_panel.size == Vector2(1000, 64))
 
 	var first := Button.new()
 	first.set_meta(UIController.TOOLTIP_META, "First tooltip")
@@ -38,8 +39,8 @@ func _run():
 
 	controller.set_hovered_tooltip(null)
 	assert(not controller._tooltip_panel.visible, "Tooltip should disappear immediately")
-	assert(controller._tooltip_viewport.render_target_update_mode == SubViewport.UPDATE_ALWAYS,
-		"Hiding a tooltip must not tear down its OpenXR render target")
+	assert(not controller._tooltip_panel.visible,
+		"Hiding a tooltip must clear its pixels without changing the menu render target")
 
 	controller.set_hovered_tooltip(first)
 	await create_timer(UIController.TOOLTIP_DELAY_SEC * 0.55).timeout

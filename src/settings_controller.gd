@@ -11,6 +11,7 @@ var _auto_depth_fallback: bool = false
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
 var _refresh_request_seq: int = 0
+var _last_sbs_mode: int = 1
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -280,11 +281,23 @@ func _save_setting(btn: Button, label: String):
 	main.state_manager.save_state()
 
 func cycle_sbs_mode():
+	set_sbs_mode((main.settings.host.sbs_mode + 1) % sbs_labels.size())
+
+func toggle_sbs_mode():
+	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else _last_sbs_mode)
+
+func set_sbs_mode(requested_mode: int):
 	var previous_mode: int = main.settings.host.sbs_mode
-	main.settings.host.sbs_mode = (main.settings.host.sbs_mode + 1) % 3
+	main.settings.host.sbs_mode = clampi(requested_mode, 0, sbs_labels.size() - 1)
+	if previous_mode > 0:
+		_last_sbs_mode = previous_mode
+	elif main.settings.host.sbs_mode > 0:
+		_last_sbs_mode = main.settings.host.sbs_mode
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.settings.host.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()
+	if main.screen_shortcuts:
+		main.screen_shortcuts.refresh_visuals(main.primary_screen)
 	main._log("[SBS] Mode changed: %s -> %s" % [
 		sbs_labels[previous_mode], sbs_labels[main.settings.host.sbs_mode]])
 	if main.settings.host.sbs_mode > 0 and main.screens.size() > 1:
@@ -735,6 +748,7 @@ func _schedule_ai_3d_commit():
 
 func apply_stereo():
 	var mode = get_stereo_mode()
+	var display_mode = mode if main.is_streaming else 0
 	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
 	# decoder reports the new stream's video size (normally within a frame or
 	# two of _on_stream_started(), which calls this), calling
@@ -755,9 +769,9 @@ func apply_stereo():
 	# rendering then fails to actually start, deactivate(true)'s own
 	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
 	# covers activating legacy properly.
-	main.video_presentation.apply_mode(mode, main.is_streaming)
+	main.video_presentation.apply_mode(display_mode, main.is_streaming)
 	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", mode)
+		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", display_mode)
 	if main.depth_estimator:
 		# mode 7 (MiDaS-DMap) visualizes upsampled_depth_texture (the real
 		# post-upsample data the actual warp uses), so it needs the warp

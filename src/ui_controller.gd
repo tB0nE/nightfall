@@ -22,8 +22,6 @@ var _temporary_status_generation: int = 0
 var _temporary_status_active: bool = false
 var _tooltip_panel: PanelContainer
 var _tooltip_label: Label
-var _tooltip_viewport: SubViewport
-var _tooltip_mesh: MeshInstance3D
 var _tooltip_candidate: Button
 var _tooltip_visible_target: Button
 var _tooltip_generation: int = 0
@@ -35,8 +33,6 @@ const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 const TOOLTIP_META := &"nightfall_tooltip"
 const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
-const TOOLTIP_QUAD_SIZE := Vector2(1.0, 0.064)
-const TOOLTIP_LOCAL_OFFSET := Vector3(0, 0.36, 0)
 # Keep the AI depth inspection controls available for future troubleshooting
 # without exposing them in release UI.
 const SHOW_AI3D_DIAGNOSTICS := false
@@ -82,14 +78,11 @@ func _show_tooltip(button: Button) -> void:
 	_tooltip_visible_target = button
 	_tooltip_label.text = tooltip
 	_tooltip_panel.visible = true
-	sync_tooltip_surface()
 
 func _hide_tooltip() -> void:
 	_tooltip_visible_target = null
 	if _tooltip_panel:
 		_tooltip_panel.visible = false
-	if _tooltip_mesh:
-		_tooltip_mesh.visible = false
 
 func _set_button_tooltip(button: Button, tooltip: String) -> Button:
 	button.set_meta(TOOLTIP_META, tooltip)
@@ -98,34 +91,11 @@ func _set_button_tooltip(button: Button, tooltip: String) -> Button:
 	button.tooltip_text = ""
 	return button
 
-func get_tooltip_viewport() -> SubViewport:
-	return _tooltip_viewport
-
-func sync_tooltip_surface() -> void:
-	if not _tooltip_mesh:
-		return
-	var showing: bool = _tooltip_panel != null and _tooltip_panel.visible and main.ui_visible
-	main.composition_panels.sync_tooltip_surface(
-		_tooltip_mesh,
-		showing,
-		main.comp != null and main.comp.in_use)
-
 func _build_tooltip_surface() -> void:
-	_tooltip_viewport = SubViewport.new()
-	_tooltip_viewport.name = "TooltipViewport"
-	_tooltip_viewport.disable_3d = true
-	_tooltip_viewport.transparent_bg = true
-	_tooltip_viewport.size = TOOLTIP_VIEWPORT_SIZE
-	# Keep this render target alive for the OpenXR session. Toggling the viewport
-	# or its composition layer on every hover destroys and recreates its
-	# swapchain, which can race the Quest GLES compositor and crash the app.
-	# Tooltip visibility is represented by transparent viewport content instead.
-	_tooltip_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	main.add_child(_tooltip_viewport)
-
 	_tooltip_panel = PanelContainer.new()
 	_tooltip_panel.name = "TooltipBar"
-	_tooltip_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tooltip_panel.position = Vector2((main._ui_viewport_size.x - TOOLTIP_VIEWPORT_SIZE.x) / 2.0, 0)
+	_tooltip_panel.size = TOOLTIP_VIEWPORT_SIZE
 	_tooltip_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var tooltip_style := StyleBoxFlat.new()
 	tooltip_style.bg_color = Color(0.06, 0.06, 0.10, 0.45)
@@ -144,24 +114,9 @@ func _build_tooltip_surface() -> void:
 	_tooltip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tooltip_panel.add_child(_tooltip_label)
 	_tooltip_panel.visible = false
-	_tooltip_viewport.add_child(_tooltip_panel)
-
-	_tooltip_mesh = MeshInstance3D.new()
-	_tooltip_mesh.name = "TooltipSurface"
-	var quad := QuadMesh.new()
-	quad.size = TOOLTIP_QUAD_SIZE
-	_tooltip_mesh.mesh = quad
-	_tooltip_mesh.position = TOOLTIP_LOCAL_OFFSET
-	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	material.no_depth_test = true
-	material.render_priority = 126
-	material.albedo_texture = _tooltip_viewport.get_texture()
-	_tooltip_mesh.material_override = material
-	_tooltip_mesh.visible = false
-	# No Area3D or collision shape: this surface can never intercept a menu ray.
-	main.ui_panel_3d.add_child(_tooltip_mesh)
+	# The first 102 pixels extend above the unchanged 580px menu body. This
+	# control ignores pointer events; only the original menu body has a hitbox.
+	main.ui_viewport.add_child(_tooltip_panel)
 
 # ":" added (2026-08-26) so an optional custom port can be typed directly
 # into %IPInput as "ip:port" - see main.gd's parse_ip_port().
@@ -251,7 +206,8 @@ func on_ai_3d_priority_toggled():
 
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
-		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", main.settings_controller.get_stereo_mode())
+		main.screen_mesh.material_override.set_shader_parameter("stereo_mode",
+			main.settings_controller.get_stereo_mode() if main.is_streaming else 0)
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.settings.host.sbs_mode])
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
@@ -595,13 +551,17 @@ func switch_tab(tab: int):
 
 func build_ui():
 	clear_tooltip()
-	main.ui_panel_3d.mesh.size = main._ui_mesh_size
-	main.ui_viewport.size = main._ui_viewport_size
+	main.ui_panel_3d.mesh.size = main._ui_mesh_size + Vector2(0, main.UI_TOOLTIP_STRIP_METERS)
+	main.ui_panel_3d.mesh.center_offset = Vector3(0, main.UI_TOOLTIP_STRIP_METERS * 0.5, 0)
+	main.ui_viewport.size = main._ui_viewport_size + Vector2i(0, main.UI_TOOLTIP_STRIP_PX)
 	var col_shape = main.ui_panel_3d.get_node("Area3D/CollisionShape3D")
 	if col_shape and col_shape.shape:
 		# Increase the hitbox size by 0.2m on width and height to make clicking much easier
 		col_shape.shape.size = Vector3(main._ui_mesh_size.x + 0.20, main._ui_mesh_size.y + 0.20, 0.05)
 	var root = main.get_node("%UIRoot")
+	root.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	root.position = Vector2(0, main.UI_TOOLTIP_STRIP_PX)
+	root.size = main._ui_viewport_size
 	for child in root.get_children():
 		if child.name != "IPInput" and child.name != "Numpad":
 			child.queue_free()
