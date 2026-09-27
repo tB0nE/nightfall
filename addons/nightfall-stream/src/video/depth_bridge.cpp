@@ -156,11 +156,12 @@ void DepthBridge::configure_depth(int model_index, int requested_backend) {
 #ifdef NIGHTFALL_PLATFORM_LINUX
     ensure_midas_engine();
     if (midas_engine_) {
-        midas_engine_->set_active_model(model_index);
+        effective_backend_ = midas_engine_->configure(model_index, requested_backend_);
+        backend_status_ = String::utf8(midas_engine_->get_backend_status().c_str());
+    } else {
+        effective_backend_ = DEPTH_BACKEND_CPU;
+        backend_status_ = "Linux depth runtime unavailable";
     }
-    effective_backend_ = DEPTH_BACKEND_CPU;
-    backend_status_ = requested_backend_ == DEPTH_BACKEND_GPU
-            ? "GPU depth is unavailable on Linux; using CPU" : "";
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) {
@@ -256,7 +257,10 @@ void DepthBridge::set_depth_hz_cap(int hz) {
 }
 
 int DepthBridge::get_depth_backend_capabilities(int model_index) {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    ensure_midas_engine();
+    return midas_engine_ ? midas_engine_->get_backend_capabilities(model_index) : DEPTH_BACKEND_CAP_CPU;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return DEPTH_BACKEND_CAP_CPU;
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
@@ -301,7 +305,9 @@ int DepthBridge::get_effective_depth_backend() {
 }
 
 String DepthBridge::get_depth_backend_status() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    if (midas_engine_) backend_status_ = String::utf8(midas_engine_->get_backend_status().c_str());
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return backend_status_;
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
@@ -384,6 +390,48 @@ int DepthBridge::get_depth_model_height() {
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
     if (!app_class) return 256;
     jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelHeight", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint height = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)height;
+#else
+    return 256;
+#endif
+}
+
+int DepthBridge::get_depth_model_input_width() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_width();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelInputWidth", "()I");
+    if (!method) {
+        env->DeleteLocalRef(app_class);
+        return 256;
+    }
+    jint width = env->CallStaticIntMethod(app_class, method);
+    env->DeleteLocalRef(app_class);
+    return (int)width;
+#else
+    return 256;
+#endif
+}
+
+int DepthBridge::get_depth_model_input_height() {
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return get_depth_model_height();
+#elif defined(__ANDROID__)
+    JNIEnv *env = get_jni_env();
+    if (!env) return 256;
+    jclass app_class = env->FindClass("com/godot/game/GodotApp");
+    if (!app_class) return 256;
+    jmethodID method = env->GetStaticMethodID(app_class, "getDepthModelInputHeight", "()I");
     if (!method) {
         env->DeleteLocalRef(app_class);
         return 256;
@@ -563,6 +611,8 @@ void DepthBridge::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_model_size"), &DepthBridge::get_depth_model_size);
     ClassDB::bind_method(D_METHOD("get_depth_model_width"), &DepthBridge::get_depth_model_width);
     ClassDB::bind_method(D_METHOD("get_depth_model_height"), &DepthBridge::get_depth_model_height);
+    ClassDB::bind_method(D_METHOD("get_depth_model_input_width"), &DepthBridge::get_depth_model_input_width);
+    ClassDB::bind_method(D_METHOD("get_depth_model_input_height"), &DepthBridge::get_depth_model_input_height);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_ms"), &DepthBridge::get_depth_last_inference_ms);
     ClassDB::bind_method(D_METHOD("get_depth_last_inference_hz"), &DepthBridge::get_depth_last_inference_hz);
     ClassDB::bind_method(D_METHOD("get_depth_last_age_ms"), &DepthBridge::get_depth_last_age_ms);

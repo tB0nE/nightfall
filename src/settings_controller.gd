@@ -45,13 +45,14 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                         benchmark matrix, not a formula - see
 #                         resolve_quality_tier()/get_auto_selection() below.
 #   ai_3d_models        - WHICH model, dictionaries of {label, java_index,
-#                         gpu_available}. Re-split back into two independent
+#                         gpu}. Re-split back into two independent
 #                         controls (2026-08-28, AI 3D tab) - Model here and
 #                         Type (main.settings.host.ai_3d_backend_pref, GPU/CPU) are now
 #                         orthogonal, matching Mode/Debug's own independence
-#                         above; gpu_available just records whether a GPU
-#                         variant exists at all for a given model (DA-V2-252
-#                         has none - see get_depth_backend_index()). YOLO26-N/
+#                         above; gpu records which Type exposes each entry.
+#                         Linux has CPU and Vulkan entries for MiDaS and
+#                         DA-V2-252, while platform flags hide unavailable
+#                         variants. YOLO26-N/
 #                         MiDaS/Depth Anything V2 all share the exact same
 #                         downstream warp/postProcess pipeline
 #                         (DepthEstimator.java's postProcess() works on a
@@ -95,16 +96,18 @@ var ai_3d_models: Array = [
 	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
-	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true},
-	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true},
+	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true, "linux": false},
+	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true, "linux": false},
 	# Keep this appended so existing persisted indices for the experimental
 	# widescreen GPU models do not change. Type=CPU includes it in the model
 	# cycle; it shares Java index 14 with the GPU entry above, while Type selects
 	# the full-head W8A32/XNNPACK interpreter instead of the GPU delegate.
-	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
+	{"label": "ZipDepth-384", "java_index": 14, "gpu": false, "linux": false},
 	# Android-only entries appended to preserve existing saved model indices.
 	{"label": "Auto", "java_index": 14, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": true, "linux": false},
+	# Linux Vulkan variant; appended so every existing persisted index remains stable.
+	{"label": "DA-V2-252-GPU", "java_index": 1, "gpu": true, "android": false, "linux": true},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -617,6 +620,12 @@ func get_depth_model_index() -> int:
 		return 0
 	if is_android_ai3d_auto():
 		return 18 if _auto_depth_fallback else 14
+	# Linux Auto defaults to the same high-quality ZipDepth-384 model as the
+	# APK when GPU/Vulkan is selected. CPU Auto retains the calibrated MiDaS
+	# table below, preserving the low-end fallback and tinkering choices.
+	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1 \
+			and main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU:
+		return 14
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
@@ -652,7 +661,9 @@ func get_effective_hz_cap() -> int:
 # refresh_depth_backend_status() below for how a GPU failure is surfaced
 # instead: a persistent status message, not a quiet backend swap).
 func get_depth_backend_label() -> String:
-	return "GPU" if get_depth_backend_index() == AI3D_BACKEND_GPU else "CPU"
+	if get_depth_backend_index() != AI3D_BACKEND_GPU:
+		return "CPU"
+	return "Vulkan" if OS.get_name() == "Linux" else "GPU"
 
 # A non-empty backend_status while GPU is requested means GPU depth failed
 # and (per 2026-08-30's "fail visibly, no fallback" request) is simply not

@@ -66,6 +66,9 @@ android/src/main/AndroidManifest.xml
 # at build time - build.sh will fail loudly if one referenced there is
 # missing, rather than silently shipping an incomplete build.
 /models/*.tflite
+/models/*.ncnn.param
+/models/*.ncnn.bin
+/model-training/
 
 # Model conversion artifacts
 tools/Depth-Anything-V2/

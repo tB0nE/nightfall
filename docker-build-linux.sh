@@ -44,9 +44,10 @@ mkdir -p /build/work
 (cd /build/source && tar --exclude="./build" -cf - .) | (cd /build/work && tar -xf -)
 cd /build/work
 
-cmake --preset linux -DCMAKE_BUILD_TYPE=Release -B build/linux-release
+cmake --preset linux -DCMAKE_BUILD_TYPE=Release -DNIGHTFALL_BUILD_MIDAS_TEST=OFF -B build/linux-release
 cmake --build build/linux-release
 
 cp build/linux-release/bin/linux/libnightfall-stream.linux.template_release.x86_64.so /build/output/
+chown "$(stat -c "%u:%g" /build/source)" /build/output /build/output/libnightfall-stream.linux.template_release.x86_64.so
 echo "Built: $(ls -lh /build/output/libnightfall-stream.linux.template_release.x86_64.so)"
 '

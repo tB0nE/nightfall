@@ -29,6 +29,10 @@
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/model.h"
 
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+#include "net.h"
+#endif
+
 class MidasDepthEngine {
 public:
     MidasDepthEngine();
@@ -66,6 +70,13 @@ public:
     // Any unavailable or unrecognized index falls back to MiDaS-256.
     void set_active_model(int model_index);
 
+    // Selects the model and execution backend together. Returns the effective
+    // backend using DepthBridge's 1=CPU/2=GPU convention. ZipDepth-384/256
+    // support Vulkan; the retained MiDaS/DA-V2 library remains on TFLite CPU.
+    int configure(int model_index, int requested_backend);
+    int get_backend_capabilities(int model_index) const;
+    std::string get_backend_status() const;
+
     // Native output resolution (square) of whichever model is currently
     // active - depth_estimator.gd sizes its capture viewport off this via
     // DepthBridge::get_depth_model_size(), same as Android.
@@ -100,10 +111,33 @@ private:
         bool loaded = false;
     };
 
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    struct VulkanDepthModel {
+        std::string name;
+        int size = 0;
+        int index = 0;
+        std::string stem;
+        bool input_nhwc = false;
+        float percentile_clip = 0.02f;
+        std::unique_ptr<ncnn::Net> net;
+        std::atomic<bool> loaded{false};
+        std::atomic<bool> load_attempted{false};
+    };
+#endif
+
     bool load_model(DepthModel &model, const std::string &path, const char *name, int size,
                     int index, InputLayout input_layout, bool invert_output = false,
                     float percentile_clip = 0.02f);
     std::vector<float> run_inference(DepthModel &model, const uint8_t *rgba, int width, int height);
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    void register_vulkan_model(VulkanDepthModel &model, const char *stem,
+                               const char *name, int size, int index,
+                               bool input_nhwc = false, float percentile_clip = 0.02f);
+    bool load_vulkan_model(VulkanDepthModel &model);
+    std::vector<float> run_vulkan_inference(VulkanDepthModel &model, const uint8_t *rgba,
+                                            int width, int height);
+    VulkanDepthModel *vulkan_model_for_index(int model_index);
+#endif
 
     // Ported verbatim from DepthEstimator.java - see its own comments for
     // the full reasoning (percentile-clip histogram range, dt-scaled EMA
@@ -124,6 +158,15 @@ private:
     DepthModel model_yolo_384_;
     DepthModel model_da_196_;
     DepthModel model_da_252_;
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    VulkanDepthModel model_zipdepth_384_;
+    VulkanDepthModel model_zipdepth_256_;
+    VulkanDepthModel model_midas_256_vulkan_;
+    VulkanDepthModel model_midas_192_vulkan_;
+    VulkanDepthModel model_da_252_vulkan_;
+    std::atomic<VulkanDepthModel *> active_vulkan_model_{nullptr};
+    bool vulkan_available_ = false;
+#endif
     // atomic - written from the calling thread (set_active_model()) and
     // read from worker_loop() on the dedicated inference thread; a plain
     // pointer here would be a real data race even though it happened not to
@@ -131,6 +174,10 @@ private:
     // check for that one).
     std::atomic<DepthModel *> active_model_{nullptr};
     std::atomic<int> active_model_index_{3};
+    void set_backend_status(const std::string &status);
+    mutable std::mutex backend_status_mutex_;
+    std::string backend_status_;
+    std::string model_dir_;
 
     std::thread worker_;
     std::mutex submit_mutex_;
