@@ -77,6 +77,7 @@ tools/tflite_tmp/
 tools/calibration_data.npz
 tools/depth_anything_v2.onnx
 tools/ZipDepth/
+/tools/ZipDepth
 
 # tools/model_tester/ is a desktop comparison harness (run_models.py,
 # settings.json, eg_input_1.png ARE tracked) - everything below is scratch

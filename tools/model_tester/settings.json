@@ -84,15 +84,70 @@
       "path": "yolo26s-depth-768-w8a32.tflite",
       "_note": "YOLO26-depth SMALL w8a32 variant of yolo26s_256_w8a32 (see its note) at 768x768 - exported the same way. Also fixes small's original static-int8 low-texture collapse: verified non-degenerate output on nightfall_shot.png, nightfall_github_banner.png, and demo01.jpg at this resolution. At 768, visual character (see yolo26s_w8a32_verification/) shows clean, sharp object silhouette edges (fine detail on e.g. a dog's ear/fur outline, an ornament on a table) with no visible stair-stepping/blocking artifacts."
     },
-    "zipdepth_384": {
+    "zipdepth_384_hybrid_v1": {
       "enabled": true,
       "path": "../../models/zipdepth-base-384-gpu.tflite",
       "_note": "ZipDepth (github.com/fabiotosi92/ZipDepth, ECCV 2026, MIT) - 6.1M-param pure-CNN (RepVGG + Strip Pooling/SE/Global-Context attention) distilled from Depth Anything V2 Large across 14.1M images/17 domains. Built via tools/convert_zipdepth.py from the repo's own NPU checkpoint, onnx2tf -tb tf_converter backend (proper weight-only float16 quantization, float32 I/O). Deployed on Android as a GPU-only variant (DepthEstimator.java's MODEL_ZIPDEPTH_384_GPU) - no CPU/int8 build yet, so this CPU-path test just runs the same float32-I/O file XNNPACK does on desktop, same as depth_anything's GPU-style entries. 384 = ZipDepth's native/trained resolution (all paper benchmark numbers are at this size) - 192/256 variants were also tested here but dropped (2026-09-04, see tools/convert_zipdepth.py's docstring): ZipDepth has no dedicated lower-resolution training the way MiDaS-192 does, and it showed."
     },
-    "zipdepth_384_standard_mobile": {
+    "zipdepth_384_standard_v1": {
       "enabled": true,
       "path": "../../models/zipdepth-base-384-standard-mobile-gpu.tflite",
       "_note": "Experimental exact rewrite of ZipDepth's sharper standard convex head. Replaces torch.nn.Unfold with a fixed nine-neighbor convolution while retaining the pretrained standard mask predictor, softmax weighting, and subpixel output. This is a no-training quality test and is not the production model."
+    },
+    "zipdepth_384_standard_v2": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-standard-mobile-v2-gpu.tflite",
+      "_note": "Lossless vectorized rewrite of the Standard head for the Quest comparison build."
+    },
+    "zipdepth_384_standard_v3": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-standard-mobile-v3-gpu.tflite",
+      "_note": "Exact four-channel accumulation experiment intended to avoid Standard-v2's 36-channel weighted intermediate."
+    },
+    "zipdepth_384_standard_optimized": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-standard-packed-conv4-reduceconv-zeropad-gpu.tflite",
+      "_note": "Latest fully delegated Standard head: four 9-channel learned mask convolutions, four channel softmaxes, fixed 1x1 weighted reductions, and delegate-safe zero-padded neighbour extraction. Emits packed 192x192x4 output which Android interleaves to 384x384; differs from Standard-v1 only at the outer border."
+    },
+    "zipdepth_384_standard_edgepad": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
+      "_note": "Exact-border experiment: rebuilds replicate padding from edge slices and concatenation so it can potentially remain fully OpenCL-delegated without changing Standard-v1 output."
+    },
+    "zipdepth_256_standard_edgepad": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
+      "_note": "Standard-checkpoint 256x256 experiment. The exact EdgePad reconstruction head converts its native 128x128 half-depth tensor into packed 128x128x4 output, which is interleaved to 256x256."
+    },
+    "zipdepth_512x288_standard_edgepad": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-512x288-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
+      "_note": "Exact 16:9 Standard EdgePad experiment with the same 147456 input pixels as 384x384; reconstructs natively from 256x144 to 512x288."
+    },
+    "zipdepth_384_hybrid_v2": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-hybrid-v2-gpu.tflite",
+      "_note": "Hybrid-v2 mobile head distilled from Standard while retaining the Hybrid backbone and decoder."
+    },
+    "zipdepth_384_direct_v1": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-384-direct-half-gpu.tflite",
+      "_note": "Standard-checkpoint encoder/decoder with the trained 192x192 half-resolution depth exposed directly before the learned convex 2x reconstruction head."
+    },
+    "zipdepth_256_direct_v1": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-256-direct-half-gpu.tflite",
+      "_note": "Standard-checkpoint 256x256 input with its native 128x128 half-depth tensor exposed directly before the learned convex reconstruction head."
+    },
+    "zipdepth_256_hybrid_v1": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-256-gpu.tflite",
+      "_note": "Retained 256x256 Hybrid/NPU-head reference; removed from Android production after final-warp headset testing favored EdgePad-256."
+    },
+    "zipdepth_512_direct_v1": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-512-direct-half-gpu.tflite",
+      "_note": "Higher-resolution Direct experiment: 512x512 model input with the native trained half-resolution output exposed at 256x256 before Nightfall's guided 480x270 pass."
     },
     "zipdepth_512x288": {
       "enabled": true,

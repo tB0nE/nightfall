@@ -33,6 +33,7 @@ from zipdepth.utils.model_utils import (  # noqa: E402
     fuse_remaining_conv_bn,
     strip_state_dict_prefixes,
 )
+from zipdepth_hybrid_v2 import install_hybrid_v2_head  # noqa: E402
 
 
 def _checkpoint_state(checkpoint: Path) -> dict[str, torch.Tensor]:
@@ -244,6 +245,99 @@ def bypass_npu_upsampling_head(model: nn.Module) -> None:
     upsampler.forward = types.MethodType(forward_bilinear, upsampler)
 
 
+def expose_half_resolution_depth(model: nn.Module) -> None:
+    """Return the decoder's trained half-resolution depth before upsampling.
+
+    A 384x384 ZipDepth input naturally produces a 192x192 depth prediction.
+    This keeps the complete encoder, feature pyramid, half-resolution fusion,
+    and trained depth head; only the final learned 2x reconstruction is
+    omitted so Nightfall's existing colour-guided pass can upscale it.
+    """
+    decoder = model.decoder
+
+    def forward_direct_half(self_m, s_half, feats, _size):
+        c1, c2, c3, c4 = feats
+        f4 = self_m.proj4(c4)
+        f3 = self_m.fuse3(c3, f4)
+        f2 = self_m.fuse2(c2, f3)
+        f1 = self_m.fuse1(c1, f2)
+        f_half = self_m.fuse_half(s_half, f1)
+        return F.relu(self_m.head_half(f_half))
+
+    decoder.forward = types.MethodType(forward_direct_half, decoder)
+
+
+def install_profile_probe(model: nn.Module, stage: str) -> None:
+    """Stop Standard at a cumulative profiling boundary.
+
+    These probes are diagnostic models, not candidate heads.  The f1/f_half
+    probes use a fixed channel-average 1x1 projection so both expose a
+    192x192x1 tensor.  Later probes expose their natural cumulative tensors;
+    concatenating depth_half prevents conversion from pruning the Direct path.
+    """
+    decoder = model.decoder
+    if stage == "f1":
+        channels = decoder.fuse1.proj_high.out_channels
+    elif stage == "f-half":
+        channels = decoder.fuse_half.proj_high.out_channels
+    else:
+        channels = 0
+
+    if channels:
+        projection = nn.Conv2d(channels, 1, 1, bias=False)
+        with torch.no_grad():
+            projection.weight.fill_(1.0 / channels)
+        projection.weight.requires_grad_(False)
+        decoder.add_module("profile_projection", projection)
+
+    if stage in ("weighted",):
+        neighbor_conv = nn.Conv2d(1, 9, 3, bias=False)
+        with torch.no_grad():
+            neighbor_conv.weight.zero_()
+            for index in range(9):
+                neighbor_conv.weight[index, 0, index // 3, index % 3] = 1.0
+        neighbor_conv.weight.requires_grad_(False)
+        decoder.add_module("profile_neighbor_conv", neighbor_conv)
+
+    def forward_probe(self_m, s_half, feats, _size):
+        c1, c2, c3, c4 = feats
+        f4 = self_m.proj4(c4)
+        f3 = self_m.fuse3(c3, f4)
+        f2 = self_m.fuse2(c2, f3)
+        f1 = self_m.fuse1(c1, f2)
+        if stage == "f1":
+            projected = self_m.profile_projection(f1)
+            return F.interpolate(
+                projected, scale_factor=2, mode="bilinear", align_corners=False
+            )
+
+        f_half = self_m.fuse_half(s_half, f1)
+        if stage == "f-half":
+            return self_m.profile_projection(f_half)
+
+        depth_half = self_m.head_half(f_half)
+        mask_logits = self_m.convex_up.mask_pred(f_half)
+        if stage == "mask":
+            return torch.cat((depth_half, mask_logits), dim=1)
+
+        batch, _, height, width = mask_logits.shape
+        mask = mask_logits.view(batch, 9, 4, height, width)
+        mask = F.softmax(mask / self_m.convex_up.temperature, dim=1)
+        mask_flat = mask.reshape(batch, 36, height, width)
+        if stage == "softmax":
+            return torch.cat((depth_half, mask_flat), dim=1)
+
+        depth_pad = F.pad(depth_half, (1, 1, 1, 1), mode="replicate")
+        neighbors = self_m.profile_neighbor_conv(depth_pad)
+        subpixels = []
+        for index in range(4):
+            weights = mask[:, :, index, :, :]
+            subpixels.append((weights * neighbors).sum(dim=1, keepdim=True))
+        return torch.cat(subpixels, dim=1)
+
+    decoder.forward = types.MethodType(forward_probe, decoder)
+
+
 def rewrite_standard_upsampling_head(model: nn.Module) -> None:
     """Replace ``unfold`` with an equivalent fixed one-hot convolution.
 
@@ -286,6 +380,318 @@ def rewrite_standard_upsampling_head(model: nn.Module) -> None:
         return F.relu(F.pixel_shuffle(up, scale))
 
     upsampler.forward = types.MethodType(forward_mobile, upsampler)
+
+
+def rewrite_standard_upsampling_head_v2(model: nn.Module) -> None:
+    """Vectorize the exact standard convex head for mobile GPU execution.
+
+    ``rewrite_standard_upsampling_head`` deliberately emits four independent
+    subpixel branches.  That graph proved correct on Adreno, but onnx2tf lowers
+    each branch to its own GATHER/TRANSPOSE/MUL/SUM chain.  This version keeps
+    all four subpixels in one tensor, explicitly duplicates the nine depth
+    neighbours to avoid unsafe implicit broadcasting, and performs the four
+    reductions with one fixed 1x1 convolution.  The weights and mathematics
+    are unchanged; only the graph layout differs.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-mobile-v2 rewrite requires the standard unfold head")
+
+    def forward_mobile_v2(self_m, feat, depth):
+        batch, _, height, width = depth.shape
+        subpixel_count = self_m.scale * self_m.scale
+
+        # Preserve the checkpoint's [neighbour, subpixel] channel ordering.
+        mask = self_m.mask_pred(feat)
+        mask = mask.view(batch, 9, subpixel_count, height, width)
+        mask = F.softmax(mask / self_m.temperature, dim=1)
+
+        kernels = depth.new_zeros((9, 1, 3, 3))
+        for index in range(9):
+            kernels[index, 0, index // 3, index % 3] = 1.0
+        depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+        neighbors = F.conv2d(depth_pad, kernels)
+
+        # CONCAT is well supported by LiteRT GPU and materializes equal shapes
+        # before MUL, avoiding the Adreno implicit-broadcast correctness bug.
+        neighbors = torch.stack([neighbors] * subpixel_count, dim=2)
+        weighted = (mask * neighbors).reshape(
+            batch, 9 * subpixel_count, height, width
+        )
+
+        # Channel order is neighbour-major: n0s0,n0s1,...,n8s3.  A fixed
+        # block-sparse 1x1 convolution computes all four nine-neighbour sums
+        # in one GPU kernel instead of four separate reductions.
+        reduce_weights = depth.new_zeros(
+            (subpixel_count, 9 * subpixel_count, 1, 1)
+        )
+        for subpixel in range(subpixel_count):
+            for neighbor in range(9):
+                reduce_weights[subpixel, neighbor * subpixel_count + subpixel, 0, 0] = 1.0
+        up = F.conv2d(weighted, reduce_weights)
+        return F.relu(F.pixel_shuffle(up, self_m.scale))
+
+    upsampler.forward = types.MethodType(forward_mobile_v2, upsampler)
+
+
+def rewrite_standard_upsampling_head_v3(model: nn.Module) -> None:
+    """Accumulate exact convex weights as GPU-native four-channel vectors.
+
+    V2 materializes all 36 neighbour/subpixel products and reduces them with
+    a sparse 1x1 convolution.  That is compact as a graph, but it creates a
+    large 192x192x36 intermediate and asks the mobile GPU to read it again.
+    V3 instead treats the four output subpixels as one RGBA-like vector and
+    adds each of the nine weighted neighbour contributions in sequence.
+    LiteRT's GPU graph optimizer can fuse elementwise MUL/ADD chains, while
+    every intermediate remains only four channels wide.  The softmax,
+    learned masks, neighbours, and final values are mathematically unchanged.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-mobile-v3 rewrite requires the standard unfold head")
+
+    def forward_mobile_v3(self_m, feat, depth):
+        batch, _, height, width = depth.shape
+        subpixel_count = self_m.scale * self_m.scale
+
+        mask = self_m.mask_pred(feat)
+        mask = mask.view(batch, 9, subpixel_count, height, width)
+        mask = F.softmax(mask / self_m.temperature, dim=1)
+
+        kernels = depth.new_zeros((9, 1, 3, 3))
+        for index in range(9):
+            kernels[index, 0, index // 3, index % 3] = 1.0
+        depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+        neighbors = F.conv2d(depth_pad, kernels)
+
+        up = None
+        for neighbor in range(9):
+            # Materialize four equal channels before MUL.  This preserves the
+            # Adreno no-implicit-broadcast rule and aligns each operation to
+            # the delegate's native four-channel texture slices.
+            value = neighbors[:, neighbor:neighbor + 1, :, :]
+            value4 = torch.cat([value] * subpixel_count, dim=1)
+            contribution = mask[:, neighbor, :, :, :] * value4
+            up = contribution if up is None else up + contribution
+
+        # Anchor the NCHW channel layout before DEPTH_TO_SPACE.  Without this
+        # no-op projection, onnx2tf incorrectly folded the elementwise chain's
+        # final transpose into pixel shuffle and emitted [1,8,384,48] output.
+        # A convolution boundary follows the same proven conversion path as
+        # Standard-v2's reducer while reading/writing only four channels.
+        identity = depth.new_zeros(
+            (subpixel_count, subpixel_count, 1, 1)
+        )
+        for channel in range(subpixel_count):
+            identity[channel, channel, 0, 0] = 1.0
+        up = F.conv2d(up, identity)
+        return F.relu(F.pixel_shuffle(up, self_m.scale))
+
+    upsampler.forward = types.MethodType(forward_mobile_v3, upsampler)
+
+
+def rewrite_standard_packed_softmax4(model: nn.Module) -> None:
+    """Emit exact packed Standard depth using four GPU-friendly softmaxes.
+
+    The checkpoint stores mask logits neighbour-major as ``n0s0,n0s1,...``.
+    The normal export reshapes that into a five-dimensional tensor so one
+    softmax can normalize the nine neighbours for all four output subpixels.
+    LiteRT lowers that path through multiple transposes and CPU partitions on
+    Adreno. Reorder the final learned convolution's output channels once to
+    subpixel-major ``s0n0,s0n1,...``. Four contiguous 9-channel tensors can
+    then use ordinary 4D channel softmax without changing any values.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-packed-softmax4 requires the standard unfold head")
+
+    final_convs = [
+        module for module in upsampler.mask_pred.modules()
+        if isinstance(module, nn.Conv2d)
+    ]
+    if not final_convs or final_convs[-1].out_channels != 36:
+        raise RuntimeError("Expected Standard mask predictor to end in 36 channels")
+    output_conv = final_convs[-1]
+    channel_order = [
+        neighbor * 4 + subpixel
+        for subpixel in range(4)
+        for neighbor in range(9)
+    ]
+    with torch.no_grad():
+        output_conv.weight.copy_(output_conv.weight[channel_order].clone())
+        if output_conv.bias is not None:
+            output_conv.bias.copy_(output_conv.bias[channel_order].clone())
+
+    def forward_packed_softmax4(self_m, feat, depth):
+        mask_logits = self_m.mask_pred(feat)
+        mask_groups = torch.split(mask_logits, 9, dim=1)
+        masks = [
+            F.softmax(group / self_m.temperature, dim=1)
+            for group in mask_groups
+        ]
+
+        kernels = depth.new_zeros((9, 1, 3, 3))
+        for index in range(9):
+            kernels[index, 0, index // 3, index % 3] = 1.0
+        depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+        neighbors = F.conv2d(depth_pad, kernels)
+
+        subpixels = [
+            (weights * neighbors).sum(dim=1, keepdim=True)
+            for weights in masks
+        ]
+        return torch.cat(subpixels, dim=1)
+
+    upsampler.forward = types.MethodType(forward_packed_softmax4, upsampler)
+
+
+def rewrite_standard_packed_conv4(
+    model: nn.Module, *, convolution_reduction: bool = False,
+    delegate_safe_padding: bool = False,
+    explicit_replicate_padding: bool = False,
+) -> None:
+    """Emit exact packed Standard depth without a 36-channel split op.
+
+    The final mask predictor is a 1x1 convolution, so its output channels are
+    independent. Four 9-channel convolutions using slices of the same learned
+    weights are mathematically equivalent to one 36-channel convolution
+    followed by SPLIT, while presenting the GPU delegate with four directly
+    consumable softmax inputs.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-packed-conv4 requires the standard unfold head")
+
+    mask_layers = list(upsampler.mask_pred.children())
+    if len(mask_layers) != 3 or not isinstance(mask_layers[-1], nn.Conv2d):
+        raise RuntimeError("Unexpected Standard mask predictor structure")
+    output_conv = mask_layers[-1]
+    if output_conv.in_channels != 8 or output_conv.out_channels != 36:
+        raise RuntimeError("Expected Standard mask predictor 8->36 output convolution")
+
+    upsampler.mask_softmax4_stem = nn.Sequential(*mask_layers[:-1])
+    heads = []
+    for subpixel in range(4):
+        indices = [neighbor * 4 + subpixel for neighbor in range(9)]
+        head = nn.Conv2d(8, 9, kernel_size=1, bias=output_conv.bias is not None)
+        with torch.no_grad():
+            head.weight.copy_(output_conv.weight[indices])
+            if output_conv.bias is not None:
+                head.bias.copy_(output_conv.bias[indices])
+        heads.append(head)
+    upsampler.mask_softmax4_heads = nn.ModuleList(heads)
+    # Avoid retaining/exporting an unused duplicate of the predictor weights.
+    upsampler.mask_pred = nn.Identity()
+
+    def forward_packed_conv4(self_m, feat, depth):
+        hidden = self_m.mask_softmax4_stem(feat)
+        masks = [
+            F.softmax(head(hidden) / self_m.temperature, dim=1)
+            for head in self_m.mask_softmax4_heads
+        ]
+
+        kernels = depth.new_zeros((9, 1, 3, 3))
+        for index in range(9):
+            kernels[index, 0, index // 3, index % 3] = 1.0
+        if explicit_replicate_padding:
+            # Express replicate padding using only slices and concatenation.
+            # Unlike ONNX Pad(mode=edge), these operators are candidates for
+            # LiteRT GPU delegation, while preserving Standard-v1 exactly.
+            left = depth[:, :, :, :1]
+            right = depth[:, :, :, -1:]
+            horizontal = torch.cat((left, depth, right), dim=3)
+            top = horizontal[:, :, :1, :]
+            bottom = horizontal[:, :, -1:, :]
+            depth_pad = torch.cat((top, horizontal, bottom), dim=2)
+            neighbors = F.conv2d(depth_pad, kernels)
+        elif delegate_safe_padding:
+            # Replicate padding exports as MIRROR_PAD, which LiteRT 1.4.2's
+            # GPU delegate cannot claim. That splits this tiny reconstruction
+            # tail into CPU/GPU partitions and forces four 9-channel softmax
+            # maps through CPU memory. Zero-padding inside CONV_2D keeps the
+            # entire tail delegated; it differs only on the outermost pixel.
+            neighbors = F.conv2d(depth, kernels, padding=1)
+        else:
+            depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+            neighbors = F.conv2d(depth_pad, kernels)
+        products = [weights * neighbors for weights in masks]
+        if convolution_reduction:
+            # A fixed 1x1 9->1 convolution is the same dot product as SUM,
+            # but uses the delegate's best-supported primitive.
+            reduction_kernel = depth.new_ones((1, 9, 1, 1))
+            subpixels = [
+                F.conv2d(product, reduction_kernel) for product in products
+            ]
+        else:
+            subpixels = [
+                product.sum(dim=1, keepdim=True) for product in products
+            ]
+        packed = torch.cat(subpixels, dim=1)
+        return packed
+
+    upsampler.forward = types.MethodType(forward_packed_conv4, upsampler)
+
+
+def rewrite_standard_packed_rgba(model: nn.Module) -> None:
+    """Map exact Standard reconstruction onto four-channel GPU lanes.
+
+    Each of the nine neighbours owns four mask logits, one for every 2x2
+    output subpixel. Keeping those four values together matches the GPU
+    delegate's RGBA texture slices. An explicit stable softmax across nine
+    RGBA tensors replaces four generic 9-channel softmax/reduction branches;
+    elementwise maximum/exp/add/mul/div chains can be fused by the delegate.
+    """
+    upsampler = model.decoder.convex_up
+    if not upsampler.use_unfold:
+        raise ValueError("standard-packed-rgba requires the standard unfold head")
+
+    mask_layers = list(upsampler.mask_pred.children())
+    if len(mask_layers) != 3 or not isinstance(mask_layers[-1], nn.Conv2d):
+        raise RuntimeError("Unexpected Standard mask predictor structure")
+    output_conv = mask_layers[-1]
+    if output_conv.in_channels != 8 or output_conv.out_channels != 36:
+        raise RuntimeError("Expected Standard mask predictor 8->36 output convolution")
+
+    upsampler.mask_rgba_stem = nn.Sequential(*mask_layers[:-1])
+    heads = []
+    for neighbor in range(9):
+        indices = list(range(neighbor * 4, neighbor * 4 + 4))
+        head = nn.Conv2d(8, 4, kernel_size=1, bias=output_conv.bias is not None)
+        with torch.no_grad():
+            head.weight.copy_(output_conv.weight[indices])
+            if output_conv.bias is not None:
+                head.bias.copy_(output_conv.bias[indices])
+        heads.append(head)
+    upsampler.mask_rgba_heads = nn.ModuleList(heads)
+    upsampler.mask_pred = nn.Identity()
+
+    def forward_packed_rgba(self_m, feat, depth):
+        hidden = self_m.mask_rgba_stem(feat)
+        logits = [
+            head(hidden) / self_m.temperature for head in self_m.mask_rgba_heads
+        ]
+
+        maximum = logits[0]
+        for logit in logits[1:]:
+            maximum = torch.maximum(maximum, logit)
+        exponentials = [torch.exp(logit - maximum) for logit in logits]
+        denominator = exponentials[0]
+        for exponential in exponentials[1:]:
+            denominator = denominator + exponential
+
+        depth_pad = F.pad(depth, (1, 1, 1, 1), mode="replicate")
+        weighted = None
+        for neighbor, exponential in enumerate(exponentials):
+            # Four duplicate outputs place scalar neighbour depth in the same
+            # RGBA lanes as its subpixel weights without channel broadcast.
+            kernel = depth.new_zeros((4, 1, 3, 3))
+            kernel[:, 0, neighbor // 3, neighbor % 3] = 1.0
+            neighbor4 = F.conv2d(depth_pad, kernel)
+            contribution = exponential * neighbor4
+            weighted = contribution if weighted is None else weighted + contribution
+        return weighted / denominator
+
+    upsampler.forward = types.MethodType(forward_packed_rgba, upsampler)
 
 
 def report_standard_head_equivalence(
@@ -538,14 +944,35 @@ def main() -> None:
         "--head-mode",
         choices=(
             "full",
+            "direct-half",
             "bilinear",
             "standard-mobile",
+            "standard-mobile-v2",
+            "standard-mobile-v3",
+            "standard-packed",
+            "standard-packed-softmax4",
+            "standard-packed-conv4",
+            "standard-packed-conv4-reduceconv",
+            "standard-packed-conv4-reduceconv-zeropad",
+            "standard-packed-conv4-reduceconv-edgepad",
+            "standard-packed-rgba",
+            "hybrid-v2",
+            "profile-f1",
+            "profile-f-half",
+            "profile-mask",
+            "profile-softmax",
+            "profile-weighted",
             "encoder-mosaic",
             "stage2-mosaic",
             "decoder-mosaic",
         ),
         default="full",
         help="use the complete NPU blend head or bypass it for diagnosis",
+    )
+    parser.add_argument(
+        "--hybrid-v2-checkpoint",
+        type=Path,
+        help="trained head checkpoint required by --head-mode hybrid-v2",
     )
     args = parser.parse_args()
 
@@ -562,19 +989,81 @@ def main() -> None:
     if width % 32 or height % 32:
         parser.error("ZipDepth export dimensions must both be multiples of 32")
 
-    if args.head_mode == "standard-mobile":
+    standard_modes = (
+        "direct-half",
+        "standard-mobile",
+        "standard-mobile-v2",
+        "standard-mobile-v3",
+        "standard-packed",
+        "standard-packed-softmax4",
+        "standard-packed-conv4",
+        "standard-packed-conv4-reduceconv",
+        "standard-packed-conv4-reduceconv-zeropad",
+        "standard-packed-conv4-reduceconv-edgepad",
+        "standard-packed-rgba",
+        "profile-f1",
+        "profile-f-half",
+        "profile-mask",
+        "profile-softmax",
+        "profile-weighted",
+    )
+    if args.head_mode in standard_modes:
         standard_checkpoint = args.backbone_ckpt or args.ckpt
         reference = load_model(standard_checkpoint, upsample_unfold=True)
     else:
         reference = load_model(args.ckpt, args.backbone_ckpt)
     candidate = copy.deepcopy(reference)
+    if args.head_mode == "hybrid-v2":
+        if args.hybrid_v2_checkpoint is None:
+            parser.error("--head-mode hybrid-v2 requires --hybrid-v2-checkpoint")
+        checkpoint = torch.load(
+            args.hybrid_v2_checkpoint, map_location="cpu", weights_only=False
+        )
+        refinement_channels = int(checkpoint.get("refinement_channels", 8))
+        correction_limit = float(checkpoint.get("correction_limit", 0.5))
+        reference_head = install_hybrid_v2_head(
+            reference, refinement_channels, correction_limit
+        )
+        candidate_head = install_hybrid_v2_head(
+            candidate, refinement_channels, correction_limit
+        )
+        reference_head.load_state_dict(checkpoint["head_state_dict"])
+        candidate_head.load_state_dict(checkpoint["head_state_dict"])
     patch_export_graph(reference, height, width, gpu_safe=False)
     patch_export_graph(candidate, height, width, gpu_safe=True)
     expand_unaligned_grouped_convolution(candidate)
     verify_equivalence(reference, candidate, height, width)
-    if args.head_mode == "standard-mobile":
+    if args.head_mode == "direct-half":
+        expose_half_resolution_depth(candidate)
+    elif args.head_mode == "standard-mobile":
         rewrite_standard_upsampling_head(candidate)
         report_standard_head_equivalence(reference, candidate, height, width)
+    elif args.head_mode == "standard-mobile-v2":
+        rewrite_standard_upsampling_head_v2(candidate)
+        report_standard_head_equivalence(reference, candidate, height, width)
+    elif args.head_mode == "standard-mobile-v3":
+        rewrite_standard_upsampling_head_v3(candidate)
+        report_standard_head_equivalence(reference, candidate, height, width)
+    elif args.head_mode == "standard-packed":
+        install_profile_probe(candidate, "weighted")
+    elif args.head_mode == "standard-packed-softmax4":
+        rewrite_standard_packed_softmax4(candidate)
+    elif args.head_mode == "standard-packed-conv4":
+        rewrite_standard_packed_conv4(candidate)
+    elif args.head_mode == "standard-packed-conv4-reduceconv":
+        rewrite_standard_packed_conv4(candidate, convolution_reduction=True)
+    elif args.head_mode == "standard-packed-conv4-reduceconv-zeropad":
+        rewrite_standard_packed_conv4(
+            candidate, convolution_reduction=True, delegate_safe_padding=True
+        )
+    elif args.head_mode == "standard-packed-conv4-reduceconv-edgepad":
+        rewrite_standard_packed_conv4(
+            candidate,
+            convolution_reduction=True,
+            explicit_replicate_padding=True,
+        )
+    elif args.head_mode == "standard-packed-rgba":
+        rewrite_standard_packed_rgba(candidate)
     elif args.head_mode == "bilinear":
         full_head = copy.deepcopy(candidate)
         bypass_npu_upsampling_head(candidate)
@@ -585,6 +1074,8 @@ def main() -> None:
         candidate = Stage2Mosaic(candidate).eval()
     elif args.head_mode == "decoder-mosaic":
         candidate = DecoderMosaic(candidate).eval()
+    elif args.head_mode.startswith("profile-"):
+        install_profile_probe(candidate, args.head_mode.removeprefix("profile-"))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     export_onnx(candidate, height, width, args.output, args.opset)
 
