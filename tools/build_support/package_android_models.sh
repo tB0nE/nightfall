@@ -9,34 +9,61 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ASSET_DIR="$1"
-ZIPDEPTH_384_MODEL="${NIGHTFALL_ZIPDEPTH_384_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-gpu.tflite}"
-ZIPDEPTH_256_MODEL="${NIGHTFALL_ZIPDEPTH_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-gpu.tflite}"
 
-if [[ ! -f "$ZIPDEPTH_384_MODEL" ]]; then
-  echo "Error: ZipDepth-384 model not found at $ZIPDEPTH_384_MODEL" >&2
-  exit 1
-fi
-if [[ ! -f "$ZIPDEPTH_256_MODEL" ]]; then
-  echo "Error: ZipDepth-256 model not found at $ZIPDEPTH_256_MODEL" >&2
-  exit 1
-fi
+# Android's production tier set. Historical/profiling exports stay under
+# models/ and are documented in models/README.md, but are deliberately not
+# carried in every APK.
+ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
+ZIPDEPTH_EDGEPAD_256_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
+
+declare -A REQUIRED_MODELS=(
+  ["EdgePad-384"]="$ZIPDEPTH_STANDARD_MODEL"
+  ["EdgePad-256"]="$ZIPDEPTH_EDGEPAD_256_MODEL"
+)
+for label in "${!REQUIRED_MODELS[@]}"; do
+  model_path="${REQUIRED_MODELS[$label]}"
+  if [[ ! -f "$model_path" ]]; then
+    echo "Error: $label model not found at $model_path" >&2
+    exit 1
+  fi
+done
 
 mkdir -p "$ASSET_DIR"
-echo "Bundling ZipDepth-384 model: $ZIPDEPTH_384_MODEL"
-cp "$ZIPDEPTH_384_MODEL" "$ASSET_DIR/zipdepth-base-384-gpu.tflite"
-echo "Bundling ZipDepth-256 model: $ZIPDEPTH_256_MODEL"
-cp "$ZIPDEPTH_256_MODEL" "$ASSET_DIR/zipdepth-base-256-gpu.tflite"
+# Remove assets staged by an earlier comparison build. The model exports stay
+# under models/ for future experiments; only the production APK is reduced.
+rm -f \
+  "$ASSET_DIR/zipdepth-base-384-direct-half-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-base-256-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-base-256-direct-half-gpu.tflite"
+echo "Bundling EdgePad-384 model: $ZIPDEPTH_STANDARD_MODEL"
+cp "$ZIPDEPTH_STANDARD_MODEL" \
+  "$ASSET_DIR/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
+echo "Bundling EdgePad-256 model: $ZIPDEPTH_EDGEPAD_256_MODEL"
+cp "$ZIPDEPTH_EDGEPAD_256_MODEL" \
+  "$ASSET_DIR/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
 
-# Android intentionally ships only these two ZipDepth GPU models. The Java loader still
-# soft-fails the models below so they can be re-enabled after platform policy
-# is unlocked and performance is re-benchmarked. Uncomment only the required
-# copies; see models/README.md for provenance and compatibility details.
-# cp "$PROJECT_ROOT/models/midas-midas-v2-w8a8.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/midas-v21-small-192-int8.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/midas-v21-small-192-gpu.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/midas-v21-small-256-gpu.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/depth-anything-v2-small-252.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/zipdepth-base-384-standard-w8a32.tflite" \
-#   "$ASSET_DIR/zipdepth-base-384-cpu.tflite"
-# cp "$PROJECT_ROOT/models/zipdepth-base-512x288-gpu.tflite" "$ASSET_DIR/"
-# cp "$PROJECT_ROOT/models/zipdepth-base-672x384-gpu.tflite" "$ASSET_DIR/"
+# Opt-in cumulative profiling assets. Normal release APKs never include these;
+# they are consumed only when GodotApp is launched through ADB with
+# --es nightfall_depth_profile staged.
+if [[ "${NIGHTFALL_INCLUDE_DEPTH_PROFILE_MODELS:-0}" == "1" ]]; then
+  PROFILE_MODELS=(
+    "zipdepth-base-384-profile-f1-gpu.tflite"
+    "zipdepth-base-384-profile-f-half-gpu.tflite"
+    "zipdepth-base-384-profile-mask-gpu.tflite"
+    "zipdepth-base-384-profile-softmax-gpu.tflite"
+    "zipdepth-base-384-profile-weighted-gpu.tflite"
+  )
+  for profile_model in "${PROFILE_MODELS[@]}"; do
+    profile_path="$PROJECT_ROOT/models/$profile_model"
+    if [[ ! -f "$profile_path" ]]; then
+      echo "Error: ZipDepth profiling model not found at $profile_path" >&2
+      exit 1
+    fi
+    echo "Bundling ZipDepth profiling model: $profile_path"
+    cp "$profile_path" "$ASSET_DIR/$profile_model"
+  done
+fi
+
+# Re-enable archived models only for a focused comparison build. Their files,
+# conversion recipes, quality results, and Java indices are retained; see
+# models/README.md and docs/guides/zipdepth-quest-tiers.md.

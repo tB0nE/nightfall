@@ -1467,7 +1467,7 @@ func _init_android_setup():
 		settings.host.ai_3d_separation_pct = 100
 	if not [30, 40, 50, 60, 70].has(settings.host.ai_3d_convergence_pct):
 		settings.host.ai_3d_convergence_pct = 50
-	settings.host.ai_3d_debug = clampi(settings.host.ai_3d_debug, 0, 3)
+	settings.host.ai_3d_debug = clampi(settings.host.ai_3d_debug, 0, 4)
 
 	if right_hand and left_hand:
 		var right_ray = right_hand.get_node_or_null("HandRayCast")
@@ -2549,8 +2549,29 @@ func _process_performance_overlay(delta: float):
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
+			var depth_model_name := "ZipDepth-384 Standard"
+			if settings_controller.get_depth_model_index() == 18:
+				depth_model_name = "ZipDepth-256 Fastest"
+			elif settings_controller.get_depth_model_index() == 19:
+				depth_model_name = "ZipDepth-384 Standard-v2"
+			elif settings_controller.get_depth_model_index() == 20:
+				depth_model_name = "ZipDepth-384 Hybrid-v2"
+			elif settings_controller.get_depth_model_index() == 21:
+				depth_model_name = "ZipDepth-384 Standard-v3"
+			elif settings_controller.get_depth_model_index() == 22:
+				depth_model_name = "ZipDepth-384 Direct-192 Fast"
+			elif settings_controller.get_depth_model_index() == 23:
+				depth_model_name = "ZipDepth-384 Standard-Packed"
+			elif settings_controller.get_depth_model_index() == 24:
+				depth_model_name = "ZipDepth-384 Standard-Optimized"
+			elif settings_controller.get_depth_model_index() == 25:
+				depth_model_name = "ZipDepth EdgePad-384"
+			elif settings_controller.get_depth_model_index() == 26:
+				depth_model_name = "ZipDepth EdgePad-256"
+			elif settings_controller.get_depth_model_index() == 27:
+				depth_model_name = "ZipDepth-256 Direct-128"
 			lines.append("Depth: %s / %s" % [
-				"ZipDepth-256" if settings_controller.get_depth_model_index() == 18 else "ZipDepth-384",
+				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
 		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])

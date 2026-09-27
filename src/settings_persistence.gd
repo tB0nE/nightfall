@@ -166,7 +166,7 @@ static func read_host(
 			# see its own comment) - no migration needed here, same as before
 			# the brief 3-entry detour.
 			host.ai_3d_model = clampi(config.get_value(section, "ai_3d_model", 0), 0, ai_model_count - 1)
-			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 3)
+			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 4)
 			var process_stage = clampi(config.get_value(section, "ai_3d_process_debug", 5), 0, 5)
 			host.ai_3d_process_debug = process_stage if config.has_section_key(section, "ai_3d_process_debug_v2") \
 				else (process_stage + 1 if process_stage >= 2 else process_stage)
@@ -212,7 +212,7 @@ static func read_host(
 			# own (that lived in ai_3d_model==0 instead).
 			var old_model = clampi(config.get_value(section, "ai_3d_model", 0), 0, 8)
 			var old_quality = clampi(config.get_value(section, "ai_3d_quality", 0), 0, 3)
-			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 3)
+			host.ai_3d_debug = clampi(config.get_value(section, "ai_3d_debug", 0), 0, 4)
 			var process_stage = clampi(config.get_value(section, "ai_3d_process_debug", 5), 0, 5)
 			host.ai_3d_process_debug = process_stage if config.has_section_key(section, "ai_3d_process_debug_v2") \
 				else (process_stage + 1 if process_stage >= 2 else process_stage)

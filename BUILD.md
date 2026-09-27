@@ -94,8 +94,9 @@ Nightfall's fast presentation path is a separate GDExtension in
 directly, renders both eyes into one double-wide OpenXR swapchain, and submits
 two eye-specific sub-images through Godot's existing OpenXR frame loop. The
 legacy Godot composition-layer path remains the automatic fallback for Linux,
-multi-monitor layouts, diagnostic depth views, unsupported renderers, and
-startup failures.
+multi-monitor layouts, raw/input depth diagnostic views, unsupported renderers,
+and startup failures. DMap-Final and DMap-Warp remain on the native path so they
+display the exact production depth and offset textures.
 
 AI separation/convergence and Picture-tab brightness/contrast/gamma are
 implemented directly in this path. Reactive ambient modes consume an

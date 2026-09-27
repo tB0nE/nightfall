@@ -315,6 +315,24 @@ func get_depth_model_height() -> int:
 			return db.get_depth_model_size()
 	return 256
 
+func get_depth_model_input_width() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_input_width"):
+				return db.get_depth_model_input_width()
+			return get_depth_model_width()
+	return 256
+
+func get_depth_model_input_height() -> int:
+	if _v2:
+		var db = _v2.get_depth_bridge()
+		if db:
+			if db.has_method("get_depth_model_input_height"):
+				return db.get_depth_model_input_height()
+			return get_depth_model_height()
+	return 256
+
 func get_depth_last_inference_ms() -> float:
 	if _v2:
 		var db = _v2.get_depth_bridge()

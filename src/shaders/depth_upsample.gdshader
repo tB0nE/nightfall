@@ -113,6 +113,7 @@ vec3 sample_stream(vec2 uv) {
 void fragment() {
 	vec3 hi = sample_stream(to_frame_uv(UV));
 	ivec2 low_sz = textureSize(depth_texture, 0);
+	ivec2 guide_sz = textureSize(depth_guide_texture, 0);
 	vec2 low_size = vec2(low_sz);
 	vec2 lp = UV * low_size - 0.5;
 	ivec2 base = ivec2(floor(lp));
@@ -125,7 +126,13 @@ void fragment() {
 		for (int dx = -2; dx <= 2; dx++) {
 			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), low_sz - ivec2(1));
 			float s = texelFetch(depth_texture, q, 0).r;
-			vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
+			// Most models have equal input/output dimensions. Direct-half keeps
+			// ZipDepth's 384x384 colour input but exposes its native 192x192
+			// depth, so map each low-depth texel to the corresponding guide texel.
+			ivec2 guide_q = clamp(
+				ivec2((vec2(q) + vec2(0.5)) * vec2(guide_sz) / low_size),
+				ivec2(0), guide_sz - ivec2(1));
+			vec3 gcol = texelFetch(depth_guide_texture, guide_q, 0).rgb;
 			vec2 off = vec2(q) - lp;
 			float ws = exp(-dot(off, off) / (2.0 * 1.5 * 1.5));
 			vec3 cd = hi - gcol;

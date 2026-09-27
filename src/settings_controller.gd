@@ -63,7 +63,8 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                         only apply_stereo()'s final set_depth_model() call
 #                         and depth_estimator.gd's sync_model_size() (256 vs
 #                         YOLO's 768) need to know which one is picked here.
-#   ai_3d_debug_labels  - debug depth-data VIEWS (DMap/-Raw/-Input), overlaid
+#   ai_3d_debug_labels  - debug depth-data VIEWS
+#                         (DMap/-Raw/-Input/-Warp), overlaid
 #                         on whichever tier is active rather than a mode of
 #                         its own - see get_stereo_mode() and
 #                         _schedule_ai_3d_commit(). Left untouched by this
@@ -75,9 +76,22 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
 var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
 var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
-const ANDROID_MODEL_384 := 2
+const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9
-const ANDROID_MODEL_256 := 10
+# Stable persisted/UI slots repurposed for the final Android quality tiers.
+# The historical entries remain in ai_3d_models below so old saves and Linux
+# indices do not shift; Android cycles only Auto and the two EdgePad slots.
+const ANDROID_MODEL_STANDARD := 18
+const ANDROID_MODEL_EDGEPAD_256 := 19
+const ANDROID_DEPTH_PROCESS_FULL := 5
+# Native renderer-only production mode: retain Full's occlusion/Newton warp,
+# but resize the reconstructed Standard depth with one linear texture sample
+# instead of running the 5x5 joint-bilateral pass.
+const ANDROID_DEPTH_PROCESS_FULL_LINEAR := 6
+# Native renderer-only experiment: four bilinear depth taps receive
+# scale-matched colour weights only where those taps already contain a depth
+# boundary. Flat-depth text and texture therefore remain ordinary linear.
+const ANDROID_DEPTH_PROCESS_FULL_GUIDED_LINEAR := 7
 # Back to its original 5-entry shape (2026-08-28, AI 3D tab - briefly
 # deduplicated to 3 entries with an independent Type control, corrected
 # after clarifying the actual request: Type doesn't just gate Model, it
@@ -105,11 +119,22 @@ var ai_3d_models: Array = [
 	{"label": "ZipDepth-384", "java_index": 14, "gpu": false, "linux": false},
 	# Android-only entries appended to preserve existing saved model indices.
 	{"label": "Auto", "java_index": 14, "gpu": true, "android": true, "linux": false},
-	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": true, "linux": false},
+	{"label": "Fastest", "java_index": 18, "gpu": true, "android": true, "linux": false},
 	# Linux Vulkan variant; appended so every existing persisted index remains stable.
 	{"label": "DA-V2-252-GPU", "java_index": 1, "gpu": true, "android": false, "linux": true},
+	# Temporary exact-graph optimization comparison. Appended so every
+	# existing persisted model index remains stable.
+	{"label": "ZipDepth-384-Standard-v2-GPU", "java_index": 19, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Hybrid-v2-GPU", "java_index": 20, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-v3-GPU", "java_index": 21, "gpu": true, "android": true, "linux": false},
+	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-384", "java_index": 25, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 ]
-var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
 const AI3D_BACKEND_CPU := 1
 const AI3D_BACKEND_GPU := 2
@@ -219,11 +244,13 @@ func get_stereo_mode() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
 	if main.settings.host.ai_3d_debug == 1:
-		return 7 # MiDaS-DMap
+		return 7 # DMap-Final: exact production upsampled depth
 	elif main.settings.host.ai_3d_debug == 2:
 		return 8 # MiDaS-DMap-Raw
 	elif main.settings.host.ai_3d_debug == 3:
 		return 9 # MiDaS-DMap-Input
+	elif main.settings.host.ai_3d_debug == 4:
+		return 12 # DMap-Warp: final occlusion/displacement field
 	match resolve_quality_tier():
 		1: return 10 # MiDaS-Fast
 		_: return 6 # MiDaS-Std
@@ -484,7 +511,7 @@ func reset_ai_3d_effect_settings():
 	if main.settings.host.ai_3d_speed != 0:
 		main.settings.host.ai_3d_speed = 1
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	main.settings.host.ai_3d_model = 0
+	main.settings.host.ai_3d_model = MODEL_ZIPDEPTH_384 if OS.get_name() == "Linux" else 0
 	main.settings.host.ai_3d_gpu_api = 0
 	main.settings.host.ai_3d_hz_cap = 20
 	main.settings.host.ai_3d_separation_pct = 100
@@ -504,7 +531,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_384, ANDROID_MODEL_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var pos = candidates.find(main.settings.host.ai_3d_model)
@@ -517,7 +544,11 @@ func cycle_ai_3d_model():
 
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
-		return 1 if _auto_depth_fallback else 0
+		# Quest 2 lacks the OpenCL library exposed on Quest 3. Auto starts on
+		# the compatible EdgePad-256/OpenGL tier there; Quest 3 starts
+		# EdgePad-384/OpenCL and uses the 256/OpenGL path only after a real
+		# OpenCL failure.
+		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
 	return main.settings.host.ai_3d_gpu_api
 
 func is_android_ai3d_auto() -> bool:
@@ -565,20 +596,10 @@ func normalize_ai_3d_model_for_type():
 	if not candidates.is_empty() and not candidates.has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = candidates[0]
 
-# AI-3D Type/Model/3D-Mode are locked to GPU/ZipDepth-384-GPU/Standard on
-# Android (2026-09-07) - ZipDepth-384-GPU replaces MiDaS as strictly better
-# in every way tested, and Auto/Fast's tier and resolution-cap thresholds in
-# AUTO_TABLE above were empirically benchmarked around MiDaS's specific
-# speed, not ZipDepth's, so leaving them reachable would apply stale
-# calibration to a different model rather than actually saving anything -
-# Standard is simply forced instead until AUTO_TABLE is re-benchmarked
-# against ZipDepth. build.sh only bundles zipdepth-base-384-gpu.tflite for
-# Android (MiDaS/DA-V2/CPU-backend/experimental-widescreen models are
-# commented out there, not deleted, so this can be reverted by uncommenting
-# those cp lines and this lock together). Linux keeps every model/tier
-# selectable - it never had ZipDepth support to begin with (native
-# MidasDepthEngine only), so this lock would remove capability there for no
-# corresponding size/perf win.
+# Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
+# model selector: Auto, EdgePad-384, EdgePad-256. See
+# docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
+# decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
 	return SettingsPlatformPolicy.ai3d_options_locked()
 
@@ -586,10 +607,7 @@ func depth_gpu_priority_available() -> bool:
 	return SettingsPlatformPolicy.depth_gpu_priority_available()
 
 func _locked_ai3d_model_index() -> int:
-	for i in range(ai_3d_models.size()):
-		if ai_3d_models[i].label == "ZipDepth-384-GPU":
-			return i
-	return 0
+	return ANDROID_MODEL_AUTO
 
 # Called after loading persisted state (any format/migration branch - see
 # load_host_state()'s own comment) and by reset_ai_3d_effect_settings(), so
@@ -600,7 +618,7 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if prefer_auto or not [ANDROID_MODEL_384, ANDROID_MODEL_AUTO, ANDROID_MODEL_256].has(main.settings.host.ai_3d_model):
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -619,7 +637,7 @@ func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
 	if is_android_ai3d_auto():
-		return 18 if _auto_depth_fallback else 14
+		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto defaults to the same high-quality ZipDepth-384 model as the
 	# APK when GPU/Vulkan is selected. CPU Auto retains the calibrated MiDaS
 	# table below, preserving the low-end fallback and tinkering choices.
@@ -629,6 +647,19 @@ func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
+
+# Android production reconstruction is part of the tier definition rather
+# than a hidden debug preference. Both EdgePad models retain ZipDepth's full
+# learned reconstruction head. Hardware-linear produced the best practical
+# quality/cost result; the 5x5 and conservative 2x2 colour-guided experiments
+# remain available in the native renderer and comparison tools for reference.
+func get_depth_process_stage() -> int:
+	if OS.get_name() == "Android":
+		var model_index := get_depth_model_index()
+		if model_index in [25, 26]:
+			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
+	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
+		else main.settings.host.ai_3d_process_debug
 
 # The backend to actually request from configure_depth() (2026-08-28 -
 # now driven by main.settings.host.ai_3d_backend_pref, the "Type" control). Model is
@@ -684,10 +715,10 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
-		main._log("[DEPTH] Auto: ZipDepth-384/OpenCL failed (%s); switching to ZipDepth-256/OpenGL for this app session" % status)
+		main._log("[DEPTH] Auto: EdgePad-384/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
 			main.ui_controller.update_stereo_shader()
-			main.ui_controller.show_temporary_status("AI 3D fallback: ZipDepth-256 / OpenGL", 3.0)
+			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-256 / OpenGL", 3.0)
 		apply_stereo()
 		return
 	var requested = get_depth_backend_index()
@@ -715,7 +746,7 @@ func _schedule_ai_3d_commit():
 	_ai_3d_commit_seq += 1
 	var my_seq = _ai_3d_commit_seq
 	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
-	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input
+	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input/-Warp
 	# against whichever tier is active), where quick feedback matters more
 	# than matching the restart delay exactly. Shared across all three
 	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
@@ -724,7 +755,7 @@ func _schedule_ai_3d_commit():
 	await main.get_tree().create_timer(0.6).timeout
 	if _ai_3d_commit_seq != my_seq:
 		return
-	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
+	# MiDaS-DMap/-Raw/-Input/-Warp are debug VIEWS of whatever depth data is
 	# already flowing, not a separate mode with its own resolution needs -
 	# deliberately inherit whatever resolution (including a MiDaS-Fast
 	# cap) is already active instead of recomputing/restarting back
@@ -800,7 +831,7 @@ func apply_stereo():
 		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.settings.host.ai_3d_speed > 0 else 0
-		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
+		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
 		# Direct decoder textures feed the small depth-input viewport without a
 		# third full-resolution mono render. refresh_stream_source() keeps the
 		# old mono path available only when a backend cannot expose those textures.
@@ -808,7 +839,7 @@ func apply_stereo():
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
 	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
 	# comment above) - it comes straight from main.settings.host.ai_3d_model. Modes
-	# 6/7/8/9/10 (Std, DMap, DMap-Raw, DMap-Input,
+	# 6/7/8/9/10/12 (Std, DMap, DMap-Raw, DMap-Input,
 	# Fast) are pure visualizations/warp-pass variants of whatever
 	# model's depth data is already flowing, not a separate source - mode 9
 	# doesn't even read the model's output (just the color capture), but

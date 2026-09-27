@@ -320,8 +320,10 @@ private:
 	GLuint delayed_upsample_program = 0;
 	GLint u_upsample_texmatrix = -1, u_upsample_sigma = -1, u_upsample_sharp = -1;
 	GLint u_upsample_depth_guide = -1;
+	GLint u_upsample_linear = -1;
 	GLint u_delayed_upsample_texmatrix = -1, u_delayed_upsample_sigma = -1;
 	GLint u_delayed_upsample_sharp = -1, u_delayed_upsample_depth_guide = -1;
+	GLint u_delayed_upsample_linear = -1;
 	GLuint upsample_texture = 0, upsample_fbo = 0;
 	int upsample_width = 0, upsample_height = 0;
 
@@ -467,7 +469,8 @@ private:
 			float p_convergence, bool p_occluding, int p_depth_process_stage);
 	void run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 			uint32_t p_depth_guide_texture_id, const float *p_tex_matrix,
-			bool p_texture_2d = false, bool p_color_guided = true);
+			bool p_texture_2d = false, bool p_color_guided = true,
+			int p_resample_mode = 0);
 	void run_offset_search(float p_separation, float p_convergence);
 	bool ensure_depth_sync_ring();
 	uint32_t capture_depth_sync_frame(uint32_t p_oes_texture_id,

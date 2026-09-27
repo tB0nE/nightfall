@@ -33,6 +33,10 @@ public class DepthEstimator {
     public static final int BACKEND_CAP_GPU = 2;
     public static final int GPU_PRIORITY_STREAM = 0;
     public static final int GPU_PRIORITY_DEFAULT = 1;
+    // Qualcomm's OpenCL driver may still be retiring resources immediately
+    // after Interpreter/GpuDelegate.close(). Compiling another large model
+    // in that window has rebooted the Quest 3 during rapid A/B switching.
+    private static final long GPU_MODEL_SWITCH_QUIESCE_MS = 750L;
     // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
     // 50ms/20Hz default unchanged, see setHzCap() below.
     private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
@@ -268,8 +272,17 @@ public class DepthEstimator {
     // close to DA-V2 quality; 256 trades some detail for Quest 2 OpenGL
     // compatibility. The exporter expands one grouped convolution so the
     // OpenGL delegate can run both bundled ZipDepth models.
-    private static final String MODEL_ZIPDEPTH_384_GPU = "zipdepth-base-384-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_V1_GPU = "zipdepth-base-384-standard-v1-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_GPU = "zipdepth-base-256-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_V2_GPU = "zipdepth-base-384-standard-v2-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_V3_GPU = "zipdepth-base-384-standard-v3-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_HYBRID_V2_GPU = "zipdepth-base-384-hybrid-v2-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_DIRECT_HALF_GPU = "zipdepth-base-384-direct-half-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_PACKED_GPU = "zipdepth-base-384-standard-packed-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU = "zipdepth-base-384-standard-packed-conv4-reduceconv-zeropad-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU = "zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU = "zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU = "zipdepth-base-256-direct-half-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
     // TFLite ops. This w8a32 export keeps float32 activations and I/O while
@@ -309,6 +322,9 @@ public class DepthEstimator {
         final String assetFile;
         final int inputWidth;
         final int inputHeight;
+        final int outputWidth;
+        final int outputHeight;
+        final boolean packed2x2Output;
         // Per-model temporal/range smoothing time constants (2026-09-04) -
         // see postProcess()'s depthTauSeconds/rangeTauSeconds comment for
         // why this needs to differ per model rather than staying global.
@@ -338,12 +354,29 @@ public class DepthEstimator {
 
         GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
                 float depthTauSeconds, float rangeTauSeconds) {
+            this(label, assetFile, inputWidth, inputHeight, inputWidth, inputHeight,
+                    depthTauSeconds, rangeTauSeconds);
+        }
+
+        GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
+                int outputWidth, int outputHeight,
+                float depthTauSeconds, float rangeTauSeconds) {
+            this(label, assetFile, inputWidth, inputHeight, outputWidth, outputHeight,
+                    depthTauSeconds, rangeTauSeconds, false);
+        }
+
+        GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
+                int outputWidth, int outputHeight,
+                float depthTauSeconds, float rangeTauSeconds, boolean packed2x2Output) {
             this.label = label;
             this.assetFile = assetFile;
             this.inputWidth = inputWidth;
             this.inputHeight = inputHeight;
+            this.outputWidth = outputWidth;
+            this.outputHeight = outputHeight;
             this.depthTauSeconds = depthTauSeconds;
             this.rangeTauSeconds = rangeTauSeconds;
+            this.packed2x2Output = packed2x2Output;
         }
     }
 
@@ -590,10 +623,46 @@ public class DepthEstimator {
             // multi-frame smear; range tau shortened proportionally so the
             // contrast-stretch bounds track the now-fast-updating values
             // instead of dragging behind them.
-            gpuVariants.put(14, new GpuVariant("ZipDepth-384-GPU", MODEL_ZIPDEPTH_384_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+            gpuVariants.put(14, new GpuVariant("ZipDepth-384-Standard-v1-GPU", MODEL_ZIPDEPTH_384_STANDARD_V1_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
                     0.02f, 0.1f));
             gpuVariants.put(18, new GpuVariant("ZipDepth-256-GPU", MODEL_ZIPDEPTH_256_GPU, ZIPDEPTH_256_GPU_INPUT_SIZE,
                     0.02f, 0.1f));
+            gpuVariants.put(19, new GpuVariant("ZipDepth-384-Standard-v2-GPU", MODEL_ZIPDEPTH_384_STANDARD_V2_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
+            gpuVariants.put(21, new GpuVariant("ZipDepth-384-Standard-v3-GPU", MODEL_ZIPDEPTH_384_STANDARD_V3_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
+            gpuVariants.put(20, new GpuVariant("ZipDepth-384-Hybrid-v2-GPU", MODEL_ZIPDEPTH_384_HYBRID_V2_GPU, ZIPDEPTH_384_GPU_INPUT_SIZE,
+                    0.02f, 0.1f));
+            gpuVariants.put(22, new GpuVariant("ZipDepth-384-Direct-192-GPU", MODEL_ZIPDEPTH_384_DIRECT_HALF_GPU,
+                    384, 384, 192, 192, 0.02f, 0.1f));
+            // Exact Standard-v1 reconstruction values before DEPTH_TO_SPACE.
+            // LiteRT splits that otherwise-trivial final layout operation
+            // across GPU and CPU partitions on Adreno. Interleave the four
+            // learned 2x2 subpixels while extracting the output instead.
+            gpuVariants.put(23, new GpuVariant("ZipDepth-384-Standard-Packed-GPU",
+                    MODEL_ZIPDEPTH_384_STANDARD_PACKED_GPU,
+                    384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            // Mathematically identical to Standard-Packed, but stores the
+            // learned mask channels in subpixel-major order and evaluates
+            // four ordinary NHWC 9-channel softmaxes. The ZeroPad variant
+            // keeps the complete graph on the GPU. It remains experimental:
+            // initializing it while a stream connects has caused a headset
+            // reboot, while selecting it after the stream settles works.
+            gpuVariants.put(24, new GpuVariant("ZipDepth-384-Standard-Optimized-GPU",
+                    MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU,
+                    384, 384, 384, 384, 0.02f, 0.1f, true));
+            gpuVariants.put(25, new GpuVariant("ZipDepth-384-Standard-EdgePad-GPU",
+                    MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU,
+                    384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            gpuVariants.put(26, new GpuVariant("ZipDepth-256-Standard-EdgePad-GPU",
+                    MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU,
+                    256, 256, 256, 256, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
+                    MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
+                    256, 256, 128, 128, 0.02f, 0.1f));
             gpuVariants.put(15, new GpuVariant("ZipDepth-512x288-GPU", MODEL_ZIPDEPTH_512X288_GPU, 512, 288,
                     0.02f, 0.1f));
             gpuVariants.put(16, new GpuVariant("ZipDepth-672x384-GPU", MODEL_ZIPDEPTH_672X384_GPU, 672, 384,
@@ -889,7 +958,7 @@ public class DepthEstimator {
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -915,6 +984,12 @@ public class DepthEstimator {
                 Thread.yield();
             }
             GpuVariant previousVariant = activeGpuVariant;
+            boolean needsGpuQuiescence = previousVariant != null && previousVariant != variant;
+            if (needsGpuQuiescence) {
+                // submitFrame() rejects new work while the executor drains,
+                // closes the old delegate, and lets OpenCL retire resources.
+                gpuReconfigurePending = true;
+            }
             latestGpuFrame.set(null);
             nextDispatchNs = 0;
             smoothedDepthFloat = null;
@@ -938,10 +1013,28 @@ public class DepthEstimator {
             // are bound to the thread that created/invoked them, same as
             // releaseGpuVariant()'s other call site in setGpuPriority().
             if (previousVariant != null && previousVariant != variant) {
+                GpuVariant targetVariant = variant;
                 executor.execute(() -> {
                     synchronized (DepthEstimator.this) {
                         if (previousVariant != activeGpuVariant) {
+                            Log.i(TAG, "Closing previous GPU model before switch: "
+                                    + previousVariant.label);
                             releaseGpuVariant(previousVariant);
+                        }
+                    }
+                    try {
+                        Thread.sleep(GPU_MODEL_SWITCH_QUIESCE_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    synchronized (DepthEstimator.this) {
+                        // A newer model/API/priority change may have queued
+                        // another transition. Only its final target can
+                        // reopen frame submission.
+                        if (activeGpuVariant == targetVariant) {
+                            gpuReconfigurePending = false;
+                            Log.i(TAG, "GPU model switch quiescence complete: "
+                                    + targetVariant.label);
                         }
                     }
                 });
@@ -958,8 +1051,17 @@ public class DepthEstimator {
             case 8: return "YOLO26-Depth-N-320";
             case 10: return "MiDaS-192";
             case 11: return "Depth Anything V2-196";
-            case 14: return "ZipDepth-384";
+            case 14: return "ZipDepth-384-Standard-v1";
             case 18: return "ZipDepth-256";
+            case 19: return "ZipDepth-384-Standard-v2";
+            case 20: return "ZipDepth-384-Hybrid-v2";
+            case 21: return "ZipDepth-384-Standard-v3";
+            case 22: return "ZipDepth-384-Direct-192";
+            case 23: return "ZipDepth-384-Standard-Packed";
+            case 24: return "ZipDepth-384-Standard-Optimized";
+            case 25: return "ZipDepth-384-Standard-EdgePad";
+            case 26: return "ZipDepth-256-Standard-EdgePad";
+            case 27: return "ZipDepth-256-Direct-128";
             case 15: return "ZipDepth-512x288";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
@@ -1383,7 +1485,7 @@ public class DepthEstimator {
         try {
             v.inputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 3 * 4)
                     .order(ByteOrder.nativeOrder());
-            v.outputBuf = ByteBuffer.allocateDirect(v.inputWidth * v.inputHeight * 4)
+            v.outputBuf = ByteBuffer.allocateDirect(v.outputWidth * v.outputHeight * 4)
                     .order(ByteOrder.nativeOrder());
             MappedByteBuffer buffer = loadModelFile(v.assetFile);
             long mappedNs = System.nanoTime();
@@ -1408,9 +1510,27 @@ public class DepthEstimator {
             Interpreter.Options opts = new Interpreter.Options();
             opts.addDelegate(v.delegate);
             v.interp = new Interpreter(buffer, opts);
+            int[] actualInputShape = v.interp.getInputTensor(0).shape();
+            int[] actualOutputShape = v.interp.getOutputTensor(0).shape();
+            int actualInputElements = 1;
+            int actualOutputElements = 1;
+            for (int dim : actualInputShape) actualInputElements *= dim;
+            for (int dim : actualOutputShape) actualOutputElements *= dim;
+            int expectedInputElements = v.inputWidth * v.inputHeight * 3;
+            int expectedOutputElements = v.outputWidth * v.outputHeight;
+            if (actualInputElements != expectedInputElements
+                    || actualOutputElements != expectedOutputElements) {
+                throw new IllegalStateException(String.format(java.util.Locale.US,
+                        "%s tensor contract mismatch for %s: input=%s (%d, expected %d), output=%s (%d, expected %d)",
+                        v.label, v.assetFile,
+                        java.util.Arrays.toString(actualInputShape), actualInputElements, expectedInputElements,
+                        java.util.Arrays.toString(actualOutputShape), actualOutputElements, expectedOutputElements));
+            }
             Log.i(TAG, String.format(java.util.Locale.US,
-                    "%s model loaded with GPU delegate in %.1fms",
-                    v.label, (System.nanoTime() - mappedNs) / 1_000_000.0f));
+                    "%s model loaded from %s with GPU delegate in %.1fms; input=%s output=%s",
+                    v.label, v.assetFile, (System.nanoTime() - mappedNs) / 1_000_000.0f,
+                    java.util.Arrays.toString(actualInputShape),
+                    java.util.Arrays.toString(actualOutputShape)));
         } catch (Exception | LinkageError e) {
             Log.w(TAG, v.label + " model/GPU delegate not available", e);
             v.failureReason = "GPU delegate initialization failed: " + e.getClass().getSimpleName();
@@ -1468,12 +1588,37 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         long postprocessStartNs = System.nanoTime();
-        int outputCount = v.inputWidth * v.inputHeight;
-        byte[] result = postProcess(extractFloatOutput(v.outputBuf, outputCount),
-                v.inputWidth, v.inputHeight, false, DEFAULT_PERCENTILE_CLIP,
+        int outputCount = v.outputWidth * v.outputHeight;
+        float[] raw = extractFloatOutput(v.outputBuf, outputCount);
+        if (v.packed2x2Output) {
+            raw = unpack2x2Depth(raw, v.outputWidth, v.outputHeight);
+        }
+        byte[] result = postProcess(raw,
+                v.outputWidth, v.outputHeight, false, DEFAULT_PERCENTILE_CLIP,
                 v.depthTauSeconds, v.rangeTauSeconds);
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
+    }
+
+    /** Reproduce pixel_shuffle(scale=2) for a NHWC [H/2,W/2,4] tensor. */
+    private static float[] unpack2x2Depth(float[] packed, int outputWidth, int outputHeight) {
+        int packedWidth = outputWidth / 2;
+        int packedHeight = outputHeight / 2;
+        float[] unpacked = new float[outputWidth * outputHeight];
+        for (int y = 0; y < packedHeight; y++) {
+            int topRow = (y * 2) * outputWidth;
+            int bottomRow = topRow + outputWidth;
+            int packedRow = y * packedWidth * 4;
+            for (int x = 0; x < packedWidth; x++) {
+                int source = packedRow + x * 4;
+                int targetX = x * 2;
+                unpacked[topRow + targetX] = Math.max(0.0f, packed[source]);
+                unpacked[topRow + targetX + 1] = Math.max(0.0f, packed[source + 1]);
+                unpacked[bottomRow + targetX] = Math.max(0.0f, packed[source + 2]);
+                unpacked[bottomRow + targetX + 1] = Math.max(0.0f, packed[source + 3]);
+            }
+        }
+        return unpacked;
     }
 
     // dequantize (quantized - zero_point) * scale, given a specific model's
@@ -1548,6 +1693,12 @@ public class DepthEstimator {
     // DEPTH: 0.145 / -ln(0.40) ~= 0.158.
     private static final float RANGE_TAU_SECONDS = 0.89f;
     private static final float DEPTH_TAU_SECONDS = 0.158f;
+    // Moonlight Android XR's depthAlpha=0.60/rangeAlpha=0.15 defaults,
+    // converted from fixed-per-update factors to cadence-independent time
+    // constants at their intended 20 Hz update rate:
+    // tau = 0.05 / -ln(1 - alpha).
+    private static final float ZIPDEPTH_DEPTH_TAU_SECONDS = 0.055f;
+    private static final float ZIPDEPTH_RANGE_TAU_SECONDS = 0.308f;
     private float smoothLo = 0.0f;
     private float smoothHi = 1.0f;
     private boolean rangeValid = false;
@@ -1875,10 +2026,20 @@ public class DepthEstimator {
 
     public int getModelWidth() {
         GpuVariant variant = activeGpuVariant;
-        return variant != null ? variant.inputWidth : getCpuModelSize();
+        return variant != null ? variant.outputWidth : getCpuModelSize();
     }
 
     public int getModelHeight() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.outputHeight : getCpuModelSize();
+    }
+
+    public int getModelInputWidth() {
+        GpuVariant variant = activeGpuVariant;
+        return variant != null ? variant.inputWidth : getCpuModelSize();
+    }
+
+    public int getModelInputHeight() {
         GpuVariant variant = activeGpuVariant;
         return variant != null ? variant.inputHeight : getCpuModelSize();
     }
