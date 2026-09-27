@@ -2,7 +2,10 @@
 
 > Status: Active
 >
-> Baseline: `main` after the v0.7.8 native-XR integration (`10a7426`)
+> Original baseline: `main` after the v0.7.8 native-XR integration (`10a7426`)
+>
+> Current continuation: `refactor/linux-restoration-and-cleanup`, branched from
+> v0.7.10 `main` (`718122a`).
 
 ## Objective
 
@@ -23,6 +26,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 1. Repository hygiene
 
+> Status: Implemented and merged in PR #26. Continue to keep the active-plan
+> index accurate as later phases land.
+
 - Consolidate project documentation under `docs/`.
 - Separate active plans from historical investigations and completed plans.
 - Remove proven-unused backup files and deprecated shaders.
@@ -42,7 +48,7 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 3. Settings and menu ownership
 
-> Status: Implemented on `refactor/settings-ownership`. Typed app/host stores,
+> Status: Implemented and merged in PR #28. Typed app/host stores,
 > platform policy, persistence codecs, declarative menu construction, and direct
 > typed-store consumption are complete.
 
@@ -55,9 +61,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 4. Application lifecycle
 
-> Status: In progress on `refactor/session-lifecycle`. Connection intent, media
+> Status: Partially implemented and merged in PR #29. Connection intent, media
 > activity, timeout state, performance sampling, and the active-screen registry
-> now have explicit owners.
+> now have explicit owners. Further dependency narrowing remains.
 
 - Model boot, server selection, connecting, streaming, reconnecting, failed,
   and disconnecting as explicit states.
@@ -68,10 +74,11 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 5. Rendering boundary
 
-> Status: In progress on `refactor/rendering-boundary`. UI and keyboard
-> composition layers now have a narrow resource owner, and video-path selection
-> is explicit behind `VideoPresentation`. Pointer-layer extraction continues on
-> `refactor/composition-input-overlays`.
+> Status: Partially implemented and merged in PRs #30 and #32. Video-path
+> selection is explicit behind `VideoPresentation`; panel, environment, pointer,
+> controller-indicator, and screen-control overlays have resource owners. PR #33
+> consolidated layers to stay within the Quest layer limit. Remaining work is
+> narrowing consumers and verifying renderer ownership boundaries.
 
 - Define one renderer-facing contract for mesh, legacy composition-layer, and
   native OpenXR implementations.
@@ -81,6 +88,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 6. Native subsystem splits
 
+> Status: Not started as a focused refactor. Keep each split behavior-preserving
+> and validate Android and Linux paths separately.
+
 - Split Android depth model loading, scheduling, preprocessing,
   post-processing, and telemetry.
 - Split stream session/callbacks, decoder selection, queues, and rendering
@@ -88,6 +98,20 @@ behavioral refactors should be separate commits or pull requests.
 - Split texture upload by CPU, GLES/OES, and Android-image paths.
 - Split native-XR session, swapchain, frame submission, pipeline, and
   Android-platform responsibilities.
+
+### 7. Restore and validate Linux releases
+
+> Status: Linux binary and AppImage builds are restored on
+> `refactor/linux-restoration-and-cleanup`; PCVR runtime validation remains.
+
+- Rebuild the Linux streaming extension in the Ubuntu 22.04 container and
+  export a Linux binary/AppImage from the current source.
+- Verify all bundled Linux CPU/Vulkan depth variants and the OpenXR vendor plugin are
+  present; fail packaging clearly when an input is missing.
+- Run the Linux build and unit tests, then launch the packaged client with a
+  PCVR runtime. Exercise connection, controls, SBS, AI 3D, and stream restarts.
+- Publish a Linux artifact only after on-device/runtime validation; build
+  success alone is not a release sign-off.
 
 ## Completion criteria
 
