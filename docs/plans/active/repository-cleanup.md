@@ -6,6 +6,11 @@
 >
 > Current continuation: `refactor/linux-restoration-and-cleanup`, branched from
 > v0.7.10 `main` (`718122a`).
+>
+> Current checkpoint: Linux build restoration, Vulkan depth inference,
+> EdgePad Android quality tiers, profiling tools, and their documentation are
+> implemented on this branch. The remaining merge gate is runtime validation,
+> especially Linux PCVR and Quest 2 Auto behavior.
 
 ## Objective
 
@@ -101,8 +106,9 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 7. Restore and validate Linux releases
 
-> Status: Linux binary and AppImage builds are restored on
-> `refactor/linux-restoration-and-cleanup`; PCVR runtime validation remains.
+> Status: Build, packaging, CPU/Vulkan model smoke tests, and AppImage export
+> are implemented on `refactor/linux-restoration-and-cleanup`. PCVR runtime
+> validation remains before Linux release publication.
 
 - Rebuild the Linux streaming extension in the Ubuntu 22.04 container and
   export a Linux binary/AppImage from the current source.

@@ -15,10 +15,12 @@ ASSET_DIR="$1"
 # carried in every APK.
 ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
 ZIPDEPTH_EDGEPAD_256_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
+ZIPDEPTH_EDGEPAD_224_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_224_MODEL:-$PROJECT_ROOT/models/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
 
 declare -A REQUIRED_MODELS=(
   ["EdgePad-384"]="$ZIPDEPTH_STANDARD_MODEL"
   ["EdgePad-256"]="$ZIPDEPTH_EDGEPAD_256_MODEL"
+  ["EdgePad-224"]="$ZIPDEPTH_EDGEPAD_224_MODEL"
 )
 for label in "${!REQUIRED_MODELS[@]}"; do
   model_path="${REQUIRED_MODELS[$label]}"
@@ -41,6 +43,9 @@ cp "$ZIPDEPTH_STANDARD_MODEL" \
 echo "Bundling EdgePad-256 model: $ZIPDEPTH_EDGEPAD_256_MODEL"
 cp "$ZIPDEPTH_EDGEPAD_256_MODEL" \
   "$ASSET_DIR/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
+echo "Bundling EdgePad-224 model: $ZIPDEPTH_EDGEPAD_224_MODEL"
+cp "$ZIPDEPTH_EDGEPAD_224_MODEL" \
+  "$ASSET_DIR/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
 
 # Opt-in cumulative profiling assets. Normal release APKs never include these;
 # they are consumed only when GodotApp is launched through ADB with

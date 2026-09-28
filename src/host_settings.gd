@@ -33,7 +33,7 @@ var ai_3d_backend_pref: int = 2
 ## Depth inference update-rate cap in Hz.
 var ai_3d_hz_cap: int = 20
 ## Percentage multiplier over the renderer's tuned parallax baseline.
-var ai_3d_separation_pct: int = 100
+var ai_3d_separation_pct: int = 75
 ## Depth fraction that appears at the screen plane, expressed as a percentage.
 var ai_3d_convergence_pct: int = 50
 ## Cursor correction over AI-warped video: -1=Left, 0=Default, 1=Right.

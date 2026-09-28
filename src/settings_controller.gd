@@ -80,9 +80,10 @@ const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9
 # Stable persisted/UI slots repurposed for the final Android quality tiers.
 # The historical entries remain in ai_3d_models below so old saves and Linux
-# indices do not shift; Android cycles only Auto and the two EdgePad slots.
+# indices do not shift; Android cycles only Auto and the manual EdgePad slots.
 const ANDROID_MODEL_STANDARD := 18
 const ANDROID_MODEL_EDGEPAD_256 := 19
+const ANDROID_MODEL_EDGEPAD_224 := 21
 const ANDROID_DEPTH_PROCESS_FULL := 5
 # Native renderer-only production mode: retain Full's occlusion/Newton warp,
 # but resize the reconstructed Standard depth with one linear texture sample
@@ -133,13 +134,14 @@ var ai_3d_models: Array = [
 	{"label": "EdgePad-384", "java_index": 25, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-224", "java_index": 28, "gpu": true, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
 const AI3D_BACKEND_CPU := 1
 const AI3D_BACKEND_GPU := 2
-const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40]
-const AI3D_SEPARATION_VALUES: Array = [50, 75, 100, 125, 150]
+const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40, 60]
+const AI3D_SEPARATION_VALUES: Array = [50, 75, 100]
 const AI3D_CONVERGENCE_VALUES: Array = [30, 40, 50, 60, 70]
 const AI3D_CURSOR_POSITION_LABELS: Array = ["Left", "Default", "Right"]
 # stereo_screen.gdshader's own live-path separation constant (mesh-
@@ -446,8 +448,12 @@ func cycle_ai_3d_separation():
 		return
 	var idx = AI3D_SEPARATION_VALUES.find(main.settings.host.ai_3d_separation_pct)
 	main.settings.host.ai_3d_separation_pct = AI3D_SEPARATION_VALUES[(maxi(idx, 0) + 1) % AI3D_SEPARATION_VALUES.size()]
-	_save_setting(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
+	_save_setting(main._ui_3d_separation_btn, get_ai_3d_separation_label())
 	_schedule_ai_3d_commit()
+
+func get_ai_3d_separation_label() -> String:
+	var value: int = main.settings.host.ai_3d_separation_pct
+	return "%d%%%s" % [value, " (Default)" if value == 75 else ""]
 
 # AI 3D tab's "Convergence" control (2026-08-28) - maps directly to the
 # warp shaders' already-declared "convergence" uniform (0.30-0.70), which
@@ -461,8 +467,12 @@ func cycle_ai_3d_convergence():
 		return
 	var idx = AI3D_CONVERGENCE_VALUES.find(main.settings.host.ai_3d_convergence_pct)
 	main.settings.host.ai_3d_convergence_pct = AI3D_CONVERGENCE_VALUES[(maxi(idx, 0) + 1) % AI3D_CONVERGENCE_VALUES.size()]
-	_save_setting(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
+	_save_setting(main._ui_3d_convergence_btn, get_ai_3d_convergence_label())
 	_schedule_ai_3d_commit()
+
+func get_ai_3d_convergence_label() -> String:
+	var value: int = main.settings.host.ai_3d_convergence_pct
+	return "%d%%%s" % [value, " (Default)" if value == 50 else ""]
 
 # Moves the rendered cursor over the AI-warped image without changing the
 # raycast or host click coordinates. This corrects visual click alignment;
@@ -514,7 +524,7 @@ func reset_ai_3d_effect_settings():
 	main.settings.host.ai_3d_model = MODEL_ZIPDEPTH_384 if OS.get_name() == "Linux" else 0
 	main.settings.host.ai_3d_gpu_api = 0
 	main.settings.host.ai_3d_hz_cap = 20
-	main.settings.host.ai_3d_separation_pct = 100
+	main.settings.host.ai_3d_separation_pct = 75
 	main.settings.host.ai_3d_convergence_pct = 50
 	main.settings.host.ai_3d_cursor_position = 0
 	main.settings.host.ai_3d_depth_sync = false
@@ -531,7 +541,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var pos = candidates.find(main.settings.host.ai_3d_model)
@@ -597,7 +607,7 @@ func normalize_ai_3d_model_for_type():
 		main.settings.host.ai_3d_model = candidates[0]
 
 # Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
-# model selector: Auto, EdgePad-384, EdgePad-256. See
+# model selector: Auto, EdgePad-384, EdgePad-256, EdgePad-224. See
 # docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
 # decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
@@ -618,7 +628,7 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256].has(main.settings.host.ai_3d_model):
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -656,7 +666,7 @@ func get_depth_model_index() -> int:
 func get_depth_process_stage() -> int:
 	if OS.get_name() == "Android":
 		var model_index := get_depth_model_index()
-		if model_index in [25, 26]:
+		if model_index in [25, 26, 28]:
 			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
 	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
 		else main.settings.host.ai_3d_process_debug

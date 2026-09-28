@@ -119,6 +119,16 @@
       "path": "../../models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
       "_note": "Standard-checkpoint 256x256 experiment. The exact EdgePad reconstruction head converts its native 128x128 half-depth tensor into packed 128x128x4 output, which is interleaved to 256x256."
     },
+    "zipdepth_224_standard_edgepad": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
+      "_note": "Standard-checkpoint 224x224 EdgePad model. Manual Android performance/quality tier; never selected by Auto."
+    },
+    "zipdepth_192_standard_edgepad": {
+      "enabled": true,
+      "path": "../../models/zipdepth-base-192-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",
+      "_note": "Standard-checkpoint 192x192 EdgePad comparison model. Retained locally and not bundled in the APK."
+    },
     "zipdepth_512x288_standard_edgepad": {
       "enabled": true,
       "path": "../../models/zipdepth-base-512x288-standard-packed-conv4-reduceconv-edgepad-gpu.tflite",

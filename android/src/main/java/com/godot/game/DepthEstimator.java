@@ -282,6 +282,7 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU = "zipdepth-base-384-standard-packed-conv4-reduceconv-zeropad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU = "zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU = "zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU = "zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU = "zipdepth-base-256-direct-half-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
@@ -660,6 +661,10 @@ public class DepthEstimator {
                     MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU,
                     256, 256, 256, 256, ZIPDEPTH_DEPTH_TAU_SECONDS,
                     ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            gpuVariants.put(28, new GpuVariant("ZipDepth-224-Standard-EdgePad-GPU",
+                    MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU,
+                    224, 224, 224, 224, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
             gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
                     MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
                     256, 256, 128, 128, 0.02f, 0.1f));
@@ -958,7 +963,7 @@ public class DepthEstimator {
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -1062,6 +1067,7 @@ public class DepthEstimator {
             case 25: return "ZipDepth-384-Standard-EdgePad";
             case 26: return "ZipDepth-256-Standard-EdgePad";
             case 27: return "ZipDepth-256-Direct-128";
+            case 28: return "ZipDepth-224-Standard-EdgePad";
             case 15: return "ZipDepth-512x288";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";

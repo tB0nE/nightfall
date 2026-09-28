@@ -104,6 +104,16 @@ MODEL_PRESETS = {
         "zipdepth_384_standard_edgepad",
         "zipdepth_256_standard_edgepad",
     ],
+    "zipdepth-edgepad-lowres": [
+        "zipdepth_256_standard_edgepad",
+        "zipdepth_224_standard_edgepad",
+        "zipdepth_192_standard_edgepad",
+    ],
+    "zipdepth-edgepad-384-256-224": [
+        "zipdepth_384_standard_edgepad",
+        "zipdepth_256_standard_edgepad",
+        "zipdepth_224_standard_edgepad",
+    ],
 }
 
 DISPLAY_NAMES = {
@@ -113,6 +123,8 @@ DISPLAY_NAMES = {
     "zipdepth_384_standard_optimized": "Standard Optimized",
     "zipdepth_384_standard_edgepad": "Standard EdgePad (exact border)",
     "zipdepth_256_standard_edgepad": "Standard EdgePad-256",
+    "zipdepth_224_standard_edgepad": "Standard EdgePad-224",
+    "zipdepth_192_standard_edgepad": "Standard EdgePad-192",
     "zipdepth_512x288_standard_edgepad": "Standard EdgePad 512x288",
     "edgepad_square_guided_480": "384x384 EdgePad -> guided 480x270",
     "edgepad_wide_guided_480": "512x288 EdgePad -> guided 480x270",
@@ -145,6 +157,10 @@ DISPLAY_NAMES = {
     "edgepad_384_guided_linear_480": "EdgePad-384 guided linear",
     "edgepad_256_plain_linear_480": "EdgePad-256 plain linear",
     "edgepad_256_guided_linear_480": "EdgePad-256 guided linear",
+    "edgepad_256_lowres_linear_480": "EdgePad-256",
+    "edgepad_224_lowres_linear_480": "EdgePad-224",
+    "edgepad_192_lowres_linear_480": "EdgePad-192",
+    "edgepad_384_lowres_linear_480": "EdgePad-384",
 }
 
 # ---------------------------------------------------------------------------
@@ -1029,7 +1045,49 @@ def main():
     emit(f"Total wall time for this run: {run_wall_ms}ms")
     summary["run_wall_time_ms"] = run_wall_ms
 
-    if args.preset == "zipdepth-direct-v2" and normalized_outputs:
+    if args.preset in ("zipdepth-edgepad-lowres", "zipdepth-edgepad-384-256-224") \
+            and normalized_outputs:
+        # Match Android production: unpack the learned 2x reconstruction in
+        # infer_zipdepth(), then hardware-linear scale each native square map
+        # into Nightfall's 480x270 working depth texture.
+        final_outputs = {}
+        postprocess_cpu_ms = {}
+        sizes = (384, 256, 224) if args.preset == "zipdepth-edgepad-384-256-224" \
+            else (256, 224, 192)
+        for size in sizes:
+            model_key = f"zipdepth_{size}_standard_edgepad"
+            if model_key not in normalized_outputs:
+                continue
+            start = time.perf_counter()
+            output_key = f"edgepad_{size}_lowres_linear_480"
+            final_outputs[output_key] = np.clip(np.asarray(
+                Image.fromarray(
+                    normalized_outputs[model_key].astype(np.float32), mode="F"
+                ).resize((480, 270), Image.Resampling.BILINEAR),
+                dtype=np.float32,
+            ), 0.0, 1.0)
+            postprocess_cpu_ms[output_key] = round(
+                (time.perf_counter() - start) * 1000.0, 2
+            )
+
+        selected_models = list(final_outputs)
+        comparison_gray = []
+        comparison_color = []
+        for key, output in final_outputs.items():
+            gray = to_gray_png(output)
+            color = to_color_png(output)
+            gray.save(run_dir / f"{key}_gray.png")
+            color.save(run_dir / f"{key}_color.png")
+            comparison_gray.append((DISPLAY_NAMES[key], gray.convert("RGB")))
+            comparison_color.append((DISPLAY_NAMES[key], color))
+        normalized_outputs = final_outputs
+        summary["postprocess_cpu_ms"] = postprocess_cpu_ms
+        summary["postprocess_note"] = (
+            "All three EdgePad models use the same learned head and plain "
+            "linear 480x270 production scaling; only model resolution varies."
+        )
+
+    elif args.preset == "zipdepth-direct-v2" and normalized_outputs:
         standard_key = "zipdepth_384_standard_v1"
         direct_key = "zipdepth_384_direct_v1"
         final_outputs = {}

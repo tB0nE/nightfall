@@ -1461,10 +1461,10 @@ func _init_android_setup():
 	# yet), so a fresh Android install can't boot pointed at settings.host.ai_3d_model's
 	# compiled-in default (MiDaS-256-GPU, not bundled there).
 	settings_controller.enforce_ai3d_platform_lock(true)
-	if not [12, 15, 20, 30, 40].has(settings.host.ai_3d_hz_cap):
+	if not [12, 15, 20, 30, 40, 60].has(settings.host.ai_3d_hz_cap):
 		settings.host.ai_3d_hz_cap = 20
-	if not [50, 75, 100, 125, 150].has(settings.host.ai_3d_separation_pct):
-		settings.host.ai_3d_separation_pct = 100
+	if not [50, 75, 100].has(settings.host.ai_3d_separation_pct):
+		settings.host.ai_3d_separation_pct = 75
 	if not [30, 40, 50, 60, 70].has(settings.host.ai_3d_convergence_pct):
 		settings.host.ai_3d_convergence_pct = 50
 	settings.host.ai_3d_debug = clampi(settings.host.ai_3d_debug, 0, 4)
@@ -2570,6 +2570,8 @@ func _process_performance_overlay(delta: float):
 				depth_model_name = "ZipDepth EdgePad-256"
 			elif settings_controller.get_depth_model_index() == 27:
 				depth_model_name = "ZipDepth-256 Direct-128"
+			elif settings_controller.get_depth_model_index() == 28:
+				depth_model_name = "ZipDepth EdgePad-224"
 			lines.append("Depth: %s / %s" % [
 				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])

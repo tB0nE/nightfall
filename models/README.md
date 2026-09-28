@@ -1,7 +1,7 @@
 # Depth model assets
 
 This directory holds the `.tflite` depth-estimation model library. Android
-currently bundles EdgePad-384 and EdgePad-256 through
+currently bundles EdgePad-384, EdgePad-256, and manual-only EdgePad-224 through
 `tools/build_support/package_android_models.sh`. Linux bundles Vulkan ncnn
 conversions of ZipDepth-384/256, MiDaS-256/192, and Depth Anything V2-252,
 alongside TFLite CPU variants of the latter three. They are installed in
@@ -34,6 +34,8 @@ Every model here shares the same downstream pipeline (`DepthEstimator.java`'s
 | `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | Retained Android reference. Standard checkpoint backbone/decoder plus the mobile-safe NPU head; no longer bundled after Standard EdgePad and Direct-192 superseded it. |
 | `zipdepth-base-256-gpu.tflite` | ~12MB | ZipDepth-256 Hybrid (GPU, fp16 weights) | Retained Android reference; no longer bundled after final-warp testing exposed a substantial quality gap from the learned EdgePad head. |
 | `zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite` | ~12MB | ZipDepth Standard EdgePad-256 (GPU, fp16 weights) | **Android Quest 2 Auto/manual model.** Standard checkpoint, 256x256 input, packed 128x128x4 learned reconstruction output interleaved to 256x256. Uses OpenGL under Quest 2 Auto. |
+| `zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite` | ~12MB | ZipDepth Standard EdgePad-224 (GPU, fp16 weights) | Android manual-only performance experiment targeting sustained 60Hz inference. Never selected by Auto. |
+| `zipdepth-base-192-standard-packed-conv4-reduceconv-edgepad-gpu.tflite` | ~12MB | ZipDepth Standard EdgePad-192 (GPU, fp16 weights) | Retained local comparison model; not bundled in the Android APK. |
 | `zipdepth-base-256-direct-half-gpu.tflite` | ~12MB | ZipDepth Direct-128 (GPU, fp16 weights) | Retained comparison model. Standard-checkpoint 256x256 trunk ending at its native 128x128 half-depth tensor. |
 | `zipdepth-base-384-vulkan.ncnn.{param,bin}` | ~12MB | ZipDepth-384 Hybrid (Vulkan FP16) | Primary Linux GPU model; generated from the validated ONNX export. |
 | `zipdepth-base-256-vulkan.ncnn.{param,bin}` | ~12MB | ZipDepth-256 Hybrid (Vulkan FP16) | Lower-cost Linux GPU option. |
@@ -221,9 +223,18 @@ These reuse the 384-trained weights; they are inference-shape experiments,
 not separately trained checkpoints. The 512x288 model has the same pixel
 count as 384x384, while 672x384 is approximately equivalent to 512x512.
 
-Square 192 and 256 models were also
-built and visually compared via `tools/model_tester/`. The 256 export was
-selected as the Quest 2 OpenGL compatibility model; 192 remains unbundled.
+Square 192, 224, and 256 models were also built and visually compared via
+`tools/model_tester/`. Regenerate the two lower-resolution EdgePad experiments
+with:
+
+```bash
+python3 tools/convert_zipdepth.py \
+  --shape 224x224 --shape 192x192 \
+  --head-mode standard-packed-conv4-reduceconv-edgepad
+```
+
+The 256 export was selected as the Quest 2 OpenGL compatibility model, 224 is
+bundled as a manual community/experimental tier, and 192 remains unbundled.
 Every number in ZipDepth's paper is measured at 384x384, and ZipDepth has no
 dedicated lower-resolution training. These exports use the 384 weights
 outside their trained distribution, and

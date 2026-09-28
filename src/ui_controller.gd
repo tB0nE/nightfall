@@ -233,8 +233,8 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
-	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
-	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
+	update_option_btn(main._ui_3d_separation_btn, main.settings_controller.get_ai_3d_separation_label())
+	update_option_btn(main._ui_3d_convergence_btn, main.settings_controller.get_ai_3d_convergence_label())
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
@@ -896,10 +896,10 @@ func build_ui():
 	main._ui_3d_hz_cap_btn = make_option_btn("Hz Cap", "20hz")
 	_set_button_tooltip(main._ui_3d_hz_cap_btn, "Limit how often the depth model runs each second.")
 	ai3d_row2.add_child(main._ui_3d_hz_cap_btn)
-	main._ui_3d_separation_btn = make_option_btn("Separation", "100%")
+	main._ui_3d_separation_btn = make_option_btn("Separation", "75% (Default)")
 	_set_button_tooltip(main._ui_3d_separation_btn, "Adjust the perceived strength of the stereoscopic depth.")
 	ai3d_row2.add_child(main._ui_3d_separation_btn)
-	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50%")
+	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50% (Default)")
 	_set_button_tooltip(main._ui_3d_convergence_btn, "Adjust the depth plane where the left and right views meet.")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")

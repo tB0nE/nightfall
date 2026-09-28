@@ -124,7 +124,8 @@ field rather than only the raw or resized depth map. The EdgePad models were
 the only candidates that remained consistently clean at actual viewing size.
 Their reconstruction cost was small—about 1.3–2 ms in these comparisons—while
 the perceived quality improvement was substantial. EdgePad-384 and
-EdgePad-256 therefore became the only production Android models. Direct,
+EdgePad-256 therefore became the original production Android models. A later
+manual-only EdgePad-224 tier was added to investigate sustained 60Hz inference. Direct,
 Hybrid, and intermediate Standard exports remain retained references, not APK
 assets or UI choices.
 
@@ -168,7 +169,7 @@ guided 5x5 conversion:
 
 The exact native `DMap-Final` view exposed two motion issues hidden by the old
 debug paths: visible 20 Hz stepping and unstable frame-to-frame normalization.
-The two production EdgePad variants now restore Moonlight Android XR's intended
+The production EdgePad variants now restore Moonlight Android XR's intended
 smoothing behavior using cadence-independent equivalents:
 depth tau 0.055 seconds (60% new data at 20 Hz) and range tau 0.308 seconds
 (15% new range at 20 Hz). A native scale-matched 5x5 colour-guided conversion

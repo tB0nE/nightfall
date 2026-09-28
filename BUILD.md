@@ -211,7 +211,8 @@ For Linux AppImage (`--appimage`):
 
 ### Depth models
 
-Android bundles two GPU models: ZipDepth EdgePad-384 and EdgePad-256. Auto
+Android bundles three GPU models: ZipDepth EdgePad-384, EdgePad-256, and the
+manual-only EdgePad-224 performance tier. Auto
 selects EdgePad-384/OpenCL on Quest 3/3S and EdgePad-256/OpenGL on Quest 2.
 Linux bundles ncnn
 Vulkan conversions of both ZipDepth models, MiDaS-256, MiDaS-192, and Depth

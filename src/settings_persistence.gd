@@ -173,11 +173,11 @@ static func read_host(
 			host.ai_3d_last_mode = clampi(config.get_value(section, "ai_3d_last_mode", 1), 1, 3)
 			host.ai_3d_backend_pref = 1 if config.get_value(section, "ai_3d_backend_pref", 2) == 1 else 2
 			host.ai_3d_hz_cap = config.get_value(section, "ai_3d_hz_cap", 20)
-			if not [12, 15, 20, 30, 40].has(host.ai_3d_hz_cap):
+			if not [12, 15, 20, 30, 40, 60].has(host.ai_3d_hz_cap):
 				host.ai_3d_hz_cap = 20
-			host.ai_3d_separation_pct = config.get_value(section, "ai_3d_separation_pct", 100)
-			if not [50, 75, 100, 125, 150].has(host.ai_3d_separation_pct):
-				host.ai_3d_separation_pct = 100
+			host.ai_3d_separation_pct = config.get_value(section, "ai_3d_separation_pct", 75)
+			if not [50, 75, 100].has(host.ai_3d_separation_pct):
+				host.ai_3d_separation_pct = 75
 			host.ai_3d_convergence_pct = config.get_value(section, "ai_3d_convergence_pct", 50)
 			if not [30, 40, 50, 60, 70].has(host.ai_3d_convergence_pct):
 				host.ai_3d_convergence_pct = 50
