@@ -85,7 +85,7 @@ cmake --preset linux -DCMAKE_BUILD_TYPE=Release
 ninja -C build/linux-release
 ```
 
-Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. Linux AI 3D defaults to ZipDepth-384 through ncnn's Vulkan backend and also offers ZipDepth-256, MiDaS-192/256, and Depth Anything V2-252 on Vulkan. The latter three retain independently selectable TFLite CPU variants. No vcpkg ports are used for these runtimes: `CMakeLists.txt` vendors TFLite `v2.17.0` and a pinned ncnn revision through `FetchContent`. The first configure therefore needs network access and is substantially slower; the Docker build cache preserves both source and compiled dependencies. Model files ship loose beside the binary in `depth_models/` rather than through Godot's PCK.
+Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. Linux AI 3D defaults to ZipDepth-384 through ncnn's Vulkan backend. The production selector keeps MiDaS-256 and Depth Anything V2-252 as CPU alternatives; older converted Vulkan variants remain development assets rather than user-facing choices. No vcpkg ports are used for these runtimes: `CMakeLists.txt` vendors TFLite `v2.17.0` and a pinned ncnn revision through `FetchContent`. The first configure therefore needs network access and is substantially slower; the Docker build cache preserves both source and compiled dependencies. Model files ship loose beside the binary in `depth_models/` rather than through Godot's PCK.
 
 ### Native OpenXR renderer (Quest/GLES)
 

@@ -127,8 +127,9 @@ To build the current Linux client:
 4. Start the generated `Nightfall-x86_64.AppImage`
 
 Linux supports the normal streaming controls, SBS, passthrough when exposed by
-the runtime, Vulkan inference for ZipDepth, MiDaS, and Depth Anything, and native CPU depth
-models. It does not use Android's native GLES renderer path.
+the runtime, ZipDepth-384 inference through Vulkan, and MiDaS-256 or Depth
+Anything V2-252 CPU alternatives. It does not use Android's native GLES
+renderer path.
 
 ### Controls
 

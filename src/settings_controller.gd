@@ -96,19 +96,24 @@ const ANDROID_DEPTH_PROCESS_FULL_GUIDED_LINEAR := 7
 # Back to its original 5-entry shape (2026-08-28, AI 3D tab - briefly
 # deduplicated to 3 entries with an independent Type control, corrected
 # after clarifying the actual request: Type doesn't just gate Model, it
-# FILTERS which entries Model cycles through - GPU shows MiDaS-256-GPU/
-# MiDaS-192-GPU, CPU shows MiDaS-192/MiDaS-256/DA-V2-252. cycle_ai_3d_model()
-# below only cycles entries whose .gpu matches main.settings.host.ai_3d_backend_pref;
+# FILTERS which entries Model cycles through. Linux deliberately exposes a
+# compact production-oriented roster: Vulkan
+# shows only ZipDepth-384, while CPU keeps MiDaS-256 and DA-V2-252 as
+# compatibility/tinkering choices. Historical slots remain in this array so
+# persisted indices and Android mappings never shift; `linux = false` merely
+# removes them from Linux's Model cycle.
+# cycle_ai_3d_model() below only cycles entries whose .gpu matches
+# main.settings.host.ai_3d_backend_pref;
 # cycle_ai_3d_type() snaps main.settings.host.ai_3d_model to the new Type's first entry
 # whenever the current selection doesn't match. Same order/indices as the
 # original list for MiDaS-256-GPU (0) and MiDaS-192-GPU (1), so AUTO_TABLE/
 # QUEST2_AUTO_TABLE's stored model_idx values need no changes. ZipDepth
 # entries (below) are additive on top of this same 5-entry shape.
 var ai_3d_models: Array = [
-	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
-	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
+	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true, "linux": false},
+	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true, "linux": false},
 	{"label": "ZipDepth-384-GPU", "java_index": 14, "gpu": true},
-	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
+	{"label": "MiDaS-192", "java_index": 10, "gpu": false, "linux": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
 	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true, "linux": false},
@@ -122,7 +127,7 @@ var ai_3d_models: Array = [
 	{"label": "Auto", "java_index": 14, "gpu": true, "android": true, "linux": false},
 	{"label": "Fastest", "java_index": 18, "gpu": true, "android": true, "linux": false},
 	# Linux Vulkan variant; appended so every existing persisted index remains stable.
-	{"label": "DA-V2-252-GPU", "java_index": 1, "gpu": true, "android": false, "linux": true},
+	{"label": "DA-V2-252-GPU", "java_index": 1, "gpu": true, "android": false, "linux": false},
 	# Temporary exact-graph optimization comparison. Appended so every
 	# existing persisted model index remains stable.
 	{"label": "ZipDepth-384-Standard-v2-GPU", "java_index": 19, "gpu": true, "android": true, "linux": false},
@@ -648,15 +653,20 @@ func get_depth_model_index() -> int:
 		return 0
 	if is_android_ai3d_auto():
 		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
-	# Linux Auto defaults to the same high-quality ZipDepth-384 model as the
-	# APK when GPU/Vulkan is selected. CPU Auto retains the calibrated MiDaS
-	# table below, preserving the low-end fallback and tinkering choices.
-	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1 \
-			and main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU:
-		return 14
+	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
+	# or MiDaS-256 when the user explicitly changes Type to CPU. The old Auto
+	# table was calibrated for the retired MiDaS GPU roster and must not make
+	# Linux silently select a slower model.
+	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
+		return 14 if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else 3
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
+
+func get_depth_model_label() -> String:
+	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
+		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
+	return ai_3d_models[main.settings.host.ai_3d_model].label
 
 # Android production reconstruction is part of the tier definition rather
 # than a hidden debug preference. Both EdgePad models retain ZipDepth's full
@@ -1240,6 +1250,14 @@ func apply_display_refresh_rate() -> bool:
 		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
 		if request_seq != _refresh_request_seq:
 			return false
+	# Always report what the runtime says it actually applied. This matters on
+	# desktop OpenXR runtimes such as WiVRN, where accepting a request and
+	# presenting at that rate are separate concerns.
+	var applied_hz: float = interface.get_display_refresh_rate()
+	if applied_hz > 0.0:
+		if absf(applied_hz - best) >= 0.6:
+			main._log("[REFRESH] Runtime reported %.0fHz after requesting %.0fHz" % [applied_hz, best])
+		best = applied_hz
 	main.display_refresh_rate = best
 	# 2026-08-29: capping render fps to the stream's own fps again (was
 	# uncapped since 8ffa8fe, 2026-05-05, "remove 60fps cap causing Quest ASW

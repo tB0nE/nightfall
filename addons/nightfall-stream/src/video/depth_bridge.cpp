@@ -448,11 +448,11 @@ int DepthBridge::get_depth_model_input_height() {
 // line exactly (same volatile fields, updated at the same point) - added so
 // a GDScript status-bar readout can show live inference timing without
 // needing adb/logcat, for the 1080p-vs-1440p+ GPU-depth-inference regression
-// investigation. Linux has no equivalent telemetry wired up yet (MidasDepthEngine
-// doesn't track this) - returns 0 there, same "no data" convention as
-// get_depth_model_size()'s own platform fallback.
+// investigation. Linux exposes the equivalent native worker measurements.
 float DepthBridge::get_depth_last_inference_ms() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return midas_engine_ ? midas_engine_->get_last_inference_ms() : 0.0f;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 0.0f;
 
@@ -474,7 +474,9 @@ float DepthBridge::get_depth_last_inference_ms() {
 }
 
 float DepthBridge::get_depth_last_inference_hz() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return midas_engine_ ? midas_engine_->get_last_inference_hz() : 0.0f;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 0.0f;
 
@@ -496,7 +498,9 @@ float DepthBridge::get_depth_last_inference_hz() {
 }
 
 float DepthBridge::get_depth_last_age_ms() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return midas_engine_ ? midas_engine_->get_last_age_ms() : 0.0f;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 0.0f;
     jclass app_class = env->FindClass("com/godot/game/GodotApp");
@@ -515,7 +519,9 @@ float DepthBridge::get_depth_last_age_ms() {
 }
 
 int DepthBridge::get_depth_last_skipped_frames() {
-#ifdef __ANDROID__
+#ifdef NIGHTFALL_PLATFORM_LINUX
+    return midas_engine_ ? midas_engine_->get_last_skipped_frames() : 0;
+#elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 0;
     jclass app_class = env->FindClass("com/godot/game/GodotApp");

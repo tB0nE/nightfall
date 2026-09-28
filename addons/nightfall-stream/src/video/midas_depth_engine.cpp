@@ -369,7 +369,11 @@ void MidasDepthEngine::submit_frame(const uint8_t *rgba, size_t rgba_len, int wi
     if (!active_model_) return;
 #endif
     if (!rgba || width <= 0 || height <= 0) return;
-    if (is_inferencing_.load()) return; // drop - matches Android's isInferencing.compareAndSet policy
+    submitted_frames_.fetch_add(1);
+    if (is_inferencing_.load()) {
+        dropped_frames_.fetch_add(1);
+        return; // drop - matches Android's isInferencing.compareAndSet policy
+    }
 
     size_t needed = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     if (rgba_len < needed) {
@@ -391,6 +395,7 @@ void MidasDepthEngine::submit_frame(const uint8_t *rgba, size_t rgba_len, int wi
         pending_rgba_.assign(rgba, rgba + needed);
         pending_width_ = width;
         pending_height_ = height;
+        pending_capture_time_ns_ = now_ns();
         has_pending_ = true;
     }
     submit_cv_.notify_one();
@@ -407,6 +412,7 @@ void MidasDepthEngine::worker_loop() {
     while (true) {
         std::vector<uint8_t> rgba;
         int width = 0, height = 0;
+        int64_t capture_time_ns = 0;
         {
             std::unique_lock<std::mutex> lock(submit_mutex_);
             submit_cv_.wait(lock, [this] { return has_pending_ || shutdown_; });
@@ -414,10 +420,13 @@ void MidasDepthEngine::worker_loop() {
             rgba = std::move(pending_rgba_);
             width = pending_width_;
             height = pending_height_;
+            capture_time_ns = pending_capture_time_ns_;
             has_pending_ = false;
         }
 
         is_inferencing_.store(true);
+        const int64_t inference_start_ns = now_ns();
+        bool inference_completed = false;
         DepthModel *model = active_model_;
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
         VulkanDepthModel *vulkan_model = active_vulkan_model_;
@@ -432,21 +441,48 @@ void MidasDepthEngine::worker_loop() {
         if (vulkan_model && vulkan_model->loaded.load()) {
             std::vector<float> raw = run_vulkan_inference(*vulkan_model, rgba.data(), width, height);
             if (!raw.empty()) {
+                const int64_t inference_end_ns = now_ns();
                 std::vector<uint8_t> depth = post_process(raw, vulkan_model->size,
                                                           vulkan_model->percentile_clip);
                 std::lock_guard<std::mutex> lock(result_mutex_);
                 latest_result_ = std::move(depth);
                 has_result_ = true;
+                telemetry_total_inference_ns_ += inference_end_ns - inference_start_ns;
+                inference_completed = true;
             }
         } else
 #endif
         if (model && model->loaded) {
             std::vector<float> raw = run_inference(*model, rgba.data(), width, height);
             if (!raw.empty()) {
+                const int64_t inference_end_ns = now_ns();
                 std::vector<uint8_t> depth = post_process(raw, model->size, model->percentile_clip);
                 std::lock_guard<std::mutex> lock(result_mutex_);
                 latest_result_ = std::move(depth);
                 has_result_ = true;
+                telemetry_total_inference_ns_ += inference_end_ns - inference_start_ns;
+                inference_completed = true;
+            }
+        }
+        if (inference_completed) {
+            const int64_t completed_ns = now_ns();
+            last_depth_age_ms_.store(static_cast<float>(completed_ns - capture_time_ns) / 1e6f);
+            telemetry_completed_frames_++;
+            if (telemetry_window_start_ns_ == 0) telemetry_window_start_ns_ = inference_start_ns;
+            const int64_t elapsed_ns = completed_ns - telemetry_window_start_ns_;
+            if (elapsed_ns >= 1000000000LL) {
+                const float divisor = static_cast<float>(std::max(telemetry_completed_frames_, 1));
+                last_inference_ms_.store(static_cast<float>(telemetry_total_inference_ns_) / divisor / 1e6f);
+                last_inference_hz_.store(divisor * 1e9f / static_cast<float>(elapsed_ns));
+                const int submitted = submitted_frames_.exchange(0);
+                const int dropped = dropped_frames_.exchange(0);
+                last_skipped_frames_.store(dropped);
+                NF_LOG(TAG, "Perf: model=%d inference=%.1fms completed=%.1fHz submitted=%d dropped=%d age=%.1fms",
+                       active_model_index_.load(), last_inference_ms_.load(), last_inference_hz_.load(),
+                       submitted, dropped, last_depth_age_ms_.load());
+                telemetry_window_start_ns_ = completed_ns;
+                telemetry_total_inference_ns_ = 0;
+                telemetry_completed_frames_ = 0;
             }
         }
         is_inferencing_.store(false);

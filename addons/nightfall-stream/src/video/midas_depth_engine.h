@@ -77,6 +77,15 @@ public:
     int get_backend_capabilities(int model_index) const;
     std::string get_backend_status() const;
 
+    // Live worker telemetry consumed by the same status-bar/performance
+    // overlay API as Android. Inference time covers model input preparation,
+    // dispatch, and output readback, but excludes Nightfall's common depth
+    // normalization/temporal smoothing pass.
+    float get_last_inference_ms() const { return last_inference_ms_.load(); }
+    float get_last_inference_hz() const { return last_inference_hz_.load(); }
+    float get_last_age_ms() const { return last_depth_age_ms_.load(); }
+    int get_last_skipped_frames() const { return last_skipped_frames_.load(); }
+
     // Native output resolution (square) of whichever model is currently
     // active - depth_estimator.gd sizes its capture viewport off this via
     // DepthBridge::get_depth_model_size(), same as Android.
@@ -186,8 +195,20 @@ private:
     std::vector<uint8_t> pending_rgba_;
     int pending_width_ = 0;
     int pending_height_ = 0;
+    int64_t pending_capture_time_ns_ = 0;
     std::atomic<bool> is_inferencing_{false};
     bool shutdown_ = false;
+
+    // Worker-owned rolling window with atomic snapshots for the Godot thread.
+    int64_t telemetry_window_start_ns_ = 0;
+    int64_t telemetry_total_inference_ns_ = 0;
+    int telemetry_completed_frames_ = 0;
+    std::atomic<int> submitted_frames_{0};
+    std::atomic<int> dropped_frames_{0};
+    std::atomic<float> last_inference_ms_{0.0f};
+    std::atomic<float> last_inference_hz_{0.0f};
+    std::atomic<float> last_depth_age_ms_{0.0f};
+    std::atomic<int> last_skipped_frames_{0};
 
     std::mutex result_mutex_;
     std::vector<uint8_t> latest_result_;

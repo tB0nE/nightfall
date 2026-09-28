@@ -223,11 +223,10 @@ func update_stereo_shader():
 	# fallback correctly (see settings_controller.gd's get_depth_backend_index()) -
 	# no separate Auto-display special-casing needed here.
 	update_option_btn(main._ui_3d_type_btn, main.settings_controller.get_depth_backend_label())
-	# Under Auto (ai_3d_speed==1) main.settings.host.ai_3d_model is frozen/irrelevant - show
-	# whichever model AUTO_TABLE actually picked instead (see
-	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
-	var model_idx = main.settings_controller.get_auto_selection().model_idx if OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
+	# Auto's model is policy-driven rather than the persisted manual slot. Ask
+	# SettingsController for the effective label so Linux displays its real
+	# ZipDepth-384/Vulkan default (or MiDaS-256 after an explicit CPU choice).
+	update_option_btn(main._ui_3d_btn, main.settings_controller.get_depth_model_label())
 	if main._ui_3d_gpu_api_btn:
 		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())

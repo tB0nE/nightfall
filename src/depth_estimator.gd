@@ -562,7 +562,7 @@ func process(delta: float):
 		var backend_status = main.stream_backend.get_depth_backend_status()
 		main._log("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d input=%dx%d output=%dx%d backend=%d status='%s'" % [
 			capture_value, submit_ms, float(_perf_submitted) / _perf_window,
-			float(_perf_updates) / _perf_window, main.settings.host.ai_3d_model,
+			float(_perf_updates) / _perf_window, main.settings_controller.get_depth_model_index(),
 			model_input_width, model_input_height, model_width, model_height,
 			main.stream_backend.get_effective_depth_backend(),
 			backend_status if not backend_status.is_empty() else "ok",

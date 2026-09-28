@@ -9,8 +9,10 @@
 >
 > Current checkpoint: Linux build restoration, Vulkan depth inference,
 > EdgePad Android quality tiers, profiling tools, and their documentation are
-> implemented on this branch. The remaining merge gate is runtime validation,
-> especially Linux PCVR and Quest 2 Auto behavior.
+> implemented and runtime-tested on this branch. Linux local capture remains
+> available as an explicit experiment, but normal Sunshine encode/decode is
+> the production default until the local path has a zero-copy presentation
+> implementation.
 
 ## Objective
 
@@ -106,9 +108,12 @@ behavioral refactors should be separate commits or pull requests.
 
 ### 7. Restore and validate Linux releases
 
-> Status: Build, packaging, CPU/Vulkan model smoke tests, and AppImage export
-> are implemented on `refactor/linux-restoration-and-cleanup`. PCVR runtime
-> validation remains before Linux release publication.
+> Status: Build, packaging, CPU/Vulkan model smoke tests, AppImage export, and
+> WiVRN PCVR runtime validation are complete on
+> `refactor/linux-restoration-and-cleanup`. Linux depth timing is exposed in
+> the status bar, and the experimental same-machine capture path is opt-in via
+> `NIGHTFALL_ENABLE_LOCAL_CAPTURE=1` after its CPU conversion/upload cost was
+> found to limit a 2560x1440/120fps test near 80fps.
 
 - Rebuild the Linux streaming extension in the Ubuntu 22.04 container and
   export a Linux binary/AppImage from the current source.

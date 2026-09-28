@@ -57,9 +57,17 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 			ip = h_host.get("localaddress", "")
 			break
 
-	local_capture_mode = _is_local_host(ip) and OS.get_environment("NIGHTFALL_DISABLE_LOCAL_CAPTURE") == ""
-	if OS.get_environment("NIGHTFALL_DISABLE_LOCAL_CAPTURE") != "" and _is_local_host(ip):
-		main._log("[STREAM] NIGHTFALL_DISABLE_LOCAL_CAPTURE set - forcing normal network decode path despite localhost")
+	# The experimental same-machine X11/PipeWire capture path is opt-in for
+	# now. Its X11 implementation performs a full-frame CPU channel conversion
+	# and GPU upload, which capped a 2560x1440/120 session near 80fps in real
+	# testing. Prefer Sunshine's normal encode/decode path until local capture
+	# has a genuinely zero-copy presentation path.
+	var is_local := _is_local_host(ip)
+	local_capture_mode = is_local \
+		and OS.get_environment("NIGHTFALL_ENABLE_LOCAL_CAPTURE") != "" \
+		and OS.get_environment("NIGHTFALL_DISABLE_LOCAL_CAPTURE") == ""
+	if is_local and not local_capture_mode:
+		main._log("[STREAM] Local capture disabled; using normal Sunshine decode path (set NIGHTFALL_ENABLE_LOCAL_CAPTURE=1 to test it)")
 	if local_capture_mode:
 		main._log("[STREAM] Localhost detected! Enabling local capture mode (%s)" % ("Wayland" if OS.get_environment("WAYLAND_DISPLAY") else "X11"))
 		_b().set_local_capture_mode(true)
