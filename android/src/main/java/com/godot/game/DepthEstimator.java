@@ -17,6 +17,7 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -668,8 +669,9 @@ public class DepthEstimator {
             gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
                     MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
                     256, 256, 128, 128, 0.02f, 0.1f));
-            gpuVariants.put(15, new GpuVariant("ZipDepth-512x288-GPU", MODEL_ZIPDEPTH_512X288_GPU, 512, 288,
-                    0.02f, 0.1f));
+            gpuVariants.put(15, new GpuVariant("EdgePad-512x288-Experimental-GPU",
+                    MODEL_ZIPDEPTH_512X288_GPU,
+                    512, 288, 512, 288, 0.02f, 0.1f, true));
             gpuVariants.put(16, new GpuVariant("ZipDepth-672x384-GPU", MODEL_ZIPDEPTH_672X384_GPU, 672, 384,
                     0.02f, 0.1f));
 
@@ -1068,7 +1070,7 @@ public class DepthEstimator {
             case 26: return "ZipDepth-256-Standard-EdgePad";
             case 27: return "ZipDepth-256-Direct-128";
             case 28: return "ZipDepth-224-Standard-EdgePad";
-            case 15: return "ZipDepth-512x288";
+            case 15: return "EdgePad-512x288-Experimental";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
         }
@@ -1532,6 +1534,7 @@ public class DepthEstimator {
                         java.util.Arrays.toString(actualInputShape), actualInputElements, expectedInputElements,
                         java.util.Arrays.toString(actualOutputShape), actualOutputElements, expectedOutputElements));
             }
+            validateGpuTensorShapes(v, actualInputShape, actualOutputShape);
             Log.i(TAG, String.format(java.util.Locale.US,
                     "%s model loaded from %s with GPU delegate in %.1fms; input=%s output=%s",
                     v.label, v.assetFile, (System.nanoTime() - mappedNs) / 1_000_000.0f,
@@ -1625,6 +1628,20 @@ public class DepthEstimator {
             }
         }
         return unpacked;
+    }
+
+    private static void validateGpuTensorShapes(GpuVariant v, int[] inputShape, int[] outputShape) {
+        if (!v.packed2x2Output) return;
+        int[] expectedInput = {1, v.inputHeight, v.inputWidth, 3};
+        int[] expectedOutput = {1, v.outputHeight / 2, v.outputWidth / 2, 4};
+        if (!Arrays.equals(inputShape, expectedInput)) {
+            throw new IllegalStateException(v.label + " unexpected input shape "
+                    + Arrays.toString(inputShape) + ", expected " + Arrays.toString(expectedInput));
+        }
+        if (!Arrays.equals(outputShape, expectedOutput)) {
+            throw new IllegalStateException(v.label + " unexpected output shape "
+                    + Arrays.toString(outputShape) + ", expected " + Arrays.toString(expectedOutput));
+        }
     }
 
     // dequantize (quantized - zero_point) * scale, given a specific model's
