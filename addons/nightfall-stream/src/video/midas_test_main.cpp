@@ -32,16 +32,29 @@ int main(int argc, char **argv) {
     struct ModelCase {
         int index;
         int expected_size;
+        int backend;
     };
     const ModelCase models[] = {
-        {3, 256}, {10, 192}, {7, 256}, {8, 320}, {4, 384}, {11, 196}, {1, 252},
+        {3, 256, 1}, {10, 192, 1}, {1, 252, 1},
+        {3, 256, 2}, {10, 192, 2}, {1, 252, 2},
+        {14, 384, 2}, {18, 256, 2},
     };
     constexpr int model_count = sizeof(models) / sizeof(models[0]);
     for (int cycle = 0; cycle < model_count; cycle++) {
         int model_index = models[cycle].index;
-        printf("[test] cycle %d: set_active_model(%d), get_model_size()=%d\n",
-               cycle, model_index, engine.get_model_size());
-        engine.set_active_model(model_index);
+        if (models[cycle].backend == 2 && engine.get_backend_capabilities(model_index) != 2) {
+            printf("[test] cycle %d: Vulkan model %d unavailable; skipping\n", cycle, model_index);
+            continue;
+        }
+        printf("[test] cycle %d: configure(%d, %d), get_model_size()=%d\n",
+               cycle, model_index, models[cycle].backend, engine.get_model_size());
+        int effective_backend = engine.configure(model_index, models[cycle].backend);
+        if (effective_backend != models[cycle].backend) {
+            fprintf(stderr, "[test] model %d requested backend %d but got %d: %s\n",
+                    model_index, models[cycle].backend, effective_backend,
+                    engine.get_backend_status().c_str());
+            return 1;
+        }
         int size = engine.get_model_size();
         printf("[test] cycle %d: get_model_size() after switch = %d\n", cycle, size);
         if (size != models[cycle].expected_size) {
@@ -52,11 +65,17 @@ int main(int argc, char **argv) {
 
         bool received_depth = false;
         const size_t expected_depth_bytes = static_cast<size_t>(size) * size;
-        for (int i = 0; i < 100; i++) {
+        // First use of an ncnn graph may compile Vulkan pipelines. Keep the
+        // production path asynchronous, but allow the standalone harness up
+        // to one minute for that one-time operation.
+        const int attempts = models[cycle].backend == 2 ? 3000 : 100;
+        for (int i = 0; i < attempts; i++) {
             submit_synthetic_frame(engine, size);
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             auto depth = engine.get_latest_depth();
-            printf("[test] cycle %d frame %d: submitted, got %zu depth bytes\n", cycle, i, depth.size());
+            if (!depth.empty() || i % 25 == 0) {
+                printf("[test] cycle %d frame %d: submitted, got %zu depth bytes\n", cycle, i, depth.size());
+            }
             if (depth.size() == expected_depth_bytes) {
                 received_depth = true;
                 break;

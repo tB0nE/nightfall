@@ -123,6 +123,7 @@ cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.s
 cd "$SCRIPT_DIR"
 cp android/src/main/java/com/godot/game/GodotApp.java android/build/src/main/java/com/godot/game/GodotApp.java
 cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/main/java/com/godot/game/DepthEstimator.java
+cp android/src/main/java/com/godot/game/DepthProfileRunner.java android/build/src/main/java/com/godot/game/DepthProfileRunner.java
 cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/main/java/com/godot/game/DiagnosticLog.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
@@ -139,7 +140,7 @@ cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/m
 # Linux depth_models block above.
 bash "$SCRIPT_DIR/tools/build_support/package_android_models.sh" \
   "$SCRIPT_DIR/android/build/nightfallAssets"
-LITERT_GPU_AAR="$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar"
+LITERT_GPU_AAR="${NIGHTFALL_LITERT_GPU_AAR:-$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar}"
 if [ "$USE_STOCK_LITERT" = "1" ]; then
   echo "Using stock-priority LiteRT GPU 1.4.2"
   sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
@@ -148,12 +149,18 @@ else
     echo "Error: low-priority LiteRT GPU AAR not found at $LITERT_GPU_AAR"
     exit 1
   fi
-  if ! echo "$NIGHTFALL_LITERT_GPU_AAR_SHA256  $LITERT_GPU_AAR" | sha256sum --check --status; then
+  LITERT_GPU_AAR_SHA256="${NIGHTFALL_LITERT_GPU_AAR_SHA256_OVERRIDE:-$NIGHTFALL_LITERT_GPU_AAR_SHA256}"
+  if ! echo "$LITERT_GPU_AAR_SHA256  $LITERT_GPU_AAR" | sha256sum --check --status; then
     echo "Error: checksum mismatch for $LITERT_GPU_AAR"
     exit 1
   fi
-  echo "Using low-priority Nightfall LiteRT GPU 1.4.2"
-  sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu-api:1.4.2"\n    implementation files("../libs/litert-gpu-nightfall-1.4.2.aar")' android/build/build.gradle
+  LITERT_GPU_AAR_NAME="$(basename "$LITERT_GPU_AAR")"
+  LITERT_GPU_AAR_DEST="$SCRIPT_DIR/android/libs/$LITERT_GPU_AAR_NAME"
+  if [ "$LITERT_GPU_AAR" != "$LITERT_GPU_AAR_DEST" ]; then
+    cp "$LITERT_GPU_AAR" "$LITERT_GPU_AAR_DEST"
+  fi
+  echo "Using low-priority Nightfall LiteRT GPU 1.4.2: $LITERT_GPU_AAR_NAME"
+  sed -i "/implementation \"androidx.documentfile:documentfile/a\\\\n    implementation \"com.google.ai.edge.litert:litert:1.4.2\"\\n    implementation \"com.google.ai.edge.litert:litert-gpu-api:1.4.2\"\\n    implementation files(\"../libs/$LITERT_GPU_AAR_NAME\")" android/build/build.gradle
 fi
 sed -i "s|main.res.srcDirs += \['res'\]|main.res.srcDirs += ['res']\n        main.assets.srcDirs += ['nightfallAssets']|" android/build/build.gradle
 # mmap'd via AssetManager.openFd() at runtime (DepthEstimator.java), which requires

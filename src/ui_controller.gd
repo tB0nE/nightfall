@@ -35,7 +35,11 @@ const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
 # Keep the AI depth inspection controls available for future troubleshooting
 # without exposing them in release UI.
-const SHOW_AI3D_DIAGNOSTICS := false
+# Temporary model-validation build: expose the raw depth-map selector while
+# keeping the separate post-processing-stage control hidden. The standard-head
+# ZipDepth experiment needs direct visual confirmation of its OpenCL output.
+const SHOW_AI3D_DEPTH_DEBUG := false
+const SHOW_AI3D_PROCESS_DEBUG := false
 
 func _init(owner: Node3D):
 	main = owner
@@ -219,18 +223,17 @@ func update_stereo_shader():
 	# fallback correctly (see settings_controller.gd's get_depth_backend_index()) -
 	# no separate Auto-display special-casing needed here.
 	update_option_btn(main._ui_3d_type_btn, main.settings_controller.get_depth_backend_label())
-	# Under Auto (ai_3d_speed==1) main.settings.host.ai_3d_model is frozen/irrelevant - show
-	# whichever model AUTO_TABLE actually picked instead (see
-	# settings_controller.gd's get_auto_selection()/get_depth_model_index()).
-	var model_idx = main.settings_controller.get_auto_selection().model_idx if OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_model
-	update_option_btn(main._ui_3d_btn, main.settings_controller.ai_3d_models[model_idx].label)
+	# Auto's model is policy-driven rather than the persisted manual slot. Ask
+	# SettingsController for the effective label so Linux displays its real
+	# ZipDepth-384/Vulkan default (or MiDaS-256 after an explicit CPU choice).
+	update_option_btn(main._ui_3d_btn, main.settings_controller.get_depth_model_label())
 	if main._ui_3d_gpu_api_btn:
 		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
-	update_option_btn(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
-	update_option_btn(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
+	update_option_btn(main._ui_3d_separation_btn, main.settings_controller.get_ai_3d_separation_label())
+	update_option_btn(main._ui_3d_convergence_btn, main.settings_controller.get_ai_3d_convergence_label())
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
@@ -850,8 +853,8 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_type_btn, "Choose whether depth inference runs on the CPU or GPU.")
 	main._ui_3d_type_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_type_btn)
-	main._ui_3d_btn = make_option_btn("Model", main.settings_controller.ai_3d_models[0].label)
-	_set_button_tooltip(main._ui_3d_btn, "Choose the depth-estimation model.")
+	main._ui_3d_btn = make_option_btn("Quality", main.settings_controller.ai_3d_models[0].label)
+	_set_button_tooltip(main._ui_3d_btn, "Choose an automatic, production, or experimental AI depth quality.")
 	main._ui_3d_btn.visible = not ai3d_options_locked
 	ai3d_row1.add_child(main._ui_3d_btn)
 	if OS.get_name() == "Android":
@@ -867,7 +870,7 @@ func build_ui():
 	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
 	if OS.get_name() == "Android":
 		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
-	if OS.get_name() == "Android" and SHOW_AI3D_DIAGNOSTICS:
+	if OS.get_name() == "Android" and SHOW_AI3D_DEPTH_DEBUG:
 		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
 		_set_button_tooltip(main._ui_3d_debug_btn,
 			"Inspect the processed depth map, raw model output, or model input.")
@@ -892,16 +895,16 @@ func build_ui():
 	main._ui_3d_hz_cap_btn = make_option_btn("Hz Cap", "20hz")
 	_set_button_tooltip(main._ui_3d_hz_cap_btn, "Limit how often the depth model runs each second.")
 	ai3d_row2.add_child(main._ui_3d_hz_cap_btn)
-	main._ui_3d_separation_btn = make_option_btn("Separation", "100%")
+	main._ui_3d_separation_btn = make_option_btn("Separation", "75% (Default)")
 	_set_button_tooltip(main._ui_3d_separation_btn, "Adjust the perceived strength of the stereoscopic depth.")
 	ai3d_row2.add_child(main._ui_3d_separation_btn)
-	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50%")
+	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50% (Default)")
 	_set_button_tooltip(main._ui_3d_convergence_btn, "Adjust the depth plane where the left and right views meet.")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
 	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
 	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
 	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
-	if OS.get_name() == "Android" and SHOW_AI3D_DIAGNOSTICS:
+	if OS.get_name() == "Android" and SHOW_AI3D_PROCESS_DEBUG:
 		main._ui_3d_process_debug_btn = make_option_btn("3D Process", "Full")
 		_set_button_tooltip(main._ui_3d_process_debug_btn,
 			"Progressively enable the AI 3D warp stages for troubleshooting.")

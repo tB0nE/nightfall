@@ -102,6 +102,29 @@ if(TARGET_PLATFORM STREQUAL "linux")
         # build as part of our default target.
         add_subdirectory("${tensorflow_SOURCE_DIR}/tensorflow/lite" "${CMAKE_CURRENT_BINARY_DIR}/tflite-build" EXCLUDE_FROM_ALL)
     endif()
+
+    # Linux GPU depth inference uses ncnn's Vulkan backend. Unlike Android's
+    # LiteRT OpenCL/OpenGL delegate, this is supported by the Vulkan drivers
+    # already required by Nightfall on Nvidia, AMD, and Intel Linux systems.
+    # Pin the validated revision: model conversion/output parity and RTX 3090
+    # execution timings are recorded in models/README.md.
+    set(NCNN_VULKAN ON CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    # Nightfall only uses ncnn's Vulkan path. Avoid introducing a host
+    # libgomp dependency into the portable AppImage for unused CPU threading.
+    set(NCNN_OPENMP OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        ncnn
+        GIT_REPOSITORY https://github.com/Tencent/ncnn.git
+        GIT_TAG 6c52e59dfb610cbd77946bea19099aaf96f8dcc1
+        GIT_SHALLOW TRUE
+        GIT_SUBMODULES glslang
+    )
+    FetchContent_MakeAvailable(ncnn)
 endif()
 
 if(DEFINED GODOTCPP_SUFFIX AND NOT GODOTCPP_SUFFIX STREQUAL "")
@@ -197,7 +220,8 @@ if(TARGET_PLATFORM STREQUAL "steamos" OR TARGET_PLATFORM STREQUAL "linux")
     endif()
     if(TARGET_PLATFORM STREQUAL "linux")
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
-        target_link_libraries(${LIBNAME} PRIVATE tensorflow-lite)
+        target_link_libraries(${LIBNAME} PRIVATE tensorflow-lite ncnn)
+        target_compile_definitions(${LIBNAME} PRIVATE NIGHTFALL_HAS_NCNN_VULKAN)
 
         # Standalone MidasDepthEngine reproduction harness (2026-08-20 segfault
         # investigation) - NOT part of the normal build, opt-in only
@@ -208,7 +232,8 @@ if(TARGET_PLATFORM STREQUAL "steamos" OR TARGET_PLATFORM STREQUAL "linux")
             add_executable(midas_test src/video/midas_test_main.cpp src/video/midas_depth_engine.cpp)
             target_compile_features(midas_test PRIVATE cxx_std_17)
             target_include_directories(midas_test PRIVATE src)
-            target_link_libraries(midas_test PRIVATE tensorflow-lite pthread)
+            target_link_libraries(midas_test PRIVATE tensorflow-lite ncnn pthread)
+            target_compile_definitions(midas_test PRIVATE NIGHTFALL_HAS_NCNN_VULKAN)
         endif()
     endif()
 endif()

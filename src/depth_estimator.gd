@@ -35,6 +35,8 @@ const GPU_BOOST_REFRESH_INTERVAL := 15.0
 # then resizes depth_viewport/depth_texture to match.
 var model_width: int = 256
 var model_height: int = 256
+var model_input_width: int = 256
+var model_input_height: int = 256
 var _poll_timer: float = 0.0
 var _backend_status_timer: float = 0.0
 var _size_mismatch_log_timer: float = 0.0
@@ -145,7 +147,7 @@ func setup():
 		return
 	depth_viewport = SubViewport.new()
 	depth_viewport.name = "DepthViewport"
-	depth_viewport.size = Vector2i(model_width, model_height)
+	depth_viewport.size = Vector2i(model_input_width, model_input_height)
 	depth_viewport.disable_3d = true
 	depth_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	depth_viewport.transparent_bg = true
@@ -304,13 +306,18 @@ func sync_model_size():
 		return
 	var new_width = main.stream_backend.get_depth_model_width()
 	var new_height = main.stream_backend.get_depth_model_height()
-	if new_width <= 0 or new_height <= 0:
+	var new_input_width = main.stream_backend.get_depth_model_input_width()
+	var new_input_height = main.stream_backend.get_depth_model_input_height()
+	if new_width <= 0 or new_height <= 0 or new_input_width <= 0 or new_input_height <= 0:
 		return
-	if new_width == model_width and new_height == model_height:
+	if new_width == model_width and new_height == model_height \
+			and new_input_width == model_input_width and new_input_height == model_input_height:
 		return
 	model_width = new_width
 	model_height = new_height
-	depth_viewport.size = Vector2i(model_width, model_height)
+	model_input_width = new_input_width
+	model_input_height = new_input_height
+	depth_viewport.size = Vector2i(model_input_width, model_input_height)
 	var img = Image.create(model_width, model_height, false, Image.FORMAT_L8)
 	depth_texture.set_image(img)
 
@@ -485,9 +492,9 @@ func process(delta: float):
 		# late, the latest-frame policy simply picks it up on a later frame.
 		if native_capture_available:
 			var native_data: PackedByteArray = main.stream_backend.consume_native_depth_capture()
-			if native_data.size() == model_width * model_height * 4:
+			if native_data.size() == model_input_width * model_input_height * 4:
 				var native_submit_start = Time.get_ticks_usec()
-				main.stream_backend.submit_depth_frame(native_data, model_width, model_height)
+				main.stream_backend.submit_depth_frame(native_data, model_input_width, model_input_height)
 				_perf_submit_usec += Time.get_ticks_usec() - native_submit_start
 				_perf_submitted += 1
 
@@ -502,7 +509,7 @@ func process(delta: float):
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			if native_capture_available:
-				main.stream_backend.request_native_depth_capture(model_width, model_height)
+				main.stream_backend.request_native_depth_capture(model_input_width, model_input_height)
 			else:
 				var capture_start = Time.get_ticks_usec()
 				var img = depth_viewport.get_texture().get_image()
@@ -522,7 +529,7 @@ func process(delta: float):
 					_perf_capture_usec += Time.get_ticks_usec() - capture_start
 					if data.size() > 0:
 						var submit_start = Time.get_ticks_usec()
-						main.stream_backend.submit_depth_frame(data, model_width, model_height)
+						main.stream_backend.submit_depth_frame(data, model_input_width, model_input_height)
 						_perf_submit_usec += Time.get_ticks_usec() - submit_start
 						_perf_submitted += 1
 
@@ -553,10 +560,11 @@ func process(delta: float):
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
 		var backend_status = main.stream_backend.get_depth_backend_status()
-		main._log("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d size=%dx%d backend=%d status='%s'" % [
+		main._log("[DEPTH-PERF] capture=%s submit=%.2fms requested=%.1fHz updates=%.1fHz model=%d input=%dx%d output=%dx%d backend=%d status='%s'" % [
 			capture_value, submit_ms, float(_perf_submitted) / _perf_window,
-			float(_perf_updates) / _perf_window, main.settings.host.ai_3d_model,
-			model_width, model_height, main.stream_backend.get_effective_depth_backend(),
+			float(_perf_updates) / _perf_window, main.settings_controller.get_depth_model_index(),
+			model_input_width, model_input_height, model_width, model_height,
+			main.stream_backend.get_effective_depth_backend(),
 			backend_status if not backend_status.is_empty() else "ok",
 		])
 		_perf_window = 0.0

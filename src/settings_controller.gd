@@ -45,13 +45,14 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                         benchmark matrix, not a formula - see
 #                         resolve_quality_tier()/get_auto_selection() below.
 #   ai_3d_models        - WHICH model, dictionaries of {label, java_index,
-#                         gpu_available}. Re-split back into two independent
+#                         gpu}. Re-split back into two independent
 #                         controls (2026-08-28, AI 3D tab) - Model here and
 #                         Type (main.settings.host.ai_3d_backend_pref, GPU/CPU) are now
 #                         orthogonal, matching Mode/Debug's own independence
-#                         above; gpu_available just records whether a GPU
-#                         variant exists at all for a given model (DA-V2-252
-#                         has none - see get_depth_backend_index()). YOLO26-N/
+#                         above; gpu records which Type exposes each entry.
+#                         Linux has CPU and Vulkan entries for MiDaS and
+#                         DA-V2-252, while platform flags hide unavailable
+#                         variants. YOLO26-N/
 #                         MiDaS/Depth Anything V2 all share the exact same
 #                         downstream warp/postProcess pipeline
 #                         (DepthEstimator.java's postProcess() works on a
@@ -62,7 +63,8 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 #                         only apply_stereo()'s final set_depth_model() call
 #                         and depth_estimator.gd's sync_model_size() (256 vs
 #                         YOLO's 768) need to know which one is picked here.
-#   ai_3d_debug_labels  - debug depth-data VIEWS (DMap/-Raw/-Input), overlaid
+#   ai_3d_debug_labels  - debug depth-data VIEWS
+#                         (DMap/-Raw/-Input/-Warp), overlaid
 #                         on whichever tier is active rather than a mode of
 #                         its own - see get_stereo_mode() and
 #                         _schedule_ai_3d_commit(). Left untouched by this
@@ -74,44 +76,77 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
 var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
 var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
-const ANDROID_MODEL_384 := 2
+const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9
-const ANDROID_MODEL_256 := 10
+# Stable persisted/UI slots repurposed for the final Android quality tiers.
+# The historical entries remain in ai_3d_models below so old saves and Linux
+# indices do not shift; Android cycles only Auto and the manual EdgePad slots.
+const ANDROID_MODEL_STANDARD := 18
+const ANDROID_MODEL_EDGEPAD_256 := 19
+const ANDROID_MODEL_EDGEPAD_224 := 21
+const ANDROID_DEPTH_PROCESS_FULL := 5
+# Native renderer-only production mode: retain Full's occlusion/Newton warp,
+# but resize the reconstructed Standard depth with one linear texture sample
+# instead of running the 5x5 joint-bilateral pass.
+const ANDROID_DEPTH_PROCESS_FULL_LINEAR := 6
+# Native renderer-only experiment: four bilinear depth taps receive
+# scale-matched colour weights only where those taps already contain a depth
+# boundary. Flat-depth text and texture therefore remain ordinary linear.
+const ANDROID_DEPTH_PROCESS_FULL_GUIDED_LINEAR := 7
 # Back to its original 5-entry shape (2026-08-28, AI 3D tab - briefly
 # deduplicated to 3 entries with an independent Type control, corrected
 # after clarifying the actual request: Type doesn't just gate Model, it
-# FILTERS which entries Model cycles through - GPU shows MiDaS-256-GPU/
-# MiDaS-192-GPU, CPU shows MiDaS-192/MiDaS-256/DA-V2-252. cycle_ai_3d_model()
-# below only cycles entries whose .gpu matches main.settings.host.ai_3d_backend_pref;
+# FILTERS which entries Model cycles through. Linux deliberately exposes a
+# compact production-oriented roster: Vulkan
+# shows only ZipDepth-384, while CPU keeps MiDaS-256 and DA-V2-252 as
+# compatibility/tinkering choices. Historical slots remain in this array so
+# persisted indices and Android mappings never shift; `linux = false` merely
+# removes them from Linux's Model cycle.
+# cycle_ai_3d_model() below only cycles entries whose .gpu matches
+# main.settings.host.ai_3d_backend_pref;
 # cycle_ai_3d_type() snaps main.settings.host.ai_3d_model to the new Type's first entry
 # whenever the current selection doesn't match. Same order/indices as the
 # original list for MiDaS-256-GPU (0) and MiDaS-192-GPU (1), so AUTO_TABLE/
 # QUEST2_AUTO_TABLE's stored model_idx values need no changes. ZipDepth
 # entries (below) are additive on top of this same 5-entry shape.
 var ai_3d_models: Array = [
-	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true},
-	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true},
+	{"label": "MiDaS-256-GPU", "java_index": 3, "gpu": true, "linux": false},
+	{"label": "MiDaS-192-GPU", "java_index": 10, "gpu": true, "linux": false},
 	{"label": "ZipDepth-384-GPU", "java_index": 14, "gpu": true},
-	{"label": "MiDaS-192", "java_index": 10, "gpu": false},
+	{"label": "MiDaS-192", "java_index": 10, "gpu": false, "linux": false},
 	{"label": "MiDaS-256", "java_index": 3, "gpu": false},
 	{"label": "DA-V2-252", "java_index": 1, "gpu": false},
-	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true},
-	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true},
+	{"label": "ZipDepth-512x288-GPU (Experimental)", "java_index": 15, "gpu": true, "linux": false},
+	{"label": "ZipDepth-672x384-GPU (Experimental)", "java_index": 16, "gpu": true, "linux": false},
 	# Keep this appended so existing persisted indices for the experimental
 	# widescreen GPU models do not change. Type=CPU includes it in the model
 	# cycle; it shares Java index 14 with the GPU entry above, while Type selects
 	# the full-head W8A32/XNNPACK interpreter instead of the GPU delegate.
-	{"label": "ZipDepth-384", "java_index": 14, "gpu": false},
+	{"label": "ZipDepth-384", "java_index": 14, "gpu": false, "linux": false},
 	# Android-only entries appended to preserve existing saved model indices.
 	{"label": "Auto", "java_index": 14, "gpu": true, "android": true, "linux": false},
-	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": true, "linux": false},
+	{"label": "Fastest", "java_index": 18, "gpu": true, "android": true, "linux": false},
+	# Linux Vulkan variant; appended so every existing persisted index remains stable.
+	{"label": "DA-V2-252-GPU", "java_index": 1, "gpu": true, "android": false, "linux": false},
+	# Temporary exact-graph optimization comparison. Appended so every
+	# existing persisted model index remains stable.
+	{"label": "ZipDepth-384-Standard-v2-GPU", "java_index": 19, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Hybrid-v2-GPU", "java_index": 20, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-v3-GPU", "java_index": 21, "gpu": true, "android": true, "linux": false},
+	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
+	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-384", "java_index": 25, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-224", "java_index": 28, "gpu": true, "android": true, "linux": false},
 ]
-var ai_3d_debug_labels: Array = ["Off", "DMap", "DMap-Raw", "DMap-Input"]
+var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
 const AI3D_BACKEND_CPU := 1
 const AI3D_BACKEND_GPU := 2
-const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40]
-const AI3D_SEPARATION_VALUES: Array = [50, 75, 100, 125, 150]
+const AI3D_HZ_CAP_VALUES: Array = [12, 15, 20, 30, 40, 60]
+const AI3D_SEPARATION_VALUES: Array = [50, 75, 100]
 const AI3D_CONVERGENCE_VALUES: Array = [30, 40, 50, 60, 70]
 const AI3D_CURSOR_POSITION_LABELS: Array = ["Left", "Default", "Right"]
 # stereo_screen.gdshader's own live-path separation constant (mesh-
@@ -216,11 +251,13 @@ func get_stereo_mode() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
 	if main.settings.host.ai_3d_debug == 1:
-		return 7 # MiDaS-DMap
+		return 7 # DMap-Final: exact production upsampled depth
 	elif main.settings.host.ai_3d_debug == 2:
 		return 8 # MiDaS-DMap-Raw
 	elif main.settings.host.ai_3d_debug == 3:
 		return 9 # MiDaS-DMap-Input
+	elif main.settings.host.ai_3d_debug == 4:
+		return 12 # DMap-Warp: final occlusion/displacement field
 	match resolve_quality_tier():
 		1: return 10 # MiDaS-Fast
 		_: return 6 # MiDaS-Std
@@ -416,8 +453,12 @@ func cycle_ai_3d_separation():
 		return
 	var idx = AI3D_SEPARATION_VALUES.find(main.settings.host.ai_3d_separation_pct)
 	main.settings.host.ai_3d_separation_pct = AI3D_SEPARATION_VALUES[(maxi(idx, 0) + 1) % AI3D_SEPARATION_VALUES.size()]
-	_save_setting(main._ui_3d_separation_btn, "%d%%" % main.settings.host.ai_3d_separation_pct)
+	_save_setting(main._ui_3d_separation_btn, get_ai_3d_separation_label())
 	_schedule_ai_3d_commit()
+
+func get_ai_3d_separation_label() -> String:
+	var value: int = main.settings.host.ai_3d_separation_pct
+	return "%d%%%s" % [value, " (Default)" if value == 75 else ""]
 
 # AI 3D tab's "Convergence" control (2026-08-28) - maps directly to the
 # warp shaders' already-declared "convergence" uniform (0.30-0.70), which
@@ -431,8 +472,12 @@ func cycle_ai_3d_convergence():
 		return
 	var idx = AI3D_CONVERGENCE_VALUES.find(main.settings.host.ai_3d_convergence_pct)
 	main.settings.host.ai_3d_convergence_pct = AI3D_CONVERGENCE_VALUES[(maxi(idx, 0) + 1) % AI3D_CONVERGENCE_VALUES.size()]
-	_save_setting(main._ui_3d_convergence_btn, "%d%%" % main.settings.host.ai_3d_convergence_pct)
+	_save_setting(main._ui_3d_convergence_btn, get_ai_3d_convergence_label())
 	_schedule_ai_3d_commit()
+
+func get_ai_3d_convergence_label() -> String:
+	var value: int = main.settings.host.ai_3d_convergence_pct
+	return "%d%%%s" % [value, " (Default)" if value == 50 else ""]
 
 # Moves the rendered cursor over the AI-warped image without changing the
 # raycast or host click coordinates. This corrects visual click alignment;
@@ -481,10 +526,10 @@ func reset_ai_3d_effect_settings():
 	if main.settings.host.ai_3d_speed != 0:
 		main.settings.host.ai_3d_speed = 1
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	main.settings.host.ai_3d_model = 0
+	main.settings.host.ai_3d_model = MODEL_ZIPDEPTH_384 if OS.get_name() == "Linux" else 0
 	main.settings.host.ai_3d_gpu_api = 0
 	main.settings.host.ai_3d_hz_cap = 20
-	main.settings.host.ai_3d_separation_pct = 100
+	main.settings.host.ai_3d_separation_pct = 75
 	main.settings.host.ai_3d_convergence_pct = 50
 	main.settings.host.ai_3d_cursor_position = 0
 	main.settings.host.ai_3d_depth_sync = false
@@ -501,7 +546,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_384, ANDROID_MODEL_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var pos = candidates.find(main.settings.host.ai_3d_model)
@@ -514,7 +559,11 @@ func cycle_ai_3d_model():
 
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
-		return 1 if _auto_depth_fallback else 0
+		# Quest 2 lacks the OpenCL library exposed on Quest 3. Auto starts on
+		# the compatible EdgePad-256/OpenGL tier there; Quest 3 starts
+		# EdgePad-384/OpenCL and uses the 256/OpenGL path only after a real
+		# OpenCL failure.
+		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
 	return main.settings.host.ai_3d_gpu_api
 
 func is_android_ai3d_auto() -> bool:
@@ -562,20 +611,10 @@ func normalize_ai_3d_model_for_type():
 	if not candidates.is_empty() and not candidates.has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = candidates[0]
 
-# AI-3D Type/Model/3D-Mode are locked to GPU/ZipDepth-384-GPU/Standard on
-# Android (2026-09-07) - ZipDepth-384-GPU replaces MiDaS as strictly better
-# in every way tested, and Auto/Fast's tier and resolution-cap thresholds in
-# AUTO_TABLE above were empirically benchmarked around MiDaS's specific
-# speed, not ZipDepth's, so leaving them reachable would apply stale
-# calibration to a different model rather than actually saving anything -
-# Standard is simply forced instead until AUTO_TABLE is re-benchmarked
-# against ZipDepth. build.sh only bundles zipdepth-base-384-gpu.tflite for
-# Android (MiDaS/DA-V2/CPU-backend/experimental-widescreen models are
-# commented out there, not deleted, so this can be reverted by uncommenting
-# those cp lines and this lock together). Linux keeps every model/tier
-# selectable - it never had ZipDepth support to begin with (native
-# MidasDepthEngine only), so this lock would remove capability there for no
-# corresponding size/perf win.
+# Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
+# model selector: Auto, EdgePad-384, EdgePad-256, EdgePad-224. See
+# docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
+# decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
 	return SettingsPlatformPolicy.ai3d_options_locked()
 
@@ -583,10 +622,7 @@ func depth_gpu_priority_available() -> bool:
 	return SettingsPlatformPolicy.depth_gpu_priority_available()
 
 func _locked_ai3d_model_index() -> int:
-	for i in range(ai_3d_models.size()):
-		if ai_3d_models[i].label == "ZipDepth-384-GPU":
-			return i
-	return 0
+	return ANDROID_MODEL_AUTO
 
 # Called after loading persisted state (any format/migration branch - see
 # load_host_state()'s own comment) and by reset_ai_3d_effect_settings(), so
@@ -597,7 +633,7 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
 	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if prefer_auto or not [ANDROID_MODEL_384, ANDROID_MODEL_AUTO, ANDROID_MODEL_256].has(main.settings.host.ai_3d_model):
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -616,10 +652,34 @@ func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
 	if is_android_ai3d_auto():
-		return 18 if _auto_depth_fallback else 14
+		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
+	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
+	# or MiDaS-256 when the user explicitly changes Type to CPU. The old Auto
+	# table was calibrated for the retired MiDaS GPU roster and must not make
+	# Linux silently select a slower model.
+	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
+		return 14 if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else 3
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
+
+func get_depth_model_label() -> String:
+	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
+		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
+	return ai_3d_models[main.settings.host.ai_3d_model].label
+
+# Android production reconstruction is part of the tier definition rather
+# than a hidden debug preference. Both EdgePad models retain ZipDepth's full
+# learned reconstruction head. Hardware-linear produced the best practical
+# quality/cost result; the 5x5 and conservative 2x2 colour-guided experiments
+# remain available in the native renderer and comparison tools for reference.
+func get_depth_process_stage() -> int:
+	if OS.get_name() == "Android":
+		var model_index := get_depth_model_index()
+		if model_index in [25, 26, 28]:
+			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
+	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
+		else main.settings.host.ai_3d_process_debug
 
 # The backend to actually request from configure_depth() (2026-08-28 -
 # now driven by main.settings.host.ai_3d_backend_pref, the "Type" control). Model is
@@ -652,7 +712,9 @@ func get_effective_hz_cap() -> int:
 # refresh_depth_backend_status() below for how a GPU failure is surfaced
 # instead: a persistent status message, not a quiet backend swap).
 func get_depth_backend_label() -> String:
-	return "GPU" if get_depth_backend_index() == AI3D_BACKEND_GPU else "CPU"
+	if get_depth_backend_index() != AI3D_BACKEND_GPU:
+		return "CPU"
+	return "Vulkan" if OS.get_name() == "Linux" else "GPU"
 
 # A non-empty backend_status while GPU is requested means GPU depth failed
 # and (per 2026-08-30's "fail visibly, no fallback" request) is simply not
@@ -673,10 +735,10 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
-		main._log("[DEPTH] Auto: ZipDepth-384/OpenCL failed (%s); switching to ZipDepth-256/OpenGL for this app session" % status)
+		main._log("[DEPTH] Auto: EdgePad-384/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
 			main.ui_controller.update_stereo_shader()
-			main.ui_controller.show_temporary_status("AI 3D fallback: ZipDepth-256 / OpenGL", 3.0)
+			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-256 / OpenGL", 3.0)
 		apply_stereo()
 		return
 	var requested = get_depth_backend_index()
@@ -704,7 +766,7 @@ func _schedule_ai_3d_commit():
 	_ai_3d_commit_seq += 1
 	var my_seq = _ai_3d_commit_seq
 	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
-	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input
+	# used for fast click-through debugging (checking DMap/DMap-Raw/-Input/-Warp
 	# against whichever tier is active), where quick feedback matters more
 	# than matching the restart delay exactly. Shared across all three
 	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
@@ -713,7 +775,7 @@ func _schedule_ai_3d_commit():
 	await main.get_tree().create_timer(0.6).timeout
 	if _ai_3d_commit_seq != my_seq:
 		return
-	# MiDaS-DMap/-Raw/-Input are debug VIEWS of whatever depth data is
+	# MiDaS-DMap/-Raw/-Input/-Warp are debug VIEWS of whatever depth data is
 	# already flowing, not a separate mode with its own resolution needs -
 	# deliberately inherit whatever resolution (including a MiDaS-Fast
 	# cap) is already active instead of recomputing/restarting back
@@ -789,7 +851,7 @@ func apply_stereo():
 		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.settings.host.ai_3d_speed > 0 else 0
-		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11, warp_tier)
+		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
 		# Direct decoder textures feed the small depth-input viewport without a
 		# third full-resolution mono render. refresh_stream_source() keeps the
 		# old mono path available only when a backend cannot expose those textures.
@@ -797,7 +859,7 @@ func apply_stereo():
 	# Which Java-side model/interpreter to run is entirely orthogonal to mode
 	# (stereo_mode only encodes speed tier / debug view, see ai_3d_models'
 	# comment above) - it comes straight from main.settings.host.ai_3d_model. Modes
-	# 6/7/8/9/10 (Std, DMap, DMap-Raw, DMap-Input,
+	# 6/7/8/9/10/12 (Std, DMap, DMap-Raw, DMap-Input,
 	# Fast) are pure visualizations/warp-pass variants of whatever
 	# model's depth data is already flowing, not a separate source - mode 9
 	# doesn't even read the model's output (just the color capture), but
@@ -1188,6 +1250,14 @@ func apply_display_refresh_rate() -> bool:
 		await main.get_tree().create_timer(REFRESH_SURFACE_SETTLE_SEC).timeout
 		if request_seq != _refresh_request_seq:
 			return false
+	# Always report what the runtime says it actually applied. This matters on
+	# desktop OpenXR runtimes such as WiVRN, where accepting a request and
+	# presenting at that rate are separate concerns.
+	var applied_hz: float = interface.get_display_refresh_rate()
+	if applied_hz > 0.0:
+		if absf(applied_hz - best) >= 0.6:
+			main._log("[REFRESH] Runtime reported %.0fHz after requesting %.0fHz" % [applied_hz, best])
+		best = applied_hz
 	main.display_refresh_rate = best
 	# 2026-08-29: capping render fps to the stream's own fps again (was
 	# uncapped since 8ffa8fe, 2026-05-05, "remove 60fps cap causing Quest ASW

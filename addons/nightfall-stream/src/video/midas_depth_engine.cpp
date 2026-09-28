@@ -10,6 +10,10 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+#include "gpu.h"
+#endif
+
 namespace {
 constexpr const char *TAG = "MidasDepthEngine";
 constexpr int HIST_BINS = 512;
@@ -29,6 +33,16 @@ int64_t now_ns() {
 
 MidasDepthEngine::MidasDepthEngine() {}
 
+void MidasDepthEngine::set_backend_status(const std::string &status) {
+    std::lock_guard<std::mutex> lock(backend_status_mutex_);
+    backend_status_ = status;
+}
+
+std::string MidasDepthEngine::get_backend_status() const {
+    std::lock_guard<std::mutex> lock(backend_status_mutex_);
+    return backend_status_;
+}
+
 MidasDepthEngine::~MidasDepthEngine() {
     {
         std::lock_guard<std::mutex> lock(submit_mutex_);
@@ -38,7 +52,108 @@ MidasDepthEngine::~MidasDepthEngine() {
     if (worker_.joinable()) {
         worker_.join();
     }
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    active_vulkan_model_.store(nullptr);
+    model_zipdepth_384_.net.reset();
+    model_zipdepth_256_.net.reset();
+    model_midas_256_vulkan_.net.reset();
+    model_midas_192_vulkan_.net.reset();
+    model_da_252_vulkan_.net.reset();
+    if (vulkan_available_) ncnn::destroy_gpu_instance();
+#endif
 }
+
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+void MidasDepthEngine::register_vulkan_model(VulkanDepthModel &model, const char *stem,
+                                              const char *name, int size, int index,
+                                              bool input_nhwc, float percentile_clip) {
+    model.name = name;
+    model.stem = stem;
+    model.size = size;
+    model.index = index;
+    model.input_nhwc = input_nhwc;
+    model.percentile_clip = percentile_clip;
+}
+
+bool MidasDepthEngine::load_vulkan_model(VulkanDepthModel &model) {
+    model.load_attempted.store(true);
+    model.net = std::make_unique<ncnn::Net>();
+    model.net->opt.use_vulkan_compute = true;
+    model.net->opt.use_fp16_packed = true;
+    model.net->opt.use_fp16_storage = true;
+    model.net->opt.use_fp16_arithmetic = true;
+    model.net->opt.num_threads = 4;
+    model.net->set_vulkan_device(ncnn::get_default_gpu_index());
+
+    const std::string prefix = model_dir_ + "/" + model.stem;
+    if (model.net->load_param((prefix + ".ncnn.param").c_str()) != 0 ||
+        model.net->load_model((prefix + ".ncnn.bin").c_str()) != 0) {
+        NF_LOGE(TAG, "Failed to load Vulkan model: %s", prefix.c_str());
+        model.net.reset();
+        return false;
+    }
+    model.loaded.store(true);
+    NF_LOG(TAG, "Loaded %s (%dx%d Vulkan, device=%s)", model.name.c_str(), model.size, model.size,
+           ncnn::get_gpu_device(ncnn::get_default_gpu_index())->info.device_name());
+    return true;
+}
+
+MidasDepthEngine::VulkanDepthModel *MidasDepthEngine::vulkan_model_for_index(int model_index) {
+    if (model_index == 3) return &model_midas_256_vulkan_;
+    if (model_index == 10) return &model_midas_192_vulkan_;
+    if (model_index == 1) return &model_da_252_vulkan_;
+    if (model_index == 14) return &model_zipdepth_384_;
+    if (model_index == 18) return &model_zipdepth_256_;
+    return nullptr;
+}
+
+std::vector<float> MidasDepthEngine::run_vulkan_inference(VulkanDepthModel &model,
+                                                           const uint8_t *rgba,
+                                                           int width, int height) {
+    ncnn::Mat input;
+    if (model.input_nhwc) {
+        // pnnx preserves Depth Anything's [H,W,C] input as an ncnn Mat with
+        // w=3, h=H, c=W. Populate its contiguous storage in RGB pixel order;
+        // the graph's first Permute converts it to NCHW for the network.
+        input = ncnn::Mat(3, width, height);
+        float *values = input;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                const uint8_t *pixel = rgba + (y * width + x) * 4;
+                const size_t offset = static_cast<size_t>(y * width + x) * 3;
+                values[offset] = pixel[0] / 255.0f;
+                values[offset + 1] = pixel[1] / 255.0f;
+                values[offset + 2] = pixel[2] / 255.0f;
+            }
+        }
+    } else {
+        input = ncnn::Mat::from_pixels(rgba, ncnn::Mat::PIXEL_RGBA2RGB, width, height);
+        if (!input.empty()) {
+            const float norm[3] = {1.0f / 255.0f, 1.0f / 255.0f, 1.0f / 255.0f};
+            input.substract_mean_normalize(nullptr, norm);
+        }
+    }
+    if (input.empty()) return {};
+
+    ncnn::Extractor extractor = model.net->create_extractor();
+    if (extractor.input("in0", input) != 0) {
+        NF_LOGE(TAG, "Vulkan input failed for %s", model.name.c_str());
+        return {};
+    }
+    ncnn::Mat output;
+    if (extractor.extract("out0", output) != 0 || output.empty()) {
+        NF_LOGE(TAG, "Vulkan inference failed for %s", model.name.c_str());
+        return {};
+    }
+    if (output.total() != static_cast<size_t>(model.size * model.size)) {
+        NF_LOGE(TAG, "Unexpected Vulkan output for %s (%zu values)",
+                model.name.c_str(), output.total());
+        return {};
+    }
+    const float *values = output;
+    return std::vector<float>(values, values + output.total());
+}
+#endif
 
 bool MidasDepthEngine::load_model(DepthModel &model, const std::string &path, const char *name, int size,
                                   int index, InputLayout input_layout, bool invert_output,
@@ -100,6 +215,7 @@ bool MidasDepthEngine::load_model(DepthModel &model, const std::string &path, co
 
 void MidasDepthEngine::initialize(const std::string &model_dir) {
     if (initialized_) return;
+    model_dir_ = model_dir;
 
     bool ok_256 = load_model(model_256_, model_dir + "/midas-midas-v2-w8a8.tflite", "MiDaS-256", 256, 3, InputLayout::QuantizedNhWC);
     bool ok_192 = load_model(model_192_, model_dir + "/midas-v21-small-192-int8.tflite", "MiDaS-192", 192, 10, InputLayout::QuantizedNhWC);
@@ -109,19 +225,36 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
     bool ok_da_196 = load_model(model_da_196_, model_dir + "/depth-anything-v2-small-196.tflite", "Depth Anything V2-196", 196, 11, InputLayout::FloatNhWC);
     bool ok_da_252 = load_model(model_da_252_, model_dir + "/depth-anything-v2-small-252.tflite", "Depth Anything V2-252", 252, 1, InputLayout::FloatNhWC);
 
-    if (!ok_256 && !ok_192) {
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    ncnn::create_gpu_instance();
+    vulkan_available_ = ncnn::get_gpu_count() > 0;
+    if (vulkan_available_) {
+        register_vulkan_model(model_midas_256_vulkan_, "midas-v21-small-256-vulkan", "MiDaS-256", 256, 3);
+        register_vulkan_model(model_midas_192_vulkan_, "midas-v21-small-192-vulkan", "MiDaS-192", 192, 10);
+        register_vulkan_model(model_da_252_vulkan_, "depth-anything-v2-252-vulkan", "Depth Anything V2-252", 252, 1, true);
+        register_vulkan_model(model_zipdepth_384_, "zipdepth-base-384-vulkan", "ZipDepth-384", 384, 14);
+        register_vulkan_model(model_zipdepth_256_, "zipdepth-base-256-vulkan", "ZipDepth-256", 256, 18);
+    } else {
+        NF_LOGE(TAG, "No Vulkan compute device found; ZipDepth GPU inference unavailable");
+    }
+#endif
+
+    if (!ok_256 && !ok_192 && !vulkan_available_) {
         NF_LOGE(TAG, "No depth models could be loaded from %s - AI-3D depth unavailable", model_dir.c_str());
         return;
     }
 
-    active_model_ = ok_256 ? &model_256_ : &model_192_;
-    active_model_index_ = ok_256 ? 3 : 10;
+    active_model_ = ok_256 ? &model_256_ : (ok_192 ? &model_192_ : nullptr);
+    if (active_model_) active_model_index_ = ok_256 ? 3 : 10;
     initialized_ = true;
     worker_ = std::thread(&MidasDepthEngine::worker_loop, this);
     NF_LOG(TAG, "Initialized (MiDaS-256=%s, MiDaS-192=%s, YOLO-256=%s, YOLO-320=%s, YOLO-384=%s, DA-196=%s, DA-252=%s)",
            ok_256 ? "true" : "false", ok_192 ? "true" : "false", ok_yolo_256 ? "true" : "false",
            ok_yolo_320 ? "true" : "false", ok_yolo_384 ? "true" : "false", ok_da_196 ? "true" : "false",
            ok_da_252 ? "true" : "false");
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    NF_LOG(TAG, "Vulkan depth library registered for lazy loading (MiDaS-256, MiDaS-192, DA-V2-252, ZipDepth-384, ZipDepth-256)");
+#endif
 }
 
 MidasDepthEngine::DepthModel *MidasDepthEngine::model_for_index(int model_index) {
@@ -142,12 +275,62 @@ MidasDepthEngine::DepthModel *MidasDepthEngine::model_for_index(int model_index)
 }
 
 void MidasDepthEngine::set_active_model(int model_index) {
-    if (!initialized_) return;
+    configure(model_index, 1);
+}
+
+int MidasDepthEngine::get_backend_capabilities(int model_index) const {
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    if (vulkan_available_ && (model_index == 1 || model_index == 3 || model_index == 10 ||
+                              model_index == 14 || model_index == 18)) {
+        return 2;
+    }
+#endif
+    return 1;
+}
+
+int MidasDepthEngine::configure(int model_index, int requested_backend) {
+    if (!initialized_) return 1;
+
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    VulkanDepthModel *vulkan_target = vulkan_model_for_index(model_index);
+    const bool wants_gpu = requested_backend == 0 || requested_backend == 2;
+    if (wants_gpu && vulkan_target) {
+        while (is_inferencing_.load()) std::this_thread::yield();
+        {
+            std::lock_guard<std::mutex> lock(postprocess_mutex_);
+            smoothed_valid_ = false;
+            range_valid_ = false;
+            last_post_process_time_ns_ = 0;
+        }
+        active_model_.store(nullptr);
+        active_vulkan_model_.store(vulkan_target);
+        active_model_index_ = vulkan_target->index;
+        if (vulkan_target->load_attempted.load() && !vulkan_target->loaded.load()) {
+            set_backend_status("Vulkan model failed to load: " + vulkan_target->name);
+        } else {
+            set_backend_status("");
+        }
+        NF_LOG(TAG, "Selected model %s (Vulkan%s)", vulkan_target->name.c_str(),
+               vulkan_target->loaded.load() ? "" : ", lazy load pending");
+        return 2;
+    }
+    active_vulkan_model_.store(nullptr);
+    if (wants_gpu && (model_index == 1 || model_index == 3 || model_index == 10 ||
+                      model_index == 14 || model_index == 18)) {
+        set_backend_status("Vulkan depth unavailable; using CPU fallback");
+    } else {
+        set_backend_status("");
+    }
+#else
+    (void)requested_backend;
+    set_backend_status((model_index == 14 || model_index == 18)
+            ? "Vulkan depth support is unavailable in this build" : "");
+#endif
 
     DepthModel *target = model_for_index(model_index);
-    if (!target) return;
+    if (!target) return 1;
 
-    if (active_model_ == target) return;
+    if (active_model_ == target) return 1;
 
     // Wait out any in-flight inference before switching, same as
     // DepthEstimator.java's setActiveModel() busy-wait - avoids a race
@@ -164,19 +347,33 @@ void MidasDepthEngine::set_active_model(int model_index) {
     }
     active_model_ = target;
     active_model_index_ = target->index;
-    NF_LOG(TAG, "Switched to model %s", target->name.c_str());
+    NF_LOG(TAG, "Switched to model %s (CPU)", target->name.c_str());
+    return 1;
 }
 
 int MidasDepthEngine::get_model_size() const {
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    VulkanDepthModel *vulkan_model = active_vulkan_model_.load();
+    if (vulkan_model) return vulkan_model->size;
+#endif
     DepthModel *model = active_model_.load();
     if (!initialized_ || !model) return 256;
     return model->size;
 }
 
 void MidasDepthEngine::submit_frame(const uint8_t *rgba, size_t rgba_len, int width, int height) {
-    if (!initialized_ || !active_model_) return;
+    if (!initialized_) return;
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    if (!active_model_ && !active_vulkan_model_) return;
+#else
+    if (!active_model_) return;
+#endif
     if (!rgba || width <= 0 || height <= 0) return;
-    if (is_inferencing_.load()) return; // drop - matches Android's isInferencing.compareAndSet policy
+    submitted_frames_.fetch_add(1);
+    if (is_inferencing_.load()) {
+        dropped_frames_.fetch_add(1);
+        return; // drop - matches Android's isInferencing.compareAndSet policy
+    }
 
     size_t needed = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     if (rgba_len < needed) {
@@ -198,6 +395,7 @@ void MidasDepthEngine::submit_frame(const uint8_t *rgba, size_t rgba_len, int wi
         pending_rgba_.assign(rgba, rgba + needed);
         pending_width_ = width;
         pending_height_ = height;
+        pending_capture_time_ns_ = now_ns();
         has_pending_ = true;
     }
     submit_cv_.notify_one();
@@ -214,6 +412,7 @@ void MidasDepthEngine::worker_loop() {
     while (true) {
         std::vector<uint8_t> rgba;
         int width = 0, height = 0;
+        int64_t capture_time_ns = 0;
         {
             std::unique_lock<std::mutex> lock(submit_mutex_);
             submit_cv_.wait(lock, [this] { return has_pending_ || shutdown_; });
@@ -221,18 +420,69 @@ void MidasDepthEngine::worker_loop() {
             rgba = std::move(pending_rgba_);
             width = pending_width_;
             height = pending_height_;
+            capture_time_ns = pending_capture_time_ns_;
             has_pending_ = false;
         }
 
         is_inferencing_.store(true);
+        const int64_t inference_start_ns = now_ns();
+        bool inference_completed = false;
         DepthModel *model = active_model_;
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+        VulkanDepthModel *vulkan_model = active_vulkan_model_;
+        if (vulkan_model && !vulkan_model->loaded.load() && !vulkan_model->load_attempted.load()) {
+            NF_LOG(TAG, "Lazy-loading %s Vulkan model", vulkan_model->name.c_str());
+            if (!load_vulkan_model(*vulkan_model)) {
+                set_backend_status("Vulkan model failed to load: " + vulkan_model->name);
+            } else {
+                set_backend_status("");
+            }
+        }
+        if (vulkan_model && vulkan_model->loaded.load()) {
+            std::vector<float> raw = run_vulkan_inference(*vulkan_model, rgba.data(), width, height);
+            if (!raw.empty()) {
+                const int64_t inference_end_ns = now_ns();
+                std::vector<uint8_t> depth = post_process(raw, vulkan_model->size,
+                                                          vulkan_model->percentile_clip);
+                std::lock_guard<std::mutex> lock(result_mutex_);
+                latest_result_ = std::move(depth);
+                has_result_ = true;
+                telemetry_total_inference_ns_ += inference_end_ns - inference_start_ns;
+                inference_completed = true;
+            }
+        } else
+#endif
         if (model && model->loaded) {
             std::vector<float> raw = run_inference(*model, rgba.data(), width, height);
             if (!raw.empty()) {
+                const int64_t inference_end_ns = now_ns();
                 std::vector<uint8_t> depth = post_process(raw, model->size, model->percentile_clip);
                 std::lock_guard<std::mutex> lock(result_mutex_);
                 latest_result_ = std::move(depth);
                 has_result_ = true;
+                telemetry_total_inference_ns_ += inference_end_ns - inference_start_ns;
+                inference_completed = true;
+            }
+        }
+        if (inference_completed) {
+            const int64_t completed_ns = now_ns();
+            last_depth_age_ms_.store(static_cast<float>(completed_ns - capture_time_ns) / 1e6f);
+            telemetry_completed_frames_++;
+            if (telemetry_window_start_ns_ == 0) telemetry_window_start_ns_ = inference_start_ns;
+            const int64_t elapsed_ns = completed_ns - telemetry_window_start_ns_;
+            if (elapsed_ns >= 1000000000LL) {
+                const float divisor = static_cast<float>(std::max(telemetry_completed_frames_, 1));
+                last_inference_ms_.store(static_cast<float>(telemetry_total_inference_ns_) / divisor / 1e6f);
+                last_inference_hz_.store(divisor * 1e9f / static_cast<float>(elapsed_ns));
+                const int submitted = submitted_frames_.exchange(0);
+                const int dropped = dropped_frames_.exchange(0);
+                last_skipped_frames_.store(dropped);
+                NF_LOG(TAG, "Perf: model=%d inference=%.1fms completed=%.1fHz submitted=%d dropped=%d age=%.1fms",
+                       active_model_index_.load(), last_inference_ms_.load(), last_inference_hz_.load(),
+                       submitted, dropped, last_depth_age_ms_.load());
+                telemetry_window_start_ns_ = completed_ns;
+                telemetry_total_inference_ns_ = 0;
+                telemetry_completed_frames_ = 0;
             }
         }
         is_inferencing_.store(false);

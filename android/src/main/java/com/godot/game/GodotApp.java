@@ -75,6 +75,44 @@ public class GodotApp extends GodotActivity {
 		depthEstimator = new DepthEstimator();
 		depthEstimator.initialize(appContext);
 		DiagnosticLog.info("GODOT", "DepthEstimator initialized: " + depthEstimator.isInitialized());
+		java.io.File profileDirectory = getExternalFilesDir(null);
+		boolean debugBuild = (getApplicationInfo().flags
+				& android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+		if (debugBuild) {
+			String profileStage = getIntent().getStringExtra("nightfall_depth_profile");
+			if (!DepthProfileRunner.isKnownStage(profileStage) && profileDirectory != null) {
+				String[] stages = {"f1", "f_half", "direct", "mask", "softmax", "weighted", "standard", "softmax4", "conv4", "conv4_reduceconv", "conv4_zeropad", "conv4_edgepad"};
+				for (String stage : stages) {
+					java.io.File marker = new java.io.File(
+							profileDirectory, "depth_profile_" + stage);
+					if (!marker.exists()) continue;
+					profileStage = stage;
+					if (!marker.delete()) {
+						DiagnosticLog.info("GODOT", "Could not remove depth benchmark marker: " + stage);
+					}
+					break;
+				}
+			}
+			if (DepthProfileRunner.isKnownStage(profileStage)) {
+				DiagnosticLog.info("GODOT", "Starting opt-in depth benchmark stage: " + profileStage);
+				DepthProfileRunner.start(appContext, profileStage);
+			}
+		}
+		// ADB-friendly one-shot recovery path for the private rotated log after
+		// a release-build crash or headset reboot. The marker lives in external
+		// app storage; export still uses the same permissionless MediaStore path
+		// as the in-app Download Log button.
+		if (profileDirectory != null) {
+			java.io.File exportMarker = new java.io.File(
+					profileDirectory, "export_diagnostics_on_start");
+			if (exportMarker.exists()) {
+				if (!exportMarker.delete()) {
+					DiagnosticLog.info("GODOT", "Could not remove diagnostic export marker");
+				}
+				DiagnosticLog.info("GODOT", "Exporting diagnostics from one-shot startup marker");
+				DiagnosticLog.export(appContext);
+			}
+		}
 		try {
 			java.io.FileOutputStream fos = openFileOutput("jni_result.txt", MODE_PRIVATE);
 			fos.write(jniResult.getBytes());
@@ -163,6 +201,20 @@ public class GodotApp extends GodotActivity {
 	public static int getDepthModelHeight() {
 		if (depthEstimator != null && depthEstimator.isInitialized()) {
 			return depthEstimator.getModelHeight();
+		}
+		return 256;
+	}
+
+	public static int getDepthModelInputWidth() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelInputWidth();
+		}
+		return 256;
+	}
+
+	public static int getDepthModelInputHeight() {
+		if (depthEstimator != null && depthEstimator.isInitialized()) {
+			return depthEstimator.getModelInputHeight();
 		}
 		return 256;
 	}

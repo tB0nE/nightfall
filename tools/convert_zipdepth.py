@@ -90,7 +90,25 @@ def download_checkpoint(weights_mode="hybrid"):
 
 
 def head_suffix(head_mode):
-    return "_standard_mobile" if head_mode == "standard-mobile" else ""
+    return {
+        "direct-half": "_direct_half",
+        "standard-mobile": "_standard_mobile",
+        "standard-mobile-v2": "_standard_mobile_v2",
+        "standard-mobile-v3": "_standard_mobile_v3",
+        "standard-packed": "_standard_packed",
+        "standard-packed-softmax4": "_standard_packed_softmax4",
+        "standard-packed-conv4": "_standard_packed_conv4",
+        "standard-packed-conv4-reduceconv": "_standard_packed_conv4_reduceconv",
+        "standard-packed-conv4-reduceconv-zeropad": "_standard_packed_conv4_reduceconv_zeropad",
+        "standard-packed-conv4-reduceconv-edgepad": "_standard_packed_conv4_reduceconv_edgepad",
+        "standard-packed-rgba": "_standard_packed_rgba",
+        "hybrid-v2": "_hybrid_v2",
+        "profile-f1": "_profile_f1",
+        "profile-f-half": "_profile_f_half",
+        "profile-mask": "_profile_mask",
+        "profile-softmax": "_profile_softmax",
+        "profile-weighted": "_profile_weighted",
+    }.get(head_mode, "")
 
 
 def model_stem(width, height, head_mode="full"):
@@ -100,7 +118,25 @@ def model_stem(width, height, head_mode="full"):
 
 def model_filename(width, height, head_mode="full"):
     size = str(width) if width == height else f"{width}x{height}"
-    suffix = "-standard-mobile" if head_mode == "standard-mobile" else ""
+    suffix = {
+        "direct-half": "-direct-half",
+        "standard-mobile": "-standard-mobile",
+        "standard-mobile-v2": "-standard-mobile-v2",
+        "standard-mobile-v3": "-standard-mobile-v3",
+        "standard-packed": "-standard-packed",
+        "standard-packed-softmax4": "-standard-packed-softmax4",
+        "standard-packed-conv4": "-standard-packed-conv4",
+        "standard-packed-conv4-reduceconv": "-standard-packed-conv4-reduceconv",
+        "standard-packed-conv4-reduceconv-zeropad": "-standard-packed-conv4-reduceconv-zeropad",
+        "standard-packed-conv4-reduceconv-edgepad": "-standard-packed-conv4-reduceconv-edgepad",
+        "standard-packed-rgba": "-standard-packed-rgba",
+        "hybrid-v2": "-hybrid-v2",
+        "profile-f1": "-profile-f1",
+        "profile-f-half": "-profile-f-half",
+        "profile-mask": "-profile-mask",
+        "profile-softmax": "-profile-softmax",
+        "profile-weighted": "-profile-weighted",
+    }.get(head_mode, "")
     return f"zipdepth-base-{size}{suffix}-gpu.tflite"
 
 
@@ -117,7 +153,13 @@ def parse_shape(value):
     return width, height
 
 
-def export_onnx(shapes, force=False, head_mode="full", weights_mode="hybrid"):
+def export_onnx(
+    shapes,
+    force=False,
+    head_mode="full",
+    weights_mode="hybrid",
+    hybrid_v2_checkpoint=None,
+):
     onnx_dir = os.path.join(REPO_DIR, "onnx_export")
     os.makedirs(onnx_dir, exist_ok=True)
     for width, height in shapes:
@@ -137,6 +179,10 @@ def export_onnx(shapes, force=False, head_mode="full", weights_mode="hybrid"):
         ]
         if weights_mode == "hybrid":
             command.extend(["--backbone-ckpt", STANDARD_CKPT_PATH])
+        if head_mode == "hybrid-v2":
+            if hybrid_v2_checkpoint is None:
+                raise ValueError("hybrid-v2 export requires a trained checkpoint")
+            command.extend(["--hybrid-v2-checkpoint", hybrid_v2_checkpoint])
         subprocess.check_call(command, cwd=PROJECT_DIR)
 
 
@@ -251,8 +297,24 @@ def main():
         "--head-mode",
         choices=(
             "full",
+            "direct-half",
             "bilinear",
             "standard-mobile",
+            "standard-mobile-v2",
+            "standard-mobile-v3",
+            "standard-packed",
+            "standard-packed-softmax4",
+            "standard-packed-conv4",
+            "standard-packed-conv4-reduceconv",
+            "standard-packed-conv4-reduceconv-zeropad",
+            "standard-packed-conv4-reduceconv-edgepad",
+            "standard-packed-rgba",
+            "hybrid-v2",
+            "profile-f1",
+            "profile-f-half",
+            "profile-mask",
+            "profile-softmax",
+            "profile-weighted",
             "encoder-mosaic",
             "stage2-mosaic",
             "decoder-mosaic",
@@ -266,6 +328,10 @@ def main():
         default="hybrid",
         help="use the NPU weights or the sharper standard weights with the NPU head",
     )
+    parser.add_argument(
+        "--hybrid-v2-checkpoint",
+        help="trained Hybrid-v2 checkpoint required by --head-mode hybrid-v2",
+    )
     args = parser.parse_args()
     shapes = tuple(dict.fromkeys(args.shapes or DEFAULT_SHAPES))
     install_deps()
@@ -276,6 +342,7 @@ def main():
         force=args.force,
         head_mode=args.head_mode,
         weights_mode=args.weights_mode,
+        hybrid_v2_checkpoint=args.hybrid_v2_checkpoint,
     )
     convert_tflite(shapes, force=args.force, head_mode=args.head_mode)
     verify(shapes, head_mode=args.head_mode)

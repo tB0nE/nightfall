@@ -2,8 +2,9 @@ class_name NativeXrRendererManager
 extends RefCounted
 
 # Production bridge for the Android/GLES composition-layer renderer. The
-# legacy Godot viewport path remains live as a fallback and for multi-monitor
-# and depth diagnostic modes.
+# legacy Godot viewport path remains live as a fallback, for multi-monitor,
+# and for raw/input depth diagnostics. DMap-Final and DMap-Warp stay native so
+# they inspect the exact production textures rather than legacy approximations.
 
 var main: Node3D
 var renderer = null
@@ -75,7 +76,7 @@ func can_render_current_config() -> bool:
 	if native_sharpening > 0 and not renderer.supports_compositor_sharpening():
 		return false
 	var mode := _mode()
-	if mode >= 7 and mode <= 9:
+	if mode >= 8 and mode <= 9:
 		return false
 	if main.primary_screen and main.primary_screen.curvature > 0 and not renderer.supports_cylinder():
 		return false
@@ -217,13 +218,16 @@ func process_frame(new_frame: bool) -> void:
 	var depth_id := 0
 	var guide_id := 0
 	var separation := 0.0
-	if mode == 6 or mode == 10 or mode == 11:
+	if mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12:
 		var depth = main.depth_estimator
 		if depth and depth.depth_texture:
 			guide_id = main.stream_backend.get_native_depth_guide_texture_id()
 			if guide_id != 0:
 				depth_id = RenderingServer.texture_get_native_handle(depth.depth_texture.get_rid())
-				separation = depth._pass_parallax * (main.settings.host.ai_3d_separation_pct / 100.0)
+				# DMap-Final needs the production depth conversion but no
+				# occlusion-offset search.
+				if mode != 7:
+					separation = depth._pass_parallax * (main.settings.host.ai_3d_separation_pct / 100.0)
 	var convergence: float = float(main.settings.host.ai_3d_convergence_pct) / 100.0
 	var matrix: PackedFloat32Array = main.stream_backend.get_oes_transform_matrix()
 	if matrix.size() < 16:
@@ -251,7 +255,7 @@ func process_frame(new_frame: bool) -> void:
 			false, main.settings.passthrough_enabled, fence, mode,
 			main.depth_estimator.depth_revision if main.depth_estimator else 0,
 			color_transfer, convergence, brightness, contrast, gamma,
-			main.settings.host.ai_3d_process_debug)
+			main.settings_controller.get_depth_process_stage())
 	_force_redraw = false
 
 func request_redraw() -> void:

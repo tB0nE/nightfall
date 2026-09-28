@@ -80,6 +80,27 @@ static const char *FRAGMENT_SRC =
 		"out vec4 fragColor;\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
+		// DMap-Final shows the exact temporally-smoothed, normalized and
+		// production-upsampled depth texture consumed by the following warp.
+		// Keep it grayscale so it matches the offline temporal-depth evaluator
+		// and exposes subtle frame-to-frame changes without heatmap banding.
+		"    if (u_stereoMode == 7) {\n"
+		"        float finalDepth = texture(u_depth, v_plain).r;\n"
+		"        fragColor = vec4(vec3(finalDepth), 1.0);\n"
+		"        return;\n"
+		"    }\n"
+		// DMap-Warp displays the exact offset field sampled by the final warp.
+		// Mid-grey means no displacement; lighter/darker pixels move in
+		// opposite horizontal directions. Contrast is amplified 4x so the
+		// nearest-versus-linear sampling boundary is visible in-headset.
+		"    if (u_stereoMode == 12) {\n"
+		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
+		"        if (u_eyeIndex >= 0.5) off = -off;\n"
+		"        float vis = clamp(0.5 + off * 4.0, 0.0, 1.0);\n"
+		"        fragColor = vec4(vec3(vis), 1.0);\n"
+		"        return;\n"
+		"    }\n"
 		"    float d = texture(u_depth, v_plain).r;\n"
 		"    vec2 tc = v_plain;\n"
 		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
@@ -209,6 +230,19 @@ static const char *HDR_FRAGMENT_SRC =
 		"}\n"
 		"void main() {\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
+		"    if (u_stereoMode == 7) {\n"
+		"        float finalDepth = texture(u_depth, v_plain).r;\n"
+		"        fragColor = vec4(vec3(finalDepth), 1.0);\n"
+		"        return;\n"
+		"    }\n"
+		"    if (u_stereoMode == 12) {\n"
+		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
+		"        if (u_eyeIndex >= 0.5) off = -off;\n"
+		"        float vis = clamp(0.5 + off * 4.0, 0.0, 1.0);\n"
+		"        fragColor = vec4(vec3(vis), 1.0);\n"
+		"        return;\n"
+		"    }\n"
 		"    float d = texture(u_depth, v_plain).r;\n"
 		"    vec2 tc = v_plain;\n"
 		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
@@ -282,10 +316,17 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"uniform mat4 u_texmatrix;\n"
 		"uniform float u_sigmaR;\n"
 		"uniform float u_sharp;\n"
+		// 0=5x5 joint bilateral, 1=hardware linear, 2=depth-gated guided linear.
+		"uniform int u_linear;\n"
 		"out vec4 fragColor;\n"
 		"const float SIGMA_S = 1.5;\n"
 		"const float FLAT = 0.05;\n"
 		"void main() {\n"
+		"    if (u_linear == 1) {\n"
+		"        float d = texture(u_depth, v_plain).r;\n"
+		"        fragColor = vec4(d);\n"
+		"        return;\n"
+		"    }\n"
 		// This grid was originally represented by one scalar N: first a
 		// hardcoded 256, then the texture width. Both only work for square
 		// models. Using width for Y sends rectangular maps past their last real
@@ -299,6 +340,38 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"    vec3 hi = texture(u_depthGuide, v_plain).rgb;\n"
 		"    vec2 lp = v_plain * lowSize - 0.5;\n"
 		"    ivec2 base = ivec2(floor(lp));\n"
+		"    if (u_linear == 2) {\n"
+		// Preserve hardware-linear as the baseline. Colour may only move an
+		// already-present depth boundary; a colour-only text edge in a flat
+		// depth neighbourhood therefore has exactly zero influence.
+		"        float linearDepth = texture(u_depth, v_plain).r;\n"
+		"        vec2 f = fract(lp);\n"
+		"        float guidedNum = 0.0;\n"
+		"        float guidedDen = 0.0;\n"
+		"        float localLo = 1.0;\n"
+		"        float localHi = 0.0;\n"
+		"        for (int oy = 0; oy <= 1; oy++) {\n"
+		"            for (int ox = 0; ox <= 1; ox++) {\n"
+		"                ivec2 q = clamp(base + ivec2(ox, oy), ivec2(0), lowSizeI - ivec2(1));\n"
+		"                float sd = texelFetch(u_depth, q, 0).r;\n"
+		"                vec3 sg = texelFetch(u_depthGuide, q, 0).rgb;\n"
+		"                float wx = ox == 0 ? 1.0 - f.x : f.x;\n"
+		"                float wy = oy == 0 ? 1.0 - f.y : f.y;\n"
+		"                vec3 cd = hi - sg;\n"
+		"                float colourWeight = exp(-dot(cd, cd) / (2.0 * u_sigmaR * u_sigmaR));\n"
+		"                float w = wx * wy * colourWeight;\n"
+		"                guidedNum += w * sd;\n"
+		"                guidedDen += w;\n"
+		"                localLo = min(localLo, sd);\n"
+		"                localHi = max(localHi, sd);\n"
+		"            }\n"
+		"        }\n"
+		"        float guidedDepth = guidedNum / max(guidedDen, 1e-6);\n"
+		"        float depthGate = smoothstep(0.025, 0.08, localHi - localLo);\n"
+		"        float d = mix(linearDepth, guidedDepth, depthGate * 0.65);\n"
+		"        fragColor = vec4(d);\n"
+		"        return;\n"
+		"    }\n"
 		"    float num = 0.0;\n"
 		"    float den = 0.0;\n"
 		"    float dlo = 1.0;\n"
@@ -849,6 +922,7 @@ bool NightfallXrRenderer::init_gl() {
 	u_upsample_sigma = glGetUniformLocation(upsample_program, "u_sigmaR");
 	u_upsample_sharp = glGetUniformLocation(upsample_program, "u_sharp");
 	u_upsample_depth_guide = glGetUniformLocation(upsample_program, "u_depthGuide");
+	u_upsample_linear = glGetUniformLocation(upsample_program, "u_linear");
 	glUseProgram(upsample_program);
 	glUniform1i(glGetUniformLocation(upsample_program, "u_texture"), 0);
 	glUniform1i(glGetUniformLocation(upsample_program, "u_depth"), 1);
@@ -865,8 +939,9 @@ bool NightfallXrRenderer::init_gl() {
 			glUseProgram(delayed_upsample_program);
 			u_delayed_upsample_texmatrix = glGetUniformLocation(delayed_upsample_program, "u_texmatrix");
 			u_delayed_upsample_sigma = glGetUniformLocation(delayed_upsample_program, "u_sigmaR");
-			u_delayed_upsample_sharp = glGetUniformLocation(delayed_upsample_program, "u_sharp");
-			u_delayed_upsample_depth_guide = glGetUniformLocation(delayed_upsample_program, "u_depthGuide");
+		u_delayed_upsample_sharp = glGetUniformLocation(delayed_upsample_program, "u_sharp");
+		u_delayed_upsample_depth_guide = glGetUniformLocation(delayed_upsample_program, "u_depthGuide");
+		u_delayed_upsample_linear = glGetUniformLocation(delayed_upsample_program, "u_linear");
 			glUniform1i(glGetUniformLocation(delayed_upsample_program, "u_texture"), 0);
 			glUniform1i(glGetUniformLocation(delayed_upsample_program, "u_depth"), 1);
 			glUniform1i(u_delayed_upsample_depth_guide, 2);
@@ -1279,7 +1354,7 @@ uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id
 
 void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, bool p_texture_2d,
-		bool p_color_guided) {
+		bool p_color_guided, int p_resample_mode) {
 	glBindFramebuffer(GL_FRAMEBUFFER, upsample_fbo);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, upsample_texture, 0);
 	glViewport(0, 0, upsample_width, upsample_height);
@@ -1290,6 +1365,13 @@ void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_dep
 			p_oes_texture_id);
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, p_depth_texture_id);
+	if (p_resample_mode == 1 || p_resample_mode == 2) {
+		// Godot owns this ImageTexture, but its sampler state is ordinary GLES
+		// texture state. Set it explicitly so Standard's production path is a
+		// real hardware-linear resize regardless of project/UI filter defaults.
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	}
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, p_depth_guide_texture_id);
 	glUniformMatrix4fv(p_texture_2d ? u_delayed_upsample_texmatrix : u_upsample_texmatrix,
@@ -1300,6 +1382,8 @@ void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_dep
 	glUniform1f(p_texture_2d ? u_delayed_upsample_sigma : u_upsample_sigma,
 			p_color_guided ? 0.25f : 1000.0f);
 	glUniform1f(p_texture_2d ? u_delayed_upsample_sharp : u_upsample_sharp, 0.0f);
+	glUniform1i(p_texture_2d ? u_delayed_upsample_linear : u_upsample_linear,
+			p_resample_mode);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
 	glEnableVertexAttribArray(0);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
@@ -1442,7 +1526,8 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 				p_depth_guide_texture_id, source_matrix, source_is_2d,
 				// Guided and production modes use scale-matched colour guidance;
 				// Spatial remains an explicit un-guided comparison/fallback.
-				p_depth_process_stage >= 3);
+				p_depth_process_stage >= 3,
+				p_depth_process_stage == 6 ? 1 : (p_depth_process_stage == 7 ? 2 : 0));
 		depth_cache_valid = true;
 		rendered_depth_revision = pending_depth_revision;
 		rendered_upsample_process_stage = p_depth_process_stage;
@@ -1622,7 +1707,9 @@ void NightfallXrRenderer::submit_frame(bool p_new_frame, uint32_t p_oes_texture_
 	pending_brightness = std::fmin(std::fmax(p_brightness, -1.0f), 1.0f);
 	pending_contrast = std::fmin(std::fmax(p_contrast, 0.01f), 4.0f);
 	pending_gamma = std::fmin(std::fmax(p_gamma, 0.01f), 4.0f);
-	pending_depth_process_stage = std::min(std::max(p_depth_process_stage, 0), 5);
+	// Stage 6 is Full with hardware-linear conversion; stage 7 is the
+	// conservative 2x2 depth-gated guided-linear experiment.
+	pending_depth_process_stage = std::min(std::max(p_depth_process_stage, 0), 7);
 	pending_depth_revision = p_depth_revision;
 	if (pending_oes_fence != 0) {
 		// submit_frame() runs on the script thread, where no GL context is

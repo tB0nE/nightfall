@@ -66,6 +66,9 @@ android/src/main/AndroidManifest.xml
 # at build time - build.sh will fail loudly if one referenced there is
 # missing, rather than silently shipping an incomplete build.
 /models/*.tflite
+/models/*.ncnn.param
+/models/*.ncnn.bin
+/model-training/
 
 # Model conversion artifacts
 tools/Depth-Anything-V2/
@@ -74,6 +77,7 @@ tools/tflite_tmp/
 tools/calibration_data.npz
 tools/depth_anything_v2.onnx
 tools/ZipDepth/
+/tools/ZipDepth
 
 # tools/model_tester/ is a desktop comparison harness (run_models.py,
 # settings.json, eg_input_1.png ARE tracked) - everything below is scratch

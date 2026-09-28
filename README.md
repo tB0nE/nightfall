@@ -22,9 +22,9 @@ stereoscopic 3D, passthrough, ambient lighting, and real-time AI depth.
 ## Features
 
 - **AI stereoscopic 3D** - real-time depth conversion turns ordinary 2D games
-  into stereoscopic 3D without server-side processing. Android uses the fast,
-  mobile-optimized ZipDepth-384 GPU model; Linux retains its native selectable
-  depth models.
+  into stereoscopic 3D without server-side processing. Android uses LiteRT GPU;
+  Linux defaults to ZipDepth-384 on Vulkan while retaining selectable Vulkan
+  and CPU variants of MiDaS and Depth Anything for experimentation.
 - **SBS support** - Stretch and Crop modes for native side-by-side content,
   with a quick toggle on the right thumbstick.
 - **Flexible stream configuration** - 720p through 4K presets, including 4:3
@@ -127,8 +127,9 @@ To build the current Linux client:
 4. Start the generated `Nightfall-x86_64.AppImage`
 
 Linux supports the normal streaming controls, SBS, passthrough when exposed by
-the runtime, and native CPU AI-depth models. It does not use Android's
-ZipDepth/GPU or native GLES renderer paths.
+the runtime, ZipDepth-384 inference through Vulkan, and MiDaS-256 or Depth
+Anything V2-252 CPU alternatives. It does not use Android's native GLES
+renderer path.
 
 ### Controls
 

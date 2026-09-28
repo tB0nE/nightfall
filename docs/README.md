@@ -25,6 +25,7 @@ the build/deployment entry point.
 - [Microphone passthrough](plans/active/microphone-passthrough.md)
 - [Equirectangular SBS video](plans/active/equirect-sbs-vr-video.md)
 - [LiteRT ML Drift migration](plans/active/litert-ml-drift-migration.md)
+- [Preserve vanilla ZipDepth sharpness on Quest](plans/active/zipdepth-standard-head-quest.md)
 - [ZipDepth sharp mobile head experiment](plans/active/zipdepth-sharp-mobile-head.md)
 - [Sunshine raw-frame passthrough](plans/active/sunshine-raw-frame-passthrough.md)
 - [Feature pipeline](plans/active/feature-pipeline.md)
@@ -36,6 +37,12 @@ the build/deployment entry point.
 - [Session lifecycle](architecture/session-lifecycle.md)
 - [Rendering boundary](architecture/rendering-boundary.md)
 - [Multi-monitor encode budget and layout](architecture/multi-monitor-encode-budget-and-layout.md)
+
+## Technical guides
+
+- [ZipDepth on Quest GPU](guides/zipdepth-quest-gpu.md)
+- [ZipDepth Quest quality tiers and retained experiments](guides/zipdepth-quest-tiers.md)
+- [Training the ZipDepth Hybrid-v2 mobile head](guides/zipdepth-hybrid-v2-training.md)
 
 ## Document lifecycle
 

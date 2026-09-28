@@ -85,7 +85,7 @@ cmake --preset linux -DCMAKE_BUILD_TYPE=Release
 ninja -C build/linux-release
 ```
 
-Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. AI 3D depth estimation works natively on Linux with the same selectable models as Android: MiDaS-192/256, YOLO26-N-256/320/384, and Depth Anything V2-196/252. No vcpkg `tensorflow-lite` port exists, so `CMakeLists.txt` vendors TFLite's own standalone CMake build directly via `FetchContent` (pinned to `v2.17.0`, matching the Android build's Gradle dependency) - this needs network access at CMake-configure time (not just `docker build` time) and is what makes the first build slower. The `.tflite` models ship as loose files next to the binary (`depth_models/`, populated by `build.sh` from `models/` - see `models/README.md`) rather than through Godot's PCK, since the Linux PCK export (below) never includes `models/`.
+Either way, the output is `bin/linux/libnightfall-stream.linux.template_release.x86_64.so`. Linux AI 3D defaults to ZipDepth-384 through ncnn's Vulkan backend. The production selector keeps MiDaS-256 and Depth Anything V2-252 as CPU alternatives; older converted Vulkan variants remain development assets rather than user-facing choices. No vcpkg ports are used for these runtimes: `CMakeLists.txt` vendors TFLite `v2.17.0` and a pinned ncnn revision through `FetchContent`. The first configure therefore needs network access and is substantially slower; the Docker build cache preserves both source and compiled dependencies. Model files ship loose beside the binary in `depth_models/` rather than through Godot's PCK.
 
 ### Native OpenXR renderer (Quest/GLES)
 
@@ -94,8 +94,9 @@ Nightfall's fast presentation path is a separate GDExtension in
 directly, renders both eyes into one double-wide OpenXR swapchain, and submits
 two eye-specific sub-images through Godot's existing OpenXR frame loop. The
 legacy Godot composition-layer path remains the automatic fallback for Linux,
-multi-monitor layouts, diagnostic depth views, unsupported renderers, and
-startup failures.
+multi-monitor layouts, raw/input depth diagnostic views, unsupported renderers,
+and startup failures. DMap-Final and DMap-Warp remain on the native path so they
+display the exact production depth and offset textures.
 
 AI separation/convergence and Picture-tab brightness/contrast/gamma are
 implemented directly in this path. Reactive ambient modes consume an
@@ -203,16 +204,20 @@ its own `extensions/nightfall-xr/build_android.sh` entry point.
 
 For Linux AppImage (`--appimage`):
 1. Builds Linux .so in Ubuntu 22.04 Docker container (glibc 2.35 compat, skips if .so already exists)
-2. Exports PCK via Godot headless (using Android preset workaround)
+2. Exports the Linux PCK via Godot headless
 3. Assembles Linux binary from release template + PCK
 4. Creates AppDir with binary, PCK, .so files, plugin.gdextension, desktop entry, and icon
 5. Builds AppImage via `appimagetool` (auto-downloaded to `/tmp/`)
 
 ### Depth models
 
-Android bundles only ZipDepth-384-GPU. Linux bundles its existing MiDaS-256,
-MiDaS-192, and Depth Anything V2-252 models. The `.tflite` files come from
-`models/` and are not committed (`.gitignore`'s `/models/*.tflite`), so the
+Android bundles three GPU models: ZipDepth EdgePad-384, EdgePad-256, and the
+manual-only EdgePad-224 performance tier. Auto
+selects EdgePad-384/OpenCL on Quest 3/3S and EdgePad-256/OpenGL on Quest 2.
+Linux bundles ncnn
+Vulkan conversions of both ZipDepth models, MiDaS-256, MiDaS-192, and Depth
+Anything V2-252, plus TFLite CPU variants of the latter three. The generated `.tflite` and
+`.ncnn.*` files come from `models/` and are not committed, so the
 platform-specific files must exist locally before building. See
 **`models/README.md`** for the full manifest and acquisition/conversion notes;
 the packaging scripts fail instead of silently shipping a missing model.
@@ -228,6 +233,10 @@ python3 tools/convert_depth_anything_v2.py
 
 # Quest GPU model. Builds the sharper standard/NPU hybrid by default.
 python3 tools/convert_zipdepth.py --force
+
+# Linux Vulkan model library; install pnnx or pass --pnnx /path/to/pnnx.
+# Requires retained ZipDepth/Depth-Anything ONNX exports and MiDaS source/weights.
+python3 tools/convert_linux_depth_ncnn.py --pnnx /path/to/pnnx
 ```
 
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
@@ -301,7 +310,7 @@ adb install -r Nightfall-Android-arm64-v8a-debug.apk
 | `NightfallRelease` | `app.nightfall.quest` | no | yes | yes |
 | `NightfallLinux` | N/A (Linux Desktop) | N/A | N/A | N/A |
 
-Both Android presets can coexist on the same device since they use different package names. The Linux preset is not usable directly (Godot headless doesn't register LinuxBSD export platform); `build.sh --appimage` works around this via PCK export.
+Both Android presets can coexist on the same device since they use different package names. The Linux preset targets Godot 4.7's `Linux` exporter and excludes the Android-only native-XR extension.
 
 ## Tests
 
