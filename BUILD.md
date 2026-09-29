@@ -247,7 +247,7 @@ in [`docs/guides/zipdepth-quest-gpu.md`](docs/guides/zipdepth-quest-gpu.md).
 
 ### Nightfall LiteRT GPU AAR
 
-Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`, a LiteRT 1.4.2 GPU delegate patched to select either a low-priority Qualcomm OpenCL context (`Stream`, the default) or the driver's normal context (`Default`) at runtime. Changing the AI 3D tab's GPU Priority setting recreates only the GPU delegate/interpreter; it does not restart the stream or app. With the native double-wide renderer, Stream priority protects the 90 Hz render cadence while MiDaS-256 inference remains around 30-35 ms.
+Normal Android builds use the checked-in `android/libs/litert-gpu-nightfall-1.4.2.aar`, a LiteRT 1.4.2 GPU delegate patched to select either a low-priority Qualcomm OpenCL context (`Stream`, the product default) or the driver's normal context (`AI 3D`) at runtime. Changing the AI 3D tab's GPU Priority setting recreates only the GPU delegate/interpreter; it does not restart the stream or app. Stream priority protects render and decode cadence during GPU-heavy games; AI 3D priority is an explicit opt-in for users who prefer maximum inference throughput.
 
 For performance A/B testing, pass `--stock-litert` to use Google's unpatched `com.google.ai.edge.litert:litert-gpu:1.4.2` dependency instead:
 

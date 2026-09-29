@@ -74,7 +74,10 @@ var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # 2026-08-20 for the YOLO26-S/MiDaS-GPU/YOLO26-N-resolution/7-way-lineup
 # history that produced the roster below.
 var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
-var ai_3d_gpu_priority_labels: Array = ["Stream", "Default"]
+# Persisted values: 0 protects stream/render cadence (the product default),
+# while 1 gives the inference delegate the driver's normal-priority context.
+# "AI 3D" describes that user-visible tradeoff more clearly than "Default".
+var ai_3d_gpu_priority_labels: Array = ["Stream", "AI 3D"]
 var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
 const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9

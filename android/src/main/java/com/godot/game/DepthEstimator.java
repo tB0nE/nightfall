@@ -33,7 +33,7 @@ public class DepthEstimator {
     public static final int BACKEND_CAP_CPU = 1;
     public static final int BACKEND_CAP_GPU = 2;
     public static final int GPU_PRIORITY_STREAM = 0;
-    public static final int GPU_PRIORITY_DEFAULT = 1;
+    public static final int GPU_PRIORITY_AI_3D = 1;
     // Qualcomm's OpenCL driver may still be retiring resources immediately
     // after Interpreter/GpuDelegate.close(). Compiling another large model
     // in that window has rebooted the Quest 3 during rapid A/B switching.
@@ -746,7 +746,7 @@ public class DepthEstimator {
     }
 
     private void applyGpuPriorityEnvironment(int priority) {
-        String value = priority == GPU_PRIORITY_DEFAULT ? "default" : "stream";
+        String value = priority == GPU_PRIORITY_AI_3D ? "default" : "stream";
         try {
             // Process-local environment shared with LiteRT's native JNI
             // library. The patched CreateCLContext() reads this immediately
@@ -758,8 +758,8 @@ public class DepthEstimator {
     }
 
     public void setGpuPriority(int priority) {
-        final int selected = priority == GPU_PRIORITY_DEFAULT
-                ? GPU_PRIORITY_DEFAULT : GPU_PRIORITY_STREAM;
+        final int selected = priority == GPU_PRIORITY_AI_3D
+                ? GPU_PRIORITY_AI_3D : GPU_PRIORITY_STREAM;
         synchronized (this) {
             applyGpuPriorityEnvironment(selected);
             if (gpuPriority == selected) {
@@ -853,7 +853,7 @@ public class DepthEstimator {
     }
 
     private static String gpuPriorityName(int priority) {
-        return priority == GPU_PRIORITY_DEFAULT ? "Default" : "Stream";
+        return priority == GPU_PRIORITY_AI_3D ? "AI 3D" : "Stream";
     }
 
     private static void releaseGpuVariant(GpuVariant variant) {
