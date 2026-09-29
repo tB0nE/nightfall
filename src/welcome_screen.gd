@@ -13,7 +13,12 @@ func build_welcome_ui():
 	for child in root.get_children():
 		child.queue_free()
 
-	var twilight_images = ["res://src/assets/early_twilight.png", "res://src/assets/late_twilight.png"]
+	var twilight_images = [
+		"res://src/assets/early_twilight.png",
+		"res://src/assets/late_twilight.png",
+		"res://src/assets/twilight_of_life.png",
+		"res://src/assets/jungle_twlight.png",
+	]
 	var bg = TextureRect.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bg.texture = load(twilight_images[randi() % twilight_images.size()])
