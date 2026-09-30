@@ -2,6 +2,7 @@
 #include "miniaudio_backend.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <cmath>
 #include <cstring>
 #include "nf_log.h"
 
@@ -127,24 +128,48 @@ void AudioRenderer::decode_and_play_sample(const char *sample_data, int sample_l
     if (pcm.size() < total_samples) return;
 
     const float *pcm_ptr = pcm.ptr();
+    bool boosted = volume_gain_.load(std::memory_order_relaxed) != 1.0f;
 
-    if (channels_ == 2) {
+    if (channels_ == 2 && !boosted) {
         audio_backend_->write_pcm(pcm_ptr, frames);
+        return;
+    }
+
+    float stereo_buf[2048];
+    int out_frames = frames < 1024 ? frames : 1024;
+    if (channels_ == 2) {
+        memcpy(stereo_buf, pcm_ptr, (size_t)out_frames * 2 * sizeof(float));
     } else if (channels_ > 2) {
-        float stereo_buf[2048];
-        for (int i = 0; i < frames && i < 1024; i++) {
+        for (int i = 0; i < out_frames; i++) {
             _downmix_to_stereo(pcm_ptr + i * channels_, stereo_buf + i * 2);
         }
-        int out_frames = frames < 1024 ? frames : 1024;
-        audio_backend_->write_pcm(stereo_buf, out_frames);
     } else {
-        float stereo_buf[2048];
-        for (int i = 0; i < frames && i < 1024; i++) {
+        for (int i = 0; i < out_frames; i++) {
             stereo_buf[i * 2] = pcm_ptr[i];
             stereo_buf[i * 2 + 1] = pcm_ptr[i];
         }
-        int out_frames = frames < 1024 ? frames : 1024;
-        audio_backend_->write_pcm(stereo_buf, out_frames);
+    }
+    if (boosted) {
+        _apply_volume_boost(stereo_buf, out_frames * 2);
+    }
+    audio_backend_->write_pcm(stereo_buf, out_frames);
+}
+
+// Some hosts send noticeably quiet audio (the same stream is equally quiet in
+// Moonlight XR), so the user can boost it. Samples within the knee pass
+// through unchanged; louder ones are compressed smoothly towards full scale
+// instead of hard clipping.
+void AudioRenderer::_apply_volume_boost(float *samples, int count) const {
+    const float gain = volume_gain_.load(std::memory_order_relaxed);
+    const float knee = 0.8f;
+    for (int i = 0; i < count; i++) {
+        float s = samples[i] * gain;
+        float mag = fabsf(s);
+        if (mag > knee) {
+            mag = knee + (1.0f - knee) * tanhf((mag - knee) / (1.0f - knee));
+            s = copysignf(mag, s);
+        }
+        samples[i] = s;
     }
 }
 
@@ -214,10 +239,23 @@ bool AudioRenderer::is_muted() const {
     return muted_.load();
 }
 
+void AudioRenderer::set_volume_boost_db(float db) {
+    if (db < 0.0f) db = 0.0f;
+    if (db > 24.0f) db = 24.0f;
+    volume_boost_db_.store(db);
+    volume_gain_.store(db == 0.0f ? 1.0f : powf(10.0f, db / 20.0f));
+}
+
+float AudioRenderer::get_volume_boost_db() const {
+    return volume_boost_db_.load();
+}
+
 void AudioRenderer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_initialized"), &AudioRenderer::is_initialized);
     ClassDB::bind_method(D_METHOD("get_channels"), &AudioRenderer::get_channels);
     ClassDB::bind_method(D_METHOD("get_sample_rate"), &AudioRenderer::get_sample_rate);
     ClassDB::bind_method(D_METHOD("get_latency_ms"), &AudioRenderer::get_latency_ms);
     ClassDB::bind_method(D_METHOD("get_backend_name"), &AudioRenderer::get_backend_name);
+    ClassDB::bind_method(D_METHOD("set_volume_boost_db", "db"), &AudioRenderer::set_volume_boost_db);
+    ClassDB::bind_method(D_METHOD("get_volume_boost_db"), &AudioRenderer::get_volume_boost_db);
 }

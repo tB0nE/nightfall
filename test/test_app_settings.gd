@@ -82,6 +82,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.tracking_mode = 1
 	source.auto_reconnect_enabled = false
 	source.quick_start_enabled = true
+	source.audio_boost_db = 9
 	source.idle_timeout_min = 60
 	source.pipewire_restore_token = "restore"
 	var config := ConfigFile.new()
@@ -109,6 +110,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(loaded.tracking_mode == 1)
 	assert(not loaded.auto_reconnect_enabled)
 	assert(loaded.quick_start_enabled)
+	assert(loaded.audio_boost_db == 9)
 	assert(loaded.idle_timeout_min == 60)
 	assert(loaded.pipewire_restore_token == "restore")
 
@@ -120,6 +122,7 @@ func _test_legacy_app_migrations() -> void:
 	config.set_value("screen", "contrast_pct", 13)
 	config.set_value("screen", "gamma_pct", 13)
 	config.set_value("screen", "sharpen_mode", 4)
+	config.set_value("stream", "audio_boost_db", 7)
 	var settings := AppSettings.new()
 	SettingsPersistence.read_app(config, settings, true, [0, 6, 7])
 	assert(not settings.passthrough_enabled)
@@ -129,6 +132,7 @@ func _test_legacy_app_migrations() -> void:
 	assert(settings.contrast_pct == 100)
 	assert(settings.gamma_pct == 100)
 	assert(settings.sharpen_mode == 0)
+	assert(settings.audio_boost_db == 0)
 
 func _test_host_persistence_round_trip() -> void:
 	var source := HostSettings.new()
@@ -238,6 +242,7 @@ func _test_general_defaults_and_reset() -> void:
 	settings.ai_3d_gpu_priority = 1
 	settings.auto_reconnect_enabled = false
 	settings.quick_start_enabled = true
+	settings.audio_boost_db = 12
 	settings.idle_timeout_min = 60
 	settings.pipewire_restore_token = "token"
 
@@ -252,6 +257,7 @@ func _test_general_defaults_and_reset() -> void:
 	assert(settings.ai_3d_gpu_priority == 0)
 	assert(settings.auto_reconnect_enabled)
 	assert(not settings.quick_start_enabled)
+	assert(settings.audio_boost_db == 0)
 	assert(settings.idle_timeout_min == 0)
 	assert(settings.pipewire_restore_token.is_empty())
 

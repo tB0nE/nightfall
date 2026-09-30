@@ -29,6 +29,8 @@ public:
     void play_local_pcm(const float *data, size_t frames);
     void set_muted(bool muted);
     bool is_muted() const;
+    void set_volume_boost_db(float db);
+    float get_volume_boost_db() const;
 
     bool is_initialized() const;
     int get_channels() const;
@@ -41,6 +43,7 @@ protected:
 
 private:
     void _downmix_to_stereo(const float *multi, float *stereo);
+    void _apply_volume_boost(float *samples, int count) const;
 
     static AudioRenderer *active_instance_;
     friend class StreamConnection;
@@ -64,6 +67,8 @@ private:
     std::atomic<bool> initialized_{false};
     std::atomic<bool> running_{false};
     std::atomic<bool> muted_{false};
+    std::atomic<float> volume_boost_db_{0.0f};
+    std::atomic<float> volume_gain_{1.0f};
 };
 
 } // namespace godot

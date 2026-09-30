@@ -63,6 +63,7 @@ static func get_tabs() -> Array:
 				"options": [
 					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec used by the stream.", TARGET_SETTINGS, &"cycle_codec"),
 					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
+					_option(&"_ui_audio_boost_btn", "Volume", "Normal", "Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.", TARGET_SETTINGS, &"cycle_audio_boost"),
 				],
 			},
 		],

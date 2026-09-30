@@ -163,6 +163,8 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
+		if main._ui_audio_boost_btn:
+			main.ui_controller.update_option_btn(main._ui_audio_boost_btn, main.settings_controller.get_audio_boost_label())
 		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
@@ -211,6 +213,7 @@ func load_state():
 	main.screen_manager.apply_curvature()
 	if main.stream_backend and main.stream_backend._v2:
 		main.stream_backend._v2.set_auto_reconnect(main.settings.auto_reconnect_enabled)
+	main.settings_controller.apply_audio_boost()
 
 	sync_ui_to_settings()
 	main.settings_controller.apply_depth_gpu_priority(false)

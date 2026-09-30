@@ -1126,6 +1126,23 @@ func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 
+func cycle_audio_boost():
+	var values: Array = SettingsPersistence.AUDIO_BOOST_VALUES
+	var idx = values.find(main.settings.audio_boost_db)
+	main.settings.audio_boost_db = values[(maxi(idx, 0) + 1) % values.size()]
+	_save_setting(main._ui_audio_boost_btn, get_audio_boost_label())
+	apply_audio_boost()
+
+func get_audio_boost_label() -> String:
+	return "Normal" if main.settings.audio_boost_db == 0 else "+%d dB" % main.settings.audio_boost_db
+
+func apply_audio_boost():
+	if not (main.stream_backend and main.stream_backend._v2):
+		return
+	var audio = main.stream_backend._v2.get_audio_renderer()
+	if audio:
+		audio.set_volume_boost_db(float(main.settings.audio_boost_db))
+
 func cycle_idle_timeout():
 	var idx = idle_values.find(main.settings.idle_timeout_min)
 	idx = (idx + 1) % idle_values.size()
