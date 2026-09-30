@@ -337,6 +337,7 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             if (!pair_mac.is_empty()) {
                 host_data["mac"] = pair_mac;
             }
+            config_manager->remove_superseded_hosts(pair_ip, pair_https_port, server_unique_id);
             config_manager->add_host(host_data);
 
             pair_state = PAIR_FINISHED;
