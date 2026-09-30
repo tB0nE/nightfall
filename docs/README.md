@@ -29,6 +29,7 @@ the build/deployment entry point.
 - [ZipDepth sharp mobile head experiment](plans/active/zipdepth-sharp-mobile-head.md)
 - [Sunshine raw-frame passthrough](plans/active/sunshine-raw-frame-passthrough.md)
 - [WiVRn Nightfall overlay experiment](plans/active/wivrn-nightfall-overlay-experiment.md)
+- [Nightfall Gateway experiment](plans/active/nightfall-gateway-experiment.md)
 - [Feature pipeline](plans/active/feature-pipeline.md)
 - [Future-feature research](plans/active/future-features.md)
 
