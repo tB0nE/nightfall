@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - **Godot 4.7 stable** (editor + custom export templates)
+- **Android SDK platform 36 and Build Tools 36.1.0**
 - **Android NDK 29.0.14206865**
 - **JDK 17**
 - **vcpkg** (for GDExtension dependency management)
@@ -34,7 +35,7 @@ cd <project-root>/addons/nightfall-stream
 
 export VCPKG_ROOT=~/Development/Personal/vcpkg
 export VCPKG_DEFAULT_TRIPLET=arm64-android
-export ANDROID_NDK_HOME=/path/to/ndk/27.0.12077973
+export ANDROID_NDK_HOME=/path/to/ndk/29.0.14206865
 export ANDROID_ABI=arm64-v8a
 
 cmake --preset android
@@ -185,6 +186,16 @@ The `build.sh` script handles everything:
 # Linux AppImage
 ./build.sh --appimage
 ```
+
+### WSL2 release build on Windows
+
+On a WSL2 installation with the local build tools and caches under `.build-cache/`,
+run `tools/build_support/build_release_wsl.sh` from the project root. It builds
+only the release APK, then installs it with Windows `adb.exe`. Windows ADB can
+reach a USB-connected Quest even when its USB device is not passed through to
+WSL. The script expects the release keystore configured in `.env`, the three
+Android EdgePad models in `models/`, and the Meta plugin in
+`addons/godotopenxrvendors/`.
 
 What `build.sh` does:
 1. Builds the matching debug or release native OpenXR extension
