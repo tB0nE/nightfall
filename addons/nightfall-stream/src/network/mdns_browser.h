@@ -12,7 +12,17 @@ class MdnsBrowser : public RefCounted {
 
 private:
     PackedByteArray _build_ptr_query(const String &service_type);
-    Array _parse_dns_response(const uint8_t *data, int len);
+    struct MdnsRecords {
+        // Keyed by lower-cased DNS name.
+        Dictionary instances;
+        Dictionary source_ips;
+        Dictionary srv;
+        Dictionary a;
+        Dictionary txt;
+    };
+
+    void _parse_dns_response(const uint8_t *data, int len, const String &source_ip, MdnsRecords &records);
+    Array _resolve_hosts(const MdnsRecords &records);
     String _read_dns_name(const uint8_t *data, int len, int offset, int &out_end);
     int _write_dns_name(uint8_t *buf, int offset, const String &name);
 
