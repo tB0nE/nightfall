@@ -42,4 +42,5 @@ export GRADLE_USER_HOME="$CACHE_ROOT/gradle"
 
 cd "$PROJECT_ROOT"
 ./build.sh --release
-"$CACHE_ROOT/platform-tools/adb.exe" install -r "$PROJECT_ROOT/Nightfall-Android-arm64-v8a.apk"
+# adb.exe is a Windows binary, so it needs a Windows path to the APK.
+"$CACHE_ROOT/platform-tools/adb.exe" install -r "$(wslpath -w "$PROJECT_ROOT/Nightfall-Android-arm64-v8a.apk")"
