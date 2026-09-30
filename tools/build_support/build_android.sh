@@ -21,8 +21,8 @@ JAVA_HOME="${NIGHTFALL_JAVA_HOME:-${JAVA_HOME:-/home/linuxbrew/.linuxbrew/opt/op
 GODOT_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/godot"
 GODOT_TEMPLATE_DIR="${NIGHTFALL_GODOT_TEMPLATE_DIR:-$GODOT_DATA_HOME/export_templates/$NIGHTFALL_GODOT_TEMPLATE_VERSION}"
 TEMPLATES="${NIGHTFALL_ANDROID_SOURCE_TEMPLATE:-$GODOT_TEMPLATE_DIR/android_source.zip}"
-CONFIG="export_presets.cfg"
-CONFIG_BACKUP="export_presets.cfg.bak"
+CONFIG="$SCRIPT_DIR/export_presets.cfg"
+CONFIG_BACKUP="$SCRIPT_DIR/export_presets.cfg.bak"
 
 # The Godot export packages the prebuilt streaming GDExtension. Refuse to
 # silently ship an older binary when its native sources changed; otherwise new
@@ -115,11 +115,21 @@ sed -i '/tools:targetApi="29" \/>/a\
         <meta-data\
             android:name="com.oculus.trade_cpu_for_gpu_amount"\
             android:value="1" />' src/main/AndroidManifest.xml
-# Replace Godot .so with patched version (AHB Vulkan patch for Quest)
-# Cover all locations the Gradle build might pick up the .so from
-cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
-mkdir -p libs/release/arm64-v8a libs/debug/arm64-v8a
-cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
+# Godot 4.7 ships the runtime inside a prebuilt AAR. Replace its arm64 entry
+# before Gradle consumes it; adding a second jniLibs copy creates duplicates.
+GODOT_AAR="libs/$NATIVE_XR_TARGET/godot-lib.template_${NATIVE_XR_TARGET}.aar"
+if [ -f "$GODOT_AAR" ]; then
+  mkdir -p aar_extract/jni/arm64-v8a
+  cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
+  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so)
+elif [ -d aar_extract/jni/arm64-v8a ]; then
+  cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
+  mkdir -p "libs/$NATIVE_XR_TARGET/arm64-v8a"
+  cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
+else
+  echo "Error: Godot Android template has no known runtime location" >&2
+  exit 1
+fi
 cd "$SCRIPT_DIR"
 cp android/src/main/java/com/godot/game/GodotApp.java android/build/src/main/java/com/godot/game/GodotApp.java
 cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/main/java/com/godot/game/DepthEstimator.java
