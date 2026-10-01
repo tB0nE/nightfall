@@ -84,7 +84,50 @@ support as part of this plan.
 
 ## Implementation Plan
 
-### Phase 1 — Build PyroWave for Android (the real unknown, do this first)
+### Phase 1 — Build PyroWave for Android ✅ done
+
+Turned out much simpler than the "real unknown" framing above suggested.
+Building just the `pyrowave-shared` CMake target against the NDK toolchain
+worked on the first clean configure/build — `PYROWAVE_DEVEL`/`PYROWAVE_UTILS`
+default OFF routes Granite to `GRANITE_PLATFORM=null` automatically (no
+SDL, no runtime shader compiler, no renderer pulled in), and
+`shaders/slangmosh.hpp` is already pre-generated and checked into
+PyroWave's own repo, so no Slang toolchain was needed at all. Vulkan
+itself is loaded dynamically via `volk` (`dlopen`, not a link-time
+`NEEDED` entry) — the built `.so` only needs `libc/libdl/liblog/libm`.
+
+Build script: `tools/build_support/build_pyrowave_android.sh` (pins
+PyroWave and Granite at the commits used here, clones/builds into
+`.build-cache/`, strips, and vendors the result). Vendored artifact:
+`addons/nightfall-stream/third_party/pyrowave/` (`include/pyrowave.h`,
+`lib/android-arm64-v8a/libpyrowave-shared.so`, 1.66MB stripped, `VERSION`
+recording exact commits/NDK/ABI for reproducibility). Added a `.gitignore`
+exception for this one `.so` — everything else matching `*.so` in this
+repo is a build output, this is a checked-in third-party binary.
+
+**On-device validation**: pushed PyroWave's own `pyrowave-c-test` smoke
+test (full C API coverage: device creation, encoder/decoder validation,
+8 encode→decode roundtrip variants, error-handling, a system-stability
+test) to the Quest 3 via `adb push` + `LD_LIBRARY_PATH` and ran it
+directly as a native executable. **All tests passed** on the real
+hardware/driver.
+
+Real on-device performance data from that stability test, at 4K
+(3840x2160, the test's own "upper bound of normal usage"):
+decode-side stages (iDWT 6.56ms, Dequant 1.72ms, Packing 1.51ms, Resolve
+0.08ms) total **~9.9ms/frame**; encode-side (DWT 6.47ms, Analyze 1.38ms,
+Quant 5.90ms) totals ~13.75ms/frame. Scales down roughly with pixel count
+at lower resolutions (~2.5ms decode at 1080p, back-of-envelope). Tight but
+workable at 4K/90Hz (11.1ms budget) for decode alone; real headroom
+needs measuring once this runs inside Nightfall alongside compositor/depth
+work, not just standalone (see Verification below). One benign warning:
+`Got global priority: expected 1024, got 256` — the Quest's driver doesn't
+honor the highest realtime queue-priority request, falls back to medium;
+not a failure, just a device limitation worth knowing about (same general
+territory as the existing GPU-priority tradeoffs already handled for depth
+inference).
+
+### Phase 1 (original framing, kept for context)
 
 PyroWave's repo ships `build_aarch64.sh` (SteamOS/Steam Deck aarch64 Linux,
 not Android) and `setup_android_build.sh` (generates a *whole standalone
