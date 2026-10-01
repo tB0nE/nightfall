@@ -191,7 +191,60 @@ copy:
 - `VideoDepacketizer.c`: treat PyroWave payloads as opaque
   (`BUFFER_TYPE_PICDATA`, no bitstream parsing), same handling as AV1.
 
-### Phase 3 — Decoder
+### Phase 3 — Decoder: build/link infrastructure ✅ done, decode-thread wiring in progress
+
+Wrote `pyrowave_decoder.h/cpp` in `addons/nightfall-stream/src/video/` -
+a small `PyrowaveDecoder` class wrapping `pyrowave_create_default_device()`
++ `pyrowave_decoder_create()` once per stream, and a `decode()` call per
+decode unit that parses the `'PYW1'` framing, pushes sub-packets, and calls
+`pyrowave_decoder_decode_cpu_buffer_synchronous()` into persistent Y/U/V
+scratch buffers - ported directly from `zevro-ai/moonlight`'s
+`pyrowave.cpp`, confirmed against the real API in the vendored header
+rather than assumed.
+
+Wired into `addons/nightfall-stream/CMakeLists.txt` (Android-only include
+dir + link against the vendored `.so`, plus a post-build copy alongside
+`libnightfall-stream.so`) and `tools/build_support/build_android.sh` (the
+vendored `.so` has no `nightfall-stream.gdextension` entry of its own, so
+nothing would otherwise place it in the APK - it rides along via the same
+`aar_extract/jni/arm64-v8a` mechanism already used for the patched
+`libgodot_android.so`, plus an `unzip -Z1` presence check matching the
+existing ones for the stream/vendor libraries).
+
+Two build issues found and fixed along the way, both header/ABI
+mismatches rather than anything wrong with the vendored binary itself:
+`pyrowave.h` expects Vulkan headers already included (needs
+`<vulkan/vulkan.h>` first); and the NDK's own bundled Vulkan headers are
+older than what PyroWave was actually built against (missing
+`VkQueueGlobalPriority` - part of `VK_KHR_global_priority`). Fixed by
+having `build_pyrowave_android.sh` also vendor the exact pinned
+Vulkan-Headers tree Granite itself builds against
+(`include/vulkan/` + `include/vk_video/`), so the include path is
+guaranteed ABI-consistent with the vendored `.so` rather than whatever the
+NDK happens to ship.
+
+**Validated end-to-end on the real Quest 3**: full `nightfall-stream`
+rebuild links clean (confirmed `libnightfall-stream.so` now carries a real
+`NEEDED: libpyrowave-shared.so` entry, not just a build-time link), a full
+`build.sh --release --install` run produces an APK that actually contains
+`lib/arm64-v8a/libpyrowave-shared.so`, and the app launches and connects
+to a host normally on-device - no `UnsatisfiedLinkError`, no missing-symbol
+failures. This was the highest-risk remaining unknown in this phase (does
+the dynamic linker actually resolve a net-new runtime `.so` dependency
+bundled this way); it's now proven, not assumed.
+
+Remaining for this phase: wire `PyrowaveDecoder` into
+`stream_connection.cpp`'s decoder-setup callback (`_cb_decoder_setup()`,
+which currently hits `"FATAL: Unsupported video format"` for anything
+that isn't H264/HEVC on Android) and its decode thread (`_decode_thread_func()`,
+which currently branches straight into MediaCodec-specific
+feed/dequeue logic right after popping a packet off `packet_queue_` - the
+insertion point for a PyroWave branch that bypasses all of that and calls
+`uploader_->update_from_frame()` directly with a lightweight `AVFrame`
+view over the decoded planes, confirmed safe since `update_from_frame()`
+copies the data out synchronously and never retains the pointer).
+
+### Phase 3 (original framing, kept for context)
 
 New file in `addons/nightfall-stream/src/video/` (e.g.
 `pyrowave_decoder.cpp/h`), parallel to the existing MediaCodec-based

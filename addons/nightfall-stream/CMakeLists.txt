@@ -241,6 +241,17 @@ endif()
 if(ANDROID)
     target_compile_definitions(${LIBNAME} PRIVATE _FORTIFY_SOURCE=0)
     target_link_libraries(${LIBNAME} PRIVATE atomic m log dl android mediandk GLESv3)
+
+    # PyroWave codec (docs/plans/active/pyrowave-codec.md) - vendored as a
+    # prebuilt shared library (see tools/build_support/build_pyrowave_android.sh;
+    # PyroWave ships no Android NDK cross-compile recipe of its own).
+    set(PYROWAVE_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/pyrowave")
+    set(PYROWAVE_SHARED_LIB "${PYROWAVE_VENDOR_DIR}/lib/android-arm64-v8a/libpyrowave-shared.so")
+    if(NOT EXISTS "${PYROWAVE_SHARED_LIB}")
+        message(FATAL_ERROR "PyroWave shared library not found at ${PYROWAVE_SHARED_LIB} - run tools/build_support/build_pyrowave_android.sh")
+    endif()
+    target_include_directories(${LIBNAME} PRIVATE "${PYROWAVE_VENDOR_DIR}/include")
+    target_link_libraries(${LIBNAME} PRIVATE "${PYROWAVE_SHARED_LIB}")
 endif()
 
 if(WIN32)
@@ -267,6 +278,18 @@ add_custom_command(TARGET ${LIBNAME} POST_BUILD
         "${GODOT_ADDON_DIR}/$<TARGET_FILE_NAME:${LIBNAME}>"
     COMMENT "Deploying to Godot addon directory..."
 )
+
+if(ANDROID)
+    # Bundled alongside the main extension .so so Godot's export (via
+    # nightfall-stream.gdextension's [dependencies] section) packages it
+    # into the APK too - libnightfall-stream.so has a NEEDED entry for it.
+    add_custom_command(TARGET ${LIBNAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PYROWAVE_SHARED_LIB}"
+            "${GODOT_ADDON_DIR}/libpyrowave-shared.so"
+        COMMENT "Deploying PyroWave shared library to Godot addon directory..."
+    )
+endif()
 
 # Standalone CLI stream test (desktop only)
 if(TARGET_PLATFORM STREQUAL "linux" OR TARGET_PLATFORM STREQUAL "steamos")

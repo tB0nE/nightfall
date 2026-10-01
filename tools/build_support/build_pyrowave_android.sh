@@ -69,6 +69,15 @@ mkdir -p "$VENDOR_DIR/include" "$VENDOR_DIR/lib/android-$ANDROID_ABI"
   build-android/libpyrowave-shared.so \
   -o "$VENDOR_DIR/lib/android-$ANDROID_ABI/libpyrowave-shared.so"
 cp pyrowave.h "$VENDOR_DIR/include/pyrowave.h"
+# pyrowave.h uses Vulkan types directly without including the Vulkan headers
+# itself. The NDK ships its own (older) copy of vulkan/vulkan.h, which is
+# missing types PyroWave was actually built against (e.g.
+# VkQueueGlobalPriority) - vendor the exact pinned Vulkan-Headers tree
+# Granite itself used so consumers get a header-compatible <vulkan/vulkan.h>
+# ahead of the NDK's on the include path, rather than a silent ABI mismatch.
+rm -rf "$VENDOR_DIR/include/vulkan" "$VENDOR_DIR/include/vk_video"
+cp -r Granite/third_party/khronos/vulkan-headers/include/vulkan "$VENDOR_DIR/include/vulkan"
+cp -r Granite/third_party/khronos/vulkan-headers/include/vk_video "$VENDOR_DIR/include/vk_video"
 
 cat > "$VENDOR_DIR/VERSION" <<EOF
 pyrowave: $PYROWAVE_COMMIT
