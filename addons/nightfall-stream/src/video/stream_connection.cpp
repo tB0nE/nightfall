@@ -763,6 +763,17 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
         mime = "video/hevc";
     } else if (videoFormat & VIDEO_FORMAT_MASK_H264) {
         mime = "video/avc";
+    } else if (videoFormat & VIDEO_FORMAT_MASK_AV1) {
+        // Was never wired up on Android - the client already negotiates AV1
+        // (probe_all_video_formats() reports it, via FfmpegDecoder's probe,
+        // which is unrelated to this MediaCodec path and doesn't mean this
+        // branch exists) and a host would pick it, then decoder setup fell
+        // through to "FATAL: Unsupported video format" below, failing the
+        // whole connection. Whether Quest 3 actually has a usable AV1
+        // MediaCodec decoder underneath is a separate, unverified question -
+        // if not, AndroidMediaCodec::init() below fails and this now reports
+        // that specific, correct failure instead of refusing to even try.
+        mime = "video/av01";
     }
     if (mime) {
         auto new_codec = std::make_shared<AndroidMediaCodec>();
