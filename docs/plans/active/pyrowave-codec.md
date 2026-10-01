@@ -162,7 +162,22 @@ Steps:
    `pyrowave_create_default_device()` succeeds on the Quest 3's actual
    Vulkan driver before writing any real decoder integration.
 
-### Phase 2 — Protocol (`moonlight-common-c`)
+### Phase 2 — Protocol (`moonlight-common-c`) ✅ done
+
+Nightfall vendors `moonlight-common-c` via a vcpkg overlay port
+(`addons/nightfall-stream/vcpkg-overlay/moonlight-common-c/`), pinned to
+upstream commit `7b026e77be62175104640e7e722b758df6d3d0d7` with two
+existing local patches already applied on top. That pinned commit is a
+direct ancestor of `zevro-ai/moonlight-common-c`'s fork, so its two
+PyroWave commits cherry-picked onto it with zero conflicts — the diff
+below is byte-identical to the upstream fork's change, just rebased.
+Saved as a third overlay patch, `0003-add-pyrowave-codec.patch`, and
+registered in the port's `portfile.cmake`. Verified both that vcpkg
+actually re-fetches/re-patches/reinstalls the port (triggered by the
+patch-list change) and that the full `nightfall-stream` addon still
+builds cleanly against the patched header.
+
+### Phase 2 (original framing, kept for context)
 
 Port `zevro-ai/moonlight-common-c`'s two commits onto Nightfall's vendored
 copy:
