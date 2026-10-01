@@ -102,6 +102,17 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
 		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
+		if main.settings.codec_preference == 4:
+			# PyroWave is intra-only (every frame is a full I-frame, no
+			# inter-frame compression), so it needs substantially more
+			# bitrate than HEVC for equivalent quality - confirmed starved
+			# at HEVC's auto value (80Mbps at 1440p120): host-side testing
+			# needed ~200Mbps (2.5x) to look right. 3x wasn't enough headroom
+			# in practice - frames started dropping fast at higher
+			# resolution/fps, so bumped to 4x. Bypasses the normal
+			# auto-bitrate ceiling since that cap was tuned for
+			# inter-frame codecs.
+			bitrate = clampi(bitrate * 4, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS * 4)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
 			bitrate_ref.x, bitrate_ref.y, main.settings.host.stream_fps, float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
@@ -650,7 +661,15 @@ func _update_yuv_shader_params():
 	var mat = _v2_yuv_rect.material
 	if not mat is ShaderMaterial:
 		return
-	if local_capture_mode or OS.get_name() == "Android":
+	# This blanket "Android always means color_matrix_type=3 (already-RGB
+	# OES bridge)" assumption predates PyroWave, the first Android codec
+	# that genuinely decodes to real multi-plane YUV (color_matrix_type=1)
+	# instead of an OES-converted RGB surface - it was stomping PyroWave's
+	# correctly-computed cmt back to 3 on this exact shared
+	# TextureUploader material, which made tex_u/tex_v never get sampled at
+	# all (color_matrix_type==3 short-circuits straight to tex_y.rgb) -
+	# the actual root cause of PyroWave's greyscale video.
+	if local_capture_mode or (OS.get_name() == "Android" and main.settings.codec_preference != 4):
 		mat.set_shader_parameter("color_matrix_type", 3)
 		mat.set_shader_parameter("color_range", 1)
 		mat.set_shader_parameter("is_semi_planar", false)

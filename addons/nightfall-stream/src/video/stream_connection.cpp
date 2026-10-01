@@ -1,4 +1,5 @@
 #include "stream_connection.h"
+#include <chrono>
 #include "ffmpeg_decoder.h"
 #include "texture_uploader.h"
 #include "audio/audio_renderer.h"
@@ -753,7 +754,16 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
         self->native_video_width_ = width;
         self->native_video_height_ = height;
         self->pyrowave_pending_init_.store(true);
-        self->uploader_->ensure_shader_material();
+        // RETRY of the GPU-shader YUV->RGB conversion path (previously
+        // abandoned for a CPU-side RGBA conversion workaround after it came
+        // out grayscale for reasons never root-caused). New theory:
+        // yuv_display_core.gdshaderinc's fragment() calls filtered_stream()
+        // (an 8-tap blur/sharpen convolution) instead of yuv_to_rgb()
+        // directly whenever filter_mode>0 or sharpen>0 - if those default
+        // nonzero, every previous grayscale observation went through a
+        // completely different code path than the one that was inspected.
+        self->uploader_->setup(width, height, AV_PIX_FMT_YUV420P,
+                               (int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED);
         NF_LOG("StreamConnection", "PyroWave decode scheduled: %dx%d", width, height);
         return 0;
     }
@@ -1348,7 +1358,32 @@ void StreamConnection::_decode_thread_func() {
                     frame.linesize[0] = pyrowave_decoder_->y_stride();
                     frame.linesize[1] = pyrowave_decoder_->uv_stride();
                     frame.linesize[2] = pyrowave_decoder_->uv_stride();
+                    auto upload_t0 = std::chrono::steady_clock::now();
                     uploader_->update_from_frame(&frame);
+                    auto upload_t1 = std::chrono::steady_clock::now();
+                    double upload_ms = std::chrono::duration<double, std::milli>(upload_t1 - upload_t0).count();
+                    static double sum_upload_ms = 0;
+                    static int upload_count = 0;
+                    sum_upload_ms += upload_ms;
+                    upload_count++;
+                    if (upload_count >= 120) {
+                        NF_LOG("StreamConnection", "[TIMING] 3-plane GPU upload=%.2fms decode+readback=%.2fms (avg over %d frames)",
+                               sum_upload_ms / upload_count, pyrowave_decoder_->last_decode_ms(), upload_count);
+                        sum_upload_ms = 0;
+                        upload_count = 0;
+                    }
+                    // GDScript's bind_yuv_textures() polls is_display_ready()
+                    // (-> display_wired_) before trusting the shader
+                    // material's tex_y, since that RID stays "valid" even
+                    // when it wraps a freed/stale texture from a prior
+                    // session - see display_wired_'s header comment. Only
+                    // the MediaCodec/AHB compute-dispatch paths set this
+                    // today; without it here, PyroWave decodes and uploads
+                    // every frame successfully but the composition layer
+                    // never binds to it, so nothing is ever displayed.
+                    if (!display_wired_.exchange(true)) {
+                        NF_LOG("StreamConnection", "Display wired after first PyroWave frame");
+                    }
                     _record_rendered_frame(pkt->pts);
                 } else {
                     NF_LOGE("StreamConnection", "PyroWave decode failed; requesting IDR");
@@ -2073,6 +2108,7 @@ void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
         last_frame_latency_us_.store((int)decode_us);
     }
     frames_decoded_.fetch_add(1);
+
     std::lock_guard<std::mutex> lock(performance_stats_mutex_);
     performance_stats_.rendered_frames++;
     performance_stats_.decode_time_us += (uint64_t)decode_us;

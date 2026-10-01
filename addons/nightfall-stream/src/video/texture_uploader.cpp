@@ -511,9 +511,24 @@ void TextureUploader::update_from_frame(AVFrame *frame) {
                 memcpy(dst + i * dst_stride, src + i * src_stride, dst_stride);
         }
 
+        static int plane_log_count[3] = {0, 0, 0};
+        if (plane_log_count[gl_idx] < 5) {
+            plane_log_count[gl_idx]++;
+            int mn = 255, mx = 0;
+            long sum = 0;
+            for (int i = 0; i < required_size; i++) {
+                uint8_t b = dst[i];
+                if (b < mn) mn = b;
+                if (b > mx) mx = b;
+                sum += b;
+            }
+            NF_LOG("TextureUploader", "upload_plane gl_idx=%d %dx%d bpp=%d stride=%d/%d min=%d max=%d mean=%ld",
+                   gl_idx, w, h, bpp, src_stride, dst_stride, mn, mx, sum / required_size);
+        }
+
         img->set_data(w, h, false, (bpp == 2) ? Image::FORMAT_RG8 : Image::FORMAT_L8, plane_buffers[gl_idx]);
         if (img->is_empty()) return;
-        rs->texture_2d_update(tex->get_rid(), img, 0);
+        tex->update(img);
     };
 
     upload_plane(0, 0, frame->width, frame->height, 1);
