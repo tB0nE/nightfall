@@ -1026,6 +1026,9 @@ func is_codec_available(idx: int) -> bool:
 		3:
 			client_ok = main._client_codec_support.get("raw", true)
 			server_ok = main._server_codec_support.get("raw", true)
+		4:
+			client_ok = main._client_codec_support.get("pyrowave", false)
+			server_ok = main._server_codec_support.get("pyrowave", false)
 	if main._server_codec_support.is_empty():
 		return client_ok
 	return client_ok and server_ok

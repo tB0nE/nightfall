@@ -219,13 +219,17 @@ func _on_v2_launch_response(response: Dictionary):
 		"hevc": (scm & 0x0300) != 0,
 		"av1": (scm & 0x030000) != 0,
 		"raw": (scm & 0x01000000) != 0,
+		# SCM_PYROWAVE (docs/plans/active/pyrowave-codec.md) - see this
+		# project's moonlight-common-c overlay patch, 0003-add-pyrowave-codec.patch.
+		"pyrowave": (scm & 0x00800000) != 0,
 	}
-	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s" % [
+	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		scm,
 		str(main._server_codec_support.get("h264", false)),
 		str(main._server_codec_support.get("hevc", false)),
 		str(main._server_codec_support.get("av1", false)),
-		str(main._server_codec_support.get("raw", false))])
+		str(main._server_codec_support.get("raw", false)),
+		str(main._server_codec_support.get("pyrowave", false))])
 	if not main.settings_controller.is_codec_available(main.settings.codec_preference):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
@@ -257,6 +261,12 @@ func _on_v2_launch_response(response: Dictionary):
 	var codec_pref = main.settings.codec_preference
 	if codec_pref == 3:
 		stream_config["supported_video_formats"] = 0x10000
+	elif codec_pref == 4:
+		# PyroWave (docs/plans/active/pyrowave-codec.md) - VIDEO_FORMAT_PYROWAVE.
+		# Not a FfmpegDecoder-probed family like H264/HEVC/AV1 above (PyroWave's
+		# decode path on Android is MediaCodec-free, see stream_connection.cpp's
+		# _cb_decoder_setup()), so there's nothing to probe - request it directly.
+		stream_config["supported_video_formats"] = 0x01000000
 	else:
 		var family_map = [1, 2, 3]
 		stream_config["supported_video_formats"] = _b().probe_video_format(family_map[codec_pref], false)

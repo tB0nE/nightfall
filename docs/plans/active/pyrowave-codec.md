@@ -267,7 +267,48 @@ decode path, not a replacement for it. Port the real logic from
 - Teardown: `pyrowave_decoder_destroy()` / `pyrowave_device_destroy()`
   mirroring the existing decoder's stop/cleanup path.
 
-### Phase 4 — Wiring and UI
+### Phase 4 — Wiring and UI ✅ done
+
+`_cb_decoder_setup()` now has a PyroWave branch (before the MediaCodec
+mime selection) that records the request and defers the actual
+`PyrowaveDecoder::init()` to the decode thread via a `pyrowave_pending_init_`
+flag - `_cb_decoder_setup()` runs on moonlight-common-c's own callback
+thread, not the decode thread, so (mirroring the existing `native_codec_`
+pattern's own reasoning) `pyrowave_decoder_` itself is only ever touched
+from one thread. `_decode_thread_func()` checks that flag, initializes
+and owns the decoder from there, decodes each packet synchronously, and
+hands the result to `uploader_->update_from_frame()` via a lightweight
+stack `AVFrame` - then `continue`s past the MediaCodec-specific code
+entirely for PyroWave frames. Torn down alongside `native_codec_` at
+every point that's provably after `decode_thread_.join()` (confirmed by
+checking each of the 4 existing `_replace_native_codec(nullptr)` call
+sites individually - one is mid-stream reconfigure on the callback
+thread, where resetting it would race the decode thread, so that one's
+deliberately left alone; `decoder_ready_.store(false)` already covers
+it, since the decode thread's own `pyrowave_pending_init_` handling
+replaces the old instance safely on its next init anyway).
+
+UI/negotiation: added "PyroWave" to `codec_labels`, gated in
+`is_codec_available()` on both `device_is_quest3` (client) and the
+host's `SCM_PYROWAVE` bit (server) via the existing `_client_codec_support`/
+`_server_codec_support` dictionaries. Client-side support isn't probed
+through `probe_all_video_formats()` (that queries `FfmpegDecoder`'s own
+capabilities for the Linux path - unrelated to PyroWave's MediaCodec-free
+Android path), so it's set directly from the device-tier check instead.
+
+Hit one real namespace bug along the way: `PyrowaveDecoder` wasn't
+declared inside `namespace godot {}` like its `AndroidMediaCodec` sibling,
+so `stream_connection.h`'s forward declaration resolved to a different,
+incomplete type - fixed by wrapping the class in the same namespace.
+
+**Validated on the real Quest 3**: full rebuild + install + launch,
+confirmed via on-device logs that `device_is_quest3=true` and
+`pyrowave=true` both resolve correctly, and the app runs normally with
+all of this wired in. What's *not* yet validated (no PyroWave-capable
+host available this session): an actual end-to-end stream negotiating
+and decoding PyroWave content.
+
+### Phase 4 (original framing, kept for context)
 
 - `nightfall_stream.cpp`/`stream_connection.cpp`: codec selection branches
   on the negotiated format, same shape as the existing H264/HEVC/AV1
