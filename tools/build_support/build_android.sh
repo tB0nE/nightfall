@@ -117,15 +117,32 @@ sed -i '/tools:targetApi="29" \/>/a\
             android:value="1" />' src/main/AndroidManifest.xml
 # Godot 4.7 ships the runtime inside a prebuilt AAR. Replace its arm64 entry
 # before Gradle consumes it; adding a second jniLibs copy creates duplicates.
+#
+# libpyrowave-shared.so rides along the same way (docs/plans/active/
+# pyrowave-codec.md) - it's a runtime dependency of libnightfall-stream.so
+# (a real NEEDED entry, not dlopen'd), but has no [libraries]/[dependencies]
+# entry of its own in nightfall-stream.gdextension, so Godot's own export
+# never places it. This is the only mechanism in this script that actually
+# lands an arbitrary extra .so in the APK's lib/arm64-v8a/, same as
+# libgodot_android.so above.
 GODOT_AAR="libs/$NATIVE_XR_TARGET/godot-lib.template_${NATIVE_XR_TARGET}.aar"
+PYROWAVE_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libpyrowave-shared.so"
+if [ ! -f "$PYROWAVE_LIBRARY" ]; then
+  echo "Error: PyroWave shared library not found at $PYROWAVE_LIBRARY"
+  echo "Rebuild the $STREAM_VARIANT streaming GDExtension (its CMake build deploys this alongside libnightfall-stream.so)."
+  exit 1
+fi
 if [ -f "$GODOT_AAR" ]; then
   mkdir -p aar_extract/jni/arm64-v8a
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
-  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so)
+  cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
+  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so jni/arm64-v8a/libpyrowave-shared.so)
 elif [ -d aar_extract/jni/arm64-v8a ]; then
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
+  cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
   mkdir -p "libs/$NATIVE_XR_TARGET/arm64-v8a"
   cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
+  cp "$PYROWAVE_LIBRARY" "libs/$NATIVE_XR_TARGET/arm64-v8a/libpyrowave-shared.so"
 else
   echo "Error: Godot Android template has no known runtime location" >&2
   exit 1
@@ -203,6 +220,10 @@ if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libnightfall-stream.android.t
 fi
 if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libgodotopenxrvendors.so" >/dev/null; then
   echo "Error: $OUTPUT is missing the Meta OpenXR vendor plugin library" >&2
+  exit 1
+fi
+if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libpyrowave-shared.so" >/dev/null; then
+  echo "Error: $OUTPUT is missing the PyroWave shared library" >&2
   exit 1
 fi
 

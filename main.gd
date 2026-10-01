@@ -246,7 +246,7 @@ var _steady_velocity: Vector3 = Vector3.ZERO
 var _steady_raw_hit: Vector3 = Vector3.ZERO
 var _steady_last_usec: int = 0
 var _steady_last_frame: int = -1
-var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
+var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw", "PyroWave"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
 var corner_handles: Array:
@@ -1846,11 +1846,18 @@ func _init_stream_backend():
 		device_is_quest3 = device_codename.to_lower() == "eureka"
 		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s device_is_quest3=%s" % [device_codename, str(device_is_quest2), str(device_is_quest3)])
 	_client_codec_support = stream_backend.probe_all_video_formats()
-	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s" % [
+	# PyroWave (docs/plans/active/pyrowave-codec.md) isn't probed through
+	# probe_all_video_formats() - that queries FfmpegDecoder's own
+	# capabilities (used on Linux), which has nothing to do with Android's
+	# MediaCodec-based decode path PyroWave actually uses there. Scoped to
+	# Quest 3 only for now (see the plan doc's own reasoning).
+	_client_codec_support["pyrowave"] = device_is_quest3
+	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		str(_client_codec_support.get("h264", false)),
 		str(_client_codec_support.get("hevc", false)),
 		str(_client_codec_support.get("av1", false)),
-		str(_client_codec_support.get("raw", true))])
+		str(_client_codec_support.get("raw", true)),
+		str(_client_codec_support.get("pyrowave", false))])
 	v2_node.pair_completed.connect(func(s, m): stream_manager.on_pair_completed(s, m))
 	if v2_node.has_signal("log_message"):
 		v2_node.log_message.connect(func(message: String):

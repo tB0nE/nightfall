@@ -102,6 +102,17 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
 		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
+		if main.settings.codec_preference == 4:
+			# PyroWave is intra-only (every frame is a full I-frame, no
+			# inter-frame compression), so it needs substantially more
+			# bitrate than HEVC for equivalent quality - confirmed starved
+			# at HEVC's auto value (80Mbps at 1440p120): host-side testing
+			# needed ~200Mbps (2.5x) to look right. 3x wasn't enough headroom
+			# in practice - frames started dropping fast at higher
+			# resolution/fps, so bumped to 4x. Bypasses the normal
+			# auto-bitrate ceiling since that cap was tuned for
+			# inter-frame codecs.
+			bitrate = clampi(bitrate * 4, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS * 4)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
 			bitrate_ref.x, bitrate_ref.y, main.settings.host.stream_fps, float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
@@ -219,13 +230,17 @@ func _on_v2_launch_response(response: Dictionary):
 		"hevc": (scm & 0x0300) != 0,
 		"av1": (scm & 0x030000) != 0,
 		"raw": (scm & 0x01000000) != 0,
+		# SCM_PYROWAVE (docs/plans/active/pyrowave-codec.md) - see this
+		# project's moonlight-common-c overlay patch, 0003-add-pyrowave-codec.patch.
+		"pyrowave": (scm & 0x00800000) != 0,
 	}
-	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s" % [
+	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		scm,
 		str(main._server_codec_support.get("h264", false)),
 		str(main._server_codec_support.get("hevc", false)),
 		str(main._server_codec_support.get("av1", false)),
-		str(main._server_codec_support.get("raw", false))])
+		str(main._server_codec_support.get("raw", false)),
+		str(main._server_codec_support.get("pyrowave", false))])
 	if not main.settings_controller.is_codec_available(main.settings.codec_preference):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
@@ -257,6 +272,12 @@ func _on_v2_launch_response(response: Dictionary):
 	var codec_pref = main.settings.codec_preference
 	if codec_pref == 3:
 		stream_config["supported_video_formats"] = 0x10000
+	elif codec_pref == 4:
+		# PyroWave (docs/plans/active/pyrowave-codec.md) - VIDEO_FORMAT_PYROWAVE.
+		# Not a FfmpegDecoder-probed family like H264/HEVC/AV1 above (PyroWave's
+		# decode path on Android is MediaCodec-free, see stream_connection.cpp's
+		# _cb_decoder_setup()), so there's nothing to probe - request it directly.
+		stream_config["supported_video_formats"] = 0x01000000
 	else:
 		var family_map = [1, 2, 3]
 		stream_config["supported_video_formats"] = _b().probe_video_format(family_map[codec_pref], false)
@@ -640,7 +661,15 @@ func _update_yuv_shader_params():
 	var mat = _v2_yuv_rect.material
 	if not mat is ShaderMaterial:
 		return
-	if local_capture_mode or OS.get_name() == "Android":
+	# This blanket "Android always means color_matrix_type=3 (already-RGB
+	# OES bridge)" assumption predates PyroWave, the first Android codec
+	# that genuinely decodes to real multi-plane YUV (color_matrix_type=1)
+	# instead of an OES-converted RGB surface - it was stomping PyroWave's
+	# correctly-computed cmt back to 3 on this exact shared
+	# TextureUploader material, which made tex_u/tex_v never get sampled at
+	# all (color_matrix_type==3 short-circuits straight to tex_y.rgb) -
+	# the actual root cause of PyroWave's greyscale video.
+	if local_capture_mode or (OS.get_name() == "Android" and main.settings.codec_preference != 4):
 		mat.set_shader_parameter("color_matrix_type", 3)
 		mat.set_shader_parameter("color_range", 1)
 		mat.set_shader_parameter("is_semi_planar", false)
