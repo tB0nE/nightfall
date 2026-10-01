@@ -18,6 +18,8 @@ uint32_t read_u32(const uint8_t *data) {
 }
 } // namespace
 
+namespace godot {
+
 PyrowaveDecoder::~PyrowaveDecoder() {
     destroy();
 }
@@ -124,3 +126,5 @@ bool PyrowaveDecoder::decode(const uint8_t *payload, size_t len) {
     }
     return true;
 }
+
+} // namespace godot

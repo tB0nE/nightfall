@@ -10,6 +10,8 @@
 #include <vulkan/vulkan.h>
 #include <pyrowave.h>
 
+namespace godot {
+
 // Wraps PyroWave's C API (addons/nightfall-stream/third_party/pyrowave) for
 // the intra-only, GPU-compute PyroWave codec - see
 // docs/plans/active/pyrowave-codec.md for the full integration plan and
@@ -57,3 +59,5 @@ private:
     PyrowaveDecoder(const PyrowaveDecoder &) = delete;
     PyrowaveDecoder &operator=(const PyrowaveDecoder &) = delete;
 };
+
+} // namespace godot

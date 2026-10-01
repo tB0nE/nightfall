@@ -16,6 +16,7 @@
 #ifdef __ANDROID__
 #include "video/mediacodec_internal.h"
 #include "video/mediacodec_native.h"
+#include "video/pyrowave_decoder.h"
 #include <jni.h>
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
@@ -98,6 +99,10 @@ StreamConnection::~StreamConnection() {
     // Safe to retire now — decode thread is joined by stop(). The codec shuts
     // down when the last decode-thread reference is released.
     _replace_native_codec(nullptr);
+    // pyrowave_decoder_ is decode-thread-only (see its own comment) - also
+    // safe here for the same reason.
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
 #endif
     if (h264_extradata_) {
         av_freep(&h264_extradata_);
@@ -737,6 +742,22 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
         rs->call_on_render_thread(callable_mp(self, &StreamConnection::_render_free_pipeline_rt));
     }
 
+    // PyroWave (docs/plans/active/pyrowave-codec.md) - not a MediaCodec
+    // format at all, so it bypasses the mime/AndroidMediaCodec path below
+    // entirely. The actual PyrowaveDecoder::init() call is deferred to the
+    // decode thread (see pyrowave_decoder_'s own comment on why) - this just
+    // records the request and reports success immediately, matching how
+    // self->decoder_ready_ already means "the decode path for this stream
+    // is up," not "already done synchronously by the time this returns."
+    if (videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+        self->native_video_width_ = width;
+        self->native_video_height_ = height;
+        self->pyrowave_pending_init_.store(true);
+        self->uploader_->ensure_shader_material();
+        NF_LOG("StreamConnection", "PyroWave decode scheduled: %dx%d", width, height);
+        return 0;
+    }
+
     const char *mime = nullptr;
     if (videoFormat & VIDEO_FORMAT_MASK_H265) {
         mime = "video/hevc";
@@ -1282,6 +1303,53 @@ void StreamConnection::_decode_thread_func() {
         }
 
 #ifdef __ANDROID__
+        // PyroWave (docs/plans/active/pyrowave-codec.md) - handled entirely
+        // here rather than falling into the MediaCodec feed/dequeue machinery
+        // below: it has no async Surface/callback pipeline, decode is one
+        // synchronous call that hands back CPU YUV420p planes directly. Init
+        // is deferred from _cb_decoder_setup() (a different thread - see
+        // pyrowave_decoder_'s own comment) to here via pyrowave_pending_init_
+        // so pyrowave_decoder_ itself is only ever touched from this thread.
+        if (active_video_format_ & VIDEO_FORMAT_MASK_PYROWAVE) {
+            if (pyrowave_pending_init_.exchange(false)) {
+                pyrowave_decoder_ = std::make_unique<PyrowaveDecoder>();
+                if (pyrowave_decoder_->init(native_video_width_, native_video_height_)) {
+                    decoder_ready_.store(true);
+                } else {
+                    NF_LOGE("StreamConnection", "FATAL: PyroWave decoder init failed");
+                    pyrowave_decoder_.reset();
+                    decoder_ready_.store(false);
+                    is_streaming_.store(false);
+                    queue_cv_.notify_all();
+                    LiInterruptConnection();
+                }
+            }
+
+            if (pkt && decoder_ready_.load() && pyrowave_decoder_) {
+                if (pyrowave_decoder_->decode(reinterpret_cast<const uint8_t *>(pkt->data), (size_t)pkt->size)) {
+                    AVFrame frame{};
+                    frame.format = AV_PIX_FMT_YUV420P;
+                    frame.width = pyrowave_decoder_->width();
+                    frame.height = pyrowave_decoder_->height();
+                    frame.data[0] = const_cast<uint8_t *>(pyrowave_decoder_->y_data());
+                    frame.data[1] = const_cast<uint8_t *>(pyrowave_decoder_->u_data());
+                    frame.data[2] = const_cast<uint8_t *>(pyrowave_decoder_->v_data());
+                    frame.linesize[0] = pyrowave_decoder_->y_stride();
+                    frame.linesize[1] = pyrowave_decoder_->uv_stride();
+                    frame.linesize[2] = pyrowave_decoder_->uv_stride();
+                    uploader_->update_from_frame(&frame);
+                    _record_rendered_frame(pkt->pts);
+                } else {
+                    NF_LOGE("StreamConnection", "PyroWave decode failed; requesting IDR");
+                    LiRequestIdrFrame();
+                }
+            }
+
+            queued_unit.reset();
+            pkt = nullptr;
+            continue;
+        }
+
         uint64_t decode_generation = render_generation_.load();
         std::shared_ptr<AndroidMediaCodec> codec = _get_native_codec();
         if (codec && decoder_ready_.load()) {
@@ -1765,6 +1833,8 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
 #ifdef __ANDROID__
     _replace_native_codec(nullptr);
     native_codec_event_.store(false);
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
 #endif
 
     {
@@ -1857,6 +1927,8 @@ void StreamConnection::stop() {
     // No callback may retain the StreamConnection wakeup after stop returns.
     _replace_native_codec(nullptr);
     native_codec_event_.store(false);
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
 #endif
 
     {
