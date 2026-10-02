@@ -163,6 +163,8 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
 		if main._ui_quick_start_btn:
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
+		if main._ui_usb_link_btn:
+			main.ui_controller.update_option_btn(main._ui_usb_link_btn, "On" if main.settings.usb_link_enabled else "Off")
 		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
@@ -188,6 +190,7 @@ func load_state():
 		main.screen_manager.apply_curvature()
 		sync_ui_to_settings()
 		main.settings_controller.apply_depth_gpu_priority(false)
+		main.settings_controller.apply_usb_link()
 		return
 
 	var load_info := SettingsPersistence.read_app(
@@ -214,3 +217,4 @@ func load_state():
 
 	sync_ui_to_settings()
 	main.settings_controller.apply_depth_gpu_priority(false)
+	main.settings_controller.apply_usb_link()

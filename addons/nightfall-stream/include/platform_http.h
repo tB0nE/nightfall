@@ -24,6 +24,14 @@ public:
     virtual void set_verify_peer(bool verify) = 0;
     virtual void set_timeout_ms(int ms) = 0;
 
+    // Pins the connection's egress interface and, for a link-local IPv6
+    // literal (which has no embedded zone id), its scope - without this a
+    // request to a fe80:: address picked up over USB Link can silently
+    // route out the default (Wi-Fi) interface instead, or fail to resolve
+    // the zone at all. No-op when iface is empty. See
+    // docs/plans/active/usb-link-streaming.md Step 3.
+    virtual void set_bind_interface(const std::string& iface) = 0;
+
     virtual std::string get_backend_name() const = 0;
 };
 

@@ -18,6 +18,7 @@ public:
     void set_server_cert_pin(const std::string& cert_pem) override;
     void set_verify_peer(bool verify) override;
     void set_timeout_ms(int ms) override;
+    void set_bind_interface(const std::string& iface) override;
 
     std::string get_backend_name() const override;
 
@@ -29,6 +30,7 @@ private:
     std::string server_cert_pem_;
     int timeout_ms_ = 10000;
     bool verify_peer_ = true;
+    std::string bind_iface_;
 
     static std::once_flag curl_init_flag_;
     static size_t _write_cb(void* contents, size_t size, size_t nmemb, void* userp);

@@ -11,6 +11,7 @@
 #include "config/computer_manager.h"
 #include "network/http_requester.h"
 #include "network/mdns_browser.h"
+#include "network/usb_link_bridge.h"
 #include "video/ffmpeg_decoder.h"
 #include "video/texture_uploader.h"
 #include "video/depth_bridge.h"
@@ -48,6 +49,7 @@ void initialize_nightfall_types(ModuleInitializationLevel p_level)
     GDREGISTER_CLASS(NightfallComputerManager);
     GDREGISTER_CLASS(HttpRequester);
     GDREGISTER_CLASS(MdnsBrowser);
+    GDREGISTER_CLASS(UsbLinkBridge);
     GDREGISTER_CLASS(FfmpegDecoder);
     GDREGISTER_CLASS(TextureUploader);
     GDREGISTER_CLASS(DepthBridge);

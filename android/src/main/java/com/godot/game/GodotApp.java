@@ -17,6 +17,7 @@ public class GodotApp extends GodotActivity {
 
 	public static String jniResult = "NOT_RUN";
 	public static DepthEstimator depthEstimator;
+	public static UsbLinkManager usbLinkManager;
 	public static WifiManager.MulticastLock multicastLock;
 	private static Context appContext;
 
@@ -75,6 +76,8 @@ public class GodotApp extends GodotActivity {
 		depthEstimator = new DepthEstimator();
 		depthEstimator.initialize(appContext);
 		DiagnosticLog.info("GODOT", "DepthEstimator initialized: " + depthEstimator.isInitialized());
+		usbLinkManager = new UsbLinkManager(appContext);
+		DiagnosticLog.info("GODOT", "UsbLinkManager created, supported=" + UsbLinkManager.isSupported());
 		java.io.File profileDirectory = getExternalFilesDir(null);
 		boolean debugBuild = (getApplicationInfo().flags
 				& android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
@@ -305,6 +308,46 @@ public class GodotApp extends GodotActivity {
 			if (!found) sb.append("  (no hardware/software decoder found for this mime)\n");
 		}
 		return sb.toString();
+	}
+
+	public static boolean isUsbLinkSupported() {
+		return UsbLinkManager.isSupported();
+	}
+
+	public static boolean startUsbLink() {
+		return usbLinkManager != null && usbLinkManager.start();
+	}
+
+	public static void stopUsbLink() {
+		if (usbLinkManager != null) {
+			usbLinkManager.stop();
+		}
+	}
+
+	public static boolean isUsbLinkUp() {
+		return usbLinkManager != null && usbLinkManager.isUp();
+	}
+
+	// Pipe-joined (no address can legally contain '|') since this crosses the
+	// JNI boundary as a single jstring - simplest thing that works given
+	// there's no JNI String[] round trip already plumbed anywhere else here.
+	public static String getUsbLinkAddresses() {
+		if (usbLinkManager == null) {
+			return "";
+		}
+		return String.join("|", usbLinkManager.getLinkLocalAddresses());
+	}
+
+	public static String getUsbLinkInterfaceName() {
+		return usbLinkManager != null ? usbLinkManager.getInterfaceName() : "";
+	}
+
+	public static String getActiveNetworkTransport() {
+		return usbLinkManager != null ? usbLinkManager.getActiveTransport() : "";
+	}
+
+	public static String describeUsbLinkProperties() {
+		return usbLinkManager != null ? usbLinkManager.describeLinkProperties() : "(no manager)";
 	}
 
 	@Override

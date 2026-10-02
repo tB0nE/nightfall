@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <poll.h>
+#include <net/if.h>
 
 using namespace godot;
 
@@ -94,7 +95,7 @@ String MdnsBrowser::_read_dns_name(const uint8_t *data, int len, int offset, int
     return result;
 }
 
-Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len) {
+Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v6) {
     Array hosts;
 
     if (len < 12) return hosts;
@@ -114,6 +115,7 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len) {
     Dictionary ptr_targets;
     Dictionary srv_records;
     Dictionary a_records;
+    Dictionary aaaa_records;
     Dictionary txt_records;
 
     for (int i = 0; i < ancount && offset < len; i++) {
@@ -153,13 +155,16 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len) {
             }
         } else if (rtype == 28) {
             if (rdlength == 16) {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d.%d",
-                    data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
-                    data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
-                    data[offset + 8], data[offset + 9], data[offset + 10], data[offset + 11],
-                    data[offset + 12], data[offset + 13], data[offset + 14], data[offset + 15]);
-                a_records[name.to_lower()] = String(buf);
+                char buf[INET6_ADDRSTRLEN];
+                if (inet_ntop(AF_INET6, data + offset, buf, sizeof(buf))) {
+                    String addr(buf);
+                    // A host announces several AAAA records; for the link,
+                    // the link-local one is the one guaranteed reachable.
+                    String key = name.to_lower();
+                    if (!aaaa_records.has(key) || addr.to_lower().begins_with("fe80:") == want_v6) {
+                        aaaa_records[key] = addr;
+                    }
+                }
             }
         } else if (rtype == 16) {
             Dictionary txt;
@@ -198,16 +203,24 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len) {
             host["port"] = srv["port"];
             String target = srv["target"];
             String target_lower = target.to_lower();
-            if (a_records.has(target_lower)) {
-                host["ip"] = a_records[target_lower];
+            String short_target = target_lower.replace(".local.", "").replace(".local", "");
+            auto lookup = [&](const Dictionary &records) -> String {
+                if (records.has(target_lower)) return records[target_lower];
+                if (records.has(short_target)) return records[short_target];
+                return String();
+            };
+            String ip;
+            if (want_v6) {
+                ip = lookup(aaaa_records);
             } else {
-                String short_target = target_lower.replace(".local.", "").replace(".local", "");
-                if (a_records.has(short_target)) {
-                    host["ip"] = a_records[short_target];
-                } else {
-                    host["ip"] = "";
+                ip = lookup(a_records);
+                if (ip.is_empty()) {
+                    // A zone-less link-local address is unusable off the USB path.
+                    String v6 = lookup(aaaa_records);
+                    if (!v6.to_lower().begins_with("fe80:")) ip = v6;
                 }
             }
+            host["ip"] = ip;
             host["hostname"] = target;
         }
 
@@ -226,6 +239,10 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len) {
 }
 
 Array MdnsBrowser::browse(float timeout) {
+    return _browse_v4(timeout);
+}
+
+Array MdnsBrowser::_browse_v4(float timeout) {
     Array results;
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -313,7 +330,7 @@ Array MdnsBrowser::browse(float timeout) {
 
         if (!(recv_buf[2] & 0x80)) continue;
 
-        Array found = _parse_dns_response(recv_buf, (int)n);
+        Array found = _parse_dns_response(recv_buf, (int)n, false);
         for (int i = 0; i < found.size(); i++) {
             Dictionary host = found[i];
             if (host.has("ip")) {
@@ -330,6 +347,139 @@ Array MdnsBrowser::browse(float timeout) {
     return results;
 }
 
+Array MdnsBrowser::browse_on_interface(const String &iface_name, float timeout) {
+    return _browse_v6_scoped(iface_name, timeout);
+}
+
+Array MdnsBrowser::_browse_v6_scoped(const String &iface_name, float timeout) {
+    Array results;
+
+    CharString iface_cs = iface_name.utf8();
+    unsigned int ifindex = if_nametoindex(iface_cs.get_data());
+    if (ifindex == 0) {
+        NF_LOG("MdnsBrowser", "Unknown interface '%s': %s", iface_cs.get_data(), strerror(errno));
+        return results;
+    }
+
+    int sock = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        NF_LOG("MdnsBrowser", "Failed to create IPv6 socket: %s", strerror(errno));
+        return results;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = (int)timeout;
+    tv.tv_usec = (int)((timeout - (int)timeout) * 1000000);
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in6 local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin6_family = AF_INET6;
+    local_addr.sin6_addr = in6addr_any;
+    local_addr.sin6_port = htons(0);
+    if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+        NF_LOG("MdnsBrowser", "Failed to bind IPv6 socket: %s", strerror(errno));
+        close(sock);
+        return results;
+    }
+
+    // Scope both the outgoing multicast egress and the membership join to
+    // usb0's interface index - without this the join defaults to the
+    // primary (Wi-Fi) route and never sees anything a host only announces
+    // on the USB link.
+    setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_IF, &ifindex, sizeof(ifindex));
+
+    struct ipv6_mreq mreq;
+    memset(&mreq, 0, sizeof(mreq));
+    inet_pton(AF_INET6, "ff02::fb", &mreq.ipv6mr_multiaddr);
+    mreq.ipv6mr_interface = ifindex;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
+        NF_LOG("MdnsBrowser", "IPV6_ADD_MEMBERSHIP failed: %s", strerror(errno));
+    }
+
+    PackedByteArray query = _build_ptr_query("_nvstream._tcp.local");
+    if (query.size() == 0) {
+        close(sock);
+        return results;
+    }
+
+    struct sockaddr_in6 mcast_addr;
+    memset(&mcast_addr, 0, sizeof(mcast_addr));
+    mcast_addr.sin6_family = AF_INET6;
+    inet_pton(AF_INET6, "ff02::fb", &mcast_addr.sin6_addr);
+    mcast_addr.sin6_port = htons(5353);
+    mcast_addr.sin6_scope_id = ifindex;
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        sendto(sock, query.ptr(), query.size(), 0,
+                (struct sockaddr *)&mcast_addr, sizeof(mcast_addr));
+        if (attempt < 2) {
+            usleep(200000);
+        }
+    }
+
+    Dictionary seen_ips;
+    uint8_t recv_buf[4096];
+
+    struct timespec ts_start;
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    double start_time = ts_start.tv_sec + ts_start.tv_nsec / 1e9;
+    double end_time = start_time + timeout;
+
+    while (true) {
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        double now = ts_now.tv_sec + ts_now.tv_nsec / 1e9;
+        double remaining = end_time - now;
+        if (remaining <= 0) break;
+
+        struct pollfd pfd;
+        pfd.fd = sock;
+        pfd.events = POLLIN;
+        int poll_ms = (int)(remaining * 1000);
+        if (poll_ms < 10) poll_ms = 10;
+
+        int ret = poll(&pfd, 1, poll_ms);
+        if (ret <= 0) continue;
+
+        struct sockaddr_in6 from;
+        socklen_t from_len = sizeof(from);
+        ssize_t n = recvfrom(sock, recv_buf, sizeof(recv_buf), 0,
+                (struct sockaddr *)&from, &from_len);
+        if (n <= 12) continue;
+
+        if (!(recv_buf[2] & 0x80)) continue;
+
+        Array found = _parse_dns_response(recv_buf, (int)n, true);
+        for (int i = 0; i < found.size(); i++) {
+            Dictionary host = found[i];
+            if (host.has("ip")) {
+                String ip = host["ip"];
+                if (!seen_ips.has(ip) && ip != "") {
+                    seen_ips[ip] = true;
+                    // A link-local address is meaningless without its zone;
+                    // carrying it in the address text lets every downstream
+                    // consumer (HTTP binding, getaddrinfo in the stream path,
+                    // saved host records) recover the interface on its own.
+                    if (ip.to_lower().begins_with("fe80:")) {
+                        host["ip"] = ip + String("%") + iface_name;
+                    }
+                    host["iface"] = iface_name;
+                    host["scope_id"] = (int)ifindex;
+                    results.append(host);
+                }
+            }
+        }
+    }
+
+    close(sock);
+    return results;
+}
+
 void MdnsBrowser::_bind_methods() {
     ClassDB::bind_method(D_METHOD("browse", "timeout"), &MdnsBrowser::browse, DEFVAL(3.0));
+    ClassDB::bind_method(D_METHOD("browse_on_interface", "iface_name", "timeout"), &MdnsBrowser::browse_on_interface, DEFVAL(3.0));
 }

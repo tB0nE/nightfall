@@ -77,6 +77,15 @@ private:
     String _get_unique_id();
     String _get_uuid();
     Dictionary _get_ssl_options();
+    // Wraps an IPv6 literal in brackets for URL construction (required
+    // syntax - "http://fe80::1:47989/..." is ambiguous with the port
+    // separator). Returns the address unchanged for IPv4/hostnames, which
+    // never contain ':'. See docs/plans/active/usb-link-streaming.md Step 3.
+    static bool _is_link_local(const String &addr);
+    // The address to reach a saved host by right now: its USB Link address
+    // while the link is up, otherwise its network address.
+    static String _host_address(const Dictionary &host);
+    static String _bracket_host(const String &addr);
 
     void _on_pair_request_completed(int code, PackedByteArray body, Dictionary headers, String error, int step);
     void _on_server_info_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback, String ip);
@@ -109,6 +118,7 @@ public:
     void set_parent_node(Node *node);
 
     String start_pair(String ip, int port = 47989);
+    String get_host_address(const Dictionary &host);
     void cancel_pair();
     void unpair(int host_id);
     String get_last_paired_unique_id();

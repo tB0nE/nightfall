@@ -5,7 +5,7 @@ func _init():
 	assert(_tab_button_labels() == ["Display", "Stream", "Control", "AI 3D", "Picture", "Monitors", "Advanced"])
 	assert(_tab_ids() == [&"display", &"stream", &"control", &"picture", &"advanced"])
 	assert(_option_count(&"display") == 8)
-	assert(_option_count(&"stream") == 6)
+	assert(_option_count(&"stream") == 7)
 	assert(_option_count(&"control") == 8)
 	assert(_option_count(&"picture") == 4)
 	assert(_option_count(&"advanced") == 3)

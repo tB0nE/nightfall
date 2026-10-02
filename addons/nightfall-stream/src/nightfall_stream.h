@@ -51,6 +51,14 @@ public:
     int get_server_codec_mode_support() const;
 
     void set_auto_reconnect(bool enabled);
+    // When enabled, a due retry emits reconnect_requested instead of
+    // replaying the previous LiStartConnection: Sunshine discards an RTSP
+    // session once its stream ends, so a retry needs a fresh /resume launch,
+    // which only the script side knows how to perform.
+    void set_reconnect_via_launch(bool enabled);
+    // Called by the script side when its relaunch failed before a stream
+    // could start; schedules the next attempt or reports reconnect_failed.
+    void retry_reconnect();
     bool get_auto_reconnect() const;
     void set_max_reconnect_attempts(int attempts);
     int get_max_reconnect_attempts() const;
@@ -126,6 +134,7 @@ private:
     bool last_disable_hw_ = false;
 
     bool auto_reconnect_ = true;
+    bool reconnect_via_launch_ = false;
     int max_reconnect_attempts_ = 5;
     int reconnect_delay_ms_ = 2000;
     int reconnect_attempts_ = 0;

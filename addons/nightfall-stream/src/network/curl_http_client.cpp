@@ -1,6 +1,7 @@
 #include "curl_http_client.h"
 #include <cstring>
 #include <vector>
+#include <net/if.h>
 
 namespace nightfall {
 
@@ -91,6 +92,14 @@ HttpResponse CurlHttpClient::_perform(const std::string& url, const std::string&
         curl_easy_setopt(curl, CURLOPT_SSLKEYTYPE, "PEM");
     }
 
+    if (!bind_iface_.empty()) {
+        curl_easy_setopt(curl, CURLOPT_INTERFACE, bind_iface_.c_str());
+        unsigned int ifindex = if_nametoindex(bind_iface_.c_str());
+        if (ifindex != 0) {
+            curl_easy_setopt(curl, CURLOPT_ADDRESS_SCOPE, static_cast<long>(ifindex));
+        }
+    }
+
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_ms_));
 
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _write_cb);
@@ -138,6 +147,10 @@ void CurlHttpClient::set_verify_peer(bool verify) {
 
 void CurlHttpClient::set_timeout_ms(int ms) {
     timeout_ms_ = ms;
+}
+
+void CurlHttpClient::set_bind_interface(const std::string& iface) {
+    bind_iface_ = iface;
 }
 
 std::string CurlHttpClient::get_backend_name() const {

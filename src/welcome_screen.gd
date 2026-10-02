@@ -563,7 +563,7 @@ func update_welcome_info():
 	var host_name = main._last_hostname
 	if host_name.is_empty():
 		for h in _hosts:
-			if h.has("localaddress") and h.localaddress == saved_ip:
+			if main.host_matches_address(h, saved_ip):
 				var hname = h.get("hostname", "")
 				if hname != saved_ip and not hname.is_empty():
 					host_name = hname
@@ -674,21 +674,27 @@ func browse_mdns():
 			btn.add_theme_stylebox_override("pressed", press_style)
 			btn.pressed.connect(func():
 				main._log("[mDNS] Selected host: ip='" + ip + "' friendly='" + friendly + "'")
+				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
+				for h in (_cm4.get_hosts() if _cm4 else []):
+					if main.host_matches_address(h, ip):
+						# Already-saved machine: use its saved identity (per-host
+						# settings key off it) whichever path it was found on;
+						# the backend picks USB or network per request.
+						var saved_ip: String = h.get("localaddress", ip)
+						main.get_node("%IPInput").text = saved_ip
+						save_last_ip(saved_ip, h.get("server_unique_id", ""))
+						main.state_manager.load_host_state(saved_ip)
+						main.current_host_id = h.id
+						main.settings_controller.detect_polaris_host(saved_ip, main.current_host_id)
+						show_welcome_screen("welcome")
+						return
+				# Unknown address: pairing first checks the server's identity,
+				# and if this machine is already paired it just records the new
+				# address on the existing entry instead of pairing again.
 				main.get_node("%IPInput").text = ip
 				save_last_ip(ip)
 				main.state_manager.load_host_state(ip)
-				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
-				var found_host = false
-				for h in (_cm4.get_hosts() if _cm4 else []):
-					if h.has("localaddress") and h.localaddress == ip:
-						main.current_host_id = h.id
-						found_host = true
-						break
-				if found_host:
-					main.settings_controller.detect_polaris_host(ip, main.current_host_id)
-					show_welcome_screen("welcome")
-				else:
-					start_pair(ip)
+				start_pair(ip)
 			)
 			discover_list.add_child(btn)
 	if scan_btn:
@@ -705,6 +711,7 @@ func populate_server_list():
 
 	var _cm2 = main.stream_backend.get_config_manager() if main.stream_backend else null
 	var hosts = _cm2.get_hosts() if _cm2 else []
+	var usb_link_up: bool = not main.stream_manager._usb_link_iface().is_empty()
 	for h in hosts:
 		var ip = h.get("localaddress", "")
 		var hname = h.get("hostname", "")
@@ -722,6 +729,8 @@ func populate_server_list():
 		# "10.0.0.13:57984" vs "10.0.0.13:47984".
 		var https_port = h.get("https_port", 47984)
 		var display = "%s (%s:%d)" % [hname, ip, https_port] if not hname.is_empty() else "%s:%d" % [ip, https_port]
+		if not str(h.get("usb_address", "")).is_empty() and usb_link_up:
+			display += "  [USB]"
 		var btn = Button.new()
 		btn.custom_minimum_size = Vector2(400, 80)
 		btn.add_theme_font_size_override("font_size", 36)
@@ -823,7 +832,7 @@ func _get_host_mac(ip: String) -> String:
 	var _cm = main.stream_backend.get_config_manager() if main.stream_backend else null
 	var hosts = _cm.get_hosts() if _cm else []
 	for h in hosts:
-		if h.has("localaddress") and h.localaddress == ip:
+		if main.host_matches_address(h, ip):
 			var mac = h.get("mac", "")
 			if not mac.is_empty() and mac != "00:00:00:00:00:00":
 				return mac

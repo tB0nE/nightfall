@@ -12,7 +12,10 @@ class MdnsBrowser : public RefCounted {
 
 private:
     PackedByteArray _build_ptr_query(const String &service_type);
-    Array _parse_dns_response(const uint8_t *data, int len);
+    // want_v6: resolve SRV targets to AAAA records only (the USB link has no
+    // routable IPv4, so a LAN A record answered over it would be a dead end);
+    // otherwise prefer A and fall back to a non-link-local AAAA.
+    Array _parse_dns_response(const uint8_t *data, int len, bool want_v6);
     String _read_dns_name(const uint8_t *data, int len, int offset, int &out_end);
     int _write_dns_name(uint8_t *buf, int offset, const String &name);
 
@@ -20,10 +23,19 @@ protected:
     static void _bind_methods();
 
 public:
+    Array _browse_v4(float timeout);
+    Array _browse_v6_scoped(const String &iface_name, float timeout);
+
+public:
     MdnsBrowser();
     ~MdnsBrowser();
 
     Array browse(float timeout = 3.0);
+    // IPv6 mDNS (ff02::fb) scoped to a single interface by name (e.g. "usb0") -
+    // see docs/plans/active/usb-link-streaming.md Step 2. The default-route
+    // IPv4 socket in browse() never sees USB Link traffic since usb0 carries
+    // no IPv4 address at all, only a link-local IPv6 one.
+    Array browse_on_interface(const String &iface_name, float timeout = 3.0);
 };
 
 } // namespace godot

@@ -30,6 +30,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("stream", "quick_start", settings.quick_start_enabled)
 	config.set_value("stream", "idle_timeout_min", settings.idle_timeout_min)
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
+	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
 
 static func read_app(
 		config: ConfigFile,
@@ -116,6 +117,8 @@ static func read_app(
 		"stream", "idle_timeout_min", AppSettings.DEFAULT_IDLE_TIMEOUT_MIN)
 	settings.pipewire_restore_token = config.get_value(
 		"local_capture", "restore_token", AppSettings.DEFAULT_PIPEWIRE_RESTORE_TOKEN)
+	settings.usb_link_enabled = config.get_value(
+		"stream", "usb_link_enabled", AppSettings.DEFAULT_USB_LINK_ENABLED)
 	return result
 
 static func write_host(config: ConfigFile, section: String, host: HostSettings) -> void:
