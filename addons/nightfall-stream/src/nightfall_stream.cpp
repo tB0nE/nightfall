@@ -455,6 +455,11 @@ bool NightfallStream::is_hw_decode() const {
     return false;
 }
 
+String NightfallStream::get_decode_mode() const {
+    if (stream_connection_) return stream_connection_->get_decode_mode();
+    return "SW";
+}
+
 String NightfallStream::get_error_string(int error_code) {
     return StreamConnection::get_error_string(error_code);
 }
@@ -646,6 +651,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_video_width"), &NightfallStream::get_video_width);
     ClassDB::bind_method(D_METHOD("get_video_height"), &NightfallStream::get_video_height);
     ClassDB::bind_method(D_METHOD("is_hw_decode"), &NightfallStream::is_hw_decode);
+    ClassDB::bind_method(D_METHOD("get_decode_mode"), &NightfallStream::get_decode_mode);
     ClassDB::bind_static_method("NightfallStream", D_METHOD("get_error_string", "error_code"), &NightfallStream::get_error_string);
     ClassDB::bind_method(D_METHOD("get_computer_manager"), &NightfallStream::get_computer_manager);
     ClassDB::bind_method(D_METHOD("get_config_manager"), &NightfallStream::get_config_manager);

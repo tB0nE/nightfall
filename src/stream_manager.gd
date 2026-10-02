@@ -721,7 +721,7 @@ func update_stats():
 		var cur_size = current_stream_size
 		if cur_size.x != vw or cur_size.y != vh:
 			resize_stream_viewport(vw, vh)
-	var hw = "HW" if _b().is_hw_decode() else "SW"
+	var hw = _b().get_decode_mode()
 	var ip = main.get_node("%IPInput").text
 	var ip_display = ip if not ip.is_empty() else "?"
 	var dropped = _b().get_frames_dropped()

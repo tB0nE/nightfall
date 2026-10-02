@@ -1852,6 +1852,11 @@ func _init_stream_backend():
 	# MediaCodec-based decode path PyroWave actually uses there. Scoped to
 	# Quest 3 only for now (see the plan doc's own reasoning).
 	_client_codec_support["pyrowave"] = device_is_quest3
+	# Raw frames only make sense for the Linux build's local-capture pipeline.
+	# A saved Raw preference falls back once server info arrives
+	# (stream_manager.gd's is_codec_available() check).
+	if OS.get_name() == "Android":
+		_client_codec_support["raw"] = false
 	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		str(_client_codec_support.get("h264", false)),
 		str(_client_codec_support.get("hevc", false)),

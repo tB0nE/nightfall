@@ -83,6 +83,7 @@ public:
     int get_video_width() const;
     int get_video_height() const;
     bool is_hw_decode() const;
+    String get_decode_mode() const;
 
     static String get_error_string(int error_code);
 

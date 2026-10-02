@@ -181,6 +181,12 @@ func is_hw_decode() -> bool:
 		return _v2.is_hw_decode()
 	return false
 
+# "HW", "SW", or for PyroWave "SW-GPU" (zero-copy) / "SW-CPU" (CPU readback).
+func get_decode_mode() -> String:
+	if _v2 and _v2.has_method("get_decode_mode"):
+		return _v2.get_decode_mode()
+	return "HW" if is_hw_decode() else "SW"
+
 func get_frames_dropped() -> int:
 	if _v2:
 		return _v2.get_frames_dropped()

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <vector>
 
 // pyrowave.h uses Vulkan types directly (VkQueue, VkInstance, etc.) without
@@ -10,7 +12,11 @@
 #include <vulkan/vulkan.h>
 #include <pyrowave.h>
 
+#include "pyrowave_gpu_pipeline.h"
+
 namespace godot {
+
+class TextureUploader;
 
 // Creates PyroWave's shared Vulkan device as early as possible - called once
 // from register_types.cpp at MODULE_INITIALIZATION_LEVEL_CORE, before Godot's
@@ -40,8 +46,17 @@ public:
     PyrowaveDecoder() = default;
     ~PyrowaveDecoder();
 
-    bool init(int width, int height);
+    // With an uploader, tries the zero-copy GPU path first (pyrowave_gpu_pipeline.h)
+    // and falls back to the CPU-readback path if it can't be set up. On the GPU path,
+    // on_gpu_frame_complete(pts) fires (from another thread) when a frame's GPU work is
+    // done; on the CPU path decode() itself returning true means the frame is done.
+    bool init(int width, int height, TextureUploader *uploader = nullptr,
+              std::function<void(int64_t)> on_gpu_frame_complete = nullptr);
     void destroy();
+
+    // True when decode() delivers frames straight to the uploader's GPU output;
+    // the y/u/v_data() planes below are then not filled.
+    bool uses_gpu_output() const;
 
     // Decodes one full PyroWave-framed decode-unit payload: the 'PYW1'
     // magic + packet-count header + concatenated sub-packets, exactly as
@@ -51,7 +66,7 @@ public:
     // entirely ours to parse here). On success, the decoded Y/U/V planes
     // are left in the scratch buffers below (valid until the next decode()
     // call) and true is returned.
-    bool decode(const uint8_t *payload, size_t len);
+    bool decode(const uint8_t *payload, size_t len, int64_t pts = 0);
 
     int width() const { return width_; }
     int height() const { return height_; }
@@ -87,6 +102,9 @@ private:
     std::vector<uint8_t> output_rgba_;
     double last_decode_ms_ = 0.0;
     double last_convert_ms_ = 0.0;
+#ifdef __ANDROID__
+    std::unique_ptr<PyrowaveGpuPipeline> gpu_;
+#endif
 
     void convert_to_rgba();
 

@@ -1,200 +1,182 @@
 # PyroWave Zero-Copy GPU Pipeline (Quest 3)
 
-> Status: Active — planning only, not started. Follows on from
-> `pyrowave-codec.md` (the working, CPU-round-trip integration already
-> shipped on `feat/add_pyrowave`).
+> Status: Implemented, awaiting on-device stream testing. Validation step 1
+> passed on Quest 3 (golden frame decoded through our own VkDevice into an RGBA
+> AHardwareBuffer; all 8 patches within ±1 of exact). In-app, our own Vulkan
+> device comes up at startup. Steps 2-4 are covered by the integrated build and
+> need a live PyroWave stream to confirm. Follows on from `pyrowave-codec.md`
+> (the CPU-round-trip integration merged in PR #46).
+>
+> Code: `pyrowave_gpu_pipeline.cpp/h` (device bootstrap, decode + conversion,
+> slot ring), `texture_uploader.cpp/h` (`*_pyrowave_gpu_*`: EGLImage import,
+> fence handoff, stable RID), `shaders/pyrowave_yuv_to_rgba.comp` (compiled by
+> CMake with the NDK's `glslc`). Logs to look for: `PyrowaveGpu: Zero-copy
+> pipeline ready`, `TextureUploader: PyroWave GPU output ready`, and
+> `PyrowaveDecoder: [TIMING] zero-copy decode-thread cost=...`. If setup fails,
+> `falling back to CPU readback` is logged and the old path runs unchanged.
 
 ## Problem
 
-PyroWave decode on this Quest 3 costs ~10-17ms per frame on the decode
-thread (measured via direct in-app timing, and independently confirmed by
-PyroWave's own standalone CLI test harness reporting the same ~10ms total
-for `iDWT`+`Dequant`+`Packing`+`Resolve` on this exact hardware, in total
-isolation with zero app/GPU contention). That rules out Nightfall's own
-architecture or GPU contention with Godot's rendering as the cause — this is
-genuinely how long this GPU workload takes on this mobile SoC (Adreno 740 in
-Snapdragon XR2 Gen 2) today, nowhere close to PyroWave's own advertised
-<0.1ms (1080p) / <0.2ms (4K) figures, which are desktop-discrete-GPU numbers
-(the host side of this integration was benchmarked on an RTX 3090).
+Today PyroWave decode calls `pyrowave_decoder_decode_cpu_buffer_synchronous()`.
+That function is GPU decode, then a blocking GPU-to-CPU readback, and then
+Nightfall does a CPU-to-GPU upload into GLES textures. The decode thread blocks
+for about 12-20ms per frame. The iDWT compute itself is about 10ms of GPU time
+on Adreno 740 (PyroWave's standalone benchmark on this hardware), and most of
+the rest is the round trip.
 
-At 2560x1440@60 this fits inside budget with some margin. At 90/120Hz it
-won't, and the single largest chunk of that cost is **not** the actual
-wavelet transform compute shader — it's `pyrowave_decoder_decode_cpu_buffer_synchronous()`,
-which pyrowave.h's own header explicitly calls "mostly for bringup testing":
-GPU decode, then a full synchronous GPU→CPU memory readback. Nightfall then
-does a second CPU→GPU copy to get the result into a sampleable texture. Two
-full round-trips across the CPU/GPU boundary, every single frame.
+## What didn't work, and why (confirmed on-device, 2026-10-02)
 
-## Why the reference client doesn't pay this cost
+The first design shared PyroWave's **YUV output planes** directly between
+Vulkan and GLES. Two platform constraints rule that out:
 
-`MoreOrLessSoftware/moonlight-android`'s PyroWave decoder
-(`app/src/main/jni/vulkan/pyrowave_decoder.cpp`) uses `pyrowave_create_device`
-(not `pyrowave_create_default_device`) and `pyrowave_decoder_decode_gpu_buffer`
-(not the CPU buffer API) — PyroWave decodes directly into a GPU image that
-app owns. It gets away with zero cross-API copying because its *entire app*
-is Vulkan-native (own `vulkan_renderer.cpp`, own `VkSwapchain`, own
-`ANativeWindow` surface) — the decoded image is already native to the same
-API the renderer consumes it with. No bridge needed, because there's nothing
-to bridge.
+1. **AHardwareBuffer:** PyroWave's decode writes each plane through a
+   single-channel storage/attachment view, so it needs R8 (or R16) images.
+   Quest 3's gralloc refuses `AHARDWAREBUFFER_FORMAT_R8_UNORM`, `R16_UINT` and
+   `R16G16_UINT` for every usage combination tried (EIO/EPERM). NV12 allocates,
+   but its chroma plane can only be reached through swizzled views, which can't
+   be write targets. Vulkan requires identity swizzle for storage, and
+   `pyrowave_image_get_image_view()` rejects it for the same reason.
+2. **Raw dma-buf:** `/dev/dma_heap/system` *is* allocatable from the app
+   process (Horizon OS sepolicy is looser than AOSP here, verified in-app).
+   But Horizon's EGL (`1.5 Android META-EGL`) does not expose
+   `EGL_EXT_image_dma_buf_import`, so GLES can't import a raw dma-buf.
 
-Nightfall runs Godot's `gl_compatibility` (GLES3) renderer, not Vulkan
-(switched from a Vulkan/AHardwareBuffer pipeline on 2026-08-23, `7e0ca91` —
-no documented rationale; worth revisiting separately, but out of scope
-here). That means PyroWave's GPU-resident output has to cross an API
-boundary to reach the screen, which is exactly the thing this plan is about.
+The Granite AHardwareBuffer-import patch
+(`tools/build_support/patches/granite-android-hardware-buffer-import.patch`)
+was written for design 1. It works, but the design below doesn't need it (see
+"Housekeeping").
 
-## What's actually missing
+## The design: only the final RGB frame crosses the API boundary
 
-PyroWave's GPU-buffer path (`pyrowave_decoder_decode_gpu_buffer`) requires
-images the app supplies, which can be **externally imported** memory
-(`pyrowave_image_create()` with an `external_handle` + `handle_type`). This
-function is fully implemented and handle-type-agnostic — it forwards
-straight to the underlying Granite engine's `device.create_image()` with
-`IMAGE_MISC_EXTERNAL_MEMORY_BIT`, and that already works for `DMA_BUF`
-(Linux/Wayland capture) and `D3D11`/`D3D12` (Windows, with an NVIDIA-specific
-workaround already in place).
+The mistake in the first design was assuming the YUV planes had to cross
+APIs. They don't. `pyrowave.h` supports an app-owned Vulkan device:
 
-**It has never been wired up for `VK_ANDROID_external_memory_android_hardware_buffer`.**
-Confirmed by grepping all of Granite (the engine PyroWave is built on) for
-`AHardwareBuffer`/`ANDROID_HARDWARE_BUFFER`: zero hits outside the Vulkan
-headers themselves. This is PyroWave's own `// TODO: Add support for
-importing external memory as GPU buffers.` comment, still present at
-upstream HEAD (we're already pinned to it, commit `89f7e47`) — there is no
-newer version to pull that already has this.
+- `pyrowave_create_device()` takes *our* VkInstance/VkDevice.
+- With that path, "application should create its own images and set the image
+  view struct without going through" `pyrowave_image_get_image_view()`. So
+  the planes are ordinary Vulkan-internal R8 images. Gralloc is never involved
+  for them, so its format restrictions don't apply.
+- `pyrowave_device_set_command_buffer()` makes PyroWave record decode into
+  *our* command buffer. We append our own pass and submit once.
 
-Both PyroWave and Granite are open source and **we already build them from
-source** (`tools/build_support/build_pyrowave_android.sh`), so this is not
-blocked on upstream shipping a feature — it's blocked on nobody having
-written the AHardwareBuffer import path yet, on either the Vulkan side
-(Granite) or the GLES side (us).
+Per frame:
 
-## The three pieces of actual work
+```
+[Vulkan, our device]                          [GLES, Godot render thread]
+ PyroWave decode -> internal R8 Y/Cb/Cr
+ our YUV->RGB pass (BT.709 limited range)
+   -> RGBA8888 AHardwareBuffer (ring slot N)
+ submit, export SYNC_FD semaphore  ------fd----> eglCreateSyncKHR(NATIVE_FENCE)
+                                                 eglWaitSyncKHR  (GPU-side wait)
+                                                 sample slot N texture (color_matrix_type=3)
+ wait on GLES release fence for slot <---fd---- eglDupNativeFenceFDANDROID
+```
 
-### 1. Granite: AHardwareBuffer import (new code, Vulkan side)
+The YUV-to-RGB conversion moves from the GLES display shader into the Vulkan
+pass, so it isn't an added copy. The readback and the upload are gone.
 
-`VK_ANDROID_external_memory_android_hardware_buffer` has a different import
-mechanism than DMA_BUF or the D3D handle types already supported:
+### Capabilities this depends on (all verified on Quest 3)
 
-1. `vkGetAndroidHardwareBufferPropertiesANDROID()` on the `AHardwareBuffer*`
-   to get memory requirements and a compatible memory type index.
-2. `vkAllocateMemory()` with a `VkImportAndroidHardwareBufferInfoANDROID`
-   chained into `pNext`, importing that exact buffer.
-3. Bind the already-created `VkImage` (created with
-   `VkExternalMemoryImageCreateInfo` specifying
-   `VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID` in
-   its own `pNext`) to that memory via `vkBindImageMemory2`.
+| Requirement | Result |
+|---|---|
+| Vulkan 1.3 on Adreno 740 | yes |
+| `VK_ANDROID_external_memory_android_hardware_buffer`, `VK_EXT_queue_family_foreign` | yes |
+| RGBA8888 AHB allocates (2560x1440, SAMPLED+FRAMEBUFFER) | yes |
+| RGBA8888 AHB imports to Vulkan with STORAGE / COLOR_ATTACHMENT usage | yes (dedicated alloc only) |
+| Allocated AHB format features: STORAGE_IMAGE, COLOR_ATTACHMENT, SAMPLED | all yes, plain `VK_FORMAT_R8G8B8A8_UNORM` (no external-format/Ycbcr conversion needed) |
+| `VK_KHR_external_semaphore_fd` with SYNC_FD export/import | yes |
+| `EGL_ANDROID_get_native_client_buffer`, `EGL_ANDROID_image_native_buffer` | yes |
+| `EGL_ANDROID_native_fence_sync`, `EGL_KHR_wait_sync` | yes |
+| `glslc` for the conversion shader | ships in NDK `shader-tools/` |
+| Wrapping a GL texture as a Godot RID | precedent: `texture_uploader.cpp` (`texture_create_from_native_handle`) |
 
-This needs to land in Granite's `Device::create_image()` (or an adjacent
-helper) as a new case, parallel to the existing DMA_BUF path — a real patch
-to our vendored fork, not a config flag.
+This is the same basic architecture as `MoreOrLessSoftware/moonlight-android`
+(app-owned Vulkan device, `pyrowave_decoder_decode_gpu_buffer`). The difference
+is that we hand the result to GLES instead of presenting from Vulkan.
 
-### 2. Nightfall: GLES-side import of the same buffer
+## Components to build
 
-Separately, GLES needs to see the *same* `AHardwareBuffer` as a sampleable
-texture: `eglGetNativeClientBufferANDROID()` → `eglCreateImageKHR()`
-(`EGL_NATIVE_BUFFER_ANDROID` target) → `glEGLImageTargetTexture2DOES()`,
-producing a `GL_TEXTURE_EXTERNAL_OES` texture.
+1. **Vulkan bootstrap (native addon).** Create our own VkInstance/VkDevice at
+   `MODULE_INITIALIZATION_LEVEL_CORE`, the same slot as today's
+   `pyrowave_warmup_device()`, because the Adreno driver fails device creation
+   once a GLES context exists. Enable what PyroWave's decoder requires
+   (Vulkan 1.3, subgroup basic/ballot/shuffle/arithmetic ops, subgroup size
+   control) plus the AHB, queue-family-foreign and external-semaphore-fd
+   extensions. Pass it to `pyrowave_create_device()`.
+2. **Internal plane images.** Y (WxH) and Cb/Cr (W/2xH/2) R8_UNORM images with
+   SAMPLED plus STORAGE or COLOR_ATTACHMENT usage. Which one depends on
+   `pyrowave_decoder_device_prefers_fragment_path()`, which is true on this
+   Adreno, so color attachments in `COLOR_ATTACHMENT_OPTIMAL`/`GENERAL`.
+   Fill `pyrowave_image_view` manually.
+3. **Output ring.** Three RGBA8888 AHardwareBuffers. Each one is imported once
+   into Vulkan (dedicated allocation, `VkImportAndroidHardwareBufferInfoANDROID`)
+   and once into GLES (`eglGetNativeClientBufferANDROID` ->
+   `eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID)` ->
+   `glEGLImageTargetTexture2DOES(GL_TEXTURE_2D)`). Imports are set up once
+   per stream, not per frame.
+4. **Conversion pass.** A full-screen fragment pass (Adreno prefers fragment)
+   that samples the 3 planes and writes RGBA into the ring slot. The BT.709
+   limited-range math already exists in `PyrowaveDecoder::convert_to_rgba()`
+   and `yuv_display_core.gdshaderinc`. Compile with `glslc` and embed the
+   SPIR-V as a header. Queue-family transfer to and from
+   `VK_QUEUE_FAMILY_FOREIGN_EXT` around the write.
+5. **Sync.** Vulkan to GLES: export a SYNC_FD from the submit's signal
+   semaphore, then `eglWaitSyncKHR` on the render thread before sampling.
+   GLES to Vulkan: after Godot's frame that sampled slot N, take a native fence
+   fd and import it as a temporary semaphore payload, then wait on it before
+   reusing slot N. Three slots means the decode thread normally never waits.
+6. **Godot wiring.** Wrap each slot's GL texture as a Godot RID once. Per
+   frame, point `tex_y` at the current slot's RID with `color_matrix_type = 3`
+   ("already RGB"), the same sentinel the MediaCodec OES path uses. Set
+   `display_wired_` as today.
+7. **Fallback.** If any capability check or import fails at stream setup,
+   use the existing CPU-round-trip path unchanged. Never fail hard.
 
-The existing MediaCodec OES-bridge code
-(`texture_uploader.cpp`'s `create_android_gles_decoder_surface()` /
-`update_android_gles_external_texture()`, currently dead - gated behind
-`supports_android_hardware_buffer_import()`, which hardcodes `false` on
-`gl_compatibility`) is a useful *reference* for the GLES-side plumbing
-pattern, but not directly reusable: that code consumes a `SurfaceTexture`
-MediaCodec itself produces, not an `AHardwareBuffer` we allocate ourselves.
-This needs new code, following that one as a template.
+## Validation order
 
-**Format question to resolve early**: PyroWave decodes to planar YUV420P
-(separate Y/Cb/Cr, per `pyrowave_image_view`'s own docs on plane aspects and
-`VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT`). Whether an `AHardwareBuffer` in a
-YUV420/NV12-family format can round-trip through both a Vulkan planar image
-import *and* GLES's automatic external-OES YUV→RGB conversion needs to be
-verified directly - if the automatic OES conversion doesn't use BT.709
-limited-range (matching the host's actual encode), we may need to bypass it
-and sample the Y/Cb/Cr planes directly via aspect-based texture views
-instead (same math we already have working in the shader today), just
-GPU-resident instead of CPU-uploaded.
+1. **Vulkan-only.** Bootstrap the device, decode the golden frame
+   (`~/Development/Personal/pyrowave-golden/`) into internal planes, convert
+   into one RGBA AHB, then CPU-readback via `AHardwareBuffer_lock`
+   (RGBA8888 supports CPU read) and compare against expected RGB at the 8
+   patch centres. Standalone binary over adb, as with the earlier probes.
+2. **GLES import.** Fill an RGBA AHB with a known pattern and display it
+   in-app through the EGLImage -> Godot RID path.
+3. **End to end with coarse sync** (`vkQueueWaitIdle` + `glFinish`), to prove
+   correctness separately from sync.
+4. **Real fence sync and ring.** Measure decode-thread time,
+   end-to-end latency and drops against the current 12-20ms baseline at
+   1440p60/90/120.
 
-### 3. Cross-API GPU synchronization (the hard part)
+## Expected payoff, honestly
 
-PyroWave's Vulkan compute write and GLES's sampling read touch the same
-memory from two different APIs that don't know about each other's
-scheduling. Needs real GPU-side sync, not a CPU-side `vkQueueWaitIdle`
-stall (which would just reintroduce a blocking wait, defeating the point):
+- Removes the blocking readback and the CPU upload. The decode thread drops
+  from ~12-20ms blocking to sub-millisecond record+submit, and frames can
+  pipeline instead of serializing on the CPU.
+- Does **not** make the iDWT faster. About 10ms of GPU time per frame remains,
+  and it shares the GPU with Godot's rendering, passthrough and AI-3D. At 90Hz
+  (11.1ms) that is tight. At 120Hz it will likely still drop frames, because
+  the bottleneck becomes GPU throughput, not architecture.
 
-- Export a Vulkan semaphore as a sync fd (`VK_KHR_external_semaphore_fd`)
-  after PyroWave's decode submission.
-- Import that fd into EGL as `EGL_ANDROID_native_fence_sync` and wait on it
-  before GLES samples the texture.
-- `pyrowave_decoder_decode_gpu_buffer()`'s own `acquire`/`release`
-  `pyrowave_gpu_sync_operation` parameters are exactly the hook point for
-  this - they're how the app tells PyroWave which queue family doesnship the
-  image before/after its own decode submission.
+## Housekeeping
 
-This is the single most failure-prone part of the whole design, and the one
-most worth validating in isolation before touching the other two pieces.
-
-## Suggested validation order (de-risk before integrating)
-
-1. **Vulkan-only correctness check, no GLES at all.** Patch Granite for
-   AHardwareBuffer import, allocate a buffer, decode a real frame into it via
-   `pyrowave_decoder_decode_gpu_buffer()`, then do a *one-time, test-only* CPU
-   readback (`vkMapMemory` or similar) purely to verify pixel correctness -
-   reusing the same golden-frame comparison approach already used earlier
-   in this project (`~/Development/Personal/pyrowave-golden/`). This proves
-   the Vulkan-side import actually works before any GLES code exists.
-2. **GLES import + static display**, no PyroWave yet: allocate an
-   `AHardwareBuffer`, fill it with a known test pattern from the CPU side,
-   import into GLES via EGLImage, confirm it renders correctly through the
-   existing shader path. Proves the GLES half independently.
-3. **Wire the two together** with a coarse, correctness-first sync strategy
-   (even a temporary CPU-side stall is fine here, to isolate "is the
-   cross-API handoff correct" from "is it fast").
-4. **Only then** implement the real semaphore/fence-based sync and measure
-   whether it actually beats the current ~12-20ms CPU-round-trip baseline by
-   enough to matter.
-
-## Fallback behavior
-
-If AHardwareBuffer import fails at creation time (format unsupported,
-driver rejects the extension, etc.), fall back automatically to the current
-CPU-round-trip path (`pyrowave_decoder_decode_cpu_buffer_synchronous` +
-GPU-shader YUV→RGB conversion) - matching the pattern already used
-elsewhere in this codebase (native-XR-renderer falling back to the legacy
-composition path on unsupported configurations). Never a hard failure.
-
-## Effort / risk assessment
-
-This is genuine multi-day, two-graphics-API engineering work, not a small
-patch - realistically the biggest remaining risk is step 3 (cross-API sync),
-which is the kind of thing that can silently produce visually-plausible but
-subtly-wrong output (torn frames, stale data one frame behind) if done
-incorrectly, rather than an obvious crash. Recommend treating this as its
-own scoped effort with on-device validation at each of the four steps above
-individually, not as one combined implementation - matching how the
-original `pyrowave-codec.md` integration was done (small, independently
-verified phases, each confirmed on-device before the next began).
-
-## Expected payoff
-
-If it works: PyroWave's per-frame cost on the decode thread drops from the
-current ~12-20ms (GPU decode + CPU readback + GPU reupload) to something
-close to the actual wavelet-transform compute time alone (~10ms on this
-hardware per the standalone benchmark, likely slightly less once the
-readback/reupload overhead is removed), making 90/120Hz realistic instead
-of CPU-round-trip-bound. It does **not** make PyroWave decode as fast on
-this mobile GPU as the <0.2ms desktop figures suggest - that gap is compute
-throughput, not architecture, and nothing short of real hardware
-acceleration (which doesn't exist for PyroWave on any platform today) closes
-it.
+- The Granite AHB-import patch and its `build_pyrowave_android.sh` hook were
+  dropped. This design imports the RGBA buffers with raw Vulkan on our own
+  device and runs against the unmodified vendored PyroWave library.
+- Granite keeps 2 frame contexts and frees PyroWave's per-call image views when
+  a context is recycled. That recycle waits on a fence submitted on the *next*
+  decode call, after our command buffer, so the views outlive our use of them as
+  long as each frame is submitted before the next `decode_frame()`. The decode
+  loop guarantees this.
+- The API-28 `libvulkan` stub only exports Vulkan 1.0/1.1 symbols, so 1.3 and
+  extension entry points are fetched with `vkGetDeviceProcAddr`.
 
 ## Critical files
 
-`tools/build_support/build_pyrowave_android.sh` (vendoring/build script -
-will need a Granite source patch step), `addons/nightfall-stream/third_party/pyrowave/`
-(vendored headers/lib), `addons/nightfall-stream/src/video/pyrowave_decoder.cpp/h`
-(decoder wrapper - needs a GPU-buffer code path alongside the existing CPU
-one), `addons/nightfall-stream/src/video/texture_uploader.cpp/h` (new
-AHardwareBuffer/EGLImage import code, informed by but not copied from the
-existing dead MediaCodec OES-bridge functions), `addons/nightfall-stream/src/video/stream_connection.cpp`
-(wiring + fallback-on-failure logic).
+`addons/nightfall-stream/src/video/pyrowave_decoder.cpp/h` (device bootstrap,
+GPU decode path, fallback), new `addons/nightfall-stream/src/video/pyrowave_gpu_bridge.cpp/h`
+(AHB ring, Vulkan/EGL imports, sync, conversion pass), new conversion shader +
+generated SPIR-V header, `addons/nightfall-stream/src/video/texture_uploader.cpp`
+(RID wrapping, render-thread fence wait), `addons/nightfall-stream/src/video/stream_connection.cpp`
+(wiring + fallback), `addons/nightfall-stream/src/register_types.cpp`
+(CORE-level bootstrap), `addons/nightfall-stream/CMakeLists.txt` (link
+`vulkan`, `EGL`, `GLESv3`, `android`; shader build step).

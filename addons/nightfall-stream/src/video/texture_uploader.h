@@ -21,6 +21,7 @@
 
 #ifdef __ANDROID__
 #include <media/NdkImage.h>
+#include <android/hardware_buffer.h>
 #include <android/native_window.h>
 #endif
 
@@ -91,6 +92,22 @@ public:
     uint64_t consume_oes_ready_fence();
     void set_native_direct_mode(bool enabled) { native_direct_mode_.store(enabled); }
     unsigned int get_native_depth_guide_texture_id() const { return gles_depth_texture_; }
+
+    // PyroWave zero-copy output (pyrowave_gpu_pipeline.h): a ring of RGBA8888
+    // AHardwareBuffers written by Vulkan and sampled here through EGLImages. One
+    // stable GL texture is re-pointed at the newest slot each frame, so the
+    // material's tex_y never changes. Called from the decode thread only.
+    // setup blocks until the render thread has imported the ring.
+    bool setup_pyrowave_gpu_output(int width, int height, AHardwareBuffer *const *buffers, int count);
+    // Returns a slot Vulkan may write, plus the GLES release fence for it (-1 if
+    // none is needed). Returns -1 if no slot is free.
+    int acquire_pyrowave_gpu_slot(int *release_fd);
+    // Hands a written slot to the render thread. Takes ownership of ready_fd
+    // (signaled when the Vulkan write completes; -1 means already complete).
+    void present_pyrowave_gpu_slot(int slot, int ready_fd);
+    // Returns an acquired-but-unwritten slot, restoring its release fence.
+    void abandon_pyrowave_gpu_slot(int slot, int release_fd);
+    void teardown_pyrowave_gpu_output();
 #endif
 
 protected:
@@ -244,6 +261,33 @@ private:
     mutable std::mutex gles_depth_result_mutex_;
     std::vector<uint8_t> gles_depth_result_;
     bool gles_depth_result_ready_ = false;
+
+    void _render_thread_setup_pyrowave_gpu();
+    void _render_thread_present_pyrowave_gpu();
+    void _render_thread_destroy_pyrowave_gpu();
+    static constexpr int PYRO_SLOT_COUNT = 3;
+    // FREE: Vulkan may write. DECODING: Vulkan is recording/writing. PENDING: written,
+    // waiting for the render thread. BOUND: the GL texture currently points at it.
+    enum PyroSlotState { PYRO_SLOT_FREE, PYRO_SLOT_DECODING, PYRO_SLOT_PENDING, PYRO_SLOT_BOUND };
+    // Guards the slot bookkeeping shared between decode and render threads. The
+    // EGLImages and GL texture are render-thread-only.
+    std::mutex pyro_mutex_;
+    std::condition_variable pyro_cv_;
+    bool pyro_setup_done_ = false;
+    bool pyro_setup_ok_ = false;
+    bool pyro_active_ = false;
+    AHardwareBuffer *pyro_setup_buffers_[PYRO_SLOT_COUNT] = {};
+    int pyro_width_ = 0;
+    int pyro_height_ = 0;
+    PyroSlotState pyro_state_[PYRO_SLOT_COUNT] = {};
+    int pyro_release_fd_[PYRO_SLOT_COUNT] = { -1, -1, -1 };
+    int pyro_pending_slot_ = -1;
+    int pyro_pending_fd_ = -1;
+    int pyro_bound_slot_ = -1;
+    int pyro_next_slot_ = 0;
+    bool pyro_present_queued_ = false;
+    void *pyro_images_[PYRO_SLOT_COUNT] = {}; // EGLImageKHR
+    unsigned int pyro_texture_ = 0;
 #endif
 };
 
