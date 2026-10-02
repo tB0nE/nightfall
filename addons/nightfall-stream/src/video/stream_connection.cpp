@@ -5,6 +5,7 @@
 #include "audio/audio_renderer.h"
 #include "input/input_bridge.h"
 #include "video/depth_bridge.h"
+#include "network/usb_link_bridge.h"
 #include "video/codec_defs.h"
 #include "ycbcr_to_rgba_spirv.h"
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -1904,7 +1905,11 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
     host_address_ = host;
 
     LiInitializeServerInformation(&server_info_);
-    host_address_std_ = host.utf8().get_data();
+    // moonlight-common-c hands this string straight to getaddrinfo(), which
+    // resolves a "%<iface>" zone into sin6_scope_id (verified on-device - see
+    // docs/plans/active/usb-link-streaming.md), so a link-local host only
+    // needs its zone present here.
+    host_address_std_ = UsbLinkBridge::zone_link_local(host).utf8().get_data();
     server_info_.address = host_address_std_.c_str();
 
     if (server_info.has("rtsp_session_url")) {

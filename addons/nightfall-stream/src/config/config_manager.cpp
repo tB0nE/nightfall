@@ -132,6 +132,7 @@ Array NightfallConfigManager::get_hosts() {
             host["hostname"] = config->get_value("hosts", prefix + "hostname", "");
             host["mac"] = config->get_value("hosts", prefix + "mac", "");
             host["localaddress"] = config->get_value("hosts", prefix + "localaddress", "");
+            host["usb_address"] = config->get_value("hosts", prefix + "usb_address", "");
             host["https_port"] = config->get_value("hosts", prefix + "https_port", 47984);
             host["srvcert"] = config->get_value("hosts", prefix + "srvcert", "");
             host["server_unique_id"] = config->get_value("hosts", prefix + "server_unique_id", "");

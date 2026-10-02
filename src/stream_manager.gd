@@ -186,10 +186,34 @@ func _compute_capture_outputs() -> String:
 		labels.append(m.label)
 	return ",".join(labels)
 
+# Address the current stream was launched against (USB Link or network).
+var stream_host_address: String = ""
+
+# "USB Link", "Wi-Fi", "Ethernet", or "Network" when the platform can't tell.
+func connection_label() -> String:
+	if stream_host_address.to_lower().begins_with("fe80:"):
+		return "USB Link"
+	var bridge = main.settings_controller._usb_link_bridge()
+	var transport: String = bridge.get_active_transport() if bridge and bridge.has_method("get_active_transport") else ""
+	return transport if not transport.is_empty() else "Network"
+
+# Native auto-reconnect asks for a full relaunch rather than replaying the old
+# RTSP session (see NightfallStream::set_reconnect_via_launch).
+func relaunch_for_reconnect():
+	if not main.session_lifecycle.is_reconnecting():
+		return
+	await start_stream(_current_host_id, _current_app_id)
+
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# Mid-reconnect (e.g. cable still unplugged): hand the failure back to
+		# the native retry schedule instead of tearing the session down.
+		if main.session_lifecycle.is_reconnecting() and _b()._v2:
+			main._log("[RECONNECT] Relaunch failed, scheduling next attempt")
+			_b()._v2.retry_reconnect()
+			return
 		# establish_stream() failed before a decoder session existed, so there
 		# will be no stream_terminated callback to restore the welcome viewport.
 		# Undo start_stream()'s eager resolution change here; otherwise the
@@ -347,6 +371,7 @@ func _on_v2_launch_response(response: Dictionary):
 		main._log("[STREAM] Launch response had no reconnectable host address")
 		main.restore_after_failed_connect("Host address missing from launch response")
 		return
+	stream_host_address = ip
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %.1fMbps)" % [w, h, fps, float(br) / 1000.0])
 
@@ -516,7 +541,7 @@ func on_pair_pressed():
 	var pair_port: int = parsed[1]
 	var paired_host_id = -1
 	for h in _b().get_hosts():
-		if h.has("localaddress") and h.localaddress == ip:
+		if main.host_matches_address(h, ip):
 			paired_host_id = h.id
 			break
 	if paired_host_id != -1:
@@ -546,6 +571,12 @@ func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
 	if not success:
 		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
+		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,
+		# so an instant refusal over the cable almost always means this.
+		var pair_ip: String = main.parse_ip_port(main.get_node("%IPInput").text)[0]
+		if pair_ip.to_lower().begins_with("fe80:") and str(_msg).contains("Could not connect"):
+			main._ui_status_label.text = "Server refused the USB connection.\nSet address_family = both in its Sunshine config and restart it."
+			main._log("[PAIR] USB Link host refused connection - Sunshine likely listening on IPv4 only")
 		main.welcome_screen.show_welcome_screen("server")
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
@@ -575,6 +606,16 @@ func on_pair_completed(success: bool, _msg: String):
 	# created/updated. Fall back to bare-IP matching only if unique_id is
 	# unavailable (e.g. an older cached build without get_last_paired_unique_id).
 	var unique_id = _b().get_last_paired_unique_id() if _b().has_method("get_last_paired_unique_id") else ""
+	# Reached an already-paired machine by a new path (e.g. over USB Link):
+	# continue under its saved identity so per-host settings stay shared.
+	if not unique_id.is_empty():
+		for h in _b().get_hosts():
+			if h.get("server_unique_id", "") == unique_id:
+				var saved_ip: String = h.get("localaddress", "")
+				if not saved_ip.is_empty() and saved_ip != main.get_node("%IPInput").text:
+					main.get_node("%IPInput").text = saved_ip
+					main.state_manager.load_host_state(saved_ip)
+				break
 	main.welcome_screen.save_last_ip(main.get_node("%IPInput").text, unique_id)
 	var found = false
 	for h in _b().get_hosts():
@@ -585,7 +626,7 @@ func on_pair_completed(success: bool, _msg: String):
 			break
 	if not found and unique_id.is_empty():
 		for h in _b().get_hosts():
-			if h.has("localaddress") and h.localaddress == ip:
+			if main.host_matches_address(h, ip):
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
@@ -599,7 +640,7 @@ func on_pair_completed(success: bool, _msg: String):
 				found = true
 				await start_stream(h.id, main._selected_app_id)
 				break
-			elif unique_id.is_empty() and h.has("localaddress") and h.localaddress == ip:
+			elif unique_id.is_empty() and main.host_matches_address(h, ip):
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
@@ -613,15 +654,47 @@ var _mdns_result: Array = []
 func browse_mdns() -> Array:
 	main._log("[mDNS] Starting browse...")
 	_mdns_result = []
-	var thread = Thread.new()
-	thread.start(func():
-		_mdns_result = _b().browse_mdns(3.0)
-	)
-	while thread.is_alive():
-		await main.get_tree().create_timer(0.1).timeout
-	thread.wait_to_finish()
+	# USB Link carries only link-local IPv6, invisible to the IPv4 browse, so
+	# scan the link too (in parallel) whenever it's actually up.
+	var usb_iface := _usb_link_iface()
+	var threads: Array[Thread] = []
+	var lan_hosts: Array = []
+	var usb_hosts: Array = []
+	var lan_thread = Thread.new()
+	lan_thread.start(func(): lan_hosts.append_array(_b().browse_mdns(3.0)))
+	threads.append(lan_thread)
+	if not usb_iface.is_empty():
+		var usb_thread = Thread.new()
+		usb_thread.start(func(): usb_hosts.append_array(_b().browse_mdns_usb(usb_iface, 3.0)))
+		threads.append(usb_thread)
+	for t in threads:
+		while t.is_alive():
+			await main.get_tree().create_timer(0.1).timeout
+		t.wait_to_finish()
+	_mdns_result = _merge_mdns_hosts(usb_hosts, lan_hosts)
 	main._log("[mDNS] Found %d hosts" % _mdns_result.size())
 	return _mdns_result
+
+# One entry per machine: a PC reachable both ways advertises the same SRV
+# target on each network, and the cable is the path worth taking.
+func _merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
+	var merged: Array = []
+	var seen := {}
+	for host in usb_hosts + lan_hosts:
+		var key = str(host.get("hostname", host.get("ip", ""))).to_lower()
+		if seen.has(key):
+			continue
+		seen[key] = true
+		merged.append(host)
+	return merged
+
+func _usb_link_iface() -> String:
+	if not main.settings_controller.usb_link_supported():
+		return ""
+	var bridge = main.settings_controller._usb_link_bridge()
+	if bridge == null or not bridge.is_up():
+		return ""
+	return bridge.get_interface_name()
 
 func bind_texture():
 	var stream_tex

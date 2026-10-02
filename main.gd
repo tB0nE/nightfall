@@ -501,6 +501,7 @@ var _ui_ctrl_type_btn: Button
 var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
+var _ui_usb_link_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
@@ -730,7 +731,36 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 # somewhere (pairing, host-record matching, Wake-on-LAN's host lookup) need
 # the parsed ip/port.
 const DEFAULT_PAIR_PORT := 47989
+
+# Host records saved before USB Link addresses carried a "%<iface>" zone hold
+# the bare link-local address; the zone never distinguishes two machines.
+func same_host_address(a: String, b: String) -> bool:
+	return a.get_slice("%", 0).to_lower() == b.get_slice("%", 0).to_lower()
+
+# A saved host is reachable at its network address and, once seen over USB
+# Link, its usb_address too - either identifies the same machine.
+func host_matches_address(h: Dictionary, addr: String) -> bool:
+	for key in ["localaddress", "usb_address"]:
+		var a: String = h.get(key, "")
+		if not a.is_empty() and same_host_address(a, addr):
+			return true
+	return false
+
 func parse_ip_port(text: String) -> Array:
+	# "[v6addr]:port", or a bare IPv6 address (2+ colons) with no port at all -
+	# its last group can be all digits, so it must never be split on ":".
+	if text.begins_with("["):
+		var close = text.find("]")
+		if close != -1:
+			var inner = text.substr(1, close - 1)
+			var rest = text.substr(close + 1)
+			if rest.begins_with(":") and rest.substr(1).is_valid_int():
+				var p = rest.substr(1).to_int()
+				if p > 0 and p <= 65535:
+					return [inner, p]
+			return [inner, DEFAULT_PAIR_PORT]
+	if text.count(":") > 1:
+		return [text, DEFAULT_PAIR_PORT]
 	var colon = text.rfind(":")
 	if colon == -1:
 		return [text, DEFAULT_PAIR_PORT]
@@ -1834,6 +1864,8 @@ func _init_stream_backend():
 	v2_node.set_auto_reconnect(settings.auto_reconnect_enabled)
 	v2_node.set_max_reconnect_attempts(5)
 	v2_node.set_reconnect_delay_ms(2000)
+	if v2_node.has_method("set_reconnect_via_launch"):
+		v2_node.set_reconnect_via_launch(true)
 	stream_backend = StreamBackend.new(v2_node)
 	stream_backend.set_config_manager(config_mgr)
 	stream_backend.set_computer_manager(comp_mgr)
@@ -1885,6 +1917,12 @@ func _init_stream_backend():
 			session_lifecycle.reconnect_scheduled()
 			ui_controller.set_status("Reconnecting %d/%d in %ds..." % [attempt, max_attempts, delay_ms / 1000])
 			_log("[RECONNECT] Attempt %d/%d in %dms" % [attempt, max_attempts, delay_ms])
+		)
+	if v2_node.has_signal("reconnect_requested"):
+		v2_node.reconnect_requested.connect(func(attempt, max_attempts):
+			_log("[RECONNECT] Relaunching session (attempt %d/%d)" % [attempt, max_attempts])
+			ui_controller.set_status("Reconnecting %d/%d..." % [attempt, max_attempts])
+			stream_manager.relaunch_for_reconnect()
 		)
 	if v2_node.has_signal("reconnect_failed"):
 		v2_node.reconnect_failed.connect(func():
@@ -2075,7 +2113,7 @@ func _init_textures_and_ui():
 							break
 				if current_host_id < 0:
 					for h in config_mgr.get_hosts():
-						if h.has("localaddress") and h.localaddress == saved_host_ip:
+						if host_matches_address(h, saved_host_ip):
 							current_host_id = h.id
 							break
 				if current_host_id >= 0:
@@ -2460,6 +2498,11 @@ func _sync_comp_background():
 		comp_bg_equirect.visible = true
 
 func _process_stats(delta):
+	# Deliberately ahead of the is_streaming early-return below - USB Link's
+	# status has to be visible on the welcome screen (that's the whole point
+	# of the toggle: know it's "Up" before trying to connect over it), not
+	# just while a stream using it is already running.
+	settings_controller.poll_usb_link_status(delta)
 	if not is_streaming:
 		if comp:
 			comp.set_stats_visible(false)
@@ -2536,6 +2579,7 @@ func _process_performance_overlay(delta: float):
 	if decoder_name.is_empty():
 		decoder_name = "Unknown"
 	var lines := PackedStringArray([
+		"Connection: %s (%s)" % [stream_manager.connection_label(), stream_manager.stream_host_address],
 		"Video stream: %dx%d %.0f FPS" % [width, height, total_fps],
 		"Decoder: %s" % decoder_name,
 		"Incoming frame rate from network: %.0f FPS" % incoming_fps,

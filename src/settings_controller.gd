@@ -1222,6 +1222,126 @@ func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 
+# USB Link (docs/plans/active/usb-link-streaming.md) - requests Horizon OS
+# 2.5+'s TRANSPORT_USB network so streaming can use the USB-C cable instead
+# of Wi-Fi. _usb_link_bridge() returns a fresh, stateless proxy each call,
+# same convention as MdnsBrowser's own ad-hoc ClassDB.instantiate() use - the
+# real state lives in Java's static UsbLinkManager singleton regardless of
+# how many of these wrapper instances exist.
+func _usb_link_bridge() -> Object:
+	if not ClassDB.class_exists("UsbLinkBridge"):
+		return null
+	return ClassDB.instantiate("UsbLinkBridge")
+
+func usb_link_supported() -> bool:
+	var bridge = _usb_link_bridge()
+	return bridge != null and bridge.is_supported()
+
+# Called after loading persisted state - a saved "on" has to actually
+# re-request the link, not just redraw the button label as "On" (unlike a
+# plain cosmetic setting, this one does something only while an underlying
+# system request is live, and that request does not survive a process
+# restart on its own).
+func apply_usb_link():
+	if not main.settings.usb_link_enabled:
+		return
+	var bridge = _usb_link_bridge()
+	if bridge == null or not bridge.is_supported():
+		main.settings.usb_link_enabled = false
+		return
+	var started: bool = bridge.start()
+	if main._ui_usb_link_btn:
+		main.ui_controller.update_option_btn(main._ui_usb_link_btn, "Requesting..." if started else "Failed")
+	main._log("[USB LINK] Re-requested on load: %s" % ("ok" if started else "failed"))
+
+func toggle_usb_link():
+	main._log("[USB LINK] toggle pressed, class_exists=%s" % ClassDB.class_exists("UsbLinkBridge"))
+	var bridge = _usb_link_bridge()
+	if bridge == null:
+		main._log("[USB LINK] bridge instantiate failed")
+		return
+	var supported: bool = bridge.is_supported()
+	main._log("[USB LINK] bridge.is_supported()=%s" % supported)
+	if not supported:
+		return
+	main.settings.usb_link_enabled = not main.settings.usb_link_enabled
+	if main.settings.usb_link_enabled:
+		var started: bool = bridge.start()
+		_save_setting(main._ui_usb_link_btn, "Requesting..." if started else "Failed")
+		main._log("[USB LINK] Requested: %s" % ("ok" if started else "failed"))
+	else:
+		bridge.stop()
+		_save_setting(main._ui_usb_link_btn, "Off")
+		main._log("[USB LINK] Released")
+
+# Polled once a second (own timer, deliberately NOT main.gd's telemetry
+# frame_sample - that one only ever fires while is_streaming, which would
+# leave this stuck on "Requesting..." at the welcome screen forever, exactly
+# the bug this replaced) while the setting is on, so the button label
+# actually reflects link state - start() only means "requested", not "up"
+# (the link comes up asynchronously, same reason the reference PR's own UI
+# has to react to a callback rather than show success immediately).
+var _usb_link_poll_elapsed: float = 0.0
+
+func poll_usb_link_status(delta: float):
+	if not main.settings.usb_link_enabled or not main._ui_usb_link_btn:
+		return
+	_usb_link_poll_elapsed += delta
+	if _usb_link_poll_elapsed < 1.0:
+		return
+	_usb_link_poll_elapsed = 0.0
+	var bridge = _usb_link_bridge()
+	if bridge == null:
+		return
+	var up: bool = bridge.is_up()
+	var label = "Up" if up else "Requesting..."
+	if main._ui_usb_link_btn.text.find(label) < 0:
+		main.ui_controller.update_option_btn(main._ui_usb_link_btn, label)
+	if up:
+		_maybe_return_to_usb_link()
+
+var _usb_return_probe_in_flight: bool = false
+var _usb_return_last_probe_ms: int = 0
+
+# A stream that fell back to the network when the cable was pulled moves back
+# onto USB Link once the host answers over it again (the link coming up on the
+# headset doesn't mean the PC side is configured yet, so probe, don't assume).
+func _maybe_return_to_usb_link():
+	if not main.is_streaming or _restart_pending or _usb_return_probe_in_flight:
+		return
+	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING:
+		return
+	if main.stream_manager.connection_label() == "USB Link":
+		return
+	var host: Dictionary = {}
+	for h in main.stream_backend.get_hosts():
+		if h.get("id") == main.current_host_id:
+			host = h
+			break
+	var usb_address: String = host.get("usb_address", "")
+	if usb_address.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	if now - _usb_return_last_probe_ms < 5000:
+		return
+	_usb_return_last_probe_ms = now
+	var cm = main.stream_backend.get_computer_manager()
+	if cm == null:
+		return
+	_usb_return_probe_in_flight = true
+	var expected_id: String = host.get("server_unique_id", "")
+	cm.connect_to_computer(usb_address, main.DEFAULT_PAIR_PORT, func(result: Dictionary):
+		_usb_return_probe_in_flight = false
+		if result.get("status", "") != "online":
+			return
+		if not expected_id.is_empty() and result.get("uniqueid", "") != expected_id:
+			return
+		if not main.is_streaming or main.stream_manager.connection_label() == "USB Link":
+			return
+		main._log("[USB LINK] Host reachable over USB again - moving stream back onto it")
+		_schedule_stream_restart()
+	)
+
 func cycle_idle_timeout():
 	var idx = idle_values.find(main.settings.idle_timeout_min)
 	idx = (idx + 1) % idle_values.size()

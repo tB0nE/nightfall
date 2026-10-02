@@ -475,3 +475,10 @@ func browse_mdns(timeout: float) -> Array:
 		if mdns_browser:
 			return mdns_browser.browse(timeout)
 	return []
+
+func browse_mdns_usb(iface_name: String, timeout: float) -> Array:
+	if ClassDB.class_exists("MdnsBrowser"):
+		var mdns_browser = ClassDB.instantiate("MdnsBrowser")
+		if mdns_browser:
+			return mdns_browser.browse_on_interface(iface_name, timeout)
+	return []
