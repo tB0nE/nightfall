@@ -721,7 +721,7 @@ func update_stats():
 		var cur_size = current_stream_size
 		if cur_size.x != vw or cur_size.y != vh:
 			resize_stream_viewport(vw, vh)
-	var hw = "HW" if _b().is_hw_decode() else "SW"
+	var hw = _b().get_decode_mode()
 	var ip = main.get_node("%IPInput").text
 	var ip_display = ip if not ip.is_empty() else "?"
 	var dropped = _b().get_frames_dropped()
@@ -734,16 +734,15 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
-	# Live GPU-depth-inference readout (2026-08-25) - added for the
-	# 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so testing
-	# resolution/quality-tier combos doesn't require pulling logcat each
-	# time. Only shown while depth is actually running on GPU (matches
-	# depth_estimator.gd's own should_boost/effective_gpu gate) - CPU-model
-	# telemetry isn't meaningfully populated (see DepthEstimator.java's
-	# recordTelemetry(), which resets its window every CPU call).
+	# Live depth-inference readout (2026-08-25, extended to CPU 2026-10-02) -
+	# added for the 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so
+	# testing resolution/quality-tier combos doesn't require pulling logcat
+	# each time. Shown whenever depth is actually running, GPU or CPU -
+	# DepthEstimator.java's recordTelemetry() accumulates a real window for
+	# CPU inference too, it's not just reset every call.
 	if main.depth_estimator and main.depth_estimator.enabled and main.stream_backend \
 			and main.stream_backend.has_method("get_effective_depth_backend") \
-			and main.stream_backend.get_effective_depth_backend() == 2 \
+			and main.stream_backend.get_effective_depth_backend() != 0 \
 			and main.stream_backend.has_method("get_depth_last_inference_ms"):
 		var inf_ms = main.stream_backend.get_depth_last_inference_ms()
 		var inf_hz = main.stream_backend.get_depth_last_inference_hz()

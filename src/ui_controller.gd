@@ -859,7 +859,7 @@ func build_ui():
 	ai3d_row1.add_child(main._ui_3d_btn)
 	if OS.get_name() == "Android":
 		main._ui_3d_gpu_api_btn = make_option_btn("Backend", "OpenCL")
-		_set_button_tooltip(main._ui_3d_gpu_api_btn, "Choose OpenCL or OpenGL. Auto selects the backend for you.")
+		_set_button_tooltip(main._ui_3d_gpu_api_btn, "Choose OpenCL, OpenGL, or CPU (frees the GPU entirely). Auto selects the backend for you.")
 		ai3d_row1.add_child(main._ui_3d_gpu_api_btn)
 	main._ui_3d_priority_btn = make_option_btn("GPU Priority", main.settings_controller.ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")

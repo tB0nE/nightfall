@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and validate an INT8-weight ZipDepth-384 CPU model.
+"""Create and validate an INT8-weight ZipDepth CPU model (384 by default).
 
 The source SavedModel is the numerically-equivalent portable rewrite of the
 standard ZipDepth convex head. The exported model keeps float32 I/O so Android
@@ -109,12 +109,16 @@ def validate(float_model: Path, int8_model: Path, paths: list[Path]) -> None:
 
 
 def main() -> None:
+    global SIZE
     parser = argparse.ArgumentParser()
     parser.add_argument("--saved-model", type=Path, default=DEFAULT_SAVED_MODEL)
     parser.add_argument("--float-model", type=Path, default=DEFAULT_FLOAT_MODEL)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--mode", choices=("dynamic", "full"), default="dynamic")
+    parser.add_argument("--size", type=int, default=SIZE,
+                        help="square input size of the SavedModel (e.g. 256 for EdgePad-256's CPU twin)")
     args = parser.parse_args()
+    SIZE = args.size
 
     paths = calibration_images()
     if not paths:

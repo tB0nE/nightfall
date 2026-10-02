@@ -3,6 +3,7 @@
 #include "nf_log.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -33,6 +34,21 @@ void pyrowave_warmup_device() {
         return;
     }
     g_warmup_attempted = true;
+    // FP16 wavelet maths and storage (PyroWave precision level 0) instead of its
+    // default level 1 (FP32 maths, FP32 storage for the lowest bands). Measured ~7%
+    // faster decode on Quest 3's Adreno 740. PyroWave reads this once, on first use
+    // of its configuration, so it must be set before any device or decoder exists.
+    // Doesn't override an explicitly set value.
+    setenv("PYROWAVE_PRECISION", "0", 0);
+#ifdef __ANDROID__
+    // Our own VkDevice enables the zero-copy GPU output path; the default device
+    // below only supports the CPU-readback path.
+    g_warm_device = pyrowave_gpu_create_device();
+    if (g_warm_device) {
+        NF_LOG("PyrowaveDecoder", "Warmup device created (own VkDevice, zero-copy capable)");
+        return;
+    }
+#endif
     if (pyrowave_create_default_device(&g_warm_device) != PYROWAVE_SUCCESS || !g_warm_device) {
         NF_LOGE("PyrowaveDecoder", "Warmup device creation failed");
         g_warm_device = nullptr;
@@ -45,7 +61,16 @@ PyrowaveDecoder::~PyrowaveDecoder() {
     destroy();
 }
 
-bool PyrowaveDecoder::init(int width, int height) {
+bool PyrowaveDecoder::uses_gpu_output() const {
+#ifdef __ANDROID__
+    return gpu_ != nullptr;
+#else
+    return false;
+#endif
+}
+
+bool PyrowaveDecoder::init(int width, int height, TextureUploader *uploader,
+                           std::function<void(int64_t)> on_gpu_frame_complete) {
     destroy();
 
     // Falls back to a late attempt if warmup didn't run or failed, but the
@@ -65,6 +90,12 @@ bool PyrowaveDecoder::init(int width, int height) {
     info.width = width;
     info.height = height;
     info.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+#ifdef __ANDROID__
+    const bool try_gpu = uploader && pyrowave_gpu_available();
+    // The fragment path is PyroWave's recommendation for mobile GPUs (true on Adreno).
+    // The CPU-readback path keeps its long-standing compute-path default.
+    info.fragment_path = try_gpu && pyrowave_decoder_device_prefers_fragment_path(device_);
+#endif
 
     if (pyrowave_decoder_create(&info, &decoder_) != PYROWAVE_SUCCESS || !decoder_) {
         NF_LOGE("PyrowaveDecoder", "Decoder creation failed (%dx%d)", width, height);
@@ -75,6 +106,19 @@ bool PyrowaveDecoder::init(int width, int height) {
 
     width_ = width;
     height_ = height;
+
+#ifdef __ANDROID__
+    if (try_gpu) {
+        gpu_ = std::make_unique<PyrowaveGpuPipeline>();
+        if (gpu_->init(device_, decoder_, info.fragment_path, width, height, uploader,
+                       std::move(on_gpu_frame_complete))) {
+            NF_LOG("PyrowaveDecoder", "Initialized %dx%d (zero-copy GPU output)", width, height);
+            return true;
+        }
+        NF_LOGE("PyrowaveDecoder", "Zero-copy GPU output unavailable, falling back to CPU readback");
+        gpu_.reset();
+    }
+#endif
     output_y_.assign((size_t)width * (size_t)height, 0);
     output_u_.assign((size_t)(width / 2) * (size_t)(height / 2), 0);
     output_v_.assign((size_t)(width / 2) * (size_t)(height / 2), 0);
@@ -120,6 +164,10 @@ void PyrowaveDecoder::convert_to_rgba() {
 }
 
 void PyrowaveDecoder::destroy() {
+#ifdef __ANDROID__
+    // Before the decoder: the pipeline idles the queue that still references it.
+    gpu_.reset();
+#endif
     if (decoder_) {
         pyrowave_decoder_destroy(decoder_);
         decoder_ = nullptr;
@@ -131,7 +179,7 @@ void PyrowaveDecoder::destroy() {
     height_ = 0;
 }
 
-bool PyrowaveDecoder::decode(const uint8_t *payload, size_t len) {
+bool PyrowaveDecoder::decode(const uint8_t *payload, size_t len, int64_t pts) {
     if (!decoder_ || !payload || len < 4) {
         return false;
     }
@@ -167,6 +215,26 @@ bool PyrowaveDecoder::decode(const uint8_t *payload, size_t len) {
         NF_LOGE("PyrowaveDecoder", "Frame incomplete after %u packets", packet_count);
         return false;
     }
+
+#ifdef __ANDROID__
+    if (gpu_) {
+        auto t0 = std::chrono::steady_clock::now();
+        bool ok = gpu_->decode_frame(pts);
+        double submit_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        last_decode_ms_ = submit_ms;
+        last_convert_ms_ = 0.0;
+        static double sum_submit_ms = 0;
+        static int submit_count = 0;
+        sum_submit_ms += submit_ms;
+        if (++submit_count >= 120) {
+            NF_LOG("PyrowaveDecoder", "[TIMING] zero-copy decode-thread cost=%.2fms (record+submit, avg over %d frames)",
+                   sum_submit_ms / submit_count, submit_count);
+            sum_submit_ms = 0;
+            submit_count = 0;
+        }
+        return ok;
+    }
+#endif
 
     pyrowave_cpu_buffer buffer = {};
     buffer.format = PYROWAVE_CPU_BUFFER_FORMAT_YUV420P;

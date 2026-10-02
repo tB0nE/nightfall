@@ -779,13 +779,33 @@ func cycle_app():
 	if app_btn:
 		app_btn.text = "App: %s" % app_name
 
+# Hosts list apps in their own order (vibepollo also pulls in Lutris games), and
+# the first entry is preselected - so pin Desktop, then Steam, ahead of the rest.
+# Everything else keeps the host's order.
+static func order_apps(apps: Array) -> Array:
+	var rank := func(app) -> int:
+		var name := String(app.get("name", "")).strip_edges().to_lower()
+		if name == "desktop":
+			return 0
+		if name.begins_with("steam"):
+			return 1
+		return 2
+	var indexed := []
+	for i in apps.size():
+		indexed.append([rank.call(apps[i]), i, apps[i]])
+	indexed.sort_custom(func(a, b): return a[0] < b[0] or (a[0] == b[0] and a[1] < b[1]))
+	var ordered := []
+	for entry in indexed:
+		ordered.append(entry[2])
+	return ordered
+
 func query_app_list():
 	if main.current_host_id < 0:
 		return
 	main.stream_backend.get_app_list(main.current_host_id, func(success: bool):
 		if success:
 			var _cm3 = main.stream_backend.get_config_manager() if main.stream_backend else null
-			main._available_apps = _cm3.get_apps(main.current_host_id) if _cm3 else []
+			main._available_apps = order_apps(_cm3.get_apps(main.current_host_id) if _cm3 else [])
 			if main._available_apps.is_empty():
 				main._available_apps = [{"name": "Desktop", "id": 881448767}]
 			main._selected_app_idx = 0

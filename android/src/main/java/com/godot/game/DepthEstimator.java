@@ -293,6 +293,11 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_384_CPU = "zipdepth-base-384-cpu.tflite";
     private static final int ZIPDEPTH_384_GPU_INPUT_SIZE = 384;
     private static final int ZIPDEPTH_256_GPU_INPUT_SIZE = 256;
+    // EdgePad-256's CPU twin (tools/quantize_zipdepth_cpu.py --size 256), same
+    // W8A32 recipe as MODEL_ZIPDEPTH_384_CPU above - int8 weights, float32
+    // activations, so it runs on XNNPACK with no GPU delegate at all. Lets AI 3D
+    // run while leaving the GPU entirely free for the stream/passthrough.
+    private static final String MODEL_ZIPDEPTH_256_CPU = "zipdepth-base-256-cpu.tflite";
     private static final String MODEL_ZIPDEPTH_512X288_GPU = "zipdepth-base-512x288-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_672X384_GPU = "zipdepth-base-672x384-gpu.tflite";
 
@@ -305,6 +310,7 @@ public class DepthEstimator {
     private Interpreter tfliteYoloN384;
     private Interpreter tfliteYoloS;
     private Interpreter tfliteZipDepth384;
+    private Interpreter tfliteZipDepth256;
 
     // Generic GPU-backed model slot (2026-08-24, replacing the original
     // single-model-hardcoded MiDaS-256-GPU-only fields) - one GpuVariant per
@@ -408,6 +414,8 @@ public class DepthEstimator {
     private ByteBuffer outputBufferYoloS;
     private ByteBuffer inputBufferZipDepth384;
     private ByteBuffer outputBufferZipDepth384;
+    private ByteBuffer inputBufferZipDepth256;
+    private ByteBuffer outputBufferZipDepth256;
     private volatile boolean initialized = false;
     private volatile int activeModelIndex = 0;
     private volatile int requestedModelIndex = 3;
@@ -527,6 +535,12 @@ public class DepthEstimator {
             outputBufferZipDepth384 = ByteBuffer.allocateDirect(
                     ZIPDEPTH_384_GPU_INPUT_SIZE * ZIPDEPTH_384_GPU_INPUT_SIZE * 4)
                     .order(ByteOrder.nativeOrder());
+            inputBufferZipDepth256 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_256_GPU_INPUT_SIZE * ZIPDEPTH_256_GPU_INPUT_SIZE * 3 * 4)
+                    .order(ByteOrder.nativeOrder());
+            outputBufferZipDepth256 = ByteBuffer.allocateDirect(
+                    ZIPDEPTH_256_GPU_INPUT_SIZE * ZIPDEPTH_256_GPU_INPUT_SIZE * 4)
+                    .order(ByteOrder.nativeOrder());
 
             // Unlike every model below, this was never wrapped in its own
             // try/catch - it was always bundled, so a missing file here used
@@ -609,6 +623,14 @@ public class DepthEstimator {
                 tfliteZipDepth384 = null;
             }
 
+            try {
+                tfliteZipDepth256 = loadCpuInterpreter(MODEL_ZIPDEPTH_256_CPU);
+                Log.i(TAG, "ZipDepth-256 full-head CPU model loaded");
+            } catch (Exception e) {
+                Log.w(TAG, "ZipDepth-256 full-head CPU model not available", e);
+                tfliteZipDepth256 = null;
+            }
+
             // GPU variants are lazy-loaded on first actual use (see
             // ensureGpuVariantLoaded()), not eagerly here - just registering
             // the slot/asset-filename/input-size, same as the original
@@ -682,7 +704,8 @@ public class DepthEstimator {
                     + ", DA196=" + (tfliteDA196 != null) + ", DA252=" + (tfliteDA252 != null)
                     + ", YoloN256=" + (tfliteYoloN256 != null) + ", YoloN320=" + (tfliteYoloN320 != null)
                     + ", YoloN384=" + (tfliteYoloN384 != null) + ", YoloS=" + (tfliteYoloS != null)
-                    + ", ZipDepth384CPU=" + (tfliteZipDepth384 != null) + ")");
+                    + ", ZipDepth384CPU=" + (tfliteZipDepth384 != null)
+                    + ", ZipDepth256CPU=" + (tfliteZipDepth256 != null) + ")");
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize", e);
@@ -960,12 +983,13 @@ public class DepthEstimator {
         if (modelIndex == 10 && tfliteMidas192 != null) return tfliteMidas192;
         if (modelIndex == 11 && tfliteDA196 != null) return tfliteDA196;
         if (modelIndex == 14 && tfliteZipDepth384 != null) return tfliteZipDepth384;
+        if (modelIndex == 29 && tfliteZipDepth256 != null) return tfliteZipDepth256;
         return tfliteMidas;
     }
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -1070,6 +1094,7 @@ public class DepthEstimator {
             case 26: return "ZipDepth-256-Standard-EdgePad";
             case 27: return "ZipDepth-256-Direct-128";
             case 28: return "ZipDepth-224-Standard-EdgePad";
+            case 29: return "ZipDepth-256-Standard-EdgePad-CPU";
             case 15: return "EdgePad-512x288-Experimental";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
@@ -1152,7 +1177,11 @@ public class DepthEstimator {
         } else if (modelIdx == 11) {
             return runInferenceDA(tfliteDA196, inputBufferDA196, outputBufferDA196, DA_196_INPUT_SIZE, frameCopy, width, height);
         } else if (modelIdx == 14 && tfliteZipDepth384 != null) {
-            return runInferenceZipDepthCpu(frameCopy, width, height);
+            return runInferenceZipDepthCpu(tfliteZipDepth384, inputBufferZipDepth384, outputBufferZipDepth384,
+                    ZIPDEPTH_384_GPU_INPUT_SIZE, frameCopy, width, height);
+        } else if (modelIdx == 29 && tfliteZipDepth256 != null) {
+            return runInferenceZipDepthCpu(tfliteZipDepth256, inputBufferZipDepth256, outputBufferZipDepth256,
+                    ZIPDEPTH_256_GPU_INPUT_SIZE, frameCopy, width, height);
         } else {
             return runInferenceMidas(tfliteMidas, inputBufferMidas, outputBufferMidas, OUTPUT_SIZE,
                     MIDAS_INPUT_SCALE, MIDAS_INPUT_ZERO_POINT, MIDAS_OUTPUT_SCALE, MIDAS_OUTPUT_ZERO_POINT,
@@ -1160,11 +1189,11 @@ public class DepthEstimator {
         }
     }
 
-    private byte[] runInferenceZipDepthCpu(byte[] rgbaPixels, int width, int height) {
-        inputBufferZipDepth384.rewind();
-        outputBufferZipDepth384.rewind();
+    private byte[] runInferenceZipDepthCpu(Interpreter interp, ByteBuffer inputBuf, ByteBuffer outputBuf,
+            int size, byte[] rgbaPixels, int width, int height) {
+        inputBuf.rewind();
+        outputBuf.rewind();
 
-        int size = ZIPDEPTH_384_GPU_INPUT_SIZE;
         int srcRowBytes = width * 4;
         float scaleX = (float) width / size;
         float scaleY = (float) height / size;
@@ -1174,17 +1203,17 @@ public class DepthEstimator {
             for (int x = 0; x < size; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
                 int srcIdx = srcRowOff + srcX * 4;
-                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
-                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
-                inputBufferZipDepth384.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
+                inputBuf.putFloat((rgbaPixels[srcIdx] & 0xFF) / 255.0f);
+                inputBuf.putFloat((rgbaPixels[srcIdx + 1] & 0xFF) / 255.0f);
+                inputBuf.putFloat((rgbaPixels[srcIdx + 2] & 0xFF) / 255.0f);
             }
         }
-        inputBufferZipDepth384.rewind();
+        inputBuf.rewind();
 
-        tfliteZipDepth384.run(inputBufferZipDepth384, outputBufferZipDepth384);
-        outputBufferZipDepth384.rewind();
+        interp.run(inputBuf, outputBuf);
+        outputBuf.rewind();
         return postProcess(
-                extractFloatOutput(outputBufferZipDepth384, size * size),
+                extractFloatOutput(outputBuf, size * size),
                 size, size, false, DEFAULT_PERCENTILE_CLIP, 0.02f, 0.1f);
     }
 
@@ -2004,6 +2033,10 @@ public class DepthEstimator {
             tfliteZipDepth384.close();
             tfliteZipDepth384 = null;
         }
+        if (tfliteZipDepth256 != null) {
+            tfliteZipDepth256.close();
+            tfliteZipDepth256 = null;
+        }
         for (GpuVariant v : gpuVariants.values()) {
             releaseGpuVariant(v);
         }
@@ -2043,6 +2076,9 @@ public class DepthEstimator {
         }
         if (activeModelIndex == 14 && tfliteZipDepth384 != null) {
             return ZIPDEPTH_384_GPU_INPUT_SIZE;
+        }
+        if (activeModelIndex == 29 && tfliteZipDepth256 != null) {
+            return ZIPDEPTH_256_GPU_INPUT_SIZE;
         }
         return OUTPUT_SIZE;
     }

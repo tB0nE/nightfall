@@ -70,6 +70,10 @@ public:
     int get_video_width() const;
     int get_video_height() const;
     bool is_hw_decode() const;
+    // Status-bar label: "HW" (MediaCodec/hw FFmpeg), "SW" (software FFmpeg), or for
+    // PyroWave (a Vulkan compute codec - never hardware) "SW-GPU" when frames stay on
+    // the GPU (zero-copy) and "SW-CPU" when they round-trip through the CPU.
+    String get_decode_mode() const;
 
     static String get_error_string(int error_code);
 
@@ -198,6 +202,9 @@ private:
     // performs the actual init()/decode()/destroy() calls itself.
     std::unique_ptr<PyrowaveDecoder> pyrowave_decoder_;
     std::atomic<bool> pyrowave_pending_init_{false};
+    // Readable from the main thread (stats/status bar), unlike pyrowave_decoder_.
+    enum PyrowaveOutputMode { PYROWAVE_OUTPUT_NONE, PYROWAVE_OUTPUT_CPU, PYROWAVE_OUTPUT_GPU };
+    std::atomic<int> pyrowave_output_mode_{PYROWAVE_OUTPUT_NONE};
 
     // Compute pipeline for YCbCr → RGBA conversion
     RID compute_shader_;

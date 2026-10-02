@@ -16,11 +16,19 @@ ASSET_DIR="$1"
 ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
 ZIPDEPTH_EDGEPAD_256_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
 ZIPDEPTH_EDGEPAD_224_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_224_MODEL:-$PROJECT_ROOT/models/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
+# CPU twin of EdgePad-256 (tools/quantize_zipdepth_cpu.py --size 256), run through
+# XNNPACK with no GPU delegate at all - selected via the "Backend" control's CPU
+# option so AI 3D can run while leaving the GPU entirely to the stream/passthrough.
+ZIPDEPTH_EDGEPAD_256_CPU_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_CPU_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-cpu.tflite}"
+# CPU twin of EdgePad-384 (tools/quantize_zipdepth_cpu.py, default --size 384).
+ZIPDEPTH_EDGEPAD_384_CPU_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_384_CPU_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-cpu.tflite}"
 
 declare -A REQUIRED_MODELS=(
   ["EdgePad-384"]="$ZIPDEPTH_STANDARD_MODEL"
   ["EdgePad-256"]="$ZIPDEPTH_EDGEPAD_256_MODEL"
   ["EdgePad-224"]="$ZIPDEPTH_EDGEPAD_224_MODEL"
+  ["EdgePad-256-CPU"]="$ZIPDEPTH_EDGEPAD_256_CPU_MODEL"
+  ["EdgePad-384-CPU"]="$ZIPDEPTH_EDGEPAD_384_CPU_MODEL"
 )
 for label in "${!REQUIRED_MODELS[@]}"; do
   model_path="${REQUIRED_MODELS[$label]}"
@@ -46,6 +54,12 @@ cp "$ZIPDEPTH_EDGEPAD_256_MODEL" \
 echo "Bundling EdgePad-224 model: $ZIPDEPTH_EDGEPAD_224_MODEL"
 cp "$ZIPDEPTH_EDGEPAD_224_MODEL" \
   "$ASSET_DIR/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
+echo "Bundling EdgePad-256-CPU model: $ZIPDEPTH_EDGEPAD_256_CPU_MODEL"
+cp "$ZIPDEPTH_EDGEPAD_256_CPU_MODEL" \
+  "$ASSET_DIR/zipdepth-base-256-cpu.tflite"
+echo "Bundling EdgePad-384-CPU model: $ZIPDEPTH_EDGEPAD_384_CPU_MODEL"
+cp "$ZIPDEPTH_EDGEPAD_384_CPU_MODEL" \
+  "$ASSET_DIR/zipdepth-base-384-cpu.tflite"
 
 # Opt-in cumulative profiling assets. Normal release APKs never include these;
 # they are consumed only when GodotApp is launched through ADB with

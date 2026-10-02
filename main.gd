@@ -1852,6 +1852,11 @@ func _init_stream_backend():
 	# MediaCodec-based decode path PyroWave actually uses there. Scoped to
 	# Quest 3 only for now (see the plan doc's own reasoning).
 	_client_codec_support["pyrowave"] = device_is_quest3
+	# Raw frames only make sense for the Linux build's local-capture pipeline.
+	# A saved Raw preference falls back once server info arrives
+	# (stream_manager.gd's is_codec_available() check).
+	if OS.get_name() == "Android":
+		_client_codec_support["raw"] = false
 	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		str(_client_codec_support.get("h264", false)),
 		str(_client_codec_support.get("hevc", false)),
@@ -2471,6 +2476,7 @@ func _process_stats(delta):
 		video_presentation.process_frame(new_video_frame)
 	var frame_sample := telemetry.record_frame(delta, new_video_frame)
 	if not frame_sample.is_empty():
+		settings_controller.on_performance_sample(frame_sample)
 		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
 		# FPS (consume_new_frame() can report at most one "yes" per
 		# script tick, no matter how many render-thread completions happened
@@ -2557,7 +2563,12 @@ func _process_performance_overlay(delta: float):
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
 			var depth_model_name := "ZipDepth-384 Standard"
-			if settings_controller.get_depth_model_index() == 18:
+			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:
+				# CPU twins share java_index with several GPU-labeled entries
+				# (e.g. 14 is also "Auto"/"ZipDepth-384-GPU"), so resolve the
+				# label directly instead of matching on java_index below.
+				depth_model_name = settings_controller.get_depth_model_label()
+			elif settings_controller.get_depth_model_index() == 18:
 				depth_model_name = "ZipDepth-256 Fastest"
 			elif settings_controller.get_depth_model_index() == 19:
 				depth_model_name = "ZipDepth-384 Standard-v2"
@@ -2583,7 +2594,7 @@ func _process_performance_overlay(delta: float):
 				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
-		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
+		lines.append("Depth GPU priority: %s" % settings_controller.get_ai_3d_gpu_priority_label())
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))

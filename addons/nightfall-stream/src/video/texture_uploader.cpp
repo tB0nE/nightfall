@@ -6,11 +6,15 @@
 #include "nf_log.h"
 
 #ifdef __ANDROID__
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES3/gl32.h>
 #include <GLES2/gl2ext.h>
 #include <android/native_window_jni.h>
 #include <chrono>
 #include <jni.h>
+#include <poll.h>
+#include <unistd.h>
 #endif
 
 using namespace godot;
@@ -1448,6 +1452,7 @@ void TextureUploader::_render_thread_cleanup() {
     }
 #ifdef __ANDROID__
     _render_thread_destroy_android_gles_surface();
+    _render_thread_destroy_pyrowave_gpu();
 #endif
     if (rd) {
         // Deliberately NOT freeing rd_texture_rid[i]/rs_texture_rid[i] here - this runs
@@ -1537,6 +1542,334 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     gles_surface_ready_ = false;
     gles_surface_failed_ = false;
     gles_update_queued_ = false;
+}
+
+namespace {
+struct PyroEgl {
+    PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC getNativeClientBuffer = nullptr;
+    PFNEGLCREATEIMAGEKHRPROC createImage = nullptr;
+    PFNEGLDESTROYIMAGEKHRPROC destroyImage = nullptr;
+    PFNEGLCREATESYNCKHRPROC createSync = nullptr;
+    PFNEGLDESTROYSYNCKHRPROC destroySync = nullptr;
+    PFNEGLWAITSYNCKHRPROC waitSync = nullptr;
+    PFNEGLDUPNATIVEFENCEFDANDROIDPROC dupNativeFenceFd = nullptr;
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC imageTargetTexture2D = nullptr;
+};
+
+const PyroEgl *pyro_egl() {
+    static PyroEgl egl;
+    static bool loaded = false;
+    if (!loaded) {
+        loaded = true;
+        egl.getNativeClientBuffer = (PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC)eglGetProcAddress("eglGetNativeClientBufferANDROID");
+        egl.createImage = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+        egl.destroyImage = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+        egl.createSync = (PFNEGLCREATESYNCKHRPROC)eglGetProcAddress("eglCreateSyncKHR");
+        egl.destroySync = (PFNEGLDESTROYSYNCKHRPROC)eglGetProcAddress("eglDestroySyncKHR");
+        egl.waitSync = (PFNEGLWAITSYNCKHRPROC)eglGetProcAddress("eglWaitSyncKHR");
+        egl.dupNativeFenceFd = (PFNEGLDUPNATIVEFENCEFDANDROIDPROC)eglGetProcAddress("eglDupNativeFenceFDANDROID");
+        egl.imageTargetTexture2D = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    }
+    bool complete = egl.getNativeClientBuffer && egl.createImage && egl.destroyImage && egl.createSync &&
+                    egl.destroySync && egl.waitSync && egl.dupNativeFenceFd && egl.imageTargetTexture2D;
+    return complete ? &egl : nullptr;
+}
+
+void pyro_wait_and_close_fd(int fd) {
+    if (fd < 0) return;
+    pollfd p = { fd, POLLIN, 0 };
+    poll(&p, 1, 1000);
+    close(fd);
+}
+} // namespace
+
+bool TextureUploader::setup_pyrowave_gpu_output(int width, int height, AHardwareBuffer *const *buffers, int count) {
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (!rs || count != PYRO_SLOT_COUNT) return false;
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        for (int i = 0; i < PYRO_SLOT_COUNT; i++) pyro_setup_buffers_[i] = buffers[i];
+        pyro_width_ = width;
+        pyro_height_ = height;
+        pyro_setup_done_ = false;
+        pyro_setup_ok_ = false;
+    }
+    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_setup_pyrowave_gpu));
+    std::unique_lock<std::mutex> lock(pyro_mutex_);
+    if (!pyro_cv_.wait_for(lock, std::chrono::seconds(5), [this] { return pyro_setup_done_; })) {
+        NF_LOGE("TextureUploader", "Timed out importing PyroWave output ring into GLES");
+        return false;
+    }
+    return pyro_setup_ok_;
+}
+
+void TextureUploader::_render_thread_setup_pyrowave_gpu() {
+    _render_thread_destroy_pyrowave_gpu();
+
+    AHardwareBuffer *buffers[PYRO_SLOT_COUNT];
+    int width, height;
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        for (int i = 0; i < PYRO_SLOT_COUNT; i++) buffers[i] = pyro_setup_buffers_[i];
+        width = pyro_width_;
+        height = pyro_height_;
+    }
+    auto finish = [this](bool ok) {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        for (auto &b : pyro_setup_buffers_) b = nullptr;
+        pyro_setup_ok_ = ok;
+        pyro_setup_done_ = true;
+        pyro_cv_.notify_all();
+    };
+
+    const PyroEgl *egl = pyro_egl();
+    EGLDisplay display = eglGetCurrentDisplay();
+    if (!egl || display == EGL_NO_DISPLAY) {
+        NF_LOGE("TextureUploader", "PyroWave GPU output: EGL image/fence extensions unavailable");
+        finish(false);
+        return;
+    }
+
+    // Each EGLImage holds its own reference to its AHardwareBuffer.
+    const EGLint image_attribs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
+    for (int i = 0; i < PYRO_SLOT_COUNT; i++) {
+        EGLClientBuffer client_buffer = egl->getNativeClientBuffer(buffers[i]);
+        EGLImageKHR image = client_buffer
+            ? egl->createImage(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, client_buffer, image_attribs)
+            : EGL_NO_IMAGE_KHR;
+        if (image == EGL_NO_IMAGE_KHR) {
+            NF_LOGE("TextureUploader", "PyroWave GPU output: eglCreateImageKHR failed for slot %d (0x%x)", i, eglGetError());
+            _render_thread_destroy_pyrowave_gpu();
+            finish(false);
+            return;
+        }
+        pyro_images_[i] = image;
+    }
+
+    GLint previous_binding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_binding);
+    glGenTextures(1, &pyro_texture_);
+    glBindTexture(GL_TEXTURE_2D, pyro_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    egl->imageTargetTexture2D(GL_TEXTURE_2D, (GLeglImageOES)pyro_images_[0]);
+    GLenum gl_error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, (GLuint)previous_binding);
+    if (gl_error != GL_NO_ERROR) {
+        NF_LOGE("TextureUploader", "PyroWave GPU output: glEGLImageTargetTexture2DOES failed (0x%x)", gl_error);
+        _render_thread_destroy_pyrowave_gpu();
+        finish(false);
+        return;
+    }
+
+    // Same stable-RID wiring as the MediaCodec GLES path above.
+    RenderingServer *rs = RenderingServer::get_singleton();
+    PackedByteArray placeholder_data;
+    placeholder_data.resize(width * height * 4);
+    placeholder_data.fill(0);
+    Ref<Image> placeholder = Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, placeholder_data);
+    plane_textures[0] = ImageTexture::create_from_image(placeholder);
+    RID native_texture = rs->texture_create_from_native_handle(
+        RenderingServer::TEXTURE_TYPE_2D, Image::FORMAT_RGBA8, (uint64_t)pyro_texture_, width, height, 1);
+    if (!native_texture.is_valid() || plane_textures[0].is_null()) {
+        NF_LOGE("TextureUploader", "PyroWave GPU output: Godot refused native texture");
+        _render_thread_destroy_pyrowave_gpu();
+        finish(false);
+        return;
+    }
+    rs->texture_replace(plane_textures[0]->get_rid(), native_texture);
+    use_shader_conversion = true;
+    is_nv12 = false;
+    current_width = width;
+    current_height = height;
+    ensure_shader_material();
+    shader_material->set_shader_parameter("tex_y", plane_textures[0]);
+    shader_material->set_shader_parameter("is_semi_planar", false);
+    shader_material->set_shader_parameter("is_nv12_rd", false);
+    shader_material->set_shader_parameter("color_matrix_type", 3);
+    shader_material->set_shader_parameter("color_range", 1);
+    shader_material->set_shader_parameter("swap_uv", false);
+
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        for (int i = 0; i < PYRO_SLOT_COUNT; i++) {
+            pyro_state_[i] = PYRO_SLOT_FREE;
+            pyro_release_fd_[i] = -1;
+        }
+        // The texture already points at slot 0, so treat it as bound; it is released
+        // (with a fence) the first time a real frame is presented.
+        pyro_state_[0] = PYRO_SLOT_BOUND;
+        pyro_bound_slot_ = 0;
+        pyro_next_slot_ = 1;
+        pyro_pending_slot_ = -1;
+        pyro_pending_fd_ = -1;
+        pyro_present_queued_ = false;
+        pyro_active_ = true;
+    }
+    NF_LOG("TextureUploader", "PyroWave GPU output ready: %dx%d, %d-slot EGLImage ring", width, height, PYRO_SLOT_COUNT);
+    finish(true);
+}
+
+int TextureUploader::acquire_pyrowave_gpu_slot(int *release_fd) {
+    *release_fd = -1;
+    std::lock_guard<std::mutex> lock(pyro_mutex_);
+    if (!pyro_active_) return -1;
+    for (int n = 0; n < PYRO_SLOT_COUNT; n++) {
+        int i = (pyro_next_slot_ + n) % PYRO_SLOT_COUNT;
+        if (pyro_state_[i] == PYRO_SLOT_FREE) {
+            pyro_state_[i] = PYRO_SLOT_DECODING;
+            *release_fd = pyro_release_fd_[i];
+            pyro_release_fd_[i] = -1;
+            pyro_next_slot_ = (i + 1) % PYRO_SLOT_COUNT;
+            return i;
+        }
+    }
+    return -1;
+}
+
+void TextureUploader::abandon_pyrowave_gpu_slot(int slot, int release_fd) {
+    std::lock_guard<std::mutex> lock(pyro_mutex_);
+    if (!pyro_active_ || slot < 0 || slot >= PYRO_SLOT_COUNT || pyro_state_[slot] != PYRO_SLOT_DECODING) {
+        if (release_fd >= 0) close(release_fd);
+        return;
+    }
+    pyro_state_[slot] = PYRO_SLOT_FREE;
+    pyro_release_fd_[slot] = release_fd;
+}
+
+void TextureUploader::present_pyrowave_gpu_slot(int slot, int ready_fd) {
+    RenderingServer *rs = RenderingServer::get_singleton();
+    bool queue_callback = false;
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        if (!rs || !pyro_active_ || slot < 0 || slot >= PYRO_SLOT_COUNT) {
+            if (ready_fd >= 0) close(ready_fd);
+            return;
+        }
+        // A frame the render thread never picked up is simply superseded: GLES never
+        // sampled it, so it goes straight back to FREE with no release fence. Later
+        // Vulkan writes to it are ordered after this one on the same queue.
+        if (pyro_pending_slot_ >= 0) {
+            if (pyro_pending_fd_ >= 0) close(pyro_pending_fd_);
+            pyro_state_[pyro_pending_slot_] = PYRO_SLOT_FREE;
+        }
+        pyro_pending_slot_ = slot;
+        pyro_pending_fd_ = ready_fd;
+        pyro_state_[slot] = PYRO_SLOT_PENDING;
+        if (!pyro_present_queued_) {
+            pyro_present_queued_ = true;
+            queue_callback = true;
+        }
+    }
+    // Outside the lock: in single-threaded rendering this can run the callback inline.
+    if (queue_callback) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_present_pyrowave_gpu));
+    }
+}
+
+void TextureUploader::_render_thread_present_pyrowave_gpu() {
+    int slot, ready_fd;
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        pyro_present_queued_ = false;
+        slot = pyro_pending_slot_;
+        ready_fd = pyro_pending_fd_;
+        pyro_pending_slot_ = -1;
+        pyro_pending_fd_ = -1;
+        if (!pyro_active_ || slot < 0 || !pyro_texture_) {
+            if (ready_fd >= 0) close(ready_fd);
+            return;
+        }
+    }
+
+    const PyroEgl *egl = pyro_egl();
+    EGLDisplay display = eglGetCurrentDisplay();
+
+    // GPU-side wait: everything Godot draws after this point waits for the Vulkan write.
+    if (ready_fd >= 0) {
+        const EGLint attribs[] = { EGL_SYNC_NATIVE_FENCE_FD_ANDROID, ready_fd, EGL_NONE };
+        EGLSyncKHR sync = egl->createSync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs);
+        if (sync != EGL_NO_SYNC_KHR) {
+            egl->waitSync(display, sync, 0); // EGL now owns ready_fd
+            egl->destroySync(display, sync);
+        } else {
+            pyro_wait_and_close_fd(ready_fd);
+        }
+    }
+
+    GLint previous_binding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_binding);
+    glBindTexture(GL_TEXTURE_2D, pyro_texture_);
+    egl->imageTargetTexture2D(GL_TEXTURE_2D, (GLeglImageOES)pyro_images_[slot]);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)previous_binding);
+
+    int previous_slot;
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        previous_slot = pyro_bound_slot_;
+        pyro_bound_slot_ = slot;
+        pyro_state_[slot] = PYRO_SLOT_BOUND;
+    }
+
+    // Every draw that could have sampled the previous slot has already been issued, so
+    // a fence here covers them all. Vulkan waits on it before writing that slot again.
+    if (previous_slot >= 0 && previous_slot != slot) {
+        int release_fd = -1;
+        EGLSyncKHR release = egl->createSync(display, EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
+        if (release != EGL_NO_SYNC_KHR) {
+            glFlush();
+            release_fd = egl->dupNativeFenceFd(display, release);
+            egl->destroySync(display, release);
+        }
+        if (release_fd < 0) {
+            glFinish();
+        }
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        if (pyro_release_fd_[previous_slot] >= 0) close(pyro_release_fd_[previous_slot]);
+        pyro_release_fd_[previous_slot] = release_fd;
+        pyro_state_[previous_slot] = PYRO_SLOT_FREE;
+    }
+
+    new_frame_available_.store(true);
+}
+
+void TextureUploader::teardown_pyrowave_gpu_output() {
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        pyro_active_ = false;
+    }
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (rs) {
+        rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_destroy_pyrowave_gpu));
+    }
+}
+
+void TextureUploader::_render_thread_destroy_pyrowave_gpu() {
+    {
+        std::lock_guard<std::mutex> lock(pyro_mutex_);
+        pyro_active_ = false;
+        if (pyro_pending_fd_ >= 0) close(pyro_pending_fd_);
+        pyro_pending_fd_ = -1;
+        pyro_pending_slot_ = -1;
+        for (int i = 0; i < PYRO_SLOT_COUNT; i++) {
+            if (pyro_release_fd_[i] >= 0) close(pyro_release_fd_[i]);
+            pyro_release_fd_[i] = -1;
+            pyro_state_[i] = PYRO_SLOT_FREE;
+        }
+        pyro_bound_slot_ = -1;
+    }
+    const PyroEgl *egl = pyro_egl();
+    EGLDisplay display = eglGetCurrentDisplay();
+    for (auto &image : pyro_images_) {
+        if (image && egl && display != EGL_NO_DISPLAY) egl->destroyImage(display, (EGLImageKHR)image);
+        image = nullptr;
+    }
+    if (pyro_texture_) {
+        glDeleteTextures(1, &pyro_texture_);
+        pyro_texture_ = 0;
+    }
 }
 #endif
 

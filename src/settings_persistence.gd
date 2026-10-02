@@ -24,7 +24,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "codec_preference", settings.codec_preference)
 	config.set_value("screen", "grid_mode_enabled", settings.grid_mode_enabled)
 	config.set_value("diagnostics", "performance_overlay", settings.performance_overlay_enabled)
-	config.set_value("ai_3d", "gpu_priority", settings.ai_3d_gpu_priority)
+	config.set_value("ai_3d", "gpu_priority_mode", settings.ai_3d_gpu_priority)
 	config.set_value("controller", "hand_tracking_enabled", settings.tracking_mode)
 	config.set_value("stream", "auto_reconnect", settings.auto_reconnect_enabled)
 	config.set_value("stream", "quick_start", settings.quick_start_enabled)
@@ -97,8 +97,14 @@ static func read_app(
 		"screen", "grid_mode_enabled", AppSettings.DEFAULT_GRID_MODE_ENABLED)
 	settings.performance_overlay_enabled = config.get_value(
 		"diagnostics", "performance_overlay", AppSettings.DEFAULT_PERFORMANCE_OVERLAY_ENABLED)
-	settings.ai_3d_gpu_priority = clampi(config.get_value(
-		"ai_3d", "gpu_priority", AppSettings.DEFAULT_AI_3D_GPU_PRIORITY), 0, 1)
+	# "gpu_priority_mode" is 0 Stream / 1 Adaptive / 2 AI 3D. Older saves only have
+	# "gpu_priority" (0 Stream / 1 AI 3D), so map that across when the new key is absent.
+	if config.has_section_key("ai_3d", "gpu_priority_mode"):
+		settings.ai_3d_gpu_priority = clampi(config.get_value("ai_3d", "gpu_priority_mode"), 0, 2)
+	else:
+		var legacy_priority := clampi(config.get_value(
+			"ai_3d", "gpu_priority", AppSettings.DEFAULT_AI_3D_GPU_PRIORITY), 0, 1)
+		settings.ai_3d_gpu_priority = 2 if legacy_priority == 1 else 0
 	var raw_tracking = config.get_value(
 		"controller", "hand_tracking_enabled", AppSettings.DEFAULT_TRACKING_MODE)
 	settings.tracking_mode = (1 if raw_tracking else 0) if raw_tracking is bool else int(raw_tracking)

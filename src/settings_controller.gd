@@ -77,8 +77,12 @@ var ai_3d_speed_labels: Array = ["Off", "Auto", "Fast", "Standard"]
 # Persisted values: 0 protects stream/render cadence (the product default),
 # while 1 gives the inference delegate the driver's normal-priority context.
 # "AI 3D" describes that user-visible tradeoff more clearly than "Default".
-var ai_3d_gpu_priority_labels: Array = ["Stream", "AI 3D"]
-var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
+var ai_3d_gpu_priority_labels: Array = ["Stream", "Adaptive", "AI 3D"]
+const AI3D_GPU_PRIORITY_STREAM := 0
+const AI3D_GPU_PRIORITY_ADAPTIVE := 1
+const AI3D_GPU_PRIORITY_AI_3D := 2
+var _ai3d_pacer := Ai3dAdaptivePacer.new()
+var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"] # GPU delegate choice only; "CPU" (get_ai_3d_gpu_api_label()) is a third state layered on top, not index 2 here - it's not a GPU delegate backend at all.
 const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9
 # Stable persisted/UI slots repurposed for the final Android quality tiers.
@@ -87,6 +91,8 @@ const ANDROID_MODEL_AUTO := 9
 const ANDROID_MODEL_STANDARD := 18
 const ANDROID_MODEL_EDGEPAD_256 := 19
 const ANDROID_MODEL_EDGEPAD_224 := 21
+const ANDROID_MODEL_EDGEPAD_256_CPU := 22
+const ANDROID_MODEL_EDGEPAD_384_CPU := 23
 const ANDROID_DEPTH_PROCESS_FULL := 5
 # Native renderer-only production mode: retain Full's occlusion/Newton warp,
 # but resize the reconstructed Standard depth with one linear texture sample
@@ -143,6 +149,11 @@ var ai_3d_models: Array = [
 	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-224", "java_index": 28, "gpu": true, "android": true, "linux": false},
+	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
+	# control's CPU option, not the locked Model list. _android_cpu_model_index()
+	# picks between them to match whatever Model is actually selected.
+	{"label": "EdgePad-256-CPU", "java_index": 29, "gpu": false, "android": true, "linux": false},
+	{"label": "EdgePad-384-CPU", "java_index": 14, "gpu": false, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -573,12 +584,25 @@ func is_android_ai3d_auto() -> bool:
 	return OS.get_name() == "Android" and main.settings.host.ai_3d_model == ANDROID_MODEL_AUTO
 
 func get_ai_3d_gpu_api_label() -> String:
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return "CPU"
 	return ai_3d_gpu_api_labels[get_ai_3d_gpu_api_effective()]
 
+# On Android this is the only exposed way to choose CPU inference (the "Type"
+# row with GPU/CPU is hidden, see ai3d_options_locked()) - cycles OpenCL ->
+# OpenGL -> CPU -> OpenCL. CPU runs the CPU twin matching whatever Model the
+# locked button shows (_android_cpu_model_index()), so AI 3D can run using no
+# GPU time at all; see get_depth_model_index()/_label().
 func cycle_ai_3d_gpu_api() -> void:
 	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
 		return
-	main.settings.host.ai_3d_gpu_api = 1 - main.settings.host.ai_3d_gpu_api
+	if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
+		main.settings.host.ai_3d_gpu_api = 0
+	elif main.settings.host.ai_3d_gpu_api == 0:
+		main.settings.host.ai_3d_gpu_api = 1
+	else:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_CPU
 	_save_setting(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	_schedule_ai_3d_commit()
 
@@ -589,20 +613,29 @@ func _android_depth_class() -> Object:
 func cycle_ai_3d_gpu_priority():
 	if not depth_gpu_priority_available():
 		return
+	var was_stream: bool = main.settings.ai_3d_gpu_priority == AI3D_GPU_PRIORITY_STREAM
 	main.settings.ai_3d_gpu_priority = (main.settings.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size()
 	_save_setting(main._ui_3d_priority_btn, ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
-	apply_depth_gpu_priority(true)
+	# Only crossing to or from Stream changes the OpenCL context priority, which
+	# reloads the inference delegate; Adaptive <-> AI 3D just changes pacing.
+	var reloads: bool = was_stream != (main.settings.ai_3d_gpu_priority == AI3D_GPU_PRIORITY_STREAM)
+	apply_depth_gpu_priority(true, reloads)
 
-func apply_depth_gpu_priority(notify: bool = false):
+func apply_depth_gpu_priority(notify: bool = false, reloads: bool = true):
 	if not depth_gpu_priority_available() or not main.stream_backend:
 		return
 	if not main.stream_backend.has_method("set_depth_gpu_priority"):
 		return
-	main.stream_backend.set_depth_gpu_priority(main.settings.ai_3d_gpu_priority)
+	# The OpenCL context only has two levels: LOW (Stream) and default. Adaptive
+	# uses default and paces inference instead (see Ai3dAdaptivePacer).
+	var opencl_default_priority: bool = main.settings.ai_3d_gpu_priority != AI3D_GPU_PRIORITY_STREAM
+	main.stream_backend.set_depth_gpu_priority(1 if opencl_default_priority else 0)
+	_ai3d_pacer.reset(_base_hz_cap())
+	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	var label: String = ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority]
 	main._log("[DEPTH] GPU priority selected: %s" % label)
 	if notify and main.ui_controller:
-		main.ui_controller.set_status("Depth GPU priority: %s (reloading inference)" % label)
+		main.ui_controller.set_status("Depth GPU priority: %s%s" % [label, " (reloading inference)" if reloads else ""])
 
 # Safety net for main.settings.host.ai_3d_model/ai_3d_backend_pref disagreeing (e.g. a
 # save file edited/corrupted outside the normal cycle_ai_3d_model()/
@@ -635,7 +668,10 @@ func _locked_ai3d_model_index() -> int:
 func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
-	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
+	# CPU is a real, persisted choice here (the "Backend" control's third
+	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
+	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
@@ -654,6 +690,8 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].java_index
 	if is_android_ai3d_auto():
 		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
@@ -667,9 +705,19 @@ func get_depth_model_index() -> int:
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
 
 func get_depth_model_label() -> String:
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
 		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
 	return ai_3d_models[main.settings.host.ai_3d_model].label
+
+# Which CPU model twin to run while Backend==CPU. Matches whatever Model the
+# locked button is actually showing, so switching Model while on CPU picks the
+# equivalent CPU tier instead of silently always running one fixed size.
+func _android_cpu_model_index() -> int:
+	if main.settings.host.ai_3d_model == ANDROID_MODEL_STANDARD:
+		return ANDROID_MODEL_EDGEPAD_384_CPU
+	return ANDROID_MODEL_EDGEPAD_256_CPU
 
 # Android production reconstruction is part of the tier definition rather
 # than a hidden debug preference. Both EdgePad models retain ZipDepth's full
@@ -693,6 +741,11 @@ func get_depth_process_stage() -> int:
 func get_depth_backend_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	# PyroWave's own decode already costs real GPU time every frame (it's a
+	# Vulkan compute codec) - Auto pairs it with CPU-only inference on every
+	# headset instead of adding GPU-delegate depth work on top.
+	if OS.get_name() == "Android" and is_android_ai3d_auto() and main.settings.codec_preference == 4:
+		return AI3D_BACKEND_CPU
 	# 2026-08-30: Auto follows the Type control the same as Fast/Standard do -
 	# it was never meant to force GPU unconditionally, just default to it
 	# (main.settings.host.ai_3d_backend_pref's own default value). AUTO_TABLE's model_idx
@@ -707,7 +760,43 @@ func get_depth_backend_index() -> int:
 # for the button's displayed label and the actual value pushed to the
 # Java inference loop, so they can never disagree.
 func get_effective_hz_cap() -> int:
+	var base := _base_hz_cap()
+	if is_ai3d_adaptive_active() and _ai3d_pacer.current_hz > 0.0:
+		return mini(base, int(_ai3d_pacer.current_hz))
+	return base
+
+func _base_hz_cap() -> int:
 	return 20 if main.settings.host.ai_3d_speed == 1 else main.settings.host.ai_3d_hz_cap
+
+func is_ai3d_adaptive_active() -> bool:
+	return main.settings.ai_3d_gpu_priority == AI3D_GPU_PRIORITY_ADAPTIVE \
+		and depth_gpu_priority_available() \
+		and main.is_streaming \
+		and main.settings.host.ai_3d_speed > 0 \
+		and get_stereo_mode() >= 3 \
+		and get_depth_backend_index() == AI3D_BACKEND_GPU
+
+# Called once per second with the app/video frame-rate telemetry sample.
+func on_performance_sample(sample: Dictionary) -> void:
+	if not is_ai3d_adaptive_active():
+		_ai3d_pacer.reset(_base_hz_cap())
+		return
+	var new_hz := _ai3d_pacer.on_sample(
+		float(sample.get("app_fps", 0.0)),
+		float(sample.get("video_update_fps", 0.0)),
+		float(main.display_refresh_rate),
+		float(main.settings.host.stream_fps),
+		_base_hz_cap())
+	if new_hz > 0 and main.stream_backend:
+		main.stream_backend.set_depth_hz_cap(new_hz)
+		main._log("[DEPTH] Adaptive: AI 3D inference rate %d Hz (app %.1f fps, video %.1f fps)" % [
+			new_hz, float(sample.get("app_fps", 0.0)), float(sample.get("video_update_fps", 0.0))])
+
+func get_ai_3d_gpu_priority_label() -> String:
+	var label: String = ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority]
+	if is_ai3d_adaptive_active():
+		label += " (%d Hz)" % get_effective_hz_cap()
+	return label
 
 # 2026-08-30: only ever "GPU" or "CPU" now - no silent runtime GPU->CPU
 # substitution to represent as a third hybrid state (see
@@ -1059,6 +1148,10 @@ func cycle_codec():
 	main.state_manager.save_state()
 	if main.is_streaming:
 		_schedule_stream_restart()
+	if main.settings.codec_preference == 4 and main.ui_controller:
+		# PyroWave decode is GPU compute work; next to passthrough and AI 3D it
+		# leaves AI 3D only a few updates a second.
+		main.ui_controller.set_status("PyroWave: lowest latency for fast-paced 2D streaming. GPU-heavy - not recommended with AI 3D.")
 
 func fallback_codec():
 	if is_codec_available(1):
