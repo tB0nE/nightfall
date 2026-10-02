@@ -266,18 +266,20 @@ if(ANDROID)
               "${NIGHTFALL_NDK_ROOT}/shader-tools/linux-x86_64"
         NO_CMAKE_FIND_ROOT_PATH)
     if(NOT NIGHTFALL_GLSLC)
-        message(FATAL_ERROR "glslc not found in the NDK's shader-tools (needed for pyrowave_yuv_to_rgba.comp)")
+        message(FATAL_ERROR "glslc not found in the NDK's shader-tools (needed for the PyroWave conversion shaders)")
     endif()
-    set(PYROWAVE_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/video/shaders/pyrowave_yuv_to_rgba.comp")
     set(PYROWAVE_SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    set(PYROWAVE_SHADER_HEADER "${PYROWAVE_SHADER_OUT_DIR}/pyrowave_yuv_to_rgba.spv.h")
-    add_custom_command(
-        OUTPUT "${PYROWAVE_SHADER_HEADER}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${PYROWAVE_SHADER_OUT_DIR}"
-        COMMAND "${NIGHTFALL_GLSLC}" --target-env=vulkan1.3 -O -mfmt=c "${PYROWAVE_SHADER_SRC}" -o "${PYROWAVE_SHADER_HEADER}"
-        DEPENDS "${PYROWAVE_SHADER_SRC}"
-        COMMENT "Compiling pyrowave_yuv_to_rgba.comp to SPIR-V")
-    target_sources(${LIBNAME} PRIVATE "${PYROWAVE_SHADER_HEADER}")
+    foreach(PYROWAVE_SHADER pyrowave_fullscreen.vert pyrowave_yuv_to_rgba.frag)
+        set(PYROWAVE_SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/src/video/shaders/${PYROWAVE_SHADER}")
+        set(PYROWAVE_SHADER_HEADER "${PYROWAVE_SHADER_OUT_DIR}/${PYROWAVE_SHADER}.spv.h")
+        add_custom_command(
+            OUTPUT "${PYROWAVE_SHADER_HEADER}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${PYROWAVE_SHADER_OUT_DIR}"
+            COMMAND "${NIGHTFALL_GLSLC}" --target-env=vulkan1.3 -O -mfmt=c "${PYROWAVE_SHADER_SRC}" -o "${PYROWAVE_SHADER_HEADER}"
+            DEPENDS "${PYROWAVE_SHADER_SRC}"
+            COMMENT "Compiling ${PYROWAVE_SHADER} to SPIR-V")
+        target_sources(${LIBNAME} PRIVATE "${PYROWAVE_SHADER_HEADER}")
+    endforeach()
     target_include_directories(${LIBNAME} PRIVATE "${PYROWAVE_SHADER_OUT_DIR}")
 endif()
 

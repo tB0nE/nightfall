@@ -9,7 +9,7 @@
 >
 > Code: `pyrowave_gpu_pipeline.cpp/h` (device bootstrap, decode + conversion,
 > slot ring), `texture_uploader.cpp/h` (`*_pyrowave_gpu_*`: EGLImage import,
-> fence handoff, stable RID), `shaders/pyrowave_yuv_to_rgba.comp` (compiled by
+> fence handoff, stable RID), `shaders/pyrowave_fullscreen.vert` + `pyrowave_yuv_to_rgba.frag` (compiled by
 > CMake with the NDK's `glslc`). Logs to look for: `PyrowaveGpu: Zero-copy
 > pipeline ready`, `TextureUploader: PyroWave GPU output ready`, and
 > `PyrowaveDecoder: [TIMING] zero-copy decode-thread cost=...`. If setup fails,

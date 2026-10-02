@@ -2,7 +2,7 @@
 
 // Zero-copy PyroWave decode for Android - see docs/plans/active/pyrowave-zero-copy-gpu.md.
 // PyroWave decodes into Vulkan-internal R8 planes inside our own command buffer, our
-// compute pass converts them to RGBA into one of three RGBA8888 AHardwareBuffers, and
+// fragment pass converts them to RGBA into one of three RGBA8888 AHardwareBuffers, and
 // GLES samples that buffer through an EGLImage (TextureUploader's PyroWave GPU output).
 // Only the final RGB frame crosses the Vulkan/GLES boundary; sync is SYNC_FD both ways.
 
@@ -70,6 +70,7 @@ private:
 
     bool create_plane(int index, uint32_t w, uint32_t h);
     bool create_slot(Slot &slot);
+    bool create_conversion_pipeline();
     void write_descriptors(Slot &slot);
     void completion_loop();
     void stop_completion_thread();
@@ -102,6 +103,7 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkCommandPool command_pool_ = VK_NULL_HANDLE;
     Slot slots_[kSlotCount];
+
 
     PyrowaveGpuPipeline(const PyrowaveGpuPipeline &) = delete;
     PyrowaveGpuPipeline &operator=(const PyrowaveGpuPipeline &) = delete;

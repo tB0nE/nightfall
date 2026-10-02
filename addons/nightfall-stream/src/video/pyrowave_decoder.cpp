@@ -3,6 +3,7 @@
 #include "nf_log.h"
 
 #include <chrono>
+#include <cstdlib>
 #include <string>
 
 namespace {
@@ -33,6 +34,12 @@ void pyrowave_warmup_device() {
         return;
     }
     g_warmup_attempted = true;
+    // FP16 wavelet maths and storage (PyroWave precision level 0) instead of its
+    // default level 1 (FP32 maths, FP32 storage for the lowest bands). Measured ~7%
+    // faster decode on Quest 3's Adreno 740. PyroWave reads this once, on first use
+    // of its configuration, so it must be set before any device or decoder exists.
+    // Doesn't override an explicitly set value.
+    setenv("PYROWAVE_PRECISION", "0", 0);
 #ifdef __ANDROID__
     // Our own VkDevice enables the zero-copy GPU output path; the default device
     // below only supports the CPU-readback path.

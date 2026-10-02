@@ -34,7 +34,7 @@ if ! XDG_DATA_HOME="$NIGHTFALL_TEST_DATA_ROOT/parse-user-data" "$GODOT" \
   echo "Godot project scan exited unsuccessfully" >&2
   exit 1
 fi
-if rg -q "SCRIPT ERROR:|Parse Error:" "$output_file"; then
+if grep -qE "SCRIPT ERROR:|Parse Error:" "$output_file"; then
   cat "$output_file" >&2
   echo "The Godot project scan reported a script failure" >&2
   exit 1

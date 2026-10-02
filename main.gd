@@ -2476,6 +2476,7 @@ func _process_stats(delta):
 		video_presentation.process_frame(new_video_frame)
 	var frame_sample := telemetry.record_frame(delta, new_video_frame)
 	if not frame_sample.is_empty():
+		settings_controller.on_performance_sample(frame_sample)
 		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
 		# FPS (consume_new_frame() can report at most one "yes" per
 		# script tick, no matter how many render-thread completions happened
@@ -2588,7 +2589,7 @@ func _process_performance_overlay(delta: float):
 				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
-		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
+		lines.append("Depth GPU priority: %s" % settings_controller.get_ai_3d_gpu_priority_label())
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))

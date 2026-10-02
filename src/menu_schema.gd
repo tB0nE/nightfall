@@ -61,7 +61,7 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"StreamRow2",
 				"options": [
-					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec used by the stream.", TARGET_SETTINGS, &"cycle_codec"),
+					_option(&"_ui_codec_btn", "Codec", "HEVC", "Video codec. PyroWave suits fast 2D streaming; avoid it with AI 3D.", TARGET_SETTINGS, &"cycle_codec"),
 					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
 				],
 			},

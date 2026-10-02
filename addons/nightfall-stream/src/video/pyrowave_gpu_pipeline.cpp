@@ -13,8 +13,11 @@
 
 namespace {
 
-const uint32_t kYuvToRgbaSpv[] =
-#include "pyrowave_yuv_to_rgba.spv.h"
+const uint32_t kFullscreenVertSpv[] =
+#include "pyrowave_fullscreen.vert.spv.h"
+;
+const uint32_t kYuvToRgbaFragSpv[] =
+#include "pyrowave_yuv_to_rgba.frag.spv.h"
 ;
 
 constexpr const char *kTag = "PyrowaveGpu";
@@ -29,6 +32,8 @@ struct VkGlobals {
     uint32_t queue_family = 0;
 
     PFN_vkCmdPipelineBarrier2 CmdPipelineBarrier2 = nullptr;
+    PFN_vkCmdBeginRendering CmdBeginRendering = nullptr;
+    PFN_vkCmdEndRendering CmdEndRendering = nullptr;
     PFN_vkGetSemaphoreFdKHR GetSemaphoreFdKHR = nullptr;
     PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR = nullptr;
     PFN_vkGetAndroidHardwareBufferPropertiesANDROID GetAndroidHardwareBufferPropertiesANDROID = nullptr;
@@ -211,11 +216,13 @@ pyrowave_device pyrowave_gpu_create_device() {
     vkGetDeviceQueue(g_vk.device, g_vk.queue_family, 0, &g_vk.queue);
 
     g_vk.CmdPipelineBarrier2 = (PFN_vkCmdPipelineBarrier2)vkGetDeviceProcAddr(g_vk.device, "vkCmdPipelineBarrier2");
+    g_vk.CmdBeginRendering = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(g_vk.device, "vkCmdBeginRendering");
+    g_vk.CmdEndRendering = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(g_vk.device, "vkCmdEndRendering");
     g_vk.GetSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)vkGetDeviceProcAddr(g_vk.device, "vkGetSemaphoreFdKHR");
     g_vk.ImportSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)vkGetDeviceProcAddr(g_vk.device, "vkImportSemaphoreFdKHR");
     g_vk.GetAndroidHardwareBufferPropertiesANDROID = (PFN_vkGetAndroidHardwareBufferPropertiesANDROID)
         vkGetDeviceProcAddr(g_vk.device, "vkGetAndroidHardwareBufferPropertiesANDROID");
-    if (!g_vk.CmdPipelineBarrier2 || !g_vk.GetSemaphoreFdKHR || !g_vk.ImportSemaphoreFdKHR ||
+    if (!g_vk.CmdPipelineBarrier2 || !g_vk.CmdBeginRendering || !g_vk.CmdEndRendering || !g_vk.GetSemaphoreFdKHR || !g_vk.ImportSemaphoreFdKHR ||
         !g_vk.GetAndroidHardwareBufferPropertiesANDROID) {
         NF_LOGE(kTag, "Missing Vulkan entry points");
         destroy_vk_device();
@@ -323,7 +330,7 @@ bool PyrowaveGpuPipeline::create_slot(Slot &slot) {
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+    info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(g_vk.device, &info, nullptr, &slot.image) != VK_SUCCESS) return false;
@@ -371,21 +378,18 @@ bool PyrowaveGpuPipeline::create_slot(Slot &slot) {
 }
 
 void PyrowaveGpuPipeline::write_descriptors(Slot &slot) {
-    VkDescriptorImageInfo images[4];
+    VkDescriptorImageInfo images[3];
+    VkWriteDescriptorSet writes[3];
     for (int i = 0; i < 3; i++) {
         images[i] = { sampler_, plane_views_[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    }
-    images[3] = { VK_NULL_HANDLE, slot.view, VK_IMAGE_LAYOUT_GENERAL };
-    VkWriteDescriptorSet writes[4];
-    for (int i = 0; i < 4; i++) {
         writes[i] = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
         writes[i].dstSet = slot.set;
         writes[i].dstBinding = (uint32_t)i;
         writes[i].descriptorCount = 1;
-        writes[i].descriptorType = i < 3 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &images[i];
     }
-    vkUpdateDescriptorSets(g_vk.device, 4, writes, 0, nullptr);
+    vkUpdateDescriptorSets(g_vk.device, 3, writes, 0, nullptr);
 }
 
 void PyrowaveGpuPipeline::completion_loop() {
@@ -419,6 +423,68 @@ void PyrowaveGpuPipeline::stop_completion_thread() {
     completion_stop_ = false;
 }
 
+bool PyrowaveGpuPipeline::create_conversion_pipeline() {
+    VkShaderModule modules[2] = {};
+    const uint32_t *code[2] = { kFullscreenVertSpv, kYuvToRgbaFragSpv };
+    const size_t code_size[2] = { sizeof(kFullscreenVertSpv), sizeof(kYuvToRgbaFragSpv) };
+    for (int i = 0; i < 2; i++) {
+        VkShaderModuleCreateInfo module_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        module_info.codeSize = code_size[i];
+        module_info.pCode = code[i];
+        if (vkCreateShaderModule(g_vk.device, &module_info, nullptr, &modules[i]) != VK_SUCCESS) {
+            if (modules[0]) vkDestroyShaderModule(g_vk.device, modules[0], nullptr);
+            return false;
+        }
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, modules[0], "main", nullptr },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, modules[1], "main", nullptr },
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo input_assembly = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkViewport viewport = { 0.0f, 0.0f, float(width_), float(height_), 0.0f, 1.0f };
+    VkRect2D scissor = { { 0, 0 }, { width_, height_ } };
+    VkPipelineViewportStateCreateInfo viewport_state = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    viewport_state.viewportCount = 1;
+    viewport_state.pViewports = &viewport;
+    viewport_state.scissorCount = 1;
+    viewport_state.pScissors = &scissor;
+    VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend_attachment = {};
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attachment;
+    const VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo rendering = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_format;
+
+    VkGraphicsPipelineCreateInfo pipeline_info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    pipeline_info.pNext = &rendering;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &raster;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pColorBlendState = &blend;
+    pipeline_info.layout = pipeline_layout_;
+    VkResult result = vkCreateGraphicsPipelines(g_vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_);
+    vkDestroyShaderModule(g_vk.device, modules[0], nullptr);
+    vkDestroyShaderModule(g_vk.device, modules[1], nullptr);
+    return result == VK_SUCCESS;
+}
+
 bool PyrowaveGpuPipeline::init(pyrowave_device device, pyrowave_decoder decoder, bool fragment_path,
                                int width, int height, TextureUploader *uploader,
                                FrameCompleteCallback on_complete) {
@@ -450,13 +516,12 @@ bool PyrowaveGpuPipeline::init(pyrowave_device device, pyrowave_decoder decoder,
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     if (vkCreateSampler(g_vk.device, &sampler_info, nullptr, &sampler_) != VK_SUCCESS) return fail("sampler");
 
-    VkDescriptorSetLayoutBinding bindings[4] = {};
+    VkDescriptorSetLayoutBinding bindings[3] = {};
     for (int i = 0; i < 3; i++) {
-        bindings[i] = { (uint32_t)i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
+        bindings[i] = { (uint32_t)i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr };
     }
-    bindings[3] = { 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
     VkDescriptorSetLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-    layout_info.bindingCount = 4;
+    layout_info.bindingCount = 3;
     layout_info.pBindings = bindings;
     if (vkCreateDescriptorSetLayout(g_vk.device, &layout_info, nullptr, &set_layout_) != VK_SUCCESS) {
         return fail("descriptor set layout");
@@ -469,26 +534,14 @@ bool PyrowaveGpuPipeline::init(pyrowave_device device, pyrowave_decoder decoder,
         return fail("pipeline layout");
     }
 
-    VkShaderModuleCreateInfo module_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
-    module_info.codeSize = sizeof(kYuvToRgbaSpv);
-    module_info.pCode = kYuvToRgbaSpv;
-    VkShaderModule module = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(g_vk.device, &module_info, nullptr, &module) != VK_SUCCESS) return fail("shader module");
-    VkComputePipelineCreateInfo pipeline_info = { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
-    pipeline_info.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
-                            VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr };
-    pipeline_info.layout = pipeline_layout_;
-    VkResult pipeline_result = vkCreateComputePipelines(g_vk.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_);
-    vkDestroyShaderModule(g_vk.device, module, nullptr);
-    if (pipeline_result != VK_SUCCESS) return fail("compute pipeline");
+    if (!create_conversion_pipeline()) return fail("conversion pipeline");
 
-    VkDescriptorPoolSize pool_sizes[2] = {
+    VkDescriptorPoolSize pool_sizes[1] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * kSlotCount },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kSlotCount },
     };
     VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     pool_info.maxSets = kSlotCount;
-    pool_info.poolSizeCount = 2;
+    pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = pool_sizes;
     if (vkCreateDescriptorPool(g_vk.device, &pool_info, nullptr, &descriptor_pool_) != VK_SUCCESS) {
         return fail("descriptor pool");
@@ -603,12 +656,12 @@ bool PyrowaveGpuPipeline::decode_frame(int64_t pts) {
     // reading them before this decode overwrites them (same queue, so a barrier suffices).
     VkImageMemoryBarrier2 pre[4];
     for (int i = 0; i < 3; i++) {
-        pre[i] = image_barrier(planes_[i], VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, 0, decode_stage, decode_access,
+        pre[i] = image_barrier(planes_[i], VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, decode_stage, decode_access,
                                VK_IMAGE_LAYOUT_UNDEFINED, decode_layout);
     }
     pre[3] = image_barrier(slot.image, VK_PIPELINE_STAGE_2_NONE, 0,
-                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                            VK_QUEUE_FAMILY_FOREIGN_EXT, g_vk.queue_family);
     barriers(slot.cmd, pre, 4);
 
@@ -625,19 +678,31 @@ bool PyrowaveGpuPipeline::decode_frame(int64_t pts) {
     VkImageMemoryBarrier2 mid[3];
     for (int i = 0; i < 3; i++) {
         mid[i] = image_barrier(planes_[i], decode_stage, decode_write,
-                               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                               VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                                decode_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     barriers(slot.cmd, mid, 3);
 
-    vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_);
-    vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &slot.set, 0, nullptr);
-    vkCmdDispatch(slot.cmd, (width_ + 7) / 8, (height_ + 7) / 8, 1);
+    VkRenderingAttachmentInfo attachment = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    attachment.imageView = slot.view;
+    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rendering = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+    rendering.renderArea = { { 0, 0 }, { width_, height_ } };
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &attachment;
+    g_vk.CmdBeginRendering(slot.cmd, &rendering);
+    vkCmdBindPipeline(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    vkCmdBindDescriptorSets(slot.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &slot.set, 0, nullptr);
+    vkCmdDraw(slot.cmd, 3, 1, 0, 0);
+    g_vk.CmdEndRendering(slot.cmd);
 
     VkImageMemoryBarrier2 release = image_barrier(slot.image,
-                                                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                                                  VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                                                   VK_PIPELINE_STAGE_2_NONE, 0,
-                                                  VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                                                   g_vk.queue_family, VK_QUEUE_FAMILY_FOREIGN_EXT);
     barriers(slot.cmd, &release, 1);
     vkEndCommandBuffer(slot.cmd);
@@ -659,7 +724,7 @@ bool PyrowaveGpuPipeline::decode_frame(int64_t pts) {
         release_fd = -1;
     }
 
-    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
     if (wait_released) {
         submit.waitSemaphoreCount = 1;
