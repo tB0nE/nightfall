@@ -14,6 +14,12 @@ repeated or discarded.
 | Auto, Quest 2 | EdgePad-256 | 256x256 -> 256x256 | Linear | OpenGL |
 | EdgePad-384 | EdgePad-384 | 384x384 -> 384x384 | Linear | User-selected |
 | EdgePad-256 | EdgePad-256 | 256x256 -> 256x256 | Linear | User-selected |
+| Any, Backend: CPU | EdgePad-256-CPU | 256x256 -> 256x256 | Linear | CPU (XNNPACK, no GPU delegate) |
+
+The "Backend" control's third state (`tools/quantize_zipdepth_cpu.py --size
+256`, int8 weights/float32 activations) overrides whatever Model is currently
+selected and runs EdgePad-256-CPU instead - the only AI 3D option on Android
+that uses zero GPU time, for when the stream and passthrough need all of it.
 
 Quest 3/3S Auto falls back to EdgePad-256/OpenGL for the current session if
 the EdgePad-384 OpenCL delegate fails. Quest 2 starts there directly because

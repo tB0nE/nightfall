@@ -2563,7 +2563,12 @@ func _process_performance_overlay(delta: float):
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
 			var depth_model_name := "ZipDepth-384 Standard"
-			if settings_controller.get_depth_model_index() == 18:
+			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:
+				# CPU twins share java_index with several GPU-labeled entries
+				# (e.g. 14 is also "Auto"/"ZipDepth-384-GPU"), so resolve the
+				# label directly instead of matching on java_index below.
+				depth_model_name = settings_controller.get_depth_model_label()
+			elif settings_controller.get_depth_model_index() == 18:
 				depth_model_name = "ZipDepth-256 Fastest"
 			elif settings_controller.get_depth_model_index() == 19:
 				depth_model_name = "ZipDepth-384 Standard-v2"

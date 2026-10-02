@@ -82,7 +82,7 @@ const AI3D_GPU_PRIORITY_STREAM := 0
 const AI3D_GPU_PRIORITY_ADAPTIVE := 1
 const AI3D_GPU_PRIORITY_AI_3D := 2
 var _ai3d_pacer := Ai3dAdaptivePacer.new()
-var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"]
+var ai_3d_gpu_api_labels: Array = ["OpenCL", "OpenGL"] # GPU delegate choice only; "CPU" (get_ai_3d_gpu_api_label()) is a third state layered on top, not index 2 here - it's not a GPU delegate backend at all.
 const MODEL_ZIPDEPTH_384 := 2
 const ANDROID_MODEL_AUTO := 9
 # Stable persisted/UI slots repurposed for the final Android quality tiers.
@@ -91,6 +91,8 @@ const ANDROID_MODEL_AUTO := 9
 const ANDROID_MODEL_STANDARD := 18
 const ANDROID_MODEL_EDGEPAD_256 := 19
 const ANDROID_MODEL_EDGEPAD_224 := 21
+const ANDROID_MODEL_EDGEPAD_256_CPU := 22
+const ANDROID_MODEL_EDGEPAD_384_CPU := 23
 const ANDROID_DEPTH_PROCESS_FULL := 5
 # Native renderer-only production mode: retain Full's occlusion/Newton warp,
 # but resize the reconstructed Standard depth with one linear texture sample
@@ -147,6 +149,11 @@ var ai_3d_models: Array = [
 	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-224", "java_index": 28, "gpu": true, "android": true, "linux": false},
+	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
+	# control's CPU option, not the locked Model list. _android_cpu_model_index()
+	# picks between them to match whatever Model is actually selected.
+	{"label": "EdgePad-256-CPU", "java_index": 29, "gpu": false, "android": true, "linux": false},
+	{"label": "EdgePad-384-CPU", "java_index": 14, "gpu": false, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -577,12 +584,25 @@ func is_android_ai3d_auto() -> bool:
 	return OS.get_name() == "Android" and main.settings.host.ai_3d_model == ANDROID_MODEL_AUTO
 
 func get_ai_3d_gpu_api_label() -> String:
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return "CPU"
 	return ai_3d_gpu_api_labels[get_ai_3d_gpu_api_effective()]
 
+# On Android this is the only exposed way to choose CPU inference (the "Type"
+# row with GPU/CPU is hidden, see ai3d_options_locked()) - cycles OpenCL ->
+# OpenGL -> CPU -> OpenCL. CPU runs the CPU twin matching whatever Model the
+# locked button shows (_android_cpu_model_index()), so AI 3D can run using no
+# GPU time at all; see get_depth_model_index()/_label().
 func cycle_ai_3d_gpu_api() -> void:
 	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
 		return
-	main.settings.host.ai_3d_gpu_api = 1 - main.settings.host.ai_3d_gpu_api
+	if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
+		main.settings.host.ai_3d_gpu_api = 0
+	elif main.settings.host.ai_3d_gpu_api == 0:
+		main.settings.host.ai_3d_gpu_api = 1
+	else:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_CPU
 	_save_setting(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	_schedule_ai_3d_commit()
 
@@ -648,7 +668,10 @@ func _locked_ai3d_model_index() -> int:
 func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	if not ai3d_options_locked():
 		return
-	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
+	# CPU is a real, persisted choice here (the "Backend" control's third
+	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
+	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
@@ -667,6 +690,8 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 func get_depth_model_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].java_index
 	if is_android_ai3d_auto():
 		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
@@ -680,9 +705,19 @@ func get_depth_model_index() -> int:
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
 
 func get_depth_model_label() -> String:
+	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
 		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
 	return ai_3d_models[main.settings.host.ai_3d_model].label
+
+# Which CPU model twin to run while Backend==CPU. Matches whatever Model the
+# locked button is actually showing, so switching Model while on CPU picks the
+# equivalent CPU tier instead of silently always running one fixed size.
+func _android_cpu_model_index() -> int:
+	if main.settings.host.ai_3d_model == ANDROID_MODEL_STANDARD:
+		return ANDROID_MODEL_EDGEPAD_384_CPU
+	return ANDROID_MODEL_EDGEPAD_256_CPU
 
 # Android production reconstruction is part of the tier definition rather
 # than a hidden debug preference. Both EdgePad models retain ZipDepth's full
@@ -706,6 +741,11 @@ func get_depth_process_stage() -> int:
 func get_depth_backend_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	# PyroWave's own decode already costs real GPU time every frame (it's a
+	# Vulkan compute codec) - Auto pairs it with CPU-only inference on every
+	# headset instead of adding GPU-delegate depth work on top.
+	if OS.get_name() == "Android" and is_android_ai3d_auto() and main.settings.codec_preference == 4:
+		return AI3D_BACKEND_CPU
 	# 2026-08-30: Auto follows the Type control the same as Fast/Standard do -
 	# it was never meant to force GPU unconditionally, just default to it
 	# (main.settings.host.ai_3d_backend_pref's own default value). AUTO_TABLE's model_idx
