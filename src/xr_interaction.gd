@@ -947,6 +947,11 @@ func _apply_ui_hover_states():
 func _point_in_ui_rect(p: Vector2, btn: Button) -> bool:
 	if p.x < 0 or p.y < 0:
 		return false
+	# Buttons on the scrolling Settings page only count where they are
+	# visible inside the scroll area (see UIController._make_scroll_friendly()).
+	var clip = btn.get_meta(&"nightfall_clip", null)
+	if clip is Control and is_instance_valid(clip) and not clip.get_global_rect().has_point(p):
+		return false
 	var gp = btn.global_position
 	return p.x >= gp.x and p.x <= gp.x + btn.size.x \
 		and p.y >= gp.y and p.y <= gp.y + btn.size.y
