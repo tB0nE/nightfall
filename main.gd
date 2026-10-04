@@ -1157,6 +1157,8 @@ func _on_stream_started():
 	# call when a restart is about to happen, relying on this one instead,
 	# so the mode is only ever applied against a session that's actually live.
 	settings_controller.apply_stereo()
+	# Meteor host depth is offered per stream (see meteor_depth_selected()).
+	ui_controller.update_option_btn(_ui_3d_btn, settings_controller.get_depth_model_label())
 	if not was_restarting:
 		ui_visible = false
 		_set_ui_visible(false)

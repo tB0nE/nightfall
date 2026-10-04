@@ -150,6 +150,12 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
 	if not capture_outputs.is_empty():
 		options["capture_outputs"] = capture_outputs
+	_meteor = {}
+	if not local_capture_mode and not _meteor_bypass:
+		_meteor = await _probe_meteor(host_id)
+	_meteor_bypass = false
+	if not _meteor.is_empty():
+		options[MeteorClient.HTTPS_PORT_OPTION] = int(_meteor["ports"]["https"])
 	main._ui_status_label.text = "Launching stream..."
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
@@ -186,6 +192,41 @@ func _compute_capture_outputs() -> String:
 		labels.append(m.label)
 	return ",".join(labels)
 
+# Nightfall Meteor's port map when the current launch goes through it (see
+# MeteorClient), else {}.
+var _meteor: Dictionary = {}
+# Set after a launch through Meteor fails, so the retry goes straight to Sunshine.
+var _meteor_bypass := false
+# The address Meteor answered on, for its depth port.
+var _meteor_address := ""
+
+## Meteor's host depth offer for the current stream (see
+## MeteorClient.depth_info()), or {} when there's none.
+func meteor_depth_info() -> Dictionary:
+	return MeteorClient.depth_info(_meteor)
+
+func meteor_address() -> String:
+	return _meteor_address
+
+func _probe_meteor(host_id: int) -> Dictionary:
+	var cm = _b().get_computer_manager()
+	for host in _b().get_hosts():
+		if host.get("id") != host_id:
+			continue
+		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
+		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
+		if not info.is_empty():
+			_meteor_address = address
+			var ports: Dictionary = info["ports"]
+			main._log("[METEOR] Found Nightfall Meteor %s on %s; streaming through it (https %d, rtsp %d, video %d)" % [
+				info.get("version", "?"), address, int(ports.get("https", 0)), int(ports.get("rtsp", 0)), int(ports.get("video", 0))])
+			var depth := MeteorClient.depth_info(info)
+			if not depth.is_empty():
+				main._log("[METEOR] Host depth offered: %s %dx%d on port %d" % [
+					depth.get("model", "?"), int(depth["width"]), int(depth["height"]), int(depth["port"])])
+		return info
+	return {}
+
 # Address the current stream was launched against (USB Link or network).
 var stream_host_address: String = ""
 
@@ -208,6 +249,14 @@ func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# Meteor is experimental: never let it cost a working connection (or
+		# trigger the stale-pairing re-pair below). Retry once without it.
+		if not _meteor.is_empty():
+			main._log("[METEOR] Launch through Meteor failed; retrying straight to Sunshine")
+			_meteor = {}
+			_meteor_bypass = true
+			start_stream(_current_host_id, _current_app_id)
+			return
 		# Mid-reconnect (e.g. cable still unplugged): hand the failure back to
 		# the native retry schedule instead of tearing the session down.
 		if main.session_lifecycle.is_reconnecting() and _b()._v2:
@@ -269,6 +318,14 @@ func _on_v2_launch_response(response: Dictionary):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
 	server_info["rtsp_session_url"] = response.get("session_url", "")
+	if not _meteor.is_empty():
+		var session_url: String = server_info["rtsp_session_url"]
+		server_info["rtsp_session_url"] = MeteorClient.route_rtsp_url(session_url, _meteor)
+		main._log("[METEOR] RTSP %s -> %s" % [session_url, server_info["rtsp_session_url"]])
+		if session_url.begins_with("rtspenc"):
+			# Meteor can't rewrite the UDP ports inside encrypted RTSP, so
+			# video and audio would go straight to Sunshine.
+			main._log("[METEOR] Sunshine is using encrypted RTSP; stream ports won't go through Meteor")
 	server_info["server_app_version"] = response.get("app_version", "")
 	server_info["server_gfe_version"] = response.get("gfe_version", "")
 

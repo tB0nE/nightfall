@@ -1,6 +1,9 @@
 # Microphone Passthrough: Implementation Plan
 
-> Status: Active proposal
+> Status: Superseded (2026-10-03) by [meteor-microphone.md](meteor-microphone.md).
+> Only Apollo accepts microphone audio inside the Moonlight protocol, so
+> passthrough moves into Nightfall Meteor, which works with every host. The
+> partial work is on branch `apollo-microphone-passthrough`.
 
 ## Overview
 

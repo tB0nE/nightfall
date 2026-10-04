@@ -553,8 +553,25 @@ func reset_ai_3d_effect_settings():
 	main.ui_controller.update_stereo_shader()
 	_schedule_ai_3d_commit()
 
+# Stands for Nightfall Meteor's host depth in the Model cycle. Not an index
+# into ai_3d_models: Meteor is only offered per stream, so it never replaces
+# the saved on-device model (see meteor_depth_selected()).
+const MODEL_METEOR := -1
+
+## The PC's Nightfall Meteor offered host depth for the current stream.
+func meteor_depth_offered() -> bool:
+	return main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+
+## Meteor depth is chosen automatically whenever it's offered, unless the
+## user picked an on-device model while it was (per host, until they pick
+## Meteor again). depth_estimator.gd falls back to on-device depth while
+## Meteor's maps aren't arriving.
+func meteor_depth_selected() -> bool:
+	return meteor_depth_offered() and not main.settings.host.ai_3d_meteor_declined
+
 # Cycles only within the entries matching the current Type
 # (main.settings.host.ai_3d_backend_pref) - see _ai_3d_model_indices_for_type() above.
+# Meteor comes first while it's offered.
 func cycle_ai_3d_model():
 	if not _ai_3d_supported():
 		return
@@ -563,9 +580,18 @@ func cycle_ai_3d_model():
 	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
-	var pos = candidates.find(main.settings.host.ai_3d_model)
-	main.settings.host.ai_3d_model = candidates[(maxi(pos, -1) + 1) % candidates.size()]
-	_save_setting(main._ui_3d_btn, ai_3d_models[main.settings.host.ai_3d_model].label)
+	var offered := meteor_depth_offered()
+	if offered:
+		candidates = [MODEL_METEOR] + candidates
+	var pos = 0 if meteor_depth_selected() else candidates.find(main.settings.host.ai_3d_model)
+	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
+	if next == MODEL_METEOR:
+		main.settings.host.ai_3d_meteor_declined = false
+	else:
+		main.settings.host.ai_3d_model = next
+		if offered:
+			main.settings.host.ai_3d_meteor_declined = true
+	_save_setting(main._ui_3d_btn, get_depth_model_label())
 	if main._ui_3d_gpu_api_btn:
 		main.ui_controller.update_option_btn(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	main.ui_controller.update_3d_btn_state()
@@ -705,6 +731,8 @@ func get_depth_model_index() -> int:
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
 
 func get_depth_model_label() -> String:
+	if meteor_depth_selected():
+		return "Meteor (%s)" % main.stream_manager.meteor_depth_info().get("model", "PC")
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:

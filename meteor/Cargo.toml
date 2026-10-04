@@ -1,0 +1,27 @@
+[package]
+name = "nightfall-meteor"
+version = "0.1.0"
+edition = "2024"
+description = "Nightfall companion app for the Sunshine host PC"
+license = "GPL-3.0-only"
+
+[dependencies]
+env_logger = "0.11.11"
+libloading = "0.9"
+log = "0.4.34"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"] }
+png = "0.18"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+socket2 = "0.6"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
+toml = "1.1.6"
+zstd = "0.13"
+
+# The tray icon is a StatusNotifierItem on Linux. Windows support comes later.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", features = ["tokio"] }
+
+[profile.release]
+strip = true
+lto = true

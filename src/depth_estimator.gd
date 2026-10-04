@@ -50,6 +50,19 @@ var _gpu_boost_refresh_timer: float = 0.0
 var _native_depth_capture_active: bool = false
 var _direct_stream_source_bound: bool = false
 var _native_renderer_active: bool = false
+# Nightfall Meteor host depth (see settings_controller.meteor_depth_selected()).
+# While its maps arrive, depth_texture holds them and on-device capture and
+# inference stop; if they stop, on-device depth takes over again.
+var meteor := MeteorDepthReceiver.new()
+var _meteor_in_use := false
+var _meteor_perf_maps := 0
+var _meteor_perf_bytes := 0
+var _meteor_guide_timer := 0.0
+# The native renderer only applies depth when the capture's guide texture
+# exists (fast_xr_renderer_android.cpp's has_depth). The Quest's production
+# stage samples depth linearly and doesn't read the guide's pixels, so a slow
+# capture keeps one alive without running the model on it.
+const METEOR_GUIDE_INTERVAL_SEC := 0.5
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -302,7 +315,7 @@ func set_separation_pct(pct: int):
 # bindings valid instead of needing to re-push a new texture reference
 # everywhere depth_texture is used.
 func sync_model_size():
-	if not main.stream_backend or not depth_viewport or not depth_texture:
+	if _meteor_in_use or not main.stream_backend or not depth_viewport or not depth_texture:
 		return
 	var new_width = main.stream_backend.get_depth_model_width()
 	var new_height = main.stream_backend.get_depth_model_height()
@@ -451,7 +464,8 @@ func process(delta: float):
 	# half of this decision: boost before/during normal GPU inference, but drop
 	# back to sustained-high once that GPU path has stopped for the session.
 	var backend_failed = effective_gpu and not main.stream_backend.get_depth_backend_status().is_empty()
-	var should_boost = enabled and effective_gpu and not backend_failed and main.is_streaming
+	_update_meteor()
+	var should_boost = enabled and effective_gpu and not backend_failed and main.is_streaming and not _meteor_in_use
 	if should_boost:
 		_gpu_boost_refresh_timer += delta
 		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
@@ -477,7 +491,9 @@ func process(delta: float):
 			upsample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-	if main.stream_backend.has_method("submit_depth_frame"):
+	if _meteor_in_use:
+		_keep_native_guide(delta)
+	elif main.stream_backend.has_method("submit_depth_frame"):
 		var native_capture_available: bool = (
 			_platform == "Android"
 			and main.stream_backend.has_method("supports_native_depth_capture")
@@ -533,7 +549,7 @@ func process(delta: float):
 						_perf_submit_usec += Time.get_ticks_usec() - submit_start
 						_perf_submitted += 1
 
-	if main.stream_backend.has_method("get_depth_map"):
+	if not _meteor_in_use and main.stream_backend.has_method("get_depth_map"):
 		var depth_bytes = main.stream_backend.get_depth_map()
 		if depth_bytes != null and depth_bytes.size() == model_width * model_height:
 			depth_source_age_ms = maxf(main.stream_backend.get_depth_last_age_ms(), 0.0)
@@ -555,7 +571,19 @@ func process(delta: float):
 				main._log("[DEPTH] Size mismatch: got %d bytes, expected %d (model=%dx%d) - texture update skipped" % [depth_bytes.size(), model_width * model_height, model_width, model_height])
 
 	_perf_window += delta
-	if _perf_window >= 1.0:
+	if _perf_window >= 1.0 and meteor.is_active():
+		var received := meteor.maps_received - _meteor_perf_maps
+		var mbit := float(meteor.bytes_received - _meteor_perf_bytes) * 8.0 / 1000000.0 / _perf_window
+		main._log("[METEOR-DEPTH] %s maps=%.1f/s received=%.1f/s %.1fMbit/s host=%.2fms frame=%d skipped=%d size=%dx%d" % [
+			"in use" if _meteor_in_use else "not delivering", float(_perf_updates) / _perf_window,
+			float(received) / _perf_window, mbit, meteor.host_latency_ms, meteor.frame_number,
+			meteor.maps_skipped, meteor.width, meteor.height])
+		_meteor_perf_maps = meteor.maps_received
+		_meteor_perf_bytes = meteor.bytes_received
+	if _perf_window >= 1.0 and _meteor_in_use:
+		_perf_window = 0.0
+		_perf_updates = 0
+	elif _perf_window >= 1.0:
 		var capture_ms = float(_perf_capture_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var submit_ms = float(_perf_submit_usec) / maxf(float(_perf_submitted), 1.0) / 1000.0
 		var capture_value = "async-native" if _native_depth_capture_active else "%.2fms" % capture_ms
@@ -572,3 +600,65 @@ func process(delta: float):
 		_perf_submit_usec = 0
 		_perf_submitted = 0
 		_perf_updates = 0
+
+# Runs every frame: connects to Meteor's depth port while Meteor depth is
+# selected and AI 3D is on during a stream, and applies each new map.
+func _update_meteor() -> void:
+	var wanted: bool = enabled and main.is_streaming and depth_texture != null \
+		and main.settings_controller.meteor_depth_selected()
+	if not wanted:
+		if meteor.is_active():
+			meteor.stop()
+			main._log("[METEOR] Host depth stopped")
+		_set_meteor_in_use(false)
+		return
+	if not meteor.is_active():
+		var info: Dictionary = main.stream_manager.meteor_depth_info()
+		meteor.start(main.stream_manager.meteor_address(), int(info["port"]))
+		main._log("[METEOR] Connecting to host depth on %s:%d" % [meteor.host, meteor.port])
+	if meteor.poll():
+		_apply_meteor_map()
+	_set_meteor_in_use(meteor.is_delivering())
+
+func _apply_meteor_map() -> void:
+	if meteor.width != model_width or meteor.height != model_height:
+		model_width = meteor.width
+		model_height = meteor.height
+		depth_texture.set_image(Image.create(model_width, model_height, false, Image.FORMAT_L8))
+	var image := Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, meteor.map)
+	# Meteor's maps are top row first. On-device maps from the native GLES
+	# capture come back bottom row first, and that's what the renderer expects
+	# (the viewport fallback flips its input instead, so its maps are top first).
+	if _native_capture_supported():
+		image.flip_y()
+	depth_texture.update(image)
+	# Maps arrive about when their frame does; exact matching is Phase 3.
+	depth_source_age_ms = 0.0
+	depth_revision += 1
+	_perf_updates += 1
+
+func _set_meteor_in_use(value: bool) -> void:
+	if value == _meteor_in_use:
+		return
+	_meteor_in_use = value
+	if value:
+		main._log("[METEOR] Using host depth from Meteor; on-device depth paused")
+	else:
+		if meteor.is_active():
+			main._log("[METEOR] Host depth not arriving; using on-device depth")
+		# Back to the on-device model's size.
+		sync_model_size()
+
+func _native_capture_supported() -> bool:
+	return _platform == "Android" and main.stream_backend.has_method("supports_native_depth_capture") \
+		and main.stream_backend.supports_native_depth_capture()
+
+func _keep_native_guide(delta: float) -> void:
+	if not _native_capture_supported():
+		return
+	# Drain finished captures; Meteor supplies the depth.
+	main.stream_backend.consume_native_depth_capture()
+	_meteor_guide_timer -= delta
+	if _meteor_guide_timer <= 0.0:
+		_meteor_guide_timer = METEOR_GUIDE_INTERVAL_SEC
+		main.stream_backend.request_native_depth_capture(model_input_width, model_input_height)

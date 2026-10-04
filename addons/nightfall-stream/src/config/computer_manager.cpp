@@ -524,6 +524,12 @@ void NightfallComputerManager::establish_stream(int host_id, int app_id, Diction
             break;
         }
     }
+    // Nightfall Meteor (meteor/) answered the client's probe, so the launch
+    // goes through its port, which forwards to Sunshine's (see meteor_client.gd).
+    if (options.has("meteor_https_port")) {
+        port = options["meteor_https_port"];
+        options.erase("meteor_https_port");
+    }
 
     if (ip.is_empty()) {
         if (callback.is_valid()) {
