@@ -35,8 +35,74 @@ func build_welcome_ui():
 	build_server_screen(screens)
 	build_ip_screen(screens)
 	build_pin_screen(screens)
+	build_language_picker(root)
 
 	show_welcome_screen("welcome")
+
+# Language dropdown in the top-right corner, so a new user can switch language
+# before reaching the in-stream Settings page. It is a plain grid of buttons rather
+# than an OptionButton, whose popup is a separate window that the projected XR
+# pointer can't reach.
+func build_language_picker(root: Control):
+	var picker = VBoxContainer.new()
+	picker.name = "LanguagePicker"
+	picker.add_theme_constant_override("separation", 4)
+	picker.anchor_left = 1.0
+	picker.anchor_right = 1.0
+	picker.offset_left = -720
+	picker.offset_right = -24
+	picker.offset_top = 24
+	picker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(picker)
+
+	var toggle = Button.new()
+	toggle.name = "LanguageToggle"
+	toggle.custom_minimum_size = Vector2(260, 56)
+	toggle.add_theme_font_size_override("font_size", 24)
+	toggle.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	toggle.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	toggle.size_flags_horizontal = Control.SIZE_SHRINK_END
+	picker.add_child(toggle)
+
+	var options = GridContainer.new()
+	options.name = "LanguageOptions"
+	options.columns = 3
+	options.add_theme_constant_override("h_separation", 6)
+	options.add_theme_constant_override("v_separation", 6)
+	options.size_flags_horizontal = Control.SIZE_SHRINK_END
+	options.visible = false
+	options.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	picker.add_child(options)
+	for language in Localization.LANGUAGES:
+		var code: String = language["code"]
+		var option = Button.new()
+		option.text = language["name"]
+		option.custom_minimum_size = Vector2(228, 56)
+		option.add_theme_font_size_override("font_size", 24)
+		option.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		options.add_child(option)
+		option.pressed.connect(func():
+			options.visible = false
+			main.settings_controller.set_language(code)
+		)
+	toggle.pressed.connect(func(): options.visible = not options.visible)
+	_update_language_toggle()
+
+func _update_language_toggle():
+	var toggle = main.welcome_viewport.get_node_or_null("WelcomeRoot/LanguagePicker/LanguageToggle")
+	if toggle:
+		toggle.text = "%s  \u25BC" % Localization.language_name(Localization.current())
+
+## Labels and buttons translate themselves; this refreshes text composed at
+## runtime after a language change.
+func retranslate():
+	_update_language_toggle()
+	var app_btn = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/WelcomeScreen/WelcomeAppBtn")
+	if app_btn:
+		var app_name = "Desktop"
+		if not main._available_apps.is_empty():
+			app_name = main._available_apps[main._selected_app_idx].get("name", "Desktop")
+		app_btn.text = Localization.t("App: %s") % app_name
 
 func build_welcome_screen(parent: Node):
 	var screen = VBoxContainer.new()
@@ -80,6 +146,7 @@ func build_welcome_screen(parent: Node):
 
 	var host_label = Label.new()
 	host_label.name = "WelcomeHostName"
+	host_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 	host_label.add_theme_font_size_override("font_size", 32)
 	host_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	host_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -87,6 +154,7 @@ func build_welcome_screen(parent: Node):
 
 	var ip_label = Label.new()
 	ip_label.name = "WelcomeHostIP"
+	ip_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 	ip_label.add_theme_font_size_override("font_size", 20)
 	ip_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.4))
 	ip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -136,7 +204,7 @@ func build_welcome_screen(parent: Node):
 	app_btn.custom_minimum_size = Vector2(400, 60)
 	app_btn.add_theme_font_size_override("font_size", 24)
 	app_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	app_btn.text = "App: Desktop"
+	app_btn.text = Localization.t("App: %s") % "Desktop"
 	app_btn.visible = false
 	screen.add_child(app_btn)
 
@@ -464,6 +532,7 @@ func build_pin_screen(parent: Node):
 	screen.add_child(pin_spacer)
 
 	var pin_label = Label.new()
+	pin_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 	pin_label.name = "PINLabel"
 	pin_label.add_theme_font_size_override("font_size", 80)
 	pin_label.add_theme_color_override("font_color", Color(0.4, 0.7, 1, 1))
@@ -588,7 +657,7 @@ func update_welcome_info():
 		if main.current_host_id >= 0:
 			query_app_list()
 		elif not main._available_apps.is_empty():
-			if app_btn: app_btn.text = "App: %s" % main._available_apps[main._selected_app_idx].get("name", "Desktop")
+			if app_btn: app_btn.text = Localization.t("App: %s") % main._available_apps[main._selected_app_idx].get("name", "Desktop")
 	else:
 		if has_hosts:
 			if connect_btn: connect_btn.text = "Connect"
@@ -658,6 +727,7 @@ func browse_mdns():
 			btn.add_theme_font_size_override("font_size", 22)
 			btn.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0, 1.0))
 			btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			btn.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 			btn.text = friendly + "  " + ip
 			var btn_style = StyleBoxFlat.new()
 			btn_style.set_bg_color(Color(0.15, 0.18, 0.25, 0.9))
@@ -735,6 +805,7 @@ func populate_server_list():
 		btn.custom_minimum_size = Vector2(400, 80)
 		btn.add_theme_font_size_override("font_size", 36)
 		btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		btn.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 		btn.text = display
 		server_list.add_child(btn)
 		btn.pressed.connect(func():
@@ -786,7 +857,7 @@ func cycle_app():
 		return
 	var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
 	if app_btn:
-		app_btn.text = "App: %s" % app_name
+		app_btn.text = Localization.t("App: %s") % app_name
 
 # Hosts list apps in their own order (vibepollo also pulls in Lutris games), and
 # the first entry is preselected - so pin Desktop, then Steam, ahead of the rest.
@@ -824,7 +895,7 @@ func query_app_list():
 			if screens:
 				var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
 				if app_btn:
-					app_btn.text = "App: %s" % app_name
+					app_btn.text = Localization.t("App: %s") % app_name
 					app_btn.visible = true
 	)
 

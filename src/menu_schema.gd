@@ -15,8 +15,8 @@ static func get_tab_buttons() -> Array:
 		_tab_button(&"_tab_btn_picture", "Picture", 4, "Adjust the streamed image."),
 		# Monitors remains visible as a disabled preview of the feature.
 		_tab_button(&"_tab_btn_monitors", "Monitors", 5, "Configure physical and virtual monitor layouts. Coming soon.", true, true, 0.3),
-		# Advanced is retained for future migrations but is not user-facing.
-		_tab_button(&"_tab_btn_advanced", "Advanced", 6, "Configure connection and diagnostic options.", false, true),
+		# Settings has no tab button: the gear in the top bar opens it.
+		_tab_button(&"_tab_btn_settings", "Settings", 6, "Configure language, diagnostics, and connection options.", false, true),
 	]
 
 static func get_tabs() -> Array:
@@ -113,23 +113,37 @@ static func get_tabs() -> Array:
 		],
 	},
 	{
-		"id": &"advanced",
-		"node_name": &"TabAdvanced",
+		# Unlike the other tabs, Settings scrolls, so it can grow past the
+		# two rows that fit the menu. Each row may carry a section title.
+		"id": &"settings",
+		"node_name": &"TabSettings",
+		"scrollable": true,
 		"rows": [
 			{
-				"node_name": &"AdvancedRow1",
+				"node_name": &"SettingsDiagnosticsRow",
+				"title": "Diagnostics",
 				"options": [
-					_option(&"_ui_reconnect_btn", "Auto-Reconnect", "On", "Automatically attempt to restore an interrupted stream.", TARGET_SETTINGS, &"cycle_auto_reconnect"),
-					_option(&"_ui_idle_btn", "Idle Disconnect", "Off", "Disconnect after the selected period without input.", TARGET_SETTINGS, &"cycle_idle_timeout"),
+					_option(&"_ui_log_btn", "Save Log", "", "Save diagnostic logs to Download/Nightfall.", TARGET_UI, &"on_export_logs_pressed", OS.get_name() == "Android"),
+					_option(&"_ui_stats_btn", "Stats", "Off", "Show or hide live stream performance statistics.", TARGET_UI, &"on_stats_toggled"),
+				] + ([] if OS.get_name() == "Android" else [
+					# Android exposes this diagnostic on the AI 3D tab. The
+					# desktop copy stays hidden, as it was on Advanced.
+					_option(&"_ui_3d_debug_btn", "3D Debug", "Off", "Display intermediate AI depth data for troubleshooting.", TARGET_UI, &"on_ai_3d_debug_toggled", false, true),
+				]),
+			},
+			{
+				"node_name": &"SettingsGeneralRow",
+				"title": "General",
+				"options": [
+					_option(&"_ui_language_btn", "Language", "English", "Choose the language used by Nightfall's menus.", TARGET_UI, &"on_language_pressed"),
 				],
 			},
 			{
-				"node_name": &"AdvancedRow2",
-				# Android exposes this diagnostic directly on the AI 3D tab.
-				# Retain the hidden Advanced copy on desktop for now so its
-				# existing menu structure remains unchanged.
-				"options": [] if OS.get_name() == "Android" else [
-					_option(&"_ui_3d_debug_btn", "3D Debug", "Off", "Display intermediate AI depth data for troubleshooting.", TARGET_UI, &"on_ai_3d_debug_toggled", false, true),
+				"node_name": &"SettingsConnectionRow",
+				"title": "Connection",
+				"options": [
+					_option(&"_ui_reconnect_btn", "Auto-Reconnect", "On", "Automatically attempt to restore an interrupted stream.", TARGET_SETTINGS, &"cycle_auto_reconnect"),
+					_option(&"_ui_idle_btn", "Idle Disconnect", "Off", "Disconnect after the selected period without input.", TARGET_SETTINGS, &"cycle_idle_timeout"),
 				],
 			},
 		],

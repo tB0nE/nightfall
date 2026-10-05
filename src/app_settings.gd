@@ -33,6 +33,8 @@ const DEFAULT_QUICK_START_ENABLED := false
 const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
+# Empty means "follow the OS language" (see Localization.resolve_language()).
+const DEFAULT_LANGUAGE := ""
 
 var bezel_enabled: bool = DEFAULT_BEZEL_ENABLED
 var passthrough_enabled: bool = DEFAULT_PASSTHROUGH_ENABLED
@@ -56,6 +58,9 @@ var quick_start_enabled: bool = DEFAULT_QUICK_START_ENABLED
 var idle_timeout_min: int = DEFAULT_IDLE_TIMEOUT_MIN
 var pipewire_restore_token: String = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
+# Not reset with the other general settings: a settings reset should not
+# switch the menus to another language.
+var language: String = DEFAULT_LANGUAGE
 
 func reset_display() -> void:
 	bezel_enabled = DEFAULT_BEZEL_ENABLED
