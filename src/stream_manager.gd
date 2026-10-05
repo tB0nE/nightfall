@@ -102,6 +102,17 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		# param). Same bitrate at fewer pixels means MORE bits per pixel.
 		var bitrate_ref = main.compute_requested_resolution(false)
 		bitrate = _auto_bitrate(bitrate_ref.x, bitrate_ref.y)
+		if main.settings.codec_preference == 4:
+			# PyroWave is intra-only (every frame is a full I-frame, no
+			# inter-frame compression), so it needs substantially more
+			# bitrate than HEVC for equivalent quality - confirmed starved
+			# at HEVC's auto value (80Mbps at 1440p120): host-side testing
+			# needed ~200Mbps (2.5x) to look right. 3x wasn't enough headroom
+			# in practice - frames started dropping fast at higher
+			# resolution/fps, so bumped to 4x. Bypasses the normal
+			# auto-bitrate ceiling since that cap was tuned for
+			# inter-frame codecs.
+			bitrate = clampi(bitrate * 4, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS * 4)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
 			bitrate_ref.x, bitrate_ref.y, main.settings.host.stream_fps, float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
@@ -175,10 +186,34 @@ func _compute_capture_outputs() -> String:
 		labels.append(m.label)
 	return ",".join(labels)
 
+# Address the current stream was launched against (USB Link or network).
+var stream_host_address: String = ""
+
+# "USB Link", "Wi-Fi", "Ethernet", or "Network" when the platform can't tell.
+func connection_label() -> String:
+	if stream_host_address.to_lower().begins_with("fe80:"):
+		return "USB Link"
+	var bridge = main.settings_controller._usb_link_bridge()
+	var transport: String = bridge.get_active_transport() if bridge and bridge.has_method("get_active_transport") else ""
+	return transport if not transport.is_empty() else "Network"
+
+# Native auto-reconnect asks for a full relaunch rather than replaying the old
+# RTSP session (see NightfallStream::set_reconnect_via_launch).
+func relaunch_for_reconnect():
+	if not main.session_lifecycle.is_reconnecting():
+		return
+	await start_stream(_current_host_id, _current_app_id)
+
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# Mid-reconnect (e.g. cable still unplugged): hand the failure back to
+		# the native retry schedule instead of tearing the session down.
+		if main.session_lifecycle.is_reconnecting() and _b()._v2:
+			main._log("[RECONNECT] Relaunch failed, scheduling next attempt")
+			_b()._v2.retry_reconnect()
+			return
 		# establish_stream() failed before a decoder session existed, so there
 		# will be no stream_terminated callback to restore the welcome viewport.
 		# Undo start_stream()'s eager resolution change here; otherwise the
@@ -219,13 +254,17 @@ func _on_v2_launch_response(response: Dictionary):
 		"hevc": (scm & 0x0300) != 0,
 		"av1": (scm & 0x030000) != 0,
 		"raw": (scm & 0x01000000) != 0,
+		# SCM_PYROWAVE (docs/plans/active/pyrowave-codec.md) - see this
+		# project's moonlight-common-c overlay patch, 0003-add-pyrowave-codec.patch.
+		"pyrowave": (scm & 0x00800000) != 0,
 	}
-	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s" % [
+	main._log("[CODEC] Server SCM=0x%x: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		scm,
 		str(main._server_codec_support.get("h264", false)),
 		str(main._server_codec_support.get("hevc", false)),
 		str(main._server_codec_support.get("av1", false)),
-		str(main._server_codec_support.get("raw", false))])
+		str(main._server_codec_support.get("raw", false)),
+		str(main._server_codec_support.get("pyrowave", false))])
 	if not main.settings_controller.is_codec_available(main.settings.codec_preference):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
@@ -257,6 +296,12 @@ func _on_v2_launch_response(response: Dictionary):
 	var codec_pref = main.settings.codec_preference
 	if codec_pref == 3:
 		stream_config["supported_video_formats"] = 0x10000
+	elif codec_pref == 4:
+		# PyroWave (docs/plans/active/pyrowave-codec.md) - VIDEO_FORMAT_PYROWAVE.
+		# Not a FfmpegDecoder-probed family like H264/HEVC/AV1 above (PyroWave's
+		# decode path on Android is MediaCodec-free, see stream_connection.cpp's
+		# _cb_decoder_setup()), so there's nothing to probe - request it directly.
+		stream_config["supported_video_formats"] = 0x01000000
 	else:
 		var family_map = [1, 2, 3]
 		stream_config["supported_video_formats"] = _b().probe_video_format(family_map[codec_pref], false)
@@ -326,6 +371,7 @@ func _on_v2_launch_response(response: Dictionary):
 		main._log("[STREAM] Launch response had no reconnectable host address")
 		main.restore_after_failed_connect("Host address missing from launch response")
 		return
+	stream_host_address = ip
 	_b().start_stream_v2(ip, server_info, stream_config, false)
 	main._log("[STREAM] start_stream called (%dx%d@%d %.1fMbps)" % [w, h, fps, float(br) / 1000.0])
 
@@ -495,7 +541,7 @@ func on_pair_pressed():
 	var pair_port: int = parsed[1]
 	var paired_host_id = -1
 	for h in _b().get_hosts():
-		if h.has("localaddress") and h.localaddress == ip:
+		if main.host_matches_address(h, ip):
 			paired_host_id = h.id
 			break
 	if paired_host_id != -1:
@@ -525,6 +571,12 @@ func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
 	if not success:
 		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
+		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,
+		# so an instant refusal over the cable almost always means this.
+		var pair_ip: String = main.parse_ip_port(main.get_node("%IPInput").text)[0]
+		if pair_ip.to_lower().begins_with("fe80:") and str(_msg).contains("Could not connect"):
+			main._ui_status_label.text = "Server refused the USB connection.\nSet address_family = both in its Sunshine config and restart it."
+			main._log("[PAIR] USB Link host refused connection - Sunshine likely listening on IPv4 only")
 		main.welcome_screen.show_welcome_screen("server")
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
@@ -554,6 +606,16 @@ func on_pair_completed(success: bool, _msg: String):
 	# created/updated. Fall back to bare-IP matching only if unique_id is
 	# unavailable (e.g. an older cached build without get_last_paired_unique_id).
 	var unique_id = _b().get_last_paired_unique_id() if _b().has_method("get_last_paired_unique_id") else ""
+	# Reached an already-paired machine by a new path (e.g. over USB Link):
+	# continue under its saved identity so per-host settings stay shared.
+	if not unique_id.is_empty():
+		for h in _b().get_hosts():
+			if h.get("server_unique_id", "") == unique_id:
+				var saved_ip: String = h.get("localaddress", "")
+				if not saved_ip.is_empty() and saved_ip != main.get_node("%IPInput").text:
+					main.get_node("%IPInput").text = saved_ip
+					main.state_manager.load_host_state(saved_ip)
+				break
 	main.welcome_screen.save_last_ip(main.get_node("%IPInput").text, unique_id)
 	var found = false
 	for h in _b().get_hosts():
@@ -564,7 +626,7 @@ func on_pair_completed(success: bool, _msg: String):
 			break
 	if not found and unique_id.is_empty():
 		for h in _b().get_hosts():
-			if h.has("localaddress") and h.localaddress == ip:
+			if main.host_matches_address(h, ip):
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
@@ -578,7 +640,7 @@ func on_pair_completed(success: bool, _msg: String):
 				found = true
 				await start_stream(h.id, main._selected_app_id)
 				break
-			elif unique_id.is_empty() and h.has("localaddress") and h.localaddress == ip:
+			elif unique_id.is_empty() and main.host_matches_address(h, ip):
 				main.current_host_id = h.id
 				found = true
 				await start_stream(h.id, main._selected_app_id)
@@ -592,15 +654,47 @@ var _mdns_result: Array = []
 func browse_mdns() -> Array:
 	main._log("[mDNS] Starting browse...")
 	_mdns_result = []
-	var thread = Thread.new()
-	thread.start(func():
-		_mdns_result = _b().browse_mdns(3.0)
-	)
-	while thread.is_alive():
-		await main.get_tree().create_timer(0.1).timeout
-	thread.wait_to_finish()
+	# USB Link carries only link-local IPv6, invisible to the IPv4 browse, so
+	# scan the link too (in parallel) whenever it's actually up.
+	var usb_iface := _usb_link_iface()
+	var threads: Array[Thread] = []
+	var lan_hosts: Array = []
+	var usb_hosts: Array = []
+	var lan_thread = Thread.new()
+	lan_thread.start(func(): lan_hosts.append_array(_b().browse_mdns(3.0)))
+	threads.append(lan_thread)
+	if not usb_iface.is_empty():
+		var usb_thread = Thread.new()
+		usb_thread.start(func(): usb_hosts.append_array(_b().browse_mdns_usb(usb_iface, 3.0)))
+		threads.append(usb_thread)
+	for t in threads:
+		while t.is_alive():
+			await main.get_tree().create_timer(0.1).timeout
+		t.wait_to_finish()
+	_mdns_result = _merge_mdns_hosts(usb_hosts, lan_hosts)
 	main._log("[mDNS] Found %d hosts" % _mdns_result.size())
 	return _mdns_result
+
+# One entry per machine: a PC reachable both ways advertises the same SRV
+# target on each network, and the cable is the path worth taking.
+func _merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
+	var merged: Array = []
+	var seen := {}
+	for host in usb_hosts + lan_hosts:
+		var key = str(host.get("hostname", host.get("ip", ""))).to_lower()
+		if seen.has(key):
+			continue
+		seen[key] = true
+		merged.append(host)
+	return merged
+
+func _usb_link_iface() -> String:
+	if not main.settings_controller.usb_link_supported():
+		return ""
+	var bridge = main.settings_controller._usb_link_bridge()
+	if bridge == null or not bridge.is_up():
+		return ""
+	return bridge.get_interface_name()
 
 func bind_texture():
 	var stream_tex
@@ -640,7 +734,15 @@ func _update_yuv_shader_params():
 	var mat = _v2_yuv_rect.material
 	if not mat is ShaderMaterial:
 		return
-	if local_capture_mode or OS.get_name() == "Android":
+	# This blanket "Android always means color_matrix_type=3 (already-RGB
+	# OES bridge)" assumption predates PyroWave, the first Android codec
+	# that genuinely decodes to real multi-plane YUV (color_matrix_type=1)
+	# instead of an OES-converted RGB surface - it was stomping PyroWave's
+	# correctly-computed cmt back to 3 on this exact shared
+	# TextureUploader material, which made tex_u/tex_v never get sampled at
+	# all (color_matrix_type==3 short-circuits straight to tex_y.rgb) -
+	# the actual root cause of PyroWave's greyscale video.
+	if local_capture_mode or (OS.get_name() == "Android" and main.settings.codec_preference != 4):
 		mat.set_shader_parameter("color_matrix_type", 3)
 		mat.set_shader_parameter("color_range", 1)
 		mat.set_shader_parameter("is_semi_planar", false)
@@ -692,7 +794,7 @@ func update_stats():
 		var cur_size = current_stream_size
 		if cur_size.x != vw or cur_size.y != vh:
 			resize_stream_viewport(vw, vh)
-	var hw = "HW" if _b().is_hw_decode() else "SW"
+	var hw = _b().get_decode_mode()
 	var ip = main.get_node("%IPInput").text
 	var ip_display = ip if not ip.is_empty() else "?"
 	var dropped = _b().get_frames_dropped()
@@ -705,16 +807,15 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
-	# Live GPU-depth-inference readout (2026-08-25) - added for the
-	# 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so testing
-	# resolution/quality-tier combos doesn't require pulling logcat each
-	# time. Only shown while depth is actually running on GPU (matches
-	# depth_estimator.gd's own should_boost/effective_gpu gate) - CPU-model
-	# telemetry isn't meaningfully populated (see DepthEstimator.java's
-	# recordTelemetry(), which resets its window every CPU call).
+	# Live depth-inference readout (2026-08-25, extended to CPU 2026-10-02) -
+	# added for the 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so
+	# testing resolution/quality-tier combos doesn't require pulling logcat
+	# each time. Shown whenever depth is actually running, GPU or CPU -
+	# DepthEstimator.java's recordTelemetry() accumulates a real window for
+	# CPU inference too, it's not just reset every call.
 	if main.depth_estimator and main.depth_estimator.enabled and main.stream_backend \
 			and main.stream_backend.has_method("get_effective_depth_backend") \
-			and main.stream_backend.get_effective_depth_backend() == 2 \
+			and main.stream_backend.get_effective_depth_backend() != 0 \
 			and main.stream_backend.has_method("get_depth_last_inference_ms"):
 		var inf_ms = main.stream_backend.get_depth_last_inference_ms()
 		var inf_hz = main.stream_backend.get_depth_last_inference_hz()

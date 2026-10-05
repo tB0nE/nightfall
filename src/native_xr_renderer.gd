@@ -65,6 +65,15 @@ func _native_compositor_sharpening() -> int:
 func can_render_current_config() -> bool:
 	if not provider_registered or main.screens.size() != 1:
 		return false
+	# PyroWave decodes to plain CPU YUV420p planes uploaded through the
+	# legacy ShaderMaterial/RenderingDevice texture path (see
+	# TextureUploader::update_from_frame()) - unlike MediaCodec, it never
+	# creates a MediaCodec Surface/OES texture, which is the only thing this
+	# native renderer samples. Without this check it stays "eligible" and
+	# keeps presenting a stale/empty OES texture while PyroWave decode
+	# succeeds invisibly on the legacy path underneath it.
+	if main.settings.codec_preference == 4:
+		return false
 	# Auto-detection and shader-based sharpening consume the legacy RGB
 	# viewport. Runtime compositor sharpening is attached directly to our own
 	# OpenXR layers and therefore remains eligible for the fast path.

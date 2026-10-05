@@ -1,9 +1,11 @@
 #include "stream_connection.h"
+#include <chrono>
 #include "ffmpeg_decoder.h"
 #include "texture_uploader.h"
 #include "audio/audio_renderer.h"
 #include "input/input_bridge.h"
 #include "video/depth_bridge.h"
+#include "network/usb_link_bridge.h"
 #include "video/codec_defs.h"
 #include "ycbcr_to_rgba_spirv.h"
 #include <godot_cpp/classes/rendering_device.hpp>
@@ -16,6 +18,7 @@
 #ifdef __ANDROID__
 #include "video/mediacodec_internal.h"
 #include "video/mediacodec_native.h"
+#include "video/pyrowave_decoder.h"
 #include <jni.h>
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
@@ -98,6 +101,11 @@ StreamConnection::~StreamConnection() {
     // Safe to retire now — decode thread is joined by stop(). The codec shuts
     // down when the last decode-thread reference is released.
     _replace_native_codec(nullptr);
+    // pyrowave_decoder_ is decode-thread-only (see its own comment) - also
+    // safe here for the same reason.
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
+    pyrowave_output_mode_.store(PYROWAVE_OUTPUT_NONE);
 #endif
     if (h264_extradata_) {
         av_freep(&h264_extradata_);
@@ -737,11 +745,39 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
         rs->call_on_render_thread(callable_mp(self, &StreamConnection::_render_free_pipeline_rt));
     }
 
+    // PyroWave (docs/plans/active/pyrowave-codec.md) - not a MediaCodec
+    // format at all, so it bypasses the mime/AndroidMediaCodec path below
+    // entirely. The actual PyrowaveDecoder::init() call is deferred to the
+    // decode thread (see pyrowave_decoder_'s own comment on why) - this just
+    // records the request and reports success immediately, matching how
+    // self->decoder_ready_ already means "the decode path for this stream
+    // is up," not "already done synchronously by the time this returns."
+    if (videoFormat & VIDEO_FORMAT_MASK_PYROWAVE) {
+        self->native_video_width_ = width;
+        self->native_video_height_ = height;
+        self->pyrowave_pending_init_.store(true);
+        // Texture setup happens on the decode thread once init knows whether
+        // the zero-copy GPU output is available (see _decode_thread_func).
+        NF_LOG("StreamConnection", "PyroWave decode scheduled: %dx%d", width, height);
+        return 0;
+    }
+
     const char *mime = nullptr;
     if (videoFormat & VIDEO_FORMAT_MASK_H265) {
         mime = "video/hevc";
     } else if (videoFormat & VIDEO_FORMAT_MASK_H264) {
         mime = "video/avc";
+    } else if (videoFormat & VIDEO_FORMAT_MASK_AV1) {
+        // Was never wired up on Android - the client already negotiates AV1
+        // (probe_all_video_formats() reports it, via FfmpegDecoder's probe,
+        // which is unrelated to this MediaCodec path and doesn't mean this
+        // branch exists) and a host would pick it, then decoder setup fell
+        // through to "FATAL: Unsupported video format" below, failing the
+        // whole connection. Whether Quest 3 actually has a usable AV1
+        // MediaCodec decoder underneath is a separate, unverified question -
+        // if not, AndroidMediaCodec::init() below fails and this now reports
+        // that specific, correct failure instead of refusing to even try.
+        mime = "video/av01";
     }
     if (mime) {
         auto new_codec = std::make_shared<AndroidMediaCodec>();
@@ -1282,6 +1318,97 @@ void StreamConnection::_decode_thread_func() {
         }
 
 #ifdef __ANDROID__
+        // PyroWave (docs/plans/active/pyrowave-codec.md) - handled entirely
+        // here rather than falling into the MediaCodec feed/dequeue machinery
+        // below: it has no async Surface/callback pipeline, decode is one
+        // synchronous call that hands back CPU YUV420p planes directly. Init
+        // is deferred from _cb_decoder_setup() (a different thread - see
+        // pyrowave_decoder_'s own comment) to here via pyrowave_pending_init_
+        // so pyrowave_decoder_ itself is only ever touched from this thread.
+        if (active_video_format_ & VIDEO_FORMAT_MASK_PYROWAVE) {
+            if (pyrowave_pending_init_.exchange(false)) {
+                pyrowave_decoder_ = std::make_unique<PyrowaveDecoder>();
+                // Zero-copy frames count as decoded when their GPU work finishes,
+                // reported from the pipeline's completion thread.
+                auto on_gpu_frame_complete = [this](int64_t pts) { _record_rendered_frame(pts); };
+                if (pyrowave_decoder_->init(native_video_width_, native_video_height_, uploader_.ptr(),
+                                            on_gpu_frame_complete)) {
+                    // The zero-copy path wires its own RGBA output texture during
+                    // init; the CPU-readback fallback needs the 3-plane YUV textures.
+                    if (pyrowave_decoder_->uses_gpu_output()) {
+                        pyrowave_output_mode_.store(PYROWAVE_OUTPUT_GPU);
+                    } else {
+                        pyrowave_output_mode_.store(PYROWAVE_OUTPUT_CPU);
+                        uploader_->setup(native_video_width_, native_video_height_, AV_PIX_FMT_YUV420P,
+                                         (int)AVCOL_SPC_BT709, (int)AVCOL_RANGE_UNSPECIFIED);
+                    }
+                    decoder_ready_.store(true);
+                } else {
+                    NF_LOGE("StreamConnection", "FATAL: PyroWave decoder init failed");
+                    pyrowave_decoder_.reset();
+                    decoder_ready_.store(false);
+                    is_streaming_.store(false);
+                    queue_cv_.notify_all();
+                    LiInterruptConnection();
+                }
+            }
+
+            if (pkt && decoder_ready_.load() && pyrowave_decoder_) {
+                if (pyrowave_decoder_->decode(reinterpret_cast<const uint8_t *>(pkt->data), (size_t)pkt->size, pkt->pts)) {
+                    // The zero-copy path has already handed the frame to the
+                    // uploader inside decode(); only the CPU fallback uploads here.
+                    if (!pyrowave_decoder_->uses_gpu_output()) {
+                        AVFrame frame{};
+                        frame.format = AV_PIX_FMT_YUV420P;
+                        frame.width = pyrowave_decoder_->width();
+                        frame.height = pyrowave_decoder_->height();
+                        frame.data[0] = const_cast<uint8_t *>(pyrowave_decoder_->y_data());
+                        frame.data[1] = const_cast<uint8_t *>(pyrowave_decoder_->u_data());
+                        frame.data[2] = const_cast<uint8_t *>(pyrowave_decoder_->v_data());
+                        frame.linesize[0] = pyrowave_decoder_->y_stride();
+                        frame.linesize[1] = pyrowave_decoder_->uv_stride();
+                        frame.linesize[2] = pyrowave_decoder_->uv_stride();
+                        auto upload_t0 = std::chrono::steady_clock::now();
+                        uploader_->update_from_frame(&frame);
+                        auto upload_t1 = std::chrono::steady_clock::now();
+                        double upload_ms = std::chrono::duration<double, std::milli>(upload_t1 - upload_t0).count();
+                        static double sum_upload_ms = 0;
+                        static int upload_count = 0;
+                        sum_upload_ms += upload_ms;
+                        upload_count++;
+                        if (upload_count >= 120) {
+                            NF_LOG("StreamConnection", "[TIMING] 3-plane GPU upload=%.2fms decode+readback=%.2fms (avg over %d frames)",
+                                   sum_upload_ms / upload_count, pyrowave_decoder_->last_decode_ms(), upload_count);
+                            sum_upload_ms = 0;
+                            upload_count = 0;
+                        }
+                    }
+                    // GDScript's bind_yuv_textures() polls is_display_ready()
+                    // (-> display_wired_) before trusting the shader
+                    // material's tex_y, since that RID stays "valid" even
+                    // when it wraps a freed/stale texture from a prior
+                    // session - see display_wired_'s header comment. Only
+                    // the MediaCodec/AHB compute-dispatch paths set this
+                    // today; without it here, PyroWave decodes and uploads
+                    // every frame successfully but the composition layer
+                    // never binds to it, so nothing is ever displayed.
+                    if (!display_wired_.exchange(true)) {
+                        NF_LOG("StreamConnection", "Display wired after first PyroWave frame");
+                    }
+                    if (!pyrowave_decoder_->uses_gpu_output()) {
+                        _record_rendered_frame(pkt->pts);
+                    }
+                } else {
+                    NF_LOGE("StreamConnection", "PyroWave decode failed; requesting IDR");
+                    LiRequestIdrFrame();
+                }
+            }
+
+            queued_unit.reset();
+            pkt = nullptr;
+            continue;
+        }
+
         uint64_t decode_generation = render_generation_.load();
         std::shared_ptr<AndroidMediaCodec> codec = _get_native_codec();
         if (codec && decoder_ready_.load()) {
@@ -1765,6 +1892,9 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
 #ifdef __ANDROID__
     _replace_native_codec(nullptr);
     native_codec_event_.store(false);
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
+    pyrowave_output_mode_.store(PYROWAVE_OUTPUT_NONE);
 #endif
 
     {
@@ -1775,7 +1905,11 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
     host_address_ = host;
 
     LiInitializeServerInformation(&server_info_);
-    host_address_std_ = host.utf8().get_data();
+    // moonlight-common-c hands this string straight to getaddrinfo(), which
+    // resolves a "%<iface>" zone into sin6_scope_id (verified on-device - see
+    // docs/plans/active/usb-link-streaming.md), so a link-local host only
+    // needs its zone present here.
+    host_address_std_ = UsbLinkBridge::zone_link_local(host).utf8().get_data();
     server_info_.address = host_address_std_.c_str();
 
     if (server_info.has("rtsp_session_url")) {
@@ -1857,6 +1991,9 @@ void StreamConnection::stop() {
     // No callback may retain the StreamConnection wakeup after stop returns.
     _replace_native_codec(nullptr);
     native_codec_event_.store(false);
+    pyrowave_decoder_.reset();
+    pyrowave_pending_init_.store(false);
+    pyrowave_output_mode_.store(PYROWAVE_OUTPUT_NONE);
 #endif
 
     {
@@ -1979,8 +2116,11 @@ void StreamConnection::_reset_performance_stats() {
 }
 
 void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
-    const int64_t now_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    // frame_enqueue_time_us is moonlight-common-c's enqueueTimeUs (PltGetMicroseconds,
+    // counted from that library's own start point), so "now" must come from the same
+    // clock - steady_clock has a different epoch and every sample used to land outside
+    // the outlier window below, reading as 0.00ms for every codec.
+    const int64_t now_us = (int64_t)LiGetMicroseconds();
     int64_t decode_us = now_us - frame_enqueue_time_us;
     // Same outlier policy as Moonlight Android: invalid timestamps and decoder
     // stalls over a second don't poison the rolling average.
@@ -1990,6 +2130,7 @@ void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
         last_frame_latency_us_.store((int)decode_us);
     }
     frames_decoded_.fetch_add(1);
+
     std::lock_guard<std::mutex> lock(performance_stats_mutex_);
     performance_stats_.rendered_frames++;
     performance_stats_.decode_time_us += (uint64_t)decode_us;
@@ -2045,6 +2186,11 @@ bool StreamConnection::is_display_ready() const {
 
 String StreamConnection::get_decoder_name() const {
 #ifdef __ANDROID__
+    switch (pyrowave_output_mode_.load()) {
+        case PYROWAVE_OUTPUT_GPU: return "PyroWave (Vulkan, zero-copy)";
+        case PYROWAVE_OUTPUT_CPU: return "PyroWave (Vulkan, CPU readback)";
+        default: break;
+    }
     std::shared_ptr<AndroidMediaCodec> codec = _get_native_codec();
     if (codec && !codec->get_name().empty()) return String::utf8(codec->get_name().c_str());
 #endif
@@ -2074,6 +2220,17 @@ bool StreamConnection::is_hw_decode() const {
 #endif
     if (decoder_.is_valid()) return decoder_->is_hw_decode();
     return false;
+}
+
+String StreamConnection::get_decode_mode() const {
+#ifdef __ANDROID__
+    switch (pyrowave_output_mode_.load()) {
+        case PYROWAVE_OUTPUT_GPU: return "SW-GPU";
+        case PYROWAVE_OUTPUT_CPU: return "SW-CPU";
+        default: break;
+    }
+#endif
+    return is_hw_decode() ? "HW" : "SW";
 }
 
 String StreamConnection::get_error_string(int error_code) {

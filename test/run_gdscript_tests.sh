@@ -24,8 +24,11 @@ mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 tests=(
 	"test/test_app_settings.gd"
 	"test/test_menu_schema.gd"
+	"test/test_localization.gd"
 	"test/test_ui_tooltips.gd"
 	"test/test_performance_telemetry.gd"
+	"test/test_ai3d_adaptive_pacer.gd"
+	"test/test_welcome_screen.gd"
 	"test/test_session_lifecycle.gd"
 	"test/test_monitor_grid.gd"
 	"test/test_screen_registry.gd"
@@ -56,7 +59,7 @@ for test_file in "${tests[@]}"; do
 
 	# GDScript assertions are reported as script errors but Godot can still exit
 	# with status zero. Treat either marker as a failed test explicitly.
-	if rg -q "SCRIPT ERROR:|Assertion failed" "$output_file"; then
+	if grep -qE "SCRIPT ERROR:|Assertion failed" "$output_file"; then
 		echo "$test_file reported a script failure" >&2
 		exit 1
 	fi

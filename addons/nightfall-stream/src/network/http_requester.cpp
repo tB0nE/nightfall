@@ -35,8 +35,21 @@ void HttpRequester::request(String url, String method, PackedByteArray body, Dic
 
     client->set_timeout_ms(timeout_ms);
 
+    // A zoned IPv6 literal ("[fe80::1%25usb0]") names the interface the
+    // request must leave through: bind to it explicitly so Android's per-app
+    // routing can't send it out the default (Wi-Fi) network, and hand curl the
+    // plain literal - binding already supplies the scope.
+    String request_url = url;
+    int zone_start = url.find("%25");
+    int bracket_end = url.find("]");
+    if (url.find("://[") != -1 && zone_start != -1 && bracket_end > zone_start) {
+        String iface = url.substr(zone_start + 3, bracket_end - zone_start - 3);
+        client->set_bind_interface(iface.utf8().get_data());
+        request_url = url.substr(0, zone_start) + url.substr(bracket_end);
+    }
+
     std::thread([=]() {
-        _perform_async(client, url, method, body, headers, ssl_options, callback);
+        _perform_async(client, request_url, method, body, headers, ssl_options, callback);
     }).detach();
 }
 

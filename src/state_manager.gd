@@ -165,10 +165,13 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 		if main._ui_audio_boost_btn:
 			main.ui_controller.update_option_btn(main._ui_audio_boost_btn, main.settings_controller.get_audio_boost_label())
+		if main._ui_usb_link_btn:
+			main.ui_controller.update_option_btn(main._ui_usb_link_btn, "On" if main.settings.usb_link_enabled else "Off")
 		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])
 		main.ui_controller.update_stats_btn_state()
+		main.ui_controller.update_language_btn()
 		if main.controller_mapper:
 			main.ui_controller.update_btn_toggle_btn()
 			main.ui_controller.update_primary_btn()
@@ -187,9 +190,11 @@ func load_state():
 	main._log("[STATE] load_state called. Load result: %d" % err)
 	if err != OK:
 		main._log("[STATE] load failed or not found, applying default curvature and syncing...")
+		main.settings_controller.apply_language()
 		main.screen_manager.apply_curvature()
 		sync_ui_to_settings()
 		main.settings_controller.apply_depth_gpu_priority(false)
+		main.settings_controller.apply_usb_link()
 		return
 
 	var load_info := SettingsPersistence.read_app(
@@ -198,6 +203,7 @@ func load_state():
 		main.passthrough_supported,
 		main.settings_controller.get_sharpen_choices())
 	main.curvature = save.get_value("screen", "curvature", 2)
+	main.settings_controller.apply_language()
 	# Keep the existing diagnostic while migration details stay in the codec.
 	if load_info.current_passthrough_value != null:
 		var raw_saved = load_info.current_passthrough_value
@@ -217,3 +223,4 @@ func load_state():
 
 	sync_ui_to_settings()
 	main.settings_controller.apply_depth_gpu_priority(false)
+	main.settings_controller.apply_usb_link()

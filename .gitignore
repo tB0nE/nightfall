@@ -15,6 +15,11 @@ build/
 *.dylib
 *.dll
 *.exe
+# PyroWave is vendored as a prebuilt binary (see
+# tools/build_support/build_pyrowave_android.sh) - unlike every other .so
+# here, which are build outputs, this one is a checked-in third-party
+# artifact with no other distribution channel.
+!addons/nightfall-stream/third_party/pyrowave/lib/android-arm64-v8a/libpyrowave-shared.so
 
 # Plugins (install via Godot editor)
 addons/godotopenxrvendors/

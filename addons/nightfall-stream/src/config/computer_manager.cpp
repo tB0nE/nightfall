@@ -8,6 +8,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "nf_log.h"
+#include "network/usb_link_bridge.h"
 
 #include <thread>
 #include <chrono>
@@ -83,14 +84,14 @@ void NightfallComputerManager::_step_pair() {
         return;
 
     is_requesting = true;
-    String base_url = "http://" + pair_ip + ":" + String::num_int64(pair_port) + "/pair";
+    String base_url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/pair";
 	String common_params = "uniqueid=" + unique_id + "&uuid=" + current_uuid + "&devicename=nightfall";
 
     Dictionary ssl_opts;
 
     switch (pair_state) {
         case PAIR_STAGE_0_PREFLIGHT: {
-            String url = "http://" + pair_ip + ":" + String::num_int64(pair_port) + "/serverinfo?uniqueid=" + unique_id + "&uuid=" + current_uuid;
+            String url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/serverinfo?uniqueid=" + unique_id + "&uuid=" + current_uuid;
             http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(), callable_mp(this, &NightfallComputerManager::_on_pair_request_completed).bind(0), 120000);
             break;
         }
@@ -158,7 +159,7 @@ void NightfallComputerManager::_step_pair() {
             break;
         }
         case PAIR_STAGE_5_HTTPS_CHALLENGE: {
-            String https_url = "https://" + pair_ip + ":" + String::num_int64(pair_https_port) + "/pair";
+            String https_url = "https://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_https_port) + "/pair";
             String url = https_url + "?" + common_params + "&phrase=pairchallenge";
 
             Dictionary stage5_ssl_opts = _get_ssl_options();
@@ -214,7 +215,7 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
     if (failed) {
         NF_LOG("NightfallPair", "Pair FAILED at step %d: %s", step, fail_msg.utf8().get_data());
         String uuid = _get_uuid();
-        String url = "http://" + pair_ip + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
+        String url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
         http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(), Callable());
 
         pair_state = PAIR_ERROR;
@@ -243,9 +244,13 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
                     Dictionary h = hosts[i];
                     if (h.get("server_unique_id", "") == server_unique_id) {
                         known_and_paired = true;
-                        if (h.get("localaddress", "") != pair_ip) {
+                        // Same machine reached another way: record the USB
+                        // and network addresses separately so neither
+                        // overwrites the other.
+                        String field = _is_link_local(pair_ip) ? "usb_address" : "localaddress";
+                        if (h.get(field, "") != pair_ip) {
                             Dictionary update_data;
-                            update_data["localaddress"] = pair_ip;
+                            update_data[field] = pair_ip;
                             config_manager->update_host(h["id"], update_data);
                         }
                         if (!pair_mac.is_empty() && h.get("mac", "") != pair_mac) {
@@ -330,6 +335,9 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             Dictionary host_data;
             host_data["hostname"] = pair_ip;
             host_data["localaddress"] = pair_ip;
+            if (_is_link_local(pair_ip)) {
+                host_data["usb_address"] = pair_ip;
+            }
             host_data["uuid"] = current_uuid;
             host_data["srvcert"] = server_cert_pem;
             host_data["https_port"] = pair_https_port;
@@ -356,7 +364,7 @@ void NightfallComputerManager::cancel_pair() {
     if (!config_manager.is_valid()) return;
     if (pair_state != PAIR_IDLE && pair_state != PAIR_FINISHED && pair_state != PAIR_ERROR) {
         String uuid = _get_uuid();
-        String url = "http://" + pair_ip + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
+        String url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
         http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(), Callable());
     }
     _reset_pairing();
@@ -392,7 +400,7 @@ void NightfallComputerManager::_reset_pairing() {
 
 void NightfallComputerManager::connect_to_computer(String ip, int port, Callable callback) {
     if (!config_manager.is_valid()) return;
-    String url = "http://" + ip + ":" + String::num_int64(port) + "/serverinfo?uniqueid=" + _get_unique_id() + "&uuid=" + _get_uuid();
+    String url = "http://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/serverinfo?uniqueid=" + _get_unique_id() + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(),
             callable_mp(this, &NightfallComputerManager::_on_server_info_completed).bind(Variant(callback), Variant(ip)));
 }
@@ -424,14 +432,14 @@ void NightfallComputerManager::get_app_list(int host_id, Callable callback) {
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
         }
     }
     if (ip.is_empty())
         return;
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/applist?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/applist?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_app_list_completed).bind(Variant(host_id), Variant(callback)));
 }
@@ -479,13 +487,13 @@ void NightfallComputerManager::get_app_cover(int host_id, int app_id, Callable c
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
         }
     }
     if (ip.is_empty()) return;
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/appasset?uniqueid=" + unique_id + "&uuid=" + _get_uuid() + "&appid=" + String::num_int64(app_id);
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/appasset?uniqueid=" + unique_id + "&uuid=" + _get_uuid() + "&appid=" + String::num_int64(app_id);
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_app_cover_completed).bind(Variant(callback)));
 }
@@ -512,7 +520,7 @@ void NightfallComputerManager::establish_stream(int host_id, int app_id, Diction
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
             break;
         }
@@ -543,7 +551,7 @@ void NightfallComputerManager::establish_stream(int host_id, int app_id, Diction
     int64_t rikeyid = rikeyid_bytes.decode_u32(0);
     ctx["rikeyid"] = rikeyid;
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/serverinfo?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/serverinfo?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_launch_serverinfo_completed).bind(ctx));
 }
@@ -607,7 +615,7 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
     options["rikeyid"] = rikeyid;
     options["ip"] = ip;
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/" + command + "?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/" + command + "?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     url += "&appid=" + String::num_int64(app_id);
     url += "&rikey=" + rikey;
     url += "&rikeyid=" + String::num_int64(rikeyid);
@@ -748,7 +756,7 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
 // capture enabled). Missing/failed/malformed responses just proceed without a
 // manifest - the client falls back to its own single/replicated layout.
 void NightfallComputerManager::_fetch_display_manifest(Dictionary response, Callable callback, String ip, int port) {
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_display_manifest_completed).bind(Variant(response), Variant(callback), Variant(ip), Variant(port)));
 }
@@ -782,7 +790,7 @@ void NightfallComputerManager::_on_display_manifest_completed(int code, PackedBy
 // client's cursor toggle - a missing/malformed response just means the toggle stays
 // unavailable, matching how Sunshine/Apollo hosts (no such endpoint) behave today.
 void NightfallComputerManager::_fetch_session_status(Dictionary response, Callable callback, String ip, int port) {
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/status?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/session/status?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_session_status_completed).bind(Variant(response), Variant(callback)));
 }
@@ -813,7 +821,7 @@ void NightfallComputerManager::stop_stream(int host_id, Callable callback) {
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
         }
     }
@@ -823,7 +831,7 @@ void NightfallComputerManager::stop_stream(int host_id, Callable callback) {
         return;
     }
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_simple_request_completed).bind(Variant(callback)));
 }
@@ -835,7 +843,7 @@ void NightfallComputerManager::_on_simple_request_completed(int code, PackedByte
 
 void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int port) {
     if (ip.is_empty()) return;
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(), Callable());
     NF_LOG("NightfallPair", "cancel_host_stream: sent /cancel to %s:%d", ip.utf8().get_data(), port);
 }
@@ -856,7 +864,7 @@ void NightfallComputerManager::fetch_display_manifest(int host_id, Callable call
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
         }
     }
@@ -867,7 +875,7 @@ void NightfallComputerManager::fetch_display_manifest(int host_id, Callable call
         return;
     }
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     NF_LOG("NightfallPrelaunch", "dispatching GET %s", url.utf8().get_data());
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_prelaunch_manifest_completed).bind(Variant(callback)));
@@ -897,7 +905,7 @@ void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Cal
     for (int i = 0; i < hosts.size(); i++) {
         Dictionary host = hosts[i];
         if ((int64_t)host["id"] == host_id) {
-            ip = host.get("localaddress", "");
+            ip = _host_address(host);
             port = host.get("https_port", 47984);
         }
     }
@@ -916,7 +924,7 @@ void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Cal
     Dictionary headers;
     headers["Content-Type"] = "application/json";
 
-    String url = "https://" + ip + ":" + String::num_int64(port) + "/polaris/v1/session/cursor?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/session/cursor?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
     http_requester->request(url, "POST", body_str.to_utf8_buffer(), headers, _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_set_cursor_visible_completed).bind(Variant(callback)));
 }
@@ -1098,6 +1106,37 @@ String NightfallComputerManager::_extract_xml_attr(const String &xml, const Stri
 	return xml.substr(start, end - start);
 }
 
+bool NightfallComputerManager::_is_link_local(const String &addr) {
+    return addr.to_lower().begins_with("fe80:");
+}
+
+String NightfallComputerManager::_host_address(const Dictionary &host) {
+    String local = host.get("localaddress", "");
+    String usb = host.get("usb_address", "");
+    // Records saved before usb_address existed may hold the USB address in
+    // localaddress (pairing over USB used to overwrite it).
+    if (usb.is_empty() && _is_link_local(local)) {
+        usb = local;
+        local = "";
+    }
+    if (!usb.is_empty() && (local.is_empty() || !UsbLinkBridge::current_interface_name().is_empty())) {
+        return usb;
+    }
+    return local;
+}
+
+String NightfallComputerManager::get_host_address(const Dictionary &host) {
+    return _host_address(host);
+}
+
+String NightfallComputerManager::_bracket_host(const String &addr) {
+    if (addr.find(":") != -1 && !addr.begins_with("[")) {
+        // RFC 6874: a zone inside a URL literal is written as %25<zone>.
+        return "[" + UsbLinkBridge::zone_link_local(addr).replace("%", "%25") + "]";
+    }
+    return addr;
+}
+
 String NightfallComputerManager::_get_unique_id() {
     if (!config_manager.is_valid()) {
         return _bytes_to_hex(_generate_random_bytes(8)).to_upper();
@@ -1142,6 +1181,7 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_config_manager", "cm"), &NightfallComputerManager::set_config_manager);
     ClassDB::bind_method(D_METHOD("set_http_requester", "req"), &NightfallComputerManager::set_http_requester);
 
+    ClassDB::bind_method(D_METHOD("get_host_address", "host"), &NightfallComputerManager::get_host_address);
     ClassDB::bind_method(D_METHOD("start_pair", "ip", "port"), &NightfallComputerManager::start_pair, DEFVAL(47989));
     ClassDB::bind_method(D_METHOD("cancel_pair"), &NightfallComputerManager::cancel_pair);
     ClassDB::bind_method(D_METHOD("get_last_paired_unique_id"), &NightfallComputerManager::get_last_paired_unique_id);

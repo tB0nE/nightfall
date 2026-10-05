@@ -134,6 +134,17 @@ func _test_legacy_app_migrations() -> void:
 	assert(settings.sharpen_mode == 0)
 	assert(settings.audio_boost_db == 0)
 
+	# Old saves stored 0 Stream / 1 AI 3D under "gpu_priority"; AI 3D is now 2.
+	var legacy_ai_3d := ConfigFile.new()
+	legacy_ai_3d.set_value("ai_3d", "gpu_priority", 1)
+	var migrated := AppSettings.new()
+	SettingsPersistence.read_app(legacy_ai_3d, migrated, true, [0, 6, 7])
+	assert(migrated.ai_3d_gpu_priority == 2)
+	var legacy_stream := ConfigFile.new()
+	legacy_stream.set_value("ai_3d", "gpu_priority", 0)
+	SettingsPersistence.read_app(legacy_stream, migrated, true, [0, 6, 7])
+	assert(migrated.ai_3d_gpu_priority == 0)
+
 func _test_host_persistence_round_trip() -> void:
 	var source := HostSettings.new()
 	source.stream_fps = 120

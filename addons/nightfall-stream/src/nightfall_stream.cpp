@@ -130,6 +130,9 @@ int NightfallStream::get_state() const {
 void NightfallStream::start_stream(const String &host, const Dictionary &server_info, const Dictionary &stream_config, bool disable_hw) {
     NF_LOG("NightfallStream", "start_stream: host=%s server_info_keys=%d stream_config_keys=%d state=%d stream_conn=%p",
         host.utf8().get_data(), (int)server_info.size(), (int)stream_config.size(), (int)state_, (void*)stream_connection_);
+    // A retry keeps its attempt count (reset on a successful connection
+    // instead), or max_reconnect_attempts_ could never be reached.
+    bool is_retry = state_ == STATE_RECONNECTING;
     if (state_ == STATE_CONNECTING || state_ == STATE_CONNECTED) {
         stop_stream();
     }
@@ -140,7 +143,9 @@ void NightfallStream::start_stream(const String &host, const Dictionary &server_
     last_disable_hw_ = disable_hw;
 
     state_ = STATE_CONNECTING;
-    _reset_reconnect();
+    if (!is_retry) {
+        _reset_reconnect();
+    }
     emit_signal("state_changed", (int)state_);
 
     // Set local_capture_mode so _cb_submit_decode_unit skips Sunshine frames
@@ -252,6 +257,19 @@ Dictionary NightfallStream::probe_all_video_formats() {
 int NightfallStream::get_server_codec_mode_support() const {
     if (!stream_connection_) return 0;
     return stream_connection_->get_server_codec_mode_support();
+}
+
+void NightfallStream::set_reconnect_via_launch(bool enabled) {
+    reconnect_via_launch_ = enabled;
+}
+
+void NightfallStream::retry_reconnect() {
+    if (state_ != STATE_RECONNECTING) return;
+    if (reconnect_attempts_ < max_reconnect_attempts_) {
+        _attempt_reconnect();
+    } else {
+        emit_signal("reconnect_failed");
+    }
 }
 
 void NightfallStream::set_auto_reconnect(bool enabled) {
@@ -455,6 +473,11 @@ bool NightfallStream::is_hw_decode() const {
     return false;
 }
 
+String NightfallStream::get_decode_mode() const {
+    if (stream_connection_) return stream_connection_->get_decode_mode();
+    return "SW";
+}
+
 String NightfallStream::get_error_string(int error_code) {
     return StreamConnection::get_error_string(error_code);
 }
@@ -493,6 +516,12 @@ void NightfallStream::_on_stream_terminated(int error_code, const String &error_
 
     if (error_code == 0) return;
 
+    if (reconnect_timer_) {
+        // Second report of the same failure; a retry is already pending.
+        state_ = STATE_RECONNECTING;
+        emit_signal("state_changed", (int)state_);
+        return;
+    }
     if (auto_reconnect_ && reconnect_attempts_ < max_reconnect_attempts_) {
         state_ = STATE_RECONNECTING;
         emit_signal("state_changed", (int)state_);
@@ -515,6 +544,12 @@ void NightfallStream::_on_stage_complete(const String &stage_name) {
 void NightfallStream::_on_stage_failed(const String &stage_name, int error_code) {
     emit_signal("stage_failed", stage_name, error_code);
 
+    if (reconnect_timer_) {
+        // Second report of the same failure; a retry is already pending.
+        state_ = STATE_RECONNECTING;
+        emit_signal("state_changed", (int)state_);
+        return;
+    }
     if (auto_reconnect_ && reconnect_attempts_ < max_reconnect_attempts_) {
         state_ = STATE_RECONNECTING;
         emit_signal("state_changed", (int)state_);
@@ -550,6 +585,11 @@ void NightfallStream::_on_controller_trigger_rumble(int controller, int left_mot
 }
 
 void NightfallStream::_attempt_reconnect() {
+    // One failed connection reports both stage_failed and stream_terminated;
+    // only the first should schedule (and count) a retry.
+    if (reconnect_timer_) {
+        return;
+    }
     reconnect_attempts_++;
 
     int delay = reconnect_delay_ms_;
@@ -585,9 +625,21 @@ void NightfallStream::_on_reconnect_timeout() {
 
 void NightfallStream::_do_reconnect() {
     if (state_ != STATE_RECONNECTING) return;
+    if (reconnect_via_launch_) {
+        NF_LOG("NightfallStream", "_do_reconnect: requesting relaunch (attempt %d/%d)", reconnect_attempts_, max_reconnect_attempts_);
+        emit_signal("reconnect_requested", reconnect_attempts_, max_reconnect_attempts_);
+        return;
+    }
     NF_LOG("NightfallStream", "_do_reconnect: last_host_=%s last_server_info_keys=%d last_stream_config_keys=%d",
         last_host_.utf8().get_data(), (int)last_server_info_.size(), (int)last_stream_config_.size());
-    start_stream(last_host_, last_server_info_, last_stream_config_, last_disable_hw_);
+    // Copies: start_stream() reassigns last_* from its by-reference
+    // arguments, and godot-cpp's String/Dictionary assignment is not
+    // self-assignment safe - passing the members directly wiped last_host_
+    // after the first retry, so every later attempt connected to "".
+    String host = last_host_;
+    Dictionary server_info = last_server_info_;
+    Dictionary stream_config = last_stream_config_;
+    start_stream(host, server_info, stream_config, last_disable_hw_);
 }
 
 void NightfallStream::_reset_reconnect() {
@@ -617,6 +669,8 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_server_codec_mode_support"), &NightfallStream::get_server_codec_mode_support);
 
     ClassDB::bind_method(D_METHOD("set_auto_reconnect", "enabled"), &NightfallStream::set_auto_reconnect);
+    ClassDB::bind_method(D_METHOD("set_reconnect_via_launch", "enabled"), &NightfallStream::set_reconnect_via_launch);
+    ClassDB::bind_method(D_METHOD("retry_reconnect"), &NightfallStream::retry_reconnect);
     ClassDB::bind_method(D_METHOD("get_auto_reconnect"), &NightfallStream::get_auto_reconnect);
     ClassDB::bind_method(D_METHOD("set_max_reconnect_attempts", "attempts"), &NightfallStream::set_max_reconnect_attempts);
     ClassDB::bind_method(D_METHOD("get_max_reconnect_attempts"), &NightfallStream::get_max_reconnect_attempts);
@@ -646,6 +700,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_video_width"), &NightfallStream::get_video_width);
     ClassDB::bind_method(D_METHOD("get_video_height"), &NightfallStream::get_video_height);
     ClassDB::bind_method(D_METHOD("is_hw_decode"), &NightfallStream::is_hw_decode);
+    ClassDB::bind_method(D_METHOD("get_decode_mode"), &NightfallStream::get_decode_mode);
     ClassDB::bind_static_method("NightfallStream", D_METHOD("get_error_string", "error_code"), &NightfallStream::get_error_string);
     ClassDB::bind_method(D_METHOD("get_computer_manager"), &NightfallStream::get_computer_manager);
     ClassDB::bind_method(D_METHOD("get_config_manager"), &NightfallStream::get_config_manager);
@@ -671,6 +726,7 @@ void NightfallStream::_bind_methods() {
     ADD_SIGNAL(MethodInfo("reconnect_scheduled", PropertyInfo(Variant::INT, "attempt"), PropertyInfo(Variant::INT, "max_attempts"), PropertyInfo(Variant::INT, "delay_ms")));
     ADD_SIGNAL(MethodInfo("reconnect_attempt", PropertyInfo(Variant::INT, "attempt"), PropertyInfo(Variant::INT, "max_attempts")));
     ADD_SIGNAL(MethodInfo("reconnect_failed"));
+    ADD_SIGNAL(MethodInfo("reconnect_requested", PropertyInfo(Variant::INT, "attempt"), PropertyInfo(Variant::INT, "max_attempts")));
     ADD_SIGNAL(MethodInfo("pair_completed", PropertyInfo(Variant::BOOL, "success"), PropertyInfo(Variant::STRING, "message")));
     ADD_SIGNAL(MethodInfo("log_message", PropertyInfo(Variant::STRING, "message")));
     ADD_SIGNAL(MethodInfo("h264_hw_upgraded"));

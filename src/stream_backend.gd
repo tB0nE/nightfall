@@ -181,6 +181,12 @@ func is_hw_decode() -> bool:
 		return _v2.is_hw_decode()
 	return false
 
+# "HW", "SW", or for PyroWave "SW-GPU" (zero-copy) / "SW-CPU" (CPU readback).
+func get_decode_mode() -> String:
+	if _v2 and _v2.has_method("get_decode_mode"):
+		return _v2.get_decode_mode()
+	return "HW" if is_hw_decode() else "SW"
+
 func get_frames_dropped() -> int:
 	if _v2:
 		return _v2.get_frames_dropped()
@@ -468,4 +474,11 @@ func browse_mdns(timeout: float) -> Array:
 		var mdns_browser = ClassDB.instantiate("MdnsBrowser")
 		if mdns_browser:
 			return mdns_browser.browse(timeout)
+	return []
+
+func browse_mdns_usb(iface_name: String, timeout: float) -> Array:
+	if ClassDB.class_exists("MdnsBrowser"):
+		var mdns_browser = ClassDB.instantiate("MdnsBrowser")
+		if mdns_browser:
+			return mdns_browser.browse_on_interface(iface_name, timeout)
 	return []

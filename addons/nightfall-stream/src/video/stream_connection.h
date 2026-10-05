@@ -31,6 +31,7 @@ class InputBridge;
 class RenderingDevice;
 #ifdef __ANDROID__
 class AndroidMediaCodec;
+class PyrowaveDecoder;
 #endif
 
 class StreamConnection : public Node {
@@ -69,6 +70,10 @@ public:
     int get_video_width() const;
     int get_video_height() const;
     bool is_hw_decode() const;
+    // Status-bar label: "HW" (MediaCodec/hw FFmpeg), "SW" (software FFmpeg), or for
+    // PyroWave (a Vulkan compute codec - never hardware) "SW-GPU" when frames stay on
+    // the GPU (zero-copy) and "SW-CPU" when they round-trip through the CPU.
+    String get_decode_mode() const;
 
     static String get_error_string(int error_code);
 
@@ -185,6 +190,21 @@ private:
     mutable std::mutex native_codec_mutex_;
     std::shared_ptr<AndroidMediaCodec> native_codec_;
     std::atomic<bool> native_codec_event_{false};
+
+    // PyroWave (docs/plans/active/pyrowave-codec.md) - unlike AndroidMediaCodec,
+    // this has no async Surface/callback pipeline, so rather than give it its
+    // own native_codec_-style shared_ptr/mutex/generation machinery,
+    // pyrowave_decoder_ is touched only by the decode thread: _cb_decoder_setup()
+    // (which, like the MediaCodec path, runs on moonlight-common-c's own
+    // internal callback thread, not the decode thread) only records that an
+    // init is needed via pyrowave_pending_init_ (+ width/height, reusing
+    // native_video_width_/height_ already set there); _decode_thread_func()
+    // performs the actual init()/decode()/destroy() calls itself.
+    std::unique_ptr<PyrowaveDecoder> pyrowave_decoder_;
+    std::atomic<bool> pyrowave_pending_init_{false};
+    // Readable from the main thread (stats/status bar), unlike pyrowave_decoder_.
+    enum PyrowaveOutputMode { PYROWAVE_OUTPUT_NONE, PYROWAVE_OUTPUT_CPU, PYROWAVE_OUTPUT_GPU };
+    std::atomic<int> pyrowave_output_mode_{PYROWAVE_OUTPUT_NONE};
 
     // Compute pipeline for YCbCr → RGBA conversion
     RID compute_shader_;

@@ -58,6 +58,16 @@ def check_native_xr_descriptor() -> None:
         fail(f"native-XR descriptor is missing: {', '.join(missing)}")
 
 
+# Paths deliberately checked in despite the blanket rule below - same
+# rationale as android/libs/litert-gpu-nightfall-1.4.2.aar (which escapes by
+# extension instead): a vendored third-party binary with no other
+# distribution channel, not a build output. See .gitignore's comment next to
+# this path, and build_pyrowave_android.sh's own header comment.
+TRACKED_ARTIFACT_EXCEPTIONS = {
+    "addons/nightfall-stream/third_party/pyrowave/lib/android-arm64-v8a/libpyrowave-shared.so",
+}
+
+
 def check_tracked_artifacts() -> None:
     result = subprocess.run(
         ["git", "ls-files", "-z", "*.apk", "*.AppImage", "*.so", "*.a"],
@@ -66,6 +76,7 @@ def check_tracked_artifacts() -> None:
         capture_output=True,
     )
     artifacts = [item.decode() for item in result.stdout.split(b"\0") if item]
+    artifacts = [path for path in artifacts if path not in TRACKED_ARTIFACT_EXCEPTIONS]
     if artifacts:
         fail(f"compiled artifacts are tracked: {', '.join(artifacts)}")
 

@@ -246,7 +246,7 @@ var _steady_velocity: Vector3 = Vector3.ZERO
 var _steady_raw_hit: Vector3 = Vector3.ZERO
 var _steady_last_usec: int = 0
 var _steady_last_frame: int = -1
-var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw"]
+var codec_labels: Array = ["H.264", "HEVC", "AV1", "Raw", "PyroWave"]
 var _client_codec_support: Dictionary = {}
 var _server_codec_support: Dictionary = {}
 var corner_handles: Array:
@@ -502,6 +502,7 @@ var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_audio_boost_btn: Button
+var _ui_usb_link_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
@@ -524,6 +525,7 @@ var _ui_close_btn: Button
 var _ui_center_btn: Button
 var _ui_log_btn: Button
 var _ui_stats_btn: Button
+var _ui_language_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
@@ -731,7 +733,36 @@ func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 # somewhere (pairing, host-record matching, Wake-on-LAN's host lookup) need
 # the parsed ip/port.
 const DEFAULT_PAIR_PORT := 47989
+
+# Host records saved before USB Link addresses carried a "%<iface>" zone hold
+# the bare link-local address; the zone never distinguishes two machines.
+func same_host_address(a: String, b: String) -> bool:
+	return a.get_slice("%", 0).to_lower() == b.get_slice("%", 0).to_lower()
+
+# A saved host is reachable at its network address and, once seen over USB
+# Link, its usb_address too - either identifies the same machine.
+func host_matches_address(h: Dictionary, addr: String) -> bool:
+	for key in ["localaddress", "usb_address"]:
+		var a: String = h.get(key, "")
+		if not a.is_empty() and same_host_address(a, addr):
+			return true
+	return false
+
 func parse_ip_port(text: String) -> Array:
+	# "[v6addr]:port", or a bare IPv6 address (2+ colons) with no port at all -
+	# its last group can be all digits, so it must never be split on ":".
+	if text.begins_with("["):
+		var close = text.find("]")
+		if close != -1:
+			var inner = text.substr(1, close - 1)
+			var rest = text.substr(close + 1)
+			if rest.begins_with(":") and rest.substr(1).is_valid_int():
+				var p = rest.substr(1).to_int()
+				if p > 0 and p <= 65535:
+					return [inner, p]
+			return [inner, DEFAULT_PAIR_PORT]
+	if text.count(":") > 1:
+		return [text, DEFAULT_PAIR_PORT]
 	var colon = text.rfind(":")
 	if colon == -1:
 		return [text, DEFAULT_PAIR_PORT]
@@ -1837,6 +1868,8 @@ func _init_stream_backend():
 	settings_controller.apply_audio_boost()
 	v2_node.set_max_reconnect_attempts(5)
 	v2_node.set_reconnect_delay_ms(2000)
+	if v2_node.has_method("set_reconnect_via_launch"):
+		v2_node.set_reconnect_via_launch(true)
 	stream_backend = StreamBackend.new(v2_node)
 	stream_backend.set_config_manager(config_mgr)
 	stream_backend.set_computer_manager(comp_mgr)
@@ -1849,11 +1882,23 @@ func _init_stream_backend():
 		device_is_quest3 = device_codename.to_lower() == "eureka"
 		_log("[DEVICE] Build.DEVICE='%s' device_is_quest2=%s device_is_quest3=%s" % [device_codename, str(device_is_quest2), str(device_is_quest3)])
 	_client_codec_support = stream_backend.probe_all_video_formats()
-	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s" % [
+	# PyroWave (docs/plans/active/pyrowave-codec.md) isn't probed through
+	# probe_all_video_formats() - that queries FfmpegDecoder's own
+	# capabilities (used on Linux), which has nothing to do with Android's
+	# MediaCodec-based decode path PyroWave actually uses there. Scoped to
+	# Quest 3 only for now (see the plan doc's own reasoning).
+	_client_codec_support["pyrowave"] = device_is_quest3
+	# Raw frames only make sense for the Linux build's local-capture pipeline.
+	# A saved Raw preference falls back once server info arrives
+	# (stream_manager.gd's is_codec_available() check).
+	if OS.get_name() == "Android":
+		_client_codec_support["raw"] = false
+	_log("[CODEC] Client support: h264=%s hevc=%s av1=%s raw=%s pyrowave=%s" % [
 		str(_client_codec_support.get("h264", false)),
 		str(_client_codec_support.get("hevc", false)),
 		str(_client_codec_support.get("av1", false)),
-		str(_client_codec_support.get("raw", true))])
+		str(_client_codec_support.get("raw", true)),
+		str(_client_codec_support.get("pyrowave", false))])
 	v2_node.pair_completed.connect(func(s, m): stream_manager.on_pair_completed(s, m))
 	if v2_node.has_signal("log_message"):
 		v2_node.log_message.connect(func(message: String):
@@ -1876,6 +1921,12 @@ func _init_stream_backend():
 			session_lifecycle.reconnect_scheduled()
 			ui_controller.set_status("Reconnecting %d/%d in %ds..." % [attempt, max_attempts, delay_ms / 1000])
 			_log("[RECONNECT] Attempt %d/%d in %dms" % [attempt, max_attempts, delay_ms])
+		)
+	if v2_node.has_signal("reconnect_requested"):
+		v2_node.reconnect_requested.connect(func(attempt, max_attempts):
+			_log("[RECONNECT] Relaunching session (attempt %d/%d)" % [attempt, max_attempts])
+			ui_controller.set_status("Reconnecting %d/%d..." % [attempt, max_attempts])
+			stream_manager.relaunch_for_reconnect()
 		)
 	if v2_node.has_signal("reconnect_failed"):
 		v2_node.reconnect_failed.connect(func():
@@ -2066,7 +2117,7 @@ func _init_textures_and_ui():
 							break
 				if current_host_id < 0:
 					for h in config_mgr.get_hosts():
-						if h.has("localaddress") and h.localaddress == saved_host_ip:
+						if host_matches_address(h, saved_host_ip):
 							current_host_id = h.id
 							break
 				if current_host_id >= 0:
@@ -2451,6 +2502,11 @@ func _sync_comp_background():
 		comp_bg_equirect.visible = true
 
 func _process_stats(delta):
+	# Deliberately ahead of the is_streaming early-return below - USB Link's
+	# status has to be visible on the welcome screen (that's the whole point
+	# of the toggle: know it's "Up" before trying to connect over it), not
+	# just while a stream using it is already running.
+	settings_controller.poll_usb_link_status(delta)
 	if not is_streaming:
 		if comp:
 			comp.set_stats_visible(false)
@@ -2467,6 +2523,7 @@ func _process_stats(delta):
 		video_presentation.process_frame(new_video_frame)
 	var frame_sample := telemetry.record_frame(delta, new_video_frame)
 	if not frame_sample.is_empty():
+		settings_controller.on_performance_sample(frame_sample)
 		# Diagnostic (2026-09-06): video update FPS is inherently capped at app
 		# FPS (consume_new_frame() can report at most one "yes" per
 		# script tick, no matter how many render-thread completions happened
@@ -2526,6 +2583,7 @@ func _process_performance_overlay(delta: float):
 	if decoder_name.is_empty():
 		decoder_name = "Unknown"
 	var lines := PackedStringArray([
+		"Connection: %s (%s)" % [stream_manager.connection_label(), stream_manager.stream_host_address],
 		"Video stream: %dx%d %.0f FPS" % [width, height, total_fps],
 		"Decoder: %s" % decoder_name,
 		"Incoming frame rate from network: %.0f FPS" % incoming_fps,
@@ -2553,7 +2611,12 @@ func _process_performance_overlay(delta: float):
 	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
 			var depth_model_name := "ZipDepth-384 Standard"
-			if settings_controller.get_depth_model_index() == 18:
+			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:
+				# CPU twins share java_index with several GPU-labeled entries
+				# (e.g. 14 is also "Auto"/"ZipDepth-384-GPU"), so resolve the
+				# label directly instead of matching on java_index below.
+				depth_model_name = settings_controller.get_depth_model_label()
+			elif settings_controller.get_depth_model_index() == 18:
 				depth_model_name = "ZipDepth-256 Fastest"
 			elif settings_controller.get_depth_model_index() == 19:
 				depth_model_name = "ZipDepth-384 Standard-v2"
@@ -2579,7 +2642,7 @@ func _process_performance_overlay(delta: float):
 				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])
 		lines.append("Depth inference: %.2f ms" % stream_backend.get_depth_last_inference_ms())
-		lines.append("Depth GPU priority: %s" % settings_controller.ai_3d_gpu_priority_labels[settings.ai_3d_gpu_priority])
+		lines.append("Depth GPU priority: %s" % settings_controller.get_ai_3d_gpu_priority_label())
 		lines.append("Depth age: %.1f ms" % stream_backend.get_depth_last_age_ms())
 		lines.append("Depth frames skipped: %d" % stream_backend.get_depth_last_skipped_frames())
 	comp.update_stats_text("\n".join(lines))
