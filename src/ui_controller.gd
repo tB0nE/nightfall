@@ -8,14 +8,27 @@ var _tab_control: Control
 var _tab_monitors: Control
 var _tab_ai3d: Control
 var _tab_picture: Control
-var _tab_advanced: Control
+var _tab_settings: Control
 var _tab_btn_display: Button
 var _tab_btn_stream: Button
 var _tab_btn_control: Button
 var _tab_btn_monitors: Button
 var _tab_btn_ai3d: Button
 var _tab_btn_picture: Button
-var _tab_btn_advanced: Button
+var _tab_btn_settings: Button
+var _settings_gear_btn: Button
+var _settings_scroll: ScrollContainer
+var _brand_label: Label
+# Hidden while Advanced Settings is open, so its page can use the whole menu
+# below the top row: the tab bar, the status line and the grab bar.
+var _settings_hidden_chrome: Array[Control] = []
+var _tab_before_settings: int = 0
+var _bottom_margin: Control
+var _language_grid: GridContainer
+# Drag-to-scroll state for the Settings page (see _on_scroll_drag_input()).
+var _scroll_drag_start_y: float = 0.0
+var _scroll_drag_start_value: int = 0
+var _scroll_dragged: bool = false
 var _preset_row: HBoxContainer
 var _current_tab: int = 0
 var _temporary_status_generation: int = 0
@@ -33,6 +46,16 @@ const PRESET_SECONDARY_COLOR := Color(1, 1, 1, 0.35)
 const TOOLTIP_META := &"nightfall_tooltip"
 const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
+const SETTINGS_TAB := 6
+# Space under the menu's last row; the Settings page only needs to clear the
+# rounded corners, since it is already inset 24px from the sides.
+const MENU_BOTTOM_MARGIN_PX := 32
+const SETTINGS_BOTTOM_MARGIN_PX := 12
+# Pointer travel (UI pixels, about 1 mm each) before a press on the Settings
+# page becomes a scroll instead of a click.
+const SCROLL_DRAG_THRESHOLD_PX := 16.0
+const OPTION_LABEL_META := &"nightfall_option_label"
+const OPTION_VALUE_META := &"nightfall_option_value"
 # Keep the AI depth inspection controls available for future troubleshooting
 # without exposing them in release UI.
 # Temporary model-validation build: expose the raw depth-map selector while
@@ -80,7 +103,7 @@ func _show_tooltip(button: Button) -> void:
 		_hide_tooltip()
 		return
 	_tooltip_visible_target = button
-	_tooltip_label.text = tooltip
+	_tooltip_label.text = Localization.t(tooltip)
 	_tooltip_panel.visible = true
 
 func _hide_tooltip() -> void:
@@ -317,8 +340,9 @@ func update_3d_btn_state():
 	# Debug views depend on AI-3D producing depth, but are independent of the
 	# Android model/type/mode lock. The lock hides selectors that cannot be
 	# changed on Android; it must not disable this diagnostic control too.
+	# Visibility is fixed at build time: shown on Android's AI 3D tab when
+	# SHOW_AI3D_DEPTH_DEBUG is set, hidden on the desktop Settings page.
 	if main._ui_3d_debug_btn:
-		main._ui_3d_debug_btn.visible = true
 		main._ui_3d_debug_btn.disabled = effect_disabled
 		main._ui_3d_debug_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	if main._ui_3d_process_debug_btn:
@@ -326,13 +350,102 @@ func update_3d_btn_state():
 		main._ui_3d_process_debug_btn.modulate.a = 0.3 if effect_disabled else 1.0
 
 func update_stats_btn_state():
-	if not main._ui_stats_btn:
+	update_option_btn(main._ui_stats_btn, "On" if main.settings.performance_overlay_enabled else "Off")
+
+func update_language_btn():
+	update_option_btn(main._ui_language_btn, Localization.language_name(Localization.current()))
+	if _language_grid:
+		for button in _language_grid.get_children():
+			var selected: bool = button.get_meta(&"language_code", "") == Localization.current()
+			button.add_theme_color_override("font_color",
+				Color(0.35, 0.65, 1.0, 1.0) if selected else Color(1, 1, 1, 0.85))
+
+func on_stats_toggled():
+	main.toggle_performance_overlay()
+
+func on_export_logs_pressed():
+	main.export_diagnostics()
+
+# The Language option opens a grid of languages beneath it on the Settings
+# page; with this many languages, cycling through them would be tedious.
+func on_language_pressed():
+	if not _language_grid:
 		return
-	main._ui_stats_btn.text = "Stats"
-	main._ui_stats_btn.add_theme_color_override(
-		"font_color",
-		Color(0.35, 0.65, 1.0, 1.0) if main.settings.performance_overlay_enabled else Color(1, 1, 1, 0.5)
-	)
+	_language_grid.get_parent().visible = not _language_grid.get_parent().visible
+	if _language_grid.get_parent().visible:
+		_reveal_language_grid.call_deferred()
+	_cull_settings_page.call_deferred()
+
+# Hides the Settings page's buttons and labels that aren't wholly inside the
+# scroll area (it doesn't clip; see _build_scroll_page()). Alpha, not
+# visibility, so the page's layout doesn't move.
+func _cull_settings_page():
+	if not _settings_scroll or not is_instance_valid(_settings_scroll):
+		return
+	_cull_outside(_settings_scroll.get_child(0), _settings_scroll.get_global_rect())
+
+func _cull_outside(node: Node, view: Rect2) -> void:
+	for child in node.get_children():
+		if child is Button or child is Label:
+			child.modulate.a = 1.0 if view.encloses(child.get_global_rect()) else 0.0
+		elif child is Control:
+			_cull_outside(child, view)
+
+func _reveal_language_grid():
+	if _settings_scroll and _language_grid:
+		_settings_scroll.ensure_control_visible(_language_grid)
+
+func _build_language_grid(content: Control) -> void:
+	var general_row := content.find_child("SettingsGeneralRow", false, false)
+	if general_row == null:
+		return
+	var holder := VBoxContainer.new()
+	holder.name = "LanguageGridHolder"
+	holder.add_theme_constant_override("separation", 0)
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.visible = false
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 12)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(gap)
+	_language_grid = GridContainer.new()
+	_language_grid.name = "LanguageGrid"
+	_language_grid.columns = 4
+	_language_grid.add_theme_constant_override("h_separation", 12)
+	_language_grid.add_theme_constant_override("v_separation", 8)
+	_language_grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_language_grid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(_language_grid)
+	content.add_child(holder)
+	content.move_child(holder, general_row.get_index() + 1)
+	for language in Localization.LANGUAGES:
+		var button := make_action_btn(language["name"])
+		button.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		button.custom_minimum_size = Vector2(230, 56)
+		button.set_meta(&"language_code", language["code"])
+		_language_grid.add_child(button)
+		_make_scroll_friendly(button)
+		var code: String = language["code"]
+		button.pressed.connect(_on_scroll_friendly_pressed.bind(func():
+			holder.visible = false
+			main.settings_controller.set_language(code)))
+
+## Re-applies the current language to text composed at runtime. Plain Labels
+## and Buttons hold their English key and translate themselves.
+func retranslate():
+	var buttons := []
+	_collect_option_buttons(main.get_node("%UIRoot"), buttons)
+	for button in buttons:
+		_compose_option_text(button)
+	update_language_btn()
+	if _tooltip_visible_target != null and is_instance_valid(_tooltip_visible_target):
+		_show_tooltip(_tooltip_visible_target)
+
+func _collect_option_buttons(node: Node, result: Array) -> void:
+	if node is Button and node.has_meta(OPTION_LABEL_META):
+		result.append(node)
+	for child in node.get_children():
+		_collect_option_buttons(child, result)
 
 func update_ambient_btn_state():
 	var supported = main.comp != null and main.comp.ambient_supported()
@@ -493,6 +606,15 @@ func _draw_preset_blocks(diagram: Control, preset: Dictionary):
 			rect.color.a *= 0.5
 		diagram.add_child(rect)
 
+## The gear opens Advanced Settings; pressed again, it returns to the tab that
+## was open before.
+func toggle_settings_page():
+	if _current_tab == SETTINGS_TAB:
+		switch_tab(_tab_before_settings)
+	else:
+		_tab_before_settings = _current_tab
+		switch_tab(SETTINGS_TAB)
+
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
 	main.get_node("%Laser").visible = main.is_xr_active
@@ -507,7 +629,7 @@ func switch_tab(tab: int):
 	if _tab_monitors: _tab_monitors.visible = (tab == 5)
 	if _tab_ai3d: _tab_ai3d.visible = (tab == 3)
 	if _tab_picture: _tab_picture.visible = (tab == 4)
-	if _tab_advanced: _tab_advanced.visible = (tab == 6)
+	if _tab_settings: _tab_settings.visible = (tab == SETTINGS_TAB)
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -536,10 +658,21 @@ func switch_tab(tab: int):
 		_tab_btn_picture.add_theme_stylebox_override("normal", tab_active_style if tab == 4 else tab_inactive_style)
 		_tab_btn_picture.add_theme_stylebox_override("hover", tab_active_style)
 		_tab_btn_picture.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 4 else Color(1, 1, 1, 0.5))
-	if _tab_btn_advanced:
-		_tab_btn_advanced.add_theme_stylebox_override("normal", tab_active_style if tab == 6 else tab_inactive_style)
-		_tab_btn_advanced.add_theme_stylebox_override("hover", tab_active_style)
-		_tab_btn_advanced.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 6 else Color(1, 1, 1, 0.5))
+	if _settings_gear_btn:
+		# The gear stands in for the Settings tab button, so it carries the
+		# active-tab highlight instead.
+		_settings_gear_btn.add_theme_color_override("icon_normal_color",
+			Color(0.35, 0.65, 1.0, 1.0) if tab == SETTINGS_TAB else Color(1, 1, 1, 0.5))
+	if tab == SETTINGS_TAB and _settings_scroll:
+		_settings_scroll.scroll_vertical = 0
+		_cull_settings_page.call_deferred()
+	for node in _settings_hidden_chrome:
+		if is_instance_valid(node):
+			node.visible = tab != SETTINGS_TAB
+	if _brand_label:
+		_brand_label.text = "Advanced Settings" if tab == SETTINGS_TAB else "Nightfall"
+	if _bottom_margin:
+		_bottom_margin.custom_minimum_size.y = SETTINGS_BOTTOM_MARGIN_PX if tab == SETTINGS_TAB else MENU_BOTTOM_MARGIN_PX
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
@@ -593,6 +726,7 @@ func build_ui():
 	root.add_child(panel)
 
 	var brand = Label.new()
+	_brand_label = brand
 	brand.name = "Brand"
 	brand.text = "Nightfall"
 	brand.add_theme_font_size_override("font_size", 30)
@@ -653,58 +787,36 @@ func build_ui():
 	main._ui_center_btn.add_theme_stylebox_override("pressed", center_hover)
 	top_row.add_child(main._ui_center_btn)
 
-	main._ui_log_btn = Button.new()
-	main._ui_log_btn.text = "\u2193"
-	_set_button_tooltip(main._ui_log_btn, "Save diagnostic logs to Download/Nightfall.")
-	main._ui_log_btn.focus_mode = Control.FOCUS_NONE
-	main._ui_log_btn.custom_minimum_size = Vector2(60, 36)
-	main._ui_log_btn.add_theme_font_size_override("font_size", 24)
-	main._ui_log_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	main._ui_log_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
-	var log_style = main._btn_style.duplicate()
-	log_style.content_margin_left = 10
-	log_style.content_margin_right = 10
-	log_style.content_margin_top = 2
-	log_style.content_margin_bottom = 2
-	log_style.set_corner_radius_all(0)
-	var log_hover = main._btn_hover.duplicate()
-	log_hover.content_margin_left = 10
-	log_hover.content_margin_right = 10
-	log_hover.content_margin_top = 2
-	log_hover.content_margin_bottom = 2
-	log_hover.set_corner_radius_all(0)
-	main._ui_log_btn.add_theme_stylebox_override("normal", log_style)
-	main._ui_log_btn.add_theme_stylebox_override("hover", log_hover)
-	main._ui_log_btn.add_theme_stylebox_override("pressed", log_hover)
-	main._ui_log_btn.visible = OS.get_name() == "Android"
-	top_row.add_child(main._ui_log_btn)
-
-	main._ui_stats_btn = Button.new()
-	main._ui_stats_btn.text = "Stats"
-	_set_button_tooltip(main._ui_stats_btn, "Show or hide live stream performance statistics.")
-	main._ui_stats_btn.focus_mode = Control.FOCUS_NONE
-	main._ui_stats_btn.custom_minimum_size = Vector2(100, 36)
-	main._ui_stats_btn.add_theme_font_size_override("font_size", 22)
-	main._ui_stats_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	main._ui_stats_btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
-	var stats_style = main._btn_style.duplicate()
-	stats_style.content_margin_left = 12
-	stats_style.content_margin_right = 12
-	stats_style.content_margin_top = 2
-	stats_style.content_margin_bottom = 2
-	stats_style.set_corner_radius_all(0)
-	stats_style.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
-	var stats_hover = main._btn_hover.duplicate()
-	stats_hover.content_margin_left = 12
-	stats_hover.content_margin_right = 12
-	stats_hover.content_margin_top = 2
-	stats_hover.content_margin_bottom = 2
-	stats_hover.set_corner_radius_all(0)
-	stats_hover.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
-	main._ui_stats_btn.add_theme_stylebox_override("normal", stats_style)
-	main._ui_stats_btn.add_theme_stylebox_override("hover", stats_hover)
-	main._ui_stats_btn.add_theme_stylebox_override("pressed", stats_hover)
-	top_row.add_child(main._ui_stats_btn)
+	# Logs and Stats used to sit here; they moved onto the Settings page,
+	# which this gear opens in place of a seventh tab button.
+	_settings_gear_btn = Button.new()
+	_settings_gear_btn.name = "SettingsGear"
+	_settings_gear_btn.icon = load("res://src/assets/gear_icon.svg")
+	_settings_gear_btn.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_set_button_tooltip(_settings_gear_btn, "Open settings: language, logs, stats, and connection options.")
+	_settings_gear_btn.focus_mode = Control.FOCUS_NONE
+	_settings_gear_btn.custom_minimum_size = Vector2(60, 36)
+	_settings_gear_btn.add_theme_color_override("icon_normal_color", Color(1, 1, 1, 0.5))
+	_settings_gear_btn.add_theme_color_override("icon_hover_color", Color(1, 1, 1, 1))
+	_settings_gear_btn.add_theme_color_override("icon_pressed_color", Color(1, 1, 1, 1))
+	var gear_style = main._btn_style.duplicate()
+	gear_style.content_margin_left = 10
+	gear_style.content_margin_right = 10
+	gear_style.content_margin_top = 2
+	gear_style.content_margin_bottom = 2
+	gear_style.set_corner_radius_all(0)
+	gear_style.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
+	var gear_hover = main._btn_hover.duplicate()
+	gear_hover.content_margin_left = 10
+	gear_hover.content_margin_right = 10
+	gear_hover.content_margin_top = 2
+	gear_hover.content_margin_bottom = 2
+	gear_hover.set_corner_radius_all(0)
+	gear_hover.set_corner_radius(CORNER_BOTTOM_RIGHT, 32)
+	_settings_gear_btn.add_theme_stylebox_override("normal", gear_style)
+	_settings_gear_btn.add_theme_stylebox_override("hover", gear_hover)
+	_settings_gear_btn.add_theme_stylebox_override("pressed", gear_hover)
+	top_row.add_child(_settings_gear_btn)
 
 	var left_spacer = Control.new()
 	left_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -987,7 +1099,8 @@ func build_ui():
 	_set_button_tooltip(main._ui_grid_mode_btn, "Arrange screens using the monitor grid.")
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
-	_tab_advanced = _build_menu_tab(vbox, MenuSchema.get_tab(&"advanced"))
+	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
+	_build_language_grid(_settings_scroll.get_child(0))
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -1040,8 +1153,11 @@ func build_ui():
 	grab_right_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	grab_bar_center.add_child(grab_right_spacer)
 
+	_settings_hidden_chrome = [top_margin, tab_bar, tab_margin, main._ui_status_label, grab_gap, grab_bar_center]
+
 	var bottom_margin = Control.new()
-	bottom_margin.custom_minimum_size = Vector2(0, 32)
+	_bottom_margin = bottom_margin
+	bottom_margin.custom_minimum_size = Vector2(0, MENU_BOTTOM_MARGIN_PX)
 	bottom_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(bottom_margin)
 
@@ -1049,10 +1165,10 @@ func build_ui():
 	main._ui_disconnect_btn.button_down.connect(func(): main.disconnect_stream())
 	main._ui_close_btn.button_down.connect(func(): main._toggle_ui())
 	main._ui_center_btn.button_down.connect(func(): main._reset_positions())
-	main._ui_log_btn.button_down.connect(func(): main.export_diagnostics())
-	main._ui_stats_btn.button_down.connect(func(): main.toggle_performance_overlay())
+	_settings_gear_btn.button_down.connect(toggle_settings_page)
 	main._ui_disconnect_btn.visible = main.is_streaming
 	update_stats_btn_state()
+	update_language_btn()
 	main._ui_3d_mode_btn.button_down.connect(func(): on_ai_3d_mode_toggled())
 	main._ui_3d_type_btn.button_down.connect(func(): on_ai_3d_type_toggled())
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
@@ -1114,14 +1230,18 @@ func _build_menu_tab(
 	tab.visible = schema["id"] == &"display"
 	parent.add_child(tab)
 
+	var scrollable: bool = schema.get("scrollable", false)
+	var content: VBoxContainer = _build_scroll_page(tab) if scrollable else tab
 	var rows: Array = schema["rows"]
 	for row_index in rows.size():
+		var row_schema: Dictionary = rows[row_index]
 		if row_index > 0:
 			var gap := Control.new()
 			gap.custom_minimum_size = Vector2(0, 20)
 			gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			tab.add_child(gap)
-		var row_schema: Dictionary = rows[row_index]
+			content.add_child(gap)
+		if row_schema.has("title"):
+			content.add_child(_make_section_title(row_schema["title"]))
 		var row := HBoxContainer.new()
 		row.name = row_schema["node_name"]
 		row.add_theme_constant_override("separation", 12)
@@ -1129,7 +1249,7 @@ func _build_menu_tab(
 		row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		tab.add_child(row)
+		content.add_child(row)
 		for option in row_schema["options"]:
 			var field: StringName = option["field"]
 			var value: String = value_overrides.get(field, option["value"])
@@ -1139,16 +1259,118 @@ func _build_menu_tab(
 			button.disabled = option["disabled"]
 			main.set(field, button)
 			row.add_child(button)
-			_connect_menu_action(button, option)
+			if scrollable:
+				_make_scroll_friendly(button)
+			_connect_menu_action(button, option, scrollable)
 	return tab
 
-func _connect_menu_action(button: Button, option: Dictionary) -> void:
+# Settings page body: fills the menu below the top row (switch_tab() hides
+# the tab bar, status line and grab bar) and scrolls content of any height.
+# Scrolling works by pressing and dragging anywhere on the page (as on the
+# Quest home screen) or with the scrollbar.
+func _build_scroll_page(tab: VBoxContainer) -> VBoxContainer:
+	tab.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 24)
+	margin.add_theme_constant_override("margin_right", 24)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tab.add_child(margin)
+
+	_settings_scroll = ScrollContainer.new()
+	_settings_scroll.name = "SettingsScroll"
+	_settings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_settings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_settings_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	_settings_scroll.follow_focus = false
+	# Under GLES this container's clip rect comes out flipped vertically inside
+	# the menu's SubViewport, cutting off the bottom of the page, so it doesn't
+	# clip; _cull_settings_page() hides whatever is scrolled out of view.
+	_settings_scroll.clip_contents = false
+	var bar := _settings_scroll.get_v_scroll_bar()
+	bar.value_changed.connect(func(_value): _cull_settings_page.call_deferred())
+	bar.changed.connect(func(): _cull_settings_page.call_deferred())
+	margin.add_child(_settings_scroll)
+	_style_scroll_bar(_settings_scroll.get_v_scroll_bar())
+
+	var content := VBoxContainer.new()
+	content.name = "SettingsContent"
+	content.add_theme_constant_override("separation", 0)
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Stops presses on empty space here, so this page (not the
+	# ScrollContainer's own touch handling) owns drag scrolling.
+	content.mouse_filter = Control.MOUSE_FILTER_STOP
+	content.gui_input.connect(_on_scroll_drag_input)
+	_settings_scroll.add_child(content)
+	return content
+
+func _style_scroll_bar(bar: VScrollBar) -> void:
+	bar.custom_minimum_size = Vector2(14, 0)
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(1, 1, 1, 0.04)
+	track.set_corner_radius_all(7)
+	bar.add_theme_stylebox_override("scroll", track)
+	bar.add_theme_stylebox_override("scroll_focus", track)
+	for state in [["grabber", 0.22], ["grabber_highlight", 0.4], ["grabber_pressed", 0.55]]:
+		var grabber := StyleBoxFlat.new()
+		grabber.bg_color = Color(1, 1, 1, state[1])
+		grabber.set_corner_radius_all(7)
+		bar.add_theme_stylebox_override(state[0], grabber)
+
+func _make_section_title(text: String) -> Label:
+	var title := Label.new()
+	title.text = text
+	title.add_theme_font_size_override("font_size", 20)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.custom_minimum_size = Vector2(0, 36)
+	title.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return title
+
+# A button on a scrolling page acts on release rather than press, so a press
+# that turns into a drag can scroll the page without changing the setting.
+func _make_scroll_friendly(button: Button) -> void:
+	button.action_mode = BaseButton.ACTION_MODE_BUTTON_RELEASE
+	button.gui_input.connect(_on_scroll_drag_input)
+	# The pointer hover pass draws hover by rectangle; this keeps buttons
+	# scrolled out of view from lighting up or showing tooltips.
+	button.set_meta(&"nightfall_clip", _settings_scroll)
+
+# gui_input runs before the button's own handling, so on release the drag flag
+# is still set when _on_scroll_friendly_pressed() checks it.
+func _on_scroll_drag_input(event: InputEvent) -> void:
+	if not _settings_scroll:
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_scroll_drag_start_y = event.global_position.y
+			_scroll_drag_start_value = _settings_scroll.scroll_vertical
+			_scroll_dragged = false
+	elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
+		var travel: float = event.global_position.y - _scroll_drag_start_y
+		if not _scroll_dragged and absf(travel) >= SCROLL_DRAG_THRESHOLD_PX:
+			_scroll_dragged = true
+			clear_tooltip()
+		if _scroll_dragged:
+			_settings_scroll.scroll_vertical = _scroll_drag_start_value - int(travel)
+
+func _on_scroll_friendly_pressed(callable: Callable) -> void:
+	if _scroll_dragged:
+		return
+	callable.call()
+
+func _connect_menu_action(button: Button, option: Dictionary, on_release: bool = false) -> void:
 	var target := _menu_action_target(option["target"])
 	var action: StringName = option["action"]
 	if target == null or not target.has_method(action):
 		push_error("Invalid menu action %s.%s" % [option["target"], action])
 		return
-	button.button_down.connect(Callable(target, action))
+	if on_release:
+		button.pressed.connect(_on_scroll_friendly_pressed.bind(Callable(target, action)))
+	else:
+		button.button_down.connect(Callable(target, action))
 
 func _menu_action_target(target: StringName) -> Object:
 	match target:
@@ -1165,7 +1387,7 @@ func _menu_action_target(target: StringName) -> Object:
 func make_option_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.text = label_text + "\n" + value_text
+	_init_option_text(btn, label_text, value_text)
 	btn.add_theme_font_size_override("font_size", 26)
 	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
@@ -1184,7 +1406,7 @@ func make_option_btn(label_text: String, value_text: String) -> Button:
 func make_compact_option_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.text = label_text + "\n" + value_text
+	_init_option_text(btn, label_text, value_text)
 	btn.add_theme_font_size_override("font_size", 18)
 	btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1))
@@ -1245,12 +1467,26 @@ func refresh_ui_buttons():
 	_collect_buttons(root, btns)
 	main.xr_interaction.populate_ui_buttons(btns)
 
+# Option buttons show "Label\nValue". Both halves are kept in English as
+# metadata and translated whenever the text is composed, so a language change
+# only has to recompose (see retranslate()).
+func _init_option_text(btn: Button, label_text: String, value_text: String) -> void:
+	btn.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	btn.set_meta(OPTION_LABEL_META, label_text)
+	btn.set_meta(OPTION_VALUE_META, value_text)
+	_compose_option_text(btn)
+
+# An option with no value (an action such as Save Log) shows its label alone.
+func _compose_option_text(btn: Button) -> void:
+	var label := Localization.t(btn.get_meta(OPTION_LABEL_META, ""))
+	var value: String = btn.get_meta(OPTION_VALUE_META, "")
+	btn.text = label if value.is_empty() else label + "\n" + Localization.t(value)
+
 func update_option_btn(btn: Button, value: String):
-	if btn == null:
+	if btn == null or not btn.has_meta(OPTION_LABEL_META):
 		return
-	var parts = btn.text.split("\n")
-	if parts.size() >= 2:
-		btn.text = parts[0] + "\n" + value
+	btn.set_meta(OPTION_VALUE_META, value)
+	_compose_option_text(btn)
 
 func update_codec_btn():
 	main.ui_controller.update_option_btn(main._ui_codec_btn, main.codec_labels[main.settings.codec_preference])

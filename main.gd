@@ -524,6 +524,7 @@ var _ui_close_btn: Button
 var _ui_center_btn: Button
 var _ui_log_btn: Button
 var _ui_stats_btn: Button
+var _ui_language_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat

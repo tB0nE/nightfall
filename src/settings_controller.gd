@@ -1250,6 +1250,20 @@ func cycle_auto_reconnect():
 		main.stream_backend._v2.set_auto_reconnect(main.settings.auto_reconnect_enabled)
 	_save_setting(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
 
+func set_language(code: String):
+	main.settings.language = code
+	apply_language()
+	main.state_manager.save_state()
+
+# Applies the saved language (or the OS language when none was chosen) and
+# refreshes text that was composed before the change.
+func apply_language():
+	Localization.apply(Localization.resolve_language(main.settings.language))
+	if main.ui_controller:
+		main.ui_controller.retranslate()
+	if main.welcome_screen:
+		main.welcome_screen.retranslate()
+
 func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
@@ -1327,7 +1341,7 @@ func poll_usb_link_status(delta: float):
 		return
 	var up: bool = bridge.is_up()
 	var label = "Up" if up else "Requesting..."
-	if main._ui_usb_link_btn.text.find(label) < 0:
+	if main._ui_usb_link_btn.get_meta(UIController.OPTION_VALUE_META, "") != label:
 		main.ui_controller.update_option_btn(main._ui_usb_link_btn, label)
 	if up:
 		_maybe_return_to_usb_link()
