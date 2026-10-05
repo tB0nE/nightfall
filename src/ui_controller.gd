@@ -18,6 +18,12 @@ var _tab_btn_picture: Button
 var _tab_btn_settings: Button
 var _settings_gear_btn: Button
 var _settings_scroll: ScrollContainer
+var _brand_label: Label
+# Hidden while Advanced Settings is open, so its page can use the whole menu
+# below the top row: the tab bar, the status line and the grab bar.
+var _settings_hidden_chrome: Array[Control] = []
+var _tab_before_settings: int = 0
+var _bottom_margin: Control
 var _language_grid: GridContainer
 # Drag-to-scroll state for the Settings page (see _on_scroll_drag_input()).
 var _scroll_drag_start_y: float = 0.0
@@ -41,9 +47,10 @@ const TOOLTIP_META := &"nightfall_tooltip"
 const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
 const SETTINGS_TAB := 6
-# Same height the fixed tabs spend on two option rows plus their gap, so the
-# menu keeps its size; the Settings page scrolls within it.
-const SETTINGS_PAGE_HEIGHT := 284
+# Space under the menu's last row; the Settings page only needs to clear the
+# rounded corners, since it is already inset 24px from the sides.
+const MENU_BOTTOM_MARGIN_PX := 32
+const SETTINGS_BOTTOM_MARGIN_PX := 12
 # Pointer travel (UI pixels, about 1 mm each) before a press on the Settings
 # page becomes a scroll instead of a click.
 const SCROLL_DRAG_THRESHOLD_PX := 16.0
@@ -367,6 +374,22 @@ func on_language_pressed():
 	_language_grid.get_parent().visible = not _language_grid.get_parent().visible
 	if _language_grid.get_parent().visible:
 		_reveal_language_grid.call_deferred()
+	_cull_settings_page.call_deferred()
+
+# Hides the Settings page's buttons and labels that aren't wholly inside the
+# scroll area (it doesn't clip; see _build_scroll_page()). Alpha, not
+# visibility, so the page's layout doesn't move.
+func _cull_settings_page():
+	if not _settings_scroll or not is_instance_valid(_settings_scroll):
+		return
+	_cull_outside(_settings_scroll.get_child(0), _settings_scroll.get_global_rect())
+
+func _cull_outside(node: Node, view: Rect2) -> void:
+	for child in node.get_children():
+		if child is Button or child is Label:
+			child.modulate.a = 1.0 if view.encloses(child.get_global_rect()) else 0.0
+		elif child is Control:
+			_cull_outside(child, view)
 
 func _reveal_language_grid():
 	if _settings_scroll and _language_grid:
@@ -583,6 +606,15 @@ func _draw_preset_blocks(diagram: Control, preset: Dictionary):
 			rect.color.a *= 0.5
 		diagram.add_child(rect)
 
+## The gear opens Advanced Settings; pressed again, it returns to the tab that
+## was open before.
+func toggle_settings_page():
+	if _current_tab == SETTINGS_TAB:
+		switch_tab(_tab_before_settings)
+	else:
+		_tab_before_settings = _current_tab
+		switch_tab(SETTINGS_TAB)
+
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
 	main.get_node("%Laser").visible = main.is_xr_active
@@ -633,6 +665,14 @@ func switch_tab(tab: int):
 			Color(0.35, 0.65, 1.0, 1.0) if tab == SETTINGS_TAB else Color(1, 1, 1, 0.5))
 	if tab == SETTINGS_TAB and _settings_scroll:
 		_settings_scroll.scroll_vertical = 0
+		_cull_settings_page.call_deferred()
+	for node in _settings_hidden_chrome:
+		if is_instance_valid(node):
+			node.visible = tab != SETTINGS_TAB
+	if _brand_label:
+		_brand_label.text = "Advanced Settings" if tab == SETTINGS_TAB else "Nightfall"
+	if _bottom_margin:
+		_bottom_margin.custom_minimum_size.y = SETTINGS_BOTTOM_MARGIN_PX if tab == SETTINGS_TAB else MENU_BOTTOM_MARGIN_PX
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
@@ -686,6 +726,7 @@ func build_ui():
 	root.add_child(panel)
 
 	var brand = Label.new()
+	_brand_label = brand
 	brand.name = "Brand"
 	brand.text = "Nightfall"
 	brand.add_theme_font_size_override("font_size", 30)
@@ -1112,8 +1153,11 @@ func build_ui():
 	grab_right_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	grab_bar_center.add_child(grab_right_spacer)
 
+	_settings_hidden_chrome = [top_margin, tab_bar, tab_margin, main._ui_status_label, grab_gap, grab_bar_center]
+
 	var bottom_margin = Control.new()
-	bottom_margin.custom_minimum_size = Vector2(0, 32)
+	_bottom_margin = bottom_margin
+	bottom_margin.custom_minimum_size = Vector2(0, MENU_BOTTOM_MARGIN_PX)
 	bottom_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vbox.add_child(bottom_margin)
 
@@ -1121,7 +1165,7 @@ func build_ui():
 	main._ui_disconnect_btn.button_down.connect(func(): main.disconnect_stream())
 	main._ui_close_btn.button_down.connect(func(): main._toggle_ui())
 	main._ui_center_btn.button_down.connect(func(): main._reset_positions())
-	_settings_gear_btn.button_down.connect(func(): switch_tab(SETTINGS_TAB))
+	_settings_gear_btn.button_down.connect(toggle_settings_page)
 	main._ui_disconnect_btn.visible = main.is_streaming
 	update_stats_btn_state()
 	update_language_btn()
@@ -1220,22 +1264,33 @@ func _build_menu_tab(
 			_connect_menu_action(button, option, scrollable)
 	return tab
 
-# Settings page body: a fixed-height viewport onto content of any height.
+# Settings page body: fills the menu below the top row (switch_tab() hides
+# the tab bar, status line and grab bar) and scrolls content of any height.
 # Scrolling works by pressing and dragging anywhere on the page (as on the
 # Quest home screen) or with the scrollbar.
 func _build_scroll_page(tab: VBoxContainer) -> VBoxContainer:
+	tab.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 24)
 	margin.add_theme_constant_override("margin_right", 24)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tab.add_child(margin)
 
 	_settings_scroll = ScrollContainer.new()
 	_settings_scroll.name = "SettingsScroll"
-	_settings_scroll.custom_minimum_size = Vector2(0, SETTINGS_PAGE_HEIGHT)
+	_settings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_settings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_settings_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	_settings_scroll.follow_focus = false
+	# Under GLES this container's clip rect comes out flipped vertically inside
+	# the menu's SubViewport, cutting off the bottom of the page, so it doesn't
+	# clip; _cull_settings_page() hides whatever is scrolled out of view.
+	_settings_scroll.clip_contents = false
+	var bar := _settings_scroll.get_v_scroll_bar()
+	bar.value_changed.connect(func(_value): _cull_settings_page.call_deferred())
+	bar.changed.connect(func(): _cull_settings_page.call_deferred())
 	margin.add_child(_settings_scroll)
 	_style_scroll_bar(_settings_scroll.get_v_scroll_bar())
 
@@ -1421,9 +1476,11 @@ func _init_option_text(btn: Button, label_text: String, value_text: String) -> v
 	btn.set_meta(OPTION_VALUE_META, value_text)
 	_compose_option_text(btn)
 
+# An option with no value (an action such as Save Log) shows its label alone.
 func _compose_option_text(btn: Button) -> void:
-	btn.text = Localization.t(btn.get_meta(OPTION_LABEL_META, "")) + "\n" \
-		+ Localization.t(btn.get_meta(OPTION_VALUE_META, ""))
+	var label := Localization.t(btn.get_meta(OPTION_LABEL_META, ""))
+	var value: String = btn.get_meta(OPTION_VALUE_META, "")
+	btn.text = label if value.is_empty() else label + "\n" + Localization.t(value)
 
 func update_option_btn(btn: Button, value: String):
 	if btn == null or not btn.has_meta(OPTION_LABEL_META):

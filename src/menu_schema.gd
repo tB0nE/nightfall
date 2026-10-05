@@ -123,7 +123,7 @@ static func get_tabs() -> Array:
 				"node_name": &"SettingsDiagnosticsRow",
 				"title": "Diagnostics",
 				"options": [
-					_option(&"_ui_log_btn", "Logs", "Save", "Save diagnostic logs to Download/Nightfall.", TARGET_UI, &"on_export_logs_pressed", OS.get_name() == "Android"),
+					_option(&"_ui_log_btn", "Save Log", "", "Save diagnostic logs to Download/Nightfall.", TARGET_UI, &"on_export_logs_pressed", OS.get_name() == "Android"),
 					_option(&"_ui_stats_btn", "Stats", "Off", "Show or hide live stream performance statistics.", TARGET_UI, &"on_stats_toggled"),
 				] + ([] if OS.get_name() == "Android" else [
 					# Android exposes this diagnostic on the AI 3D tab. The

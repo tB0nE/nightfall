@@ -952,6 +952,9 @@ func _point_in_ui_rect(p: Vector2, btn: Button) -> bool:
 	var clip = btn.get_meta(&"nightfall_clip", null)
 	if clip is Control and is_instance_valid(clip) and not clip.get_global_rect().has_point(p):
 		return false
+	# Hidden by UIController._cull_settings_page() while partly out of view.
+	if clip != null and btn.modulate.a <= 0.0:
+		return false
 	var gp = btn.global_position
 	return p.x >= gp.x and p.x <= gp.x + btn.size.x \
 		and p.y >= gp.y and p.y <= gp.y + btn.size.y
@@ -1188,7 +1191,8 @@ func handle_scroll():
 
 func _is_ui_grab_bar(pixel_pos: Vector2) -> bool:
 	var bar = main.ui_viewport.find_child("CompGrabBar", true, false)
-	if not bar or not bar is Control:
+	# Hidden on the Advanced Settings page, where its old rect is page content.
+	if not bar or not bar is Control or not bar.is_visible_in_tree():
 		return false
 	var bar_rect = bar.get_global_rect()
 	return pixel_pos.x >= bar_rect.position.x and pixel_pos.x <= bar_rect.end.x and pixel_pos.y >= bar_rect.position.y and pixel_pos.y <= bar_rect.end.y
