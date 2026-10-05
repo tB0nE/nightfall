@@ -455,7 +455,7 @@ impl Depth {
                 rate_window = (Instant::now(), 0);
             }
             if let Some((dir, every)) = &self.save
-                && maps % every == 1
+                && (maps - 1) % every == 0
             {
                 let rgb = match &frame.pixels {
                     Pixels::Rgb(rgb) if same_size => Ok(rgb.clone()),
@@ -475,15 +475,14 @@ impl Depth {
     }
 }
 
-/// Picks a default: square ZipDepth 384x384, else the first. Other sizes and
-/// aspect ratios have shown corrupt or wrong depth maps on the Quest and are
-/// under investigation (2026-10-03), so they're never chosen automatically.
+/// The widescreen EdgePad family's 512x288 model (the Quest's standard tier),
+/// built by tools/make_host_model.py. Its 672x384 sibling is the
+/// higher-quality host choice.
+pub const DEFAULT_MODEL: &str = "zipdepth_wide_512x288.onnx";
+
+/// Picks a default: the 512x288 model, else the first.
 fn preferred_model(models: &[String]) -> Option<String> {
-    models
-        .iter()
-        .find(|m| m.as_str() == "zipdepth_base_384.onnx")
-        .or_else(|| models.first())
-        .cloned()
+    models.iter().find(|m| m.as_str() == DEFAULT_MODEL).or_else(|| models.first()).cloned()
 }
 
 fn display_name(path: &Path) -> String {

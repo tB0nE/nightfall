@@ -84,10 +84,11 @@ tap rebuilds whole frames (`src/video_tap.rs`, a port of moonlight-common-c's
 reassembly, keeping only the data shards). Each frame then goes through:
 
 1. **Decode:** NVDEC, called directly through the NVIDIA driver
-   (`src/nvdec.rs`), decodes the frame as soon as it's complete and scales it
-   to the model's input size in the same step. A small CUDA kernel
-   (`kernels/nv12_to_tensor.cu`) then writes the model's input tensor
-   directly in GPU memory, and ONNX Runtime reads it in place, so the frame
+   (`src/nvdec.rs`), decodes the frame at full size as soon as it's complete.
+   A small CUDA kernel (`kernels/nv12_to_tensor.cu`) then reduces it to the
+   model's input with the Quest's 4x4 footprint average (so host depth sees
+   the same input as on-device depth; NVDEC's own scaler aliases text and
+   fine detail) and writes the model's input tensor directly in GPU memory, and ONNX Runtime reads it in place, so the frame
    never passes through the CPU. Each frame stays tagged with its frame
    number. `--cpu-frames` switches to converting on the CPU, for
    comparison.
@@ -138,10 +139,31 @@ Requirements:
   ONNX Runtime 1.30 links TensorRT 10, so version 11 won't load. Without
   it, Meteor stays on CUDA.
 - Models in `~/.local/share/nightfall-meteor/models` (`models_dir` changes
-  this). Fixed-size ZipDepth exports work. Use
-  `tools/ZipDepth/onnx_export/zipdepth_base_384.onnx` (with its
-  `_raw.onnx.data`) for now: other sizes and aspect ratios have produced
-  corrupt or wrong depth maps and are being investigated.
+  this); the tray's Model menu lists them. Meteor defaults to
+  `zipdepth_wide_512x288.onnx`, the widescreen EdgePad model the Quest's
+  standard tier also runs; `zipdepth_wide_672x384.onnx` is the
+  higher-quality choice (about 0.6 ms more per frame). Both come from the
+  model researcher's exports (`nightfall-temporal-zipdepth`, see its
+  `reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md`). Build them once with
+  `make_host_model.py`, which unpacks the packed EdgePad output in the graph
+  and checks the result against the matching `.tflite`:
+
+  ```sh
+  E=../nightfall-temporal-zipdepth/local-data/exports
+  python meteor/tools/make_host_model.py \
+      $E/cheap_widescreen_active16x9_gate_d_final/512x288/student_512x288_edgepad.onnx \
+      ~/.local/share/nightfall-meteor/models/zipdepth_wide_512x288.onnx \
+      $E/cheap_widescreen_active16x9_gate_d_final/512x288/tflite/student_512x288_edgepad_float16.tflite
+  python meteor/tools/make_host_model.py \
+      $E/host_strong_zero_shot/672x384/student_672x384_edgepad.onnx \
+      ~/.local/share/nightfall-meteor/models/zipdepth_wide_672x384.onnx \
+      $E/host_strong_zero_shot/672x384/tflite/student_672x384_edgepad_float16.tflite
+  ```
+
+  The first use of a model builds its TensorRT engine (about 100 s, then
+  cached). The square `zipdepth_edgepad_384.onnx` (built the same way from
+  `tools/ZipDepth/onnx_export/zipdepth_base_384_standard_packed_conv4_reduceconv_edgepad.onnx`)
+  still works if it's in the folder.
 
 Without these, Meteor logs why and stays a plain proxy.
 

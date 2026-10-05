@@ -4,6 +4,7 @@
 #include "video/depth_bridge.h"
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
+#include <array>
 #include <atomic>
 #include <string>
 #include <thread>
@@ -60,6 +61,9 @@ public:
 
     int get_frames_dropped() const;
     int get_frames_decoded() const;
+    // Moonlight frame number of the frame most recently handed to the display
+    // (0 before the first), for matching Nightfall Meteor's host depth maps.
+    int get_presented_frame_number() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;
@@ -106,6 +110,7 @@ private:
     void _decode_thread_func();
     void _clear_packet_queue();
     void _record_rendered_frame(int64_t frame_enqueue_time_us);
+    void _remember_frame_pts(int64_t pts, int frame_number);
     void _reset_performance_stats();
 
     AVColorSpace _resolve_frame_colorspace(AVFrame *frame) const;
@@ -135,6 +140,14 @@ private:
 
     std::atomic<int> frames_dropped_{0};
     std::atomic<int> frames_decoded_{0};
+    // Decoder PTS (the frame's enqueue time) -> Moonlight frame number for
+    // recent frames, so _record_rendered_frame() can name the rendered frame.
+    static constexpr int kFramePtsSlots = 128;
+    std::array<int64_t, kFramePtsSlots> frame_pts_{};
+    std::array<int, kFramePtsSlots> frame_pts_numbers_{};
+    int frame_pts_next_ = 0;
+    std::mutex frame_pts_mutex_;
+    std::atomic<int> presented_frame_number_{0};
     std::atomic<int> last_frame_latency_us_{0};
 
     // Moonlight Android-compatible performance window. Network submission and

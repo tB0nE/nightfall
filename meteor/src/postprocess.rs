@@ -11,9 +11,11 @@ use std::time::Instant;
 
 const HIST_BINS: usize = 512;
 pub const PERCENTILE_CLIP: f32 = 0.02;
-/// ZipDepth's tau pair in DepthEstimator.java (`GpuVariant(..., 0.02f, 0.1f)`).
-pub const DEPTH_TAU_SECONDS: f32 = 0.02;
-pub const RANGE_TAU_SECONDS: f32 = 0.1;
+/// ZipDepth's tau pair: `ZIPDEPTH_DEPTH_TAU_SECONDS` and
+/// `ZIPDEPTH_RANGE_TAU_SECONDS` in DepthEstimator.java, used by the EdgePad
+/// models the Quest runs.
+pub const DEPTH_TAU_SECONDS: f32 = 0.055;
+pub const RANGE_TAU_SECONDS: f32 = 0.308;
 
 pub struct PostProcessor {
     smooth_lo: f32,
@@ -164,7 +166,7 @@ mod tests {
         // A sudden jump only moves part of the way after one 60 Hz frame...
         let inverted: Vec<f32> = ramp.iter().rev().copied().collect();
         let second = p.process(&inverted, t0 + Duration::from_millis(16));
-        assert!(second[0] > 128 && second[0] < 250, "{}", second[0]);
+        assert!(second[0] > 30 && second[0] < 225, "{}", second[0]);
         // ...and converges after a few tau.
         let later = p.process(&inverted, t0 + Duration::from_millis(500));
         assert!(later[0] >= 250);

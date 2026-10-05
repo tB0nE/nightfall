@@ -80,6 +80,7 @@ public:
 
     int get_frames_dropped() const;
     int get_frames_decoded() const;
+    int get_presented_frame_number() const;
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;

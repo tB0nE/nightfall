@@ -1,7 +1,8 @@
 # Depth model assets
 
 This directory holds the `.tflite` depth-estimation model library. Android
-currently bundles EdgePad-384, EdgePad-256, and manual-only EdgePad-224 through
+currently bundles two of the widescreen EdgePad family (EdgePad-512 and
+EdgePad-320, below) and the two square CPU twins through
 `tools/build_support/package_android_models.sh`. Linux bundles Vulkan ncnn
 conversions of ZipDepth-384/256, MiDaS-256/192, and Depth Anything V2-252,
 alongside TFLite CPU variants of the latter three. They are installed in
@@ -31,6 +32,9 @@ Every model here shares the same downstream pipeline (`DepthEstimator.java`'s
 | `midas-v21-small-256-vulkan.ncnn.{param,bin}` | ~32MB | MiDaS-256 (Vulkan FP16) | Linux GPU variant. |
 | `midas-v21-small-192-vulkan.ncnn.{param,bin}` | ~32MB | MiDaS-192 (Vulkan FP16) | Linux GPU variant; smoother than the heavily quantized CPU model. |
 | `depth-anything-v2-252-vulkan.ncnn.{param,bin}` | ~47MB | Depth Anything V2 Small-252 (Vulkan FP16) | Linux GPU transformer variant. |
+| `zipdepth-wide-512x288-edgepad-gpu.tflite` | ~12MB | Widescreen EdgePad 512x288 (GPU, fp16) | **Android Quest 3/3S Auto/manual model (EdgePad-512, index 25) since 2026-10-04.** From nightfall-temporal-zipdepth's selected checkpoint (`cheap_widescreen_active16x9_gate_d_final/512x288`), SHA-256 `dfa40c15155df2a7ae2eb2ccdf78da610ae4722b1cc388fa93e6888bcc78d0df`. Packed 144x256x4 output. Meteor's default host model is the same weights' ONNX. |
+| `zipdepth-wide-352x198-t352x224-edgepad-gpu.tflite` | ~12MB | Widescreen EdgePad 352x198 in a 352x224 tensor (GPU, fp16) | Not bundled: dropped 2026-10-04 for having 20% more pixels than the EdgePad-256 it would have replaced. SHA-256 `e9ddb113368bf3a372f1e9aa88c27882cae7fd28343e83a033344fd4f331e02c`; see the tier guide for the 13-row edge padding and post-unpack crop. |
+| `zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite` | ~12MB | Widescreen EdgePad 320x180 in a 320x192 tensor (GPU, fp16) | **Android Quest 2 Auto/manual model and Quest 3 OpenCL fallback (EdgePad-320, index 28).** SHA-256 `9dfd7519b3d1b208b7ad74caa55b9097e35ca537b03fdd0ec690d8cfce56f2ec`; 6-row edge padding, cropped after unpacking. |
 | `zipdepth-base-384-gpu.tflite` | ~12MB | ZipDepth-384 Hybrid (GPU, fp16 weights) | Retained Android reference. Standard checkpoint backbone/decoder plus the mobile-safe NPU head; no longer bundled after Standard EdgePad and Direct-192 superseded it. |
 | `zipdepth-base-256-gpu.tflite` | ~12MB | ZipDepth-256 Hybrid (GPU, fp16 weights) | Retained Android reference; no longer bundled after final-warp testing exposed a substantial quality gap from the learned EdgePad head. |
 | `zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite` | ~12MB | ZipDepth Standard EdgePad-256 (GPU, fp16 weights) | **Android Quest 2 Auto/manual model.** Standard checkpoint, 256x256 input, packed 128x128x4 learned reconstruction output interleaved to 256x256. Uses OpenGL under Quest 2 Auto. |

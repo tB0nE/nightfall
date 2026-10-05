@@ -197,6 +197,13 @@ func get_frames_decoded() -> int:
 		return _v2.get_frames_decoded()
 	return 0
 
+## Moonlight frame number of the frame most recently handed to the display,
+## or 0 (also from a native library that predates it).
+func get_presented_frame_number() -> int:
+	if _v2 and _v2.has_method("get_presented_frame_number"):
+		return _v2.get_presented_frame_number()
+	return 0
+
 func get_decode_queue_size() -> int:
 	if _v2:
 		return _v2.get_decode_queue_size()

@@ -9,6 +9,7 @@ func _init():
 	_test_route_rtsp_url()
 	_test_depth_info()
 	_test_parse_depth_messages()
+	_test_pick_depth_map()
 	if not _failures.is_empty():
 		for failure in _failures:
 			printerr("FAIL: " + failure)
@@ -74,16 +75,31 @@ func _test_parse_depth_messages() -> void:
 	for i in 16:
 		map[i] = i * 10
 	var stream := _message(41, 4, 4, map) + _message(42, 4, 4, map)
-	var partial := stream.slice(0, stream.size() - 5)
-	var parsed := MeteorDepthReceiver.parse_messages(partial)
-	_check(parsed.get("count") == 1 and parsed["newest"]["frame"] == 41, "a partial second message waits")
+	var parsed := MeteorDepthReceiver.parse_messages(stream.slice(0, stream.size() - 5))
+	_check(parsed.size() == 1 and parsed[0]["frame"] == 41, "a partial second message waits")
 	parsed = MeteorDepthReceiver.parse_messages(stream)
-	_check(parsed.get("count") == 2 and parsed.get("consumed") == stream.size(), "both messages parse")
-	var newest: Dictionary = parsed["newest"]
-	_check(newest["frame"] == 42 and newest["epoch"] == 3 and newest["latency_us"] == 1800, "newest header fields")
+	_check(parsed.size() == 2 and parsed[1]["payload_end"] == stream.size(), "both messages parse")
+	var newest: Dictionary = parsed[1]
+	_check(newest["frame"] == 42 and newest["epoch"] == 3 and newest["latency_us"] == 1800, "header fields")
 	var payload := stream.slice(newest["payload_start"], newest["payload_end"])
 	_check(payload.decompress(16, FileAccess.COMPRESSION_ZSTD) == map, "payload decompresses")
 	var bad := stream.duplicate()
 	bad[0] = 0
-	_check(MeteorDepthReceiver.parse_messages(bad).has("error"), "bad magic is rejected")
-	_check(MeteorDepthReceiver.parse_messages(PackedByteArray()).get("count") == 0, "empty buffer")
+	parsed = MeteorDepthReceiver.parse_messages(bad)
+	_check(parsed.size() == 1 and parsed[0].has("error"), "bad magic is rejected")
+	_check(MeteorDepthReceiver.parse_messages(PackedByteArray()).is_empty(), "empty buffer")
+
+func _test_pick_depth_map() -> void:
+	var receiver := MeteorDepthReceiver.new()
+	for frame in [10, 11, 13]:
+		receiver._store({"frame": frame, "epoch": 1, "map": PackedByteArray(), "width": 1, "height": 1, "latency_us": 0})
+	_check(receiver.pick(11)["frame"] == 11, "exact frame")
+	_check(receiver.pick(12)["frame"] == 11, "newest before a missing frame")
+	_check(receiver.pick(20)["frame"] == 13, "newest when the frame hasn't arrived")
+	_check(receiver.pick(9).is_empty(), "never a map from a later frame")
+	_check(receiver.pick(0)["frame"] == 13, "unknown frame number takes the newest")
+	receiver._store({"frame": 2, "epoch": 2, "map": PackedByteArray(), "width": 1, "height": 1, "latency_us": 0})
+	_check(receiver.pick(5)["frame"] == 2 and receiver.pick(12)["frame"] == 2, "a new epoch drops old maps")
+	for frame in range(3, 30):
+		receiver._store({"frame": frame, "epoch": 2, "map": PackedByteArray(), "width": 1, "height": 1, "latency_us": 0})
+	_check(receiver.pick(17).is_empty(), "only the newest maps are kept")

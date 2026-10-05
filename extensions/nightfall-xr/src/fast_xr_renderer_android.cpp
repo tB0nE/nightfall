@@ -10,6 +10,7 @@
 
 #include <android/log.h>
 #include <GLES2/gl2ext.h>
+#include <GLES3/gl31.h>
 
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -1043,6 +1044,9 @@ void NightfallXrRenderer::stop_stream() {
 	rendered_depth_convergence = -1.0f;
 	rendered_depth_process_stage = -1;
 	rendered_upsample_process_stage = -1;
+	sized_depth_texture_id = 0;
+	sized_depth_revision = UINT64_MAX;
+	depth_map_width = depth_map_height = 0;
 	layer_frame_counter = 0;
 	eye_last_queried_frame[0] = 0;
 	eye_last_queried_frame[1] = 0;
@@ -1352,6 +1356,53 @@ uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id
 	return depth_sync_textures[selected];
 }
 
+// Hardware-linear depth gains nothing from a working grid bigger or smaller
+// than the map itself: it would only resample the map once more before the
+// warp stretches it to the screen. So when the map already has the stream's
+// aspect (the widescreen models, Meteor's maps), the grid is the map's own
+// size and the upsample pass is a 1:1 copy. Colour-guided modes and
+// differently shaped maps keep a quarter of the stream, where the guide adds
+// detail or the aspect needs correcting.
+void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, bool p_linear) {
+	if (p_depth_texture_id != sized_depth_texture_id || pending_depth_revision != sized_depth_revision) {
+		sized_depth_texture_id = p_depth_texture_id;
+		sized_depth_revision = pending_depth_revision;
+		GLint width = 0, height = 0;
+		glBindTexture(GL_TEXTURE_2D, p_depth_texture_id);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+		glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+		depth_map_width = width;
+		depth_map_height = height;
+	}
+	int width = video_width / UPSAMPLE_DIVISOR;
+	int height = video_height / UPSAMPLE_DIVISOR;
+	if (p_linear && depth_map_width > 0 && depth_map_height > 0 && video_height > 0) {
+		float map_aspect = (float)depth_map_width / (float)depth_map_height;
+		float video_aspect = (float)video_width / (float)video_height;
+		if (std::fabs(map_aspect / video_aspect - 1.0f) < 0.05f) {
+			width = depth_map_width;
+			height = depth_map_height;
+		}
+	}
+	if (width != upsample_width || height != upsample_height) {
+		resize_working_textures(width, height);
+	}
+}
+
+void NightfallXrRenderer::resize_working_textures(int p_width, int p_height) {
+	XR_LOG("Depth working grid %dx%d -> %dx%d (map %dx%d, stream %dx%d)",
+			upsample_width, upsample_height, p_width, p_height,
+			depth_map_width, depth_map_height, video_width, video_height);
+	upsample_width = p_width;
+	upsample_height = p_height;
+	glBindTexture(GL_TEXTURE_2D, upsample_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, upsample_width, upsample_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glBindTexture(GL_TEXTURE_2D, offset_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, upsample_width, upsample_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	// Both textures are empty again.
+	depth_cache_valid = false;
+}
+
 void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, bool p_texture_2d,
 		bool p_color_guided, int p_resample_mode) {
@@ -1515,22 +1566,33 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		}
 	}
 
-	bool has_depth = p_depth_texture_id != 0 && p_depth_guide_texture_id != 0;
+	// The guide is the on-device capture of the model's input. Host depth
+	// (Nightfall Meteor) has no capture, so without a guide the depth is
+	// resized with hardware-linear sampling, which never reads the guide.
+	bool has_depth = p_depth_texture_id != 0;
+	bool has_guide = p_depth_guide_texture_id != 0;
+	int resample_mode = !has_guide ? 1
+			: (p_depth_process_stage == 6 ? 1 : (p_depth_process_stage == 7 ? 2 : 0));
+	// Cache key: the stage, plus whether a guide was available.
+	int upsample_key = p_depth_process_stage * 2 + (has_guide ? 1 : 0);
 	bool use_upsample = has_depth && p_depth_process_stage >= 2;
+	if (use_upsample) {
+		choose_working_size(p_depth_texture_id, resample_mode == 1);
+	}
 	bool refresh_depth = use_upsample && (!depth_cache_valid ||
 			pending_depth_revision != rendered_depth_revision ||
-			p_depth_process_stage != rendered_upsample_process_stage);
+			upsample_key != rendered_upsample_process_stage);
 	bool did_depth_work = false;
 	if (refresh_depth) {
 		run_upsample(source_texture_id, p_depth_texture_id,
 				p_depth_guide_texture_id, source_matrix, source_is_2d,
 				// Guided and production modes use scale-matched colour guidance;
 				// Spatial remains an explicit un-guided comparison/fallback.
-				p_depth_process_stage >= 3,
-				p_depth_process_stage == 6 ? 1 : (p_depth_process_stage == 7 ? 2 : 0));
+				has_guide && p_depth_process_stage >= 3,
+				resample_mode);
 		depth_cache_valid = true;
 		rendered_depth_revision = pending_depth_revision;
-		rendered_upsample_process_stage = p_depth_process_stage;
+		rendered_upsample_process_stage = upsample_key;
 		did_depth_work = true;
 	}
 	bool upsampling = use_upsample && depth_cache_valid;

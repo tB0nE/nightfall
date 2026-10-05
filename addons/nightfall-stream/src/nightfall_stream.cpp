@@ -361,6 +361,11 @@ int NightfallStream::get_frames_dropped() const {
     return 0;
 }
 
+int NightfallStream::get_presented_frame_number() const {
+    if (stream_connection_) return stream_connection_->get_presented_frame_number();
+    return 0;
+}
+
 int NightfallStream::get_frames_decoded() const {
     if (stream_connection_) return stream_connection_->get_frames_decoded();
     return 0;
@@ -690,6 +695,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_bridge"), &NightfallStream::get_depth_bridge);
     ClassDB::bind_method(D_METHOD("get_frames_dropped"), &NightfallStream::get_frames_dropped);
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &NightfallStream::get_frames_decoded);
+    ClassDB::bind_method(D_METHOD("get_presented_frame_number"), &NightfallStream::get_presented_frame_number);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &NightfallStream::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &NightfallStream::get_last_frame_latency_us);
     ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &NightfallStream::get_network_latency_ms);

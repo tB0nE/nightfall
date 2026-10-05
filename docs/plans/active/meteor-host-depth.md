@@ -45,10 +45,15 @@ Wins if it works:
    the stream.
 3. **NVIDIA only** for the first version (NVDEC + CUDA / TensorRT). Windows
    and other GPUs come later.
-4. **Model: square 384x384 for now** (added 2026-10-03). Other sizes and
-   aspect ratios (672x384, 512x288) have produced corrupt or incorrect depth
-   maps. Meteor defaults to `zipdepth_base_384.onnx` until the models are
-   investigated; the rectangular figures below are kept for reference.
+4. **Model: the widescreen EdgePad family** (2026-10-04). Meteor defaults to
+   `zipdepth_wide_512x288.onnx` and offers `zipdepth_wide_672x384.onnx` as
+   the higher-quality choice, both from the model researcher's selected
+   checkpoint (`nightfall-temporal-zipdepth`,
+   `reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md`) and built by
+   `meteor/tools/make_host_model.py`. These replace the square 384x384
+   interim (2026-10-03), which was chosen because the stock-weight
+   rectangular models gave wrong depth. On a replayed 2560x1440 gameplay
+   clip the frame-to-map median is about 3.3 ms for either at 120 Hz.
 5. **Microphone passthrough goes into Meteor too.** It has its own plan:
    [meteor-microphone.md](meteor-microphone.md).
 
@@ -177,11 +182,34 @@ session, not yet on the Quest)
   that reason, although maps arrived at 57/s. While Meteor is in use the
   client now still captures a guide frame twice a second and discards it.
   The production stage (Full-Linear) doesn't read the guide's pixels; a
-  stage that does (Guided) would see a stale guide. The proper fix is in
-  the renderer, in Phase 3.
+  stage that does (Guided) would see a stale guide. Replaced in Phase 3 by
+  the renderer fix below.
 - **Not yet:** Depth Sync uses an age of 0 for host maps, the stats overlay
   doesn't show host depth, and only the logs (`[METEOR-DEPTH]`, once a
   second) report rate, bandwidth and Meteor's latency.
+
+**Phase 3** (built 2026-10-04; installed, not yet tested on the Quest)
+- **Which frame is on screen.** `stream_connection.cpp` records each frame's
+  decoder PTS (its enqueue time) against its Moonlight frame number, and
+  `_record_rendered_frame()`, which every decode path calls, looks the
+  rendered frame up. `get_presented_frame_number()` exposes it.
+- **Receiver thread.** `meteor_depth.gd` now reads, parses and decompresses
+  on a worker thread and keeps the last 12 maps. The main thread only picks
+  one: 0.013 ms a frame, measured against a live 120 Hz stream, down from
+  0.28 ms.
+- **Matching.** The client shows the map for the frame on screen, or the
+  newest one before it, never one from a later frame. With Depth Sync on,
+  the colour delay stays at 1 frame and the map for that delayed frame is
+  shown; it moves to 2 frames only if over 10% of frames miss their map in a
+  2-second window, and back once 98% would match at 1. Each change repeats
+  or skips one video frame, so it changes rarely.
+- **Renderer.** `fast_xr_renderer_android.cpp` applies depth without a guide
+  texture, resizing linearly when there's none; host depth passes no guide.
+  The twice-a-second guide capture from Phase 2 is gone.
+- **Stats.** `[METEOR-DEPTH]` logs, once a second, the presented frame,
+  the newest map's frame, the exact-match rate, how many frames showed a
+  map 1, 2 or 3+ frames old, and the Depth Sync delay. The stats overlay
+  doesn't show these yet.
 
 ## Where this sits next to the Gateway plan
 
@@ -412,7 +440,9 @@ displayed depth matches its frame in more than 95% of frames at 60 and
   post-processing (590 KB). Moving post-processing to the GPU is possible
   but small.
 - Measure the impact on game FPS.
-- Port to Windows: D3D11VA decode, and DirectML or TensorRT for inference.
+- Port to Windows: see [meteor-windows.md](meteor-windows.md). NVDEC and
+  CUDA work there too, so NVIDIA hosts keep this pipeline; D3D11VA and
+  DirectML would only matter for other GPUs.
 - Add a Windows tray icon (Meteor currently has none on Windows).
 
 ## Risks

@@ -325,7 +325,15 @@ private:
 	GLint u_delayed_upsample_sharp = -1, u_delayed_upsample_depth_guide = -1;
 	GLint u_delayed_upsample_linear = -1;
 	GLuint upsample_texture = 0, upsample_fbo = 0;
+	// The depth working grid (upsample and offset textures). A quarter of
+	// the stream by default; see choose_working_size().
 	int upsample_width = 0, upsample_height = 0;
+	// The depth texture's size, read when its id or revision changes.
+	uint32_t sized_depth_texture_id = 0;
+	uint64_t sized_depth_revision = UINT64_MAX;
+	int depth_map_width = 0, depth_map_height = 0;
+	void choose_working_size(uint32_t p_depth_texture_id, bool p_linear);
+	void resize_working_textures(int p_width, int p_height);
 
 	GLuint offset_program = 0;
 	GLint u_offset_disp = -1, u_offset_conv = -1;

@@ -29,7 +29,8 @@ impl ksni::Tray for MeteorTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![crate::icon::meteor_icon(32), crate::icon::meteor_icon(64)]
+        static ICONS: std::sync::OnceLock<Vec<ksni::Icon>> = std::sync::OnceLock::new();
+        ICONS.get_or_init(|| crate::icon::SIZES.iter().map(|&s| crate::icon::nightfall_icon(s)).collect()).clone()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {

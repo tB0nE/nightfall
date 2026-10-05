@@ -8,13 +8,32 @@ repeated or discarded.
 
 ## Production Android models
 
-| UI choice | Model | Model I/O | Depth conversion | Default backend |
+Since 2026-10-04 the EdgePad classes run the widescreen EdgePad family:
+one retrained checkpoint (SHA-256 `2dc8fddcef9ef22f45b6a1573b9cf66de0f39b1b5172e4284dd693790bd6309e`) exported at three 16:9
+sizes by the model researcher (`nightfall-temporal-zipdepth`,
+`reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md`). Android ships two of
+them: EdgePad-512 and EdgePad-320. The family's 352x198 model (352x224
+tensor) was dropped because it has 20% more pixels than the EdgePad-256 it
+would have replaced, so Quest 2 Auto and the Quest 3 OpenCL fallback now use
+EdgePad-320, which has 6% fewer. Saves that chose EdgePad-256 move to
+EdgePad-320; the square exports described further down
+remain in `models/` as the rollback (see `DepthEstimator.java`'s EdgePad
+registrations).
+
+| UI choice | Java index | Model | Image -> tensor | Default backend |
 |---|---|---|---|---|
-| Auto, Quest 3/3S | EdgePad-384 | 384x384 -> 384x384 | Linear | OpenCL |
-| Auto, Quest 2 | EdgePad-256 | 256x256 -> 256x256 | Linear | OpenGL |
-| EdgePad-384 | EdgePad-384 | 384x384 -> 384x384 | Linear | User-selected |
-| EdgePad-256 | EdgePad-256 | 256x256 -> 256x256 | Linear | User-selected |
-| Any, Backend: CPU | EdgePad-256-CPU | 256x256 -> 256x256 | Linear | CPU (XNNPACK, no GPU delegate) |
+| Auto, Quest 3/3S | 25 | EdgePad-512 | 512x288 -> 512x288 | OpenCL |
+| Auto, Quest 2 | 28 | EdgePad-320 | 320x180 -> 320x192 | OpenGL |
+| EdgePad-512 | 25 | `zipdepth-wide-512x288-edgepad-gpu.tflite` | 512x288 -> 512x288 | User-selected |
+| EdgePad-320 | 28 | `zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite` | 320x180 -> 320x192 | User-selected |
+| Any, Backend: CPU | 29 | EdgePad-256-CPU (square, unchanged) | 256x256 -> 256x256 | CPU (XNNPACK, no GPU delegate) |
+
+EdgePad-320 takes a 16:9 image padded to a taller tensor: the capture is at
+the image size, `runInferenceGpu()` repeats its top and bottom rows into 6
+padding rows each side, and the output is unpacked to the full tensor and
+only then cropped back to the image rows (cropping the packed tensor would
+shift a row for an odd pad). Never pad with black
+or stretch the image to the tensor height.
 
 The "Backend" control's third state (`tools/quantize_zipdepth_cpu.py --size
 256`, int8 weights/float32 activations) overrides whatever Model is currently

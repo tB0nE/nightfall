@@ -1,57 +1,97 @@
-//! Draws the tray icon (a meteor with its tail) so no image files ship.
+//! Draws the tray icon so no image files ship: Nightfall's mark (an N whose
+//! right stroke is a planet) as a white glyph on transparent, like other
+//! monochrome tray icons. The planet is reduced to its lit edge, a crescent
+//! beside the N's diagonal.
+
+/// The sizes offered to the tray, which picks the closest.
+pub const SIZES: [i32; 4] = [22, 32, 48, 64];
+
+/// Samples per pixel along each axis, for anti-aliased edges.
+const SUPERSAMPLE: i32 = 4;
 
 /// ARGB32 pixels, as the StatusNotifierItem spec wants.
-pub fn meteor_icon(size: i32) -> ksni::Icon {
-    let n = size as f32;
-    let head = (0.36, 0.64);
-    let tail_end = (0.92, 0.08);
-    let head_radius = 0.2;
+pub fn nightfall_icon(size: i32) -> ksni::Icon {
+    let outline = n_outline();
+    let samples = size * SUPERSAMPLE;
     let mut data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
-            let p = ((x as f32 + 0.5) / n, (y as f32 + 0.5) / n);
-            // Tail: a streak that narrows and fades towards its far end.
-            let (t, dist) = segment_distance(p, head, tail_end);
-            let tail_width = head_radius * (1.0 - t) * 0.9;
-            let tail_alpha = coverage(tail_width - dist, n) * (1.0 - t).powf(1.4);
-            // Head: a hot core fading out to orange.
-            let head_dist = ((p.0 - head.0).powi(2) + (p.1 - head.1).powi(2)).sqrt();
-            let head_alpha = coverage(head_radius - head_dist, n);
-            let heat = (1.0 - head_dist / head_radius).clamp(0.0, 1.0);
-
-            let head_rgb = mix((255.0, 140.0, 40.0), (255.0, 250.0, 225.0), heat.powf(0.7));
-            let tail_rgb = mix((255.0, 170.0, 60.0), (150.0, 90.0, 255.0), t);
-            let a = head_alpha + tail_alpha * (1.0 - head_alpha);
-            let rgb = if a > 0.0 {
-                mix(tail_rgb, head_rgb, head_alpha / a)
-            } else {
-                (0.0, 0.0, 0.0)
-            };
-            data.extend_from_slice(&[
-                (a * 255.0) as u8,
-                rgb.0 as u8,
-                rgb.1 as u8,
-                rgb.2 as u8,
-            ]);
+            let mut hits = 0;
+            for sy in 0..SUPERSAMPLE {
+                for sx in 0..SUPERSAMPLE {
+                    let p = (
+                        ((x * SUPERSAMPLE + sx) as f32 + 0.5) / samples as f32,
+                        ((y * SUPERSAMPLE + sy) as f32 + 0.5) / samples as f32,
+                    );
+                    if inside(&outline, p) || in_crescent(p) {
+                        hits += 1;
+                    }
+                }
+            }
+            let alpha = (hits * 255 / (SUPERSAMPLE * SUPERSAMPLE)) as u8;
+            data.extend_from_slice(&[alpha, 255, 255, 255]);
         }
     }
     ksni::Icon { width: size, height: size, data }
 }
 
-/// How far along a->b the closest point to p is (0..1), and the distance to it.
-fn segment_distance(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> (f32, f32) {
-    let ab = (b.0 - a.0, b.1 - a.1);
-    let ap = (p.0 - a.0, p.1 - a.1);
-    let t = ((ap.0 * ab.0 + ap.1 * ab.1) / (ab.0 * ab.0 + ab.1 * ab.1)).clamp(0.0, 1.0);
-    let closest = (a.0 + ab.0 * t, a.1 + ab.1 * t);
-    (t, ((p.0 - closest.0).powi(2) + (p.1 - closest.1).powi(2)).sqrt())
+/// The N in unit coordinates (y down): the stem, a rounded top, and the
+/// diagonal sweeping down to the bottom right.
+fn n_outline() -> Vec<(f32, f32)> {
+    let mut points = vec![(0.16, 0.90)];
+    points.extend(bezier((0.16, 0.20), (0.16, 0.10), (0.26, 0.11), 8));
+    points.extend(bezier((0.26, 0.11), (0.40, 0.13), (0.80, 0.90), 24));
+    points.extend([(0.65, 0.90), (0.28, 0.36), (0.28, 0.90)]);
+    points
 }
 
-/// Anti-aliased edge: 1 inside, 0 outside, a one-pixel ramp between.
-fn coverage(signed_distance: f32, size: f32) -> f32 {
-    (signed_distance * size + 0.5).clamp(0.0, 1.0)
+/// The planet's lit edge: inside the planet, outside a slightly offset copy
+/// of it, and clear of the N's diagonal by a gap.
+fn in_crescent(p: (f32, f32)) -> bool {
+    let in_circle = |c: (f32, f32), r: f32| (p.0 - c.0).powi(2) + (p.1 - c.1).powi(2) < r * r;
+    let (a, b) = ((0.40, 0.30), (0.80, 0.90));
+    let side = ((b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)) / (b.0 - a.0).hypot(b.1 - a.1);
+    in_circle((0.50, 0.52), 0.37) && !in_circle((0.385, 0.50), 0.345) && side < -0.075
 }
 
-fn mix(a: (f32, f32, f32), b: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
-    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t, a.2 + (b.2 - a.2) * t)
+fn bezier(p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), steps: usize) -> Vec<(f32, f32)> {
+    (0..steps)
+        .map(|i| {
+            let t = i as f32 / (steps - 1) as f32;
+            let u = 1.0 - t;
+            (
+                u * u * p0.0 + 2.0 * u * t * p1.0 + t * t * p2.0,
+                u * u * p0.1 + 2.0 * u * t * p1.1 + t * t * p2.1,
+            )
+        })
+        .collect()
+}
+
+/// Even-odd point-in-polygon test.
+fn inside(polygon: &[(f32, f32)], p: (f32, f32)) -> bool {
+    let mut result = false;
+    for (i, &a) in polygon.iter().enumerate() {
+        let b = polygon[(i + 1) % polygon.len()];
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < (b.0 - a.0) * (p.1 - a.1) / (b.1 - a.1) + a.0 {
+            result = !result;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draws_a_white_glyph_on_transparent() {
+        let icon = nightfall_icon(32);
+        assert_eq!(icon.data.len(), 32 * 32 * 4);
+        let alpha = |x: usize, y: usize| icon.data[(y * 32 + x) * 4];
+        assert_eq!(alpha(7, 24), 255, "the stem");
+        assert_eq!(alpha(1, 1), 0, "a corner");
+        assert_eq!(alpha(26, 16), 255, "the crescent");
+        assert_eq!(alpha(20, 16), 0, "between the diagonal and the crescent");
+        assert!(icon.data.chunks(4).all(|px| px[1..] == [255, 255, 255]));
+    }
 }

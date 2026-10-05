@@ -1018,6 +1018,7 @@ int StreamConnection::_cb_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     queued_unit.is_idr = decodeUnit->frameType == FRAME_TYPE_IDR;
     queued_unit.frame_number = decodeUnit->frameNumber;
     queued_unit.presentation_time_us = decodeUnit->presentationTimeUs;
+    self->_remember_frame_pts(pkt->pts, decodeUnit->frameNumber);
 
     DecodeUnitQueue::PushResult enqueue_result;
     {
@@ -2087,6 +2088,17 @@ int StreamConnection::get_frames_decoded() const {
     return frames_decoded_.load();
 }
 
+int StreamConnection::get_presented_frame_number() const {
+    return presented_frame_number_.load();
+}
+
+void StreamConnection::_remember_frame_pts(int64_t pts, int frame_number) {
+    std::lock_guard<std::mutex> lock(frame_pts_mutex_);
+    frame_pts_[frame_pts_next_] = pts;
+    frame_pts_numbers_[frame_pts_next_] = frame_number;
+    frame_pts_next_ = (frame_pts_next_ + 1) % kFramePtsSlots;
+}
+
 int StreamConnection::get_decode_queue_size() const {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return (int)packet_queue_.size();
@@ -2113,6 +2125,7 @@ void StreamConnection::_reset_performance_stats() {
     frames_decoded_.store(0);
     frames_dropped_.store(0);
     last_frame_latency_us_.store(0);
+    presented_frame_number_.store(0);
 }
 
 void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
@@ -2130,6 +2143,17 @@ void StreamConnection::_record_rendered_frame(int64_t frame_enqueue_time_us) {
         last_frame_latency_us_.store((int)decode_us);
     }
     frames_decoded_.fetch_add(1);
+    {
+        // Newest first: a PTS is only ever reused by a much later frame.
+        std::lock_guard<std::mutex> lock(frame_pts_mutex_);
+        for (int i = 1; i <= kFramePtsSlots; ++i) {
+            const int slot = (frame_pts_next_ - i + kFramePtsSlots) % kFramePtsSlots;
+            if (frame_pts_[slot] == frame_enqueue_time_us && frame_pts_numbers_[slot] != 0) {
+                presented_frame_number_.store(frame_pts_numbers_[slot]);
+                break;
+            }
+        }
+    }
 
     std::lock_guard<std::mutex> lock(performance_stats_mutex_);
     performance_stats_.rendered_frames++;
@@ -2271,6 +2295,7 @@ void StreamConnection::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_depth_bridge"), &StreamConnection::get_depth_bridge);
     ClassDB::bind_method(D_METHOD("get_frames_dropped"), &StreamConnection::get_frames_dropped);
     ClassDB::bind_method(D_METHOD("get_frames_decoded"), &StreamConnection::get_frames_decoded);
+    ClassDB::bind_method(D_METHOD("get_presented_frame_number"), &StreamConnection::get_presented_frame_number);
     ClassDB::bind_method(D_METHOD("get_decode_queue_size"), &StreamConnection::get_decode_queue_size);
     ClassDB::bind_method(D_METHOD("get_last_frame_latency_us"), &StreamConnection::get_last_frame_latency_us);
     ClassDB::bind_method(D_METHOD("get_network_latency_ms"), &StreamConnection::get_network_latency_ms);

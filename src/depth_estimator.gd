@@ -57,12 +57,20 @@ var meteor := MeteorDepthReceiver.new()
 var _meteor_in_use := false
 var _meteor_perf_maps := 0
 var _meteor_perf_bytes := 0
-var _meteor_guide_timer := 0.0
-# The native renderer only applies depth when the capture's guide texture
-# exists (fast_xr_renderer_android.cpp's has_depth). The Quest's production
-# stage samples depth linearly and doesn't read the guide's pixels, so a slow
-# capture keeps one alive without running the model on it.
-const METEOR_GUIDE_INTERVAL_SEC := 0.5
+# Matching Meteor's maps to the frame on screen (Moonlight frame numbers).
+var _meteor_shown_frame := -1
+var _meteor_last_presented := 0
+# Depth Sync's colour delay while Meteor depth is in use: 1 frame, or 2 when
+# maps keep arriving later than that. Changed rarely, because each change
+# repeats or skips a video frame.
+var _meteor_sync_delay := 1
+const METEOR_SYNC_WINDOW := 120
+var _meteor_sync_frames := 0
+var _meteor_sync_misses := 0
+var _meteor_sync_would_hit_at_1 := 0
+# Per log window: presented frames by how far the map shown lagged the frame
+# wanted (0 = exact), and frames with no usable map.
+var _meteor_match := {"frames": 0, "exact": 0, "lag1": 0, "lag2": 0, "lag_more": 0, "none": 0}
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
 # depth_upsample.gdshader / depth_offset.gdshader for what these compute.
@@ -491,9 +499,7 @@ func process(delta: float):
 			upsample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-	if _meteor_in_use:
-		_keep_native_guide(delta)
-	elif main.stream_backend.has_method("submit_depth_frame"):
+	if not _meteor_in_use and main.stream_backend.has_method("submit_depth_frame"):
 		var native_capture_available: bool = (
 			_platform == "Android"
 			and main.stream_backend.has_method("supports_native_depth_capture")
@@ -574,12 +580,17 @@ func process(delta: float):
 	if _perf_window >= 1.0 and meteor.is_active():
 		var received := meteor.maps_received - _meteor_perf_maps
 		var mbit := float(meteor.bytes_received - _meteor_perf_bytes) * 8.0 / 1000000.0 / _perf_window
-		main._log("[METEOR-DEPTH] %s maps=%.1f/s received=%.1f/s %.1fMbit/s host=%.2fms frame=%d skipped=%d size=%dx%d" % [
+		var m := _meteor_match
+		var frames := maxi(int(m["frames"]), 1)
+		main._log("[METEOR-DEPTH] %s shown=%.1f/s received=%.1f/s %.1fMbit/s host=%.2fms presented=%d newest=%d exact=%.0f%% lag1=%d lag2=%d lag3+=%d none=%d sync=%s" % [
 			"in use" if _meteor_in_use else "not delivering", float(_perf_updates) / _perf_window,
-			float(received) / _perf_window, mbit, meteor.host_latency_ms, meteor.frame_number,
-			meteor.maps_skipped, meteor.width, meteor.height])
+			float(received) / _perf_window, mbit, meteor.host_latency_ms, _meteor_last_presented,
+			meteor.newest_frame, 100.0 * m["exact"] / frames, m["lag1"], m["lag2"], m["lag_more"], m["none"],
+			("%d frame%s" % [_meteor_sync_delay, "" if _meteor_sync_delay == 1 else "s"]) if main.settings.host.ai_3d_depth_sync else "off"])
 		_meteor_perf_maps = meteor.maps_received
 		_meteor_perf_bytes = meteor.bytes_received
+		for key in m:
+			m[key] = 0
 	if _perf_window >= 1.0 and _meteor_in_use:
 		_perf_window = 0.0
 		_perf_updates = 0
@@ -609,6 +620,8 @@ func _update_meteor() -> void:
 	if not wanted:
 		if meteor.is_active():
 			meteor.stop()
+			_meteor_shown_frame = -1
+			_meteor_last_presented = 0
 			main._log("[METEOR] Host depth stopped")
 		_set_meteor_in_use(false)
 		return
@@ -616,23 +629,68 @@ func _update_meteor() -> void:
 		var info: Dictionary = main.stream_manager.meteor_depth_info()
 		meteor.start(main.stream_manager.meteor_address(), int(info["port"]))
 		main._log("[METEOR] Connecting to host depth on %s:%d" % [meteor.host, meteor.port])
-	if meteor.poll():
-		_apply_meteor_map()
+	_match_meteor_map()
 	_set_meteor_in_use(meteor.is_delivering())
 
-func _apply_meteor_map() -> void:
-	if meteor.width != model_width or meteor.height != model_height:
-		model_width = meteor.width
-		model_height = meteor.height
+# Shows the map made from the frame on screen. With Depth Sync, the renderer
+# shows the frame _meteor_sync_delay frames behind the newest decoded one, so
+# that's the frame to match.
+func _match_meteor_map() -> void:
+	var presented: int = main.stream_backend.get_presented_frame_number()
+	var syncing: bool = main.settings.host.ai_3d_depth_sync
+	var target := presented - _meteor_sync_delay if syncing and presented > 0 else presented
+	var entry := meteor.pick(target)
+	if presented > 0 and presented != _meteor_last_presented:
+		_meteor_last_presented = presented
+		_meteor_match["frames"] += 1
+		if entry.is_empty():
+			_meteor_match["none"] += 1
+		else:
+			var lag: int = target - entry["frame"]
+			var key := "exact" if lag == 0 else ("lag1" if lag == 1 else ("lag2" if lag == 2 else "lag_more"))
+			_meteor_match[key] += 1
+		if syncing:
+			_adapt_meteor_sync_delay(presented, entry.is_empty() or entry["frame"] != target)
+	if not entry.is_empty() and entry["frame"] != _meteor_shown_frame:
+		_meteor_shown_frame = entry["frame"]
+		_apply_meteor_map(entry)
+
+func _adapt_meteor_sync_delay(presented: int, missed: bool) -> void:
+	_meteor_sync_frames += 1
+	if missed:
+		_meteor_sync_misses += 1
+	if meteor.newest_frame >= presented - 1:
+		_meteor_sync_would_hit_at_1 += 1
+	if _meteor_sync_frames < METEOR_SYNC_WINDOW:
+		return
+	var previous := _meteor_sync_delay
+	if _meteor_sync_delay == 1 and _meteor_sync_misses * 10 > _meteor_sync_frames:
+		_meteor_sync_delay = 2
+	elif _meteor_sync_delay == 2 and _meteor_sync_would_hit_at_1 * 50 >= _meteor_sync_frames * 49:
+		_meteor_sync_delay = 1
+	if _meteor_sync_delay != previous:
+		main._log("[METEOR] Depth Sync delay %d -> %d frames (%d of %d frames missed their map)" % [
+			previous, _meteor_sync_delay, _meteor_sync_misses, _meteor_sync_frames])
+	_meteor_sync_frames = 0
+	_meteor_sync_misses = 0
+	_meteor_sync_would_hit_at_1 = 0
+
+## Depth Sync's colour delay in frames while Meteor depth is in use.
+func meteor_sync_delay() -> int:
+	return _meteor_sync_delay
+
+func _apply_meteor_map(entry: Dictionary) -> void:
+	if entry["width"] != model_width or entry["height"] != model_height:
+		model_width = entry["width"]
+		model_height = entry["height"]
 		depth_texture.set_image(Image.create(model_width, model_height, false, Image.FORMAT_L8))
-	var image := Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, meteor.map)
+	var image := Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, entry["map"])
 	# Meteor's maps are top row first. On-device maps from the native GLES
 	# capture come back bottom row first, and that's what the renderer expects
 	# (the viewport fallback flips its input instead, so its maps are top first).
 	if _native_capture_supported():
 		image.flip_y()
 	depth_texture.update(image)
-	# Maps arrive about when their frame does; exact matching is Phase 3.
 	depth_source_age_ms = 0.0
 	depth_revision += 1
 	_perf_updates += 1
@@ -653,12 +711,5 @@ func _native_capture_supported() -> bool:
 	return _platform == "Android" and main.stream_backend.has_method("supports_native_depth_capture") \
 		and main.stream_backend.supports_native_depth_capture()
 
-func _keep_native_guide(delta: float) -> void:
-	if not _native_capture_supported():
-		return
-	# Drain finished captures; Meteor supplies the depth.
-	main.stream_backend.consume_native_depth_capture()
-	_meteor_guide_timer -= delta
-	if _meteor_guide_timer <= 0.0:
-		_meteor_guide_timer = METEOR_GUIDE_INTERVAL_SEC
-		main.stream_backend.request_native_depth_capture(model_input_width, model_input_height)
+func meteor_in_use() -> bool:
+	return _meteor_in_use

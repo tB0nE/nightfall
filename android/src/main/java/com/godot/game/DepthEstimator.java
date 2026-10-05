@@ -285,6 +285,16 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU = "zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU = "zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU = "zipdepth-base-256-direct-half-gpu.tflite";
+    // The widescreen EdgePad family (2026-10-04): one retrained checkpoint
+    // exported at 16:9 sizes, behind the EdgePad classes (25 and 28) in place
+    // of the square 384/224 exports above, which stay as
+    // the rollback. See nightfall-temporal-zipdepth's
+    // reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md. Nightfall ships two of
+    // them: 512x288 and 320x180, the latter padded to a taller tensor
+    // (GpuVariant.padRows). The family's 352x198 model was dropped for having
+    // 20% more pixels than the EdgePad-256 it would have replaced.
+    private static final String MODEL_ZIPDEPTH_WIDE_512X288_GPU = "zipdepth-wide-512x288-edgepad-gpu.tflite";
+    private static final String MODEL_ZIPDEPTH_WIDE_320X180_GPU = "zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
     // TFLite ops. This w8a32 export keeps float32 activations and I/O while
@@ -333,6 +343,12 @@ public class DepthEstimator {
         final int outputWidth;
         final int outputHeight;
         final boolean packed2x2Output;
+        // Rows of padding above and below the image in the input tensor: the
+        // image is captured at inputWidth x (inputHeight - 2 * padRows), its
+        // top and bottom rows are repeated into the padding, and the same
+        // rows are cropped from the output (outputHeight == inputHeight)
+        // before post-processing, so callers only see the image's size.
+        final int padRows;
         // Per-model temporal/range smoothing time constants (2026-09-04) -
         // see postProcess()'s depthTauSeconds/rangeTauSeconds comment for
         // why this needs to differ per model rather than staying global.
@@ -376,6 +392,16 @@ public class DepthEstimator {
         GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
                 int outputWidth, int outputHeight,
                 float depthTauSeconds, float rangeTauSeconds, boolean packed2x2Output) {
+            this(label, assetFile, inputWidth, inputHeight, outputWidth, outputHeight,
+                    depthTauSeconds, rangeTauSeconds, packed2x2Output, 0);
+        }
+
+        GpuVariant(String label, String assetFile, int inputWidth, int inputHeight,
+                int outputWidth, int outputHeight,
+                float depthTauSeconds, float rangeTauSeconds, boolean packed2x2Output, int padRows) {
+            if (padRows > 0 && (outputWidth != inputWidth || outputHeight != inputHeight)) {
+                throw new IllegalArgumentException(label + ": padding needs an output the size of the input");
+            }
             this.label = label;
             this.assetFile = assetFile;
             this.inputWidth = inputWidth;
@@ -385,6 +411,16 @@ public class DepthEstimator {
             this.depthTauSeconds = depthTauSeconds;
             this.rangeTauSeconds = rangeTauSeconds;
             this.packed2x2Output = packed2x2Output;
+            this.padRows = padRows;
+        }
+
+        /** The image's height: the capture size, and the map's after cropping. */
+        int imageHeight() {
+            return inputHeight - 2 * padRows;
+        }
+
+        int mapHeight() {
+            return outputHeight - 2 * padRows;
         }
     }
 
@@ -676,18 +712,21 @@ public class DepthEstimator {
             gpuVariants.put(24, new GpuVariant("ZipDepth-384-Standard-Optimized-GPU",
                     MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU,
                     384, 384, 384, 384, 0.02f, 0.1f, true));
-            gpuVariants.put(25, new GpuVariant("ZipDepth-384-Standard-EdgePad-GPU",
-                    MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU,
-                    384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
+            // The EdgePad classes run the widescreen family; slot 26
+            // (EdgePad-256) is retired. To roll back, register
+            // MODEL_ZIPDEPTH_{384,256,224}_STANDARD_EDGEPAD_GPU at 25, 26 and 28
+            // (square, no padding), bundle them again in
+            // tools/build_support/package_android_models.sh, and restore slot
+            // 19 in settings_controller.gd.
+            gpuVariants.put(25, new GpuVariant("ZipDepth-Wide-512x288-EdgePad-GPU",
+                    MODEL_ZIPDEPTH_WIDE_512X288_GPU,
+                    512, 288, 512, 288, ZIPDEPTH_DEPTH_TAU_SECONDS,
                     ZIPDEPTH_RANGE_TAU_SECONDS, true));
-            gpuVariants.put(26, new GpuVariant("ZipDepth-256-Standard-EdgePad-GPU",
-                    MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU,
-                    256, 256, 256, 256, ZIPDEPTH_DEPTH_TAU_SECONDS,
-                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
-            gpuVariants.put(28, new GpuVariant("ZipDepth-224-Standard-EdgePad-GPU",
-                    MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU,
-                    224, 224, 224, 224, ZIPDEPTH_DEPTH_TAU_SECONDS,
-                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            // 320x180 image in a 320x192 tensor (6 rows each side).
+            gpuVariants.put(28, new GpuVariant("ZipDepth-Wide-320x180-EdgePad-GPU",
+                    MODEL_ZIPDEPTH_WIDE_320X180_GPU,
+                    320, 192, 320, 192, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true, 6));
             gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
                     MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
                     256, 256, 128, 128, 0.02f, 0.1f));
@@ -1090,10 +1129,10 @@ public class DepthEstimator {
             case 22: return "ZipDepth-384-Direct-192";
             case 23: return "ZipDepth-384-Standard-Packed";
             case 24: return "ZipDepth-384-Standard-Optimized";
-            case 25: return "ZipDepth-384-Standard-EdgePad";
-            case 26: return "ZipDepth-256-Standard-EdgePad";
+            case 25: return "ZipDepth-Wide-512x288-EdgePad";
+            case 26: return "ZipDepth-256-Standard-EdgePad (retired)";
             case 27: return "ZipDepth-256-Direct-128";
-            case 28: return "ZipDepth-224-Standard-EdgePad";
+            case 28: return "ZipDepth-Wide-320x180-EdgePad";
             case 29: return "ZipDepth-256-Standard-EdgePad-CPU";
             case 15: return "EdgePad-512x288-Experimental";
             case 16: return "ZipDepth-672x384";
@@ -1603,11 +1642,14 @@ public class DepthEstimator {
         v.outputBuf.rewind();
 
         int srcRowBytes = width * 4;
+        int imageHeight = v.imageHeight();
         float scaleX = (float) width / v.inputWidth;
-        float scaleY = (float) height / v.inputHeight;
+        float scaleY = (float) height / imageHeight;
 
         for (int y = 0; y < v.inputHeight; y++) {
-            int srcY = Math.min((int) (y * scaleY), height - 1);
+            // Padding rows repeat the image's first and last rows.
+            int imageY = Math.min(Math.max(y - v.padRows, 0), imageHeight - 1);
+            int srcY = Math.min((int) (imageY * scaleY), height - 1);
             int srcRowOff = srcY * srcRowBytes;
             for (int x = 0; x < v.inputWidth; x++) {
                 int srcX = Math.min((int) (x * scaleX), width - 1);
@@ -1631,8 +1673,14 @@ public class DepthEstimator {
         if (v.packed2x2Output) {
             raw = unpack2x2Depth(raw, v.outputWidth, v.outputHeight);
         }
+        // Unpack first, then crop: an odd pad (13 rows) would split the
+        // packed 2x2 blocks.
+        if (v.padRows > 0) {
+            raw = Arrays.copyOfRange(raw, v.padRows * v.outputWidth,
+                    (v.padRows + v.mapHeight()) * v.outputWidth);
+        }
         byte[] result = postProcess(raw,
-                v.outputWidth, v.outputHeight, false, DEFAULT_PERCENTILE_CLIP,
+                v.outputWidth, v.mapHeight(), false, DEFAULT_PERCENTILE_CLIP,
                 v.depthTauSeconds, v.rangeTauSeconds);
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
@@ -2090,7 +2138,7 @@ public class DepthEstimator {
 
     public int getModelHeight() {
         GpuVariant variant = activeGpuVariant;
-        return variant != null ? variant.outputHeight : getCpuModelSize();
+        return variant != null ? variant.mapHeight() : getCpuModelSize();
     }
 
     public int getModelInputWidth() {
@@ -2100,7 +2148,7 @@ public class DepthEstimator {
 
     public int getModelInputHeight() {
         GpuVariant variant = activeGpuVariant;
-        return variant != null ? variant.inputHeight : getCpuModelSize();
+        return variant != null ? variant.imageHeight() : getCpuModelSize();
     }
 
     // Kept for older native callers; square models return their normal size,

@@ -5,8 +5,10 @@
 //!   CUVID_PKT_ENDOFPICTURE, with no display delay, so the frame is decoded
 //!   and handed back inside the same call (no waiting for the next frame,
 //!   which is what made the ffmpeg child process a frame late).
-//! - NVDEC scales to the model's input size while decoding, so only a small
-//!   NV12 image is copied back from the GPU.
+//! - Frames are decoded at full size and reduced to the model's input with
+//!   the Quest's 4x4 footprint average, so host depth sees the same input as
+//!   on-device depth (NVDEC's own scaler takes one sample per pixel, which
+//!   aliases text and fine detail).
 //! - The frame number travels through the parser as the timestamp, so each
 //!   output names its exact frame.
 //! - GPU output (the default): a small CUDA kernel
@@ -267,6 +269,9 @@ struct State {
     api: &'static Api,
     decoder: *mut c_void,
     coded: (u32, u32),
+    /// The decoded frame's size (the stream's display area).
+    surface: (usize, usize),
+    /// The model's input size.
     target: (usize, usize),
     bit_depth_minus8: u8,
     full_range: bool,
@@ -410,6 +415,7 @@ impl NvDecoder {
             api,
             decoder: ptr::null_mut(),
             coded: (0, 0),
+            surface: (0, 0),
             target,
             bit_depth_minus8: 0,
             full_range: false,
@@ -510,8 +516,10 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
         unsafe { (state.api.destroy_decoder)(state.decoder) };
         state.decoder = ptr::null_mut();
     }
-    let (tw, th) = state.target;
+    // Decode at full size (no NVDEC scaling); copy_frame reduces it.
     let area = format.display_area;
+    let tw = ((area[2] - area[0]).max(2) as usize) & !1;
+    let th = ((area[3] - area[1]).max(2) as usize) & !1;
     let mut info = DecodeCreateInfo {
         width: c_ulong::from(format.coded_width),
         height: c_ulong::from(format.coded_height),
@@ -546,15 +554,18 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
         return 0;
     }
     state.coded = coded;
+    state.surface = (tw, th);
     state.bit_depth_minus8 = format.bit_depth_luma_minus8;
     state.full_range = format.signal_bits & 0x08 != 0;
     state.matrix = format.matrix_coefficients;
     log::info!(
-        "NVDEC: {}x{} codec {} {}-bit, scaling to {tw}x{th} (matrix {}, {} range)",
+        "NVDEC: {}x{} codec {} {}-bit, decoding {tw}x{th}, reduced to {}x{} (matrix {}, {} range)",
         coded.0,
         coded.1,
         format.codec,
         8 + format.bit_depth_luma_minus8,
+        state.target.0,
+        state.target.1,
         state.matrix,
         if state.full_range { "full" } else { "limited" }
     );
@@ -619,8 +630,11 @@ fn copy_frame(state: &mut State, info: &ParserDispInfo) -> Result<Pixels, String
         (api.map_frame)(state.decoder, info.picture_index, &mut device_ptr, &mut pitch, &mut proc_params)
     })?;
     let (w, h) = state.target;
+    let (sw, sh) = state.surface;
     if let (Some(kernel), Some(pool), 0) = (state.kernel, state.pool.clone(), state.bit_depth_minus8) {
-        let converted = convert_on_gpu(state, kernel, &pool, device_ptr, pitch as usize);
+        let coefficients = Coefficients::new(state.matrix, state.full_range);
+        let frame = (device_ptr, pitch as usize, state.surface);
+        let converted = convert_on_gpu(api, kernel, &pool, frame, state.target, &coefficients);
         // SAFETY: unmapping the surface mapped above, after the kernel finished.
         unsafe { (api.unmap_frame)(state.decoder, device_ptr) };
         return converted.map(|ptr| Pixels::Gpu(GpuTensor { ptr, width: w, height: h, pool }));
@@ -628,8 +642,8 @@ fn copy_frame(state: &mut State, info: &ParserDispInfo) -> Result<Pixels, String
     let bytes_per_sample = if state.bit_depth_minus8 > 0 { 2 } else { 1 };
     // Luma rows, then half as many chroma rows, contiguous at this pitch
     // (the chroma plane starts at pitch * height for an even height).
-    let rows = h + h / 2;
-    let row_bytes = w * bytes_per_sample;
+    let rows = sh + sh / 2;
+    let row_bytes = sw * bytes_per_sample;
     let host = if bytes_per_sample == 1 { &mut state.nv12 } else { &mut state.p016 };
     host.resize(row_bytes * rows, 0);
     let copy = Memcpy2D {
@@ -661,7 +675,7 @@ fn copy_frame(state: &mut State, info: &ParserDispInfo) -> Result<Pixels, String
         state.nv12.clear();
         state.nv12.extend(state.p016.chunks_exact(2).map(|s| s[1]));
     }
-    Ok(Pixels::Rgb(nv12_to_rgb(&state.nv12, w, h, state.matrix, state.full_range)))
+    Ok(Pixels::Rgb(nv12_box_to_rgb(&state.nv12, sw, sh, w, h, state.matrix, state.full_range)))
 }
 
 const KERNEL_PTX: &str = concat!(include_str!("../kernels/nv12_to_tensor.ptx"), "\0");
@@ -742,27 +756,29 @@ pub(crate) unsafe fn launch(
     check("cuLaunchKernel", rc)
 }
 
-/// Runs the kernel on a mapped NV12 surface into a pooled tensor buffer and
-/// waits for it, so the surface can be unmapped and the tensor used.
+/// Runs the kernel on a mapped NV12 surface (pointer, pitch, size) into a
+/// pooled tensor buffer of the target size and waits for it, so the surface
+/// can be unmapped and the tensor used.
 fn convert_on_gpu(
-    state: &State,
+    api: &Api,
     kernel: *mut c_void,
     pool: &TensorPool,
-    nv12: CuDevicePtr,
-    pitch: usize,
+    (nv12, pitch, surface): (CuDevicePtr, usize, (usize, usize)),
+    (w, h): (usize, usize),
+    c: &Coefficients,
 ) -> Result<CuDevicePtr, String> {
-    let api = state.api;
     let out = pool.take()?;
-    let (w, h) = state.target;
-    let c = Coefficients::new(state.matrix, state.full_range);
     let mut src = nv12;
     let mut pitch = pitch as c_int;
+    let (mut src_width, mut src_height) = (surface.0 as c_int, surface.1 as c_int);
     let (mut width, mut height) = (w as c_int, h as c_int);
     let mut floats = [c.y_offset, c.y_scale, c.c_scale, c.r_v, c.g_u, c.g_v, c.b_u];
     let mut dst = out;
     let mut params: Vec<*mut c_void> = vec![
         (&mut src as *mut CuDevicePtr).cast(),
         (&mut pitch as *mut c_int).cast(),
+        (&mut src_width as *mut c_int).cast(),
+        (&mut src_height as *mut c_int).cast(),
         (&mut width as *mut c_int).cast(),
         (&mut height as *mut c_int).cast(),
     ];
@@ -821,20 +837,63 @@ impl Coefficients {
     }
 }
 
-/// NV12 to packed RGB24. `matrix` is the H.273 matrix_coefficients value.
-/// The GPU kernel does the same arithmetic.
-pub fn nv12_to_rgb(nv12: &[u8], width: usize, height: usize, matrix: u8, full_range: bool) -> Vec<u8> {
+/// Samples per side of the footprint average (the Quest's TAPS).
+const TAPS: usize = 4;
+
+/// Bilinear sample of one channel at (x, y) in texel units (texel centres at
+/// +0.5), clamped to the edge; `stride` is 1 for luma, 2 for chroma.
+fn bilinear(plane: &[u8], pitch: usize, stride: usize, width: usize, height: usize, x: f32, y: f32) -> f32 {
+    let (x, y) = (x - 0.5, y - 0.5);
+    let (fx, fy) = (x.floor(), y.floor());
+    let (ax, ay) = (x - fx, y - fy);
+    let clamp = |v: f32, n: usize| (v as i64).clamp(0, n as i64 - 1) as usize;
+    let (x0, x1) = (clamp(fx, width), clamp(fx + 1.0, width));
+    let (y0, y1) = (clamp(fy, height), clamp(fy + 1.0, height));
+    let at = |x: usize, y: usize| f32::from(plane[pitch * y + stride * x]);
+    let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * ax;
+    let bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * ax;
+    top + (bottom - top) * ay
+}
+
+/// A full-size NV12 frame (`src_width` x `src_height`, tightly packed) to
+/// packed RGB24 at `width` x `height`, each pixel the average of a 4x4 grid of
+/// bilinear samples over its footprint. `matrix` is the H.273
+/// matrix_coefficients value. The GPU kernel (kernels/nv12_to_tensor.cu) does
+/// the same arithmetic.
+pub fn nv12_box_to_rgb(
+    nv12: &[u8],
+    src_width: usize,
+    src_height: usize,
+    width: usize,
+    height: usize,
+    matrix: u8,
+    full_range: bool,
+) -> Vec<u8> {
     let Coefficients { y_offset: y_off, y_scale, c_scale, r_v, g_u, g_v, b_u } = Coefficients::new(matrix, full_range);
-    let (luma, chroma) = nv12.split_at(width * height);
+    let (luma, chroma) = nv12.split_at(src_width * src_height);
+    let (cw, ch) = (src_width / 2, src_height / 2);
+    let (foot_u, foot_v) = (1.0 / width as f32, 1.0 / height as f32);
+    let taps = TAPS as f32;
     let mut rgb = Vec::with_capacity(width * height * 3);
     for y in 0..height {
-        let crow = &chroma[(y / 2) * width..];
         for x in 0..width {
-            let l = (f32::from(luma[y * width + x]) - y_off) * y_scale;
-            let u = (f32::from(crow[x & !1]) - 128.0) * c_scale;
-            let v = (f32::from(crow[x | 1]) - 128.0) * c_scale;
-            let px = |c: f32| c.round().clamp(0.0, 255.0) as u8;
-            rgb.extend_from_slice(&[px(l + r_v * v), px(l - g_u * u - g_v * v), px(l + b_u * u)]);
+            let mut sum = [0f32; 3];
+            for ty in 0..TAPS {
+                for tx in 0..TAPS {
+                    let u = (x as f32 + 0.5) * foot_u + ((tx as f32 + 0.5) / taps - 0.5) * foot_u;
+                    let v = (y as f32 + 0.5) * foot_v + ((ty as f32 + 0.5) / taps - 0.5) * foot_v;
+                    let (u, v) = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+                    let (lx, ly) = (u * src_width as f32, v * src_height as f32);
+                    let (cx, cy) = (u * cw as f32, v * ch as f32);
+                    let l = (bilinear(luma, src_width, 1, src_width, src_height, lx, ly) - y_off) * y_scale;
+                    let cu = (bilinear(chroma, src_width, 2, cw, ch, cx, cy) - 128.0) * c_scale;
+                    let cv = (bilinear(&chroma[1..], src_width, 2, cw, ch, cx, cy) - 128.0) * c_scale;
+                    sum[0] += (l + r_v * cv).clamp(0.0, 255.0);
+                    sum[1] += (l - g_u * cu - g_v * cv).clamp(0.0, 255.0);
+                    sum[2] += (l + b_u * cu).clamp(0.0, 255.0);
+                }
+            }
+            rgb.extend(sum.map(|c| (c / (taps * taps)).round_ties_even() as u8));
         }
     }
     rgb
@@ -866,13 +925,72 @@ mod tests {
 
     #[test]
     fn converts_limited_range_bt709() {
-        // 2x2 image: Y=16 (black) and Y=235 (white), neutral chroma.
-        let black_white = [16, 235, 16, 235, 128, 128];
-        let rgb = nv12_to_rgb(&black_white, 2, 2, 1, false);
-        assert_eq!(&rgb[..6], &[0, 0, 0, 255, 255, 255]);
+        // Flat 4x4 frames reduced to 2x2. Black (Y=16) and white (Y=235),
+        // neutral chroma:
+        let flat = |y: u8, cb: u8, cr: u8| [vec![y; 16], [cb, cr].repeat(4)].concat();
+        assert_eq!(nv12_box_to_rgb(&flat(16, 128, 128), 4, 4, 2, 2, 1, false), vec![0; 12]);
+        assert_eq!(nv12_box_to_rgb(&flat(235, 128, 128), 4, 4, 2, 2, 1, false), vec![255; 12]);
         // Pure red in BT.709 limited range: Y=63, Cb=102, Cr=240.
-        let red = [63, 63, 63, 63, 102, 240];
-        let rgb = nv12_to_rgb(&red, 2, 2, 1, false);
+        let rgb = nv12_box_to_rgb(&flat(63, 102, 240), 4, 4, 2, 2, 1, false);
         assert!(rgb[0] >= 250 && rgb[1] <= 5 && rgb[2] <= 5, "{:?}", &rgb[..3]);
+    }
+
+    #[test]
+    fn averages_detail_instead_of_aliasing() {
+        // One-pixel black/white stripes, 16x4 reduced to 2x1: a single sample
+        // per pixel would land on one colour; the footprint average is grey.
+        let mut nv12: Vec<u8> = (0..64).map(|i| if i % 2 == 0 { 16 } else { 235 }).collect();
+        nv12.extend([128u8; 32]);
+        let rgb = nv12_box_to_rgb(&nv12, 16, 4, 2, 1, 1, false);
+        for c in rgb {
+            assert!((120..=135).contains(&c), "{c}");
+        }
+    }
+
+    /// The kernel and the CPU version must agree byte for byte on a
+    /// stream-sized frame. Skipped without an NVIDIA GPU.
+    #[test]
+    fn gpu_reduction_matches_the_cpu() {
+        let Ok((api, ctx)) = primary_context() else {
+            eprintln!("skipping: no CUDA");
+            return;
+        };
+        let kernel = load_kernel(api, ctx).unwrap();
+        let (sw, sh, w, h) = (2560, 1440, 384, 384);
+        // Gradients, fine stripes and noise, in luma and chroma.
+        let mut seed = 99u32;
+        let nv12: Vec<u8> = (0..sw * sh * 3 / 2)
+            .map(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let (x, y) = (i % sw, i / sw);
+                let base = (x * 255 / sw + y % 7 * 20 + if x % 3 == 0 { 60 } else { 0 }) as u32;
+                ((base + seed % 9) % 256) as u8
+            })
+            .collect();
+        let expected = nv12_box_to_rgb(&nv12, sw, sh, w, h, 1, false);
+        let pool = TensorPool { api, ctx, bytes: w * h * 3 * 4, free: Mutex::new(Vec::new()) };
+        let mut floats = vec![0f32; w * h * 3];
+        unsafe {
+            (api.cu_ctx_push)(ctx);
+            let mut src: CuDevicePtr = 0;
+            check("cuMemAlloc", (api.cu_mem_alloc)(&mut src, nv12.len())).unwrap();
+            check("cuMemcpyHtoD", (api.cu_memcpy_htod)(src, nv12.as_ptr().cast(), nv12.len())).unwrap();
+            let c = Coefficients::new(1, false);
+            let out = convert_on_gpu(api, kernel, &pool, (src, sw, (sw, sh)), (w, h), &c).unwrap();
+            check("cuMemcpyDtoH", (api.cu_memcpy_dtoh)(floats.as_mut_ptr().cast(), out, floats.len() * 4)).unwrap();
+            (api.cu_mem_free)(src);
+            pool.free.lock().unwrap().push(out);
+            let mut popped = ptr::null_mut();
+            (api.cu_ctx_pop)(&mut popped);
+        }
+        let plane = w * h;
+        let got: Vec<u8> = (0..plane)
+            .flat_map(|i| (0..3).map(move |c| (c, i)))
+            .map(|(c, i)| (floats[c * plane + i] * 255.0).round() as u8)
+            .collect();
+        let diff = expected.iter().zip(&got).filter(|(a, b)| a != b).count();
+        assert_eq!(diff, 0, "{diff} of {} bytes differ", expected.len());
     }
 }
