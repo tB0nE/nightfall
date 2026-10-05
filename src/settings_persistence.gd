@@ -6,6 +6,7 @@ extends RefCounted
 
 const BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
 const PICTURE_SCALE_VALUES: Array = [50, 75, 100, 125, 150]
+const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12]
 
 static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
@@ -28,6 +29,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("controller", "hand_tracking_enabled", settings.tracking_mode)
 	config.set_value("stream", "auto_reconnect", settings.auto_reconnect_enabled)
 	config.set_value("stream", "quick_start", settings.quick_start_enabled)
+	config.set_value("stream", "audio_boost_db", settings.audio_boost_db)
 	config.set_value("stream", "idle_timeout_min", settings.idle_timeout_min)
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
 	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
@@ -114,6 +116,10 @@ static func read_app(
 		"stream", "auto_reconnect", AppSettings.DEFAULT_AUTO_RECONNECT_ENABLED)
 	settings.quick_start_enabled = config.get_value(
 		"stream", "quick_start", AppSettings.DEFAULT_QUICK_START_ENABLED)
+	settings.audio_boost_db = config.get_value(
+		"stream", "audio_boost_db", AppSettings.DEFAULT_AUDIO_BOOST_DB)
+	if not AUDIO_BOOST_VALUES.has(settings.audio_boost_db):
+		settings.audio_boost_db = AppSettings.DEFAULT_AUDIO_BOOST_DB
 	settings.idle_timeout_min = config.get_value(
 		"stream", "idle_timeout_min", AppSettings.DEFAULT_IDLE_TIMEOUT_MIN)
 	settings.pipewire_restore_token = config.get_value(

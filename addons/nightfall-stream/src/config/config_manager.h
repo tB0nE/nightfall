@@ -18,6 +18,7 @@ private:
     void _check_and_create_certs();
     String _get_host_prefix(int index);
     String _get_app_prefix(int host_index, int app_index);
+    void _remove_duplicate_hosts();
 
 protected:
     static void _bind_methods();
@@ -45,6 +46,7 @@ public:
     int add_host(const Dictionary &data);
     void update_host(int index, const Dictionary &data);
     void remove_host(int index);
+    void remove_superseded_hosts(const String &address, int https_port, const String &server_unique_id);
     void clear_hosts();
 
     Array get_apps(int host_index);

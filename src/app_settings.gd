@@ -30,6 +30,7 @@ const DEFAULT_PERFORMANCE_OVERLAY_ENABLED := false
 const DEFAULT_AI_3D_GPU_PRIORITY := 0
 const DEFAULT_AUTO_RECONNECT_ENABLED := true
 const DEFAULT_QUICK_START_ENABLED := false
+const DEFAULT_AUDIO_BOOST_DB := 0
 const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
@@ -55,6 +56,8 @@ var performance_overlay_enabled: bool = DEFAULT_PERFORMANCE_OVERLAY_ENABLED
 var ai_3d_gpu_priority: int = DEFAULT_AI_3D_GPU_PRIORITY
 var auto_reconnect_enabled: bool = DEFAULT_AUTO_RECONNECT_ENABLED
 var quick_start_enabled: bool = DEFAULT_QUICK_START_ENABLED
+## Stream audio gain in dB, one of SettingsPersistence.AUDIO_BOOST_VALUES.
+var audio_boost_db: int = DEFAULT_AUDIO_BOOST_DB
 var idle_timeout_min: int = DEFAULT_IDLE_TIMEOUT_MIN
 var pipewire_restore_token: String = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
@@ -84,6 +87,7 @@ func reset_general() -> void:
 	ai_3d_gpu_priority = DEFAULT_AI_3D_GPU_PRIORITY
 	auto_reconnect_enabled = DEFAULT_AUTO_RECONNECT_ENABLED
 	quick_start_enabled = DEFAULT_QUICK_START_ENABLED
+	audio_boost_db = DEFAULT_AUDIO_BOOST_DB
 	idle_timeout_min = DEFAULT_IDLE_TIMEOUT_MIN
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED

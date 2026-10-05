@@ -501,6 +501,7 @@ var _ui_ctrl_type_btn: Button
 var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
+var _ui_audio_boost_btn: Button
 var _ui_usb_link_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
@@ -1113,6 +1114,7 @@ func _on_stream_started():
 	welcome_screen.reset_connect_button()
 	ui_controller.set_disconnect_visible(true)
 	_log("[STREAM] Connection started!")
+	settings_controller.apply_audio_boost()
 	if not comp.in_use:
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
@@ -1863,6 +1865,7 @@ func _init_stream_backend():
 	var v2_node = ClassDB.instantiate("NightfallStream")
 	add_child(v2_node)
 	v2_node.set_auto_reconnect(settings.auto_reconnect_enabled)
+	settings_controller.apply_audio_boost()
 	v2_node.set_max_reconnect_attempts(5)
 	v2_node.set_reconnect_delay_ms(2000)
 	if v2_node.has_method("set_reconnect_via_launch"):
