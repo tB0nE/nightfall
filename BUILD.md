@@ -176,22 +176,45 @@ The `build.sh` script handles everything:
 # Debug build
 ./build.sh --debug
 
-# Release build (requires .env with keystore credentials)
-./build.sh --release
+# Dev build: release-signed and optimized, for testing (requires .env)
+./build.sh --dev
+
+# Release build (requires .env with keystore credentials, and a version)
+git tag v0.7.12 && ./build.sh --release
+./build.sh --release --version 0.7.12   # before tagging
 
 # Build and install via ADB
-./build.sh --debug --install
-./build.sh --release --install
+./build.sh --dev --install
 
 # Linux AppImage
 ./build.sh --appimage
 ```
 
+### Versions
+
+`build.sh` writes the APK's `versionName` and `versionCode` at export time;
+`export_presets.cfg` itself keeps placeholders. The code is
+`MAJOR*10000 + MINOR*100 + PATCH`, so `0.7.12` is `712`.
+
+| Build | Version name | Version code |
+| --- | --- | --- |
+| `--release` | the release, from the `vX.Y.Z` tag on HEAD or `--version` | that release's |
+| `--dev` | the last release tag plus the commit, e.g. `0.7.11-dev+66198ff` (`-dirty` with uncommitted changes) | the last release's |
+| `--debug` | as dev, e.g. `0.7.11-debug+66198ff` | the last release's |
+
+Dev builds share the last release's code, so each one installs over the
+previous dev build and over that release, and the next release installs over
+them. Android refuses to install a lower code over a higher one: going back to
+an older release means uninstalling first, which also clears pairings and
+settings. Debug builds are signed with the debug key, so they can't install
+over a dev or release build without uninstalling either.
+
 ### WSL2 release build on Windows
 
 On a WSL2 installation with the local build tools and caches under `.build-cache/`,
 run `tools/build_support/build_release_wsl.sh` from the project root. It rebuilds
-the release streaming GDExtension, builds only the release APK, then installs it
+the release streaming GDExtension, builds a dev APK (or a release one, given
+`--release` and the same version options as `build.sh`), then installs it
 with Windows `adb.exe`. Windows ADB can reach a USB-connected Quest even when its
 USB device is not passed through to WSL. The script expects the release keystore
 configured in `.env`, the three Android EdgePad models in `models/`, and the Meta
