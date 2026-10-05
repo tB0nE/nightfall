@@ -12,10 +12,23 @@ class MdnsBrowser : public RefCounted {
 
 private:
     PackedByteArray _build_ptr_query(const String &service_type);
+    struct MdnsRecords {
+        // Keyed by lower-cased DNS name.
+        Dictionary instances;
+        Dictionary source_ips;
+        Dictionary srv;
+        Dictionary a;
+        Dictionary aaaa_link_local;
+        Dictionary aaaa_routable;
+        Dictionary txt;
+    };
+
+    void _parse_dns_response(const uint8_t *data, int len, const String &source_ip, MdnsRecords &records);
     // want_v6: resolve SRV targets to AAAA records only (the USB link has no
-    // routable IPv4, so a LAN A record answered over it would be a dead end);
-    // otherwise prefer A and fall back to a non-link-local AAAA.
-    Array _parse_dns_response(const uint8_t *data, int len, bool want_v6);
+    // routable IPv4, so a LAN A record answered over it would be a dead end),
+    // preferring link-local; otherwise prefer A and fall back to a
+    // non-link-local AAAA.
+    Array _resolve_hosts(const MdnsRecords &records, bool want_v6);
     String _read_dns_name(const uint8_t *data, int len, int offset, int &out_end);
     int _write_dns_name(uint8_t *buf, int offset, const String &name);
 

@@ -190,12 +190,19 @@ The `build.sh` script handles everything:
 ### WSL2 release build on Windows
 
 On a WSL2 installation with the local build tools and caches under `.build-cache/`,
-run `tools/build_support/build_release_wsl.sh` from the project root. It builds
-only the release APK, then installs it with Windows `adb.exe`. Windows ADB can
-reach a USB-connected Quest even when its USB device is not passed through to
-WSL. The script expects the release keystore configured in `.env`, the three
-Android EdgePad models in `models/`, and the Meta plugin in
-`addons/godotopenxrvendors/`.
+run `tools/build_support/build_release_wsl.sh` from the project root. It rebuilds
+the release streaming GDExtension, builds only the release APK, then installs it
+with Windows `adb.exe`. Windows ADB can reach a USB-connected Quest even when its
+USB device is not passed through to WSL. The script expects the release keystore
+configured in `.env`, the three Android EdgePad models in `models/`, and the Meta
+plugin in `addons/godotopenxrvendors/`.
+
+`.build-cache/` holds the canonical SDK, patched runtime and vcpkg checkout. The
+script keeps fast working copies, plus the GDExtension build tree, in
+`~/.cache/nightfall-build/` (override with `NIGHTFALL_WSL_CACHE`), seeding any
+missing copy from `.build-cache/`. Because systemd clears `/tmp` on every WSL
+boot, the `/tmp/nightfall-*` paths used by the builds are recreated as symlinks
+into that directory on each run.
 
 What `build.sh` does:
 1. Builds the matching debug or release native OpenXR extension

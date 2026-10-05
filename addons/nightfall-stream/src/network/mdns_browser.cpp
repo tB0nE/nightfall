@@ -95,13 +95,15 @@ String MdnsBrowser::_read_dns_name(const uint8_t *data, int len, int offset, int
     return result;
 }
 
-Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v6) {
-    Array hosts;
-
-    if (len < 12) return hosts;
+// Records are accumulated across every response packet in the browse window:
+// responders may split PTR/SRV/TXT/A across packets, and most (Windows dnsapi,
+// used by Apollo/Vibepollo/Vibeshine, and macOS mDNSResponder) put SRV/TXT/A
+// in the additional section rather than the answer section.
+void MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, const String &source_ip, MdnsRecords &records) {
+    if (len < 12) return;
 
     int qdcount = (data[4] << 8) | data[5];
-    int ancount = (data[6] << 8) | data[7];
+    int rrcount = ((data[6] << 8) | data[7]) + ((data[8] << 8) | data[9]) + ((data[10] << 8) | data[11]);
 
     int offset = 12;
 
@@ -112,13 +114,7 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v
         offset += 4;
     }
 
-    Dictionary ptr_targets;
-    Dictionary srv_records;
-    Dictionary a_records;
-    Dictionary aaaa_records;
-    Dictionary txt_records;
-
-    for (int i = 0; i < ancount && offset < len; i++) {
+    for (int i = 0; i < rrcount && offset < len; i++) {
         int name_end = 0;
         String name = _read_dns_name(data, len, offset, name_end);
         offset = name_end;
@@ -132,9 +128,12 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v
         if (offset + rdlength > len) break;
 
         if (rtype == 12) {
-            int target_end = 0;
-            String target = _read_dns_name(data, len, offset, target_end);
-            ptr_targets[name] = target;
+            if (name.to_lower().trim_suffix(".") == "_nvstream._tcp.local") {
+                int target_end = 0;
+                String instance = _read_dns_name(data, len, offset, target_end);
+                records.instances[instance.to_lower()] = instance;
+                if (!source_ip.is_empty()) records.source_ips[instance.to_lower()] = source_ip;
+            }
         } else if (rtype == 33) {
             if (rdlength >= 6) {
                 int port = (data[offset + 4] << 8) | data[offset + 5];
@@ -143,7 +142,7 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v
                 Dictionary srv;
                 srv["port"] = port;
                 srv["target"] = target;
-                srv_records[name] = srv;
+                records.srv[name.to_lower()] = srv;
             }
         } else if (rtype == 1) {
             if (rdlength == 4) {
@@ -151,19 +150,18 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v
                         String::num_int64(data[offset + 1]) + "." +
                         String::num_int64(data[offset + 2]) + "." +
                         String::num_int64(data[offset + 3]);
-                a_records[name.to_lower()] = ip;
+                records.a[name.to_lower()] = ip;
             }
         } else if (rtype == 28) {
+            // Kept apart from A records, which share the hostname. A host
+            // announces several AAAA records; on the USB link only the
+            // link-local one is guaranteed reachable.
             if (rdlength == 16) {
                 char buf[INET6_ADDRSTRLEN];
                 if (inet_ntop(AF_INET6, data + offset, buf, sizeof(buf))) {
                     String addr(buf);
-                    // A host announces several AAAA records; for the link,
-                    // the link-local one is the one guaranteed reachable.
-                    String key = name.to_lower();
-                    if (!aaaa_records.has(key) || addr.to_lower().begins_with("fe80:") == want_v6) {
-                        aaaa_records[key] = addr;
-                    }
+                    bool link_local = addr.to_lower().begins_with("fe80:");
+                    (link_local ? records.aaaa_link_local : records.aaaa_routable)[name.to_lower()] = addr;
                 }
             }
         } else if (rtype == 16) {
@@ -184,53 +182,69 @@ Array MdnsBrowser::_parse_dns_response(const uint8_t *data, int len, bool want_v
                 }
                 pos += tlen;
             }
-            txt_records[name] = txt;
+            records.txt[name.to_lower()] = txt;
         }
 
         offset += rdlength;
     }
+}
 
-    Array ptr_keys = ptr_targets.keys();
-    for (int i = 0; i < ptr_keys.size(); i++) {
-        String ptr_name = ptr_keys[i];
-        String instance_name = ptr_targets[ptr_name];
+Array MdnsBrowser::_resolve_hosts(const MdnsRecords &records, bool want_v6) {
+    Array hosts;
+
+    Array keys = records.instances.keys();
+    for (int i = 0; i < keys.size(); i++) {
+        String key = keys[i];
+        String instance_name = records.instances[key];
 
         Dictionary host;
         host["instance"] = instance_name;
+        host["ip"] = "";
 
-        if (srv_records.has(instance_name)) {
-            Dictionary srv = srv_records[instance_name];
+        if (records.srv.has(key)) {
+            Dictionary srv = records.srv[key];
             host["port"] = srv["port"];
             String target = srv["target"];
             String target_lower = target.to_lower();
-            String short_target = target_lower.replace(".local.", "").replace(".local", "");
-            auto lookup = [&](const Dictionary &records) -> String {
-                if (records.has(target_lower)) return records[target_lower];
-                if (records.has(short_target)) return records[short_target];
+            String short_target = target_lower.trim_suffix(".").trim_suffix(".local");
+            auto lookup = [&](const Dictionary &by_name) -> String {
+                if (by_name.has(target_lower)) return by_name[target_lower];
+                if (by_name.has(target_lower.trim_suffix("."))) return by_name[target_lower.trim_suffix(".")];
+                if (by_name.has(short_target)) return by_name[short_target];
                 return String();
             };
             String ip;
             if (want_v6) {
-                ip = lookup(aaaa_records);
+                ip = lookup(records.aaaa_link_local);
+                if (ip.is_empty()) ip = lookup(records.aaaa_routable);
             } else {
-                ip = lookup(a_records);
-                if (ip.is_empty()) {
-                    // A zone-less link-local address is unusable off the USB path.
-                    String v6 = lookup(aaaa_records);
-                    if (!v6.to_lower().begins_with("fe80:")) ip = v6;
-                }
+                // A zone-less link-local address is unusable off the USB path.
+                ip = lookup(records.a);
+                if (ip.is_empty()) ip = lookup(records.aaaa_routable);
             }
             host["ip"] = ip;
             host["hostname"] = target;
+        } else {
+            host["port"] = 47989;
         }
 
-        if (txt_records.has(instance_name)) {
-            Dictionary txt = txt_records[instance_name];
+        // A responder that sent no A record is still the host itself.
+        if (String(host["ip"]).is_empty() && records.source_ips.has(key)) {
+            host["ip"] = records.source_ips[key];
+        }
+
+        if (records.txt.has(key)) {
+            Dictionary txt = records.txt[key];
             if (txt.has("id")) host["id"] = txt["id"];
             if (txt.has("nm")) host["friendly_name"] = txt["nm"];
         }
+        if (!host.has("friendly_name")) {
+            // Instance names are "<host name>._nvstream._tcp.local"; Windows
+            // hosts publish an empty TXT record with no "nm".
+            host["friendly_name"] = instance_name.get_slice("._nvstream", 0);
+        }
 
-        if (host.has("ip") && host["ip"] != "") {
+        if (host["ip"] != "") {
             hosts.append(host);
         }
     }
@@ -298,8 +312,8 @@ Array MdnsBrowser::_browse_v4(float timeout) {
         }
     }
 
-    Dictionary seen_ips;
-    uint8_t recv_buf[4096];
+    MdnsRecords records;
+    uint8_t recv_buf[9000];
 
     struct timespec ts_start;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -330,18 +344,23 @@ Array MdnsBrowser::_browse_v4(float timeout) {
 
         if (!(recv_buf[2] & 0x80)) continue;
 
-        Array found = _parse_dns_response(recv_buf, (int)n, false);
-        for (int i = 0; i < found.size(); i++) {
-            Dictionary host = found[i];
-            if (host.has("ip")) {
-                String ip = host["ip"];
-                if (!seen_ips.has(ip) && ip != "") {
-                    seen_ips[ip] = true;
-                    results.append(host);
-                }
-            }
+        char from_ip[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &from.sin_addr, from_ip, sizeof(from_ip));
+        _parse_dns_response(recv_buf, (int)n, String(from_ip), records);
+    }
+
+    Array found = _resolve_hosts(records, false);
+    Dictionary seen_ips;
+    for (int i = 0; i < found.size(); i++) {
+        Dictionary host = found[i];
+        String ip = host["ip"];
+        if (!seen_ips.has(ip)) {
+            seen_ips[ip] = true;
+            results.append(host);
         }
     }
+    NF_LOG("MdnsBrowser", "Browse finished: %d instance(s), %d host(s)",
+           (int)records.instances.size(), (int)results.size());
 
     close(sock);
     return results;
@@ -421,8 +440,8 @@ Array MdnsBrowser::_browse_v6_scoped(const String &iface_name, float timeout) {
         }
     }
 
-    Dictionary seen_ips;
-    uint8_t recv_buf[4096];
+    MdnsRecords records;
+    uint8_t recv_buf[9000];
 
     struct timespec ts_start;
     clock_gettime(CLOCK_MONOTONIC, &ts_start);
@@ -453,27 +472,31 @@ Array MdnsBrowser::_browse_v6_scoped(const String &iface_name, float timeout) {
 
         if (!(recv_buf[2] & 0x80)) continue;
 
-        Array found = _parse_dns_response(recv_buf, (int)n, true);
-        for (int i = 0; i < found.size(); i++) {
-            Dictionary host = found[i];
-            if (host.has("ip")) {
-                String ip = host["ip"];
-                if (!seen_ips.has(ip) && ip != "") {
-                    seen_ips[ip] = true;
-                    // A link-local address is meaningless without its zone;
-                    // carrying it in the address text lets every downstream
-                    // consumer (HTTP binding, getaddrinfo in the stream path,
-                    // saved host records) recover the interface on its own.
-                    if (ip.to_lower().begins_with("fe80:")) {
-                        host["ip"] = ip + String("%") + iface_name;
-                    }
-                    host["iface"] = iface_name;
-                    host["scope_id"] = (int)ifindex;
-                    results.append(host);
-                }
-            }
-        }
+        char from_ip[INET6_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET6, &from.sin6_addr, from_ip, sizeof(from_ip));
+        _parse_dns_response(recv_buf, (int)n, String(from_ip), records);
     }
+
+    Array found = _resolve_hosts(records, true);
+    Dictionary seen_ips;
+    for (int i = 0; i < found.size(); i++) {
+        Dictionary host = found[i];
+        String ip = host["ip"];
+        if (seen_ips.has(ip)) continue;
+        seen_ips[ip] = true;
+        // A link-local address is meaningless without its zone; carrying it
+        // in the address text lets every downstream consumer (HTTP binding,
+        // getaddrinfo in the stream path, saved host records) recover the
+        // interface on its own.
+        if (ip.to_lower().begins_with("fe80:")) {
+            host["ip"] = ip + String("%") + iface_name;
+        }
+        host["iface"] = iface_name;
+        host["scope_id"] = (int)ifindex;
+        results.append(host);
+    }
+    NF_LOG("MdnsBrowser", "USB browse finished: %d instance(s), %d host(s)",
+           (int)records.instances.size(), (int)results.size());
 
     close(sock);
     return results;

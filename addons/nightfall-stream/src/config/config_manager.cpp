@@ -39,6 +39,7 @@ void NightfallConfigManager::load_config() {
         NF_LOG("NightfallConfig", "Config load failed, creating new config at %s", config_path.utf8().get_data());
         save_config();
     }
+    _remove_duplicate_hosts();
     _check_and_create_certs();
 }
 
@@ -213,6 +214,42 @@ void NightfallConfigManager::remove_host(int index) {
         config->set_value("hosts", k, new_data[k]);
     }
     save_config();
+}
+
+// An address:https_port pair can only be one server at a time, and a server
+// keeps its unique id across addresses. A new pairing therefore supersedes any
+// record matching either; the old record's certificate and cached app ids are
+// no longer valid (e.g. after the host software was reinstalled or reset).
+void NightfallConfigManager::remove_superseded_hosts(const String &address, int https_port, const String &server_unique_id) {
+    Array hosts = get_hosts();
+    for (int i = hosts.size() - 1; i >= 0; i--) {
+        Dictionary h = hosts[i];
+        bool same_server = !server_unique_id.is_empty() && String(h.get("server_unique_id", "")) == server_unique_id;
+        bool same_endpoint = String(h.get("localaddress", "")) == address && (int)h.get("https_port", 47984) == https_port;
+        if (same_server || same_endpoint) {
+            NF_LOG("NightfallConfig", "Removing superseded host %d (%s:%d)",
+                   (int)h["id"], String(h.get("localaddress", "")).utf8().get_data(), (int)h.get("https_port", 47984));
+            remove_host(h["id"]);
+        }
+    }
+}
+
+// Older builds appended a new record on every pairing, leaving stale
+// duplicates that address-based lookups would pick first. Keep only the
+// newest (highest index) record for each address:https_port.
+void NightfallConfigManager::_remove_duplicate_hosts() {
+    Array hosts = get_hosts();
+    Dictionary seen;
+    for (int i = hosts.size() - 1; i >= 0; i--) {
+        Dictionary h = hosts[i];
+        String endpoint = String(h.get("localaddress", "")) + ":" + String::num_int64((int)h.get("https_port", 47984));
+        if (seen.has(endpoint)) {
+            NF_LOG("NightfallConfig", "Removing duplicate host %d (%s)", (int)h["id"], endpoint.utf8().get_data());
+            remove_host(h["id"]);
+        } else {
+            seen[endpoint] = true;
+        }
+    }
 }
 
 void NightfallConfigManager::clear_hosts() {
