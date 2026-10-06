@@ -332,7 +332,7 @@ private:
 	uint32_t sized_depth_texture_id = 0;
 	uint64_t sized_depth_revision = UINT64_MAX;
 	int depth_map_width = 0, depth_map_height = 0;
-	void choose_working_size(uint32_t p_depth_texture_id, bool p_linear);
+	void choose_working_size(uint32_t p_depth_texture_id, int p_resample_mode);
 	void resize_working_textures(int p_width, int p_height);
 
 	GLuint offset_program = 0;
@@ -375,6 +375,22 @@ private:
 	double xr_timing_sum_total_ms = 0.0;
 	int xr_timing_count = 0;
 	int xr_timing_depth_count = 0;
+
+	// GPU time of the depth passes (upsample and offset search), from
+	// GL_EXT_disjoint_timer_query: a small ring of queries, each read back a
+	// few frames after it ends so the render thread never waits on the GPU.
+	// A rough guide only: on the Quest 3's tiled GPU it read 0.36 ms for a
+	// 1920x1080 grid but 0.60 ms for 1036x588 (2026-10-06), so it doesn't
+	// capture all of the work. The frame rate is the reliable measure.
+	static constexpr int DEPTH_GPU_QUERY_COUNT = 4;
+	GLuint depth_gpu_queries[DEPTH_GPU_QUERY_COUNT]{};
+	// 0 = free, 1 = in flight with depth work, 2 = in flight without (ignored).
+	int depth_gpu_query_state[DEPTH_GPU_QUERY_COUNT]{};
+	int depth_gpu_query_next = 0;
+	bool depth_gpu_timer_supported = false;
+	double depth_gpu_sum_ms = 0.0;
+	int depth_gpu_count = 0;
+	void collect_depth_gpu_times();
 
 	// Latest params from submit_frame(), consumed by _on_pre_render().
 	bool pending_new_frame = false;

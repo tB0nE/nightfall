@@ -301,8 +301,14 @@ static float srgb_encode_lut(float c) {
 	return c <= 0.0031308f ? c * 12.92f : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
 }
 
+// u_linear == 3 is Snapdragon Game Super Resolution 1 (sgsr1_shader_mobile_edge_
+// direction.frag, https://github.com/SnapdragonStudios/snapdragon-gsr),
+// Copyright (c) 2025, Qualcomm Innovation Center, Inc. All rights reserved.
+// SPDX-License-Identifier: BSD-3-Clause. Adapted to upscale the single depth
+// channel (.r, not the reference's green luma), with edge direction on. GLSL
+// ES 3.10 is for its textureGather.
 static const char *UPSAMPLE_FRAGMENT_SRC =
-		"#version 300 es\n"
+		"#version 310 es\n"
 		"#ifndef NIGHTFALL_TEXTURE_2D\n"
 		"#extension GL_OES_EGL_image_external_essl3 : require\n"
 		"#define NIGHTFALL_SAMPLER samplerExternalOES\n"
@@ -317,15 +323,93 @@ static const char *UPSAMPLE_FRAGMENT_SRC =
 		"uniform mat4 u_texmatrix;\n"
 		"uniform float u_sigmaR;\n"
 		"uniform float u_sharp;\n"
-		// 0=5x5 joint bilateral, 1=hardware linear, 2=depth-gated guided linear.
+		// 0=5x5 joint bilateral, 1=hardware linear, 2=depth-gated guided linear,
+		// 3=Snapdragon GSR.
 		"uniform int u_linear;\n"
 		"out vec4 fragColor;\n"
 		"const float SIGMA_S = 1.5;\n"
 		"const float FLAT = 0.05;\n"
+		"const float GSR_EDGE_THRESHOLD = 8.0 / 255.0;\n"
+		"const float GSR_EDGE_SHARPNESS = 2.0;\n"
+		"float gsrLanczos2(float x) {\n"
+		"    float wA = x - 4.0;\n"
+		"    float wB = x * wA - wA;\n"
+		"    wA *= wA;\n"
+		"    return wB * wA;\n"
+		"}\n"
+		"vec2 gsrWeight(float dx, float dy, float c, float stdev, vec2 dir) {\n"
+		"    float edgeDis = dx * dir.y + dy * dir.x;\n"
+		"    float x = (dx * dx + dy * dy)\n"
+		"            + edgeDis * edgeDis * (clamp(c * c * stdev, 0.0, 1.0) * 0.7 - 1.0);\n"
+		"    float w = gsrLanczos2(x);\n"
+		"    return vec2(w, w * c);\n"
+		"}\n"
+		"vec2 gsrEdgeDirection(vec4 left, vec4 right) {\n"
+		"    float RxLz = right.x - left.z;\n"
+		"    float RwLy = right.w - left.y;\n"
+		"    vec2 delta = vec2(RxLz + RwLy, RxLz - RwLy);\n"
+		"    float lengthInv = inversesqrt(delta.x * delta.x + 3.075740e-05 + delta.y * delta.y);\n"
+		"    return delta * lengthInv;\n"
+		"}\n"
+		// Bilinear, plus GSR's directional Lanczos correction where the 2x2
+		// around the sample holds an edge: diagonal depth edges come out as
+		// lines rather than the low-res grid's steps.
+		"float gsrUpscale() {\n"
+		"    vec2 size = vec2(textureSize(u_depth, 0));\n"
+		"    vec2 texel = 1.0 / size;\n"
+		"    float d = textureLod(u_depth, v_plain, 0.0).r;\n"
+		"    vec2 imgCoord = v_plain * size + vec2(-0.5, 0.5);\n"
+		"    vec2 imgCoordPixel = floor(imgCoord);\n"
+		"    vec2 coord = imgCoordPixel * texel;\n"
+		"    vec2 pl = imgCoord - imgCoordPixel;\n"
+		"    vec4 left = textureGather(u_depth, coord, 0);\n"
+		"    float edgeVote = abs(left.z - left.y) + abs(d - left.y) + abs(d - left.z);\n"
+		"    if (edgeVote <= GSR_EDGE_THRESHOLD) {\n"
+		"        return d;\n"
+		"    }\n"
+		"    coord.x += texel.x;\n"
+		"    vec4 right = textureGather(u_depth, coord + vec2(texel.x, 0.0), 0);\n"
+		"    vec4 upDown;\n"
+		"    upDown.xy = textureGather(u_depth, coord + vec2(0.0, -texel.y), 0).wz;\n"
+		"    upDown.zw = textureGather(u_depth, coord + vec2(0.0, texel.y), 0).yx;\n"
+		"    float mean = (left.y + left.z + right.x + right.w) * 0.25;\n"
+		"    left -= vec4(mean);\n"
+		"    right -= vec4(mean);\n"
+		"    upDown -= vec4(mean);\n"
+		"    float centre = d - mean;\n"
+		"    float sum = abs(left.x) + abs(left.y) + abs(left.z) + abs(left.w)\n"
+		"            + abs(right.x) + abs(right.y) + abs(right.z) + abs(right.w)\n"
+		"            + abs(upDown.x) + abs(upDown.y) + abs(upDown.z) + abs(upDown.w);\n"
+		"    float sumMean = 1.014185e+01 / sum;\n"
+		"    float stdev = sumMean * sumMean;\n"
+		"    vec2 dir = gsrEdgeDirection(left, right);\n"
+		"    vec2 aWY = gsrWeight(pl.x, pl.y + 1.0, upDown.x, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 1.0, pl.y + 1.0, upDown.y, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 1.0, pl.y - 2.0, upDown.z, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x, pl.y - 2.0, upDown.w, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x + 1.0, pl.y - 1.0, left.x, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x, pl.y - 1.0, left.y, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x, pl.y, left.z, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x + 1.0, pl.y, left.w, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 1.0, pl.y - 1.0, right.x, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 2.0, pl.y - 1.0, right.y, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 2.0, pl.y, right.z, stdev, dir);\n"
+		"    aWY += gsrWeight(pl.x - 1.0, pl.y, right.w, stdev, dir);\n"
+		"    float finalY = aWY.y / aWY.x;\n"
+		"    float maxY = max(max(left.y, left.z), max(right.x, right.w));\n"
+		"    float minY = min(min(left.y, left.z), min(right.x, right.w));\n"
+		"    float deltaY = clamp(GSR_EDGE_SHARPNESS * finalY, minY, maxY) - centre;\n"
+		"    deltaY = clamp(deltaY, -23.0 / 255.0, 23.0 / 255.0);\n"
+		"    return clamp(d + deltaY, 0.0, 1.0);\n"
+		"}\n"
 		"void main() {\n"
 		"    if (u_linear == 1) {\n"
 		"        float d = texture(u_depth, v_plain).r;\n"
 		"        fragColor = vec4(d);\n"
+		"        return;\n"
+		"    }\n"
+		"    if (u_linear == 3) {\n"
+		"        fragColor = vec4(gsrUpscale());\n"
 		"        return;\n"
 		"    }\n"
 		// This grid was originally represented by one scalar N: first a
@@ -482,6 +566,15 @@ static const char *OVERLAY_FRAGMENT_SRC =
 		"out vec4 fragColor;\n"
 		"void main() { fragColor = texture(u_texture, v_plain); }\n";
 #define UPSAMPLE_DIVISOR 4
+// The GSR working grid as a fraction of the stream (see
+// choose_working_size()): 1920x1080 for a 2560x1440 stream.
+#define GSR_GRID_STREAM_FRACTION 0.75f
+// How host depth (Nightfall Meteor, no colour guide) is resized: 1 =
+// hardware linear on a map-sized grid, 3 = GSR to the larger grid above.
+// Linear: Meteor softens VDA's edges itself, which hides the grid's steps
+// at no headset cost. A finer GSR grid smoothed them only partly (tested
+// 2026-10-06 at 1036x588 and 1920x1080), so it's kept for later use.
+#define HOST_DEPTH_RESAMPLE_MODE 1
 // Screen center height in the play/stage space, matching main.gd's own
 // hardcoded assumption for the stats overlay quad and XRCamera3D's fallback
 // seated height (both 1.6m) -- quad_layers[] left this at the pose default
@@ -1016,8 +1109,39 @@ bool NightfallXrRenderer::init_gl() {
 
 	const char *gl_exts = (const char *)glGetString(GL_EXTENSIONS);
 	srgb_write_control = gl_exts != nullptr && strstr(gl_exts, "GL_EXT_sRGB_write_control") != nullptr;
+	depth_gpu_timer_supported = gl_exts != nullptr && strstr(gl_exts, "GL_EXT_disjoint_timer_query") != nullptr;
+	if (depth_gpu_timer_supported) {
+		glGenQueries(DEPTH_GPU_QUERY_COUNT, depth_gpu_queries);
+		for (int &state : depth_gpu_query_state) {
+			state = 0;
+		}
+	}
 
 	return true;
+}
+
+// Reads back the depth-pass timer queries that have finished.
+void NightfallXrRenderer::collect_depth_gpu_times() {
+	GLint disjoint = 0;
+	glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+	for (int i = 0; i < DEPTH_GPU_QUERY_COUNT; i++) {
+		if (depth_gpu_query_state[i] == 0) {
+			continue;
+		}
+		GLuint available = 0;
+		glGetQueryObjectuiv(depth_gpu_queries[i], GL_QUERY_RESULT_AVAILABLE, &available);
+		if (!available) {
+			continue;
+		}
+		GLuint ns = 0;
+		glGetQueryObjectuiv(depth_gpu_queries[i], GL_QUERY_RESULT, &ns);
+		// A disjoint event (e.g. a clock change) makes in-flight results meaningless.
+		if (depth_gpu_query_state[i] == 1 && !disjoint) {
+			depth_gpu_sum_ms += ns / 1.0e6;
+			depth_gpu_count++;
+		}
+		depth_gpu_query_state[i] = 0;
+	}
 }
 
 void NightfallXrRenderer::stop_stream() {
@@ -1112,6 +1236,10 @@ void NightfallXrRenderer::stop_stream() {
 			if (ambient_sample_texture) glDeleteTextures(1, &ambient_sample_texture);
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
+			if (depth_gpu_timer_supported) {
+				glDeleteQueries(DEPTH_GPU_QUERY_COUNT, depth_gpu_queries);
+				depth_gpu_timer_supported = false;
+			}
 			if (hdr_lut_texture) glDeleteTextures(1, &hdr_lut_texture);
 			if (overlay_texture) glDeleteTextures(1, &overlay_texture);
 			if (depth_sync_textures[0]) {
@@ -1363,7 +1491,13 @@ uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id
 // size and the upsample pass is a 1:1 copy. Colour-guided modes and
 // differently shaped maps keep a quarter of the stream, where the guide adds
 // detail or the aspect needs correcting.
-void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, bool p_linear) {
+//
+// GSR (host depth) is the exception: the warp shifts each grid cell as one
+// block, so on a map-sized grid a sharp depth edge steps in blocks of about
+// 5x5 screen pixels. GSR upscales the map to a grid of
+// GSR_GRID_STREAM_FRACTION of the stream, where the blocks are small and its
+// edges are lines.
+void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, int p_resample_mode) {
 	if (p_depth_texture_id != sized_depth_texture_id || pending_depth_revision != sized_depth_revision) {
 		sized_depth_texture_id = p_depth_texture_id;
 		sized_depth_revision = pending_depth_revision;
@@ -1376,10 +1510,14 @@ void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, bool 
 	}
 	int width = video_width / UPSAMPLE_DIVISOR;
 	int height = video_height / UPSAMPLE_DIVISOR;
-	if (p_linear && depth_map_width > 0 && depth_map_height > 0 && video_height > 0) {
+	bool linear = p_resample_mode == 1 || p_resample_mode == 3;
+	if (linear && depth_map_width > 0 && depth_map_height > 0 && video_height > 0) {
 		float map_aspect = (float)depth_map_width / (float)depth_map_height;
 		float video_aspect = (float)video_width / (float)video_height;
-		if (std::fabs(map_aspect / video_aspect - 1.0f) < 0.05f) {
+		if (p_resample_mode == 3) {
+			width = std::max(depth_map_width, (int)(video_width * GSR_GRID_STREAM_FRACTION));
+			height = std::max(depth_map_height, (int)(video_height * GSR_GRID_STREAM_FRACTION));
+		} else if (std::fabs(map_aspect / video_aspect - 1.0f) < 0.05f) {
 			width = depth_map_width;
 			height = depth_map_height;
 		}
@@ -1416,7 +1554,7 @@ void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_dep
 			p_oes_texture_id);
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, p_depth_texture_id);
-	if (p_resample_mode == 1 || p_resample_mode == 2) {
+	if (p_resample_mode >= 1) {
 		// Godot owns this ImageTexture, but its sampler state is ordinary GLES
 		// texture state. Set it explicitly so Standard's production path is a
 		// real hardware-linear resize regardless of project/UI filter defaults.
@@ -1568,21 +1706,30 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 
 	// The guide is the on-device capture of the model's input. Host depth
 	// (Nightfall Meteor) has no capture, so without a guide the depth is
-	// resized with hardware-linear sampling, which never reads the guide.
+	// resized as HOST_DEPTH_RESAMPLE_MODE says, neither of which reads it.
 	bool has_depth = p_depth_texture_id != 0;
 	bool has_guide = p_depth_guide_texture_id != 0;
-	int resample_mode = !has_guide ? 1
+	int resample_mode = !has_guide ? HOST_DEPTH_RESAMPLE_MODE
 			: (p_depth_process_stage == 6 ? 1 : (p_depth_process_stage == 7 ? 2 : 0));
 	// Cache key: the stage, plus whether a guide was available.
 	int upsample_key = p_depth_process_stage * 2 + (has_guide ? 1 : 0);
 	bool use_upsample = has_depth && p_depth_process_stage >= 2;
 	if (use_upsample) {
-		choose_working_size(p_depth_texture_id, resample_mode == 1);
+		choose_working_size(p_depth_texture_id, resample_mode);
 	}
 	bool refresh_depth = use_upsample && (!depth_cache_valid ||
 			pending_depth_revision != rendered_depth_revision ||
 			upsample_key != rendered_upsample_process_stage);
 	bool did_depth_work = false;
+	int depth_gpu_query = -1;
+	if (depth_gpu_timer_supported) {
+		collect_depth_gpu_times();
+		if (depth_gpu_query_state[depth_gpu_query_next] == 0) {
+			depth_gpu_query = depth_gpu_query_next;
+			depth_gpu_query_next = (depth_gpu_query_next + 1) % DEPTH_GPU_QUERY_COUNT;
+			glBeginQuery(GL_TIME_ELAPSED_EXT, depth_gpu_queries[depth_gpu_query]);
+		}
+	}
 	if (refresh_depth) {
 		run_upsample(source_texture_id, p_depth_texture_id,
 				p_depth_guide_texture_id, source_matrix, source_is_2d,
@@ -1604,6 +1751,10 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		rendered_depth_convergence = p_convergence;
 		rendered_depth_process_stage = p_depth_process_stage;
 		did_depth_work = true;
+	}
+	if (depth_gpu_query >= 0) {
+		glEndQuery(GL_TIME_ELAPSED_EXT);
+		depth_gpu_query_state[depth_gpu_query] = did_depth_work ? 1 : 2;
 	}
 	const auto t_depth_done = std::chrono::steady_clock::now();
 
@@ -1862,14 +2013,17 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 	if (xr_timing_count >= 120) {
 		double n = (double)xr_timing_count;
 		XR_LOG("Native render timing avg over %d frames: total=%.3fms egl_in=%.3fms "
-				"fence/ambient=%.3fms depth=%.3fms(n=%d) acquire/wait=%.3fms draw=%.3fms "
-				"release=%.3fms egl_out=%.3fms",
+				"fence/ambient=%.3fms depth=%.3fms(n=%d) depth_gpu=%.3fms(n=%d) grid=%dx%d "
+				"acquire/wait=%.3fms draw=%.3fms release=%.3fms egl_out=%.3fms",
 				xr_timing_count,
 				(xr_timing_sum_total_ms + xr_timing_sum_egl_in_ms + xr_timing_sum_egl_out_ms) / n,
 				xr_timing_sum_egl_in_ms / n,
 				xr_timing_sum_fence_ambient_ms / n,
 				xr_timing_depth_count > 0 ? xr_timing_sum_depth_ms / xr_timing_depth_count : 0.0,
 				xr_timing_depth_count,
+				depth_gpu_count > 0 ? depth_gpu_sum_ms / depth_gpu_count : 0.0,
+				depth_gpu_count,
+				upsample_width, upsample_height,
 				xr_timing_sum_acquire_wait_ms / n,
 				xr_timing_sum_draw_ms / n,
 				xr_timing_sum_release_ms / n,
@@ -1884,6 +2038,8 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 		xr_timing_sum_total_ms = 0.0;
 		xr_timing_count = 0;
 		xr_timing_depth_count = 0;
+		depth_gpu_sum_ms = 0.0;
+		depth_gpu_count = 0;
 	}
 }
 
