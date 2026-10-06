@@ -144,6 +144,8 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
 	options["surroundAudioInfo"] = 0xCA0203
+	if hdr_requested():
+		options["hdr_mode"] = 1
 	var capture_outputs = _compute_capture_outputs()
 	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
 		capture_outputs, str(main.layout.source) if main.layout else "null",
@@ -153,6 +155,13 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	main._ui_status_label.text = "Launching stream..."
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
+
+# HDR needs a 10-bit codec (HEVC or AV1) and, for now, Android: Quest's
+# MediaCodec -> SurfaceTexture path samples 10-bit frames natively, while the
+# desktop FFmpeg upload only handles 8-bit NV12/YUV420P.
+func hdr_requested() -> bool:
+	return main.settings.hdr_enabled and OS.get_name() == "Android" \
+		and (main.settings.codec_preference == 1 or main.settings.codec_preference == 2)
 
 # Comma-separated real RandR output names (e.g. "DP-0,DP-2") for whichever
 # monitors are currently enabled in main.layout, matching Polaris's new
@@ -304,7 +313,17 @@ func _on_v2_launch_response(response: Dictionary):
 		stream_config["supported_video_formats"] = 0x01000000
 	else:
 		var family_map = [1, 2, 3]
-		stream_config["supported_video_formats"] = _b().probe_video_format(family_map[codec_pref], false)
+		var formats: int = _b().probe_video_format(family_map[codec_pref], false)
+		if hdr_requested():
+			# The 10-bit profile alongside each 8-bit one the decoder passed
+			# (VIDEO_FORMAT_H265 -> H265_MAIN10, AV1_MAIN8 -> AV1_MAIN10). The
+			# host only picks it when its display is actually in HDR.
+			if formats & 0x0100:
+				formats |= 0x0200
+			if formats & 0x1000:
+				formats |= 0x2000
+		stream_config["supported_video_formats"] = formats
+		main._log("[STREAM] Video formats 0x%x (HDR %s)" % [formats, "requested" if hdr_requested() else "off"])
 	stream_config["color_space"] = 1
 	stream_config["color_range"] = 0
 	stream_config["encryption_flags"] = 0xFFFFFFFF

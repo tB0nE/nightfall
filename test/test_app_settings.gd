@@ -83,6 +83,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.auto_reconnect_enabled = false
 	source.quick_start_enabled = true
 	source.audio_boost_db = 9
+	source.hdr_enabled = true
 	source.idle_timeout_min = 60
 	source.pipewire_restore_token = "restore"
 	var config := ConfigFile.new()
@@ -111,6 +112,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(not loaded.auto_reconnect_enabled)
 	assert(loaded.quick_start_enabled)
 	assert(loaded.audio_boost_db == 9)
+	assert(loaded.hdr_enabled)
 	assert(loaded.idle_timeout_min == 60)
 	assert(loaded.pipewire_restore_token == "restore")
 
@@ -254,6 +256,7 @@ func _test_general_defaults_and_reset() -> void:
 	settings.auto_reconnect_enabled = false
 	settings.quick_start_enabled = true
 	settings.audio_boost_db = 12
+	settings.hdr_enabled = true
 	settings.idle_timeout_min = 60
 	settings.pipewire_restore_token = "token"
 
@@ -269,6 +272,7 @@ func _test_general_defaults_and_reset() -> void:
 	assert(settings.auto_reconnect_enabled)
 	assert(not settings.quick_start_enabled)
 	assert(settings.audio_boost_db == 0)
+	assert(not settings.hdr_enabled)
 	assert(settings.idle_timeout_min == 0)
 	assert(settings.pipewire_restore_token.is_empty())
 

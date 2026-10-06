@@ -503,6 +503,7 @@ var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_audio_boost_btn: Button
 var _ui_usb_link_btn: Button
+var _ui_hdr_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.

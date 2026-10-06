@@ -34,6 +34,7 @@ const DEFAULT_AUDIO_BOOST_DB := 0
 const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
+const DEFAULT_HDR_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
 
@@ -61,6 +62,9 @@ var audio_boost_db: int = DEFAULT_AUDIO_BOOST_DB
 var idle_timeout_min: int = DEFAULT_IDLE_TIMEOUT_MIN
 var pipewire_restore_token: String = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
+## Ask the host for an HDR10 stream (10-bit, PQ) and tone-map it for the
+## headset, instead of the host squashing its HDR desktop to SDR.
+var hdr_enabled: bool = DEFAULT_HDR_ENABLED
 # Not reset with the other general settings: a settings reset should not
 # switch the menus to another language.
 var language: String = DEFAULT_LANGUAGE
@@ -91,3 +95,4 @@ func reset_general() -> void:
 	idle_timeout_min = DEFAULT_IDLE_TIMEOUT_MIN
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED
+	hdr_enabled = DEFAULT_HDR_ENABLED

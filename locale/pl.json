@@ -188,5 +188,7 @@
 	"Enter Server IP": "Wpisz IP serwera",
 	"e.g. 192.168.1.100": "np. 192.168.1.100",
 	"Pair": "Sparuj",
-	"Enter PIN on Host": "Wpisz PIN na hoście"
+	"Enter PIN on Host": "Wpisz PIN na hoście",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Żądaj HDR, gdy ekran hosta go używa; dopasowane do gogli."
 }

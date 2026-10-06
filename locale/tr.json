@@ -188,5 +188,7 @@
 	"Enter Server IP": "Sunucu IP'sini girin",
 	"e.g. 192.168.1.100": "ör. 192.168.1.100",
 	"Pair": "Eşleştir",
-	"Enter PIN on Host": "PIN'i ana bilgisayarda girin"
+	"Enter PIN on Host": "PIN'i ana bilgisayarda girin",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Ana bilgisayar ekranı kullanıyorsa HDR iste; başlık için ton eşlenir."
 }
