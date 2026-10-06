@@ -165,6 +165,7 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 cp android/src/main/java/com/godot/game/DepthProfileRunner.java android/build/src/main/java/com/godot/game/DepthProfileRunner.java
 cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/main/java/com/godot/game/DiagnosticLog.java
 cp android/src/main/java/com/godot/game/UsbLinkManager.java android/build/src/main/java/com/godot/game/UsbLinkManager.java
+cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/java/com/godot/game/GamepadInfo.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from
