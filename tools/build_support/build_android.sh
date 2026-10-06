@@ -11,11 +11,16 @@ SCRIPT_DIR="$(cd "$TOOL_DIR/../.." && pwd)"
 cd "$SCRIPT_DIR"
 # shellcheck source=native_xr_versions.sh
 source "$TOOL_DIR/native_xr_versions.sh"
+# shellcheck source=app_version.sh
+source "$TOOL_DIR/app_version.sh"
 
 PRESET="$1"
 OUTPUT="$2"
 USE_STOCK_LITERT="${NIGHTFALL_USE_STOCK_LITERT:-0}"
 INSTALL="${NIGHTFALL_INSTALL:-0}"
+BUILD_KIND="${NIGHTFALL_BUILD_KIND:-debug}"
+nightfall_resolve_version "$BUILD_KIND" "$SCRIPT_DIR"
+echo "Version $NIGHTFALL_VERSION_NAME (code $NIGHTFALL_VERSION_CODE)"
 GODOT="${NIGHTFALL_GODOT_EDITOR:?Set NIGHTFALL_GODOT_EDITOR to a Godot 4.7 executable}"
 JAVA_HOME="${NIGHTFALL_JAVA_HOME:-${JAVA_HOME:-/home/linuxbrew/.linuxbrew/opt/openjdk@17}}"
 GODOT_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/godot"
@@ -78,6 +83,22 @@ if [ ! -f "$PATCHED_GODOT_RUNTIME" ]; then
   exit 1
 fi
 
+cleanup() {
+  if [ -f "$CONFIG_BACKUP" ]; then
+    mv "$CONFIG_BACKUP" "$CONFIG"
+    echo "Restored original $CONFIG"
+  fi
+}
+trap cleanup EXIT
+
+# The presets are patched for this export only (version, and the keystore for
+# release-signed builds); cleanup() restores the committed file.
+cp "$CONFIG" "$CONFIG_BACKUP"
+sed -i \
+  -e "s|^version/code=.*|version/code=$NIGHTFALL_VERSION_CODE|" \
+  -e "s|^version/name=.*|version/name=\"$NIGHTFALL_VERSION_NAME\"|" \
+  "$CONFIG"
+
 if [ "$PRESET" = "NightfallRelease" ]; then
   RELEASE_ENV_FILE="${NIGHTFALL_ENV_FILE:-.env}"
   if [ ! -f "$RELEASE_ENV_FILE" ]; then
@@ -89,7 +110,6 @@ if [ "$PRESET" = "NightfallRelease" ]; then
     echo "Error: .env missing NIGHTFALL_KEYSTORE_PATH, NIGHTFALL_KEYSTORE_USER, or NIGHTFALL_KEYSTORE_PASSWORD"
     exit 1
   fi
-  cp "$CONFIG" "$CONFIG_BACKUP"
   sed -i \
     -e "s|\${NIGHTFALL_KEYSTORE_PATH}|${NIGHTFALL_KEYSTORE_PATH}|g" \
     -e "s|\${NIGHTFALL_KEYSTORE_USER}|${NIGHTFALL_KEYSTORE_USER}|g" \
@@ -97,14 +117,6 @@ if [ "$PRESET" = "NightfallRelease" ]; then
     "$CONFIG"
   echo "Patched keystore credentials into $CONFIG"
 fi
-
-cleanup() {
-  if [ -f "$CONFIG_BACKUP" ]; then
-    mv "$CONFIG_BACKUP" "$CONFIG"
-    echo "Restored original $CONFIG"
-  fi
-}
-trap cleanup EXIT
 
 rm -rf android/build
 mkdir -p android/build
@@ -153,6 +165,7 @@ cp android/src/main/java/com/godot/game/DepthEstimator.java android/build/src/ma
 cp android/src/main/java/com/godot/game/DepthProfileRunner.java android/build/src/main/java/com/godot/game/DepthProfileRunner.java
 cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/main/java/com/godot/game/DiagnosticLog.java
 cp android/src/main/java/com/godot/game/UsbLinkManager.java android/build/src/main/java/com/godot/game/UsbLinkManager.java
+cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/java/com/godot/game/GamepadInfo.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from

@@ -188,5 +188,7 @@
 	"Enter Server IP": "サーバーのIPを入力",
 	"e.g. 192.168.1.100": "例: 192.168.1.100",
 	"Pair": "ペアリング",
-	"Enter PIN on Host": "ホストでPINを入力"
+	"Enter PIN on Host": "ホストでPINを入力",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "ホストの画面がHDRの場合に要求し、ヘッドセット向けにトーンマップします。"
 }

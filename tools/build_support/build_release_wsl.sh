@@ -86,6 +86,12 @@ ninja -C "$STREAM_BUILD" -j "$NIGHTFALL_BUILD_JOBS"
 "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-debug \
   "$STREAM_BUILD/bin/android/$STREAM_SO" -o "addons/nightfall-stream/bin/android/$STREAM_SO"
 
-./build.sh --release
+# A dev build by default; pass --release (plus --version X.Y.Z when HEAD has no
+# release tag) to build a release instead.
+BUILD_ARGS=("$@")
+[[ "${#BUILD_ARGS[@]}" -gt 0 ]] || BUILD_ARGS=(--dev)
+APK="Nightfall-Android-arm64-v8a-dev.apk"
+[[ " ${BUILD_ARGS[*]} " == *" --release "* ]] && APK="Nightfall-Android-arm64-v8a.apk"
+./build.sh "${BUILD_ARGS[@]}"
 # adb.exe is a Windows binary, so it needs a Windows path to the APK.
-"$CACHE_ROOT/platform-tools/adb.exe" install -r "$(wslpath -w "$PROJECT_ROOT/Nightfall-Android-arm64-v8a.apk")"
+"$CACHE_ROOT/platform-tools/adb.exe" install -r "$(wslpath -w "$PROJECT_ROOT/$APK")"

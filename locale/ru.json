@@ -188,5 +188,7 @@
 	"Enter Server IP": "Введите IP сервера",
 	"e.g. 192.168.1.100": "напр. 192.168.1.100",
 	"Pair": "Сопряжение",
-	"Enter PIN on Host": "Введите PIN на хосте"
+	"Enter PIN on Host": "Введите PIN на хосте",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запрос HDR, если его использует экран хоста; адаптация для шлема."
 }

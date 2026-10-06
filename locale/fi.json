@@ -188,5 +188,7 @@
 	"Enter Server IP": "Anna palvelimen IP",
 	"e.g. 192.168.1.100": "esim. 192.168.1.100",
 	"Pair": "Muodosta pari",
-	"Enter PIN on Host": "Anna PIN isännällä"
+	"Enter PIN on Host": "Anna PIN isännällä",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille."
 }

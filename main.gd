@@ -503,6 +503,7 @@ var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_audio_boost_btn: Button
 var _ui_usb_link_btn: Button
+var _ui_hdr_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
@@ -1169,8 +1170,10 @@ func _on_stream_started():
 		composition_panels.hide_ui()
 	if settings.passthrough_enabled:
 		_hide_all_backgrounds()
-	var all_btn_flags = 0x1000|0x2000|0x4000|0x8000|0x0001|0x0002|0x0004|0x0008|0x0100|0x0200|0x0010|0x0020|0x0040|0x0080|0x0400
-	stream_backend.send_controller_arrival(0, 1, 1, all_btn_flags, 0x01|0x02)
+	# Pads announce themselves to the host on their first input (see
+	# InputHandler.send_pad_state), so a session with only a physical pad
+	# doesn't also get an idle controller 0.
+	input_handler.reset_gamepads()
 
 	# The host's real desktop can be a very different shape than settings.host.native_resolution
 	# assumed (first-ever connection to a host, or its desktop layout changed since
@@ -1421,6 +1424,7 @@ func _ready():
 	Input.joy_connection_changed.connect(func(device, connected):
 		_on_joy_changed(device, connected)
 	)
+	input_handler.scan_connected_pads()
 
 	if right_hand:
 		right_hand.pose = "aim"
@@ -2179,7 +2183,7 @@ func _post_ready_check():
 
 
 func _on_joy_changed(device: int, connected: bool):
-	pass
+	input_handler.on_joy_connection_changed(device, connected)
 
 func _process(delta):
 	if is_xr_active:

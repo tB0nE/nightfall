@@ -188,5 +188,7 @@
 	"Enter Server IP": "输入服务器 IP",
 	"e.g. 192.168.1.100": "例如 192.168.1.100",
 	"Pair": "配对",
-	"Enter PIN on Host": "在主机上输入 PIN"
+	"Enter PIN on Host": "在主机上输入 PIN",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "主机显示器使用 HDR 时请求 HDR，并为头显进行色调映射。"
 }

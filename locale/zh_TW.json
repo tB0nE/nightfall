@@ -188,5 +188,7 @@
 	"Enter Server IP": "輸入伺服器 IP",
 	"e.g. 192.168.1.100": "例如 192.168.1.100",
 	"Pair": "配對",
-	"Enter PIN on Host": "在主機上輸入 PIN"
+	"Enter PIN on Host": "在主機上輸入 PIN",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。"
 }

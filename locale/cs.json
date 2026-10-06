@@ -188,5 +188,7 @@
 	"Enter Server IP": "Zadejte IP serveru",
 	"e.g. 192.168.1.100": "např. 192.168.1.100",
 	"Pair": "Spárovat",
-	"Enter PIN on Host": "Zadejte PIN na hostiteli"
+	"Enter PIN on Host": "Zadejte PIN na hostiteli",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vyžádat HDR, když jej displej hostitele používá; upraveno pro headset."
 }

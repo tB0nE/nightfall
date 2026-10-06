@@ -188,5 +188,7 @@
 	"Enter Server IP": "Voer bediener-IP in",
 	"e.g. 192.168.1.100": "bv. 192.168.1.100",
 	"Pair": "Paar",
-	"Enter PIN on Host": "Voer PIN op gasheer in"
+	"Enter PIN on Host": "Voer PIN op gasheer in",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vra HDR wanneer die gasheerskerm dit gebruik; aangepas vir die headset."
 }

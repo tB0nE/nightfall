@@ -33,6 +33,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("stream", "idle_timeout_min", settings.idle_timeout_min)
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
 	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
+	config.set_value("stream", "hdr_enabled", settings.hdr_enabled)
 	config.set_value("general", "language", settings.language)
 
 static func read_app(
@@ -126,6 +127,8 @@ static func read_app(
 		"local_capture", "restore_token", AppSettings.DEFAULT_PIPEWIRE_RESTORE_TOKEN)
 	settings.usb_link_enabled = config.get_value(
 		"stream", "usb_link_enabled", AppSettings.DEFAULT_USB_LINK_ENABLED)
+	settings.hdr_enabled = config.get_value(
+		"stream", "hdr_enabled", AppSettings.DEFAULT_HDR_ENABLED)
 	settings.language = str(config.get_value("general", "language", AppSettings.DEFAULT_LANGUAGE))
 	return result
 
