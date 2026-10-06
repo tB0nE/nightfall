@@ -1236,6 +1236,14 @@ func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 
+# HDR is negotiated at launch (10-bit codec + hdrMode), so a live stream
+# restarts to pick it up, the same as a codec change.
+func toggle_hdr():
+	main.settings.hdr_enabled = not main.settings.hdr_enabled
+	_save_setting(main._ui_hdr_btn, "On" if main.settings.hdr_enabled else "Off")
+	if main.is_streaming:
+		_schedule_stream_restart()
+
 func cycle_audio_boost():
 	var values: Array = SettingsPersistence.AUDIO_BOOST_VALUES
 	var idx = values.find(main.settings.audio_boost_db)

@@ -188,5 +188,7 @@
 	"Enter Server IP": "Ange serverns IP",
 	"e.g. 192.168.1.100": "t.ex. 192.168.1.100",
 	"Pair": "Parkoppla",
-	"Enter PIN on Host": "Ange PIN på värden"
+	"Enter PIN on Host": "Ange PIN på värden",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Begär HDR när värdens skärm använder det; tonmappas för headsetet."
 }

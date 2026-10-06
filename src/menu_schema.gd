@@ -62,7 +62,7 @@ static func get_tabs() -> Array:
 				"node_name": &"StreamRow2",
 				"options": [
 					_option(&"_ui_codec_btn", "Codec", "HEVC", "Video codec. PyroWave suits fast 2D streaming; avoid it with AI 3D.", TARGET_SETTINGS, &"cycle_codec"),
-					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
+					_option(&"_ui_hdr_btn", "HDR", "Off", "Request HDR when the host display uses it; tone-mapped for the headset.", TARGET_SETTINGS, &"toggle_hdr", OS.get_name() == "Android"),
 					_option(&"_ui_audio_boost_btn", "Volume", "Normal", "Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.", TARGET_SETTINGS, &"cycle_audio_boost"),
 					_option(&"_ui_usb_link_btn", "USB Link", "Off", "Stream over a USB-C cable instead of Wi-Fi, once the host is reachable over it.", TARGET_SETTINGS, &"toggle_usb_link", OS.get_name() == "Android"),
 				],
@@ -145,6 +145,7 @@ static func get_tabs() -> Array:
 				"options": [
 					_option(&"_ui_reconnect_btn", "Auto-Reconnect", "On", "Automatically attempt to restore an interrupted stream.", TARGET_SETTINGS, &"cycle_auto_reconnect"),
 					_option(&"_ui_idle_btn", "Idle Disconnect", "Off", "Disconnect after the selected period without input.", TARGET_SETTINGS, &"cycle_idle_timeout"),
+					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
 				],
 			},
 		],

@@ -188,5 +188,7 @@
 	"Enter Server IP": "서버 IP 입력",
 	"e.g. 192.168.1.100": "예: 192.168.1.100",
 	"Pair": "페어링",
-	"Enter PIN on Host": "호스트에서 PIN 입력"
+	"Enter PIN on Host": "호스트에서 PIN 입력",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "호스트 화면이 HDR을 사용하면 요청하고 헤드셋에 맞게 톤 매핑합니다."
 }

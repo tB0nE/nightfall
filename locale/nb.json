@@ -188,5 +188,7 @@
 	"Enter Server IP": "Skriv inn serverens IP",
 	"e.g. 192.168.1.100": "f.eks. 192.168.1.100",
 	"Pair": "Par",
-	"Enter PIN on Host": "Skriv inn PIN på verten"
+	"Enter PIN on Host": "Skriv inn PIN på verten",
+	"HDR": "HDR",
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Be om HDR når vertens skjerm bruker det; tonetilpasset for headsettet."
 }
