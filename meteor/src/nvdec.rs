@@ -171,19 +171,21 @@ struct Memcpy2D {
     height: usize,
 }
 
-/// The driver entry points we use (also used by gpu_post.rs).
+/// The driver entry points we use (also used by gpu_post.rs and vda.rs).
 pub(crate) struct Api {
     _cuda: Library,
     _cuvid: Library,
     pub(crate) cu_init: unsafe extern "C" fn(c_uint) -> CuResult,
     pub(crate) cu_device_get: unsafe extern "C" fn(*mut c_int, c_int) -> CuResult,
+    pub(crate) cu_device_get_name: unsafe extern "C" fn(*mut c_char, c_int, c_int) -> CuResult,
+    pub(crate) cu_device_get_attribute: unsafe extern "C" fn(*mut c_int, c_int, c_int) -> CuResult,
     pub(crate) cu_primary_ctx_retain: unsafe extern "C" fn(*mut CuContext, c_int) -> CuResult,
     pub(crate) cu_ctx_push: unsafe extern "C" fn(CuContext) -> CuResult,
     pub(crate) cu_ctx_pop: unsafe extern "C" fn(*mut CuContext) -> CuResult,
     cu_memcpy_2d: unsafe extern "C" fn(*const Memcpy2D) -> CuResult,
     pub(crate) cu_memcpy_dtoh: unsafe extern "C" fn(*mut c_void, CuDevicePtr, usize) -> CuResult,
-    #[cfg_attr(not(test), allow(dead_code))] // used by gpu_post's tests
     pub(crate) cu_memcpy_htod: unsafe extern "C" fn(CuDevicePtr, *const c_void, usize) -> CuResult,
+    pub(crate) cu_mem_get_info: unsafe extern "C" fn(*mut usize, *mut usize) -> CuResult,
     pub(crate) cu_mem_alloc: unsafe extern "C" fn(*mut CuDevicePtr, usize) -> CuResult,
     pub(crate) cu_mem_free: unsafe extern "C" fn(CuDevicePtr) -> CuResult,
     pub(crate) cu_module_load_data: unsafe extern "C" fn(*mut *mut c_void, *const c_void) -> CuResult,
@@ -233,12 +235,15 @@ fn load_api() -> Result<Api, String> {
     let api = Api {
         cu_init: sym!(cuda, b"cuInit"),
         cu_device_get: sym!(cuda, b"cuDeviceGet"),
+        cu_device_get_name: sym!(cuda, b"cuDeviceGetName"),
+        cu_device_get_attribute: sym!(cuda, b"cuDeviceGetAttribute"),
         cu_primary_ctx_retain: sym!(cuda, b"cuDevicePrimaryCtxRetain"),
         cu_ctx_push: sym!(cuda, b"cuCtxPushCurrent_v2"),
         cu_ctx_pop: sym!(cuda, b"cuCtxPopCurrent_v2"),
         cu_memcpy_2d: sym!(cuda, b"cuMemcpy2D_v2"),
         cu_memcpy_dtoh: sym!(cuda, b"cuMemcpyDtoH_v2"),
         cu_memcpy_htod: sym!(cuda, b"cuMemcpyHtoD_v2"),
+        cu_mem_get_info: sym!(cuda, b"cuMemGetInfo_v2"),
         cu_mem_alloc: sym!(cuda, b"cuMemAlloc_v2"),
         cu_mem_free: sym!(cuda, b"cuMemFree_v2"),
         cu_module_load_data: sym!(cuda, b"cuModuleLoadData"),
@@ -696,6 +701,28 @@ pub(crate) fn primary_context() -> Result<(&'static Api, CuContext), String> {
         check("cuDevicePrimaryCtxRetain", (api.cu_primary_ctx_retain)(&mut ctx, device))?;
     }
     Ok((api, ctx))
+}
+
+/// The GPU's name and compute capability, as a file-name-safe key (for
+/// example `sm86-nvidia-geforce-rtx-3090`).
+pub(crate) fn gpu_identity(api: &Api, ctx: CuContext) -> String {
+    const COMPUTE_CAPABILITY_MAJOR: c_int = 75;
+    const COMPUTE_CAPABILITY_MINOR: c_int = 76;
+    let mut name = [0 as c_char; 128];
+    let (mut major, mut minor) = (0, 0);
+    // SAFETY: out-pointers to locals; device 0, with its context pushed.
+    unsafe {
+        (api.cu_ctx_push)(ctx);
+        (api.cu_device_get_name)(name.as_mut_ptr(), name.len() as c_int, 0);
+        (api.cu_device_get_attribute)(&mut major, COMPUTE_CAPABILITY_MAJOR, 0);
+        (api.cu_device_get_attribute)(&mut minor, COMPUTE_CAPABILITY_MINOR, 0);
+        let mut popped = ptr::null_mut();
+        (api.cu_ctx_pop)(&mut popped);
+    }
+    // SAFETY: the driver writes a NUL-terminated string (zeroed if not).
+    let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_string_lossy().to_lowercase();
+    let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    format!("sm{major}{minor}-{}", slug.trim_matches('-'))
 }
 
 /// Loads a NUL-terminated PTX module and looks up kernels in it. The module

@@ -126,7 +126,7 @@ impl MeteorTray {
         let current = depth.model();
         let model_names = models.clone();
         let model_menu = SubMenu {
-            label: format!("Model: {}", current.as_deref().map_or("none", |m| m.trim_end_matches(".onnx"))),
+            label: format!("Model: {}", current.as_deref().map_or_else(|| "none".to_string(), crate::depth::model_label)),
             submenu: vec![
                 RadioGroup {
                     selected: current.as_ref().and_then(|c| models.iter().position(|m| m == c)).unwrap_or(0),
@@ -137,7 +137,7 @@ impl MeteorTray {
                     }),
                     options: models
                         .iter()
-                        .map(|m| RadioItem { label: m.trim_end_matches(".onnx").into(), ..Default::default() })
+                        .map(|m| RadioItem { label: crate::depth::model_label(m), ..Default::default() })
                         .collect(),
                 }
                 .into(),
@@ -161,6 +161,25 @@ impl MeteorTray {
             ],
             ..Default::default()
         };
+        let softening_menu = SubMenu {
+            label: format!("Edge softening (VDA): {}", crate::vda::SOFTENING[depth.edge_softening()].0),
+            submenu: vec![
+                RadioGroup {
+                    selected: depth.edge_softening(),
+                    select: Box::new(|tray: &mut Self, i| {
+                        if let Some(depth) = &tray.depth {
+                            depth.set_edge_softening(i);
+                        }
+                    }),
+                    options: crate::vda::SOFTENING
+                        .iter()
+                        .map(|(label, _)| RadioItem { label: (*label).into(), ..Default::default() })
+                        .collect(),
+                }
+                .into(),
+            ],
+            ..Default::default()
+        };
         vec![
             CheckmarkItem {
                 label: "Host depth".into(),
@@ -175,6 +194,18 @@ impl MeteorTray {
             .into(),
             model_menu.into(),
             rate_menu.into(),
+            CheckmarkItem {
+                label: "Depth smoothing".into(),
+                checked: depth.smoothing(),
+                activate: Box::new(|tray: &mut Self| {
+                    if let Some(depth) = &tray.depth {
+                        depth.set_smoothing(!depth.smoothing());
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+            softening_menu.into(),
             info(readout),
         ]
     }

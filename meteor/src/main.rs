@@ -23,6 +23,7 @@ mod status;
 mod stream_info;
 #[cfg(target_os = "linux")]
 mod tray;
+mod vda;
 mod video_dump;
 mod video_tap;
 

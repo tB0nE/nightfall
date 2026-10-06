@@ -70,7 +70,7 @@ impl PostProcessor {
         if first {
             self.smoothed = raw.iter().map(|v| ((v - lo) * scale).clamp(0.0, 1.0)).collect();
         } else {
-            let alpha = 1.0 - (-dt / self.depth_tau).exp();
+            let alpha = if self.depth_tau > 0.0 { 1.0 - (-dt / self.depth_tau).exp() } else { 1.0 };
             for (prev, v) in self.smoothed.iter_mut().zip(raw) {
                 let normalized = ((v - lo) * scale).clamp(0.0, 1.0);
                 *prev += alpha * (normalized - *prev);

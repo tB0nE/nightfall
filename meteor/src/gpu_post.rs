@@ -31,6 +31,8 @@ pub struct GpuPost {
     host: Vec<u8>,
     first: bool,
     last: Option<Instant>,
+    /// The per-pixel smoothing's time constant; 0 turns it off.
+    pub depth_tau: f32,
 }
 
 impl GpuPost {
@@ -53,6 +55,7 @@ impl GpuPost {
             host: vec![0; pixels],
             first: true,
             last: None,
+            depth_tau: DEPTH_TAU_SECONDS,
         };
         // SAFETY: allocations in the pushed primary context; freed in Drop
         // (which also handles a partial failure here).
@@ -94,7 +97,7 @@ impl GpuPost {
         };
         self.last = Some(now);
         let mut range_alpha = 1.0 - (-dt / RANGE_TAU_SECONDS).exp();
-        let mut depth_alpha = 1.0 - (-dt / DEPTH_TAU_SECONDS).exp();
+        let mut depth_alpha = if self.depth_tau > 0.0 { 1.0 - (-dt / self.depth_tau).exp() } else { 1.0 };
         let count = self.pixels as f32;
         let mut lo_target = (count * PERCENTILE_CLIP) as u32;
         let mut hi_target = (count * (1.0 - PERCENTILE_CLIP)) as u32;

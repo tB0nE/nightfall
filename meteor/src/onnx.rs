@@ -125,6 +125,20 @@ fn preload_cuda_libraries(runtime: &Path) -> usize {
     }
 }
 
+/// The TensorRT library's version (for example `10.16.1`), once ONNX
+/// Runtime's TensorRT libraries are loaded (see preload_cuda_libraries).
+pub fn tensorrt_version() -> Option<String> {
+    let name = if cfg!(windows) { "nvinfer_10.dll" } else { "libnvinfer.so.10" };
+    // SAFETY: TensorRT's own library, already loaded by the preload;
+    // getInferLibVersion takes no arguments and returns an int.
+    unsafe {
+        let lib = libloading::Library::new(name).ok()?;
+        let version: libloading::Symbol<unsafe extern "C" fn() -> i32> = lib.get(b"getInferLibVersion").ok()?;
+        let v = version();
+        Some(format!("{}.{}.{}", v / 10000, v / 100 % 100, v % 100))
+    }
+}
+
 /// A depth model with a fixed NCHW float input (`image`, RGB 0..1) and a
 /// single-channel output of the same size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

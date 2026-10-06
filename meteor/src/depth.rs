@@ -11,6 +11,9 @@
 //! The engine keeps only the newest decoded frame, so when inference is busy
 //! or the rate cap applies, frames are skipped rather than queued. Every
 //! frame is still decoded, because later frames depend on earlier ones.
+//!
+//! Models are single `.onnx` files (EdgePad, one frame at a time), or Video
+//! Depth Anything (`vda.rs`), a pair of graphs with a temporal state.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -31,9 +34,63 @@ enum Output {
     Device(u64),
 }
 use crate::onnx::{Backend, DepthModel};
-use crate::postprocess::PostProcessor;
+use crate::postprocess::{DEPTH_TAU_SECONDS, PostProcessor};
 use crate::stream_info::Codec;
+use crate::vda::{self, VdaModel};
 use crate::video_tap::Frame;
+
+/// A loaded depth model.
+enum Engine {
+    Plain(Box<DepthModel>),
+    Vda(Box<VdaModel>),
+}
+
+impl Engine {
+    fn load(models_dir: &Path, name: &str, backend: Backend, cache: &Path) -> Result<Engine, String> {
+        if name == vda::ID {
+            VdaModel::load(models_dir, backend, cache).map(|m| Engine::Vda(Box::new(m)))
+        } else {
+            DepthModel::load(&models_dir.join(name), backend, cache).map(|m| Engine::Plain(Box::new(m)))
+        }
+    }
+
+    /// The name in the models menu and state.toml.
+    fn id(&self) -> String {
+        match self {
+            Engine::Plain(m) => format!("{}.onnx", m.name),
+            Engine::Vda(m) => m.name.clone(),
+        }
+    }
+
+    /// The depth map's size.
+    fn output_size(&self) -> (usize, usize) {
+        match self {
+            Engine::Plain(m) => (m.width, m.height),
+            Engine::Vda(_) => (vda::WIDTH, vda::HEIGHT),
+        }
+    }
+
+    /// The size the decoder reduces frames to.
+    fn input_size(&self) -> (usize, usize) {
+        match self {
+            Engine::Plain(m) => (m.width, m.height),
+            Engine::Vda(_) => vda::DECODE_SIZE,
+        }
+    }
+
+    fn describe(&self) -> String {
+        let (w, h) = self.output_size();
+        match self {
+            Engine::Plain(m) => format!("{} ({w}x{h}, {})", m.name, m.backend.label()),
+            Engine::Vda(m) => format!("{} ({w}x{h}, {})", vda::LABEL, m.description),
+        }
+    }
+}
+
+/// The models menu's name for a model.
+pub fn model_label(name: &str) -> String {
+    if name == vda::ID { vda::LABEL.to_string() } else { name.trim_end_matches(".onnx").to_string() }
+}
 
 /// Rates offered in the tray. 0 means every frame the stream delivers.
 pub const RATES: [u32; 6] = [0, 30, 60, 72, 90, 120];
@@ -45,11 +102,16 @@ struct SavedState {
     enabled: bool,
     model: Option<String>,
     rate: u32,
+    /// The per-pixel depth smoothing in post-processing. VDA is temporal
+    /// already, so this is a switch for comparing it with and without.
+    smoothing: bool,
+    /// VDA's edge softening, an index into vda::SOFTENING.
+    edge_softening: usize,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { enabled: true, model: None, rate: 0 }
+        SavedState { enabled: true, model: None, rate: 0, smoothing: true, edge_softening: vda::DEFAULT_SOFTENING }
     }
 }
 
@@ -99,9 +161,11 @@ pub struct Depth {
     available: AtomicBool,
     state: Mutex<SavedState>,
     status: Mutex<String>,
-    /// Name and input size of the model in use.
+    /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
-    pending_model: Mutex<Option<PathBuf>>,
+    /// The size the decoder reduces frames to for that model.
+    input_size: Mutex<Option<(usize, usize)>>,
+    pending_model: Mutex<Option<String>>,
     input: Mutex<Option<Decoded>>,
     wake: Condvar,
     pub latest: Mutex<Option<Arc<DepthMap>>>,
@@ -138,6 +202,7 @@ impl Depth {
             state: Mutex::new(state),
             status: Mutex::new("starting".into()),
             active: Mutex::new(None),
+            input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
             input: Mutex::new(None),
             wake: Condvar::new(),
@@ -196,6 +261,26 @@ impl Depth {
         log::info!("Depth rate: {}", if hz == 0 { "match stream".into() } else { format!("{hz} Hz") });
     }
 
+    pub fn smoothing(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.smoothing)
+    }
+
+    pub fn set_smoothing(&self, on: bool) {
+        self.update_state(|s| s.smoothing = on);
+        log::info!("Depth smoothing {}", if on { "on" } else { "off" });
+    }
+
+    /// The edge softening level (an index into vda::SOFTENING).
+    pub fn edge_softening(&self) -> usize {
+        self.state.lock().map_or(vda::DEFAULT_SOFTENING, |s| s.edge_softening.min(vda::SOFTENING.len() - 1))
+    }
+
+    pub fn set_edge_softening(&self, level: usize) {
+        let level = level.min(vda::SOFTENING.len() - 1);
+        self.update_state(|s| s.edge_softening = level);
+        log::info!("Edge softening: {}", vda::SOFTENING[level].0);
+    }
+
     pub fn status(&self) -> String {
         self.status.lock().map_or_else(|_| String::new(), |s| s.clone())
     }
@@ -209,15 +294,24 @@ impl Depth {
         self.active.lock().ok().and_then(|a| a.clone())
     }
 
+    fn input_size(&self) -> Option<(usize, usize)> {
+        self.input_size.lock().ok().and_then(|s| *s)
+    }
+
+    /// The `.onnx` models in the models folder, with VDA's two graphs listed
+    /// once, as `vda::ID`.
     pub fn list_models(&self) -> Vec<String> {
         let mut models: Vec<String> = std::fs::read_dir(&self.models_dir)
             .map(|dir| {
                 dir.flatten()
                     .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|name| name.ends_with(".onnx"))
+                    .filter(|name| name.ends_with(".onnx") && name != vda::STEP_FILE && name != vda::COLD_FILE)
                     .collect()
             })
             .unwrap_or_default();
+        if vda::present(&self.models_dir) {
+            models.push(vda::ID.to_string());
+        }
         models.sort();
         models
     }
@@ -227,7 +321,7 @@ impl Depth {
     pub fn select_model(&self, name: &str) {
         self.update_state(|s| s.model = Some(name.to_string()));
         if let Ok(mut pending) = self.pending_model.lock() {
-            *pending = Some(self.models_dir.join(name));
+            *pending = Some(name.to_string());
         }
         self.wake.notify_one();
     }
@@ -260,78 +354,89 @@ impl Depth {
     }
 
     fn run(self: Arc<Self>) {
-        // (model path, backend, result)
-        let (loaded_tx, loaded_rx) = mpsc::channel::<(PathBuf, Backend, Result<DepthModel, String>)>();
-        let mut model: Option<DepthModel> = None;
+        // (model name, backend, result)
+        let (loaded_tx, loaded_rx) = mpsc::channel::<(String, Backend, Result<Engine, String>)>();
+        let mut model: Option<Engine> = None;
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
         let mut last_stream = None;
         let mut last_run: Option<Instant> = None;
         let mut rate_window = (Instant::now(), 0u32);
         let mut resized = Vec::new();
+        let mut telemetry = vda::Telemetry::default();
+        // VDA frames that failed in a row; after a few, go back to the
+        // previous model.
+        let mut failures = 0;
+        // The last single-frame model in use, to fall back to.
+        let mut fallback: Option<String> = None;
         loop {
-            if let Some(path) = self.pending_model.lock().ok().and_then(|mut p| p.take()) {
-                self.set_status(format!("loading {}", display_name(&path)));
+            if let Some(name) = self.pending_model.lock().ok().and_then(|mut p| p.take()) {
+                self.set_status(format!("loading {}", model_label(&name)));
                 let tx = loaded_tx.clone();
                 let tensorrt = self.tensorrt;
                 let pending = self.tensorrt_pending.clone();
+                let models_dir = self.models_dir.clone();
                 // CUDA first, so depth starts within a second; then TensorRT,
                 // whose first engine build for a model takes about 90 s.
                 let _ = std::thread::Builder::new().name("depth-load".into()).spawn(move || {
                     let cache = crate::config::cache_dir().join("tensorrt");
-                    let cuda = DepthModel::load(&path, Backend::Cuda, &cache);
+                    let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
                     let cuda_ok = cuda.is_ok();
-                    let _ = tx.send((path.clone(), Backend::Cuda, cuda));
+                    let _ = tx.send((name.clone(), Backend::Cuda, cuda));
                     if tensorrt && cuda_ok {
                         pending.store(true, Ordering::Relaxed);
-                        let trt = DepthModel::load(&path, Backend::TensorRt, &cache);
+                        let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache);
                         pending.store(false, Ordering::Relaxed);
-                        let _ = tx.send((path, Backend::TensorRt, trt));
+                        let _ = tx.send((name, Backend::TensorRt, trt));
                     }
                 });
             }
-            while let Ok((path, backend, result)) = loaded_rx.try_recv() {
+            while let Ok((name, backend, result)) = loaded_rx.try_recv() {
                 // A model chosen since this one started loading wins.
-                let wanted = self.model().map(|m| self.models_dir.join(m));
-                if wanted.as_ref() != Some(&path) {
+                if self.model().as_ref() != Some(&name) {
                     continue;
                 }
                 match result {
                     Ok(loaded) => {
                         if let Ok(mut active) = self.active.lock() {
-                            *active = Some((loaded.name.clone(), loaded.width, loaded.height));
+                            let (w, h) = loaded.output_size();
+                            *active = Some((loaded.id(), w, h));
                         }
-                        let building = if self.tensorrt_pending.load(Ordering::Relaxed) {
-                            "; building the TensorRT engine (about 90 s the first time)"
-                        } else {
-                            ""
+                        if let Ok(mut size) = self.input_size.lock() {
+                            *size = Some(loaded.input_size());
+                        }
+                        let building = match (self.tensorrt_pending.load(Ordering::Relaxed), &loaded) {
+                            (false, _) => "",
+                            (true, Engine::Vda(_)) => "; building the TensorRT engines (several minutes the first time)",
+                            (true, Engine::Plain(_)) => "; building the TensorRT engine (about 90 s the first time)",
                         };
-                        self.set_status(format!(
-                            "ready: {} ({}x{}, {}{building})",
-                            loaded.name,
-                            loaded.width,
-                            loaded.height,
-                            loaded.backend.label()
-                        ));
+                        self.set_status(format!("ready: {}{building}", loaded.describe()));
                         // Same model and size: no need to restart smoothing.
-                        if model.as_ref().is_none_or(|m| m.name != loaded.name) {
+                        if model.as_ref().is_none_or(|m| m.id() != loaded.id()) {
                             post.reset();
                             if let Some(g) = &mut gpu_post {
                                 g.reset();
                             }
                         }
+                        if let Engine::Plain(_) = loaded {
+                            fallback = Some(loaded.id());
+                        }
+                        failures = 0;
                         model = Some(loaded);
                     }
                     // TensorRT is optional: stay on CUDA.
                     Err(err) if backend == Backend::TensorRt => {
                         log::warn!("TensorRT unavailable, staying on CUDA: {err}");
                         if let Some(m) = &model {
-                            self.set_status(format!("ready: {} ({}x{}, CUDA)", m.name, m.width, m.height));
+                            self.set_status(format!("ready: {}", m.describe()));
                         }
                     }
                     Err(err) => {
                         log::warn!("Can't load depth model: {err}");
                         self.set_status(format!("model failed: {err}"));
+                        if name == vda::ID {
+                            self.fall_back(model.as_ref().map(Engine::id).or(fallback.clone()), &err);
+                        }
                     }
                 }
             }
@@ -350,7 +455,7 @@ impl Depth {
                 }
                 continue;
             };
-            let Some(model) = model.as_mut() else { continue };
+            let Some(engine) = model.as_mut() else { continue };
             if !self.enabled() || (self.subscribers.load(Ordering::Relaxed) == 0 && self.save.is_none()) {
                 continue;
             }
@@ -370,15 +475,25 @@ impl Depth {
                 if let Some(g) = &mut gpu_post {
                     g.reset();
                 }
+                if let Engine::Vda(m) = engine {
+                    m.reset("new stream");
+                }
                 last_stream = Some(stream);
             }
+            let depth_tau = if self.smoothing() { DEPTH_TAU_SECONDS } else { 0.0 };
+            post.depth_tau = depth_tau;
             let (fw, fh) = frame.size;
-            let same_size = (fw, fh) == (model.width, model.height);
+            let input = engine.input_size();
+            let (width, height) = engine.output_size();
+            let same_size = (fw, fh) == input;
             let infer_start = Instant::now();
-            let pixels = model.width * model.height;
-            // Keep the model output on the GPU for GPU post-processing.
+            let pixels = width * height;
+            // Keep the model output on the GPU for GPU post-processing. VDA's
+            // output is always on the GPU; a single-frame model's is when
+            // its input was.
+            let device_output = matches!(engine, Engine::Vda(_)) || matches!(frame.pixels, Pixels::Gpu(_));
             let on_device = self.gpu_post.load(Ordering::Relaxed)
-                && matches!(frame.pixels, Pixels::Gpu(_))
+                && device_output
                 && (gpu_post.is_some() || {
                     match GpuPost::new(pixels) {
                         Ok(g) => gpu_post = Some(g),
@@ -392,39 +507,77 @@ impl Depth {
             if on_device && gpu_post.as_ref().is_some_and(|g| g.pixels() != pixels) {
                 gpu_post = GpuPost::new(pixels).ok();
             }
-            let result = match &frame.pixels {
-                Pixels::Rgb(rgb) if same_size => model.infer(rgb).map(Output::Host),
-                Pixels::Rgb(rgb) => {
-                    // The model changed size since this stream's decoder started.
-                    resize_rgb(rgb, fw, fh, model.width, model.height, &mut resized);
-                    model.infer(&resized).map(Output::Host)
+            let mut vda_report = None;
+            let result = match engine {
+                Engine::Plain(model) => match &frame.pixels {
+                    Pixels::Rgb(rgb) if same_size => model.infer(rgb).map(Output::Host),
+                    Pixels::Rgb(rgb) => {
+                        // The model changed size since this stream's decoder started.
+                        resize_rgb(rgb, fw, fh, input.0, input.1, &mut resized);
+                        model.infer(&resized).map(Output::Host)
+                    }
+                    Pixels::Gpu(tensor) if same_size && on_device => model.infer_on_device(tensor.ptr).map(Output::Device),
+                    Pixels::Gpu(tensor) if same_size => model.infer_gpu(tensor.ptr).map(Output::Host),
+                    // The decoder restarts at the new size on the next keyframe.
+                    Pixels::Gpu(_) => continue,
+                },
+                Engine::Vda(model) => {
+                    model.edge_softening = vda::SOFTENING[self.edge_softening()].1;
+                    let report = match &frame.pixels {
+                        Pixels::Gpu(tensor) if same_size => model.infer_device(tensor.ptr, frame.size),
+                        Pixels::Rgb(rgb) if same_size => model.infer_rgb(rgb, frame.size),
+                        Pixels::Rgb(rgb) => {
+                            resize_rgb(rgb, fw, fh, input.0, input.1, &mut resized);
+                            model.infer_rgb(&resized, input)
+                        }
+                        Pixels::Gpu(_) => continue,
+                    };
+                    report.and_then(|report| {
+                        let output =
+                            if on_device { Ok(Output::Device(report.depth)) } else { model.download_depth(report.depth).map(Output::Host) };
+                        vda_report = Some(report);
+                        output
+                    })
                 }
-                Pixels::Gpu(tensor) if same_size && on_device => model.infer_on_device(tensor.ptr).map(Output::Device),
-                Pixels::Gpu(tensor) if same_size => model.infer_gpu(tensor.ptr).map(Output::Host),
-                // The decoder restarts at the new size on the next keyframe.
-                Pixels::Gpu(_) => continue,
             };
             let output = match result {
-                Ok(output) => output,
+                Ok(output) => {
+                    failures = 0;
+                    output
+                }
                 Err(err) => {
                     log::warn!("Depth inference failed: {err}");
+                    if matches!(engine, Engine::Vda(_)) {
+                        failures += 1;
+                        if failures >= 3 {
+                            model = None;
+                            self.fall_back(fallback.clone(), &format!("{failures} failed frames in a row ({err})"));
+                        }
+                    }
                     continue;
                 }
             };
             let infer_end = Instant::now();
             let infer_time = infer_end - infer_start;
+            let post_start = Instant::now();
             let data = match (output, gpu_post.as_mut()) {
                 (Output::Host(raw), _) => post.process(&raw, Instant::now()),
-                (Output::Device(raw), Some(g)) => match g.process(raw, Instant::now()) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        log::warn!("GPU post-processing failed: {err}");
-                        continue;
+                (Output::Device(raw), Some(g)) => {
+                    g.depth_tau = depth_tau;
+                    match g.process(raw, Instant::now()) {
+                        Ok(data) => data,
+                        Err(err) => {
+                            log::warn!("GPU post-processing failed: {err}");
+                            continue;
+                        }
                     }
-                },
+                }
                 (Output::Device(_), None) => continue,
             };
             let done = Instant::now();
+            if let Some(report) = &vda_report {
+                telemetry.record(report, done - post_start, done - frame.tag.queued, self.stats.skipped.load(Ordering::Relaxed));
+            }
             let maps = self.stats.maps.fetch_add(1, Ordering::Relaxed) + 1;
             let map = Arc::new(DepthMap {
                 stream: frame.tag.stream,
@@ -433,8 +586,8 @@ impl Depth {
                 epoch: frame.tag.epoch,
                 frame_index: frame.tag.index,
                 after_loss: frame.tag.after_loss,
-                width: model.width,
-                height: model.height,
+                width,
+                height,
                 data,
                 frame_queued: frame.tag.queued,
                 decoded: frame.decoded,
@@ -458,12 +611,12 @@ impl Depth {
                 && (maps - 1) % every == 0
             {
                 let rgb = match &frame.pixels {
-                    Pixels::Rgb(rgb) if same_size => Ok(rgb.clone()),
-                    Pixels::Rgb(_) => Ok(resized.clone()),
-                    Pixels::Gpu(tensor) => tensor.download_rgb(),
+                    Pixels::Rgb(rgb) if same_size => Ok((rgb.clone(), frame.size)),
+                    Pixels::Rgb(_) => Ok((resized.clone(), input)),
+                    Pixels::Gpu(tensor) => tensor.download_rgb().map(|rgb| (rgb, (tensor.width, tensor.height))),
                 };
                 match rgb {
-                    Ok(rgb) => save_snapshot(dir, &map, &rgb),
+                    Ok((rgb, size)) => save_snapshot(dir, &map, &rgb, size),
                     Err(err) => log::warn!("Can't save depth snapshot: {err}"),
                 }
             }
@@ -471,6 +624,31 @@ impl Depth {
                 *latest = Some(map);
                 self.map_ready.notify_all();
             }
+        }
+    }
+
+    /// Goes back to `previous` (or the default single-frame model) after
+    /// VDA failed to load or run.
+    fn fall_back(&self, previous: Option<String>, why: &str) {
+        let models = self.list_models();
+        let target = previous
+            .filter(|m| m != vda::ID && models.contains(m))
+            .or_else(|| preferred_model(&models.iter().filter(|m| *m != vda::ID).cloned().collect::<Vec<_>>()));
+        let Some(target) = target else {
+            log::warn!("{} failed ({why}), and there is no other model", vda::LABEL);
+            return;
+        };
+        log::warn!("{} failed ({why}); switching back to {}", vda::LABEL, model_label(&target));
+        let active = self.active_model().map(|(name, _, _)| name);
+        if active.as_deref() == Some(target.as_str()) {
+            // Still loaded: only the choice changes back.
+            self.update_state(|s| s.model = Some(target.clone()));
+            self.set_status(format!("{} failed: {why}; using {}", vda::LABEL, model_label(&target)));
+        } else {
+            if let Ok(mut active) = self.active.lock() {
+                *active = None;
+            }
+            self.select_model(&target);
         }
     }
 }
@@ -485,9 +663,6 @@ fn preferred_model(models: &[String]) -> Option<String> {
     models.iter().find(|m| m.as_str() == DEFAULT_MODEL).or_else(|| models.first()).cloned()
 }
 
-fn display_name(path: &Path) -> String {
-    path.file_stem().and_then(|s| s.to_str()).unwrap_or("model").to_string()
-}
 
 /// Nearest-neighbour RGB24 resize; only used for the frames in flight when
 /// the model changes size.
@@ -505,19 +680,20 @@ fn resize_rgb(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize, out: &mut 
 }
 
 /// Writes the frame and its depth map as PNGs, for checking that they match.
-fn save_snapshot(dir: &Path, map: &DepthMap, rgb: &[u8]) {
+/// The frame is `size`, which differs from the map's for VDA.
+fn save_snapshot(dir: &Path, map: &DepthMap, rgb: &[u8], (fw, fh): (usize, usize)) {
     let stem = format!("s{}e{}-f{:06}", map.stream, map.epoch, map.frame_index);
-    let write = |name: String, data: &[u8], color: png::ColorType| -> std::io::Result<()> {
+    let write = |name: String, data: &[u8], (w, h): (usize, usize), color: png::ColorType| -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let file = std::io::BufWriter::new(std::fs::File::create(dir.join(name))?);
-        let mut encoder = png::Encoder::new(file, map.width as u32, map.height as u32);
+        let mut encoder = png::Encoder::new(file, w as u32, h as u32);
         encoder.set_color(color);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.write_header()?.write_image_data(data)?;
         Ok(())
     };
-    let result = write(format!("{stem}-frame.png"), rgb, png::ColorType::Rgb)
-        .and_then(|()| write(format!("{stem}-depth.png"), &map.data, png::ColorType::Grayscale));
+    let result = write(format!("{stem}-frame.png"), rgb, (fw, fh), png::ColorType::Rgb)
+        .and_then(|()| write(format!("{stem}-depth.png"), &map.data, (map.width, map.height), png::ColorType::Grayscale));
     if let Err(err) = result {
         log::warn!("Can't save depth snapshot in {}: {err}", dir.display());
     }
@@ -573,7 +749,7 @@ impl DepthFeed {
             self.epoch = Some(frame.epoch);
             self.failed = false;
         }
-        let model_size = self.depth.active_model().map(|(_, w, h)| (w, h));
+        let model_size = self.depth.input_size();
         // A new model size: start again at the next keyframe at that size.
         if self.decoder.as_ref().is_some_and(|(_, _, size)| Some(*size) != model_size) {
             self.decoder = None;

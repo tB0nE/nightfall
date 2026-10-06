@@ -122,8 +122,17 @@ keyframe and Sunshine rarely sends one.
 
 The tray has the controls:
 - a **Host depth** on/off toggle;
-- a **Model** menu, listing the `.onnx` files in the models folder;
+- a **Model** menu, listing the `.onnx` files in the models folder (and
+  Video Depth Anything, below);
 - a **Rate** menu: Match stream, 30, 60, 72, 90 or 120 Hz (72 Hz is the Quest default refresh rate);
+- **Depth smoothing**, the per-pixel smoothing in post-processing (on by
+  default), for comparing VDA with and without it;
+- **Edge softening (VDA)**: Off, Light, Medium (default) or High, a
+  Gaussian blur of 0.75, 0.85 or 1 depth texel (sigma).
+  The headset's stereo warp shifts the picture in blocks of one depth texel
+  (about 5x5 screen pixels at 1440p), so a hard edge shows those blocks as
+  jaggies; softened, it becomes a slope the warp stretches smoothly. VDA's
+  temporal stability is unaffected;
 - a live readout of the rate and timings.
 
 Choices are kept in `state.toml`, next to `meteor.toml`.
@@ -161,11 +170,49 @@ Requirements:
   ```
 
   The first use of a model builds its TensorRT engine (about 100 s, then
-  cached). The square `zipdepth_edgepad_384.onnx` (built the same way from
+  cached).
+- Optional: **Video Depth Anything Small (518x294)** (`src/vda.rs`), a
+  temporal model: it keeps eight hidden-state histories between frames
+  instead of seeing each frame alone. It's a manual choice for testing; the
+  default stays the EdgePad 512x288 model. Copy the two graphs from the model
+  researcher's `experiments/video_depth_anything_small/artifacts/tensorrt_518x294/`
+  into the models folder; they appear as one entry:
+
+  ```sh
+  A=../nightfall-temporal-zipdepth/experiments/video_depth_anything_small/artifacts/tensorrt_518x294
+  cp $A/vda_s_streaming_step_518x294.onnx $A/vda_s_cold_start_518x294.onnx \
+      ~/.local/share/nightfall-meteor/models/
+  ```
+
+  Meteor checks both files' SHA-256 before loading them. The first frame
+  after a reset runs the cold-start graph (TensorRT fp32, optimisation level
+  0, about 8 ms); every later frame runs the recurrent step (TensorRT fp16,
+  about 3.9 ms on an RTX 3090) with 31 of its earlier states. Frames are
+  reduced to 720p by the decoder and resized to 518x294 with OpenCV's
+  bicubic filter on the GPU, as in the researcher's reference. The state
+  starts again on a new stream, after a pause of over 0.5 s, on a hard cut
+  (a large change in a 16x9 thumbnail), and after any non-finite output.
+  If VDA fails to load, or fails three frames in a row, Meteor goes back to
+  the previous model. The first TensorRT build takes about 2.5 minutes
+  (CUDA runs it meanwhile, at about 11 ms a frame); the engines are cached
+  per graph hash, precision, builder level, TensorRT version and GPU.
+  Every 10 s the log reports steps per second and p50/p95 times for each
+  stage, and each cold start and its reason. Its depth has the same
+  polarity as EdgePad's (near is bright). The square `zipdepth_edgepad_384.onnx` (built the same way from
   `tools/ZipDepth/onnx_export/zipdepth_base_384_standard_packed_conv4_reduceconv_edgepad.onnx`)
   still works if it's in the folder.
 
 Without these, Meteor logs why and stays a plain proxy.
+
+VDA measured on an RTX 3090 (2026-10-06):
+- Against the researcher's all-TensorRT reference over their 75-frame
+  sequence (`cargo test --release -- --ignored vda`, which needs their data):
+  depth correlation 0.99995 mean, 0.99972 worst, from their inputs and from
+  the 720p frames through the resize kernel.
+- Replaying a 1440p 60 fps recording: 59 maps/s; prepare 0.44 ms, model
+  3.85/4.25 ms (p50/p95), storing states 0.09 ms, post-processing 0.15 ms;
+  frame in to map out 6.4 ms median. About 1 GB of GPU memory with both
+  engines loaded (195 MB of it Meteor's own buffers).
 
 Measured on an RTX 3090 (2026-10-03):
 
