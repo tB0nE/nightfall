@@ -37,6 +37,7 @@ tests=(
 	"test/test_screen_layout.gd"
 	"test/test_monitor_presets.gd"
 	"test/test_video_presentation.gd"
+	"test/test_controller_layout.gd"
 )
 
 for test_file in "${tests[@]}"; do

@@ -92,7 +92,7 @@ func _process(_delta):
 	elif ctrl_type == CtrlType.KBMOUSE:
 		_send_kbm_mode()
 
-# True for either PAD-HAND or PAD-ABXY - both drive send_multi_controller_event
+# True for either PAD-HAND or PAD-ABXY - both drive InputHandler.send_pad_state
 # via the shared _send_gamepad_mode() below and need the same UI/interaction
 # gating (laser pointer disabled, "PAD" status indicator, etc.) elsewhere in
 # the codebase - see xr_interaction.gd/main.gd/stream_manager.gd's callers.
@@ -151,7 +151,7 @@ func _deactivate():
 	_prev_rx = 0
 	_prev_ry = 0
 	if main.is_streaming:
-		main.stream_backend.send_multi_controller_event(0, 1, 0, 0, 0, 0, 0, 0, 0)
+		main.input_handler.neutral_pad_state(GamepadSlots.QUEST_PAD)
 	active = false
 	_log("[CTRL] Deactivated")
 	if main.ui_controller:
@@ -189,7 +189,7 @@ func _deactivate_silent():
 	_prev_rx = 0
 	_prev_ry = 0
 	if main.is_streaming:
-		main.stream_backend.send_multi_controller_event(0, 1, 0, 0, 0, 0, 0, 0, 0)
+		main.input_handler.neutral_pad_state(GamepadSlots.QUEST_PAD)
 
 func _log(msg: String):
 	if main and main.has_method("_log"):
@@ -294,7 +294,7 @@ func _send_gamepad_mode(abxy_layout: bool):
 	var changed = button_flags != _prev_button_flags or lt != _prev_lt or rt != _prev_rt \
 		or lx != _prev_lx or ly != _prev_ly or rx != _prev_rx or ry != _prev_ry
 	if changed or _poll_timer >= 0.1:
-		main.stream_backend.send_multi_controller_event(0, 1, button_flags, lt, rt, lx, ly, rx, ry)
+		main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_XBOX, button_flags, lt, rt, lx, ly, rx, ry)
 		_prev_button_flags = button_flags
 		_prev_lt = lt
 		_prev_rt = rt
