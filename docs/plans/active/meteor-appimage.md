@@ -1,9 +1,10 @@
 # Nightfall Meteor: AppImage
 
 > Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
-> backend and Phases 1 to 4 done (2026-10-07; the download needs the
-> graphs' release and NVIDIA's answer); Phases 5 and 6 planned for a small
-> AppImage with VDA downloaded on first use (rewritten 2026-10-07).
+> backend and Phases 1 to 5 done (2026-10-07; the download needs the
+> graphs' release and NVIDIA's answer); Phase 6 (test and release) left,
+> for a small AppImage with VDA downloaded on first use (rewritten
+> 2026-10-07).
 >
 > Date: 2026-10-07
 >
@@ -556,16 +557,53 @@ Tested 2026-10-07 on Bazzite (KDE):
 - **Not tested:** the no-tray notification (this desktop has a tray), and
   ufw.
 
-## Phase 5: fix the shutdown crash
+## Phase 5: fix the shutdown crash (fixed 2026-10-07, uncommitted)
 
-Meteor often exits with SIGSEGV (exit code 139) when stopped. That matters
-more with autostart: every logout or shutdown would leave a crash report.
-Likely candidates: CUDA or TensorRT objects freed after the context, the
-ncnn Vulkan instance torn down by a static destructor while a net still
-exists, or models dropped while the depth thread is still running.
-Reproduce with `kill -TERM` during a replay, get a backtrace (core dump or
-gdb), and make shutdown stop the depth thread and drop the models before
-the process exits.
+**Cause.** `quit()` ended with `std::process::exit`, which runs every
+library's exit handlers. TensorRT, ONNX Runtime and cuDNN free their
+global state in those, while Meteor's depth threads may still be using it:
+building an engine, loading a model, or running a frame.
+
+The five recorded dumps (`coredumpctl`, 4 to 7 October) all fit:
+- one has the main thread inside `exit()` running libnvinfer's handlers;
+- the others have the crashing thread inside ONNX Runtime's TensorRT or
+  CUDA provider (SIGSEGV in libnvinfer, SIGABRT in cuDNN).
+
+**Reproduced:** quitting during an in-process ONNX Runtime TensorRT build
+(`METEOR_TENSORRT=ort`, empty cache) crashed 3 times out of 3 with
+SIGSEGV. The crashing thread was still in the build, reading a string the
+handlers had freed.
+
+**Since the native backend, no dumps.** Native builds run in a child
+process, and quitting during model loads, native builds or replays
+(VDA and ncnn) exited cleanly before the fix too. The race remained for
+any frame or load in flight, so it's fixed at the root anyway.
+
+**Fix** (`main.rs`):
+- `exit_now()` flushes the log and calls `_exit`, skipping the libraries'
+  handlers; the system frees the memory and GPU state.
+- `quit()` (tray Quit, SIGTERM, Ctrl+C) removes the virtual microphone,
+  then calls it.
+- So do the end of a replay and the error exits after the models start
+  loading.
+
+**Found on the way:**
+- **A second launch** took the single-instance lock (the discovery port)
+  only after starting to load the models, so it loaded for seconds and
+  then exited in the middle of model work. The lock is now taken first.
+- **An engine build outlived Meteor:** the `--build-tensorrt` child kept
+  the GPU busy for minutes after a quit. The child now asks for SIGKILL
+  when its parent goes (`PR_SET_PDEATHSIG`), and exits at once if that
+  already happened. The plan is written to `.partial` and renamed, so a
+  cut-short build leaves nothing half-written.
+- **`--quit-after <seconds>`** quits mid-replay through the normal path,
+  to test this again.
+
+**Tested:**
+- the reproduction, 5 runs, all exit 0;
+- quitting mid-replay on VDA and on ncnn, exit 0;
+- SIGTERM during a native engine build: exit 0, and no build process is
+  left.
 
 ## Phase 6: test and release
 

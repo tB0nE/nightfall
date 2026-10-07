@@ -161,6 +161,7 @@ pub fn build_in_child(onnx: &Path, options: &BuildOptions, plan: &Path, timing_c
         None => std::env::current_exe().map_err(|e| format!("can't find Meteor's executable: {e}"))?,
     };
     let status = std::process::Command::new(&exe)
+        .env("METEOR_PARENT", std::process::id().to_string())
         .arg("--build-tensorrt")
         .arg(onnx)
         .arg(plan)
@@ -187,6 +188,7 @@ pub fn build_command(args: &[String], tensorrt_dir: Option<PathBuf>) -> i32 {
         return 2;
     };
     configure(tensorrt_dir);
+    exit_with_parent();
     let options = BuildOptions { fp16: precision == "fp16", opt_level };
     let plan = Path::new(plan);
     let result = build(Path::new(onnx), &options, Path::new(timing)).and_then(|bytes| {
@@ -200,6 +202,23 @@ pub fn build_command(args: &[String], tensorrt_dir: Option<PathBuf>) -> i32 {
         Err(err) => {
             log::error!("{err}");
             1
+        }
+    }
+}
+
+/// A build outliving Meteor would keep the GPU busy for minutes, so the
+/// child asks for SIGKILL when its parent goes, and exits if that already
+/// happened.
+fn exit_with_parent() {
+    #[cfg(target_os = "linux")]
+    {
+        let parent: Option<i32> = std::env::var("METEOR_PARENT").ok().and_then(|p| p.parse().ok());
+        // SAFETY: plain syscalls with integer arguments.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            if parent.is_some_and(|p| libc::getppid() != p) {
+                libc::_exit(1);
+            }
         }
     }
 }

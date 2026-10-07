@@ -75,6 +75,7 @@ async fn main() {
              \x20 --save-every <n>        N for --save-depth (default 60)\n\
              \x20 --replay <file>         run a .h264/.hevc file through host depth and exit\n\
              \x20 --fps <n>               frame rate for --replay (default 60)\n\
+             \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
              \x20                         and the VDA graphs, then exit"
         );
@@ -90,6 +91,47 @@ async fn main() {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         std::process::exit(download::command(&models_dir));
     }
+    // Not for a replay: Sunshine's ports, and the discovery port, which
+    // doubles as a single-instance lock. It's taken before the models start
+    // loading, so a second launch exits straight away.
+    let replay_file = value("--replay");
+    let startup = if replay_file.is_some() {
+        None
+    } else {
+        let sunshine_base = config
+            .sunshine_port
+            .unwrap_or_else(|| config::detect_sunshine_port(&config.sunshine_host));
+        let map = match PortMap::new(sunshine_base, config.port_offset) {
+            Ok(map) => map,
+            Err(err) => {
+                log::error!("Bad port settings in {}: {err}", config::config_path().display());
+                exit_now(2);
+            }
+        };
+        log::info!(
+            "Nightfall Meteor {} proxying Sunshine at {}:{} (settings: {})",
+            env!("CARGO_PKG_VERSION"),
+            config.sunshine_host,
+            sunshine_base,
+            config::config_path().display()
+        );
+        let discovery = match discovery::bind(config.discovery_port).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                log::error!("Can't listen on discovery port {} ({err}); is Meteor already running?", config.discovery_port);
+                #[cfg(target_os = "linux")]
+                desktop::notify(
+                    "Nightfall Meteor is already running",
+                    &format!("Look for it in the tray. (Port {} is in use.)", config.discovery_port),
+                )
+                .await;
+                exit_now(1);
+            }
+        };
+        log::info!("discovery TCP :{} (GET /meteor)", config.discovery_port);
+        log::info!("Log: {}", logfile::path().display());
+        Some((map, discovery))
+    };
     let depth = (!flag("--no-depth")).then(|| {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let tensorrt = config.tensorrt && !flag("--no-tensorrt");
@@ -100,55 +142,30 @@ async fn main() {
         depth.gpu_post.store(!flag("--cpu-post"), std::sync::atomic::Ordering::Relaxed);
         depth
     });
-    if let Some(file) = value("--replay") {
+    let Some((map, discovery)) = startup else {
+        let file = replay_file.unwrap_or_default();
         let fps = value("--fps").and_then(|n| n.parse().ok()).unwrap_or(60);
         let Some(depth) = depth else {
             log::error!("--replay needs host depth");
-            std::process::exit(2);
+            exit_now(2);
         };
+        // Quits through the normal path mid-replay, to test shutdown while
+        // the depth threads are busy (see exit_now).
+        if let Some(secs) = value("--quit-after").and_then(|s| s.parse::<f64>().ok()) {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                quit();
+            });
+        }
         // Lets a local test client read the replayed maps.
         depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(|_| false));
         let result = tokio::task::spawn_blocking(move || replay::run(std::path::Path::new(&file), fps, depth)).await;
         if let Ok(Err(err)) = result {
             log::error!("{err}");
-            std::process::exit(1);
+            exit_now(1);
         }
-        return;
-    }
-    let sunshine_base = config
-        .sunshine_port
-        .unwrap_or_else(|| config::detect_sunshine_port(&config.sunshine_host));
-    let map = match PortMap::new(sunshine_base, config.port_offset) {
-        Ok(map) => map,
-        Err(err) => {
-            log::error!("Bad port settings in {}: {err}", config::config_path().display());
-            std::process::exit(2);
-        }
+        exit_now(0);
     };
-    log::info!(
-        "Nightfall Meteor {} proxying Sunshine at {}:{} (settings: {})",
-        env!("CARGO_PKG_VERSION"),
-        config.sunshine_host,
-        sunshine_base,
-        config::config_path().display()
-    );
-
-    // The discovery port doubles as a single-instance lock.
-    let discovery = match discovery::bind(config.discovery_port).await {
-        Ok(listener) => listener,
-        Err(err) => {
-            log::error!("Can't listen on discovery port {} ({err}); is Meteor already running?", config.discovery_port);
-            #[cfg(target_os = "linux")]
-            desktop::notify(
-                "Nightfall Meteor is already running",
-                &format!("Look for it in the tray. (Port {} is in use.)", config.discovery_port),
-            )
-            .await;
-            std::process::exit(1);
-        }
-    };
-    log::info!("discovery TCP :{} (GET /meteor)", config.discovery_port);
-    log::info!("Log: {}", logfile::path().display());
     #[cfg(target_os = "linux")]
     desktop::update_autostart();
 
@@ -156,7 +173,7 @@ async fn main() {
     let proxy = Proxy::new(map.clone(), config.sunshine_host.clone(), stats.clone(), dump_dir, depth.clone());
     if let Err(err) = proxy.start().await {
         log::error!("Can't open the proxy ports: {err}");
-        std::process::exit(1);
+        exit_now(1);
     }
     let mic = if flag("--no-mic") {
         None
@@ -211,7 +228,24 @@ pub fn quit() -> ! {
     if let Some(mic) = MIC.get() {
         mic.shutdown();
     }
-    std::process::exit(0);
+    exit_now(0);
+}
+
+/// Exits without running the libraries' exit handlers. TensorRT, ONNX
+/// Runtime and the CUDA libraries free their global state in those, while
+/// the depth threads may still be using it (an engine build, a model
+/// load, a frame), which crashed Meteor on exit: SIGSEGV in libnvinfer
+/// (reproduced 2026-10-07 by quitting during an ONNX Runtime TensorRT
+/// build). The system frees the process's memory and GPU state anyway.
+pub fn exit_now(code: i32) -> ! {
+    log::logger().flush();
+    #[cfg(unix)]
+    // SAFETY: _exit ends the process at once; nothing runs after it.
+    unsafe {
+        libc::_exit(code)
+    }
+    #[cfg(not(unix))]
+    std::process::exit(code)
 }
 
 async fn wait_for_exit_signal() {
