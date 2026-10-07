@@ -31,5 +31,10 @@ Check a retrained model against ONNX Runtime before shipping it.
 `cargo test --release -- --ignored edgepad` compares EdgePad 512 with ONNX
 Runtime CUDA fp32 on 30 frames of a game capture. It needs the frames and
 references as raw floats (`input.f32`, `cuda32.f32`, `trt16.f32`) in the
-folder named by `EDGEPAD_TEST_DATA`. On 2026-10-07 the error was 0.061% of
-the depth range on average and 0.72% at worst.
+folder named by `EDGEPAD_TEST_DATA`. The test passes when ncnn is about as
+close to fp32 as TensorRT fp16 on the same frames. On 2026-10-07:
+- the first frame set: ncnn 0.061% of the depth range on average and 0.72%
+  at worst, TensorRT 0.068% and 0.85%;
+- a regenerated set (every 80th frame of a 100 MB capture,
+  `ffmpeg ... scale=512:288:flags=area`): ncnn 0.118% and 1.04%, TensorRT
+  0.137% and 1.27%.

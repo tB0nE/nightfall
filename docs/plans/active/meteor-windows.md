@@ -54,7 +54,7 @@ against the code on 2026-10-07:
 | TensorRT shim (`native/tensorrt.cpp`, `build.rs`) | **Doesn't compile on Windows:** `<dlfcn.h>`, `dlopen` and `dlsym`. Needs `LoadLibraryW` and `GetProcAddress`, with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` so `nvinfer_10.dll` finds its builder resource next to it. `build.rs` passes GCC's `-isystem`; MSVC needs `/external:I` (or `.include()`). The `_INTERNAL` factory functions are the same names on both |
 | TensorRT lookup (`tensorrt.rs`) | Library names are Linux-only (`libnvinfer.so.10`, `libnvonnxparser.so.10`), and the venv path is the Unix layout. Windows: `nvinfer_10.dll`, `nvonnxparser_10.dll`, and `target\bench-venv\Lib\site-packages\tensorrt_libs` |
 | Engine-build child (`tensorrt.rs`) | `--build-tensorrt` in a child process works as is, but it only dies with Meteor on Linux (`PR_SET_PDEATHSIG`). Windows: put it in a Job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` |
-| VDA download (`download.rs`) | Pins the Linux wheel and file names. Windows needs the `win_amd64` wheel's URL, sizes and `RECORD` SHA-256s, the `.dll` names, and `GetDiskFreeSpaceExW` (today free space isn't checked off Unix). The zip reader handles both: the Windows wheel has no zip64 record |
+| VDA download (`download.rs`) | Pins the Linux wheel and file names. Windows needs the `win_amd64` wheel's URL, sizes, SHA-256s and `.dll` names, and `GetDiskFreeSpaceExW` (today free space isn't checked off Unix). The zip reader handles both: the Windows wheel has no zip64 record. **The Windows wheel's `RECORD` hashes can't be used:** NVIDIA signs the DLLs after writing it. `nvinfer_10.dll` carries a 10,352-byte Authenticode table past `RECORD`'s size (found 2026-10-07; the zip's CRC-32 matched). Pin our own SHA-256s of the signed files instead |
 | Data folder (`config.rs`) | `data_dir()` is `%APPDATA%` (roaming) on Windows, so models and the 1 GB TensorRT download would land in the roaming profile. Move it to `%LOCALAPPDATA%\Nightfall Meteor` |
 | ONNX Runtime (`onnx/runtime.rs`, development only) | `find_dev_runtime()` and `preload_cuda_libraries()` are Unix-only, as before |
 | Shutdown (`main.rs`) | `exit_now()` skips the libraries' exit handlers with `_exit` on Unix (the Linux crash fix). Off Unix it falls back to `std::process::exit`, which runs DLL detach and static destructors: the same race. Use `TerminateProcess(GetCurrentProcess(), code)` after the cleanup. Ctrl+C only (no SIGTERM on Windows) |
@@ -163,9 +163,17 @@ Then VDA on native TensorRT:
 
 Then the VDA download:
 
-- Pin the `win_amd64` wheel (URL, size, and each DLL's `RECORD` SHA-256),
-  chosen by platform in `download.rs`. Free space through
-  `GetDiskFreeSpaceExW`.
+- Pin the `win_amd64` wheel (URL, size, and each signed DLL's SHA-256,
+  measured ourselves; not `RECORD`'s), chosen by platform in `download.rs`.
+  Free space through `GetDiskFreeSpaceExW`. Measured 2026-10-07, checked
+  against the zip's CRC-32:
+  - `nvinfer_10.dll`
+    `73fd99ba7448ebe7b75f3a97bca5fd996f166fa75760f616c0b0eda5c2f7005b`
+    (375,812,208 bytes);
+  - `nvonnxparser_10.dll`
+    `4474757aac9e6abe12b3086fa2ed95f97e93e7b26cc5e89dbada2670842f471e`;
+  - `nvinfer_builder_resource_sm86_10.dll`
+    `35331ca0164b785b85a9f3d48bb7be1195af9d5ccb760033c0854e133f53b621`.
 - Test it end to end, as on Linux (`--download-vda`, then a replay).
 
 Finally `cargo test --release`, and `--quit-after` during a replay and

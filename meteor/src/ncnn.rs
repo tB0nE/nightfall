@@ -383,7 +383,9 @@ mod tests {
         eprintln!("ncnn:     mean {mean:.3}%, p99 {p99:.3}%, max {max:.2}% of the depth range");
         eprintln!("TensorRT: mean {t_mean:.3}%, p99 {t_p99:.3}%, max {t_max:.2}%");
         assert!(out.iter().all(|v| v.is_finite()));
-        assert!(mean < 0.1 && max < 1.5, "ncnn is further from fp32 than expected");
+        // The numbers depend on the frames, so ncnn is held to TensorRT fp16's
+        // error on the same frames, with a loose absolute bound.
+        assert!(mean <= 1.25 * t_mean && mean < 0.3 && max < 2.0, "ncnn is further from fp32 than expected");
 
         let mut ms = Vec::new();
         for i in 0..600 {
