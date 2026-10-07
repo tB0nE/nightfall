@@ -42,7 +42,8 @@ func set_bezel_enabled(enabled: bool):
 
 # GitHub issue #17 (2026-08-20): used to prefer s.monitor.frame_rect.size
 # over the real stream_w/stream_h whenever a monitor spec existed - correct
-# for genuine multi-monitor manifests (Polaris hosts report each monitor's
+# for genuine multi-monitor manifests (the in-development Polaris extension
+# reports each monitor's
 # real per-output resolution there), but WRONG for any single-screen/non-
 # manifest host (Sunshine et al.): s.monitor there is just whatever the
 # welcome screen's fixed 16:9 placeholder last set, never updated again, so

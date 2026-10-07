@@ -1633,9 +1633,11 @@ func _resolution_btn_label() -> String:
 	return "%d%% %s" % [main.settings.host.resolution_scale_pct, dims]
 
 # Best-effort, cached, one-time-per-host-selection probe for whether this host
-# is a Polaris server (which reports its real, possibly multi-monitor desktop
-# size via a display-manifest extension no other GameStream-compatible host
-# implements) vs everything else, e.g. Sunshine, which is client-driven - the
+# is a Polaris server running Nightfall's multi-monitor extension (in
+# development, not part of stock Polaris), which reports its real, possibly
+# multi-monitor desktop size via a display manifest no other GameStream-
+# compatible host implements, vs everything else, e.g. Sunshine, which is
+# client-driven - the
 # client picks a resolution and the host adapts to match it, so there's
 # nothing for it to report and main.settings.host.is_polaris_host correctly defaults to
 # false (the old fixed-list picker) for it. Deliberately decoupled from the

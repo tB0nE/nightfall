@@ -72,7 +72,6 @@ keeps your keyboard and desk visible while you work.
 - Multiple monitors (70% complete)
 - An improved version of ZipDepth optimized for sharper edges and widescreen ratios
 - Safely reintroduce 3D objects and environments without affecting performance
-- Resolve Vibepollo pairing issues
 - Improve hand tracking
 
 ## Usage and Requirements

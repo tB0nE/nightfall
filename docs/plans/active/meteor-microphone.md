@@ -5,7 +5,7 @@
 > Date: 2026-10-03
 >
 > Replaces: [microphone-passthrough.md](microphone-passthrough.md), the
-> Apollo-only approach on branch `apollo-microphone-passthrough`.
+> in-protocol approach on branch `apollo-microphone-passthrough`.
 >
 > Initial platform: Quest 3 client, Linux host with PipeWire (1.6.9 here,
 > through its PulseAudio compatibility layer).
@@ -14,7 +14,8 @@
 
 The earlier attempt sent microphone audio inside the Moonlight protocol.
 That needed a forked moonlight-common-c (logabell's `codex/mic-common-c`),
-and only Apollo accepts that stream. Sunshine, Vibepollo and Polaris don't.
+and only a fork of Apollo accepts that stream; stock Apollo, Sunshine,
+Vibepollo and Polaris don't.
 The branch also never captured real audio; `_capture_audio` was a silence
 stub.
 

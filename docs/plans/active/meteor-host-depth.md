@@ -56,6 +56,10 @@ Wins if it works:
    clip the frame-to-map median is about 3.3 ms for either at 120 Hz.
 5. **Microphone passthrough goes into Meteor too.** It has its own plan:
    [meteor-microphone.md](meteor-microphone.md).
+6. **Default runtime: ncnn on Vulkan; TensorRT becomes an optional
+   Performance pack** (2026-10-05). The ONNX Runtime + CUDA + TensorRT stack
+   is gigabytes; ncnn is a few MB and measured about 1 ms slower per frame.
+   See "Install size and the GPU runtime".
 
 ## Progress (2026-10-03)
 
@@ -271,6 +275,77 @@ depth pipeline and side channel carry over unchanged.
   directly; see Progress.) The system ffmpeg has the `cuda` hwaccel
   (NVDEC), and the GPU is an RTX 3090 with 24 GB.
 
+## Install size and the GPU runtime (2026-10-05)
+
+Meteor itself is small; the GPU runtime is not. Measured on the
+development machine:
+
+| Part | Size |
+| --- | --- |
+| `nightfall-meteor` binary | 6 MB |
+| One model (`zipdepth_wide_512x288.onnx`) | 25 MB |
+| TensorRT engine cache, built on first run | about 50 MB |
+| ONNX Runtime + CUDA + cuDNN + TensorRT (`target/bench-venv`) | 6.7 GB |
+
+Most of the 6.7 GB is never used: TensorRT ships a "builder resource"
+library per GPU generation (sm75 to sm120, 116 to 454 MB each, plus Windows
+copies inside the Linux wheel), and the CUDA wheels include cuFFT, cuRAND,
+NVRTC and nvJitLink, which Meteor doesn't load.
+
+### Default: ncnn on Vulkan
+
+ncnn (BSD licence, a few MB) runs the same models through Vulkan, needs
+nothing but the GPU driver, and isn't tied to NVIDIA (decoding still is,
+through NVDEC). Measured on the RTX 3090 with the ncnn 1.0.20260526 Python
+wheel, fp16, including the host upload and download:
+
+| Model | Back to back | Paced at 120 Hz | TensorRT (replay, 120 Hz) |
+| --- | --- | --- | --- |
+| 512x288 | median 2.05 ms, p95 2.6 | median 2.5 ms, p95 7.2 | 1.6 ms |
+| 672x384 | median 2.53 ms, p95 3.1 | median 4.8 ms, p95 5.3 | 1.5 ms |
+
+- Output matches ONNX Runtime with correlation 0.99984 (512) and 0.99992
+  (672) in fp16; fp32 reaches 0.99998 but costs about 1 ms more.
+- The paced runs are pessimistic: with no game running, the GPU drops to
+  idle clocks (210 MHz) between frames. Under a game the clocks stay up.
+  Measure it beside a game before relying on either number.
+- Conversion: `pnnx model.onnx inputshape=[1,3,288,512] fp16=1`. ncnn has no
+  `DepthToSpace` layer, so the ncnn models end at the packed 4-channel output
+  and Meteor's CUDA post-processing unpacks the 2x2 blocks (channel order as
+  in `make_host_model.py`) and applies the ReLU.
+- The reduced frame lives in CUDA memory. Copying it to Vulkan through the
+  host costs about 0.3 ms at 512x288; CUDA-Vulkan external memory sharing
+  avoids even that.
+- Install: binary, ncnn, and fp16 models (12 MB each), about 35 MB in all.
+
+### Optional: the Performance pack (TensorRT)
+
+For users who want the lowest latency, the tray offers a download of a
+trimmed TensorRT runtime. Meteor keeps running on ncnn while it downloads,
+then switches live, as it already does when switching models. What it needs:
+
+| Part | Size |
+| --- | --- |
+| `libnvinfer` | 663 MB |
+| Builder resource for the detected GPU only | 116 to 454 MB (RTX 3090, sm86: 176 MB) |
+| `libnvonnxparser` | 5 MB |
+| ONNX Runtime core and TensorRT provider | 30 MB |
+| `libcudart` | about 1 MB |
+
+About 0.9 to 1.2 GB depending on the GPU, before compression. Left out:
+ONNX Runtime's CUDA provider (272 MB), cuDNN and cuBLAS/cuBLASLt (about
+1.5 GB), cuFFT, cuRAND, NVRTC, nvJitLink and `libnvinfer_plugin` (about
+0.6 GB). TensorRT 10 doesn't need cuDNN or cuBLAS by default, and the model
+runs entirely in TensorRT; leaving out the CUDA provider still needs testing
+(see "Open questions").
+
+A further cut: build the engine once with the full builder, then run it on
+TensorRT's lean runtime and delete the builder. That shrinks the installed
+size but not the download, and the engine has to be rebuilt (and the
+builder fetched again) when the GPU or driver changes. The pip wheels don't
+include the lean runtime, so trying it needs NVIDIA's full TensorRT
+download.
+
 ## Design
 
 ### 1. The tap (Meteor)
@@ -439,7 +514,14 @@ displayed depth matches its frame in more than 95% of frames at 60 and
   Progress). The model output still comes back to the CPU for
   post-processing (590 KB). Moving post-processing to the GPU is possible
   but small.
-- Measure the impact on game FPS.
+- Measure the impact on game FPS, with both ncnn and TensorRT.
+- Switch the default runtime to ncnn on Vulkan (Decision 6): convert the
+  models with pnnx, unpack the 2x2 output in the CUDA post-processing, and
+  move the reduced frame from CUDA to Vulkan (through the host first, then
+  external memory sharing).
+- Build the Performance pack: the trimmed TensorRT file list for the
+  detected GPU, a background download from the tray, and a live switch from
+  ncnn once it's ready.
 - Port to Windows: see [meteor-windows.md](meteor-windows.md). NVDEC and
   CUDA work there too, so NVIDIA hosts keep this pipeline; D3D11VA and
   DirectML would only matter for other GPUs.
@@ -451,13 +533,22 @@ displayed depth matches its frame in more than 95% of frames at 60 and
 | --- | --- |
 | A tapped frame is lost and Meteor's decoder stays corrupt until the next IDR | Large socket buffer; count losses in Phase 0; FEC via nanors if needed; the depth map is marked degraded rather than the stream being touched |
 | Depth adds too much Wi-Fi traffic | 336x192, zstd, rate cap, and later NVENC grayscale video |
-| Inference slows the game | Rate cap, TensorRT fp16, and lowering the depth rate while the GPU is busy |
+| Inference slows the game | Rate cap, fp16 (ncnn or TensorRT), and lowering the depth rate while the GPU is busy |
+| ncnn falls behind under a game's GPU load | Measure beside a game; the tray offers the Performance pack; lower the depth rate |
 | Host maps look different from local ones | Port the Java post-processing and share test vectors |
 | Encrypted video (LAN encryption on) | Detect it from ANNOUNCE and report no host depth; the client uses on-device depth |
 | HDR / 10-bit streams | Decode works; the model input needs a PQ-to-SDR conversion before inference. Defer it and flag HDR streams as unsupported at first |
 | Stale or mismatched maps after a reconnect or resolution change | Epoch per stream; the client flushes its ring on stream start |
 
 ## Open questions
+
+- Does ONNX Runtime's TensorRT provider run this model without the CUDA
+  provider registered as a fallback? If so, the Performance pack drops the
+  CUDA provider, cuDNN and cuBLAS (about 1.8 GB). Test: remove them from a
+  copy of the runtime and run the replay benchmark.
+- Which of these NVIDIA files may be redistributed (TensorRT and CUDA
+  licences), and from where should Meteor download them?
+- How much do the pack's files shrink when compressed for download?
 
 - At 120 Hz, is the depth bandwidth acceptable on Wi-Fi, or should the
   client ask Meteor for a smaller map when it's on Wi-Fi rather than USB
