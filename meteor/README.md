@@ -359,12 +359,35 @@ commented out:
 # port_offset = 1000
 # discovery_port = 47900   # the client expects 47900
 # onnxruntime_lib = "/path/to/libonnxruntime.so.1.30.0"
+# ncnn_lib = "/path/to/libncnn.so.1"
+# tensorrt_dir = "/path/to/tensorrt/lib"
 # models_dir = "/home/you/.local/share/nightfall-meteor/models"
 # tensorrt = true
 ```
 
 When `sunshine_port` is unset, Meteor reads `port` from the Sunshine, Apollo,
 Vibepollo, and Polaris config files and uses the first one that is listening.
+
+Also in the tray, below the depth and microphone controls:
+- **Start with my computer:** an entry in `~/.config/autostart`. The
+  AppImage's first run turns it on, once, and Meteor updates the entry
+  if the AppImage moves.
+- **Open log:** `~/.local/state/nightfall-meteor/meteor.log`. Meteor
+  logs there as well as to the terminal, and moves the file to
+  `meteor.log.1` at 5 MB.
+
+**Firewall:** Meteor checks at start that firewalld lets the Quest
+through, in the zone of the interface the default route uses. If not,
+the tray says "Firewall is blocking the Quest", and "Allow the Quest
+through the firewall" opens the ports with one `pkexec` prompt. With ufw,
+whose rules need root to read, the tray offers to open the ports in ufw.
+The ports are TCP 47900, 47901, 48984, 48989 and 49010, and UDP 47902,
+48998 to 49000 and 49002 (with the default offset).
+
+**Desktop notifications:**
+- Starting Meteor while it's already running shows "already running".
+- If there's no tray to show its icon in (GNOME without the AppIndicator
+  extension), Meteor says it's running anyway.
 
 ## Tests
 

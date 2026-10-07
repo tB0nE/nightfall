@@ -8,11 +8,15 @@
 mod config;
 mod depth;
 mod depth_server;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod discovery;
 mod download;
+mod firewall;
 mod gpu_post;
 #[cfg(target_os = "linux")]
 mod icon;
+mod logfile;
 mod mic;
 mod ncnn;
 mod nvdec;
@@ -41,8 +45,8 @@ use crate::status::Status;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().collect();
+    logfile::init(args.get(1).map(String::as_str) != Some("--build-tensorrt"));
     // A TensorRT engine build, run by Meteor in a child process.
     if args.get(1).map(String::as_str) == Some("--build-tensorrt") {
         std::process::exit(tensorrt::build_command(&args[2..], config::load().tensorrt_dir));
@@ -134,10 +138,19 @@ async fn main() {
         Ok(listener) => listener,
         Err(err) => {
             log::error!("Can't listen on discovery port {} ({err}); is Meteor already running?", config.discovery_port);
+            #[cfg(target_os = "linux")]
+            desktop::notify(
+                "Nightfall Meteor is already running",
+                &format!("Look for it in the tray. (Port {} is in use.)", config.discovery_port),
+            )
+            .await;
             std::process::exit(1);
         }
     };
     log::info!("discovery TCP :{} (GET /meteor)", config.discovery_port);
+    log::info!("Log: {}", logfile::path().display());
+    #[cfg(target_os = "linux")]
+    desktop::update_autostart();
 
     let stats = Arc::new(Stats::default());
     let proxy = Proxy::new(map.clone(), config.sunshine_host.clone(), stats.clone(), dump_dir, depth.clone());
@@ -167,12 +180,18 @@ async fn main() {
         sunshine_host: config.sunshine_host.clone(),
         discovery_port: config.discovery_port,
         sunshine_up: AtomicBool::new(false),
+        firewall: std::sync::Mutex::new(firewall::Status::Checking),
     });
     tokio::spawn(status::watch_sunshine(status.clone()));
+    status.check_firewall();
 
     #[cfg(target_os = "linux")]
-    if !no_tray {
-        tray::run(tray::MeteorTray { status, stats, depth, mic }).await;
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic }).await {
+        desktop::notify(
+            "Nightfall Meteor is running",
+            "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
+        )
+        .await;
     }
     #[cfg(not(target_os = "linux"))]
     {

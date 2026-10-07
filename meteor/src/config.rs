@@ -107,7 +107,7 @@ pub fn default_models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
-fn config_dir() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     if cfg!(windows) {
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
         return appdata.join("Nightfall Meteor");

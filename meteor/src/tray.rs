@@ -68,14 +68,34 @@ impl ksni::Tray for MeteorTray {
                 mb(self.stats.bytes_to_client.load(Ordering::Relaxed)),
                 mb(self.stats.bytes_to_sunshine.load(Ordering::Relaxed))
             )),
-            MenuItem::Separator,
         ]
         .into_iter()
+        .chain(self.firewall_menu())
+        .chain([MenuItem::Separator])
         .chain(self.depth_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
         .chain([
             MenuItem::Separator,
+            CheckmarkItem {
+                label: "Start with my computer".into(),
+                checked: crate::desktop::autostart_enabled(),
+                activate: Box::new(|_| {
+                    let on = !crate::desktop::autostart_enabled();
+                    match crate::desktop::set_autostart(on) {
+                        Ok(()) => log::info!("Autostart {}", if on { "on" } else { "off" }),
+                        Err(err) => log::warn!("Can't change autostart: {err}"),
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Open log".into(),
+                activate: Box::new(|_| open_url(&crate::logfile::path().to_string_lossy())),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Open settings file".into(),
                 activate: Box::new(|_| crate::open_config_file()),
@@ -269,6 +289,36 @@ impl MeteorTray {
             items.pop();
         }
         items
+    }
+
+    /// A warning, with a fix, when the firewall would stop the Quest from
+    /// finding Meteor.
+    fn firewall_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use crate::firewall::Status;
+        use ksni::menu::*;
+        let info = |label: String| -> ksni::MenuItem<Self> {
+            StandardItem { label, enabled: false, ..Default::default() }.into()
+        };
+        let allow = |label: &str| -> ksni::MenuItem<Self> {
+            StandardItem {
+                label: label.into(),
+                icon_name: "security-medium".into(),
+                activate: Box::new(|tray: &mut Self| tray.status.allow_firewall()),
+                ..Default::default()
+            }
+            .into()
+        };
+        match self.status.firewall() {
+            Status::Checking | Status::Open => vec![],
+            Status::Blocked { zone, ports } => vec![
+                info(format!("Firewall is blocking the Quest ({} ports, zone {zone})", ports.len())),
+                allow("Allow the Quest through the firewall"),
+            ],
+            Status::Ufw => vec![
+                info("ufw is on; Meteor can't check that the Quest gets through".into()),
+                allow("Open Meteor's ports in ufw"),
+            ],
+        }
     }
 
     fn mic_menu(&self) -> Vec<ksni::MenuItem<Self>> {

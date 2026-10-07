@@ -1,8 +1,8 @@
 # Nightfall Meteor: AppImage
 
 > Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
-> backend and Phases 1 to 3 done (2026-10-07; the download needs the
-> graphs' release and NVIDIA's answer); Phases 4 to 6 planned for a small
+> backend and Phases 1 to 4 done (2026-10-07; the download needs the
+> graphs' release and NVIDIA's answer); Phases 5 and 6 planned for a small
 > AppImage with VDA downloaded on first use (rewritten 2026-10-07).
 >
 > Date: 2026-10-07
@@ -511,37 +511,50 @@ Still to do:
   Today they're attributed to ZipDepth (MIT, Fabio Tosi), but our model
   researcher trained them.
 
-## Phase 4: first run
+## Phase 4: first run (built 2026-10-07)
 
-What the user sees, and what Meteor has to do for it:
+- **Autostart** (`src/desktop.rs`): the AppImage's first run writes
+  `~/.config/autostart/nightfall-meteor.desktop` with `Exec="$APPIMAGE"`
+  (quoted per the desktop entry spec). An `autostart-offered` marker in
+  the config folder stops it happening again. On each start, an enabled
+  entry follows the AppImage if it has moved. The tray has a "Start with
+  my computer" checkbox. Outside an AppImage nothing is turned on, but the
+  checkbox works, with the binary's path.
+- **The engine build status** was done earlier: the status line says VDA is
+  loading while EdgePad serves.
+- **Firewall** (`src/firewall.rs`):
+  - checks at start, without privileges, firewalld's zone for the default
+    route's interface. A zone target of ACCEPT, `--query-port` (which
+    understands ranges) or the zone's services' ports count as open.
+  - If anything is blocked, the tray shows "Firewall is blocking the Quest
+    (N ports, zone Z)" and "Allow the Quest through the firewall": one
+    `pkexec sh -c "firewall-cmd --permanent ... && firewall-cmd --reload"`,
+    then a fresh check.
+  - An active ufw (rules unreadable without root) gets "Open Meteor's ports
+    in ufw".
+  - The port list comes from the port map, so a changed offset is covered.
+- **Logs** (`src/logfile.rs`): everything also goes to
+  `~/.local/state/nightfall-meteor/meteor.log`, moved to `meteor.log.1`
+  at 5 MB, with "Open log" in the tray. The engine-build child appends
+  without rotating. ncnn's own stderr lines (its GPU list) don't reach the
+  file.
+- **Second launch:** a desktop notification (D-Bus, zbus) says Meteor is
+  already running, before exiting.
+- **No tray host:** when the tray can't start, a notification says Meteor
+  is running and that the AppIndicator extension adds its controls.
 
-- **Autostart:** on first run, Meteor writes
-  `~/.config/autostart/nightfall-meteor.desktop` pointing at `$APPIMAGE`
-  (the AppImage's own path), and the tray gets a "Start with my computer"
-  toggle. On every start, if autostart is on and the AppImage has moved,
-  Meteor rewrites the path.
-- **Sunshine not running:** Meteor already waits for it and reports its
-  status. The tray says "Waiting for Sunshine".
-- **Firewall:** Meteor needs TCP 47900, 47901, 48984, 48989 and 49010, and
-  UDP 47902 and 48998 to 49002. If the ports are blocked, the Quest can't
-  find Meteor and silently uses on-device depth, so this has to be visible:
-  - On start, check firewalld (the active zone's ports and services) and
-    ufw if present.
-  - If any port is blocked, the tray shows "Firewall is blocking the Quest"
-    with an "Allow" item that runs one `pkexec firewall-cmd --permanent ...`
-    (or `ufw allow`) command, then reloads.
-  - Fedora's Workstation zone (1025 to 65535 open) passes without a prompt.
-- **Logs:** an autostarted AppImage has no terminal, so Meteor also logs to
-  `~/.local/state/nightfall-meteor/meteor.log` (rotated at a few MB). The
-  tray gets "Open log". ncnn prints its GPU list to stderr at start; that
-  goes to the log too.
-- **Second launch:** today it logs "is Meteor already running?" and exits.
-  Show a desktop notification instead ("Meteor is already running; it's
-  in the tray").
-- **No tray host** (GNOME without the AppIndicator extension): Meteor still
-  runs on EdgePad. Detect the missing StatusNotifierWatcher and send one
-  notification saying Meteor is running and that the AppIndicator
-  extension adds its controls (including the VDA download).
+Tested 2026-10-07 on Bazzite (KDE):
+- **Autostart:** in a scratch config, the entry was written on the first
+  run, followed a "moved" AppImage path on the next, and with the real
+  AppImage pointed at the AppImage file.
+- **Log file:** written.
+- **Firewall:** the FedoraWorkstation zone reads as open (1025 to 65535).
+  Under the stock public zone, all 10 ports would be reported blocked
+  (queried read-only). "Allow" itself wasn't run, since it changes the
+  firewall.
+- **Second launch:** the notification went through.
+- **Not tested:** the no-tray notification (this desktop has a tray), and
+  ufw.
 
 ## Phase 5: fix the shutdown crash
 

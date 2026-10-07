@@ -24,6 +24,8 @@ zstd = "0.13"
 # The tray icon is a StatusNotifierItem on Linux. Windows support comes later.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", features = ["tokio"] }
+# Desktop notifications; the same zbus the tray uses.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
