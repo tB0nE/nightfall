@@ -1,6 +1,8 @@
 # Nightfall Meteor: AppImage
 
-> Status: Phase 0 done (2026-10-07); Phases 1 to 5 planned.
+> Status: Phase 0, the native TensorRT backend for VDA and the Vulkan EdgePad
+> backend done (2026-10-07); Phases 1 to 6 planned for a small AppImage with
+> VDA downloaded on first use (rewritten 2026-10-07).
 >
 > Date: 2026-10-07
 >
@@ -15,32 +17,40 @@
 Download one file, run it, and it works:
 
 1. The user makes `Nightfall-Meteor-x86_64.AppImage` executable and runs it.
-2. A tray icon appears. Meteor finds Sunshine, starts Video Depth Anything
-   (VDA) by default, and adds itself to autostart.
+2. A tray icon appears. Meteor finds Sunshine, starts EdgePad 512 on Vulkan
+   straight away, and adds itself to autostart.
 3. The Quest finds Meteor the next time it connects to that PC and uses host
    depth. Nothing changes on the headset.
+4. Video Depth Anything (VDA) is in the Model menu as a download. Choosing
+   it downloads TensorRT from NVIDIA and the VDA graphs, builds the engines
+   for this GPU, and switches to VDA. EdgePad serves depth meanwhile.
 
 The user installs only the NVIDIA driver and Sunshine (or a fork), as they
 already would to stream.
 
 ## Decisions
 
-1. **Fat AppImage.** The GPU runtime (ONNX Runtime, TensorRT, and the CUDA
-   libraries it needs) ships inside the AppImage. No downloads on first
-   run. The small AppImage with a separate runtime download
-   (meteor-host-depth.md, "Install size and the GPU runtime") comes later.
-2. **Models bundled:** VDA-S 518x294 (both graphs, 240 MB) and EdgePad
-   512x288 (25 MB). The 672x384 model is not bundled; users can still drop
-   it in the models folder.
-3. **VDA by default.** This changes the default from EdgePad 512 (the
-   researcher's handoff asked us not to change defaults; this decision
-   replaces that). EdgePad stays in the Model menu and is the fallback if
-   VDA fails.
-4. **Autostart on by default**, with a tray toggle to turn it off. Running
+1. **Small AppImage** (revised 2026-10-07; the first version of this plan
+   bundled the whole ONNX Runtime GPU runtime at 1.67 GiB). It holds
+   Meteor, ncnn and EdgePad 512 converted for ncnn: about 32 MB. No
+   ONNX Runtime and no NVIDIA inference libraries.
+2. **VDA is a download, on request.** Choosing it in the Model menu is the
+   user's go-ahead. TensorRT's files come from NVIDIA's own server
+   (`pypi.nvidia.com`), only the ones this GPU needs; the VDA graphs come
+   from our release.
+3. **EdgePad 512 by default.** Once VDA is installed and chosen, it stays
+   the choice (state.toml), and EdgePad is its fallback, as today.
+4. **ONNX Runtime leaves the release build.** EdgePad runs on ncnn and VDA
+   on native TensorRT. The ONNX Runtime code stays for development
+   comparisons behind a cargo feature until the AppImage ships, then goes.
+5. **Autostart on by default**, with a tray toggle to turn it off. Running
    the AppImage is taken as the user's intent to use Meteor.
+6. **An offline AppImage** (VDA and TensorRT for the four consumer GPU
+   generations inside) only if users ask for one.
 
 ## The size limit
 
+This was the fat AppImage's problem; it's kept for the offline AppImage.
 GitHub release assets are limited to 2 GiB per file. Measured 2026-10-07
 with zstd -15 (about what the AppImage's squashfs achieves):
 
@@ -344,61 +354,118 @@ From the two spikes:
 
 ONNX Runtime goes: EdgePad runs on ncnn, VDA on native TensorRT. Engines
 are built locally and cached as today. While VDA downloads and builds,
-EdgePad serves depth. The phases below assume the fat ONNX Runtime bundle
-and need rewriting for this.
+EdgePad serves depth.
 
-## Phase 1: make Meteor relocatable
+What a VDA download fetches, from `tensorrt_cu13_libs-10.16.1.11`
+(manylinux_2_28 x86_64, 3.7 GB; the server answers range requests, so
+only these members are read):
 
-Today Meteor finds its runtime only in the development folder, and its
-models only in `~/.local/share/nightfall-meteor/models`.
+| File | Compressed | Installed |
+| --- | --- | --- |
+| `libnvinfer.so.10` | 308 MB | 663 MB |
+| `libnvonnxparser.so.10` | 2 MB | 5 MB |
+| Builder resource, RTX 20 (sm75) | 94 MB | 116 MB |
+| Builder resource, RTX 30 (sm86) | 152 MB | 176 MB |
+| Builder resource, RTX 40 (sm89) | 161 MB | 185 MB |
+| Builder resource, RTX 50 (sm120) | 235 MB | 262 MB |
+| VDA graphs (our release) | about 240 MB | 240 MB |
 
-- **Runtime discovery** (`onnx.rs`): in order, `onnxruntime_lib` from
-  `meteor.toml`, the AppImage's runtime folder (`$APPDIR/usr/lib/meteor`),
-  then the development venv (`target/bench-venv`, as today).
-- **Library loading:** the AppRun sets `LD_LIBRARY_PATH` to the runtime
-  folder, so ONNX Runtime and TensorRT find their libraries by soname.
-  `preload_cuda_libraries()` then only covers the development venv's pip
-  layout, or goes away.
+So 0.55 to 0.79 GB to download and 1.0 to 1.2 GB on disk, depending on
+the GPU. The wheel also has sm80, sm90 and sm100 (data-centre parts) and a
+PTX resource (215 MB) that may serve a GPU with no resource of its own.
+
+## Phase 1: Meteor without ONNX Runtime
+
+Most of this exists (the two backends above). What's left:
+
+- **TensorRT lookup** (`tensorrt.rs`): open `libnvinfer` and the parser
+  from the installed runtime folder
+  (`~/.local/share/nightfall-meteor/runtime/tensorrt-10.16.1`) by path,
+  then fall back to the development venv's preload, as today.
+  `build_command` stops calling `onnx::init`.
+- **VDA without ONNX Runtime** (`depth.rs`, `vda.rs`):
+  - list VDA when its graphs are present and TensorRT loads, not only when
+    ONNX Runtime does;
+  - without ONNX Runtime there is no CUDA fallback while the engines
+    build, so the current EdgePad model keeps serving until VDA is ready,
+    and the switch happens then;
+  - the `Runner::Ort` path and the other ONNX Runtime code move behind a
+    cargo feature, `onnxruntime`, on in development builds and off in the
+    AppImage.
 - **Bundled models** (`depth.rs`): the Model menu lists the bundled folder
   (`$APPDIR/usr/share/nightfall-meteor/models`) and the user's models
   folder. A user's file of the same name wins, so a newer model can replace
   a bundled one without rebuilding the AppImage.
-- **Defaults:** VDA when its two files are present, else EdgePad 512. Depth
+- **Defaults:** EdgePad 512 until VDA is installed and chosen. Depth
   smoothing defaults to off for VDA and on for the EdgePad models (VDA is
   temporally steady without it, and it adds about 40 ms of lag). The
   default is per model, so switching models doesn't carry the other
   model's choice; once the user sets it, their choice is saved.
 - **The TensorRT cache** stays in `~/.cache/nightfall-meteor/tensorrt`. Its
   key (model hash, precision, builder settings, TensorRT version, GPU)
-  already rebuilds engines after a driver or AppImage update that changes
-  TensorRT.
+  already rebuilds engines after an update that changes TensorRT.
 
-## Phase 2: build the AppImage
+## Phase 2: the VDA download
+
+- **In the tray:** while VDA isn't installed, the Model menu shows "Video
+  Depth Anything (download, about N MB)", with N for this GPU. Choosing it
+  starts the download; the status line shows progress ("Downloading VDA:
+  210 of 640 MB"), then "Preparing VDA for your GPU" during the engine
+  build (about 3 minutes on an RTX 3090), then VDA as usual. A "Cancel"
+  item appears while it runs. The menu item says the TensorRT files come
+  from NVIDIA under NVIDIA's licence, with a link to it.
+- **Choosing the files:** the GPU's compute capability (from the driver,
+  `cuDeviceGetAttribute`) picks the builder resource. A GPU with none
+  doesn't get the menu item, and the log says why.
+- **Fetching** (`src/download.rs`, new):
+  - HTTPS with `ureq` and rustls (no OpenSSL dependency); zip parsing and
+    inflate with `flate2`, which are the only new crates;
+  - read the wheel's central directory (zip64) with range requests, then
+    each member's range, inflating as it streams;
+  - check each file against a SHA-256 pinned in Meteor (taken from the
+    wheel's `RECORD`, which the build checks), and the VDA graphs against
+    the hashes already in `vda.rs`;
+  - write into `runtime/tensorrt-10.16.1.partial`, then rename, so a
+    half-done download never looks installed; an interrupted download
+    resumes per file;
+  - check free disk space first (1.3 GB).
+- **The URL:** pinned, with the version. If NVIDIA moves it, the download
+  fails with a message and EdgePad keeps working; a Meteor update fixes the
+  URL. Reading the PEP 503 index for the file name is a fallback worth
+  having.
+- **Updates:** a new Meteor with a newer TensorRT downloads into a new
+  folder and rebuilds engines; the old folder is removed once the new one
+  works.
+- **Removing it:** a tray item "Remove VDA" deletes the runtime folder,
+  the graphs and the cached engines, and switches to EdgePad.
+
+## Phase 3: build the AppImage
 
 `meteor/tools/build_appimage.sh`, run in a container so the result works on
 older distributions:
 
-1. Build `nightfall-meteor` (release) in an older base, e.g. Ubuntu 22.04
-   (glibc 2.35). NVIDIA's wheels need glibc 2.28 or newer, so that's the
-   real floor. No CUDA toolkit is needed: the kernels are prebuilt PTX.
-2. Download pinned wheels with hashes: `onnxruntime-gpu` 1.30.x,
-   `tensorrt-cu13` 10.16.1 (Meteor's ONNX Runtime links TensorRT 10), and
-   the cuDNN, cuBLAS, cuRAND and cudart wheels it was tested with. Unpack
-   only the Phase 0 file list into `AppDir/usr/lib/meteor`.
-3. Copy the three model files into `AppDir/usr/share/nightfall-meteor/models`
-   and check their SHA-256s (VDA's are already in `vda.rs`).
+1. Build `nightfall-meteor` (release, without the `onnxruntime` feature) on
+   Ubuntu 22.04 (glibc 2.35). The TensorRT wheel needs glibc 2.28, so that
+   is the floor for VDA. No CUDA toolkit is needed: the kernels are
+   prebuilt PTX and the TensorRT headers are vendored.
+2. Fetch ncnn's `ubuntu-2204-shared` build (the 24.04 build needs glibc
+   2.39), pinned by version and SHA-256, into `AppDir/usr/lib`. It needs
+   `libgomp`, which goes in too.
+3. Convert EdgePad 512 with `models/convert_ncnn.py` from the pinned ONNX
+   export, check it with the parity test, and put it in
+   `AppDir/usr/share/nightfall-meteor/models`.
 4. Add the AppRun, a `.desktop` file, the tray icon as a PNG, and
-   `THIRD_PARTY_NOTICES` (ONNX Runtime MIT, VDA-S Apache-2.0, ZipDepth MIT,
-   the NVIDIA licence texts).
+   `THIRD_PARTY_NOTICES` (ncnn BSD-3, the TensorRT headers Apache-2.0,
+   ZipDepth MIT; VDA-S Apache-2.0 and NVIDIA's licence for the download).
 5. Pack with appimagetool (zstd), embedding update information for
-   AppImageUpdate (`gh-releases-zsync`), so updates can download only the
-   changed blocks later.
-6. Fail if the result is over 1.9 GiB.
+   AppImageUpdate (`gh-releases-zsync`).
+6. Fail if the result is over 100 MB.
 
 The repository's client AppImage (`tools/build_support/build_linux.sh`)
-already fetches appimagetool; reuse that step.
+already fetches appimagetool; reuse that step. The VDA graphs go up as
+separate assets on the same release.
 
-## Phase 3: first run
+## Phase 4: first run
 
 What the user sees, and what Meteor has to do for it:
 
@@ -407,9 +474,6 @@ What the user sees, and what Meteor has to do for it:
   (the AppImage's own path), and the tray gets a "Start with my computer"
   toggle. On every start, if autostart is on and the AppImage has moved,
   Meteor rewrites the path.
-- **Engine build status:** while TensorRT engines build, the tray shows
-  "Preparing depth for your GPU" with the model name, instead of a model
-  that isn't ready. When it's done, the status shows the model as usual.
 - **Sunshine not running:** Meteor already waits for it and reports its
   status. The tray says "Waiting for Sunshine".
 - **Firewall:** Meteor needs TCP 47900, 47901, 48984, 48989 and 49010, and
@@ -423,63 +487,74 @@ What the user sees, and what Meteor has to do for it:
   - Fedora's Workstation zone (1025 to 65535 open) passes without a prompt.
 - **Logs:** an autostarted AppImage has no terminal, so Meteor also logs to
   `~/.local/state/nightfall-meteor/meteor.log` (rotated at a few MB). The
-  tray gets "Open log".
+  tray gets "Open log". ncnn prints its GPU list to stderr at start; that
+  goes to the log too.
 - **Second launch:** today it logs "is Meteor already running?" and exits.
   Show a desktop notification instead ("Meteor is already running; it's
   in the tray").
 - **No tray host** (GNOME without the AppIndicator extension): Meteor still
-  runs. Detect the missing StatusNotifierWatcher and send one notification
-  saying Meteor is running and that the AppIndicator extension adds its
-  controls.
+  runs on EdgePad. Detect the missing StatusNotifierWatcher and send one
+  notification saying Meteor is running and that the AppIndicator
+  extension adds its controls (including the VDA download).
 
-## Phase 4: fix the shutdown crash
+## Phase 5: fix the shutdown crash
 
 Meteor often exits with SIGSEGV (exit code 139) when stopped. That matters
 more with autostart: every logout or shutdown would leave a crash report.
-Likely candidates: CUDA or TensorRT objects freed after the context, or
-ONNX Runtime sessions dropped while the depth thread is still running.
+Likely candidates: CUDA or TensorRT objects freed after the context, the
+ncnn Vulkan instance torn down by a static destructor while a net still
+exists, or models dropped while the depth thread is still running.
 Reproduce with `kill -TERM` during a replay, get a backtrace (core dump or
 gdb), and make shutdown stop the depth thread and drop the models before
 the process exits.
 
-## Phase 5: test and release
+## Phase 6: test and release
 
 Test on a clean account each time: a new Linux user on the development
 machine, so `~/.config`, `~/.cache` and `~/.local` start empty.
 
 | Check | Expect |
 | --- | --- |
-| Run on Bazzite / Fedora Atomic (KDE) | Tray, autostart entry, VDA engines build, the Quest gets VDA depth |
-| Run on an Ubuntu 22.04 or 24.04 distrobox with the host driver | Starts, loads the runtime, builds the engines |
+| Run on Bazzite / Fedora Atomic (KDE) | Tray, autostart entry, EdgePad on Vulkan within seconds, the Quest gets depth |
+| Choose VDA | Download with progress, engine build, then VDA; EdgePad throughout |
+| Interrupt the download (network off, quit) | Resumes or restarts cleanly; never half-installed |
+| Run on an Ubuntu 22.04 or 24.04 distrobox with the host driver | Starts on EdgePad; VDA downloads and builds |
 | GNOME without AppIndicator | The notification; Meteor still serves depth |
 | Firewall: firewalld public zone | The tray warns; "Allow" opens the ports and the Quest finds Meteor |
 | Second launch | The notification, one instance |
 | Move the AppImage, log in again | Autostart follows it |
 | Logout / shutdown | Clean exit, no crash report |
-| GPUs | At least one of RTX 20, 30, 40, 50 each, ideally; the builder resources differ per generation |
-| Size | Under 1.9 GiB |
+| GPUs | At least one of RTX 20, 30, 40, 50 each, ideally: the builder resources differ per generation, and Vulkan performance differs |
+| Size | Under 100 MB |
 
-Release: a GitHub release asset, with the SHA-256 in the release notes and
-a short install section in `meteor/README.md` (make executable, run; what
-the tray items do; where config, logs and models live).
+Release: a GitHub release with the AppImage and the VDA graphs, SHA-256s in
+the release notes, and a short install section in `meteor/README.md` (make
+executable, run; what the tray items do; where config, logs, models and
+the VDA download live).
 
 ## Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Over 2 GiB | Phase 0; the build fails above 1.9 GiB |
-| A future model needs a node TensorRT can't take | The CUDA provider would run it and need cuDNN's ops; check each new model on the trimmed runtime (one engine per graph) |
-| NVIDIA's licences don't allow redistributing a file | Check before Phase 2; if a file can't ship, it becomes a first-run download from NVIDIA's own servers |
+| NVIDIA moves or removes the wheel | Pinned URL and hashes; EdgePad keeps working; an index lookup as fallback; a Meteor update fixes it |
+| NVIDIA's terms don't allow fetching the wheel's files this way | Ask before Phase 2 (below); the fallback is the offline AppImage or asking users to install TensorRT themselves |
+| A future model needs a layer ncnn doesn't have | Meteor's load fails with ncnn's message, and the ONNX model still works in development; check each retrained model with the parity test |
+| ncnn is slower than TensorRT for EdgePad (5.9 against 3.1 ms frame to map on a 3090; p95 14 against 5 ms) | Acceptable for the default; CUDA–Vulkan external memory, or EdgePad on TensorRT once VDA's download is there |
+| A Vulkan driver problem on some systems | ncnn picks the discrete GPU and logs it; if Vulkan fails, depth is off with the reason in the tray, and VDA (TensorRT) still works once installed |
 | A newer driver changes engine compatibility | The cache key includes the TensorRT version and GPU; add the driver version too |
-| A distribution's glibc is too old | Build on Ubuntu 22.04; NVIDIA's wheels need 2.28 anyway |
+| A distribution's glibc is too old | Build on Ubuntu 22.04 with ncnn's 22.04 build; TensorRT needs 2.28 anyway |
 | FUSE missing (some minimal installs) | The AppImage runtime's own error message; `--appimage-extract-and-run` documented in the README |
-| First-run wait for engines is confusing | The tray status; the Quest keeps on-device depth meanwhile |
+| First-run wait for VDA is confusing | Download and build progress in the tray; EdgePad serves meanwhile |
 
 ## Open questions
 
-- Do the TensorRT terms cover the builder resource files? (Ask NVIDIA.)
-- How long do the VDA and EdgePad engine builds take on RTX 20 and 40
-  cards (only the 3090 is measured: VDA about 2.5 minutes)?
-- Should Meteor build the engines in the background on first run even when
-  no Quest is connected, so the first stream already has VDA? (Proposed:
-  yes, at low priority.)
+- Does NVIDIA's licence allow an application to fetch individual files
+  from the TensorRT wheel on the user's behalf, and does the user need to
+  accept it first? Ask nvidia-compute-license-questions@nvidia.com, along
+  with the builder resources question.
+- How long do the VDA engine builds take on RTX 20 and 40 cards (only the
+  3090 is measured: about 3 minutes), and how fast is ncnn EdgePad on them?
+- Is the PTX builder resource enough for a GPU without its own?
+- Should a GPU without NVDEC (or a non-NVIDIA GPU) get anything? Decoding
+  is NVDEC-only today, so not yet (meteor-windows.md has the decoding
+  options).
