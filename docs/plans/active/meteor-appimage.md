@@ -1,9 +1,9 @@
 # Nightfall Meteor: AppImage
 
 > Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
-> backend, Phase 1 and Phase 2 done (2026-10-07; Phase 2 needs the graphs'
-> release and NVIDIA's answer); Phases 3 to 6 planned for a small AppImage
-> with VDA downloaded on first use (rewritten 2026-10-07).
+> backend and Phases 1 to 3 done (2026-10-07; the download needs the
+> graphs' release and NVIDIA's answer); Phases 4 to 6 planned for a small
+> AppImage with VDA downloaded on first use (rewritten 2026-10-07).
 >
 > Date: 2026-10-07
 >
@@ -475,31 +475,41 @@ Still to do:
   name if the pinned URL moves: not done. An interrupted download restarts
   the file it was on.
 
-## Phase 3: build the AppImage
+## Phase 3: build the AppImage (built 2026-10-07)
 
-`meteor/tools/build_appimage.sh`, run in a container so the result works on
-older distributions:
+`meteor/tools/build_appimage.sh [models folder]`, with its files in
+`meteor/tools/appimage/` (Containerfile, AppRun, `.desktop`, cargo-about
+config):
 
-1. Build `nightfall-meteor` (release, without the `onnxruntime` feature) on
-   Ubuntu 22.04 (glibc 2.35). The TensorRT wheel needs glibc 2.28, so that
-   is the floor for VDA. No CUDA toolkit is needed: the kernels are
-   prebuilt PTX and the TensorRT headers are vendored.
-2. Fetch ncnn's `ubuntu-2204-shared` build (the 24.04 build needs glibc
-   2.39), pinned by version and SHA-256, into `AppDir/usr/lib`. It needs
-   `libgomp`, which goes in too.
-3. Convert EdgePad 512 with `models/convert_ncnn.py` from the pinned ONNX
-   export, check it with the parity test, and put it in
-   `AppDir/usr/share/nightfall-meteor/models`.
-4. Add the AppRun, a `.desktop` file, the tray icon as a PNG, and
-   `THIRD_PARTY_NOTICES` (ncnn BSD-3, the TensorRT headers Apache-2.0,
-   ZipDepth MIT; VDA-S Apache-2.0 and NVIDIA's licence for the download).
-5. Pack with appimagetool (zstd), embedding update information for
-   AppImageUpdate (`gh-releases-zsync`).
-6. Fail if the result is over 100 MB.
+1. **Build:** Meteor builds without the `onnxruntime` feature in an
+   Ubuntu 22.04 container (podman or docker), with Rust 1.92.0 pinned.
+   The cargo registry and target folders are cached under
+   `target/appimage/`.
+2. **ncnn:** its `ubuntu-2204-shared` build and its licence are fetched,
+   each checked against a pinned SHA-256. The container's `libgomp`
+   goes next to it, and ncnn's RPATH is set to `$ORIGIN`, so no
+   `LD_LIBRARY_PATH` is needed.
+3. **EdgePad 512:** taken from the models folder, after checking that its
+   param file records the input size.
+4. **AppDir:** AppRun, `.desktop`, and the client's icon (732x732). Also
+   `usr/share/doc/nightfall-meteor/`: the GPL, and `THIRD_PARTY_NOTICES.txt`
+   covering ncnn, libgomp, ZipDepth, the TensorRT headers and every Rust
+   crate (cargo-about fails the build on an unlisted licence).
+5. **Pack:** appimagetool (continuous) with zstd and `gh-releases-zsync`
+   update information. The build fails above 100 MB.
 
-The repository's client AppImage (`tools/build_support/build_linux.sh`)
-already fetches appimagetool; reuse that step. The VDA graphs go up as
-separate assets on the same release.
+Result: **34 MB**, needing glibc 2.35. Tested 2026-10-07:
+- **On Bazzite, with empty settings:** the AppImage ran EdgePad on its own
+  ncnn and libgomp, 5.2 ms frame to map.
+- **With the TensorRT download in place:** it ran VDA from cached engines.
+- **In a stock Ubuntu 22.04 container** (no GPU, Vulkan or libgomp
+  installed): it started as a proxy, with depth off and the reason logged.
+
+Still to do:
+- **Pin appimagetool:** it's the continuous build, as the client uses.
+- **Attribution:** confirm the EdgePad weights' wording in the notices.
+  Today they're attributed to ZipDepth (MIT, Fabio Tosi), but our model
+  researcher trained them.
 
 ## Phase 4: first run
 

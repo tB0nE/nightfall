@@ -1,0 +1,4 @@
+#!/bin/sh
+# Meteor finds ncnn in usr/lib and EdgePad in usr/share from its own path.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/nightfall-meteor" "$@"

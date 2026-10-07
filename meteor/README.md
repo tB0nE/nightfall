@@ -30,6 +30,25 @@ cargo run --release -- --no-tray
 StatusNotifierItem, so it shows on KDE, and on GNOME with the AppIndicator
 extension. Windows and macOS run without a tray icon for now.
 
+### Building the AppImage
+
+```
+meteor/tools/build_appimage.sh [models folder]
+```
+
+Builds `target/appimage/Nightfall-Meteor-x86_64.AppImage`. Inside:
+- Meteor without ONNX Runtime, built on Ubuntu 22.04 in a container, so it
+  runs on glibc 2.35 or newer;
+- ncnn's 22.04 build and `libgomp`;
+- EdgePad 512 for ncnn;
+- the notices for all of these and the Rust crates
+  (`usr/share/doc/nightfall-meteor/THIRD_PARTY_NOTICES.txt`).
+
+The script needs podman (or docker) and network access. The models folder
+(default `~/.local/share/nightfall-meteor/models`) must hold
+`zipdepth_wide_512x288.ncnn.{param,bin}`, from `models/convert_ncnn.py`.
+VDA isn't inside; the tray offers it as a download.
+
 ## How the client finds it
 
 Before each launch, Nightfall sends `GET http://<host>:47900/meteor`. Meteor
