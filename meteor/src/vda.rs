@@ -151,17 +151,51 @@ pub struct StepReport {
     pub soften: Duration,
 }
 
-/// One ONNX graph with its inputs and outputs bound to GPU memory.
+/// One graph with its outputs bound to GPU memory.
 struct Graph {
-    // Field order is drop order: the binding holds the output tensors, which
-    // the allocator must outlive.
-    binding: IoBinding,
-    session: Session,
-    /// depth, then the eight new states (f32, ORT-owned).
+    runner: Runner,
+    /// depth, then the eight new states (f32).
     outputs: Vec<CuDevicePtr>,
-    _allocator: Allocator,
     /// "from cache" or "built in N s".
     engine: String,
+}
+
+// Two of these exist per model, so the size difference doesn't matter.
+#[allow(clippy::large_enum_variant)]
+enum Runner {
+    /// ONNX Runtime, which owns the outputs. Field order is drop order: the
+    /// binding holds the output tensors, which the allocator must outlive.
+    Ort { binding: IoBinding, session: Session, _allocator: Allocator },
+    /// TensorRT without ONNX Runtime (src/tensorrt.rs). Meteor owns the
+    /// outputs and the stream; `release` frees them with the engine.
+    Native { engine: Option<crate::tensorrt::Engine>, stream: *mut c_void },
+}
+
+impl Graph {
+    fn native(&self) -> bool {
+        matches!(self.runner, Runner::Native { .. })
+    }
+
+    /// Frees a native graph's engine, stream and outputs (ONNX Runtime's
+    /// free themselves on drop).
+    fn release(&mut self, api: &Api, ctx: CuContext) {
+        let Runner::Native { engine, stream } = &mut self.runner else { return };
+        // SAFETY: our own engine, stream and allocations, in the pushed
+        // context, with no run in flight (runs are synchronous).
+        unsafe {
+            (api.cu_ctx_push)(ctx);
+            drop(engine.take());
+            if !stream.is_null() {
+                (api.cu_stream_destroy)(*stream);
+                *stream = ptr::null_mut();
+            }
+            for p in self.outputs.drain(..) {
+                (api.cu_mem_free)(p);
+            }
+            let mut popped = ptr::null_mut();
+            (api.cu_ctx_pop)(&mut popped);
+        }
+    }
 }
 
 struct Kernels {
@@ -224,15 +258,22 @@ impl VdaModel {
         let (api, ctx) = primary_context()?;
         let free_before = free_memory(api, ctx);
         let identity = crate::nvdec::gpu_identity(api, ctx);
-        let cold = open_graph(&cold_path, backend, false, COLD_OPT_LEVEL, cache_dir, COLD_SHA256, &identity)?;
-        let step = open_graph(&step_path, backend, true, STEP_OPT_LEVEL, cache_dir, STEP_SHA256, &identity)?;
+        let mut cold = open_graph(&cold_path, backend, false, COLD_OPT_LEVEL, cache_dir, COLD_SHA256, &identity, api, ctx)?;
+        let step = match open_graph(&step_path, backend, true, STEP_OPT_LEVEL, cache_dir, STEP_SHA256, &identity, api, ctx) {
+            Ok(step) => step,
+            Err(err) => {
+                cold.release(api, ctx);
+                return Err(err);
+            }
+        };
         let names = [c"vda_clear", c"vda_resize_normalize", c"vda_thumb", c"vda_append", c"vda_check", c"vda_pack", c"vda_blur"];
         let k = load_functions(api, ctx, PTX, &names)?;
         let kernels = Kernels { clear: k[0], resize: k[1], thumb: k[2], append: k[3], check: k[4], pack: k[5], blur: k[6] };
         let precision = match backend {
             Backend::Cuda => "CUDA fp32".to_string(),
             Backend::TensorRt => {
-                format!("TensorRT fp16 step ({}), fp32 cold start ({})", step.engine, cold.engine)
+                let native = if step.native() { " (native)" } else { "" };
+                format!("TensorRT{native} fp16 step ({}), fp32 cold start ({})", step.engine, cold.engine)
             }
         };
         let mut model = VdaModel {
@@ -503,27 +544,43 @@ impl VdaModel {
         let err = |e: ort::Error| e.to_string();
         let image_ptr = self.image;
         let packed = self.packed;
+        let api = self.api;
         let graph = if cold { &mut self.cold } else { &mut self.step };
+        let (binding, session) = match &mut graph.runner {
+            Runner::Ort { binding, session, .. } => (binding, session),
+            Runner::Native { engine: Some(engine), stream } => {
+                engine.set_address("image", image_ptr)?;
+                if !cold {
+                    for (i, &cache) in packed.iter().enumerate() {
+                        engine.set_address(&format!("cache_{i}"), cache)?;
+                    }
+                }
+                engine.enqueue(*stream)?;
+                // SAFETY: our stream, in the pushed context.
+                return check("cuStreamSynchronize", unsafe { (api.cu_stream_synchronize)(*stream) });
+            }
+            Runner::Native { engine: None, .. } => return Err("the engine was released".into()),
+        };
         // SAFETY: the image and packed buffers are ours, sized for these
         // shapes, and outlive the run; they are unbound before returning.
         let bound = unsafe {
             let image_shape = Shape::new([1, 1, 3, HEIGHT as i64, WIDTH as i64]);
             let image = TensorRefMut::<f32>::from_raw(cuda_memory().map_err(err)?, image_ptr as usize as *mut _, image_shape)
                 .map_err(err)?;
-            graph.binding.bind_input("image", &image).map_err(err)?;
+            binding.bind_input("image", &image).map_err(err)?;
             if !cold {
                 for (i, &(tokens, channels)) in STATES.iter().enumerate() {
                     let shape = Shape::new([tokens as i64, HISTORY as i64, channels as i64]);
                     let cache = TensorRefMut::<f32>::from_raw(cuda_memory().map_err(err)?, packed[i] as usize as *mut _, shape)
                         .map_err(err)?;
-                    graph.binding.bind_input(format!("cache_{i}"), &cache).map_err(err)?;
+                    binding.bind_input(format!("cache_{i}"), &cache).map_err(err)?;
                 }
             }
             Ok::<(), String>(())
         };
         // Run returns once the outputs are ready on the device.
-        let ran = bound.and_then(|()| graph.session.run_binding(&graph.binding).map(drop).map_err(err));
-        graph.binding.clear_inputs();
+        let ran = bound.and_then(|()| session.run_binding(binding).map(drop).map_err(err));
+        binding.clear_inputs();
         ran
     }
 
@@ -675,6 +732,8 @@ impl VdaModel {
 
 impl Drop for VdaModel {
     fn drop(&mut self) {
+        self.step.release(self.api, self.ctx);
+        self.cold.release(self.api, self.ctx);
         let staging = self.staging.map(|(p, _)| p).unwrap_or(0);
         let buffers: Vec<CuDevicePtr> = [self.image, self.readback, self.softened, self.blurred, staging]
             .into_iter()
@@ -716,10 +775,12 @@ fn free_memory(api: &Api, ctx: CuContext) -> Option<usize> {
     }
 }
 
-/// Opens one graph and binds its outputs to buffers ONNX Runtime allocates
-/// on the GPU. On TensorRT, each graph gets its own engine folder named by
-/// everything the engine depends on, so a change of any of them builds a
-/// new engine rather than loading a stale one.
+/// Opens one graph and binds its outputs to GPU memory. On TensorRT, each
+/// graph gets its own engine folder named by everything the engine depends
+/// on, so a change of any of them builds a new engine rather than loading a
+/// stale one. TensorRT runs without ONNX Runtime when its libraries open
+/// (`METEOR_TENSORRT=ort` uses ONNX Runtime's TensorRT provider instead).
+#[allow(clippy::too_many_arguments)]
 fn open_graph(
     path: &Path,
     backend: Backend,
@@ -728,8 +789,16 @@ fn open_graph(
     cache_dir: &Path,
     sha256: &str,
     gpu: &str,
+    api: &'static Api,
+    ctx: CuContext,
 ) -> Result<Graph, String> {
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
+    if backend == Backend::TensorRt && std::env::var("METEOR_TENSORRT").as_deref() != Ok("ort") {
+        match crate::tensorrt::init() {
+            Ok(version) => return open_native(path, fp16, opt_level, cache_dir, sha256, gpu, &version, api, ctx),
+            Err(err) => log::warn!("TensorRT without ONNX Runtime isn't available ({err}); using ONNX Runtime's"),
+        }
+    }
     let fail = |err: ort::Error| format!("{file} ({}): {err}", backend.label());
     let (session, engine) = match backend {
         Backend::Cuda => {
@@ -739,7 +808,7 @@ fn open_graph(
         Backend::TensorRt => {
             let precision = if fp16 { "fp16" } else { "fp32" };
             let trt = crate::onnx::tensorrt_version().unwrap_or_else(|| "unknown".into());
-            let dir = cache_dir.join(format!("{ID}-{}-{precision}-opt{opt_level}-trt{trt}-{gpu}", &sha256[..12]));
+            let dir = engine_dir(cache_dir, sha256, precision, opt_level, &trt, gpu);
             let cached = has_engine(&dir);
             let started = Instant::now();
             let mut result = build_session(path, [tensorrt(&dir, fp16, opt_level), cuda_fallback()]);
@@ -759,19 +828,13 @@ fn open_graph(
             (session, engine)
         }
     };
-    let mut expected = vec![("image".to_string(), vec![1, 1, 3, HEIGHT as i64, WIDTH as i64])];
-    if fp16 {
-        expected.extend(
-            STATES.iter().enumerate().map(|(i, &(t, c))| (format!("cache_{i}"), vec![t as i64, HISTORY as i64, c as i64])),
-        );
-    }
-    for (name, shape) in &expected {
+    for (name, shape) in expected_inputs(fp16) {
         let found = session
             .inputs()
             .iter()
             .find(|i| i.name() == name)
             .and_then(|i| i.dtype().tensor_shape().map(|s| s.iter().copied().collect::<Vec<i64>>()));
-        if found.as_ref() != Some(shape) {
+        if found.as_ref() != Some(&shape) {
             return Err(format!("{file}: expected input {name} {shape:?}, found {found:?}"));
         }
     }
@@ -780,14 +843,122 @@ fn open_graph(
     let allocator = Allocator::new(&session, cuda_memory().map_err(err)?).map_err(err)?;
     let mut binding = session.create_binding().map_err(err)?;
     let mut outputs = Vec::with_capacity(9);
-    let mut shapes = vec![("depth".to_string(), vec![1usize, 1, HEIGHT, WIDTH])];
-    shapes.extend(STATES.iter().enumerate().map(|(i, &(t, c))| (format!("updated_cache_{i}"), vec![t, 1, c])));
-    for (name, shape) in shapes {
+    for (name, shape) in output_shapes() {
         let mut tensor = Tensor::<f32>::new(&allocator, shape).map_err(err)?;
         outputs.push(tensor.data_ptr_mut() as u64);
         binding.bind_output(name, tensor).map_err(err)?;
     }
-    Ok(Graph { binding, session, outputs, _allocator: allocator, engine })
+    Ok(Graph { runner: Runner::Ort { binding, session, _allocator: allocator }, outputs, engine })
+}
+
+/// The graph's inputs: the image, and on the step (`with_caches`) the
+/// eight packed histories.
+fn expected_inputs(with_caches: bool) -> Vec<(String, Vec<i64>)> {
+    let mut expected = vec![("image".to_string(), vec![1, 1, 3, HEIGHT as i64, WIDTH as i64])];
+    if with_caches {
+        expected.extend(
+            STATES.iter().enumerate().map(|(i, &(t, c))| (format!("cache_{i}"), vec![t as i64, HISTORY as i64, c as i64])),
+        );
+    }
+    expected
+}
+
+/// The depth, then the eight new states.
+fn output_shapes() -> Vec<(String, Vec<usize>)> {
+    let mut shapes = vec![("depth".to_string(), vec![1usize, 1, HEIGHT, WIDTH])];
+    shapes.extend(STATES.iter().enumerate().map(|(i, &(t, c))| (format!("updated_cache_{i}"), vec![t, 1, c])));
+    shapes
+}
+
+fn engine_dir(cache_dir: &Path, sha256: &str, precision: &str, opt_level: u8, trt: &str, gpu: &str) -> PathBuf {
+    cache_dir.join(format!("{ID}-{}-{precision}-opt{opt_level}-trt{trt}-{gpu}", &sha256[..12]))
+}
+
+/// The native engine in its engine folder, next to ONNX Runtime's.
+const NATIVE_PLAN: &str = "native.plan";
+const NATIVE_TIMING_CACHE: &str = "native.timing";
+
+/// open_graph on TensorRT without ONNX Runtime: loads the cached plan, or
+/// builds and caches it, then allocates and binds the outputs.
+#[allow(clippy::too_many_arguments)]
+fn open_native(
+    path: &Path,
+    fp16: bool,
+    opt_level: u8,
+    cache_dir: &Path,
+    sha256: &str,
+    gpu: &str,
+    version: &str,
+    api: &'static Api,
+    ctx: CuContext,
+) -> Result<Graph, String> {
+    use crate::tensorrt::{BuildOptions, Engine};
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
+    let precision = if fp16 { "fp16" } else { "fp32" };
+    let dir = engine_dir(cache_dir, sha256, precision, opt_level, version, gpu);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let plan_path = dir.join(NATIVE_PLAN);
+
+    // SAFETY: pushing our retained primary context around TensorRT and
+    // driver calls; popped below.
+    unsafe { (api.cu_ctx_push)(ctx) };
+    let mut graph = Graph { runner: Runner::Native { engine: None, stream: ptr::null_mut() }, outputs: Vec::new(), engine: String::new() };
+    let result = (|| {
+        let started = Instant::now();
+        let cached = std::fs::read(&plan_path).ok().and_then(|plan| {
+            Engine::load(&plan).map_err(|e| log::warn!("{file}: rebuilding the TensorRT engine ({e})")).ok()
+        });
+        let mut engine = match cached {
+            Some(engine) => {
+                graph.engine = "from cache".into();
+                engine
+            }
+            None => {
+                log::info!("{file}: building the TensorRT {precision} engine (several minutes the first time)");
+                let options = BuildOptions { fp16, opt_level };
+                crate::tensorrt::build_in_child(path, &options, &plan_path, &dir.join(NATIVE_TIMING_CACHE))
+                    .map_err(|e| format!("{file} (TensorRT): {e}"))?;
+                let plan = std::fs::read(&plan_path).map_err(|e| format!("{}: {e}", plan_path.display()))?;
+                graph.engine = format!("built in {:.0} s", started.elapsed().as_secs_f64());
+                Engine::load(&plan).map_err(|e| format!("{file} (TensorRT): {e}"))?
+            }
+        };
+        log::info!("{file}: TensorRT {precision} engine {} (native, {})", graph.engine, dir.display());
+
+        for (name, shape) in expected_inputs(fp16) {
+            let found = engine.tensor(&name).filter(|t| t.input && t.dtype == 0).map(|t| t.shape.clone());
+            if found.as_ref() != Some(&shape) {
+                return Err(format!("{file}: expected f32 input {name} {shape:?}, found {found:?}"));
+            }
+        }
+        for (name, shape) in output_shapes() {
+            let expected: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+            let found = engine.tensor(&name).filter(|t| !t.input && t.dtype == 0).map(|t| t.shape.clone());
+            if found.as_ref() != Some(&expected) {
+                return Err(format!("{file}: expected f32 output {name} {expected:?}, found {found:?}"));
+            }
+            let mut ptr = 0;
+            // SAFETY: allocation in the pushed context; freed in Graph::release.
+            check("cuMemAlloc", unsafe { (api.cu_mem_alloc)(&mut ptr, shape.iter().product::<usize>() * 4) })?;
+            graph.outputs.push(ptr);
+            engine.set_address(&name, ptr)?;
+        }
+        let mut stream = ptr::null_mut();
+        // SAFETY: an out-pointer to a local, in the pushed context.
+        check("cuStreamCreate", unsafe { (api.cu_stream_create)(&mut stream, 0) })?;
+        graph.runner = Runner::Native { engine: Some(engine), stream };
+        Ok(())
+    })();
+    let mut popped = ptr::null_mut();
+    // SAFETY: popping what we pushed.
+    unsafe { (api.cu_ctx_pop)(&mut popped) };
+    match result {
+        Ok(()) => Ok(graph),
+        Err(err) => {
+            graph.release(api, ctx);
+            Err(err)
+        }
+    }
 }
 
 fn build_session<const N: usize>(path: &Path, providers: [ort::ep::ExecutionProviderDispatch; N]) -> ort::Result<Session> {
@@ -1135,6 +1306,7 @@ mod tests {
     /// Needs the models and the reference data, so it's ignored by default:
     ///
     /// ```sh
+    /// cargo build --release   # engines build in Meteor's own binary
     /// VDA_TEST_DATA=<dir with inputs.f32, frames.u8, ref.f32> \
     /// VDA_TEST_BACKEND=tensorrt cargo test --release -- --ignored --nocapture vda
     /// ```
@@ -1154,6 +1326,12 @@ mod tests {
             .find(|p| p.exists())
             .expect("ONNX Runtime in target/bench-venv");
         crate::onnx::init(Some(&runtime)).unwrap();
+        // Engines build in a child process, which has to be Meteor itself.
+        if std::env::var_os("METEOR_BUILDER").is_none() {
+            let meteor = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/nightfall-meteor");
+            // SAFETY: set before any other thread reads the environment.
+            unsafe { std::env::set_var("METEOR_BUILDER", meteor) };
+        }
         let models = crate::config::default_models_dir();
         let cache = crate::config::cache_dir().join("tensorrt");
         let mut model = VdaModel::load(&models, backend, &cache).unwrap();

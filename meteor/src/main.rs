@@ -21,6 +21,7 @@ mod proxy;
 mod replay;
 mod status;
 mod stream_info;
+mod tensorrt;
 #[cfg(target_os = "linux")]
 mod tray;
 mod vda;
@@ -40,6 +41,10 @@ use crate::status::Status;
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().collect();
+    // A TensorRT engine build, run by Meteor in a child process.
+    if args.get(1).map(String::as_str) == Some("--build-tensorrt") {
+        std::process::exit(tensorrt::build_command(&args[2..], config::load().onnxruntime_lib.as_deref()));
+    }
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let value = |name: &str| {
         args.iter().position(|arg| arg == name).map(|i| match args.get(i + 1) {

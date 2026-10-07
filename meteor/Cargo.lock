@@ -640,6 +640,7 @@ dependencies = [
 name = "nightfall-meteor"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "env_logger",
  "ksni",
  "libloading",

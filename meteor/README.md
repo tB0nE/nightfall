@@ -193,9 +193,13 @@ Requirements:
   starts again on a new stream, after a pause of over 0.5 s, on a hard cut
   (a large change in a 16x9 thumbnail), and after any non-finite output.
   If VDA fails to load, or fails three frames in a row, Meteor goes back to
-  the previous model. The first TensorRT build takes about 2.5 minutes
-  (CUDA runs it meanwhile, at about 11 ms a frame); the engines are cached
-  per graph hash, precision, builder level, TensorRT version and GPU.
+  the previous model. VDA runs on TensorRT directly, without ONNX Runtime
+  (`src/tensorrt.rs`), about 3.1 ms a step on an RTX 3090;
+  `METEOR_TENSORRT=ort` uses ONNX Runtime's TensorRT provider instead. The
+  first TensorRT build takes about 3 minutes, in a child process
+  (`nightfall-meteor --build-tensorrt`; CUDA runs VDA meanwhile, at about
+  11 ms a frame). The engines are cached per graph hash, precision, builder
+  level, TensorRT version and GPU, and load in about 0.3 s.
   Every 10 s the log reports steps per second and p50/p95 times for each
   stage, and each cold start and its reason. Its depth has the same
   polarity as EdgePad's (near is bright). The square `zipdepth_edgepad_384.onnx` (built the same way from
@@ -206,7 +210,8 @@ Without these, Meteor logs why and stays a plain proxy.
 
 VDA measured on an RTX 3090 (2026-10-06):
 - Against the researcher's all-TensorRT reference over their 75-frame
-  sequence (`cargo test --release -- --ignored vda`, which needs their data):
+  sequence (`cargo build --release`, then `cargo test --release -- --ignored
+  vda`, which needs their data):
   depth correlation 0.99995 mean, 0.99972 worst, from their inputs and from
   the 720p frames through the resize kernel.
 - Replaying a 1440p 60 fps recording: 59 maps/s; prepare 0.44 ms, model
