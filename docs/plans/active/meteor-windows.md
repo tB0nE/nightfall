@@ -1,78 +1,127 @@
 # Nightfall Meteor: Windows
 
-> Status: Planned.
+> Status: Planned. Updated 2026-10-07 for the Linux work since 2026-10-05:
+> ncnn for EdgePad, native TensorRT for VDA, the VDA download, the
+> AppImage and its first-run setup, and the shutdown fix.
 >
 > Date: 2026-10-05
 >
 > Related: [meteor-host-depth.md](meteor-host-depth.md) (host depth),
-> [meteor-microphone.md](meteor-microphone.md) (microphone).
+> [meteor-appimage.md](meteor-appimage.md) (the Linux release this
+> mirrors), [meteor-microphone.md](meteor-microphone.md) (microphone).
 >
 > Scope: Windows 10/11 x64 hosts with an NVIDIA GPU, running Sunshine,
-> Apollo, Vibepollo or Vibeshine. Other GPUs stay out of scope, as on Linux.
+> Apollo, Vibepollo or Vibeshine. Other GPUs stay out of scope, as on Linux
+> (decoding is NVDEC).
 
 ## Goal
 
-Meteor does on Windows what it does on Linux: proxy the stream, run host
-depth on the GPU, and present the Quest's microphone as a PC microphone, with
-a tray icon. The Quest app needs no changes; it can't tell which OS Meteor
-runs on.
+Meteor does on Windows what it does on Linux:
+- proxy the stream;
+- run host depth on the GPU: EdgePad on Vulkan out of the box, and VDA
+  after a download from the tray;
+- present the Quest's microphone as a PC microphone;
+- show a tray icon.
+
+The Quest app needs no changes; it can't tell which OS Meteor runs on.
+
+## The runtimes, as built on Linux
+
+The Windows release should match the Linux one
+([meteor-appimage.md](meteor-appimage.md)):
+
+| | What | Linux | Windows |
+| --- | --- | --- | --- |
+| EdgePad (default) | ncnn on Vulkan (`ncnn.rs`), `<name>.ncnn.param`/`.bin` | `libncnn.so.1`, 20 MB | `ncnn.dll` from `ncnn-20260526-windows-vs2022-shared.zip` (x64), 13 MB |
+| VDA (on request) | Native TensorRT (`tensorrt.rs`, shim `native/tensorrt.cpp`), engines built in a child process | Downloaded from NVIDIA's `manylinux` wheel: 0.4 to 0.55 GB | NVIDIA's `win_amd64` wheel (1.9 GB) has the same files: `nvinfer_10.dll` 193 MB compressed, `nvonnxparser_10.dll` 1.3 MB, builder resources 94 MB (sm75) to 235 MB (sm120). About 0.29 to 0.43 GB per GPU |
+| Development only | ONNX Runtime (`onnxruntime` feature) | `target/bench-venv` | `target\bench-venv` (layout below) |
+
+The release builds without the `onnxruntime` feature
+(`--no-default-features`).
 
 ## Where we start
 
-Most of Meteor was written to be portable, and the Linux-only parts are
-switched off elsewhere rather than missing:
+Most of Meteor is portable. These are the parts that need work, checked
+against the code on 2026-10-07:
 
 | Part | Windows today |
 | --- | --- |
-| Proxy, discovery, depth port (`proxy.rs`, `discovery.rs`, `depth_server.rs`) | Portable: tokio sockets only |
-| Decoding (`nvdec.rs`) | Loads `nvcuda.dll` / `nvcuvid.dll` on Windows; NVDEC and CUDA work the same there. Untested |
-| Reduce kernel (`kernels/nv12_to_tensor.ptx`) | Portable: PTX, JIT-compiled by the driver |
+| Proxy, discovery, depth and mic ports (`proxy.rs`, `discovery.rs`, `depth_server.rs`, `mic.rs`) | **Broken for IPv4.** Every listener binds `::`, relying on Linux's dual-stack default. Windows sockets default to `IPV6_V6ONLY`, so a Quest on IPv4 would reach none of them. Discovery's fallback to `0.0.0.0` would also let a second Meteor start, because the single-instance lock is the discovery port. Fix: bind through `socket2` with `set_only_v6(false)` (already a dependency) |
+| Decoding (`nvdec.rs`) | Loads `nvcuda.dll` and `nvcuvid.dll`; NVDEC and CUDA work the same there. Untested |
+| Kernels (`kernels/*.ptx`) | Portable: PTX, JIT-compiled by the driver |
 | Post-processing (`gpu_post.rs`, `postprocess.rs`) | Portable |
-| Model runtime (`onnx.rs`) | ONNX Runtime is loaded at run time (`ort` with `load-dynamic`), so nothing links at build time. Finding the runtime and preloading cuDNN/cuBLAS/TensorRT is Unix-only (`find_dev_runtime()`, `preload_cuda_libraries()`); on Windows it loads nothing |
-| Config, models, TensorRT cache (`config.rs`) | Already uses `%APPDATA%\Nightfall Meteor` and `%LOCALAPPDATA%\Nightfall Meteor` |
-| Sunshine detection (`config.rs`) | Already looks in `C:\Program Files\{Sunshine,Apollo,Vibepollo,Vibeshine}\config\sunshine.conf` |
-| "Open settings file" (`main.rs`) | Uses `explorer` |
-| Tray (`tray.rs`, `ksni`) | Linux-only dependency; Windows logs "No tray icon on this platform yet" and waits for Ctrl+C |
+| ncnn (`ncnn.rs`) | Looks for `ncnn.dll` next to the exe, in `../lib`, `target/ncnn/lib`, or on the search path. **Four GPU functions are found by their GCC (Itanium) names, which MSVC's `ncnn.dll` doesn't export.** On Windows they are `?create_gpu_instance@ncnn@@YAHPEBD@Z`, `?get_gpu_count@ncnn@@YAHXZ`, `?get_default_gpu_index@ncnn@@YAHXZ`, `?get_gpu_info@ncnn@@YAAEBVGpuInfo@1@H@Z` and `?device_name@GpuInfo@ncnn@@QEBAPEBDXZ` (checked in the 20260526 DLL). `ncnn.dll` imports the MSVC runtime and `VCOMP140.DLL` (OpenMP) |
+| TensorRT shim (`native/tensorrt.cpp`, `build.rs`) | **Doesn't compile on Windows:** `<dlfcn.h>`, `dlopen` and `dlsym`. Needs `LoadLibraryW` and `GetProcAddress`, with `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` so `nvinfer_10.dll` finds its builder resource next to it. `build.rs` passes GCC's `-isystem`; MSVC needs `/external:I` (or `.include()`). The `_INTERNAL` factory functions are the same names on both |
+| TensorRT lookup (`tensorrt.rs`) | Library names are Linux-only (`libnvinfer.so.10`, `libnvonnxparser.so.10`), and the venv path is the Unix layout. Windows: `nvinfer_10.dll`, `nvonnxparser_10.dll`, and `target\bench-venv\Lib\site-packages\tensorrt_libs` |
+| Engine-build child (`tensorrt.rs`) | `--build-tensorrt` in a child process works as is, but it only dies with Meteor on Linux (`PR_SET_PDEATHSIG`). Windows: put it in a Job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` |
+| VDA download (`download.rs`) | Pins the Linux wheel and file names. Windows needs the `win_amd64` wheel's URL, sizes and `RECORD` SHA-256s, the `.dll` names, and `GetDiskFreeSpaceExW` (today free space isn't checked off Unix). The zip reader handles both: the Windows wheel has no zip64 record |
+| Data folder (`config.rs`) | `data_dir()` is `%APPDATA%` (roaming) on Windows, so models and the 1 GB TensorRT download would land in the roaming profile. Move it to `%LOCALAPPDATA%\Nightfall Meteor` |
+| ONNX Runtime (`onnx/runtime.rs`, development only) | `find_dev_runtime()` and `preload_cuda_libraries()` are Unix-only, as before |
+| Shutdown (`main.rs`) | `exit_now()` skips the libraries' exit handlers with `_exit` on Unix (the Linux crash fix). Off Unix it falls back to `std::process::exit`, which runs DLL detach and static destructors: the same race. Use `TerminateProcess(GetCurrentProcess(), code)` after the cleanup. Ctrl+C only (no SIGTERM on Windows) |
+| Logging (`logfile.rs`) | Done: `%LOCALAPPDATA%\Nightfall Meteor\meteor.log`, rotated at 5 MB, as well as stderr |
+| Single instance (`main.rs`) | The discovery port is the lock, taken before the models load. It works once the dual-stack bind is fixed (above). A named mutex isn't needed |
+| Firewall check (`firewall.rs`) | Compiled everywhere, but it queries firewalld and ufw, so on Windows it always reports open. Make it Linux-only, and use Windows Firewall (Phase 4) |
+| Autostart and notifications (`desktop.rs`) | Linux-only: `~/.config/autostart` and D-Bus. Windows: the `HKCU\...\Run` key and toast notifications (Phase 4) |
+| Tray (`tray.rs`, `ksni`) | Linux-only. The menu has grown: the Model menu with the VDA download offer and progress, the firewall warning and Allow, Start with my computer, Open log. Windows logs "No tray icon on this platform yet" and waits for Ctrl+C |
 | Microphone (`mic.rs`) | `VirtualMic::create()` returns "not supported yet"; the receiver, jitter buffer and drift control are portable |
-| Shutdown (`main.rs`) | Ctrl+C only (no SIGTERM on Windows) |
+| Packaging | Linux has `tools/build_appimage.sh`. Windows has nothing yet (Phase 4) |
 
 A Windows type-check from Linux (`cargo check --target
-x86_64-pc-windows-gnu`, 2026-10-05) stopped only at `zstd-sys`, which needs
-a Windows C compiler. No Rust errors were reached, so others may still be
-hidden behind it.
+x86_64-pc-windows-gnu`, 2026-10-05) stopped at `zstd-sys`, which needs a
+Windows C compiler. It now also needs the shim to compile, so do the first
+check on Windows.
 
 ## Where to develop
 
 Develop and test on Windows. Building can happen on either OS, but every
-piece that needs work (DLL loading, NVDEC on the Windows driver, audio, the
-tray) can only be tested on Windows.
+piece that needs work (DLL loading, NVDEC on the Windows driver, Vulkan,
+audio, the tray) can only be tested on Windows.
 
 Windows setup:
 
-1. Rust with the MSVC toolchain (`rustup`, Visual Studio Build Tools with
-   the "Desktop development with C++" workload).
-2. NVIDIA driver (provides `nvcuda.dll` and `nvcuvid.dll`).
-3. Python 3.12 venv at `meteor\target\bench-venv` with `onnxruntime-gpu` and
-   `tensorrt-cu13<11`, as on Linux (see `tools/bench_depth.py`). This is the
-   development runtime until Phase 4 decides on distribution.
-4. Sunshine (or a fork), streaming to the Quest as usual.
-5. VB-CABLE (Phase 3).
-6. The models, built with `meteor/tools/make_host_model.py` (it runs on
-   Windows) or copied from the Linux machine's
-   `~/.local/share/nightfall-meteor/models` into
-   `%APPDATA%\Nightfall Meteor\models`.
+1. Rust 1.92.0 with the MSVC toolchain (`rustup`, plus Visual Studio Build
+   Tools with the "Desktop development with C++" workload, which also
+   compiles the TensorRT shim).
+2. NVIDIA driver: `nvcuda.dll`, `nvcuvid.dll` and the Vulkan driver.
+3. ncnn: unpack `ncnn-20260526-windows-vs2022-shared.zip` and copy
+   `x64\bin\ncnn.dll` into `meteor\target\ncnn\lib\` (`tools/fetch_ncnn.sh`
+   does this on Linux; a PowerShell twin is part of Phase 2).
+4. The models in `%APPDATA%\Nightfall Meteor\models` (or wherever
+   `data_dir()` points after the fix above), copied from the Linux
+   machine's `~/.local/share/nightfall-meteor/models`:
+   - `zipdepth_wide_512x288.ncnn.param` and `.bin`, the default;
+   - the VDA graphs, or let the VDA download fetch them.
 
-Cross-building from Linux is optional (for CI or release builds): either
-`cargo-xwin` (MSVC target; downloads the Windows SDK and CRT, which means
-accepting Microsoft's licence) or `mingw-w64` (GNU target). Run it in a
-container rather than installing toolchains on the host.
+   `models/convert_ncnn.py` runs on Windows too, with `pip install pnnx`.
+5. TensorRT for VDA, either:
+   - a Python 3.12 venv at `meteor\target\bench-venv` with
+     `tensorrt-cu13<11`, which Meteor finds in
+     `Lib\site-packages\tensorrt_libs` once the lookup is ported; or
+   - `tensorrt_dir` in `meteor.toml`; or
+   - the VDA download, once ported.
+
+   Add `onnxruntime-gpu` to the venv only to compare with ONNX Runtime.
+6. Sunshine (or a fork), streaming to the Quest as usual.
+7. VB-CABLE (Phase 3).
+
+Cross-building from Linux is optional, for CI or release builds:
+- `cargo-xwin` (the MSVC target; it downloads the Windows SDK and CRT,
+  which means accepting Microsoft's licence); or
+- `mingw-w64` (the GNU target; it can't link against MSVC's `ncnn.dll`
+  import library, but the DLLs are loaded at run time anyway).
+
+Run either in a container, as the AppImage build does.
 
 ## Phases
 
 ### Phase 1: builds and proxies
 
-- Build `cargo build --release` on Windows; fix whatever the type-check
-  didn't reach.
+- Fix the dual-stack binds (above) on every listener, then check the Quest
+  connects over IPv4 and a second Meteor exits.
+- Make the TensorRT shim compile on Windows (`LoadLibraryW`,
+  `GetProcAddress`, MSVC include flags), so `cargo build --release` works.
+  Fix whatever else the build finds.
+- `exit_now()` on Windows: `TerminateProcess` after the cleanup.
 - Run Meteor in a console with `--no-depth --no-mic`, connect the Quest
   through it, and stream.
 - Windows Firewall: allow Meteor's proxy ports and the depth (47901) and
@@ -84,26 +133,47 @@ difference from connecting to Sunshine directly.
 
 ### Phase 2: host depth
 
-- Port `find_dev_runtime()`: on Windows the venv layout is
-  `target\bench-venv\Lib\site-packages\onnxruntime\capi\onnxruntime.dll`.
-- Port `preload_cuda_libraries()`: instead of `dlopen(RTLD_GLOBAL)`, add each
-  `site-packages\nvidia\*\bin` folder and `site-packages\tensorrt_libs` to
-  the DLL search path with `AddDllDirectory()` (after
-  `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`), so the CUDA
-  and TensorRT providers find cuDNN, cuBLAS and `nvinfer` when ONNX Runtime
-  loads them. Check the folder names in the installed wheels; NVIDIA's
-  Windows wheels put DLLs in `bin`, not `lib`.
-- Check NVDEC: the decoder log line ("NVDEC: 2560x1440 codec 8 8-bit,
-  decoding ..., reduced to 512x288") and `nvdec::tests::gpu_reduction_matches_the_cpu`.
-- Run the replay benchmark on a recorded dump (`--replay <file> --fps 120`)
-  and compare with Linux: about 3.3 ms frame to map with 512x288 or 672x384
-  on the RTX 3090 (2026-10-04).
-- Check the TensorRT engine cache lands in `%LOCALAPPDATA%\Nightfall Meteor`
-  and is reused on the next start.
-- Run `cargo test --release`.
+EdgePad on ncnn first, since it's the default and needs only the driver:
 
-Done when: the Quest shows host depth with Depth Sync on, and the replay
-timings are close to Linux.
+- Pick the ncnn GPU function names per platform (the MSVC names above).
+- Look for `ncnn.dll` next to the exe (the release layout) and in
+  `target\ncnn\lib` (development), and check `VCOMP140.DLL` and the MSVC
+  runtime are found.
+- Check NVDEC: the decoder log line ("NVDEC: 2560x1440 codec 8 8-bit,
+  decoding ..., reduced to 512x288") and
+  `nvdec::tests::gpu_reduction_matches_the_cpu`.
+- The parity test, `cargo test --release -- --ignored edgepad` with
+  `EDGEPAD_TEST_DATA`. Linux: 0.061% mean error, 0.72% worst.
+- The replay benchmark on a recorded dump (`--replay <file> --fps 120`).
+  Compare with Linux on the RTX 3090: EdgePad on ncnn 5.2 to 6 ms frame to
+  map; VDA 5.1 ms.
+
+Then VDA on native TensorRT:
+
+- Port the TensorRT lookup: DLL names, venv path, `tensorrt_dir`.
+- Check that the engine-build child finds `nvinfer_10.dll`'s builder
+  resource, and that its plan lands in `%LOCALAPPDATA%\Nightfall
+  Meteor\tensorrt` and is reused.
+- The Job object for the build child; quitting mid-build must leave no
+  build process.
+- Check whether `nvinfer_10.dll` needs anything beyond the driver. On Linux
+  it needs nothing: it links CUDA's runtime statically.
+- The VDA parity test (`cargo test --release -- --ignored vda`, with the
+  researcher's data). Linux: correlation 0.99995 mean, 0.99965 worst.
+
+Then the VDA download:
+
+- Pin the `win_amd64` wheel (URL, size, and each DLL's `RECORD` SHA-256),
+  chosen by platform in `download.rs`. Free space through
+  `GetDiskFreeSpaceExW`.
+- Test it end to end, as on Linux (`--download-vda`, then a replay).
+
+Finally `cargo test --release`, and `--quit-after` during a replay and
+during an engine build, which must exit cleanly.
+
+Done when: the Quest shows host depth with Depth Sync on (EdgePad out of
+the box, VDA after the download), and the replay timings are close to
+Linux.
 
 ### Phase 3: microphone through VB-CABLE
 
@@ -147,47 +217,65 @@ doesn't bundle it without a distribution agreement with VB-Audio.
 
 ### Phase 4: tray, packaging and startup
 
-- Tray: replace `ksni` on Windows with a Win32 tray (the `tray-icon` crate,
-  or `Shell_NotifyIconW` through the `windows` crate). It needs its own
-  thread with a Win32 message loop. Split `tray.rs` into a shared menu model
-  (status lines, Model and Rate menus, the microphone item, "Open settings
-  file", Quit) and per-platform hosts. `icon.rs` already draws RGBA pixels,
-  which become an `HICON`. Use a white glyph; the Windows taskbar is dark by
-  default. Consider an outlined variant for the light theme later.
-- No console: build as a Windows-subsystem app
-  (`#![cfg_attr(windows, windows_subsystem = "windows")]`), and log to
-  `%LOCALAPPDATA%\Nightfall Meteor\meteor.log` (rotated) instead of stderr.
-  Keep a `--console` flag for development.
-- Single instance: a named mutex, so a second launch exits (or shows the
-  first one's tray).
-- Shutdown: handle `WM_QUERYENDSESSION` and `WM_ENDSESSION` (logoff and
-  shutdown), and close the console or Ctrl+C in `--console` mode.
-- Start with Windows: a tray toggle that writes
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
-- GPU runtime distribution (decision needed, see below).
-- Installer: start with a zip (`nightfall-meteor.exe`, models, README),
-  then an Inno Setup or MSIX installer that also adds the firewall rules
-  (`netsh advfirewall`, private profile) and the Start menu entry.
+Mirror the Linux first-run work ([meteor-appimage.md](meteor-appimage.md),
+Phase 4):
+
+- **Tray:** replace `ksni` on Windows with a Win32 tray (the `tray-icon`
+  crate, or `Shell_NotifyIconW` through the `windows` crate). It needs its
+  own thread with a Win32 message loop.
+  - Split `tray.rs` into a shared menu model and per-platform hosts. The
+    menu model covers the status lines, the Model menu (with the VDA
+    download offer, progress, Cancel and Remove), Rate, smoothing, edge
+    softening, the microphone, the firewall warning, Start with my
+    computer, Open log, Open settings file and Quit.
+  - `icon.rs` already draws RGBA pixels, which become an `HICON`. Use a
+    white glyph; the Windows taskbar is dark by default. Consider an
+    outlined variant for the light theme later.
+- **No console:** build as a Windows-subsystem app
+  (`#![cfg_attr(windows, windows_subsystem = "windows")]`); the log file
+  already exists. Keep a `--console` flag for development.
+- **Notifications:** a toast for "already running" and for a missing tray,
+  as `desktop::notify` does on Linux.
+- **Shutdown:** handle `WM_QUERYENDSESSION` and `WM_ENDSESSION` (logoff and
+  shutdown) through `quit()`, and close the console or Ctrl+C in
+  `--console` mode.
+- **Start with Windows:** a tray toggle that writes
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, turned on once at
+  the first run, like the AppImage. It follows the exe if it moves.
+- **Firewall:** the installer adds the rules (`netsh advfirewall`, private
+  profile). For the zip, the tray checks the rules and offers to add them
+  through one elevated `netsh` (UAC prompt), like Linux's `pkexec`.
+- **Packaging:** start with a zip, then an Inno Setup or MSIX installer
+  that also adds the firewall rules and the Start menu entry. Both build
+  from a script like `tools/build_appimage.sh`. Contents:
+  - `nightfall-meteor.exe` (no ONNX Runtime);
+  - `ncnn.dll`;
+  - the MSVC runtime and `vcomp140.dll` next to it (app-local, allowed by
+    Microsoft's redistributable terms), or the VC++ Redistributable as an
+    installer prerequisite;
+  - EdgePad 512 for ncnn;
+  - README, LICENSE and THIRD_PARTY_NOTICES (cargo-about, as for the
+    AppImage).
+
+  About 30 MB.
 
 Done when: a fresh Windows machine with Sunshine and an NVIDIA driver can
-install Meteor, see its tray icon, and stream with host depth and the
-microphone without touching a terminal.
+install Meteor, see its tray icon, stream with host depth (and download
+VDA) and the microphone, without touching a terminal.
 
-## Decisions to make
+## Decisions
 
-1. **GPU runtime distribution** (Phase 4). ONNX Runtime GPU plus cuDNN,
-   cuBLAS and TensorRT is roughly 1.5-2 GB of DLLs.
-   - Bundle everything: simplest for users, a huge download, and every
-     update ships it again.
-   - Download on first run: Meteor fetches the pinned runtime (for example
-     from the PyPI wheels it already uses) into `%LOCALAPPDATA%`, showing
-     progress in the tray. Small installer; needs a network on first run.
-   - CUDA only, no TensorRT: drops about 1 GB, but the model takes roughly
-     twice as long (still under 2 ms at 512x288).
-
-   Recommendation: download on first run, CUDA first so depth works within
-   seconds, with TensorRT fetched in the background and switched to once
-   it's built (Meteor already switches CUDA to TensorRT live).
+1. **GPU runtime distribution** (decided 2026-10-05, built on Linux
+   2026-10-07; see [meteor-appimage.md](meteor-appimage.md)):
+   - EdgePad runs on ncnn (Vulkan), shipped with Meteor; the release is
+     about 30 MB and needs only the GPU driver.
+   - VDA is downloaded from the tray on request: TensorRT's files straight
+     from NVIDIA's wheel (only the ones this GPU needs, 0.29 to 0.43 GB
+     on Windows) and the VDA graphs from our release. Meteor then builds
+     the engines and switches to VDA while EdgePad serves.
+   - ONNX Runtime isn't shipped.
+   - Still open, for both platforms: NVIDIA's answer on fetching the
+     wheel's files this way, and the graphs' release.
 2. **Microphone driver.** VB-CABLE (recommended) or another virtual cable
    (Virtual Audio Cable, VoiceMeeter). The code only needs an endpoint name,
    so supporting a list of known names is cheap.
@@ -198,9 +286,12 @@ microphone without touching a terminal.
 
 | Risk | Mitigation |
 | --- | --- |
-| DLL search order picks up a different CUDA or cuDNN from `PATH` (another app's install) | `SetDefaultDllDirectories` plus explicit `AddDllDirectory` for our folders; log the loaded DLL paths at startup |
+| DLL search order picks up a different `ncnn.dll`, MSVC runtime or TensorRT from `PATH` (another app's install) | `SetDefaultDllDirectories` plus explicit paths for our DLLs; log the loaded DLL paths at startup, as Linux logs TensorRT's |
+| ncnn's C++ names change with its compiler or version | They're pinned with the ncnn version; `ncnn.rs` fails with the missing symbol's name; the version bump checks them |
+| Dual-stack sockets behave differently (some adapters, IPv6 disabled) | Bind with `only_v6(false)`, fall back to `0.0.0.0` on failure, and log which one |
 | NVDEC behaves differently on the Windows driver (surface limits, pitch) | Phase 2's GPU-vs-CPU reduction test and replay comparison |
+| Vulkan interop with a game running (another Vulkan or DX12 app on the GPU) | Measure ncnn timings under game load in Phase 2 |
 | WASAPI shared mode adds latency or crackles under load | Event-driven mode, an MMCSS "Pro Audio" thread priority (`AvSetMmThreadCharacteristicsW`), measured in Phase 3 |
 | VB-CABLE missing or renamed | Find endpoints by name, accept several known names, and show a clear tray message |
-| Antivirus flags an unsigned exe that opens ports and loads DLLs | Code-sign release builds; publish hashes |
-| Firewall blocks the depth or microphone port, so the Quest silently falls back to on-device depth | Installer rules; the tray shows "no Quest connected to depth" when a stream runs but nobody connects to 47901 |
+| Antivirus flags an unsigned exe that opens ports, loads DLLs and downloads more | Code-sign release builds; publish hashes; downloads are verified against pinned SHA-256s |
+| Firewall blocks the depth or microphone port, so the Quest silently falls back to on-device depth | Installer rules; the tray's firewall check |
