@@ -12,8 +12,11 @@
 //! or the rate cap applies, frames are skipped rather than queued. Every
 //! frame is still decoded, because later frames depend on earlier ones.
 //!
-//! Models are single `.onnx` files (EdgePad, one frame at a time), or Video
-//! Depth Anything (`vda.rs`), a pair of graphs with a temporal state.
+//! Single-frame models (EdgePad) run on ncnn's Vulkan backend
+//! (`<name>.ncnn.param`, see `ncnn.rs`) or on ONNX Runtime (`<name>.onnx`);
+//! when both are there, ncnn wins unless `METEOR_NCNN=off`. Video Depth
+//! Anything (`vda.rs`) is a pair of graphs with a temporal state, on
+//! TensorRT.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -25,6 +28,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::gpu_post::GpuPost;
+use crate::ncnn::{self, NcnnModel};
 use crate::nvdec::{NvDecoder, Pixels};
 
 /// Where a model run left its output.
@@ -41,7 +45,10 @@ use crate::video_tap::Frame;
 
 /// A loaded depth model.
 enum Engine {
+    /// Single-frame, on ONNX Runtime.
     Plain(Box<DepthModel>),
+    /// Single-frame, on ncnn (Vulkan).
+    Ncnn(Box<NcnnModel>),
     Vda(Box<VdaModel>),
 }
 
@@ -49,6 +56,8 @@ impl Engine {
     fn load(models_dir: &Path, name: &str, backend: Backend, cache: &Path) -> Result<Engine, String> {
         if name == vda::ID {
             VdaModel::load(models_dir, backend, cache).map(|m| Engine::Vda(Box::new(m)))
+        } else if is_ncnn(name) {
+            NcnnModel::load(&models_dir.join(name)).map(|m| Engine::Ncnn(Box::new(m)))
         } else {
             DepthModel::load(&models_dir.join(name), backend, cache).map(|m| Engine::Plain(Box::new(m)))
         }
@@ -58,6 +67,7 @@ impl Engine {
     fn id(&self) -> String {
         match self {
             Engine::Plain(m) => format!("{}.onnx", m.name),
+            Engine::Ncnn(m) => format!("{}{}", m.name, ncnn::PARAM_SUFFIX),
             Engine::Vda(m) => m.name.clone(),
         }
     }
@@ -66,6 +76,7 @@ impl Engine {
     fn output_size(&self) -> (usize, usize) {
         match self {
             Engine::Plain(m) => (m.width, m.height),
+            Engine::Ncnn(m) => (m.width, m.height),
             Engine::Vda(_) => (vda::WIDTH, vda::HEIGHT),
         }
     }
@@ -74,6 +85,7 @@ impl Engine {
     fn input_size(&self) -> (usize, usize) {
         match self {
             Engine::Plain(m) => (m.width, m.height),
+            Engine::Ncnn(m) => (m.width, m.height),
             Engine::Vda(_) => vda::DECODE_SIZE,
         }
     }
@@ -82,14 +94,31 @@ impl Engine {
         let (w, h) = self.output_size();
         match self {
             Engine::Plain(m) => format!("{} ({w}x{h}, {})", m.name, m.backend.label()),
+            Engine::Ncnn(m) => format!("{} ({w}x{h}, Vulkan fp16)", m.name),
             Engine::Vda(m) => format!("{} ({w}x{h}, {})", vda::LABEL, m.description),
         }
     }
 }
 
+fn is_ncnn(name: &str) -> bool {
+    name.ends_with(ncnn::PARAM_SUFFIX)
+}
+
+/// A single-frame model's name without its format: `zipdepth_wide_512x288`
+/// for both `.onnx` and `.ncnn.param`.
+fn stem(name: &str) -> &str {
+    name.strip_suffix(ncnn::PARAM_SUFFIX).or_else(|| name.strip_suffix(".onnx")).unwrap_or(name)
+}
+
 /// The models menu's name for a model.
 pub fn model_label(name: &str) -> String {
-    if name == vda::ID { vda::LABEL.to_string() } else { name.trim_end_matches(".onnx").to_string() }
+    if name == vda::ID { vda::LABEL.to_string() } else { stem(name).to_string() }
+}
+
+/// Where Meteor finds the runtimes; each is optional.
+pub struct Runtimes<'a> {
+    pub onnxruntime: Option<&'a Path>,
+    pub ncnn: Option<&'a Path>,
 }
 
 /// Rates offered in the tray. 0 means every frame the stream delivers.
@@ -156,6 +185,9 @@ pub struct Depth {
     /// `--cpu-post` turns it off.
     pub gpu_post: AtomicBool,
     tensorrt: bool,
+    /// Which runtimes loaded: ONNX Runtime, ncnn.
+    onnx_ok: bool,
+    ncnn_ok: bool,
     /// A TensorRT engine is being built.
     pub tensorrt_pending: Arc<AtomicBool>,
     available: AtomicBool,
@@ -179,24 +211,47 @@ pub struct Depth {
 }
 
 impl Depth {
-    /// Loads ONNX Runtime and the selected model in the background. Depth
-    /// stays unavailable (and Meteor a plain proxy) if either fails.
-    pub fn start(
-        onnxruntime_lib: Option<&Path>,
-        tensorrt: bool,
-        models_dir: PathBuf,
-        save: Option<(PathBuf, u64)>,
-    ) -> Arc<Depth> {
+    /// Loads the runtimes, then the selected model in the background. Depth
+    /// stays unavailable (and Meteor a plain proxy) if no runtime or model
+    /// loads.
+    pub fn start(runtimes: Runtimes, tensorrt: bool, models_dir: PathBuf, save: Option<(PathBuf, u64)>) -> Arc<Depth> {
         let state: SavedState = std::fs::read_to_string(crate::config::state_path())
             .ok()
             .and_then(|text| toml::from_str(&text).ok())
             .unwrap_or_default();
+        let mut errors = Vec::new();
+        let onnx_ok = match crate::onnx::init(runtimes.onnxruntime) {
+            Ok(source) => {
+                log::info!("ONNX Runtime: {source}");
+                true
+            }
+            Err(err) => {
+                errors.push(err);
+                false
+            }
+        };
+        let ncnn_ok = if std::env::var("METEOR_NCNN").as_deref() == Ok("off") {
+            false
+        } else {
+            match ncnn::init(runtimes.ncnn) {
+                Ok(source) => {
+                    log::info!("Vulkan: {source}");
+                    true
+                }
+                Err(err) => {
+                    errors.push(err);
+                    false
+                }
+            }
+        };
         let depth = Arc::new(Depth {
             models_dir,
             stats: DepthStats::default(),
             gpu_frames: AtomicBool::new(true),
             gpu_post: AtomicBool::new(true),
             tensorrt,
+            onnx_ok,
+            ncnn_ok,
             tensorrt_pending: Arc::default(),
             available: AtomicBool::new(false),
             state: Mutex::new(state),
@@ -211,19 +266,23 @@ impl Depth {
             subscribers: AtomicU32::new(0),
             save,
         });
-        match crate::onnx::init(onnxruntime_lib) {
-            Ok(source) => log::info!("ONNX Runtime: {source}"),
-            Err(err) => {
-                log::warn!("Host depth is off: {err}");
-                depth.set_status(format!("off: {err}"));
-                return depth;
-            }
+        if !onnx_ok && !ncnn_ok {
+            let err = errors.join("; ");
+            log::warn!("Host depth is off: {err}");
+            depth.set_status(format!("off: {err}"));
+            return depth;
+        }
+        for err in &errors {
+            log::info!("Not available: {err}");
         }
         let models = depth.list_models();
         let wanted = depth.state.lock().ok().and_then(|s| s.model.clone());
-        let chosen = wanted.filter(|m| models.contains(m)).or_else(|| preferred_model(&models));
+        // A model saved in the other format still counts.
+        let chosen = wanted
+            .and_then(|w| models.iter().find(|m| **m == w || (w != vda::ID && stem(m) == stem(&w))).cloned())
+            .or_else(|| preferred_model(&models));
         let Some(chosen) = chosen else {
-            let msg = format!("off: no .onnx models in {}", depth.models_dir.display());
+            let msg = format!("off: no models in {}", depth.models_dir.display());
             log::warn!("Host depth is {msg}");
             depth.set_status(msg);
             return depth;
@@ -298,18 +357,34 @@ impl Depth {
         self.input_size.lock().ok().and_then(|s| *s)
     }
 
-    /// The `.onnx` models in the models folder, with VDA's two graphs listed
-    /// once, as `vda::ID`.
+    /// The models in the models folder that a loaded runtime can run: each
+    /// single-frame model once, as `.ncnn.param` (with its `.bin`) or else
+    /// `.onnx`, and VDA's two graphs once, as `vda::ID`.
     pub fn list_models(&self) -> Vec<String> {
-        let mut models: Vec<String> = std::fs::read_dir(&self.models_dir)
-            .map(|dir| {
-                dir.flatten()
-                    .filter_map(|e| e.file_name().into_string().ok())
-                    .filter(|name| name.ends_with(".onnx") && name != vda::STEP_FILE && name != vda::COLD_FILE)
-                    .collect()
-            })
+        let files: Vec<String> = std::fs::read_dir(&self.models_dir)
+            .map(|dir| dir.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
             .unwrap_or_default();
-        if vda::present(&self.models_dir) {
+        let has = |name: &str| files.iter().any(|f| f == name);
+        let mut stems: Vec<&str> = files
+            .iter()
+            .filter(|f| (is_ncnn(f) || f.ends_with(".onnx")) && *f != vda::STEP_FILE && *f != vda::COLD_FILE)
+            .map(|f| stem(f))
+            .collect();
+        stems.sort();
+        stems.dedup();
+        let mut models: Vec<String> = stems
+            .into_iter()
+            .filter_map(|s| {
+                let param = format!("{s}{}", ncnn::PARAM_SUFFIX);
+                if self.ncnn_ok && has(&param) && has(&format!("{s}.ncnn.bin")) {
+                    Some(param)
+                } else {
+                    let onnx = format!("{s}.onnx");
+                    (self.onnx_ok && has(&onnx)).then_some(onnx)
+                }
+            })
+            .collect();
+        if self.onnx_ok && vda::present(&self.models_dir) {
             models.push(vda::ID.to_string());
         }
         models.sort();
@@ -354,8 +429,9 @@ impl Depth {
     }
 
     fn run(self: Arc<Self>) {
-        // (model name, backend, result)
-        let (loaded_tx, loaded_rx) = mpsc::channel::<(String, Backend, Result<Engine, String>)>();
+        // (model name, whether a failure leaves the model running on what
+        // loaded before (TensorRT after CUDA), result)
+        let (loaded_tx, loaded_rx) = mpsc::channel::<(String, bool, Result<Engine, String>)>();
         let mut model: Option<Engine> = None;
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
@@ -376,26 +452,33 @@ impl Depth {
                 let tensorrt = self.tensorrt;
                 let pending = self.tensorrt_pending.clone();
                 let models_dir = self.models_dir.clone();
-                // CUDA first, so depth starts within a second; then TensorRT,
-                // whose first engine build for a model takes about 90 s.
-                // Without the CUDA provider, TensorRT only.
+                // ncnn models load once, in about a second. ONNX models load
+                // on CUDA first, so depth starts within a second; then on
+                // TensorRT, whose first engine build for a model takes about
+                // 90 s. Without the CUDA provider, TensorRT only.
                 let _ = std::thread::Builder::new().name("depth-load".into()).spawn(move || {
                     let cache = crate::config::cache_dir().join("tensorrt");
-                    let cuda_ok = !crate::onnx::cuda_backend_present() || {
+                    if is_ncnn(&name) {
+                        let _ = tx.send((name.clone(), false, Engine::load(&models_dir, &name, Backend::Cuda, &cache)));
+                        return;
+                    }
+                    let cuda_present = crate::onnx::cuda_backend_present();
+                    let cuda_ok = !cuda_present || {
                         let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
                         let ok = cuda.is_ok();
-                        let _ = tx.send((name.clone(), Backend::Cuda, cuda));
+                        let _ = tx.send((name.clone(), false, cuda));
                         ok
                     };
                     if tensorrt && cuda_ok {
                         pending.store(true, Ordering::Relaxed);
                         let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache);
                         pending.store(false, Ordering::Relaxed);
-                        let _ = tx.send((name, Backend::TensorRt, trt));
+                        // TensorRT is optional when CUDA is there.
+                        let _ = tx.send((name, cuda_present, trt));
                     }
                 });
             }
-            while let Ok((name, backend, result)) = loaded_rx.try_recv() {
+            while let Ok((name, optional, result)) = loaded_rx.try_recv() {
                 // A model chosen since this one started loading wins.
                 if self.model().as_ref() != Some(&name) {
                     continue;
@@ -413,6 +496,7 @@ impl Depth {
                             (false, _) => "",
                             (true, Engine::Vda(_)) => "; building the TensorRT engines (several minutes the first time)",
                             (true, Engine::Plain(_)) => "; building the TensorRT engine (about 90 s the first time)",
+                            (true, Engine::Ncnn(_)) => "",
                         };
                         self.set_status(format!("ready: {}{building}", loaded.describe()));
                         // Same model and size: no need to restart smoothing.
@@ -422,14 +506,13 @@ impl Depth {
                                 g.reset();
                             }
                         }
-                        if let Engine::Plain(_) = loaded {
+                        if let Engine::Plain(_) | Engine::Ncnn(_) = loaded {
                             fallback = Some(loaded.id());
                         }
                         failures = 0;
                         model = Some(loaded);
                     }
-                    // TensorRT is optional when CUDA is there: stay on CUDA.
-                    Err(err) if backend == Backend::TensorRt && crate::onnx::cuda_backend_present() => {
+                    Err(err) if optional => {
                         log::warn!("TensorRT unavailable, staying on CUDA: {err}");
                         if let Some(m) = &model {
                             self.set_status(format!("ready: {}", m.describe()));
@@ -493,9 +576,13 @@ impl Depth {
             let infer_start = Instant::now();
             let pixels = width * height;
             // Keep the model output on the GPU for GPU post-processing. VDA's
-            // output is always on the GPU; a single-frame model's is when
-            // its input was.
-            let device_output = matches!(engine, Engine::Vda(_)) || matches!(frame.pixels, Pixels::Gpu(_));
+            // output is always on the GPU; an ONNX model's is when its input
+            // was; ncnn's comes back to the CPU.
+            let device_output = match engine {
+                Engine::Vda(_) => true,
+                Engine::Plain(_) => matches!(frame.pixels, Pixels::Gpu(_)),
+                Engine::Ncnn(_) => false,
+            };
             let on_device = self.gpu_post.load(Ordering::Relaxed)
                 && device_output
                 && (gpu_post.is_some() || {
@@ -523,6 +610,19 @@ impl Depth {
                     Pixels::Gpu(tensor) if same_size && on_device => model.infer_on_device(tensor.ptr).map(Output::Device),
                     Pixels::Gpu(tensor) if same_size => model.infer_gpu(tensor.ptr).map(Output::Host),
                     // The decoder restarts at the new size on the next keyframe.
+                    Pixels::Gpu(_) => continue,
+                },
+                Engine::Ncnn(model) => match &frame.pixels {
+                    Pixels::Rgb(rgb) if same_size => model.infer(rgb).map(Output::Host),
+                    Pixels::Rgb(rgb) => {
+                        resize_rgb(rgb, fw, fh, input.0, input.1, &mut resized);
+                        model.infer(&resized).map(Output::Host)
+                    }
+                    // Vulkan can't read CUDA memory: the input comes back
+                    // to the CPU (1.8 MB at 512x288).
+                    Pixels::Gpu(tensor) if same_size => {
+                        tensor.download().and_then(|planar| model.infer_planar(&planar)).map(Output::Host)
+                    }
                     Pixels::Gpu(_) => continue,
                 },
                 Engine::Vda(model) => {
@@ -658,13 +758,13 @@ impl Depth {
 }
 
 /// The widescreen EdgePad family's 512x288 model (the Quest's standard tier),
-/// built by tools/make_host_model.py. Its 672x384 sibling is the
-/// higher-quality host choice.
-pub const DEFAULT_MODEL: &str = "zipdepth_wide_512x288.onnx";
+/// built by tools/make_host_model.py, in either format. Its 672x384 sibling
+/// is the higher-quality host choice.
+pub const DEFAULT_MODEL: &str = "zipdepth_wide_512x288";
 
 /// Picks a default: the 512x288 model, else the first.
 fn preferred_model(models: &[String]) -> Option<String> {
-    models.iter().find(|m| m.as_str() == DEFAULT_MODEL).or_else(|| models.first()).cloned()
+    models.iter().find(|m| *m != vda::ID && stem(m) == DEFAULT_MODEL).or_else(|| models.first()).cloned()
 }
 
 

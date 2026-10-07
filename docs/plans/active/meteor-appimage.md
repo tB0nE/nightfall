@@ -190,7 +190,7 @@ Not checked yet: VDA parity through the native engines (the spike timed
 zeroed inputs), and the cold start built at fp32 opt 0 as Meteor does (the
 spike built it at fp16 opt 4).
 
-### Native TensorRT backend for VDA (built 2026-10-07, uncommitted)
+### Native TensorRT backend for VDA (built 2026-10-07)
 
 VDA now runs on TensorRT without ONNX Runtime whenever `libnvinfer` and
 `libnvonnxparser` open. `METEOR_TENSORRT=ort` switches back to ONNX
@@ -246,9 +246,11 @@ fp16=0`.
   0=2 1=1`.
 - `fp16=0` keeps the weights in fp32 (24.6 MB). The default fp16 weights
   add error.
-- The converted model comes from the ZipDepth export, so the conversion
-  belongs with the model tooling. Check with the model owner before adding
-  it there.
+- Only Meteor uses the ncnn format (the Quest runs TFLite), and Meteor may
+  become its own repository, so the conversion lives in `meteor/models/`.
+  It reads the ZipDepth ONNX export and leaves the ZipDepth tooling alone.
+  The converted weights (24.6 MB) aren't committed; the AppImage build
+  runs the conversion.
 
 **Parity:** 30 real frames (a 2560x1440 game capture, every 80th frame,
 scaled to 512x288). Error is measured against ONNX Runtime CUDA fp32, as
@@ -283,6 +285,52 @@ a percentage of the depth range:
   interop can replace the copies later if they show up in the timings.
 - Vulkan isn't tied to NVIDIA, which matters once decoding stops being
   NVDEC-only (meteor-windows.md, other GPUs).
+
+### Vulkan EdgePad backend (built 2026-10-07)
+
+- **Runtime:** `src/ncnn.rs` opens ncnn's prebuilt shared library (release
+  20260526, `ubuntu-2404-shared`, 20 MB, 8.7 MB zipped) through its C API.
+  Like ONNX Runtime, it loads at run time, so Meteor builds and runs
+  without it. Four GPU functions (create the instance, count devices, the
+  default device, its name) come from ncnn's C++ API by their mangled
+  names. `tools/fetch_ncnn.sh` downloads the library into `target/ncnn`.
+- **Lookup:** `ncnn_lib` in meteor.toml, then next to the binary, `../lib`
+  (the AppImage), `target/ncnn/lib`, then the library path.
+- **Models:** `meteor/models/convert_ncnn.py` turns an ONNX export into
+  `<name>.ncnn.param` and `.bin`. It does the `PixelShuffle` fix and
+  records the input size on the `Input` layer. The weights aren't
+  committed.
+- **Menu:** each EdgePad model is listed once: on ncnn when it's converted
+  and ncnn loaded, else as `.onnx` on ONNX Runtime. `METEOR_NCNN=off`
+  prefers ONNX. A saved choice in the other format carries over.
+- **No ONNX Runtime:** depth runs on ncnn alone, and VDA is hidden. Tested
+  with a missing `onnxruntime_lib`: the only NVIDIA libraries loaded were
+  the driver's `libcuda` and `libnvcuvid`.
+- **Data path:** NVDEC still prepares the tensor in CUDA memory. It comes
+  back to the CPU (1.8 MB), goes into ncnn, and the depth comes back for
+  CPU post-processing.
+
+| EdgePad 512, RTX 3090 | ncnn Vulkan | TensorRT fp16 (ONNX Runtime) |
+| --- | --- | --- |
+| Error vs ONNX Runtime CUDA fp32, mean / max | 0.061% / 0.72% | 0.068% / 0.85% |
+| Model run back to back (median / p95) | 2.5 / 3.2 ms | |
+| Replay at 120 fps: model step | 3.4 ms | 1.0 ms |
+| Replay at 120 fps: post-processing | 0.9 ms (CPU) | 0.3 ms (GPU) |
+| Replay at 120 fps: frame to map (median / p95) | 5.8-6.0 / 14-15 ms | 3.1 / 5.4 ms |
+| Replay at 60 fps: model step | 3.9 ms | |
+| Load | 0.8 s (3.4 s with a cold driver shader cache) | 0.25 s CUDA, then TensorRT |
+
+Why the model step is slower in the replay than back to back:
+- The GPU time-slices between NVDEC's CUDA context and Vulkan. TensorRT
+  shares the CUDA context, so it doesn't switch.
+- The GPU and CPU clock down between frames. The 60 fps replay is slower
+  than the 120 fps one.
+
+The cost is about 3 ms median and 9 ms at p95 against TensorRT. It's
+acceptable for the no-download default. Later improvements:
+- CUDA–Vulkan external memory, to drop the copies and allow GPU
+  post-processing;
+- EdgePad on native TensorRT once the VDA download is installed.
 
 ## Direction (2026-10-07)
 

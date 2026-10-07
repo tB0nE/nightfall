@@ -92,12 +92,16 @@ reassembly, keeping only the data shards). Each frame then goes through:
    never passes through the CPU. Each frame stays tagged with its frame
    number. `--cpu-frames` switches to converting on the CPU, for
    comparison.
-2. **Model:** ONNX Runtime runs the depth model (`src/onnx.rs`). It starts
-   on CUDA within a second, builds a TensorRT fp16 engine in the background,
-   and switches to it. The first build takes about 90 s per model and GPU;
-   after that the engine is cached in `~/.cache/nightfall-meteor/tensorrt`
-   and loads in about 0.4 s. Set `tensorrt = false`, or pass
-   `--no-tensorrt`, to stay on CUDA.
+2. **Model:** the EdgePad models run on ncnn's Vulkan backend
+   (`src/ncnn.rs`), which loads in under a second and needs no NVIDIA
+   inference libraries. Vulkan can't read CUDA memory, so the input tensor
+   comes back to the CPU first, and post-processing runs on the CPU.
+   Without ncnn (or with `METEOR_NCNN=off`), ONNX Runtime runs the `.onnx`
+   versions (`src/onnx.rs`): it starts on CUDA within a second, builds a
+   TensorRT fp16 engine in the background, and switches to it. The first
+   build takes about 90 s per model and GPU; after that the engine is cached
+   in `~/.cache/nightfall-meteor/tensorrt` and loads in about 0.4 s. Set
+   `tensorrt = false`, or pass `--no-tensorrt`, to stay on CUDA.
 3. **Post-processing:** ported from the Quest's `DepthEstimator.java`, so a
    host map matches an on-device one. It runs as CUDA kernels on the model's
    output while it's still on the GPU (`kernels/postprocess.cu`,
@@ -122,8 +126,9 @@ keyframe and Sunshine rarely sends one.
 
 The tray has the controls:
 - a **Host depth** on/off toggle;
-- a **Model** menu, listing the `.onnx` files in the models folder (and
-  Video Depth Anything, below);
+- a **Model** menu, listing the models in the models folder (each EdgePad
+  model once, on ncnn when it has been converted, and Video Depth
+  Anything, below);
 - a **Rate** menu: Match stream, 30, 60, 72, 90 or 120 Hz (72 Hz is the Quest default refresh rate);
 - **Depth smoothing**, the per-pixel smoothing in post-processing (on by
   default), for comparing VDA with and without it;
@@ -140,10 +145,14 @@ Choices are kept in `state.toml`, next to `meteor.toml`.
 Requirements:
 - An NVIDIA GPU and driver (Meteor uses the driver's `libcuda` and
   `libnvcuvid`).
-- ONNX Runtime with the CUDA provider. For now this comes from the
-  `onnxruntime-gpu` pip package; set it up once with
-  `tools/bench_depth.py`'s instructions, which put it in `target/bench-venv`
-  where development builds find it. Otherwise set `onnxruntime_lib`.
+- ncnn (Vulkan) for the EdgePad models: `tools/fetch_ncnn.sh` puts ncnn's
+  prebuilt library in `target/ncnn`, where development builds find it.
+  Otherwise set `ncnn_lib`.
+- ONNX Runtime with the CUDA provider, for VDA (and for EdgePad without
+  ncnn). For now this comes from the `onnxruntime-gpu` pip package; set it
+  up once with `tools/bench_depth.py`'s instructions, which put it in
+  `target/bench-venv` where development builds find it. Otherwise set
+  `onnxruntime_lib`.
 - Optional: TensorRT 10 (`tensorrt-cu13<11` from pip, in the same venv).
   ONNX Runtime 1.30 links TensorRT 10, so version 11 won't load. Without
   it, Meteor stays on CUDA.
@@ -169,8 +178,16 @@ Requirements:
       $E/host_strong_zero_shot/672x384/tflite/student_672x384_edgepad_float16.tflite
   ```
 
-  The first use of a model builds its TensorRT engine (about 100 s, then
-  cached).
+  Then convert them for ncnn (needs `pip install pnnx`; see
+  `models/README.md`):
+
+  ```sh
+  M=~/.local/share/nightfall-meteor/models
+  python meteor/models/convert_ncnn.py $M/zipdepth_wide_512x288.onnx $M/zipdepth_wide_672x384.onnx
+  ```
+
+  Without the conversion, the first use of a model on ONNX Runtime builds
+  its TensorRT engine (about 100 s, then cached).
 - Optional: **Video Depth Anything Small (518x294)** (`src/vda.rs`), a
   temporal model: it keeps eight hidden-state histories between frames
   instead of seeing each frame alone. It's a manual choice for testing; the
@@ -207,6 +224,19 @@ Requirements:
   still works if it's in the folder.
 
 Without these, Meteor logs why and stays a plain proxy.
+
+EdgePad 512 on ncnn, measured on an RTX 3090 (2026-10-07):
+- Against ONNX Runtime CUDA fp32 on 30 frames of a 1440p game capture
+  (`cargo test --release -- --ignored edgepad`, which needs the frames):
+  0.061% of the depth range on average, 0.72% at worst. TensorRT fp16,
+  which Meteor ran before, is 0.068% and 0.85%.
+- Run back to back: 2.5 ms median, 3.2 ms p95, upload and download included.
+- Replaying the 1440p capture at 120 fps: frame in to map out 5.8-6.0 ms
+  median, 14-15 ms p95 (decode 1.6 ms, model 3.4 ms, post-processing
+  0.9 ms). TensorRT fp16 through ONNX Runtime: 3.1 ms median, 5.4 ms p95.
+  The model is slower in the replay than back to back because the GPU
+  switches between NVDEC's CUDA work and Vulkan, and clocks down between
+  frames.
 
 VDA measured on an RTX 3090 (2026-10-06):
 - Against the researcher's all-TensorRT reference over their 75-frame

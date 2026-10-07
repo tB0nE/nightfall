@@ -26,7 +26,10 @@ pub struct Config {
     /// libonnxruntime with the CUDA provider. Found next to the binary in
     /// development builds when unset (see onnx.rs).
     pub onnxruntime_lib: Option<PathBuf>,
-    /// Folder of depth models (.onnx) for the tray's Model menu.
+    /// libncnn, for single-frame models on Vulkan. Found next to the binary
+    /// or on the library path when unset (see ncnn.rs).
+    pub ncnn_lib: Option<PathBuf>,
+    /// Folder of depth models (.ncnn.param or .onnx) for the tray's Model menu.
     pub models_dir: Option<PathBuf>,
     /// Run the depth model with TensorRT fp16 once its engine is built.
     pub tensorrt: bool,
@@ -40,6 +43,7 @@ impl Default for Config {
             port_offset: DEFAULT_PORT_OFFSET,
             discovery_port: DEFAULT_DISCOVERY_PORT,
             onnxruntime_lib: None,
+            ncnn_lib: None,
             models_dir: None,
             tensorrt: true,
         }

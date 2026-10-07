@@ -357,6 +357,19 @@ impl GpuTensor {
     /// Copies the tensor back as packed RGB24 (for snapshots).
     pub fn download_rgb(&self) -> Result<Vec<u8>, String> {
         let plane = self.width * self.height;
+        let floats = self.download()?;
+        let mut rgb = Vec::with_capacity(plane * 3);
+        for i in 0..plane {
+            for c in 0..3 {
+                rgb.push((floats[c * plane + i] * 255.0).round() as u8);
+            }
+        }
+        Ok(rgb)
+    }
+
+    /// Copies the tensor back as it is: planar RGB floats.
+    pub fn download(&self) -> Result<Vec<f32>, String> {
+        let plane = self.width * self.height;
         let mut floats = vec![0f32; plane * 3];
         let api = self.pool.api;
         // SAFETY: floats holds exactly the tensor's bytes.
@@ -368,13 +381,7 @@ impl GpuTensor {
             rc
         };
         check("cuMemcpyDtoH", rc)?;
-        let mut rgb = Vec::with_capacity(plane * 3);
-        for i in 0..plane {
-            for c in 0..3 {
-                rgb.push((floats[c * plane + i] * 255.0).round() as u8);
-            }
-        }
-        Ok(rgb)
+        Ok(floats)
     }
 }
 

@@ -13,6 +13,7 @@ mod gpu_post;
 #[cfg(target_os = "linux")]
 mod icon;
 mod mic;
+mod ncnn;
 mod nvdec;
 mod onnx;
 mod ports;
@@ -81,7 +82,8 @@ async fn main() {
     let depth = (!flag("--no-depth")).then(|| {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let tensorrt = config.tensorrt && !flag("--no-tensorrt");
-        let depth = Depth::start(config.onnxruntime_lib.as_deref(), tensorrt, models_dir, save);
+        let runtimes = depth::Runtimes { onnxruntime: config.onnxruntime_lib.as_deref(), ncnn: config.ncnn_lib.as_deref() };
+        let depth = Depth::start(runtimes, tensorrt, models_dir, save);
         depth.gpu_frames.store(!flag("--cpu-frames"), std::sync::atomic::Ordering::Relaxed);
         depth.gpu_post.store(!flag("--cpu-post"), std::sync::atomic::Ordering::Relaxed);
         depth
@@ -223,7 +225,9 @@ pub fn open_config_file() {
              # discovery_port = {}\n\n\
              # ONNX Runtime with the CUDA provider, for host depth.\n\
              # onnxruntime_lib = \"/path/to/libonnxruntime.so\"\n\n\
-             # Folder of depth models (.onnx) for the tray's Model menu.\n\
+             # ncnn, for the EdgePad models on Vulkan.\n\
+             # ncnn_lib = \"/path/to/libncnn.so.1\"\n\n\
+             # Folder of depth models (.ncnn.param or .onnx) for the tray's Model menu.\n\
              # models_dir = \"{}\"\n\n\
              # Run the depth model with TensorRT fp16 (built once, then cached).\n\
              # tensorrt = true\n",
