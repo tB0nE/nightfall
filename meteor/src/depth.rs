@@ -378,11 +378,15 @@ impl Depth {
                 let models_dir = self.models_dir.clone();
                 // CUDA first, so depth starts within a second; then TensorRT,
                 // whose first engine build for a model takes about 90 s.
+                // Without the CUDA provider, TensorRT only.
                 let _ = std::thread::Builder::new().name("depth-load".into()).spawn(move || {
                     let cache = crate::config::cache_dir().join("tensorrt");
-                    let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
-                    let cuda_ok = cuda.is_ok();
-                    let _ = tx.send((name.clone(), Backend::Cuda, cuda));
+                    let cuda_ok = !crate::onnx::cuda_backend_present() || {
+                        let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
+                        let ok = cuda.is_ok();
+                        let _ = tx.send((name.clone(), Backend::Cuda, cuda));
+                        ok
+                    };
                     if tensorrt && cuda_ok {
                         pending.store(true, Ordering::Relaxed);
                         let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache);
@@ -424,8 +428,8 @@ impl Depth {
                         failures = 0;
                         model = Some(loaded);
                     }
-                    // TensorRT is optional: stay on CUDA.
-                    Err(err) if backend == Backend::TensorRt => {
+                    // TensorRT is optional when CUDA is there: stay on CUDA.
+                    Err(err) if backend == Backend::TensorRt && crate::onnx::cuda_backend_present() => {
                         log::warn!("TensorRT unavailable, staying on CUDA: {err}");
                         if let Some(m) = &model {
                             self.set_status(format!("ready: {}", m.describe()));

@@ -50,6 +50,17 @@ fn load_runtime(configured: Option<&Path>) -> Result<String, String> {
     Ok(format!("{} ({preloaded} CUDA libraries preloaded)", lib.display()))
 }
 
+/// Whether models can run on ONNX Runtime's CUDA provider. The TensorRT
+/// provider needs the CUDA provider's library too, but not cuDNN, so a
+/// TensorRT-only runtime (the AppImage) leaves cuDNN's engines out, and then
+/// models load straight on TensorRT.
+pub fn cuda_backend_present() -> bool {
+    let name = if cfg!(windows) { "cudnn_ops64_9.dll" } else { "libcudnn_ops.so.9" };
+    // SAFETY: cuDNN's own library (already loaded by the preload when it is
+    // there); loading it runs only its initializers.
+    unsafe { libloading::Library::new(name).is_ok() }
+}
+
 /// `target/bench-venv/lib/python3.*/site-packages/onnxruntime/capi/libonnxruntime.so.*`
 fn find_dev_runtime() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;

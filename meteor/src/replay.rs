@@ -22,8 +22,13 @@ pub fn run(path: &Path, fps: u32, depth: Arc<Depth>) -> Result<(), String> {
     log::info!("Replaying {} frames of {codec:?} at {fps} fps", units.len());
 
     // Wait for the model.
-    let started = Instant::now();
+    // Without CUDA, the first model is the TensorRT engine, so the wait
+    // counts from the end of the build.
+    let mut started = Instant::now();
     while depth.active_model().is_none() {
+        if depth.tensorrt_pending.load(Ordering::Relaxed) {
+            started = Instant::now();
+        }
         if !depth.available() || started.elapsed() > Duration::from_secs(60) {
             return Err(format!("host depth isn't available: {}", depth.status()));
         }
