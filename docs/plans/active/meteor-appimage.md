@@ -1,8 +1,9 @@
 # Nightfall Meteor: AppImage
 
 > Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
-> backend and Phase 1 done (2026-10-07); Phases 2 to 6 planned for a small
-> AppImage with VDA downloaded on first use (rewritten 2026-10-07).
+> backend, Phase 1 and Phase 2 done (2026-10-07; Phase 2 needs the graphs'
+> release and NVIDIA's answer); Phases 3 to 6 planned for a small AppImage
+> with VDA downloaded on first use (rewritten 2026-10-07).
 >
 > Date: 2026-10-07
 >
@@ -412,39 +413,67 @@ Tested on the RTX 3090 with the build without ONNX Runtime:
 - **Libraries loaded:** only the NVIDIA driver's own, Vulkan, ncnn and
   TensorRT's two libraries.
 
-## Phase 2: the VDA download
+## Phase 2: the VDA download (built 2026-10-07)
 
-- **In the tray:** while VDA isn't installed, the Model menu shows "Video
-  Depth Anything (download, about N MB)", with N for this GPU. Choosing it
-  starts the download; the status line shows progress ("Downloading VDA:
-  210 of 640 MB"), then "Preparing VDA for your GPU" during the engine
-  build (about 3 minutes on an RTX 3090), then VDA as usual. A "Cancel"
-  item appears while it runs. The menu item says the TensorRT files come
-  from NVIDIA under NVIDIA's licence, with a link to it.
-- **Choosing the files:** the GPU's compute capability (from the driver,
-  `cuDeviceGetAttribute`) picks the builder resource. A GPU with none
-  doesn't get the menu item, and the log says why.
-- **Fetching** (`src/download.rs`, new):
-  - HTTPS with `ureq` and rustls (no OpenSSL dependency); zip parsing and
-    inflate with `flate2`, which are the only new crates;
-  - read the wheel's central directory (zip64) with range requests, then
-    each member's range, inflating as it streams;
-  - check each file against a SHA-256 pinned in Meteor (taken from the
-    wheel's `RECORD`, which the build checks), and the VDA graphs against
-    the hashes already in `vda.rs`;
-  - write into `runtime/tensorrt-10.16.1.partial`, then rename, so a
-    half-done download never looks installed; an interrupted download
-    resumes per file;
-  - check free disk space first (1.3 GB).
-- **The URL:** pinned, with the version. If NVIDIA moves it, the download
-  fails with a message and EdgePad keeps working; a Meteor update fixes the
-  URL. Reading the PEP 503 index for the file name is a fallback worth
-  having.
-- **Updates:** a new Meteor with a newer TensorRT downloads into a new
-  folder and rebuilds engines; the old folder is removed once the new one
-  works.
-- **Removing it:** a tray item "Remove VDA" deletes the runtime folder,
-  the graphs and the cached engines, and switches to EdgePad.
+Built in `src/download.rs`, with the tray items in `src/tray.rs` and
+`nightfall-meteor --download-vda` for terminals and scripts.
+
+- **In the tray:** while VDA can't run, the Model menu ends with a
+  "Download Video Depth Anything (N MB)" submenu, with N for this GPU. It
+  contains:
+  - the reason to want it;
+  - "Needs NVIDIA TensorRT, downloaded from NVIDIA under NVIDIA's licence";
+  - a line about the one-off engine build (about 3 minutes);
+  - "Read NVIDIA's TensorRT licence", which opens the licence page;
+  - "Accept and download".
+
+  While the download runs, the menu shows "Downloading VDA: X of Y MB" and
+  "Cancel download". Afterwards Meteor switches to VDA; the current model
+  serves while VDA's engines build. A failed download shows its reason in
+  the submenu, and the user can try again. "Remove the VDA download"
+  deletes TensorRT, the graphs it fetched (listed in
+  `downloaded-models.txt`) and VDA's cached engines.
+- **Choosing the files:** compute capability 7.5, 8.0, 8.6, 8.9, 9.0, 10.0
+  and 12.0 each have a builder resource. Any other GPU gets no offer;
+  `--download-vda` says why.
+- **Fetching:**
+  - `ureq` (rustls, bundled roots) and `flate2`;
+  - two range requests read the wheel's zip64 central directory, then each
+    member's bytes, inflated as they stream in;
+  - SHA-256s are pinned from the wheel's `RECORD`, and were checked against
+    the pip-installed files;
+  - each file is written as `.partial` and renamed only once its hash
+    matches;
+  - `libnvinfer` goes last, so a half-done download never looks
+    installed;
+  - a free-space check runs first.
+- **TensorRT reloads without a restart:** `tensorrt::init()` no longer
+  remembers a failure, so the download's folder is found as soon as it's
+  complete.
+
+Tested 2026-10-07 in an AppImage-like layout on the RTX 3090, with the
+build without ONNX Runtime, empty config, data and cache folders, and the
+bundled EdgePad:
+- the download fetched 701 MB in 24 s: 462 MB from NVIDIA, and the graphs
+  from a local server;
+- every hash matched;
+- the bundled EdgePad loaded first. The child built VDA's engines from
+  the downloaded TensorRT (7 s and 167 s); nothing else NVIDIA was loaded
+  beyond the driver.
+- VDA then ran at 5.1 ms frame to map (p95 5.3 ms) with no frames skipped.
+
+Still to do:
+- **Hosting the graphs:** `VDA_URL` points at a release that doesn't exist
+  yet (`meteor-vda-s-518x294` on tB0nE/nightfall). Creating it and
+  uploading the two graphs (Apache-2.0, with their licence) is the
+  maintainer's step.
+- **NVIDIA's answer** on fetching the wheel's files this way (Open
+  questions).
+- **Updates:** a newer TensorRT downloads into a new folder; removing the
+  old one once the new one works isn't written yet.
+- **Resuming within a file**, and reading the package index for the file
+  name if the pinned URL moves: not done. An interrupted download restarts
+  the file it was on.
 
 ## Phase 3: build the AppImage
 

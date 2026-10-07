@@ -149,11 +149,26 @@ Requirements:
 - ncnn (Vulkan) for the EdgePad models: `tools/fetch_ncnn.sh` puts ncnn's
   prebuilt library in `target/ncnn`, where development builds find it.
   Otherwise set `ncnn_lib`.
-- TensorRT 10 for VDA (`tensorrt-cu13<11` from pip). Meteor opens
-  `libnvinfer` and `libnvonnxparser` from `tensorrt_dir` in meteor.toml,
-  the VDA download's folder (`~/.local/share/nightfall-meteor/runtime/
-  tensorrt-10.16.1`, Phase 2 of the AppImage plan), the development venv
-  (`target/bench-venv`), or the library path.
+- TensorRT 10 for VDA. Meteor opens `libnvinfer` and `libnvonnxparser`
+  from `tensorrt_dir` in meteor.toml, the VDA download's folder, the
+  development venv (`target/bench-venv`, `tensorrt-cu13<11` from pip), or
+  the library path.
+- **The VDA download** (`src/download.rs`). When VDA can't run yet, the
+  tray's Model menu offers "Download Video Depth Anything (N MB)". The
+  submenu says TensorRT comes from NVIDIA under NVIDIA's licence, links to
+  that licence, and has "Accept and download". `nightfall-meteor
+  --download-vda` does the same from a terminal. It fetches:
+  - from NVIDIA's package server, only `libnvinfer`, the ONNX parser and
+    this GPU's builder resource, by range requests into the 3.7 GB
+    `tensorrt_cu13_libs` 10.16.1.11 wheel (462 MB on an RTX 30);
+  - the two VDA graphs from our release (`METEOR_VDA_URL` overrides the
+    folder URL), 239 MB.
+
+  Each file is checked against a pinned SHA-256, then renamed into place:
+  TensorRT into `~/.local/share/nightfall-meteor/runtime/tensorrt-10.16.1`,
+  the graphs into the models folder. Meteor then switches to VDA, building
+  its engines while the current model keeps serving. "Remove the VDA
+  download" deletes TensorRT, the graphs it fetched and VDA's engines.
 - Optional, for development: ONNX Runtime with the CUDA provider. It runs
   the `.onnx` EdgePad models without ncnn, and VDA on CUDA while its
   engines build (without it, an EdgePad model serves meanwhile). It comes

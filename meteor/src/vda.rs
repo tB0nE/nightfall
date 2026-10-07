@@ -46,8 +46,11 @@ pub const ID: &str = "vda_s_518x294";
 pub const LABEL: &str = "Video Depth Anything Small (518x294)";
 pub const STEP_FILE: &str = "vda_s_streaming_step_518x294.onnx";
 pub const COLD_FILE: &str = "vda_s_cold_start_518x294.onnx";
-const STEP_SHA256: &str = "98e62bd266218fd8b95293033502476797ba3673228d3417e140f5a96d9f714f";
-const COLD_SHA256: &str = "dd4df8ab533e19e9610083da8d3eefe1ac398648cba519deee605230493486e0";
+pub const STEP_SHA256: &str = "98e62bd266218fd8b95293033502476797ba3673228d3417e140f5a96d9f714f";
+pub const COLD_SHA256: &str = "dd4df8ab533e19e9610083da8d3eefe1ac398648cba519deee605230493486e0";
+/// The graphs' sizes, for the download's progress.
+pub const STEP_BYTES: u64 = 126_235_867;
+pub const COLD_BYTES: u64 = 112_997_409;
 
 pub const WIDTH: usize = 518;
 pub const HEIGHT: usize = 294;

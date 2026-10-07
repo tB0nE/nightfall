@@ -7,6 +7,7 @@ license = "GPL-3.0-only"
 
 [dependencies]
 env_logger = "0.11.11"
+flate2 = "1"
 libloading = "0.9"
 log = "0.4.34"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"], optional = true }
@@ -17,11 +18,15 @@ sha2 = "0.11.0"
 socket2 = "0.6"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
 toml = "1.1.6"
+ureq = "3"
 zstd = "0.13"
 
 # The tray icon is a StatusNotifierItem on Linux. Windows support comes later.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", features = ["tokio"] }
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
 
 [features]
 default = ["onnxruntime"]

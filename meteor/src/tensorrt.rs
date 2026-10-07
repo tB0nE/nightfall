@@ -17,7 +17,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 #[repr(C)]
 struct RawEngine {
@@ -80,7 +80,9 @@ pub const VERSION: &str = "10.16.1";
 const NVINFER: &str = "libnvinfer.so.10";
 const PARSER: &str = "libnvonnxparser.so.10";
 
-static INIT: OnceLock<Result<String, String>> = OnceLock::new();
+/// The version once TensorRT has opened. A failure isn't kept, so
+/// TensorRT installed later (the VDA download) is found without a restart.
+static OPENED: Mutex<Option<String>> = Mutex::new(None);
 static CONFIGURED: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Sets `tensorrt_dir` from meteor.toml, before the first init().
@@ -108,9 +110,13 @@ fn candidates() -> Vec<PathBuf> {
     dirs
 }
 
-/// Opens TensorRT once. Returns its version (for example `10.16.1`).
+/// Opens TensorRT once it can. Returns its version (for example `10.16.1`).
 pub fn init() -> Result<String, String> {
-    INIT.get_or_init(|| {
+    let mut opened = OPENED.lock().map_err(|_| "TensorRT's lock is poisoned".to_string())?;
+    if let Some(version) = opened.as_ref() {
+        return Ok(version.clone());
+    }
+    let result = (|| {
         let mut pairs: Vec<(CString, CString)> = Vec::new();
         for dir in candidates() {
             pairs.push((c_path(&dir.join(NVINFER))?, c_path(&dir.join(PARSER))?));
@@ -129,8 +135,11 @@ pub fn init() -> Result<String, String> {
             errors.push(message(&err));
         }
         Err(format!("TensorRT not found ({})", errors.join("; ")))
-    })
-    .clone()
+    })();
+    if let Ok(version) = &result {
+        *opened = Some(version.clone());
+    }
+    result
 }
 
 /// Builder settings, part of the engine's cache key.

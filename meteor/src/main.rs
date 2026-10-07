@@ -9,6 +9,7 @@ mod config;
 mod depth;
 mod depth_server;
 mod discovery;
+mod download;
 mod gpu_post;
 #[cfg(target_os = "linux")]
 mod icon;
@@ -69,7 +70,9 @@ async fn main() {
              \x20 --save-depth <dir>      save every Nth frame and depth map as PNGs\n\
              \x20 --save-every <n>        N for --save-depth (default 60)\n\
              \x20 --replay <file>         run a .h264/.hevc file through host depth and exit\n\
-             \x20 --fps <n>               frame rate for --replay (default 60)"
+             \x20 --fps <n>               frame rate for --replay (default 60)\n\
+             \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
+             \x20                         and the VDA graphs, then exit"
         );
         return;
     }
@@ -79,6 +82,10 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    if flag("--download-vda") {
+        let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
+        std::process::exit(download::command(&models_dir));
+    }
     let depth = (!flag("--no-depth")).then(|| {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let tensorrt = config.tensorrt && !flag("--no-tensorrt");

@@ -199,6 +199,8 @@ pub struct Depth {
     /// `usr/share/nightfall-meteor/models`); a file of the same name in
     /// models_dir wins.
     bundled_dir: Option<PathBuf>,
+    /// The VDA download (TensorRT and the graphs), started from the tray.
+    pub download: crate::download::Download,
     pub stats: DepthStats,
     /// Keep decoded frames on the GPU (default); `--cpu-frames` turns it off.
     pub gpu_frames: AtomicBool,
@@ -272,6 +274,7 @@ impl Depth {
         let depth = Arc::new(Depth {
             models_dir,
             bundled_dir,
+            download: crate::download::Download::default(),
             stats: DepthStats::default(),
             gpu_frames: AtomicBool::new(true),
             gpu_post: AtomicBool::new(true),
@@ -441,6 +444,66 @@ impl Depth {
         }
         models.sort();
         models
+    }
+
+    /// When VDA isn't usable but the download would make it so: the bytes
+    /// to download. None while a download runs.
+    pub fn vda_offer(&self) -> Option<u64> {
+        if self.download.state() == crate::download::State::Running || self.list_models().iter().any(|m| m == vda::ID) {
+            return None;
+        }
+        crate::download::plan(&self.models_dir).ok().filter(|p| !p.is_empty()).map(|p| p.bytes())
+    }
+
+    /// Downloads what VDA needs in the background, then switches to it. The
+    /// current model keeps serving meanwhile.
+    pub fn download_vda(self: &Arc<Self>) {
+        if self.download.state() == crate::download::State::Running {
+            return;
+        }
+        let depth = self.clone();
+        let _ = std::thread::Builder::new().name("vda-download".into()).spawn(move || {
+            let plan = match crate::download::plan(&depth.models_dir) {
+                Ok(plan) => plan,
+                Err(err) => {
+                    log::warn!("VDA download: {err}");
+                    if let Ok(mut s) = depth.download.state.lock() {
+                        *s = crate::download::State::Failed(err);
+                    }
+                    return;
+                }
+            };
+            log::info!("VDA download: {} MB", plan.bytes() / 1_000_000);
+            match depth.download.run(&plan) {
+                Ok(()) => {
+                    log::info!("VDA download finished");
+                    if depth.list_models().iter().any(|m| m == vda::ID) {
+                        depth.select_model(vda::ID);
+                    } else {
+                        log::warn!("VDA was downloaded but still isn't usable: {}", crate::tensorrt::init().err().unwrap_or_default());
+                    }
+                }
+                Err(err) => log::warn!("VDA download stopped: {err}"),
+            }
+        });
+    }
+
+    /// Deletes what the VDA download installed, after switching away from
+    /// VDA if it's in use.
+    pub fn remove_vda_download(&self) {
+        if self.model().as_deref() == Some(vda::ID) {
+            let models: Vec<String> = self.list_models().into_iter().filter(|m| m != vda::ID).collect();
+            if let Some(other) = preferred_model(&models) {
+                self.select_model(&other);
+            }
+        }
+        match crate::download::remove(&self.models_dir) {
+            Ok(()) => log::info!("Removed the VDA download"),
+            Err(err) => log::warn!("Can't remove the VDA download: {err}"),
+        }
+        if let Ok(mut s) = self.download.state.lock() {
+            *s = crate::download::State::Idle;
+        }
     }
 
     /// Loads a model from the models folder in the background; the engine

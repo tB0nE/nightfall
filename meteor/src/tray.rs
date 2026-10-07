@@ -125,9 +125,7 @@ impl MeteorTray {
         let models = depth.list_models();
         let current = depth.model();
         let model_names = models.clone();
-        let model_menu = SubMenu {
-            label: format!("Model: {}", current.as_deref().map_or_else(|| "none".to_string(), crate::depth::model_label)),
-            submenu: vec![
+        let mut model_items: Vec<ksni::MenuItem<Self>> = vec![
                 RadioGroup {
                     selected: current.as_ref().and_then(|c| models.iter().position(|m| m == c)).unwrap_or(0),
                     select: Box::new(move |tray: &mut Self, i| {
@@ -141,7 +139,11 @@ impl MeteorTray {
                         .collect(),
                 }
                 .into(),
-            ],
+        ];
+        model_items.extend(self.vda_download_items(depth));
+        let model_menu = SubMenu {
+            label: format!("Model: {}", current.as_deref().map_or_else(|| "none".to_string(), crate::depth::model_label)),
+            submenu: model_items,
             ..Default::default()
         };
         let rate_label = |hz: u32| if hz == 0 { "Match stream".to_string() } else { format!("{hz} Hz") };
@@ -208,6 +210,65 @@ impl MeteorTray {
             softening_menu.into(),
             info(readout),
         ]
+        .into_iter()
+        .chain(download_progress(depth).map(info))
+        .collect()
+    }
+
+    /// The VDA download's items at the end of the Model menu: an offer
+    /// (with NVIDIA's licence), progress and Cancel, or Remove.
+    fn vda_download_items(&self, depth: &Arc<Depth>) -> Vec<ksni::MenuItem<Self>> {
+        use crate::download::State;
+        use ksni::menu::*;
+        let info = |label: String| -> ksni::MenuItem<Self> {
+            StandardItem { label, enabled: false, ..Default::default() }.into()
+        };
+        let action = |label: &str, f: fn(&Arc<Depth>)| -> ksni::MenuItem<Self> {
+            StandardItem {
+                label: label.into(),
+                activate: Box::new(move |tray: &mut Self| {
+                    if let Some(depth) = &tray.depth {
+                        f(depth);
+                    }
+                }),
+                ..Default::default()
+            }
+            .into()
+        };
+        let mut items = vec![MenuItem::Separator];
+        if let Some(progress) = download_progress(depth) {
+            items.push(info(progress));
+            items.push(action("Cancel download", |d| d.download.cancel.store(true, Ordering::Relaxed)));
+        } else if let Some(bytes) = depth.vda_offer() {
+            let mut offer = vec![
+                info("Video Depth Anything: steadier, more detailed depth".into()),
+                info("Needs NVIDIA TensorRT, downloaded from NVIDIA under NVIDIA's licence".into()),
+                info("Then about 3 minutes to prepare it for your GPU, once".into()),
+                StandardItem {
+                    label: "Read NVIDIA's TensorRT licence".into(),
+                    activate: Box::new(|_| open_url(crate::download::LICENCE_URL)),
+                    ..Default::default()
+                }
+                .into(),
+                action("Accept and download", |d| d.download_vda()),
+            ];
+            if let State::Failed(err) = depth.download.state() {
+                offer.insert(0, info(format!("Last download failed: {err}")));
+            }
+            items.push(
+                SubMenu {
+                    label: format!("Download Video Depth Anything ({} MB)", bytes.div_ceil(1_000_000)),
+                    submenu: offer,
+                    ..Default::default()
+                }
+                .into(),
+            );
+        } else if crate::download::installed() {
+            items.push(action("Remove the VDA download", |d| d.remove_vda_download()));
+        } else {
+            items.pop();
+        }
+        items
     }
 
     fn mic_menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -251,6 +312,21 @@ impl MeteorTray {
         } else {
             "Waiting for a client".into()
         }
+    }
+}
+
+/// "Downloading VDA: 210 of 640 MB" while the download runs.
+fn download_progress(depth: &Depth) -> Option<String> {
+    (depth.download.state() == crate::download::State::Running).then(|| {
+        let mb = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed) / 1_000_000;
+        format!("Downloading VDA: {} of {} MB", mb(&depth.download.done), mb(&depth.download.total))
+    })
+}
+
+fn open_url(url: &str) {
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    if let Err(err) = std::process::Command::new(opener).arg(url).spawn() {
+        log::warn!("Can't open {url}: {err}");
     }
 }
 

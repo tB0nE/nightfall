@@ -718,6 +718,21 @@ pub(crate) fn primary_context() -> Result<(&'static Api, CuContext), String> {
 
 /// The GPU's name and compute capability, as a file-name-safe key (for
 /// example `sm86-nvidia-geforce-rtx-3090`).
+/// Device 0's compute capability, for example (8, 6) for an RTX 30.
+pub(crate) fn compute_capability() -> Result<(i32, i32), String> {
+    const COMPUTE_CAPABILITY_MAJOR: c_int = 75;
+    const COMPUTE_CAPABILITY_MINOR: c_int = 76;
+    let api = api()?;
+    let (mut major, mut minor) = (0, 0);
+    // SAFETY: plain driver calls with out-pointers to locals; needs no context.
+    unsafe {
+        check("cuInit", (api.cu_init)(0))?;
+        check("cuDeviceGetAttribute", (api.cu_device_get_attribute)(&mut major, COMPUTE_CAPABILITY_MAJOR, 0))?;
+        check("cuDeviceGetAttribute", (api.cu_device_get_attribute)(&mut minor, COMPUTE_CAPABILITY_MINOR, 0))?;
+    }
+    Ok((major, minor))
+}
+
 pub(crate) fn gpu_identity(api: &Api, ctx: CuContext) -> String {
     const COMPUTE_CAPABILITY_MAJOR: c_int = 75;
     const COMPUTE_CAPABILITY_MINOR: c_int = 76;
