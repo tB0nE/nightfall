@@ -9,7 +9,7 @@ license = "GPL-3.0-only"
 env_logger = "0.11.11"
 libloading = "0.9"
 log = "0.4.34"
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"], optional = true }
 png = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -22,6 +22,12 @@ zstd = "0.13"
 # The tray icon is a StatusNotifierItem on Linux. Windows support comes later.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", features = ["tokio"] }
+
+[features]
+default = ["onnxruntime"]
+# ONNX Runtime: EdgePad's .onnx models, and VDA on CUDA while its engines
+# build. For development comparisons; the AppImage builds without it.
+onnxruntime = ["dep:ort"]
 
 [profile.release]
 strip = true

@@ -130,8 +130,9 @@ The tray has the controls:
   model once, on ncnn when it has been converted, and Video Depth
   Anything, below);
 - a **Rate** menu: Match stream, 30, 60, 72, 90 or 120 Hz (72 Hz is the Quest default refresh rate);
-- **Depth smoothing**, the per-pixel smoothing in post-processing (on by
-  default), for comparing VDA with and without it;
+- **Depth smoothing**, the per-pixel smoothing in post-processing,
+  remembered per model: on by default for EdgePad, off for VDA, which is
+  temporally steady already (smoothing adds about 40 ms of lag);
 - **Edge softening (VDA)**: Off, Light, Medium (default) or High, a
   Gaussian blur of 0.75, 0.85 or 1 depth texel (sigma).
   The headset's stereo warp shifts the picture in blocks of one depth texel
@@ -148,16 +149,24 @@ Requirements:
 - ncnn (Vulkan) for the EdgePad models: `tools/fetch_ncnn.sh` puts ncnn's
   prebuilt library in `target/ncnn`, where development builds find it.
   Otherwise set `ncnn_lib`.
-- ONNX Runtime with the CUDA provider, for VDA (and for EdgePad without
-  ncnn). For now this comes from the `onnxruntime-gpu` pip package; set it
-  up once with `tools/bench_depth.py`'s instructions, which put it in
-  `target/bench-venv` where development builds find it. Otherwise set
-  `onnxruntime_lib`.
-- Optional: TensorRT 10 (`tensorrt-cu13<11` from pip, in the same venv).
-  ONNX Runtime 1.30 links TensorRT 10, so version 11 won't load. Without
-  it, Meteor stays on CUDA.
+- TensorRT 10 for VDA (`tensorrt-cu13<11` from pip). Meteor opens
+  `libnvinfer` and `libnvonnxparser` from `tensorrt_dir` in meteor.toml,
+  the VDA download's folder (`~/.local/share/nightfall-meteor/runtime/
+  tensorrt-10.16.1`, Phase 2 of the AppImage plan), the development venv
+  (`target/bench-venv`), or the library path.
+- Optional, for development: ONNX Runtime with the CUDA provider. It runs
+  the `.onnx` EdgePad models without ncnn, and VDA on CUDA while its
+  engines build (without it, an EdgePad model serves meanwhile). It comes
+  from the `onnxruntime-gpu` pip package; set it up once with
+  `tools/bench_depth.py`'s instructions, which put it in
+  `target/bench-venv` where development builds find it, or set
+  `onnxruntime_lib`. ONNX Runtime 1.30 links TensorRT 10, so version 11
+  won't load. Builds with `--no-default-features` leave ONNX Runtime out
+  (the `onnxruntime` feature), as the AppImage will.
 - Models in `~/.local/share/nightfall-meteor/models` (`models_dir` changes
-  this); the tray's Model menu lists them. Meteor defaults to
+  this), and those shipped in `../share/nightfall-meteor/models` next to
+  the binary (the AppImage); a file of the same name in the models folder
+  wins. The tray's Model menu lists them. Meteor defaults to
   `zipdepth_wide_512x288.onnx`, the widescreen EdgePad model the Quest's
   standard tier also runs; `zipdepth_wide_672x384.onnx` is the
   higher-quality choice (about 0.6 ms more per frame). Both come from the

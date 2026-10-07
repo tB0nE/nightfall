@@ -1,8 +1,8 @@
 # Nightfall Meteor: AppImage
 
-> Status: Phase 0, the native TensorRT backend for VDA and the Vulkan EdgePad
-> backend done (2026-10-07); Phases 1 to 6 planned for a small AppImage with
-> VDA downloaded on first use (rewritten 2026-10-07).
+> Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
+> backend and Phase 1 done (2026-10-07); Phases 2 to 6 planned for a small
+> AppImage with VDA downloaded on first use (rewritten 2026-10-07).
 >
 > Date: 2026-10-07
 >
@@ -374,36 +374,43 @@ So 0.55 to 0.79 GB to download and 1.0 to 1.2 GB on disk, depending on
 the GPU. The wheel also has sm80, sm90 and sm100 (data-centre parts) and a
 PTX resource (215 MB) that may serve a GPU with no resource of its own.
 
-## Phase 1: Meteor without ONNX Runtime
+## Phase 1: Meteor without ONNX Runtime (done, 2026-10-07)
 
-Most of this exists (the two backends above). What's left:
+- **TensorRT lookup** (`tensorrt.rs`): `libnvinfer` and the parser are
+  opened by path from `tensorrt_dir` in meteor.toml, the VDA download's
+  folder (`~/.local/share/nightfall-meteor/runtime/tensorrt-10.16.1`,
+  `tensorrt::install_dir()`), or the development venv's `tensorrt_libs`;
+  then by soname. TensorRT opens the builder resource from its own folder
+  (its RPATH is `$ORIGIN`). The engine-build child no longer loads ONNX
+  Runtime.
+- **The `onnxruntime` cargo feature** (on by default):
+  - `onnx.rs` keeps `Backend` and picks `onnx/runtime.rs` or a stub, whose
+    `init()` fails and whose `DepthModel` can't exist;
+  - VDA's ONNX Runtime graphs moved to `vda/ort_graph.rs`;
+  - `ort` is an optional dependency;
+  - `cargo build --no-default-features` builds Meteor without it, warning
+    free.
+- **VDA without ONNX Runtime:** it's listed when its graphs are there and
+  TensorRT loads. With no CUDA provider to run it while the engines build,
+  the preferred EdgePad model loads first and serves until VDA is ready.
+  The status says VDA is loading.
+- **Bundled models:** the menu also lists
+  `<binary>/../share/nightfall-meteor/models`; a file of the same name in
+  the user's folder wins.
+- **Smoothing per model:** remembered per model in `state.toml`
+  (`[model_smoothing]`). Unset, it's off for VDA and on for EdgePad.
+  Older files' single `smoothing` switch is ignored. A unit test checks
+  that an older file still parses, because reusing that key had made old
+  files fail to parse and drop the saved model.
 
-- **TensorRT lookup** (`tensorrt.rs`): open `libnvinfer` and the parser
-  from the installed runtime folder
-  (`~/.local/share/nightfall-meteor/runtime/tensorrt-10.16.1`) by path,
-  then fall back to the development venv's preload, as today.
-  `build_command` stops calling `onnx::init`.
-- **VDA without ONNX Runtime** (`depth.rs`, `vda.rs`):
-  - list VDA when its graphs are present and TensorRT loads, not only when
-    ONNX Runtime does;
-  - without ONNX Runtime there is no CUDA fallback while the engines
-    build, so the current EdgePad model keeps serving until VDA is ready,
-    and the switch happens then;
-  - the `Runner::Ort` path and the other ONNX Runtime code move behind a
-    cargo feature, `onnxruntime`, on in development builds and off in the
-    AppImage.
-- **Bundled models** (`depth.rs`): the Model menu lists the bundled folder
-  (`$APPDIR/usr/share/nightfall-meteor/models`) and the user's models
-  folder. A user's file of the same name wins, so a newer model can replace
-  a bundled one without rebuilding the AppImage.
-- **Defaults:** EdgePad 512 until VDA is installed and chosen. Depth
-  smoothing defaults to off for VDA and on for the EdgePad models (VDA is
-  temporally steady without it, and it adds about 40 ms of lag). The
-  default is per model, so switching models doesn't carry the other
-  model's choice; once the user sets it, their choice is saved.
-- **The TensorRT cache** stays in `~/.cache/nightfall-meteor/tensorrt`. Its
-  key (model hash, precision, builder settings, TensorRT version, GPU)
-  already rebuilds engines after an update that changes TensorRT.
+Tested on the RTX 3090 with the build without ONNX Runtime:
+- **VDA from cached engines:** EdgePad loaded in 0.8 s and VDA took over
+  0.8 s later.
+- **From an empty cache:** EdgePad served while the child built both engines
+  with the venv's TensorRT (cold start 7 s, step 182 s). Then VDA ran at
+  5.1 ms frame to map (p95 5.3 ms), with no frames skipped.
+- **Libraries loaded:** only the NVIDIA driver's own, Vulkan, ncnn and
+  TensorRT's two libraries.
 
 ## Phase 2: the VDA download
 

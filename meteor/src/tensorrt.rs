@@ -1,17 +1,22 @@
 //! TensorRT without ONNX Runtime, through the shim in native/tensorrt.cpp.
 //!
-//! `libnvinfer` and `libnvonnxparser` are opened at run time, by soname
-//! (found among the libraries `onnx::init` preloads, or on the library
-//! path), so Meteor builds and runs as a plain proxy without them. Running
-//! an engine needs only `libnvinfer`; building one also needs this GPU's
-//! builder resource (`libnvinfer_builder_resource_smNN`), which TensorRT
-//! opens itself.
+//! `libnvinfer` and `libnvonnxparser` are opened at run time, so Meteor
+//! builds and runs as a plain proxy without them. They're looked for in:
+//!
+//! - `tensorrt_dir` in meteor.toml;
+//! - the VDA download's folder (`install_dir()`);
+//! - the development venv's `tensorrt_libs` (`target/bench-venv`);
+//! - the library path, by soname.
+//!
+//! Running an engine needs only `libnvinfer`; building one also needs this
+//! GPU's builder resource (`libnvinfer_builder_resource_smNN`), which
+//! TensorRT opens itself from its own folder (its RPATH is `$ORIGIN`).
 //!
 //! Engines are built from the ONNX file once per model, GPU and TensorRT
 //! version, and cached as plans by the caller.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 #[repr(C)]
@@ -50,6 +55,9 @@ extern "C" fn log_message(severity: c_int, message: *const c_char) {
     // SAFETY: TensorRT passes a NUL-terminated string valid for the call.
     let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
     match severity {
+        // The builder reports each tactic it rejects as an error; the build
+        // still succeeds with another.
+        1 if text.contains("Skipping tactic") => log::debug!("TensorRT: {text}"),
         0 | 1 => log::error!("TensorRT: {text}"),
         2 => log::warn!("TensorRT: {text}"),
         3 => log::debug!("TensorRT: {text}"),
@@ -67,21 +75,60 @@ fn c_path(path: &Path) -> Result<CString, String> {
     CString::new(path.as_os_str().as_encoded_bytes()).map_err(|_| format!("{}: NUL in path", path.display()))
 }
 
+/// The TensorRT the VDA download installs, and the headers' version.
+pub const VERSION: &str = "10.16.1";
+const NVINFER: &str = "libnvinfer.so.10";
+const PARSER: &str = "libnvonnxparser.so.10";
+
 static INIT: OnceLock<Result<String, String>> = OnceLock::new();
+static CONFIGURED: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Sets `tensorrt_dir` from meteor.toml, before the first init().
+pub fn configure(dir: Option<PathBuf>) {
+    let _ = CONFIGURED.set(dir);
+}
+
+/// Where the VDA download puts TensorRT.
+pub fn install_dir() -> PathBuf {
+    crate::config::data_dir().join("runtime").join(format!("tensorrt-{VERSION}"))
+}
+
+/// Folders that have both libraries, in the order they're tried.
+fn candidates() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = CONFIGURED.get().cloned().flatten().into_iter().collect();
+    dirs.push(install_dir());
+    // target/{debug,release}/nightfall-meteor, or target/release/deps/<test>
+    if let Ok(exe) = std::env::current_exe() {
+        for target in exe.ancestors().skip(1).take(3) {
+            let Ok(pythons) = std::fs::read_dir(target.join("bench-venv/lib")) else { continue };
+            dirs.extend(pythons.flatten().map(|p| p.path().join("site-packages/tensorrt_libs")));
+        }
+    }
+    dirs.retain(|d| d.join(NVINFER).is_file() && d.join(PARSER).is_file());
+    dirs
+}
 
 /// Opens TensorRT once. Returns its version (for example `10.16.1`).
 pub fn init() -> Result<String, String> {
     INIT.get_or_init(|| {
-        let mut err = [0u8; ERR_LEN];
-        // SAFETY: NUL-terminated names, a log callback that outlives the
-        // process, and an error buffer of the stated size.
-        let version = unsafe {
-            trt_init(c"libnvinfer.so.10".as_ptr(), c"libnvonnxparser.so.10".as_ptr(), log_message, err.as_mut_ptr().cast(), ERR_LEN)
-        };
-        if version < 0 {
-            return Err(message(&err));
+        let mut pairs: Vec<(CString, CString)> = Vec::new();
+        for dir in candidates() {
+            pairs.push((c_path(&dir.join(NVINFER))?, c_path(&dir.join(PARSER))?));
         }
-        Ok(format!("{}.{}.{}", version / 10000, version / 100 % 100, version % 100))
+        pairs.push((CString::new(NVINFER).expect("no NUL"), CString::new(PARSER).expect("no NUL")));
+        let mut errors = Vec::new();
+        for (nvinfer, parser) in &pairs {
+            let mut err = [0u8; ERR_LEN];
+            // SAFETY: NUL-terminated names, a log callback that outlives the
+            // process, and an error buffer of the stated size.
+            let version = unsafe { trt_init(nvinfer.as_ptr(), parser.as_ptr(), log_message, err.as_mut_ptr().cast(), ERR_LEN) };
+            if version >= 0 {
+                log::info!("TensorRT: {}", nvinfer.to_string_lossy());
+                return Ok(format!("{}.{}.{}", version / 10000, version / 100 % 100, version % 100));
+            }
+            errors.push(message(&err));
+        }
+        Err(format!("TensorRT not found ({})", errors.join("; ")))
     })
     .clone()
 }
@@ -121,7 +168,7 @@ pub fn build_in_child(onnx: &Path, options: &BuildOptions, plan: &Path, timing_c
 
 /// The child's side of build_in_child: `<onnx> <plan> <timing cache>
 /// <fp16|fp32> <optimisation level>`. Returns the exit code.
-pub fn build_command(args: &[String], runtime: Option<&Path>) -> i32 {
+pub fn build_command(args: &[String], tensorrt_dir: Option<PathBuf>) -> i32 {
     let [onnx, plan, timing, precision, opt_level] = args else {
         log::error!("--build-tensorrt needs <onnx> <plan> <timing cache> <fp16|fp32> <level>");
         return 2;
@@ -130,10 +177,7 @@ pub fn build_command(args: &[String], runtime: Option<&Path>) -> i32 {
         log::error!("bad optimisation level {opt_level}");
         return 2;
     };
-    // Preloads the libraries next to ONNX Runtime, where TensorRT is today.
-    if let Err(err) = crate::onnx::init(runtime) {
-        log::warn!("{err}");
-    }
+    configure(tensorrt_dir);
     let options = BuildOptions { fp16: precision == "fp16", opt_level };
     let plan = Path::new(plan);
     let result = build(Path::new(onnx), &options, Path::new(timing)).and_then(|bytes| {

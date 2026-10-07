@@ -29,6 +29,10 @@ pub struct Config {
     /// libncnn, for single-frame models on Vulkan. Found next to the binary
     /// or on the library path when unset (see ncnn.rs).
     pub ncnn_lib: Option<PathBuf>,
+    /// A folder with libnvinfer and libnvonnxparser (TensorRT 10), for VDA.
+    /// Found in the VDA download's folder or the development venv when
+    /// unset (see tensorrt.rs).
+    pub tensorrt_dir: Option<PathBuf>,
     /// Folder of depth models (.ncnn.param or .onnx) for the tray's Model menu.
     pub models_dir: Option<PathBuf>,
     /// Run the depth model with TensorRT fp16 once its engine is built.
@@ -44,6 +48,7 @@ impl Default for Config {
             discovery_port: DEFAULT_DISCOVERY_PORT,
             onnxruntime_lib: None,
             ncnn_lib: None,
+            tensorrt_dir: None,
             models_dir: None,
             tensorrt: true,
         }
@@ -86,15 +91,20 @@ pub fn cache_dir() -> PathBuf {
     base.join("nightfall-meteor")
 }
 
-pub fn default_models_dir() -> PathBuf {
+/// Downloaded runtimes and the default models folder.
+pub fn data_dir() -> PathBuf {
     if cfg!(windows) {
-        return config_dir().join("models");
+        return config_dir();
     }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
         .unwrap_or_default();
-    base.join("nightfall-meteor").join("models")
+    base.join("nightfall-meteor")
+}
+
+pub fn default_models_dir() -> PathBuf {
+    data_dir().join("models")
 }
 
 fn config_dir() -> PathBuf {

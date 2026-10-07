@@ -44,7 +44,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     // A TensorRT engine build, run by Meteor in a child process.
     if args.get(1).map(String::as_str) == Some("--build-tensorrt") {
-        std::process::exit(tensorrt::build_command(&args[2..], config::load().onnxruntime_lib.as_deref()));
+        std::process::exit(tensorrt::build_command(&args[2..], config::load().tensorrt_dir));
     }
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let value = |name: &str| {
@@ -82,6 +82,7 @@ async fn main() {
     let depth = (!flag("--no-depth")).then(|| {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let tensorrt = config.tensorrt && !flag("--no-tensorrt");
+        tensorrt::configure(config.tensorrt_dir.clone());
         let runtimes = depth::Runtimes { onnxruntime: config.onnxruntime_lib.as_deref(), ncnn: config.ncnn_lib.as_deref() };
         let depth = Depth::start(runtimes, tensorrt, models_dir, save);
         depth.gpu_frames.store(!flag("--cpu-frames"), std::sync::atomic::Ordering::Relaxed);
@@ -227,6 +228,8 @@ pub fn open_config_file() {
              # onnxruntime_lib = \"/path/to/libonnxruntime.so\"\n\n\
              # ncnn, for the EdgePad models on Vulkan.\n\
              # ncnn_lib = \"/path/to/libncnn.so.1\"\n\n\
+             # A folder with TensorRT 10's libnvinfer and libnvonnxparser, for VDA.\n\
+             # tensorrt_dir = \"/path/to/tensorrt/lib\"\n\n\
              # Folder of depth models (.ncnn.param or .onnx) for the tray's Model menu.\n\
              # models_dir = \"{}\"\n\n\
              # Run the depth model with TensorRT fp16 (built once, then cached).\n\

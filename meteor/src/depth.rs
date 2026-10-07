@@ -18,6 +18,7 @@
 //! Anything (`vda.rs`) is a pair of graphs with a temporal state, on
 //! TensorRT.
 
+use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -121,6 +122,18 @@ pub struct Runtimes<'a> {
     pub ncnn: Option<&'a Path>,
 }
 
+/// A model the loading thread finished with.
+struct Loaded {
+    /// The model that was chosen.
+    name: String,
+    /// A failure leaves the model running on what loaded before (TensorRT
+    /// after CUDA).
+    optional: bool,
+    /// A single-frame model to serve while `name` keeps loading.
+    interim: bool,
+    result: Result<Engine, String>,
+}
+
 /// Rates offered in the tray. 0 means every frame the stream delivers.
 pub const RATES: [u32; 6] = [0, 30, 60, 72, 90, 120];
 
@@ -131,16 +144,20 @@ struct SavedState {
     enabled: bool,
     model: Option<String>,
     rate: u32,
-    /// The per-pixel depth smoothing in post-processing. VDA is temporal
-    /// already, so this is a switch for comparing it with and without.
-    smoothing: bool,
+    /// The per-pixel depth smoothing in post-processing, per model (by
+    /// stem), once the user has set it. Unset, it's off for VDA, which is
+    /// temporally steady already (smoothing adds about 40 ms of lag), and on
+    /// for the EdgePad models. (Older files have a single `smoothing`
+    /// switch, which is ignored; reusing that key for this table would
+    /// make them fail to parse.)
+    model_smoothing: BTreeMap<String, bool>,
     /// VDA's edge softening, an index into vda::SOFTENING.
     edge_softening: usize,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { enabled: true, model: None, rate: 0, smoothing: true, edge_softening: vda::DEFAULT_SOFTENING }
+        SavedState { enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING }
     }
 }
 
@@ -178,6 +195,10 @@ pub struct DepthStats {
 
 pub struct Depth {
     pub models_dir: PathBuf,
+    /// Models shipped with Meteor (the AppImage's
+    /// `usr/share/nightfall-meteor/models`); a file of the same name in
+    /// models_dir wins.
+    bundled_dir: Option<PathBuf>,
     pub stats: DepthStats,
     /// Keep decoded frames on the GPU (default); `--cpu-frames` turns it off.
     pub gpu_frames: AtomicBool,
@@ -244,8 +265,13 @@ impl Depth {
                 }
             }
         };
+        let bundled_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.parent()?.join("../share/nightfall-meteor/models")))
+            .filter(|dir| dir.is_dir());
         let depth = Arc::new(Depth {
             models_dir,
+            bundled_dir,
             stats: DepthStats::default(),
             gpu_frames: AtomicBool::new(true),
             gpu_post: AtomicBool::new(true),
@@ -266,12 +292,6 @@ impl Depth {
             subscribers: AtomicU32::new(0),
             save,
         });
-        if !onnx_ok && !ncnn_ok {
-            let err = errors.join("; ");
-            log::warn!("Host depth is off: {err}");
-            depth.set_status(format!("off: {err}"));
-            return depth;
-        }
         for err in &errors {
             log::info!("Not available: {err}");
         }
@@ -282,7 +302,11 @@ impl Depth {
             .and_then(|w| models.iter().find(|m| **m == w || (w != vda::ID && stem(m) == stem(&w))).cloned())
             .or_else(|| preferred_model(&models));
         let Some(chosen) = chosen else {
-            let msg = format!("off: no models in {}", depth.models_dir.display());
+            let msg = if onnx_ok || ncnn_ok {
+                format!("off: no models in {}", depth.models_dir.display())
+            } else {
+                format!("off: {}", errors.join("; "))
+            };
             log::warn!("Host depth is {msg}");
             depth.set_status(msg);
             return depth;
@@ -320,12 +344,19 @@ impl Depth {
         log::info!("Depth rate: {}", if hz == 0 { "match stream".into() } else { format!("{hz} Hz") });
     }
 
+    /// Depth smoothing for the chosen model.
     pub fn smoothing(&self) -> bool {
-        self.state.lock().is_ok_and(|s| s.smoothing)
+        self.state.lock().is_ok_and(|s| {
+            let model = s.model.as_deref().unwrap_or_default();
+            s.model_smoothing.get(stem(model)).copied().unwrap_or(model != vda::ID)
+        })
     }
 
     pub fn set_smoothing(&self, on: bool) {
-        self.update_state(|s| s.smoothing = on);
+        self.update_state(|s| {
+            let model = stem(s.model.as_deref().unwrap_or_default()).to_string();
+            s.model_smoothing.insert(model, on);
+        });
         log::info!("Depth smoothing {}", if on { "on" } else { "off" });
     }
 
@@ -357,17 +388,38 @@ impl Depth {
         self.input_size.lock().ok().and_then(|s| *s)
     }
 
-    /// The models in the models folder that a loaded runtime can run: each
-    /// single-frame model once, as `.ncnn.param` (with its `.bin`) or else
-    /// `.onnx`, and VDA's two graphs once, as `vda::ID`.
+    /// Model files by name, with the folder each is in: the bundled ones,
+    /// then the user's, which win.
+    fn model_files(&self) -> BTreeMap<String, PathBuf> {
+        let mut files = BTreeMap::new();
+        for dir in self.bundled_dir.iter().chain([&self.models_dir]) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    files.insert(name, dir.clone());
+                }
+            }
+        }
+        files
+    }
+
+    /// The folder a model is loaded from.
+    fn model_dir(&self, name: &str) -> PathBuf {
+        if name == vda::ID {
+            return self.models_dir.clone();
+        }
+        self.model_files().remove(name).unwrap_or_else(|| self.models_dir.clone())
+    }
+
+    /// The models a loaded runtime can run: each single-frame model once, as
+    /// `.ncnn.param` (with its `.bin`) or else `.onnx`, and VDA's two graphs
+    /// once, as `vda::ID`, when TensorRT is there for them.
     pub fn list_models(&self) -> Vec<String> {
-        let files: Vec<String> = std::fs::read_dir(&self.models_dir)
-            .map(|dir| dir.flatten().filter_map(|e| e.file_name().into_string().ok()).collect())
-            .unwrap_or_default();
-        let has = |name: &str| files.iter().any(|f| f == name);
+        let found = self.model_files();
+        let files: Vec<&String> = found.keys().collect();
+        let has = |name: &str| found.contains_key(name);
         let mut stems: Vec<&str> = files
             .iter()
-            .filter(|f| (is_ncnn(f) || f.ends_with(".onnx")) && *f != vda::STEP_FILE && *f != vda::COLD_FILE)
+            .filter(|f| (is_ncnn(f) || f.ends_with(".onnx")) && f.as_str() != vda::STEP_FILE && f.as_str() != vda::COLD_FILE)
             .map(|f| stem(f))
             .collect();
         stems.sort();
@@ -384,7 +436,7 @@ impl Depth {
                 }
             })
             .collect();
-        if self.onnx_ok && vda::present(&self.models_dir) {
+        if vda::present(&self.models_dir) && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
             models.push(vda::ID.to_string());
         }
         models.sort();
@@ -429,9 +481,7 @@ impl Depth {
     }
 
     fn run(self: Arc<Self>) {
-        // (model name, whether a failure leaves the model running on what
-        // loaded before (TensorRT after CUDA), result)
-        let (loaded_tx, loaded_rx) = mpsc::channel::<(String, bool, Result<Engine, String>)>();
+        let (loaded_tx, loaded_rx) = mpsc::channel::<Loaded>();
         let mut model: Option<Engine> = None;
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
@@ -451,34 +501,51 @@ impl Depth {
                 let tx = loaded_tx.clone();
                 let tensorrt = self.tensorrt;
                 let pending = self.tensorrt_pending.clone();
-                let models_dir = self.models_dir.clone();
+                let models_dir = self.model_dir(&name);
+                let cuda_present = crate::onnx::cuda_backend_present();
+                // Without CUDA, VDA has nothing to run on while its engines
+                // build (minutes the first time), so a single-frame model
+                // serves until it's ready, unless one already does.
+                let interim = (name == vda::ID && !cuda_present && model.is_none())
+                    .then(|| preferred_model(&self.list_models().into_iter().filter(|m| m != vda::ID).collect::<Vec<_>>()))
+                    .flatten()
+                    .map(|m| (self.model_dir(&m), m));
                 // ncnn models load once, in about a second. ONNX models load
                 // on CUDA first, so depth starts within a second; then on
                 // TensorRT, whose first engine build for a model takes about
                 // 90 s. Without the CUDA provider, TensorRT only.
                 let _ = std::thread::Builder::new().name("depth-load".into()).spawn(move || {
                     let cache = crate::config::cache_dir().join("tensorrt");
+                    let send = |optional, interim, result| {
+                        let _ = tx.send(Loaded { name: name.clone(), optional, interim, result });
+                    };
                     if is_ncnn(&name) {
-                        let _ = tx.send((name.clone(), false, Engine::load(&models_dir, &name, Backend::Cuda, &cache)));
+                        send(false, false, Engine::load(&models_dir, &name, Backend::Cuda, &cache));
                         return;
                     }
-                    let cuda_present = crate::onnx::cuda_backend_present();
+                    if let Some((dir, interim)) = interim {
+                        pending.store(tensorrt, Ordering::Relaxed);
+                        let backend = if is_ncnn(&interim) { Backend::Cuda } else { Backend::TensorRt };
+                        send(false, true, Engine::load(&dir, &interim, backend, &cache));
+                    }
                     let cuda_ok = !cuda_present || {
                         let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
                         let ok = cuda.is_ok();
-                        let _ = tx.send((name.clone(), false, cuda));
+                        send(false, false, cuda);
                         ok
                     };
-                    if tensorrt && cuda_ok {
+                    if !tensorrt && !cuda_present {
+                        send(false, false, Err("no backend: TensorRT is turned off and there is no CUDA provider".into()));
+                    } else if tensorrt && cuda_ok {
                         pending.store(true, Ordering::Relaxed);
                         let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache);
                         pending.store(false, Ordering::Relaxed);
                         // TensorRT is optional when CUDA is there.
-                        let _ = tx.send((name, cuda_present, trt));
+                        send(cuda_present, false, trt);
                     }
                 });
             }
-            while let Ok((name, optional, result)) = loaded_rx.try_recv() {
+            while let Ok(Loaded { name, optional, interim, result }) = loaded_rx.try_recv() {
                 // A model chosen since this one started loading wins.
                 if self.model().as_ref() != Some(&name) {
                     continue;
@@ -493,6 +560,7 @@ impl Depth {
                             *size = Some(loaded.input_size());
                         }
                         let building = match (self.tensorrt_pending.load(Ordering::Relaxed), &loaded) {
+                            _ if interim => "; loading Video Depth Anything (the first time builds its TensorRT engines, several minutes)",
                             (false, _) => "",
                             (true, Engine::Vda(_)) => "; building the TensorRT engines (several minutes the first time)",
                             (true, Engine::Plain(_)) => "; building the TensorRT engine (about 90 s the first time)",
@@ -512,6 +580,7 @@ impl Depth {
                         failures = 0;
                         model = Some(loaded);
                     }
+                    Err(err) if interim => log::warn!("Can't load a model to use while VDA loads: {err}"),
                     Err(err) if optional => {
                         log::warn!("TensorRT unavailable, staying on CUDA: {err}");
                         if let Some(m) = &model {
@@ -898,5 +967,28 @@ impl DepthFeed {
                 self.decoder = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_an_older_state_file() {
+        let text = "enabled = true\nmodel = \"vda_s_518x294\"\nrate = 120\nsmoothing = false\nedge_softening = 2\n";
+        let state: SavedState = toml::from_str(text).unwrap();
+        assert_eq!(state.model.as_deref(), Some("vda_s_518x294"));
+        assert_eq!(state.rate, 120);
+        assert!(state.model_smoothing.is_empty());
+    }
+
+    #[test]
+    fn names_models_in_either_format() {
+        assert_eq!(stem("zipdepth_wide_512x288.ncnn.param"), "zipdepth_wide_512x288");
+        assert_eq!(stem("zipdepth_wide_512x288.onnx"), "zipdepth_wide_512x288");
+        assert_eq!(stem(vda::ID), vda::ID);
+        let models = ["vda_s_518x294".to_string(), "zipdepth_wide_512x288.ncnn.param".to_string()];
+        assert_eq!(preferred_model(&models).as_deref(), Some("zipdepth_wide_512x288.ncnn.param"));
     }
 }
