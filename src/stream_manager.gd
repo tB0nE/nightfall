@@ -368,8 +368,7 @@ func _on_v2_launch_response(response: Dictionary):
 				# same as before this port-suffix support existed.
 				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
 				if str(pin) != "" and str(pin) != "0":
-					main._pair_pin = str(pin)
-					main.welcome_screen.show_welcome_screen("pin")
+					main.welcome_screen.show_pin_when_needed(str(pin))
 					return
 			main._ui_status_label.text = "Pairing needed. Please re-select server."
 			main.welcome_screen.show_welcome_screen("server")
@@ -714,11 +713,11 @@ func on_pair_pressed():
 			main._log("[PAIR] FAILED - no pin returned")
 			main.welcome_screen.show_welcome_screen("server")
 			return
-		main._pair_pin = str(pin)
-		main.welcome_screen.show_welcome_screen("pin")
+		main.welcome_screen.show_pin_when_needed(str(pin))
 
 func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
+	main.welcome_screen.pairing_finished()
 	if not success:
 		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
 		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,

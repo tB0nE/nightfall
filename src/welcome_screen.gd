@@ -843,8 +843,26 @@ func start_pair(ip: String):
 	if str(pin) == "" or str(pin) == "0":
 		main._log("[PAIR] FAILED - no pin returned")
 		return
-	main._pair_pin = str(pin)
-	show_welcome_screen("pin")
+	show_pin_when_needed(str(pin))
+
+# Pairing first checks whether the server already knows this client (a known
+# machine reached by a new address, say over USB Link); that answers
+# "Already paired" within a moment. The PIN only shows if the check hasn't
+# finished by then, so a known machine doesn't flash a PIN it never needs.
+const PIN_DELAY_SEC := 1.0
+var _pin_pending := 0
+
+func show_pin_when_needed(pin: String) -> void:
+	main._pair_pin = pin
+	_pin_pending += 1
+	var ticket := _pin_pending
+	await main.get_tree().create_timer(PIN_DELAY_SEC).timeout
+	if ticket == _pin_pending:
+		show_welcome_screen("pin")
+
+## Called when pairing finishes, either way: a PIN still waiting stays hidden.
+func pairing_finished() -> void:
+	_pin_pending += 1
 
 func cycle_app():
 	if main._available_apps.is_empty():
