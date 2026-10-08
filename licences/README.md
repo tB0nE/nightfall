@@ -20,6 +20,14 @@ Collected on 2026-10-08 from the sources the release builds use:
 | `noto-cjk.txt` | `src/assets/fonts/NOTO_CJK_LICENSE.txt` |
 | `ncnn.txt` | ncnn's `LICENSE.txt` (Linux builds) |
 
+Checked 2026-10-08 against the APK's LiteRT 1.4.2 libraries
+(`libtensorflowlite_jni.so`, `libtensorflowlite_gpu_jni.so`): their own
+`LICENSE` is `tensorflow.txt` exactly, and their strings and symbols show
+XNNPACK, ruy, gemmlowp, Eigen, FlatBuffers, cpuinfo, Abseil, fft2d and the
+OpenCL headers. farmhash and pthreadpool leave no strings but are TFLite
+and XNNPACK dependencies, so they stay listed. KleidiAI isn't in this
+version.
+
 Godot's own licence and its third-party components come from the engine at
 run time (`Engine.get_license_text()`, `Engine.get_copyright_info()`).
 

@@ -2622,7 +2622,17 @@ func _process_performance_overlay(delta: float):
 	# CPU frame time and creating a misleading comparison.
 	var native_warp_ms := video_presentation.get_warp_gpu_ms()
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
-	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+	var host_depth: Dictionary = depth_estimator.meteor_stats if depth_estimator else {}
+	if settings.host.ai_3d_speed > 0 and not host_depth.is_empty():
+		var offer: Dictionary = stream_manager.meteor_depth_info()
+		lines.append("Depth: Nightfall Meteor (%s)" % offer.get("model", "?"))
+		lines.append("Host depth: %.0f maps/s received, %.0f shown, %.1f Mbit/s" % [
+			host_depth["received_hz"], host_depth["shown_hz"], host_depth["mbit"]])
+		lines.append("Meteor frame-to-map time: %.1f ms" % host_depth["host_ms"])
+		lines.append("Depth match: %.0f%% exact, %.0f%% 1 frame old, %.0f%% older, %.0f%% none" % [
+			host_depth["exact_pct"], host_depth["lag1_pct"], host_depth["older_pct"], host_depth["none_pct"]])
+		lines.append("Depth Sync: %s" % ("on" if settings.host.ai_3d_depth_sync else "off"))
+	elif settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
 			var depth_model_name := "ZipDepth-384 Standard"
 			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:

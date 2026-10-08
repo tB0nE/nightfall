@@ -45,6 +45,7 @@ const ENTRIES := [
 	["Eigen", "Bundled with LiteRT. Mozilla Public License 2.0. Source code: https://gitlab.com/libeigen/eigen", "MPL-2.0.txt"],
 	["farmhash", "Bundled with LiteRT.", "farmhash.txt"],
 	["fft2d", "Bundled with LiteRT.", "fft2d.txt"],
+	["OpenCL headers", "Compiled into LiteRT's GPU delegate. Copyright (c) 2008-2020 The Khronos Group Inc. Apache License 2.0.", "Apache-2.0.txt"],
 	["ncnn", "Runs depth models on Vulkan in the Linux build.", "ncnn.txt"],
 	["Noto Sans CJK", "The Chinese, Japanese and Korean menu fonts (subsets).", "noto-cjk.txt"],
 ]

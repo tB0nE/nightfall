@@ -70,6 +70,10 @@ var _meteor_sync_misses := 0
 var _meteor_sync_would_hit_at_1 := 0
 # Per log window: presented frames by how far the map shown lagged the frame
 # wanted (0 = exact), and frames with no usable map.
+## The last second of host depth for the stats overlay ({} when Meteor's
+## maps aren't in use): shown_hz, received_hz, mbit, host_ms, and the share
+## of presented frames whose map was exact, one frame old, older, or missing.
+var meteor_stats := {}
 var _meteor_match := {"frames": 0, "exact": 0, "lag1": 0, "lag2": 0, "lag_more": 0, "none": 0}
 
 # stereo_mode 5/6 (MiDaS-GPU / MiDaS-Std)'s upsample+offset passes - see
@@ -587,6 +591,16 @@ func process(delta: float):
 			float(received) / _perf_window, mbit, meteor.host_latency_ms, _meteor_last_presented,
 			meteor.newest_frame, 100.0 * m["exact"] / frames, m["lag1"], m["lag2"], m["lag_more"], m["none"],
 			("%d frame%s" % [_meteor_sync_delay, "" if _meteor_sync_delay == 1 else "s"]) if main.settings.host.ai_3d_depth_sync else "off"])
+		meteor_stats = {} if not _meteor_in_use else {
+			"shown_hz": float(_perf_updates) / _perf_window,
+			"received_hz": float(received) / _perf_window,
+			"mbit": mbit,
+			"host_ms": meteor.host_latency_ms,
+			"exact_pct": 100.0 * m["exact"] / frames,
+			"lag1_pct": 100.0 * m["lag1"] / frames,
+			"older_pct": 100.0 * (m["lag2"] + m["lag_more"]) / frames,
+			"none_pct": 100.0 * m["none"] / frames,
+		}
 		_meteor_perf_maps = meteor.maps_received
 		_meteor_perf_bytes = meteor.bytes_received
 		for key in m:
@@ -618,6 +632,7 @@ func _update_meteor() -> void:
 	var wanted: bool = enabled and main.is_streaming and depth_texture != null \
 		and main.settings_controller.meteor_depth_selected()
 	if not wanted:
+		meteor_stats = {}
 		if meteor.is_active():
 			meteor.stop()
 			_meteor_shown_frame = -1

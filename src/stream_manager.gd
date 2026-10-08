@@ -250,6 +250,35 @@ func _probe_meteor(host_id: int) -> Dictionary:
 		return info
 	return {}
 
+# Fetches the host's app list again and relaunches the app with the same
+# name under its current ID; gives up if the app has gone.
+func _retry_with_fresh_app_id() -> void:
+	var host_id := _current_host_id
+	var name := _app_name(_current_app_id)
+	main._log("[STREAM] The host doesn't know app %d (%s); refreshing its app list" % [_current_app_id, name])
+	_b().get_app_list(host_id, func(success: bool) -> void:
+		var apps: Array = _b().get_apps(host_id) if success else []
+		var fresh := -1
+		for app in apps:
+			if String(app.get("name", "")) == name:
+				fresh = int(app.get("id", -1))
+		if fresh < 0:
+			main._log("[STREAM] %s isn't in the host's app list any more" % name)
+			main.restore_after_failed_connect("Launch failed: Cannot find requested application")
+			main._ui_status_label.text = "Launch failed: %s isn't on the host any more" % name
+			return
+		main._log("[STREAM] %s is now app %d; launching again" % [name, fresh])
+		main._available_apps = WelcomeScreen.order_apps(apps)
+		main._selected_app_id = fresh
+		main._selected_app_idx = maxi(main._available_apps.find_custom(func(a): return int(a.get("id", -1)) == fresh), 0)
+		start_stream(host_id, fresh))
+
+func _app_name(app_id: int) -> String:
+	for app in main._available_apps + _b().get_apps(_current_host_id):
+		if int(app.get("id", -1)) == app_id:
+			return String(app.get("name", ""))
+	return "Desktop"
+
 # Remembers the first key a host's Meteor sends, and refuses a Meteor whose
 # key has changed since (MeteorClient.check_key()): the stream then goes
 # straight to Sunshine.
@@ -287,10 +316,21 @@ func relaunch_for_reconnect():
 		return
 	await start_stream(_current_host_id, _current_app_id)
 
+# Set once a launch has retried with a refreshed app list (see
+# _retry_with_fresh_app_id()); cleared when a launch succeeds.
+var _app_id_refreshed := false
+
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# The host no longer knows this app ID: its app list changed (a
+		# restart can renumber apps), or the welcome screen fell back to its
+		# placeholder Desktop when the list came back empty.
+		if str(msg).contains("requested application") and not _app_id_refreshed:
+			_app_id_refreshed = true
+			_retry_with_fresh_app_id()
+			return
 		# Meteor is experimental: never let it cost a working connection (or
 		# trigger the stale-pairing re-pair below). Retry once without it.
 		if not _meteor.is_empty():
@@ -337,6 +377,7 @@ func _on_v2_launch_response(response: Dictionary):
 			main._ui_status_label.text = "Launch failed: " + str(msg)
 		return
 
+	_app_id_refreshed = false
 	var server_info = {}
 	server_info["server_codec_mode_support"] = response.get("server_codec_mode_support", 0)
 	var scm = response.get("server_codec_mode_support", 0)
