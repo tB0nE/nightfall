@@ -87,7 +87,7 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo
     echo "- ncnn $NCNN_VERSION (Tencent), BSD 3-Clause: usr/lib/libncnn.so.1"
     echo "- GNU OpenMP runtime (libgomp), GPL v3 with the GCC Runtime Library Exception: usr/lib/libgomp.so.1"
-    echo "- ZipDepth EdgePad 512x288 weights (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
+    echo "- EdgePad 512x288 weights: Nightfall's fine-tune of ZipDepth (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
     echo "- The Rust crates listed at the end"
     echo

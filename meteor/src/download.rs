@@ -1,4 +1,4 @@
-//! The VDA download: TensorRT from NVIDIA and the two VDA graphs, fetched
+//! The VDA download: TensorRT from NVIDIA and VDA's files, fetched
 //! when the user chooses VDA in the tray.
 //!
 //! TensorRT comes from NVIDIA's own package server. The libraries wheel is
@@ -11,8 +11,9 @@
 //! half-done download never looks installed. An interrupted download
 //! starts the unfinished file again.
 //!
-//! The graphs come from our release (or `METEOR_VDA_URL`) into the models
-//! folder, checked against the hashes in vda.rs.
+//! VDA's two graphs and their shared weights (126 MB) come from our release
+//! (or `METEOR_VDA_URL`) into the models folder, checked against the hashes
+//! in vda.rs.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -145,12 +146,9 @@ pub fn plan(models_dir: &Path) -> Result<Plan, String> {
         .ok_or_else(|| format!("TensorRT {} has no builder for this GPU (compute capability {major}.{minor})", crate::tensorrt::VERSION))?;
     let dir = crate::tensorrt::install_dir();
     let tensorrt = [builder, &PARSER, &NVINFER].into_iter().filter(|f| !dir.join(f.name).is_file()).collect();
-    let graphs = [
-        (crate::vda::STEP_FILE, crate::vda::STEP_SHA256, crate::vda::STEP_BYTES),
-        (crate::vda::COLD_FILE, crate::vda::COLD_SHA256, crate::vda::COLD_BYTES),
-    ]
-    .into_iter()
-    .filter(|(file, _, _)| !models_dir.join(file).is_file())
+    let graphs = crate::vda::FILES
+        .into_iter()
+        .filter(|(file, _, _)| !models_dir.join(file).is_file())
     .collect();
     Ok(Plan { tensorrt, graphs, models_dir: models_dir.to_path_buf() })
 }
@@ -380,7 +378,7 @@ pub fn command(models_dir: &Path) -> i32 {
 pub fn remove(models_dir: &Path) -> Result<(), String> {
     let install = crate::tensorrt::install_dir();
     if let Ok(list) = std::fs::read_to_string(install.join(DOWNLOADED_MODELS)) {
-        for file in list.lines().filter(|f| *f == crate::vda::STEP_FILE || *f == crate::vda::COLD_FILE) {
+        for file in list.lines().filter(|f| crate::vda::is_file(f)) {
             let _ = std::fs::remove_file(models_dir.join(file));
         }
     }

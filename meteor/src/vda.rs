@@ -4,7 +4,8 @@
 //! `reports/METEOR_VDA_S_518X294_INTEGRATION_REQUEST.md`
 //! (`nightfall-temporal-zipdepth`).
 //!
-//! Two ONNX graphs, both verified against their SHA-256 before use:
+//! Two ONNX graphs sharing one weights file (`models/share_vda_weights.py`),
+//! all three verified against their SHA-256 before use:
 //! - the cold start, run on the first frame after any reset. Its eight
 //!   states seed the history. TensorRT builds it in fp32 at optimisation
 //!   level 0, which the researcher found was the only exact build.
@@ -44,13 +45,16 @@ mod ort_graph;
 /// The model's name in the models menu and state.toml.
 pub const ID: &str = "vda_s_518x294";
 pub const LABEL: &str = "Video Depth Anything Small (518x294)";
-pub const STEP_FILE: &str = "vda_s_streaming_step_518x294.onnx";
-pub const COLD_FILE: &str = "vda_s_cold_start_518x294.onnx";
-pub const STEP_SHA256: &str = "98e62bd266218fd8b95293033502476797ba3673228d3417e140f5a96d9f714f";
-pub const COLD_SHA256: &str = "dd4df8ab533e19e9610083da8d3eefe1ac398648cba519deee605230493486e0";
-/// The graphs' sizes, for the download's progress.
-pub const STEP_BYTES: u64 = 126_235_867;
-pub const COLD_BYTES: u64 = 112_997_409;
+pub const STEP_FILE: &str = "vda_s_518x294_step.onnx";
+pub const COLD_FILE: &str = "vda_s_518x294_cold.onnx";
+/// Both graphs' weights, as ONNX external data (named inside the graphs).
+pub const DATA_FILE: &str = "vda_s_518x294.onnx.data";
+const STEP_SHA256: &str = "0982c66a3ec3f6551ef968f52063ab9132c096d254e184b6bc30a096ddad86de";
+const COLD_SHA256: &str = "4048448bc7f2e056f938caf4188ddc7b509768320bb4e5dd294d62ae6c88f262";
+const DATA_SHA256: &str = "f5cb22053bfeacfdc175a12ed12efcddecd5a20c827994c0a25567c898531a32";
+/// VDA's files: name, SHA-256, and size (for the download's progress).
+pub const FILES: [(&str, &str, u64); 3] =
+    [(DATA_FILE, DATA_SHA256, 115_901_952), (STEP_FILE, STEP_SHA256, 10_354_815), (COLD_FILE, COLD_SHA256, 275_651)];
 
 pub const WIDTH: usize = 518;
 pub const HEIGHT: usize = 294;
@@ -93,9 +97,14 @@ const COLD_OPT_LEVEL: u8 = 0;
 
 const PTX: &str = concat!(include_str!("../kernels/vda.ptx"), "\0");
 
-/// Whether both graphs are in the models folder.
+/// Whether VDA's files are in the models folder.
 pub fn present(models_dir: &Path) -> bool {
-    models_dir.join(STEP_FILE).is_file() && models_dir.join(COLD_FILE).is_file()
+    FILES.iter().all(|(file, _, _)| models_dir.join(file).is_file())
+}
+
+/// Whether a file in the models folder is one of VDA's.
+pub fn is_file(name: &str) -> bool {
+    FILES.iter().any(|(file, _, _)| *file == name)
 }
 
 /// The reference's history list (validate_tensorrt_sequence.py, following
@@ -257,8 +266,9 @@ impl VdaModel {
         let started = Instant::now();
         let step_path = models_dir.join(STEP_FILE);
         let cold_path = models_dir.join(COLD_FILE);
-        verify(&step_path, STEP_SHA256)?;
-        verify(&cold_path, COLD_SHA256)?;
+        for (file, sha256, _) in FILES {
+            verify(&models_dir.join(file), sha256)?;
+        }
         let (api, ctx) = primary_context()?;
         let free_before = free_memory(api, ctx);
         let identity = crate::nvdec::gpu_identity(api, ctx);

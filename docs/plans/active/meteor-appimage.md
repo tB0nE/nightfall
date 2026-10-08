@@ -1,8 +1,8 @@
 # Nightfall Meteor: AppImage
 
 > Status: Phase 0, the native TensorRT backend for VDA, the Vulkan EdgePad
-> backend and Phases 1 to 5 done (2026-10-07; the download needs the
-> graphs' release and NVIDIA's answer); Phase 6 (test and release) left,
+> backend and Phases 1 to 5 done (2026-10-07; VDA's files published
+> 2026-10-08); Phase 6 (test and release) left,
 > for a small AppImage with VDA downloaded on first use (rewritten
 > 2026-10-07).
 >
@@ -131,9 +131,10 @@ needs to say so (Phase 3). Later starts take under 2 seconds.
     (Apache-2.0).
   - The builder resource files aren't named. They're `libnvinfer`'s
     per-GPU parts (split out in TensorRT 10), but the text doesn't say so.
-  - Before release, ask nvidia-compute-license-questions@nvidia.com to
-    confirm the builder resources are covered. Otherwise, the fallback is
-    a first-run download of them.
+  - This only matters if Meteor ships TensorRT itself, which it doesn't
+    (2026-10-08): the files are downloaded from NVIDIA on request (Phase 2).
+    Bundling would also hit the grant's copyleft condition, since Meteor is
+    GPL-3.0; see Open questions.
 - Each set of terms needs its licence text shipped and passed on to users
   (THIRD_PARTY_NOTICES, Phase 2).
 
@@ -370,10 +371,11 @@ only these members are read):
 | Builder resource, RTX 30 (sm86) | 152 MB | 176 MB |
 | Builder resource, RTX 40 (sm89) | 161 MB | 185 MB |
 | Builder resource, RTX 50 (sm120) | 235 MB | 262 MB |
-| VDA graphs (our release) | about 240 MB | 240 MB |
+| VDA graphs and their shared weights (our release) | 126 MB | 126 MB |
 
-So 0.55 to 0.79 GB to download and 1.0 to 1.2 GB on disk, depending on
-the GPU. The wheel also has sm80, sm90 and sm100 (data-centre parts) and a
+So 0.53 to 0.67 GB to download and 0.9 to 1.1 GB on disk, depending on
+the GPU. Until 2026-10-08 the two graphs each held the full weights
+(240 MB); `meteor/models/share_vda_weights.py` now stores them once. The wheel also has sm80, sm90 and sm100 (data-centre parts) and a
 PTX resource (215 MB) that may serve a GPU with no resource of its own.
 
 ## Phase 1: Meteor without ONNX Runtime (done, 2026-10-07)
@@ -463,13 +465,17 @@ bundled EdgePad:
   beyond the driver.
 - VDA then ran at 5.1 ms frame to map (p95 5.3 ms) with no frames skipped.
 
+Repeated 2026-10-08 with the shared-weights files (three files, 126 MB,
+from a local server): 588 MB in 26 s, every hash matched. VDA parity on
+the repacked graphs: correlation 0.999952 mean, 0.999772 worst (0.999951
+and 0.999653 before).
+
+The release `meteor-vda-s-518x294` on tB0nE/nightfall (a pre-release, so
+it never shows as the latest app release) holds the three files and the
+Apache-2.0 licence since 2026-10-08. All three download with the pinned
+SHA-256s.
+
 Still to do:
-- **Hosting the graphs:** `VDA_URL` points at a release that doesn't exist
-  yet (`meteor-vda-s-518x294` on tB0nE/nightfall). Creating it and
-  uploading the two graphs (Apache-2.0, with their licence) is the
-  maintainer's step.
-- **NVIDIA's answer** on fetching the wheel's files this way (Open
-  questions).
 - **Updates:** a newer TensorRT downloads into a new folder; removing the
   old one once the new one works isn't written yet.
 - **Resuming within a file**, and reading the package index for the file
@@ -508,9 +514,12 @@ Result: **34 MB**, needing glibc 2.35. Tested 2026-10-07:
 
 Still to do:
 - **Pin appimagetool:** it's the continuous build, as the client uses.
-- **Attribution:** confirm the EdgePad weights' wording in the notices.
-  Today they're attributed to ZipDepth (MIT, Fabio Tosi), but our model
-  researcher trained them.
+- **Attribution (settled 2026-10-08):** the EdgePad weights are a
+  fine-tune of ZipDepth's MIT `zipdepth_base.pth` (the researcher's
+  training starts from it; `nightfall-temporal-zipdepth`,
+  `configs/student_512x288_spatial.yaml`). The notices call them
+  "Nightfall's fine-tune of ZipDepth (Fabio Tosi), MIT" and keep his
+  copyright and licence text, which MIT requires.
 
 ## Phase 4: first run (built 2026-10-07)
 
@@ -646,9 +655,20 @@ the VDA download live).
 ## Open questions
 
 - Does NVIDIA's licence allow an application to fetch individual files
-  from the TensorRT wheel on the user's behalf, and does the user need to
-  accept it first? Ask nvidia-compute-license-questions@nvidia.com, along
-  with the builder resources question.
+  from the TensorRT wheel on the user's behalf? Not a release blocker
+  (decided 2026-10-08). The TensorRT licence grants redistribution inside
+  an application with material additional functionality, but Meteor
+  redistributes nothing: the files come unmodified from NVIDIA's server,
+  after the user accepts NVIDIA's licence in the tray, and only run on
+  NVIDIA GPUs. Ask nvidia-compute-license-questions@nvidia.com when
+  convenient. If NVIDIA objects, the fallback is a tray item that shows
+  the `pip install` command to run instead, with no change to what ships.
+  - It becomes pressing only if TensorRT is ever bundled (in the AppImage
+    or a Windows installer). That needs two more things: NVIDIA confirming
+    the builder resources are covered (the grant names only libnvinfer and
+    libnvinfer_plugin), and a GPL-3.0 section 7 additional permission on
+    Meteor for linking NVIDIA's libraries, because the grant forbids terms
+    that would put TensorRT under an open-source licence.
 - How long do the VDA engine builds take on RTX 20 and 40 cards (only the
   3090 is measured: about 3 minutes), and how fast is ncnn EdgePad on them?
 - Is the PTX builder resource enough for a GPU without its own?

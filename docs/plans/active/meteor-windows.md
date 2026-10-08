@@ -282,8 +282,11 @@ VDA) and the microphone, without touching a terminal.
      on Windows) and the VDA graphs from our release. Meteor then builds
      the engines and switches to VDA while EdgePad serves.
    - ONNX Runtime isn't shipped.
-   - Still open, for both platforms: NVIDIA's answer on fetching the
-     wheel's files this way, and the graphs' release.
+   - VDA's files are published (release `meteor-vda-s-518x294`,
+     2026-10-08). NVIDIA's answer on fetching the wheel's files this way
+     isn't a blocker
+     (meteor-appimage.md, Open questions); a Windows installer that
+     bundled TensorRT would make it one.
 2. **Microphone driver.** VB-CABLE (recommended) or another virtual cable
    (Virtual Audio Cable, VoiceMeeter). The code only needs an endpoint name,
    so supporting a list of known names is cheap.

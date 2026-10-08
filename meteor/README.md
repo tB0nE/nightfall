@@ -234,17 +234,21 @@ Requirements:
 - Optional: **Video Depth Anything Small (518x294)** (`src/vda.rs`), a
   temporal model: it keeps eight hidden-state histories between frames
   instead of seeing each frame alone. It's a manual choice for testing; the
-  default stays the EdgePad 512x288 model. Copy the two graphs from the model
-  researcher's `experiments/video_depth_anything_small/artifacts/tensorrt_518x294/`
+  default stays the EdgePad 512x288 model. The tray downloads it (Model,
+  then "Download Video Depth Anything"). Or repack the model researcher's
+  two graphs from `experiments/video_depth_anything_small/artifacts/tensorrt_518x294/`
   into the models folder; they appear as one entry:
 
   ```sh
   A=../nightfall-temporal-zipdepth/experiments/video_depth_anything_small/artifacts/tensorrt_518x294
-  cp $A/vda_s_streaming_step_518x294.onnx $A/vda_s_cold_start_518x294.onnx \
-      ~/.local/share/nightfall-meteor/models/
+  python meteor/models/share_vda_weights.py $A/vda_s_streaming_step_518x294.onnx \
+      $A/vda_s_cold_start_518x294.onnx --out ~/.local/share/nightfall-meteor/models
   ```
 
-  Meteor checks both files' SHA-256 before loading them. The first frame
+  The researcher's graphs each hold the full weights. The repack stores
+  them once in `vda_s_518x294.onnx.data`, which both graphs read (239 MB
+  becomes 126 MB; see `models/README.md`). Meteor checks all three files'
+  SHA-256 before loading them. The first frame
   after a reset runs the cold-start graph (TensorRT fp32, optimisation level
   0, about 8 ms); every later frame runs the recurrent step (TensorRT fp16,
   about 3.9 ms on an RTX 3090) with 31 of its earlier states. Frames are

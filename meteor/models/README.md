@@ -38,3 +38,31 @@ close to fp32 as TensorRT fp16 on the same frames. On 2026-10-07:
 - a regenerated set (every 80th frame of a 100 MB capture,
   `ffmpeg ... scale=512:288:flags=area`): ncnn 0.118% and 1.04%, TensorRT
   0.137% and 1.27%.
+
+## Video Depth Anything on shared weights
+
+The model researcher's VDA export (`nightfall-temporal-zipdepth`,
+`experiments/video_depth_anything_small/export_streaming_onnx.py`) writes
+two self-contained graphs: the recurrent step (126 MB) and the cold start
+for the first frame (113 MB). The cold start's weights are all in the step
+too. `share_vda_weights.py` stores them once, as ONNX external data that
+both graphs point at:
+
+```sh
+pip install onnx
+A=.../experiments/video_depth_anything_small/artifacts/tensorrt_518x294
+python share_vda_weights.py $A/vda_s_streaming_step_518x294.onnx \
+    $A/vda_s_cold_start_518x294.onnx --out ~/.local/share/nightfall-meteor/models
+```
+
+| File | Size | Holds |
+| --- | --- | --- |
+| `vda_s_518x294.onnx.data` | 115.9 MB | Every weight of 1 KiB or more, once |
+| `vda_s_518x294_step.onnx` | 10.4 MB | The step graph (mostly its temporal position constants) |
+| `vda_s_518x294_cold.onnx` | 0.3 MB | The cold-start graph |
+
+The nodes and values are unchanged (checked weight by weight on
+2026-10-08), and the script writes the same bytes on every run. These three
+files are what the VDA download fetches, and their SHA-256s are pinned in
+`../src/vda.rs`. Re-export or retrain, and the release and the hashes need
+updating together.

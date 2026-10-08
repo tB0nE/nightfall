@@ -414,7 +414,7 @@ impl Depth {
     }
 
     /// The models a loaded runtime can run: each single-frame model once, as
-    /// `.ncnn.param` (with its `.bin`) or else `.onnx`, and VDA's two graphs
+    /// `.ncnn.param` (with its `.bin`) or else `.onnx`, and VDA's files
     /// once, as `vda::ID`, when TensorRT is there for them.
     pub fn list_models(&self) -> Vec<String> {
         let found = self.model_files();
@@ -422,7 +422,7 @@ impl Depth {
         let has = |name: &str| found.contains_key(name);
         let mut stems: Vec<&str> = files
             .iter()
-            .filter(|f| (is_ncnn(f) || f.ends_with(".onnx")) && f.as_str() != vda::STEP_FILE && f.as_str() != vda::COLD_FILE)
+            .filter(|f| (is_ncnn(f) || f.ends_with(".onnx")) && !vda::is_file(f))
             .map(|f| stem(f))
             .collect();
         stems.sort();
