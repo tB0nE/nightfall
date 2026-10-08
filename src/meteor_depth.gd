@@ -95,8 +95,16 @@ func pick(target: int) -> Dictionary:
 	_mutex.unlock()
 	return best
 
+# StreamPeerTCP, or nightfall-stream's NightfallTcpPeer for a zoned
+# link-local address (USB Link), which StreamPeerTCP can't reach. Both offer
+# the calls _run() makes, with the same status values.
+static func _new_peer(address: String):
+	if "%" in address and ClassDB.class_exists("NightfallTcpPeer"):
+		return ClassDB.instantiate("NightfallTcpPeer")
+	return StreamPeerTCP.new()
+
 func _run() -> void:
-	var peer: StreamPeerTCP = null
+	var peer = null
 	var buf := PackedByteArray()
 	var retry_at := 0.0
 	while _running:
@@ -106,12 +114,12 @@ func _run() -> void:
 				OS.delay_msec(50)
 				continue
 			retry_at = now + RECONNECT_SEC
-			peer = StreamPeerTCP.new()
+			peer = _new_peer(host)
 			if peer.connect_to_host(host, port) != OK:
 				peer = null
 				continue
 		peer.poll()
-		var status := peer.get_status()
+		var status: int = peer.get_status()
 		if status == StreamPeerTCP.STATUS_CONNECTING:
 			OS.delay_msec(5)
 			continue
@@ -124,7 +132,7 @@ func _run() -> void:
 			peer.set_no_delay(true)
 			_connected_at = now
 			_connected = true
-		var available := peer.get_available_bytes()
+		var available: int = peer.get_available_bytes()
 		if available <= 0:
 			OS.delay_usec(IDLE_USEC)
 			continue

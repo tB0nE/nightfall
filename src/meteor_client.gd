@@ -18,9 +18,13 @@ const HTTPS_PORT_OPTION := "meteor_https_port"
 ## sunshine_https_port guards against a Meteor that fronts a different
 ## Sunshine instance on the same PC.
 static func probe(owner: Node, ip: String, sunshine_https_port: int) -> Dictionary:
-	# Godot's HTTP client can't reach a zoned link-local address (USB Link).
-	if ip.is_empty() or ip.to_lower().begins_with("fe80:"):
+	if ip.is_empty():
 		return {}
+	if is_link_local(ip):
+		# Godot's HTTP client can't reach a zoned link-local address (USB
+		# Link); nightfall-stream's can.
+		var url := "http://[%s]:%d/meteor" % [zone_address(ip).replace("%", "%25"), DISCOVERY_PORT]
+		return parse_info(await _native_get(owner, url), sunshine_https_port)
 	var request := HTTPRequest.new()
 	request.timeout = PROBE_TIMEOUT_SEC
 	owner.add_child(request)
@@ -34,6 +38,35 @@ static func probe(owner: Node, ip: String, sunshine_https_port: int) -> Dictiona
 	if result[0] != HTTPRequest.RESULT_SUCCESS or result[1] != 200:
 		return {}
 	return parse_info(PackedByteArray(result[3]).get_string_from_utf8(), sunshine_https_port)
+
+static func is_link_local(ip: String) -> bool:
+	return ip.to_lower().begins_with("fe80:")
+
+## A link-local address with the USB Link interface as its zone
+## ("fe80::1%usb0"), which sockets need to know where to send. Other
+## addresses, and ones that already have a zone, come back unchanged.
+static func zone_address(ip: String) -> String:
+	if not is_link_local(ip) or "%" in ip or not ClassDB.class_exists("UsbLinkBridge"):
+		return ip
+	var iface: String = ClassDB.instantiate("UsbLinkBridge").get_interface_name()
+	return ip if iface.is_empty() else "%s%%%s" % [ip, iface]
+
+## GET through nightfall-stream's HttpRequester; the body, or "" on failure.
+static func _native_get(owner: Node, url: String) -> String:
+	if not ClassDB.class_exists("HttpRequester"):
+		return ""
+	var state := {"done": false, "code": 0, "body": PackedByteArray()}
+	var requester = ClassDB.instantiate("HttpRequester")
+	requester.request(url, "GET", PackedByteArray(), {}, {}, func(code: int, body: PackedByteArray, _headers, _error) -> void:
+		state["code"] = code
+		state["body"] = body
+		state["done"] = true, int(PROBE_TIMEOUT_SEC * 1000))
+	var give_up := Time.get_ticks_msec() + int(PROBE_TIMEOUT_SEC * 1000) + 500
+	while not state["done"] and Time.get_ticks_msec() < give_up:
+		await owner.get_tree().process_frame
+	if not state["done"] or state["code"] != 200:
+		return ""
+	return PackedByteArray(state["body"]).get_string_from_utf8()
 
 static func parse_info(body: String, sunshine_https_port: int) -> Dictionary:
 	# Something else may answer on the port; JSON.parse_string() would log an error.

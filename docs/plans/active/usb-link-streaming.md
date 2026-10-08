@@ -163,6 +163,28 @@ before integrating, verify each step before building on it)
    leaving and restarting - matching the reference PR's own "both paths
    reset the process network" lesson learned the hard way.
 
+## Nightfall Meteor over USB Link (built and tested 2026-10-08)
+
+Until 2026-10-08 the client skipped Meteor on a link-local address, because
+Godot's HTTPRequest and StreamPeerTCP can't reach a zoned address. Now:
+- `MeteorClient.probe()` asks Meteor's discovery through nightfall-stream's
+  `HttpRequester`, which binds to the zone's interface (as pairing does);
+- the stream keeps the zoned address (`MeteorClient.zone_address()`) for
+  Meteor's side channels;
+- host depth connects through `NightfallTcpPeer` (`network/tcp_peer.cpp`),
+  a native TCP client offering the StreamPeerTCP calls the receiver uses;
+- the microphone's socket already resolved zones (`getaddrinfo`).
+
+On the PC, the `quest-usb-link` profile has no firewall zone of its own, so
+it gets the default FedoraWorkstation zone, which allows 1025-65535: Meteor's
+ports need no change there.
+
+Tested 2026-10-08 on the Quest 3 over the cable, 2560x1440 HEVC at 120 fps:
+discovery found Meteor on `fe80::...%usb0`; Meteor's video tap saw 0
+incomplete frames; host depth (VDA) arrived at 115-120 maps/s (53 Mbit/s,
+5.1-5.6 ms on the host) through NightfallTcpPeer; the encrypted microphone
+sent 99 packets/s and recorded as live audio from the Nightfall Microphone.
+
 ## Fallback behavior
 
 If the USB link request fails, times out, or discovery finds nothing on it,
