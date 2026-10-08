@@ -475,12 +475,17 @@ it never shows as the latest app release) holds the three files and the
 Apache-2.0 licence since 2026-10-08. All three download with the pinned
 SHA-256s.
 
+Resuming (2026-10-08): each file's stored bytes go to `<name>.download`
+first; a dropped connection resumes by range request (5 times, with
+back-off), and a download cancelled or killed carries on next time. Tested
+against GitHub and NVIDIA: killed at 154 of 308 MB of `libnvinfer`, the next
+run resumed there and finished in 10 s with the pinned SHA-256. If the
+pinned wheel URL stops answering, the package index on NVIDIA's server is
+read for the same file name (unit-tested; NVIDIA hasn't moved it).
+
 Still to do:
 - **Updates:** a newer TensorRT downloads into a new folder; removing the
   old one once the new one works isn't written yet.
-- **Resuming within a file**, and reading the package index for the file
-  name if the pinned URL moves: not done. An interrupted download restarts
-  the file it was on.
 
 ## Phase 3: build the AppImage (built 2026-10-07)
 
@@ -513,7 +518,9 @@ Result: **34 MB**, needing glibc 2.35. Tested 2026-10-07:
   installed): it started as a proxy, with depth off and the reason logged.
 
 Still to do:
-- **Pin appimagetool:** it's the continuous build, as the client uses.
+- **Pin appimagetool (done 2026-10-08):** appimagetool 1.9.1 and the type2
+  runtime 20251108, each checked against a pinned SHA-256; the runtime is
+  passed with `--runtime-file`, so appimagetool fetches nothing itself.
 - **Attribution (settled 2026-10-08):** the EdgePad weights are a
   fine-tune of ZipDepth's MIT `zipdepth_base.pth` (the researcher's
   training starts from it; `nightfall-temporal-zipdepth`,

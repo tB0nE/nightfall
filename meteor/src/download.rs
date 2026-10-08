@@ -4,12 +4,18 @@
 //! TensorRT comes from NVIDIA's own package server. The libraries wheel is
 //! 3.7 GB, but the server answers range requests, so only the three files
 //! this GPU needs are read: `libnvinfer`, the ONNX parser and the GPU's
-//! builder resource (0.4 to 0.55 GB compressed). Each is inflated as it
-//! arrives and checked against the SHA-256 in the wheel's `RECORD`, pinned
-//! below, then renamed into `tensorrt::install_dir()`. A file under its
-//! final name has been verified, and `libnvinfer` comes last, so a
-//! half-done download never looks installed. An interrupted download
-//! starts the unfinished file again.
+//! builder resource (0.4 to 0.55 GB compressed). If the pinned URL stops
+//! answering, the package's index on the same server is read for the same
+//! file name.
+//!
+//! Each file's stored bytes go to `<name>.download` first. A dropped
+//! connection is retried (RETRIES times, with back-off) from where it
+//! stopped, by range request, and a download cancelled or interrupted by
+//! quitting continues from there next time. A finished file is inflated,
+//! checked against the SHA-256 in the wheel's `RECORD`, pinned below, and
+//! renamed into `tensorrt::install_dir()`. A file under its final name has
+//! been verified, and `libnvinfer` comes last, so a half-done download
+//! never looks installed.
 //!
 //! VDA's two graphs and their shared weights (126 MB) come from our release
 //! (or `METEOR_VDA_URL`) into the models folder, checked against the hashes
@@ -28,6 +34,12 @@ const WHEEL_URL: &str =
     "https://pypi.nvidia.com/tensorrt-cu13-libs/tensorrt_cu13_libs-10.16.1.11-py3-none-manylinux_2_28_x86_64.whl";
 const WHEEL_SIZE: u64 = 3_728_705_565;
 const WHEEL_DIR: &str = "tensorrt_libs/";
+/// The package's index, read for the wheel's URL if the pinned one moves.
+const WHEEL_INDEX_URL: &str = "https://pypi.nvidia.com/tensorrt-cu13-libs/";
+/// Times a dropped connection is resumed before the download gives up.
+const RETRIES: u32 = 5;
+/// The suffix of a file still being downloaded.
+const DOWNLOADING: &str = "download";
 
 /// What the user agrees to by downloading.
 pub const LICENCE_URL: &str = "https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html";
@@ -122,9 +134,10 @@ impl Plan {
         self.tensorrt.iter().map(|f| f.compressed).sum::<u64>() + self.graphs.iter().map(|g| g.2).sum::<u64>()
     }
 
-    /// Bytes on disk afterwards, plus room for the file being written.
+    /// Bytes on disk afterwards, plus the stored bytes kept until each file
+    /// is inflated.
     fn disk_bytes(&self) -> u64 {
-        self.tensorrt.iter().map(|f| f.size).sum::<u64>() + self.graphs.iter().map(|g| g.2).sum::<u64>()
+        self.tensorrt.iter().map(|f| f.size + f.compressed).sum::<u64>() + self.graphs.iter().map(|g| g.2).sum::<u64>()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -206,20 +219,25 @@ impl Download {
         let install = crate::tensorrt::install_dir();
         std::fs::create_dir_all(&install).map_err(|e| format!("{}: {e}", install.display()))?;
         std::fs::create_dir_all(&plan.models_dir).map_err(|e| format!("{}: {e}", plan.models_dir.display()))?;
-        let need = plan.disk_bytes() + 700_000_000;
+        let need = plan.disk_bytes() + 200_000_000;
         if let Some(free) = free_space(&install)
             && free < need
         {
             return Err(format!("not enough disk space: {} MB free, {} MB needed", free / 1_000_000, need / 1_000_000));
         }
         let agent = agent();
-        for (file, sha256, _) in &plan.graphs {
+        for (file, sha256, size) in &plan.graphs {
             let base = std::env::var("METEOR_VDA_URL").unwrap_or_else(|_| VDA_URL.to_string());
             let url = format!("{base}{file}");
             log::info!("VDA download: {url}");
-            let response = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
-            let reader = self.counting(response.into_body().into_reader());
-            install_verified(reader, &plan.models_dir.join(file), sha256)?;
+            let path = plan.models_dir.join(file);
+            let raw = downloading(&path);
+            self.resumable(&agent, &url, 0, *size, &raw)?;
+            let reader = std::fs::File::open(&raw).map_err(|e| format!("{}: {e}", raw.display()))?;
+            // A bad file starts again next time.
+            let installed = install_verified(reader, &path, sha256);
+            let _ = std::fs::remove_file(&raw);
+            installed?;
             let mut list = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -237,14 +255,19 @@ impl Download {
                 return Err(format!("{} in NVIDIA's package isn't the expected size", file.name));
             }
             log::info!("VDA download: {} from NVIDIA ({} MB)", file.name, file.compressed / 1_000_000);
+            let path = install.join(file.name);
+            let raw = downloading(&path);
             // Progress counts the bytes received, before inflating.
-            let body = self.counting(wheel.body(&agent, &member)?);
+            self.resumable(&agent, &wheel.url, wheel.data_start(&agent, &member)?, member.compressed, &raw)?;
+            let body = std::io::BufReader::new(std::fs::File::open(&raw).map_err(|e| format!("{}: {e}", raw.display()))?);
             let reader: Box<dyn Read> = match member.method {
                 0 => Box::new(body),
                 8 => Box::new(flate2::read::DeflateDecoder::new(body)),
                 m => return Err(format!("NVIDIA's package uses compression method {m}")),
             };
-            install_verified(reader, &install.join(file.name), file.sha256)?;
+            let installed = install_verified(reader, &path, file.sha256);
+            let _ = std::fs::remove_file(&raw);
+            installed?;
         }
         Ok(())
     }
@@ -253,6 +276,68 @@ impl Download {
     fn counting<'a, R: Read + 'a>(&'a self, inner: R) -> impl Read + 'a {
         Counting { inner, download: self }
     }
+
+    /// Fetches bytes `start..start + len` of `url` into `path`, carrying on
+    /// from whatever `path` already holds, and resuming after a dropped
+    /// connection up to RETRIES times.
+    fn resumable(&self, agent: &ureq::Agent, url: &str, start: u64, len: u64, path: &Path) -> Result<(), String> {
+        let fail = |e: std::io::Error| format!("{}: {e}", path.display());
+        let mut have = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        if have > len {
+            std::fs::remove_file(path).map_err(fail)?;
+            have = 0;
+        }
+        if have > 0 {
+            log::info!("Resuming {} at {} of {} MB", path.display(), have / 1_000_000, len / 1_000_000);
+        }
+        self.done.fetch_add(have, Ordering::Relaxed);
+        let mut failures = 0;
+        while have < len {
+            let attempt = (|| -> Result<(), String> {
+                let response = agent
+                    .get(url)
+                    .header("Range", format!("bytes={}-{}", start + have, start + len - 1))
+                    .call()
+                    .map_err(|e| format!("{url}: {e}"))?;
+                let mut out = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(fail)?;
+                match response.status().as_u16() {
+                    206 => {}
+                    // The server ignored the range: start the file again.
+                    200 => {
+                        out.set_len(0).map_err(fail)?;
+                        self.done.fetch_sub(have, Ordering::Relaxed);
+                        have = 0;
+                        if start > 0 {
+                            return Err(format!("{url} doesn't answer range requests"));
+                        }
+                    }
+                    status => return Err(format!("{url}: HTTP {status}")),
+                }
+                let mut body = self.counting(response.into_body().into_reader().take(len - have));
+                std::io::copy(&mut body, &mut out).map_err(|e| format!("{url}: {e}"))?;
+                Ok(())
+            })();
+            have = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if let Err(err) = attempt {
+                failures += 1;
+                if self.cancel.load(Ordering::Relaxed) || failures > RETRIES {
+                    return Err(err);
+                }
+                let wait = Duration::from_secs(2u64.pow(failures).min(30));
+                log::warn!("{err}; resuming in {} s ({failures} of {RETRIES})", wait.as_secs());
+                std::thread::sleep(wait);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where `path` is written while it's still downloading.
+fn downloading(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".");
+    name.push(DOWNLOADING);
+    path.with_file_name(name)
 }
 
 struct Counting<'a, R> {
@@ -374,9 +459,12 @@ pub fn command(models_dir: &Path) -> i32 {
 }
 
 /// Deletes what the download installed: TensorRT, the graphs it fetched,
-/// and VDA's cached engines.
+/// any unfinished files, and VDA's cached engines.
 pub fn remove(models_dir: &Path) -> Result<(), String> {
     let install = crate::tensorrt::install_dir();
+    for (file, _, _) in crate::vda::FILES {
+        let _ = std::fs::remove_file(downloading(&models_dir.join(file)));
+    }
     if let Ok(list) = std::fs::read_to_string(install.join(DOWNLOADED_MODELS)) {
         for file in list.lines().filter(|f| crate::vda::is_file(f)) {
             let _ = std::fs::remove_file(models_dir.join(file));
@@ -410,37 +498,71 @@ struct Member {
 
 /// The wheel's central directory, read with two range requests.
 struct Wheel {
+    url: String,
     members: Vec<(String, Member)>,
 }
 
 impl Wheel {
     fn open(agent: &ureq::Agent) -> Result<Wheel, String> {
-        let tail = range(agent, WHEEL_SIZE - 65_536, 65_536)?;
+        let (url, tail) = match range(agent, WHEEL_URL, WHEEL_SIZE - 65_536, 65_536) {
+            Ok(tail) => (WHEEL_URL.to_string(), tail),
+            Err(err) => {
+                // Moved? The index lists where the same file is now.
+                let url = moved_wheel_url(agent).ok_or(err)?;
+                log::info!("NVIDIA's package moved; using {url}");
+                let tail = range(agent, &url, WHEEL_SIZE - 65_536, 65_536)?;
+                (url, tail)
+            }
+        };
         let (cd_offset, cd_size) = central_directory(&tail)?;
-        let cd = range(agent, cd_offset, cd_size)?;
-        Ok(Wheel { members: members(&cd)? })
+        let cd = range(agent, &url, cd_offset, cd_size)?;
+        Ok(Wheel { members: members(&cd)?, url })
     }
 
     fn member(&self, name: &str) -> Result<Member, String> {
         self.members.iter().find(|(n, _)| n == name).map(|(_, m)| m.clone()).ok_or_else(|| format!("{name} isn't in NVIDIA's package"))
     }
 
-    /// The member's stored (compressed) bytes, as they stream in.
-    fn body(&self, agent: &ureq::Agent, member: &Member) -> Result<impl Read + Send + use<>, String> {
-        let header = range(agent, member.offset, 30)?;
+    /// Where the member's stored (compressed) bytes start in the wheel.
+    fn data_start(&self, agent: &ureq::Agent, member: &Member) -> Result<u64, String> {
+        let header = range(agent, &self.url, member.offset, 30)?;
         if header.get(..4) != Some(b"PK\x03\x04") {
             return Err("NVIDIA's package has an unexpected layout".into());
         }
         let name_len = u64::from(u16::from_le_bytes([header[26], header[27]]));
         let extra_len = u64::from(u16::from_le_bytes([header[28], header[29]]));
-        let start = member.offset + 30 + name_len + extra_len;
-        range_reader(agent, start, member.compressed)
+        Ok(member.offset + 30 + name_len + extra_len)
     }
 }
 
-fn range_reader(agent: &ureq::Agent, start: u64, len: u64) -> Result<impl Read + Send + use<>, String> {
+/// The wheel's URL from the package's index (a PEP 503 page of links), if
+/// it lists the same file name.
+fn moved_wheel_url(agent: &ureq::Agent) -> Option<String> {
+    let page = agent.get(WHEEL_INDEX_URL).call().ok()?.into_body().read_to_string().ok()?;
+    wheel_link(&page, WHEEL_INDEX_URL, WHEEL_URL.rsplit('/').next()?)
+}
+
+/// The link to `file` in an index page, made absolute against `base`.
+fn wheel_link(page: &str, base: &str, file: &str) -> Option<String> {
+    page.split("href=\"").skip(1).filter_map(|s| s.split('"').next()).find_map(|href| {
+        let href = href.split('#').next()?;
+        if href.rsplit('/').next()? != file {
+            return None;
+        }
+        Some(if href.contains("://") {
+            href.to_string()
+        } else if let Some(path) = href.strip_prefix('/') {
+            let origin: String = base.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+            format!("{origin}/{path}")
+        } else {
+            format!("{}{href}", base)
+        })
+    })
+}
+
+fn range_reader(agent: &ureq::Agent, url: &str, start: u64, len: u64) -> Result<impl Read + Send + use<>, String> {
     let response = agent
-        .get(WHEEL_URL)
+        .get(url)
         .header("Range", format!("bytes={start}-{}", start + len - 1))
         .call()
         .map_err(|e| format!("NVIDIA's server: {e}"))?;
@@ -450,9 +572,9 @@ fn range_reader(agent: &ureq::Agent, start: u64, len: u64) -> Result<impl Read +
     Ok(response.into_body().into_reader().take(len))
 }
 
-fn range(agent: &ureq::Agent, start: u64, len: u64) -> Result<Vec<u8>, String> {
+fn range(agent: &ureq::Agent, url: &str, start: u64, len: u64) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(len as usize);
-    range_reader(agent, start, len)?.read_to_end(&mut out).map_err(|e| format!("NVIDIA's server: {e}"))?;
+    range_reader(agent, url, start, len)?.read_to_end(&mut out).map_err(|e| format!("NVIDIA's server: {e}"))?;
     Ok(out)
 }
 
@@ -532,6 +654,27 @@ fn members(cd: &[u8]) -> Result<Vec<(String, Member)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_a_moved_wheel_in_the_index() {
+        let file = "tensorrt_cu13_libs-10.16.1.11-py3-none-manylinux_2_28_x86_64.whl";
+        let base = "https://pypi.nvidia.com/tensorrt-cu13-libs/";
+        let page = format!(
+            "<a href=\"other.whl\">x</a><a href=\"https://files.example.com/a/{file}#sha256=ab\">{file}</a>"
+        );
+        assert_eq!(wheel_link(&page, base, file).as_deref(), Some(format!("https://files.example.com/a/{file}").as_str()));
+        let relative = format!("<a href=\"{file}#sha256=ab\">{file}</a>");
+        assert_eq!(wheel_link(&relative, base, file), Some(format!("{base}{file}")));
+        let rooted = format!("<a href=\"/packages/{file}\">{file}</a>");
+        assert_eq!(wheel_link(&rooted, base, file), Some(format!("https://pypi.nvidia.com/packages/{file}")));
+        assert_eq!(wheel_link("<a href=\"tensorrt_cu13_libs-10.16.0.whl\">", base, file), None);
+    }
+
+    #[test]
+    fn names_unfinished_files() {
+        assert_eq!(downloading(Path::new("/m/vda_s_518x294.onnx.data")), Path::new("/m/vda_s_518x294.onnx.data.download"));
+        assert_eq!(downloading(Path::new("/t/libnvinfer.so.10")), Path::new("/t/libnvinfer.so.10.download"));
+    }
 
     /// A central directory entry, with a zip64 field for the offset.
     fn entry(name: &str, compressed: u32, offset: Option<u64>) -> Vec<u8> {

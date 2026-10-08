@@ -844,7 +844,7 @@ impl Depth {
                 rate_window = (Instant::now(), 0);
             }
             if let Some((dir, every)) = &self.save
-                && (maps - 1) % every == 0
+                && (maps - 1).is_multiple_of(*every)
             {
                 let rgb = match &frame.pixels {
                     Pixels::Rgb(rgb) if same_size => Ok((rgb.clone(), frame.size)),

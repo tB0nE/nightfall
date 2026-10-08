@@ -22,6 +22,14 @@ NCNN_ZIP="ncnn-$NCNN_VERSION-ubuntu-2204-shared"
 NCNN_SHA256=69174c845eaf0e7b592f1e032b700d1b0ffda2915ebf69ee98b2d87411578d30
 NCNN_LICENSE_SHA256=7c974bac98848df46be1af5bdaa3c3c9c01f6082a90f55caeb7f60c6208aa255
 MAX_BYTES=$((100 * 1000 * 1000))
+# appimagetool packs the AppImage, putting the AppImage runtime (the small
+# launcher at the front of the file) in front of it. Both are pinned so a
+# release build is reproducible; appimagetool would otherwise fetch the
+# newest runtime.
+APPIMAGETOOL_VERSION=1.9.1
+APPIMAGETOOL_SHA256=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+RUNTIME_VERSION=20251108
+RUNTIME_SHA256=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
 
 OUT="$METEOR/target/appimage"
 WORK="$OUT/work"
@@ -121,14 +129,18 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
 } > "$APPDIR/usr/share/doc/nightfall-meteor/THIRD_PARTY_NOTICES.txt"
 
 echo "== Packing"
-TOOL="$OUT/appimagetool-x86_64.AppImage"
+TOOL="$OUT/appimagetool-$APPIMAGETOOL_VERSION-x86_64.AppImage"
+RUNTIME="$OUT/runtime-$RUNTIME_VERSION-x86_64"
 if [[ ! -x "$TOOL" ]]; then
-    curl -fsSL -o "$TOOL" https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+    curl -fsSL -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-x86_64.AppImage"
     chmod +x "$TOOL"
 fi
+[[ -f "$RUNTIME" ]] || curl -fsSL -o "$RUNTIME" "https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME_VERSION/runtime-x86_64"
+echo "$APPIMAGETOOL_SHA256  $TOOL" | sha256sum -c --quiet
+echo "$RUNTIME_SHA256  $RUNTIME" | sha256sum -c --quiet
 TARGET="$OUT/Nightfall-Meteor-x86_64.AppImage"
 rm -f "$TARGET" "$TARGET.zsync"
-(cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --comp zstd \
+(cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --comp zstd --runtime-file "$RUNTIME" \
     -u "gh-releases-zsync|tB0nE|nightfall|latest|Nightfall-Meteor-*x86_64.AppImage.zsync" \
     "$APPDIR" "$TARGET" >"$WORK/appimagetool.log" 2>&1) || { cat "$WORK/appimagetool.log" >&2; exit 1; }
 
