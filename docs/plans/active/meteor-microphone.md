@@ -96,9 +96,20 @@ Quest mic ─► AAudio capture ─► UDP :47902 ─► Meteor ─► jitter bu
   are accepted only from loopback (`tools/send_mic.py`). Checked: the C++
   cipher (`mic_cipher.cpp`, OpenSSL) matches a fixed vector from Meteor's
   tests, and a 3 s tone sent encrypted through Meteor recorded from the
-  device at the exact level and frequency. It hides the audio on the
-  network but doesn't authenticate Meteor, whose key arrives over plain
-  HTTP; pinning it per host would close that.
+  device at the exact level and frequency.
+- Opus (2026-10-08): the headset encodes 10 ms frames at 32 kbit/s
+  (complexity 5, voice, in-band FEC for 5% loss) when Meteor lists
+  `opus_48k_mono`, else sends PCM. Meteor decodes with libopus (built from
+  `audiopus_sys`'s bundled source, statically linked) at playout; a lost
+  frame comes from the next packet's FEC, else loss concealment. Measured
+  on the PC: 83 kbit/s on the wire with headers and encryption (PCM: about
+  820); with every 25th packet dropped, each loss showed as a 12-18 ms dip
+  to 7-19% of a 440 Hz tone's level rather than silence (FEC is a lower
+  quality voice coding, better on speech than on a sine).
+- Meteor's key is permanent since 2026-10-08 (`meteor.key`) and the headset
+  remembers it per host (trust on first use), so a different Meteor
+  answering for that PC is refused. Settings > Forget Meteor Keys trusts a
+  reinstalled one.
 - Grab bar (2026-10-08): a microphone button left of the controller button
   turns the microphone on and off, lit while on, with a blue dot while
   audio is reaching Meteor. An AI 3D on/off button joins the right side, so

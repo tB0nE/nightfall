@@ -530,6 +530,7 @@ var _ui_stats_btn: Button
 var _ui_language_btn: Button
 var _ui_licences_btn: Button
 var _ui_microphone_btn: Button
+var _ui_forget_meteor_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat

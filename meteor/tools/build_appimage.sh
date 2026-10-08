@@ -89,6 +89,7 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "- GNU OpenMP runtime (libgomp), GPL v3 with the GCC Runtime Library Exception: usr/lib/libgomp.so.1"
     echo "- EdgePad 512x288 weights: Nightfall's fine-tune of ZipDepth (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
+    echo "- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor (microphone)"
     echo "- The Rust crates listed at the end"
     echo
     echo "Choosing Video Depth Anything in the tray downloads NVIDIA TensorRT from"
@@ -106,6 +107,10 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "=========================================================================="
     echo "NVIDIA TensorRT headers"
     cat third_party/tensorrt/LICENSE
+    echo
+    echo "=========================================================================="
+    echo "libopus"
+    cat "$OUT"/cargo-registry/src/*/audiopus_sys-*/opus/COPYING
     echo
     echo "=========================================================================="
     echo "GCC Runtime Library Exception (libgomp): https://www.gnu.org/licenses/gcc-exception-3.1.html"

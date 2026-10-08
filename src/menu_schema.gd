@@ -146,6 +146,7 @@ static func get_tabs() -> Array:
 					_option(&"_ui_reconnect_btn", "Auto-Reconnect", "On", "Automatically attempt to restore an interrupted stream.", TARGET_SETTINGS, &"cycle_auto_reconnect"),
 					_option(&"_ui_idle_btn", "Idle Disconnect", "Off", "Disconnect after the selected period without input.", TARGET_SETTINGS, &"cycle_idle_timeout"),
 					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
+					_option(&"_ui_forget_meteor_btn", "Forget Meteor Keys", "", "Trust the next key Nightfall Meteor sends, after reinstalling it.", TARGET_SETTINGS, &"forget_meteor_keys"),
 				],
 			},
 			{

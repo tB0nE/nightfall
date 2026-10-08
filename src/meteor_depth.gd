@@ -2,9 +2,11 @@ class_name MeteorDepthReceiver
 extends RefCounted
 
 ## Receives depth maps from Nightfall Meteor's depth port (see
-## meteor/src/depth_server.rs). Each message is a 32-byte little-endian header
-## then a zstd-compressed 8-bit map, tagged with the Moonlight frame number it
-## was made from.
+## meteor/src/depth_server.rs). On connecting it sends a key made for this
+## connection; each message is then a 32-byte little-endian header and a
+## zstd-compressed 8-bit map, encrypted (nightfall-stream's
+## MeteorChannelCipher), tagged with the Moonlight frame number it was made
+## from.
 ##
 ## A worker thread connects, reads and decompresses, and keeps the newest
 ## RING_SIZE maps. The main thread only picks the map for the frame on screen
@@ -12,7 +14,9 @@ extends RefCounted
 
 const HEADER_LEN := 32
 const MAGIC := 0x4D44464E # "NFDM", little-endian
-const VERSION := 1
+const VERSION := 2
+const HELLO_MAGIC := "NFDK"
+const KDF_INFO := "nightfall-meteor depth v2"
 const COMPRESSION_ZSTD := 1
 const MAX_MAP_PIXELS := 4096 * 4096
 ## About 100 ms of maps at 120 Hz.
@@ -27,6 +31,8 @@ const IDLE_USEC := 500
 
 var host := ""
 var port := 0
+## Meteor's public key (MeteorClient.meteor_key()).
+var key := ""
 # Written by the worker; plain ints and bools, read without the lock.
 var maps_received := 0
 var bytes_received := 0
@@ -42,12 +48,17 @@ var _last_map_at := 0.0
 # {frame, epoch, map, width, height, latency_us}, oldest first. Guarded by _mutex.
 var _ring: Array[Dictionary] = []
 
-func start(address: String, depth_port: int) -> void:
-	if address == host and depth_port == port and _thread:
+## Whether this build can decrypt Meteor's maps.
+static func is_supported() -> bool:
+	return ClassDB.class_exists("MeteorChannelCipher")
+
+func start(address: String, depth_port: int, meteor_key: String) -> void:
+	if address == host and depth_port == port and meteor_key == key and _thread:
 		return
 	stop()
 	host = address
 	port = depth_port
+	key = meteor_key
 	_running = true
 	_thread = Thread.new()
 	_thread.start(_run)
@@ -105,6 +116,8 @@ static func _new_peer(address: String):
 
 func _run() -> void:
 	var peer = null
+	var cipher = null
+	var counter := 0
 	var buf := PackedByteArray()
 	var retry_at := 0.0
 	while _running:
@@ -130,6 +143,16 @@ func _run() -> void:
 			continue
 		if not _connected:
 			peer.set_no_delay(true)
+			cipher = ClassDB.instantiate("MeteorChannelCipher")
+			var err: String = cipher.init(key, KDF_INFO)
+			var hello := HELLO_MAGIC.to_ascii_buffer()
+			hello.append_array(cipher.get_public_key())
+			if not err.is_empty() or peer.put_data(hello) != OK:
+				push_warning("Meteor depth: can't start the encrypted connection (%s)" % err)
+				peer.disconnect_from_host()
+				peer = null
+				continue
+			counter = 0
 			_connected_at = now
 			_connected = true
 		var available: int = peer.get_available_bytes()
@@ -155,10 +178,17 @@ func _run() -> void:
 			_connected = false
 			continue
 		var consumed := 0
+		var forged := false
 		for message: Dictionary in messages:
 			consumed = message["payload_end"]
 			var pixels: int = message["width"] * message["height"]
-			var map := buf.slice(message["payload_start"], message["payload_end"]).decompress(pixels, FileAccess.COMPRESSION_ZSTD)
+			var header := buf.slice(message["header_start"], message["payload_start"])
+			var plain: PackedByteArray = cipher.open(counter, header, buf.slice(message["payload_start"], message["payload_end"]))
+			counter += 1
+			if plain.is_empty():
+				forged = true
+				break
+			var map := plain.decompress(pixels, FileAccess.COMPRESSION_ZSTD)
 			if map.size() != pixels:
 				push_warning("Meteor depth: map for frame %d didn't decompress" % message["frame"])
 				continue
@@ -170,6 +200,13 @@ func _run() -> void:
 				"height": message["height"],
 				"latency_us": message["latency_us"],
 			})
+		if forged:
+			push_warning("Meteor depth: a map didn't decrypt; reconnecting")
+			peer.disconnect_from_host()
+			peer = null
+			buf = PackedByteArray()
+			_connected = false
+			continue
 		if consumed > 0:
 			buf = buf.slice(consumed)
 	if peer:
@@ -191,8 +228,8 @@ func _store(entry: Dictionary) -> void:
 	_last_map_at = _now()
 
 ## The complete messages at the start of buf, each {frame, epoch, width,
-## height, latency_us, payload_start, payload_end}; or a single {error} for a
-## stream that isn't Meteor's.
+## height, latency_us, header_start, payload_start, payload_end} (the payload
+## still encrypted); or a single {error} for a stream that isn't Meteor's.
 static func parse_messages(buf: PackedByteArray) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	var offset := 0
@@ -207,7 +244,7 @@ static func parse_messages(buf: PackedByteArray) -> Array[Dictionary]:
 		var payload_len := buf.decode_u32(offset + 24)
 		if header_len < HEADER_LEN or buf.decode_u8(offset + 20) != 0 or buf.decode_u8(offset + 21) != COMPRESSION_ZSTD:
 			return [{"error": "unsupported map format"}]
-		if w == 0 or h == 0 or w * h > MAX_MAP_PIXELS or payload_len > w * h + 65536:
+		if w == 0 or h == 0 or w * h > MAX_MAP_PIXELS or payload_len > w * h + 65536 + 16:
 			return [{"error": "bad map size %dx%d (%d bytes)" % [w, h, payload_len]}]
 		var end := offset + header_len + payload_len
 		if end > buf.size():
@@ -218,6 +255,7 @@ static func parse_messages(buf: PackedByteArray) -> Array[Dictionary]:
 			"width": w,
 			"height": h,
 			"latency_us": buf.decode_u32(offset + 28),
+			"header_start": offset,
 			"payload_start": offset + header_len,
 			"payload_end": end,
 		})

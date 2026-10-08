@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Invia il microfono del visore al PC tramite Nightfall Meteor.",
 	"Microphone on": "Microfono attivo",
 	"Microphone unavailable": "Microfono non disponibile",
-	"Microphone permission denied": "Permesso microfono negato"
+	"Microphone permission denied": "Permesso microfono negato",
+	"Forget Meteor Keys": "Dimentica chiavi Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Fidati della prossima chiave di Nightfall Meteor dopo la reinstallazione.",
+	"Meteor's key changed; not using it": "La chiave di Meteor è cambiata; non usato",
+	"Meteor keys forgotten": "Chiavi Meteor dimenticate"
 }

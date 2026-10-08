@@ -13,23 +13,22 @@
 //! | 0-3 | magic `NFMC` |
 //! | 4 | version: 2 encrypted, 1 plain (loopback only, for tools/send_mic.py) |
 //! | 5 | flags: bit 0 = muted on the headset |
-//! | 6 | format: 0 = PCM s16le, 48 kHz, mono |
+//! | 6 | format: 0 = PCM s16le, 48 kHz, mono; 1 = Opus, 48 kHz, mono |
 //! | 7 | reserved |
 //! | 8-11 | sequence number |
 //! | 12-15 | timestamp of the first sample, in samples |
 //! | v2: 16-47 | the sender's X25519 public key |
-//! | then | 480 samples (960 bytes); v2: encrypted, then a 16-byte tag |
+//! | then | the frame: 480 PCM samples (960 bytes), or one Opus packet (v2 only; empty when muted); v2: encrypted, then a 16-byte tag |
 //!
-//! Encryption (v2): each Meteor run makes an X25519 key pair and publishes
-//! the public key in discovery (`mic.key`, hex). The headset makes its own
-//! pair for each microphone session and sends its public key in every
-//! packet, so there's no handshake to lose. Both sides derive an AES-256-GCM
-//! key with HKDF-SHA256 (salt: the headset's public key then Meteor's;
-//! info: MIC_KDF_INFO). The nonce is the sequence number (little-endian)
-//! followed by 8 zero bytes, unique within a session's key, and the header
-//! (bytes 0-47) is the additional data. This keeps the audio private on the
-//! network; it doesn't authenticate Meteor, since its key arrives over plain
-//! HTTP.
+//! Encryption (v2, see crypto.rs): the headset makes a key pair for each
+//! microphone session and sends its public key in every packet, so there's
+//! no handshake to lose. The session key comes from Meteor's key with
+//! MIC_KDF_INFO, the nonce is the sequence number, and the header (bytes
+//! 0-47) is the additional data.
+//!
+//! Opus frames are decoded at playout, in sequence order. A lost one is
+//! rebuilt from the next packet's forward error correction when that has
+//! arrived, else from the decoder's loss concealment.
 //!
 //! A playout thread moves one frame every 10 ms from a jitter buffer into
 //! the device (see Mic::play). The jitter buffer starts once 40 ms
@@ -44,14 +43,18 @@ use std::time::{Duration, Instant};
 
 pub const DEFAULT_MIC_PORT: u16 = 47902;
 pub const FORMAT_PCM_S16LE_48K_MONO: &str = "pcm_s16le_48k_mono";
+pub const FORMAT_OPUS_48K_MONO: &str = "opus_48k_mono";
+const FORMAT_PCM: u8 = 0;
+const FORMAT_OPUS: u8 = 1;
+/// Larger than any Opus packet for 10 ms of mono voice.
+const MAX_OPUS_BYTES: usize = 1275;
 const MAGIC: &[u8; 4] = b"NFMC";
 const VERSION_PLAIN: u8 = 1;
 const VERSION_ENCRYPTED: u8 = 2;
 const HEADER: usize = 16;
-const KEY_BYTES: usize = 32;
+const KEY_BYTES: usize = crate::crypto::KEY_BYTES;
 const ENCRYPTED_HEADER: usize = HEADER + KEY_BYTES;
-const TAG_BYTES: usize = 16;
-pub const ENCRYPTION: &str = "x25519-hkdf-sha256-aes256gcm";
+const TAG_BYTES: usize = crate::crypto::TAG_BYTES;
 const MIC_KDF_INFO: &[u8] = b"nightfall-meteor mic v2";
 /// Senders' derived keys kept at once (one per headset session).
 const MAX_SENDER_KEYS: usize = 8;
@@ -77,9 +80,16 @@ pub struct MicStats {
     pub rejected: AtomicU64,
 }
 
+/// A received frame, still encoded if it's Opus.
+#[derive(Clone)]
+enum Frame {
+    Pcm(Vec<u8>),
+    Opus(Vec<u8>),
+}
+
 #[derive(Default)]
 struct Jitter {
-    frames: BTreeMap<u32, Vec<u8>>,
+    frames: BTreeMap<u32, Frame>,
     /// The next sequence number to play, once playing.
     next: Option<u32>,
     last_packet: Option<Instant>,
@@ -88,9 +98,7 @@ struct Jitter {
 
 pub struct Mic {
     pub port: u16,
-    /// This run's X25519 key pair (see the module comment).
-    secret: x25519_dalek::StaticSecret,
-    pub public_key: [u8; KEY_BYTES],
+    key: Arc<crate::crypto::MeteorKey>,
     /// AES-256-GCM keys by sender public key.
     keys: Mutex<Vec<([u8; KEY_BYTES], ring::aead::LessSafeKey)>>,
     pub stats: MicStats,
@@ -102,7 +110,7 @@ pub struct Mic {
 impl Mic {
     /// Creates the virtual device and starts listening. None when the
     /// device can't be created (no PipeWire/PulseAudio, or not Linux).
-    pub async fn start(port: u16, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<Arc<Mic>> {
+    pub async fn start(port: u16, key: Arc<crate::crypto::MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<Arc<Mic>> {
         let device = match VirtualMic::create() {
             Ok(device) => device,
             Err(err) => {
@@ -121,17 +129,9 @@ impl Mic {
             },
         };
         log::info!("Microphone: UDP :{port} -> PipeWire source \"Nightfall Microphone\" ({SOURCE_NAME}), encrypted");
-        let mut seed = [0u8; KEY_BYTES];
-        if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed).is_err() {
-            log::warn!("Microphone passthrough is off: no system randomness for its key");
-            return None;
-        }
-        let secret = x25519_dalek::StaticSecret::from(seed);
-        let public_key = x25519_dalek::PublicKey::from(&secret).to_bytes();
         let mic = Arc::new(Mic {
             port,
-            secret,
-            public_key,
+            key,
             keys: Mutex::default(),
             stats: MicStats::default(),
             muted: AtomicBool::new(false),
@@ -182,7 +182,7 @@ impl Mic {
                 }
                 continue;
             }
-            let Some((seq, muted_on_headset, pcm)) = self.open(&mut buf[..len], ip.is_loopback()) else { continue };
+            let Some((seq, muted_on_headset, format, payload)) = self.open(&mut buf[..len], ip.is_loopback()) else { continue };
             self.stats.packets.fetch_add(1, Ordering::Relaxed);
             let Ok(mut jitter) = self.jitter.lock() else { return };
             if jitter.sender != Some(from) {
@@ -196,7 +196,11 @@ impl Mic {
             if jitter.next.is_some_and(|next| seq_before(seq, next)) {
                 continue;
             }
-            let frame = if muted_on_headset { vec![0u8; FRAME_BYTES] } else { pcm.to_vec() };
+            let frame = match format {
+                _ if muted_on_headset => Frame::Pcm(vec![0u8; FRAME_BYTES]),
+                FORMAT_OPUS => Frame::Opus(payload.to_vec()),
+                _ => Frame::Pcm(payload.to_vec()),
+            };
             jitter.frames.insert(seq, frame);
         }
     }
@@ -217,6 +221,8 @@ impl Mic {
         let mut tick = Instant::now();
         let mut last_log = Instant::now();
         let mut playing = false;
+        // One per stream, so its state follows that stream's frames.
+        let mut decoder: Option<opus::Decoder> = None;
         loop {
             tick += FRAME;
             match tick.checked_duration_since(Instant::now()) {
@@ -229,12 +235,19 @@ impl Mic {
                 last_log = Instant::now();
                 self.log_levels();
             }
-            let frame = {
+            let (frame, following) = {
                 let Ok(mut jitter) = self.jitter.lock() else { return };
-                self.next_frame(&mut jitter)
+                let frame = self.next_frame(&mut jitter);
+                // A lost Opus frame can be rebuilt from the next packet.
+                let following = match &frame {
+                    Some(None) => jitter.next.and_then(|n| jitter.frames.get(&n).cloned()),
+                    _ => None,
+                };
+                (frame, following)
             };
             let Some(frame) = frame else {
                 playing = false;
+                decoder = None;
                 continue;
             };
             let Ok(mut device) = self.device.lock() else { return };
@@ -248,7 +261,16 @@ impl Mic {
             if frame.is_none() {
                 self.stats.concealed.fetch_add(1, Ordering::Relaxed);
             }
-            let data = if self.muted.load(Ordering::Relaxed) { &silence } else { frame.as_ref().unwrap_or(&silence) };
+            let pcm = match frame {
+                Some(Frame::Pcm(pcm)) => Some(pcm),
+                Some(Frame::Opus(packet)) => decode(&mut decoder, &packet, false),
+                None => match following {
+                    Some(Frame::Opus(next)) => decode(&mut decoder, &next, true),
+                    _ if decoder.is_some() => decode(&mut decoder, &[], false),
+                    _ => None,
+                },
+            };
+            let data = if self.muted.load(Ordering::Relaxed) { &silence } else { pcm.as_ref().unwrap_or(&silence) };
             match device.write(data) {
                 Ok(true) => {
                     self.stats.played.fetch_add(1, Ordering::Relaxed);
@@ -278,7 +300,7 @@ impl Mic {
 
     /// None: not playing (idle or still buffering). Some(None): play silence
     /// for a missing frame. Some(Some(pcm)): play this frame.
-    fn next_frame(&self, jitter: &mut Jitter) -> Option<Option<Vec<u8>>> {
+    fn next_frame(&self, jitter: &mut Jitter) -> Option<Option<Frame>> {
         let live = jitter.last_packet.is_some_and(|t| t.elapsed() < IDLE_AFTER);
         if !live {
             if jitter.next.take().is_some() {
@@ -312,26 +334,33 @@ impl Mic {
 }
 
 impl Mic {
-    /// Checks a packet and returns (sequence, muted, PCM), decrypting it in
-    /// place. Plain (v1) packets count only from loopback.
-    fn open<'a>(&self, packet: &'a mut [u8], loopback: bool) -> Option<(u32, bool, &'a [u8])> {
-        if packet.len() < HEADER || &packet[..4] != MAGIC || packet[6] != 0 {
+    /// Checks a packet and returns (sequence, muted, format, frame),
+    /// decrypting it in place. Plain (v1) packets count only from loopback.
+    fn open<'a>(&self, packet: &'a mut [u8], loopback: bool) -> Option<(u32, bool, u8, &'a [u8])> {
+        if packet.len() < HEADER || &packet[..4] != MAGIC {
             return None;
         }
         let seq = u32::from_le_bytes([packet[8], packet[9], packet[10], packet[11]]);
         let muted = packet[5] & 1 != 0;
+        let format = packet[6];
+        let body = packet.len().saturating_sub(ENCRYPTED_HEADER + TAG_BYTES);
+        let size_ok = match format {
+            FORMAT_PCM => body == FRAME_BYTES,
+            FORMAT_OPUS => body <= MAX_OPUS_BYTES && packet.len() >= ENCRYPTED_HEADER + TAG_BYTES,
+            _ => false,
+        };
         match packet[4] {
-            VERSION_PLAIN if loopback && packet.len() == HEADER + FRAME_BYTES => Some((seq, muted, &packet[HEADER..])),
-            VERSION_ENCRYPTED if packet.len() == ENCRYPTED_HEADER + FRAME_BYTES + TAG_BYTES => {
+            VERSION_PLAIN if loopback && format == FORMAT_PCM && packet.len() == HEADER + FRAME_BYTES => {
+                Some((seq, muted, format, &packet[HEADER..]))
+            }
+            VERSION_ENCRYPTED if size_ok => {
                 let sender: [u8; KEY_BYTES] = packet[HEADER..ENCRYPTED_HEADER].try_into().ok()?;
                 let (header, body) = packet.split_at_mut(ENCRYPTED_HEADER);
-                let mut nonce = [0u8; 12];
-                nonce[..4].copy_from_slice(&seq.to_le_bytes());
                 let mut keys = self.keys.lock().ok()?;
                 let index = match keys.iter().position(|(k, _)| *k == sender) {
                     Some(index) => index,
                     None => {
-                        let key = derive_key(&self.secret, &self.public_key, &sender)?;
+                        let key = self.key.session_key(&sender, MIC_KDF_INFO)?;
                         if keys.len() >= MAX_SENDER_KEYS {
                             keys.remove(0);
                         }
@@ -341,29 +370,24 @@ impl Mic {
                 };
                 let pcm = keys[index]
                     .1
-                    .open_in_place(ring::aead::Nonce::assume_unique_for_key(nonce), ring::aead::Aad::from(&*header), body)
+                    .open_in_place(crate::crypto::nonce(u64::from(seq)), ring::aead::Aad::from(&*header), body)
                     .ok()?;
-                Some((seq, muted, &*pcm))
+                Some((seq, muted, format, &*pcm))
             }
             _ => None,
         }
     }
 }
 
-/// The session key for one sender (see the module comment). None for a
-/// public key that yields no shared secret.
-fn derive_key(secret: &x25519_dalek::StaticSecret, ours: &[u8; KEY_BYTES], theirs: &[u8; KEY_BYTES]) -> Option<ring::aead::LessSafeKey> {
-    let shared = secret.diffie_hellman(&x25519_dalek::PublicKey::from(*theirs));
-    if !shared.was_contributory() {
-        return None;
+/// One 10 ms frame from Opus: `packet` itself, its forward error correction
+/// for the frame before it (`fec`), or, with no packet, loss concealment.
+fn decode(decoder: &mut Option<opus::Decoder>, packet: &[u8], fec: bool) -> Option<Vec<u8>> {
+    if decoder.is_none() {
+        *decoder = opus::Decoder::new(48_000, opus::Channels::Mono).ok();
     }
-    let mut salt = [0u8; KEY_BYTES * 2];
-    salt[..KEY_BYTES].copy_from_slice(theirs);
-    salt[KEY_BYTES..].copy_from_slice(ours);
-    let prk = ring::hkdf::Salt::new(ring::hkdf::HKDF_SHA256, &salt).extract(shared.as_bytes());
-    let info = [MIC_KDF_INFO];
-    let okm = prk.expand(&info, &ring::aead::AES_256_GCM).ok()?;
-    Some(ring::aead::LessSafeKey::new(ring::aead::UnboundKey::from(okm)))
+    let mut out = [0i16; FRAME_SAMPLES];
+    let samples = decoder.as_mut()?.decode(packet, &mut out, fec).ok()?;
+    (samples == FRAME_SAMPLES).then(|| out.iter().flat_map(|s| s.to_le_bytes()).collect())
 }
 
 fn seq_before(a: u32, b: u32) -> bool {
@@ -614,12 +638,9 @@ mod tests {
     }
 
     fn mic() -> Mic {
-        let secret = x25519_dalek::StaticSecret::from([7u8; KEY_BYTES]);
-        let public_key = x25519_dalek::PublicKey::from(&secret).to_bytes();
         Mic {
             port: 0,
-            secret,
-            public_key,
+            key: Arc::new(crate::crypto::MeteorKey::from_seed([7u8; KEY_BYTES])),
             keys: Mutex::default(),
             stats: MicStats::default(),
             muted: AtomicBool::new(false),
@@ -632,8 +653,8 @@ mod tests {
     fn plain_packets_only_from_loopback() {
         let m = mic();
         let mut muted_packet = packet(7, 1);
-        let (seq, muted, pcm) = m.open(&mut muted_packet, true).unwrap();
-        assert_eq!((seq, muted, pcm.len()), (7, true, FRAME_BYTES));
+        let (seq, muted, format, pcm) = m.open(&mut muted_packet, true).unwrap();
+        assert_eq!((seq, muted, format, pcm.len()), (7, true, FORMAT_PCM, FRAME_BYTES));
         assert!(m.open(&mut packet(7, 0), false).is_none());
         assert!(m.open(&mut packet(7, 0)[..100], true).is_none());
         let mut wrong = packet(7, 0);
@@ -643,24 +664,21 @@ mod tests {
 
     /// Encrypts like the headset (meteor_mic.cpp).
     fn encrypted(m: &Mic, client: &x25519_dalek::StaticSecret, seq: u32, pcm: &[u8]) -> Vec<u8> {
+        encrypted_frame(m, client, seq, FORMAT_PCM, pcm)
+    }
+
+    fn encrypted_frame(m: &Mic, client: &x25519_dalek::StaticSecret, seq: u32, format: u8, pcm: &[u8]) -> Vec<u8> {
         let client_public = x25519_dalek::PublicKey::from(client).to_bytes();
         let mut p = MAGIC.to_vec();
-        p.extend_from_slice(&[VERSION_ENCRYPTED, 0, 0, 0]);
+        p.extend_from_slice(&[VERSION_ENCRYPTED, 0, format, 0]);
         p.extend_from_slice(&seq.to_le_bytes());
         p.extend_from_slice(&(seq * 480).to_le_bytes());
         p.extend_from_slice(&client_public);
-        // The headset's side of the agreement: same salt order (headset, Meteor).
-        let shared = client.diffie_hellman(&x25519_dalek::PublicKey::from(m.public_key));
-        let mut salt = client_public.to_vec();
-        salt.extend_from_slice(&m.public_key);
-        let prk = ring::hkdf::Salt::new(ring::hkdf::HKDF_SHA256, &salt).extract(shared.as_bytes());
-        let info = [MIC_KDF_INFO];
-        let okm = prk.expand(&info, &ring::aead::AES_256_GCM).unwrap();
-        let key = ring::aead::LessSafeKey::new(ring::aead::UnboundKey::from(okm));
-        let mut nonce = [0u8; 12];
-        nonce[..4].copy_from_slice(&seq.to_le_bytes());
+        // The headset's side of the agreement.
+        let shared = client.diffie_hellman(&x25519_dalek::PublicKey::from(m.key.public));
+        let key = crate::crypto::derive(shared.as_bytes(), &client_public, &m.key.public, MIC_KDF_INFO);
         let mut body = pcm.to_vec();
-        key.seal_in_place_append_tag(ring::aead::Nonce::assume_unique_for_key(nonce), ring::aead::Aad::from(&p[..]), &mut body)
+        key.seal_in_place_append_tag(crate::crypto::nonce(u64::from(seq)), ring::aead::Aad::from(&p[..]), &mut body)
             .unwrap();
         p.extend_from_slice(&body);
         p
@@ -673,8 +691,8 @@ mod tests {
         let pcm: Vec<u8> = (0..FRAME_BYTES).map(|i| i as u8).collect();
         let mut p = encrypted(&m, &client, 42, &pcm);
         assert_eq!(p.len(), ENCRYPTED_HEADER + FRAME_BYTES + TAG_BYTES);
-        let (seq, muted, out) = m.open(&mut p, false).unwrap();
-        assert_eq!((seq, muted, out), (42, false, &pcm[..]));
+        let (seq, muted, format, out) = m.open(&mut p, false).unwrap();
+        assert_eq!((seq, muted, format, out), (42, false, FORMAT_PCM, &pcm[..]));
         // Tampered audio, header or sequence number fails.
         for at in [60, 9, 5] {
             let mut bad = encrypted(&m, &client, 42, &pcm);
@@ -695,8 +713,51 @@ mod tests {
         let p = encrypted(&m, &client, 1, &[0u8; FRAME_BYTES]);
         let hex: String = p[ENCRYPTED_HEADER..ENCRYPTED_HEADER + 8].iter().map(|b| format!("{b:02x}")).collect();
         let tag: String = p[p.len() - TAG_BYTES..].iter().map(|b| format!("{b:02x}")).collect();
-        let public: String = m.public_key.iter().map(|b| format!("{b:02x}")).collect();
+        let public = m.key.public_hex();
         eprintln!("meteor public {public}\nfirst 8 ciphertext bytes {hex}\ntag {tag}");
+    }
+
+    fn first(frame: Frame) -> u8 {
+        match frame {
+            Frame::Pcm(pcm) => pcm[0],
+            Frame::Opus(_) => panic!("expected PCM"),
+        }
+    }
+
+    /// Encodes like the headset (meteor_mic.cpp): 10 ms frames at 48 kHz.
+    #[test]
+    fn opus_frames_decode_and_conceal() {
+        let m = mic();
+        let client = x25519_dalek::StaticSecret::from([9u8; KEY_BYTES]);
+        let mut encoder = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Voip).unwrap();
+        encoder.set_inband_fec(true).unwrap();
+        encoder.set_packet_loss_perc(10).unwrap();
+        let tone = |seq: u32| -> Vec<i16> {
+            (0..FRAME_SAMPLES).map(|n| (8000.0 * (2.0 * std::f64::consts::PI * 440.0 * f64::from(seq * 480 + n as u32) / 48000.0).sin()) as i16).collect()
+        };
+        let mut decoder = None;
+        let mut energy = Vec::new();
+        let mut packets = Vec::new();
+        for seq in 0..20 {
+            let packet = encoder.encode_vec(&tone(seq), MAX_OPUS_BYTES).unwrap();
+            let mut wire = encrypted_frame(&m, &client, seq, FORMAT_OPUS, &packet);
+            let (got_seq, _, format, payload) = m.open(&mut wire, false).unwrap();
+            assert_eq!((got_seq, format, payload), (seq, FORMAT_OPUS, &packet[..]));
+            packets.push(packet);
+        }
+        for (seq, packet) in packets.iter().enumerate() {
+            // Frame 12 is lost: rebuilt from 13's forward error correction.
+            let pcm = if seq == 12 { decode(&mut decoder, &packets[13], true) } else { decode(&mut decoder, packet, false) }.unwrap();
+            let samples: Vec<i16> = pcm.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            energy.push((samples.iter().map(|&s| f64::from(s).powi(2)).sum::<f64>() / samples.len() as f64).sqrt());
+        }
+        // After the encoder's first frames, the tone comes through (8000 peak is about 5657 RMS), lost frame included.
+        assert!(energy[5..].iter().all(|&e| e > 3000.0), "{energy:?}");
+        // Loss concealment with no packet still gives a full frame.
+        assert_eq!(decode(&mut decoder, &[], false).unwrap().len(), FRAME_BYTES);
+        // A too-large Opus body is refused.
+        let mut huge = encrypted_frame(&m, &client, 30, FORMAT_OPUS, &vec![0u8; MAX_OPUS_BYTES + 1]);
+        assert!(m.open(&mut huge, false).is_none());
     }
 
     #[test]
@@ -704,7 +765,7 @@ mod tests {
         let m = mic();
         let mut j = Jitter { last_packet: Some(Instant::now()), ..Default::default() };
         let add = |j: &mut Jitter, seq: u32| {
-            j.frames.insert(seq, vec![seq as u8; FRAME_BYTES]);
+            j.frames.insert(seq, Frame::Pcm(vec![seq as u8; FRAME_BYTES]));
         };
         // Waits until 40 ms are buffered.
         for seq in 10..13 {
@@ -712,16 +773,16 @@ mod tests {
         }
         assert!(m.next_frame(&mut j).is_none());
         add(&mut j, 14); // 13 is missing
-        assert_eq!(m.next_frame(&mut j).unwrap().unwrap()[0], 10);
-        assert_eq!(m.next_frame(&mut j).unwrap().unwrap()[0], 11);
-        assert_eq!(m.next_frame(&mut j).unwrap().unwrap()[0], 12);
+        assert_eq!(first(m.next_frame(&mut j).unwrap().unwrap()), 10);
+        assert_eq!(first(m.next_frame(&mut j).unwrap().unwrap()), 11);
+        assert_eq!(first(m.next_frame(&mut j).unwrap().unwrap()), 12);
         assert!(m.next_frame(&mut j).unwrap().is_none()); // 13 concealed
-        assert_eq!(m.next_frame(&mut j).unwrap().unwrap()[0], 14);
+        assert_eq!(first(m.next_frame(&mut j).unwrap().unwrap()), 14);
         // A burst of 20 frames is cut back to the target.
         for seq in 15..35 {
             add(&mut j, seq);
         }
-        let played = m.next_frame(&mut j).unwrap().unwrap()[0];
+        let played = first(m.next_frame(&mut j).unwrap().unwrap());
         assert_eq!(played, 35 - TARGET_FRAMES as u8);
         assert_eq!(j.frames.len(), TARGET_FRAMES - 1);
         // Silence for long enough and it goes idle.

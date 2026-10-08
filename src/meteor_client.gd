@@ -100,11 +100,27 @@ static func route_rtsp_url(session_url: String, info: Dictionary) -> String:
 		return session_url
 	return session_url.substr(0, found.get_start(1)) + str(int(info["ports"]["rtsp"])) + session_url.substr(found.get_end(1))
 
-## Keep in sync with FORMAT_PCM_S16LE_48K_MONO and ENCRYPTION in meteor/src/mic.rs.
+## Keep in sync with FORMAT_PCM_S16LE_48K_MONO in meteor/src/mic.rs and
+## ENCRYPTION in meteor/src/crypto.rs.
 const MIC_FORMAT := "pcm_s16le_48k_mono"
-const MIC_ENCRYPTION := "x25519-hkdf-sha256-aes256gcm"
+const MIC_FORMAT_OPUS := "opus_48k_mono"
+const ENCRYPTION := "x25519-hkdf-sha256-aes256gcm"
+## Meteor keys this client has seen, by Sunshine host (see check_key()).
+const KEYS_FILE := "user://meteor_keys.cfg"
+enum KeyCheck { NEW, SAME, CHANGED }
 
-## Meteor's microphone offer ({port, formats, encryption, key}), or {} when
+## Meteor's public key (64 hex digits), which its side channels are
+## encrypted for, or "" if it sent none.
+static func meteor_key(info: Dictionary) -> String:
+	var key := String(info.get("key", "")).to_lower()
+	if key.length() != 64:
+		return ""
+	for c in key:
+		if not c in "0123456789abcdef":
+			return ""
+	return key
+
+## Meteor's microphone offer ({port, formats, encryption, key, opus}), or {} when
 ## it has no microphone device, or none in a format and encryption this
 ## client sends.
 static func mic_info(info: Dictionary) -> Dictionary:
@@ -112,14 +128,40 @@ static func mic_info(info: Dictionary) -> Dictionary:
 	if not mic is Dictionary or int(mic.get("port", 0)) <= 0:
 		return {}
 	var formats = mic.get("formats", [])
-	if not formats is Array or not formats.has(MIC_FORMAT):
+	if not formats is Array or not (formats.has(MIC_FORMAT) or formats.has(MIC_FORMAT_OPUS)):
 		return {}
-	if mic.get("encryption", "") != MIC_ENCRYPTION or String(mic.get("key", "")).length() != 64:
+	if mic.get("encryption", "") != ENCRYPTION or meteor_key(info).is_empty():
 		return {}
-	return mic
+	var offer: Dictionary = mic.duplicate()
+	offer["key"] = meteor_key(info)
+	offer["opus"] = formats.has(MIC_FORMAT_OPUS)
+	return offer
 
-## Meteor's host depth offer ({port, width, height, model, ...}), or {} when
-## it isn't offering depth in a format this client reads.
+## Trust on first use: the first key a host's Meteor sends is remembered,
+## and a different one later means another program answered as Meteor (or
+## Meteor was reinstalled), so the client doesn't use it until the user
+## forgets the old key (Settings > Connection).
+static func check_key(remembered: String, offered: String) -> KeyCheck:
+	if remembered.is_empty():
+		return KeyCheck.NEW
+	return KeyCheck.SAME if remembered == offered else KeyCheck.CHANGED
+
+static func remembered_key(host_id: String) -> String:
+	var keys := ConfigFile.new()
+	keys.load(KEYS_FILE)
+	return String(keys.get_value("keys", host_id, ""))
+
+static func remember_key(host_id: String, key: String) -> void:
+	var keys := ConfigFile.new()
+	keys.load(KEYS_FILE)
+	keys.set_value("keys", host_id, key)
+	keys.save(KEYS_FILE)
+
+static func forget_keys() -> void:
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(KEYS_FILE))
+
+## Meteor's host depth offer ({port, width, height, model, key, ...}), or {}
+## when it isn't offering depth in a format and encryption this client reads.
 static func depth_info(info: Dictionary) -> Dictionary:
 	var depth = info.get("depth", {})
 	if not depth is Dictionary or depth.is_empty():
@@ -129,4 +171,8 @@ static func depth_info(info: Dictionary) -> Dictionary:
 		return {}
 	if int(depth.get("port", 0)) <= 0 or int(depth.get("width", 0)) <= 0 or int(depth.get("height", 0)) <= 0:
 		return {}
-	return depth
+	if depth.get("encryption", "") != ENCRYPTION or meteor_key(info).is_empty():
+		return {}
+	var offer: Dictionary = depth.duplicate()
+	offer["key"] = meteor_key(info)
+	return offer

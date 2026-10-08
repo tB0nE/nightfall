@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Başlık mikrofonunu Nightfall Meteor ile bilgisayara gönderin.",
 	"Microphone on": "Mikrofon açık",
 	"Microphone unavailable": "Mikrofon kullanılamıyor",
-	"Microphone permission denied": "Mikrofon izni reddedildi"
+	"Microphone permission denied": "Mikrofon izni reddedildi",
+	"Forget Meteor Keys": "Meteor anahtarlarını unut",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Yeniden kurulumdan sonra Nightfall Meteor'un sonraki anahtarına güvenin.",
+	"Meteor's key changed; not using it": "Meteor anahtarı değişti; kullanılmıyor",
+	"Meteor keys forgotten": "Meteor anahtarları unutuldu"
 }

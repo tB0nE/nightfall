@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Wysyłaj mikrofon gogli do komputera przez Nightfall Meteor.",
 	"Microphone on": "Mikrofon włączony",
 	"Microphone unavailable": "Mikrofon niedostępny",
-	"Microphone permission denied": "Odmówiono dostępu do mikrofonu"
+	"Microphone permission denied": "Odmówiono dostępu do mikrofonu",
+	"Forget Meteor Keys": "Zapomnij klucze Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Ufaj kolejnemu kluczowi Nightfall Meteor po jego ponownej instalacji.",
+	"Meteor's key changed; not using it": "Klucz Meteor się zmienił; nieużywany",
+	"Meteor keys forgotten": "Zapomniano klucze Meteor"
 }

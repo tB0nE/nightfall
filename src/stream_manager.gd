@@ -210,8 +210,11 @@ var _meteor_bypass := false
 var _meteor_address := ""
 
 ## Meteor's host depth offer for the current stream (see
-## MeteorClient.depth_info()), or {} when there's none.
+## MeteorClient.depth_info()), or {} when there's none or this build can't
+## decrypt it.
 func meteor_depth_info() -> Dictionary:
+	if not MeteorDepthReceiver.is_supported():
+		return {}
 	return MeteorClient.depth_info(_meteor)
 
 ## Meteor's microphone offer for the current stream (see
@@ -229,6 +232,8 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			continue
 		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
 		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
+		if not info.is_empty() and not _trust_meteor(info, String(host.get("uuid", address))):
+			return {}
 		if not info.is_empty():
 			# Zoned for USB Link, so the depth and microphone sockets reach it.
 			_meteor_address = MeteorClient.zone_address(address)
@@ -244,6 +249,25 @@ func _probe_meteor(host_id: int) -> Dictionary:
 				main._log("[METEOR] Microphone offered on port %d" % int(mic["port"]))
 		return info
 	return {}
+
+# Remembers the first key a host's Meteor sends, and refuses a Meteor whose
+# key has changed since (MeteorClient.check_key()): the stream then goes
+# straight to Sunshine.
+func _trust_meteor(info: Dictionary, host_id: String) -> bool:
+	var key := MeteorClient.meteor_key(info)
+	if key.is_empty():
+		return true # An older Meteor: it offers no encrypted side channels.
+	var remembered := MeteorClient.remembered_key(host_id)
+	match MeteorClient.check_key(remembered, key):
+		MeteorClient.KeyCheck.NEW:
+			MeteorClient.remember_key(host_id, key)
+			main._log("[METEOR] Remembered this host's Meteor key %s..." % key.substr(0, 16))
+		MeteorClient.KeyCheck.CHANGED:
+			main._log("[METEOR] Meteor's key changed (was %s..., now %s...); not using it. Settings > Forget Meteor Keys trusts the new one" % [
+				remembered.substr(0, 16), key.substr(0, 16)])
+			main.ui_controller.show_temporary_status("Meteor's key changed; not using it", 4.0)
+			return false
+	return true
 
 # Address the current stream was launched against (USB Link or network).
 var stream_host_address: String = ""

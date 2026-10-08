@@ -1,0 +1,6 @@
+[env]
+# libopus's bundled CMake files (audiopus_sys) declare a minimum below 3.5,
+# which CMake 4 refuses without this.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+# Installs libopus into lib/, not Fedora's lib64/ (see the file).
+CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_gnu = { value = "tools/cmake/install-libdir-lib.cmake", relative = true }

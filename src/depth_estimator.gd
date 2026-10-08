@@ -627,7 +627,7 @@ func _update_meteor() -> void:
 		return
 	if not meteor.is_active():
 		var info: Dictionary = main.stream_manager.meteor_depth_info()
-		meteor.start(main.stream_manager.meteor_address(), int(info["port"]))
+		meteor.start(main.stream_manager.meteor_address(), int(info["port"]), String(info["key"]))
 		main._log("[METEOR] Connecting to host depth on %s:%d" % [meteor.host, meteor.port])
 	_match_meteor_map()
 	_set_meteor_in_use(meteor.is_delivering())

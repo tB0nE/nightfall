@@ -2,6 +2,7 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 namespace godot {
@@ -28,6 +29,8 @@ public:
     int get_available_bytes() const;
     // [Error, PackedByteArray], as StreamPeer.get_partial_data().
     Array get_partial_data(int bytes);
+    // Sends all of data (small messages only; waits up to a second).
+    int put_data(const PackedByteArray &data);
     void disconnect_from_host();
 
 protected:

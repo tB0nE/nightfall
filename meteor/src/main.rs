@@ -6,6 +6,7 @@
 //! it compute depth maps on the host GPU and send them alongside the video.
 
 mod config;
+mod crypto;
 mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
@@ -158,7 +159,12 @@ async fn main() {
             });
         }
         // Lets a local test client read the replayed maps.
-        depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(|_| false));
+        match crypto::MeteorKey::load_or_create(&config::data_dir().join("meteor.key")) {
+            Ok(key) => {
+                depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(key), Arc::new(|_| false));
+            }
+            Err(err) => log::warn!("No key, so no depth port: {err}"),
+        }
         let result = tokio::task::spawn_blocking(move || replay::run(std::path::Path::new(&file), fps, depth)).await;
         if let Ok(Err(err)) = result {
             log::error!("{err}");
@@ -175,21 +181,35 @@ async fn main() {
         log::error!("Can't open the proxy ports: {err}");
         exit_now(1);
     }
-    let mic = if flag("--no-mic") {
-        None
-    } else {
-        let streaming = stats.clone();
-        Mic::start(mic::DEFAULT_MIC_PORT, Arc::new(move |ip| streaming.is_streaming(ip))).await
+    // The side channels are encrypted for this key (crypto.rs); without it
+    // Meteor still proxies, but offers neither.
+    let key = match crypto::MeteorKey::load_or_create(&config::data_dir().join("meteor.key")) {
+        Ok(key) => Some(Arc::new(key)),
+        Err(err) => {
+            log::warn!("No key, so no host depth or microphone: {err}");
+            None
+        }
+    };
+    let mic = match &key {
+        Some(key) if !flag("--no-mic") => {
+            let streaming = stats.clone();
+            Mic::start(mic::DEFAULT_MIC_PORT, key.clone(), Arc::new(move |ip| streaming.is_streaming(ip))).await
+        }
+        _ => None,
     };
     if let Some(mic) = &mic {
         let _ = MIC.set(mic.clone());
     }
-    let depth_port = depth.clone().and_then(|depth| {
+    let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
-        depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(move |ip| streaming.is_streaming(ip)))
+        depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
             .map(|port| (port, depth))
     });
-    let features = discovery::Features { mic: mic.as_ref().map(|m| (m.port, m.public_key)), depth: depth_port };
+    let features = discovery::Features {
+        key: key.as_ref().map(|k| k.public_hex()),
+        mic_port: mic.as_ref().map(|m| m.port),
+        depth: depth_port,
+    };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
     let status = Arc::new(Status {

@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Stuur die headset-mikrofoon via Nightfall Meteor na die rekenaar.",
 	"Microphone on": "Mikrofoon aan",
 	"Microphone unavailable": "Mikrofoon nie beskikbaar nie",
-	"Microphone permission denied": "Mikrofoontoestemming geweier"
+	"Microphone permission denied": "Mikrofoontoestemming geweier",
+	"Forget Meteor Keys": "Vergeet Meteor-sleutels",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Vertrou die volgende sleutel van Nightfall Meteor, ná herinstallering.",
+	"Meteor's key changed; not using it": "Meteor se sleutel het verander; nie gebruik nie",
+	"Meteor keys forgotten": "Meteor-sleutels vergeet"
 }

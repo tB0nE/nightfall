@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Nightfall Meteor 経由でヘッドセットのマイクを PC に送ります。",
 	"Microphone on": "マイク オン",
 	"Microphone unavailable": "マイクを使用できません",
-	"Microphone permission denied": "マイクの権限が拒否されました"
+	"Microphone permission denied": "マイクの権限が拒否されました",
+	"Forget Meteor Keys": "Meteor のキーを忘れる",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "再インストール後、Nightfall Meteor の次のキーを信頼します。",
+	"Meteor's key changed; not using it": "Meteor のキーが変わったため使用しません",
+	"Meteor keys forgotten": "Meteor のキーを忘れました"
 }

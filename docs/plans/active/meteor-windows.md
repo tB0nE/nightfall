@@ -81,7 +81,11 @@ Windows setup:
 
 1. Rust 1.92.0 with the MSVC toolchain (`rustup`, plus Visual Studio Build
    Tools with the "Desktop development with C++" workload, which also
-   compiles the TensorRT shim).
+   compiles the TensorRT shim), and CMake on the path: `audiopus_sys` builds
+   libopus from its bundled source for the microphone's Opus decoder
+   (2026-10-08). `.cargo/config.toml` sets `CMAKE_POLICY_VERSION_MINIMUM`
+   for CMake 4; its lib64 workaround applies to Linux only.
+   Meteor's key (`meteor.key`, 2026-10-08) lives in `data_dir()`.
 2. NVIDIA driver: `nvcuda.dll`, `nvcuvid.dll` and the Vulkan driver.
 3. ncnn: unpack `ncnn-20260526-windows-vs2022-shared.zip` and copy
    `x64\bin\ncnn.dll` into `meteor\target\ncnn\lib\` (`tools/fetch_ncnn.sh`

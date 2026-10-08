@@ -337,10 +337,22 @@ falls back to `module-pipe-source`, which adds about 260 ms. The device is
 removed when Meteor exits.
 
 The headset sends 10 ms PCM packets to UDP 47902, encrypted with AES-256-GCM
-under a key agreed with X25519 (format in `src/mic.rs`). Meteor accepts them
-only from loopback or from a client that is streaming through it, and plain
-packets only from loopback. Discovery advertises the port and Meteor's
-public key under `"mic"`.
+under a key agreed with X25519 (format in `src/mic.rs`), as Opus at 32 kbit/s
+(about 83 kbit/s with headers) or raw PCM. Meteor decodes Opus at playout and
+rebuilds a lost frame from the next packet's forward error correction, else
+with loss concealment. It accepts packets only from loopback or from a client
+that is streaming through it, and plain packets only from loopback.
+Discovery advertises the port and formats under `"mic"`.
+
+## Encryption and Meteor's key
+
+Meteor makes an X25519 key on first run and keeps it in `meteor.key` in its
+data folder (owner-only). Discovery publishes the public key as `"key"`; the
+microphone and the depth maps are encrypted for it (AES-256-GCM, `src/crypto.rs`).
+The headset remembers each host's key the first time it sees it and won't use
+a Meteor whose key has changed; Settings > Forget Meteor Keys trusts a
+reinstalled one. Deleting `meteor.key` makes a new key, which every headset
+will refuse until it forgets the old one.
 
 The tray shows the microphone's status, with **Mute microphone** and **Set as
 default input**.

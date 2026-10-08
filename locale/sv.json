@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Skicka headsetets mikrofon till datorn via Nightfall Meteor.",
 	"Microphone on": "Mikrofon på",
 	"Microphone unavailable": "Mikrofonen är inte tillgänglig",
-	"Microphone permission denied": "Mikrofonbehörighet nekad"
+	"Microphone permission denied": "Mikrofonbehörighet nekad",
+	"Forget Meteor Keys": "Glöm Meteor-nycklar",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Lita på nästa nyckel från Nightfall Meteor efter ominstallation.",
+	"Meteor's key changed; not using it": "Meteors nyckel har ändrats; används inte",
+	"Meteor keys forgotten": "Meteor-nycklar glömda"
 }

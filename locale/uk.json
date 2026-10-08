@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Передавати мікрофон гарнітури на ПК через Nightfall Meteor.",
 	"Microphone on": "Мікрофон увімкнено",
 	"Microphone unavailable": "Мікрофон недоступний",
-	"Microphone permission denied": "Доступ до мікрофона заборонено"
+	"Microphone permission denied": "Доступ до мікрофона заборонено",
+	"Forget Meteor Keys": "Забути ключі Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Довіряти наступному ключу Nightfall Meteor після перевстановлення.",
+	"Meteor's key changed; not using it": "Ключ Meteor змінився; не використовується",
+	"Meteor keys forgotten": "Ключі Meteor забуто"
 }

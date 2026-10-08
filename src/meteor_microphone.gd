@@ -80,7 +80,7 @@ func process() -> void:
 	if not _running:
 		if now < _retry_at:
 			return
-		var err: String = native.start_meteor_mic(host, port, String(offer["key"]))
+		var err: String = native.start_meteor_mic(host, port, String(offer["key"]), bool(offer.get("opus", false)))
 		if err.is_empty():
 			_running = true
 			_host = host
@@ -89,7 +89,7 @@ func process() -> void:
 			_logged_packets = 0
 			_peak = 0.0
 			_last_error = ""
-			main._log("[METEOR-MIC] Sending the microphone to %s:%d" % [host, port])
+			main._log("[METEOR-MIC] Sending the microphone to %s:%d as %s" % [host, port, "Opus" if offer.get("opus", false) else "PCM"])
 			main.ui_controller.show_temporary_status("Microphone on", 2.0)
 		else:
 			_retry_at = now + RETRY_SEC

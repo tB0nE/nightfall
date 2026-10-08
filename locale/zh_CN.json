@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "通过 Nightfall Meteor 将头显麦克风发送到电脑。",
 	"Microphone on": "麦克风已开启",
 	"Microphone unavailable": "麦克风不可用",
-	"Microphone permission denied": "麦克风权限被拒绝"
+	"Microphone permission denied": "麦克风权限被拒绝",
+	"Forget Meteor Keys": "忘记 Meteor 密钥",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "重新安装后，信任 Nightfall Meteor 发送的下一个密钥。",
+	"Meteor's key changed; not using it": "Meteor 的密钥已更改，不再使用",
+	"Meteor keys forgotten": "已忘记 Meteor 密钥"
 }

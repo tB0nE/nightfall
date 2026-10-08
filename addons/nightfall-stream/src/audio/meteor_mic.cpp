@@ -9,6 +9,7 @@
 
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
+#include <opus.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -23,6 +24,9 @@ constexpr const char *TAG = "MeteorMic";
 constexpr uint8_t VERSION = 2; // encrypted
 constexpr uint8_t FLAG_MUTED = 1;
 constexpr uint8_t FORMAT_PCM_S16LE_48K_MONO = 0;
+constexpr uint8_t FORMAT_OPUS_48K_MONO = 1;
+// Opus at 32 kbit/s fills about 40 bytes per 10 ms frame; room to spare.
+constexpr int MAX_OPUS_BYTES = 400;
 // How long one read waits for audio before checking whether to stop.
 constexpr int64_t READ_TIMEOUT_NS = 100 * 1000 * 1000;
 
@@ -51,17 +55,31 @@ void MeteorMic::fail(const std::string &reason) {
 
 #ifdef __ANDROID__
 
-std::string MeteorMic::start(const std::string &host, int port, const std::string &meteor_key) {
+std::string MeteorMic::start(const std::string &host, int port, const std::string &meteor_key, bool opus) {
     stop();
     {
         std::lock_guard<std::mutex> lock(error_mutex_);
         error_.clear();
     }
-    uint8_t meteor_public[MicCipher::KEY_BYTES];
+    uint8_t meteor_public[MeteorCipher::KEY_BYTES];
     if (!parse_hex_key(meteor_key, meteor_public)) return "Meteor didn't send a valid microphone key";
     // A fresh key pair for every session.
-    std::string cipher_error = cipher_.init(meteor_public);
+    std::string cipher_error = cipher_.init(meteor_public, "nightfall-meteor mic v2");
     if (!cipher_error.empty()) return cipher_error;
+    if (opus) {
+        int err = 0;
+        encoder_ = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &err);
+        if (err != OPUS_OK || !encoder_) {
+            encoder_ = nullptr;
+            return std::string("can't create the Opus encoder: ") + opus_strerror(err);
+        }
+        opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(32000));
+        opus_encoder_ctl(encoder_, OPUS_SET_COMPLEXITY(5));
+        opus_encoder_ctl(encoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+        // Meteor rebuilds a lost frame from the next packet's FEC.
+        opus_encoder_ctl(encoder_, OPUS_SET_INBAND_FEC(1));
+        opus_encoder_ctl(encoder_, OPUS_SET_PACKET_LOSS_PERC(5));
+    }
 
     // getaddrinfo handles IPv4, IPv6 and a zoned link-local address.
     addrinfo hints{};
@@ -129,7 +147,8 @@ std::string MeteorMic::start(const std::string &host, int port, const std::strin
     level_.store(0.0f);
     running_.store(true);
     thread_ = std::thread(&MeteorMic::run, this);
-    NF_LOG(TAG, "Sending the microphone to %s:%d (AAudio %d Hz, burst %d frames, %s)", host.c_str(), port, rate,
+    NF_LOG(TAG, "Sending the microphone to %s:%d as %s (AAudio %d Hz, burst %d frames, %s)", host.c_str(), port,
+           encoder_ ? "Opus" : "PCM", rate,
            AAudioStream_getFramesPerBurst(stream),
            AAudioStream_getPerformanceMode(stream) == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY ? "low latency" : "normal");
     return "";
@@ -149,16 +168,20 @@ void MeteorMic::stop() {
         close(socket_);
         socket_ = -1;
     }
+    if (encoder_) {
+        opus_encoder_destroy(encoder_);
+        encoder_ = nullptr;
+    }
 }
 
 void MeteorMic::run() {
     AAudioStream *stream = static_cast<AAudioStream *>(stream_);
-    uint8_t packet[HEADER_BYTES + FRAME_SAMPLES * 2 + MicCipher::TAG_BYTES];
+    uint8_t packet[HEADER_BYTES + FRAME_SAMPLES * 2 + MeteorCipher::TAG_BYTES];
     std::memcpy(packet, "NFMC", 4);
     packet[4] = VERSION;
-    packet[6] = FORMAT_PCM_S16LE_48K_MONO;
+    packet[6] = encoder_ ? FORMAT_OPUS_48K_MONO : FORMAT_PCM_S16LE_48K_MONO;
     packet[7] = 0;
-    std::memcpy(packet + 16, cipher_.public_key(), MicCipher::KEY_BYTES);
+    std::memcpy(packet + 16, cipher_.public_key(), MeteorCipher::KEY_BYTES);
     int16_t samples[FRAME_SAMPLES];
     int filled = 0;
     uint32_t seq = 0;
@@ -181,20 +204,30 @@ void MeteorMic::run() {
         packet[5] = muted ? FLAG_MUTED : 0;
         put_u32(packet + 8, seq);
         put_u32(packet + 12, seq * FRAME_SAMPLES);
-        if (muted) {
-            std::memset(packet + HEADER_BYTES, 0, FRAME_SAMPLES * 2);
+        int body = FRAME_SAMPLES * 2;
+        if (encoder_) {
+            // A muted Opus frame is empty; Meteor plays silence for it.
+            body = muted ? 0 : opus_encode(encoder_, samples, FRAME_SAMPLES, packet + HEADER_BYTES, MAX_OPUS_BYTES);
+            if (body < 0) {
+                fail(std::string("Opus encoding failed: ") + opus_strerror(body));
+                running_.store(false);
+                break;
+            }
+        } else if (muted) {
+            std::memset(packet + HEADER_BYTES, 0, body);
         } else {
             // Little-endian on every Android ABI, as the format wants.
-            std::memcpy(packet + HEADER_BYTES, samples, FRAME_SAMPLES * 2);
+            std::memcpy(packet + HEADER_BYTES, samples, body);
         }
-        if (!cipher_.seal(seq, packet, HEADER_BYTES, packet + HEADER_BYTES, FRAME_SAMPLES * 2)) {
+        if (!cipher_.seal(seq, packet, HEADER_BYTES, packet + HEADER_BYTES, body)) {
             fail("microphone encryption failed");
             running_.store(false);
             break;
         }
         seq++;
         // ECONNREFUSED (Meteor not listening yet) and EAGAIN only drop a frame.
-        if (send(socket_, packet, sizeof(packet), 0) == static_cast<ssize_t>(sizeof(packet))) {
+        ssize_t size = HEADER_BYTES + body + MeteorCipher::TAG_BYTES;
+        if (send(socket_, packet, size, 0) == size) {
             packets_.fetch_add(1);
         } else if (send_errors++ % 500 == 0) {
             NF_LOGE(TAG, "send failed (%s); %llu so far", strerror(errno), static_cast<unsigned long long>(send_errors));
@@ -204,7 +237,7 @@ void MeteorMic::run() {
 
 #else
 
-std::string MeteorMic::start(const std::string &, int, const std::string &) {
+std::string MeteorMic::start(const std::string &, int, const std::string &, bool) {
     return "this platform doesn't capture the microphone for Meteor";
 }
 

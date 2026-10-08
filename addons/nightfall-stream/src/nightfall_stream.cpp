@@ -344,9 +344,9 @@ Ref<ShaderMaterial> NightfallStream::get_shader_material() const {
     return nullptr;
 }
 
-String NightfallStream::start_meteor_mic(const String &host, int port, const String &meteor_key) {
+String NightfallStream::start_meteor_mic(const String &host, int port, const String &meteor_key, bool opus) {
     if (!meteor_mic_) meteor_mic_ = new MeteorMic();
-    return String::utf8(meteor_mic_->start(host.utf8().get_data(), port, meteor_key.utf8().get_data()).c_str());
+    return String::utf8(meteor_mic_->start(host.utf8().get_data(), port, meteor_key.utf8().get_data(), opus).c_str());
 }
 
 void NightfallStream::stop_meteor_mic() {
@@ -718,7 +718,7 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_texture_uploader"), &NightfallStream::get_texture_uploader);
     ClassDB::bind_method(D_METHOD("get_shader_material"), &NightfallStream::get_shader_material);
     ClassDB::bind_method(D_METHOD("get_audio_renderer"), &NightfallStream::get_audio_renderer);
-    ClassDB::bind_method(D_METHOD("start_meteor_mic", "host", "port", "meteor_key"), &NightfallStream::start_meteor_mic);
+    ClassDB::bind_method(D_METHOD("start_meteor_mic", "host", "port", "meteor_key", "opus"), &NightfallStream::start_meteor_mic);
     ClassDB::bind_method(D_METHOD("stop_meteor_mic"), &NightfallStream::stop_meteor_mic);
     ClassDB::bind_method(D_METHOD("set_meteor_mic_muted", "muted"), &NightfallStream::set_meteor_mic_muted);
     ClassDB::bind_method(D_METHOD("get_meteor_mic_status"), &NightfallStream::get_meteor_mic_status);

@@ -1,12 +1,14 @@
 #pragma once
 
-#include "mic_cipher.h"
+#include "network/meteor_cipher.h"
 
 #include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
+
+struct OpusEncoder;
 
 namespace godot {
 
@@ -16,8 +18,9 @@ namespace godot {
 //
 // Android captures with AAudio: 48 kHz, mono, 16-bit, with the
 // VOICE_COMMUNICATION preset so the platform's echo cancellation and noise
-// suppression apply where the headset has them. Every 10 ms frame goes to
-// Meteor's microphone port as one UDP datagram, encrypted (MicCipher), in
+// suppression apply where the headset has them. Frames go out as Opus (32
+// kbit/s, with forward error correction) when Meteor takes it, else as PCM. Every 10 ms frame goes to
+// Meteor's microphone port as one UDP datagram, encrypted (MeteorCipher), in
 // the version 2 format meteor/src/mic.rs reads. Other platforms don't
 // capture.
 class MeteorMic {
@@ -28,9 +31,9 @@ public:
     MeteorMic &operator=(const MeteorMic &) = delete;
 
     // Opens the microphone and starts sending to host:port, encrypted for
-    // Meteor's public key (64 hex digits, from discovery). Returns an empty
-    // string, or why it couldn't start.
-    std::string start(const std::string &host, int port, const std::string &meteor_key);
+    // Meteor's public key (64 hex digits, from discovery), as Opus when opus
+    // is set, else PCM. Returns an empty string, or why it couldn't start.
+    std::string start(const std::string &host, int port, const std::string &meteor_key, bool opus);
     void stop();
 
     bool is_running() const { return running_.load(); }
@@ -47,7 +50,7 @@ public:
 
     static constexpr int SAMPLE_RATE = 48000;
     static constexpr int FRAME_SAMPLES = 480; // 10 ms
-    static constexpr int HEADER_BYTES = 16 + MicCipher::KEY_BYTES;
+    static constexpr int HEADER_BYTES = 16 + MeteorCipher::KEY_BYTES;
 
 private:
     void run();
@@ -60,7 +63,8 @@ private:
     std::thread thread_;
     mutable std::mutex error_mutex_;
     std::string error_;
-    MicCipher cipher_;
+    MeteorCipher cipher_;
+    OpusEncoder *encoder_ = nullptr;
     int socket_ = -1;
     void *stream_ = nullptr; // AAudioStream on Android
 };

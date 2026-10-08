@@ -11,6 +11,10 @@ flate2 = "1"
 libloading = "0.9"
 log = "0.4.34"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"], optional = true }
+opus = "0.3"
+# libopus built from its bundled source and linked statically, so the
+# AppImage and Windows builds carry no extra library.
+audiopus_sys = { version = "0.2", features = ["static"] }
 png = "0.18"
 # Microphone encryption (src/mic.rs): AES-256-GCM and HKDF, and X25519.
 ring = "0.17"

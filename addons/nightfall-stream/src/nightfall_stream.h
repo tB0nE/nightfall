@@ -99,7 +99,8 @@ public:
 
     // The headset microphone to Nightfall Meteor (audio/meteor_mic.h).
     // start_meteor_mic() returns an empty string, or why it couldn't start.
-    String start_meteor_mic(const String &host, int port, const String &meteor_key);
+    // opus: send Opus rather than PCM (when Meteor's offer lists it).
+    String start_meteor_mic(const String &host, int port, const String &meteor_key, bool opus);
     void stop_meteor_mic();
     void set_meteor_mic_muted(bool muted);
     // {running, muted, packets, level, error}

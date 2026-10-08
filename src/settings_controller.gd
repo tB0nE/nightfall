@@ -1276,6 +1276,13 @@ func toggle_hdr():
 	if main.is_streaming:
 		_schedule_stream_restart()
 
+# Meteor's keys are remembered per host (MeteorClient.check_key()); this
+# lets a reinstalled Meteor be trusted again.
+func forget_meteor_keys():
+	MeteorClient.forget_keys()
+	main._log("[METEOR] Forgot the remembered Meteor keys")
+	main.ui_controller.show_temporary_status("Meteor keys forgotten", 2.0)
+
 # The headset microphone to Nightfall Meteor (MeteorMicrophone). Turning it on
 # asks for the microphone permission the first time.
 func toggle_microphone():

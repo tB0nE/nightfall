@@ -109,6 +109,24 @@ Array NightfallTcpPeer::get_partial_data(int bytes) {
     return result;
 }
 
+int NightfallTcpPeer::put_data(const PackedByteArray &data) {
+    if (status_ != STATUS_CONNECTED) return ERR_UNCONFIGURED;
+    int64_t sent = 0;
+    for (int tries = 0; sent < data.size() && tries < 100; ++tries) {
+        ssize_t n = send(fd_, data.ptr() + sent, data.size() - sent, MSG_NOSIGNAL);
+        if (n > 0) {
+            sent += n;
+        } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            pollfd p{fd_, POLLOUT, 0};
+            ::poll(&p, 1, 10);
+        } else {
+            status_ = STATUS_ERROR;
+            return ERR_CONNECTION_ERROR;
+        }
+    }
+    return sent == data.size() ? OK : ERR_TIMEOUT;
+}
+
 void NightfallTcpPeer::disconnect_from_host() {
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
@@ -129,6 +147,7 @@ Array NightfallTcpPeer::get_partial_data(int) {
     result.append(PackedByteArray());
     return result;
 }
+int NightfallTcpPeer::put_data(const PackedByteArray &) { return ERR_UNAVAILABLE; }
 void NightfallTcpPeer::disconnect_from_host() {}
 
 #endif
@@ -140,5 +159,6 @@ void NightfallTcpPeer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_no_delay", "enabled"), &NightfallTcpPeer::set_no_delay);
     ClassDB::bind_method(D_METHOD("get_available_bytes"), &NightfallTcpPeer::get_available_bytes);
     ClassDB::bind_method(D_METHOD("get_partial_data", "bytes"), &NightfallTcpPeer::get_partial_data);
+    ClassDB::bind_method(D_METHOD("put_data", "data"), &NightfallTcpPeer::put_data);
     ClassDB::bind_method(D_METHOD("disconnect_from_host"), &NightfallTcpPeer::disconnect_from_host);
 }

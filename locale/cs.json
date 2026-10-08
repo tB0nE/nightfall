@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Posílat mikrofon headsetu do PC přes Nightfall Meteor.",
 	"Microphone on": "Mikrofon zapnut",
 	"Microphone unavailable": "Mikrofon není dostupný",
-	"Microphone permission denied": "Přístup k mikrofonu zamítnut"
+	"Microphone permission denied": "Přístup k mikrofonu zamítnut",
+	"Forget Meteor Keys": "Zapomenout klíče Meteoru",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Důvěřovat dalšímu klíči od Nightfall Meteor, po jeho přeinstalaci.",
+	"Meteor's key changed; not using it": "Klíč Meteoru se změnil; nepoužívá se",
+	"Meteor keys forgotten": "Klíče Meteoru zapomenuty"
 }

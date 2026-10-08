@@ -14,8 +14,9 @@ use crate::ports::{CHANNELS, PortMap};
 /// Optional services that discovery advertises next to the port map.
 #[derive(Clone, Default)]
 pub struct Features {
-    /// The microphone's port and this run's public key (see mic.rs).
-    pub mic: Option<(u16, [u8; 32])>,
+    /// Meteor's public key, hex (crypto.rs).
+    pub key: Option<String>,
+    pub mic_port: Option<u16>,
     pub depth: Option<(u16, Arc<Depth>)>,
 }
 
@@ -37,14 +38,16 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         "sunshine": sunshine,
         "ports": ports,
     });
-    // Optional features; older clients ignore keys they don't know.
-    if let Some((port, key)) = &features.mic {
-        let key: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    // Optional features; older clients ignore keys they don't know. Both
+    // side channels are encrypted for Meteor's key.
+    if let Some(key) = &features.key {
+        info["key"] = json!(key);
+    }
+    if let Some(port) = features.mic_port {
         info["mic"] = json!({
             "port": port,
-            "formats": [crate::mic::FORMAT_PCM_S16LE_48K_MONO],
-            "encryption": crate::mic::ENCRYPTION,
-            "key": key,
+            "formats": [crate::mic::FORMAT_OPUS_48K_MONO, crate::mic::FORMAT_PCM_S16LE_48K_MONO],
+            "encryption": crate::crypto::ENCRYPTION,
         });
     }
     // Only while a model is loaded and host depth is switched on in the tray.
@@ -56,6 +59,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
             "port": port,
             "formats": [crate::depth_server::FORMAT_L8],
             "compression": "zstd",
+            "encryption": crate::crypto::ENCRYPTION,
             "width": width,
             "height": height,
             "model": model,

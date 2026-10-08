@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Send headsettets mikrofon til pc'en via Nightfall Meteor.",
 	"Microphone on": "Mikrofon til",
 	"Microphone unavailable": "Mikrofon ikke tilgængelig",
-	"Microphone permission denied": "Adgang til mikrofon nægtet"
+	"Microphone permission denied": "Adgang til mikrofon nægtet",
+	"Forget Meteor Keys": "Glem Meteor-nøgler",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Stol på den næste nøgle fra Nightfall Meteor efter geninstallation.",
+	"Meteor's key changed; not using it": "Meteors nøgle er ændret; bruges ikke",
+	"Meteor keys forgotten": "Meteor-nøgler glemt"
 }

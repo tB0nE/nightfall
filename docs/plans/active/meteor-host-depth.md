@@ -404,6 +404,13 @@ download.
 
 ### 3. Depth side channel
 
+Encrypted since 2026-10-08 (transport version 2, `meteor/src/depth_server.rs`):
+the client sends `NFDK` and a fresh X25519 public key on connecting, and each
+map is sealed with AES-256-GCM under a key derived from it and Meteor's key
+(`meteor/src/crypto.rs`), the header authenticated and the message count as
+the nonce. The client decrypts in nightfall-stream (`MeteorChannelCipher`).
+The design below describes version 1.
+
 - Discovery reply gains `"depth": {"port": 47901, "formats": ["L8"],
   "width": .., "height": .., "max_hz": .., "model": ".."}`. It's optional, so
   older clients ignore it. Bump `protocol` only if the existing fields change

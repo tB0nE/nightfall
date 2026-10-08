@@ -198,5 +198,9 @@
 	"Send the headset microphone to the PC through Nightfall Meteor.": "Nightfall Meteor를 통해 헤드셋 마이크를 PC로 보냅니다.",
 	"Microphone on": "마이크 켜짐",
 	"Microphone unavailable": "마이크를 사용할 수 없음",
-	"Microphone permission denied": "마이크 권한이 거부됨"
+	"Microphone permission denied": "마이크 권한이 거부됨",
+	"Forget Meteor Keys": "Meteor 키 잊기",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "재설치 후 Nightfall Meteor가 보내는 다음 키를 신뢰합니다.",
+	"Meteor's key changed; not using it": "Meteor 키가 바뀌어 사용하지 않음",
+	"Meteor keys forgotten": "Meteor 키를 잊었습니다"
 }
