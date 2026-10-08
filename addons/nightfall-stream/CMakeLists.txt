@@ -121,7 +121,9 @@ if(TARGET_PLATFORM STREQUAL "linux")
         ncnn
         GIT_REPOSITORY https://github.com/Tencent/ncnn.git
         GIT_TAG 6c52e59dfb610cbd77946bea19099aaf96f8dcc1
-        GIT_SHALLOW TRUE
+        # Not shallow: a shallow clone only reaches a branch tip, so a pinned
+        # commit stops checking out once ncnn's master moves past it.
+        GIT_SHALLOW FALSE
         GIT_SUBMODULES glslang
     )
     FetchContent_MakeAvailable(ncnn)
@@ -153,6 +155,13 @@ if(ANDROID)
     list(REMOVE_ITEM SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_depth_engine.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_test_main.cpp")
+else()
+    # PyroWave decoding is Quest-only (docs/plans/active/pyrowave-codec.md):
+    # it needs the NDK's Vulkan headers and the vendored Android library, and
+    # every use of it is behind __ANDROID__.
+    list(REMOVE_ITEM SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/pyrowave_decoder.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/pyrowave_gpu_pipeline.cpp")
 endif()
 target_sources(${LIBNAME} PRIVATE ${SOURCE_FILES})
 
