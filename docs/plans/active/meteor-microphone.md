@@ -87,9 +87,24 @@ Quest mic ─► AAudio capture ─► UDP :47902 ─► Meteor ─► jitter bu
   for `RECORD_AUDIO` the first time. One setting for every host, not per
   host as planned above.
 - Export: `permissions/record_audio=true`.
-- Not done: the mute shortcut, the status line while live (only a
-  temporary "Microphone on"), echo checks with game audio on the speakers,
-  and the exit gate below.
+- Encrypted (2026-10-08, packet version 2, details in `meteor/src/mic.rs`):
+  Meteor makes an X25519 key pair per run and publishes the public key in
+  discovery; the headset makes one per session and sends its public key in
+  every packet, so there's no handshake. HKDF-SHA256 gives an AES-256-GCM
+  key; the sequence number is the nonce and the header is authenticated.
+  Cost: 48 bytes a packet and microseconds of CPU. Plain version 1 packets
+  are accepted only from loopback (`tools/send_mic.py`). Checked: the C++
+  cipher (`mic_cipher.cpp`, OpenSSL) matches a fixed vector from Meteor's
+  tests, and a 3 s tone sent encrypted through Meteor recorded from the
+  device at the exact level and frequency. It hides the audio on the
+  network but doesn't authenticate Meteor, whose key arrives over plain
+  HTTP; pinning it per host would close that.
+- Grab bar (2026-10-08): a microphone button left of the controller button
+  turns the microphone on and off, lit while on, with a blue dot while
+  audio is reaching Meteor. An AI 3D on/off button joins the right side, so
+  there are three each side.
+- Not done: echo checks with game audio on the speakers, and the exit gate
+  below.
 
 ## Design
 
@@ -169,8 +184,8 @@ Quest mic ─► AAudio capture ─► UDP :47902 ─► Meteor ─► jitter bu
 
 ### Security and privacy
 
-- v1 sends audio unencrypted on the local network, like the rest of the
-  experiment, and Meteor only listens while a stream is active.
+- Audio is encrypted since 2026-10-08 (see Progress, Phase 2). The depth
+  channel still isn't.
 - Encryption belongs to the shared Meteor session work: one session key for
   the depth and microphone channels, agreed during the stream. It isn't
   blocking for a LAN test, but it must be done before this is presented as a

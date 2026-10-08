@@ -336,9 +336,11 @@ virtual source fed by a `pw-cat` child process; with no `pw-cat`, Meteor
 falls back to `module-pipe-source`, which adds about 260 ms. The device is
 removed when Meteor exits.
 
-The headset sends 10 ms PCM packets to UDP 47902 (format in `src/mic.rs`).
-Meteor accepts them only from loopback or from a client that is streaming
-through it. Discovery advertises the port under `"mic"`.
+The headset sends 10 ms PCM packets to UDP 47902, encrypted with AES-256-GCM
+under a key agreed with X25519 (format in `src/mic.rs`). Meteor accepts them
+only from loopback or from a client that is streaming through it, and plain
+packets only from loopback. Discovery advertises the port and Meteor's
+public key under `"mic"`.
 
 The tray shows the microphone's status, with **Mute microphone** and **Set as
 default input**.

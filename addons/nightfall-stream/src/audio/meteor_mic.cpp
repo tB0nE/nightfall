@@ -20,7 +20,7 @@ namespace godot {
 
 namespace {
 constexpr const char *TAG = "MeteorMic";
-constexpr uint8_t VERSION = 1;
+constexpr uint8_t VERSION = 2; // encrypted
 constexpr uint8_t FLAG_MUTED = 1;
 constexpr uint8_t FORMAT_PCM_S16LE_48K_MONO = 0;
 // How long one read waits for audio before checking whether to stop.
@@ -51,12 +51,17 @@ void MeteorMic::fail(const std::string &reason) {
 
 #ifdef __ANDROID__
 
-std::string MeteorMic::start(const std::string &host, int port) {
+std::string MeteorMic::start(const std::string &host, int port, const std::string &meteor_key) {
     stop();
     {
         std::lock_guard<std::mutex> lock(error_mutex_);
         error_.clear();
     }
+    uint8_t meteor_public[MicCipher::KEY_BYTES];
+    if (!parse_hex_key(meteor_key, meteor_public)) return "Meteor didn't send a valid microphone key";
+    // A fresh key pair for every session.
+    std::string cipher_error = cipher_.init(meteor_public);
+    if (!cipher_error.empty()) return cipher_error;
 
     // getaddrinfo handles IPv4, IPv6 and a zoned link-local address.
     addrinfo hints{};
@@ -148,11 +153,12 @@ void MeteorMic::stop() {
 
 void MeteorMic::run() {
     AAudioStream *stream = static_cast<AAudioStream *>(stream_);
-    uint8_t packet[HEADER_BYTES + FRAME_SAMPLES * 2];
+    uint8_t packet[HEADER_BYTES + FRAME_SAMPLES * 2 + MicCipher::TAG_BYTES];
     std::memcpy(packet, "NFMC", 4);
     packet[4] = VERSION;
     packet[6] = FORMAT_PCM_S16LE_48K_MONO;
     packet[7] = 0;
+    std::memcpy(packet + 16, cipher_.public_key(), MicCipher::KEY_BYTES);
     int16_t samples[FRAME_SAMPLES];
     int filled = 0;
     uint32_t seq = 0;
@@ -181,6 +187,11 @@ void MeteorMic::run() {
             // Little-endian on every Android ABI, as the format wants.
             std::memcpy(packet + HEADER_BYTES, samples, FRAME_SAMPLES * 2);
         }
+        if (!cipher_.seal(seq, packet, HEADER_BYTES, packet + HEADER_BYTES, FRAME_SAMPLES * 2)) {
+            fail("microphone encryption failed");
+            running_.store(false);
+            break;
+        }
         seq++;
         // ECONNREFUSED (Meteor not listening yet) and EAGAIN only drop a frame.
         if (send(socket_, packet, sizeof(packet), 0) == static_cast<ssize_t>(sizeof(packet))) {
@@ -193,7 +204,7 @@ void MeteorMic::run() {
 
 #else
 
-std::string MeteorMic::start(const std::string &, int) {
+std::string MeteorMic::start(const std::string &, int, const std::string &) {
     return "this platform doesn't capture the microphone for Meteor";
 }
 

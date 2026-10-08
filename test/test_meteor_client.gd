@@ -55,12 +55,15 @@ func _test_depth_info() -> void:
 
 # The shape meteor/src/discovery.rs sends.
 func _test_mic_info() -> void:
-	var with_mic := INFO.substr(0, INFO.length() - 1) + ',"mic":{"port":47902,"formats":["pcm_s16le_48k_mono"]}}'
+	var with_mic := INFO.substr(0, INFO.length() - 1) + ',"mic":{"port":47902,"formats":["pcm_s16le_48k_mono"],' \
+		+ '"encryption":"x25519-hkdf-sha256-aes256gcm","key":"13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d"}}'
 	var mic := MeteorClient.mic_info(MeteorClient.parse_info(with_mic, 47984))
 	_check(int(mic.get("port", 0)) == 47902, "mic offer is read")
 	_check(MeteorClient.mic_info(MeteorClient.parse_info(INFO, 47984)).is_empty(), "no mic key means no offer")
 	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("pcm_s16le_48k_mono", "opus"), 47984)).is_empty(), "unknown mic format is ignored")
 	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("47902", "0"), 47984)).is_empty(), "port 0 is no offer")
+	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("aes256gcm", "none"), 47984)).is_empty(), "unknown encryption is no offer")
+	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("13be4fea", ""), 47984)).is_empty(), "a short key is no offer")
 
 static func _message(frame: int, w: int, h: int, map: PackedByteArray) -> PackedByteArray:
 	var payload := map.compress(FileAccess.COMPRESSION_ZSTD)

@@ -14,7 +14,8 @@ use crate::ports::{CHANNELS, PortMap};
 /// Optional services that discovery advertises next to the port map.
 #[derive(Clone, Default)]
 pub struct Features {
-    pub mic_port: Option<u16>,
+    /// The microphone's port and this run's public key (see mic.rs).
+    pub mic: Option<(u16, [u8; 32])>,
     pub depth: Option<(u16, Arc<Depth>)>,
 }
 
@@ -37,8 +38,14 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         "ports": ports,
     });
     // Optional features; older clients ignore keys they don't know.
-    if let Some(port) = features.mic_port {
-        info["mic"] = json!({ "port": port, "formats": [crate::mic::FORMAT_PCM_S16LE_48K_MONO] });
+    if let Some((port, key)) = &features.mic {
+        let key: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        info["mic"] = json!({
+            "port": port,
+            "formats": [crate::mic::FORMAT_PCM_S16LE_48K_MONO],
+            "encryption": crate::mic::ENCRYPTION,
+            "key": key,
+        });
     }
     // Only while a model is loaded and host depth is switched on in the tray.
     if let Some((port, depth)) = &features.depth

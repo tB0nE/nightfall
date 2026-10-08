@@ -1,5 +1,7 @@
 #pragma once
 
+#include "mic_cipher.h"
+
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -15,8 +17,9 @@ namespace godot {
 // Android captures with AAudio: 48 kHz, mono, 16-bit, with the
 // VOICE_COMMUNICATION preset so the platform's echo cancellation and noise
 // suppression apply where the headset has them. Every 10 ms frame goes to
-// Meteor's microphone port as one UDP datagram, in the format
-// meteor/src/mic.rs reads. Other platforms don't capture.
+// Meteor's microphone port as one UDP datagram, encrypted (MicCipher), in
+// the version 2 format meteor/src/mic.rs reads. Other platforms don't
+// capture.
 class MeteorMic {
 public:
     MeteorMic() = default;
@@ -24,9 +27,10 @@ public:
     MeteorMic(const MeteorMic &) = delete;
     MeteorMic &operator=(const MeteorMic &) = delete;
 
-    // Opens the microphone and starts sending to host:port. Returns an empty
+    // Opens the microphone and starts sending to host:port, encrypted for
+    // Meteor's public key (64 hex digits, from discovery). Returns an empty
     // string, or why it couldn't start.
-    std::string start(const std::string &host, int port);
+    std::string start(const std::string &host, int port, const std::string &meteor_key);
     void stop();
 
     bool is_running() const { return running_.load(); }
@@ -43,7 +47,7 @@ public:
 
     static constexpr int SAMPLE_RATE = 48000;
     static constexpr int FRAME_SAMPLES = 480; // 10 ms
-    static constexpr int HEADER_BYTES = 16;
+    static constexpr int HEADER_BYTES = 16 + MicCipher::KEY_BYTES;
 
 private:
     void run();
@@ -56,6 +60,7 @@ private:
     std::thread thread_;
     mutable std::mutex error_mutex_;
     std::string error_;
+    MicCipher cipher_;
     int socket_ = -1;
     void *stream_ = nullptr; // AAudioStream on Android
 };

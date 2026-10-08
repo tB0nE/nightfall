@@ -6,7 +6,8 @@ extends RefCounted
 ## (docs/plans/active/meteor-microphone.md). Capture is native AAudio
 ## (addons/nightfall-stream/src/audio/meteor_mic.cpp); this decides when it
 ## runs: the Microphone setting is on, a stream goes through a Meteor that
-## offers a microphone, the app has RECORD_AUDIO, and it isn't paused.
+## offers a microphone, the app has RECORD_AUDIO, and it isn't paused. The
+## audio is encrypted for the key Meteor publishes in discovery.
 
 const PERMISSION := "android.permission.RECORD_AUDIO"
 const RETRY_SEC := 5.0
@@ -79,7 +80,7 @@ func process() -> void:
 	if not _running:
 		if now < _retry_at:
 			return
-		var err: String = native.start_meteor_mic(host, port)
+		var err: String = native.start_meteor_mic(host, port, String(offer["key"]))
 		if err.is_empty():
 			_running = true
 			_host = host

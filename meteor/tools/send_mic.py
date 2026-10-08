@@ -4,7 +4,8 @@
 Streams a WAV file (48 kHz mono 16-bit) or a test tone to Meteor's
 microphone port in real time, one packet per 10 ms (packet format in
 meteor/src/mic.rs). Optional packet loss and jitter exercise the jitter
-buffer. Standard library only.
+buffer. Standard library only, so it sends the plain version 1 packets,
+which Meteor accepts from loopback only; the headset encrypts (version 2).
 
     python3 meteor/tools/send_mic.py --tone 440 --seconds 10
     python3 meteor/tools/send_mic.py --wav speech.wav --loss 0.02 --jitter-ms 30

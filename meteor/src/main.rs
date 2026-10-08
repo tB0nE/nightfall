@@ -189,7 +189,7 @@ async fn main() {
         depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(move |ip| streaming.is_streaming(ip)))
             .map(|port| (port, depth))
     });
-    let features = discovery::Features { mic_port: mic.as_ref().map(|m| m.port), depth: depth_port };
+    let features = discovery::Features { mic: mic.as_ref().map(|m| (m.port, m.public_key)), depth: depth_port };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
     let status = Arc::new(Status {

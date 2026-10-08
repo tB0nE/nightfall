@@ -67,17 +67,21 @@ static func route_rtsp_url(session_url: String, info: Dictionary) -> String:
 		return session_url
 	return session_url.substr(0, found.get_start(1)) + str(int(info["ports"]["rtsp"])) + session_url.substr(found.get_end(1))
 
-## Keep in sync with FORMAT_PCM_S16LE_48K_MONO in meteor/src/mic.rs.
+## Keep in sync with FORMAT_PCM_S16LE_48K_MONO and ENCRYPTION in meteor/src/mic.rs.
 const MIC_FORMAT := "pcm_s16le_48k_mono"
+const MIC_ENCRYPTION := "x25519-hkdf-sha256-aes256gcm"
 
-## Meteor's microphone offer ({port, formats}), or {} when it has no
-## microphone device or none in a format this client sends.
+## Meteor's microphone offer ({port, formats, encryption, key}), or {} when
+## it has no microphone device, or none in a format and encryption this
+## client sends.
 static func mic_info(info: Dictionary) -> Dictionary:
 	var mic = info.get("mic", {})
 	if not mic is Dictionary or int(mic.get("port", 0)) <= 0:
 		return {}
 	var formats = mic.get("formats", [])
 	if not formats is Array or not formats.has(MIC_FORMAT):
+		return {}
+	if mic.get("encryption", "") != MIC_ENCRYPTION or String(mic.get("key", "")).length() != 64:
 		return {}
 	return mic
 
