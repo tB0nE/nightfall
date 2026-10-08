@@ -1,11 +1,13 @@
 # PyroWave Zero-Copy GPU Pipeline (Quest 3)
 
-> Status: Implemented, awaiting on-device stream testing. Validation step 1
-> passed on Quest 3 (golden frame decoded through our own VkDevice into an RGBA
-> AHardwareBuffer; all 8 patches within ±1 of exact). In-app, our own Vulkan
-> device comes up at startup. Steps 2-4 are covered by the integrated build and
-> need a live PyroWave stream to confirm. Follows on from `pyrowave-codec.md`
-> (the CPU-round-trip integration merged in PR #46).
+> Status: Done (updated 2026-10-08). Merged in PR #47 (2026-10-02) and used
+> in live PyroWave streams on Quest 3: `a4beb30` measured the decode at about
+> 4.2 ms of GPU per 1440p frame and cut the YUV-to-RGBA pass from 1.26 to
+> 0.66 ms. Validation step 1 passed on Quest 3 (golden frame decoded through
+> our own VkDevice into an RGBA AHardwareBuffer; all 8 patches within ±1 of
+> exact). Step 4's comparison against the 12-20 ms baseline at 60/90/120 Hz
+> isn't recorded. Follows on from `pyrowave-codec.md` (the CPU-round-trip
+> integration merged in PR #46).
 >
 > Code: `pyrowave_gpu_pipeline.cpp/h` (device bootstrap, decode + conversion,
 > slot ring), `texture_uploader.cpp/h` (`*_pyrowave_gpu_*`: EGLImage import,

@@ -1,7 +1,13 @@
 # Nightfall Meteor: host-side depth maps
 
-> Status: In progress. Phase 0 partly done, Phase 1 done, Phase 2 built (see
-> "Progress").
+> Status: Phases 1 to 3 built and in use on the Quest 3 since 2026-10-04;
+> most of Phase 4 done (updated 2026-10-08). The default runtime is ncnn on
+> Vulkan, with Video Depth Anything on TensorRT downloaded on request
+> ([meteor-appimage.md](meteor-appimage.md)). Ships for Linux in the release
+> after v0.7.11; Windows is [meteor-windows.md](meteor-windows.md).
+> Exit gates not recorded yet: a 30-minute AI 3D run on host depth (Phase 2),
+> the match rate above 95% at 60 and 120 fps (Phase 3), and the effect on
+> game FPS (Phase 4).
 > Decisions agreed 2026-10-03.
 >
 > Date: 2026-10-03
@@ -192,7 +198,7 @@ session, not yet on the Quest)
   doesn't show host depth, and only the logs (`[METEOR-DEPTH]`, once a
   second) report rate, bandwidth and Meteor's latency.
 
-**Phase 3** (built 2026-10-04; installed, not yet tested on the Quest)
+**Phase 3** (built 2026-10-04; in use on the Quest since, but its match-rate gate isn't recorded)
 - **Which frame is on screen.** `stream_connection.cpp` records each frame's
   decoder PTS (its enqueue time) against its Moonlight frame number, and
   `_record_rendered_frame()`, which every decode path calls, looks the

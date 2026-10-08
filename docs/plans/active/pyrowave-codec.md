@@ -1,6 +1,12 @@
 # PyroWave Codec Support (Quest 3)
 
-> Status: Active — in progress on `feat/add_pyrowave`
+> Status: Done (updated 2026-10-08). Merged in PR #46 (2026-10-01), with the
+> zero-copy GPU decoder in PR #47 ([pyrowave-zero-copy-gpu.md](pyrowave-zero-copy-gpu.md));
+> on main for the release after v0.7.11. Decode and display work on Quest 3
+> against a PyroWave host (`fix(pyrowave)`, 2026-10-01; decode GPU time
+> measured in `a4beb30`). Not recorded yet, from "Verification": the
+> fallback against a host without PyroWave, and the throughput comparison
+> with H264/HEVC/AV1.
 
 ## What It Is
 
@@ -191,7 +197,7 @@ copy:
 - `VideoDepacketizer.c`: treat PyroWave payloads as opaque
   (`BUFFER_TYPE_PICDATA`, no bitstream parsing), same handling as AV1.
 
-### Phase 3 — Decoder: build/link infrastructure ✅ done, decode-thread wiring in progress
+### Phase 3 — Decoder: build/link infrastructure ✅ done (decode-thread wiring done in Phase 4)
 
 Wrote `pyrowave_decoder.h/cpp` in `addons/nightfall-stream/src/video/` -
 a small `PyrowaveDecoder` class wrapping `pyrowave_create_default_device()`
