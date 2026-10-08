@@ -190,5 +190,8 @@
 	"Pair": "Muodosta pari",
 	"Enter PIN on Host": "Anna PIN isännällä",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille.",
+	"About": "Tietoja",
+	"Licences": "Lisenssit",
+	"Show the licences of Nightfall and the software it includes.": "Näytä Nightfallin ja sen sisältämien ohjelmistojen lisenssit."
 }

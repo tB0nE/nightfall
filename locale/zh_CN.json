@@ -190,5 +190,8 @@
 	"Pair": "配对",
 	"Enter PIN on Host": "在主机上输入 PIN",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "主机显示器使用 HDR 时请求 HDR，并为头显进行色调映射。"
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "主机显示器使用 HDR 时请求 HDR，并为头显进行色调映射。",
+	"About": "关于",
+	"Licences": "许可证",
+	"Show the licences of Nightfall and the software it includes.": "显示 Nightfall 及其包含软件的许可证。"
 }

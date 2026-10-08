@@ -190,5 +190,8 @@
 	"Pair": "Spárovat",
 	"Enter PIN on Host": "Zadejte PIN na hostiteli",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vyžádat HDR, když jej displej hostitele používá; upraveno pro headset."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vyžádat HDR, když jej displej hostitele používá; upraveno pro headset.",
+	"About": "O aplikaci",
+	"Licences": "Licence",
+	"Show the licences of Nightfall and the software it includes.": "Zobrazte licence Nightfall a softwaru, který obsahuje."
 }

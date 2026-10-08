@@ -190,5 +190,8 @@
 	"Pair": "Parkoppla",
 	"Enter PIN on Host": "Ange PIN på värden",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Begär HDR när värdens skärm använder det; tonmappas för headsetet."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Begär HDR när värdens skärm använder det; tonmappas för headsetet.",
+	"About": "Om",
+	"Licences": "Licenser",
+	"Show the licences of Nightfall and the software it includes.": "Visa licenserna för Nightfall och den programvara som ingår."
 }

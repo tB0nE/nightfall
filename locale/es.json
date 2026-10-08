@@ -190,5 +190,8 @@
 	"Pair": "Emparejar",
 	"Enter PIN on Host": "Introduce el PIN en el host",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Solicita HDR si la pantalla del host lo usa; adaptado al visor."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Solicita HDR si la pantalla del host lo usa; adaptado al visor.",
+	"About": "Acerca de",
+	"Licences": "Licencias",
+	"Show the licences of Nightfall and the software it includes.": "Muestra las licencias de Nightfall y del software que incluye."
 }

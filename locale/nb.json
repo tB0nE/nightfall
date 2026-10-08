@@ -190,5 +190,8 @@
 	"Pair": "Par",
 	"Enter PIN on Host": "Skriv inn PIN på verten",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Be om HDR når vertens skjerm bruker det; tonetilpasset for headsettet."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Be om HDR når vertens skjerm bruker det; tonetilpasset for headsettet.",
+	"About": "Om",
+	"Licences": "Lisenser",
+	"Show the licences of Nightfall and the software it includes.": "Vis lisensene for Nightfall og programvaren den inneholder."
 }

@@ -190,5 +190,8 @@
 	"Pair": "Спарувати",
 	"Enter PIN on Host": "Введіть PIN на хості",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запит HDR, коли його використовує екран хоста; адаптується для шолома."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запит HDR, коли його використовує екран хоста; адаптується для шолома.",
+	"About": "Про програму",
+	"Licences": "Ліцензії",
+	"Show the licences of Nightfall and the software it includes.": "Показати ліцензії Nightfall і програм, які він містить."
 }

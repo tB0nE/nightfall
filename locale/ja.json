@@ -190,5 +190,8 @@
 	"Pair": "ペアリング",
 	"Enter PIN on Host": "ホストでPINを入力",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "ホストの画面がHDRの場合に要求し、ヘッドセット向けにトーンマップします。"
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "ホストの画面がHDRの場合に要求し、ヘッドセット向けにトーンマップします。",
+	"About": "情報",
+	"Licences": "ライセンス",
+	"Show the licences of Nightfall and the software it includes.": "Nightfall と同梱ソフトウェアのライセンスを表示します。"
 }

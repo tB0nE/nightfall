@@ -25,6 +25,7 @@ var _settings_hidden_chrome: Array[Control] = []
 var _tab_before_settings: int = 0
 var _bottom_margin: Control
 var _language_grid: GridContainer
+var _licences: VBoxContainer
 # Drag-to-scroll state for the Settings page (see _on_scroll_drag_input()).
 var _scroll_drag_start_y: float = 0.0
 var _scroll_drag_start_value: int = 0
@@ -390,6 +391,45 @@ func _cull_outside(node: Node, view: Rect2) -> void:
 			child.modulate.a = 1.0 if view.encloses(child.get_global_rect()) else 0.0
 		elif child is Control:
 			_cull_outside(child, view)
+
+# Licences opens the licence texts beneath it, built on first use.
+func on_licences_pressed():
+	if not _settings_scroll:
+		return
+	if not _licences:
+		_build_licences(_settings_scroll.get_child(0))
+	_licences.visible = not _licences.visible
+	if _licences.visible:
+		_reveal_licences.call_deferred()
+	_cull_settings_page.call_deferred()
+
+func _reveal_licences():
+	if _settings_scroll and _licences:
+		_settings_scroll.ensure_control_visible(_licences.get_child(0))
+
+# One Label per line, so _cull_settings_page() hides the text line by line.
+func _build_licences(content: Control) -> void:
+	var about_row := content.find_child("SettingsAboutRow", false, false)
+	_licences = VBoxContainer.new()
+	_licences.name = "Licences"
+	_licences.add_theme_constant_override("separation", 0)
+	_licences.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_licences.visible = false
+	for entry in Licences.entries():
+		var heading: bool = entry[0] == &"heading"
+		var label := Label.new()
+		label.text = entry[1]
+		label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.add_theme_font_size_override("font_size", 20 if heading else 17)
+		label.add_theme_color_override("font_color", Color(1, 1, 1, 0.85 if heading else 0.6))
+		label.custom_minimum_size = Vector2(0, 52 if heading else 24)
+		label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM if heading else VERTICAL_ALIGNMENT_TOP
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_licences.add_child(label)
+	content.add_child(_licences)
+	if about_row:
+		content.move_child(_licences, about_row.get_index() + 1)
 
 func _reveal_language_grid():
 	if _settings_scroll and _language_grid:

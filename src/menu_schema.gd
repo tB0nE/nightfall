@@ -148,6 +148,13 @@ static func get_tabs() -> Array:
 					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
 				],
 			},
+			{
+				"node_name": &"SettingsAboutRow",
+				"title": "About",
+				"options": [
+					_option(&"_ui_licences_btn", "Licences", "", "Show the licences of Nightfall and the software it includes.", TARGET_UI, &"on_licences_pressed"),
+				],
+			},
 		],
 	},
 ]

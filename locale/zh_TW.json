@@ -190,5 +190,8 @@
 	"Pair": "配對",
 	"Enter PIN on Host": "在主機上輸入 PIN",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。"
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。",
+	"About": "關於",
+	"Licences": "授權",
+	"Show the licences of Nightfall and the software it includes.": "顯示 Nightfall 及其包含軟體的授權條款。"
 }
