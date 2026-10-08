@@ -13,7 +13,8 @@ Status:
 - **Proxy:** works. Everything is forwarded.
 - **Host depth (Phase 2):** Meteor decodes the video it forwards, runs the
   depth model and sends each map to the headset on its depth port, where it
-  appears as the "Meteor" AI 3D model. Exact frame matching is Phase 3.
+  appears as the "Meteor" AI 3D model, matched to the frame on screen
+  (Phase 3).
 - **Microphone (Phase 1):** the "Nightfall Microphone" device and the UDP
   receiver work. The headset doesn't send audio yet (Phase 2).
 

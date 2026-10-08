@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Richiede l’HDR se lo schermo dell’host lo usa; adattato al visore.",
 	"About": "Informazioni",
 	"Licences": "Licenze",
-	"Show the licences of Nightfall and the software it includes.": "Mostra le licenze di Nightfall e del software incluso."
+	"Show the licences of Nightfall and the software it includes.": "Mostra le licenze di Nightfall e del software incluso.",
+	"Microphone": "Microfono",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Invia il microfono del visore al PC tramite Nightfall Meteor.",
+	"Microphone on": "Microfono attivo",
+	"Microphone unavailable": "Microfono non disponibile",
+	"Microphone permission denied": "Permesso microfono negato"
 }

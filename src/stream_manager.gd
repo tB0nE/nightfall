@@ -214,6 +214,11 @@ var _meteor_address := ""
 func meteor_depth_info() -> Dictionary:
 	return MeteorClient.depth_info(_meteor)
 
+## Meteor's microphone offer for the current stream (see
+## MeteorClient.mic_info()), or {} when there's none.
+func meteor_mic_info() -> Dictionary:
+	return MeteorClient.mic_info(_meteor)
+
 func meteor_address() -> String:
 	return _meteor_address
 
@@ -233,6 +238,9 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			if not depth.is_empty():
 				main._log("[METEOR] Host depth offered: %s %dx%d on port %d" % [
 					depth.get("model", "?"), int(depth["width"]), int(depth["height"]), int(depth["port"])])
+			var mic := MeteorClient.mic_info(info)
+			if not mic.is_empty():
+				main._log("[METEOR] Microphone offered on port %d" % int(mic["port"]))
 		return info
 	return {}
 

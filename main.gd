@@ -281,6 +281,7 @@ var input_handler: InputHandler
 var ui_controller: UIController
 var auto_detect: AutoDetect
 var depth_estimator: DepthEstimatorModule
+var meteor_microphone: MeteorMicrophone
 var native_xr_renderer: NativeXrRendererManager
 var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
@@ -528,6 +529,7 @@ var _ui_log_btn: Button
 var _ui_stats_btn: Button
 var _ui_language_btn: Button
 var _ui_licences_btn: Button
+var _ui_microphone_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
@@ -1447,6 +1449,7 @@ func _init_modules():
 	ui_controller = UIController.new(self)
 	auto_detect = AutoDetect.new(self)
 	depth_estimator = DepthEstimatorModule.new(self)
+	meteor_microphone = MeteorMicrophone.new(self)
 	native_xr_renderer = NativeXrRendererManager.new(self)
 	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
@@ -2232,6 +2235,9 @@ func _process(delta):
 			if comp_shader_mat_right and not comp_shader_mat_right.get_shader_parameter("depth_texture"):
 				comp_shader_mat_right.set_shader_parameter("depth_texture", dt)
 
+	if meteor_microphone:
+		meteor_microphone.process()
+
 	_process_stats(delta)
 
 	if grabbed_node:
@@ -2679,7 +2685,11 @@ func _notification(what):
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application paused")
+		if meteor_microphone:
+			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if meteor_microphone:
+			meteor_microphone.set_paused(false)
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application resumed")
 		_schedule_xr_surface_refresh("application resumed")

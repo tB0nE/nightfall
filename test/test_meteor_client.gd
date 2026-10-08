@@ -8,6 +8,7 @@ func _init():
 	_test_parse_info()
 	_test_route_rtsp_url()
 	_test_depth_info()
+	_test_mic_info()
 	_test_parse_depth_messages()
 	_test_pick_depth_map()
 	if not _failures.is_empty():
@@ -51,6 +52,15 @@ func _test_depth_info() -> void:
 	_check(MeteorClient.depth_info(MeteorClient.parse_info(INFO, 47984)).is_empty(), "no depth key means no offer")
 	_check(MeteorClient.depth_info(MeteorClient.parse_info(with_depth.replace('"zstd"', '"lz4"'), 47984)).is_empty(), "unknown compression is ignored")
 	_check(MeteorClient.depth_info(MeteorClient.parse_info(with_depth.replace('["L8"]', '["F16"]'), 47984)).is_empty(), "unknown format is ignored")
+
+# The shape meteor/src/discovery.rs sends.
+func _test_mic_info() -> void:
+	var with_mic := INFO.substr(0, INFO.length() - 1) + ',"mic":{"port":47902,"formats":["pcm_s16le_48k_mono"]}}'
+	var mic := MeteorClient.mic_info(MeteorClient.parse_info(with_mic, 47984))
+	_check(int(mic.get("port", 0)) == 47902, "mic offer is read")
+	_check(MeteorClient.mic_info(MeteorClient.parse_info(INFO, 47984)).is_empty(), "no mic key means no offer")
+	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("pcm_s16le_48k_mono", "opus"), 47984)).is_empty(), "unknown mic format is ignored")
+	_check(MeteorClient.mic_info(MeteorClient.parse_info(with_mic.replace("47902", "0"), 47984)).is_empty(), "port 0 is no offer")
 
 static func _message(frame: int, w: int, h: int, map: PackedByteArray) -> PackedByteArray:
 	var payload := map.compress(FileAccess.COMPRESSION_ZSTD)

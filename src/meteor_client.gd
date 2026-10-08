@@ -67,6 +67,20 @@ static func route_rtsp_url(session_url: String, info: Dictionary) -> String:
 		return session_url
 	return session_url.substr(0, found.get_start(1)) + str(int(info["ports"]["rtsp"])) + session_url.substr(found.get_end(1))
 
+## Keep in sync with FORMAT_PCM_S16LE_48K_MONO in meteor/src/mic.rs.
+const MIC_FORMAT := "pcm_s16le_48k_mono"
+
+## Meteor's microphone offer ({port, formats}), or {} when it has no
+## microphone device or none in a format this client sends.
+static func mic_info(info: Dictionary) -> Dictionary:
+	var mic = info.get("mic", {})
+	if not mic is Dictionary or int(mic.get("port", 0)) <= 0:
+		return {}
+	var formats = mic.get("formats", [])
+	if not formats is Array or not formats.has(MIC_FORMAT):
+		return {}
+	return mic
+
 ## Meteor's host depth offer ({port, width, height, model, ...}), or {} when
 ## it isn't offering depth in a format this client reads.
 static func depth_info(info: Dictionary) -> Dictionary:

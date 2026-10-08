@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille.",
 	"About": "Tietoja",
 	"Licences": "Lisenssit",
-	"Show the licences of Nightfall and the software it includes.": "Näytä Nightfallin ja sen sisältämien ohjelmistojen lisenssit."
+	"Show the licences of Nightfall and the software it includes.": "Näytä Nightfallin ja sen sisältämien ohjelmistojen lisenssit.",
+	"Microphone": "Mikrofoni",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Lähetä lasien mikrofoni tietokoneelle Nightfall Meteorin kautta.",
+	"Microphone on": "Mikrofoni päällä",
+	"Microphone unavailable": "Mikrofoni ei käytettävissä",
+	"Microphone permission denied": "Mikrofonin käyttöoikeus evätty"
 }

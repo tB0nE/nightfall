@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Żądaj HDR, gdy ekran hosta go używa; dopasowane do gogli.",
 	"About": "O aplikacji",
 	"Licences": "Licencje",
-	"Show the licences of Nightfall and the software it includes.": "Pokaż licencje Nightfall i dołączonego oprogramowania."
+	"Show the licences of Nightfall and the software it includes.": "Pokaż licencje Nightfall i dołączonego oprogramowania.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Wysyłaj mikrofon gogli do komputera przez Nightfall Meteor.",
+	"Microphone on": "Mikrofon włączony",
+	"Microphone unavailable": "Mikrofon niedostępny",
+	"Microphone permission denied": "Odmówiono dostępu do mikrofonu"
 }

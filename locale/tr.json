@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Ana bilgisayar ekranı kullanıyorsa HDR iste; başlık için ton eşlenir.",
 	"About": "Hakkında",
 	"Licences": "Lisanslar",
-	"Show the licences of Nightfall and the software it includes.": "Nightfall'un ve içerdiği yazılımların lisanslarını gösterin."
+	"Show the licences of Nightfall and the software it includes.": "Nightfall'un ve içerdiği yazılımların lisanslarını gösterin.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Başlık mikrofonunu Nightfall Meteor ile bilgisayara gönderin.",
+	"Microphone on": "Mikrofon açık",
+	"Microphone unavailable": "Mikrofon kullanılamıyor",
+	"Microphone permission denied": "Mikrofon izni reddedildi"
 }

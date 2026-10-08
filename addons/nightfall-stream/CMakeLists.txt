@@ -240,7 +240,7 @@ endif()
 
 if(ANDROID)
     target_compile_definitions(${LIBNAME} PRIVATE _FORTIFY_SOURCE=0)
-    target_link_libraries(${LIBNAME} PRIVATE atomic m log dl android mediandk GLESv3)
+    target_link_libraries(${LIBNAME} PRIVATE atomic m log dl android mediandk GLESv3 aaudio)
 
     # PyroWave codec (docs/plans/active/pyrowave-codec.md) - vendored as a
     # prebuilt shared library (see tools/build_support/build_pyrowave_android.sh;

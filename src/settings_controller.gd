@@ -1276,6 +1276,26 @@ func toggle_hdr():
 	if main.is_streaming:
 		_schedule_stream_restart()
 
+# The headset microphone to Nightfall Meteor (MeteorMicrophone). Turning it on
+# asks for the microphone permission the first time.
+func toggle_microphone():
+	if main.settings.microphone_enabled:
+		_set_microphone(false)
+		return
+	if not MeteorMicrophone.is_supported():
+		main.ui_controller.show_temporary_status("Microphone unavailable", 2.0)
+		return
+	main.meteor_microphone.request_permission(func(granted: bool) -> void:
+		if granted:
+			_set_microphone(true)
+		else:
+			main._log("[METEOR-MIC] Microphone permission denied")
+			main.ui_controller.show_temporary_status("Microphone permission denied", 2.0))
+
+func _set_microphone(enabled: bool) -> void:
+	main.settings.microphone_enabled = enabled
+	_save_setting(main._ui_microphone_btn, "On" if enabled else "Off")
+
 func cycle_audio_boost():
 	var values: Array = SettingsPersistence.AUDIO_BOOST_VALUES
 	var idx = values.find(main.settings.audio_boost_db)

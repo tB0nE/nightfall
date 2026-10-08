@@ -7,6 +7,7 @@
 #include "video/x11_capture.h"
 #include "audio/audio_renderer.h"
 #include "audio/pipewire_audio.h"
+#include "audio/meteor_mic.h"
 #include "input/input_bridge.h"
 #include "config/computer_manager.h"
 #include "config/config_manager.h"
@@ -38,6 +39,8 @@ NightfallStream::NightfallStream() {}
 
 NightfallStream::~NightfallStream() {
     stop_stream();
+    delete meteor_mic_;
+    meteor_mic_ = nullptr;
     if (http_requester_) {
         memdelete(http_requester_);
         http_requester_ = nullptr;
@@ -339,6 +342,30 @@ Ref<TextureUploader> NightfallStream::get_texture_uploader() const {
 Ref<ShaderMaterial> NightfallStream::get_shader_material() const {
     if (stream_connection_) return stream_connection_->get_shader_material();
     return nullptr;
+}
+
+String NightfallStream::start_meteor_mic(const String &host, int port) {
+    if (!meteor_mic_) meteor_mic_ = new MeteorMic();
+    return String::utf8(meteor_mic_->start(host.utf8().get_data(), port).c_str());
+}
+
+void NightfallStream::stop_meteor_mic() {
+    if (meteor_mic_) meteor_mic_->stop();
+}
+
+void NightfallStream::set_meteor_mic_muted(bool muted) {
+    if (!meteor_mic_) meteor_mic_ = new MeteorMic();
+    meteor_mic_->set_muted(muted);
+}
+
+Dictionary NightfallStream::get_meteor_mic_status() const {
+    Dictionary status;
+    status["running"] = meteor_mic_ && meteor_mic_->is_running();
+    status["muted"] = meteor_mic_ && meteor_mic_->is_muted();
+    status["packets"] = meteor_mic_ ? static_cast<int64_t>(meteor_mic_->packets_sent()) : 0;
+    status["level"] = meteor_mic_ ? meteor_mic_->level() : 0.0f;
+    status["error"] = meteor_mic_ ? String::utf8(meteor_mic_->error().c_str()) : String();
+    return status;
 }
 
 Ref<AudioRenderer> NightfallStream::get_audio_renderer() const {
@@ -691,6 +718,10 @@ void NightfallStream::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_texture_uploader"), &NightfallStream::get_texture_uploader);
     ClassDB::bind_method(D_METHOD("get_shader_material"), &NightfallStream::get_shader_material);
     ClassDB::bind_method(D_METHOD("get_audio_renderer"), &NightfallStream::get_audio_renderer);
+    ClassDB::bind_method(D_METHOD("start_meteor_mic", "host", "port"), &NightfallStream::start_meteor_mic);
+    ClassDB::bind_method(D_METHOD("stop_meteor_mic"), &NightfallStream::stop_meteor_mic);
+    ClassDB::bind_method(D_METHOD("set_meteor_mic_muted", "muted"), &NightfallStream::set_meteor_mic_muted);
+    ClassDB::bind_method(D_METHOD("get_meteor_mic_status"), &NightfallStream::get_meteor_mic_status);
     ClassDB::bind_method(D_METHOD("get_input_bridge"), &NightfallStream::get_input_bridge);
     ClassDB::bind_method(D_METHOD("get_depth_bridge"), &NightfallStream::get_depth_bridge);
     ClassDB::bind_method(D_METHOD("get_frames_dropped"), &NightfallStream::get_frames_dropped);

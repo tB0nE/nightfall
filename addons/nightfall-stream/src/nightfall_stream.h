@@ -20,6 +20,7 @@ class PipeWireCapture;
 class DmaBufImporter;
 class PipeWireAudio;
 class X11Capture;
+class MeteorMic;
 
 class NightfallStream : public Node {
     GDCLASS(NightfallStream, Node);
@@ -96,6 +97,14 @@ public:
 
     static String get_error_string(int error_code);
 
+    // The headset microphone to Nightfall Meteor (audio/meteor_mic.h).
+    // start_meteor_mic() returns an empty string, or why it couldn't start.
+    String start_meteor_mic(const String &host, int port);
+    void stop_meteor_mic();
+    void set_meteor_mic_muted(bool muted);
+    // {running, muted, packets, level, error}
+    Dictionary get_meteor_mic_status() const;
+
     Object *get_computer_manager() const;
     Object *get_config_manager() const;
     Object *get_stream_connection() const;
@@ -125,6 +134,7 @@ private:
     StreamState state_ = STATE_IDLE;
 
     StreamConnection *stream_connection_ = nullptr;
+    MeteorMic *meteor_mic_ = nullptr;
     Ref<NightfallComputerManager> computer_manager_;
     Ref<NightfallConfigManager> config_manager_;
     HttpRequester *http_requester_ = nullptr;

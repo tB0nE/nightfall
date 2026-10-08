@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "ホストの画面がHDRの場合に要求し、ヘッドセット向けにトーンマップします。",
 	"About": "情報",
 	"Licences": "ライセンス",
-	"Show the licences of Nightfall and the software it includes.": "Nightfall と同梱ソフトウェアのライセンスを表示します。"
+	"Show the licences of Nightfall and the software it includes.": "Nightfall と同梱ソフトウェアのライセンスを表示します。",
+	"Microphone": "マイク",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Nightfall Meteor 経由でヘッドセットのマイクを PC に送ります。",
+	"Microphone on": "マイク オン",
+	"Microphone unavailable": "マイクを使用できません",
+	"Microphone permission denied": "マイクの権限が拒否されました"
 }

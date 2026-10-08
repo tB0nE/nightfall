@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。",
 	"About": "關於",
 	"Licences": "授權",
-	"Show the licences of Nightfall and the software it includes.": "顯示 Nightfall 及其包含軟體的授權條款。"
+	"Show the licences of Nightfall and the software it includes.": "顯示 Nightfall 及其包含軟體的授權條款。",
+	"Microphone": "麥克風",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "透過 Nightfall Meteor 將頭戴裝置的麥克風傳送到電腦。",
+	"Microphone on": "麥克風已開啟",
+	"Microphone unavailable": "麥克風無法使用",
+	"Microphone permission denied": "麥克風權限遭拒"
 }

@@ -149,6 +149,13 @@ static func get_tabs() -> Array:
 				],
 			},
 			{
+				"node_name": &"SettingsMicrophoneRow",
+				"title": "Microphone",
+				"options": [
+					_option(&"_ui_microphone_btn", "Microphone", "Off", "Send the headset microphone to the PC through Nightfall Meteor.", TARGET_SETTINGS, &"toggle_microphone"),
+				],
+			},
+			{
 				"node_name": &"SettingsAboutRow",
 				"title": "About",
 				"options": [

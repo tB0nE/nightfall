@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запрос HDR, если его использует экран хоста; адаптация для шлема.",
 	"About": "О программе",
 	"Licences": "Лицензии",
-	"Show the licences of Nightfall and the software it includes.": "Показать лицензии Nightfall и входящего в него ПО."
+	"Show the licences of Nightfall and the software it includes.": "Показать лицензии Nightfall и входящего в него ПО.",
+	"Microphone": "Микрофон",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Передавать микрофон гарнитуры на ПК через Nightfall Meteor.",
+	"Microphone on": "Микрофон включён",
+	"Microphone unavailable": "Микрофон недоступен",
+	"Microphone permission denied": "Доступ к микрофону запрещён"
 }

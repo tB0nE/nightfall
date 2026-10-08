@@ -1,6 +1,7 @@
 # Nightfall Meteor: microphone passthrough
 
-> Status: In progress. Phases 0 and 1 done on the host (see "Progress").
+> Status: Host side done (Phases 0 and 1). Quest side (Phase 2) built
+> 2026-10-08 and installed, not yet tested on the headset (see "Progress").
 >
 > Date: 2026-10-03
 >
@@ -69,6 +70,26 @@ Quest mic ─► AAudio capture ─► UDP :47902 ─► Meteor ─► jitter bu
   are no gaps on a clean stream. With 2% loss and 30 ms jitter, the only gaps
   are the lost packets themselves.
 - The 30-minute run is still to do.
+
+**Phase 2 (built 2026-10-08, not yet tested on the Quest)**
+- Capture: `addons/nightfall-stream/src/audio/meteor_mic.cpp`, native
+  AAudio as designed (48 kHz, mono, 16-bit, `VOICE_COMMUNICATION`, low
+  latency, shared). A thread reads 480-sample frames and sends each as one
+  UDP datagram in the `meteor/src/mic.rs` format to Meteor's port, over a
+  connected non-blocking socket (a full buffer or an unreachable port drops
+  the frame). It fails to start, with the reason, if the stream doesn't
+  open at exactly 48 kHz mono 16-bit.
+- Control: `src/meteor_microphone.gd` runs capture while the setting is on,
+  the stream goes through a Meteor that offers `pcm_s16le_48k_mono`, the app
+  has `RECORD_AUDIO`, and it isn't paused. It retries every 5 s and logs
+  `[METEOR-MIC]` packets per second and peak level every 10 s.
+- UI: Settings > Microphone (On/Off, off by default). Turning it on asks
+  for `RECORD_AUDIO` the first time. One setting for every host, not per
+  host as planned above.
+- Export: `permissions/record_audio=true`.
+- Not done: the mute shortcut, the status line while live (only a
+  temporary "Microphone on"), echo checks with game audio on the speakers,
+  and the exit gate below.
 
 ## Design
 

@@ -193,5 +193,10 @@
 	"Request HDR when the host display uses it; tone-mapped for the headset.": "Be om HDR når vertens skjerm bruker det; tonetilpasset for headsettet.",
 	"About": "Om",
 	"Licences": "Lisenser",
-	"Show the licences of Nightfall and the software it includes.": "Vis lisensene for Nightfall og programvaren den inneholder."
+	"Show the licences of Nightfall and the software it includes.": "Vis lisensene for Nightfall og programvaren den inneholder.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Send headsettets mikrofon til PC-en via Nightfall Meteor.",
+	"Microphone on": "Mikrofon på",
+	"Microphone unavailable": "Mikrofon utilgjengelig",
+	"Microphone permission denied": "Mikrofontilgang avslått"
 }
