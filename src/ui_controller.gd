@@ -26,6 +26,10 @@ var _tab_before_settings: int = 0
 var _bottom_margin: Control
 var _language_grid: GridContainer
 var _licences: VBoxContainer
+var _licence_index := 0
+var _licence_lines := PackedStringArray()
+var _licence_page := 0
+const LICENCE_PAGE_LINES := 80
 # Drag-to-scroll state for the Settings page (see _on_scroll_drag_input()).
 var _scroll_drag_start_y: float = 0.0
 var _scroll_drag_start_value: int = 0
@@ -392,7 +396,8 @@ func _cull_outside(node: Node, view: Rect2) -> void:
 		elif child is Control:
 			_cull_outside(child, view)
 
-# Licences opens the licence texts beneath it, built on first use.
+# Licences opens a grid of components beneath it, built on first use; the
+# chosen component's licence shows below the grid, a page at a time.
 func on_licences_pressed():
 	if not _settings_scroll:
 		return
@@ -405,31 +410,115 @@ func on_licences_pressed():
 
 func _reveal_licences():
 	if _settings_scroll and _licences:
-		_settings_scroll.ensure_control_visible(_licences.get_child(0))
+		_settings_scroll.ensure_control_visible(_licences.get_child(1))
 
-# One Label per line, so _cull_settings_page() hides the text line by line.
 func _build_licences(content: Control) -> void:
 	var about_row := content.find_child("SettingsAboutRow", false, false)
 	_licences = VBoxContainer.new()
 	_licences.name = "Licences"
-	_licences.add_theme_constant_override("separation", 0)
+	_licences.add_theme_constant_override("separation", 8)
 	_licences.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_licences.visible = false
-	for entry in Licences.entries():
-		var heading: bool = entry[0] == &"heading"
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 4)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_licences.add_child(gap)
+	var grid := GridContainer.new()
+	grid.name = "LicenceGrid"
+	grid.columns = 4
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 8)
+	grid.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	grid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_licences.add_child(grid)
+	var names := Licences.names()
+	for i in names.size():
+		var button := make_action_btn(names[i])
+		button.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		button.custom_minimum_size = Vector2(230, 56)
+		grid.add_child(button)
+		_make_scroll_friendly(button)
+		var entry_index: int = i
+		button.pressed.connect(_on_scroll_friendly_pressed.bind(func(): _show_licence(entry_index)))
+
+	var nav := HBoxContainer.new()
+	nav.name = "LicencePager"
+	nav.alignment = BoxContainer.ALIGNMENT_CENTER
+	nav.add_theme_constant_override("separation", 12)
+	nav.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	nav.visible = false
+	for step in [-1, 1]:
+		var button := make_action_btn("<" if step < 0 else ">")
+		button.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		button.custom_minimum_size = Vector2(120, 56)
+		_make_scroll_friendly(button)
+		var direction: int = step
+		button.pressed.connect(_on_scroll_friendly_pressed.bind(func(): _turn_licence_page(direction)))
+		nav.add_child(button)
+	var page_label := Label.new()
+	page_label.name = "Page"
+	page_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	page_label.add_theme_font_size_override("font_size", 20)
+	page_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	page_label.custom_minimum_size = Vector2(360, 0)
+	page_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	page_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	nav.add_child(page_label)
+	nav.move_child(page_label, 1)
+	_licences.add_child(nav)
+
+	# One Label per line, so _cull_settings_page() hides the text line by line.
+	var text := VBoxContainer.new()
+	text.name = "LicenceText"
+	text.add_theme_constant_override("separation", 0)
+	text.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for i in LICENCE_PAGE_LINES:
 		var label := Label.new()
-		label.text = entry[1]
 		label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
 		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		label.add_theme_font_size_override("font_size", 20 if heading else 17)
-		label.add_theme_color_override("font_color", Color(1, 1, 1, 0.85 if heading else 0.6))
-		label.custom_minimum_size = Vector2(0, 52 if heading else 24)
-		label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM if heading else VERTICAL_ALIGNMENT_TOP
+		label.add_theme_font_size_override("font_size", 17)
+		label.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+		label.custom_minimum_size = Vector2(0, 24)
 		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_licences.add_child(label)
+		label.visible = false
+		text.add_child(label)
+	_licences.add_child(text)
 	content.add_child(_licences)
 	if about_row:
 		content.move_child(_licences, about_row.get_index() + 1)
+
+func _show_licence(index: int) -> void:
+	_licence_index = index
+	_licence_lines = Licences.lines(index)
+	_licence_page = 0
+	var grid := _licences.get_node("LicenceGrid")
+	for i in grid.get_child_count():
+		grid.get_child(i).add_theme_color_override("font_color",
+			Color(0.35, 0.65, 1.0, 1.0) if i == index else Color(1, 1, 1, 0.85))
+	_render_licence_page()
+	_settings_scroll.ensure_control_visible.call_deferred(_licences.get_node("LicencePager"))
+
+func _turn_licence_page(step: int) -> void:
+	var pages := ceili(_licence_lines.size() / float(LICENCE_PAGE_LINES))
+	_licence_page = clampi(_licence_page + step, 0, maxi(pages - 1, 0))
+	_render_licence_page()
+	_settings_scroll.ensure_control_visible.call_deferred(_licences.get_node("LicencePager"))
+
+func _render_licence_page() -> void:
+	var pages := maxi(ceili(_licence_lines.size() / float(LICENCE_PAGE_LINES)), 1)
+	var nav := _licences.get_node("LicencePager")
+	nav.visible = true
+	nav.get_node("Page").text = "%s  %d / %d" % [Licences.names()[_licence_index], _licence_page + 1, pages]
+	nav.get_child(0).disabled = _licence_page == 0
+	nav.get_child(2).disabled = _licence_page >= pages - 1
+	var text := _licences.get_node("LicenceText")
+	var first := _licence_page * LICENCE_PAGE_LINES
+	for i in LICENCE_PAGE_LINES:
+		var label: Label = text.get_child(i)
+		var line := first + i
+		label.visible = line < _licence_lines.size()
+		label.text = _licence_lines[line] if label.visible else ""
+	_cull_settings_page.call_deferred()
 
 func _reveal_language_grid():
 	if _settings_scroll and _language_grid:
