@@ -18,7 +18,7 @@
 
 Download one file, run it, and it works:
 
-1. The user makes `Nightfall-Meteor-x86_64.AppImage` executable and runs it.
+1. The user makes `Nightfall-Meteor-<version>-x86_64.AppImage` executable and runs it.
 2. A tray icon appears. Meteor finds Sunshine, starts EdgePad 512 on Vulkan
    straight away, and adds itself to autostart.
 3. The Quest finds Meteor the next time it connects to that PC and uses host

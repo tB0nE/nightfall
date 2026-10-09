@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Nightfall-Meteor-x86_64.AppImage: Meteor (without ONNX Runtime),
+# Builds Nightfall-Meteor-<version>-x86_64.AppImage: Meteor (without ONNX Runtime),
 # ncnn and EdgePad 512 for Vulkan, about 30 MB. VDA is a download from the
 # tray (src/download.rs). See docs/plans/active/meteor-appimage.md.
 #
@@ -138,7 +138,9 @@ fi
 [[ -f "$RUNTIME" ]] || curl -fsSL -o "$RUNTIME" "https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME_VERSION/runtime-x86_64"
 echo "$APPIMAGETOOL_SHA256  $TOOL" | sha256sum -c --quiet
 echo "$RUNTIME_SHA256  $RUNTIME" | sha256sum -c --quiet
-TARGET="$OUT/Nightfall-Meteor-x86_64.AppImage"
+# The version is in the name from the start: the .zsync file records the
+# AppImage's file name, so the release asset must keep the name built here.
+TARGET="$OUT/Nightfall-Meteor-$VERSION-x86_64.AppImage"
 rm -f "$TARGET" "$TARGET.zsync"
 (cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --comp zstd --runtime-file "$RUNTIME" \
     -u "gh-releases-zsync|tB0nE|nightfall|latest|Nightfall-Meteor-*x86_64.AppImage.zsync" \
