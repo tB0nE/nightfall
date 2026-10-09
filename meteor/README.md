@@ -15,8 +15,9 @@ Status:
   depth model and sends each map to the headset on its depth port, where it
   appears as the "Meteor" AI 3D model, matched to the frame on screen
   (Phase 3).
-- **Microphone (Phase 1):** the "Nightfall Microphone" device and the UDP
-  receiver work. The headset doesn't send audio yet (Phase 2).
+- **Microphone:** the Quest sends encrypted audio to Meteor. Linux exposes a
+  "Nightfall Microphone" device; Windows plays it into VB-CABLE, where apps
+  record from CABLE Output. Both have been tested with the headset.
 
 ## Running
 
@@ -52,9 +53,46 @@ VDA isn't inside; the tray offers it as a download.
 
 ### Windows release folder
 
-Build with `cargo build --release --no-default-features`. Keep
-`nightfall-meteor.exe` and `ncnn.dll` together, with EdgePad's `.ncnn.param`
-and `.ncnn.bin` in `share/nightfall-meteor/models/` beside the executable.
+From Windows PowerShell in `meteor`, run:
+
+```powershell
+.\tools\build_windows_release.ps1
+```
+
+The script builds with `cargo build --release --locked --no-default-features`
+and creates `target\windows-release\Nightfall-Meteor-<version>-windows-x64.zip`.
+It takes EdgePad 512 from `%LOCALAPPDATA%\Nightfall Meteor\models` by default;
+pass `-ModelsDir` to use another folder. It fetches ncnn's pinned Windows
+release and verifies the DLL and licence hashes; pass `-NcnnDir` for a folder
+already holding `ncnn.dll` and `LICENSE.txt`. The first run installs
+`cargo-about` to generate third-party notices. The zip contains the exe,
+ncnn, EdgePad 512, README, licence and notices. It requires the Microsoft
+Visual C++ x64 Redistributable on the destination PC. The zip does not set
+up firewall rules or install a Start menu entry. The installer adds the
+Start menu entry but does not change firewall rules yet.
+
+Inside the zip, keep `nightfall-meteor.exe` and `ncnn.dll` together, with
+EdgePad's `.ncnn.param` and `.ncnn.bin` in
+`share/nightfall-meteor/models/` beside the executable.
+
+### Windows installer
+
+Install Inno Setup 7, then run from Windows PowerShell in `meteor`:
+
+```powershell
+.\tools\build_windows_installer.ps1
+```
+
+It rebuilds the release folder and creates
+`target\windows-release\Nightfall-Meteor-<version>-Setup-x64.exe`. The same
+`-ModelsDir` and `-NcnnDir` options work. The installer is per-user: it puts
+the app under `%LOCALAPPDATA%\Programs\Nightfall Meteor`, creates Start menu
+and uninstall entries, offers a desktop shortcut, and can launch Meteor at
+the end. It needs no administrator rights. It leaves the pairing key,
+downloaded VDA files, and settings in AppData during uninstall. The Visual
+C++ x64 Redistributable remains a prerequisite, and Windows Firewall may
+need its first-run private-network prompt. Before installing, quit a portable
+Meteor process if one is running; only one instance can listen on the ports.
 EdgePad is the default. The Windows tray's **Depth model** menu offers the
 VDA download, with progress and Cancel. It fetches the VDA graphs from the
 Nightfall release and only the needed DLLs from NVIDIA's Windows TensorRT

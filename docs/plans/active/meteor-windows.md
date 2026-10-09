@@ -22,17 +22,48 @@
   frames at 120 fps, with 6.2 ms median and 7.3 ms p95 frame-to-map latency.
 - The Windows tray has the Nightfall icon, model, rate, smoothing, edge
   softening, microphone, VDA download/progress/cancel/remove, autostart and
-  basic stream status controls. VB-CABLE output and an isolated tone test
-  work; a real headset-microphone application test remains.
+  basic stream status controls. VB-CABLE output, an isolated tone test, and
+  a real headset-microphone application test work (user confirmed 2026-10-09).
 - The Quest's USB depth connection previously had repeated 230-275 ms
   blocked writes. A larger TCP receive buffer removed those stalls in a
   three-minute USB run. Longer USB testing and Wi-Fi/IPv4 validation remain.
-- The current Windows build is a folder of manually placed files, not an
-  installer. Windows firewall checking and setup, notifications, no-console
-  startup, packaging, and the TensorRT engine-build Job object remain.
+- The Windows PowerShell release script builds a 28.8 MiB zip with EdgePad
+  and notices. Its default path fetched and hash-checked ncnn, and the
+  extracted zip processed a 360-frame H.264 replay: 352 maps at 120 fps,
+  5.4 ms median and 6.4 ms p95 frame-to-map (2026-10-09). An Inno Setup 7
+  script builds a 28.9 MiB per-user installer. A silent install/uninstall
+  test verified the files and registry entry, and left `meteor.key` intact.
+  Windows firewall checking and setup, notifications, no-console startup,
+  the Visual C++ prerequisite, and the TensorRT engine-build Job object
+  remain.
 - Windows VDA download hashes are pinned for the sm86 resource used by the
   RTX 3090. Other NVIDIA GPU resources need signed-file hashes before their
   downloads can be offered.
+
+## Pre-release handoff (2026-10-09)
+
+The 0.1.0 installer is suitable for a small tester pre-release on Windows
+10/11 x64 with an NVIDIA GPU, Sunshine-compatible host, and the Microsoft
+Visual C++ x64 Redistributable. VB-CABLE is an optional separate install for
+microphone use. Quit any portable Meteor before starting the installed copy:
+only one instance can own the ports. The installer is per-user, makes Start
+menu and uninstall entries, and leaves `%LOCALAPPDATA%\Nightfall Meteor`
+(including `meteor.key`, models, and VDA downloads) and the roaming settings
+in place on uninstall. It is unsigned and does not add Windows Firewall
+rules; accept the private-network prompt when Windows shows one. The
+installer is built by `meteor/tools/build_windows_installer.ps1` into
+`meteor/target/windows-release/` and was copied to the Windows/Linux share
+at `G:\Temp\nightfall-windows-build` for handoff. The copied bytes were
+verified against the build with SHA-256.
+
+Before a wider release, test the installed app on a clean Windows PC,
+including missing Visual C++ runtime and firewall behavior; test longer USB
+and Wi-Fi/IPv4 headset sessions; start Meteor without a console and handle
+Windows logoff/shutdown; stop a TensorRT engine-build child when Meteor exits;
+and add firewall status/setup, code signing, and published checksums. The
+Windows VDA download is currently verified for sm86 only; other NVIDIA GPU
+builders need hashes and testing. Notifications and DLL search hardening
+remain lower-priority follow-ups.
 
 ## Goal
 
