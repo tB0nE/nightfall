@@ -82,6 +82,7 @@ keeps your keyboard and desk visible while you work.
 
 - Port the Android optimizations to the Linux version
 - Multiple monitors (70% complete)
+- Nightfall Meteor on AMD and Intel GPUs (host depth with EdgePad; [plan](docs/plans/active/meteor-amd-intel.md))
 - Nightfall Meteor: wider GPU and desktop testing, and a signed Windows installer
 - Safely reintroduce 3D objects and environments without affecting performance
 - Improve hand tracking

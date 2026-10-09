@@ -25,6 +25,7 @@ the build/deployment entry point.
   (supersedes [the in-protocol microphone plan](plans/active/microphone-passthrough.md))
 - [Nightfall Meteor: Linux AppImage](plans/active/meteor-appimage.md)
 - [Nightfall Meteor: Windows port](plans/active/meteor-windows.md)
+- [Nightfall Meteor: AMD and Intel GPUs](plans/active/meteor-amd-intel.md)
 - [USB Link streaming](plans/active/usb-link-streaming.md)
 - [PyroWave codec](plans/active/pyrowave-codec.md) and its
   [zero-copy GPU decoder](plans/active/pyrowave-zero-copy-gpu.md) (both done)
