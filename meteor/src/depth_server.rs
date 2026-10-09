@@ -45,7 +45,7 @@ const ZSTD_LEVEL: i32 = 1;
 const STREAM_WAIT: Duration = Duration::from_secs(5);
 
 pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<u16> {
-    let listener = match TcpListener::bind(("::", port)).or_else(|_| TcpListener::bind(("0.0.0.0", port))) {
+    let listener = match crate::net::tcp_listener_std(port).or_else(|_| TcpListener::bind(("0.0.0.0", port))) {
         Ok(listener) => listener,
         Err(err) => {
             log::warn!("Can't listen on depth port {port} ({err}); host depth won't reach clients");
@@ -101,6 +101,7 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
     let mut compressor = zstd::bulk::Compressor::new(ZSTD_LEVEL)?;
     let mut message = Vec::new();
     let mut sent = 0u64;
+    let mut last_sent: Option<(Instant, Instant, u64)> = None;
     loop {
         let map = {
             let Ok(latest) = depth.latest.lock() else { return Ok(()) };
@@ -122,8 +123,28 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
         if !(ip.is_loopback() || map.client == Some(ip)) {
             continue;
         }
+        let encode_start = Instant::now();
         encode(&map, &mut compressor, &session, sent, &mut message)?;
+        let write_start = Instant::now();
         stream.write_all(&message)?;
+        let sent_at = Instant::now();
+        if let Some((previous_sent, previous_done, previous_seq)) = last_sent {
+            let send_gap = sent_at.duration_since(previous_sent);
+            let map_gap = map.done.saturating_duration_since(previous_done);
+            if send_gap >= Duration::from_millis(100) || map_gap >= Duration::from_millis(100) {
+                log::info!(
+                    "Depth delivery gap to {peer}: send {:.0} ms, maps {:.0} ms, {} maps advanced, encode {:.1} ms, write {:.1} ms, map age {:.1} ms, frame {}",
+                    send_gap.as_secs_f64() * 1000.0,
+                    map_gap.as_secs_f64() * 1000.0,
+                    map.seq.saturating_sub(previous_seq),
+                    (write_start - encode_start).as_secs_f64() * 1000.0,
+                    (sent_at - write_start).as_secs_f64() * 1000.0,
+                    sent_at.duration_since(map.done).as_secs_f64() * 1000.0,
+                    map.frame_index,
+                );
+            }
+        }
+        last_sent = Some((sent_at, map.done, map.seq));
         sent += 1;
     }
 }

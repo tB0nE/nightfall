@@ -11,14 +11,16 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(windows)]
+mod desktop_windows;
 mod discovery;
 mod download;
 mod firewall;
 mod gpu_post;
-#[cfg(target_os = "linux")]
 mod icon;
 mod logfile;
 mod mic;
+mod net;
 mod ncnn;
 mod nvdec;
 mod onnx;
@@ -31,6 +33,8 @@ mod stream_info;
 mod tensorrt;
 #[cfg(target_os = "linux")]
 mod tray;
+#[cfg(windows)]
+mod tray_windows;
 mod vda;
 mod video_dump;
 mod video_tap;
@@ -232,8 +236,14 @@ async fn main() {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (no_tray, status, stats, depth, mic);
-        log::info!("No tray icon on this platform yet; press Ctrl+C to stop");
+        #[cfg(windows)]
+        if !no_tray {
+            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone());
+        }
+        let _ = (status, stats, depth, mic);
+        if no_tray {
+            log::info!("No tray icon requested; press Ctrl+C to stop");
+        }
     }
 
     wait_for_exit_signal().await;
@@ -265,7 +275,15 @@ pub fn exit_now(code: i32) -> ! {
         libc::_exit(code)
     }
     #[cfg(not(unix))]
-    std::process::exit(code)
+    {
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(
+                windows_sys::Win32::System::Threading::GetCurrentProcess(), code as u32,
+            );
+        }
+        std::process::exit(code)
+    }
 }
 
 async fn wait_for_exit_signal() {

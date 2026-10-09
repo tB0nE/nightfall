@@ -27,9 +27,9 @@ cargo run --release -- --no-tray
 ```
 
 `--help` lists the debug options (`--dump-video`, `--save-depth`, `--replay`,
-`--no-depth`, `--no-mic`). Set `RUST_LOG=debug` for per-connection logging. The tray uses
-StatusNotifierItem, so it shows on KDE, and on GNOME with the AppIndicator
-extension. Windows and macOS run without a tray icon for now.
+`--no-depth`, `--no-mic`). Set `RUST_LOG=debug` for per-connection logging. On
+Linux the tray uses StatusNotifierItem; on Windows it uses the notification
+area. macOS runs without a tray icon for now.
 
 ### Building the AppImage
 
@@ -49,6 +49,21 @@ The script needs podman (or docker) and network access. The models folder
 (default `~/.local/share/nightfall-meteor/models`) must hold
 `zipdepth_wide_512x288.ncnn.{param,bin}`, from `models/convert_ncnn.py`.
 VDA isn't inside; the tray offers it as a download.
+
+### Windows release folder
+
+Build with `cargo build --release --no-default-features`. Keep
+`nightfall-meteor.exe` and `ncnn.dll` together, with EdgePad's `.ncnn.param`
+and `.ncnn.bin` in `share/nightfall-meteor/models/` beside the executable.
+EdgePad is the default. The Windows tray's **Depth model** menu offers the
+VDA download, with progress and Cancel. It fetches the VDA graphs from the
+Nightfall release and only the needed DLLs from NVIDIA's Windows TensorRT
+wheel; the files are checked against pinned SHA-256 hashes. On the RTX 3090,
+the download is about 472 MB and the first engine build took about five
+minutes. The Windows download is currently pinned for the sm86 GPU resource;
+other NVIDIA GPUs still need their signed DLL hashes added. `--download-vda`
+offers the same download from a console. Meteor also finds pre-supplied VDA
+files in `share/nightfall-meteor/models/` and `tensorrt/` beside the exe.
 
 ## How the client finds it
 
@@ -149,7 +164,7 @@ The tray has the controls:
 - a **Model** menu, listing the models in the models folder (each EdgePad
   model once, on ncnn when it has been converted, and Video Depth
   Anything, below);
-- a **Rate** menu: Match stream, 30, 60, 72, 90 or 120 Hz (72 Hz is the Quest default refresh rate);
+- a **Rate** menu: Match stream, 20, 30, 60, 72, 90 or 120 Hz (72 Hz is the Quest default refresh rate);
 - **Depth smoothing**, the per-pixel smoothing in post-processing,
   remembered per model: on by default for EdgePad, off for VDA, which is
   temporally steady already (smoothing adds about 40 ms of lag);
@@ -297,6 +312,14 @@ VDA measured on an RTX 3090 (2026-10-06):
   frame in to map out 6.4 ms median. About 1 GB of GPU memory with both
   engines loaded (195 MB of it Meteor's own buffers).
 
+On Windows with the same RTX 3090 (2026-10-08), VDA's 75-frame reference
+test passed at 0.999939 mean correlation from model inputs and 0.999506 from
+720p frames. A 1440p capture replayed at 120 fps produced 3774 maps from
+3796 frames, with 6.6 ms median and 7.3 ms p95 frame-to-map time. The model
+step took about 4.5 ms median; the two engines used 704 MiB of GPU memory.
+Model changes during a stream update NVDEC's reduction size on the next frame;
+they do not wait for a new video keyframe.
+
 Measured on an RTX 3090 (2026-10-03):
 
 | | |
@@ -331,7 +354,7 @@ Debugging:
 
 ## Microphone
 
-Meteor creates a **Nightfall Microphone** input device. It's a PipeWire
+On Linux, Meteor creates a **Nightfall Microphone** input device. It's a PipeWire
 virtual source fed by a `pw-cat` child process; with no `pw-cat`, Meteor
 falls back to `module-pipe-source`, which adds about 260 ms. The device is
 removed when Meteor exits.
@@ -354,13 +377,23 @@ a Meteor whose key has changed; Settings > Forget Meteor Keys trusts a
 reinstalled one. Deleting `meteor.key` makes a new key, which every headset
 will refuse until it forgets the old one.
 
-The tray shows the microphone's status, with **Mute microphone** and **Set as
-default input**.
+On Windows, install [VB-CABLE](https://vb-audio.com/Cable/index.htm) and reboot
+as its installer instructs. Meteor sends microphone audio to **CABLE Input**;
+choose **CABLE Output** as the microphone in Discord, a game, or Windows Sound
+settings. The Windows tray shows microphone status and a mute control. Without
+VB-CABLE, the proxy and depth features still start.
+
+The Linux tray shows the microphone's status, with **Mute microphone** and
+**Set as default input**.
 
 To test without a headset:
 `python3 tools/send_mic.py --tone 440 --seconds 10`, then record from the
 device (`pw-record --target nightfall_mic out.wav`). `--loss` and
 `--jitter-ms` simulate a poor network.
+
+On Windows, `cargo run --release --no-default-features --example verify_windows_mic`
+sends a short test tone to a running Meteor and confirms that it reaches
+**CABLE Output**.
 
 Measured: a tone comes out of the device 80-105 ms after the first packet is
 sent. That includes the 40 ms jitter buffer, the 30 ms start cushion, and the

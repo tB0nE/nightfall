@@ -285,6 +285,7 @@ struct State {
     /// The model's input size.
     target: (usize, usize),
     bit_depth_minus8: u8,
+    transfer: u8,
     full_range: bool,
     matrix: u8,
     /// NV12 (or the high bytes of P016) copied back from the GPU.
@@ -292,6 +293,7 @@ struct State {
     p016: Vec<u8>,
     /// The NV12-to-tensor kernel, when frames stay on the GPU.
     kernel: Option<*mut c_void>,
+    p016_kernel: Option<*mut c_void>,
     pool: Option<Arc<TensorPool>>,
     output: Option<(i64, Pixels)>,
     error: Option<String>,
@@ -436,11 +438,13 @@ impl NvDecoder {
             surface: (0, 0),
             target,
             bit_depth_minus8: 0,
+            transfer: 1,
             full_range: false,
             matrix: 1,
             nv12: Vec::new(),
             p016: Vec::new(),
-            kernel,
+            kernel: kernel.map(|k| k.0),
+            p016_kernel: kernel.map(|k| k.1),
             pool,
             output: None,
             error: None,
@@ -467,6 +471,24 @@ impl NvDecoder {
         // and lives as long as the parser.
         check("cuvidCreateVideoParser", unsafe { (api.create_parser)(&mut parser, &mut params) })?;
         Ok(NvDecoder { api, ctx, parser, state })
+    }
+
+    /// Change only the reduced model input size. The decoded video surfaces
+    /// stay valid, so switching models does not need another keyframe.
+    pub fn set_target(&mut self, width: usize, height: usize) {
+        let target = (width & !1, height & !1);
+        if self.state.target == target {
+            return;
+        }
+        self.state.target = target;
+        if self.state.kernel.is_some() {
+            self.state.pool = Some(Arc::new(TensorPool {
+                api: self.api,
+                ctx: self.ctx,
+                bytes: target.0 * target.1 * 3 * 4,
+                free: Mutex::new(Vec::new()),
+            }));
+        }
     }
 
     /// Decodes one complete frame. Returns it at the target size, or None if
@@ -526,6 +548,10 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
     let (state, format) = unsafe { (&mut *user.cast::<State>(), &*format) };
     let surfaces = u32::from(format.min_num_decode_surfaces).max(1) + 2;
     let coded = (format.coded_width, format.coded_height);
+    // VUI color metadata may change without a coded-size or bit-depth change.
+    state.transfer = format.transfer_characteristics;
+    state.full_range = format.signal_bits & 0x08 != 0;
+    state.matrix = format.matrix_coefficients;
     if !state.decoder.is_null() {
         if coded == state.coded && format.bit_depth_luma_minus8 == state.bit_depth_minus8 {
             return surfaces as c_int;
@@ -574,10 +600,8 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
     state.coded = coded;
     state.surface = (tw, th);
     state.bit_depth_minus8 = format.bit_depth_luma_minus8;
-    state.full_range = format.signal_bits & 0x08 != 0;
-    state.matrix = format.matrix_coefficients;
     log::info!(
-        "NVDEC: {}x{} codec {} {}-bit, decoding {tw}x{th}, reduced to {}x{} (matrix {}, {} range)",
+        "NVDEC: {}x{} codec {} {}-bit, decoding {tw}x{th}, reduced to {}x{} (matrix {}, transfer {}, {} range)",
         coded.0,
         coded.1,
         format.codec,
@@ -585,6 +609,7 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
         state.target.0,
         state.target.1,
         state.matrix,
+        state.transfer,
         if state.full_range { "full" } else { "limited" }
     );
     surfaces as c_int
@@ -649,10 +674,11 @@ fn copy_frame(state: &mut State, info: &ParserDispInfo) -> Result<Pixels, String
     })?;
     let (w, h) = state.target;
     let (sw, sh) = state.surface;
-    if let (Some(kernel), Some(pool), 0) = (state.kernel, state.pool.clone(), state.bit_depth_minus8) {
+    let kernel = if state.bit_depth_minus8 > 0 { state.p016_kernel } else { state.kernel };
+    if let (Some(kernel), Some(pool)) = (kernel, state.pool.clone()) {
         let coefficients = Coefficients::new(state.matrix, state.full_range);
         let frame = (device_ptr, pitch as usize, state.surface);
-        let converted = convert_on_gpu(api, kernel, &pool, frame, state.target, &coefficients);
+        let converted = convert_on_gpu(api, kernel, &pool, frame, state.target, &coefficients, (state.bit_depth_minus8 > 0).then_some(state.transfer == 16));
         // SAFETY: unmapping the surface mapped above, after the kernel finished.
         unsafe { (api.unmap_frame)(state.decoder, device_ptr) };
         return converted.map(|ptr| Pixels::Gpu(GpuTensor { ptr, width: w, height: h, pool }));
@@ -698,8 +724,9 @@ fn copy_frame(state: &mut State, info: &ParserDispInfo) -> Result<Pixels, String
 
 const KERNEL_PTX: &str = concat!(include_str!("../kernels/nv12_to_tensor.ptx"), "\0");
 
-fn load_kernel(api: &Api, ctx: CuContext) -> Result<*mut c_void, String> {
-    Ok(load_functions(api, ctx, KERNEL_PTX, &[c"nv12_to_tensor"])?[0])
+fn load_kernel(api: &Api, ctx: CuContext) -> Result<(*mut c_void, *mut c_void), String> {
+    let functions = load_functions(api, ctx, KERNEL_PTX, &[c"nv12_to_tensor", c"p016_to_tensor"])?;
+    Ok((functions[0], functions[1]))
 }
 
 /// The device's primary context (the one ONNX Runtime uses), retained.
@@ -821,6 +848,7 @@ fn convert_on_gpu(
     (nv12, pitch, surface): (CuDevicePtr, usize, (usize, usize)),
     (w, h): (usize, usize),
     c: &Coefficients,
+    hdr_pq: Option<bool>,
 ) -> Result<CuDevicePtr, String> {
     let out = pool.take()?;
     let mut src = nv12;
@@ -838,6 +866,10 @@ fn convert_on_gpu(
         (&mut height as *mut c_int).cast(),
     ];
     params.extend(floats.iter_mut().map(|f| (f as *mut f32).cast::<c_void>()));
+    let mut pq = i32::from(hdr_pq.unwrap_or(false));
+    if hdr_pq.is_some() {
+        params.push((&mut pq as *mut c_int).cast());
+    }
     params.push((&mut dst as *mut CuDevicePtr).cast());
     const BLOCK: c_uint = 16;
     let grid = |n: usize| (n as c_uint).div_ceil(BLOCK);
@@ -958,6 +990,7 @@ pub fn nv12_box_to_rgb(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn struct_sizes_match_the_headers() {
         // 64-bit Linux sizes of the C structs (gcc, nv-codec-headers 13.x).
@@ -1010,7 +1043,7 @@ mod tests {
             eprintln!("skipping: no CUDA");
             return;
         };
-        let kernel = load_kernel(api, ctx).unwrap();
+        let kernel = load_kernel(api, ctx).unwrap().0;
         let (sw, sh, w, h) = (2560, 1440, 384, 384);
         // Gradients, fine stripes and noise, in luma and chroma.
         let mut seed = 99u32;
@@ -1033,7 +1066,7 @@ mod tests {
             check("cuMemAlloc", (api.cu_mem_alloc)(&mut src, nv12.len())).unwrap();
             check("cuMemcpyHtoD", (api.cu_memcpy_htod)(src, nv12.as_ptr().cast(), nv12.len())).unwrap();
             let c = Coefficients::new(1, false);
-            let out = convert_on_gpu(api, kernel, &pool, (src, sw, (sw, sh)), (w, h), &c).unwrap();
+            let out = convert_on_gpu(api, kernel, &pool, (src, sw, (sw, sh)), (w, h), &c, None).unwrap();
             check("cuMemcpyDtoH", (api.cu_memcpy_dtoh)(floats.as_mut_ptr().cast(), out, floats.len() * 4)).unwrap();
             (api.cu_mem_free)(src);
             pool.free.lock().unwrap().push(out);
@@ -1047,5 +1080,72 @@ mod tests {
             .collect();
         let diff = expected.iter().zip(&got).filter(|(a, b)| a != b).count();
         assert_eq!(diff, 0, "{diff} of {} bytes differ", expected.len());
+    }
+
+    #[test]
+    fn gpu_p016_hdr_tonemaps_and_keeps_frame_orientation() {
+        let Ok((api, ctx)) = primary_context() else {
+            eprintln!("skipping: no CUDA");
+            return;
+        };
+        let kernel = load_kernel(api, ctx).unwrap().1;
+        let (sw, sh, w, h) = (16, 16, 4, 4);
+        let mut samples = vec![512u16 << 6; sw * sh * 3 / 2];
+        for y in 0..sh {
+            for x in 0..sw {
+                // Top of the picture is darker than the bottom.
+                samples[y * sw + x] = ((128 + y * 32) as u16) << 6;
+            }
+        }
+        let pool = TensorPool { api, ctx, bytes: w * h * 3 * 4, free: Mutex::new(Vec::new()) };
+        let mut floats = vec![0f32; w * h * 3];
+        unsafe {
+            (api.cu_ctx_push)(ctx);
+            let mut src: CuDevicePtr = 0;
+            let bytes = samples.len() * 2;
+            check("cuMemAlloc", (api.cu_mem_alloc)(&mut src, bytes)).unwrap();
+            check("cuMemcpyHtoD", (api.cu_memcpy_htod)(src, samples.as_ptr().cast(), bytes)).unwrap();
+            let c = Coefficients::new(9, false);
+            let out = convert_on_gpu(api, kernel, &pool, (src, sw * 2, (sw, sh)), (w, h), &c, Some(true)).unwrap();
+            check("cuMemcpyDtoH", (api.cu_memcpy_dtoh)(floats.as_mut_ptr().cast(), out, floats.len() * 4)).unwrap();
+            (api.cu_mem_free)(src);
+            pool.free.lock().unwrap().push(out);
+            let mut popped = ptr::null_mut();
+            (api.cu_ctx_pop)(&mut popped);
+        }
+        assert!(floats.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)));
+        assert!(floats[0] < floats[(h - 1) * w], "P016 rows were inverted: {:?}", &floats[..w * h]);
+        assert!((floats[0] - floats[w * h]).abs() < 0.01);
+        assert!((floats[0] - floats[2 * w * h]).abs() < 0.01);
+    }
+
+    #[test]
+    #[ignore]
+    fn changes_input_size_without_restarting_the_video_decoder() {
+        let path = std::env::var("METEOR_TEST_HEVC").expect("METEOR_TEST_HEVC");
+        let bytes = std::fs::read(path).unwrap();
+        let units = crate::replay::split_access_units(Codec::Hevc, &bytes);
+        let mut decoder = NvDecoder::new(Codec::Hevc, 1280, 720, true).unwrap();
+        let mut found = 0;
+        for (i, unit) in units.iter().enumerate() {
+            let Some(Pixels::Gpu(tensor)) = decoder.decode(unit, i as u32 + 1).unwrap() else { continue };
+            found += 1;
+            match found {
+                1 => {
+                    assert_eq!((tensor.width, tensor.height), (1280, 720));
+                    decoder.set_target(672, 384);
+                }
+                2 => {
+                    assert_eq!((tensor.width, tensor.height), (672, 384));
+                    decoder.set_target(512, 288);
+                }
+                3 => {
+                    assert_eq!((tensor.width, tensor.height), (512, 288));
+                    break;
+                }
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(found, 3, "the clip needs three decoded frames");
     }
 }

@@ -135,7 +135,7 @@ struct Loaded {
 }
 
 /// Rates offered in the tray. 0 means every frame the stream delivers.
-pub const RATES: [u32; 6] = [0, 30, 60, 72, 90, 120];
+pub const RATES: [u32; 7] = [0, 20, 30, 60, 72, 90, 120];
 
 /// The tray's choices, remembered across restarts in state.toml.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,8 +227,8 @@ pub struct Depth {
     /// Signalled with `latest` whenever a new map is ready.
     pub map_ready: Condvar,
     /// Clients connected to the depth port. The model only runs while there
-    /// is one (or while saving snapshots); decoding never stops, because
-    /// the decoder can only restart on a keyframe.
+    /// is one (or while saving snapshots); decoding continues so an active
+    /// stream keeps its video history.
     pub subscribers: AtomicU32,
     save: Option<(PathBuf, u64)>,
 }
@@ -269,8 +269,15 @@ impl Depth {
         };
         let bundled_dir = std::env::current_exe()
             .ok()
-            .and_then(|exe| Some(exe.parent()?.join("../share/nightfall-meteor/models")))
-            .filter(|dir| dir.is_dir());
+            .and_then(|exe| {
+                let parent = exe.parent()?;
+                let dir = if cfg!(windows) {
+                    parent.join("share/nightfall-meteor/models")
+                } else {
+                    parent.join("../share/nightfall-meteor/models")
+                };
+                dir.is_dir().then_some(dir)
+            });
         let depth = Arc::new(Depth {
             models_dir,
             bundled_dir,
@@ -408,9 +415,19 @@ impl Depth {
     /// The folder a model is loaded from.
     fn model_dir(&self, name: &str) -> PathBuf {
         if name == vda::ID {
-            return self.models_dir.clone();
+            return self.vda_dir().unwrap_or_else(|| self.models_dir.clone());
         }
         self.model_files().remove(name).unwrap_or_else(|| self.models_dir.clone())
+    }
+
+    /// Both VDA graphs must come from one folder. Prefer a complete user
+    /// installation over the bundled copy.
+    fn vda_dir(&self) -> Option<PathBuf> {
+        if vda::present(&self.models_dir) {
+            Some(self.models_dir.clone())
+        } else {
+            self.bundled_dir.as_ref().filter(|dir| vda::present(dir)).cloned()
+        }
     }
 
     /// The models a loaded runtime can run: each single-frame model once, as
@@ -439,7 +456,7 @@ impl Depth {
                 }
             })
             .collect();
-        if vda::present(&self.models_dir) && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
+        if self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
             models.push(vda::ID.to_string());
         }
         models.sort();
@@ -986,9 +1003,14 @@ impl DepthFeed {
             self.failed = false;
         }
         let model_size = self.depth.input_size();
-        // A new model size: start again at the next keyframe at that size.
-        if self.decoder.as_ref().is_some_and(|(_, _, size)| Some(*size) != model_size) {
-            self.decoder = None;
+        // NVDEC keeps the full-size surfaces. Only its reduction target and
+        // tensor pool change, so a model switch need not wait for an IDR.
+        if let (Some((decoder, _, size)), Some((width, height))) = (&mut self.decoder, model_size)
+            && *size != (width, height)
+        {
+            decoder.set_target(width, height);
+            *size = (width, height);
+            log::info!("Host depth input resized to {width}x{height} for the selected model");
         }
         if self.decoder.is_none() {
             // A decoder can only start on a keyframe.

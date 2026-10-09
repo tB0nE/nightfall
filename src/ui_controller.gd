@@ -66,7 +66,7 @@ const OPTION_VALUE_META := &"nightfall_option_value"
 # Temporary model-validation build: expose the raw depth-map selector while
 # keeping the separate post-processing-stage control hidden. The standard-head
 # ZipDepth experiment needs direct visual confirmation of its OpenCL output.
-const SHOW_AI3D_DEPTH_DEBUG := false
+const SHOW_AI3D_DEPTH_DEBUG := true
 const SHOW_AI3D_PROCESS_DEBUG := false
 
 func _init(owner: Node3D):

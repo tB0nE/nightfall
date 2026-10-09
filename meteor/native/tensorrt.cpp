@@ -8,7 +8,11 @@
 // Every function returns 0 on success; on failure it returns -1 and writes
 // a message to `err` (NUL-terminated, truncated to `err_len`).
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <cstdint>
 #include <cstdio>
@@ -47,6 +51,29 @@ int fail(char* err, size_t err_len, const std::string& message) {
     return -1;
 }
 
+#if defined(_WIN32)
+HMODULE open_library(const char* name) {
+    int len = MultiByteToWideChar(CP_UTF8, 0, name, -1, nullptr, 0);
+    if (len <= 0) return nullptr;
+    std::wstring wide(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, name, -1, wide.data(), len);
+    // TensorRT later loads its GPU-specific builder resource by bare DLL
+    // name. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR only applies to dependencies of
+    // this load, so register the folder for those later loads as well.
+    auto slash = wide.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) ||
+            !AddDllDirectory(wide.substr(0, slash).c_str())) return nullptr;
+    }
+    return LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+}
+const char* loader_error() {
+    static char buffer[256];
+    std::snprintf(buffer, sizeof(buffer), "Windows error %lu", static_cast<unsigned long>(GetLastError()));
+    return buffer;
+}
+#endif
+
 template <typename T>
 struct Deleter {
     void operator()(T* p) const { delete p; }
@@ -68,6 +95,16 @@ extern "C" {
 // library's version (for example 101601), or -1.
 int32_t trt_init(const char* nvinfer, const char* parser, LogFn log, char* err, size_t err_len) {
     g_logger.fn = log;
+#if defined(_WIN32)
+    HMODULE infer = open_library(nvinfer);
+    if (!infer) return fail(err, err_len, loader_error());
+    HMODULE onnx = open_library(parser);
+    if (!onnx) return fail(err, err_len, loader_error());
+    g_create_builder = reinterpret_cast<void* (*)(void*, int32_t)>(GetProcAddress(infer, "createInferBuilder_INTERNAL"));
+    g_create_runtime = reinterpret_cast<void* (*)(void*, int32_t)>(GetProcAddress(infer, "createInferRuntime_INTERNAL"));
+    g_lib_version = reinterpret_cast<int32_t (*)()>(GetProcAddress(infer, "getInferLibVersion"));
+    g_create_parser = reinterpret_cast<void* (*)(void*, void*, int)>(GetProcAddress(onnx, "createNvOnnxParser_INTERNAL"));
+#else
     void* infer = dlopen(nvinfer, RTLD_NOW | RTLD_GLOBAL);
     if (!infer) return fail(err, err_len, dlerror());
     void* onnx = dlopen(parser, RTLD_NOW | RTLD_GLOBAL);
@@ -76,6 +113,7 @@ int32_t trt_init(const char* nvinfer, const char* parser, LogFn log, char* err, 
     g_create_runtime = reinterpret_cast<void* (*)(void*, int32_t)>(dlsym(infer, "createInferRuntime_INTERNAL"));
     g_lib_version = reinterpret_cast<int32_t (*)()>(dlsym(infer, "getInferLibVersion"));
     g_create_parser = reinterpret_cast<void* (*)(void*, void*, int)>(dlsym(onnx, "createNvOnnxParser_INTERNAL"));
+#endif
     if (!g_create_builder || !g_create_runtime || !g_lib_version || !g_create_parser) {
         return fail(err, err_len, "TensorRT's factory functions are missing");
     }

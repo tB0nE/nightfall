@@ -9,10 +9,8 @@ fn main() {
         .std("c++17")
         .file("native/tensorrt.cpp")
         // System includes, so warnings in NVIDIA's headers stay quiet.
-        .flag("-isystem")
-        .flag("third_party/tensorrt/include")
-        .flag("-isystem")
-        .flag("third_party/tensorrt/cuda_stub")
+        .include("third_party/tensorrt/include")
+        .include("third_party/tensorrt/cuda_stub")
         .compile("meteor_tensorrt");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo:rustc-link-lib=dl");

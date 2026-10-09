@@ -736,7 +736,7 @@ func get_depth_model_index() -> int:
 
 func get_depth_model_label() -> String:
 	if meteor_depth_selected():
-		return "Meteor (%s)" % main.stream_manager.meteor_depth_info().get("model", "PC")
+		return "Meteor"
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:

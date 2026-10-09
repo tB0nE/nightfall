@@ -3,6 +3,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #ifndef _WIN32
 #include <cerrno>
@@ -38,6 +39,15 @@ int NightfallTcpPeer::connect_to_host(const String &host, int port) {
     if (fd_ < 0) {
         freeaddrinfo(found);
         return ERR_CANT_CREATE;
+    }
+    // A depth map can span many TCP segments. Leave room for several maps
+    // while the USB network interface batches delivery or ACKs.
+    int receive_buffer = 1024 * 1024;
+    if (setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer)) == 0) {
+        socklen_t size = sizeof(receive_buffer);
+        if (getsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, &size) == 0) {
+            UtilityFunctions::print("[METEOR-DEPTH-NET] TCP receive buffer ", receive_buffer, " bytes");
+        }
     }
     fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL, 0) | O_NONBLOCK);
     int result = ::connect(fd_, found->ai_addr, found->ai_addrlen);
@@ -103,6 +113,14 @@ Array NightfallTcpPeer::get_partial_data(int bytes) {
         result.append(PackedByteArray());
         return result;
     }
+#if defined(__linux__) && defined(TCP_QUICKACK)
+    // Depth maps arrive in many TCP segments. Re-enable prompt ACKs after
+    // each read so a delayed ACK cannot hold up the next map on USB Link.
+    if (got > 0) {
+        int quick_ack = 1;
+        setsockopt(fd_, IPPROTO_TCP, TCP_QUICKACK, &quick_ack, sizeof(quick_ack));
+    }
+#endif
     data.resize(static_cast<int64_t>(got));
     result.append(OK);
     result.append(data);

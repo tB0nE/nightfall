@@ -1,8 +1,7 @@
 # Nightfall Meteor: Windows
 
-> Status: Planned. Updated 2026-10-07 for the Linux work since 2026-10-05:
-> ncnn for EdgePad, native TensorRT for VDA, the VDA download, the
-> AppImage and its first-run setup, and the shutdown fix.
+> Status: In progress. The inventory below describes the 2026-10-07
+> starting point. See the current status below for the Windows work since then.
 >
 > Date: 2026-10-05
 >
@@ -13,6 +12,27 @@
 > Scope: Windows 10/11 x64 hosts with an NVIDIA GPU, running Sunshine,
 > Apollo, Vibepollo or Vibeshine. Other GPUs stay out of scope, as on Linux
 > (decoding is NVDEC).
+
+## Current Windows status (2026-10-09)
+
+- The Windows release exe proxies a Quest 3 stream and runs EdgePad on ncnn
+  and VDA on TensorRT. VDA's 75-frame parity test passed. A fresh download
+  of the VDA graphs and NVIDIA's Windows DLLs passed SHA-256 verification;
+  after a first engine build, the 1440p replay made 3775 maps from 3796
+  frames at 120 fps, with 6.2 ms median and 7.3 ms p95 frame-to-map latency.
+- The Windows tray has the Nightfall icon, model, rate, smoothing, edge
+  softening, microphone, VDA download/progress/cancel/remove, autostart and
+  basic stream status controls. VB-CABLE output and an isolated tone test
+  work; a real headset-microphone application test remains.
+- The Quest's USB depth connection previously had repeated 230-275 ms
+  blocked writes. A larger TCP receive buffer removed those stalls in a
+  three-minute USB run. Longer USB testing and Wi-Fi/IPv4 validation remain.
+- The current Windows build is a folder of manually placed files, not an
+  installer. Windows firewall checking and setup, notifications, no-console
+  startup, packaging, and the TensorRT engine-build Job object remain.
+- Windows VDA download hashes are pinned for the sm86 resource used by the
+  RTX 3090. Other NVIDIA GPU resources need signed-file hashes before their
+  downloads can be offered.
 
 ## Goal
 

@@ -1247,7 +1247,10 @@ mod tests {
             // SAFETY: set before any other thread reads the environment.
             unsafe { std::env::set_var("METEOR_BUILDER", meteor) };
         }
-        let models = crate::config::default_models_dir();
+        let models = std::env::var_os("VDA_MODELS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(crate::config::default_models_dir);
+        crate::tensorrt::configure(std::env::var_os("VDA_TENSORRT_DIR").map(PathBuf::from));
         let cache = crate::config::cache_dir().join("tensorrt");
         let mut model = VdaModel::load(&models, backend, &cache).unwrap();
         eprintln!("{}", model.description);

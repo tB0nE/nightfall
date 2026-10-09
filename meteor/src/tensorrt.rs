@@ -77,8 +77,8 @@ fn c_path(path: &Path) -> Result<CString, String> {
 
 /// The TensorRT the VDA download installs, and the headers' version.
 pub const VERSION: &str = "10.16.1";
-const NVINFER: &str = "libnvinfer.so.10";
-const PARSER: &str = "libnvonnxparser.so.10";
+const NVINFER: &str = if cfg!(windows) { "nvinfer_10.dll" } else { "libnvinfer.so.10" };
+const PARSER: &str = if cfg!(windows) { "nvonnxparser_10.dll" } else { "libnvonnxparser.so.10" };
 
 /// The version once TensorRT has opened. A failure isn't kept, so
 /// TensorRT installed later (the VDA download) is found without a restart.
@@ -101,9 +101,19 @@ fn candidates() -> Vec<PathBuf> {
     dirs.push(install_dir());
     // target/{debug,release}/nightfall-meteor, or target/release/deps/<test>
     if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("tensorrt"));
+        }
         for target in exe.ancestors().skip(1).take(3) {
-            let Ok(pythons) = std::fs::read_dir(target.join("bench-venv/lib")) else { continue };
-            dirs.extend(pythons.flatten().map(|p| p.path().join("site-packages/tensorrt_libs")));
+            #[cfg(windows)]
+            {
+                dirs.push(target.join("bench-venv/Lib/site-packages/tensorrt_libs"));
+            }
+            #[cfg(not(windows))]
+            {
+                let Ok(pythons) = std::fs::read_dir(target.join("bench-venv/lib")) else { continue };
+                dirs.extend(pythons.flatten().map(|p| p.path().join("site-packages/tensorrt_libs")));
+            }
         }
     }
     dirs.retain(|d| d.join(NVINFER).is_file() && d.join(PARSER).is_file());

@@ -71,6 +71,7 @@ func stop() -> void:
 	host = ""
 	port = 0
 	_connected = false
+	_last_map_at = 0.0
 	newest_frame = 0
 	_mutex.lock()
 	_ring.clear()
@@ -120,7 +121,33 @@ func _run() -> void:
 	var counter := 0
 	var buf := PackedByteArray()
 	var retry_at := 0.0
+	var stats_at := Time.get_ticks_usec()
+	var last_loop_at := stats_at
+	var max_loop_gap_us := 0
+	var max_read_us := 0
+	var max_parse_us := 0
+	var max_open_us := 0
+	var max_decompress_us := 0
+	var max_store_us := 0
+	var measured_maps := 0
 	while _running:
+		var loop_at := Time.get_ticks_usec()
+		max_loop_gap_us = maxi(max_loop_gap_us, loop_at - last_loop_at)
+		last_loop_at = loop_at
+		if loop_at - stats_at >= 1000000:
+			if _connected:
+				print("[METEOR-DEPTH-TIMING] maps=%d max_loop=%.1f max_read=%.1f max_parse=%.1f max_decrypt=%.1f max_zstd=%.1f max_store=%.1f ms buffered=%d" % [
+					measured_maps, max_loop_gap_us / 1000.0, max_read_us / 1000.0,
+					max_parse_us / 1000.0, max_open_us / 1000.0,
+					max_decompress_us / 1000.0, max_store_us / 1000.0, buf.size()])
+			stats_at = loop_at
+			max_loop_gap_us = 0
+			max_read_us = 0
+			max_parse_us = 0
+			max_open_us = 0
+			max_decompress_us = 0
+			max_store_us = 0
+			measured_maps = 0
 		var now := _now()
 		if peer == null:
 			if now < retry_at:
@@ -159,7 +186,9 @@ func _run() -> void:
 		if available <= 0:
 			OS.delay_usec(IDLE_USEC)
 			continue
+		var read_at := Time.get_ticks_usec()
 		var result: Array = peer.get_partial_data(available)
+		max_read_us = maxi(max_read_us, Time.get_ticks_usec() - read_at)
 		if result[0] != OK:
 			peer.disconnect_from_host()
 			peer = null
@@ -169,7 +198,9 @@ func _run() -> void:
 		var chunk: PackedByteArray = result[1]
 		buf.append_array(chunk)
 		bytes_received += chunk.size()
+		var parse_at := Time.get_ticks_usec()
 		var messages := parse_messages(buf)
+		max_parse_us = maxi(max_parse_us, Time.get_ticks_usec() - parse_at)
 		if messages.size() == 1 and messages[0].has("error"):
 			push_warning("Meteor depth: %s; reconnecting" % messages[0]["error"])
 			peer.disconnect_from_host()
@@ -183,15 +214,20 @@ func _run() -> void:
 			consumed = message["payload_end"]
 			var pixels: int = message["width"] * message["height"]
 			var header := buf.slice(message["header_start"], message["payload_start"])
+			var open_at := Time.get_ticks_usec()
 			var plain: PackedByteArray = cipher.open(counter, header, buf.slice(message["payload_start"], message["payload_end"]))
+			max_open_us = maxi(max_open_us, Time.get_ticks_usec() - open_at)
 			counter += 1
 			if plain.is_empty():
 				forged = true
 				break
+			var decompress_at := Time.get_ticks_usec()
 			var map := plain.decompress(pixels, FileAccess.COMPRESSION_ZSTD)
+			max_decompress_us = maxi(max_decompress_us, Time.get_ticks_usec() - decompress_at)
 			if map.size() != pixels:
 				push_warning("Meteor depth: map for frame %d didn't decompress" % message["frame"])
 				continue
+			var store_at := Time.get_ticks_usec()
 			_store({
 				"frame": message["frame"],
 				"epoch": message["epoch"],
@@ -200,6 +236,8 @@ func _run() -> void:
 				"height": message["height"],
 				"latency_us": message["latency_us"],
 			})
+			max_store_us = maxi(max_store_us, Time.get_ticks_usec() - store_at)
+			measured_maps += 1
 		if forged:
 			push_warning("Meteor depth: a map didn't decrypt; reconnecting")
 			peer.disconnect_from_host()
@@ -214,6 +252,10 @@ func _run() -> void:
 	_connected = false
 
 func _store(entry: Dictionary) -> void:
+	var now := _now()
+	if _last_map_at > 0.0 and now - _last_map_at >= 0.1:
+		push_warning("[METEOR-DEPTH] Receive gap %.0f ms before frame %d (previous %d)" % [
+			(now - _last_map_at) * 1000.0, entry["frame"], newest_frame])
 	_mutex.lock()
 	# A new stream epoch starts its frame numbers again.
 	if not _ring.is_empty() and (entry["epoch"] != _ring[-1]["epoch"] or entry["frame"] < _ring[-1]["frame"]):
@@ -225,7 +267,7 @@ func _store(entry: Dictionary) -> void:
 	maps_received += 1
 	newest_frame = entry["frame"]
 	host_latency_ms = entry["latency_us"] / 1000.0
-	_last_map_at = _now()
+	_last_map_at = now
 
 ## The complete messages at the start of buf, each {frame, epoch, width,
 ## height, latency_us, header_start, payload_start, payload_end} (the payload

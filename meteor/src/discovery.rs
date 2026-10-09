@@ -70,7 +70,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
 }
 
 pub async fn bind(port: u16) -> io::Result<TcpListener> {
-    match TcpListener::bind(("::", port)).await {
+    match crate::net::tcp_listener(port).await {
         Ok(listener) => Ok(listener),
         Err(_) => TcpListener::bind(("0.0.0.0", port)).await,
     }

@@ -1,18 +1,17 @@
 //! The VDA download: TensorRT from NVIDIA and VDA's files, fetched
 //! when the user chooses VDA in the tray.
 //!
-//! TensorRT comes from NVIDIA's own package server. The libraries wheel is
-//! 3.7 GB, but the server answers range requests, so only the three files
-//! this GPU needs are read: `libnvinfer`, the ONNX parser and the GPU's
-//! builder resource (0.4 to 0.55 GB compressed). If the pinned URL stops
-//! answering, the package's index on the same server is read for the same
-//! file name.
+//! TensorRT comes from NVIDIA's own package server. The Linux wheel is
+//! 3.7 GB and the Windows wheel is 1.9 GB, but the server answers range
+//! requests, so only the three files this GPU needs are read. If the pinned
+//! URL stops answering, the package's index on the same server is read for
+//! the same file name.
 //!
 //! Each file's stored bytes go to `<name>.download` first. A dropped
 //! connection is retried (RETRIES times, with back-off) from where it
 //! stopped, by range request, and a download cancelled or interrupted by
 //! quitting continues from there next time. A finished file is inflated,
-//! checked against the SHA-256 in the wheel's `RECORD`, pinned below, and
+//! checked against the pinned SHA-256 below, and
 //! renamed into `tensorrt::install_dir()`. A file under its final name has
 //! been verified, and `libnvinfer` comes last, so a half-done download
 //! never looks installed.
@@ -29,10 +28,14 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// `tensorrt_cu13_libs` 10.16.1.11 for Linux x86_64 (glibc 2.28 or newer).
-const WHEEL_URL: &str =
-    "https://pypi.nvidia.com/tensorrt-cu13-libs/tensorrt_cu13_libs-10.16.1.11-py3-none-manylinux_2_28_x86_64.whl";
-const WHEEL_SIZE: u64 = 3_728_705_565;
+/// `tensorrt_cu13_libs` 10.16.1.11. Only the needed DLLs or shared objects
+/// are fetched from NVIDIA's wheel by range request.
+const WHEEL_URL: &str = if cfg!(windows) {
+    "https://pypi.nvidia.com/tensorrt-cu13-libs/tensorrt_cu13_libs-10.16.1.11-py3-none-win_amd64.whl"
+} else {
+    "https://pypi.nvidia.com/tensorrt-cu13-libs/tensorrt_cu13_libs-10.16.1.11-py3-none-manylinux_2_28_x86_64.whl"
+};
+const WHEEL_SIZE: u64 = if cfg!(windows) { 1_911_173_812 } else { 3_728_705_565 };
 const WHEEL_DIR: &str = "tensorrt_libs/";
 /// The package's index, read for the wheel's URL if the pinned one moves.
 const WHEEL_INDEX_URL: &str = "https://pypi.nvidia.com/tensorrt-cu13-libs/";
@@ -48,7 +51,8 @@ pub const LICENCE_URL: &str = "https://docs.nvidia.com/deeplearning/tensorrt/lat
 /// folder URL ending in `/`).
 const VDA_URL: &str = "https://github.com/tB0nE/nightfall/releases/download/meteor-vda-s-518x294/";
 
-/// A file in the wheel's `tensorrt_libs/`, from its `RECORD`.
+/// A file in the wheel's `tensorrt_libs/`. Windows hashes are measured from
+/// the signed DLLs: NVIDIA's wheel RECORD predates their Authenticode data.
 struct WheelFile {
     name: &'static str,
     sha256: &'static str,
@@ -56,20 +60,37 @@ struct WheelFile {
     compressed: u64,
 }
 
+#[cfg(not(windows))]
 const NVINFER: WheelFile = WheelFile {
     name: "libnvinfer.so.10",
     sha256: "6637a7f7117f80281c206ee79ebaf2a8b7f0f4d6b62a375856839d9260a4105a",
     size: 662_824_456,
     compressed: 308_031_727,
 };
+#[cfg(windows)]
+const NVINFER: WheelFile = WheelFile {
+    name: "nvinfer_10.dll",
+    sha256: "73fd99ba7448ebe7b75f3a97bca5fd996f166fa75760f616c0b0eda5c2f7005b",
+    size: 375_812_208,
+    compressed: 192_830_051,
+};
+#[cfg(not(windows))]
 const PARSER: WheelFile = WheelFile {
     name: "libnvonnxparser.so.10",
     sha256: "09cda8eddce7f53f039fbffc3c30a4d066dc7759464331ca8ccf3fa461b48cf7",
     size: 5_058_816,
     compressed: 2_017_876,
 };
+#[cfg(windows)]
+const PARSER: WheelFile = WheelFile {
+    name: "nvonnxparser_10.dll",
+    sha256: "4474757aac9e6abe12b3086fa2ed95f97e93e7b26cc5e89dbada2670842f471e",
+    size: 3_268_208,
+    compressed: 1_346_636,
+};
 
 /// Builder resources by compute capability (major * 10 + minor).
+#[cfg(not(windows))]
 const BUILDERS: [(u32, WheelFile); 7] = [
     (75, WheelFile {
         name: "libnvinfer_builder_resource_sm75.so.10.16.1",
@@ -115,6 +136,16 @@ const BUILDERS: [(u32, WheelFile); 7] = [
     }),
 ];
 
+// The sm86 signed DLL is verified on the Windows RTX 3090. Add other GPU
+// resources only after pinning the hashes of their signed wheel members.
+#[cfg(windows)]
+const BUILDERS: [(u32, WheelFile); 1] = [(86, WheelFile {
+    name: "nvinfer_builder_resource_sm86_10.dll",
+    sha256: "35331ca0164b785b85a9f3d48bb7be1195af9d5ccb760033c0854e133f53b621",
+    size: 176_011_888,
+    compressed: 151_838_572,
+})];
+
 /// The graphs this download fetched, so "Remove VDA" deletes only those.
 const DOWNLOADED_MODELS: &str = "downloaded-models.txt";
 
@@ -156,7 +187,7 @@ fn builder_for(major: i32, minor: i32) -> Option<&'static WheelFile> {
 pub fn plan(models_dir: &Path) -> Result<Plan, String> {
     let (major, minor) = crate::nvdec::compute_capability()?;
     let builder = builder_for(major, minor)
-        .ok_or_else(|| format!("TensorRT {} has no builder for this GPU (compute capability {major}.{minor})", crate::tensorrt::VERSION))?;
+        .ok_or_else(|| format!("No verified TensorRT {} download for this GPU (compute capability {major}.{minor})", crate::tensorrt::VERSION))?;
     let dir = crate::tensorrt::install_dir();
     let tensorrt = [builder, &PARSER, &NVINFER].into_iter().filter(|f| !dir.join(f.name).is_file()).collect();
     let graphs = crate::vda::FILES
@@ -413,7 +444,18 @@ fn free_space(dir: &Path) -> Option<u64> {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let path: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available = 0u64;
+    // SAFETY: path is NUL-terminated and available points to a u64.
+    (unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut available, std::ptr::null_mut(), std::ptr::null_mut()) } != 0)
+        .then_some(available)
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn free_space(_dir: &Path) -> Option<u64> {
     None
 }
@@ -726,7 +768,11 @@ mod tests {
 
     #[test]
     fn picks_the_builder_resource() {
+        #[cfg(windows)]
+        assert_eq!(builder_for(8, 6).map(|f| f.name), Some("nvinfer_builder_resource_sm86_10.dll"));
+        #[cfg(not(windows))]
         assert_eq!(builder_for(8, 6).map(|f| f.name), Some("libnvinfer_builder_resource_sm86.so.10.16.1"));
+        #[cfg(not(windows))]
         assert_eq!(builder_for(12, 0).map(|f| f.name), Some("libnvinfer_builder_resource_sm120.so.10.16.1"));
         assert!(builder_for(8, 7).is_none());
         assert!(builder_for(6, 1).is_none());

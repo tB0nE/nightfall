@@ -94,7 +94,7 @@ pub fn cache_dir() -> PathBuf {
 /// Downloaded runtimes and the default models folder.
 pub fn data_dir() -> PathBuf {
     if cfg!(windows) {
-        return config_dir();
+        return std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default().join("Nightfall Meteor");
     }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)

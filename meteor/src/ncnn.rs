@@ -116,9 +116,30 @@ fn load(configured: Option<&Path>) -> Result<Runtime, String> {
     Err(format!("ncnn not found ({})", errors.join("; ")))
 }
 
+#[cfg(windows)]
+const CREATE_GPU_INSTANCE: &[u8] = b"?create_gpu_instance@ncnn@@YAHPEBD@Z\0";
+#[cfg(windows)]
+const GET_GPU_COUNT: &[u8] = b"?get_gpu_count@ncnn@@YAHXZ\0";
+#[cfg(windows)]
+const GET_DEFAULT_GPU_INDEX: &[u8] = b"?get_default_gpu_index@ncnn@@YAHXZ\0";
+#[cfg(windows)]
+const GET_GPU_INFO: &[u8] = b"?get_gpu_info@ncnn@@YAAEBVGpuInfo@1@H@Z\0";
+#[cfg(windows)]
+const GPU_INFO_DEVICE_NAME: &[u8] = b"?device_name@GpuInfo@ncnn@@QEBAPEBDXZ\0";
+#[cfg(not(windows))]
+const CREATE_GPU_INSTANCE: &[u8] = b"_ZN4ncnn19create_gpu_instanceEPKc\0";
+#[cfg(not(windows))]
+const GET_GPU_COUNT: &[u8] = b"_ZN4ncnn13get_gpu_countEv\0";
+#[cfg(not(windows))]
+const GET_DEFAULT_GPU_INDEX: &[u8] = b"_ZN4ncnn21get_default_gpu_indexEv\0";
+#[cfg(not(windows))]
+const GET_GPU_INFO: &[u8] = b"_ZN4ncnn12get_gpu_infoEi\0";
+#[cfg(not(windows))]
+const GPU_INFO_DEVICE_NAME: &[u8] = b"_ZNK4ncnn7GpuInfo11device_nameEv\0";
+
 fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
     macro_rules! sym {
-        ($name:literal) => {
+        ($name:expr) => {
             // SAFETY: the symbol's type matches c_api.h / gpu.h for the
             // field it's assigned to.
             *unsafe { lib.get($name) }.map_err(|e| e.to_string())?
@@ -149,11 +170,11 @@ fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
         mat_get_h: sym!(b"ncnn_mat_get_h"),
         mat_get_c: sym!(b"ncnn_mat_get_c"),
         mat_get_channel_data: sym!(b"ncnn_mat_get_channel_data"),
-        create_gpu_instance: sym!(b"_ZN4ncnn19create_gpu_instanceEPKc"),
-        get_gpu_count: sym!(b"_ZN4ncnn13get_gpu_countEv"),
-        get_default_gpu_index: sym!(b"_ZN4ncnn21get_default_gpu_indexEv"),
-        get_gpu_info: sym!(b"_ZN4ncnn12get_gpu_infoEi"),
-        gpu_info_device_name: sym!(b"_ZNK4ncnn7GpuInfo11device_nameEv"),
+        create_gpu_instance: sym!(CREATE_GPU_INSTANCE),
+        get_gpu_count: sym!(GET_GPU_COUNT),
+        get_default_gpu_index: sym!(GET_DEFAULT_GPU_INDEX),
+        get_gpu_info: sym!(GET_GPU_INFO),
+        gpu_info_device_name: sym!(GPU_INFO_DEVICE_NAME),
     };
     // SAFETY: plain calls into ncnn; the strings it returns are static.
     unsafe {

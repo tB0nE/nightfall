@@ -226,7 +226,7 @@ impl Proxy {
         ch: Channel,
     ) {
         self.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
-        log::info!("{} flow opened for {client}", ch.name);
+        log::debug!("{} flow opened for {client}", ch.name);
         let tap = if ch.name == "video" {
             self.stats.set_streaming(client.ip(), true);
             self.start_video_tap(client, &upstream)
@@ -258,7 +258,7 @@ impl Proxy {
             self.stats.set_streaming(client.ip(), false);
         }
         self.stats.udp_flows.fetch_sub(1, Ordering::Relaxed);
-        log::info!("{} flow closed for {client}", ch.name);
+        log::debug!("{} flow closed for {client}", ch.name);
     }
 
     fn start_video_tap(&self, client: SocketAddr, upstream: &UdpSocket) -> Option<VideoTap> {
@@ -272,11 +272,11 @@ impl Proxy {
                 log::info!("Video for {client} is PyroWave; Meteor can't decode it (no host depth)");
                 return None;
             }
-            Some(info) => log::info!(
+            Some(info) => log::debug!(
                 "Tapping video for {client}: {:?} {}x{} at {} fps",
                 info.codec, info.width, info.height, info.fps
             ),
-            None => log::info!("Tapping video for {client} (no ANNOUNCE seen; codec from the bitstream)"),
+            None => log::debug!("Tapping video for {client} (no ANNOUNCE seen; codec from the bitstream)"),
         }
         // Loopback from Sunshine shouldn't lose packets, given room to buffer.
         enlarge_receive_buffer(upstream);
@@ -303,15 +303,14 @@ fn enlarge_receive_buffer(socket: &UdpSocket) {
 }
 
 async fn bind_tcp(port: u16) -> io::Result<TcpListener> {
-    // "[::]" also accepts IPv4 on Linux and Windows, and USB Link uses IPv6.
-    match TcpListener::bind(("::", port)).await {
+    match crate::net::tcp_listener(port).await {
         Ok(listener) => Ok(listener),
         Err(_) => TcpListener::bind(("0.0.0.0", port)).await,
     }
 }
 
 async fn bind_udp(port: u16) -> io::Result<UdpSocket> {
-    match UdpSocket::bind(("::", port)).await {
+    match crate::net::udp_socket(port).await {
         Ok(socket) => Ok(socket),
         Err(_) => UdpSocket::bind(("0.0.0.0", port)).await,
     }

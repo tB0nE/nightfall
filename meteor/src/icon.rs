@@ -10,10 +10,10 @@ pub const SIZES: [i32; 4] = [22, 32, 48, 64];
 const SUPERSAMPLE: i32 = 4;
 
 /// ARGB32 pixels, as the StatusNotifierItem spec wants.
-pub fn nightfall_icon(size: i32) -> ksni::Icon {
+pub fn nightfall_alpha(size: i32) -> Vec<u8> {
     let outline = n_outline();
     let samples = size * SUPERSAMPLE;
-    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    let mut alpha_data = Vec::with_capacity((size * size) as usize);
     for y in 0..size {
         for x in 0..size {
             let mut hits = 0;
@@ -29,9 +29,17 @@ pub fn nightfall_icon(size: i32) -> ksni::Icon {
                 }
             }
             let alpha = (hits * 255 / (SUPERSAMPLE * SUPERSAMPLE)) as u8;
-            data.extend_from_slice(&[alpha, 255, 255, 255]);
+            alpha_data.push(alpha);
         }
     }
+    alpha_data
+}
+
+#[cfg(target_os = "linux")]
+pub fn nightfall_icon(size: i32) -> ksni::Icon {
+    let alpha = nightfall_alpha(size);
+    let mut data = Vec::with_capacity(alpha.len() * 4);
+    for a in alpha { data.extend_from_slice(&[a, 255, 255, 255]); }
     ksni::Icon { width: size, height: size, data }
 }
 
@@ -85,13 +93,12 @@ mod tests {
 
     #[test]
     fn draws_a_white_glyph_on_transparent() {
-        let icon = nightfall_icon(32);
-        assert_eq!(icon.data.len(), 32 * 32 * 4);
-        let alpha = |x: usize, y: usize| icon.data[(y * 32 + x) * 4];
+        let icon = nightfall_alpha(32);
+        assert_eq!(icon.len(), 32 * 32);
+        let alpha = |x: usize, y: usize| icon[y * 32 + x];
         assert_eq!(alpha(7, 24), 255, "the stem");
         assert_eq!(alpha(1, 1), 0, "a corner");
         assert_eq!(alpha(26, 16), 255, "the crescent");
         assert_eq!(alpha(20, 16), 0, "between the diagonal and the crescent");
-        assert!(icon.data.chunks(4).all(|px| px[1..] == [255, 255, 255]));
     }
 }

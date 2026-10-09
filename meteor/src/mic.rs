@@ -69,6 +69,7 @@ const IDLE_AFTER: Duration = Duration::from_millis(500);
 const FRAME: Duration = Duration::from_millis(10);
 /// Silence written ahead of each stream (30 ms); see Mic::play.
 const PREROLL_FRAMES: usize = 3;
+#[cfg(target_os = "linux")]
 const SOURCE_NAME: &str = "nightfall_mic";
 
 #[derive(Default)]
@@ -109,7 +110,7 @@ pub struct Mic {
 
 impl Mic {
     /// Creates the virtual device and starts listening. None when the
-    /// device can't be created (no PipeWire/PulseAudio, or not Linux).
+    /// device can't be created (no PipeWire/PulseAudio or Windows virtual cable).
     pub async fn start(port: u16, key: Arc<crate::crypto::MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<Arc<Mic>> {
         let device = match VirtualMic::create() {
             Ok(device) => device,
@@ -118,17 +119,20 @@ impl Mic {
                 return None;
             }
         };
-        let socket = match tokio::net::UdpSocket::bind(("::", port)).await {
+        let socket = match crate::net::udp_socket(port).await {
             Ok(socket) => socket,
             Err(_) => match tokio::net::UdpSocket::bind(("0.0.0.0", port)).await {
                 Ok(socket) => socket,
                 Err(err) => {
-                    log::warn!("Microphone passthrough is off: can't listen on UDP {port}: {err}");
-                    return None;
+                log::warn!("Microphone passthrough is off: can't listen on UDP {port}: {err}");
+                return None;
                 }
             },
         };
+        #[cfg(target_os = "linux")]
         log::info!("Microphone: UDP :{port} -> PipeWire source \"Nightfall Microphone\" ({SOURCE_NAME}), encrypted");
+        #[cfg(windows)]
+        log::info!("Microphone: UDP :{port} -> VB-CABLE Input (record from CABLE Output), encrypted");
         let mic = Arc::new(Mic {
             port,
             key,
@@ -155,6 +159,7 @@ impl Mic {
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn set_default_input(&self) {
         match std::process::Command::new("pactl").args(["set-default-source", SOURCE_NAME]).status() {
             Ok(status) if status.success() => log::info!("Nightfall Microphone is now the default input"),
@@ -409,6 +414,10 @@ struct VirtualMic {
     module: String,
     #[cfg(target_os = "linux")]
     feed: Feed,
+    #[cfg(windows)]
+    feed: std::sync::mpsc::SyncSender<Vec<u8>>,
+    #[cfg(windows)]
+    queued: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[cfg(target_os = "linux")]
@@ -609,7 +618,86 @@ fn remove_stale_modules() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+impl VirtualMic {
+    fn create() -> Result<VirtualMic, String> {
+        let (feed, recv) = std::sync::mpsc::sync_channel(8);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let report = queued.clone();
+        std::thread::Builder::new().name("mic-wasapi".into())
+            .spawn(move || windows_audio(recv, ready_tx, report))
+            .map_err(|e| format!("can't start Windows audio thread: {e}"))?;
+        ready_rx.recv().map_err(|_| "Windows audio thread exited during startup".to_string())??;
+        Ok(VirtualMic { feed, queued })
+    }
+
+    fn write(&mut self, pcm: &[u8]) -> std::io::Result<bool> {
+        use std::sync::mpsc::TrySendError;
+        match self.feed.try_send(pcm.to_vec()) {
+            Ok(()) => Ok(true),
+            Err(TrySendError::Full(_)) => Ok(false),
+            Err(TrySendError::Disconnected(_)) => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Windows audio thread stopped")),
+        }
+    }
+
+    fn fill(&self) -> Option<usize> {
+        Some(self.queued.load(Ordering::Relaxed))
+    }
+}
+
+#[cfg(windows)]
+fn windows_audio(
+    recv: std::sync::mpsc::Receiver<Vec<u8>>,
+    ready: std::sync::mpsc::SyncSender<Result<(), String>>,
+    queued: Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use wasapi::{DeviceEnumerator, Direction, StreamMode, WaveFormat, SampleType};
+    let result = (|| -> Result<_, String> {
+        wasapi::initialize_mta().ok().map_err(|e| format!("can't initialize COM for audio: {e:?}"))?;
+        let devices = DeviceEnumerator::new().map_err(|e| e.to_string())?
+            .get_device_collection(&Direction::Render).map_err(|e| e.to_string())?;
+        let device = (&devices).into_iter().filter_map(Result::ok)
+            .find(|d| d.get_friendlyname().ok().is_some_and(|name| {
+                let name = name.to_ascii_lowercase();
+                name.contains("cable input") || name.contains("cable-a input") || name.contains("cable-b input")
+            }))
+            .ok_or("VB-CABLE render device not found. Install VB-CABLE, then restart Meteor; select CABLE Output as the recording device in your app")?;
+        log::info!("Windows microphone output: {}", device.get_friendlyname().unwrap_or_default());
+        let mut client = device.get_iaudioclient().map_err(|e| e.to_string())?;
+        let format = WaveFormat::new(16, 16, &SampleType::Int, 48_000, 1, None);
+        client.initialize_client(&format, &Direction::Render, &StreamMode::PollingShared {
+            autoconvert: true,
+            buffer_duration_hns: 500_000,
+        }).map_err(|e| format!("can't open VB-CABLE audio stream: {e}"))?;
+        let render = client.get_audiorenderclient().map_err(|e| e.to_string())?;
+        client.start_stream().map_err(|e| e.to_string())?;
+        Ok((client, render))
+    })();
+    let (client, render) = match result {
+        Ok(pair) => { let _ = ready.send(Ok(())); pair }
+        Err(err) => { let _ = ready.send(Err(err)); return; }
+    };
+    while let Ok(pcm) = recv.recv() {
+        let frames = pcm.len() / 2;
+        match client.get_available_space_in_frames() {
+            Ok(space) if space as usize >= frames => {
+                if let Err(err) = render.write_to_device(frames, &pcm, None) {
+                    log::warn!("VB-CABLE audio write failed: {err}");
+                    break;
+                }
+            }
+            Ok(_) => log::debug!("VB-CABLE audio buffer full; dropping one microphone frame"),
+            Err(err) => { log::warn!("VB-CABLE audio buffer failed: {err}"); break; }
+        }
+        if let Ok(frames) = client.get_current_padding() {
+            queued.store(frames as usize * 2, Ordering::Relaxed);
+        }
+    }
+    let _ = client.stop_stream();
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 impl VirtualMic {
     fn create() -> Result<VirtualMic, String> {
         Err("needs a virtual audio driver on this platform (not supported yet)".into())
