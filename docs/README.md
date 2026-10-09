@@ -26,6 +26,8 @@ the build/deployment entry point.
 - [Nightfall Meteor: Linux AppImage](plans/active/meteor-appimage.md)
 - [Nightfall Meteor: Windows port](plans/active/meteor-windows.md)
 - [Nightfall Meteor: AMD and Intel GPUs](plans/active/meteor-amd-intel.md)
+- [Nightfall Meteor as a host](plans/active/meteor-host.md): the direction for multiple monitors and XR
+- [Research spike: streaming PC VR to Nightfall](plans/active/meteor-xr-streaming-spike.md)
 - [USB Link streaming](plans/active/usb-link-streaming.md)
 - [PyroWave codec](plans/active/pyrowave-codec.md) and its
   [zero-copy GPU decoder](plans/active/pyrowave-zero-copy-gpu.md) (both done)
