@@ -89,8 +89,10 @@ const ANDROID_MODEL_AUTO := 9
 # The historical entries remain in ai_3d_models below so old saves and Linux
 # indices do not shift; Android cycles only Auto and the manual EdgePad slots.
 const ANDROID_MODEL_STANDARD := 18
-const ANDROID_MODEL_EDGEPAD_256 := 19
-const ANDROID_MODEL_EDGEPAD_224 := 21
+# Slot 19 (EdgePad-256, briefly EdgePad-352) is retired; saves that chose it
+# move to EdgePad-320 (see enforce_ai3d_platform_lock()).
+const ANDROID_MODEL_RETIRED_EDGEPAD_256 := 19
+const ANDROID_MODEL_EDGEPAD_320 := 21
 const ANDROID_MODEL_EDGEPAD_256_CPU := 22
 const ANDROID_MODEL_EDGEPAD_384_CPU := 23
 const ANDROID_DEPTH_PROCESS_FULL := 5
@@ -145,10 +147,10 @@ var ai_3d_models: Array = [
 	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-384", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256 (retired)", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-224", "java_index": 28, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-320", "java_index": 28, "gpu": true, "android": true, "linux": false},
 	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
 	# control's CPU option, not the locked Model list. _android_cpu_model_index()
 	# picks between them to match whatever Model is actually selected.
@@ -553,19 +555,45 @@ func reset_ai_3d_effect_settings():
 	main.ui_controller.update_stereo_shader()
 	_schedule_ai_3d_commit()
 
+# Stands for Nightfall Meteor's host depth in the Model cycle. Not an index
+# into ai_3d_models: Meteor is only offered per stream, so it never replaces
+# the saved on-device model (see meteor_depth_selected()).
+const MODEL_METEOR := -1
+
+## The PC's Nightfall Meteor offered host depth for the current stream.
+func meteor_depth_offered() -> bool:
+	return main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+
+## Meteor depth is chosen automatically whenever it's offered, unless the
+## user picked an on-device model while it was (per host, until they pick
+## Meteor again). depth_estimator.gd falls back to on-device depth while
+## Meteor's maps aren't arriving.
+func meteor_depth_selected() -> bool:
+	return meteor_depth_offered() and not main.settings.host.ai_3d_meteor_declined
+
 # Cycles only within the entries matching the current Type
 # (main.settings.host.ai_3d_backend_pref) - see _ai_3d_model_indices_for_type() above.
+# Meteor comes first while it's offered.
 func cycle_ai_3d_model():
 	if not _ai_3d_supported():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
-	var pos = candidates.find(main.settings.host.ai_3d_model)
-	main.settings.host.ai_3d_model = candidates[(maxi(pos, -1) + 1) % candidates.size()]
-	_save_setting(main._ui_3d_btn, ai_3d_models[main.settings.host.ai_3d_model].label)
+	var offered := meteor_depth_offered()
+	if offered:
+		candidates = [MODEL_METEOR] + candidates
+	var pos = 0 if meteor_depth_selected() else candidates.find(main.settings.host.ai_3d_model)
+	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
+	if next == MODEL_METEOR:
+		main.settings.host.ai_3d_meteor_declined = false
+	else:
+		main.settings.host.ai_3d_model = next
+		if offered:
+			main.settings.host.ai_3d_meteor_declined = true
+	_save_setting(main._ui_3d_btn, get_depth_model_label())
 	if main._ui_3d_gpu_api_btn:
 		main.ui_controller.update_option_btn(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	main.ui_controller.update_3d_btn_state()
@@ -574,8 +602,8 @@ func cycle_ai_3d_model():
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
 		# Quest 2 lacks the OpenCL library exposed on Quest 3. Auto starts on
-		# the compatible EdgePad-256/OpenGL tier there; Quest 3 starts
-		# EdgePad-384/OpenCL and uses the 256/OpenGL path only after a real
+		# the compatible EdgePad-320/OpenGL tier there; Quest 3 starts
+		# EdgePad-512/OpenCL and uses the 320/OpenGL path only after a real
 		# OpenCL failure.
 		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
 	return main.settings.host.ai_3d_gpu_api
@@ -648,7 +676,7 @@ func normalize_ai_3d_model_for_type():
 		main.settings.host.ai_3d_model = candidates[0]
 
 # Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
-# model selector: Auto, EdgePad-384, EdgePad-256, EdgePad-224. See
+# model selector: Auto, EdgePad-512, EdgePad-320. See
 # docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
 # decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
@@ -672,7 +700,9 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
 	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_256, ANDROID_MODEL_EDGEPAD_224].has(main.settings.host.ai_3d_model):
+	if main.settings.host.ai_3d_model == ANDROID_MODEL_RETIRED_EDGEPAD_256:
+		main.settings.host.ai_3d_model = ANDROID_MODEL_EDGEPAD_320
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -693,7 +723,7 @@ func get_depth_model_index() -> int:
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].java_index
 	if is_android_ai3d_auto():
-		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
+		return 28 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
 	# or MiDaS-256 when the user explicitly changes Type to CPU. The old Auto
 	# table was calibrated for the retired MiDaS GPU roster and must not make
@@ -705,6 +735,8 @@ func get_depth_model_index() -> int:
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
 
 func get_depth_model_label() -> String:
+	if meteor_depth_selected():
+		return "Meteor"
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
@@ -727,7 +759,7 @@ func _android_cpu_model_index() -> int:
 func get_depth_process_stage() -> int:
 	if OS.get_name() == "Android":
 		var model_index := get_depth_model_index()
-		if model_index in [25, 26, 28]:
+		if model_index in [25, 28]:
 			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
 	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
 		else main.settings.host.ai_3d_process_debug
@@ -827,10 +859,10 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
-		main._log("[DEPTH] Auto: EdgePad-384/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
+		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-320/OpenGL for this session" % status)
 		if main.ui_controller:
 			main.ui_controller.update_stereo_shader()
-			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-256 / OpenGL", 3.0)
+			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-320 / OpenGL", 3.0)
 		apply_stereo()
 		return
 	var requested = get_depth_backend_index()
@@ -1244,6 +1276,33 @@ func toggle_hdr():
 	if main.is_streaming:
 		_schedule_stream_restart()
 
+# Meteor's keys are remembered per host (MeteorClient.check_key()); this
+# lets a reinstalled Meteor be trusted again.
+func forget_meteor_keys():
+	MeteorClient.forget_keys()
+	main._log("[METEOR] Forgot the remembered Meteor keys")
+	main.ui_controller.show_temporary_status("Meteor keys forgotten", 2.0)
+
+# The headset microphone to Nightfall Meteor (MeteorMicrophone). Turning it on
+# asks for the microphone permission the first time.
+func toggle_microphone():
+	if main.settings.microphone_enabled:
+		_set_microphone(false)
+		return
+	if not MeteorMicrophone.is_supported():
+		main.ui_controller.show_temporary_status("Microphone unavailable", 2.0)
+		return
+	main.meteor_microphone.request_permission(func(granted: bool) -> void:
+		if granted:
+			_set_microphone(true)
+		else:
+			main._log("[METEOR-MIC] Microphone permission denied")
+			main.ui_controller.show_temporary_status("Microphone permission denied", 2.0))
+
+func _set_microphone(enabled: bool) -> void:
+	main.settings.microphone_enabled = enabled
+	_save_setting(main._ui_microphone_btn, "On" if enabled else "Off")
+
 func cycle_audio_boost():
 	var values: Array = SettingsPersistence.AUDIO_BOOST_VALUES
 	var idx = values.find(main.settings.audio_boost_db)
@@ -1601,9 +1660,11 @@ func _resolution_btn_label() -> String:
 	return "%d%% %s" % [main.settings.host.resolution_scale_pct, dims]
 
 # Best-effort, cached, one-time-per-host-selection probe for whether this host
-# is a Polaris server (which reports its real, possibly multi-monitor desktop
-# size via a display-manifest extension no other GameStream-compatible host
-# implements) vs everything else, e.g. Sunshine, which is client-driven - the
+# is a Polaris server running Nightfall's multi-monitor extension (in
+# development, not part of stock Polaris), which reports its real, possibly
+# multi-monitor desktop size via a display manifest no other GameStream-
+# compatible host implements, vs everything else, e.g. Sunshine, which is
+# client-driven - the
 # client picks a resolution and the host adapts to match it, so there's
 # nothing for it to report and main.settings.host.is_polaris_host correctly defaults to
 # false (the old fixed-list picker) for it. Deliberately decoupled from the

@@ -190,5 +190,17 @@
 	"Pair": "Spárovat",
 	"Enter PIN on Host": "Zadejte PIN na hostiteli",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vyžádat HDR, když jej displej hostitele používá; upraveno pro headset."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vyžádat HDR, když jej displej hostitele používá; upraveno pro headset.",
+	"About": "O aplikaci",
+	"Licences": "Licence",
+	"Show the licences of Nightfall and the software it includes.": "Zobrazte licence Nightfall a softwaru, který obsahuje.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Posílat mikrofon headsetu do PC přes Nightfall Meteor.",
+	"Microphone on": "Mikrofon zapnut",
+	"Microphone unavailable": "Mikrofon není dostupný",
+	"Microphone permission denied": "Přístup k mikrofonu zamítnut",
+	"Forget Meteor Keys": "Zapomenout klíče Meteoru",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Důvěřovat dalšímu klíči od Nightfall Meteor, po jeho přeinstalaci.",
+	"Meteor's key changed; not using it": "Klíč Meteoru se změnil; nepoužívá se",
+	"Meteor keys forgotten": "Klíče Meteoru zapomenuty"
 }

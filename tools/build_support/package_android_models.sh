@@ -13,9 +13,11 @@ ASSET_DIR="$1"
 # Android's production tier set. Historical/profiling exports stay under
 # models/ and are documented in models/README.md, but are deliberately not
 # carried in every APK.
-ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
-ZIPDEPTH_EDGEPAD_256_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_MODEL:-$PROJECT_ROOT/models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
-ZIPDEPTH_EDGEPAD_224_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_224_MODEL:-$PROJECT_ROOT/models/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite}"
+# The two EdgePad classes run the widescreen family (2026-10-04), copied
+# from nightfall-temporal-zipdepth's selected exports; see models/README.md.
+# The square 384/256/224 exports they replaced stay in models/ as the rollback.
+ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-wide-512x288-edgepad-gpu.tflite}"
+ZIPDEPTH_EDGEPAD_320_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_320_MODEL:-$PROJECT_ROOT/models/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite}"
 # CPU twin of EdgePad-256 (tools/quantize_zipdepth_cpu.py --size 256), run through
 # XNNPACK with no GPU delegate at all - selected via the "Backend" control's CPU
 # option so AI 3D can run while leaving the GPU entirely to the stream/passthrough.
@@ -24,9 +26,8 @@ ZIPDEPTH_EDGEPAD_256_CPU_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_256_CPU_MODEL:-$PRO
 ZIPDEPTH_EDGEPAD_384_CPU_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_384_CPU_MODEL:-$PROJECT_ROOT/models/zipdepth-base-384-cpu.tflite}"
 
 declare -A REQUIRED_MODELS=(
-  ["EdgePad-384"]="$ZIPDEPTH_STANDARD_MODEL"
-  ["EdgePad-256"]="$ZIPDEPTH_EDGEPAD_256_MODEL"
-  ["EdgePad-224"]="$ZIPDEPTH_EDGEPAD_224_MODEL"
+  ["EdgePad-512"]="$ZIPDEPTH_STANDARD_MODEL"
+  ["EdgePad-320"]="$ZIPDEPTH_EDGEPAD_320_MODEL"
   ["EdgePad-256-CPU"]="$ZIPDEPTH_EDGEPAD_256_CPU_MODEL"
   ["EdgePad-384-CPU"]="$ZIPDEPTH_EDGEPAD_384_CPU_MODEL"
 )
@@ -44,16 +45,17 @@ mkdir -p "$ASSET_DIR"
 rm -f \
   "$ASSET_DIR/zipdepth-base-384-direct-half-gpu.tflite" \
   "$ASSET_DIR/zipdepth-base-256-gpu.tflite" \
-  "$ASSET_DIR/zipdepth-base-256-direct-half-gpu.tflite"
-echo "Bundling EdgePad-384 model: $ZIPDEPTH_STANDARD_MODEL"
+  "$ASSET_DIR/zipdepth-base-256-direct-half-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite" \
+  "$ASSET_DIR/zipdepth-wide-352x198-t352x224-edgepad-gpu.tflite"
+echo "Bundling EdgePad-512 model: $ZIPDEPTH_STANDARD_MODEL"
 cp "$ZIPDEPTH_STANDARD_MODEL" \
-  "$ASSET_DIR/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
-echo "Bundling EdgePad-256 model: $ZIPDEPTH_EDGEPAD_256_MODEL"
-cp "$ZIPDEPTH_EDGEPAD_256_MODEL" \
-  "$ASSET_DIR/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
-echo "Bundling EdgePad-224 model: $ZIPDEPTH_EDGEPAD_224_MODEL"
-cp "$ZIPDEPTH_EDGEPAD_224_MODEL" \
-  "$ASSET_DIR/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
+  "$ASSET_DIR/zipdepth-wide-512x288-edgepad-gpu.tflite"
+echo "Bundling EdgePad-320 model: $ZIPDEPTH_EDGEPAD_320_MODEL"
+cp "$ZIPDEPTH_EDGEPAD_320_MODEL" \
+  "$ASSET_DIR/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite"
 echo "Bundling EdgePad-256-CPU model: $ZIPDEPTH_EDGEPAD_256_CPU_MODEL"
 cp "$ZIPDEPTH_EDGEPAD_256_CPU_MODEL" \
   "$ASSET_DIR/zipdepth-base-256-cpu.tflite"

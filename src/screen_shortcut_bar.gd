@@ -5,15 +5,25 @@ const ACTION_SBS: StringName = &"sbs"
 const ACTION_PAD: StringName = &"pad"
 const ACTION_MENU: StringName = &"menu"
 const ACTION_KEYBOARD: StringName = &"keyboard"
+const ACTION_MIC: StringName = &"mic"
+const ACTION_AI_3D: StringName = &"ai_3d"
 
-const ACTIONS: Array[StringName] = [ACTION_SBS, ACTION_PAD, ACTION_MENU, ACTION_KEYBOARD]
-const VISIBLE_ACTIONS: Array[StringName] = [ACTION_PAD, ACTION_KEYBOARD, ACTION_SBS, ACTION_MENU]
+const ACTIONS: Array[StringName] = [ACTION_SBS, ACTION_PAD, ACTION_MENU, ACTION_KEYBOARD, ACTION_MIC, ACTION_AI_3D]
+# Three each side of the grab bar, left to right.
+const VISIBLE_ACTIONS: Array[StringName] = [ACTION_MIC, ACTION_PAD, ACTION_KEYBOARD, ACTION_SBS, ACTION_AI_3D, ACTION_MENU]
 const ICONS := {
 	ACTION_SBS: preload("res://src/assets/screen_shortcuts/sbs.svg"),
 	ACTION_PAD: preload("res://src/assets/screen_shortcuts/pad.svg"),
 	ACTION_MENU: preload("res://src/assets/screen_shortcuts/menu.svg"),
 	ACTION_KEYBOARD: preload("res://src/assets/screen_shortcuts/keyboard.svg"),
+	ACTION_MIC: preload("res://src/assets/screen_shortcuts/mic.svg"),
+	ACTION_AI_3D: preload("res://src/assets/screen_shortcuts/ai3d.svg"),
 }
+# Shown at the microphone icon's top right while audio reaches Meteor.
+const LIVE_DOT := preload("res://src/assets/screen_shortcuts/live_dot.svg")
+const LIVE_DOT_COLOR := Color(0.32, 0.64, 1.0, 0.95)
+const LIVE_DOT_SIZE := 0.32 # of the icon size
+const LIVE_DOT_OFFSET := 0.4 # of the icon size, right and up from its centre
 
 # Use the screen grab bar's 0.05 idle opacity, with a stronger 0.25 icon
 # hover and 0.40 while active/open. Active remains blue on hover so toggle
@@ -26,14 +36,14 @@ const PRIMARY_BAR_COLOR := Color(0.55, 0.78, 1.0)
 
 # All dimensions scale with screen width. The composition viewport uses the
 # same normalized layout, so its visuals stay aligned with these hit targets.
-const STRIP_WIDTH_RATIO := 0.36
+const STRIP_WIDTH_RATIO := 0.46
 const STRIP_HEIGHT_RATIO := 0.046
 const BAR_WIDTH_RATIO := 0.134
 const BAR_HEIGHT_RATIO := 0.009
 const ICON_SIZE_RATIO := 0.036
 const ICON_GAP_RATIO := 0.014
 const HIT_SIZE_RATIO := 0.044
-const COMP_VIEWPORT_SIZE := Vector2i(768, 98)
+const COMP_VIEWPORT_SIZE := Vector2i(981, 98)
 const HIDE_DELAY_SECONDS := 0.5
 
 var main: Node3D
@@ -78,6 +88,8 @@ func setup_screen(screen: VRScreen) -> void:
 		collision.name = "CollisionShape3D"
 		collision.shape = BoxShape3D.new()
 		area.add_child(collision)
+		if action == ACTION_MIC:
+			icon.add_child(_make_live_dot())
 		screen.add_child(icon)
 		screen.add_child(area)
 		screen.shortcut_buttons[action] = icon
@@ -124,7 +136,38 @@ func populate_composition_viewport(screen: VRScreen, viewport: SubViewport) -> v
 		rect.modulate = IDLE_COLOR
 		root.add_child(rect)
 		screen.comp_shortcut_icons[action] = rect
+		if action == ACTION_MIC:
+			var dot = TextureRect.new()
+			dot.name = "LiveDot"
+			dot.texture = LIVE_DOT
+			dot.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			var dot_px = icon_px * LIVE_DOT_SIZE
+			dot.size = Vector2(dot_px, dot_px)
+			dot.position = Vector2(x_px + icon_px * LIVE_DOT_OFFSET, center_y - icon_px * LIVE_DOT_OFFSET) - dot.size * 0.5
+			dot.modulate = LIVE_DOT_COLOR
+			dot.visible = false
+			root.add_child(dot)
 	refresh_visuals(screen)
+
+# A child of the microphone icon; VRScreen.update_shortcut_positions() sizes it.
+func _make_live_dot() -> MeshInstance3D:
+	var dot = MeshInstance3D.new()
+	dot.name = "LiveDot"
+	var quad = QuadMesh.new()
+	quad.orientation = PlaneMesh.FACE_Z
+	dot.mesh = quad
+	var material = StandardMaterial3D.new()
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.albedo_texture = LIVE_DOT
+	material.albedo_color = LIVE_DOT_COLOR
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	material.no_depth_test = true
+	material.render_priority = 127
+	dot.material_override = material
+	dot.visible = false
+	return dot
 
 func begin_pointer_frame(delta: float = 0.0) -> void:
 	hovered_action = &""
@@ -157,6 +200,10 @@ func invoke(action: StringName) -> void:
 			main._toggle_ui()
 		ACTION_KEYBOARD:
 			main.virtual_keyboard.toggle()
+		ACTION_MIC:
+			main.settings_controller.toggle_microphone()
+		ACTION_AI_3D:
+			main.settings_controller.toggle_ai_3d_enabled()
 		_:
 			return
 	main._log("[SHORTCUT] Activated %s from primary screen" % String(action))
@@ -204,6 +251,16 @@ func refresh_visuals(screen: VRScreen) -> void:
 			if comp_icon.modulate != color:
 				comp_icon.modulate = color
 				changed = true
+	var live = show and _mic_live()
+	var mic_icon = screen.shortcut_buttons.get(ACTION_MIC) as MeshInstance3D
+	var dot = mic_icon.get_node_or_null("LiveDot") as MeshInstance3D if mic_icon else null
+	if dot:
+		dot.visible = live
+	if screen.comp_grab_bar_viewport:
+		var comp_dot = screen.comp_grab_bar_viewport.find_child("LiveDot", true, false) as TextureRect
+		if comp_dot and comp_dot.visible != live:
+			comp_dot.visible = live
+			changed = true
 	if changed and screen.comp_grab_bar_viewport:
 		# UPDATE_ALWAYS is intentional while the layer is visible; see
 		# CompositionLayerManager.setup_screen().
@@ -233,18 +290,29 @@ func _is_active(action: StringName) -> bool:
 			return main.ui_visible
 		ACTION_KEYBOARD:
 			return main.virtual_keyboard and main.virtual_keyboard.visible
+		ACTION_MIC:
+			return main.settings.microphone_enabled
+		ACTION_AI_3D:
+			return main.settings.host.ai_3d_speed != 0
 	return false
+
+func _mic_live() -> bool:
+	return main.meteor_microphone != null and main.meteor_microphone.is_live()
 
 static func _action_x_ratio(action: StringName) -> float:
 	var near = BAR_WIDTH_RATIO * 0.5 + ICON_GAP_RATIO + ICON_SIZE_RATIO * 0.5
 	var step = ICON_SIZE_RATIO + ICON_GAP_RATIO
 	match action:
+		ACTION_MIC:
+			return -near - step * 2.0
 		ACTION_PAD:
 			return -near - step
 		ACTION_KEYBOARD:
 			return -near
 		ACTION_SBS:
 			return near
-		ACTION_MENU:
+		ACTION_AI_3D:
 			return near + step
+		ACTION_MENU:
+			return near + step * 2.0
 	return 0.0

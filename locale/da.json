@@ -190,5 +190,17 @@
 	"Pair": "Par",
 	"Enter PIN on Host": "Indtast PIN på værten",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Anmod om HDR, når værtens skærm bruger det; tonetilpasset til headsettet."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Anmod om HDR, når værtens skærm bruger det; tonetilpasset til headsettet.",
+	"About": "Om",
+	"Licences": "Licenser",
+	"Show the licences of Nightfall and the software it includes.": "Vis licenserne for Nightfall og den software, den indeholder.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Send headsettets mikrofon til pc'en via Nightfall Meteor.",
+	"Microphone on": "Mikrofon til",
+	"Microphone unavailable": "Mikrofon ikke tilgængelig",
+	"Microphone permission denied": "Adgang til mikrofon nægtet",
+	"Forget Meteor Keys": "Glem Meteor-nøgler",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Stol på den næste nøgle fra Nightfall Meteor efter geninstallation.",
+	"Meteor's key changed; not using it": "Meteors nøgle er ændret; bruges ikke",
+	"Meteor keys forgotten": "Meteor-nøgler glemt"
 }

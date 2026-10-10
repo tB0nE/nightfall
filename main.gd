@@ -281,6 +281,7 @@ var input_handler: InputHandler
 var ui_controller: UIController
 var auto_detect: AutoDetect
 var depth_estimator: DepthEstimatorModule
+var meteor_microphone: MeteorMicrophone
 var native_xr_renderer: NativeXrRendererManager
 var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
@@ -527,6 +528,9 @@ var _ui_center_btn: Button
 var _ui_log_btn: Button
 var _ui_stats_btn: Button
 var _ui_language_btn: Button
+var _ui_licences_btn: Button
+var _ui_microphone_btn: Button
+var _ui_forget_meteor_btn: Button
 
 var _btn_style: StyleBoxFlat
 var _btn_hover: StyleBoxFlat
@@ -1161,6 +1165,8 @@ func _on_stream_started():
 	# call when a restart is about to happen, relying on this one instead,
 	# so the mode is only ever applied against a session that's actually live.
 	settings_controller.apply_stereo()
+	# Meteor host depth is offered per stream (see meteor_depth_selected()).
+	ui_controller.update_option_btn(_ui_3d_btn, settings_controller.get_depth_model_label())
 	if not was_restarting:
 		ui_visible = false
 		_set_ui_visible(false)
@@ -1444,6 +1450,7 @@ func _init_modules():
 	ui_controller = UIController.new(self)
 	auto_detect = AutoDetect.new(self)
 	depth_estimator = DepthEstimatorModule.new(self)
+	meteor_microphone = MeteorMicrophone.new(self)
 	native_xr_renderer = NativeXrRendererManager.new(self)
 	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
@@ -2229,6 +2236,9 @@ func _process(delta):
 			if comp_shader_mat_right and not comp_shader_mat_right.get_shader_parameter("depth_texture"):
 				comp_shader_mat_right.set_shader_parameter("depth_texture", dt)
 
+	if meteor_microphone:
+		meteor_microphone.process()
+
 	_process_stats(delta)
 
 	if grabbed_node:
@@ -2612,7 +2622,17 @@ func _process_performance_overlay(delta: float):
 	# CPU frame time and creating a misleading comparison.
 	var native_warp_ms := video_presentation.get_warp_gpu_ms()
 	lines.append("Warp GPU: %.2f ms" % native_warp_ms if native_warp_ms > 0.0 else "Warp GPU: N/A")
-	if settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
+	var host_depth: Dictionary = depth_estimator.meteor_stats if depth_estimator else {}
+	if settings.host.ai_3d_speed > 0 and not host_depth.is_empty():
+		var offer: Dictionary = stream_manager.meteor_depth_info()
+		lines.append("Depth: Nightfall Meteor (%s)" % offer.get("model", "?"))
+		lines.append("Host depth: %.0f maps/s received, %.0f shown, %.1f Mbit/s" % [
+			host_depth["received_hz"], host_depth["shown_hz"], host_depth["mbit"]])
+		lines.append("Meteor frame-to-map time: %.1f ms" % host_depth["host_ms"])
+		lines.append("Depth match: %.0f%% exact, %.0f%% 1 frame old, %.0f%% older, %.0f%% none" % [
+			host_depth["exact_pct"], host_depth["lag1_pct"], host_depth["older_pct"], host_depth["none_pct"]])
+		lines.append("Depth Sync: %s" % ("on" if settings.host.ai_3d_depth_sync else "off"))
+	elif settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
 			var depth_model_name := "ZipDepth-384 Standard"
 			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:
@@ -2676,7 +2696,11 @@ func _notification(what):
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application paused")
+		if meteor_microphone:
+			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if meteor_microphone:
+			meteor_microphone.set_paused(false)
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application resumed")
 		_schedule_xr_surface_refresh("application resumed")

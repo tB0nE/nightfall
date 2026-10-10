@@ -1,0 +1,55 @@
+[package]
+name = "nightfall-meteor"
+version = "0.1.0"
+edition = "2024"
+description = "Nightfall companion app for the Sunshine host PC"
+license = "GPL-3.0-only"
+
+[dependencies]
+env_logger = "0.11.11"
+flate2 = "1"
+libloading = "0.9"
+log = "0.4.34"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "cuda", "tensorrt", "api-24"], optional = true }
+opus = "0.3"
+# libopus built from its bundled source and linked statically, so the
+# AppImage and Windows builds carry no extra library.
+audiopus_sys = { version = "0.2", features = ["static"] }
+png = "0.18"
+# Microphone encryption (src/mic.rs): AES-256-GCM and HKDF, and X25519.
+ring = "0.17"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+socket2 = "0.6"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+toml = "1.1.6"
+ureq = "3"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zstd = "0.13"
+
+# The tray icon is a StatusNotifierItem on Linux. Windows support comes later.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", features = ["tokio"] }
+# Desktop notifications; the same zbus the tray uses.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.25.0"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[features]
+default = ["onnxruntime"]
+# ONNX Runtime: EdgePad's .onnx models, and VDA on CUDA while its engines
+# build. For development comparisons; the AppImage builds without it.
+onnxruntime = ["dep:ort"]
+
+[profile.release]
+strip = true
+lto = true
+
+[build-dependencies]
+cc = "1.6.0"

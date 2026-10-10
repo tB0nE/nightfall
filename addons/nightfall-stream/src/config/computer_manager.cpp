@@ -525,6 +525,12 @@ void NightfallComputerManager::establish_stream(int host_id, int app_id, Diction
             break;
         }
     }
+    // Nightfall Meteor (meteor/) answered the client's probe, so the launch
+    // goes through its port, which forwards to Sunshine's (see meteor_client.gd).
+    if (options.has("meteor_https_port")) {
+        port = options["meteor_https_port"];
+        options.erase("meteor_https_port");
+    }
 
     if (ip.is_empty()) {
         if (callback.is_valid()) {
@@ -730,7 +736,7 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
         }
     } else {
         // A non-200 launch/resume failure can still carry a real explanation in
-        // its body (e.g. Polaris rejecting a non-contiguous multi-monitor
+        // its body (e.g. the multi-monitor Polaris extension rejecting a non-contiguous
         // `outputs=` selection with a 400 + status_message) rather than the
         // 200-with-embedded-error-XML shape GameStream conventionally uses.
         // Try to surface that verbatim instead of the generic HTTP error, same
@@ -752,8 +758,9 @@ void NightfallComputerManager::_on_launch_request_completed(int code, PackedByte
     cb.call(response);
 }
 
-// Best-effort: not every host supports this (only Polaris hosts with multi-monitor
-// capture enabled). Missing/failed/malformed responses just proceed without a
+// Best-effort: only hosts running Nightfall's multi-monitor Polaris extension (in
+// development, not part of stock Polaris) serve this. Missing/failed/malformed
+// responses just proceed without a
 // manifest - the client falls back to its own single/replicated layout.
 void NightfallComputerManager::_fetch_display_manifest(Dictionary response, Callable callback, String ip, int port) {
     String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
@@ -851,7 +858,8 @@ void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int po
 // Pre-launch, best-effort probe: lets the caller learn the real desktop composite size
 // (e.g. a wide multi-monitor frame) BEFORE requesting a stream resolution, instead of
 // discovering it only after already launching at a guessed/legacy default. Same endpoint
-// _fetch_display_manifest() polls post-launch; only Polaris X11 hosts populate it - a
+// _fetch_display_manifest() polls post-launch; only Polaris X11 hosts running the
+// multi-monitor extension (in development, not stock Polaris) populate it - a
 // missing/malformed response just means the caller keeps its own fallback resolution.
 void NightfallComputerManager::fetch_display_manifest(int host_id, Callable callback) {
     if (!config_manager.is_valid()) {

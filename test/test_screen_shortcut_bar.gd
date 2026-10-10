@@ -9,26 +9,33 @@ func _init():
 	quit()
 
 func _test_layout_order() -> void:
-	var sbs_x = ScreenShortcutBar._action_x_ratio(ScreenShortcutBar.ACTION_SBS)
-	var pad_x = ScreenShortcutBar._action_x_ratio(ScreenShortcutBar.ACTION_PAD)
-	var menu_x = ScreenShortcutBar._action_x_ratio(ScreenShortcutBar.ACTION_MENU)
-	var keyboard_x = ScreenShortcutBar._action_x_ratio(ScreenShortcutBar.ACTION_KEYBOARD)
-	assert(pad_x < keyboard_x and keyboard_x < 0.0)
-	assert(sbs_x > 0.0 and sbs_x < menu_x)
-	assert(is_equal_approx(absf(keyboard_x), sbs_x))
-	assert(is_equal_approx(absf(pad_x), menu_x))
+	var x := func(action: StringName) -> float: return ScreenShortcutBar._action_x_ratio(action)
+	var order := ScreenShortcutBar.VISIBLE_ACTIONS
+	for i in order.size() - 1:
+		assert(x.call(order[i]) < x.call(order[i + 1]), "%s left of %s" % [order[i], order[i + 1]])
+	# Three each side, mirrored.
+	for i in 3:
+		assert(x.call(order[i]) < 0.0 and x.call(order[5 - i]) > 0.0)
+		assert(is_equal_approx(-x.call(order[i]), x.call(order[5 - i])))
 	var half_hit = ScreenShortcutBar.HIT_SIZE_RATIO * 0.5
 	var half_bar = ScreenShortcutBar.BAR_WIDTH_RATIO * 0.5
-	assert(keyboard_x + half_hit < -half_bar)
-	assert(sbs_x - half_hit > half_bar)
-	assert(pad_x + half_hit < keyboard_x - half_hit)
-	assert(sbs_x + half_hit < menu_x - half_hit)
+	assert(x.call(ScreenShortcutBar.ACTION_KEYBOARD) + half_hit < -half_bar)
+	assert(x.call(ScreenShortcutBar.ACTION_SBS) - half_hit > half_bar)
+	for i in order.size() - 1:
+		assert(x.call(order[i]) + half_hit < x.call(order[i + 1]) - half_hit)
+	# The strip (and its composition viewport) holds the outermost icons.
+	assert(x.call(ScreenShortcutBar.ACTION_MENU) + half_hit <= ScreenShortcutBar.STRIP_WIDTH_RATIO * 0.5)
+	var px_per_width := ScreenShortcutBar.COMP_VIEWPORT_SIZE.x / ScreenShortcutBar.STRIP_WIDTH_RATIO
+	var px_per_height := ScreenShortcutBar.COMP_VIEWPORT_SIZE.y / ScreenShortcutBar.STRIP_HEIGHT_RATIO
+	assert(absf(px_per_width - px_per_height) / px_per_height < 0.01, "the viewport keeps the strip's aspect")
 
 func _test_visible_actions() -> void:
 	assert(ScreenShortcutBar.VISIBLE_ACTIONS == [
+		ScreenShortcutBar.ACTION_MIC,
 		ScreenShortcutBar.ACTION_PAD,
 		ScreenShortcutBar.ACTION_KEYBOARD,
 		ScreenShortcutBar.ACTION_SBS,
+		ScreenShortcutBar.ACTION_AI_3D,
 		ScreenShortcutBar.ACTION_MENU,
 	])
 

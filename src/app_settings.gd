@@ -35,6 +35,7 @@ const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
 const DEFAULT_HDR_ENABLED := false
+const DEFAULT_MICROPHONE_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
 
@@ -65,6 +66,8 @@ var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
 ## Ask the host for an HDR10 stream (10-bit, PQ) and tone-map it for the
 ## headset, instead of the host squashing its HDR desktop to SDR.
 var hdr_enabled: bool = DEFAULT_HDR_ENABLED
+## Send the headset microphone to Nightfall Meteor (MeteorMicrophone).
+var microphone_enabled: bool = DEFAULT_MICROPHONE_ENABLED
 # Not reset with the other general settings: a settings reset should not
 # switch the menus to another language.
 var language: String = DEFAULT_LANGUAGE
@@ -92,6 +95,7 @@ func reset_general() -> void:
 	auto_reconnect_enabled = DEFAULT_AUTO_RECONNECT_ENABLED
 	quick_start_enabled = DEFAULT_QUICK_START_ENABLED
 	audio_boost_db = DEFAULT_AUDIO_BOOST_DB
+	microphone_enabled = DEFAULT_MICROPHONE_ENABLED
 	idle_timeout_min = DEFAULT_IDLE_TIMEOUT_MIN
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED

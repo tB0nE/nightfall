@@ -190,5 +190,17 @@
 	"Pair": "Спарувати",
 	"Enter PIN on Host": "Введіть PIN на хості",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запит HDR, коли його використовує екран хоста; адаптується для шолома."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Запит HDR, коли його використовує екран хоста; адаптується для шолома.",
+	"About": "Про програму",
+	"Licences": "Ліцензії",
+	"Show the licences of Nightfall and the software it includes.": "Показати ліцензії Nightfall і програм, які він містить.",
+	"Microphone": "Мікрофон",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Передавати мікрофон гарнітури на ПК через Nightfall Meteor.",
+	"Microphone on": "Мікрофон увімкнено",
+	"Microphone unavailable": "Мікрофон недоступний",
+	"Microphone permission denied": "Доступ до мікрофона заборонено",
+	"Forget Meteor Keys": "Забути ключі Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Довіряти наступному ключу Nightfall Meteor після перевстановлення.",
+	"Meteor's key changed; not using it": "Ключ Meteor змінився; не використовується",
+	"Meteor keys forgotten": "Ключі Meteor забуто"
 }

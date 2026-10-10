@@ -30,6 +30,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("stream", "auto_reconnect", settings.auto_reconnect_enabled)
 	config.set_value("stream", "quick_start", settings.quick_start_enabled)
 	config.set_value("stream", "audio_boost_db", settings.audio_boost_db)
+	config.set_value("stream", "microphone", settings.microphone_enabled)
 	config.set_value("stream", "idle_timeout_min", settings.idle_timeout_min)
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
 	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
@@ -121,6 +122,8 @@ static func read_app(
 		"stream", "audio_boost_db", AppSettings.DEFAULT_AUDIO_BOOST_DB)
 	if not AUDIO_BOOST_VALUES.has(settings.audio_boost_db):
 		settings.audio_boost_db = AppSettings.DEFAULT_AUDIO_BOOST_DB
+	settings.microphone_enabled = config.get_value(
+		"stream", "microphone", AppSettings.DEFAULT_MICROPHONE_ENABLED) == true
 	settings.idle_timeout_min = config.get_value(
 		"stream", "idle_timeout_min", AppSettings.DEFAULT_IDLE_TIMEOUT_MIN)
 	settings.pipewire_restore_token = config.get_value(
@@ -155,6 +158,7 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "ai_3d_convergence_pct", host.ai_3d_convergence_pct)
 	config.set_value(section, "ai_3d_cursor_position_v2", host.ai_3d_cursor_position)
 	config.set_value(section, "ai_3d_depth_sync", host.ai_3d_depth_sync)
+	config.set_value(section, "ai_3d_meteor_declined", host.ai_3d_meteor_declined)
 	config.set_value(section, "bitrate_idx", host.bitrate_idx)
 	config.set_value(section, "double_h", host.double_h)
 
@@ -208,6 +212,7 @@ static func read_host(
 				# Right, and Right+ are the new Left, Default, and Right.
 				host.ai_3d_cursor_position = clampi(config.get_value(section, "ai_3d_cursor_position", 1) - 1, -1, 1)
 			host.ai_3d_depth_sync = bool(config.get_value(section, "ai_3d_depth_sync", false))
+			host.ai_3d_meteor_declined = bool(config.get_value(section, "ai_3d_meteor_declined", false))
 			if config.has_section_key(section, "ai_3d_speed_v2"):
 				host.ai_3d_speed = clampi(config.get_value(section, "ai_3d_speed", 1), 0, 3)
 			else:

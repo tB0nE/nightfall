@@ -253,6 +253,11 @@ func update_shortcut_positions() -> void:
 		)
 		if icon.mesh is QuadMesh:
 			icon.mesh.size = Vector2(icon_size, icon_size)
+		var dot = icon.get_node_or_null("LiveDot") as MeshInstance3D
+		if dot and dot.mesh is QuadMesh:
+			var dot_size = icon_size * ScreenShortcutBar.LIVE_DOT_SIZE
+			dot.mesh.size = Vector2(dot_size, dot_size)
+			dot.position = Vector3(icon_size * ScreenShortcutBar.LIVE_DOT_OFFSET, icon_size * ScreenShortcutBar.LIVE_DOT_OFFSET, 0.001)
 		var area = shortcut_areas.get(action) as Area3D
 		if not area:
 			continue

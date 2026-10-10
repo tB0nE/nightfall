@@ -190,5 +190,17 @@
 	"Pair": "페어링",
 	"Enter PIN on Host": "호스트에서 PIN 입력",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "호스트 화면이 HDR을 사용하면 요청하고 헤드셋에 맞게 톤 매핑합니다."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "호스트 화면이 HDR을 사용하면 요청하고 헤드셋에 맞게 톤 매핑합니다.",
+	"About": "정보",
+	"Licences": "라이선스",
+	"Show the licences of Nightfall and the software it includes.": "Nightfall과 포함된 소프트웨어의 라이선스를 표시합니다.",
+	"Microphone": "마이크",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Nightfall Meteor를 통해 헤드셋 마이크를 PC로 보냅니다.",
+	"Microphone on": "마이크 켜짐",
+	"Microphone unavailable": "마이크를 사용할 수 없음",
+	"Microphone permission denied": "마이크 권한이 거부됨",
+	"Forget Meteor Keys": "Meteor 키 잊기",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "재설치 후 Nightfall Meteor가 보내는 다음 키를 신뢰합니다.",
+	"Meteor's key changed; not using it": "Meteor 키가 바뀌어 사용하지 않음",
+	"Meteor keys forgotten": "Meteor 키를 잊었습니다"
 }

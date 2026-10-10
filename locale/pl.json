@@ -190,5 +190,17 @@
 	"Pair": "Sparuj",
 	"Enter PIN on Host": "Wpisz PIN na hoście",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Żądaj HDR, gdy ekran hosta go używa; dopasowane do gogli."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Żądaj HDR, gdy ekran hosta go używa; dopasowane do gogli.",
+	"About": "O aplikacji",
+	"Licences": "Licencje",
+	"Show the licences of Nightfall and the software it includes.": "Pokaż licencje Nightfall i dołączonego oprogramowania.",
+	"Microphone": "Mikrofon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Wysyłaj mikrofon gogli do komputera przez Nightfall Meteor.",
+	"Microphone on": "Mikrofon włączony",
+	"Microphone unavailable": "Mikrofon niedostępny",
+	"Microphone permission denied": "Odmówiono dostępu do mikrofonu",
+	"Forget Meteor Keys": "Zapomnij klucze Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Ufaj kolejnemu kluczowi Nightfall Meteor po jego ponownej instalacji.",
+	"Meteor's key changed; not using it": "Klucz Meteor się zmienił; nieużywany",
+	"Meteor keys forgotten": "Zapomniano klucze Meteor"
 }

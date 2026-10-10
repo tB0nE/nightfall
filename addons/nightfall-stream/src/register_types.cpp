@@ -10,6 +10,8 @@
 #include "config/stream_config.h"
 #include "config/computer_manager.h"
 #include "network/http_requester.h"
+#include "network/tcp_peer.h"
+#include "network/meteor_channel_cipher.h"
 #include "network/mdns_browser.h"
 #include "network/usb_link_bridge.h"
 #include "video/ffmpeg_decoder.h"
@@ -48,6 +50,8 @@ void initialize_nightfall_types(ModuleInitializationLevel p_level)
     GDREGISTER_CLASS(NightfallStreamOptions);
     GDREGISTER_CLASS(NightfallComputerManager);
     GDREGISTER_CLASS(HttpRequester);
+    GDREGISTER_CLASS(NightfallTcpPeer);
+    GDREGISTER_CLASS(MeteorChannelCipher);
     GDREGISTER_CLASS(MdnsBrowser);
     GDREGISTER_CLASS(UsbLinkBridge);
     GDREGISTER_CLASS(FfmpegDecoder);

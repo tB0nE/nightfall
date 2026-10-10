@@ -167,6 +167,8 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 			main.ui_controller.update_option_btn(main._ui_audio_boost_btn, main.settings_controller.get_audio_boost_label())
 		if main._ui_hdr_btn:
 			main.ui_controller.update_option_btn(main._ui_hdr_btn, "On" if main.settings.hdr_enabled else "Off")
+		if main._ui_microphone_btn:
+			main.ui_controller.update_option_btn(main._ui_microphone_btn, "On" if main.settings.microphone_enabled else "Off")
 		if main._ui_usb_link_btn:
 			main.ui_controller.update_option_btn(main._ui_usb_link_btn, "On" if main.settings.usb_link_enabled else "Off")
 		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)

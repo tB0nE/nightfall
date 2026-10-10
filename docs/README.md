@@ -20,9 +20,19 @@ the build/deployment entry point.
 
 ## Active plans
 
+- [Nightfall Meteor: host-side depth maps](plans/active/meteor-host-depth.md)
+- [Nightfall Meteor: microphone passthrough](plans/active/meteor-microphone.md)
+  (supersedes [the in-protocol microphone plan](plans/active/microphone-passthrough.md))
+- [Nightfall Meteor: Linux AppImage](plans/active/meteor-appimage.md)
+- [Nightfall Meteor: Windows port](plans/active/meteor-windows.md)
+- [Nightfall Meteor: AMD and Intel GPUs](plans/active/meteor-amd-intel.md)
+- [Nightfall Meteor as a host](plans/active/meteor-host.md): the direction for multiple monitors and XR
+- [Research spike: streaming PC VR to Nightfall](plans/active/meteor-xr-streaming-spike.md)
+- [USB Link streaming](plans/active/usb-link-streaming.md)
+- [PyroWave codec](plans/active/pyrowave-codec.md) and its
+  [zero-copy GPU decoder](plans/active/pyrowave-zero-copy-gpu.md) (both done)
 - [Repository cleanup](plans/active/repository-cleanup.md)
 - [Physical keyboard overlay](plans/active/physical-keyboard-overlay.md)
-- [Microphone passthrough](plans/active/microphone-passthrough.md)
 - [Equirectangular SBS video](plans/active/equirect-sbs-vr-video.md)
 - [LiteRT ML Drift migration](plans/active/litert-ml-drift-migration.md)
 - [Preserve vanilla ZipDepth sharpness on Quest](plans/active/zipdepth-standard-head-quest.md)

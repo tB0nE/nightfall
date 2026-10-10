@@ -152,6 +152,12 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
 	if not capture_outputs.is_empty():
 		options["capture_outputs"] = capture_outputs
+	_meteor = {}
+	if not local_capture_mode and not _meteor_bypass:
+		_meteor = await _probe_meteor(host_id)
+	_meteor_bypass = false
+	if not _meteor.is_empty():
+		options[MeteorClient.HTTPS_PORT_OPTION] = int(_meteor["ports"]["https"])
 	main._ui_status_label.text = "Launching stream..."
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
@@ -195,6 +201,103 @@ func _compute_capture_outputs() -> String:
 		labels.append(m.label)
 	return ",".join(labels)
 
+# Nightfall Meteor's port map when the current launch goes through it (see
+# MeteorClient), else {}.
+var _meteor: Dictionary = {}
+# Set after a launch through Meteor fails, so the retry goes straight to Sunshine.
+var _meteor_bypass := false
+# The address Meteor answered on, for its depth port.
+var _meteor_address := ""
+
+## Meteor's host depth offer for the current stream (see
+## MeteorClient.depth_info()), or {} when there's none or this build can't
+## decrypt it.
+func meteor_depth_info() -> Dictionary:
+	if not MeteorDepthReceiver.is_supported():
+		return {}
+	return MeteorClient.depth_info(_meteor)
+
+## Meteor's microphone offer for the current stream (see
+## MeteorClient.mic_info()), or {} when there's none.
+func meteor_mic_info() -> Dictionary:
+	return MeteorClient.mic_info(_meteor)
+
+func meteor_address() -> String:
+	return _meteor_address
+
+func _probe_meteor(host_id: int) -> Dictionary:
+	var cm = _b().get_computer_manager()
+	for host in _b().get_hosts():
+		if host.get("id") != host_id:
+			continue
+		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
+		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
+		if not info.is_empty() and not _trust_meteor(info, String(host.get("uuid", address))):
+			return {}
+		if not info.is_empty():
+			# Zoned for USB Link, so the depth and microphone sockets reach it.
+			_meteor_address = MeteorClient.zone_address(address)
+			var ports: Dictionary = info["ports"]
+			main._log("[METEOR] Found Nightfall Meteor %s on %s; streaming through it (https %d, rtsp %d, video %d)" % [
+				info.get("version", "?"), address, int(ports.get("https", 0)), int(ports.get("rtsp", 0)), int(ports.get("video", 0))])
+			var depth := MeteorClient.depth_info(info)
+			if not depth.is_empty():
+				main._log("[METEOR] Host depth offered: %s %dx%d on port %d" % [
+					depth.get("model", "?"), int(depth["width"]), int(depth["height"]), int(depth["port"])])
+			var mic := MeteorClient.mic_info(info)
+			if not mic.is_empty():
+				main._log("[METEOR] Microphone offered on port %d" % int(mic["port"]))
+		return info
+	return {}
+
+# Fetches the host's app list again and relaunches the app with the same
+# name under its current ID; gives up if the app has gone.
+func _retry_with_fresh_app_id() -> void:
+	var host_id := _current_host_id
+	var name := _app_name(_current_app_id)
+	main._log("[STREAM] The host doesn't know app %d (%s); refreshing its app list" % [_current_app_id, name])
+	_b().get_app_list(host_id, func(success: bool) -> void:
+		var apps: Array = _b().get_apps(host_id) if success else []
+		var fresh := -1
+		for app in apps:
+			if String(app.get("name", "")) == name:
+				fresh = int(app.get("id", -1))
+		if fresh < 0:
+			main._log("[STREAM] %s isn't in the host's app list any more" % name)
+			main.restore_after_failed_connect("Launch failed: Cannot find requested application")
+			main._ui_status_label.text = "Launch failed: %s isn't on the host any more" % name
+			return
+		main._log("[STREAM] %s is now app %d; launching again" % [name, fresh])
+		main._available_apps = WelcomeScreen.order_apps(apps)
+		main._selected_app_id = fresh
+		main._selected_app_idx = maxi(main._available_apps.find_custom(func(a): return int(a.get("id", -1)) == fresh), 0)
+		start_stream(host_id, fresh))
+
+func _app_name(app_id: int) -> String:
+	for app in main._available_apps + _b().get_apps(_current_host_id):
+		if int(app.get("id", -1)) == app_id:
+			return String(app.get("name", ""))
+	return "Desktop"
+
+# Remembers the first key a host's Meteor sends, and refuses a Meteor whose
+# key has changed since (MeteorClient.check_key()): the stream then goes
+# straight to Sunshine.
+func _trust_meteor(info: Dictionary, host_id: String) -> bool:
+	var key := MeteorClient.meteor_key(info)
+	if key.is_empty():
+		return true # An older Meteor: it offers no encrypted side channels.
+	var remembered := MeteorClient.remembered_key(host_id)
+	match MeteorClient.check_key(remembered, key):
+		MeteorClient.KeyCheck.NEW:
+			MeteorClient.remember_key(host_id, key)
+			main._log("[METEOR] Remembered this host's Meteor key %s..." % key.substr(0, 16))
+		MeteorClient.KeyCheck.CHANGED:
+			main._log("[METEOR] Meteor's key changed (was %s..., now %s...); not using it. Settings > Forget Meteor Keys trusts the new one" % [
+				remembered.substr(0, 16), key.substr(0, 16)])
+			main.ui_controller.show_temporary_status("Meteor's key changed; not using it", 4.0)
+			return false
+	return true
+
 # Address the current stream was launched against (USB Link or network).
 var stream_host_address: String = ""
 
@@ -213,10 +316,29 @@ func relaunch_for_reconnect():
 		return
 	await start_stream(_current_host_id, _current_app_id)
 
+# Set once a launch has retried with a refreshed app list (see
+# _retry_with_fresh_app_id()); cleared when a launch succeeds.
+var _app_id_refreshed := false
+
 func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# The host no longer knows this app ID: its app list changed (a
+		# restart can renumber apps), or the welcome screen fell back to its
+		# placeholder Desktop when the list came back empty.
+		if str(msg).contains("requested application") and not _app_id_refreshed:
+			_app_id_refreshed = true
+			_retry_with_fresh_app_id()
+			return
+		# Meteor is experimental: never let it cost a working connection (or
+		# trigger the stale-pairing re-pair below). Retry once without it.
+		if not _meteor.is_empty():
+			main._log("[METEOR] Launch through Meteor failed; retrying straight to Sunshine")
+			_meteor = {}
+			_meteor_bypass = true
+			start_stream(_current_host_id, _current_app_id)
+			return
 		# Mid-reconnect (e.g. cable still unplugged): hand the failure back to
 		# the native retry schedule instead of tearing the session down.
 		if main.session_lifecycle.is_reconnecting() and _b()._v2:
@@ -246,8 +368,7 @@ func _on_v2_launch_response(response: Dictionary):
 				# same as before this port-suffix support existed.
 				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
 				if str(pin) != "" and str(pin) != "0":
-					main._pair_pin = str(pin)
-					main.welcome_screen.show_welcome_screen("pin")
+					main.welcome_screen.show_pin_when_needed(str(pin))
 					return
 			main._ui_status_label.text = "Pairing needed. Please re-select server."
 			main.welcome_screen.show_welcome_screen("server")
@@ -255,6 +376,7 @@ func _on_v2_launch_response(response: Dictionary):
 			main._ui_status_label.text = "Launch failed: " + str(msg)
 		return
 
+	_app_id_refreshed = false
 	var server_info = {}
 	server_info["server_codec_mode_support"] = response.get("server_codec_mode_support", 0)
 	var scm = response.get("server_codec_mode_support", 0)
@@ -278,6 +400,14 @@ func _on_v2_launch_response(response: Dictionary):
 		main.settings_controller.fallback_codec()
 		main.ui_controller.update_codec_btn()
 	server_info["rtsp_session_url"] = response.get("session_url", "")
+	if not _meteor.is_empty():
+		var session_url: String = server_info["rtsp_session_url"]
+		server_info["rtsp_session_url"] = MeteorClient.route_rtsp_url(session_url, _meteor)
+		main._log("[METEOR] RTSP %s -> %s" % [session_url, server_info["rtsp_session_url"]])
+		if session_url.begins_with("rtspenc"):
+			# Meteor can't rewrite the UDP ports inside encrypted RTSP, so
+			# video and audio would go straight to Sunshine.
+			main._log("[METEOR] Sunshine is using encrypted RTSP; stream ports won't go through Meteor")
 	server_info["server_app_version"] = response.get("app_version", "")
 	server_info["server_gfe_version"] = response.get("gfe_version", "")
 
@@ -583,11 +713,11 @@ func on_pair_pressed():
 			main._log("[PAIR] FAILED - no pin returned")
 			main.welcome_screen.show_welcome_screen("server")
 			return
-		main._pair_pin = str(pin)
-		main.welcome_screen.show_welcome_screen("pin")
+		main.welcome_screen.show_pin_when_needed(str(pin))
 
 func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
+	main.welcome_screen.pairing_finished()
 	if not success:
 		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
 		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,

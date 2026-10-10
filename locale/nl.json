@@ -190,5 +190,17 @@
 	"Pair": "Koppelen",
 	"Enter PIN on Host": "Voer de pincode in op de host",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vraag HDR aan als het hostscherm het gebruikt; aangepast voor de headset."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Vraag HDR aan als het hostscherm het gebruikt; aangepast voor de headset.",
+	"About": "Over",
+	"Licences": "Licenties",
+	"Show the licences of Nightfall and the software it includes.": "Toon de licenties van Nightfall en de software die het bevat.",
+	"Microphone": "Microfoon",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Stuur de headsetmicrofoon via Nightfall Meteor naar de pc.",
+	"Microphone on": "Microfoon aan",
+	"Microphone unavailable": "Microfoon niet beschikbaar",
+	"Microphone permission denied": "Microfoontoestemming geweigerd",
+	"Forget Meteor Keys": "Meteor-sleutels vergeten",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Vertrouw de volgende sleutel van Nightfall Meteor na herinstallatie.",
+	"Meteor's key changed; not using it": "Sleutel van Meteor gewijzigd; niet gebruikt",
+	"Meteor keys forgotten": "Meteor-sleutels vergeten"
 }

@@ -190,5 +190,17 @@
 	"Pair": "Muodosta pari",
 	"Enter PIN on Host": "Anna PIN isännällä",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Pyydä HDR, kun isäntänäyttö käyttää sitä; sovitetaan laseille.",
+	"About": "Tietoja",
+	"Licences": "Lisenssit",
+	"Show the licences of Nightfall and the software it includes.": "Näytä Nightfallin ja sen sisältämien ohjelmistojen lisenssit.",
+	"Microphone": "Mikrofoni",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Lähetä lasien mikrofoni tietokoneelle Nightfall Meteorin kautta.",
+	"Microphone on": "Mikrofoni päällä",
+	"Microphone unavailable": "Mikrofoni ei käytettävissä",
+	"Microphone permission denied": "Mikrofonin käyttöoikeus evätty",
+	"Forget Meteor Keys": "Unohda Meteor-avaimet",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Luota Nightfall Meteorin seuraavaan avaimeen uudelleenasennuksen jälkeen.",
+	"Meteor's key changed; not using it": "Meteorin avain vaihtui; ei käytössä",
+	"Meteor keys forgotten": "Meteor-avaimet unohdettu"
 }

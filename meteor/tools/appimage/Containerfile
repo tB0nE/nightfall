@@ -1,0 +1,14 @@
+# Builds Meteor for the AppImage on Ubuntu 22.04 (glibc 2.35, the floor
+# ncnn's 22.04 build needs; NVIDIA's TensorRT wheel needs 2.28).
+FROM docker.io/library/ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates cmake curl patchelf unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# The toolchain Meteor is developed with.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.92.0 \
+    && cargo install --locked --features cli cargo-about@0.9.2 \
+    && chmod -R a+rwX /opt/cargo /opt/rustup

@@ -1,10 +1,14 @@
 # Microphone Passthrough: Implementation Plan
 
-> Status: Active proposal
+> Status: Superseded (2026-10-03) by [meteor-microphone.md](meteor-microphone.md).
+> This plan assumed Apollo accepts microphone audio inside the Moonlight
+> protocol. Stock Apollo doesn't (2026-10-05); only a fork did. Passthrough
+> moves into Nightfall Meteor, which works with every host. The partial work
+> stays on branch `apollo-microphone-passthrough` for reference.
 
 ## Overview
 
-Add Apollo-specific microphone passthrough to Nightfall, allowing Quest microphone audio to be transmitted to the host PC during streaming. Only Apollo servers support this feature.
+Add Apollo-specific microphone passthrough to Nightfall, allowing Quest microphone audio to be transmitted to the host PC during streaming. (Assumed Apollo support; see the status note above.)
 
 ## Architecture
 

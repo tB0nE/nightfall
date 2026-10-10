@@ -87,5 +87,5 @@ void HttpRequester::_perform_async(std::shared_ptr<nightfall::PlatformHttp> clie
 }
 
 void HttpRequester::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("request", "url", "method", "body", "headers", "ssl_options", "callback"), &HttpRequester::request);
+    ClassDB::bind_method(D_METHOD("request", "url", "method", "body", "headers", "ssl_options", "callback", "timeout_ms"), &HttpRequester::request, DEFVAL(15000));
 }

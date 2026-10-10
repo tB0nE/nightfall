@@ -190,5 +190,17 @@
 	"Pair": "Emparejar",
 	"Enter PIN on Host": "Introduce el PIN en el host",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "Solicita HDR si la pantalla del host lo usa; adaptado al visor."
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "Solicita HDR si la pantalla del host lo usa; adaptado al visor.",
+	"About": "Acerca de",
+	"Licences": "Licencias",
+	"Show the licences of Nightfall and the software it includes.": "Muestra las licencias de Nightfall y del software que incluye.",
+	"Microphone": "Micrófono",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "Envía el micrófono del visor al PC mediante Nightfall Meteor.",
+	"Microphone on": "Micrófono activado",
+	"Microphone unavailable": "Micrófono no disponible",
+	"Microphone permission denied": "Permiso de micrófono denegado",
+	"Forget Meteor Keys": "Olvidar claves de Meteor",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Confía en la próxima clave de Nightfall Meteor tras reinstalarlo.",
+	"Meteor's key changed; not using it": "La clave de Meteor cambió; no se usa",
+	"Meteor keys forgotten": "Claves de Meteor olvidadas"
 }

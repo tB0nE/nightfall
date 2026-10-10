@@ -230,8 +230,11 @@ func process_frame(new_frame: bool) -> void:
 	if mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12:
 		var depth = main.depth_estimator
 		if depth and depth.depth_texture:
-			guide_id = main.stream_backend.get_native_depth_guide_texture_id()
-			if guide_id != 0:
+			# Host depth (Meteor) has no on-device capture to guide it, and a
+			# guide left over from on-device depth would belong to another
+			# frame. Without one the renderer resizes depth linearly.
+			guide_id = 0 if depth.meteor_in_use() else main.stream_backend.get_native_depth_guide_texture_id()
+			if guide_id != 0 or depth.meteor_in_use():
 				depth_id = RenderingServer.texture_get_native_handle(depth.depth_texture.get_rid())
 				# DMap-Final needs the production depth conversion but no
 				# occlusion-offset search.
@@ -254,10 +257,14 @@ func process_frame(new_frame: bool) -> void:
 		# depth result. Native capture completes through a PBO on the following
 		# render tick, before Java's inference clock starts, so account for that
 		# additional frame here. The ring is deliberately bounded to two frames.
-		delay_frames = depth_sync_delay_frames(
-			main.depth_estimator.depth_source_age_ms,
-			main.settings.host.stream_fps,
-			main.depth_estimator._native_depth_capture_active)
+		if main.depth_estimator.meteor_in_use():
+			# Meteor's maps carry frame numbers, so the delay is chosen to match them exactly.
+			delay_frames = main.depth_estimator.meteor_sync_delay()
+		else:
+			delay_frames = depth_sync_delay_frames(
+				main.depth_estimator.depth_source_age_ms,
+				main.settings.host.stream_fps,
+				main.depth_estimator._native_depth_capture_active)
 	renderer.set_depth_sync(depth_sync_enabled, delay_frames)
 	renderer.submit_frame(true, oes_id, depth_id, guide_id, matrix,
 			3.0, main.primary_screen.mesh_size.x, false, separation,

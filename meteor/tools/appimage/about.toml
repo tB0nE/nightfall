@@ -1,0 +1,17 @@
+# Licences cargo-about accepts for the AppImage's notices; all are
+# compatible with Meteor's GPL-3.0.
+accepted = [
+    "GPL-3.0-only",
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-3-Clause",
+    "Unlicense",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+]
+ignore-build-dependencies = false
+ignore-dev-dependencies = true

@@ -108,3 +108,6 @@ Nightfall.AppDir/
 /.build-cache/
 /tmp/nf_deps/
 /log.txt
+
+# Nightfall Meteor (host companion app) build output
+meteor/target/

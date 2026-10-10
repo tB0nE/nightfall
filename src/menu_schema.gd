@@ -146,6 +146,21 @@ static func get_tabs() -> Array:
 					_option(&"_ui_reconnect_btn", "Auto-Reconnect", "On", "Automatically attempt to restore an interrupted stream.", TARGET_SETTINGS, &"cycle_auto_reconnect"),
 					_option(&"_ui_idle_btn", "Idle Disconnect", "Off", "Disconnect after the selected period without input.", TARGET_SETTINGS, &"cycle_idle_timeout"),
 					_option(&"_ui_quick_start_btn", "Quick Start", "Off", "Automatically reconnect to the most recently used host and application.", TARGET_SETTINGS, &"cycle_quick_start"),
+					_option(&"_ui_forget_meteor_btn", "Forget Meteor Keys", "", "Trust the next key Nightfall Meteor sends, after reinstalling it.", TARGET_SETTINGS, &"forget_meteor_keys"),
+				],
+			},
+			{
+				"node_name": &"SettingsMicrophoneRow",
+				"title": "Microphone",
+				"options": [
+					_option(&"_ui_microphone_btn", "Microphone", "Off", "Send the headset microphone to the PC through Nightfall Meteor.", TARGET_SETTINGS, &"toggle_microphone"),
+				],
+			},
+			{
+				"node_name": &"SettingsAboutRow",
+				"title": "About",
+				"options": [
+					_option(&"_ui_licences_btn", "Licences", "", "Show the licences of Nightfall and the software it includes.", TARGET_UI, &"on_licences_pressed"),
 				],
 			},
 		],

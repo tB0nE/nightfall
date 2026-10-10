@@ -190,5 +190,17 @@
 	"Pair": "配對",
 	"Enter PIN on Host": "在主機上輸入 PIN",
 	"HDR": "HDR",
-	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。"
+	"Request HDR when the host display uses it; tone-mapped for the headset.": "主機顯示器使用 HDR 時請求 HDR，並為頭戴裝置進行色調映射。",
+	"About": "關於",
+	"Licences": "授權",
+	"Show the licences of Nightfall and the software it includes.": "顯示 Nightfall 及其包含軟體的授權條款。",
+	"Microphone": "麥克風",
+	"Send the headset microphone to the PC through Nightfall Meteor.": "透過 Nightfall Meteor 將頭戴裝置的麥克風傳送到電腦。",
+	"Microphone on": "麥克風已開啟",
+	"Microphone unavailable": "麥克風無法使用",
+	"Microphone permission denied": "麥克風權限遭拒",
+	"Forget Meteor Keys": "忘記 Meteor 金鑰",
+	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "重新安裝後，信任 Nightfall Meteor 傳送的下一個金鑰。",
+	"Meteor's key changed; not using it": "Meteor 的金鑰已變更，不再使用",
+	"Meteor keys forgotten": "已忘記 Meteor 金鑰"
 }

@@ -252,9 +252,13 @@ For Linux AppImage (`--appimage`):
 
 ### Depth models
 
-Android bundles three GPU models: ZipDepth EdgePad-384, EdgePad-256, and the
-manual-only EdgePad-224 performance tier. Auto
-selects EdgePad-384/OpenCL on Quest 3/3S and EdgePad-256/OpenGL on Quest 2.
+Android bundles the widescreen EdgePad family (EdgePad-512 and EdgePad-320)
+and two CPU models (EdgePad-256-CPU and EdgePad-384-CPU, for Backend: CPU).
+Auto selects EdgePad-512/OpenCL on Quest 3/3S and EdgePad-320/OpenGL on
+Quest 2; see `docs/guides/zipdepth-quest-tiers.md`. The square EdgePad-384,
+-256 and -224 GPU models that v0.7.x shipped stay in `models/` as the
+rollback. All of them are also published, with their SHA-256s, in the
+`edgepad-models-2026-10-08` release.
 Linux bundles ncnn
 Vulkan conversions of both ZipDepth models, MiDaS-256, MiDaS-192, and Depth
 Anything V2-252, plus TFLite CPU variants of the latter three. The generated `.tflite` and
@@ -305,6 +309,14 @@ To regenerate the patched AAR:
 
 The JNI exports must match the official library before replacing the checked-in AAR.
 
+### Nightfall Meteor
+
+Meteor, the optional PC companion, builds separately with Cargo; see
+[meteor/README.md](meteor/README.md). It needs Rust 1.92 and CMake (for the
+Opus decoder it compiles from source). `meteor/tools/build_appimage.sh` builds
+the Linux AppImage in a container, and `meteor/tools/build_windows_installer.ps1`
+builds the Windows installer on Windows.
+
 ## 3. Deploy to Quest
 
 ```bash
@@ -334,6 +346,9 @@ adb install -r Nightfall-Android-arm64-v8a-debug.apk
 │   ├── src/main/java/         # Godot Android entry point and depth inference
 │   ├── libs/                  # Patched LiteRT GPU AAR
 │   └── patches/               # LiteRT patch provenance
+├── meteor/                        # Nightfall Meteor, the PC companion (Rust; see meteor/README.md)
+├── licences/                      # Third-party licence texts shown in Settings > Licences
+├── locale/                        # UI translations (one JSON dictionary per language)
 ├── models/                        # Local depth models (weights are gitignored)
 ├── tools/                         # Model conversion and comparison tools
 ├── test/                          # GDScript and native tests/harnesses

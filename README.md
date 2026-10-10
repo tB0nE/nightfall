@@ -22,9 +22,15 @@ stereoscopic 3D, passthrough, ambient lighting, and real-time AI depth.
 ## Features
 
 - **AI stereoscopic 3D** - real-time depth conversion turns ordinary 2D games
-  into stereoscopic 3D without server-side processing. Android uses LiteRT GPU;
-  Linux defaults to ZipDepth-384 on Vulkan while retaining selectable Vulkan
-  and CPU variants of MiDaS and Depth Anything for experimentation.
+  into stereoscopic 3D. On Quest, widescreen EdgePad models run on the GPU
+  (or on the CPU, to leave the GPU to the stream); Linux defaults to
+  ZipDepth-384 on Vulkan, with MiDaS and Depth Anything alternatives. The
+  models are [published under MIT](https://github.com/tB0nE/nightfall/releases/tag/edgepad-models-2026-10-08).
+- **Nightfall Meteor** - an optional companion app for the PC (Linux and
+  Windows, NVIDIA GPUs) that runs AI depth on the PC's GPU, including the
+  temporal Video Depth Anything model, and makes the Quest's microphone a PC
+  input device. Nightfall finds it automatically; the depth maps and audio
+  are encrypted. See [meteor/README.md](meteor/README.md).
 - **SBS support** - Stretch and Crop modes for native side-by-side content,
   with a quick toggle on the right thumbstick.
 - **Flexible stream configuration** - 720p through 4K presets, including 4:3
@@ -40,6 +46,12 @@ stereoscopic 3D, passthrough, ambient lighting, and real-time AI depth.
   Meta Quest headsets.
 - **HDR streaming** - HDR10/PQ and HLG streams are tonemapped by the native
   renderer on Quest.
+- **PyroWave** - a very low-latency codec for high bitrates on a fast local
+  network, decoded on the Quest's GPU, with hosts that support it.
+- **USB Link** - stream over the Quest's USB-C cable instead of Wi-Fi, falling
+  back to Wi-Fi if it's unplugged.
+- **21 languages** - the menus are translated, with a language picker on the
+  welcome screen and a Settings page behind the gear.
 - **Ambient lighting** - a lightweight halo around the screen with Off,
   Static, Slow, and Live modes. Static mode includes selectable colours.
 - **Linux PCVR** - WiVRn/Monado support with composition layers, SBS, native AI
@@ -70,9 +82,9 @@ keeps your keyboard and desk visible while you work.
 
 - Port the Android optimizations to the Linux version
 - Multiple monitors (70% complete)
-- An improved version of ZipDepth optimized for sharper edges and widescreen ratios
+- Nightfall Meteor on AMD and Intel GPUs (host depth with EdgePad; [plan](docs/plans/active/meteor-amd-intel.md))
+- Nightfall Meteor: wider GPU and desktop testing, and a signed Windows installer
 - Safely reintroduce 3D objects and environments without affecting performance
-- Resolve Vibepollo pairing issues
 - Improve hand tracking
 
 ## Usage and Requirements
@@ -84,6 +96,12 @@ Nightfall streams from any GameStream-compatible server on your local network:
 - **[Sunshine](https://github.com/LizardByte/Sunshine)** - open source GameStream host (recommended)
 - **[Apollo](https://github.com/ClassicOldSong/Apollo)** - Sunshine fork with virtual display and extra features
 - **[Polaris](https://github.com/papi-ux/polaris)** - lightweight GameStream server for macOS and Linux
+- **[Vibepollo](https://github.com/Nonary/Vibepollo) / Vibeshine** - Nonary's Sunshine forks, which add the PyroWave codec (as does Zevro's fork)
+
+Optionally, run **[Nightfall Meteor](meteor/README.md)** on the same PC for
+host-side AI depth and microphone passthrough (NVIDIA GPU, Linux or Windows).
+Download it from the release page; Nightfall uses it automatically when it's
+running.
 
 Setup:
 
@@ -106,7 +124,7 @@ lower resolution ceiling and less performance headroom, particularly when AI
 6. If this is the first connection, enter Nightfall's displayed PIN in the host's web interface
 7. The stream starts automatically after pairing
 
-For support logs, press the **↓** button beside **Stats**. Nightfall saves a
+For support logs, open **Settings** (the gear) and press **Save Log**. Nightfall saves a
 timestamped report to `Download/Nightfall` on the headset. The report includes
 the current and previous app sessions so it can be exported after reopening
 Nightfall following a crash. Review it before sharing: host names and network
@@ -114,17 +132,13 @@ addresses may be included.
 
 ### Client (Linux PCVR)
 
-The Linux client is supported in source, but **v0.7.9 does not include a Linux
-binary**. The application changed substantially during the native-renderer
-performance work and the Linux release needs another validation pass before a
-new AppImage is published.
-
-To build the current Linux client:
+Releases include a Linux AppImage. To run it:
 
 1. Install and start [WiVRn](https://github.com/WiVRn/WiVRn) or another compatible Monado OpenXR setup
-2. Follow the Linux prerequisites in [BUILD.md](BUILD.md)
-3. Run `./build.sh --appimage`
-4. Start the generated `Nightfall-x86_64.AppImage`
+2. Download `Nightfall-Linux-*-x86_64.AppImage` from the release page, make it executable, and start it
+
+To build it yourself, follow the Linux prerequisites in [BUILD.md](BUILD.md)
+and run `./build.sh --appimage`.
 
 Linux supports the normal streaming controls, SBS, passthrough when exposed by
 the runtime, ZipDepth-384 inference through Vulkan, and MiDaS-256 or Depth
@@ -144,6 +158,7 @@ renderer path.
 | **Both thumbstick clicks** | Toggle controller mapper on/off |
 | **Grab bars** | Drag to reposition screen, menu, or keyboard |
 | **Corner handles** | Resize screen (locked aspect ratio) |
+| **Grab bar buttons** | Point under the screen: microphone, controller mapping, keyboard, SBS, AI 3D, menu |
 
 #### Controller Modes
 
@@ -212,6 +227,10 @@ See [BUILD.md](BUILD.md) for full build instructions including:
 - Linux binary and AppImage export
 - Quest deployment via ADB
 
+Nightfall Meteor (the PC companion) is a separate Rust project; see
+[meteor/README.md](meteor/README.md) for building it and its Linux AppImage and
+Windows installer.
+
 Architecture notes, active plans, research, and historical implementation
 documents are indexed in [docs/README.md](docs/README.md).
 
@@ -248,6 +267,9 @@ Donations help keep the coffee flowing and the commits coming.
 ## License
 
 Nightfall is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the full text.
+The EdgePad depth models are MIT-licensed, derived from
+[ZipDepth](https://github.com/fabiotosi92/ZipDepth); Settings → Licences in the
+app lists all third-party software and its licences.
 
 Special thanks to the [Moonlight-Godot](https://github.com/html5syt/Moonlight-Godot) project, which served as a reference implementation, and to [Janyger](https://github.com/Janyger) for AI 3D contributions to Artemis. Compatible with
 [Apollo](https://github.com/ClassicOldSong/Apollo), [Sunshine](https://github.com/LizardByte/Sunshine), and [Polaris](https://github.com/papi-ux/polaris).
