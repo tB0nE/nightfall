@@ -169,15 +169,16 @@ func _apply_android_layout(device: int) -> void:
 	if not pads is Array:
 		return
 	var pad_name := Input.get_joy_name(device)
+	var guid := Input.get_joy_guid(device)
 	for info in pads:
-		if info is Dictionary and str(info.get("name", "")) == pad_name:
+		if info is Dictionary and ControllerLayout.matches_android_device(info, pad_name, guid):
 			var layout := ControllerLayout.from_android_info(info)
 			_layouts[device] = layout
-			var guid := Input.get_joy_guid(device)
 			if not _mapped_guids.has(guid):
 				_mapped_guids[guid] = true
 				Input.add_joy_mapping(layout.to_godot_mapping(guid), true)
 			return
+	main._log("[PAD] Android layout unmatched: name=%s guid=%s candidates=%s" % [pad_name, guid, str(pads)])
 
 func _pad_type(device: int) -> int:
 	var layout: ControllerLayout = _layouts.get(device)

@@ -136,8 +136,20 @@ static func trigger_value(raw: float, centered: bool) -> float:
 static func controller_type(vendor_id: int, pad_name: String) -> int:
 	var lowered := pad_name.to_lower()
 	if vendor_id == VENDOR_SONY or lowered.contains("dualshock") or lowered.contains("dualsense") \
-			or lowered.contains("ps4") or lowered.contains("ps5") or lowered == "wireless controller":
+			or lowered.contains("playstation") or lowered.contains("ps4") or lowered.contains("ps5") or lowered == "wireless controller":
 		return CTYPE_PS
 	if vendor_id == VENDOR_NINTENDO or lowered.contains("nintendo") or lowered.contains("pro controller"):
 		return CTYPE_NINTENDO
 	return CTYPE_XBOX
+
+# Godot can replace Android's name with its controller-database display name.
+# Its Android GUID still encodes the first 16 characters of the original name
+# (Input::joy_connection_changed); short names are not zero-padded.
+static func matches_android_device(info: Dictionary, pad_name: String, guid: String) -> bool:
+	var android_name := str(info.get("name", ""))
+	if android_name == pad_name:
+		return true
+	var name_guid := ""
+	for i in mini(android_name.length(), 16):
+		name_guid += "%02x" % (android_name.unicode_at(i) & 0xff)
+	return not name_guid.is_empty() and name_guid == guid.to_lower()
