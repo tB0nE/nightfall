@@ -89,12 +89,13 @@ const ANDROID_MODEL_AUTO := 9
 # The historical entries remain in ai_3d_models below so old saves and Linux
 # indices do not shift; Android cycles only Auto and the manual EdgePad slots.
 const ANDROID_MODEL_STANDARD := 18
-# Slot 19 (EdgePad-256, briefly EdgePad-352) is retired; saves that chose it
-# move to EdgePad-320 (see enforce_ai3d_platform_lock()).
-const ANDROID_MODEL_RETIRED_EDGEPAD_256 := 19
+# Slot 19 restores the exact square EdgePad-256 model shipped in v0.7.11 for
+# direct quality comparisons with the current widescreen tiers.
+const ANDROID_MODEL_LEGACY_EDGEPAD_256 := 19
 const ANDROID_MODEL_EDGEPAD_320 := 21
 const ANDROID_MODEL_EDGEPAD_256_CPU := 22
 const ANDROID_MODEL_EDGEPAD_384_CPU := 23
+const ANDROID_MODEL_LEGACY_EDGEPAD_384 := 24
 const ANDROID_DEPTH_PROCESS_FULL := 5
 # Native renderer-only production mode: retain Full's occlusion/Newton warp,
 # but resize the reconstructed Standard depth with one linear texture sample
@@ -148,7 +149,7 @@ var ai_3d_models: Array = [
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256 (retired)", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256 (v0.7.11)", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-320", "java_index": 28, "gpu": true, "android": true, "linux": false},
 	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
@@ -156,6 +157,9 @@ var ai_3d_models: Array = [
 	# picks between them to match whatever Model is actually selected.
 	{"label": "EdgePad-256-CPU", "java_index": 29, "gpu": false, "android": true, "linux": false},
 	{"label": "EdgePad-384-CPU", "java_index": 14, "gpu": false, "android": true, "linux": false},
+	# Exact square v0.7.11 export. It uses a fresh Java index because index 25
+	# now belongs to the current widescreen EdgePad-512 model.
+	{"label": "EdgePad-384 (v0.7.11)", "java_index": 30, "gpu": true, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -598,7 +602,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_EDGEPAD_320, ANDROID_MODEL_LEGACY_EDGEPAD_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var offered := meteor_depth_offered()
@@ -616,7 +620,10 @@ func cycle_ai_3d_model():
 	if main._ui_3d_gpu_api_btn:
 		main.ui_controller.update_option_btn(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	main.ui_controller.update_3d_btn_state()
-	_schedule_ai_3d_commit()
+	# Match the resolution selector's settling window: model labels update on
+	# every click, but only the final choice tears down/compiles an OpenCL
+	# delegate after the user stops cycling.
+	_schedule_ai_3d_commit(0.8)
 
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
@@ -695,7 +702,8 @@ func normalize_ai_3d_model_for_type():
 		main.settings.host.ai_3d_model = candidates[0]
 
 # Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
-# model selector: Auto, EdgePad-512, EdgePad-320. See
+# model selector. The v0.7.11 square tiers are temporarily exposed beside
+# Auto, EdgePad-512 and EdgePad-320 for direct quality comparisons. See
 # docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
 # decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
@@ -719,9 +727,7 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
 	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if main.settings.host.ai_3d_model == ANDROID_MODEL_RETIRED_EDGEPAD_256:
-		main.settings.host.ai_3d_model = ANDROID_MODEL_EDGEPAD_320
-	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320].has(main.settings.host.ai_3d_model):
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_EDGEPAD_320, ANDROID_MODEL_LEGACY_EDGEPAD_256].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -768,7 +774,7 @@ func get_depth_model_label() -> String:
 # locked button is actually showing, so switching Model while on CPU picks the
 # equivalent CPU tier instead of silently always running one fixed size.
 func _android_cpu_model_index() -> int:
-	if main.settings.host.ai_3d_model == ANDROID_MODEL_STANDARD:
+	if main.settings.host.ai_3d_model in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
 		return ANDROID_MODEL_EDGEPAD_384_CPU
 	return ANDROID_MODEL_EDGEPAD_256_CPU
 
@@ -780,7 +786,7 @@ func _android_cpu_model_index() -> int:
 func get_depth_process_stage() -> int:
 	if OS.get_name() == "Android":
 		var model_index := get_depth_model_index()
-		if model_index in [25, 28]:
+		if model_index in [25, 26, 28, 30]:
 			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
 	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
 		else main.settings.host.ai_3d_process_debug
@@ -910,7 +916,7 @@ func cycle_ai_3d_debug():
 	_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	_schedule_ai_3d_commit()
 
-func _schedule_ai_3d_commit():
+func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 	_ai_3d_commit_seq += 1
 	var my_seq = _ai_3d_commit_seq
 	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
@@ -920,7 +926,7 @@ func _schedule_ai_3d_commit():
 	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
 	# between model/quality/debug controls in quick succession still only
 	# commits once, for whatever the final combined state ends up being.
-	await main.get_tree().create_timer(0.6).timeout
+	await main.get_tree().create_timer(delay_seconds).timeout
 	if _ai_3d_commit_seq != my_seq:
 		return
 	# MiDaS-DMap/-Raw/-Input/-Warp are debug VIEWS of whatever depth data is

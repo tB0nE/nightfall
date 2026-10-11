@@ -2,6 +2,7 @@ package com.godot.game;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.os.Debug;
 import android.system.ErrnoException;
 import android.system.Os;
 import com.godot.game.diagnostics.Log;
@@ -34,10 +35,14 @@ public class DepthEstimator {
     public static final int BACKEND_CAP_GPU = 2;
     public static final int GPU_PRIORITY_STREAM = 0;
     public static final int GPU_PRIORITY_AI_3D = 1;
-    // Qualcomm's OpenCL driver may still be retiring resources immediately
-    // after Interpreter/GpuDelegate.close(). Compiling another large model
-    // in that window has rebooted the Quest 3 during rapid A/B switching.
-    private static final long GPU_MODEL_SWITCH_QUIESCE_MS = 750L;
+    // Qualcomm's OpenCL driver may still be executing/retiring work around
+    // Interpreter/GpuDelegate.close(). The third delegate compilation in a
+    // 512 -> 384 -> 320 comparison rebooted a Quest 3 even after the original
+    // 750ms post-close delay. Let the final invoke settle before destruction,
+    // then give native resources substantially longer to retire before asking
+    // the driver to compile a differently shaped graph.
+    private static final long GPU_MODEL_SWITCH_PRE_CLOSE_MS = 250L;
+    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 2000L;
     // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
     // 50ms/20Hz default unchanged, see setHzCap() below.
     private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
@@ -712,12 +717,9 @@ public class DepthEstimator {
             gpuVariants.put(24, new GpuVariant("ZipDepth-384-Standard-Optimized-GPU",
                     MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU,
                     384, 384, 384, 384, 0.02f, 0.1f, true));
-            // The EdgePad classes run the widescreen family; slot 26
-            // (EdgePad-256) is retired. To roll back, register
-            // MODEL_ZIPDEPTH_{384,256,224}_STANDARD_EDGEPAD_GPU at 25, 26 and 28
-            // (square, no padding), bundle them again in
-            // tools/build_support/package_android_models.sh, and restore slot
-            // 19 in settings_controller.gd.
+            // Current widescreen production family. The exact square models
+            // shipped in v0.7.11 are also registered at 30/26 for a direct
+            // on-headset quality comparison; Auto remains on 25/28.
             gpuVariants.put(25, new GpuVariant("ZipDepth-Wide-512x288-EdgePad-GPU",
                     MODEL_ZIPDEPTH_WIDE_512X288_GPU,
                     512, 288, 512, 288, ZIPDEPTH_DEPTH_TAU_SECONDS,
@@ -727,6 +729,14 @@ public class DepthEstimator {
                     MODEL_ZIPDEPTH_WIDE_320X180_GPU,
                     320, 192, 320, 192, ZIPDEPTH_DEPTH_TAU_SECONDS,
                     ZIPDEPTH_RANGE_TAU_SECONDS, true, 6));
+            gpuVariants.put(30, new GpuVariant("ZipDepth-384-Standard-EdgePad-v0.7.11-GPU",
+                    MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU,
+                    384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            gpuVariants.put(26, new GpuVariant("ZipDepth-256-Standard-EdgePad-v0.7.11-GPU",
+                    MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU,
+                    256, 256, 256, 256, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
             gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
                     MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
                     256, 256, 128, 128, 0.02f, 0.1f));
@@ -936,6 +946,23 @@ public class DepthEstimator {
         variant.failureReason = "";
     }
 
+    private static String processMemorySummary() {
+        Runtime runtime = Runtime.getRuntime();
+        long mib = 1024L * 1024L;
+        return String.format(java.util.Locale.US,
+                "java=%dMiB native=%dMiB",
+                (runtime.totalMemory() - runtime.freeMemory()) / mib,
+                Debug.getNativeHeapAllocatedSize() / mib);
+    }
+
+    private static void sleepForGpuSwitch(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void markGpuVariantUnavailable(GpuVariant variant) {
         String reason = variant.failureReason.isEmpty()
                 ? "GPU delegate initialization failed"
@@ -1028,7 +1055,7 @@ public class DepthEstimator {
 
     private static int normalizeModelIndex(int modelIndex) {
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29: case 30:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -1085,18 +1112,25 @@ public class DepthEstimator {
             if (previousVariant != null && previousVariant != variant) {
                 GpuVariant targetVariant = variant;
                 executor.execute(() -> {
+                    // interp.run() has returned and frame submission is
+                    // blocked, but Qualcomm may still be retiring commands
+                    // internally. Do not destroy the context immediately at
+                    // the invocation boundary.
+                    sleepForGpuSwitch(GPU_MODEL_SWITCH_PRE_CLOSE_MS);
                     synchronized (DepthEstimator.this) {
                         if (previousVariant != activeGpuVariant) {
                             Log.i(TAG, "Closing previous GPU model before switch: "
-                                    + previousVariant.label);
+                                    + previousVariant.label + " (" + processMemorySummary() + ")");
                             releaseGpuVariant(previousVariant);
                         }
                     }
-                    try {
-                        Thread.sleep(GPU_MODEL_SWITCH_QUIESCE_MS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                    // DirectByteBuffers and mapped model buffers are reclaimed
+                    // by cleaners rather than close(). Request collection now,
+                    // while inference is intentionally paused, so the next
+                    // delegate is not compiled on top of stale native memory.
+                    System.gc();
+                    System.runFinalization();
+                    sleepForGpuSwitch(GPU_MODEL_SWITCH_POST_CLOSE_MS);
                     synchronized (DepthEstimator.this) {
                         // A newer model/API/priority change may have queued
                         // another transition. Only its final target can
@@ -1104,7 +1138,7 @@ public class DepthEstimator {
                         if (activeGpuVariant == targetVariant) {
                             gpuReconfigurePending = false;
                             Log.i(TAG, "GPU model switch quiescence complete: "
-                                    + targetVariant.label);
+                                    + targetVariant.label + " (" + processMemorySummary() + ")");
                         }
                     }
                 });
@@ -1130,10 +1164,11 @@ public class DepthEstimator {
             case 23: return "ZipDepth-384-Standard-Packed";
             case 24: return "ZipDepth-384-Standard-Optimized";
             case 25: return "ZipDepth-Wide-512x288-EdgePad";
-            case 26: return "ZipDepth-256-Standard-EdgePad (retired)";
+            case 26: return "ZipDepth-256-Standard-EdgePad-v0.7.11";
             case 27: return "ZipDepth-256-Direct-128";
             case 28: return "ZipDepth-Wide-320x180-EdgePad";
             case 29: return "ZipDepth-256-Standard-EdgePad-CPU";
+            case 30: return "ZipDepth-384-Standard-EdgePad-v0.7.11";
             case 15: return "EdgePad-512x288-Experimental";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
