@@ -122,6 +122,8 @@
 	"Save Log": "로그 저장",
 	"Save diagnostic logs to Download/Nightfall.": "진단 로그를 Download/Nightfall에 저장합니다.",
 	"Stats": "통계",
+	"Depth View": "깊이 보기",
+	"Show the final depth map used by AI 3D.": "AI 3D가 사용하는 최종 깊이 맵을 표시합니다.",
 	"Show or hide live stream performance statistics.": "실시간 스트림 성능 통계를 표시하거나 숨깁니다.",
 	"Language": "언어",
 	"Choose the language used by Nightfall's menus.": "Nightfall 메뉴에 사용할 언어를 선택합니다.",

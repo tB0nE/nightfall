@@ -266,6 +266,8 @@ func get_stereo_mode() -> int:
 		return main.settings.host.sbs_mode
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
+	if main.settings.host.ai_3d_depth_view:
+		return 7 # User-facing Final depth-map view.
 	if main.settings.host.ai_3d_debug == 1:
 		return 7 # DMap-Final: exact production upsampled depth
 	elif main.settings.host.ai_3d_debug == 2:
@@ -517,6 +519,23 @@ func toggle_ai_3d_depth_sync():
 	_save_setting(main._ui_3d_depth_sync_btn,
 		"On" if main.settings.host.ai_3d_depth_sync else "Off")
 
+func toggle_ai_3d_depth_view():
+	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
+			or main.settings.host.ai_3d_speed == 0:
+		return
+	main.settings.host.ai_3d_depth_view = not main.settings.host.ai_3d_depth_view
+	# Both controls select a renderer diagnostic mode. Keep their state
+	# separate, but never display both when a development build exposes the
+	# full Raw/Input/Warp selector alongside this user-facing Final view.
+	if main.settings.host.ai_3d_depth_view and main.settings.host.ai_3d_debug != 0:
+		main.settings.host.ai_3d_debug = 0
+		_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[0])
+	_save_setting(main._ui_3d_depth_view_btn,
+		"On" if main.settings.host.ai_3d_depth_view else "Off")
+	# This changes only the renderer's view of the depth already flowing. It
+	# never changes stream resolution or model state, so apply it immediately.
+	apply_stereo()
+
 func cycle_ai_3d_process_debug():
 	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
 			or main.settings.host.ai_3d_speed == 0:
@@ -706,8 +725,10 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
-	# Diagnostic selectors are hidden in Android releases. Always restore
-	# production rendering in case a development build persisted another stage.
+	# Diagnostic selectors start in the normal picture. The permanent Final
+	# view is deliberately session-only so a forgotten diagnostic cannot make
+	# the next launch appear broken.
+	main.settings.host.ai_3d_depth_view = false
 	main.settings.host.ai_3d_debug = 0
 	main.settings.host.ai_3d_process_debug = 5
 	if main.settings.host.ai_3d_speed != 0:
@@ -883,6 +904,9 @@ func cycle_ai_3d_debug():
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
 	main.settings.host.ai_3d_debug = (main.settings.host.ai_3d_debug + 1) % ai_3d_debug_labels.size()
+	if main.settings.host.ai_3d_debug != 0 and main.settings.host.ai_3d_depth_view:
+		main.settings.host.ai_3d_depth_view = false
+		_save_setting(main._ui_3d_depth_view_btn, "Off")
 	_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	_schedule_ai_3d_commit()
 
@@ -908,7 +932,7 @@ func _schedule_ai_3d_commit():
 	# changed the very thing being inspected (a different, uncapped
 	# resolution) and interrupted the stream to do it. They never restart,
 	# so apply_stereo() is always safe to call immediately here.
-	if main.settings.host.ai_3d_debug != 0:
+	if main.settings.host.ai_3d_debug != 0 or main.settings.host.ai_3d_depth_view:
 		apply_stereo()
 		return
 	# MiDaS-Fast caps the actual requested stream resolution (see

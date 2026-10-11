@@ -122,6 +122,8 @@
 	"Save Log": "保存日志",
 	"Save diagnostic logs to Download/Nightfall.": "将诊断日志保存到 Download/Nightfall。",
 	"Stats": "统计",
+	"Depth View": "深度视图",
+	"Show the final depth map used by AI 3D.": "显示 AI 3D 使用的最终深度图。",
 	"Show or hide live stream performance statistics.": "显示或隐藏实时串流性能统计。",
 	"Language": "语言",
 	"Choose the language used by Nightfall's menus.": "选择 Nightfall 菜单使用的语言。",

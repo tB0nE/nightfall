@@ -39,6 +39,7 @@ func _test_host_defaults() -> void:
 	assert(host.ai_3d_model == 0)
 	assert(host.ai_3d_speed == 0)
 	assert(host.ai_3d_debug == 0)
+	assert(not host.ai_3d_depth_view)
 	assert(host.ai_3d_last_mode == 1)
 	assert(host.ai_3d_backend_pref == 2)
 	assert(host.ai_3d_hz_cap == 20)

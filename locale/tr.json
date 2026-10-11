@@ -122,6 +122,8 @@
 	"Save Log": "Kaydı kaydet",
 	"Save diagnostic logs to Download/Nightfall.": "Tanılama kayıtlarını Download/Nightfall klasörüne kaydeder.",
 	"Stats": "İstatistik",
+	"Depth View": "Derinlik görünümü",
+	"Show the final depth map used by AI 3D.": "AI 3D'nin kullandığı son derinlik haritasını göster.",
 	"Show or hide live stream performance statistics.": "Canlı yayın performans istatistiklerini gösterir veya gizler.",
 	"Language": "Dil",
 	"Choose the language used by Nightfall's menus.": "Nightfall menülerinin dilini seçin.",

@@ -122,6 +122,8 @@
 	"Save Log": "Tallenna loki",
 	"Save diagnostic logs to Download/Nightfall.": "Tallenna vianmäärityslokit kansioon Download/Nightfall.",
 	"Stats": "Tilastot",
+	"Depth View": "Syvyysnäkymä",
+	"Show the final depth map used by AI 3D.": "Näytä AI 3D:n käyttämä lopullinen syvyyskartta.",
 	"Show or hide live stream performance statistics.": "Näytä tai piilota striimin suorituskykytilastot.",
 	"Language": "Kieli",
 	"Choose the language used by Nightfall's menus.": "Valitse Nightfallin valikoiden kieli.",

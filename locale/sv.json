@@ -122,6 +122,8 @@
 	"Save Log": "Spara logg",
 	"Save diagnostic logs to Download/Nightfall.": "Spara diagnostikloggar i Download/Nightfall.",
 	"Stats": "Statistik",
+	"Depth View": "Djupvy",
+	"Show the final depth map used by AI 3D.": "Visa den slutliga djupkartan som AI 3D använder.",
 	"Show or hide live stream performance statistics.": "Visa eller dölj prestandastatistik i realtid.",
 	"Language": "Språk",
 	"Choose the language used by Nightfall's menus.": "Välj språk för Nightfalls menyer.",

@@ -222,6 +222,10 @@ func on_ai_3d_depth_sync_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.toggle_ai_3d_depth_sync()
 
+func on_ai_3d_depth_view_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.toggle_ai_3d_depth_view()
+
 func on_ai_3d_reset_pressed():
 	main.settings_controller.reset_ai_3d_effect_settings()
 
@@ -264,6 +268,7 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_convergence_btn, main.settings_controller.get_ai_3d_convergence_label())
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
+	update_option_btn(main._ui_3d_depth_view_btn, "On" if main.settings.host.ai_3d_depth_view else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	if main._ui_3d_process_debug_btn:
 		update_option_btn(main._ui_3d_process_debug_btn,
@@ -342,6 +347,9 @@ func update_3d_btn_state():
 	if main._ui_3d_depth_sync_btn:
 		main._ui_3d_depth_sync_btn.disabled = effect_disabled
 		main._ui_3d_depth_sync_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	if main._ui_3d_depth_view_btn:
+		main._ui_3d_depth_view_btn.disabled = effect_disabled
+		main._ui_3d_depth_view_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	# Debug views depend on AI-3D producing depth, but are independent of the
 	# Android model/type/mode lock. The lock hides selectors that cannot be
 	# changed on Android; it must not disable this diagnostic control too.
@@ -1106,17 +1114,6 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
-	main._ui_3d_depth_sync_btn = make_option_btn("Depth Sync", "Off")
-	_set_button_tooltip(main._ui_3d_depth_sync_btn, "Delay video slightly so it matches the frame used by AI depth inference.")
-	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
-	if OS.get_name() == "Android":
-		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
-	if OS.get_name() == "Android" and SHOW_AI3D_DEPTH_DEBUG:
-		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
-		_set_button_tooltip(main._ui_3d_debug_btn,
-			"Inspect the processed depth map, raw model output, or model input.")
-		ai3d_row1.add_child(main._ui_3d_debug_btn)
-
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.name = "Ai3dGap1"
 	ai3d_gap1.custom_minimum_size = Vector2(0, 20)
@@ -1142,9 +1139,16 @@ func build_ui():
 	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50% (Default)")
 	_set_button_tooltip(main._ui_3d_convergence_btn, "Adjust the depth plane where the left and right views meet.")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
-	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
-	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
-	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
+	if OS.get_name() == "Android":
+		main._ui_3d_depth_view_btn = make_option_btn("Depth View", "Off")
+		_set_button_tooltip(main._ui_3d_depth_view_btn,
+			"Show the final depth map used by AI 3D.")
+		ai3d_row2.add_child(main._ui_3d_depth_view_btn)
+	if OS.get_name() == "Android" and SHOW_AI3D_DEPTH_DEBUG:
+		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+		_set_button_tooltip(main._ui_3d_debug_btn,
+			"Inspect the processed depth map, raw model output, or model input.")
+		ai3d_row2.add_child(main._ui_3d_debug_btn)
 	if OS.get_name() == "Android" and SHOW_AI3D_PROCESS_DEBUG:
 		main._ui_3d_process_debug_btn = make_option_btn("3D Process", "Full")
 		_set_button_tooltip(main._ui_3d_process_debug_btn,
@@ -1155,8 +1159,6 @@ func build_ui():
 		ai3d_row2.remove_child(main._ui_3d_hz_cap_btn)
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
-		ai3d_row1.remove_child(main._ui_3d_depth_sync_btn)
-		ai3d_row2.add_child(main._ui_3d_depth_sync_btn)
 
 	_tab_picture = _build_menu_tab(
 		vbox,
@@ -1306,8 +1308,8 @@ func build_ui():
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
-	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
-	main._ui_3d_depth_sync_btn.button_down.connect(func(): on_ai_3d_depth_sync_toggled())
+	if main._ui_3d_depth_view_btn:
+		main._ui_3d_depth_view_btn.button_down.connect(func(): on_ai_3d_depth_view_toggled())
 	if main._ui_3d_debug_btn and OS.get_name() == "Android":
 		main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	if main._ui_3d_process_debug_btn:

@@ -483,6 +483,7 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_gpu_api_btn: Button
+var _ui_3d_depth_view_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button

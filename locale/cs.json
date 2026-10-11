@@ -122,6 +122,8 @@
 	"Save Log": "Uložit protokol",
 	"Save diagnostic logs to Download/Nightfall.": "Uloží diagnostické protokoly do Download/Nightfall.",
 	"Stats": "Statistiky",
+	"Depth View": "Zobrazení hloubky",
+	"Show the final depth map used by AI 3D.": "Zobrazit finální hloubkovou mapu používanou AI 3D.",
 	"Show or hide live stream performance statistics.": "Zobrazí nebo skryje živé statistiky výkonu streamu.",
 	"Language": "Jazyk",
 	"Choose the language used by Nightfall's menus.": "Vyberte jazyk nabídek Nightfall.",

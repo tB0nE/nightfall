@@ -133,6 +133,14 @@ static func get_tabs() -> Array:
 				]),
 			},
 			{
+				"node_name": &"SettingsAi3dRow",
+				"title": "AI 3D",
+				"options": [
+					_option(&"_ui_3d_cursor_position_btn", "Cursor Position", "Default", "Choose how the cursor is positioned relative to AI-generated depth.", TARGET_UI, &"on_ai_3d_cursor_position_toggled"),
+					_option(&"_ui_3d_depth_sync_btn", "Depth Sync", "Off", "Delay video slightly so it matches the frame used by AI depth inference.", TARGET_UI, &"on_ai_3d_depth_sync_toggled", OS.get_name() == "Android"),
+				],
+			},
+			{
 				"node_name": &"SettingsGeneralRow",
 				"title": "General",
 				"options": [

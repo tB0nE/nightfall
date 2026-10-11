@@ -122,6 +122,8 @@
 	"Save Log": "Gem log",
 	"Save diagnostic logs to Download/Nightfall.": "Gem diagnoselogfiler i Download/Nightfall.",
 	"Stats": "Statistik",
+	"Depth View": "Dybdevisning",
+	"Show the final depth map used by AI 3D.": "Vis det endelige dybdekort, som AI 3D bruger.",
 	"Show or hide live stream performance statistics.": "Vis eller skjul ydeevnestatistik i realtid.",
 	"Language": "Sprog",
 	"Choose the language used by Nightfall's menus.": "Vælg sproget i Nightfalls menuer.",

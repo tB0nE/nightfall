@@ -122,6 +122,8 @@
 	"Save Log": "Logboek opslaan",
 	"Save diagnostic logs to Download/Nightfall.": "Sla diagnoselogboeken op in Download/Nightfall.",
 	"Stats": "Statistieken",
+	"Depth View": "Diepteweergave",
+	"Show the final depth map used by AI 3D.": "Toon de uiteindelijke dieptekaart die AI 3D gebruikt.",
 	"Show or hide live stream performance statistics.": "Toon of verberg live prestatiestatistieken van de stream.",
 	"Language": "Taal",
 	"Choose the language used by Nightfall's menus.": "Kies de taal van de menu's van Nightfall.",

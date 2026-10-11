@@ -122,6 +122,8 @@
 	"Save Log": "Protokoll speichern",
 	"Save diagnostic logs to Download/Nightfall.": "Diagnoseprotokolle in Download/Nightfall speichern.",
 	"Stats": "Statistik",
+	"Depth View": "Tiefenansicht",
+	"Show the final depth map used by AI 3D.": "Zeigt die endgültige Tiefenkarte von KI-3D.",
 	"Show or hide live stream performance statistics.": "Live-Leistungsstatistiken des Streams ein- oder ausblenden.",
 	"Language": "Sprache",
 	"Choose the language used by Nightfall's menus.": "Die Sprache der Nightfall-Menüs wählen.",
