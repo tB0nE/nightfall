@@ -510,10 +510,19 @@ public class DepthEstimator {
     private float[] smoothedDepthFloat = null;
 
     private Context appContext;
+    private boolean parityCaptureEnabled;
+    private final java.util.Set<String> parityCapturedAssets = new java.util.HashSet<>();
 
     public synchronized boolean initialize(Context context) {
         if (initialized) return true;
         appContext = context.getApplicationContext();
+        java.io.File external = appContext.getExternalFilesDir(null);
+        java.io.File marker = external == null ? null : new java.io.File(external, "depth_capture_once");
+        parityCaptureEnabled = marker != null && marker.exists();
+        if (parityCaptureEnabled) {
+            if (!marker.delete()) Log.w(TAG, "Could not remove depth capture marker");
+            Log.i(TAG, "Opt-in depth parity capture enabled: one frame per GPU model");
+        }
         applyGpuPriorityEnvironment(gpuPriority);
 
         try {
@@ -1717,8 +1726,62 @@ public class DepthEstimator {
         byte[] result = postProcess(raw,
                 v.outputWidth, v.mapHeight(), false, DEFAULT_PERCENTILE_CLIP,
                 v.depthTauSeconds, v.rangeTauSeconds);
+        if (parityCaptureEnabled && !parityCapturedAssets.contains(v.assetFile)) {
+            parityCapturedAssets.add(v.assetFile);
+            saveParityCapture(v, rgbaPixels, width, height, raw, result);
+        }
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
+    }
+
+    // Explicitly opt-in, local-only diagnostic. No frame copies or filesystem
+    // checks during normal inference. Captures may contain desktop content.
+    private void saveParityCapture(GpuVariant v, byte[] rgba, int width, int height,
+            float[] raw, byte[] processed) {
+        try {
+            java.io.File external = appContext.getExternalFilesDir(null);
+            if (external == null) throw new IOException("External app storage unavailable");
+            java.io.File directory = new java.io.File(external, "depth-parity");
+            if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Cannot create capture directory");
+            String stem = v.assetFile.replace(".tflite", "");
+            int[] colors = new int[width * height];
+            for (int i = 0; i < colors.length; i++) {
+                int p = i * 4;
+                colors[i] = android.graphics.Color.rgb(rgba[p] & 255, rgba[p + 1] & 255, rgba[p + 2] & 255);
+            }
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(colors, width, height,
+                    android.graphics.Bitmap.Config.ARGB_8888);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-input.png"))) {
+                if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)) throw new IOException("PNG compression failed");
+            } finally {
+                bitmap.recycle();
+            }
+            ByteBuffer floats = ByteBuffer.allocate(raw.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+            for (float value : raw) floats.putFloat(value);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-raw.f32"))) {
+                stream.write(floats.array());
+            }
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-processed.u8"))) {
+                stream.write(processed);
+            }
+            org.json.JSONObject metadata = new org.json.JSONObject();
+            metadata.put("asset", v.assetFile);
+            metadata.put("capture_width", width);
+            metadata.put("capture_height", height);
+            metadata.put("input_width", v.inputWidth);
+            metadata.put("input_height", v.inputHeight);
+            metadata.put("map_width", v.outputWidth);
+            metadata.put("map_height", v.mapHeight());
+            metadata.put("pad_rows", v.padRows);
+            metadata.put("smooth_lo", smoothLo);
+            metadata.put("smooth_hi", smoothHi);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + ".json"))) {
+                stream.write(metadata.toString(2).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            Log.i(TAG, "Depth parity capture saved: " + stem);
+        } catch (Exception error) {
+            Log.w(TAG, "Depth parity capture failed", error);
+        }
     }
 
     /** Reproduce pixel_shuffle(scale=2) for a NHWC [H/2,W/2,4] tensor. */

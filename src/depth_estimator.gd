@@ -564,6 +564,11 @@ func process(delta: float):
 		if depth_bytes != null and depth_bytes.size() == model_width * model_height:
 			depth_source_age_ms = maxf(main.stream_backend.get_depth_last_age_ms(), 0.0)
 			var depth_image = Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, depth_bytes)
+			# Inference now receives upright native capture bytes. The existing
+			# GLES depth texture convention is bottom-row-first, so convert only
+			# at upload, just as we do for upright Meteor maps below.
+			if _native_depth_capture_active:
+				depth_image.flip_y()
 			depth_texture.update(depth_image)
 			depth_revision += 1
 			_perf_updates += 1
@@ -700,9 +705,8 @@ func _apply_meteor_map(entry: Dictionary) -> void:
 		model_height = entry["height"]
 		depth_texture.set_image(Image.create(model_width, model_height, false, Image.FORMAT_L8))
 	var image := Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, entry["map"])
-	# Meteor's maps are top row first. On-device maps from the native GLES
-	# capture come back bottom row first, and that's what the renderer expects
-	# (the viewport fallback flips its input instead, so its maps are top first).
+	# Meteor and corrected native inference both return upright, top-row-first
+	# maps. Match the native GLES texture convention at the upload boundary.
 	if _native_capture_supported():
 		image.flip_y()
 	depth_texture.update(image)
