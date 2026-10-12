@@ -13,13 +13,10 @@ ASSET_DIR="$1"
 # Android's production tier set. Historical/profiling exports stay under
 # models/ and are documented in models/README.md, but are deliberately not
 # carried in every APK.
-# The two EdgePad classes run the widescreen family (2026-10-04), copied
-# from nightfall-temporal-zipdepth's selected exports; see models/README.md.
-# The square 384/256 exports shipped in v0.7.11 are temporarily bundled as
-# manually selectable comparison tiers. Auto still selects the widescreen
-# production family.
+# Quest 3 Auto uses widescreen 512; Quest 2/fallback uses square 256.
+# Square 384 remains manually selectable as a reference. Retired 320 stays
+# under models/ for research, but is never bundled in normal builds.
 ZIPDEPTH_STANDARD_MODEL="${NIGHTFALL_ZIPDEPTH_STANDARD_MODEL:-$PROJECT_ROOT/models/zipdepth-wide-512x288-edgepad-gpu.tflite}"
-ZIPDEPTH_EDGEPAD_320_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_320_MODEL:-$PROJECT_ROOT/models/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite}"
 ZIPDEPTH_LEGACY_384_MODEL="$PROJECT_ROOT/models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
 ZIPDEPTH_LEGACY_256_MODEL="$PROJECT_ROOT/models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"
 # CPU twin of EdgePad-256 (tools/quantize_zipdepth_cpu.py --size 256), run through
@@ -31,7 +28,6 @@ ZIPDEPTH_EDGEPAD_384_CPU_MODEL="${NIGHTFALL_ZIPDEPTH_EDGEPAD_384_CPU_MODEL:-$PRO
 
 declare -A REQUIRED_MODELS=(
   ["EdgePad-512"]="$ZIPDEPTH_STANDARD_MODEL"
-  ["EdgePad-320"]="$ZIPDEPTH_EDGEPAD_320_MODEL"
   ["EdgePad-384-v0.7.11"]="$ZIPDEPTH_LEGACY_384_MODEL"
   ["EdgePad-256-v0.7.11"]="$ZIPDEPTH_LEGACY_256_MODEL"
   ["EdgePad-256-CPU"]="$ZIPDEPTH_EDGEPAD_256_CPU_MODEL"
@@ -54,12 +50,10 @@ rm -f \
   "$ASSET_DIR/zipdepth-base-256-direct-half-gpu.tflite" \
   "$ASSET_DIR/zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite" \
   "$ASSET_DIR/zipdepth-wide-352x198-t352x224-edgepad-gpu.tflite"
+rm -f "$ASSET_DIR/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite"
 echo "Bundling EdgePad-512 model: $ZIPDEPTH_STANDARD_MODEL"
 cp "$ZIPDEPTH_STANDARD_MODEL" \
   "$ASSET_DIR/zipdepth-wide-512x288-edgepad-gpu.tflite"
-echo "Bundling EdgePad-320 model: $ZIPDEPTH_EDGEPAD_320_MODEL"
-cp "$ZIPDEPTH_EDGEPAD_320_MODEL" \
-  "$ASSET_DIR/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite"
 echo "Bundling EdgePad-384 v0.7.11 comparison model: $ZIPDEPTH_LEGACY_384_MODEL"
 cp "$ZIPDEPTH_LEGACY_384_MODEL" \
   "$ASSET_DIR/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite"

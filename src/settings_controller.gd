@@ -89,8 +89,7 @@ const ANDROID_MODEL_AUTO := 9
 # The historical entries remain in ai_3d_models below so old saves and Linux
 # indices do not shift; Android cycles only Auto and the manual EdgePad slots.
 const ANDROID_MODEL_STANDARD := 18
-# Slot 19 restores the exact square EdgePad-256 model shipped in v0.7.11 for
-# direct quality comparisons with the current widescreen tiers.
+# Slot 19 uses the square EdgePad-256 model for Quest 2 and GPU fallback.
 const ANDROID_MODEL_LEGACY_EDGEPAD_256 := 19
 const ANDROID_MODEL_EDGEPAD_320 := 21
 const ANDROID_MODEL_EDGEPAD_256_CPU := 22
@@ -149,9 +148,10 @@ var ai_3d_models: Array = [
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256 (v0.7.11)", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-320", "java_index": 28, "gpu": true, "android": true, "linux": false},
+	# Retired slot: retain persisted indices; never selectable or bundled.
+	{"label": "EdgePad-320 (retired)", "java_index": 28, "gpu": true, "android": false, "linux": false},
 	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
 	# control's CPU option, not the locked Model list. _android_cpu_model_index()
 	# picks between them to match whatever Model is actually selected.
@@ -159,7 +159,7 @@ var ai_3d_models: Array = [
 	{"label": "EdgePad-384-CPU", "java_index": 14, "gpu": false, "android": true, "linux": false},
 	# Exact square v0.7.11 export. It uses a fresh Java index because index 25
 	# now belongs to the current widescreen EdgePad-512 model.
-	{"label": "EdgePad-384 (v0.7.11)", "java_index": 30, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-384 (Reference)", "java_index": 30, "gpu": true, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -602,7 +602,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_EDGEPAD_320, ANDROID_MODEL_LEGACY_EDGEPAD_256] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_256, ANDROID_MODEL_LEGACY_EDGEPAD_384] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var offered := meteor_depth_offered()
@@ -628,8 +628,8 @@ func cycle_ai_3d_model():
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
 		# Quest 2 lacks the OpenCL library exposed on Quest 3. Auto starts on
-		# the compatible EdgePad-320/OpenGL tier there; Quest 3 starts
-		# EdgePad-512/OpenCL and uses the 320/OpenGL path only after a real
+		# the compatible EdgePad-256/OpenGL tier there; Quest 3 starts
+		# EdgePad-512/OpenCL and uses the 256/OpenGL path only after a real
 		# OpenCL failure.
 		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
 	return main.settings.host.ai_3d_gpu_api
@@ -702,8 +702,7 @@ func normalize_ai_3d_model_for_type():
 		main.settings.host.ai_3d_model = candidates[0]
 
 # Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
-# model selector. The v0.7.11 square tiers are temporarily exposed beside
-# Auto, EdgePad-512 and EdgePad-320 for direct quality comparisons. See
+# model selector: Auto, EdgePad-512, EdgePad-256 and EdgePad-384 reference. See
 # docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
 # decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
@@ -727,7 +726,10 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
 	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_EDGEPAD_320, ANDROID_MODEL_LEGACY_EDGEPAD_256].has(main.settings.host.ai_3d_model):
+	# Preserve manual intent for saves that selected the retired 320 tier.
+	if main.settings.host.ai_3d_model == ANDROID_MODEL_EDGEPAD_320:
+		main.settings.host.ai_3d_model = ANDROID_MODEL_LEGACY_EDGEPAD_256
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_LEGACY_EDGEPAD_256].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
@@ -750,7 +752,7 @@ func get_depth_model_index() -> int:
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].java_index
 	if is_android_ai3d_auto():
-		return 28 if main.device_is_quest2 or _auto_depth_fallback else 25
+		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
 	# or MiDaS-256 when the user explicitly changes Type to CPU. The old Auto
 	# table was calibrated for the retired MiDaS GPU roster and must not make
@@ -786,7 +788,7 @@ func _android_cpu_model_index() -> int:
 func get_depth_process_stage() -> int:
 	if OS.get_name() == "Android":
 		var model_index := get_depth_model_index()
-		if model_index in [25, 26, 28, 30]:
+		if model_index in [25, 26, 30]:
 			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
 	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
 		else main.settings.host.ai_3d_process_debug
@@ -884,12 +886,14 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 		_last_backend_status = ""
 		return
 	var status = main.stream_backend.get_depth_backend_status()
-	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
+	if is_android_ai3d_auto() and get_depth_backend_index() == AI3D_BACKEND_GPU \
+			and get_ai_3d_gpu_api_effective() == 0 and not _auto_depth_fallback \
+			and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
-		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-320/OpenGL for this session" % status)
+		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
 			main.ui_controller.update_stereo_shader()
-			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-320 / OpenGL", 3.0)
+			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-256 / OpenGL", 3.0)
 		apply_stereo()
 		return
 	var requested = get_depth_backend_index()

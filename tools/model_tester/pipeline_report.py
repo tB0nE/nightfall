@@ -50,6 +50,15 @@ def desktop(source):
     return re.sub(r"precision \w+ \w+;", "", source)
 
 
+def working_size(video_size, depth_size):
+    width, height = video_size
+    dw, dh = depth_size
+    grid = (max(1,width//4), max(1,height//4))
+    if abs((dw/dh)/(width/height)-1) < .05:
+        return max(dw,grid[0]), max(dh,grid[1])
+    return grid
+
+
 class Renderer:
     def __init__(self):
         self.ctx = moderngl.create_standalone_context(backend="egl", require=430)
@@ -205,11 +214,10 @@ def main():
         depth = (np.clip((raw-lo)/max(hi-lo,1e-6),0,1)*255).astype(np.uint8)
         Image.fromarray(depth).save(folder / "normalized.png")
         depth_tex = renderer.texture(depth)
-        size = (max(1,rgb.shape[1]//4), max(1,rgb.shape[0]//4))
-        if abs((raw.shape[1]/raw.shape[0]) / (rgb.shape[1]/rgb.shape[0])-1) < .05:
-            size = (raw.shape[1],raw.shape[0])
+        size = working_size((rgb.shape[1],rgb.shape[0]), (raw.shape[1],raw.shape[0]))
         working, _ = renderer.draw("UPSAMPLE_FRAGMENT_SRC", size, {"u_texture":source,"u_depth":depth_tex,"u_depthGuide":capture_tex}, {"u_sigmaR":1000.,"u_sharp":0.,"u_linear":1})
         offsets, _ = renderer.draw("OFFSET_FRAGMENT_SRC", size, {"u_depth":working}, {"u_dispTexels":separation*size[0],"u_convergence":convergence})
+        offsets.filter = (moderngl.NEAREST, moderngl.NEAREST)
         for label, mode, eye in (("depth",7,0),("left",0,0),("right",0,1),("offset",12,0)):
             final, pixels = renderer.draw("FRAGMENT_SRC", (rgb.shape[1],rgb.shape[0]), {"u_texture":source,"u_depth":working,"u_offsets":offsets}, {"u_disparity":separation if eye==0 else -separation,"u_occlusion":1.,"u_eyeIndex":float(eye),"u_convergence":convergence,"u_dispTexels":separation*size[0],"u_lowResWidth":float(size[0]),"u_frameWidth":float(rgb.shape[1]),"u_debugSolid":0.,"u_stereoMode":mode,"u_depthProcessStage":5})
             Image.fromarray(pixels[:,:,:3]).save(folder / f"{label}.png")

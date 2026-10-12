@@ -86,6 +86,10 @@ plain-linear resampling, RGBA8 intermediate grids, occlusion search and Full
 warp shaders, with default 75% separation / 50% convergence. The working-grid
 selection follows native linear mode. Override UI percentages with
 `--separation` and `--convergence`.
+Matching-aspect maps use at least the quarter-stream grid: at 1080p,
+EdgePad-320 is resized to 480×270 while EdgePad-512 stays at 512×288.
+Offset textures use nearest sampling, matching native production (earlier
+report versions incorrectly used linear offset sampling).
 
 This is a **controlled native SDR still-image reference**, not a claim of exact
 live-device equivalence. All models use the same canonical upright native

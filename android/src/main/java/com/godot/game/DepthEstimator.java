@@ -39,10 +39,11 @@ public class DepthEstimator {
     // Interpreter/GpuDelegate.close(). The third delegate compilation in a
     // 512 -> 384 -> 320 comparison rebooted a Quest 3 even after the original
     // 750ms post-close delay. Let the final invoke settle before destruction,
-    // then give native resources substantially longer to retire before asking
-    // the driver to compile a differently shaped graph.
+    // then allow native resources to retire before compiling a differently
+    // shaped graph. Testing a 1200ms post-close pause instead of 2000ms;
+    // revalidate repeated model switches for driver stability.
     private static final long GPU_MODEL_SWITCH_PRE_CLOSE_MS = 250L;
-    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 2000L;
+    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 1200L;
     // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
     // 50ms/20Hz default unchanged, see setHzCap() below.
     private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
@@ -290,16 +291,10 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU = "zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU = "zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU = "zipdepth-base-256-direct-half-gpu.tflite";
-    // The widescreen EdgePad family (2026-10-04): one retrained checkpoint
-    // exported at 16:9 sizes, behind the EdgePad classes (25 and 28) in place
-    // of the square 384/224 exports above, which stay as
-    // the rollback. See nightfall-temporal-zipdepth's
-    // reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md. Nightfall ships two of
-    // them: 512x288 and 320x180, the latter padded to a taller tensor
-    // (GpuVariant.padRows). The family's 352x198 model was dropped for having
-    // 20% more pixels than the EdgePad-256 it would have replaced.
+    // Widescreen EdgePad-512 is the Quest 3/3S production model. The smaller
+    // widescreen exports were retired after headset quality comparisons;
+    // square EdgePad-256 is the Quest 2/fallback tier, 384 is a reference.
     private static final String MODEL_ZIPDEPTH_WIDE_512X288_GPU = "zipdepth-wide-512x288-edgepad-gpu.tflite";
-    private static final String MODEL_ZIPDEPTH_WIDE_320X180_GPU = "zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
     // TFLite ops. This w8a32 export keeps float32 activations and I/O while
@@ -727,17 +722,12 @@ public class DepthEstimator {
                     MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU,
                     384, 384, 384, 384, 0.02f, 0.1f, true));
             // Current widescreen production family. The exact square models
-            // shipped in v0.7.11 are also registered at 30/26 for a direct
-            // on-headset quality comparison; Auto remains on 25/28.
+            // shipped in v0.7.11 remain at 30 (reference) and 26 (Quest 2).
+            // Auto selects 25/OpenCL on Quest 3, 26/OpenGL on Quest 2.
             gpuVariants.put(25, new GpuVariant("ZipDepth-Wide-512x288-EdgePad-GPU",
                     MODEL_ZIPDEPTH_WIDE_512X288_GPU,
                     512, 288, 512, 288, ZIPDEPTH_DEPTH_TAU_SECONDS,
                     ZIPDEPTH_RANGE_TAU_SECONDS, true));
-            // 320x180 image in a 320x192 tensor (6 rows each side).
-            gpuVariants.put(28, new GpuVariant("ZipDepth-Wide-320x180-EdgePad-GPU",
-                    MODEL_ZIPDEPTH_WIDE_320X180_GPU,
-                    320, 192, 320, 192, ZIPDEPTH_DEPTH_TAU_SECONDS,
-                    ZIPDEPTH_RANGE_TAU_SECONDS, true, 6));
             gpuVariants.put(30, new GpuVariant("ZipDepth-384-Standard-EdgePad-v0.7.11-GPU",
                     MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU,
                     384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
@@ -1063,6 +1053,8 @@ public class DepthEstimator {
     }
 
     private static int normalizeModelIndex(int modelIndex) {
+        // Defensive compatibility for callers retaining the retired 320 ID.
+        if (modelIndex == 28) return 26;
         switch (modelIndex) {
             case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29: case 30:
                 return modelIndex;

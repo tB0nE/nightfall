@@ -64,6 +64,31 @@ pixelated. Keep this as a separate quality/resampling investigation; model
 choices and Auto defaults have not been changed by this fix. Corrected capture
 replay and broader native/legacy alignment validation remain useful checks.
 
+### Small widescreen map working grid
+
+The native linear path previously used matching-aspect maps at their native
+size regardless of density. At 1080p, 320 used a 320×180 offset grid whereas
+square 256/384 used 480×270. Native offset sampling is nearest, so 320's grid
+cells covered roughly 6×6 screen pixels instead of 4×4. Apply a quarter-stream
+minimum to matching-aspect linear grids: 320 becomes 480×270, while 512 remains
+512×288 at 1080p. Larger streams may require a larger grid. This adds some
+render-pass work but does not change inference cost or recover missing model
+detail. Await headset visual/performance testing.
+
+The offline runner now matches this rule and uses nearest offset sampling;
+earlier reports used linear offset sampling and could understate blockiness.
+
+### Final headset model selection
+
+After testing the orientation fix and revised grid, the user still preferred
+EdgePad-256 over EdgePad-320; corrected widescreen 512 now surpasses square
+384. Product choices are Auto, 512, 256 and 384 (Reference). Auto selects
+512/OpenCL on Quest 3/3S, 256/OpenGL on Quest 2, and 256/OpenGL after a genuine
+Auto OpenCL failure. Saved 320 selections migrate to 256 without shifting
+persisted indices. 320 is removed from GPU registration and APK packaging;
+local model files and comparison tools remain as research records. CPU
+choices and Linux model support are unchanged.
+
 Java square/wide GPU models share percentile clipping and smoothing settings.
 The 320 model repeats six border rows at each end of its 192-row tensor and
 crops these after unpacking; 512 has no such padding.

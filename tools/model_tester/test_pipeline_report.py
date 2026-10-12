@@ -1,10 +1,16 @@
 import unittest
 
 import numpy as np
-from pipeline_report import Renderer, desktop, shader, unpack
+from pipeline_report import Renderer, desktop, shader, unpack, working_size
 
 
 class PipelineTests(unittest.TestCase):
+    def test_working_grid_floor(self):
+        self.assertEqual(working_size((1920,1080),(320,180)),(480,270))
+        self.assertEqual(working_size((1920,1080),(512,288)),(512,288))
+        self.assertEqual(working_size((1920,1080),(384,384)),(480,270))
+        self.assertEqual(working_size((1920,1080),(256,256)),(480,270))
+        self.assertEqual(working_size((3840,2160),(512,288)),(960,540))
     def test_pixel_shuffle(self):
         actual = unpack(np.array([[[[1,2,3,4],[5,6,7,8]]]]), "packed2x2")
         np.testing.assert_array_equal(actual, [[1,2,5,6],[3,4,7,8]])

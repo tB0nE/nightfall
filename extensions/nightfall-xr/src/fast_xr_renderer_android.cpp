@@ -1488,7 +1488,8 @@ uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id
 // than the map itself: it would only resample the map once more before the
 // warp stretches it to the screen. So when the map already has the stream's
 // aspect (the widescreen models, Meteor's maps), the grid is the map's own
-// size and the upsample pass is a 1:1 copy. Colour-guided modes and
+// size (but no smaller than a quarter-stream grid) and the upsample pass is
+// a 1:1 copy only when that minimum is already met. Colour-guided modes and
 // differently shaped maps keep a quarter of the stream, where the guide adds
 // detail or the aspect needs correcting.
 //
@@ -1518,8 +1519,11 @@ void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, int p
 			width = std::max(depth_map_width, (int)(video_width * GSR_GRID_STREAM_FRACTION));
 			height = std::max(depth_map_height, (int)(video_height * GSR_GRID_STREAM_FRACTION));
 		} else if (std::fabs(map_aspect / video_aspect - 1.0f) < 0.05f) {
-			width = depth_map_width;
-			height = depth_map_height;
+			// Keep matching maps direct only when they are at least as dense
+			// as the quarter-stream grid. A 320x180 map otherwise leaves
+			// nearest-sampled warp offsets in visibly large screen blocks.
+			width = std::max(depth_map_width, width);
+			height = std::max(depth_map_height, height);
 		}
 	}
 	if (width != upsample_width || height != upsample_height) {
