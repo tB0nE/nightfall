@@ -23,7 +23,7 @@ func _get_mdns():
 	return mdns
 
 func get_is_hand_tracking() -> bool:
-	if settings.tracking_mode != 1:
+	if settings.tracking_mode not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -32,7 +32,7 @@ func get_is_hand_tracking() -> bool:
 	return false
 
 func get_hand_tracking_has_data() -> bool:
-	if settings.tracking_mode != 1:
+	if settings.tracking_mode not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -79,7 +79,8 @@ var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
 
 var _is_using_hands: bool = false
-var tracking_labels: Array = ["Off", "Hands"]
+var tracking_labels: Array = ["Off", "Hands", "Off", "UI Only"] # 2: retired head-tracking setting
+var _hand_menu_pressed: bool = false
 
 # OS/runtime controller render models (2026-08-25, see the archived
 # docs/archive/plans/gles-quest-projectionless.md plan's
@@ -1030,12 +1031,21 @@ func _sync_composition_panels():
 			_restore_kb_material()
 
 func _update_laser_layers():
+	# Only the selected hand gets a beam. Keep both raycasts enabled for
+	# hit-testing so Auto can still discover and switch to the other hand.
+	var right_ray: RayCast3D = hand_raycast
+	var left_ray: RayCast3D = left_hand_raycast
+	if _is_using_hands:
+		if xr_interaction._active_hand == "left":
+			right_ray = null
+		else:
+			left_ray = null
 	composition_controller_rays.update(
 		DEBUG_COMP_LASER,
 		comp.in_use and is_xr_active,
 		xr_camera.global_position,
-		hand_raycast,
-		left_hand_raycast)
+		right_ray,
+		left_ray)
 
 func _update_marker_layers(_delta: float):
 	composition_controller_markers.update(
@@ -2367,7 +2377,15 @@ func _apply_hand_rest(side: String, resting: bool):
 
 func _process_hand_tracking(_delta):
 	var hands_active = get_is_hand_tracking() and get_hand_tracking_has_data()
+	# Aim trackers exist throughout the session, including controller use.
+	# A physical button press must never be routed into the hand-pinch path.
+	for controller in [right_hand, left_hand]:
+		if controller and (controller.get_float("trigger") > 0.1 or controller.get_float("grip") > 0.1
+				or controller.is_button_pressed("ax_button") or controller.is_button_pressed("by_button")):
+			hands_active = false
 	if hands_active != _is_using_hands:
+		xr_interaction.cancel_transient_interactions("hand/controller ownership changed")
+		_log("[HAND] ownership=%s runtime_aim=%s tracking_mode=%d" % ["hands" if hands_active else "controllers", xr_interaction.hand_aim_available(), settings.tracking_mode])
 		_is_using_hands = hands_active
 		if _is_using_hands:
 			# The controller nodes below are about to be overwritten with hand
@@ -2389,8 +2407,12 @@ func _process_hand_tracking(_delta):
 			xr_interaction._right_inactive_time = 0.0
 			xr_interaction._left_inactive_time = 0.0
 			if hand_raycast:
+				hand_raycast.top_level = false
+				hand_raycast.transform = Transform3D.IDENTITY
 				hand_raycast.enabled = true
 			if left_hand_raycast:
+				left_hand_raycast.top_level = false
+				left_hand_raycast.transform = Transform3D.IDENTITY
 				left_hand_raycast.enabled = true
 			_log("[INPUT] Controllers active, showing controller models")
 			_set_controller_models_visible(true)
@@ -2402,6 +2424,15 @@ func _process_hand_tracking(_delta):
 			_update_hand_tracker_transform(right_hand, right_tracker)
 		if left_tracker:
 			_update_hand_tracker_transform(left_hand, left_tracker)
+		var menu_tracker = XRServer.get_tracker("/user/fbhandaim/left")
+		var menu_pressed := menu_tracker != null and bool(menu_tracker.get_input("menu_pressed"))
+		if menu_pressed and not _hand_menu_pressed:
+			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_MENU)
+		_hand_menu_pressed = menu_pressed
+		if xr_interaction.hand_aim_available() and not xr_interaction.hand_aim_valid(xr_interaction._active_hand):
+			xr_interaction.cancel_transient_interactions()
+	else:
+		_hand_menu_pressed = false
 
 func _process_button_input():
 	if not is_xr_active:
@@ -3129,6 +3160,23 @@ func _update_hand_indicator_layers():
 		xr_camera.global_position)
 
 func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTracker):
+	var hand_name := "left" if hand_node == left_hand else "right"
+	var ray: RayCast3D = left_hand_raycast if hand_name == "left" else hand_raycast
+	if not ray:
+		return
+	# XRController3D continues receiving physical-controller pose signals.
+	# Keep hand aiming independent instead of overwriting its transform.
+	ray.top_level = true
+	var aim_tracker = XRServer.get_tracker("/user/fbhandaim/" + hand_name)
+	if aim_tracker:
+		var aim_pose = aim_tracker.get_pose("default")
+		var valid: bool = aim_pose != null and aim_pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE
+		if ray:
+			ray.enabled = valid
+		if valid:
+			ray.global_transform = xr_origin.global_transform * aim_pose.get_adjusted_transform()
+			ray.force_raycast_update()
+		return
 	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & 8) != 0
 	var middle_knuckle_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL) & 8) != 0
 	
@@ -3144,17 +3192,17 @@ func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTr
 		var basis = Basis(right, up, -forward)
 		# Pitch down by 30 degrees for relaxed remote-like aiming
 		basis = basis.rotated(right, deg_to_rad(-30))
-		hand_node.transform = Transform3D(basis, middle_knuckle_pos)
+		ray.global_transform = xr_origin.global_transform * Transform3D(basis, middle_knuckle_pos)
 	elif wrist_ok:
 		var t = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST)
 		t.basis = t.basis.rotated(t.basis.y, PI)
-		hand_node.transform = t
+		ray.global_transform = xr_origin.global_transform * t
 	else:
 		var palm_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_PALM) & 8) != 0
 		if palm_ok:
 			var t = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_PALM)
 			t.basis = t.basis.rotated(t.basis.y, PI)
-			hand_node.transform = t
+			ray.global_transform = xr_origin.global_transform * t
 
 func _make_laser_gradient() -> ImageTexture:
 	var img = Image.create(1, 256, false, Image.FORMAT_RGBA8)
