@@ -215,6 +215,10 @@ func _select_tracked_hand(primary: int, right_valid: bool, left_valid: bool,
 	return _active_hand
 
 func _get_auto_primary() -> String:
+	# A cached primary must not hold ownership after it has been put down.
+	if main.right_hand_resting != main.left_hand_resting:
+		_auto_primary = "left" if main.right_hand_resting else "right"
+		return _auto_primary
 	if _auto_primary != "":
 		return _auto_primary
 	if _right_on_screen and not _left_on_screen:

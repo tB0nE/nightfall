@@ -1,5 +1,9 @@
 extends SceneTree
 
+class RestOwner extends Node3D:
+	var right_hand_resting := false
+	var left_hand_resting := false
+
 func _init():
 	var main_script = load("res://main.gd")
 	if not main_script or not main_script.can_instantiate():
@@ -10,6 +14,28 @@ func _init():
 		quit(1)
 		return
 	var interaction = script.new(null)
+	var activity_owner = main_script.new()
+	activity_owner.xr_interaction = script.new(activity_owner)
+	var resting_controller := XRController3D.new()
+	activity_owner.right_hand_resting = true
+	resting_controller.position = Vector3(0.3, 1.0, -0.4)
+	assert(not activity_owner._hand_has_activity(resting_controller, "right"))
+	resting_controller.position.x += 0.003
+	assert(not activity_owner._hand_has_activity(resting_controller, "right"))
+	resting_controller.position.x += 0.009
+	assert(activity_owner._hand_has_activity(resting_controller, "right"))
+	assert(not activity_owner._hand_has_activity(resting_controller, "right"))
+	resting_controller.free()
+	activity_owner.free()
+	var owner := RestOwner.new()
+	var controller_interaction = script.new(owner)
+	controller_interaction._auto_primary = "right"
+	owner.right_hand_resting = true
+	assert(controller_interaction._get_auto_primary() == "left")
+	owner.right_hand_resting = false
+	owner.left_hand_resting = true
+	assert(controller_interaction._get_auto_primary() == "right")
+	owner.free()
 	interaction._active_hand = "left"
 	assert(interaction._select_tracked_hand(ControllerMapper.PrimaryHand.RIGHT, true, true, 0.0, 0.9, false, true) == "right")
 	assert(interaction._select_tracked_hand(ControllerMapper.PrimaryHand.LEFT, true, true, 0.9, 0.0, true, false) == "left")

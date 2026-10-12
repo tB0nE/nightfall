@@ -2220,6 +2220,9 @@ func _process(delta):
 
 	_process_input_release()
 	_process_xr_surface_refresh()
+	# Resolve controller rest/wake before selecting the pointer and drawing
+	# beams, so a pickup takes effect in this frame rather than the next.
+	_process_controller_fade(delta)
 
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
@@ -2265,7 +2268,6 @@ func _process(delta):
 			_startup_cover = null
 			_log("[COVER] Startup cover removed")
 
-	_process_controller_fade(delta)
 
 func _prepare_fade_materials(side: String):
 	var hand = right_hand if side == "right" else left_hand
@@ -2300,37 +2302,45 @@ func _set_hand_alpha(side: String, alpha: float):
 func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 	if not hand:
 		return false
-	var pos = hand.global_position
-	var last_pos = xr_interaction._last_known_right_pos if side == "right" else xr_interaction._last_known_left_pos
-	var moved = last_pos.distance_squared_to(pos) > 0.00001
-	if side == "right":
-		xr_interaction._last_known_right_pos = pos
-	else:
-		xr_interaction._last_known_left_pos = pos
-	if moved:
-		return true
-	var rot = hand.global_rotation
-	var last_rot = xr_interaction._last_known_right_rot if side == "right" else xr_interaction._last_known_left_rot
-	if last_rot.distance_squared_to(rot) > 0.0001:
+	# Local poses exclude movement/recentering of the shared XR origin,
+	# which otherwise wakes BOTH controllers when only one was picked up.
+	var pos = hand.position
+	var rot = hand.rotation
+	var pressed := hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1 \
+		or hand.is_button_pressed("ax_button") or hand.is_button_pressed("by_button")
+	var vec = hand.get_vector2("primary")
+	pressed = pressed or absf(vec.x) > 0.1 or absf(vec.y) > 0.1
+	if not _controller_pose_initialized.has(side):
+		_controller_pose_initialized[side] = true
 		if side == "right":
+			xr_interaction._last_known_right_pos = pos
 			xr_interaction._last_known_right_rot = rot
 		else:
+			xr_interaction._last_known_left_pos = pos
 			xr_interaction._last_known_left_rot = rot
-		return true
+		return pressed
+	var last_pos = xr_interaction._last_known_right_pos if side == "right" else xr_interaction._last_known_left_pos
+	var last_rot = xr_interaction._last_known_right_rot if side == "right" else xr_interaction._last_known_left_rot
+	var resting := right_hand_resting if side == "right" else left_hand_resting
+	# Resting controllers need deliberate motion, not small tracking jitter.
+	# Keep the baseline until activity so slow pickup motion accumulates.
+	var moved = last_pos.distance_squared_to(pos) > (0.0001 if resting else 0.00001)
+	var rotated = Basis.from_euler(last_rot).get_rotation_quaternion().angle_to(
+		Basis.from_euler(rot).get_rotation_quaternion()) > (0.035 if resting else 0.01)
+	if not moved and not rotated and not pressed:
+		return false
 	if side == "right":
+		xr_interaction._last_known_right_pos = pos
 		xr_interaction._last_known_right_rot = rot
 	else:
+		xr_interaction._last_known_left_pos = pos
 		xr_interaction._last_known_left_rot = rot
-	if hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1:
-		return true
-	var vec = hand.get_vector2("primary")
-	if absf(vec.x) > 0.1 or absf(vec.y) > 0.1:
-		return true
-	return false
+	return true
 
 const HAND_REST_THRESHOLD := 4.0
 var right_hand_resting: bool = false
 var left_hand_resting: bool = false
+var _controller_pose_initialized: Dictionary = {}
 
 func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
 	if not raycast or not raycast.enabled or not raycast.is_colliding():
@@ -2340,6 +2350,9 @@ func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
 		return
+	if _controller_pose_initialized.is_empty():
+		_apply_hand_rest("right", true)
+		_apply_hand_rest("left", true)
 	if _hand_has_activity(right_hand, "right"):
 		xr_interaction._right_inactive_time = 0.0
 	else:
@@ -2350,13 +2363,11 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
-	# Keep menu, keyboard, grab-bar, and shortcut pointers available regardless
-	# of controller stillness. Once a ray has gone to rest over stream content,
-	# preserve that state until physical controller activity wakes it again.
-	var right_can_rest := right_hand_resting or _raycast_points_at_stream(hand_raycast)
-	var left_can_rest := left_hand_resting or _raycast_points_at_stream(left_hand_raycast)
-	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD and right_can_rest)
-	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD and left_can_rest)
+	# A controller placed down should rest regardless of where its last ray
+	# pointed (menu, keyboard, screen or empty space). Movement/buttons wake
+	# each controller independently on the next activity check.
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
 	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
@@ -2373,6 +2384,10 @@ func _apply_hand_rest(side: String, resting: bool):
 	else:
 		left_hand_resting = resting
 		if left_hand_raycast: left_hand_raycast.enabled = not resting
+	if not resting and controller_mapper and controller_mapper.primary_hand == ControllerMapper.PrimaryHand.AUTO \
+			and not was_clicking and not was_right_clicking and not grabbed_node and grabbed_corner_idx < 0:
+		xr_interaction._auto_primary = side
+		xr_interaction._active_hand = side
 	_log("[HAND] %s controller %s" % [side, "resting (disabled)" if resting else "picked up (re-enabled)"])
 
 func _process_hand_tracking(_delta):
