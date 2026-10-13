@@ -11,6 +11,7 @@ var corner_handles: Array = []
 
 var uv_region: Vector4 = Vector4(0.0, 0.0, 1.0, 1.0)
 var monitor: ScreenLayout.MonitorSpec = null
+var content_tabs: ScreenContentTabs = ScreenContentTabs.new()
 
 # Client-side VR presentation grid state (see MonitorGrid/MonitorPresets).
 # grid_pos is (-1,-1) until this screen has ever been placed by the grid
@@ -22,6 +23,15 @@ var grid_pos: Vector2i = Vector2i(-1, -1)
 
 func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 	monitor = m
+	# Mirror existing monitor content without changing rendering or host input.
+	# Real source selection will be wired after the browser GPU feasibility gate.
+	var tab := ScreenContentTab.for_monitor(m.id)
+	if content_tabs.tabs.is_empty():
+		content_tabs.add(tab)
+	elif content_tabs.tabs.size() == 1 and content_tabs.selected().kind == ScreenContentTab.STREAM:
+		# Existing layout changes reuse a physical screen for another monitor.
+		content_tabs.tabs[0] = tab
+		content_tabs.selected_id = tab.id
 	uv_region = Vector4(
 		float(m.frame_rect.position.x) / float(frame_size.x),
 		float(m.frame_rect.position.y) / float(frame_size.y),

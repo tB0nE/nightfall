@@ -103,6 +103,7 @@ public class GodotApp extends GodotActivity {
 		super.onCreate(savedInstanceState);
 		appContext = getApplicationContext();
 		DiagnosticLog.initialize(appContext);
+		DiagnosticLog.info("BrowserCapabilities", BrowserCapabilities.describe());
 		DiagnosticLog.info("GODOT", "Native library initialization: " + jniResult);
 		setAndroidContext(appContext);
 		acquireMulticastLock(appContext);

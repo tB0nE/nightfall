@@ -167,6 +167,7 @@ cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/mai
 cp android/src/main/java/com/godot/game/UsbLinkManager.java android/build/src/main/java/com/godot/game/UsbLinkManager.java
 cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/java/com/godot/game/GamepadInfo.java
 cp android/src/main/java/com/godot/game/AudioOutput.java android/build/src/main/java/com/godot/game/AudioOutput.java
+cp android/src/main/java/com/godot/game/BrowserCapabilities.java android/build/src/main/java/com/godot/game/BrowserCapabilities.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from
