@@ -31,6 +31,8 @@ const CMD_VDA_CANCEL: usize = 11;
 const CMD_VDA_REMOVE: usize = 12;
 const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
+const CMD_INFERENCE_GPU: usize = 15;
+const CMD_INFERENCE_CPU: usize = 16;
 const CMD_RATE_BASE: usize = 100;
 const CMD_MODEL_BASE: usize = 200;
 const CMD_SOFTEN_BASE: usize = 300;
@@ -79,6 +81,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
                     let enabled = wide("Host depth enabled");
                     AppendMenuW(menu, MF_STRING | if depth.enabled() { MF_CHECKED } else { 0 }, CMD_DEPTH_ENABLED, enabled.as_ptr());
+                    let inference_menu = CreatePopupMenu();
+                    if !inference_menu.is_null() {
+                        AppendMenuW(inference_menu, MF_STRING | if !depth.cpu_inference() { MF_CHECKED } else { 0 }, CMD_INFERENCE_GPU, wide("GPU").as_ptr());
+                        let cpu_flags = MF_STRING | if depth.cpu_inference() { MF_CHECKED } else { 0 }
+                            | if depth.cpu_inference_supported() { 0 } else { MF_GRAYED };
+                        AppendMenuW(inference_menu, cpu_flags, CMD_INFERENCE_CPU, wide("CPU").as_ptr());
+                        let label = wide(&format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }));
+                        AppendMenuW(menu, MF_POPUP, inference_menu as usize, label.as_ptr());
+                    }
                     let rate_menu = CreatePopupMenu();
                     if !rate_menu.is_null() {
                         for (i, &hz) in crate::depth::RATES.iter().enumerate() {
@@ -186,6 +197,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let command = (wparam as usize) & 0xffff;
             let depth = DEPTH.get().and_then(Option::as_ref);
             if let Some(depth) = depth {
+                if command == CMD_INFERENCE_GPU || command == CMD_INFERENCE_CPU {
+                    depth.set_cpu_inference(command == CMD_INFERENCE_CPU);
+                    return 0;
+                }
                 if (CMD_RATE_BASE..CMD_RATE_BASE + crate::depth::RATES.len()).contains(&command) {
                     depth.set_rate(crate::depth::RATES[command - CMD_RATE_BASE]);
                     return 0;

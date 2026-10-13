@@ -65,6 +65,7 @@ pub fn open(path: &Path, backend: Backend, fp16: bool, opt_level: u8, cache_dir:
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
     let fail = |err: ort::Error| format!("{file} ({}): {err}", backend.label());
     let (session, engine) = match backend {
+        Backend::Cpu => return Err("VDA's live temporal pipeline requires GPU inference".into()),
         Backend::Cuda => {
             let cuda = ep::CUDA::default().build().error_on_failure();
             (build_session(path, [cuda]).map_err(fail)?, String::new())

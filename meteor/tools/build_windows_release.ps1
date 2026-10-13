@@ -15,6 +15,7 @@ $name = "Nightfall-Meteor-$version-windows-x64"
 $stage = Join-Path $out $name
 $zip = Join-Path $out "$name.zip"
 $edgepad = 'zipdepth_wide_512x288'
+$edgepadSmall = 'zipdepth_edgepad_256'
 $ncnnVersion = '20260526'
 $ncnnDllHash = 'd5709a0c84bdc6da1b1e2bd9151a529f083ff76264de60af9bacd0bee63db025'
 $ncnnLicenseHash = '7c974bac98848df46be1af5bdaa3c3c9c01f6082a90f55caeb7f60c6208aa255'
@@ -29,8 +30,14 @@ function Assert-Hash([string]$Path, [string]$Expected) {
 foreach ($extension in @('param', 'bin')) {
     $path = Join-Path $ModelsDir "$edgepad.ncnn.$extension"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
+    $smallPath = Join-Path $ModelsDir "$edgepadSmall.ncnn.$extension"
+    if (-not (Test-Path -LiteralPath $smallPath -PathType Leaf)) { throw "Missing $smallPath" }
 }
 $paramFile = Join-Path $ModelsDir "$edgepad.ncnn.param"
+$smallParamFile = Join-Path $ModelsDir "$edgepadSmall.ncnn.param"
+if (-not (Select-String -LiteralPath $smallParamFile -Pattern '^Input .* 0=256 1=256 2=3' -Quiet)) {
+    throw "$smallParamFile has no 256x256 input size; convert it with models/convert_ncnn.py"
+}
 if (-not (Select-String -LiteralPath $paramFile -Pattern '^Input .* 0=512 1=288 2=3' -Quiet)) {
     throw "$paramFile has no 512x288 input size; convert it with models/convert_ncnn.py"
 }
@@ -92,6 +99,7 @@ $doc = Join-Path $stage 'share\doc\nightfall-meteor'
 New-Item -ItemType Directory -Path $models, $doc -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $meteor 'target\release\nightfall-meteor.exe'), $ncnnDll -Destination $stage
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepad.ncnn.param"), (Join-Path $ModelsDir "$edgepad.ncnn.bin") -Destination $models
+Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.param"), (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -Destination $models
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $doc
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-release\README.txt') -Destination $stage
 
@@ -103,7 +111,7 @@ $notices = @(
     'It includes the components below, under their own licences.'
     ''
     "- ncnn $ncnnVersion (Tencent), BSD 3-Clause: ncnn.dll"
-    '- EdgePad 512x288 weights: Nightfall fine-tune of ZipDepth (Fabio Tosi), MIT: share/nightfall-meteor/models'
+    '- EdgePad 512x288 and 256x256 weights: Nightfall ZipDepth models (Fabio Tosi), MIT: share/nightfall-meteor/models'
     '- NVIDIA TensorRT headers, Apache 2.0, compiled into the TensorRT shim'
     '- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor for microphone audio'
     '- Rust crates listed at the end'

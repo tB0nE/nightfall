@@ -215,6 +215,20 @@ impl MeteorTray {
             }
             .into(),
             model_menu.into(),
+            SubMenu {
+                label: format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }),
+                submenu: vec![RadioGroup {
+                    selected: usize::from(depth.cpu_inference()),
+                    select: Box::new(|tray: &mut Self, i| {
+                        if let Some(depth) = &tray.depth { depth.set_cpu_inference(i == 1); }
+                    }),
+                    options: vec![
+                        RadioItem { label: "GPU".into(), ..Default::default() },
+                        RadioItem { label: if depth.cpu_inference_supported() { "CPU" } else { "CPU (EdgePad only)" }.into(), enabled: depth.cpu_inference_supported(), ..Default::default() },
+                    ],
+                }.into()],
+                ..Default::default()
+            }.into(),
             rate_menu.into(),
             CheckmarkItem {
                 label: "Depth smoothing".into(),

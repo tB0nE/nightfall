@@ -152,6 +152,21 @@ but video and audio then go straight to Sunshine. The client logs this.
 
 ## Host depth
 
+The tray menu offers **Inference: GPU / CPU** for EdgePad models. GPU remains
+the default; CPU reuses the existing ncnn/ONNX weights without retraining.
+Changing this reloads inference without restarting Meteor or the stream, and
+the choice is saved in `state.toml`. CPU uses fp32 and at most four workers
+(half the available logical CPUs, minimum one) to leave capacity for games.
+Status reports the active backend. A failed CPU load does not silently keep
+the previous GPU inference running.
+
+NVDEC decoding and the existing small CUDA input-conversion kernel remain
+unchanged; CPU inference does not make Meteor NVIDIA-independent or eliminate
+all GPU work. Depth post-processing runs on CPU for CPU model outputs.
+VDA's live temporal pipeline still requires GPU: select EdgePad to enable CPU.
+CPU performance is hardware-dependent; test sustained update rate and game
+frame times rather than assuming that spare CPU capacity guarantees low latency.
+
 Meteor copies each forwarded video packet to a tap, after forwarding it. The
 tap rebuilds whole frames (`src/video_tap.rs`, a port of moonlight-common-c's
 reassembly, keeping only the data shards). Each frame then goes through:
@@ -325,6 +340,13 @@ Requirements:
   still works if it's in the folder.
 
 Without these, Meteor logs why and stays a plain proxy.
+
+EdgePad-256 is a manual, lower-compute option for weaker GPUs, using the
+same optimized square EdgePad-256 model as the headset. Release packages
+include it alongside the default widescreen EdgePad-512. Select
+**Model → EdgePad-256 (lower GPU load)**; it also supports CPU inference.
+The default remains EdgePad-512. Lower resolution trades some detail for
+less inference work, not smaller weights or necessarily less GPU memory.
 
 EdgePad 512 on ncnn, measured on an RTX 3090 (2026-10-07):
 - Against ONNX Runtime CUDA fp32 on 30 frames of a 1440p game capture
