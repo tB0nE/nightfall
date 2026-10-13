@@ -162,6 +162,7 @@ static func get_tabs() -> Array:
 				"title": "Microphone",
 				"options": [
 					_option(&"_ui_microphone_btn", "Microphone", "Off", "Send the headset microphone to the PC through Nightfall Meteor.", TARGET_SETTINGS, &"toggle_microphone"),
+					_option(&"_ui_audio_output_btn", "Audio Output", "Native", "Compare Native / AudioTrack playback; reconnects. Test with Volume: Normal.", TARGET_SETTINGS, &"cycle_audio_output", OS.get_name() == "Android"),
 				],
 			},
 			{

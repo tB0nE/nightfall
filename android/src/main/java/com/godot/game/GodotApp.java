@@ -39,6 +39,13 @@ public class GodotApp extends GodotActivity {
 		return super.dispatchKeyEvent(event);
 	}
 	public static native void initializeMoonlightJNI();
+	public static boolean openAudioTrack(int rate, int channels, int period) { return AudioOutput.open(rate, channels, period); }
+	public static boolean writeAudioTrack(float[] data, int frames) { return AudioOutput.write(data, frames); }
+	public static void closeAudioTrack() { AudioOutput.close(); }
+	public static void pauseAudioTrack() { AudioOutput.pause(); }
+	public static void resumeAudioTrack() { AudioOutput.resume(); }
+	public static int audioTrackLatency() { return AudioOutput.latencyMs(); }
+	public static void logAudioDiagnostics(String message) { DiagnosticLog.info("AudioRenderer", message); }
 	public static native void setAndroidContext(Object context);
 
 	public static String jniResult = "NOT_RUN";

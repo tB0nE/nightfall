@@ -60,6 +60,8 @@ var auto_reconnect_enabled: bool = DEFAULT_AUTO_RECONNECT_ENABLED
 var quick_start_enabled: bool = DEFAULT_QUICK_START_ENABLED
 ## Stream audio gain in dB, one of SettingsPersistence.AUDIO_BOOST_VALUES.
 var audio_boost_db: int = DEFAULT_AUDIO_BOOST_DB
+## Diagnostic Android output: 0 native (default), 1 AudioTrack.
+var android_audio_output: int = 0
 var idle_timeout_min: int = DEFAULT_IDLE_TIMEOUT_MIN
 var pipewire_restore_token: String = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
@@ -95,6 +97,7 @@ func reset_general() -> void:
 	auto_reconnect_enabled = DEFAULT_AUTO_RECONNECT_ENABLED
 	quick_start_enabled = DEFAULT_QUICK_START_ENABLED
 	audio_boost_db = DEFAULT_AUDIO_BOOST_DB
+	android_audio_output = 0
 	microphone_enabled = DEFAULT_MICROPHONE_ENABLED
 	idle_timeout_min = DEFAULT_IDLE_TIMEOUT_MIN
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN

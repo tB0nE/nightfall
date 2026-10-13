@@ -84,6 +84,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.auto_reconnect_enabled = false
 	source.quick_start_enabled = true
 	source.audio_boost_db = 9
+	source.android_audio_output = 1
 	source.microphone_enabled = true
 	source.hdr_enabled = true
 	source.idle_timeout_min = 60
@@ -94,6 +95,7 @@ func _test_app_persistence_round_trip() -> void:
 
 	var loaded := AppSettings.new()
 	SettingsPersistence.read_app(config, loaded, true, [0, 6, 7])
+	assert(loaded.android_audio_output == 1)
 	assert(not loaded.bezel_enabled)
 	assert(loaded.passthrough_enabled)
 	assert(loaded.background_mode == 2)

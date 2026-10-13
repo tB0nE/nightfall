@@ -505,6 +505,7 @@ var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_audio_boost_btn: Button
+var _ui_audio_output_btn: Button
 var _ui_usb_link_btn: Button
 var _ui_hdr_btn: Button
 var _ui_host_cursor_btn: Button
@@ -1893,6 +1894,7 @@ func _init_stream_backend():
 	if v2_node.has_method("set_reconnect_via_launch"):
 		v2_node.set_reconnect_via_launch(true)
 	stream_backend = StreamBackend.new(v2_node)
+	settings_controller.apply_audio_boost()
 	stream_backend.set_config_manager(config_mgr)
 	stream_backend.set_computer_manager(comp_mgr)
 	if OS.get_name() == "Android":

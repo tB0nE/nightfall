@@ -10,8 +10,8 @@ func _init():
 	assert(_option_count(&"picture") == 4)
 	# Desktop: Logs, Stats, hidden 3D Debug, Cursor Position, hidden Android
 	# Depth Sync, Language, Auto-Reconnect, Idle, Quick Start, Forget Meteor
-	# Keys, Microphone, Licences.
-	assert(_option_count(&"settings") == 12)
+	# Keys, Microphone, hidden Android Audio Output, Licences.
+	assert(_option_count(&"settings") == 13)
 	assert(MenuSchema.get_tab(&"settings").get("scrollable", false))
 	for row in MenuSchema.get_tab(&"settings")["rows"]:
 		assert(not String(row.get("title", "")).is_empty(), "Settings rows need section titles")

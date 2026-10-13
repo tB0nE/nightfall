@@ -30,6 +30,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("stream", "auto_reconnect", settings.auto_reconnect_enabled)
 	config.set_value("stream", "quick_start", settings.quick_start_enabled)
 	config.set_value("stream", "audio_boost_db", settings.audio_boost_db)
+	config.set_value("stream", "android_audio_output", settings.android_audio_output)
 	config.set_value("stream", "microphone", settings.microphone_enabled)
 	config.set_value("stream", "idle_timeout_min", settings.idle_timeout_min)
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
@@ -122,6 +123,7 @@ static func read_app(
 		"stream", "audio_boost_db", AppSettings.DEFAULT_AUDIO_BOOST_DB)
 	if not AUDIO_BOOST_VALUES.has(settings.audio_boost_db):
 		settings.audio_boost_db = AppSettings.DEFAULT_AUDIO_BOOST_DB
+	settings.android_audio_output = clampi(int(config.get_value("stream", "android_audio_output", 0)), 0, 1)
 	settings.microphone_enabled = config.get_value(
 		"stream", "microphone", AppSettings.DEFAULT_MICROPHONE_ENABLED) == true
 	settings.idle_timeout_min = config.get_value(

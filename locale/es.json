@@ -1,4 +1,6 @@
 {
+	"Audio Output": "Audio Output",
+	"Compare Native / AudioTrack playback; reconnects. Test with Volume: Normal.": "Compare Native / AudioTrack playback; reconnects. Test with Volume: Normal.",
 	"_note": "Spanish UI strings. Keys are the English text shown in the app; a missing or empty entry falls back to English. Keys starting with _ are ignored.",
 	"Display": "Pantalla",
 	"Stream": "Streaming",

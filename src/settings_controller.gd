@@ -1347,12 +1347,24 @@ func cycle_audio_boost():
 func get_audio_boost_label() -> String:
 	return "Normal" if main.settings.audio_boost_db == 0 else "+%d dB" % main.settings.audio_boost_db
 
+func get_audio_output_label() -> String:
+	return "AudioTrack" if main.settings.android_audio_output == 1 else "Native"
+
+func cycle_audio_output():
+	main.settings.android_audio_output = 1 - main.settings.android_audio_output
+	_save_setting(main._ui_audio_output_btn, get_audio_output_label())
+	apply_audio_boost()
+	if main.is_streaming:
+		_schedule_stream_restart()
+
 func apply_audio_boost():
 	if not (main.stream_backend and main.stream_backend._v2):
 		return
 	var audio = main.stream_backend._v2.get_audio_renderer()
 	if audio:
 		audio.set_volume_boost_db(float(main.settings.audio_boost_db))
+		if OS.get_name() == "Android" and audio.has_method("set_android_output"):
+			audio.set_android_output(main.settings.android_audio_output)
 
 # USB Link (docs/plans/active/usb-link-streaming.md) - requests Horizon OS
 # 2.5+'s TRANSPORT_USB network so streaming can use the USB-C cable instead

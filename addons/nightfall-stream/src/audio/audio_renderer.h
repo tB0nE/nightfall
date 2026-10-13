@@ -31,6 +31,7 @@ public:
     bool is_muted() const;
     void set_volume_boost_db(float db);
     float get_volume_boost_db() const;
+    void set_android_output(int output);
 
     bool is_initialized() const;
     int get_channels() const;
@@ -44,6 +45,7 @@ protected:
 private:
     void _downmix_to_stereo(const float *multi, float *stereo);
     void _apply_volume_boost(float *samples, int count) const;
+    void _record_audio(const float *decoded, int decoded_channels, const float *output, int output_channels, int frames, bool written);
 
     static AudioRenderer *active_instance_;
     friend class StreamConnection;
@@ -69,6 +71,10 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<float> volume_boost_db_{0.0f};
     std::atomic<float> volume_gain_{1.0f};
+    std::atomic<int> android_output_{0};
+    double decoded_energy_[2] = {}, output_energy_[2] = {};
+    float decoded_peak_[2] = {}, output_peak_[2] = {};
+    uint64_t diagnostic_frames_ = 0, diagnostic_failures_ = 0;
 };
 
 } // namespace godot

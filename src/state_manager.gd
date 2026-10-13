@@ -165,6 +165,8 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 		if main._ui_audio_boost_btn:
 			main.ui_controller.update_option_btn(main._ui_audio_boost_btn, main.settings_controller.get_audio_boost_label())
+		if main._ui_audio_output_btn:
+			main.ui_controller.update_option_btn(main._ui_audio_output_btn, main.settings_controller.get_audio_output_label())
 		if main._ui_hdr_btn:
 			main.ui_controller.update_option_btn(main._ui_hdr_btn, "On" if main.settings.hdr_enabled else "Off")
 		if main._ui_microphone_btn:
