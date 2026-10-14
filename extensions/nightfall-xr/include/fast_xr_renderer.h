@@ -94,6 +94,7 @@ public:
 	// Optional AI-depth synchronization. A bounded three-texture ring retains
 	// the current and two preceding decoder frames only while this is enabled.
 	void set_depth_sync(bool p_enabled, int p_delay_frames);
+	void set_depth_refinement(bool p_alignment, bool p_cleanup);
 
 	// Called every GDScript _process() tick with the latest frame's
 	// parameters; actual GL rendering happens later, in _on_pre_render().
@@ -325,6 +326,13 @@ private:
 	GLint u_delayed_upsample_sharp = -1, u_delayed_upsample_depth_guide = -1;
 	GLint u_delayed_upsample_linear = -1;
 	GLuint upsample_texture = 0, upsample_fbo = 0;
+	GLuint edge_alignment_program = 0, edge_alignment_2d_program = 0;
+	GLuint contour_cleanup_program = 0, contour_cleanup_texture = 0;
+	GLuint refined_depth_texture = 0;
+	bool pending_edge_alignment = true, pending_contour_cleanup = true;
+	bool contour_cleanup_failed = false;
+	bool run_depth_refinement(uint32_t p_source, uint32_t p_depth, const float *p_matrix,
+			bool p_texture_2d);
 	// The depth working grid (upsample and offset textures). A quarter of
 	// the stream by default; see choose_working_size().
 	int upsample_width = 0, upsample_height = 0;

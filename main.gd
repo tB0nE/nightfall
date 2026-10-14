@@ -496,6 +496,8 @@ var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
 var _ui_3d_depth_sync_btn: Button
+var _ui_3d_edge_alignment_btn: Button
+var _ui_3d_contour_cleanup_btn: Button
 var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button

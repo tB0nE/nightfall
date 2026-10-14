@@ -22,7 +22,8 @@ CAPTURE = ROOT / "addons/nightfall-stream/src/video/texture_uploader.cpp"
 def write_html(output, report):
     """Embed images so local-file previews and shared HTML need no sibling access."""
     images = {}
-    for path in [output / "original.png", *output.glob("*/*.png")]:
+    active_images = [path for model in report["models"] for path in (output / model["directory"]).glob("*.png")]
+    for path in [output / "original.png", *active_images]:
         key = path.relative_to(output).as_posix()
         images[key] = "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     template = Path(__file__).with_name("pipeline_report.html").read_text()
@@ -69,18 +70,25 @@ class Renderer:
         capture = CAPTURE.read_text().split('GLES_DEPTH_CAPTURE_FRAGMENT_SHADER = R"(', 1)[1].split(')";', 1)[0]
         capture = re.sub(r"#extension[^\n]*", "", capture).replace("samplerExternalOES", "sampler2D").replace("v_uv", "v_plain")
         self.programs["capture"] = self.ctx.program(vertex_shader=desktop(shader("VERTEX_SRC")), fragment_shader=desktop(capture))
+        for name, filename in (("edge_align", "edge_alignment.glsl"), ("edge_coherent", "edge_alignment_coherent.glsl"), ("contour_cleanup", "depth_contour_cleanup.glsl"), ("edge_overlay", "depth_edge_overlay.glsl")):
+            self.programs[name] = self.ctx.program(vertex_shader=desktop(shader("VERTEX_SRC")), fragment_shader=Path(__file__).with_name(filename).read_text())
+        field_source = Path(__file__).with_name("edge_alignment.glsl").read_text().replace("#version 430 core", "#version 430 core\n#define BOUNDED3_FIELD")
+        self.programs["edge_field"] = self.ctx.program(vertex_shader=desktop(shader("VERTEX_SRC")), fragment_shader=field_source)
 
     def texture(self, array):
         if array.ndim == 2:
             array = array[..., None]
-        tex = self.ctx.texture((array.shape[1], array.shape[0]), array.shape[2], np.ascontiguousarray(array[::-1]).tobytes())
+        dtype = {np.dtype("uint8"):"f1", np.dtype("float16"):"f2", np.dtype("float32"):"f4"}.get(array.dtype)
+        if dtype is None:
+            raise ValueError(f"Unsupported texture dtype: {array.dtype}")
+        tex = self.ctx.texture((array.shape[1], array.shape[0]), array.shape[2], np.ascontiguousarray(array[::-1]).tobytes(), dtype=dtype)
         tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
         tex.repeat_x = tex.repeat_y = False
         return tex
 
-    def draw(self, name, size, textures, uniforms):
+    def draw(self, name, size, textures, uniforms, dtype="f1"):
         program = self.programs[name]
-        tex = self.ctx.texture(size, 4)
+        tex = self.ctx.texture(size, 4, dtype=dtype)
         tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
         tex.repeat_x = tex.repeat_y = False
         fbo = self.ctx.framebuffer([tex])
@@ -101,6 +109,20 @@ class Renderer:
         vao.release()
         fbo.release()
         return tex, pixels
+
+    def bounded3(self, depth, guide, size):
+        field, _ = self.draw("edge_field", size, {"u_depth":depth,"u_guide":guide}, {"u_radius":2.,"u_strength":.75}, dtype="f2")
+        try:
+            return self.draw("edge_coherent", size, {"u_depth":depth,"u_field":field}, {}, dtype="f2")
+        finally:
+            field.release()
+
+    def bounded4(self, depth, guide, size):
+        aligned, _ = self.draw("edge_align", size, {"u_depth":depth,"u_guide":guide}, {"u_radius":2.,"u_strength":.75})
+        try:
+            return self.draw("contour_cleanup",size,{"u_depth":aligned},{},dtype="f2")
+        finally:
+            aligned.release()
 
 
 def unpack(output, layout):
@@ -161,10 +183,15 @@ def main():
     parser.add_argument("manifest", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--meteor-models", type=Path, help="Add installed Meteor ONNX models from this directory, using controlled native input")
-    parser.add_argument("--include-vda", action="store_true", help="Include Meteor VDA cold-start ONNX (requires --meteor-models; no temporal history)")
+    parser.add_argument("--include-vda", action="store_true", help="Include Meteor VDA cold-start ONNX (requires --meteor-models or --vda-model; no temporal history)")
+    parser.add_argument("--vda-model", type=Path, help="Add this Meteor VDA cold-start ONNX without adding the Meteor EdgePad models")
     parser.add_argument("--separation", type=float, default=75, help="UI percentage")
     parser.add_argument("--convergence", type=float, default=50, help="UI percentage")
+    parser.add_argument("--edge-alignment", action="store_true", help="Local experiment: add Bounded-2 and coherent Bounded-3; production stays linear")
+    parser.add_argument("--contour-cleanup", action="store_true", help="Add Bounded-4 contour cleanup (requires --edge-alignment)")
     args = parser.parse_args()
+    if args.contour_cleanup and not args.edge_alignment:
+        parser.error("--contour-cleanup requires --edge-alignment")
     specs = json.loads(args.manifest.read_text())
     if args.meteor_models:
         for filename, label, size in (
@@ -177,10 +204,10 @@ def main():
                 raise FileNotFoundError(f"Missing Meteor model: {path}")
             specs.append({"name":label+" (controlled input)", "path":str(path),
                           "input_size":size,"input_layout":"nchw","output_layout":"nchw"})
-    if args.include_vda:
-        if not args.meteor_models:
-            parser.error("--include-vda requires --meteor-models")
-        path = args.meteor_models.resolve() / "vda_s_518x294_cold.onnx"
+    if args.include_vda or args.vda_model:
+        if not args.meteor_models and not args.vda_model:
+            parser.error("--include-vda requires --meteor-models or --vda-model")
+        path = args.vda_model.resolve() if args.vda_model else args.meteor_models.resolve() / "vda_s_518x294_cold.onnx"
         if not path.is_file():
             raise FileNotFoundError(path)
         specs.append({"name":"Meteor VDA Small 518×294 (cold start, controlled input)",
@@ -191,7 +218,7 @@ def main():
     renderer = Renderer()
     source = renderer.texture(rgb)
     Image.fromarray(rgb).save(args.output / "original.png")
-    report = {"scope": "Production native SDR shaders on desktop EGL; CPU inference, canonical upright capture, first-frame normalization. Not live Quest/Meteor parity; no temporal history, HDR, transport, SurfaceTexture transform or picture controls.", "renderer": renderer.ctx.info["GL_RENDERER"], "separation_pct": args.separation, "convergence_pct": args.convergence, "native_sha256": hashlib.sha256(NATIVE.read_bytes()).hexdigest(), "capture_sha256": hashlib.sha256(CAPTURE.read_bytes()).hexdigest(), "models": []}
+    report = {"scope": "Controlled static SDR reference. Linear entries use production shaders; bounded-alignment entries are LOCAL EXPERIMENTS, not headset behavior. CPU inference; no temporal history, HDR, transport or compositor. Compare alignment against Original, NOT the intentionally warped colour eye.", "renderer": renderer.ctx.info["GL_RENDERER"], "separation_pct": args.separation, "convergence_pct": args.convergence, "native_sha256": hashlib.sha256(NATIVE.read_bytes()).hexdigest(), "capture_sha256": hashlib.sha256(CAPTURE.read_bytes()).hexdigest(), "experiment_sha256": hashlib.sha256(Path(__file__).with_name("edge_alignment.glsl").read_bytes()).hexdigest(), "models": []}
     separation, convergence = .006 * args.separation / 100, args.convergence / 100
     for index, spec in enumerate(specs):
         print(f"Processing {spec['name']}", flush=True)
@@ -216,14 +243,43 @@ def main():
         depth_tex = renderer.texture(depth)
         size = working_size((rgb.shape[1],rgb.shape[0]), (raw.shape[1],raw.shape[0]))
         working, _ = renderer.draw("UPSAMPLE_FRAGMENT_SRC", size, {"u_texture":source,"u_depth":depth_tex,"u_depthGuide":capture_tex}, {"u_sigmaR":1000.,"u_sharp":0.,"u_linear":1})
-        offsets, _ = renderer.draw("OFFSET_FRAGMENT_SRC", size, {"u_depth":working}, {"u_dispTexels":separation*size[0],"u_convergence":convergence})
-        offsets.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        for label, mode, eye in (("depth",7,0),("left",0,0),("right",0,1),("offset",12,0)):
-            final, pixels = renderer.draw("FRAGMENT_SRC", (rgb.shape[1],rgb.shape[0]), {"u_texture":source,"u_depth":working,"u_offsets":offsets}, {"u_disparity":separation if eye==0 else -separation,"u_occlusion":1.,"u_eyeIndex":float(eye),"u_convergence":convergence,"u_dispTexels":separation*size[0],"u_lowResWidth":float(size[0]),"u_frameWidth":float(rgb.shape[1]),"u_debugSolid":0.,"u_stereoMode":mode,"u_depthProcessStage":5})
-            Image.fromarray(pixels[:,:,:3]).save(folder / f"{label}.png")
-            final.release()
-        report["models"].append({"name":spec["name"],"directory":str(index),"spec":spec,"depth_shape":list(raw.shape),"working_size":list(size),"normalization_range":[float(lo),float(hi)],**info})
-        for tex in (capture_tex,depth_tex,working,offsets):
+        variants = [("linear",0.,0.)]
+        if args.edge_alignment:
+            variants += [("bounded-2",2.,.75),("bounded-3",2.,.75)]
+            if args.contour_cleanup:
+                variants += [("bounded-4",2.,.75)]
+        for label, radius, strength in variants:
+            variant_folder = folder if label == "linear" else args.output / f"{index}-{label}"
+            variant_folder.mkdir(exist_ok=True)
+            aligned = working
+            if radius:
+                if label == "bounded-3":
+                    aligned, _ = renderer.bounded3(depth_tex,source,size)
+                elif label == "bounded-4":
+                    aligned, _ = renderer.bounded4(depth_tex,source,size)
+                else:
+                    aligned, _ = renderer.draw("edge_align", size, {"u_depth":depth_tex,"u_guide":source}, {"u_radius":radius,"u_strength":strength})
+                Image.fromarray(model_rgb).save(variant_folder / "input.png")
+                Image.fromarray(depth).save(variant_folder / "normalized.png")
+            offsets, _ = renderer.draw("OFFSET_FRAGMENT_SRC", size, {"u_depth":aligned}, {"u_dispTexels":separation*size[0],"u_convergence":convergence})
+            offsets.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            for view, mode, eye in (("depth",7,0),("left",0,0),("right",0,1),("offset",12,0)):
+                final, pixels = renderer.draw("FRAGMENT_SRC", (rgb.shape[1],rgb.shape[0]), {"u_texture":source,"u_depth":aligned,"u_offsets":offsets}, {"u_disparity":separation if eye==0 else -separation,"u_occlusion":1.,"u_eyeIndex":float(eye),"u_convergence":convergence,"u_dispTexels":separation*size[0],"u_lowResWidth":float(size[0]),"u_frameWidth":float(rgb.shape[1]),"u_debugSolid":0.,"u_stereoMode":mode,"u_depthProcessStage":5})
+                Image.fromarray(pixels[:,:,:3]).save(variant_folder / f"{view}.png")
+                final.release()
+            overlay, pixels = renderer.draw("edge_overlay", (rgb.shape[1],rgb.shape[0]), {"u_depth":aligned,"u_guide":source}, {})
+            Image.fromarray(pixels[:,:,:3]).save(variant_folder / "overlay.png")
+            overlay.release()
+            alignment = {"method":label,"radius_depth_texels":radius,"strength":strength,"raw_reference":f"{index}/raw.npy","input_depth_precision":"uint8","refined_depth_precision":"float16" if label in ("bounded-3","bounded-4") else "uint8"}
+            if label == "bounded-3":
+                alignment.update({"field_precision":"signed float16","tangent_neighbours":4,"ambiguity_rejection":True,"coherent_shader_sha256":hashlib.sha256(Path(__file__).with_name("edge_alignment_coherent.glsl").read_bytes()).hexdigest()})
+            elif label == "bounded-4":
+                alignment.update({"base":"bounded-2","tangent_depth_neighbours":4,"thin_feature_guard":True,"cleanup_shader_sha256":hashlib.sha256(Path(__file__).with_name("depth_contour_cleanup.glsl").read_bytes()).hexdigest()})
+            report["models"].append({"name":spec["name"] + " / " + label,"directory":variant_folder.name,"spec":spec,"depth_shape":list(raw.shape),"working_size":list(size),"normalization_range":[float(lo),float(hi)],"alignment":alignment,**info})
+            offsets.release()
+            if aligned is not working:
+                aligned.release()
+        for tex in (capture_tex,depth_tex,working):
             tex.release()
     (args.output / "report.json").write_text(json.dumps(report, indent=2)+"\n")
     write_html(args.output, report)

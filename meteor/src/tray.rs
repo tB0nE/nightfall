@@ -242,6 +242,23 @@ impl MeteorTray {
             }
             .into(),
             softening_menu.into(),
+            CheckmarkItem {
+                label: "Edge alignment (experimental)".into(),
+                checked: depth.edge_alignment(),
+                activate: Box::new(|tray: &mut Self| {
+                    if let Some(depth) = &tray.depth { depth.set_edge_alignment(!depth.edge_alignment()); }
+                }),
+                ..Default::default()
+            }.into(),
+            CheckmarkItem {
+                label: "Contour cleanup (requires alignment)".into(),
+                checked: depth.contour_cleanup(),
+                enabled: depth.edge_alignment(),
+                activate: Box::new(|tray: &mut Self| {
+                    if let Some(depth) = &tray.depth { depth.set_contour_cleanup(!depth.contour_cleanup()); }
+                }),
+                ..Default::default()
+            }.into(),
             info(readout),
         ]
         .into_iter()

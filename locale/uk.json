@@ -1,4 +1,8 @@
 {
+	"Edge Alignment": "Edge Alignment",
+	"Align on-headset depth edges to colour. Meteor uses server controls.": "Align on-headset depth edges to colour. Meteor uses server controls.",
+	"Contour Cleanup": "Contour Cleanup",
+	"Smooth depth contours. Requires Edge Alignment.": "Smooth depth contours. Requires Edge Alignment.",
 	"Audio Output": "Audio Output",
 	"Compare Native / AudioTrack playback; reconnects. Test with Volume: Normal.": "Compare Native / AudioTrack playback; reconnects. Test with Volume: Normal.",
 	"_note": "Ukrainian UI strings. Keys are the English text shown in the app; a missing or empty entry falls back to English. Keys starting with _ are ignored.",

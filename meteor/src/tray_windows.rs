@@ -33,6 +33,8 @@ const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
 const CMD_INFERENCE_GPU: usize = 15;
 const CMD_INFERENCE_CPU: usize = 16;
+const CMD_EDGE_ALIGNMENT: usize = 17;
+const CMD_CONTOUR_CLEANUP: usize = 18;
 const CMD_RATE_BASE: usize = 100;
 const CMD_MODEL_BASE: usize = 200;
 const CMD_SOFTEN_BASE: usize = 300;
@@ -146,6 +148,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     }
                     let smoothing = wide("Depth smoothing");
                     AppendMenuW(menu, MF_STRING | if depth.smoothing() { MF_CHECKED } else { 0 }, CMD_DEPTH_SMOOTHING, smoothing.as_ptr());
+                    let alignment = wide("Edge alignment (experimental)");
+                    AppendMenuW(menu, MF_STRING | if depth.edge_alignment() { MF_CHECKED } else { 0 }, CMD_EDGE_ALIGNMENT, alignment.as_ptr());
+                    let cleanup = wide("Contour cleanup (requires alignment)");
+                    AppendMenuW(menu, MF_STRING | if depth.contour_cleanup() { MF_CHECKED } else { 0 } | if depth.edge_alignment() { 0 } else { MF_GRAYED }, CMD_CONTOUR_CLEANUP, cleanup.as_ptr());
                     let softening_menu = CreatePopupMenu();
                     if !softening_menu.is_null() {
                         for (i, (label, _)) in crate::vda::SOFTENING.iter().enumerate() {
@@ -227,6 +233,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 }
                 CMD_DEPTH_ENABLED => { if let Some(depth) = depth { depth.set_enabled(!depth.enabled()); } }
                 CMD_DEPTH_SMOOTHING => { if let Some(depth) = depth { depth.set_smoothing(!depth.smoothing()); } }
+                CMD_EDGE_ALIGNMENT => { if let Some(depth) = depth { depth.set_edge_alignment(!depth.edge_alignment()); } }
+                CMD_CONTOUR_CLEANUP => { if let Some(depth) = depth { if depth.edge_alignment() { depth.set_contour_cleanup(!depth.contour_cleanup()); } } }
                 CMD_VDA_DOWNLOAD => { if let Some(depth) = depth { depth.download_vda(); } }
                 CMD_VDA_CANCEL => { if let Some(depth) = depth { depth.download.cancel.store(true, Ordering::Relaxed); } }
                 CMD_VDA_REMOVE => { if let Some(depth) = depth { depth.remove_vda_download(); } }

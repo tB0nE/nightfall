@@ -266,6 +266,11 @@ func process_frame(new_frame: bool) -> void:
 				main.settings.host.stream_fps,
 				main.depth_estimator._native_depth_capture_active)
 	renderer.set_depth_sync(depth_sync_enabled, delay_frames)
+	# Meteor has independent server-side refinement switches. Do not process
+	# its already-refined maps again on the headset.
+	var local_depth: bool = main.depth_estimator != null and not main.depth_estimator.meteor_in_use()
+	renderer.set_depth_refinement(local_depth and main.settings.host.ai_3d_edge_alignment,
+		main.settings.host.ai_3d_contour_cleanup)
 	renderer.submit_frame(true, oes_id, depth_id, guide_id, matrix,
 			3.0, main.primary_screen.mesh_size.x, false, separation,
 			false, main.settings.passthrough_enabled, fence, mode,

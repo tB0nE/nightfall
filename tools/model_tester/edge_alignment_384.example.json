@@ -1,0 +1,3 @@
+[
+  {"name":"EdgePad-384", "path":"../../models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite", "input_size":[384,384], "input_layout":"nhwc", "output_layout":"packed2x2"}
+]

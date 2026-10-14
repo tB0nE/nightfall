@@ -15,12 +15,12 @@ body{margin:0;background:#15171b;color:#eee;font:16px system-ui;display:grid;gri
 </style>
 <aside><h2>Models</h2><nav id="models"></nav></aside>
 <main><button id="back" hidden>← Back to comparison</button><h1 id="title"></h1><p id="scope"></p>
-<section id="overview"><p>All final depthmaps, using the same source image and pipeline settings. Click a model to inspect its depth and warped image.</p><button id="compare-two">Compare 2</button><p id="selection-status" role="status" aria-live="polite"></p><div id="comparison"></div></section>
+<section id="overview"><p>All final depthmaps, using the same source image and pipeline settings. Click a model to inspect its depth and warped image.</p><label>Overview <select id="overview-stage"><option value="depth">Final depth</option><option value="overlay">Original + depth edges (cyan)</option></select></label><button id="compare-two">Compare 2</button><p id="selection-status" role="status" aria-live="polite"></p><div id="comparison"></div></section>
 <section id="detail" hidden>
-<label>Depth view <select id="stage"><option value="depth">Final depth</option><option value="normalized">Normalized model depth</option><option value="offset">Warp offset</option><option value="input">Model input</option></select></label>
+<label>Depth view <select id="stage"><option value="depth">Final depth</option><option value="overlay">Original + depth edges (cyan)</option><option value="normalized">Normalized model depth</option><option value="offset">Warp offset</option><option value="input">Model input</option></select></label>
 <label>Colour eye <select id="eye"><option value="left">Left</option><option value="right">Right</option></select></label>
 <button id="hold" aria-label="Hold to show warped colour image">Hold to show final image (or Space)</button>
-<button id="original">Show original</button><p id="caption"></p><div id="image-frame" tabindex="-1"><div id="image-grid"><div class="image-panel"><h3 id="first-label" hidden></h3><img id="view" alt="Selected model depth map"></div><div class="image-panel" id="second-panel" hidden><h3 id="second-label"></h3><img id="second-view" alt="Second model depth map"></div></div><button id="fullscreen" title="View fullscreen (Esc to exit)" aria-label="View image fullscreen">⛶ Fullscreen</button></div><details><summary>Pipeline details</summary><pre id="details"></pre></details></section></main>
+<button id="original">Show original</button><p>Check spatial alignment against Original or the cyan edge overlay. Warped colour is intentionally displaced for stereo.</p><p id="caption"></p><div id="image-frame" tabindex="-1"><div id="image-grid"><div class="image-panel"><h3 id="first-label" hidden></h3><img id="view" alt="Selected model depth map"></div><div class="image-panel" id="second-panel" hidden><h3 id="second-label"></h3><img id="second-view" alt="Second model depth map"></div></div><button id="fullscreen" title="View fullscreen (Esc to exit)" aria-label="View image fullscreen">⛶ Fullscreen</button></div><details><summary>Pipeline details</summary><pre id="details"></pre></details></section></main>
 <script>
 const report=__REPORT_JSON__;
 const images=__IMAGES_JSON__;
@@ -32,9 +32,10 @@ el('fullscreen').hidden=!document.fullscreenEnabled;
 el('fullscreen').onclick=async()=>{try{if(document.fullscreenElement){await document.exitFullscreen()}else{await el('image-frame').requestFullscreen();el('image-frame').focus()}}catch(error){el('caption').textContent='Fullscreen unavailable: '+error.message}};
 document.addEventListener('fullscreenchange',()=>{const active=!!document.fullscreenElement;el('fullscreen').textContent=active?'⛶ Exit fullscreen':'⛶ Fullscreen';el('fullscreen').setAttribute('aria-label',active?'Exit fullscreen':'View image fullscreen')});
 el('scope').textContent=report.scope+' Renderer: '+report.renderer;
-function openModel(i){selected=i;pair=null;held=false;original=false;overview=false;render();el('back').focus()}
-function pickModel(i){if(!selectingPair){openModel(i);return}picks=picks.includes(i)?picks.filter(n=>n!==i):[...picks,i];if(picks.length===2){pair=[...picks];selected=pair[0];selectingPair=false;overview=false;held=false;original=false;render();el('back').focus()}else{render()}}
+function openModel(i){selected=i;pair=null;held=false;original=false;overview=false;el('stage').value=el('overview-stage').value;render();el('back').focus()}
+function pickModel(i){if(!selectingPair){openModel(i);return}picks=picks.includes(i)?picks.filter(n=>n!==i):[...picks,i];if(picks.length===2){pair=[...picks];selected=pair[0];selectingPair=false;overview=false;held=false;original=false;el('stage').value=el('overview-stage').value;render();el('back').focus()}else{render()}}
 el('compare-two').onclick=()=>{selectingPair=!selectingPair;picks=[];render()};
+el('overview-stage').onchange=()=>{[...el('comparison').children].forEach((card,i)=>{card.querySelector('img').src=imageSource(report.models[i].directory+'/'+el('overview-stage').value+'.png')})};
 report.models.forEach((m,i)=>{const b=document.createElement('button');b.textContent=m.name;b.onclick=()=>openModel(i);el('models').append(b);const card=document.createElement('button');card.className='model-card';card.onclick=()=>pickModel(i);const title=document.createElement('strong');title.textContent=m.name;const img=document.createElement('img');img.src=imageSource(m.directory+'/depth.png');img.alt=m.name+' final depthmap';card.append(title,img);el('comparison').append(card)});
 function render(){
 document.body.classList.toggle('overview',overview||!!pair);el('overview').hidden=!overview;el('detail').hidden=overview;el('back').hidden=overview;
