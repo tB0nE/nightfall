@@ -287,6 +287,7 @@ var native_xr_renderer: NativeXrRendererManager
 var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
+var browser_prototype: RefCounted
 var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
@@ -1072,6 +1073,8 @@ func _update_grab_bar_layers():
 		screen_shortcuts.revealed_screen if screen_shortcuts else null)
 
 func exit_app():
+	if browser_prototype:
+		browser_prototype.stop()
 	get_tree().quit()
 
 func disconnect_stream():
@@ -1338,13 +1341,13 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	# goes straight to the welcome screen instead of a fresh stream - hide it
 	# again so it doesn't blink away on top of the welcome screen content.
 	comp.hide_loading_dots()
-	comp_shader_mat.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+	comp_shader_mat.set_shader_parameter("main_texture", get_welcome_content_texture())
 	comp_shader_mat.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_left:
-		comp_shader_mat_left.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		comp_shader_mat_left.set_shader_parameter("main_texture", get_welcome_content_texture())
 		comp_shader_mat_left.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_right:
-		comp_shader_mat_right.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		comp_shader_mat_right.set_shader_parameter("main_texture", get_welcome_content_texture())
 		comp_shader_mat_right.set_shader_parameter("yuv_mode", 0)
 	if not comp.in_use and screen_mesh.material_override is ShaderMaterial:
 		screen_mesh.material_override.set_shader_parameter("yuv_mode", 0)
@@ -1358,7 +1361,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 		comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	else:
 		if not comp.in_use:
-			screen_mesh.material_override.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+			screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 		_switch_to_mesh_rendering()
 	if mouse_captured_by_stream:
 		input_handler.release_stream_mouse()
@@ -1466,6 +1469,7 @@ func _init_modules():
 	native_xr_renderer = NativeXrRendererManager.new(self)
 	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
+	browser_prototype = preload("res://src/browser_prototype.gd").new(self)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
@@ -2150,9 +2154,9 @@ func _init_textures_and_ui():
 
 	stream_manager.bind_texture()
 	if screen_mesh.material_override is ShaderMaterial:
-		screen_mesh.material_override.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 	comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	var _wt = welcome_viewport.get_texture()
+	var _wt = get_welcome_content_texture()
 
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	ui_controller.update_ui()
@@ -2197,13 +2201,26 @@ func _try_auto_connect():
 
 func _post_ready_check():
 	await get_tree().create_timer(0.5).timeout
+	# Godot strips command-line extras from exported Android launchers. Reuse
+	# the app-owned one-shot marker pattern used by our diagnostics exporter.
+	var browser_test_marker := "/sdcard/Android/data/app.nightfall.quest/files/browser_gpu_smoke_test"
+	if OS.has_feature("android") and FileAccess.file_exists(browser_test_marker):
+		DirAccess.remove_absolute(browser_test_marker)
+		browser_prototype.start()
 
 
 
 func _on_joy_changed(device: int, connected: bool):
 	input_handler.on_joy_connection_changed(device, connected)
 
+func get_welcome_content_texture() -> Texture2D:
+	if browser_prototype and browser_prototype.active and browser_prototype.texture:
+		return browser_prototype.texture
+	return welcome_viewport.get_texture()
+
 func _process(delta):
+	if browser_prototype:
+		browser_prototype.process()
 	if is_xr_active:
 		_process_hand_tracking(delta)
 
@@ -2740,6 +2757,8 @@ func _process_idle_timeout():
 
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if browser_prototype:
+			browser_prototype.stop()
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:

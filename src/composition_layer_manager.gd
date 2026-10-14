@@ -910,7 +910,7 @@ func connect_welcome_texture():
 		return
 	for mat in get_shader_mats():
 		if mat:
-			mat.set_shader_parameter("main_texture", main.welcome_viewport.get_texture())
+			mat.set_shader_parameter("main_texture", main.get_welcome_content_texture())
 			mat.set_shader_parameter("yuv_mode", 0)
 	main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 

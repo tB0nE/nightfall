@@ -658,6 +658,7 @@ void TextureUploader::update_from_raw_bgra(int width, int height, const uint8_t 
 
 #ifdef __ANDROID__
 extern JavaVM *nightfall_get_jvm();
+extern jclass nightfall_get_godot_app_class();
 
 namespace {
 const char *GLES_EXTERNAL_VERTEX_SHADER = R"(
@@ -750,7 +751,87 @@ JNIEnv *get_gles_jni_env(JavaVM *&out_vm) {
     }
     return env;
 }
+
+// Browser polling can run inside Godot's canvas draw frame rather than at the
+// decoder's usual dispatch boundary. Preserve actual driver state so our raw GL
+// operations neither inherit clipping/samplers nor invalidate Godot's cache.
+class BrowserGlState {
+    bool enabled_;
+    GLint active_ = 0, active_oes_ = 0, active_tex2d_ = 0, oes_ = 0, tex2d_ = 0, sampler_ = 0;
+    GLint draw_fbo_ = 0, read_fbo_ = 0, program_ = 0, viewport_[4]{};
+    GLboolean color_mask_[4]{};
+    static constexpr GLenum capabilities_[7] = {
+        GL_SCISSOR_TEST, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_BLEND,
+        GL_CULL_FACE, GL_RASTERIZER_DISCARD, GL_SAMPLE_ALPHA_TO_COVERAGE
+    };
+    GLboolean capabilities_enabled_[7]{};
+public:
+    explicit BrowserGlState(bool enabled) : enabled_(enabled) {
+        if (!enabled_) return;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &active_);
+        glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &active_oes_);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &active_tex2d_);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &oes_);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex2d_);
+        glGetIntegerv(GL_SAMPLER_BINDING, &sampler_);
+        glActiveTexture(active_);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_fbo_);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo_);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &program_);
+        glGetIntegerv(GL_VIEWPORT, viewport_);
+        glGetBooleanv(GL_COLOR_WRITEMASK, color_mask_);
+        for (int i = 0; i < 7; ++i) capabilities_enabled_[i] = glIsEnabled(capabilities_[i]);
+    }
+    void prepare_copy() {
+        if (!enabled_) return;
+        for (GLenum capability : capabilities_) glDisable(capability);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glBindSampler(0, 0); // OES texture's own non-mipmapped linear sampler.
+    }
+    ~BrowserGlState() {
+        if (!enabled_) return;
+        glUseProgram(program_);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo_);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo_);
+        glViewport(viewport_[0], viewport_[1], viewport_[2], viewport_[3]);
+        glColorMask(color_mask_[0], color_mask_[1], color_mask_[2], color_mask_[3]);
+        for (int i = 0; i < 7; ++i) {
+            if (capabilities_enabled_[i]) glEnable(capabilities_[i]); else glDisable(capabilities_[i]);
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, oes_);
+        glBindTexture(GL_TEXTURE_2D, tex2d_);
+        glBindSampler(0, sampler_);
+        glActiveTexture(active_);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, active_oes_);
+        glBindTexture(GL_TEXTURE_2D, active_tex2d_);
+    }
+};
 } // namespace
+
+void TextureUploader::_render_thread_open_browser() {
+    if (!browser_requested_.load()) return;
+    BrowserGlState browser_state(true);
+    browser_probe_frames_ = 0;
+    if (!gles_decoder_window_) _render_thread_create_android_gles_surface();
+    if (!browser_requested_.load() || !gles_surface_ready_) return;
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    if (!env || !app) return;
+    jmethodID method = env->GetStaticMethodID(app, "openBrowser", "(Landroid/view/Surface;Landroid/graphics/SurfaceTexture;II)V");
+    jobject surface = ANativeWindow_toSurface(env, gles_decoder_window_);
+    if (method && surface) env->CallStaticVoidMethod(app, method, surface,
+            static_cast<jobject>(gles_surface_texture_java_), gles_surface_width_, gles_surface_height_);
+    if (surface) env->DeleteLocalRef(surface);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        NF_LOGE("BrowserPrototype", "Could not open Java GPU browser");
+    }
+    browser_open_dispatched_.store(true);
+    if (!browser_requested_.load()) close_browser_prototype();
+}
 
 ANativeWindow *TextureUploader::create_android_gles_decoder_surface(int width, int height) {
     RenderingServer *rs = RenderingServer::get_singleton();
@@ -968,7 +1049,7 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
 void TextureUploader::update_android_gles_external_texture() {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return;
-    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    std::unique_lock<std::mutex> lock(gles_surface_mutex_);
     ++gles_decode_call_count_;
     if (!gles_surface_ready_ || gles_update_queued_) {
         if (gles_surface_ready_) ++gles_decode_coalesced_count_;
@@ -981,17 +1062,23 @@ void TextureUploader::update_android_gles_external_texture() {
         return;
     }
     gles_update_queued_ = true;
-    static int queued_updates = 0;
-    if (++queued_updates <= 3) {
-        NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_updates);
+    static std::atomic<int> queued_updates{0};
+    const int queued_update = ++queued_updates;
+    if (queued_update <= 3) {
+        NF_LOG("TextureUploader", "Queued GLES external frame #%d", queued_update);
     }
-    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
     if (gles_decode_call_count_ >= 120) {
         NF_LOG("TextureUploader", "Decode-thread GLES request rate: %d calls, %d coalesced (render thread busy)",
                 gles_decode_call_count_, gles_decode_coalesced_count_);
         gles_decode_call_count_ = 0;
         gles_decode_coalesced_count_ = 0;
     }
+    // Decoder workers queue this callback, but browser polling runs on Godot's
+    // main/render thread in the default thread-safe renderer. In that case
+    // call_on_render_thread executes inline and the callback takes this same
+    // mutex. Never dispatch while holding it, even for an apparent "queue" API.
+    lock.unlock();
+    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_update_android_gles_texture));
 }
 
 bool TextureUploader::_render_thread_ensure_depth_capture(int width, int height) {
@@ -1158,6 +1245,8 @@ inline double ms_between(std::chrono::steady_clock::time_point a, std::chrono::s
 } // namespace
 
 void TextureUploader::_render_thread_update_android_gles_texture() {
+    const bool browser_surface = browser_open_dispatched_.load();
+    BrowserGlState browser_state(browser_surface);
     const auto t_frame_start = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
@@ -1219,6 +1308,7 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
     GLenum draw_error = GL_NO_ERROR;
     const auto t_blit_start = std::chrono::steady_clock::now();
     if (!direct_mode) {
+        browser_state.prepare_copy();
         glBindFramebuffer(GL_FRAMEBUFFER, gles_fbo_);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gles_output_texture_, 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -1234,6 +1324,34 @@ void TextureUploader::_render_thread_update_android_gles_texture() {
         glUniformMatrix4fv(gles_matrix_uniform_, 1, GL_FALSE, matrix);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         draw_error = glGetError();
+        // Startup diagnostics only: no frame screenshots, no page text or pixel
+        // data in logs, and no ongoing readback in the browser/video pipeline.
+        if (browser_surface && browser_probe_frames_++ < 3) {
+            GLint pack_buffer = 0, row_length = 0, skip_rows = 0, skip_pixels = 0;
+            glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack_buffer);
+            glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
+            glGetIntegerv(GL_PACK_SKIP_ROWS, &skip_rows);
+            glGetIntegerv(GL_PACK_SKIP_PIXELS, &skip_pixels);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            int nonblack = 0, opaque = 0;
+            for (int y = 1; y <= 3; ++y) for (int x = 1; x <= 3; ++x) {
+                unsigned char pixel[4]{};
+                glReadPixels(gles_surface_width_ * x / 4, gles_surface_height_ * y / 4,
+                    1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+                if (pixel[0] || pixel[1] || pixel[2]) ++nonblack;
+                if (pixel[3] > 0) ++opaque;
+            }
+            const GLenum probe_error = glGetError();
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, pack_buffer);
+            glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
+            glPixelStorei(GL_PACK_SKIP_ROWS, skip_rows);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, skip_pixels);
+            NF_LOG("BrowserPrototype", "GPU copy probe: nonblack=%d/9 visible_alpha=%d/9 draw_error=0x%x probe_error=0x%x",
+                nonblack, opaque, draw_error, probe_error);
+        }
     }
     const auto t_blit_end = std::chrono::steady_clock::now();
 
@@ -1907,6 +2025,11 @@ PackedByteArray TextureUploader::consume_native_depth_capture() {
 }
 
 void TextureUploader::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("start_browser_prototype"), &TextureUploader::start_browser_prototype);
+    ClassDB::bind_method(D_METHOD("close_browser_prototype"), &TextureUploader::close_browser_prototype);
+    ClassDB::bind_method(D_METHOD("poll_browser_prototype"), &TextureUploader::poll_browser_prototype);
+    ClassDB::bind_method(D_METHOD("browser_pointer", "x", "y", "action"), &TextureUploader::browser_pointer);
+    ClassDB::bind_method(D_METHOD("browser_key", "code", "pressed", "modifiers"), &TextureUploader::browser_key);
     ClassDB::bind_method(D_METHOD("setup", "width", "height", "format", "colorspace", "color_range", "color_transfer"), &TextureUploader::setup, DEFVAL(0));
     ClassDB::bind_method(D_METHOD("update_color_transfer", "color_transfer"), &TextureUploader::update_color_transfer);
     ClassDB::bind_method(D_METHOD("get_color_transfer_type"), &TextureUploader::get_color_transfer_type);
@@ -1923,6 +2046,77 @@ void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("consume_oes_ready_fence"), &TextureUploader::consume_oes_ready_fence);
     ClassDB::bind_method(D_METHOD("set_native_direct_mode", "enabled"), &TextureUploader::set_native_direct_mode);
     ClassDB::bind_method(D_METHOD("get_native_depth_guide_texture_id"), &TextureUploader::get_native_depth_guide_texture_id);
+#endif
+}
+
+void TextureUploader::start_browser_prototype() {
+#ifdef __ANDROID__
+    if (browser_requested_.exchange(true)) return;
+    browser_open_dispatched_.store(false);
+    ensure_shader_material();
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        gles_surface_width_ = 1920;
+        gles_surface_height_ = 1080;
+    }
+    RenderingServer::get_singleton()->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_open_browser));
+#endif
+}
+
+void TextureUploader::close_browser_prototype() {
+#ifdef __ANDROID__
+    browser_requested_.store(false);
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    if (!env || !app) return;
+    jmethodID method = env->GetStaticMethodID(app, "closeBrowser", "()V");
+    if (method) env->CallStaticVoidMethod(app, method);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+#endif
+}
+
+int TextureUploader::poll_browser_prototype() {
+#ifdef __ANDROID__
+    if (!browser_requested_.load()) return 0;
+    if (!browser_open_dispatched_.load()) return 1;
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    if (!env || !app) return -1;
+    jmethodID poll = env->GetStaticMethodID(app, "pollBrowser", "()I");
+    int state = poll ? env->CallStaticIntMethod(app, poll) : -1;
+    jmethodID frame = env->GetStaticMethodID(app, "consumeBrowserFrame", "()Z");
+    bool ready = frame && env->CallStaticBooleanMethod(app, frame);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return -1; }
+    if (ready) update_android_gles_external_texture();
+    return state;
+#else
+    return -1;
+#endif
+}
+
+void TextureUploader::browser_pointer(float x, float y, int action) {
+#ifdef __ANDROID__
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    if (!env || !app) return;
+    jmethodID method = env->GetStaticMethodID(app, "browserPointer", "(FFI)V");
+    if (method) env->CallStaticVoidMethod(app, method, x, y, action);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+#endif
+}
+
+void TextureUploader::browser_key(int code, bool pressed, int modifiers) {
+#ifdef __ANDROID__
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    if (!env || !app) return;
+    jmethodID method = env->GetStaticMethodID(app, "browserKey", "(IZI)V");
+    if (method) env->CallStaticVoidMethod(app, method, code, static_cast<jboolean>(pressed), modifiers);
+    if (env->ExceptionCheck()) env->ExceptionClear();
 #endif
 }
 

@@ -36,6 +36,14 @@ func build_welcome_ui():
 	build_ip_screen(screens)
 	build_pin_screen(screens)
 	build_language_picker(root)
+	if OS.has_feature("android"):
+		var browser = Button.new()
+		browser.text = "Browser prototype"
+		browser.position = Vector2(24, 1000)
+		browser.custom_minimum_size = Vector2(320, 64)
+		browser.add_theme_font_size_override("font_size", 26)
+		browser.pressed.connect(main.browser_prototype.start)
+		root.add_child(browser)
 
 	show_welcome_screen("welcome")
 

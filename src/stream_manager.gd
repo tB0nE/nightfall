@@ -32,6 +32,8 @@ var _current_host_id: int = -1
 var _current_app_id: int = -1
 
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	if main.browser_prototype:
+		main.browser_prototype.stop()
 	main.session_lifecycle.begin_connect()
 	_current_host_id = host_id
 	_current_app_id = app_id

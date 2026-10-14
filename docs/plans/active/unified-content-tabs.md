@@ -133,3 +133,83 @@ Only after that works, integrate the shared source picker and real tab switching
   lifecycle and DRM remain unvalidated; no browser screen is implemented yet.
 - Next implementation gate remains the isolated GPU-surface browser prototype
   in stage 2, before new source-picker/tab UI or changes to stream presentation.
+
+## GPU prototype implementation — 2026-10-14
+
+- Temporary **Browser prototype** button on the Android welcome screen. It is
+  opt-in, not persisted and does not replace the normal PC connection flow.
+- Android WebView runs in a private app-owned VirtualDisplay/Presentation at
+  1920×1080. SurfaceTexture feeds the existing OES-to-RGBA GPU uploader; no
+  per-frame screenshots, CPU readback or extra OpenXR layer are used.
+- The browser owns a separate uploader. Closing destroys WebView, Presentation,
+  virtual display and Java Surface; one reusable GPU surface remains allocated
+  until app exit, avoiding destruction races with queued GL callbacks.
+- The local test page includes click, keyboard and drag-to-scroll checks. The
+  address bar, Go, Back and Close browser buttons are inside the same surface.
+  XR pointer and virtual-keyboard input are routed locally, never to the host.
+  Right-stick scrolling initially uses page-up/down rather than precise wheel
+  events. Opening the normal menu does not replace browser content.
+- Closing restores welcome content. Starting a PC stream closes the browser.
+  Provider failure or a 15-second first-frame timeout restores welcome content.
+  Android pause/resume forwards WebView lifecycle; pointer cancellation follows
+  the existing XR transient-input reset.
+- AI 3D for browser frames, browser/PC concurrency, tabs, screen creation,
+  fullscreen-video integration, downloads, permission prompts and DRM are NOT
+  implemented or validated. The existing stream-only AI guard is unchanged.
+- URLs, page contents and typed credentials are not added to diagnostic logs.
+  Browser cookies/storage use WebView defaults; clear-site-data controls remain
+  future work. HTTP(S) navigation only; file/content access is disabled.
+
+### Headset checks for this milestone
+
+1. Open Browser prototype without a PC; verify image orientation, sharpness,
+   click coordinates, typing, URL navigation and scrolling.
+2. Try an ordinary webpage and an unprotected HTML5 video, then YouTube; verify
+   video/audio, not just a painted page. Protected services are a separate gate.
+3. Close and reopen repeatedly, open menu/keyboard, then remove/re-wear headset.
+4. Close browser and connect normally; verify streaming, controls and AI remain
+   unchanged. Watch diagnostic `[BROWSER]`/`BrowserPrototype` messages for failures.
+5. Measure frame cost, memory and video decoder behavior before moving to tabs.
+
+### Initial browser freeze — 2026-10-14
+
+- Found a deterministic re-entrancy deadlock in the shared GLES uploader:
+  `update_android_gles_external_texture()` held `gles_surface_mutex_` while
+  calling `RenderingServer.call_on_render_thread()`. The render callback takes
+  the same mutex. Unlike the decoder-worker caller, browser polling runs on
+  Godot's main/render thread, where the engine executes that callback inline.
+- Release the scheduling mutex before dispatching. Coalescing flags/counters
+  remain protected, and the shared first-frame log counter is now atomic because
+  a decoder and browser can have different uploader instances.
+- Fresh headset reproduction: WebView opened at 09:23:03.343 and finished loading
+  its page at 09:23:03.439; Godot stopped after queuing GLES frame #1 at
+  09:23:03.444, matching the inline-dispatch deadlock.
+- `test/test_gles_render_dispatch.py` compiles the real scheduling function
+  against a minimal inline/deferred RenderingServer stub. Both corrected paths
+  pass; removing the unlock reproduces a timeout. Run with a host C++ compiler
+  and Python 3; this tests scheduling, not actual GL/WebView behavior.
+- Retained Android exit information also recorded a native SIGSEGV after the
+  unresponsive shutdowns; its stack was unavailable. Do not assume this mutex
+  correction explains that separate exit without a fresh capture.
+
+### Black browser image investigation
+
+- After fixing dispatch, logs show successful OES updates and RGBA blits while
+  the user sees black. The virtual display is ON at the intended 1920×1080.
+- Isolate the browser's raw GL copy from Godot canvas state: preserve/restore
+  clipping, depth/stencil, blend/cull, rasterizer-discard, color mask, texture
+  bindings/sampler, active unit, program, framebuffers and viewport. Apply this
+  to browser creation/update only; normal decoder rendering stays unchanged.
+- Three initial browser frames sample nine pixels each and log only nonblack /
+  visible-alpha counts and GL errors. No screenshots or continuous readback.
+- Explicit diagnostic launch: create the one-shot marker
+  `/sdcard/Android/data/app.nightfall.quest/files/browser_gpu_smoke_test` over ADB,
+  then restart the app normally. It removes the marker and opens the test page.
+  Godot intentionally strips command-line extras from exported launchers, so
+  those cannot be used for this test. Normal launches never auto-open a browser.
+- Headset smoke test at 09:52:32: WebView opens, all three RGBA copy probes report
+  `nonblack=9/9`, `visible_alpha=9/9`, draw/probe GL errors zero; Godot reports
+  `First GPU frame ready`. This verifies browser output/copy/binding, not the
+  final visual appearance through OpenXR. The user subsequently confirmed the
+  browser works very well on the headset. Broader video/login/standby coverage
+  remains part of the milestone checklist above.

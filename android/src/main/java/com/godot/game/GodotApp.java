@@ -14,6 +14,15 @@ import androidx.activity.EdgeToEdge;
 import androidx.core.splashscreen.SplashScreen;
 
 public class GodotApp extends GodotActivity {
+	private static java.lang.ref.WeakReference<GodotApp> browserActivity = new java.lang.ref.WeakReference<>(null);
+	public static void openBrowser(android.view.Surface surface, android.graphics.SurfaceTexture texture, int width, int height) {
+		BrowserPrototype.open(browserActivity.get(), surface, texture, width, height);
+	}
+	public static int pollBrowser() { return BrowserPrototype.poll(); }
+	public static boolean consumeBrowserFrame() { return BrowserPrototype.consumeFrame(); }
+	public static void closeBrowser() { BrowserPrototype.close(); }
+	public static void browserPointer(float x, float y, int action) { BrowserPrototype.pointer(x, y, action); }
+	public static void browserKey(int code, boolean pressed, int modifiers) { BrowserPrototype.key(code, pressed, modifiers); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
 
 	@Override
@@ -102,6 +111,7 @@ public class GodotApp extends GodotActivity {
 		EdgeToEdge.enable(this);
 		super.onCreate(savedInstanceState);
 		appContext = getApplicationContext();
+		browserActivity = new java.lang.ref.WeakReference<>(this);
 		DiagnosticLog.initialize(appContext);
 		DiagnosticLog.info("BrowserCapabilities", BrowserCapabilities.describe());
 		DiagnosticLog.info("GODOT", "Native library initialization: " + jniResult);
@@ -387,7 +397,20 @@ public class GodotApp extends GodotActivity {
 	@Override
 	public void onResume() {
 		super.onResume();
+		BrowserPrototype.pause(false);
 		updateWindowAppearance.run();
+	}
+
+	@Override
+	public void onPause() {
+		BrowserPrototype.pause(true);
+		super.onPause();
+	}
+
+	@Override
+	public void onDestroy() {
+		BrowserPrototype.close();
+		super.onDestroy();
 	}
 
 	@Override

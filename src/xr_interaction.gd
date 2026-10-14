@@ -45,6 +45,8 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
+	if main.browser_prototype:
+		main.browser_prototype.cancel_pointer()
 	# Tracking poses are discontinuous across headset removal or app pause.
 	# A saved drag baseline would move a screen when the next pose arrives.
 	if main.is_streaming and main.stream_backend:
@@ -364,6 +366,8 @@ func handle_pointer_interaction():
 	_grip_was_pressed = is_gripping
 	var is_now_clicking = raw_clicking and not _double_click_chord_active
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
+	if main.browser_prototype and main.browser_prototype.active and shortcut_target.role != &"screen":
+		main.browser_prototype.cancel_pointer()
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
 	# A drag started on the grab bar/corner owns this press until release.
 	# The ray can pass over a shortcut as the screen moves underneath it, and
@@ -687,6 +691,10 @@ func handle_pointer_interaction():
 		elif t.role == &"screen" and not main.is_streaming:
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t.screen.hit_point_to_uv(hit_pos)
+			if main.browser_prototype and main.browser_prototype.active:
+				main.browser_prototype.pointer(uv, is_now_clicking)
+				main.was_clicking = is_now_clicking
+				return
 			var wv = main.welcome_viewport
 			var pixel_pos = Vector2(uv.x * wv.size.x, uv.y * wv.size.y)
 
@@ -1244,7 +1252,10 @@ func _compute_parallax_shift(uv_x: float) -> float:
 var _scroll_cooldown: float = 0.0
 
 func handle_scroll():
-	if not main.is_xr_active or not main.is_streaming:
+	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
+	if not main.is_xr_active or (not main.is_streaming and not browser_active):
+		return
+	if browser_active and main.ui_visible:
 		return
 	if main.controller_mapper and main.controller_mapper.is_active():
 		if main.controller_mapper.ctrl_type != ControllerMapper.CtrlType.KBMOUSE:
@@ -1264,7 +1275,10 @@ func handle_scroll():
 				right_stick_y = val
 				break
 	if absf(right_stick_y) > 0.5:
-		main.stream_backend.send_scroll_event(1 if right_stick_y > 0 else -1)
+		if browser_active:
+			main.browser_prototype.scroll(1 if right_stick_y > 0 else -1)
+		else:
+			main.stream_backend.send_scroll_event(1 if right_stick_y > 0 else -1)
 		_scroll_cooldown = now + 0.15
 
 func _is_ui_grab_bar(pixel_pos: Vector2) -> bool:
