@@ -6,6 +6,41 @@ in git.
 
 ## EdgePad on ncnn
 
+For the lower-compute EdgePad-256 option, from the repository root:
+
+```sh
+python meteor/tools/make_host_model.py \
+  tools/ZipDepth/onnx_export/zipdepth_base_256_standard_packed_conv4_reduceconv_edgepad.onnx \
+  ~/.local/share/nightfall-meteor/models/zipdepth_edgepad_256.onnx \
+  models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite
+python meteor/models/convert_ncnn.py ~/.local/share/nightfall-meteor/models/zipdepth_edgepad_256.onnx
+```
+
+Both Linux and Windows release packaging require the 256 and 512 ncnn
+models. The 256 option is manual and does not change the default.
+
+Local smoke test (RTX 3090, 2026-10-12, desktop `eg_input_1.png`, 20
+back-to-back Vulkan calls including input upload/output download):
+
+| Model | Vulkan median | CPU median, four threads |
+| --- | --- | --- |
+| EdgePad-256 | 1.96 ms | 15.94 ms |
+| EdgePad-384 | 2.52 ms | 33.92 ms |
+| EdgePad-512x288 | 2.68 ms | 31.88 ms |
+
+These are short inference-only measurements, not live streaming latency
+or predictions for weaker GPUs. Vulkan FP16 storage differs from ONNX
+CPU FP32 by 0.274%, 0.133% and 0.092% of depth range on average,
+respectively, on this image. A synthetic smooth gradient was more
+sensitive (256: 1.36% mean, 4.94% worst), so this is not lossless and
+does not replace a varied-image quality check. CPU ncnn matches ONNX
+CPU to within 0.0011% worst in these smoke tests.
+
+`cargo test --release edgepad_cpu_parity -- --ignored --nocapture` checks
+the installed models. `EDGEPAD_TEST_GPU=1` adds Vulkan checks, and
+`EDGEPAD_TEST_RGB=<folder>` reads interleaved RGB24 files named
+`256x256.rgb`, `384x384.rgb`, `512x288.rgb` instead of the gradient.
+
 `convert_ncnn.py` turns an EdgePad ONNX model (built by
 `../tools/make_host_model.py` from the ZipDepth export) into
 `<name>.ncnn.param` and `<name>.ncnn.bin`, which Meteor runs on Vulkan

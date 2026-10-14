@@ -31,6 +31,10 @@ const CMD_VDA_CANCEL: usize = 11;
 const CMD_VDA_REMOVE: usize = 12;
 const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
+const CMD_INFERENCE_GPU: usize = 15;
+const CMD_INFERENCE_CPU: usize = 16;
+const CMD_EDGE_ALIGNMENT: usize = 17;
+const CMD_CONTOUR_CLEANUP: usize = 18;
 const CMD_RATE_BASE: usize = 100;
 const CMD_MODEL_BASE: usize = 200;
 const CMD_SOFTEN_BASE: usize = 300;
@@ -79,6 +83,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
                     let enabled = wide("Host depth enabled");
                     AppendMenuW(menu, MF_STRING | if depth.enabled() { MF_CHECKED } else { 0 }, CMD_DEPTH_ENABLED, enabled.as_ptr());
+                    let inference_menu = CreatePopupMenu();
+                    if !inference_menu.is_null() {
+                        AppendMenuW(inference_menu, MF_STRING | if !depth.cpu_inference() { MF_CHECKED } else { 0 }, CMD_INFERENCE_GPU, wide("GPU").as_ptr());
+                        let cpu_flags = MF_STRING | if depth.cpu_inference() { MF_CHECKED } else { 0 }
+                            | if depth.cpu_inference_supported() { 0 } else { MF_GRAYED };
+                        AppendMenuW(inference_menu, cpu_flags, CMD_INFERENCE_CPU, wide("CPU").as_ptr());
+                        let label = wide(&format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }));
+                        AppendMenuW(menu, MF_POPUP, inference_menu as usize, label.as_ptr());
+                    }
                     let rate_menu = CreatePopupMenu();
                     if !rate_menu.is_null() {
                         for (i, &hz) in crate::depth::RATES.iter().enumerate() {
@@ -135,6 +148,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     }
                     let smoothing = wide("Depth smoothing");
                     AppendMenuW(menu, MF_STRING | if depth.smoothing() { MF_CHECKED } else { 0 }, CMD_DEPTH_SMOOTHING, smoothing.as_ptr());
+                    let alignment = wide("Edge alignment (experimental)");
+                    AppendMenuW(menu, MF_STRING | if depth.edge_alignment() { MF_CHECKED } else { 0 }, CMD_EDGE_ALIGNMENT, alignment.as_ptr());
+                    let cleanup = wide("Contour cleanup (requires alignment)");
+                    AppendMenuW(menu, MF_STRING | if depth.contour_cleanup() { MF_CHECKED } else { 0 } | if depth.edge_alignment() { 0 } else { MF_GRAYED }, CMD_CONTOUR_CLEANUP, cleanup.as_ptr());
                     let softening_menu = CreatePopupMenu();
                     if !softening_menu.is_null() {
                         for (i, (label, _)) in crate::vda::SOFTENING.iter().enumerate() {
@@ -186,6 +203,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let command = (wparam as usize) & 0xffff;
             let depth = DEPTH.get().and_then(Option::as_ref);
             if let Some(depth) = depth {
+                if command == CMD_INFERENCE_GPU || command == CMD_INFERENCE_CPU {
+                    depth.set_cpu_inference(command == CMD_INFERENCE_CPU);
+                    return 0;
+                }
                 if (CMD_RATE_BASE..CMD_RATE_BASE + crate::depth::RATES.len()).contains(&command) {
                     depth.set_rate(crate::depth::RATES[command - CMD_RATE_BASE]);
                     return 0;
@@ -212,6 +233,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 }
                 CMD_DEPTH_ENABLED => { if let Some(depth) = depth { depth.set_enabled(!depth.enabled()); } }
                 CMD_DEPTH_SMOOTHING => { if let Some(depth) = depth { depth.set_smoothing(!depth.smoothing()); } }
+                CMD_EDGE_ALIGNMENT => { if let Some(depth) = depth { depth.set_edge_alignment(!depth.edge_alignment()); } }
+                CMD_CONTOUR_CLEANUP => { if let Some(depth) = depth { if depth.edge_alignment() { depth.set_contour_cleanup(!depth.contour_cleanup()); } } }
                 CMD_VDA_DOWNLOAD => { if let Some(depth) = depth { depth.download_vda(); } }
                 CMD_VDA_CANCEL => { if let Some(depth) = depth { depth.download.cancel.store(true, Ordering::Relaxed); } }
                 CMD_VDA_REMOVE => { if let Some(depth) = depth { depth.remove_vda_download(); } }

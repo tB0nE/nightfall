@@ -180,7 +180,7 @@ fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
     unsafe {
         let version = CStr::from_ptr((api.version)()).to_string_lossy().into_owned();
         if (api.create_gpu_instance)(std::ptr::null()) != 0 || (api.get_gpu_count)() == 0 {
-            return Err(format!("ncnn {version} found no Vulkan GPU"));
+            return Ok(Runtime { api, device: -1, description: format!("ncnn {version}, CPU only (no Vulkan GPU)") });
         }
         // ncnn prefers a discrete GPU.
         let device = (api.get_default_gpu_index)();
@@ -214,6 +214,7 @@ pub struct NcnnModel {
     pub name: String,
     pub width: usize,
     pub height: usize,
+    pub cpu: bool,
     input: Vec<f32>,
 }
 
@@ -223,10 +224,18 @@ unsafe impl Send for NcnnModel {}
 
 impl NcnnModel {
     /// `param` is `<name>.ncnn.param`; the weights are `<name>.ncnn.bin`.
+    #[cfg(test)]
     pub fn load(param: &Path) -> Result<NcnnModel, String> {
+        Self::load_backend(param, false)
+    }
+
+    pub fn load_backend(param: &Path, cpu: bool) -> Result<NcnnModel, String> {
         let started = Instant::now();
         let runtime = runtime()?;
         let api = &runtime.api;
+        if !cpu && runtime.device < 0 {
+            return Err("ncnn GPU inference requires a Vulkan GPU; select CPU instead".into());
+        }
         let file = param.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let name = file.strip_suffix(PARAM_SUFFIX).ok_or_else(|| format!("{}: not an ncnn model", param.display()))?;
         let bin = param.with_file_name(format!("{name}{BIN_SUFFIX}"));
@@ -241,19 +250,21 @@ impl NcnnModel {
         let net = unsafe {
             let net = (api.net_create)();
             let opt = (api.option_create)();
-            (api.option_set_use_vulkan_compute)(opt, 1);
-            (api.option_set_use_fp16_packed)(opt, 1);
-            (api.option_set_use_fp16_storage)(opt, 1);
+            (api.option_set_use_vulkan_compute)(opt, if cpu { 0 } else { 1 });
+            (api.option_set_use_fp16_packed)(opt, if cpu { 0 } else { 1 });
+            (api.option_set_use_fp16_storage)(opt, if cpu { 0 } else { 1 });
             (api.option_set_use_fp16_arithmetic)(opt, 0);
             // The CPU only packs the input and unpacks the output; more
             // threads only spin.
-            (api.option_set_num_threads)(opt, 1);
+            (api.option_set_num_threads)(opt, if cpu { crate::onnx::cpu_threads() as c_int } else { 1 });
             (api.net_set_option)(net, opt);
             (api.option_destroy)(opt);
-            (api.net_set_vulkan_device)(net, runtime.device);
+            if !cpu {
+                (api.net_set_vulkan_device)(net, runtime.device);
+            }
             net
         };
-        let model = NcnnModel { api, net, name: name.to_string(), width, height, input: vec![0.0; 3 * width * height] };
+        let model = NcnnModel { api, net, name: name.to_string(), width, height, cpu, input: vec![0.0; 3 * width * height] };
         // SAFETY: NUL-terminated paths; the net is ours.
         unsafe {
             if (api.net_load_param)(net, param_c.as_ptr()) != 0 {
@@ -264,8 +275,9 @@ impl NcnnModel {
             }
         }
         log::info!(
-            "Loaded depth model {} ({width}x{height}, Vulkan, {}) in {} ms",
+            "Loaded depth model {} ({width}x{height}, {}, {}) in {} ms",
             model.name,
+            if cpu { "CPU fp32" } else { "Vulkan fp16" },
             runtime.description,
             started.elapsed().as_millis()
         );
@@ -356,6 +368,61 @@ mod tests {
         assert_eq!(input_size(param), Some((512, 288)));
         assert_eq!(input_size("7767517\n1 1\nInput in0 0 1 in0\n"), None);
         assert_eq!(input_size("7767517\n1 1\nInput in0 0 1 in0 0=8 1=8 2=1\n"), None);
+    }
+
+    /// Uses installed models/runtime; CPU output against ONNX Runtime CPU,
+    /// and a short inference-only benchmark. No stream or server is started.
+    #[cfg(feature = "onnxruntime")]
+    #[test]
+    #[ignore]
+    fn edgepad_cpu_parity() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lib = root.join("target/ncnn/lib").join(LIB_NAME);
+        init(Some(&lib)).unwrap();
+        let runtime = std::fs::read_dir(root.join("target/bench-venv/lib")).unwrap()
+            .flatten().flat_map(|python| std::fs::read_dir(python.path().join("site-packages/onnxruntime/capi")).into_iter().flatten().flatten())
+            .map(|entry| entry.path()).find(|path| path.file_name().unwrap().to_string_lossy().starts_with("libonnxruntime.so")).unwrap();
+        crate::onnx::init(Some(&runtime)).unwrap();
+        let models = crate::config::default_models_dir();
+        for name in ["zipdepth_edgepad_256", "zipdepth_edgepad_384", "zipdepth_wide_512x288"] {
+            let mut cpu = NcnnModel::load_backend(&models.join(format!("{name}{PARAM_SUFFIX}")), true).unwrap();
+            let mut reference = crate::onnx::DepthModel::load(&models.join(format!("{name}.onnx")), crate::onnx::Backend::Cpu, &root.join("target/cpu-test")).unwrap();
+            assert!(cpu.cpu);
+            let rgb: Vec<u8> = if let Some(folder) = std::env::var_os("EDGEPAD_TEST_RGB") {
+                std::fs::read(Path::new(&folder).join(format!("{}x{}.rgb", cpu.width, cpu.height))).unwrap()
+            } else {
+                (0..cpu.width*cpu.height).flat_map(|i| [(i%cpu.width*255/cpu.width) as u8, (i/cpu.width*255/cpu.height) as u8, 128]).collect()
+            };
+            let expected = reference.infer(&rgb).unwrap();
+            let actual = cpu.infer(&rgb).unwrap();
+            assert_eq!(actual.len(), expected.len());
+            assert!(actual.iter().all(|v| v.is_finite()));
+            let (mean, _, max) = error(&actual, &expected);
+            eprintln!("{name}: CPU ncnn vs ONNX CPU mean {mean:.5}%, max {max:.5}% of range");
+            assert!(mean < 0.1 && max < 1.0);
+            let mut times = Vec::new();
+            for _ in 0..12 {
+                let start = Instant::now();
+                cpu.infer(&rgb).unwrap();
+                times.push(start.elapsed().as_secs_f64()*1000.0);
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("{name}: {} CPU threads, median {:.2}ms, p95 {:.2}ms",crate::onnx::cpu_threads(),times[times.len()/2],times[times.len()-1]);
+            if std::env::var_os("EDGEPAD_TEST_GPU").is_some() {
+                let mut gpu = NcnnModel::load_backend(&models.join(format!("{name}{PARAM_SUFFIX}")), false).unwrap();
+                let actual = gpu.infer(&rgb).unwrap();
+                let (mean, _, max) = error(&actual, &expected);
+                assert!(mean < 0.3 && max < 3.0, "{name}: GPU mean {mean}%, max {max}%");
+                let mut times = Vec::new();
+                for _ in 0..20 {
+                    let start = Instant::now();
+                    gpu.infer(&rgb).unwrap();
+                    times.push(start.elapsed().as_secs_f64()*1000.0);
+                }
+                times.sort_by(f64::total_cmp);
+                eprintln!("{name}: Vulkan median {:.2}ms, p95 {:.2}ms; mean error {mean:.5}%", times[10], times[19]);
+            }
+        }
     }
 
     fn read_f32(path: &Path) -> Vec<f32> {

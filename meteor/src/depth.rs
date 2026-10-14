@@ -54,11 +54,21 @@ enum Engine {
 }
 
 impl Engine {
+    fn cpu(&self) -> bool {
+        match self {
+            Engine::Plain(m) => m.backend == Backend::Cpu,
+            Engine::Ncnn(m) => m.cpu,
+            Engine::Vda(_) => false,
+        }
+    }
     fn load(models_dir: &Path, name: &str, backend: Backend, cache: &Path) -> Result<Engine, String> {
         if name == vda::ID {
+            if backend == Backend::Cpu {
+                return Err("VDA requires GPU inference; select an EdgePad model for CPU".into());
+            }
             VdaModel::load(models_dir, backend, cache).map(|m| Engine::Vda(Box::new(m)))
         } else if is_ncnn(name) {
-            NcnnModel::load(&models_dir.join(name)).map(|m| Engine::Ncnn(Box::new(m)))
+            NcnnModel::load_backend(&models_dir.join(name), backend == Backend::Cpu).map(|m| Engine::Ncnn(Box::new(m)))
         } else {
             DepthModel::load(&models_dir.join(name), backend, cache).map(|m| Engine::Plain(Box::new(m)))
         }
@@ -95,7 +105,8 @@ impl Engine {
         let (w, h) = self.output_size();
         match self {
             Engine::Plain(m) => format!("{} ({w}x{h}, {})", m.name, m.backend.label()),
-            Engine::Ncnn(m) => format!("{} ({w}x{h}, Vulkan fp16)", m.name),
+            Engine::Ncnn(m) => format!("{} ({w}x{h}, {})", m.name,
+                if m.cpu { format!("CPU fp32, {} threads", crate::onnx::cpu_threads()) } else { "Vulkan fp16".into() }),
             Engine::Vda(m) => format!("{} ({w}x{h}, {})", vda::LABEL, m.description),
         }
     }
@@ -113,7 +124,11 @@ fn stem(name: &str) -> &str {
 
 /// The models menu's name for a model.
 pub fn model_label(name: &str) -> String {
-    if name == vda::ID { vda::LABEL.to_string() } else { stem(name).to_string() }
+    match stem(name) {
+        vda::ID => vda::LABEL.to_string(),
+        "zipdepth_edgepad_256" => "EdgePad-256 (lower GPU load)".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// Where Meteor finds the runtimes; each is optional.
@@ -124,6 +139,7 @@ pub struct Runtimes<'a> {
 
 /// A model the loading thread finished with.
 struct Loaded {
+    generation: u64,
     /// The model that was chosen.
     name: String,
     /// A failure leaves the model running on what loaded before (TensorRT
@@ -141,6 +157,7 @@ pub const RATES: [u32; 7] = [0, 20, 30, 60, 72, 90, 120];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct SavedState {
+    cpu_inference: bool,
     enabled: bool,
     model: Option<String>,
     rate: u32,
@@ -153,11 +170,13 @@ struct SavedState {
     model_smoothing: BTreeMap<String, bool>,
     /// VDA's edge softening, an index into vda::SOFTENING.
     edge_softening: usize,
+    edge_alignment: bool,
+    contour_cleanup: bool,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING }
+        SavedState { cpu_inference: false, enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, edge_alignment: true, contour_cleanup: true }
     }
 }
 
@@ -221,6 +240,7 @@ pub struct Depth {
     /// The size the decoder reduces frames to for that model.
     input_size: Mutex<Option<(usize, usize)>>,
     pending_model: Mutex<Option<String>>,
+    load_generation: AtomicU64,
     input: Mutex<Option<Decoded>>,
     wake: Condvar,
     pub latest: Mutex<Option<Arc<DepthMap>>>,
@@ -295,6 +315,7 @@ impl Depth {
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
+            load_generation: AtomicU64::new(0),
             input: Mutex::new(None),
             wake: Condvar::new(),
             latest: Mutex::new(None),
@@ -354,6 +375,29 @@ impl Depth {
         log::info!("Depth rate: {}", if hz == 0 { "match stream".into() } else { format!("{hz} Hz") });
     }
 
+    pub fn cpu_inference(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.cpu_inference)
+    }
+
+    pub fn cpu_inference_supported(&self) -> bool {
+        self.model().as_deref() != Some(vda::ID)
+    }
+
+    pub fn set_cpu_inference(&self, cpu: bool) {
+        if cpu && !self.cpu_inference_supported() {
+            self.set_status("VDA requires GPU inference; choose EdgePad for CPU".into());
+            return;
+        }
+        if cpu == self.cpu_inference() {
+            return;
+        }
+        self.update_state(|s| s.cpu_inference = cpu);
+        log::info!("Inference backend requested: {} (NVDEC unchanged)", if cpu { "CPU" } else { "GPU" });
+        if let Some(name) = self.model() {
+            self.select_model(&name);
+        }
+    }
+
     /// Depth smoothing for the chosen model.
     pub fn smoothing(&self) -> bool {
         self.state.lock().is_ok_and(|s| {
@@ -368,6 +412,24 @@ impl Depth {
             s.model_smoothing.insert(model, on);
         });
         log::info!("Depth smoothing {}", if on { "on" } else { "off" });
+    }
+
+    pub fn edge_alignment(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.edge_alignment)
+    }
+
+    pub fn set_edge_alignment(&self, on: bool) {
+        self.update_state(|s| s.edge_alignment = on);
+        log::info!("Edge alignment (Bounded-2): {on}");
+    }
+
+    pub fn contour_cleanup(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.contour_cleanup)
+    }
+
+    pub fn set_contour_cleanup(&self, on: bool) {
+        self.update_state(|s| s.contour_cleanup = on);
+        log::info!("Contour cleanup (Bounded-4; requires alignment): {on}");
     }
 
     /// The edge softening level (an index into vda::SOFTENING).
@@ -456,7 +518,7 @@ impl Depth {
                 }
             })
             .collect();
-        if self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
+        if !self.cpu_inference() && self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
             models.push(vda::ID.to_string());
         }
         models.sort();
@@ -526,8 +588,13 @@ impl Depth {
     /// Loads a model from the models folder in the background; the engine
     /// switches to it between frames once it is ready.
     pub fn select_model(&self, name: &str) {
+        if name == vda::ID && self.cpu_inference() {
+            self.set_status("VDA requires GPU inference; switch inference to GPU first".into());
+            return;
+        }
         self.update_state(|s| s.model = Some(name.to_string()));
         if let Ok(mut pending) = self.pending_model.lock() {
+            self.load_generation.fetch_add(1, Ordering::Relaxed);
             *pending = Some(name.to_string());
         }
         self.wake.notify_one();
@@ -565,6 +632,8 @@ impl Depth {
         let mut model: Option<Engine> = None;
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
+        let mut gpu_refinement: Option<crate::gpu_refinement::GpuRefinement> = None;
+        let mut refinement_size = None;
         let mut last_stream = None;
         let mut last_run: Option<Instant> = None;
         let mut rate_window = (Instant::now(), 0u32);
@@ -577,6 +646,17 @@ impl Depth {
         let mut fallback: Option<String> = None;
         loop {
             if let Some(name) = self.pending_model.lock().ok().and_then(|mut p| p.take()) {
+                let generation = self.load_generation.load(Ordering::Relaxed);
+                let cpu = self.cpu_inference();
+                // Never silently keep GPU inference running after CPU was
+                // requested (including when the replacement fails to load).
+                if model.as_ref().is_some_and(|m| m.cpu() != cpu) {
+                    model = None;
+                    gpu_post = None;
+                    post.reset();
+                    if let Ok(mut active) = self.active.lock() { *active = None; }
+                    if let Ok(mut latest) = self.latest.lock() { *latest = None; }
+                }
                 self.set_status(format!("loading {}", model_label(&name)));
                 let tx = loaded_tx.clone();
                 let tensorrt = self.tensorrt;
@@ -597,8 +677,12 @@ impl Depth {
                 let _ = std::thread::Builder::new().name("depth-load".into()).spawn(move || {
                     let cache = crate::config::cache_dir().join("tensorrt");
                     let send = |optional, interim, result| {
-                        let _ = tx.send(Loaded { name: name.clone(), optional, interim, result });
+                        let _ = tx.send(Loaded { generation, name: name.clone(), optional, interim, result });
                     };
+                    if cpu {
+                        send(false, false, Engine::load(&models_dir, &name, Backend::Cpu, &cache));
+                        return;
+                    }
                     if is_ncnn(&name) {
                         send(false, false, Engine::load(&models_dir, &name, Backend::Cuda, &cache));
                         return;
@@ -625,9 +709,9 @@ impl Depth {
                     }
                 });
             }
-            while let Ok(Loaded { name, optional, interim, result }) = loaded_rx.try_recv() {
+            while let Ok(Loaded { generation, name, optional, interim, result }) = loaded_rx.try_recv() {
                 // A model chosen since this one started loading wins.
-                if self.model().as_ref() != Some(&name) {
+                if generation != self.load_generation.load(Ordering::Relaxed) || self.model().as_ref() != Some(&name) {
                     continue;
                 }
                 match result {
@@ -707,6 +791,8 @@ impl Depth {
 
             let stream = (frame.tag.stream, frame.tag.epoch);
             if last_stream != Some(stream) {
+                refinement_size = None;
+                gpu_refinement = None;
                 post.reset();
                 if let Some(g) = &mut gpu_post {
                     g.reset();
@@ -729,7 +815,7 @@ impl Depth {
             // was; ncnn's comes back to the CPU.
             let device_output = match engine {
                 Engine::Vda(_) => true,
-                Engine::Plain(_) => matches!(frame.pixels, Pixels::Gpu(_)),
+                Engine::Plain(m) => m.backend != Backend::Cpu && matches!(frame.pixels, Pixels::Gpu(_)),
                 Engine::Ncnn(_) => false,
             };
             let on_device = self.gpu_post.load(Ordering::Relaxed)
@@ -750,6 +836,9 @@ impl Depth {
             let mut vda_report = None;
             let result = match engine {
                 Engine::Plain(model) => match &frame.pixels {
+                    Pixels::Gpu(tensor) if same_size && model.backend == Backend::Cpu => {
+                        tensor.download_rgb().and_then(|rgb| model.infer(&rgb)).map(Output::Host)
+                    }
                     Pixels::Rgb(rgb) if same_size => model.infer(rgb).map(Output::Host),
                     Pixels::Rgb(rgb) => {
                         // The model changed size since this stream's decoder started.
@@ -813,7 +902,7 @@ impl Depth {
             let infer_end = Instant::now();
             let infer_time = infer_end - infer_start;
             let post_start = Instant::now();
-            let data = match (output, gpu_post.as_mut()) {
+            let mut data = match (output, gpu_post.as_mut()) {
                 (Output::Host(raw), _) => post.process(&raw, Instant::now()),
                 (Output::Device(raw), Some(g)) => {
                     g.depth_tau = depth_tau;
@@ -827,6 +916,46 @@ impl Depth {
                 }
                 (Output::Device(_), None) => continue,
             };
+            // Optional spatial refinement, after smoothing and before
+            // sending/snapshots. Never writes back into temporal history.
+            // No colour download or additional work when disabled.
+            if self.edge_alignment() {
+                let start = Instant::now();
+                let cleanup = self.contour_cleanup();
+                let mut processed = false;
+                if let Pixels::Gpu(tensor) = &frame.pixels {
+                    if refinement_size != Some(pixels) {
+                        refinement_size = Some(pixels);
+                        gpu_refinement = match crate::gpu_refinement::GpuRefinement::new(pixels) {
+                            Ok(gpu) => Some(gpu),
+                            Err(err) => {
+                                log::warn!("CUDA refinement unavailable ({err}); using slower CPU reference");
+                                None
+                            }
+                        };
+                    }
+                    if let Some(gpu) = &gpu_refinement {
+                        match gpu.process(&data, (width, height), tensor.ptr, (tensor.width, tensor.height), cleanup) {
+                            Ok(refined) => { data = refined; processed = true; }
+                            Err(err) => {
+                                log::warn!("CUDA refinement failed ({err}); using slower CPU reference until next stream/model size");
+                                gpu_refinement = None;
+                            }
+                        }
+                    }
+                }
+                if !processed {
+                    let guide = match &frame.pixels {
+                        Pixels::Rgb(rgb) => Ok(std::borrow::Cow::Borrowed(rgb.as_slice())),
+                        Pixels::Gpu(tensor) => tensor.download_rgb().map(std::borrow::Cow::Owned),
+                    };
+                    match guide {
+                        Ok(rgb) => data = crate::refinement::process(&data, (width, height), &rgb, frame.size, cleanup),
+                        Err(err) => log::warn!("Depth refinement skipped: guide download failed: {err}"),
+                    }
+                }
+                log::debug!("Depth refinement: alignment=true cleanup={cleanup} backend={} map={width}x{height} guide={fw}x{fh} {:.2}ms (including transfers)", if processed { "CUDA" } else { "CPU" }, start.elapsed().as_secs_f64() * 1000.0);
+            }
             let done = Instant::now();
             if let Some(report) = &vda_report {
                 telemetry.record(report, done - post_start, done - frame.tag.queued, self.stats.skipped.load(Ordering::Relaxed));
@@ -1066,6 +1195,26 @@ mod tests {
         assert_eq!(state.model.as_deref(), Some("vda_s_518x294"));
         assert_eq!(state.rate, 120);
         assert!(state.model_smoothing.is_empty());
+        assert!(!state.cpu_inference);
+        assert!(state.edge_alignment);
+        assert!(state.contour_cleanup);
+    }
+
+    #[test]
+    fn refinement_choices_survive_restart() {
+        for on in [false, true] {
+            let state = SavedState { edge_alignment: on, contour_cleanup: on, ..SavedState::default() };
+            let restored: SavedState = toml::from_str(&toml::to_string(&state).unwrap()).unwrap();
+            assert_eq!(restored.edge_alignment, on);
+            assert_eq!(restored.contour_cleanup, on);
+        }
+    }
+
+    #[test]
+    fn cpu_choice_survives_restart() {
+        let state = SavedState { cpu_inference: true, ..SavedState::default() };
+        let restored: SavedState = toml::from_str(&toml::to_string(&state).unwrap()).unwrap();
+        assert!(restored.cpu_inference);
     }
 
     #[test]

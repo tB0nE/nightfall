@@ -32,7 +32,8 @@ var _licence_page := 0
 const LICENCE_PAGE_LINES := 80
 # Drag-to-scroll state for the Settings page (see _on_scroll_drag_input()).
 var _scroll_drag_start_y: float = 0.0
-var _scroll_drag_start_value: int = 0
+var _scroll_drag_last_y: float = 0.0
+var _scroll_drag_pending_travel: float = 0.0
 var _scroll_dragged: bool = false
 var _preset_row: HBoxContainer
 var _current_tab: int = 0
@@ -222,6 +223,10 @@ func on_ai_3d_depth_sync_toggled():
 	main.auto_detect_enabled = false
 	main.settings_controller.toggle_ai_3d_depth_sync()
 
+func on_ai_3d_depth_view_toggled():
+	main.auto_detect_enabled = false
+	main.settings_controller.toggle_ai_3d_depth_view()
+
 func on_ai_3d_reset_pressed():
 	main.settings_controller.reset_ai_3d_effect_settings()
 
@@ -264,6 +269,9 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_convergence_btn, main.settings_controller.get_ai_3d_convergence_label())
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
+	update_option_btn(main._ui_3d_edge_alignment_btn, "On" if main.settings.host.ai_3d_edge_alignment else "Off")
+	update_option_btn(main._ui_3d_contour_cleanup_btn, "On" if main.settings.host.ai_3d_contour_cleanup else "Off")
+	update_option_btn(main._ui_3d_depth_view_btn, "On" if main.settings.host.ai_3d_depth_view else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	if main._ui_3d_process_debug_btn:
 		update_option_btn(main._ui_3d_process_debug_btn,
@@ -342,6 +350,18 @@ func update_3d_btn_state():
 	if main._ui_3d_depth_sync_btn:
 		main._ui_3d_depth_sync_btn.disabled = effect_disabled
 		main._ui_3d_depth_sync_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	var refinement_disabled: bool = effect_disabled or OS.get_name() != "Android" \
+		or (main.depth_estimator != null and main.depth_estimator.meteor_in_use())
+	if main._ui_3d_edge_alignment_btn:
+		main._ui_3d_edge_alignment_btn.disabled = refinement_disabled
+		main._ui_3d_edge_alignment_btn.modulate.a = 0.3 if refinement_disabled else 1.0
+	if main._ui_3d_contour_cleanup_btn:
+		var cleanup_disabled: bool = refinement_disabled or not main.settings.host.ai_3d_edge_alignment
+		main._ui_3d_contour_cleanup_btn.disabled = cleanup_disabled
+		main._ui_3d_contour_cleanup_btn.modulate.a = 0.3 if cleanup_disabled else 1.0
+	if main._ui_3d_depth_view_btn:
+		main._ui_3d_depth_view_btn.disabled = effect_disabled
+		main._ui_3d_depth_view_btn.modulate.a = 0.3 if effect_disabled else 1.0
 	# Debug views depend on AI-3D producing depth, but are independent of the
 	# Android model/type/mode lock. The lock hides selectors that cannot be
 	# changed on Android; it must not disable this diagnostic control too.
@@ -381,9 +401,11 @@ func on_language_pressed():
 		_reveal_language_grid.call_deferred()
 	_cull_settings_page.call_deferred()
 
-# Hides the Settings page's buttons and labels that aren't wholly inside the
-# scroll area (it doesn't clip; see _build_scroll_page()). Alpha, not
-# visibility, so the page's layout doesn't move.
+# Hides the Settings page's buttons and labels only once they are completely
+# outside the scroll area (it doesn't clip; see _build_scroll_page()). Keeping
+# partially visible rows gives the page natural document-style scrolling
+# instead of making whole two-row sections pop in and out. Alpha, not
+# visibility, keeps the page's layout stable.
 func _cull_settings_page():
 	if not _settings_scroll or not is_instance_valid(_settings_scroll):
 		return
@@ -392,7 +414,7 @@ func _cull_settings_page():
 func _cull_outside(node: Node, view: Rect2) -> void:
 	for child in node.get_children():
 		if child is Button or child is Label:
-			child.modulate.a = 1.0 if view.encloses(child.get_global_rect()) else 0.0
+			child.modulate.a = 1.0 if view.intersects(child.get_global_rect()) else 0.0
 		elif child is Control:
 			_cull_outside(child, view)
 
@@ -878,15 +900,37 @@ func build_ui():
 	vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(vbox)
 
+	# PanelContainer always stretches each direct child across its full content
+	# rectangle. Use one full-size plain Control as the overlay root so the
+	# toolbar and Advanced page can have independent, respected bounds inside
+	# it instead of both being expanded to the entire menu height.
+	var overlay = Control.new()
+	overlay.name = "MenuOverlay"
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(overlay)
+
+	# Reserve the toolbar's place in the VBox, but host the real toolbar as a
+	# later sibling of the VBox. Advanced Settings cannot use normal clipping
+	# under GLES, so this makes the toolbar a genuine overlay above the entire
+	# scrolling subtree for both drawing and GUI hit testing.
+	var top_row_space = Control.new()
+	top_row_space.name = "TopRowSpace"
+	top_row_space.custom_minimum_size = Vector2(0, 60)
+	top_row_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vbox.add_child(top_row_space)
+
 	var top_row = HBoxContainer.new()
 	top_row.name = "TopRow"
+	top_row.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	top_row.offset_bottom = 60
 	# The removed host label used to contribute a 60px minimum height, which
 	# implicitly kept every toolbar button at this height. Preserve that layout
 	# explicitly now that the duplicate host text is gone.
 	top_row.custom_minimum_size = Vector2(0, 60)
 	top_row.add_theme_constant_override("separation", 0)
 	top_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	vbox.add_child(top_row)
+	overlay.add_child(top_row)
 
 	main._ui_center_btn = Button.new()
 	main._ui_center_btn.text = "\u25C9"
@@ -1106,17 +1150,6 @@ func build_ui():
 	_set_button_tooltip(main._ui_3d_priority_btn, "Choose whether streaming or depth inference receives GPU priority.")
 	if not ai3d_options_locked:
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
-	main._ui_3d_depth_sync_btn = make_option_btn("Depth Sync", "Off")
-	_set_button_tooltip(main._ui_3d_depth_sync_btn, "Delay video slightly so it matches the frame used by AI depth inference.")
-	main._ui_3d_depth_sync_btn.visible = OS.get_name() == "Android"
-	if OS.get_name() == "Android":
-		ai3d_row1.add_child(main._ui_3d_depth_sync_btn)
-	if OS.get_name() == "Android" and SHOW_AI3D_DEPTH_DEBUG:
-		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
-		_set_button_tooltip(main._ui_3d_debug_btn,
-			"Inspect the processed depth map, raw model output, or model input.")
-		ai3d_row1.add_child(main._ui_3d_debug_btn)
-
 	var ai3d_gap1 = Control.new()
 	ai3d_gap1.name = "Ai3dGap1"
 	ai3d_gap1.custom_minimum_size = Vector2(0, 20)
@@ -1142,9 +1175,16 @@ func build_ui():
 	main._ui_3d_convergence_btn = make_option_btn("Convergence", "50% (Default)")
 	_set_button_tooltip(main._ui_3d_convergence_btn, "Adjust the depth plane where the left and right views meet.")
 	ai3d_row2.add_child(main._ui_3d_convergence_btn)
-	main._ui_3d_cursor_position_btn = make_option_btn("Cursor Position", "Default")
-	_set_button_tooltip(main._ui_3d_cursor_position_btn, "Choose how the cursor is positioned relative to AI-generated depth.")
-	ai3d_row2.add_child(main._ui_3d_cursor_position_btn)
+	if OS.get_name() == "Android":
+		main._ui_3d_depth_view_btn = make_option_btn("Depth View", "Off")
+		_set_button_tooltip(main._ui_3d_depth_view_btn,
+			"Show the final depth map used by AI 3D.")
+		ai3d_row2.add_child(main._ui_3d_depth_view_btn)
+	if OS.get_name() == "Android" and SHOW_AI3D_DEPTH_DEBUG:
+		main._ui_3d_debug_btn = make_option_btn("3D Debug", "Off")
+		_set_button_tooltip(main._ui_3d_debug_btn,
+			"Inspect the processed depth map, raw model output, or model input.")
+		ai3d_row2.add_child(main._ui_3d_debug_btn)
 	if OS.get_name() == "Android" and SHOW_AI3D_PROCESS_DEBUG:
 		main._ui_3d_process_debug_btn = make_option_btn("3D Process", "Full")
 		_set_button_tooltip(main._ui_3d_process_debug_btn,
@@ -1155,8 +1195,6 @@ func build_ui():
 		ai3d_row2.remove_child(main._ui_3d_hz_cap_btn)
 		ai3d_row1.add_child(main._ui_3d_priority_btn)
 		ai3d_row1.add_child(main._ui_3d_hz_cap_btn)
-		ai3d_row1.remove_child(main._ui_3d_depth_sync_btn)
-		ai3d_row2.add_child(main._ui_3d_depth_sync_btn)
 
 	_tab_picture = _build_menu_tab(
 		vbox,
@@ -1230,6 +1268,23 @@ func build_ui():
 
 	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
 	_build_language_grid(_settings_scroll.get_child(0))
+	var settings_end_space := Control.new()
+	settings_end_space.name = "SettingsEndSpace"
+	settings_end_space.custom_minimum_size = Vector2(0, 24)
+	settings_end_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_settings_scroll.get_child(0).add_child(settings_end_space)
+	# Advanced Settings is an overlay page rather than part of the normal menu
+	# stack. Give it an explicit viewport below the fixed toolbar: when it lived
+	# in the VBox, the unclipped GLES scroll workaround could let its scrollbar
+	# occupy the toolbar's full-height region after the other chrome was hidden.
+	vbox.remove_child(_tab_settings)
+	overlay.add_child(_tab_settings)
+	_tab_settings.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tab_settings.offset_top = 60.0
+	_tab_settings.offset_bottom = -SETTINGS_BOTTOM_MARGIN_PX
+	# Keep the real toolbar last among the panel's children so its drawing and
+	# hit testing stay above the scroll page.
+	overlay.move_child(top_row, overlay.get_child_count() - 1)
 
 	main._ui_status_label = Label.new()
 	main._ui_status_label.name = "StatusLabel"
@@ -1306,8 +1361,8 @@ func build_ui():
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
-	main._ui_3d_cursor_position_btn.button_down.connect(func(): on_ai_3d_cursor_position_toggled())
-	main._ui_3d_depth_sync_btn.button_down.connect(func(): on_ai_3d_depth_sync_toggled())
+	if main._ui_3d_depth_view_btn:
+		main._ui_3d_depth_view_btn.button_down.connect(func(): on_ai_3d_depth_view_toggled())
 	if main._ui_3d_debug_btn and OS.get_name() == "Android":
 		main._ui_3d_debug_btn.button_down.connect(func(): on_ai_3d_debug_toggled())
 	if main._ui_3d_process_debug_btn:
@@ -1412,6 +1467,14 @@ func _build_scroll_page(tab: VBoxContainer) -> VBoxContainer:
 	_settings_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_settings_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	_settings_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	# Godot's automatic wheel step is derived from the page size and feels like
+	# section paging in this compact menu. A small fixed step behaves like a
+	# webpage/document while pointer dragging remains pixel-continuous.
+	_settings_scroll.scroll_vertical_custom_step = 24.0
+	# Pointer dragging is implemented below so it also works with the XR ray's
+	# synthesized mouse events. Prevent ScrollContainer's own touch drag from
+	# simultaneously changing the same value and rebasing the next gesture.
+	_settings_scroll.scroll_deadzone = 1000000
 	_settings_scroll.follow_focus = false
 	# Under GLES this container's clip rect comes out flipped vertically inside
 	# the menu's SubViewport, cutting off the bottom of the page, so it doesn't
@@ -1475,15 +1538,28 @@ func _on_scroll_drag_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_scroll_drag_start_y = event.global_position.y
-			_scroll_drag_start_value = _settings_scroll.scroll_vertical
+			_scroll_drag_last_y = event.global_position.y
+			_scroll_drag_pending_travel = 0.0
 			_scroll_dragged = false
 	elif event is InputEventMouseMotion and (event.button_mask & MOUSE_BUTTON_MASK_LEFT):
-		var travel: float = event.global_position.y - _scroll_drag_start_y
-		if not _scroll_dragged and absf(travel) >= SCROLL_DRAG_THRESHOLD_PX:
+		var step: float = event.global_position.y - _scroll_drag_last_y
+		_scroll_drag_last_y = event.global_position.y
+		if not _scroll_dragged:
+			_scroll_drag_pending_travel = event.global_position.y - _scroll_drag_start_y
+		if not _scroll_dragged and absf(_scroll_drag_pending_travel) >= SCROLL_DRAG_THRESHOLD_PX:
 			_scroll_dragged = true
 			clear_tooltip()
 		if _scroll_dragged:
-			_settings_scroll.scroll_vertical = _scroll_drag_start_value - int(travel)
+			# Apply the threshold-crossing motion once, then use relative steps.
+			# Relative motion makes repeated swipes continue exactly where the
+			# previous one stopped instead of jumping to an old absolute baseline.
+			var movement := _scroll_drag_pending_travel if _scroll_drag_pending_travel != 0.0 else step
+			_scroll_drag_pending_travel = 0.0
+			var bar := _settings_scroll.get_v_scroll_bar()
+			var maximum := maxi(int(ceil(bar.max_value - bar.page)), 0)
+			_settings_scroll.scroll_vertical = clampi(
+				_settings_scroll.scroll_vertical - int(movement), 0, maximum)
+			_settings_scroll.accept_event()
 
 func _on_scroll_friendly_pressed(callable: Callable) -> void:
 	if _scroll_dragged:

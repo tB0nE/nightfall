@@ -89,12 +89,12 @@ const ANDROID_MODEL_AUTO := 9
 # The historical entries remain in ai_3d_models below so old saves and Linux
 # indices do not shift; Android cycles only Auto and the manual EdgePad slots.
 const ANDROID_MODEL_STANDARD := 18
-# Slot 19 (EdgePad-256, briefly EdgePad-352) is retired; saves that chose it
-# move to EdgePad-320 (see enforce_ai3d_platform_lock()).
-const ANDROID_MODEL_RETIRED_EDGEPAD_256 := 19
+# Slot 19 uses the square EdgePad-256 model for Quest 2 and GPU fallback.
+const ANDROID_MODEL_LEGACY_EDGEPAD_256 := 19
 const ANDROID_MODEL_EDGEPAD_320 := 21
 const ANDROID_MODEL_EDGEPAD_256_CPU := 22
 const ANDROID_MODEL_EDGEPAD_384_CPU := 23
+const ANDROID_MODEL_LEGACY_EDGEPAD_384 := 24
 const ANDROID_DEPTH_PROCESS_FULL := 5
 # Native renderer-only production mode: retain Full's occlusion/Newton warp,
 # but resize the reconstructed Standard depth with one linear texture sample
@@ -148,14 +148,18 @@ var ai_3d_models: Array = [
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
 	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256 (retired)", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-320", "java_index": 28, "gpu": true, "android": true, "linux": false},
+	# Retired slot: retain persisted indices; never selectable or bundled.
+	{"label": "EdgePad-320 (retired)", "java_index": 28, "gpu": true, "android": false, "linux": false},
 	# CPU twins (XNNPACK, no GPU delegate) - selected via the "Backend"
 	# control's CPU option, not the locked Model list. _android_cpu_model_index()
 	# picks between them to match whatever Model is actually selected.
 	{"label": "EdgePad-256-CPU", "java_index": 29, "gpu": false, "android": true, "linux": false},
 	{"label": "EdgePad-384-CPU", "java_index": 14, "gpu": false, "android": true, "linux": false},
+	# Exact square v0.7.11 export. It uses a fresh Java index because index 25
+	# now belongs to the current widescreen EdgePad-512 model.
+	{"label": "EdgePad-384 (Reference)", "java_index": 30, "gpu": true, "android": true, "linux": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -266,6 +270,8 @@ func get_stereo_mode() -> int:
 		return main.settings.host.sbs_mode
 	if main.settings.host.ai_3d_speed == 0:
 		return 0
+	if main.settings.host.ai_3d_depth_view:
+		return 7 # User-facing Final depth-map view.
 	if main.settings.host.ai_3d_debug == 1:
 		return 7 # DMap-Final: exact production upsampled depth
 	elif main.settings.host.ai_3d_debug == 2:
@@ -517,6 +523,40 @@ func toggle_ai_3d_depth_sync():
 	_save_setting(main._ui_3d_depth_sync_btn,
 		"On" if main.settings.host.ai_3d_depth_sync else "Off")
 
+func toggle_ai_3d_edge_alignment():
+	main.settings.host.ai_3d_edge_alignment = not main.settings.host.ai_3d_edge_alignment
+	_save_setting(main._ui_3d_edge_alignment_btn,
+		"On" if main.settings.host.ai_3d_edge_alignment else "Off")
+	main.ui_controller.update_3d_btn_state()
+	if main.native_xr_renderer:
+		main.native_xr_renderer.request_redraw()
+
+func toggle_ai_3d_contour_cleanup():
+	if not main.settings.host.ai_3d_edge_alignment:
+		return
+	main.settings.host.ai_3d_contour_cleanup = not main.settings.host.ai_3d_contour_cleanup
+	_save_setting(main._ui_3d_contour_cleanup_btn,
+		"On" if main.settings.host.ai_3d_contour_cleanup else "Off")
+	if main.native_xr_renderer:
+		main.native_xr_renderer.request_redraw()
+
+func toggle_ai_3d_depth_view():
+	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
+			or main.settings.host.ai_3d_speed == 0:
+		return
+	main.settings.host.ai_3d_depth_view = not main.settings.host.ai_3d_depth_view
+	# Both controls select a renderer diagnostic mode. Keep their state
+	# separate, but never display both when a development build exposes the
+	# full Raw/Input/Warp selector alongside this user-facing Final view.
+	if main.settings.host.ai_3d_depth_view and main.settings.host.ai_3d_debug != 0:
+		main.settings.host.ai_3d_debug = 0
+		_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[0])
+	_save_setting(main._ui_3d_depth_view_btn,
+		"On" if main.settings.host.ai_3d_depth_view else "Off")
+	# This changes only the renderer's view of the depth already flowing. It
+	# never changes stream resolution or model state, so apply it immediately.
+	apply_stereo()
+
 func cycle_ai_3d_process_debug():
 	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
 			or main.settings.host.ai_3d_speed == 0:
@@ -549,6 +589,8 @@ func reset_ai_3d_effect_settings():
 	main.settings.host.ai_3d_convergence_pct = 50
 	main.settings.host.ai_3d_cursor_position = 0
 	main.settings.host.ai_3d_depth_sync = false
+	main.settings.host.ai_3d_edge_alignment = true
+	main.settings.host.ai_3d_contour_cleanup = true
 	main.settings.host.ai_3d_process_debug = 5
 	enforce_ai3d_platform_lock()
 	main.state_manager.save_state()
@@ -579,7 +621,7 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
-	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
+	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_256, ANDROID_MODEL_LEGACY_EDGEPAD_384] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
 	if candidates.is_empty():
 		return
 	var offered := meteor_depth_offered()
@@ -597,13 +639,16 @@ func cycle_ai_3d_model():
 	if main._ui_3d_gpu_api_btn:
 		main.ui_controller.update_option_btn(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	main.ui_controller.update_3d_btn_state()
-	_schedule_ai_3d_commit()
+	# Match the resolution selector's settling window: model labels update on
+	# every click, but only the final choice tears down/compiles an OpenCL
+	# delegate after the user stops cycling.
+	_schedule_ai_3d_commit(0.8)
 
 func get_ai_3d_gpu_api_effective() -> int:
 	if is_android_ai3d_auto():
 		# Quest 2 lacks the OpenCL library exposed on Quest 3. Auto starts on
-		# the compatible EdgePad-320/OpenGL tier there; Quest 3 starts
-		# EdgePad-512/OpenCL and uses the 320/OpenGL path only after a real
+		# the compatible EdgePad-256/OpenGL tier there; Quest 3 starts
+		# EdgePad-512/OpenCL and uses the 256/OpenGL path only after a real
 		# OpenCL failure.
 		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
 	return main.settings.host.ai_3d_gpu_api
@@ -676,7 +721,7 @@ func normalize_ai_3d_model_for_type():
 		main.settings.host.ai_3d_model = candidates[0]
 
 # Android keeps Type and the legacy 3D Mode hidden, but exposes one concise
-# model selector: Auto, EdgePad-512, EdgePad-320. See
+# model selector: Auto, EdgePad-512, EdgePad-256 and EdgePad-384 reference. See
 # docs/guides/zipdepth-quest-tiers.md for the model and reconstruction
 # decisions behind those names. Linux retains its independent model library.
 func ai3d_options_locked() -> bool:
@@ -700,14 +745,17 @@ func enforce_ai3d_platform_lock(prefer_auto: bool = false):
 	# state, EdgePad-256-CPU) - only an unrecognized value falls back to GPU.
 	if main.settings.host.ai_3d_backend_pref != AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-	if main.settings.host.ai_3d_model == ANDROID_MODEL_RETIRED_EDGEPAD_256:
-		main.settings.host.ai_3d_model = ANDROID_MODEL_EDGEPAD_320
-	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_EDGEPAD_320].has(main.settings.host.ai_3d_model):
+	# Preserve manual intent for saves that selected the retired 320 tier.
+	if main.settings.host.ai_3d_model == ANDROID_MODEL_EDGEPAD_320:
+		main.settings.host.ai_3d_model = ANDROID_MODEL_LEGACY_EDGEPAD_256
+	if prefer_auto or not [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384, ANDROID_MODEL_LEGACY_EDGEPAD_256].has(main.settings.host.ai_3d_model):
 		main.settings.host.ai_3d_model = ANDROID_MODEL_AUTO
 	main.settings.host.ai_3d_gpu_api = clampi(main.settings.host.ai_3d_gpu_api, 0, 1)
 	main.settings.host.ai_3d_last_mode = 3
-	# Diagnostic selectors are hidden in Android releases. Always restore
-	# production rendering in case a development build persisted another stage.
+	# Diagnostic selectors start in the normal picture. The permanent Final
+	# view is deliberately session-only so a forgotten diagnostic cannot make
+	# the next launch appear broken.
+	main.settings.host.ai_3d_depth_view = false
 	main.settings.host.ai_3d_debug = 0
 	main.settings.host.ai_3d_process_debug = 5
 	if main.settings.host.ai_3d_speed != 0:
@@ -723,7 +771,7 @@ func get_depth_model_index() -> int:
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
 		return ai_3d_models[_android_cpu_model_index()].java_index
 	if is_android_ai3d_auto():
-		return 28 if main.device_is_quest2 or _auto_depth_fallback else 25
+		return 26 if main.device_is_quest2 or _auto_depth_fallback else 25
 	# Linux Auto is intentionally simple: ZipDepth-384 on Vulkan by default,
 	# or MiDaS-256 when the user explicitly changes Type to CPU. The old Auto
 	# table was calibrated for the retired MiDaS GPU roster and must not make
@@ -747,7 +795,7 @@ func get_depth_model_label() -> String:
 # locked button is actually showing, so switching Model while on CPU picks the
 # equivalent CPU tier instead of silently always running one fixed size.
 func _android_cpu_model_index() -> int:
-	if main.settings.host.ai_3d_model == ANDROID_MODEL_STANDARD:
+	if main.settings.host.ai_3d_model in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
 		return ANDROID_MODEL_EDGEPAD_384_CPU
 	return ANDROID_MODEL_EDGEPAD_256_CPU
 
@@ -759,7 +807,7 @@ func _android_cpu_model_index() -> int:
 func get_depth_process_stage() -> int:
 	if OS.get_name() == "Android":
 		var model_index := get_depth_model_index()
-		if model_index in [25, 28]:
+		if model_index in [25, 26, 30]:
 			return ANDROID_DEPTH_PROCESS_FULL_LINEAR
 	return ANDROID_DEPTH_PROCESS_FULL if OS.get_name() == "Android" \
 		else main.settings.host.ai_3d_process_debug
@@ -857,12 +905,14 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 		_last_backend_status = ""
 		return
 	var status = main.stream_backend.get_depth_backend_status()
-	if is_android_ai3d_auto() and not _auto_depth_fallback and not status.is_empty() and main.is_streaming:
+	if is_android_ai3d_auto() and get_depth_backend_index() == AI3D_BACKEND_GPU \
+			and get_ai_3d_gpu_api_effective() == 0 and not _auto_depth_fallback \
+			and not status.is_empty() and main.is_streaming:
 		_auto_depth_fallback = true
-		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-320/OpenGL for this session" % status)
+		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
 			main.ui_controller.update_stereo_shader()
-			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-320 / OpenGL", 3.0)
+			main.ui_controller.show_temporary_status("AI 3D fallback: EdgePad-256 / OpenGL", 3.0)
 		apply_stereo()
 		return
 	var requested = get_depth_backend_index()
@@ -883,10 +933,13 @@ func cycle_ai_3d_debug():
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
 	main.settings.host.ai_3d_debug = (main.settings.host.ai_3d_debug + 1) % ai_3d_debug_labels.size()
+	if main.settings.host.ai_3d_debug != 0 and main.settings.host.ai_3d_depth_view:
+		main.settings.host.ai_3d_depth_view = false
+		_save_setting(main._ui_3d_depth_view_btn, "Off")
 	_save_setting(main._ui_3d_debug_btn, ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	_schedule_ai_3d_commit()
 
-func _schedule_ai_3d_commit():
+func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 	_ai_3d_commit_seq += 1
 	var my_seq = _ai_3d_commit_seq
 	# Shorter than _schedule_stream_restart()'s own 0.8s - this one's mostly
@@ -896,7 +949,7 @@ func _schedule_ai_3d_commit():
 	# cycle_ai_3d_*() functions above (one sequence counter), so clicking
 	# between model/quality/debug controls in quick succession still only
 	# commits once, for whatever the final combined state ends up being.
-	await main.get_tree().create_timer(0.6).timeout
+	await main.get_tree().create_timer(delay_seconds).timeout
 	if _ai_3d_commit_seq != my_seq:
 		return
 	# MiDaS-DMap/-Raw/-Input/-Warp are debug VIEWS of whatever depth data is
@@ -908,7 +961,7 @@ func _schedule_ai_3d_commit():
 	# changed the very thing being inspected (a different, uncapped
 	# resolution) and interrupted the stream to do it. They never restart,
 	# so apply_stereo() is always safe to call immediately here.
-	if main.settings.host.ai_3d_debug != 0:
+	if main.settings.host.ai_3d_debug != 0 or main.settings.host.ai_3d_depth_view:
 		apply_stereo()
 		return
 	# MiDaS-Fast caps the actual requested stream resolution (see
@@ -1313,12 +1366,24 @@ func cycle_audio_boost():
 func get_audio_boost_label() -> String:
 	return "Normal" if main.settings.audio_boost_db == 0 else "+%d dB" % main.settings.audio_boost_db
 
+func get_audio_output_label() -> String:
+	return "AudioTrack" if main.settings.android_audio_output == 1 else "Native"
+
+func cycle_audio_output():
+	main.settings.android_audio_output = 1 - main.settings.android_audio_output
+	_save_setting(main._ui_audio_output_btn, get_audio_output_label())
+	apply_audio_boost()
+	if main.is_streaming:
+		_schedule_stream_restart()
+
 func apply_audio_boost():
 	if not (main.stream_backend and main.stream_backend._v2):
 		return
 	var audio = main.stream_backend._v2.get_audio_renderer()
 	if audio:
 		audio.set_volume_boost_db(float(main.settings.audio_boost_db))
+		if OS.get_name() == "Android" and audio.has_method("set_android_output"):
+			audio.set_android_output(main.settings.android_audio_output)
 
 # USB Link (docs/plans/active/usb-link-streaming.md) - requests Horizon OS
 # 2.5+'s TRANSPORT_USB network so streaming can use the USB-C cable instead
@@ -1740,7 +1805,8 @@ func _schedule_stream_restart():
 	await main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
 
 func toggle_hand_tracking():
-	main.settings.tracking_mode = (main.settings.tracking_mode + 1) % 2
+	var modes := [0, 3, 1]
+	main.settings.tracking_mode = modes[(modes.find(main.settings.tracking_mode) + 1) % modes.size()]
 	main.state_manager.save_state()
 	main.state_manager.sync_ui_to_settings()
 

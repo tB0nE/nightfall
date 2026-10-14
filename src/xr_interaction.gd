@@ -34,6 +34,7 @@ var _secondary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _ui_button_states: Array = []
 var _last_ui_style: Dictionary = {}
 var _screen_shortcut_press_active: bool = false
+var _last_hand_input_state: String = ""
 
 # Chord mode waits this long before committing a grip to right-click, giving a
 # near-simultaneous trigger press time to turn the pair into an explicit
@@ -106,20 +107,44 @@ func _get_hand_raycast(hand: String) -> RayCast3D:
 		return main.left_hand_raycast
 	return main.hand_raycast
 
+func hand_aim_available() -> bool:
+	return XRServer.get_tracker("/user/fbhandaim/left") != null or XRServer.get_tracker("/user/fbhandaim/right") != null
+
+func hand_aim_valid(hand: String) -> bool:
+	var tracker = XRServer.get_tracker("/user/fbhandaim/" + hand)
+	if not tracker:
+		return false
+	var pose = tracker.get_pose("default")
+	# The vendor plugin publishes system_gesture only on right and
+	# menu_gesture only on left. bool(null) is an invalid constructor call.
+	var gesture_name := "menu_gesture" if hand == "left" else "system_gesture"
+	return pose != null and pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE and tracker.get_input(gesture_name) != true
+
 func _get_hand_pinch_strength(tracker_name: String) -> float:
+	var hand := "left" if tracker_name.ends_with("left") else "right"
+	var aim = XRServer.get_tracker("/user/fbhandaim/" + hand)
+	var runtime_strength := 0.0
+	if aim:
+		if not hand_aim_valid(hand):
+			return 0.0
+		runtime_strength = float(aim.get_input("index_pinch_strength"))
 	var tracker = XRServer.get_tracker(tracker_name)
 	if not tracker:
-		return 0.0
+		return runtime_strength
 	var thumb_flags = tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_THUMB_TIP)
 	var index_flags = tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP)
 	if (thumb_flags & 8) == 0 or (index_flags & 8) == 0:
-		return 0.0
+		return runtime_strength
 	var thumb_tip = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_THUMB_TIP).origin
 	var index_tip = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP).origin
 	var dist = (index_tip - thumb_tip).length()
-	return clampf(1.0 - (dist - 0.015) / (0.045 - 0.015), 0.0, 1.0)
+	return maxf(runtime_strength, clampf(1.0 - (dist - 0.015) / (0.045 - 0.015), 0.0, 1.0))
 
 func _get_hand_grasp_strength(tracker_name: String) -> float:
+	var hand := "left" if tracker_name.ends_with("left") else "right"
+	var aim = XRServer.get_tracker("/user/fbhandaim/" + hand)
+	if aim:
+		return float(aim.get_input("middle_pinch_strength")) if hand_aim_valid(hand) and not bool(aim.get_input("index_pinch")) else 0.0
 	var tracker = XRServer.get_tracker(tracker_name)
 	if not tracker:
 		return 0.0
@@ -139,6 +164,9 @@ func _update_active_hand():
 	if not main.is_xr_active:
 		return
 	if main._is_using_hands:
+		# A press owns its hand until release, even when the other hand pinches.
+		if main.was_clicking or main.was_right_clicking or main.grabbed_node or main.grabbed_corner_idx >= 0 or _trigger_was_pressed or _grip_was_pressed:
+			return
 		var right_has_data = false
 		var left_has_data = false
 		var right_tracker = XRServer.get_tracker("/user/hand_tracker/right")
@@ -147,17 +175,14 @@ func _update_active_hand():
 			right_has_data = true
 		if left_tracker and left_tracker is XRHandTracker and left_tracker.get_has_tracking_data():
 			left_has_data = true
-		if right_has_data and left_has_data:
-			var right_pinch = _get_hand_pinch_strength("/user/hand_tracker/right")
-			var left_pinch = _get_hand_pinch_strength("/user/hand_tracker/left")
-			if left_pinch > 0.5 and right_pinch <= 0.5:
-				_active_hand = "left"
-			elif right_pinch > 0.5 and left_pinch <= 0.5:
-				_active_hand = "right"
-		elif left_has_data and not right_has_data:
-			_active_hand = "left"
-		elif right_has_data:
-			_active_hand = "right"
+		if hand_aim_available():
+			right_has_data = hand_aim_valid("right")
+			left_has_data = hand_aim_valid("left")
+		var primary: int = main.controller_mapper.primary_hand if main.controller_mapper else ControllerMapper.PrimaryHand.RIGHT
+		_active_hand = _select_tracked_hand(primary, right_has_data, left_has_data,
+			_get_hand_pinch_strength("/user/hand_tracker/right"),
+			_get_hand_pinch_strength("/user/hand_tracker/left"),
+			_is_hand_on_screen("right"), _is_hand_on_screen("left"))
 		return
 	var primary = main.controller_mapper.primary_hand if main.controller_mapper else 0
 	match primary:
@@ -168,7 +193,32 @@ func _update_active_hand():
 		_:
 			_active_hand = _get_auto_primary()
 
+func _select_tracked_hand(primary: int, right_valid: bool, left_valid: bool,
+		right_pinch: float, left_pinch: float, right_target: bool, left_target: bool) -> String:
+	# Explicit preference must not silently become the other hand. Invalid
+	# runtime poses suppress input separately until the preferred hand returns.
+	if primary == ControllerMapper.PrimaryHand.RIGHT:
+		return "right"
+	if primary == ControllerMapper.PrimaryHand.LEFT:
+		return "left"
+	if right_valid and left_valid:
+		if left_pinch > 0.5 and right_pinch <= 0.5:
+			return "left"
+		if right_pinch > 0.5 and left_pinch <= 0.5:
+			return "right"
+		if right_target != left_target:
+			return "right" if right_target else "left"
+	elif right_valid:
+		return "right"
+	elif left_valid:
+		return "left"
+	return _active_hand
+
 func _get_auto_primary() -> String:
+	# A cached primary must not hold ownership after it has been put down.
+	if main.right_hand_resting != main.left_hand_resting:
+		_auto_primary = "left" if main.right_hand_resting else "right"
+		return _auto_primary
 	if _auto_primary != "":
 		return _auto_primary
 	if _right_on_screen and not _left_on_screen:
@@ -192,6 +242,9 @@ func _is_now_clicking() -> bool:
 	if not main.is_xr_active:
 		return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
 	if main._is_using_hands:
+		var aim = XRServer.get_tracker("/user/fbhandaim/" + _active_hand)
+		if aim:
+			return hand_aim_valid(_active_hand) and (bool(aim.get_input("index_pinch")) or _get_hand_pinch_strength("/user/hand_tracker/" + _active_hand) > 0.85)
 		var tracker_name = "/user/hand_tracker/left" if _active_hand == "left" else "/user/hand_tracker/right"
 		return _get_hand_pinch_strength(tracker_name) > 0.85
 	else:
@@ -204,6 +257,9 @@ func _is_now_gripping() -> bool:
 	if not main.is_xr_active:
 		return false
 	if main._is_using_hands:
+		var aim = XRServer.get_tracker("/user/fbhandaim/" + _active_hand)
+		if aim:
+			return hand_aim_valid(_active_hand) and bool(aim.get_input("middle_pinch")) and not bool(aim.get_input("index_pinch"))
 		var tracker_name = "/user/hand_tracker/left" if _active_hand == "left" else "/user/hand_tracker/right"
 		return _get_hand_grasp_strength(tracker_name) > 0.85
 	var hand = main.left_hand if _active_hand == "left" else main.right_hand
@@ -248,12 +304,34 @@ func handle_pointer_interaction():
 	_update_on_screen_tracking()
 	_process_auto_primary(main.get_process_delta_time())
 	var active_raycast = get_active_raycast()
+	var hands_ui_only: bool = main.settings.tracking_mode == 3 or (main.input_handler and main.input_handler.hand_desktop_suspended())
+	if main._is_using_hands and hands_ui_only and active_raycast and active_raycast.is_colliding():
+		var target := PointerTarget.resolve(active_raycast.get_collider())
+		if target.role == &"screen" and main.is_streaming:
+			cancel_transient_interactions()
+			main.composition_pointers.hide_primary()
+			if main.pointer_cursor:
+				main.pointer_cursor.visible = false
+			return
 	pointer_on_ui = false
 
 	_primary_ui_pixel = Vector2(-1, -1)
 
 	var raw_clicking = _is_now_clicking()
 	var is_gripping = _is_now_gripping()
+	var input_state := "%s %s click=%s grip=%s" % ["hands" if main._is_using_hands else "controllers", _active_hand, raw_clicking, is_gripping]
+	if input_state != _last_hand_input_state:
+		_last_hand_input_state = input_state
+		main._log("[INPUT] Pointer %s right_trigger=%.2f left_trigger=%.2f" % [input_state,
+			main.right_hand.get_float("trigger") if main.right_hand else 0.0,
+			main.left_hand.get_float("trigger") if main.left_hand else 0.0])
+		if main._is_using_hands:
+			for hand in ["right", "left"]:
+				var aim = XRServer.get_tracker("/user/fbhandaim/" + hand)
+				if aim:
+					main._log("[HAND] %s valid=%s pinch=%s strength=%s system=%s menu=%s" % [hand,
+						hand_aim_valid(hand), aim.get_input("index_pinch"), aim.get_input("index_pinch_strength"),
+						aim.get_input("system_gesture"), aim.get_input("menu_gesture")])
 	var now_msec = Time.get_ticks_msec()
 	var trigger_pressed_edge = raw_clicking and not _trigger_was_pressed
 	var grip_pressed_edge = is_gripping and not _grip_was_pressed
@@ -949,7 +1027,7 @@ func _point_in_ui_rect(p: Vector2, btn: Button) -> bool:
 		return false
 	# Buttons on the scrolling Settings page only count where they are
 	# visible inside the scroll area (see UIController._make_scroll_friendly()).
-	var clip = btn.get_meta(&"nightfall_clip", null)
+	var clip = btn.get_meta(&"nightfall_clip") if btn.has_meta(&"nightfall_clip") else null
 	if clip is Control and is_instance_valid(clip) and not clip.get_global_rect().has_point(p):
 		return false
 	# Hidden by UIController._cull_settings_page() while partly out of view.

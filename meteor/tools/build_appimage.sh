@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Builds Nightfall-Meteor-<version>-x86_64.AppImage: Meteor (without ONNX Runtime),
-# ncnn and EdgePad 512 for Vulkan, about 30 MB. VDA is a download from the
+# ncnn and EdgePad 512/256 for Vulkan. VDA is a download from the
 # tray (src/download.rs). See docs/plans/active/meteor-appimage.md.
 #
 # usage: tools/build_appimage.sh [models folder]
 #
 # The models folder must hold zipdepth_wide_512x288.ncnn.{param,bin}
+# and zipdepth_edgepad_256.ncnn.{param,bin}
 # (models/convert_ncnn.py); default ~/.local/share/nightfall-meteor/models.
 # Needs podman (or docker) and network access. Output in target/appimage/.
 set -euo pipefail
@@ -15,6 +16,7 @@ METEOR="$PWD"
 REPO="$(cd .. && pwd)"
 MODELS="${1:-${XDG_DATA_HOME:-$HOME/.local/share}/nightfall-meteor/models}"
 EDGEPAD=zipdepth_wide_512x288
+EDGEPAD_SMALL=zipdepth_edgepad_256
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 
 NCNN_VERSION=20260526
@@ -37,11 +39,13 @@ APPDIR="$WORK/AppDir"
 IMAGE=nightfall-meteor-appimage
 ENGINE="$(command -v podman || command -v docker)"
 
-for f in "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin"; do
+for f in "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin"; do
     [[ -f "$f" ]] || { echo "Missing $f (see models/README.md)" >&2; exit 1; }
 done
 grep -q "^Input .* 0=512 1=288 2=3" "$MODELS/$EDGEPAD.ncnn.param" \
     || { echo "$EDGEPAD.ncnn.param has no input size; convert it with models/convert_ncnn.py" >&2; exit 1; }
+grep -q "^Input .* 0=256 1=256 2=3" "$MODELS/$EDGEPAD_SMALL.ncnn.param" \
+    || { echo "$EDGEPAD_SMALL.ncnn.param has no 256x256 input size" >&2; exit 1; }
 
 mkdir -p "$OUT/cargo-target" "$OUT/cargo-registry" "$WORK"
 rm -rf "${APPDIR:?}" "${WORK:?}/stage"
@@ -83,6 +87,7 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/nightfall-meteor
 install -m755 "$WORK/stage/nightfall-meteor" "$APPDIR/usr/bin/"
 install -m644 "$WORK/stage/libncnn.so.1" "$WORK/stage/libgomp.so.1" "$APPDIR/usr/lib/"
 install -m644 "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
+install -m644 "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
 install -m755 tools/appimage/AppRun "$APPDIR/AppRun"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/usr/share/applications/"
@@ -95,7 +100,7 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo
     echo "- ncnn $NCNN_VERSION (Tencent), BSD 3-Clause: usr/lib/libncnn.so.1"
     echo "- GNU OpenMP runtime (libgomp), GPL v3 with the GCC Runtime Library Exception: usr/lib/libgomp.so.1"
-    echo "- EdgePad 512x288 weights: Nightfall's fine-tune of ZipDepth (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
+    echo "- EdgePad 512x288 and 256x256 weights: Nightfall's ZipDepth models (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
     echo "- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor (microphone)"
     echo "- The Rust crates listed at the end"

@@ -2,6 +2,10 @@ class_name InputHandler
 extends RefCounted
 
 var main: Node3D
+var _last_desktop_input_msec: int = -10000
+
+func hand_desktop_suspended() -> bool:
+	return Time.get_ticks_msec() - _last_desktop_input_msec < 2000
 
 var _BTN_MAP = {
 	JOY_BUTTON_A: 0x1000,
@@ -34,7 +38,6 @@ const JOY_BUTTON_NAMES := ["a", "b", "x", "y", "back", "guide", "start", "leftst
 var gamepads := GamepadSlots.new()
 # Godot device ID -> ControllerLayout, Android only (see controller_layout.gd).
 var _layouts: Dictionary = {}
-var _mapped_guids: Dictionary = {}
 # Godot device ID -> {input name: true}, so the log records each button/axis a
 # pad produces once per session - enough to diagnose a mis-mapped pad from a
 # saved log without flooding it.
@@ -44,6 +47,9 @@ func _init(owner: Node3D):
 	main = owner
 
 func handle_input(event: InputEvent):
+	# Physical desktop input takes priority without disabling hand menu access.
+	if (event is InputEventKey and event.pressed) or event is InputEventMouseMotion or event is InputEventMouseButton:
+		_last_desktop_input_msec = Time.get_ticks_msec()
 	if main.is_xr_active and main.settings.tracking_mode == 2:
 		if event is InputEventKey:
 			if event.keycode == KEY_VOLUMEUP or event.keycode == KEY_VOLUMEDOWN:
@@ -168,16 +174,19 @@ func _apply_android_layout(device: int) -> void:
 	var pads = JSON.parse_string(str(info_class.describe()))
 	if not pads is Array:
 		return
+	main._log("[PAD] Android input devices: %s" % str(pads))
 	var pad_name := Input.get_joy_name(device)
+	var guid := Input.get_joy_guid(device)
 	for info in pads:
-		if info is Dictionary and str(info.get("name", "")) == pad_name:
+		if info is Dictionary and ControllerLayout.matches_android_device(info, pad_name, guid):
 			var layout := ControllerLayout.from_android_info(info)
 			_layouts[device] = layout
-			var guid := Input.get_joy_guid(device)
-			if not _mapped_guids.has(guid):
-				_mapped_guids[guid] = true
-				Input.add_joy_mapping(layout.to_godot_mapping(guid), true)
+			# Reconnecting can select Godot's built-in mapping again. Update
+			# every connection, including when the device gets a new slot.
+			Input.add_joy_mapping(layout.to_godot_mapping(guid), true)
+			main._log("[PAD] Applied Android mapping: device=%d guid=%s" % [device, guid])
 			return
+	main._log("[PAD] Android layout unmatched: name=%s guid=%s candidates=%s" % [pad_name, guid, str(pads)])
 
 func _pad_type(device: int) -> int:
 	var layout: ControllerLayout = _layouts.get(device)

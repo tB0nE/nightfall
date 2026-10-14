@@ -956,22 +956,35 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
-	# Live depth-inference readout (2026-08-25, extended to CPU 2026-10-02) -
-	# added for the 1080p-vs-1440p+ MiDaS-256-GPU throughput investigation, so
-	# testing resolution/quality-tier combos doesn't require pulling logcat
-	# each time. Shown whenever depth is actually running, GPU or CPU -
-	# DepthEstimator.java's recordTelemetry() accumulates a real window for
-	# CPU inference too, it's not just reset every call.
-	if main.depth_estimator and main.depth_estimator.enabled and main.stream_backend \
-			and main.stream_backend.has_method("get_effective_depth_backend") \
-			and main.stream_backend.get_effective_depth_backend() != 0 \
-			and main.stream_backend.has_method("get_depth_last_inference_ms"):
-		var inf_ms = main.stream_backend.get_depth_last_inference_ms()
-		var inf_hz = main.stream_backend.get_depth_last_inference_hz()
-		if inf_ms > 0.0:
-			txt += " \u2022 AI3D:" + str(snapped(inf_ms, 0.1)) + "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
+	txt += _depth_status_text()
 	if main.controller_mapper and main.controller_mapper.is_active():
 		txt += " \u2022 " + main.controller_mapper.get_mode_label()
 		if main.controller_mapper.is_gamepad_mode() and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt
+
+# Identifies the inference machine as well as its speed. Meteor pauses local
+# inference while maps are arriving, so reading only the native backend here
+# left its final value frozen in the status bar after switching to host depth.
+func _depth_status_text() -> String:
+	if not main.depth_estimator or not main.depth_estimator.enabled:
+		return ""
+	if main.depth_estimator.meteor_in_use():
+		var stats: Dictionary = main.depth_estimator.meteor_stats
+		if stats.is_empty():
+			return " \u2022 M-AI3D:starting"
+		# host_ms is Meteor's frame-to-map time; received_hz is the host map
+		# production rate, making these the closest equivalents to the local
+		# inference time/rate shown below.
+		return " \u2022 M-AI3D:" + str(snapped(float(stats.get("host_ms", 0.0)), 0.1)) \
+			+ "ms/" + str(snapped(float(stats.get("received_hz", 0.0)), 0.1)) + "Hz"
+	if main.stream_backend \
+			and main.stream_backend.has_method("get_effective_depth_backend") \
+			and main.stream_backend.get_effective_depth_backend() != 0 \
+			and main.stream_backend.has_method("get_depth_last_inference_ms"):
+		var inf_ms: float = main.stream_backend.get_depth_last_inference_ms()
+		var inf_hz: float = main.stream_backend.get_depth_last_inference_hz()
+		if inf_ms > 0.0:
+			return " \u2022 H-AI3D:" + str(snapped(inf_ms, 0.1)) \
+				+ "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
+	return ""

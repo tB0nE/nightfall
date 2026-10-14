@@ -36,6 +36,7 @@ pub use stub::*;
 /// Where an ONNX model runs. VDA uses it too, for its native TensorRT path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
+    Cpu,
     Cuda,
     TensorRt,
 }
@@ -43,8 +44,29 @@ pub enum Backend {
 impl Backend {
     pub fn label(self) -> &'static str {
         match self {
+            Backend::Cpu => "CPU",
             Backend::Cuda => "CUDA",
             Backend::TensorRt => "TensorRT fp16",
+        }
+    }
+}
+
+/// Reserve CPU capacity for games, decoding and forwarding; never use more
+/// than four inference workers by default.
+pub fn cpu_threads() -> usize {
+    cpu_threads_for(std::thread::available_parallelism().map_or(1, usize::from))
+}
+
+fn cpu_threads_for(available: usize) -> usize {
+    (available / 2).clamp(1, 4)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bounded_cpu_workers() {
+        for (available, expected) in [(1,1),(2,1),(4,2),(8,4),(32,4)] {
+            assert_eq!(super::cpu_threads_for(available), expected);
         }
     }
 }

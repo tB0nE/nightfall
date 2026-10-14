@@ -23,7 +23,7 @@ func _get_mdns():
 	return mdns
 
 func get_is_hand_tracking() -> bool:
-	if settings.tracking_mode != 1:
+	if settings.tracking_mode not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -32,7 +32,7 @@ func get_is_hand_tracking() -> bool:
 	return false
 
 func get_hand_tracking_has_data() -> bool:
-	if settings.tracking_mode != 1:
+	if settings.tracking_mode not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -79,7 +79,8 @@ var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
 
 var _is_using_hands: bool = false
-var tracking_labels: Array = ["Off", "Hands"]
+var tracking_labels: Array = ["Off", "Hands", "Off", "UI Only"] # 2: retired head-tracking setting
+var _hand_menu_pressed: bool = false
 
 # OS/runtime controller render models (2026-08-25, see the archived
 # docs/archive/plans/gles-quest-projectionless.md plan's
@@ -483,6 +484,7 @@ var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_gpu_api_btn: Button
+var _ui_3d_depth_view_btn: Button
 var _ui_3d_debug_btn: Button
 var _ui_3d_process_debug_btn: Button
 var _ui_3d_priority_btn: Button
@@ -494,6 +496,8 @@ var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
 var _ui_3d_depth_sync_btn: Button
+var _ui_3d_edge_alignment_btn: Button
+var _ui_3d_contour_cleanup_btn: Button
 var _ui_3d_reset_btn: Button
 var _ui_res_btn: Button
 var _ui_fps_btn: Button
@@ -503,6 +507,7 @@ var _ui_btn_toggle_btn: Button
 var _ui_primary_btn: Button
 var _ui_quick_start_btn: Button
 var _ui_audio_boost_btn: Button
+var _ui_audio_output_btn: Button
 var _ui_usb_link_btn: Button
 var _ui_hdr_btn: Button
 var _ui_host_cursor_btn: Button
@@ -1029,12 +1034,21 @@ func _sync_composition_panels():
 			_restore_kb_material()
 
 func _update_laser_layers():
+	# Only the selected hand gets a beam. Keep both raycasts enabled for
+	# hit-testing so Auto can still discover and switch to the other hand.
+	var right_ray: RayCast3D = hand_raycast
+	var left_ray: RayCast3D = left_hand_raycast
+	if _is_using_hands:
+		if xr_interaction._active_hand == "left":
+			right_ray = null
+		else:
+			left_ray = null
 	composition_controller_rays.update(
 		DEBUG_COMP_LASER,
 		comp.in_use and is_xr_active,
 		xr_camera.global_position,
-		hand_raycast,
-		left_hand_raycast)
+		right_ray,
+		left_ray)
 
 func _update_marker_layers(_delta: float):
 	composition_controller_markers.update(
@@ -1882,6 +1896,7 @@ func _init_stream_backend():
 	if v2_node.has_method("set_reconnect_via_launch"):
 		v2_node.set_reconnect_via_launch(true)
 	stream_backend = StreamBackend.new(v2_node)
+	settings_controller.apply_audio_boost()
 	stream_backend.set_config_manager(config_mgr)
 	stream_backend.set_computer_manager(comp_mgr)
 	if OS.get_name() == "Android":
@@ -2209,6 +2224,9 @@ func _process(delta):
 
 	_process_input_release()
 	_process_xr_surface_refresh()
+	# Resolve controller rest/wake before selecting the pointer and drawing
+	# beams, so a pickup takes effect in this frame rather than the next.
+	_process_controller_fade(delta)
 
 	xr_interaction.process_pointer_frame(delta)
 	xr_interaction.handle_scroll()
@@ -2254,7 +2272,6 @@ func _process(delta):
 			_startup_cover = null
 			_log("[COVER] Startup cover removed")
 
-	_process_controller_fade(delta)
 
 func _prepare_fade_materials(side: String):
 	var hand = right_hand if side == "right" else left_hand
@@ -2289,37 +2306,45 @@ func _set_hand_alpha(side: String, alpha: float):
 func _hand_has_activity(hand: XRController3D, side: String) -> bool:
 	if not hand:
 		return false
-	var pos = hand.global_position
-	var last_pos = xr_interaction._last_known_right_pos if side == "right" else xr_interaction._last_known_left_pos
-	var moved = last_pos.distance_squared_to(pos) > 0.00001
-	if side == "right":
-		xr_interaction._last_known_right_pos = pos
-	else:
-		xr_interaction._last_known_left_pos = pos
-	if moved:
-		return true
-	var rot = hand.global_rotation
-	var last_rot = xr_interaction._last_known_right_rot if side == "right" else xr_interaction._last_known_left_rot
-	if last_rot.distance_squared_to(rot) > 0.0001:
+	# Local poses exclude movement/recentering of the shared XR origin,
+	# which otherwise wakes BOTH controllers when only one was picked up.
+	var pos = hand.position
+	var rot = hand.rotation
+	var pressed := hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1 \
+		or hand.is_button_pressed("ax_button") or hand.is_button_pressed("by_button")
+	var vec = hand.get_vector2("primary")
+	pressed = pressed or absf(vec.x) > 0.1 or absf(vec.y) > 0.1
+	if not _controller_pose_initialized.has(side):
+		_controller_pose_initialized[side] = true
 		if side == "right":
+			xr_interaction._last_known_right_pos = pos
 			xr_interaction._last_known_right_rot = rot
 		else:
+			xr_interaction._last_known_left_pos = pos
 			xr_interaction._last_known_left_rot = rot
-		return true
+		return pressed
+	var last_pos = xr_interaction._last_known_right_pos if side == "right" else xr_interaction._last_known_left_pos
+	var last_rot = xr_interaction._last_known_right_rot if side == "right" else xr_interaction._last_known_left_rot
+	var resting := right_hand_resting if side == "right" else left_hand_resting
+	# Resting controllers need deliberate motion, not small tracking jitter.
+	# Keep the baseline until activity so slow pickup motion accumulates.
+	var moved = last_pos.distance_squared_to(pos) > (0.0001 if resting else 0.00001)
+	var rotated = Basis.from_euler(last_rot).get_rotation_quaternion().angle_to(
+		Basis.from_euler(rot).get_rotation_quaternion()) > (0.035 if resting else 0.01)
+	if not moved and not rotated and not pressed:
+		return false
 	if side == "right":
+		xr_interaction._last_known_right_pos = pos
 		xr_interaction._last_known_right_rot = rot
 	else:
+		xr_interaction._last_known_left_pos = pos
 		xr_interaction._last_known_left_rot = rot
-	if hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1:
-		return true
-	var vec = hand.get_vector2("primary")
-	if absf(vec.x) > 0.1 or absf(vec.y) > 0.1:
-		return true
-	return false
+	return true
 
 const HAND_REST_THRESHOLD := 4.0
 var right_hand_resting: bool = false
 var left_hand_resting: bool = false
+var _controller_pose_initialized: Dictionary = {}
 
 func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
 	if not raycast or not raycast.enabled or not raycast.is_colliding():
@@ -2329,6 +2354,9 @@ func _raycast_points_at_stream(raycast: RayCast3D) -> bool:
 func _process_controller_fade(delta: float):
 	if _is_using_hands or not is_xr_active:
 		return
+	if _controller_pose_initialized.is_empty():
+		_apply_hand_rest("right", true)
+		_apply_hand_rest("left", true)
 	if _hand_has_activity(right_hand, "right"):
 		xr_interaction._right_inactive_time = 0.0
 	else:
@@ -2339,13 +2367,11 @@ func _process_controller_fade(delta: float):
 		xr_interaction._left_inactive_time += delta
 	_apply_hand_fade("right", xr_interaction._right_inactive_time, delta)
 	_apply_hand_fade("left", xr_interaction._left_inactive_time, delta)
-	# Keep menu, keyboard, grab-bar, and shortcut pointers available regardless
-	# of controller stillness. Once a ray has gone to rest over stream content,
-	# preserve that state until physical controller activity wakes it again.
-	var right_can_rest := right_hand_resting or _raycast_points_at_stream(hand_raycast)
-	var left_can_rest := left_hand_resting or _raycast_points_at_stream(left_hand_raycast)
-	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD and right_can_rest)
-	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD and left_can_rest)
+	# A controller placed down should rest regardless of where its last ray
+	# pointed (menu, keyboard, screen or empty space). Movement/buttons wake
+	# each controller independently on the next activity check.
+	_apply_hand_rest("right", xr_interaction._right_inactive_time >= HAND_REST_THRESHOLD)
+	_apply_hand_rest("left", xr_interaction._left_inactive_time >= HAND_REST_THRESHOLD)
 
 func _apply_hand_fade(side: String, inactive_time: float, delta: float):
 	var target_alpha = 1.0 if inactive_time < HAND_REST_THRESHOLD else 0.02
@@ -2362,11 +2388,23 @@ func _apply_hand_rest(side: String, resting: bool):
 	else:
 		left_hand_resting = resting
 		if left_hand_raycast: left_hand_raycast.enabled = not resting
+	if not resting and controller_mapper and controller_mapper.primary_hand == ControllerMapper.PrimaryHand.AUTO \
+			and not was_clicking and not was_right_clicking and not grabbed_node and grabbed_corner_idx < 0:
+		xr_interaction._auto_primary = side
+		xr_interaction._active_hand = side
 	_log("[HAND] %s controller %s" % [side, "resting (disabled)" if resting else "picked up (re-enabled)"])
 
 func _process_hand_tracking(_delta):
 	var hands_active = get_is_hand_tracking() and get_hand_tracking_has_data()
+	# Aim trackers exist throughout the session, including controller use.
+	# A physical button press must never be routed into the hand-pinch path.
+	for controller in [right_hand, left_hand]:
+		if controller and (controller.get_float("trigger") > 0.1 or controller.get_float("grip") > 0.1
+				or controller.is_button_pressed("ax_button") or controller.is_button_pressed("by_button")):
+			hands_active = false
 	if hands_active != _is_using_hands:
+		xr_interaction.cancel_transient_interactions("hand/controller ownership changed")
+		_log("[HAND] ownership=%s runtime_aim=%s tracking_mode=%d" % ["hands" if hands_active else "controllers", xr_interaction.hand_aim_available(), settings.tracking_mode])
 		_is_using_hands = hands_active
 		if _is_using_hands:
 			# The controller nodes below are about to be overwritten with hand
@@ -2388,8 +2426,12 @@ func _process_hand_tracking(_delta):
 			xr_interaction._right_inactive_time = 0.0
 			xr_interaction._left_inactive_time = 0.0
 			if hand_raycast:
+				hand_raycast.top_level = false
+				hand_raycast.transform = Transform3D.IDENTITY
 				hand_raycast.enabled = true
 			if left_hand_raycast:
+				left_hand_raycast.top_level = false
+				left_hand_raycast.transform = Transform3D.IDENTITY
 				left_hand_raycast.enabled = true
 			_log("[INPUT] Controllers active, showing controller models")
 			_set_controller_models_visible(true)
@@ -2401,6 +2443,15 @@ func _process_hand_tracking(_delta):
 			_update_hand_tracker_transform(right_hand, right_tracker)
 		if left_tracker:
 			_update_hand_tracker_transform(left_hand, left_tracker)
+		var menu_tracker = XRServer.get_tracker("/user/fbhandaim/left")
+		var menu_pressed := menu_tracker != null and bool(menu_tracker.get_input("menu_pressed"))
+		if menu_pressed and not _hand_menu_pressed:
+			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_MENU)
+		_hand_menu_pressed = menu_pressed
+		if xr_interaction.hand_aim_available() and not xr_interaction.hand_aim_valid(xr_interaction._active_hand):
+			xr_interaction.cancel_transient_interactions()
+	else:
+		_hand_menu_pressed = false
 
 func _process_button_input():
 	if not is_xr_active:
@@ -3128,6 +3179,23 @@ func _update_hand_indicator_layers():
 		xr_camera.global_position)
 
 func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTracker):
+	var hand_name := "left" if hand_node == left_hand else "right"
+	var ray: RayCast3D = left_hand_raycast if hand_name == "left" else hand_raycast
+	if not ray:
+		return
+	# XRController3D continues receiving physical-controller pose signals.
+	# Keep hand aiming independent instead of overwriting its transform.
+	ray.top_level = true
+	var aim_tracker = XRServer.get_tracker("/user/fbhandaim/" + hand_name)
+	if aim_tracker:
+		var aim_pose = aim_tracker.get_pose("default")
+		var valid: bool = aim_pose != null and aim_pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE
+		if ray:
+			ray.enabled = valid
+		if valid:
+			ray.global_transform = xr_origin.global_transform * aim_pose.get_adjusted_transform()
+			ray.force_raycast_update()
+		return
 	var wrist_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & 8) != 0
 	var middle_knuckle_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL) & 8) != 0
 	
@@ -3143,17 +3211,17 @@ func _update_hand_tracker_transform(hand_node: XRController3D, tracker: XRHandTr
 		var basis = Basis(right, up, -forward)
 		# Pitch down by 30 degrees for relaxed remote-like aiming
 		basis = basis.rotated(right, deg_to_rad(-30))
-		hand_node.transform = Transform3D(basis, middle_knuckle_pos)
+		ray.global_transform = xr_origin.global_transform * Transform3D(basis, middle_knuckle_pos)
 	elif wrist_ok:
 		var t = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST)
 		t.basis = t.basis.rotated(t.basis.y, PI)
-		hand_node.transform = t
+		ray.global_transform = xr_origin.global_transform * t
 	else:
 		var palm_ok = (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_PALM) & 8) != 0
 		if palm_ok:
 			var t = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_PALM)
 			t.basis = t.basis.rotated(t.basis.y, PI)
-			hand_node.transform = t
+			ray.global_transform = xr_origin.global_transform * t
 
 func _make_laser_gradient() -> ImageTexture:
 	var img = Image.create(1, 256, false, Image.FORMAT_RGBA8)

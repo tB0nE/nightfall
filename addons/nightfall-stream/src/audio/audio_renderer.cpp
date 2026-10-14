@@ -1,9 +1,11 @@
 #include "audio_renderer.h"
 #include "miniaudio_backend.h"
+#include "android_audio_backend.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include "nf_log.h"
 
 using namespace godot;
@@ -76,12 +78,22 @@ int AudioRenderer::init(int audio_configuration, const POPUS_MULTISTREAM_CONFIGU
     int period_frames = samples_per_frame_;
 
     audio_backend_ = std::make_unique<nightfall::MiniaudioBackend>();
+#ifdef __ANDROID__
+    if (android_output_.load() == 1) audio_backend_ = std::make_unique<nightfall::AndroidAudioBackend>();
+#endif
     if (!audio_backend_->initialize(sample_rate_, output_channels, period_frames)) {
         UtilityFunctions::printerr("[AudioRenderer] Audio backend init failed");
         return -1;
     }
 
     initialized_.store(true);
+    diagnostic_frames_ = diagnostic_failures_ = 0;
+    memset(decoded_energy_, 0, sizeof(decoded_energy_));
+    memset(output_energy_, 0, sizeof(output_energy_));
+    memset(decoded_peak_, 0, sizeof(decoded_peak_));
+    memset(output_peak_, 0, sizeof(output_peak_));
+    NF_LOG("AudioRenderer", "output=%s requested=%d boost=%.1fdB channels=%d->%d rate=%d",
+        audio_backend_->get_backend_name().c_str(), android_output_.load(), volume_boost_db_.load(), channels_, output_channels, sample_rate_);
     UtilityFunctions::print("[AudioRenderer] Initialized: ", sample_rate_, "Hz ", channels_, "ch (output ", output_channels, "ch), ", samples_per_frame_, " spf");
     return 0;
 }
@@ -131,7 +143,8 @@ void AudioRenderer::decode_and_play_sample(const char *sample_data, int sample_l
     bool boosted = volume_gain_.load(std::memory_order_relaxed) != 1.0f;
 
     if (channels_ == 2 && !boosted) {
-        audio_backend_->write_pcm(pcm_ptr, frames);
+        bool written = audio_backend_->write_pcm(pcm_ptr, frames);
+        _record_audio(pcm_ptr, channels_, pcm_ptr, 2, frames, written);
         return;
     }
 
@@ -152,7 +165,46 @@ void AudioRenderer::decode_and_play_sample(const char *sample_data, int sample_l
     if (boosted) {
         _apply_volume_boost(stereo_buf, out_frames * 2);
     }
-    audio_backend_->write_pcm(stereo_buf, out_frames);
+    bool written = audio_backend_->write_pcm(stereo_buf, out_frames);
+    _record_audio(pcm_ptr, channels_, stereo_buf, 2, out_frames, written);
+}
+
+void AudioRenderer::set_android_output(int output) {
+    android_output_.store(output == 1 ? 1 : 0);
+}
+
+// Signal statistics only; no samples or recordings leave the audio callback.
+// Summarize every five seconds of audio, including independent left/right levels.
+void AudioRenderer::_record_audio(const float *decoded, int decoded_channels, const float *output, int output_channels, int frames, bool written) {
+    for (int i = 0; i < frames; ++i) {
+        for (int c = 0; c < 2; ++c) {
+            float d = decoded[i * decoded_channels + (c < decoded_channels ? c : 0)];
+            float o = output[i * output_channels + (c < output_channels ? c : 0)];
+            decoded_energy_[c] += double(d) * d;
+            output_energy_[c] += double(o) * o;
+            decoded_peak_[c] = fmaxf(decoded_peak_[c], fabsf(d));
+            output_peak_[c] = fmaxf(output_peak_[c], fabsf(o));
+        }
+    }
+    diagnostic_frames_ += frames;
+    if (!written) ++diagnostic_failures_;
+    if (diagnostic_frames_ < uint64_t(sample_rate_) * 5) return;
+    auto rms = [&](double energy) { return 10.0 * log10(fmax(energy / diagnostic_frames_, 1e-12)); };
+    auto peak = [](float value) { return 20.0 * log10(fmax(double(value), 1e-6)); };
+    char message[1024];
+    snprintf(message, sizeof(message), "[AUDIO-LEVEL] backend=%s channels=%d->2 rate=%d boost=%.1fdB decoded_rms_LR=%.2f/%.2fdBFS decoded_peak_LR=%.2f/%.2fdBFS output_rms_LR=%.2f/%.2fdBFS output_peak_LR=%.2f/%.2fdBFS write_failures=%llu latency_ms=%d",
+        audio_backend_->get_backend_name().c_str(), channels_, sample_rate_, volume_boost_db_.load(),
+        rms(decoded_energy_[0]), rms(decoded_energy_[1]), peak(decoded_peak_[0]), peak(decoded_peak_[1]),
+        rms(output_energy_[0]), rms(output_energy_[1]), peak(output_peak_[0]), peak(output_peak_[1]),
+        static_cast<unsigned long long>(diagnostic_failures_), audio_backend_->get_latency_ms());
+#ifdef __ANDROID__
+    nightfall::log_audio_diagnostic(message);
+#else
+    NF_LOG("AudioRenderer", "%s", message);
+#endif
+    diagnostic_frames_ = diagnostic_failures_ = 0;
+    memset(decoded_energy_, 0, sizeof(decoded_energy_)); memset(output_energy_, 0, sizeof(output_energy_));
+    memset(decoded_peak_, 0, sizeof(decoded_peak_)); memset(output_peak_, 0, sizeof(output_peak_));
 }
 
 // Some hosts send noticeably quiet audio (the same stream is equally quiet in
@@ -251,6 +303,7 @@ float AudioRenderer::get_volume_boost_db() const {
 }
 
 void AudioRenderer::_bind_methods() {
+    ClassDB::bind_method(D_METHOD("set_android_output", "output"), &AudioRenderer::set_android_output);
     ClassDB::bind_method(D_METHOD("is_initialized"), &AudioRenderer::is_initialized);
     ClassDB::bind_method(D_METHOD("get_channels"), &AudioRenderer::get_channels);
     ClassDB::bind_method(D_METHOD("get_sample_rate"), &AudioRenderer::get_sample_rate);

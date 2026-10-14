@@ -1,0 +1,6 @@
+[
+  {"name":"Headset EdgePad-384", "path":"../../models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite", "input_size":[384,384], "input_layout":"nhwc", "output_layout":"packed2x2"},
+  {"name":"Headset EdgePad-256", "path":"../../models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite", "input_size":[256,256], "input_layout":"nhwc", "output_layout":"packed2x2"},
+  {"name":"Headset EdgePad-512 widescreen", "path":"../../models/zipdepth-wide-512x288-edgepad-gpu.tflite", "input_size":[512,288], "input_layout":"nhwc", "output_layout":"packed2x2"},
+  {"name":"Headset EdgePad-320 widescreen", "path":"../../models/zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite", "input_size":[320,192], "pad_rows":6, "input_layout":"nhwc", "output_layout":"packed2x2"}
+]

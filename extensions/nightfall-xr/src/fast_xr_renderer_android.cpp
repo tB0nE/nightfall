@@ -1,6 +1,7 @@
 #ifdef __ANDROID__
 
 #include "fast_xr_renderer.h"
+#include "depth_refinement_shaders.h"
 
 #include <chrono>
 #include <cmath>
@@ -1012,6 +1013,14 @@ bool NightfallXrRenderer::init_gl() {
 	if (upsample_program == 0) {
 		return false;
 	}
+	// Optional: a shader failure must not prevent video from starting.
+	edge_alignment_program = link_program(EDGE_ALIGNMENT_FRAGMENT_SRC);
+	edge_alignment_2d_program = link_program(EDGE_ALIGNMENT_FRAGMENT_SRC,
+			"#define NIGHTFALL_TEXTURE_2D 1\n");
+	contour_cleanup_program = link_program(CONTOUR_CLEANUP_FRAGMENT_SRC);
+	if (!edge_alignment_program || !edge_alignment_2d_program || !contour_cleanup_program) {
+		XR_LOGE("Optional depth refinement shader unavailable; falling back to existing depth processing");
+	}
 	u_upsample_texmatrix = glGetUniformLocation(upsample_program, "u_texmatrix");
 	u_upsample_sigma = glGetUniformLocation(upsample_program, "u_sigmaR");
 	u_upsample_sharp = glGetUniformLocation(upsample_program, "u_sharp");
@@ -1235,6 +1244,7 @@ void NightfallXrRenderer::stop_stream() {
 			}
 			if (ambient_sample_texture) glDeleteTextures(1, &ambient_sample_texture);
 			if (upsample_texture) glDeleteTextures(1, &upsample_texture);
+			if (contour_cleanup_texture) glDeleteTextures(1, &contour_cleanup_texture);
 			if (offset_texture) glDeleteTextures(1, &offset_texture);
 			if (depth_gpu_timer_supported) {
 				glDeleteQueries(DEPTH_GPU_QUERY_COUNT, depth_gpu_queries);
@@ -1252,6 +1262,9 @@ void NightfallXrRenderer::stop_stream() {
 			if (delayed_picture_warp_program) glDeleteProgram(delayed_picture_warp_program);
 			if (delayed_hdr_warp_program) glDeleteProgram(delayed_hdr_warp_program);
 			if (upsample_program) glDeleteProgram(upsample_program);
+			if (edge_alignment_program) glDeleteProgram(edge_alignment_program);
+			if (edge_alignment_2d_program) glDeleteProgram(edge_alignment_2d_program);
+			if (contour_cleanup_program) glDeleteProgram(contour_cleanup_program);
 			if (delayed_upsample_program) glDeleteProgram(delayed_upsample_program);
 			if (offset_program) glDeleteProgram(offset_program);
 			if (depth_sync_copy_program) glDeleteProgram(depth_sync_copy_program);
@@ -1282,6 +1295,9 @@ void NightfallXrRenderer::stop_stream() {
 		warp_program = picture_warp_program = hdr_warp_program = 0;
 		delayed_warp_program = delayed_picture_warp_program = delayed_hdr_warp_program = 0;
 		upsample_program = delayed_upsample_program = offset_program = depth_sync_copy_program = overlay_program = 0;
+		edge_alignment_program = edge_alignment_2d_program = contour_cleanup_program = 0;
+		contour_cleanup_texture = refined_depth_texture = 0;
+		contour_cleanup_failed = false;
 		if (cleanup_context_current) {
 			eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
 		}
@@ -1395,6 +1411,15 @@ void NightfallXrRenderer::set_compositor_sharpening(int p_mode) {
 	XR_LOG("Native compositor sharpening: %s", mode == 2 ? "quality" : (mode == 1 ? "normal" : "off"));
 }
 
+void NightfallXrRenderer::set_depth_refinement(bool p_alignment, bool p_cleanup) {
+	if (pending_edge_alignment != p_alignment || pending_contour_cleanup != p_cleanup) {
+		pending_edge_alignment = p_alignment;
+		pending_contour_cleanup = p_cleanup;
+		depth_cache_valid = false;
+		XR_LOG("Depth refinement: alignment=%d cleanup=%d", p_alignment, p_alignment && p_cleanup);
+	}
+}
+
 void NightfallXrRenderer::set_depth_sync(bool p_enabled, int p_delay_frames) {
 	if (p_enabled && depth_sync_failed) {
 		return;
@@ -1488,7 +1513,8 @@ uint32_t NightfallXrRenderer::capture_depth_sync_frame(uint32_t p_oes_texture_id
 // than the map itself: it would only resample the map once more before the
 // warp stretches it to the screen. So when the map already has the stream's
 // aspect (the widescreen models, Meteor's maps), the grid is the map's own
-// size and the upsample pass is a 1:1 copy. Colour-guided modes and
+// size (but no smaller than a quarter-stream grid) and the upsample pass is
+// a 1:1 copy only when that minimum is already met. Colour-guided modes and
 // differently shaped maps keep a quarter of the stream, where the guide adds
 // detail or the aspect needs correcting.
 //
@@ -1518,8 +1544,11 @@ void NightfallXrRenderer::choose_working_size(uint32_t p_depth_texture_id, int p
 			width = std::max(depth_map_width, (int)(video_width * GSR_GRID_STREAM_FRACTION));
 			height = std::max(depth_map_height, (int)(video_height * GSR_GRID_STREAM_FRACTION));
 		} else if (std::fabs(map_aspect / video_aspect - 1.0f) < 0.05f) {
-			width = depth_map_width;
-			height = depth_map_height;
+			// Keep matching maps direct only when they are at least as dense
+			// as the quarter-stream grid. A 320x180 map otherwise leaves
+			// nearest-sampled warp offsets in visibly large screen blocks.
+			width = std::max(depth_map_width, width);
+			height = std::max(depth_map_height, height);
 		}
 	}
 	if (width != upsample_width || height != upsample_height) {
@@ -1538,7 +1567,63 @@ void NightfallXrRenderer::resize_working_textures(int p_width, int p_height) {
 	glBindTexture(GL_TEXTURE_2D, offset_texture);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, upsample_width, upsample_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 	// Both textures are empty again.
+	if (contour_cleanup_texture) {
+		glBindTexture(GL_TEXTURE_2D, contour_cleanup_texture);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, upsample_width, upsample_height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+	}
+	refined_depth_texture = 0;
 	depth_cache_valid = false;
+}
+
+bool NightfallXrRenderer::run_depth_refinement(uint32_t p_source, uint32_t p_depth,
+		const float *p_matrix, bool p_texture_2d) {
+	GLuint program = p_texture_2d ? edge_alignment_2d_program : edge_alignment_program;
+	if (!program) return false;
+	glBindFramebuffer(GL_FRAMEBUFFER, upsample_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, upsample_texture, 0);
+	glViewport(0, 0, upsample_width, upsample_height);
+	glUseProgram(program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, p_depth);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glUniform1i(glGetUniformLocation(program, "u_depth"), 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(p_texture_2d ? GL_TEXTURE_2D : GL_TEXTURE_EXTERNAL_OES, p_source);
+	glUniform1i(glGetUniformLocation(program, "u_guide"), 1);
+	glUniformMatrix4fv(glGetUniformLocation(program, "u_texmatrix"), 1, GL_FALSE, p_matrix);
+	glUniform1f(glGetUniformLocation(program, "u_radius"), 2.0f);
+	glUniform1f(glGetUniformLocation(program, "u_strength"), 0.75f);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+	glEnableVertexAttribArray(1);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	refined_depth_texture = upsample_texture;
+	if (pending_contour_cleanup && contour_cleanup_program && !contour_cleanup_failed) {
+		if (!contour_cleanup_texture) {
+			glGenTextures(1, &contour_cleanup_texture);
+			glBindTexture(GL_TEXTURE_2D, contour_cleanup_texture);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, upsample_width, upsample_height, 0, GL_RGBA, GL_HALF_FLOAT, nullptr);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		}
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, contour_cleanup_texture, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+			glUseProgram(contour_cleanup_program);
+			glActiveTexture(GL_TEXTURE0);
+			glBindTexture(GL_TEXTURE_2D, upsample_texture);
+			glUniform1i(glGetUniformLocation(contour_cleanup_program, "u_depth"), 0);
+			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			refined_depth_texture = contour_cleanup_texture;
+		} else {
+			XR_LOGE("Contour cleanup target unsupported; retaining aligned depth only");
+			contour_cleanup_failed = true;
+		}
+	}
+	return true;
 }
 
 void NightfallXrRenderer::run_upsample(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
@@ -1586,7 +1671,7 @@ void NightfallXrRenderer::run_offset_search(float p_separation, float p_converge
 	glViewport(0, 0, upsample_width, upsample_height);
 	glUseProgram(offset_program);
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, upsample_texture);
+	glBindTexture(GL_TEXTURE_2D, refined_depth_texture ? refined_depth_texture : upsample_texture);
 	glUniform1f(u_offset_disp, p_separation * upsample_width);
 	glUniform1f(u_offset_conv, p_convergence);
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
@@ -1731,7 +1816,17 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		}
 	}
 	if (refresh_depth) {
-		run_upsample(source_texture_id, p_depth_texture_id,
+		refined_depth_texture = 0;
+		// Only on-device maps (which have a guide). Meteor refinement is
+		// server-side. Intermediate debug stages retain their original meaning.
+		bool refine = pending_edge_alignment && has_guide && p_depth_process_stage >= 5;
+		// HDR OES samples are transfer-encoded; use the existing SDR model
+		// capture instead, rather than steering edges with PQ/HLG values.
+		bool hdr = pending_color_transfer_type != 0;
+		bool refined = refine && run_depth_refinement(
+				hdr ? p_depth_guide_texture_id : source_texture_id, p_depth_texture_id,
+				hdr ? identity_matrix : source_matrix, hdr || source_is_2d);
+		if (!refined) run_upsample(source_texture_id, p_depth_texture_id,
 				p_depth_guide_texture_id, source_matrix, source_is_2d,
 				// Guided and production modes use scale-matched colour guidance;
 				// Spatial remains an explicit un-guided comparison/fallback.
@@ -1809,7 +1904,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	glBindTexture(source_is_2d ? GL_TEXTURE_2D : GL_TEXTURE_EXTERNAL_OES,
 			source_texture_id);
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, upsampling ? upsample_texture : p_depth_texture_id);
+	glBindTexture(GL_TEXTURE_2D, upsampling ? (refined_depth_texture ? refined_depth_texture : upsample_texture) : p_depth_texture_id);
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, offset_texture);
 	if (use_hdr) {

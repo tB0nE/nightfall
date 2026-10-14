@@ -39,10 +39,13 @@ func _test_host_defaults() -> void:
 	assert(host.ai_3d_model == 0)
 	assert(host.ai_3d_speed == 0)
 	assert(host.ai_3d_debug == 0)
+	assert(not host.ai_3d_depth_view)
 	assert(host.ai_3d_last_mode == 1)
 	assert(host.ai_3d_backend_pref == 2)
 	assert(host.ai_3d_hz_cap == 20)
 	assert(not host.ai_3d_depth_sync)
+	assert(host.ai_3d_edge_alignment)
+	assert(host.ai_3d_contour_cleanup)
 	assert(host.ai_3d_process_debug == 5)
 	assert(host.ai_3d_separation_pct == 75)
 	assert(host.ai_3d_convergence_pct == 50)
@@ -83,6 +86,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.auto_reconnect_enabled = false
 	source.quick_start_enabled = true
 	source.audio_boost_db = 9
+	source.android_audio_output = 1
 	source.microphone_enabled = true
 	source.hdr_enabled = true
 	source.idle_timeout_min = 60
@@ -93,6 +97,7 @@ func _test_app_persistence_round_trip() -> void:
 
 	var loaded := AppSettings.new()
 	SettingsPersistence.read_app(config, loaded, true, [0, 6, 7])
+	assert(loaded.android_audio_output == 1)
 	assert(not loaded.bezel_enabled)
 	assert(loaded.passthrough_enabled)
 	assert(loaded.background_mode == 2)
@@ -170,6 +175,8 @@ func _test_host_persistence_round_trip() -> void:
 	source.ai_3d_convergence_pct = 60
 	source.ai_3d_cursor_position = -1
 	source.ai_3d_depth_sync = true
+	source.ai_3d_edge_alignment = false
+	source.ai_3d_contour_cleanup = false
 	source.ai_3d_process_debug = 2
 	var config := ConfigFile.new()
 	SettingsPersistence.write_host(config, "host", source)
@@ -197,6 +204,8 @@ func _test_host_persistence_round_trip() -> void:
 	assert(loaded.ai_3d_convergence_pct == 60)
 	assert(loaded.ai_3d_cursor_position == -1)
 	assert(loaded.ai_3d_depth_sync)
+	assert(not loaded.ai_3d_edge_alignment)
+	assert(not loaded.ai_3d_contour_cleanup)
 	assert(loaded.ai_3d_process_debug == 2)
 
 func _test_legacy_host_migrations() -> void:
@@ -209,6 +218,8 @@ func _test_legacy_host_migrations() -> void:
 	var old_speed := HostSettings.new()
 	SettingsPersistence.read_host(
 		config, "old-speed", old_speed, [30, 60], [100], 7, 5)
+	assert(old_speed.ai_3d_edge_alignment)
+	assert(old_speed.ai_3d_contour_cleanup)
 	assert(old_speed.ai_3d_speed == 3)
 	assert(old_speed.ai_3d_cursor_position == 1)
 	assert(old_speed.ai_3d_hz_cap == 20)

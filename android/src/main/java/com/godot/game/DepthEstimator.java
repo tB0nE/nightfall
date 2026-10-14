@@ -2,6 +2,7 @@ package com.godot.game;
 
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
+import android.os.Debug;
 import android.system.ErrnoException;
 import android.system.Os;
 import com.godot.game.diagnostics.Log;
@@ -34,10 +35,15 @@ public class DepthEstimator {
     public static final int BACKEND_CAP_GPU = 2;
     public static final int GPU_PRIORITY_STREAM = 0;
     public static final int GPU_PRIORITY_AI_3D = 1;
-    // Qualcomm's OpenCL driver may still be retiring resources immediately
-    // after Interpreter/GpuDelegate.close(). Compiling another large model
-    // in that window has rebooted the Quest 3 during rapid A/B switching.
-    private static final long GPU_MODEL_SWITCH_QUIESCE_MS = 750L;
+    // Qualcomm's OpenCL driver may still be executing/retiring work around
+    // Interpreter/GpuDelegate.close(). The third delegate compilation in a
+    // 512 -> 384 -> 320 comparison rebooted a Quest 3 even after the original
+    // 750ms post-close delay. Let the final invoke settle before destruction,
+    // then allow native resources to retire before compiling a differently
+    // shaped graph. Restore the 2000ms post-close pause: shortening it to
+    // 1200ms was followed by another headset reboot while switching models.
+    private static final long GPU_MODEL_SWITCH_PRE_CLOSE_MS = 250L;
+    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 2000L;
     // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
     // 50ms/20Hz default unchanged, see setHzCap() below.
     private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;
@@ -285,16 +291,10 @@ public class DepthEstimator {
     private static final String MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU = "zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_224_STANDARD_EDGEPAD_GPU = "zipdepth-base-224-standard-packed-conv4-reduceconv-edgepad-gpu.tflite";
     private static final String MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU = "zipdepth-base-256-direct-half-gpu.tflite";
-    // The widescreen EdgePad family (2026-10-04): one retrained checkpoint
-    // exported at 16:9 sizes, behind the EdgePad classes (25 and 28) in place
-    // of the square 384/224 exports above, which stay as
-    // the rollback. See nightfall-temporal-zipdepth's
-    // reports/NIGHTFALL_WIDESCREEN_FAMILY_HANDOFF.md. Nightfall ships two of
-    // them: 512x288 and 320x180, the latter padded to a taller tensor
-    // (GpuVariant.padRows). The family's 352x198 model was dropped for having
-    // 20% more pixels than the EdgePad-256 it would have replaced.
+    // Widescreen EdgePad-512 is the Quest 3/3S production model. The smaller
+    // widescreen exports were retired after headset quality comparisons;
+    // square EdgePad-256 is the Quest 2/fallback tier, 384 is a reference.
     private static final String MODEL_ZIPDEPTH_WIDE_512X288_GPU = "zipdepth-wide-512x288-edgepad-gpu.tflite";
-    private static final String MODEL_ZIPDEPTH_WIDE_320X180_GPU = "zipdepth-wide-320x180-t320x192-edgepad-gpu.tflite";
     // CPU counterpart uses the standard checkpoint's full learned convex
     // upsampling head. The original torch.nn.Unfold is expressed as portable
     // TFLite ops. This w8a32 export keeps float32 activations and I/O while
@@ -505,10 +505,19 @@ public class DepthEstimator {
     private float[] smoothedDepthFloat = null;
 
     private Context appContext;
+    private boolean parityCaptureEnabled;
+    private final java.util.Set<String> parityCapturedAssets = new java.util.HashSet<>();
 
     public synchronized boolean initialize(Context context) {
         if (initialized) return true;
         appContext = context.getApplicationContext();
+        java.io.File external = appContext.getExternalFilesDir(null);
+        java.io.File marker = external == null ? null : new java.io.File(external, "depth_capture_once");
+        parityCaptureEnabled = marker != null && marker.exists();
+        if (parityCaptureEnabled) {
+            if (!marker.delete()) Log.w(TAG, "Could not remove depth capture marker");
+            Log.i(TAG, "Opt-in depth parity capture enabled: one frame per GPU model");
+        }
         applyGpuPriorityEnvironment(gpuPriority);
 
         try {
@@ -712,21 +721,21 @@ public class DepthEstimator {
             gpuVariants.put(24, new GpuVariant("ZipDepth-384-Standard-Optimized-GPU",
                     MODEL_ZIPDEPTH_384_STANDARD_OPTIMIZED_GPU,
                     384, 384, 384, 384, 0.02f, 0.1f, true));
-            // The EdgePad classes run the widescreen family; slot 26
-            // (EdgePad-256) is retired. To roll back, register
-            // MODEL_ZIPDEPTH_{384,256,224}_STANDARD_EDGEPAD_GPU at 25, 26 and 28
-            // (square, no padding), bundle them again in
-            // tools/build_support/package_android_models.sh, and restore slot
-            // 19 in settings_controller.gd.
+            // Current widescreen production family. The exact square models
+            // shipped in v0.7.11 remain at 30 (reference) and 26 (Quest 2).
+            // Auto selects 25/OpenCL on Quest 3, 26/OpenGL on Quest 2.
             gpuVariants.put(25, new GpuVariant("ZipDepth-Wide-512x288-EdgePad-GPU",
                     MODEL_ZIPDEPTH_WIDE_512X288_GPU,
                     512, 288, 512, 288, ZIPDEPTH_DEPTH_TAU_SECONDS,
                     ZIPDEPTH_RANGE_TAU_SECONDS, true));
-            // 320x180 image in a 320x192 tensor (6 rows each side).
-            gpuVariants.put(28, new GpuVariant("ZipDepth-Wide-320x180-EdgePad-GPU",
-                    MODEL_ZIPDEPTH_WIDE_320X180_GPU,
-                    320, 192, 320, 192, ZIPDEPTH_DEPTH_TAU_SECONDS,
-                    ZIPDEPTH_RANGE_TAU_SECONDS, true, 6));
+            gpuVariants.put(30, new GpuVariant("ZipDepth-384-Standard-EdgePad-v0.7.11-GPU",
+                    MODEL_ZIPDEPTH_384_STANDARD_EDGEPAD_GPU,
+                    384, 384, 384, 384, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
+            gpuVariants.put(26, new GpuVariant("ZipDepth-256-Standard-EdgePad-v0.7.11-GPU",
+                    MODEL_ZIPDEPTH_256_STANDARD_EDGEPAD_GPU,
+                    256, 256, 256, 256, ZIPDEPTH_DEPTH_TAU_SECONDS,
+                    ZIPDEPTH_RANGE_TAU_SECONDS, true));
             gpuVariants.put(27, new GpuVariant("ZipDepth-256-Direct-128-GPU",
                     MODEL_ZIPDEPTH_256_DIRECT_HALF_GPU,
                     256, 256, 128, 128, 0.02f, 0.1f));
@@ -936,6 +945,23 @@ public class DepthEstimator {
         variant.failureReason = "";
     }
 
+    private static String processMemorySummary() {
+        Runtime runtime = Runtime.getRuntime();
+        long mib = 1024L * 1024L;
+        return String.format(java.util.Locale.US,
+                "java=%dMiB native=%dMiB",
+                (runtime.totalMemory() - runtime.freeMemory()) / mib,
+                Debug.getNativeHeapAllocatedSize() / mib);
+    }
+
+    private static void sleepForGpuSwitch(long delayMs) {
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private void markGpuVariantUnavailable(GpuVariant variant) {
         String reason = variant.failureReason.isEmpty()
                 ? "GPU delegate initialization failed"
@@ -1027,8 +1053,10 @@ public class DepthEstimator {
     }
 
     private static int normalizeModelIndex(int modelIndex) {
+        // Defensive compatibility for callers retaining the retired 320 ID.
+        if (modelIndex == 28) return 26;
         switch (modelIndex) {
-            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29:
+            case 1: case 4: case 5: case 7: case 8: case 10: case 11: case 14: case 15: case 16: case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29: case 30:
                 return modelIndex;
             default:
                 // MiDaS-Std and MiDaS-Fast (see settings_controller.gd) share
@@ -1085,18 +1113,25 @@ public class DepthEstimator {
             if (previousVariant != null && previousVariant != variant) {
                 GpuVariant targetVariant = variant;
                 executor.execute(() -> {
+                    // interp.run() has returned and frame submission is
+                    // blocked, but Qualcomm may still be retiring commands
+                    // internally. Do not destroy the context immediately at
+                    // the invocation boundary.
+                    sleepForGpuSwitch(GPU_MODEL_SWITCH_PRE_CLOSE_MS);
                     synchronized (DepthEstimator.this) {
                         if (previousVariant != activeGpuVariant) {
                             Log.i(TAG, "Closing previous GPU model before switch: "
-                                    + previousVariant.label);
+                                    + previousVariant.label + " (" + processMemorySummary() + ")");
                             releaseGpuVariant(previousVariant);
                         }
                     }
-                    try {
-                        Thread.sleep(GPU_MODEL_SWITCH_QUIESCE_MS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
+                    // DirectByteBuffers and mapped model buffers are reclaimed
+                    // by cleaners rather than close(). Request collection now,
+                    // while inference is intentionally paused, so the next
+                    // delegate is not compiled on top of stale native memory.
+                    System.gc();
+                    System.runFinalization();
+                    sleepForGpuSwitch(GPU_MODEL_SWITCH_POST_CLOSE_MS);
                     synchronized (DepthEstimator.this) {
                         // A newer model/API/priority change may have queued
                         // another transition. Only its final target can
@@ -1104,7 +1139,7 @@ public class DepthEstimator {
                         if (activeGpuVariant == targetVariant) {
                             gpuReconfigurePending = false;
                             Log.i(TAG, "GPU model switch quiescence complete: "
-                                    + targetVariant.label);
+                                    + targetVariant.label + " (" + processMemorySummary() + ")");
                         }
                     }
                 });
@@ -1130,10 +1165,11 @@ public class DepthEstimator {
             case 23: return "ZipDepth-384-Standard-Packed";
             case 24: return "ZipDepth-384-Standard-Optimized";
             case 25: return "ZipDepth-Wide-512x288-EdgePad";
-            case 26: return "ZipDepth-256-Standard-EdgePad (retired)";
+            case 26: return "ZipDepth-256-Standard-EdgePad-v0.7.11";
             case 27: return "ZipDepth-256-Direct-128";
             case 28: return "ZipDepth-Wide-320x180-EdgePad";
             case 29: return "ZipDepth-256-Standard-EdgePad-CPU";
+            case 30: return "ZipDepth-384-Standard-EdgePad-v0.7.11";
             case 15: return "EdgePad-512x288-Experimental";
             case 16: return "ZipDepth-672x384";
             default: return "MiDaS-256";
@@ -1682,8 +1718,62 @@ public class DepthEstimator {
         byte[] result = postProcess(raw,
                 v.outputWidth, v.mapHeight(), false, DEFAULT_PERCENTILE_CLIP,
                 v.depthTauSeconds, v.rangeTauSeconds);
+        if (parityCaptureEnabled && !parityCapturedAssets.contains(v.assetFile)) {
+            parityCapturedAssets.add(v.assetFile);
+            saveParityCapture(v, rgbaPixels, width, height, raw, result);
+        }
         lastGpuPostprocessNs = System.nanoTime() - postprocessStartNs;
         return result;
+    }
+
+    // Explicitly opt-in, local-only diagnostic. No frame copies or filesystem
+    // checks during normal inference. Captures may contain desktop content.
+    private void saveParityCapture(GpuVariant v, byte[] rgba, int width, int height,
+            float[] raw, byte[] processed) {
+        try {
+            java.io.File external = appContext.getExternalFilesDir(null);
+            if (external == null) throw new IOException("External app storage unavailable");
+            java.io.File directory = new java.io.File(external, "depth-parity");
+            if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Cannot create capture directory");
+            String stem = v.assetFile.replace(".tflite", "");
+            int[] colors = new int[width * height];
+            for (int i = 0; i < colors.length; i++) {
+                int p = i * 4;
+                colors[i] = android.graphics.Color.rgb(rgba[p] & 255, rgba[p + 1] & 255, rgba[p + 2] & 255);
+            }
+            android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(colors, width, height,
+                    android.graphics.Bitmap.Config.ARGB_8888);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-input.png"))) {
+                if (!bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, stream)) throw new IOException("PNG compression failed");
+            } finally {
+                bitmap.recycle();
+            }
+            ByteBuffer floats = ByteBuffer.allocate(raw.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+            for (float value : raw) floats.putFloat(value);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-raw.f32"))) {
+                stream.write(floats.array());
+            }
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + "-processed.u8"))) {
+                stream.write(processed);
+            }
+            org.json.JSONObject metadata = new org.json.JSONObject();
+            metadata.put("asset", v.assetFile);
+            metadata.put("capture_width", width);
+            metadata.put("capture_height", height);
+            metadata.put("input_width", v.inputWidth);
+            metadata.put("input_height", v.inputHeight);
+            metadata.put("map_width", v.outputWidth);
+            metadata.put("map_height", v.mapHeight());
+            metadata.put("pad_rows", v.padRows);
+            metadata.put("smooth_lo", smoothLo);
+            metadata.put("smooth_hi", smoothHi);
+            try (java.io.FileOutputStream stream = new java.io.FileOutputStream(new java.io.File(directory, stem + ".json"))) {
+                stream.write(metadata.toString(2).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            Log.i(TAG, "Depth parity capture saved: " + stem);
+        } catch (Exception error) {
+            Log.w(TAG, "Depth parity capture failed", error);
+        }
     }
 
     /** Reproduce pixel_shuffle(scale=2) for a NHWC [H/2,W/2,4] tensor. */

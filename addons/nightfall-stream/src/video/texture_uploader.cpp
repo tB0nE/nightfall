@@ -1096,14 +1096,13 @@ void TextureUploader::_render_thread_poll_depth_capture() {
         const uint8_t *mapped = static_cast<const uint8_t *>(
             glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, byte_count, GL_MAP_READ_BIT));
         if (mapped) {
-            // glReadPixels returns the framebuffer bottom row first; keep the
-            // same top-down byte layout previously returned by Image::get_data().
+            // The shared external blit vertex shader already flips UV.y before
+            // applying SurfaceTexture's matrix. For depth capture this means
+            // the framebuffer's bottom row is the source image's TOP row.
+            // Keep readback order: reversing it again fed upside-down images
+            // to inference (confirmed by captured inputs and CPU replay).
             std::vector<uint8_t> pixels(byte_count);
-            for (int y = 0; y < gles_depth_capture_height_; ++y) {
-                std::memcpy(pixels.data() + static_cast<size_t>(y) * row_bytes,
-                            mapped + static_cast<size_t>(gles_depth_capture_height_ - 1 - y) * row_bytes,
-                            row_bytes);
-            }
+            std::memcpy(pixels.data(), mapped, byte_count);
             glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
             {
                 std::lock_guard<std::mutex> lock(gles_depth_result_mutex_);

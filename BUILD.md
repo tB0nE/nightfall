@@ -252,12 +252,13 @@ For Linux AppImage (`--appimage`):
 
 ### Depth models
 
-Android bundles the widescreen EdgePad family (EdgePad-512 and EdgePad-320)
+Android bundles widescreen EdgePad-512, square EdgePad-256 and EdgePad-384 reference,
 and two CPU models (EdgePad-256-CPU and EdgePad-384-CPU, for Backend: CPU).
-Auto selects EdgePad-512/OpenCL on Quest 3/3S and EdgePad-320/OpenGL on
-Quest 2; see `docs/guides/zipdepth-quest-tiers.md`. The square EdgePad-384,
--256 and -224 GPU models that v0.7.x shipped stay in `models/` as the
-rollback. All of them are also published, with their SHA-256s, in the
+Auto selects EdgePad-512/OpenCL on Quest 3/3S and EdgePad-256/OpenGL on
+Quest 2, with EdgePad-256/OpenGL also used after an Auto OpenCL failure.
+See `docs/guides/zipdepth-quest-tiers.md`. Retired EdgePad-320 and other research
+exports remain in `models/`, but are not bundled. The models are published,
+with their SHA-256s, in the
 `edgepad-models-2026-10-08` release.
 Linux bundles ncnn
 Vulkan conversions of both ZipDepth models, MiDaS-256, MiDaS-192, and Depth

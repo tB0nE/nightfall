@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nightfall depth pipeline comparison</title>
+<style>
+body{margin:0;background:#15171b;color:#eee;font:16px system-ui;display:grid;grid-template-columns:240px 1fr;min-height:100vh}aside{padding:20px;border-right:1px solid #444}main{padding:20px;min-width:0}button,select{font:inherit;padding:10px;margin:4px;border:1px solid #555;border-radius:6px;background:#292d35;color:white}aside button{display:block;width:100%;text-align:left}button[aria-current=true]{background:#235886}#view{width:100%;height:auto;display:block;background:#000}#hold{touch-action:none;user-select:none}p{color:#bbb}pre{white-space:pre-wrap;font-size:12px}@media(max-width:650px){body{grid-template-columns:1fr}aside{border:0}}
+</style>
+<style>
+.model-card[aria-pressed=true]{border:2px solid #79b9ef;background:#235886}#image-grid{width:100%}#image-grid.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.image-panel{min-width:0}.image-panel h3{margin:0;padding:8px;color:#eee;font-size:14px}.image-panel img{width:100%;height:auto;display:block}#image-frame:fullscreen #image-grid{height:100%;display:flex;align-items:center;justify-content:center}#image-frame:fullscreen .image-panel{flex:1;max-width:100%;height:100%;display:flex;flex-direction:column;justify-content:center}#image-frame:fullscreen .image-panel img{width:100%;height:auto;min-height:0;object-fit:contain}#selection-status{min-height:1.5em}
+</style>
+<style>
+#image-frame{position:relative;background:#000}#fullscreen{position:absolute;top:8px;right:8px;z-index:1;background:#20242bcc}#image-frame:fullscreen{display:flex;align-items:center;justify-content:center;width:100%;height:100%}#image-frame:fullscreen #view{width:100%;height:100%;object-fit:contain}
+</style>
+<style>
+[hidden]{display:none!important}body.overview{grid-template-columns:1fr}body.overview aside{display:none}#comparison{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:16px}.model-card{margin:0;padding:12px;text-align:left;cursor:pointer}.model-card img{width:100%;height:auto;display:block;margin-top:10px}.model-card:hover{border-color:#79b9ef}.model-card:focus-visible{outline:2px solid #79b9ef}#back{margin-left:0}
+</style>
+<aside><h2>Models</h2><nav id="models"></nav></aside>
+<main><button id="back" hidden>← Back to comparison</button><h1 id="title"></h1><p id="scope"></p>
+<section id="overview"><p>All final depthmaps, using the same source image and pipeline settings. Click a model to inspect its depth and warped image.</p><label>Overview <select id="overview-stage"><option value="depth">Final depth</option><option value="overlay">Original + depth edges (cyan)</option></select></label><button id="compare-two">Compare 2</button><p id="selection-status" role="status" aria-live="polite"></p><div id="comparison"></div></section>
+<section id="detail" hidden>
+<label>Depth view <select id="stage"><option value="depth">Final depth</option><option value="overlay">Original + depth edges (cyan)</option><option value="normalized">Normalized model depth</option><option value="offset">Warp offset</option><option value="input">Model input</option></select></label>
+<label>Colour eye <select id="eye"><option value="left">Left</option><option value="right">Right</option></select></label>
+<button id="hold" aria-label="Hold to show warped colour image">Hold to show final image (or Space)</button>
+<button id="original">Show original</button><p>Check spatial alignment against Original or the cyan edge overlay. Warped colour is intentionally displaced for stereo.</p><p id="caption"></p><div id="image-frame" tabindex="-1"><div id="image-grid"><div class="image-panel"><h3 id="first-label" hidden></h3><img id="view" alt="Selected model depth map"></div><div class="image-panel" id="second-panel" hidden><h3 id="second-label"></h3><img id="second-view" alt="Second model depth map"></div></div><button id="fullscreen" title="View fullscreen (Esc to exit)" aria-label="View image fullscreen">⛶ Fullscreen</button></div><details><summary>Pipeline details</summary><pre id="details"></pre></details></section></main>
+<script>
+const report=__REPORT_JSON__;
+const images=__IMAGES_JSON__;
+function imageSource(path){return images[path]||path}
+let selected=0,held=false,original=false,overview=true;
+let selectingPair=false,picks=[],pair=null;
+const el=id=>document.getElementById(id);
+el('fullscreen').hidden=!document.fullscreenEnabled;
+el('fullscreen').onclick=async()=>{try{if(document.fullscreenElement){await document.exitFullscreen()}else{await el('image-frame').requestFullscreen();el('image-frame').focus()}}catch(error){el('caption').textContent='Fullscreen unavailable: '+error.message}};
+document.addEventListener('fullscreenchange',()=>{const active=!!document.fullscreenElement;el('fullscreen').textContent=active?'⛶ Exit fullscreen':'⛶ Fullscreen';el('fullscreen').setAttribute('aria-label',active?'Exit fullscreen':'View image fullscreen')});
+el('scope').textContent=report.scope+' Renderer: '+report.renderer;
+function openModel(i){selected=i;pair=null;held=false;original=false;overview=false;el('stage').value=el('overview-stage').value;render();el('back').focus()}
+function pickModel(i){if(!selectingPair){openModel(i);return}picks=picks.includes(i)?picks.filter(n=>n!==i):[...picks,i];if(picks.length===2){pair=[...picks];selected=pair[0];selectingPair=false;overview=false;held=false;original=false;el('stage').value=el('overview-stage').value;render();el('back').focus()}else{render()}}
+el('compare-two').onclick=()=>{selectingPair=!selectingPair;picks=[];render()};
+el('overview-stage').onchange=()=>{[...el('comparison').children].forEach((card,i)=>{card.querySelector('img').src=imageSource(report.models[i].directory+'/'+el('overview-stage').value+'.png')})};
+report.models.forEach((m,i)=>{const b=document.createElement('button');b.textContent=m.name;b.onclick=()=>openModel(i);el('models').append(b);const card=document.createElement('button');card.className='model-card';card.onclick=()=>pickModel(i);const title=document.createElement('strong');title.textContent=m.name;const img=document.createElement('img');img.src=imageSource(m.directory+'/depth.png');img.alt=m.name+' final depthmap';card.append(title,img);el('comparison').append(card)});
+function render(){
+document.body.classList.toggle('overview',overview||!!pair);el('overview').hidden=!overview;el('detail').hidden=overview;el('back').hidden=overview;
+el('compare-two').textContent=selectingPair?'Cancel selection':'Compare 2';
+el('selection-status').textContent=selectingPair?(picks.length?'Select one more model. Selected: '+report.models[picks[0]].name:'Select two models to compare.') : '';
+[...el('comparison').children].forEach((b,i)=>{if(selectingPair)b.setAttribute('aria-pressed',String(picks.includes(i)));else b.removeAttribute('aria-pressed')});
+if(overview){el('title').textContent='Final depthmap comparison';return}
+const chosen=pair||[selected],mode=held?el('eye').value:el('stage').value;
+el('title').textContent=chosen.map(i=>report.models[i].name).join(' vs ');
+el('image-grid').classList.toggle('pair',!!pair);el('first-label').hidden=!pair;el('second-panel').hidden=!pair;
+chosen.forEach((i,n)=>{const m=report.models[i],img=el(n?'second-view':'view');img.src=imageSource(original?'original.png':m.directory+'/'+mode+'.png');img.alt=original?'Original colour image':m.name+' '+mode;el(n?'second-label':'first-label').textContent=m.name});
+el('caption').textContent=original?'Original':held?'Final warped colour — '+mode:'Depth view — '+mode;
+el('details').textContent=JSON.stringify(pair?chosen.map(i=>report.models[i]):report.models[selected],null,2);
+[...el('models').children].forEach((b,i)=>b.setAttribute('aria-current',String(i===selected)));
+}
+el('back').onclick=()=>{held=false;original=false;overview=true;pair=null;picks=[];selectingPair=false;render();el('comparison').children[selected]?.focus()};
+el('hold').onpointerdown=e=>{e.preventDefault();el('hold').setPointerCapture(e.pointerId);held=true;original=false;render()};
+for(const event of ['pointerup','pointercancel','lostpointercapture'])el('hold').addEventListener(event,()=>{held=false;render()});
+window.addEventListener('blur',()=>{held=false;render()});
+window.addEventListener('keydown',e=>{if(!overview&&e.code==='Space'&&!['SELECT','INPUT','TEXTAREA','BUTTON'].includes(e.target.tagName)){e.preventDefault();held=true;original=false;render()}});
+el('hold').addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();held=true;original=false;render()}});
+window.addEventListener('keyup',e=>{if(e.code==='Space'){held=false;render()}});
+el('stage').onchange=el('eye').onchange=()=>{original=false;render()};el('original').onclick=()=>{original=!original;held=false;render()};render();
+</script></html>

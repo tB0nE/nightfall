@@ -157,6 +157,7 @@ impl DepthModel {
         let started = Instant::now();
         let fail = |err: ort::Error| format!("{} ({}): {err}", path.display(), backend.label());
         let provider = match backend {
+            Backend::Cpu => ep::CPU::default().build().error_on_failure(),
             Backend::Cuda => ep::CUDA::default().build().error_on_failure(),
             Backend::TensorRt => {
                 let _ = std::fs::create_dir_all(cache_dir);
@@ -171,12 +172,16 @@ impl DepthModel {
                     .error_on_failure()
             }
         };
-        let session = Session::builder()
+        let builder = Session::builder()
             .map_err(fail)?
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| fail(e.into()))?
             .with_execution_providers([provider])
-            .map_err(|e| fail(e.into()))?
+            .map_err(|e| fail(e.into()))?;
+        let mut builder = if backend == Backend::Cpu {
+            builder.with_intra_threads(super::cpu_threads()).map_err(|e| fail(e.into()))?
+        } else { builder };
+        let session = builder
             .commit_from_file(path)
             .map_err(fail)?;
         let shape: Vec<i64> = session

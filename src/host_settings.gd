@@ -24,6 +24,10 @@ var ai_3d_gpu_api: int = 0
 var ai_3d_speed: int = 0
 ## 0=Off, 1=DMap-Final, 2=DMap-Raw, 3=DMap-Input, 4=DMap-Warp.
 var ai_3d_debug: int = 0
+## User-facing, session-only view of the final depth map consumed by the warp.
+## This is separate from ai_3d_debug so release builds expose only Normal/Final
+## while development builds retain the full Raw/Input/Warp diagnostic cycle.
+var ai_3d_depth_view: bool = false
 ## Android warp diagnostic: 0=Off, 1=Raw, 2=Spatial, 3=Guided, 4=Occlusion, 5=Full.
 var ai_3d_process_debug: int = 5
 ## Last active AI-3D mode, used when the display toggle is turned back on.
@@ -40,6 +44,9 @@ var ai_3d_convergence_pct: int = 50
 var ai_3d_cursor_position: int = 0
 ## Delay native Android video by the measured depth age so both represent the same frame.
 var ai_3d_depth_sync: bool = false
+## Native Android boundary alignment and tangent-only contour cleanup.
+var ai_3d_edge_alignment: bool = true
+var ai_3d_contour_cleanup: bool = true
 ## The user picked an on-device model while this host's Nightfall Meteor
 ## offered depth; stays until they pick Meteor again.
 var ai_3d_meteor_declined: bool = false

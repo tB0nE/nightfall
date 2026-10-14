@@ -2,6 +2,7 @@ package com.godot.game;
 
 import android.view.InputDevice;
 import android.view.MotionEvent;
+import android.view.KeyEvent;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -20,6 +21,45 @@ import java.util.Set;
 // or on RX/RY. This reports the same sorted axis list, plus vendor/product IDs,
 // so ControllerLayout can build a correct mapping per pad (GitHub #37, #34).
 public class GamepadInfo {
+	// Adapted from Moonlight Android ControllerHandler: older hid-sony layouts
+	// translate DS4 buttons incorrectly. Correct scan codes BEFORE Godot loses
+	// them. Digital triggers are consumed; their analogue axes remain active.
+	public static int correctedKeyCode(InputDevice device, KeyEvent event) {
+		int key = event.getKeyCode();
+		if (device == null || device.getVendorId() != 0x054c) return key;
+		boolean legacy = device.hasKeys(KeyEvent.KEYCODE_BUTTON_C)[0]
+				&& device.getMotionRange(MotionEvent.AXIS_RX) != null
+				&& device.getMotionRange(MotionEvent.AXIS_RY) != null
+				&& device.getMotionRange(MotionEvent.AXIS_LTRIGGER) == null
+				&& device.getMotionRange(MotionEvent.AXIS_BRAKE) == null;
+		if (legacy) {
+			switch (event.getScanCode()) {
+				case 304: return KeyEvent.KEYCODE_BUTTON_X;
+				case 305: return KeyEvent.KEYCODE_BUTTON_A;
+				case 306: return KeyEvent.KEYCODE_BUTTON_B;
+				case 307: return KeyEvent.KEYCODE_BUTTON_Y;
+				case 308: return KeyEvent.KEYCODE_BUTTON_L1;
+				case 309: return KeyEvent.KEYCODE_BUTTON_R1;
+				case 310: case 311: return -1;
+				case 312: return KeyEvent.KEYCODE_BUTTON_SELECT;
+				case 313: return KeyEvent.KEYCODE_BUTTON_START;
+				case 314: return KeyEvent.KEYCODE_BUTTON_THUMBL;
+				case 315: return KeyEvent.KEYCODE_BUTTON_THUMBR;
+				case 316: return KeyEvent.KEYCODE_BUTTON_MODE;
+				default: return -1;
+			}
+		}
+		if (key == KeyEvent.KEYCODE_BUTTON_SELECT && event.getScanCode() == 317)
+			return KeyEvent.KEYCODE_BUTTON_1;
+		// Generic.kl reverses Linux BTN_NORTH and BTN_WEST.
+		switch (event.getScanCode()) {
+			case 304: return KeyEvent.KEYCODE_BUTTON_A;
+			case 305: return KeyEvent.KEYCODE_BUTTON_B;
+			case 307: return KeyEvent.KEYCODE_BUTTON_Y;
+			case 308: return KeyEvent.KEYCODE_BUTTON_X;
+			default: return key;
+		}
+	}
 	public static String describe() {
 		JSONArray pads = new JSONArray();
 		for (int id : InputDevice.getDeviceIds()) {
@@ -40,6 +80,9 @@ public class GamepadInfo {
 	private static JSONObject describeDevice(InputDevice device) throws Exception {
 		JSONObject pad = new JSONObject();
 		pad.put("name", device.getName());
+		pad.put("id", device.getId());
+		pad.put("descriptor", device.getDescriptor());
+		pad.put("has_button_c", device.hasKeys(KeyEvent.KEYCODE_BUTTON_C)[0]);
 		pad.put("vendor", device.getVendorId());
 		pad.put("product", device.getProductId());
 

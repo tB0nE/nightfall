@@ -8,6 +8,7 @@ func _init():
 	_test_mapping_string()
 	_test_trigger_value()
 	_test_controller_type()
+	_test_android_device_match()
 	_test_slots()
 	print("All controller_layout tests passed")
 	quit()
@@ -69,12 +70,20 @@ func _test_trigger_value():
 	assert(ControllerLayout.trigger_value(-0.2, false) == 0.0)
 
 func _test_controller_type():
+	assert(ControllerLayout.controller_type(0, "Sony PlayStation Controller") == ControllerLayout.CTYPE_PS)
 	assert(ControllerLayout.controller_type(ControllerLayout.VENDOR_SONY, "") == ControllerLayout.CTYPE_PS)
 	assert(ControllerLayout.controller_type(0, "Wireless Controller") == ControllerLayout.CTYPE_PS)
 	assert(ControllerLayout.controller_type(0, "DualSense Wireless Controller") == ControllerLayout.CTYPE_PS)
 	assert(ControllerLayout.controller_type(ControllerLayout.VENDOR_NINTENDO, "") == ControllerLayout.CTYPE_NINTENDO)
 	assert(ControllerLayout.controller_type(ControllerLayout.VENDOR_MICROSOFT, "Xbox Wireless Controller") == ControllerLayout.CTYPE_XBOX)
 	assert(ControllerLayout.controller_type(0, "Generic X-Box pad") == ControllerLayout.CTYPE_XBOX)
+
+func _test_android_device_match():
+	var info := {"name": "Wireless Controller", "vendor": 0x054c}
+	assert(ControllerLayout.matches_android_device(info, "Sony PlayStation Controller", "576972656c65737320436f6e74726f6c"))
+	assert(ControllerLayout.matches_android_device(info, "Wireless Controller", "anything"))
+	assert(ControllerLayout.matches_android_device({"name": "Pad"}, "Renamed", "506164"))
+	assert(not ControllerLayout.matches_android_device(info, "Xbox Controller", "44657669636520307837384331343937"))
 
 func _test_slots():
 	var slots := GamepadSlots.new()

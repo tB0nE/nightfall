@@ -7,12 +7,45 @@ import android.content.Context;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.KeyEvent;
 
 import androidx.activity.EdgeToEdge;
 import androidx.core.splashscreen.SplashScreen;
 
 public class GodotApp extends GodotActivity {
+	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
+
+	@Override
+	public boolean dispatchKeyEvent(KeyEvent event) {
+		InputDevice device = event.getDevice();
+		if (device != null && (event.isFromSource(InputDevice.SOURCE_GAMEPAD)
+				|| event.isFromSource(InputDevice.SOURCE_JOYSTICK))) {
+			int corrected = GamepadInfo.correctedKeyCode(device, event);
+			String signature = event.getDeviceId() + ":" + event.getScanCode() + ":" + event.getKeyCode();
+			if (event.getAction() == KeyEvent.ACTION_DOWN && loggedPadKeys.add(signature)) {
+				DiagnosticLog.info("GamepadInfo", "device=" + event.getDeviceId()
+						+ " name=" + device.getName() + " vendor=" + device.getVendorId()
+						+ " product=" + device.getProductId() + " scan=" + event.getScanCode()
+						+ " key=" + event.getKeyCode() + " corrected=" + corrected);
+			}
+			if (corrected < 0) return true;
+			if (corrected != event.getKeyCode()) {
+				event = new KeyEvent(event.getDownTime(), event.getEventTime(), event.getAction(),
+						corrected, event.getRepeatCount(), event.getMetaState(), event.getDeviceId(),
+						event.getScanCode(), event.getFlags(), event.getSource());
+			}
+		}
+		return super.dispatchKeyEvent(event);
+	}
 	public static native void initializeMoonlightJNI();
+	public static boolean openAudioTrack(int rate, int channels, int period) { return AudioOutput.open(rate, channels, period); }
+	public static boolean writeAudioTrack(float[] data, int frames) { return AudioOutput.write(data, frames); }
+	public static void closeAudioTrack() { AudioOutput.close(); }
+	public static void pauseAudioTrack() { AudioOutput.pause(); }
+	public static void resumeAudioTrack() { AudioOutput.resume(); }
+	public static int audioTrackLatency() { return AudioOutput.latencyMs(); }
+	public static void logAudioDiagnostics(String message) { DiagnosticLog.info("AudioRenderer", message); }
 	public static native void setAndroidContext(Object context);
 
 	public static String jniResult = "NOT_RUN";

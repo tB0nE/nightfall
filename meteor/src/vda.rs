@@ -284,6 +284,7 @@ impl VdaModel {
         let k = load_functions(api, ctx, PTX, &names)?;
         let kernels = Kernels { clear: k[0], resize: k[1], thumb: k[2], append: k[3], check: k[4], pack: k[5], blur: k[6] };
         let precision = match backend {
+            Backend::Cpu => return Err("VDA's live temporal pipeline requires GPU inference".into()),
             Backend::Cuda => "CUDA fp32".to_string(),
             Backend::TensorRt => {
                 let native = if step.native() { " (native)" } else { "" };
