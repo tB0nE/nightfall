@@ -523,6 +523,23 @@ func toggle_ai_3d_depth_sync():
 	_save_setting(main._ui_3d_depth_sync_btn,
 		"On" if main.settings.host.ai_3d_depth_sync else "Off")
 
+func toggle_ai_3d_edge_alignment():
+	main.settings.host.ai_3d_edge_alignment = not main.settings.host.ai_3d_edge_alignment
+	_save_setting(main._ui_3d_edge_alignment_btn,
+		"On" if main.settings.host.ai_3d_edge_alignment else "Off")
+	main.ui_controller.update_3d_btn_state()
+	if main.native_xr_renderer:
+		main.native_xr_renderer.request_redraw()
+
+func toggle_ai_3d_contour_cleanup():
+	if not main.settings.host.ai_3d_edge_alignment:
+		return
+	main.settings.host.ai_3d_contour_cleanup = not main.settings.host.ai_3d_contour_cleanup
+	_save_setting(main._ui_3d_contour_cleanup_btn,
+		"On" if main.settings.host.ai_3d_contour_cleanup else "Off")
+	if main.native_xr_renderer:
+		main.native_xr_renderer.request_redraw()
+
 func toggle_ai_3d_depth_view():
 	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
 			or main.settings.host.ai_3d_speed == 0:
@@ -572,6 +589,8 @@ func reset_ai_3d_effect_settings():
 	main.settings.host.ai_3d_convergence_pct = 50
 	main.settings.host.ai_3d_cursor_position = 0
 	main.settings.host.ai_3d_depth_sync = false
+	main.settings.host.ai_3d_edge_alignment = true
+	main.settings.host.ai_3d_contour_cleanup = true
 	main.settings.host.ai_3d_process_debug = 5
 	enforce_ai3d_platform_lock()
 	main.state_manager.save_state()

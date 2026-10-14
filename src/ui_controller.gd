@@ -269,6 +269,8 @@ func update_stereo_shader():
 	update_option_btn(main._ui_3d_convergence_btn, main.settings_controller.get_ai_3d_convergence_label())
 	update_option_btn(main._ui_3d_cursor_position_btn, main.settings_controller.get_ai_3d_cursor_position_label())
 	update_option_btn(main._ui_3d_depth_sync_btn, "On" if main.settings.host.ai_3d_depth_sync else "Off")
+	update_option_btn(main._ui_3d_edge_alignment_btn, "On" if main.settings.host.ai_3d_edge_alignment else "Off")
+	update_option_btn(main._ui_3d_contour_cleanup_btn, "On" if main.settings.host.ai_3d_contour_cleanup else "Off")
 	update_option_btn(main._ui_3d_depth_view_btn, "On" if main.settings.host.ai_3d_depth_view else "Off")
 	update_option_btn(main._ui_3d_debug_btn, main.settings_controller.ai_3d_debug_labels[main.settings.host.ai_3d_debug])
 	if main._ui_3d_process_debug_btn:
@@ -348,6 +350,15 @@ func update_3d_btn_state():
 	if main._ui_3d_depth_sync_btn:
 		main._ui_3d_depth_sync_btn.disabled = effect_disabled
 		main._ui_3d_depth_sync_btn.modulate.a = 0.3 if effect_disabled else 1.0
+	var refinement_disabled: bool = effect_disabled or OS.get_name() != "Android" \
+		or (main.depth_estimator != null and main.depth_estimator.meteor_in_use())
+	if main._ui_3d_edge_alignment_btn:
+		main._ui_3d_edge_alignment_btn.disabled = refinement_disabled
+		main._ui_3d_edge_alignment_btn.modulate.a = 0.3 if refinement_disabled else 1.0
+	if main._ui_3d_contour_cleanup_btn:
+		var cleanup_disabled: bool = refinement_disabled or not main.settings.host.ai_3d_edge_alignment
+		main._ui_3d_contour_cleanup_btn.disabled = cleanup_disabled
+		main._ui_3d_contour_cleanup_btn.modulate.a = 0.3 if cleanup_disabled else 1.0
 	if main._ui_3d_depth_view_btn:
 		main._ui_3d_depth_view_btn.disabled = effect_disabled
 		main._ui_3d_depth_view_btn.modulate.a = 0.3 if effect_disabled else 1.0

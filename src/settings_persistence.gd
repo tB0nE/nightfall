@@ -160,6 +160,8 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "ai_3d_convergence_pct", host.ai_3d_convergence_pct)
 	config.set_value(section, "ai_3d_cursor_position_v2", host.ai_3d_cursor_position)
 	config.set_value(section, "ai_3d_depth_sync", host.ai_3d_depth_sync)
+	config.set_value(section, "ai_3d_edge_alignment", host.ai_3d_edge_alignment)
+	config.set_value(section, "ai_3d_contour_cleanup", host.ai_3d_contour_cleanup)
 	config.set_value(section, "ai_3d_meteor_declined", host.ai_3d_meteor_declined)
 	config.set_value(section, "bitrate_idx", host.bitrate_idx)
 	config.set_value(section, "double_h", host.double_h)
@@ -214,6 +216,8 @@ static func read_host(
 				# Right, and Right+ are the new Left, Default, and Right.
 				host.ai_3d_cursor_position = clampi(config.get_value(section, "ai_3d_cursor_position", 1) - 1, -1, 1)
 			host.ai_3d_depth_sync = bool(config.get_value(section, "ai_3d_depth_sync", false))
+			host.ai_3d_edge_alignment = bool(config.get_value(section, "ai_3d_edge_alignment", true))
+			host.ai_3d_contour_cleanup = bool(config.get_value(section, "ai_3d_contour_cleanup", true))
 			host.ai_3d_meteor_declined = bool(config.get_value(section, "ai_3d_meteor_declined", false))
 			if config.has_section_key(section, "ai_3d_speed_v2"):
 				host.ai_3d_speed = clampi(config.get_value(section, "ai_3d_speed", 1), 0, 3)

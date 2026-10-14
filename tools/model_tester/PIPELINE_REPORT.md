@@ -106,3 +106,125 @@ compare exported headset capture/raw/processed snapshots with these inputs and
 outputs before attributing a discrepancy to conversion or shader processing.
 Video temporal evaluation and a faithful Meteor-specific processing profile
 remain follow-up work, not part of this first still-image report.
+
+## Static edge-alignment experiment (local only)
+
+```sh
+.build-cache/model-tester-venv/bin/python tools/model_tester/pipeline_report.py \
+  tools/model_tester/eg_input_1.png \
+  tools/model_tester/edge_alignment_models.example.json \
+  tools/model_tester/output/edge-alignment-comparison --edge-alignment
+```
+
+Each model gets a production **linear** baseline, **bounded-2** (two native
+depth-texel search radius, 75% correction) and **bounded-3** (the same search
+radius/strength plus the quality refinements below). Bounded-1 is no longer
+listed or generated; old output folders are retained for reference.
+Inference and normalization are shared; only the post-model resize/refinement
+differs. The experimental GLSL is NOT deployed to the headset or Meteor.
+
+### Bounded-3 changes
+
+- Generate a signed displacement/confidence field instead of applying each
+  pixel's proposed correction immediately. A broad/multi-peak colour match
+  reduces confidence using the weighted candidate-position variance; this is
+  a heuristic, not a guarantee that ambiguous edges are correctly classified.
+- Regularize that field along the local depth-edge tangent with four adjacent
+  working-grid neighbours. Depth/confidence/displacement agreement weights
+  limit mixing across unrelated boundaries. Reproject onto the local normal;
+  the maximum correction remains 1.5 native depth texels (2 × 75%).
+- Store both the signed correction field and refined depth in RGBA16F, rather
+  than rounding the refined result to RGBA8 before the offset/warp passes.
+  Model output normalization/input remains the SAME uint8 map as Bounded-2;
+  this does not recover information already lost there. PNG previews are
+  still 8-bit. Inference, model weights and final warp algorithms are unchanged.
+- No global blur or temporal smoothing is introduced. This adds a second
+  local shader pass; runtime optimization/Quest benchmarking remain future
+  work. Do not attribute every quality difference to coherence alone, since
+  precision and ambiguity handling change too.
+
+The extra GPU tests cover signed field storage, precision, competing colour
+boundaries and an injected alternating-pixel correction wobble. The wobble
+test caught native-texel neighbour spacing skipping alternating pixels on
+integer-upscaled grids; smoothing now samples adjacent working-grid pixels.
+
+To add VDA alone (without the other Meteor EdgePad exports), append:
+
+```sh
+--vda-model /home/tyrone/.local/share/nightfall-meteor/models/vda_s_518x294_cold.onnx
+```
+
+VDA gets the same three processing variants and overlays. This is the actual
+Meteor VDA Small cold-start graph with ImageNet input normalization, but still
+a single-frame, controlled-input comparison: it excludes live recurrent state,
+Meteor's bicubic capture, model-specific edge softening and temporal processing.
+It tests spatial refinement, not full live VDA equivalence.
+
+The experiment looks along an existing depth-gradient direction, estimates
+nearby depth/colour boundary positions, and shifts the depth sampling position
+toward their alignment. Depth strength, colour contrast, gradient orientation
+and proximity gate the change. It cannot introduce depth into a flat region,
+but colour texture/shadows near a real depth boundary can still mislead it.
+It cannot recover missing geometry or resolve ambiguous object boundaries.
+This is a heuristic to compare, not a production recommendation or proven win.
+
+Select **Original + depth edges (cyan)** in the overview or detail view to see
+depth-gradient ridges drawn on the unwarped source. These are diagnostic depth
+edges, not ground-truth object masks; quantization can make the contour speckled.
+Use Compare 2 for baseline versus bounded versions of the SAME model. The
+Space/hold button intentionally shows a warped eye image; do not use its shift
+relative to unwarped depth as a spatial-alignment error measurement.
+
+Tests now check the production GL resize against pixel-centre coordinates,
+an intentionally misplaced synthetic boundary, flat depth with colour edges,
+and depth with a flat colour guide, plus the Bounded-3 tests above. A passing synthetic test does not establish
+quality on real content or headset processing cost. The report remains a
+first-frame/static test without temporal smoothing. Runtime/model timings in
+these reports are not Quest benchmarks.
+
+The first generated suite lives under
+`tools/model_tester/output/edge-alignment-20261014/index.html`, with separate
+desktop, animation/hair and live-action/shadow reports, including VDA alongside
+the three EdgePad models. Existing October 12
+reports are preserved. Initial desktop inspection shows subtle boundary changes,
+not an established overall quality win; review individual edges and warped
+artifacts before deciding whether to pursue or deploy either variant.
+
+### Bounded-4: focused EdgePad-384 contour cleanup
+
+```sh
+.build-cache/model-tester-venv/bin/python tools/model_tester/pipeline_report.py \
+  tools/model_tester/output/native-meteor-pipeline-report-20261012/original.png \
+  tools/model_tester/edge_alignment_384.example.json \
+  tools/model_tester/output/edge-alignment-20261014/384-contour-desktop \
+  --edge-alignment --contour-cleanup
+.build-cache/model-tester-venv/bin/python tools/model_tester/build_contour_inspection.py \
+  tools/model_tester/output/edge-alignment-20261014/384-contour-desktop
+```
+
+Bounded-4 starts from the unchanged RGBA8 Bounded-2 result. A separate RGBA16F
+pass estimates its contour direction with a Sobel gradient, then filters depth
+only along the tangent (four neighbours, binomial weights), not across the
+foreground/background boundary. A narrow-ridge/valley guard protects thin
+features, and gradient/local-range limits bound the change. No colour guide is
+used in the cleanup itself. This is not a replacement for model training or a
+general silhouette reconstruction method; curved corners can still be altered.
+
+Initial manually selected desktop-region measurements (pixels at 2560×1440):
+
+| Region | Bounded-2 roughness | Bounded-3 | Bounded-4 |
+| --- | ---: | ---: | ---: |
+| Back-left edge | 0.521 | 0.493 | 0.500 |
+| Middle-left edge | 0.413 | 0.167 | 0.219 |
+| Rounded front-left lip | 0.361 | 0.414 | 0.358 |
+
+These estimate residual after a quadratic fit to an image-gradient contour,
+NOT ground-truth depth accuracy. Bounded-4 helps the middle edge versus 2 but
+does not beat 3 there; the rounded lip barely changes. Do not call this an
+overall quality win. The close-up page includes original, depth, overlay and
+warped-colour crops at 1×/2×/4× nearest-neighbour pixel zoom, with reproducible
+measurement boxes/metrics in `contour-metrics.json`.
+
+Only the new 384 reports include Bounded-4. The prior all-model reports, 512/VDA
+results, headset and Meteor runtime remain unchanged. GPU tests also exercise
+injected depth-contour wobble and preservation of flat/straight/thin features.

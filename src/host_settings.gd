@@ -44,6 +44,9 @@ var ai_3d_convergence_pct: int = 50
 var ai_3d_cursor_position: int = 0
 ## Delay native Android video by the measured depth age so both represent the same frame.
 var ai_3d_depth_sync: bool = false
+## Native Android boundary alignment and tangent-only contour cleanup.
+var ai_3d_edge_alignment: bool = true
+var ai_3d_contour_cleanup: bool = true
 ## The user picked an on-device model while this host's Nightfall Meteor
 ## offered depth; stays until they pick Meteor again.
 var ai_3d_meteor_declined: bool = false

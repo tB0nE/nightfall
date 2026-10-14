@@ -54,3 +54,32 @@ matching patched Godot runtime is unavailable, preventing accidental stock
 engine builds. The app retains the original Godot renderer as a runtime
 fallback for Linux, multiple monitors, diagnostic depth modes, optional
 picture filters, and `--nf-legacy-video`.
+# On-headset depth refinement
+
+Android's Advanced/Settings → AI 3D section exposes **Edge Alignment** and
+**Contour Cleanup**, both enabled by default (including saves predating these
+settings). Disabling alignment bypasses cleanup without forgetting its saved
+choice. Preferences persist per host; the AI 3D reset restores both to On.
+
+For local depth, alignment replaces the final depth resize with Bounded-2's
+bounded, colour-guided resampling (radius two native depth texels, strength
+0.75). Cleanup then applies Bounded-4's tangent-only smoothing to that working
+grid, using a separate RGBA16F target. Turning alignment Off restores the
+previous upsample path, including any model-specific resampling mode.
+Intermediate debug stages are unchanged; final-depth/warp views and the stereo
+warp consume the same refined texture. Existing depth-revision caching means
+these passes run on new maps or setting changes, not every display refresh.
+
+SDR alignment samples source OES colour through the current SurfaceTexture
+matrix, or the retained 2D frame with Depth Sync. HDR uses the existing SDR
+model-input capture as its guide, not raw PQ/HLG values. HDR therefore has a
+lower-resolution guide and still needs visual evaluation. As before, unsynced
+source colour can differ in time from a depth map during motion.
+
+These controls apply only to **on-headset inference on the native Android
+path**. Meteor has its own server-side switches; received maps are not refined
+again. Linux and legacy/multi-screen render paths are unchanged. Shader/FBO
+failures log an explicit warning and retain the existing path/aligned map
+rather than preventing streaming. Existing native depth GPU timing includes
+the passes. See the standalone
+[Quest benchmark](../../tools/model_tester/QUEST_REFINEMENT_BENCH.md).

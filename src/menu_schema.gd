@@ -138,6 +138,8 @@ static func get_tabs() -> Array:
 				"options": [
 					_option(&"_ui_3d_cursor_position_btn", "Cursor Position", "Default", "Choose how the cursor is positioned relative to AI-generated depth.", TARGET_UI, &"on_ai_3d_cursor_position_toggled"),
 					_option(&"_ui_3d_depth_sync_btn", "Depth Sync", "Off", "Delay video slightly so it matches the frame used by AI depth inference.", TARGET_UI, &"on_ai_3d_depth_sync_toggled", OS.get_name() == "Android"),
+					_option(&"_ui_3d_edge_alignment_btn", "Edge Alignment", "On", "Align on-headset depth edges to colour. Meteor uses server controls.", TARGET_SETTINGS, &"toggle_ai_3d_edge_alignment", OS.get_name() == "Android"),
+					_option(&"_ui_3d_contour_cleanup_btn", "Contour Cleanup", "On", "Smooth depth contours. Requires Edge Alignment.", TARGET_SETTINGS, &"toggle_ai_3d_contour_cleanup", OS.get_name() == "Android"),
 				],
 			},
 			{

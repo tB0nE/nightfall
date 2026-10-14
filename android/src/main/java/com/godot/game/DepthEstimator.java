@@ -40,10 +40,10 @@ public class DepthEstimator {
     // 512 -> 384 -> 320 comparison rebooted a Quest 3 even after the original
     // 750ms post-close delay. Let the final invoke settle before destruction,
     // then allow native resources to retire before compiling a differently
-    // shaped graph. Testing a 1200ms post-close pause instead of 2000ms;
-    // revalidate repeated model switches for driver stability.
+    // shaped graph. Restore the 2000ms post-close pause: shortening it to
+    // 1200ms was followed by another headset reboot while switching models.
     private static final long GPU_MODEL_SWITCH_PRE_CLOSE_MS = 250L;
-    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 1200L;
+    private static final long GPU_MODEL_SWITCH_POST_CLOSE_MS = 2000L;
     // Mutable, not a constant (2026-08-28, AI 3D tab's Hz Cap control) -
     // 50ms/20Hz default unchanged, see setHzCap() below.
     private volatile long GPU_INFERENCE_INTERVAL_NS = 50_000_000L;

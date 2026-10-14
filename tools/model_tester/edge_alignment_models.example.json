@@ -1,0 +1,5 @@
+[
+  {"name":"EdgePad-384", "path":"../../models/zipdepth-base-384-standard-packed-conv4-reduceconv-edgepad-gpu.tflite", "input_size":[384,384], "input_layout":"nhwc", "output_layout":"packed2x2"},
+  {"name":"EdgePad-256", "path":"../../models/zipdepth-base-256-standard-packed-conv4-reduceconv-edgepad-gpu.tflite", "input_size":[256,256], "input_layout":"nhwc", "output_layout":"packed2x2"},
+  {"name":"EdgePad-512", "path":"../../models/zipdepth-wide-512x288-edgepad-gpu.tflite", "input_size":[512,288], "input_layout":"nhwc", "output_layout":"packed2x2"}
+]

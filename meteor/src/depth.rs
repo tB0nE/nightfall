@@ -170,11 +170,13 @@ struct SavedState {
     model_smoothing: BTreeMap<String, bool>,
     /// VDA's edge softening, an index into vda::SOFTENING.
     edge_softening: usize,
+    edge_alignment: bool,
+    contour_cleanup: bool,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { cpu_inference: false, enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING }
+        SavedState { cpu_inference: false, enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, edge_alignment: true, contour_cleanup: true }
     }
 }
 
@@ -412,6 +414,24 @@ impl Depth {
         log::info!("Depth smoothing {}", if on { "on" } else { "off" });
     }
 
+    pub fn edge_alignment(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.edge_alignment)
+    }
+
+    pub fn set_edge_alignment(&self, on: bool) {
+        self.update_state(|s| s.edge_alignment = on);
+        log::info!("Edge alignment (Bounded-2): {on}");
+    }
+
+    pub fn contour_cleanup(&self) -> bool {
+        self.state.lock().is_ok_and(|s| s.contour_cleanup)
+    }
+
+    pub fn set_contour_cleanup(&self, on: bool) {
+        self.update_state(|s| s.contour_cleanup = on);
+        log::info!("Contour cleanup (Bounded-4; requires alignment): {on}");
+    }
+
     /// The edge softening level (an index into vda::SOFTENING).
     pub fn edge_softening(&self) -> usize {
         self.state.lock().map_or(vda::DEFAULT_SOFTENING, |s| s.edge_softening.min(vda::SOFTENING.len() - 1))
@@ -612,6 +632,8 @@ impl Depth {
         let mut model: Option<Engine> = None;
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
+        let mut gpu_refinement: Option<crate::gpu_refinement::GpuRefinement> = None;
+        let mut refinement_size = None;
         let mut last_stream = None;
         let mut last_run: Option<Instant> = None;
         let mut rate_window = (Instant::now(), 0u32);
@@ -769,6 +791,8 @@ impl Depth {
 
             let stream = (frame.tag.stream, frame.tag.epoch);
             if last_stream != Some(stream) {
+                refinement_size = None;
+                gpu_refinement = None;
                 post.reset();
                 if let Some(g) = &mut gpu_post {
                     g.reset();
@@ -878,7 +902,7 @@ impl Depth {
             let infer_end = Instant::now();
             let infer_time = infer_end - infer_start;
             let post_start = Instant::now();
-            let data = match (output, gpu_post.as_mut()) {
+            let mut data = match (output, gpu_post.as_mut()) {
                 (Output::Host(raw), _) => post.process(&raw, Instant::now()),
                 (Output::Device(raw), Some(g)) => {
                     g.depth_tau = depth_tau;
@@ -892,6 +916,46 @@ impl Depth {
                 }
                 (Output::Device(_), None) => continue,
             };
+            // Optional spatial refinement, after smoothing and before
+            // sending/snapshots. Never writes back into temporal history.
+            // No colour download or additional work when disabled.
+            if self.edge_alignment() {
+                let start = Instant::now();
+                let cleanup = self.contour_cleanup();
+                let mut processed = false;
+                if let Pixels::Gpu(tensor) = &frame.pixels {
+                    if refinement_size != Some(pixels) {
+                        refinement_size = Some(pixels);
+                        gpu_refinement = match crate::gpu_refinement::GpuRefinement::new(pixels) {
+                            Ok(gpu) => Some(gpu),
+                            Err(err) => {
+                                log::warn!("CUDA refinement unavailable ({err}); using slower CPU reference");
+                                None
+                            }
+                        };
+                    }
+                    if let Some(gpu) = &gpu_refinement {
+                        match gpu.process(&data, (width, height), tensor.ptr, (tensor.width, tensor.height), cleanup) {
+                            Ok(refined) => { data = refined; processed = true; }
+                            Err(err) => {
+                                log::warn!("CUDA refinement failed ({err}); using slower CPU reference until next stream/model size");
+                                gpu_refinement = None;
+                            }
+                        }
+                    }
+                }
+                if !processed {
+                    let guide = match &frame.pixels {
+                        Pixels::Rgb(rgb) => Ok(std::borrow::Cow::Borrowed(rgb.as_slice())),
+                        Pixels::Gpu(tensor) => tensor.download_rgb().map(std::borrow::Cow::Owned),
+                    };
+                    match guide {
+                        Ok(rgb) => data = crate::refinement::process(&data, (width, height), &rgb, frame.size, cleanup),
+                        Err(err) => log::warn!("Depth refinement skipped: guide download failed: {err}"),
+                    }
+                }
+                log::debug!("Depth refinement: alignment=true cleanup={cleanup} backend={} map={width}x{height} guide={fw}x{fh} {:.2}ms (including transfers)", if processed { "CUDA" } else { "CPU" }, start.elapsed().as_secs_f64() * 1000.0);
+            }
             let done = Instant::now();
             if let Some(report) = &vda_report {
                 telemetry.record(report, done - post_start, done - frame.tag.queued, self.stats.skipped.load(Ordering::Relaxed));
@@ -1132,6 +1196,18 @@ mod tests {
         assert_eq!(state.rate, 120);
         assert!(state.model_smoothing.is_empty());
         assert!(!state.cpu_inference);
+        assert!(state.edge_alignment);
+        assert!(state.contour_cleanup);
+    }
+
+    #[test]
+    fn refinement_choices_survive_restart() {
+        for on in [false, true] {
+            let state = SavedState { edge_alignment: on, contour_cleanup: on, ..SavedState::default() };
+            let restored: SavedState = toml::from_str(&toml::to_string(&state).unwrap()).unwrap();
+            assert_eq!(restored.edge_alignment, on);
+            assert_eq!(restored.contour_cleanup, on);
+        }
     }
 
     #[test]

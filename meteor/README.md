@@ -229,6 +229,51 @@ The tray has the controls:
   temporal stability is unaffected;
 - a live readout of the rate and timings.
 
+### Experimental depth refinement
+
+The Linux and Windows trays also offer two live switches, both on by default
+(including older settings without these keys). Explicit saved Off choices
+remain respected:
+
+- **Edge alignment (experimental)**: the Bounded-2 colour-guided boundary
+  adjustment. Searches within two native depth texels, with confidence gates
+  and 75% strength; flat depth is left alone.
+- **Contour cleanup (requires alignment)**: Bounded-4, applied **after**
+  Bounded-2. Smooths along the contour, with thin-feature protection and a
+  bounded change, rather than blurring across the depth edge. Its saved choice
+  is retained when alignment is disabled, but it does not run independently.
+
+Both apply to EdgePad and VDA, after existing normalization/temporal smoothing
+and VDA softening, before sending the map. They do not change temporal history,
+model inference, map dimensions, frame matching or the headset protocol.
+No restart or new model is needed; changes take effect on subsequent maps.
+
+GPU-decoded frames use **CUDA refinement** directly against NVDEC's existing
+RGB tensor. Only the small 8-bit map is uploaded/downloaded; no colour readback
+is needed. A slower CPU reference handles CPU frames or a CUDA refinement
+failure (logged explicitly). It adds processing time, included in the existing
+post/total timings; `RUST_LOG=debug` logs the backend and refinement milliseconds,
+including transfers. Disabled costs no colour download or refinement pass.
+This remains an experimental quality comparison, not a claim of improved
+performance. The CPU reference can be expensive on edge-heavy scenes.
+
+Initial release-mode synthetic timings on the development GPU, after warm-up:
+alignment approximately **0.13–0.14 ms**, alignment plus cleanup **0.14–0.17 ms**
+at 384x384, 512x288 and 518x294 (30 iterations; includes map transfers, excludes
+model inference and one-time CUDA initialization). These are isolated pass
+measurements, not live-stream latency guarantees. The deliberately edge-heavy
+CPU reference benchmark took roughly 77–103 ms; the normal GPU-frame path
+does not use it. Reproduce with `cargo test --release --locked
+--no-default-features benchmark_cuda_refinement -- --ignored --nocapture`
+from `meteor/` on an NVIDIA GPU.
+
+Unlike the local comparison, live Meteor uses the **model-input-resolution RGB
+guide** and refines the **native output grid**, not the full-resolution original
+guide and quarter-stream working grid. Thus the algorithm is the same, but the
+results need live evaluation (especially VDA and fine edges). Bounded-2's
+intermediate is rounded to 8-bit, and final cleanup is quantized to the existing
+8-bit wire map; the local cleanup preview used a half-float render target.
+
 Choices are kept in `state.toml`, next to `meteor.toml`.
 
 Requirements:
