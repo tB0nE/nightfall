@@ -1,0 +1,83 @@
+name: Meteor Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release/tag to build and upload to
+        required: true
+        type: string
+      models_sha256:
+        description: SHA-256 of meteor-model-inputs.zip attached to that draft
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      MODELS_SHA256: ${{ inputs.models_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+      - name: Validate release and download existing converted models
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Invalid release tag' }
+          if ($env:MODELS_SHA256 -notmatch '^[a-f0-9]{64}$') { throw 'Invalid model bundle hash' }
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft
+          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'Target must be a draft release' }
+          New-Item -ItemType Directory -Path .build-cache\release-models -Force | Out-Null
+          gh release download $env:RELEASE_TAG --pattern meteor-model-inputs.zip --dir .build-cache
+          if ($LASTEXITCODE -ne 0) { throw 'Model bundle download failed' }
+          $hash = (Get-FileHash .build-cache\meteor-model-inputs.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:MODELS_SHA256) { throw 'Model bundle checksum mismatch' }
+          Expand-Archive .build-cache\meteor-model-inputs.zip .build-cache\release-models
+      - name: Install pinned Rust and Inno Setup
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed' }
+          rustup override set 1.92.0
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain selection failed' }
+          $installer = Join-Path $env:RUNNER_TEMP innosetup.exe
+          Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe -OutFile $installer
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne '0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f') { throw 'Inno Setup checksum mismatch' }
+          $compilerDir = Join-Path $env:RUNNER_TEMP 'Inno Setup 7'
+          $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$compilerDir`"") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
+          $compilerDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Test portable Meteor code
+        shell: pwsh
+        working-directory: meteor
+        run: |
+          cargo test --release --locked --no-default-features
+          if ($LASTEXITCODE -ne 0) { throw 'Meteor tests failed' }
+      - name: Build release folder and installer
+        shell: pwsh
+        run: ./meteor/tools/build_windows_installer.ps1 -ModelsDir (Resolve-Path .build-cache/release-models).Path
+      - name: Upload fresh Windows assets to draft
+        shell: pwsh
+        run: |
+          $draft = gh release view $env:RELEASE_TAG --json isDraft --jq .isDraft
+          if ($LASTEXITCODE -ne 0 -or $draft -ne 'true') { throw 'Target is no longer a draft' }
+          $files = Get-ChildItem meteor/target/windows-release -File | Where-Object { $_.Name -match '^Nightfall-Meteor-.*(Setup-x64\.exe|windows-x64\.zip)$' }
+          if ($files.Count -ne 2) { throw 'Expected installer and portable ZIP' }
+          gh release upload $env:RELEASE_TAG @($files.FullName) --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release upload failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meteor-windows-release
+          path: |
+            meteor/target/windows-release/Nightfall-Meteor-*-Setup-x64.exe
+            meteor/target/windows-release/Nightfall-Meteor-*-windows-x64.zip
+          if-no-files-found: error
