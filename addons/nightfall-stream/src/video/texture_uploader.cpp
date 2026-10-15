@@ -2089,7 +2089,10 @@ int TextureUploader::poll_browser_prototype() {
     jmethodID frame = env->GetStaticMethodID(app, "consumeBrowserFrame", "()Z");
     bool ready = frame && env->CallStaticBooleanMethod(app, frame);
     if (env->ExceptionCheck()) { env->ExceptionClear(); return -1; }
-    if (ready) update_android_gles_external_texture();
+    // Static pages may stop producing frames before the model finishes
+    // loading. A requested capture must still sample the retained OES image
+    // and poll the preceding PBO, without requiring page animation.
+    if (ready || gles_depth_capture_requested_.load()) update_android_gles_external_texture();
     return state;
 #else
     return -1;

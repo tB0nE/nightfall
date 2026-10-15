@@ -283,6 +283,8 @@ func _resize_warp_passes():
 		return
 	var uv = main.primary_screen.uv_region
 	var stream_size: Vector2i = main.stream_manager.get_current_stream_size() if main.stream_manager else main.stream_viewport.size
+	if main.browser_content_active():
+		stream_size = main.primary_media_size()
 	var src = Vector2i(int(float(stream_size.x) * uv.z), int(float(stream_size.y) * uv.w))
 	if src.x <= 0 or src.y <= 0:
 		return
@@ -381,6 +383,11 @@ func bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt: int, cr: int
 		main._log("[DEPTH] Direct decoder source bound; redundant mono capture disabled")
 
 func refresh_stream_source():
+	if main.browser_content_active():
+		depth_target_mat.set_shader_parameter("main_texture", main.browser_prototype.texture)
+		depth_target_mat.set_shader_parameter("yuv_mode", 0)
+		_direct_stream_source_bound = false
+		return
 	if _direct_stream_source_bound:
 		_update_mono_capture_requirement()
 	else:
@@ -477,15 +484,16 @@ func process(delta: float):
 	# back to sustained-high once that GPU path has stopped for the session.
 	var backend_failed = effective_gpu and not main.stream_backend.get_depth_backend_status().is_empty()
 	_update_meteor()
-	var should_boost = enabled and effective_gpu and not backend_failed and main.is_streaming and not _meteor_in_use
+	var should_boost = enabled and effective_gpu and not backend_failed and main.primary_media_active() and not _meteor_in_use
 	if should_boost:
 		_gpu_boost_refresh_timer += delta
 		if not _gpu_boost_active or _gpu_boost_refresh_timer >= GPU_BOOST_REFRESH_INTERVAL:
 			_set_gpu_performance_hint(true, _gpu_boost_active)
 	elif _gpu_boost_active:
 		_set_gpu_performance_hint(false)
-	if not enabled or not main.is_streaming:
+	if not enabled or not main.primary_media_active():
 		return
+	var capture_source = main.primary_capture_source()
 
 	_resize_warp_passes()
 	_backend_status_timer += delta
@@ -506,8 +514,8 @@ func process(delta: float):
 	if not _meteor_in_use and main.stream_backend.has_method("submit_depth_frame"):
 		var native_capture_available: bool = (
 			_platform == "Android"
-			and main.stream_backend.has_method("supports_native_depth_capture")
-			and main.stream_backend.supports_native_depth_capture()
+			and capture_source.has_method("supports_native_depth_capture")
+			and capture_source.supports_native_depth_capture()
 		)
 		if native_capture_available != _native_depth_capture_active:
 			_native_depth_capture_active = native_capture_available
@@ -517,7 +525,7 @@ func process(delta: float):
 		# result. The GLES render thread never waits for it; if a transfer is
 		# late, the latest-frame policy simply picks it up on a later frame.
 		if native_capture_available:
-			var native_data: PackedByteArray = main.stream_backend.consume_native_depth_capture()
+			var native_data: PackedByteArray = capture_source.consume_native_depth_capture()
 			if native_data.size() == model_input_width * model_input_height * 4:
 				var native_submit_start = Time.get_ticks_usec()
 				main.stream_backend.submit_depth_frame(native_data, model_input_width, model_input_height)
@@ -535,7 +543,7 @@ func process(delta: float):
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			if native_capture_available:
-				main.stream_backend.request_native_depth_capture(model_input_width, model_input_height)
+				capture_source.request_native_depth_capture(model_input_width, model_input_height)
 			else:
 				var capture_start = Time.get_ticks_usec()
 				var img = depth_viewport.get_texture().get_image()
@@ -727,8 +735,9 @@ func _set_meteor_in_use(value: bool) -> void:
 		sync_model_size()
 
 func _native_capture_supported() -> bool:
-	return _platform == "Android" and main.stream_backend.has_method("supports_native_depth_capture") \
-		and main.stream_backend.supports_native_depth_capture()
+	var source = main.primary_capture_source()
+	return _platform == "Android" and source != null and source.has_method("supports_native_depth_capture") \
+		and source.supports_native_depth_capture()
 
 func meteor_in_use() -> bool:
 	return _meteor_in_use

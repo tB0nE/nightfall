@@ -19,6 +19,12 @@ func _init():
 	owner.browser_prototype = browser
 	browser.uploader = uploader
 	browser.active = true
+	assert(not browser.can_infer_depth())
+	browser.texture = ImageTexture.create_from_image(Image.create(2, 2, false, Image.FORMAT_RGBA8))
+	browser.set_activity(ContentProvider.Activity.VISIBLE)
+	assert(browser.can_infer_depth())
+	browser.set_activity(ContentProvider.Activity.SUSPENDED)
+	assert(not browser.can_infer_depth())
 	browser.pointer(Vector2(0.5, 0.25), true)
 	assert(uploader.events[-1] == [960.0, 270.0, 0])
 	browser.pointer(Vector2(0.6, 0.25), true)
@@ -41,6 +47,11 @@ func _init():
 	assert(uploader.events[-1] == [124, false, 0])
 	browser.scroll(1)
 	assert(uploader.events[-2] == [93, true, 0])
+	browser.active = false
+	browser.close()
+	assert(browser.activity == ContentProvider.Activity.CLOSED)
+	browser.start()
+	assert(not browser.active, "A closed provider cannot be revived")
 	keyboard.free()
 	owner.free()
 	print("All browser_prototype tests passed")

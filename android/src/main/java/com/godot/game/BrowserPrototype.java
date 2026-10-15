@@ -11,13 +11,17 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.WebView;
+import android.webkit.WebChromeClient;
 import android.webkit.WebViewClient;
 import android.webkit.RenderProcessGoneDetail;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.FrameLayout;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -34,6 +38,10 @@ public final class BrowserPrototype {
     private static SurfaceTexture texture;
     private static WebView web;
     private static LinearLayout root;
+    private static FrameLayout content;
+    private static View customView;
+    private static WebChromeClient.CustomViewCallback customViewCallback;
+    private static View navigationBar;
     private static long downTime;
 
     private BrowserPrototype() {}
@@ -61,6 +69,7 @@ public final class BrowserPrototype {
                 root = new LinearLayout(presentation.getContext());
                 root.setOrientation(LinearLayout.VERTICAL);
                 LinearLayout bar = new LinearLayout(presentation.getContext());
+                navigationBar = bar;
                 EditText address = new EditText(presentation.getContext());
                 address.setSingleLine(true);
                 address.setShowSoftInputOnFocus(false);
@@ -76,7 +85,7 @@ public final class BrowserPrototype {
                 bar.addView(go);
                 Button back = new Button(presentation.getContext());
                 back.setText("Back");
-                back.setOnClickListener(v -> { if (web.canGoBack()) web.goBack(); });
+                back.setOnClickListener(v -> { if (customView != null) hideCustomView(); else if (web.canGoBack()) web.goBack(); });
                 bar.addView(back);
                 Button exit = new Button(presentation.getContext());
                 exit.setText("Close browser");
@@ -88,11 +97,34 @@ public final class BrowserPrototype {
                 web.getSettings().setDomStorageEnabled(true);
                 web.getSettings().setAllowFileAccess(false);
                 web.getSettings().setAllowContentAccess(false);
+                web.setWebChromeClient(new WebChromeClient() {
+                    @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+                        if (token != generation.get() || content == null || customView != null) {
+                            callback.onCustomViewHidden();
+                            return;
+                        }
+                        // Keep Chromium's video view on our GPU virtual display,
+                        // never in a separate Activity/OS window outside AI capture.
+                        customView = view;
+                        customViewCallback = callback;
+                        web.setVisibility(View.GONE);
+                        navigationBar.setVisibility(View.GONE);
+                        content.addView(view, new FrameLayout.LayoutParams(-1, -1));
+                        view.requestFocus();
+                        DiagnosticLog.info("BrowserPrototype", "Video fullscreen entered");
+                    }
+                    @Override public void onHideCustomView() {
+                        if (token == generation.get()) hideCustomView();
+                    }
+                });
                 web.setWebViewClient(new WebViewClient() {
                     @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
                         return !allowed(request.getUrl().toString());
                     }
                     @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                        // A destroyed/replaced WebView may report its crash
+                        // late. Never let it dispose the newer browser.
+                        if (token != generation.get() || view != web) return true;
                         DiagnosticLog.info("BrowserPrototype", "Renderer lost; crashed=" + detail.didCrash());
                         generation.incrementAndGet();
                         dispose();
@@ -100,7 +132,9 @@ public final class BrowserPrototype {
                         return true;
                     }
                 });
-                root.addView(web, new LinearLayout.LayoutParams(-1, 0, 1));
+                content = new FrameLayout(presentation.getContext());
+                content.addView(web, new FrameLayout.LayoutParams(-1, -1));
+                root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
                 presentation.setContentView(root);
                 presentation.show();
                 presentation.getWindow().setLayout(-1, -1);
@@ -132,11 +166,35 @@ public final class BrowserPrototype {
     private static void dispose() {
         frame.set(false);
         if (texture != null) { texture.setOnFrameAvailableListener(null); texture = null; }
-        if (web != null) { web.stopLoading(); web.destroy(); web = null; }
+        hideCustomView();
+        if (web != null) {
+            web.stopLoading();
+            // Detach before destroy: the presentation must never draw a
+            // destroyed WebView while its virtual display is being retired.
+            if (web.getParent() instanceof ViewGroup) ((ViewGroup) web.getParent()).removeView(web);
+            web.destroy();
+            web = null;
+        }
         if (presentation != null) { presentation.dismiss(); presentation = null; }
         root = null;
+        content = null;
+        navigationBar = null;
         if (display != null) { display.release(); display = null; }
         if (surface != null) { surface.release(); surface = null; }
+    }
+
+    private static void hideCustomView() {
+        View previous = customView;
+        WebChromeClient.CustomViewCallback callback = customViewCallback;
+        customView = null;
+        customViewCallback = null;
+        if (previous != null && previous.getParent() instanceof ViewGroup) {
+            ((ViewGroup) previous.getParent()).removeView(previous);
+        }
+        if (web != null) web.setVisibility(View.VISIBLE);
+        if (navigationBar != null) navigationBar.setVisibility(View.VISIBLE);
+        if (callback != null) callback.onCustomViewHidden();
+        if (previous != null) DiagnosticLog.info("BrowserPrototype", "Video fullscreen exited");
     }
 
     public static void pointer(float x, float y, int action) {
@@ -160,6 +218,11 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2) return;
+            if (pressed && customView != null && (code == android.view.KeyEvent.KEYCODE_ESCAPE
+                    || code == android.view.KeyEvent.KEYCODE_BACK)) {
+                hideCustomView();
+                return;
+            }
             android.view.View focus = root.findFocus();
             if (focus == null) return;
             long now = SystemClock.uptimeMillis();
@@ -169,6 +232,7 @@ public final class BrowserPrototype {
     }
 
     public static void pause(boolean paused) {
-        UI.post(() -> { if (web != null) { if (paused) web.onPause(); else web.onResume(); } });
+        final int token = generation.get();
+        UI.post(() -> { if (token == generation.get() && web != null) { if (paused) web.onPause(); else web.onResume(); } });
     }
 }

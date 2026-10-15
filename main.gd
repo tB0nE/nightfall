@@ -288,6 +288,7 @@ var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
 var browser_prototype: RefCounted
+var screen_sources: ScreenSources
 var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
@@ -1459,6 +1460,8 @@ func _on_session_phase_changed(previous: int, current: int) -> void:
 		SessionLifecycle.Phase.keys()[previous].to_lower(),
 		SessionLifecycle.Phase.keys()[current].to_lower(),
 	])
+	if ui_controller and screen_sources:
+		ui_controller.update_screen_sources()
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
@@ -1472,6 +1475,8 @@ func _init_modules():
 	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
 	browser_prototype = preload("res://src/browser_prototype.gd").new(self)
+	screen_sources = ScreenSources.new(self)
+	screen_sources.changed.connect(ui_controller.update_screen_sources)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
@@ -2203,12 +2208,8 @@ func _try_auto_connect():
 
 func _post_ready_check():
 	await get_tree().create_timer(0.5).timeout
-	# Godot strips command-line extras from exported Android launchers. Reuse
-	# the app-owned one-shot marker pattern used by our diagnostics exporter.
-	var browser_test_marker := "/sdcard/Android/data/app.nightfall.quest/files/browser_gpu_smoke_test"
-	if OS.has_feature("android") and FileAccess.file_exists(browser_test_marker):
-		DirAccess.remove_absolute(browser_test_marker)
-		browser_prototype.start()
+	# Browser activation is user-driven. Automated rendering probes must not
+	# leave the app running in a different source when handed back for testing.
 
 
 
@@ -2219,6 +2220,20 @@ func get_welcome_content_texture() -> Texture2D:
 	if browser_prototype and browser_prototype.active and browser_prototype.texture:
 		return browser_prototype.texture
 	return welcome_viewport.get_texture()
+
+func browser_content_active() -> bool:
+	return browser_prototype != null and browser_prototype.active and browser_prototype.texture != null
+
+func primary_media_active() -> bool:
+	return is_streaming or browser_content_active()
+
+func primary_capture_source():
+	return browser_prototype.uploader if browser_content_active() else stream_backend
+
+func primary_media_size() -> Vector2i:
+	if browser_content_active():
+		return Vector2i(1920, 1080)
+	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):
 	if browser_prototype:
@@ -2590,6 +2605,8 @@ func _process_stats(delta):
 	# just while a stream using it is already running.
 	settings_controller.poll_usb_link_status(delta)
 	if not is_streaming:
+		if browser_content_active() and video_presentation:
+			video_presentation.process_frame(browser_prototype.new_frame)
 		if comp:
 			comp.set_stats_visible(false)
 		return

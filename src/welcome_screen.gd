@@ -38,11 +38,11 @@ func build_welcome_ui():
 	build_language_picker(root)
 	if OS.has_feature("android"):
 		var browser = Button.new()
-		browser.text = "Browser prototype"
+		browser.text = Localization.t("Open Browser")
 		browser.position = Vector2(24, 1000)
 		browser.custom_minimum_size = Vector2(320, 64)
 		browser.add_theme_font_size_override("font_size", 26)
-		browser.pressed.connect(main.browser_prototype.start)
+		browser.pressed.connect(func(): main.screen_sources.choose_source(ScreenContentTab.BROWSER))
 		root.add_child(browser)
 
 	show_welcome_screen("welcome")

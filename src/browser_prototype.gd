@@ -1,41 +1,77 @@
-extends RefCounted
+extends ContentProvider
 
 # Dedicated uploader retained for the app lifetime: never reuse the decoder's
 # surface, and never destroy it while Android's producer still owns a reference.
 var main: Node3D
 var uploader: RefCounted
 var active := false
+var closing := false
 var texture: Texture2D
 var _opening_at := 0
 var _pressed := false
 var _position := Vector2.ZERO
 var _modifiers := 0
+var new_frame := false
 
 func _init(owner: Node3D):
 	main = owner
 
+func can_infer_depth() -> bool:
+	return active and texture != null and activity == Activity.VISIBLE
+
 func start() -> void:
-	if active or main.is_streaming or not OS.has_feature("android"):
+	if activity == Activity.CLOSED or active or closing or not main.screen_sources.can_open_browser():
 		return
 	if not uploader:
 		uploader = ClassDB.instantiate("TextureUploader")
 	active = true
+	generation += 1
+	set_activity(Activity.VISIBLE)
 	_opening_at = Time.get_ticks_msec()
 	uploader.start_browser_prototype()
+	main.screen_sources.browser_opened()
 	main._log("[BROWSER] Opening GPU surface prototype")
 
 func stop() -> void:
 	if not active:
 		return
 	cancel_pointer()
+	closing = true
+	main.depth_estimator.set_enabled(false)
+	# Retire the native consumer before closing its SurfaceTexture producer.
+	main.video_presentation.deactivate_native(false)
 	uploader.close_browser_prototype()
 	active = false
+	generation += 1
+	set_activity(Activity.SUSPENDED)
 	texture = null
 	_modifiers = 0
 	bind_texture()
-	main._log("[BROWSER] Closed; welcome screen restored")
+	main.screen_sources.browser_closed()
+	_restore_welcome_after_close(generation)
+	main._log("[BROWSER] Closed; draining presentation before welcome restore")
+
+func _restore_welcome_after_close(token: int) -> void:
+	# Do not reacquire the legacy composition swapchain in the same XR frame
+	# that removed the native browser layers. Also keep inactive depth textures
+	# untouched until the next real inference session.
+	for _frame in range(3):
+		await main.get_tree().process_frame
+	if generation != token:
+		return
+	closing = false
+	if not main.primary_media_active() and main.session_lifecycle.phase in [
+		SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION,
+		SessionLifecycle.Phase.FAILED]:
+		main.settings_controller.apply_stereo()
+	main.screen_sources.changed.emit()
+
+func close() -> void:
+	stop()
+	super.close()
 
 func process() -> void:
+	new_frame = false
 	if not active:
 		return
 	var state: int = uploader.poll_browser_prototype()
@@ -46,10 +82,14 @@ func process() -> void:
 		main._log("[BROWSER] Timed out waiting for GPU frame")
 		stop()
 		return
-	if uploader.consume_new_frame() and not texture:
-		texture = uploader.get_shader_material().get_shader_parameter("tex_y")
-		bind_texture()
-		main._log("[BROWSER] First GPU frame ready")
+	if uploader.consume_new_frame():
+		new_frame = true
+		if not texture:
+			texture = uploader.get_shader_material().get_shader_parameter("tex_y")
+			bind_texture()
+			main.settings_controller.apply_stereo()
+			main._log("[BROWSER] First GPU frame ready")
+		frame_available.emit(generation)
 
 func bind_texture() -> void:
 	var current: Texture2D = main.get_welcome_content_texture()

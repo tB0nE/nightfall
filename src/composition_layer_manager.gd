@@ -1183,7 +1183,7 @@ func switch_to_comp_layer():
 	# That stale layer transition was observed immediately before the Quest GL
 	# thread null-dereference crash.
 	var stereo = main.settings_controller.get_stereo_mode() if main.settings_controller else 0
-	if main.is_streaming and stereo > 0:
+	if main.primary_media_active() and stereo > 0:
 		switch_to_stereo_comp_layer()
 		return
 	in_use = true

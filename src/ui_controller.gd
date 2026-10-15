@@ -6,6 +6,9 @@ var _tab_display: Control
 var _tab_stream: Control
 var _tab_control: Control
 var _tab_monitors: Control
+var _screen_source_status: Label
+var _open_browser_btn: Button
+var _close_browser_btn: Button
 var _tab_ai3d: Control
 var _tab_picture: Control
 var _tab_settings: Control
@@ -244,7 +247,7 @@ func on_ai_3d_priority_toggled():
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode",
-			main.settings_controller.get_stereo_mode() if main.is_streaming else 0)
+			main.settings_controller.get_stereo_mode() if main.primary_media_active() else 0)
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.settings.host.sbs_mode])
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
@@ -614,6 +617,41 @@ func update_ambient_btn_state():
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
 
+func _build_screen_sources(parent: VBoxContainer) -> void:
+	_screen_source_status = Label.new()
+	_screen_source_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_screen_source_status.add_theme_font_size_override("font_size", 28)
+	_screen_source_status.custom_minimum_size.y = 50
+	_screen_source_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	row.add_child(_screen_source_status)
+	_open_browser_btn = make_action_btn("Open Browser")
+	_set_button_tooltip(_open_browser_btn, "Open a browser on the primary screen without a PC.")
+	_open_browser_btn.button_down.connect(func():
+		main.screen_sources.choose_source(ScreenContentTab.BROWSER)
+		update_screen_sources())
+	row.add_child(_open_browser_btn)
+	_close_browser_btn = make_action_btn("Close Browser")
+	_set_button_tooltip(_close_browser_btn, "Close the browser tab and return to the welcome screen.")
+	_close_browser_btn.button_down.connect(func():
+		main.screen_sources.choose_source(ScreenContentTab.STREAM)
+		update_screen_sources())
+	row.add_child(_close_browser_btn)
+	update_screen_sources()
+
+func update_screen_sources() -> void:
+	if _open_browser_btn == null or main.screen_sources == null:
+		return
+	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
+	_open_browser_btn.disabled = browser_active or not main.screen_sources.can_open_browser()
+	_close_browser_btn.disabled = not browser_active
+	var source := "Browser" if browser_active else ("PC Stream" if main.is_streaming else "Welcome")
+	_screen_source_status.text = Localization.t("Screen 1: %s") % Localization.t(source)
+
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
@@ -772,7 +810,6 @@ func update_ui():
 
 func switch_tab(tab: int):
 	clear_tooltip()
-	var entering_monitors_tab = (tab == 5 and _current_tab != 5)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
@@ -828,8 +865,7 @@ func switch_tab(tab: int):
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
 	if tab == 5:
-		if entering_monitors_tab:
-			main.settings_controller.sync_staged_from_current_layout()
+		update_screen_sources()
 		update_monitor_tab()
 
 	var ui_buttons = []
@@ -1208,6 +1244,14 @@ func build_ui():
 	_tab_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.visible = false
 	vbox.add_child(_tab_monitors)
+	_build_screen_sources(_tab_monitors)
+	# Screens extends the existing monitor UI; keep its layout controls visible.
+	# Host-specific capability checks still apply to PC monitor creation.
+	var legacy_monitors := VBoxContainer.new()
+	legacy_monitors.name = "LegacyMonitorControls"
+	legacy_monitors.visible = true
+	legacy_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(legacy_monitors)
 
 	var mon_row1 = HBoxContainer.new()
 	mon_row1.name = "MonRow1"
@@ -1216,7 +1260,7 @@ func build_ui():
 	mon_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	mon_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_row1)
+	legacy_monitors.add_child(mon_row1)
 
 	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
 	_set_button_tooltip(main._ui_monitors_btn, "Choose how many physical host monitors are displayed.")
@@ -1228,7 +1272,7 @@ func build_ui():
 	var mon_gap1 = Control.new()
 	mon_gap1.custom_minimum_size = Vector2(0, 10)
 	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap1)
+	legacy_monitors.add_child(mon_gap1)
 
 	_preset_row = HBoxContainer.new()
 	_preset_row.name = "PresetRow"
@@ -1237,12 +1281,12 @@ func build_ui():
 	_preset_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_preset_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(_preset_row)
+	legacy_monitors.add_child(_preset_row)
 
 	var mon_gap2 = Control.new()
 	mon_gap2.custom_minimum_size = Vector2(0, 10)
 	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap2)
+	legacy_monitors.add_child(mon_gap2)
 
 	var mon_actions_row1 = HBoxContainer.new()
 	mon_actions_row1.name = "MonActionsRow1"
@@ -1251,7 +1295,7 @@ func build_ui():
 	mon_actions_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	mon_actions_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_actions_row1)
+	legacy_monitors.add_child(mon_actions_row1)
 
 	main._ui_apply_preset_btn = make_action_btn("Apply")
 	_set_button_tooltip(main._ui_apply_preset_btn, "Apply the selected monitor layout.")

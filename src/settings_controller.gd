@@ -901,13 +901,13 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 	# Host settings are restored on the welcome screen, and SBS can override
 	# a saved AI-3D selection. Neither state runs depth inference, so a GPU
 	# warning from their placeholder configuration must not reach the UI.
-	if not main.is_streaming or get_stereo_mode() < 3:
+	if not main.primary_media_active() or get_stereo_mode() < 3:
 		_last_backend_status = ""
 		return
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and get_depth_backend_index() == AI3D_BACKEND_GPU \
 			and get_ai_3d_gpu_api_effective() == 0 and not _auto_depth_fallback \
-			and not status.is_empty() and main.is_streaming:
+			and not status.is_empty() and main.primary_media_active():
 		_auto_depth_fallback = true
 		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
@@ -987,7 +987,9 @@ func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 
 func apply_stereo():
 	var mode = get_stereo_mode()
-	var display_mode = mode if main.is_streaming else 0
+	var media_active: bool = main.primary_media_active()
+	var depth_active: bool = mode >= 3 and media_active
+	var display_mode = mode if media_active else 0
 	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
 	# decoder reports the new stream's video size (normally within a frame or
 	# two of _on_stream_started(), which calls this), calling
@@ -1008,7 +1010,7 @@ func apply_stereo():
 	# rendering then fails to actually start, deactivate(true)'s own
 	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
 	# covers activating legacy properly.
-	main.video_presentation.apply_mode(display_mode, main.is_streaming)
+	main.video_presentation.apply_mode(display_mode, media_active)
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", display_mode)
 	if main.depth_estimator:
@@ -1028,7 +1030,7 @@ func apply_stereo():
 		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.settings.host.ai_3d_speed > 0 else 0
-		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
+		main.depth_estimator.set_enabled(depth_active, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
 		# Direct decoder textures feed the small depth-input viewport without a
 		# third full-resolution mono render. refresh_stream_source() keeps the
 		# old mono path available only when a backend cannot expose those textures.
@@ -1045,7 +1047,6 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var depth_active = mode >= 3 and main.is_streaming
 	var model_idx = get_depth_model_index() if depth_active else 0
 	if OS.get_name() == "Android":
 		var java_class := _android_depth_class()
@@ -1067,7 +1068,7 @@ func apply_stereo():
 	# configure_depth() above must still run first - sync_model_size()
 	# reads get_depth_model_width()/get_depth_model_height(), which only
 	# reflect the new model once the Java side has been reconfigured.
-	if mode >= 3 and main.depth_estimator:
+	if depth_active and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
 		main.depth_estimator.set_separation_pct(main.settings.host.ai_3d_separation_pct)
 		if main.depth_estimator.depth_texture:

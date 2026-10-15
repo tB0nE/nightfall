@@ -2,6 +2,26 @@
 
 ## Agreed product scope
 
+### User clarification — 2026-10-15
+
+- Screens extends the existing Monitors menu, retaining monitor counts,
+  layouts, presets and grid controls; it must not replace or hide them.
+- Standalone: open the app without a PC, explicitly select Browser, and use
+  on-headset AI 3D on that primary browser screen.
+- Screens must offer Add Screen / Add Browser and layout selection for the
+  resulting physical screens. Existing host monitor counts remain distinct
+  from locally created browser screens; do not fabricate host monitors.
+- AI 3D belongs to the primary screen only, whether its selected source is a
+  PC stream or browser. The earlier general AI ownership-switch idea is deferred.
+- Browser startup must be opt-in, including builds handed over after smoke tests.
+- The previous source-picker milestone was insufficient: browser AI, mixed
+  screens and source-independent layout management are still outstanding.
+- Implementation order: restore existing menu and reliable source actions;
+  route browser RGBA frames through inference and final primary-screen warp
+  without a stream; then isolate per-screen presentation/input and implement
+  Add Screen / Add Browser using the existing layout machinery. Preserve
+  source-generation invalidation, GPU teardown safety and one AI owner.
+
 - Quest 3 first; keep platform-specific providers separate for later Quest 2/Linux support.
 - Four physical screens total, shared by PC monitors, browsers and local media.
 - Add Screen creates an empty screen with a source picker. Add Tab uses that same picker.
@@ -33,7 +53,7 @@ Physical VRScreen -> ScreenContentTabs -> ScreenContentTab -> ContentProvider
 
 ## Implementation stages and gates
 
-### 1. Foundation (current work)
+### 1. Foundation
 
 - Add tested source/tab/selection data structures and the provider lifecycle contract.
 - Give existing monitor screens a matching stream tab without changing presentation.
@@ -213,3 +233,91 @@ Only after that works, integrate the shared source picker and real tab switching
   final visual appearance through OpenXR. The user subsequently confirmed the
   browser works very well on the headset. Broader video/login/standby coverage
   remains part of the milestone checklist above.
+
+## Screens source-picker slice — 2026-10-14
+
+- Merged released main (Nightfall 0.8.1 / Meteor 0.1.1) into this branch before
+  resuming. All model, refinement, audio, controller and hand-tracking fixes
+  remain present.
+- Renamed the dormant Monitors tab to **Screens** and enabled it on Android.
+  Its first source-picker slice shows the current primary-screen source and
+  **Open Browser / Close Browser**. The welcome-screen shortcut remains, now
+  labelled Open Browser, and uses the same routing.
+- `ScreenSources` owns this routing. The real browser tab is registered in the
+  primary VRScreen's existing `ScreenContentTabs` while it is open; closing,
+  browser failure/timeout or stream startup removes it and restores PC/welcome
+  selection. It does not fake a PC monitor or alter screen geometry.
+- Browser now follows the `ContentProvider` activity/generation contract and
+  emits generation-tagged frame notifications. Browser AI remains unavailable:
+  GPU output alone does not mean inference routing has been implemented.
+- A browser cannot open while a stream is connecting, streaming, reconnecting,
+  restarting or disconnecting, or with more than one physical screen. No new
+  OpenXR layers and no per-tab rendering layers are created by this UI.
+- Existing monitor layout/Virtual/Apply code is retained but hidden; these
+  host-specific controls are not presented as browser-screen management.
+- Closing currently **destroys** the browser session; this is not a tab strip,
+  hidden-tab suspension, background-audio support or workspace restoration.
+  No navigation URLs/credentials are persisted or added to diagnostics.
+- Guard late WebView renderer-loss and pause callbacks by generation, so an
+  older browser cannot destroy or pause a newer one.
+- Next: isolate stream/browser presentation ownership and per-provider input,
+  then enable one browser alongside a PC stream. Actual tab switching requires
+  reliable hidden-tab pause/mute and state retention first; Add Screen, the
+  four-screen UI and local media providers follow that lifecycle work.
+- Verification: GDScript parse and full test suite pass, including source-picker
+  lifecycle/transition guards and browser provider closure. The C++ inline/
+  deferred GLES dispatch regression test passes. Optimized release-signed DEV
+  APK installed on Quest 3; opt-in browser GPU smoke logged first-frame ready
+  and three probes with 9/9 nonblack, 9/9 visible-alpha and zero GL errors.
+  Screens-menu layout/hit testing and video still need human headset checks.
+
+## Standalone browser AI slice — 2026-10-15
+
+- Restored the existing monitor counts, layout presets, Apply/Save/Remove and
+  grid controls within Screens. Their existing Polaris capability checks are
+  retained: this does not yet make host-only controls manage local browsers.
+- Browser actions use the same button-down activation as the other XR menu
+  actions. Removed the non-interactive warning block and combined source
+  status/actions in one row to leave space for the restored layout controls.
+- Removed automatic browser startup from the diagnostic marker. Builds handed
+  over for testing start normally; browser activation is explicit.
+- Added primary-media routing separate from the PC session lifecycle: a ready
+  browser supplies its own capture uploader and 1920x1080 surface size without
+  pretending that a PC stream is connected.
+- Browser RGBA/OES frames now feed the existing async model-sized PBO capture
+  and on-device depth engine. Static pages can request captures from their
+  retained OES frame even after WebView stops producing new frames.
+- The native XR renderer can present the browser through the production depth,
+  refinement and warp path, including Final Depth Map. Browser rendering keeps
+  its RGBA copy available for the legacy/input-debug fallback. Meteor remains
+  stream-only; browser pages are not sent to Meteor.
+- Closing the browser deactivates its native consumer before closing the
+  producer, then reapplies welcome presentation and inactive inference config.
+- Automated checks: project parse, full GDScript suite (including real primary
+  source-routing tests), native release compilation and GLES dispatch test pass.
+- Still requires headset validation: browser AI/Final Depth Map, repeated
+  open/close, standby, menu input and returning to normal PC streaming.
+- Still outstanding: Add Screen/Add Browser, mixed concurrent sources,
+  source-independent layout selection and real tab switching. No extra physical
+  screens or concurrent browser/PC playback are claimed by this milestone.
+
+### Fullscreen and close follow-up
+
+- User confirmed YouTube playback with browser AI 3D. Fullscreen was missing,
+  and closing the browser crashed the app. Retained headset crash buffer records
+  SIGSEGV at 00:16:10 on 2026-10-15 in Godot's GLThread, fault address 0xe0;
+  available symbols do not establish the exact failing engine function.
+- Added WebChromeClient custom-video-view handling inside the existing virtual
+  display. Fullscreen hides browser navigation without leaving the GPU/AI
+  capture surface. Video controls or virtual-keyboard Escape exit fullscreen.
+  Custom views and WebViews are detached from their parent before destruction.
+- Corrected inactive-media apply_stereo(): a saved AI preference must not
+  re-enable capture or resize model depth textures on the welcome screen.
+- Browser close disables depth, stops native presentation, closes the producer
+  and waits three process-frame boundaries before reacquiring welcome layers.
+  Reopening is blocked during this drain; a newly started PC connection prevents
+  the deferred welcome restore. This is a targeted lifecycle correction, not
+  proof that the recorded native crash is resolved without a headset retest.
+- Added regression coverage for deferred close, stopped inference, and PC
+  connection ownership during close. Full GDScript suite and optimized Android
+  build pass. Fullscreen video/AI and repeated close require a headset retest.

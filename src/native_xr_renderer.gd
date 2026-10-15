@@ -92,7 +92,7 @@ func can_render_current_config() -> bool:
 	return true
 
 func _eligible() -> bool:
-	if not main.is_streaming or not can_render_current_config():
+	if not main.primary_media_active() or not can_render_current_config():
 		return false
 	# _schedule_stream_restart() deactivates this renderer, then awaits a
 	# couple of frame boundaries before actually freeing the decoder/texture
@@ -140,7 +140,7 @@ func refresh() -> void:
 			deactivate(true)
 		_last_eligible = false
 		return
-	var size := Vector2i(main.stream_backend.get_video_width(), main.stream_backend.get_video_height())
+	var size: Vector2i = main.primary_media_size()
 	if size.x <= 0 or size.y <= 0:
 		return
 	var mode := _mode()
@@ -171,7 +171,10 @@ func refresh() -> void:
 	# remap target. The native renderer simply remains black until its first
 	# decoder frame arrives, normally less than one display interval later.
 	if not legacy_disabled:
-		main.stream_backend.set_native_direct_mode(true)
+		# Browser retains its RGBA copy for input-depth diagnostics and legacy
+		# fallback. Stream decoding keeps its established direct-only fast path.
+		if not main.browser_content_active():
+			main.stream_backend.set_native_direct_mode(true)
 		if main.depth_estimator:
 			main.depth_estimator.set_native_renderer_active(true)
 		if main.comp:
@@ -217,7 +220,8 @@ func process_frame(new_frame: bool) -> void:
 	_process_ambient_sample()
 	if not active or (not new_frame and not _force_redraw):
 		return
-	var oes_id: int = main.stream_backend.get_oes_texture_id()
+	var source = main.primary_capture_source()
+	var oes_id: int = source.get_oes_texture_id()
 	if oes_id == 0:
 		# This is normal during decoder startup/restart. Retain the prepared
 		# native swapchain and wait for the first published OES frame instead
@@ -233,7 +237,7 @@ func process_frame(new_frame: bool) -> void:
 			# Host depth (Meteor) has no on-device capture to guide it, and a
 			# guide left over from on-device depth would belong to another
 			# frame. Without one the renderer resizes depth linearly.
-			guide_id = 0 if depth.meteor_in_use() else main.stream_backend.get_native_depth_guide_texture_id()
+			guide_id = 0 if depth.meteor_in_use() else source.get_native_depth_guide_texture_id()
 			if guide_id != 0 or depth.meteor_in_use():
 				depth_id = RenderingServer.texture_get_native_handle(depth.depth_texture.get_rid())
 				# DMap-Final needs the production depth conversion but no
@@ -241,11 +245,11 @@ func process_frame(new_frame: bool) -> void:
 				if mode != 7:
 					separation = depth._pass_parallax * (main.settings.host.ai_3d_separation_pct / 100.0)
 	var convergence: float = float(main.settings.host.ai_3d_convergence_pct) / 100.0
-	var matrix: PackedFloat32Array = main.stream_backend.get_oes_transform_matrix()
+	var matrix: PackedFloat32Array = source.get_oes_transform_matrix()
 	if matrix.size() < 16:
 		return
-	var fence: int = main.stream_backend.get_oes_ready_fence()
-	var color_transfer: int = main.stream_backend.get_color_transfer_type()
+	var fence: int = source.consume_oes_ready_fence() if main.browser_content_active() else source.get_oes_ready_fence()
+	var color_transfer: int = 0 if main.browser_content_active() else source.get_color_transfer_type()
 	var brightness: float = float(main.settings.brightness_pct) / 100.0
 	var contrast: float = float(main.settings.contrast_pct) / 100.0
 	var gamma: float = float(main.settings.gamma_pct) / 100.0
@@ -331,6 +335,8 @@ func _process_stats_upload() -> void:
 	_force_redraw = true
 
 func deactivate(restore_legacy: bool) -> void:
+	if main.browser_content_active():
+		main.browser_prototype.uploader.set_native_direct_mode(false)
 	if main.stream_backend:
 		main.stream_backend.set_native_direct_mode(false)
 	if main.depth_estimator:
