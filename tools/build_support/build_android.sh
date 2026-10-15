@@ -122,6 +122,14 @@ rm -rf android/build
 mkdir -p android/build
 cd android/build
 unzip -q "$TEMPLATES"
+# An arbitrary-site browser must support explicitly entered HTTP addresses,
+# including LAN Plex servers. Keep TLS verification and mixed-content defaults
+# unchanged; this only permits HTTP, it never downgrades an HTTPS URL.
+sed -i '/<application$/a\        android:usesCleartextTraffic="true"' src/main/AndroidManifest.xml
+if ! grep -q 'android:usesCleartextTraffic="true"' src/main/AndroidManifest.xml; then
+  echo "Error: failed to enable browser HTTP support in the exported manifest" >&2
+  exit 1
+fi
 sed -i '/tools:targetApi="29" \/>/a\
 \
         <meta-data\
@@ -138,6 +146,8 @@ sed -i '/tools:targetApi="29" \/>/a\
 # lands an arbitrary extra .so in the APK's lib/arm64-v8a/, same as
 # libgodot_android.so above.
 GODOT_AAR="libs/$NATIVE_XR_TARGET/godot-lib.template_${NATIVE_XR_TARGET}.aar"
+bash "$SCRIPT_DIR/extensions/browser-adblock/build_android.sh"
+BLOCKER_LIBRARY="$SCRIPT_DIR/extensions/browser-adblock/target/aarch64-linux-android/release/libnightfall_browser_adblock.so"
 PYROWAVE_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libpyrowave-shared.so"
 if [ ! -f "$PYROWAVE_LIBRARY" ]; then
   echo "Error: PyroWave shared library not found at $PYROWAVE_LIBRARY"
@@ -148,13 +158,15 @@ if [ -f "$GODOT_AAR" ]; then
   mkdir -p aar_extract/jni/arm64-v8a
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
   cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
-  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so jni/arm64-v8a/libpyrowave-shared.so)
+  cp "$BLOCKER_LIBRARY" aar_extract/jni/arm64-v8a/libnightfall_browser_adblock.so
+  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so jni/arm64-v8a/libpyrowave-shared.so jni/arm64-v8a/libnightfall_browser_adblock.so)
 elif [ -d aar_extract/jni/arm64-v8a ]; then
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
   cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
   mkdir -p "libs/$NATIVE_XR_TARGET/arm64-v8a"
   cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
   cp "$PYROWAVE_LIBRARY" "libs/$NATIVE_XR_TARGET/arm64-v8a/libpyrowave-shared.so"
+  cp "$BLOCKER_LIBRARY" "libs/$NATIVE_XR_TARGET/arm64-v8a/libnightfall_browser_adblock.so"
 else
   echo "Error: Godot Android template has no known runtime location" >&2
   exit 1
@@ -169,6 +181,15 @@ cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/
 cp android/src/main/java/com/godot/game/AudioOutput.java android/build/src/main/java/com/godot/game/AudioOutput.java
 cp android/src/main/java/com/godot/game/BrowserCapabilities.java android/build/src/main/java/com/godot/game/BrowserCapabilities.java
 cp android/src/main/java/com/godot/game/BrowserPrototype.java android/build/src/main/java/com/godot/game/BrowserPrototype.java
+cp android/src/main/java/com/godot/game/BrowserNavigation.java android/build/src/main/java/com/godot/game/BrowserNavigation.java
+cp android/src/main/java/com/godot/game/BrowserGamepadProbe.java android/build/src/main/java/com/godot/game/BrowserGamepadProbe.java
+cp android/src/main/java/com/godot/game/BrowserGamepadState.java android/build/src/main/java/com/godot/game/BrowserGamepadState.java
+cp android/src/main/java/com/godot/game/BrowserPhysicalGamepad.java android/build/src/main/java/com/godot/game/BrowserPhysicalGamepad.java
+cp android/src/main/java/com/godot/game/BrowserGamepadScript.java android/build/src/main/java/com/godot/game/BrowserGamepadScript.java
+cp android/src/main/java/com/godot/game/BrowserBookmarks.java android/build/src/main/java/com/godot/game/BrowserBookmarks.java
+cp android/src/main/java/com/godot/game/BrowserHistory.java android/build/src/main/java/com/godot/game/BrowserHistory.java
+cp android/src/main/java/com/godot/game/BrowserAdblock.java android/build/src/main/java/com/godot/game/BrowserAdblock.java
+cp android/src/main/java/com/godot/game/BrowserBlockingPolicy.java android/build/src/main/java/com/godot/game/BrowserBlockingPolicy.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from
@@ -185,6 +206,9 @@ cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/m
 bash "$SCRIPT_DIR/tools/build_support/package_android_models.sh" \
   "$SCRIPT_DIR/android/build/nightfallAssets"
 LITERT_GPU_AAR="${NIGHTFALL_LITERT_GPU_AAR:-$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar}"
+# Document-start injection is necessary: cloud-game pages may cache getGamepads
+# before onPageFinished. The feature is checked against the actual provider.
+sed -i '/implementation "androidx.documentfile:documentfile/a\    implementation "androidx.webkit:webkit:1.12.1"' android/build/build.gradle
 if [ "$USE_STOCK_LITERT" = "1" ]; then
   echo "Using stock-priority LiteRT GPU 1.4.2"
   sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle

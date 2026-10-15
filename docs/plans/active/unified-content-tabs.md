@@ -137,8 +137,11 @@ Physical VRScreen -> ScreenContentTabs -> ScreenContentTab -> ContentProvider
 
 ## Next milestone
 
-One hardware-accelerated browser screen playing unprotected video without a PC.
-Only after that works, integrate the shared source picker and real tab switching.
+The browser/GPU/AI proof of concept is working. Per the 2026-10-15 product
+decision, prioritize a useful single standalone browser using the
+[Standalone Nightfall browser plan](standalone-browser.md) before concurrent
+streaming, real tab switching or additional physical screens. Historical
+checkpoints below describe earlier implementation stages, not current limits.
 
 ## Resume checkpoint — 2026-10-13
 

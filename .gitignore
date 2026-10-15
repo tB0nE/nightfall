@@ -112,3 +112,4 @@ Nightfall.AppDir/
 
 # Nightfall Meteor (host companion app) build output
 meteor/target/
+extensions/browser-adblock/target/

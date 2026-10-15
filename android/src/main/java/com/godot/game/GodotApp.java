@@ -23,13 +23,17 @@ public class GodotApp extends GodotActivity {
 	public static void closeBrowser() { BrowserPrototype.close(); }
 	public static void browserPointer(float x, float y, int action) { BrowserPrototype.pointer(x, y, action); }
 	public static void browserKey(int code, boolean pressed, int modifiers) { BrowserPrototype.key(code, pressed, modifiers); }
+	public static void browserGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) {
+		BrowserPrototype.questGamepad(buttons, lt, rt, lx, ly, rx, ry);
+	}
+	public static void browserClearGamepad() { BrowserPrototype.clearQuestGamepad(); }
+	public static void browserInputEnabled(boolean enabled) { BrowserPrototype.setGamepadInputEnabled(enabled); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
 
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
 		InputDevice device = event.getDevice();
-		if (device != null && (event.isFromSource(InputDevice.SOURCE_GAMEPAD)
-				|| event.isFromSource(InputDevice.SOURCE_JOYSTICK))) {
+		if (device != null && BrowserPhysicalGamepad.accepts(event)) {
 			int corrected = GamepadInfo.correctedKeyCode(device, event);
 			String signature = event.getDeviceId() + ":" + event.getScanCode() + ":" + event.getKeyCode();
 			if (event.getAction() == KeyEvent.ACTION_DOWN && loggedPadKeys.add(signature)) {
@@ -45,7 +49,12 @@ public class GodotApp extends GodotActivity {
 						event.getScanCode(), event.getFlags(), event.getSource());
 			}
 		}
+		if (BrowserPrototype.physicalGamepadKey(event)) return true;
 		return super.dispatchKeyEvent(event);
+	}
+	@Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+		if (BrowserPrototype.physicalGamepadMotion(event)) return true;
+		return super.dispatchGenericMotionEvent(event);
 	}
 	public static native void initializeMoonlightJNI();
 	public static boolean openAudioTrack(int rate, int channels, int period) { return AudioOutput.open(rate, channels, period); }

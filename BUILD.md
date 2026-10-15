@@ -9,6 +9,10 @@
 - **vcpkg** (for GDExtension dependency management)
 - **Ninja** (build system, used by CMake)
 - **ADB** (for Quest deployment)
+- **Rust 1.92+ and the `aarch64-linux-android` target** for the optional browser
+  filtering engine bundled in Android builds. Install the target with
+  `rustup target add aarch64-linux-android`. `build.sh` builds the pinned native
+  bridge automatically; blocking itself is opt-in and off by default.
 
 ## 0. Install Godot Plugins
 

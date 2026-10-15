@@ -12,6 +12,29 @@ var _pressed := false
 var _position := Vector2.ZERO
 var _modifiers := 0
 var new_frame := false
+var _gamepad_java: Object
+var _gamepad_sent := false
+var _gamepad_input_enabled := true
+
+func _gamepad_bridge() -> Object:
+	if _gamepad_java == null and OS.get_name() == "Android":
+		var wrapper: Object = Engine.get_singleton("JavaClassWrapper")
+		if wrapper:
+			_gamepad_java = wrapper.wrap("com.godot.game.GodotApp")
+	return _gamepad_java
+
+func gamepad_state(buttons: int, lt: int, rt: int, lx: int, ly: int, rx: int, ry: int) -> void:
+	var bridge := _gamepad_bridge()
+	if active and bridge:
+		bridge.browserGamepad(buttons, lt, rt, lx, ly, rx, ry)
+		_gamepad_sent = true
+
+func clear_gamepad() -> void:
+	if _gamepad_sent:
+		var bridge := _gamepad_bridge()
+		if bridge:
+			bridge.browserClearGamepad()
+		_gamepad_sent = false
 
 func _init(owner: Node3D):
 	main = owner
@@ -25,6 +48,7 @@ func start() -> void:
 	if not uploader:
 		uploader = ClassDB.instantiate("TextureUploader")
 	active = true
+	_gamepad_input_enabled = true
 	generation += 1
 	set_activity(Activity.VISIBLE)
 	_opening_at = Time.get_ticks_msec()
@@ -36,6 +60,7 @@ func stop() -> void:
 	if not active:
 		return
 	cancel_pointer()
+	clear_gamepad()
 	closing = true
 	main.depth_estimator.set_enabled(false)
 	# Retire the native consumer before closing its SurfaceTexture producer.
@@ -74,6 +99,12 @@ func process() -> void:
 	new_frame = false
 	if not active:
 		return
+	var input_enabled: bool = not main.ui_visible and not main.virtual_keyboard.visible
+	if input_enabled != _gamepad_input_enabled:
+		_gamepad_input_enabled = input_enabled
+		var bridge := _gamepad_bridge()
+		if bridge:
+			bridge.browserInputEnabled(input_enabled)
 	var state: int = uploader.poll_browser_prototype()
 	if state < 0 or (state == 0 and Time.get_ticks_msec() - _opening_at > 1000):
 		stop()

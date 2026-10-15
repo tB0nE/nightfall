@@ -122,6 +122,12 @@ func reset_gamepads() -> void:
 # GamepadSlots.QUEST_PAD for the Quest-controller PAD mode.
 func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		lx: int, ly: int, rx: int, ry: int) -> void:
+	if main.browser_content_active():
+		# Physical pads use original Android events directly. Only XR's virtual
+		# pad needs the browser-specific state bridge; never announce it to a PC.
+		if key == GamepadSlots.QUEST_PAD:
+			main.browser_prototype.gamepad_state(buttons, lt, rt, lx, ly, rx, ry)
+		return
 	var is_new := not gamepads.has(key)
 	var slot := gamepads.acquire(key)
 	if slot < 0:

@@ -396,6 +396,13 @@ func refresh_stream_source():
 func _update_mono_capture_requirement():
 	if not main.primary_screen or not main.primary_screen.comp_viewport or not main.settings_controller:
 		return
+	# A saved AI-3D/SBS preference describes the next media session, not the
+	# mono welcome image. apply_stereo() restores that viewport before calling
+	# set_enabled(false); disabling it here made closing a 3D browser hide the
+	# only remaining screen.
+	if main.comp.in_use and not main.primary_media_active():
+		main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		return
 	# The mono viewport is the visible output in normal 2D mode and must remain
 	# active there. In stereo modes it exists only as the legacy depth fallback.
 	if main.comp.in_use and main.settings_controller.get_stereo_mode() > 0:
