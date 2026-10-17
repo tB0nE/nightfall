@@ -22,9 +22,14 @@ fi
 mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
+	"test/test_browser_depth_policy.gd"
+	"test/test_screen_primary_selection.gd"
+	"test/test_stream_browser_workspace.gd"
 	"test/test_screen_tab_hit_physics.gd"
 	"test/test_screen_tab_strip.gd"
 	"test/test_browser_gamepad.gd"
+	"test/test_browser_presentation_isolation.gd"
+	"test/test_shared_screen_controls.gd"
 	"test/test_depth_welcome_restore.gd"
 	"test/test_app_settings.gd"
 	"test/test_menu_schema.gd"

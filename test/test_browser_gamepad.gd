@@ -1,6 +1,7 @@
 extends SceneTree
 
 class FakeBrowser extends RefCounted:
+	var active := true
 	var states: Array = []
 	var cleared := 0
 	func gamepad_state(buttons, lt, rt, lx, ly, rx, ry): states.append([buttons, lt, rt, lx, ly, rx, ry])

@@ -15,6 +15,7 @@ const NAV_ICONS := {
 const STOP_ICON := preload("res://src/assets/screen_shortcuts/browser_stop.svg")
 const PANEL_RECT := Rect2(-0.5, -0.13, 1.0, 0.118)
 var main: Node3D
+var browser: RefCounted
 var hovered: StringName = &""
 var popup := ""
 var _signature := ""
@@ -41,7 +42,10 @@ func _position_background(panel: Panel, rect: Rect2, surface_size: Vector2, marg
 		(rect.position.y * _screen.mesh_size.x + margin) * scale_px)
 	panel.size = rect.size * _screen.mesh_size.x * scale_px
 
-func _init(owner: Node3D): main = owner
+func _init(owner: Node3D, target: VRScreen = null, provider: RefCounted = null):
+	main = owner
+	_screen = target
+	browser = provider if provider != null else main.browser_prototype
 
 static func visible_pages(pages: Array, selected: int) -> Array:
 	var result := pages.slice(0, MAX_VISIBLE)
@@ -84,7 +88,7 @@ static func hit_faces(rect: Rect2, mesh_size: Vector2, base_radius: float) -> Pa
 	return faces
 
 func attach(screen: VRScreen, viewport: SubViewport) -> void:
-	if screen != main.primary_screen:
+	if _screen != null and screen != _screen:
 		return
 	_screen = screen
 	_viewport = viewport
@@ -100,10 +104,13 @@ func invoke(action: StringName) -> void:
 	for item in _items:
 		if item.action == action and not item.enabled: return
 	if action == &"hover": return
-	if main.browser_prototype.closing:
+	if main.screen_sources != null and main.screen_sources.get("switching_primary") == true: return
+	if browser.closing:
 		return
 	var command := String(action)
-	main._log("[TABS] action=%s count=%d selected=%d" % [command, main.browser_prototype.pages.size(), main.browser_prototype.selected_page])
+	main._log("[TABS] action=%s count=%d selected=%d" % [command, browser.pages.size(), browser.selected_page])
+	if main.screen_sources and main.screen_sources.has_method("focus_browser"):
+		main.screen_sources.focus_browser(browser)
 	if command == "add":
 		popup = "" if popup == "sources" else "sources"
 	elif command == "overflow":
@@ -111,25 +118,33 @@ func invoke(action: StringName) -> void:
 	elif command == "menu":
 		popup = "" if popup == "settings" else "settings"
 	elif command == "close":
-		main.browser_prototype.tab_action("close", main.browser_prototype.selected_page)
+		browser.tab_action("close", browser.selected_page)
 		popup = ""
 	elif command.begins_with("close:"):
-		main.browser_prototype.tab_action("close", int(command.trim_prefix("close:")))
+		browser.tab_action("close", int(command.trim_prefix("close:")))
 		popup = ""
-	elif command in ["browser", "source:browser"]:
-		if main.browser_prototype.active:
-			main.browser_prototype.tab_action("new")
-		elif main.screen_sources.can_open_browser():
-			main.browser_prototype.start()
+	elif command == "browser":
+		popup = "" if popup == "sources" else "sources"
+	elif command == "tab:new":
+		browser.tab_action("new")
+		popup = ""
+	elif command == "screen:new":
+		main.screen_sources.add_browser_screen()
+		popup = ""
+	elif command == "stream:new":
+		main.screen_sources.add_stream_screen()
+		popup = ""
+	elif command == "screen:primary":
+		main.screen_sources.make_primary(_screen)
 		popup = ""
 	elif command.begins_with("page:"):
-		main.browser_prototype.tab_action("select", int(command.trim_prefix("page:")))
+		browser.tab_action("select", int(command.trim_prefix("page:")))
 		popup = ""
 	elif command.begins_with("list:"):
-		main.browser_prototype.tab_action("select", int(command.trim_prefix("list:")))
+		browser.tab_action("select", int(command.trim_prefix("list:")))
 		popup = ""
 	elif command.begins_with("nav:"):
-		main.browser_prototype.navigation_action(command.trim_prefix("nav:"))
+		browser.navigation_action(command.trim_prefix("nav:"))
 		popup = ""
 	_signature = ""
 
@@ -213,12 +228,14 @@ func _rebuild() -> void:
 	_reuse.clear()
 	for item in _items: _reuse[item.action] = item
 	_items.clear()
-	var browser_active: bool = main.browser_prototype.active
-	var pages: Array = main.browser_prototype.pages
-	var selected: int = main.browser_prototype.selected_page
+	var browser_active: bool = browser.active
+	var pages: Array = browser.pages
+	var selected: int = browser.selected_page
 	# A non-actionable backdrop bridges gaps and the route into dropdowns.
 	var hover_bottom := 0.0
-	if popup == "sources": hover_bottom = 0.125
+	var offer_stream: bool = main.screen_sources != null and main.screen_sources.has_method("can_offer_stream_screen") \
+		and main.screen_sources.can_offer_stream_screen()
+	if popup == "sources": hover_bottom = 0.17 if offer_stream else 0.126
 	elif popup == "settings": hover_bottom = 0.17
 	elif popup == "tabs": hover_bottom = maxf(0.0, pages.size() * 0.036 + 0.025)
 	if browser_active and not pages.is_empty():
@@ -236,11 +253,11 @@ func _rebuild() -> void:
 	else:
 		_add(&"current", "PC monitor" if main.is_streaming else "Welcome", Rect2(-0.48, -0.116, 0.80, 0.038), true, false)
 	var can_browser: bool = (browser_active and pages.size() < 8) or (not browser_active and main.screen_sources.can_open_browser())
-	_add(&"browser", "+ Browser", Rect2(0.33, -0.116, 0.15, 0.038), false, can_browser)
+	_add(&"browser", "+ Browser", Rect2(0.33, -0.116, 0.15, 0.038), false, can_browser or main.screen_sources.can_add_browser_screen())
 	if pages.size() > MAX_VISIBLE:
 		_add(&"overflow", "Tabs", Rect2(0.26, -0.116, 0.06, 0.038))
 	if browser_active:
-		var nav: Dictionary = main.browser_prototype.navigation
+		var nav: Dictionary = browser.navigation
 		var address_text := str(nav.get("address", ""))
 		if address_text.is_empty(): address_text = "Address or search"
 		var x := -0.48
@@ -252,9 +269,15 @@ func _rebuild() -> void:
 			x += float(entry[2]) + 0.009
 		_add(&"menu", "", Rect2(0.43, -0.064, 0.05, 0.038), popup == "settings")
 	if popup == "sources":
-		_add(&"source:browser", "Add browser", Rect2(0.12, -0.014, 0.31, 0.04), false, can_browser)
-		_add(&"pc", "PC monitor — connect first" if not main.is_streaming else "PC monitor — use Screens", Rect2(0.12, 0.03, 0.31, 0.04), false, false)
-		_add(&"local", "Local media — not available yet", Rect2(0.12, 0.074, 0.31, 0.04), false, false)
+		_add(&"tab:new", "Add tab", Rect2(0.19, -0.014, 0.29, 0.04), false, can_browser)
+		_add(&"screen:new", "Add Screen", Rect2(0.19, 0.03, 0.29, 0.04), false, main.screen_sources.can_add_browser_screen())
+		var row_y := 0.074
+		if offer_stream:
+			_add(&"stream:new", "New stream", Rect2(0.19, row_y, 0.29, 0.04), false, main.screen_sources.can_add_stream_screen())
+			row_y += 0.044
+		var can_primary: bool = main.screen_sources != null and main.screen_sources.has_method("can_make_primary") \
+			and main.screen_sources.can_make_primary(_screen)
+		_add(&"screen:primary", "Make primary", Rect2(0.19, row_y, 0.29, 0.04), _screen == main.primary_screen, can_primary)
 	elif popup == "settings":
 		var entries := [["home", "Home"], ["bookmarks", "Bookmarks"],
 			["privacy", "Privacy"], ["blocking", "Blocking"]]
@@ -274,7 +297,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		return
 	# Welcome already has Open Browser. Remove both artwork and hit targets
 	# here, without hiding the corner resize controls sharing this layer.
-	if not main.browser_prototype.active and not main.is_streaming:
+	if not browser.active and not main.is_streaming:
 		popup = ""
 		hovered = &""
 		_background.visible = false
@@ -286,8 +309,8 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		return
 	if not revealed and popup != "":
 		popup = ""
-	var signature := str([main.browser_prototype.pages, main.browser_prototype.selected_page,
-		main.browser_prototype.active, main.browser_prototype.navigation, main.is_streaming, popup])
+	var signature := str([browser.pages, browser.selected_page,
+		browser.active, browser.navigation, main.is_streaming, main.screens.size(), main.primary_screen, popup])
 	if signature != _signature:
 		_signature = signature
 		_rebuild()
@@ -338,7 +361,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		item.panel.add_theme_color_override("icon_normal_color", ink)
 		item.label.text = item.title
 		if item.action == &"nav:reload":
-			item.panel.icon = STOP_ICON if main.browser_prototype.navigation.get("loading", false) else NAV_ICONS["nav:reload"]
+			item.panel.icon = STOP_ICON if browser.navigation.get("loading", false) else NAV_ICONS["nav:reload"]
 		item.fallback.position = local_position
 		item.fallback.rotation.y = -angle
 		item.fallback.pixel_size = screen.mesh_size.x / 1536.0

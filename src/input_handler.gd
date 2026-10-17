@@ -117,16 +117,24 @@ func release_stream_mouse():
 func reset_gamepads() -> void:
 	gamepads.clear()
 
+func neutral_host_gamepads() -> void:
+	if not main.is_streaming or not main.stream_backend: return
+	var mask := gamepads.active_mask()
+	for slot in GamepadSlots.MAX_SLOTS:
+		if mask & (1 << slot):
+			main.stream_backend.send_multi_controller_event(slot, mask, 0, 0, 0, 0, 0, 0, 0)
+
 # Sends one source's full state as its own host controller, announcing it
 # first if it is new this session. key: a Godot device ID, or
 # GamepadSlots.QUEST_PAD for the Quest-controller PAD mode.
 func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		lx: int, ly: int, rx: int, ry: int) -> void:
-	if main.browser_content_active():
+	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
+	if focused_browser != null and focused_browser.active:
 		# Physical pads use original Android events directly. Only XR's virtual
 		# pad needs the browser-specific state bridge; never announce it to a PC.
 		if key == GamepadSlots.QUEST_PAD:
-			main.browser_prototype.gamepad_state(buttons, lt, rt, lx, ly, rx, ry)
+			focused_browser.gamepad_state(buttons, lt, rt, lx, ly, rx, ry)
 		return
 	var is_new := not gamepads.has(key)
 	var slot := gamepads.acquire(key)

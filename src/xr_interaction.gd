@@ -36,6 +36,8 @@ var _secondary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _ui_button_states: Array = []
 var _last_ui_style: Dictionary = {}
 var _screen_shortcut_press_active: bool = false
+var _browser_press_owner: RefCounted
+var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
 
 # Chord mode waits this long before committing a grip to right-click, giving a
@@ -47,8 +49,8 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
-	if main.browser_prototype:
-		main.browser_prototype.cancel_pointer()
+	if main.screen_sources:
+		main.screen_sources.cancel_browser_pointers_except()
 	# Tracking poses are discontinuous across headset removal or app pause.
 	# A saved drag baseline would move a screen when the next pose arrives.
 	if main.is_streaming and main.stream_backend:
@@ -88,6 +90,7 @@ func cancel_transient_interactions(reason: String = "") -> void:
 	_double_click_chord_active = false
 	_corner_resize_started = false
 	_screen_shortcut_press_active = false
+	_browser_press_owner = null
 	_secondary_press_viewport = null
 	_secondary_press_was_keyboard = false
 	pointer_on_ui = false
@@ -284,6 +287,8 @@ func _position_stream_pointer(active_raycast: RayCast3D) -> bool:
 	var target = PointerTarget.resolve(col) if col else {"role": &""}
 	if target.role != &"screen":
 		return false
+	if main.screen_sources.is_browser_screen(target.screen):
+		return false
 	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 	var uv = target.screen.hit_point_to_uv(hit_pos)
 	var uv_x = uv.x
@@ -368,10 +373,11 @@ func handle_pointer_interaction():
 	_grip_was_pressed = is_gripping
 	var is_now_clicking = raw_clicking and not _double_click_chord_active
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
-	if main.browser_prototype and main.browser_prototype.active and shortcut_target.role != &"screen":
-		main.browser_prototype.cancel_pointer()
+	if main.screen_sources:
+		main.screen_sources.cancel_browser_pointers_except(shortcut_target.screen if shortcut_target.role == &"screen" else null)
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
-	var on_primary_tab = shortcut_target.role == &"screen_tab" and shortcut_target.screen == main.primary_screen
+	var tab_menu = main.screen_sources.menu_for_screen(shortcut_target.screen) if shortcut_target.role == &"screen_tab" else null
+	var on_primary_tab = tab_menu != null
 	# A drag started on the grab bar/corner owns this press until release.
 	# The ray can pass over a shortcut as the screen moves underneath it, and
 	# was_clicking may be cleared by another target branch during that motion.
@@ -388,7 +394,7 @@ func handle_pointer_interaction():
 		if on_primary_shortcut:
 			main.screen_shortcuts.set_hover(shortcut_target.action)
 		elif on_primary_tab:
-			main.screen_tab_strip.set_hover(shortcut_target.action)
+			tab_menu.set_hover(shortcut_target.action)
 		if not is_now_clicking:
 			_screen_shortcut_press_active = false
 			main.was_clicking = false
@@ -396,11 +402,11 @@ func handle_pointer_interaction():
 			return
 	if on_primary_tab:
 		pointer_on_ui = true
-		main.screen_tab_strip.set_hover(shortcut_target.action)
+		tab_menu.set_hover(shortcut_target.action)
 		if is_now_clicking and not main.was_clicking:
 			_screen_shortcut_press_active = true
 			main.was_clicking = true
-			main.screen_tab_strip.invoke(shortcut_target.action)
+			tab_menu.invoke(shortcut_target.action)
 		elif not is_now_clicking:
 			main.was_clicking = false
 		return
@@ -419,7 +425,7 @@ func handle_pointer_interaction():
 		_pinch_start_time = now_msec
 		var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 		var t0 = PointerTarget.resolve(col) if col else {"role": &""}
-		if t0.role == &"screen":
+		if t0.role == &"screen" and main.is_streaming and not main.screen_sources.is_browser_screen(t0.screen):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t0.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
@@ -444,7 +450,7 @@ func handle_pointer_interaction():
 		if not pad_blocking and not tp_blocking and right_click_ready and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
-			if t1.role == &"screen":
+			if t1.role == &"screen" and not main.screen_sources.is_browser_screen(t1.screen):
 				var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 				var uv = t1.screen.hit_point_to_uv(hit_pos)
 				var uv_x = uv.x
@@ -704,11 +710,18 @@ func handle_pointer_interaction():
 			# handle_corner_resize() elsewhere, not by this hit-test.
 			return
 
-		elif t.role == &"screen" and not main.is_streaming:
+		elif t.role == &"screen" and (not main.is_streaming or main.screen_sources.is_browser_screen(t.screen)):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t.screen.hit_point_to_uv(hit_pos)
-			if main.browser_prototype and main.browser_prototype.active:
-				main.browser_prototype.pointer(uv, is_now_clicking)
+			var browser = main.screen_sources.browser_for_screen(t.screen)
+			if browser and browser.active:
+				if is_now_clicking and not main.was_clicking:
+					_browser_press_owner = browser
+					main.screen_sources.focus_browser(browser)
+				if is_now_clicking and _browser_press_owner != browser:
+					return # A held press must not become a new click on another screen.
+				browser.pointer(uv, is_now_clicking)
+				if not is_now_clicking: _browser_press_owner = null
 				main.was_clicking = is_now_clicking
 				return
 			var wv = main.welcome_viewport
@@ -739,6 +752,8 @@ func handle_pointer_interaction():
 			return
 
 		elif t.role == &"screen" and main.is_streaming:
+			if is_now_clicking and not main.was_clicking:
+				main.screen_sources.focus_browser(null)
 			if main.virtual_keyboard and main.virtual_keyboard.trackpad_active:
 				return
 			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode():
@@ -857,14 +872,21 @@ func _update_on_screen_tracking():
 	_left_on_screen = _is_hand_on_screen("left")
 
 func process_pointer_frame(delta: float):
-	if main.screen_tab_strip:
-		main.screen_tab_strip.begin_pointer_frame()
+	if main.screen_sources:
+		main.screen_sources.begin_pointer_frame()
 	if main.screen_shortcuts:
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
 	_prioritize_tab_overlay()
+	var pointer_ray := get_active_raycast()
+	var pointer_screen: VRScreen = null
+	if pointer_ray and pointer_ray.is_colliding():
+		pointer_screen = PointerTarget.resolve(pointer_ray.get_collider()).screen
+	if pointer_screen != _last_pointer_screen:
+		main._reset_steady_filter()
+		_last_pointer_screen = pointer_screen
 	_reveal_contextual_screen_controls()
 	if not main.mouse_captured_by_stream:
 		handle_pointer_interaction()
@@ -887,13 +909,15 @@ func _prioritize_tab_overlay() -> void:
 	if not ray.is_colliding(): return
 	var collider = ray.get_collider()
 	var target := PointerTarget.resolve(collider)
-	if target.role != &"screen" or target.screen != main.primary_screen: return
+	if target.role != &"screen": return
 	var query := PhysicsRayQueryParameters3D.create(ray.global_position,
 		ray.to_global(ray.target_position), ray.collision_mask, [collider.get_rid()])
 	query.collide_with_areas = ray.collide_with_areas
 	query.collide_with_bodies = ray.collide_with_bodies
 	var hit := ray.get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty() or PointerTarget.resolve(hit.collider).role != &"screen_tab": return
+	if hit.is_empty(): return
+	var overlay := PointerTarget.resolve(hit.collider)
+	if overlay.role != &"screen_tab" or overlay.screen != target.screen: return
 	_tab_ray_exclusion = collider
 	ray.add_exception(collider)
 	ray.force_raycast_update()
@@ -901,9 +925,9 @@ func _prioritize_tab_overlay() -> void:
 func _reveal_contextual_screen_controls() -> void:
 	if not main.screen_shortcuts:
 		return
-	if main.browser_prototype and main.browser_prototype.active \
-			and main.browser_prototype.navigation.get("editing", false):
-		main.screen_shortcuts.reveal_controls(main.primary_screen)
+	var browser = main.screen_sources.focused_browser()
+	if browser and browser.active and browser.navigation.get("editing", false):
+		main.screen_shortcuts.reveal_controls(browser.screen)
 	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
 		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
 		return
@@ -1298,7 +1322,13 @@ func _compute_parallax_shift(uv_x: float) -> float:
 var _scroll_cooldown: float = 0.0
 
 func handle_scroll():
-	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
+	var browser = main.screen_sources.focused_browser()
+	var ray := get_active_raycast()
+	if ray and ray.is_colliding():
+		var target := PointerTarget.resolve(ray.get_collider())
+		if target.role == &"screen":
+			browser = main.screen_sources.browser_for_screen(target.screen)
+	var browser_active: bool = browser != null and browser.active
 	if not main.is_xr_active or (not main.is_streaming and not browser_active):
 		return
 	if browser_active and main.ui_visible:
@@ -1322,7 +1352,7 @@ func handle_scroll():
 				break
 	if absf(right_stick_y) > 0.5:
 		if browser_active:
-			main.browser_prototype.scroll(1 if right_stick_y > 0 else -1)
+			browser.scroll(1 if right_stick_y > 0 else -1)
 		else:
 			main.stream_backend.send_scroll_event(1 if right_stick_y > 0 else -1)
 		_scroll_cooldown = now + 0.15

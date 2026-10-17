@@ -820,9 +820,9 @@ void TextureUploader::_render_thread_open_browser() {
     JNIEnv *env = get_gles_jni_env(vm);
     jclass app = nightfall_get_godot_app_class();
     if (!env || !app) return;
-    jmethodID method = env->GetStaticMethodID(app, "openBrowser", "(Landroid/view/Surface;Landroid/graphics/SurfaceTexture;II)V");
+    jmethodID method = env->GetStaticMethodID(app, "openBrowserFor", "(ILandroid/view/Surface;Landroid/graphics/SurfaceTexture;II)V");
     jobject surface = ANativeWindow_toSurface(env, gles_decoder_window_);
-    if (method && surface) env->CallStaticVoidMethod(app, method, surface,
+    if (method && surface) env->CallStaticVoidMethod(app, method, browser_id_, surface,
             static_cast<jobject>(gles_surface_texture_java_), gles_surface_width_, gles_surface_height_);
     if (surface) env->DeleteLocalRef(surface);
     if (env->ExceptionCheck()) {
@@ -2026,6 +2026,8 @@ PackedByteArray TextureUploader::consume_native_depth_capture() {
 
 void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start_browser_prototype", "width", "height"), &TextureUploader::start_browser_prototype, DEFVAL(1920), DEFVAL(1080));
+    ClassDB::bind_method(D_METHOD("set_browser_id", "id"), &TextureUploader::set_browser_id);
+    ClassDB::bind_method(D_METHOD("get_browser_id"), &TextureUploader::get_browser_id);
     ClassDB::bind_method(D_METHOD("close_browser_prototype"), &TextureUploader::close_browser_prototype);
     ClassDB::bind_method(D_METHOD("poll_browser_prototype"), &TextureUploader::poll_browser_prototype);
     ClassDB::bind_method(D_METHOD("browser_pointer", "x", "y", "action"), &TextureUploader::browser_pointer);
@@ -2049,9 +2051,19 @@ void TextureUploader::_bind_methods() {
 #endif
 }
 
+void TextureUploader::set_browser_id(int id) {
+    ERR_FAIL_COND_MSG(id < 0, "Browser ID must be non-negative");
+    if (id == browser_id_) return;
+#ifdef __ANDROID__
+    ERR_FAIL_COND_MSG(browser_requested_.load() || browser_open_dispatched_.load(), "Set browser ID before starting the browser");
+#endif
+    browser_id_ = id;
+}
+
 void TextureUploader::start_browser_prototype(int width, int height) {
 #ifdef __ANDROID__
     if (browser_requested_.exchange(true)) return;
+    new_frame_available_.store(false);
     browser_open_dispatched_.store(false);
     ensure_shader_material();
     {
@@ -2071,8 +2083,8 @@ void TextureUploader::close_browser_prototype() {
     JNIEnv *env = get_gles_jni_env(vm);
     jclass app = nightfall_get_godot_app_class();
     if (!env || !app) return;
-    jmethodID method = env->GetStaticMethodID(app, "closeBrowser", "()V");
-    if (method) env->CallStaticVoidMethod(app, method);
+    jmethodID method = env->GetStaticMethodID(app, "closeBrowserFor", "(I)V");
+    if (method) env->CallStaticVoidMethod(app, method, browser_id_);
     if (env->ExceptionCheck()) env->ExceptionClear();
 #endif
 }
@@ -2085,10 +2097,10 @@ int TextureUploader::poll_browser_prototype() {
     JNIEnv *env = get_gles_jni_env(vm);
     jclass app = nightfall_get_godot_app_class();
     if (!env || !app) return -1;
-    jmethodID poll = env->GetStaticMethodID(app, "pollBrowser", "()I");
-    int state = poll ? env->CallStaticIntMethod(app, poll) : -1;
-    jmethodID frame = env->GetStaticMethodID(app, "consumeBrowserFrame", "()Z");
-    bool ready = frame && env->CallStaticBooleanMethod(app, frame);
+    jmethodID poll = env->GetStaticMethodID(app, "pollBrowserFor", "(I)I");
+    int state = poll ? env->CallStaticIntMethod(app, poll, browser_id_) : -1;
+    jmethodID frame = env->GetStaticMethodID(app, "consumeBrowserFrameFor", "(I)Z");
+    bool ready = frame && env->CallStaticBooleanMethod(app, frame, browser_id_);
     if (env->ExceptionCheck()) { env->ExceptionClear(); return -1; }
     // Static pages may stop producing frames before the model finishes
     // loading. A requested capture must still sample the retained OES image
@@ -2106,8 +2118,8 @@ void TextureUploader::browser_pointer(float x, float y, int action) {
     JNIEnv *env = get_gles_jni_env(vm);
     jclass app = nightfall_get_godot_app_class();
     if (!env || !app) return;
-    jmethodID method = env->GetStaticMethodID(app, "browserPointer", "(FFI)V");
-    if (method) env->CallStaticVoidMethod(app, method, x, y, action);
+    jmethodID method = env->GetStaticMethodID(app, "browserPointerFor", "(IFFI)V");
+    if (method) env->CallStaticVoidMethod(app, method, browser_id_, x, y, action);
     if (env->ExceptionCheck()) env->ExceptionClear();
 #endif
 }
@@ -2118,8 +2130,8 @@ void TextureUploader::browser_key(int code, bool pressed, int modifiers) {
     JNIEnv *env = get_gles_jni_env(vm);
     jclass app = nightfall_get_godot_app_class();
     if (!env || !app) return;
-    jmethodID method = env->GetStaticMethodID(app, "browserKey", "(IZI)V");
-    if (method) env->CallStaticVoidMethod(app, method, code, static_cast<jboolean>(pressed), modifiers);
+    jmethodID method = env->GetStaticMethodID(app, "browserKeyFor", "(IIZI)V");
+    if (method) env->CallStaticVoidMethod(app, method, browser_id_, code, static_cast<jboolean>(pressed), modifiers);
     if (env->ExceptionCheck()) env->ExceptionClear();
 #endif
 }

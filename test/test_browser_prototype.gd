@@ -23,6 +23,8 @@ func _init():
 	browser.texture = ImageTexture.create_from_image(Image.create(2, 2, false, Image.FORMAT_RGBA8))
 	browser.set_activity(ContentProvider.Activity.VISIBLE)
 	assert(browser.can_infer_depth())
+	browser.browser_id = 2
+	assert(browser.can_infer_depth(), "Primary inference follows the selected provider, not browser slot zero")
 	browser.set_activity(ContentProvider.Activity.SUSPENDED)
 	assert(not browser.can_infer_depth())
 	browser.pointer(Vector2(0.5, 0.25), true)

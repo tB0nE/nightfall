@@ -2,6 +2,54 @@
 
 ## Agreed product scope
 
+### Independent browser screens — 2026-10-17
+
+- Updated AI budget: one **local** inference owner. A future mixed-source
+  workspace may additionally use Meteor depth on one stream while the headset
+  generates depth for one browser; Meteor is not a second local inference job.
+- First physical-screen test: two browser screens side by side, positioned by
+  existing screen/grid geometry. The cap is now four at the user's request;
+  extra slots place right, left and above the primary. Each slot retains its
+  own reusable uploader and only cleans its own surface on close. No fabricated
+  host monitor is added. Four-screen GPU/layer-budget validation is pending.
+- Each browser owns a WebView session, uploader/surface, selected tab, navigation
+  metadata, menu atlas and generation. Cookies/bookmarks/history/filter settings
+  remain shared browser-profile data, with writes guarded against stale copies.
+- The top Add Browser button offers **Add tab / Add Screen / New stream /
+  Make primary**. New stream appears only without a welcome/connection screen
+  or active/pending PC session, respecting the shared four-screen cap. It opens
+  a welcome surface and makes it primary without closing browsers. Make primary
+  transfers browser source, toolbar, shortcuts and local AI ownership after
+  draining old stereo/native consumers; a running PC stream remains primary
+  for this milestone, so browser promotion is disabled while connected.
+- Closing an auxiliary browser's last tab retires that physical screen. Closing
+  the primary returns to the existing welcome surface if present and removes
+  only that browser; otherwise its surface becomes welcome and other browsers
+  remain open. There is never a reason to create a second connection screen.
+- Keyboard and gamepad route to the focused browser; scrolling targets the
+  hovered browser. Focus changes release held keys, pointer and gamepad state.
+  Held drags do not become new clicks on a different browser screen.
+- Local AI remains on the primary browser for this first test. Secondary is
+  mono and cannot silently inherit the primary's depth/stereo/debug settings.
+  Mixed PC/browser output and UI for transferring the local inference owner
+  remain next steps, not claims of this milestone.
+- Each browser menu reuses that screen's corner-controls layer. Secondary
+  content uses one mono layer; no per-tab layers. Close hides layers first,
+  waits frame boundaries, removes controls and releases/reuses its uploader.
+  Applying host monitor layouts while browsing is guarded until source-neutral
+  layout management exists. Existing PC monitor UI remains intact.
+- Four-screen headset testing hit `XR_ERROR_LAYER_LIMIT_EXCEEDED`: the Quest
+  reported 20 optimized layers against a 16-resource limit. Consolidated the
+  grab bar/shortcuts and corners/browser menu into one cylinder atlas per screen
+  (four controls layers rather than eight). Grab-bar compatibility references
+  alias the shared layer/viewport; teardown deduplicates them. The atlas includes
+  the actual grab-bar position and preserves the bar's always-visible behavior,
+  independent corner/menu hover, existing hitboxes and resize/curvature mapping.
+  This removes four submitted layers; actual runtime budget/headroom, including
+  menu and keyboard combinations, still requires headset verification.
+- Verify independent URLs/tabs, four-screen Add Screen cap, separate navigation/gamepads,
+  close/reopen, resize/grab, primary AI plus secondary 2D, and standby recovery.
+
 ### Compact tab strip milestone — 2026-10-16
 
 - Primary-screen top strip shares the corner-controls composition layer (no
@@ -57,8 +105,9 @@
   necessary playback/decoding resources, but never runs hidden-tab inference.
 - Restore Workspace is optional. Restoring content is separate from automatically
   reconnecting or resuming playback. Start with explicit user activation after restore.
-- Only ONE screen can use AI 3D at a time, regardless of headset/Meteor backend.
-  Ownership switching needs an explicit UI decision; do not silently transfer it yet.
+- Only ONE screen can run local AI inference at a time. One Meteor-backed stream
+  may additionally use external depth (updated 2026-10-17). Ownership switching
+  needs an explicit UI decision; do not silently transfer it yet.
 - Meteor is only available to sources that actually supply external depth. Local
   browser/video frames are not automatically sent to a host.
 
@@ -422,3 +471,29 @@ checkpoints below describe earlier implementation stages, not current limits.
 - The welcome screen hides the unified browser panel and disables all of its
   hit targets; Open Browser remains the entry point. Opening the browser
   restores the panel, without affecting resize corners sharing its XR layer.
+
+### Mixed stream/browser workspace test
+
+- Welcome's Open Browser is an in-viewport dropdown: Open browser here replaces
+  welcome; New browser screen leaves welcome and Connect available and opens an
+  independent browser beside it. No popup window or new controls layer.
+- One PC stream can coexist with independent browser screens, within the shared
+  four-screen cap. Connecting preserves browsers; the host manifest reuses the
+  primary welcome surface instead of temporarily allocating an extra screen.
+  Host monitor cleanup and stream aspect/resolution updates skip browsers.
+- Clicking browser content focuses its keyboard/gamepad destination; clicking
+  stream content releases browser input and returns focus to the host. Stream
+  gamepads are neutralized on browser focus to avoid stuck buttons. Browser
+  scrolling and cursor placement stay independent of primary AI depth offsets.
+- Local AI depth still belongs only to the primary screen: with a PC stream
+  primary, auxiliary browsers remain flat. Concurrent local browser inference
+  plus Meteor stream inference is not implemented by this milestone.
+- Depth selection is source-specific: Meteor is only offered for PC streams;
+  primary browsers default to local Auto with per-browser runtime model/backend
+  overrides. Quest 3/3S uses EdgePad-512/OpenCL; Quest 2 and Auto OpenCL failures
+  use EdgePad-256/OpenGL. Browser choices never overwrite the host's Meteor or
+  model/backend preference. Browser status includes H-AI3D inference timing.
+- Automated coverage includes a full four-screen host-layout transition and
+  dropdown availability. Headset testing: add a browser from welcome, connect,
+  interact with both, switch keyboard/gamepad focus, resize/restart/disconnect
+  the stream, and close/reopen a browser without disturbing the other screen.

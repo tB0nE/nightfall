@@ -604,7 +604,16 @@ const MODEL_METEOR := -1
 
 ## The PC's Nightfall Meteor offered host depth for the current stream.
 func meteor_depth_offered() -> bool:
-	return main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+	return not primary_is_browser() and main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+
+func primary_is_browser() -> bool:
+	return main.get("browser_prototype") != null and main.browser_prototype.active
+
+func selected_depth_model_index() -> int:
+	if primary_is_browser():
+		var choice = main.browser_prototype.get("depth_model_override")
+		return int(choice) if choice != null else ANDROID_MODEL_AUTO
+	return main.settings.host.ai_3d_model
 
 ## Meteor depth is chosen automatically whenever it's offered, unless the
 ## user picked an on-device model while it was (per host, until they pick
@@ -627,10 +636,12 @@ func cycle_ai_3d_model():
 	var offered := meteor_depth_offered()
 	if offered:
 		candidates = [MODEL_METEOR] + candidates
-	var pos = 0 if meteor_depth_selected() else candidates.find(main.settings.host.ai_3d_model)
+	var pos = 0 if meteor_depth_selected() else candidates.find(selected_depth_model_index())
 	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
 	if next == MODEL_METEOR:
 		main.settings.host.ai_3d_meteor_declined = false
+	elif primary_is_browser():
+		main.browser_prototype.depth_model_override = next
 	else:
 		main.settings.host.ai_3d_model = next
 		if offered:
@@ -651,10 +662,10 @@ func get_ai_3d_gpu_api_effective() -> int:
 		# EdgePad-512/OpenCL and uses the 256/OpenGL path only after a real
 		# OpenCL failure.
 		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
-	return main.settings.host.ai_3d_gpu_api
+	return main.browser_prototype.depth_gpu_api_override if primary_is_browser() else main.settings.host.ai_3d_gpu_api
 
 func is_android_ai3d_auto() -> bool:
-	return OS.get_name() == "Android" and main.settings.host.ai_3d_model == ANDROID_MODEL_AUTO
+	return OS.get_name() == "Android" and selected_depth_model_index() == ANDROID_MODEL_AUTO
 
 func get_ai_3d_gpu_api_label() -> String:
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
@@ -669,7 +680,16 @@ func get_ai_3d_gpu_api_label() -> String:
 func cycle_ai_3d_gpu_api() -> void:
 	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
 		return
-	if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
+	if primary_is_browser():
+		var browser = main.browser_prototype
+		if browser.depth_backend_override == AI3D_BACKEND_CPU:
+			browser.depth_backend_override = AI3D_BACKEND_GPU
+			browser.depth_gpu_api_override = 0
+		elif browser.depth_gpu_api_override == 0:
+			browser.depth_gpu_api_override = 1
+		else:
+			browser.depth_backend_override = AI3D_BACKEND_CPU
+	elif main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 		main.settings.host.ai_3d_gpu_api = 0
 	elif main.settings.host.ai_3d_gpu_api == 0:
@@ -780,7 +800,7 @@ func get_depth_model_index() -> int:
 		return 14 if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else 3
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
-	return ai_3d_models[main.settings.host.ai_3d_model].java_index
+	return ai_3d_models[selected_depth_model_index()].java_index
 
 func get_depth_model_label() -> String:
 	if meteor_depth_selected():
@@ -789,13 +809,13 @@ func get_depth_model_label() -> String:
 		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
 		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
-	return ai_3d_models[main.settings.host.ai_3d_model].label
+	return ai_3d_models[selected_depth_model_index()].label
 
 # Which CPU model twin to run while Backend==CPU. Matches whatever Model the
 # locked button is actually showing, so switching Model while on CPU picks the
 # equivalent CPU tier instead of silently always running one fixed size.
 func _android_cpu_model_index() -> int:
-	if main.settings.host.ai_3d_model in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
+	if selected_depth_model_index() in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
 		return ANDROID_MODEL_EDGEPAD_384_CPU
 	return ANDROID_MODEL_EDGEPAD_256_CPU
 
@@ -821,6 +841,9 @@ func get_depth_process_stage() -> int:
 func get_depth_backend_index() -> int:
 	if main.settings.host.ai_3d_speed == 0:
 		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	if primary_is_browser():
+		var backend = main.browser_prototype.get("depth_backend_override")
+		return AI3D_BACKEND_GPU if selected_depth_model_index() == ANDROID_MODEL_AUTO or backend == null else int(backend)
 	# PyroWave's own decode already costs real GPU time every frame (it's a
 	# Vulkan compute codec) - Auto pairs it with CPU-only inference on every
 	# headset instead of adding GPU-delegate depth work on top.
@@ -1812,6 +1835,9 @@ func toggle_hand_tracking():
 	main.state_manager.sync_ui_to_settings()
 
 func apply_screen_layout(new_layout: ScreenLayout):
+	if main.get("browser_prototype") != null and main.browser_prototype.active and not main.is_streaming:
+		main._log("[LAYOUT] Close browser screens before applying a PC monitor layout")
+		return
 	var err = new_layout.validate(new_layout.frame_size)
 	if err != "":
 		main._log("[LAYOUT] Refusing invalid layout: %s" % err)
@@ -1841,6 +1867,16 @@ func apply_screen_layout(new_layout: ScreenLayout):
 			if s.monitor_id == m.id:
 				existing = s
 				break
+		# A browser workspace already owns the other physical slots. Reuse
+		# the primary welcome surface rather than allocating a fifth screen
+		# temporarily or shifting every browser when the host manifest arrives.
+		if existing == null and m.is_primary and main.primary_screen != null \
+				and not wanted_ids.has(main.primary_screen.monitor_id):
+			for candidate in main.screens:
+				if main.screen_sources.is_browser_screen(candidate):
+					existing = main.primary_screen
+					existing.monitor_id = m.id
+					break
 		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x, m.is_primary)
 		if s == null:
 			continue
@@ -1875,7 +1911,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		# and broken the moment the stream's real manifest swapped primary in.
 		apply_stereo()
 	for s in main.screens.duplicate():
-		if not wanted_ids.has(s.monitor_id):
+		if not wanted_ids.has(s.monitor_id) and not main.screen_sources.is_browser_screen(s):
 			main.remove_screen(s.monitor_id)
 	# resize_screen_to_aspect() now calls update_cylinder_params() itself
 	# (2026-08-20) - no need to pair it here anymore.

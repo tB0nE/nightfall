@@ -995,8 +995,8 @@ func _update_cursor_layer():
 				hit_point,
 				settings.bezel_enabled,
 				settings.cursor_mode,
-				stereo,
-				-1 if browser_prototype and browser_prototype.active else settings.host.ai_3d_cursor_position,
+				stereo if hovered_screen == primary_screen else 0,
+				-1 if screen_sources.is_browser_screen(hovered_screen) else settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
 				primary_screen)
 		elif composition_pointers.has_primary():
@@ -1009,12 +1009,12 @@ func _update_cursor_layer():
 			# layer in world space. Convert the legacy branch's exact pixel offset
 			# into screen metres so Left/Default/Right remain resolution-independent.
 			var native_ai_cursor_offset := Vector3.ZERO
-			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen:
+			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen == primary_screen:
 				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
 				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
 				var correction_px := VideoPresentation.cursor_calibration_pixels(
 					settings.host.ai_3d_cursor_position, base_h,
-					browser_prototype != null and browser_prototype.active)
+					screen_sources.is_browser_screen(hovered_screen))
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			composition_pointers.show_primary(
@@ -1076,8 +1076,8 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
 func _update_grab_bar_layers():
-	# The four corner visuals share one layer, leaving room for menu/keyboard
-	# while keeping their resize targets available after headset resume.
+	# One shared atlas per screen holds grab bar, shortcuts, corners and tabs.
+	# No additional controls layer is submitted as hover changes.
 	composition_screen_controls.update(
 		screens,
 		comp.in_use,
@@ -1338,6 +1338,8 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
+	if depth_estimator:
+		depth_estimator.set_enabled(false)
 	session_lifecycle.finish_cleanup()
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
@@ -1732,13 +1734,15 @@ func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, a
 				best = cand
 	return best
 
-func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
+func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false, browser_provider: RefCounted = null) -> VRScreen:
 	if not screen_registry.can_add():
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
 	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
 	add_child(s)
 	s.setup(self, monitor_id)
+	if browser_provider != null:
+		screen_sources.register_browser(s, browser_provider)
 	s.mesh_size = primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
 	s.curvature = primary_screen.curvature if primary_screen else 2
 	if primary_screen:
@@ -1837,8 +1841,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 	if comp.available and is_streaming:
 		comp.invalidate_yuv_cache()
 		_bind_yuv_textures()
-	var layer_count = screens.size() + 5
-	_log("[COMP] screens=%d layers=%d" % [screens.size(), layer_count])
+	_log("[COMP] screens=%d controls_layers=%d (one shared atlas per screen; not a total runtime layer count)" % [screens.size(), screens.size()])
 	if comp.available and s.comp_cylinder and not s.comp_cylinder.is_natively_supported():
 		_log("[COMP] Screen %s cylinder not natively supported, falling back to mesh rendering for this screen" % String(monitor_id))
 	return s
@@ -1852,6 +1855,21 @@ func remove_screen(monitor_id: StringName) -> void:
 				return
 			if not screen_registry.remove(s):
 				return
+			# Per-screen controls are parented under the XR origin, not the
+			# screen node: retire them explicitly when closing a browser screen.
+			var retired_controls: Array = []
+			for layer in [s.comp_grab_bar, s.comp_corner_layer]:
+				if is_instance_valid(layer):
+					if retired_controls.has(layer): continue
+					retired_controls.append(layer)
+					layer.visible = false
+					layer.set_layer_viewport(null)
+					layer.queue_free()
+			var retired_viewports: Array = []
+			for viewport in [s.comp_grab_bar_viewport, s.comp_corner_viewport]:
+				if is_instance_valid(viewport) and not retired_viewports.has(viewport):
+					retired_viewports.append(viewport)
+					# Freed after the render-thread layer detachment below.
 			if comp.available:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
@@ -1869,14 +1887,12 @@ func remove_screen(monitor_id: StringName) -> void:
 					xr_origin.remove_child(s.comp_cylinder_right)
 					s.comp_cylinder_right.queue_free()
 				if s.comp_viewport:
-					remove_child(s.comp_viewport)
-					s.comp_viewport.queue_free()
+					retired_viewports.append(s.comp_viewport)
 				if s.comp_viewport_left:
-					remove_child(s.comp_viewport_left)
-					s.comp_viewport_left.queue_free()
+					retired_viewports.append(s.comp_viewport_left)
 				if s.comp_viewport_right:
-					remove_child(s.comp_viewport_right)
-					s.comp_viewport_right.queue_free()
+					retired_viewports.append(s.comp_viewport_right)
+			_retire_screen_viewports(retired_viewports)
 			# screen_mesh is main.gd's own permanent $MeshInstance3D (see
 			# _init_ui()'s screens = [screen_mesh]/primary_screen = screen_mesh) -
 			# reused for the welcome screen and referenced directly all over this
@@ -1898,6 +1914,15 @@ func remove_screen(monitor_id: StringName) -> void:
 				_bind_yuv_textures()
 			_update_cursor_layer()
 			return
+
+func _retire_screen_viewports(viewports: Array) -> void:
+	# Layer detachment is queued on the render thread and accesses the old
+	# render target. Keep viewports alive until that work has drained.
+	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	for viewport in viewports:
+		if is_instance_valid(viewport):
+			viewport.queue_free()
 
 func _init_stream_backend():
 	if config_mgr and comp_mgr:
@@ -2236,6 +2261,7 @@ func browser_content_active() -> bool:
 	return browser_prototype != null and browser_prototype.active and browser_prototype.texture != null
 
 func primary_media_active() -> bool:
+	if screen_sources != null and screen_sources.switching_primary: return false
 	return is_streaming or browser_content_active()
 
 func primary_capture_source():
@@ -2249,6 +2275,8 @@ func primary_media_size() -> Vector2i:
 func _process(delta):
 	if browser_prototype:
 		browser_prototype.process()
+	if screen_sources:
+		screen_sources.process_secondary_browsers()
 	if is_xr_active:
 		_process_hand_tracking(delta)
 
@@ -2616,6 +2644,9 @@ func _process_stats(delta):
 	# just while a stream using it is already running.
 	settings_controller.poll_usb_link_status(delta)
 	if not is_streaming:
+		telemetry.record_frame(delta, browser_content_active() and browser_prototype.new_frame)
+		if telemetry.status_update_due(delta, 1.0) and ui_controller:
+			ui_controller.refresh_app_fps()
 		if browser_content_active() and video_presentation:
 			video_presentation.process_frame(browser_prototype.new_frame)
 		if comp:

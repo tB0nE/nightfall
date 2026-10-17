@@ -63,8 +63,14 @@ func _native_compositor_sharpening() -> int:
 	return 0
 
 func can_render_current_config() -> bool:
-	if not provider_registered or main.screens.size() != 1:
+	if not provider_registered or not main.primary_screen:
 		return false
+	# Independent browser outputs do not share the primary decoder or eyes.
+	for screen in main.screens:
+		if screen != main.primary_screen and main.screen_sources.browser_for_screen(screen) == null:
+			if main.screen_sources.has_method("stream_screen") and main.screen_sources.stream_screen() == screen and not main.is_streaming:
+				continue # A secondary welcome surface has its own mono layer.
+			return false
 	# PyroWave decodes to plain CPU YUV420p planes uploaded through the
 	# legacy ShaderMaterial/RenderingDevice texture path (see
 	# TextureUploader::update_from_frame()) - unlike MediaCodec, it never

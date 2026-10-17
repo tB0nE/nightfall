@@ -31,6 +31,19 @@ public class GodotApp extends GodotActivity {
 	}
 	public static void browserClearGamepad() { BrowserPrototype.clearQuestGamepad(); }
 	public static void browserInputEnabled(boolean enabled) { BrowserPrototype.setGamepadInputEnabled(enabled); }
+	public static void openBrowserFor(int id, android.view.Surface surface, android.graphics.SurfaceTexture texture, int width, int height) { BrowserPrototype.open(id, browserActivity.get(), surface, texture, width, height); }
+	public static int pollBrowserFor(int id) { return BrowserPrototype.poll(id); }
+	public static boolean consumeBrowserFrameFor(int id) { return BrowserPrototype.consumeFrame(id); }
+	public static void closeBrowserFor(int id) { BrowserPrototype.close(id); }
+	public static String browserTabsFor(int id) { return BrowserPrototype.tabs(id); }
+	public static void browserTabActionFor(int id, String action, int page) { BrowserPrototype.tabAction(id, action, page); }
+	public static void browserNavigationActionFor(int id, String action) { BrowserPrototype.navigationAction(id, action); }
+	public static void browserPointerFor(int id, float x, float y, int action) { BrowserPrototype.pointer(id, x, y, action); }
+	public static void browserKeyFor(int id, int code, boolean pressed, int modifiers) { BrowserPrototype.key(id, code, pressed, modifiers); }
+	public static void browserGamepadFor(int id, int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { BrowserPrototype.questGamepad(id, buttons, lt, rt, lx, ly, rx, ry); }
+	public static void browserClearGamepadFor(int id) { BrowserPrototype.clearQuestGamepad(id); }
+	public static void browserInputEnabledFor(int id, boolean enabled) { BrowserPrototype.setGamepadInputEnabled(id, enabled); }
+	public static void browserFocus(int id) { BrowserPrototype.focus(id); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
 
 	@Override
@@ -421,7 +434,7 @@ public class GodotApp extends GodotActivity {
 
 	@Override
 	public void onDestroy() {
-		BrowserPrototype.close();
+		BrowserPrototype.closeAll();
 		super.onDestroy();
 	}
 

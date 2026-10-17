@@ -32,8 +32,14 @@ var _current_host_id: int = -1
 var _current_app_id: int = -1
 
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+	# A browser may have become primary while welcome remained beside it.
+	# Bring the connection surface back to primary before touching the decoder.
+	var connection_screen: VRScreen = main.screen_sources.stream_screen()
+	if connection_screen != null and connection_screen != main.primary_screen:
+		if not await main.screen_sources.make_primary(connection_screen, true): return
 	if main.browser_prototype:
-		main.browser_prototype.stop()
+		main.browser_prototype.stop(false)
+	main.screen_sources.focus_browser(null)
 	main.session_lifecycle.begin_connect()
 	_current_host_id = host_id
 	_current_app_id = app_id
@@ -622,6 +628,7 @@ func resize_stream_viewport(w: int, h: int):
 		main._log("[STREAM] Preserving dormant legacy composition buffers for native path (requested %s)" % str(stream_size))
 	else:
 		for s in main.screens:
+			if main.screen_sources.is_browser_screen(s): continue
 			s.comp_base_size = stream_size
 			var comp_size = stream_size
 			if main.settings.bezel_enabled and main.comp.in_use:

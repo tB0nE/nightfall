@@ -14,13 +14,16 @@ class FakeSettings extends RefCounted:
 
 class FakeSources extends RefCounted:
 	signal changed
+	var removed: VRScreen
 	func browser_closed(): changed.emit()
+	func remove_browser_screen(screen: VRScreen): removed = screen
 
 class FakeUploader extends RefCounted:
 	var closed := false
 	func close_browser_prototype(): closed = true
 
 class FakeMain extends Node3D:
+	var browser_prototype: RefCounted
 	var depth_estimator := FakeDepth.new()
 	var video_presentation := FakePresentation.new()
 	var settings_controller := FakeSettings.new()
@@ -41,6 +44,7 @@ func _run():
 	var owner := FakeMain.new()
 	root.add_child(owner)
 	var browser = load("res://src/browser_prototype.gd").new(owner)
+	owner.browser_prototype = browser
 	var uploader := FakeUploader.new()
 	browser.uploader = uploader
 	browser.active = true
@@ -61,6 +65,22 @@ func _run():
 		await process_frame
 	assert(not browser.closing)
 	assert(owner.settings_controller.restores == 1, "A late browser close cannot restore over a PC connection")
+	# Closing an auxiliary browser must not disable primary inference or
+	# restore welcome over the remaining browser workspace.
+	var extra = load("res://src/vr_screen.tscn").instantiate()
+	root.add_child(extra)
+	var secondary = load("res://src/browser_prototype.gd").new(owner, extra, 3)
+	secondary.uploader = FakeUploader.new()
+	secondary.active = true
+	owner.depth_estimator.enabled = true
+	owner.video_presentation.stopped = false
+	secondary.stop()
+	for _frame in range(4):
+		await process_frame
+	assert(owner.screen_sources.removed == extra)
+	assert(owner.depth_estimator.enabled and not owner.video_presentation.stopped)
+	assert(owner.settings_controller.restores == 1)
+	extra.free()
 	owner.screen_mesh.free()
 	owner.free()
 	print("All browser_close tests passed")

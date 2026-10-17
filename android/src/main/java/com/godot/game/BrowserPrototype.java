@@ -35,64 +35,173 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** Opt-in GPU feasibility experiment, not a general protected-video browser. */
 public final class BrowserPrototype {
     private static final Handler UI = new Handler(Looper.getMainLooper());
-    private static final AtomicInteger generation = new AtomicInteger();
-    private static final AtomicBoolean frame = new AtomicBoolean();
+
+    // Registry entries retain only small Session shells after close. All Android
+    // view/input ownership changes run on UI; render threads read atomics only.
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, Session> sessions = new java.util.concurrent.ConcurrentHashMap<>();
+    private static volatile int focusedId = -1;
+    private static Session session(int id) {
+        if (id < 0) throw new IllegalArgumentException("Negative browser ID");
+        return sessions.computeIfAbsent(id, Session::new);
+    }
+    public static void focus(int id) { UI.post(() -> focusOnUi(id)); }
+    private static void focusOnUi(int id) {
+        if (id < 0) {
+            Session previous = sessions.get(focusedId);
+            if (previous != null) previous.releaseFocusInput();
+            focusedId = -1;
+            return;
+        }
+        Session next = sessions.get(id);
+        if (next == null || next.state == 0 || next.state == -1 || focusedId == id) return;
+        Session previous = sessions.get(focusedId);
+        if (previous != null) previous.releaseFocusInput();
+        focusedId = id;
+    }
+    public static void pause(boolean paused) { for (Session value : sessions.values()) value.pause(paused); }
+    public static void closeAll() { for (Session value : sessions.values()) value.close(); }
+    public static boolean physicalGamepadKey(android.view.KeyEvent event) {
+        Session value = sessions.get(focusedId);
+        return value != null && value.physicalGamepadKey(event);
+    }
+    public static boolean physicalGamepadMotion(MotionEvent event) {
+        Session value = sessions.get(focusedId);
+        return value != null && value.physicalGamepadMotion(event);
+    }
+    public static void open(Activity activity, Surface target, SurfaceTexture source, int width, int height) { open(0, activity, target, source, width, height); }
+    public static void open(int browserId, Activity activity, Surface target, SurfaceTexture source, int width, int height) { session(browserId).open(activity, target, source, width, height); }
+    public static int poll() { return poll(0); }
+    public static int poll(int browserId) { return session(browserId).poll(); }
+    public static String tabs() { return tabs(0); }
+    public static String tabs(int browserId) { return session(browserId).tabs(); }
+    public static boolean consumeFrame() { return consumeFrame(0); }
+    public static boolean consumeFrame(int browserId) { return session(browserId).consumeFrame(); }
+    public static void close() { close(0); }
+    public static void close(int browserId) { session(browserId).close(); }
+    public static void tabAction(String action, int id) { tabAction(0, action, id); }
+    public static void tabAction(int browserId, String action, int id) { session(browserId).tabAction(action, id); }
+    public static void navigationAction(String action) { navigationAction(0, action); }
+    public static void navigationAction(int browserId, String action) { session(browserId).navigationAction(action); }
+    public static void pointer(float x, float y, int action) { pointer(0, x, y, action); }
+    public static void pointer(int browserId, float x, float y, int action) { session(browserId).pointer(x, y, action); }
+    public static void key(int code, boolean pressed, int modifiers) { key(0, code, pressed, modifiers); }
+    public static void key(int browserId, int code, boolean pressed, int modifiers) { session(browserId).key(code, pressed, modifiers); }
+    public static void setGamepadInputEnabled(boolean enabled) { setGamepadInputEnabled(0, enabled); }
+    public static void setGamepadInputEnabled(int browserId, boolean enabled) { session(browserId).setGamepadInputEnabled(enabled); }
+    public static void questGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { questGamepad(0, buttons, lt, rt, lx, ly, rx, ry); }
+    public static void questGamepad(int browserId, int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { session(browserId).questGamepad(buttons, lt, rt, lx, ly, rx, ry); }
+    public static void clearQuestGamepad() { clearQuestGamepad(0); }
+    public static void clearQuestGamepad(int browserId) { session(browserId).clearQuestGamepad(); }
+
+    /** The filter engine/preferences are shared; document attribution is not. */
+    private static final class BlockingContext {
+        private final BrowserAdblock shared;
+        private volatile String page;
+        BlockingContext(Context context) {
+            shared = BrowserAdblock.get(context);
+            android.webkit.ServiceWorkerController.getInstance().setServiceWorkerClient(new android.webkit.ServiceWorkerClient() {
+                @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebResourceRequest request) {
+                    Session owner = null;
+                    for (Session candidate : sessions.values()) if (candidate.state == 2) {
+                        // Android does not identify the owning WebView for SW
+                        // traffic. Preserve filtering for a single browser;
+                        // fail open when attribution is ambiguous.
+                        if (owner != null) return null;
+                        owner = candidate;
+                    }
+                    return owner == null || owner.blocker == null ? null : owner.blocker.intercept(request, true);
+                }
+            });
+        }
+        void page(String value) { page = value; }
+        String currentHost() { return BrowserBlockingPolicy.host(page); }
+        private <T> T attributed(java.util.function.Supplier<T> action) {
+            synchronized (shared) {
+                shared.page(page);
+                try { return action.get(); }
+                finally {
+                    // Never leave a document attribution in shared state.
+                    shared.page(null);
+                }
+            }
+        }
+        boolean siteDisabled() { return attributed(() -> shared.siteDisabled()); }
+        void toggleSite() { attributed(() -> { shared.toggleSite(); return null; }); }
+        android.webkit.WebResourceResponse intercept(android.webkit.WebResourceRequest request, boolean worker) {
+            return attributed(() -> shared.intercept(request, worker));
+        }
+        void cosmeticCss(String url, java.util.function.Consumer<String> result) { shared.cosmeticCss(url, result); }
+        boolean enabled() { return shared.enabled(); }
+        boolean busy() { return shared.busy(); }
+        String status() { return shared.status(); }
+        void setEnabled(boolean enabled) { shared.setEnabled(enabled); }
+        void update() { shared.update(); }
+        void resetExceptions() { shared.resetExceptions(); }
+    }
+
+    private static final class Session {
+    private final int browserId;
+    private final AtomicInteger generation = new AtomicInteger();
+    private final AtomicBoolean frame = new AtomicBoolean();
     // 0 closed, 1 opening, 2 rendering, -1 failed. Read from Godot's thread.
-    private static volatile int state;
-    private static VirtualDisplay display;
-    private static Presentation presentation;
-    private static Surface surface;
-    private static SurfaceTexture texture;
-    private static WebView web;
-    private static LinearLayout root;
-    private static FrameLayout content;
-    private static View customView;
-    private static WebChromeClient.CustomViewCallback customViewCallback;
-    private static View navigationBar;
-    private static EditText address;
-    private static Button backButton, forwardButton, reloadButton, fullscreenExit;
-    private static TextView pageStatus;
-    private static boolean loading;
-    private static Runnable fullscreenHide;
-    private static boolean editingAddress;
-    private static long fullscreenHoverStart, fullscreenLastHover;
-    private static SharedPreferences browserPreferences;
-    private static BrowserBookmarks bookmarks;
-    private static View bookmarkPanel;
-    private static boolean bookmarkLoadFailed;
-    private static BrowserAdblock blocker;
-    private static View blockingPanel;
-    private static int navigationGeneration;
-    private static BrowserHistory history;
-    private static View privacyPanel;
-    private static boolean saveHistory, historyLoadFailed, mainFrameFailed;
-    private static int skipHistoryNavigation = -1;
-    private static boolean dataClearing, clearingCookies, clearBackHistoryAfterHome;
-    private static String pendingClear, completionNotice;
-    private static String pageNotice;
-    private static long downTime;
-    private static boolean paused, gamepadInputEnabled = true;
-    private static String questPad;
-    private static long questPadTime;
-    private static final java.util.Map<Long, android.view.KeyEvent> padKeys = new java.util.HashMap<>();
-    private static final java.util.Map<Integer, MotionEvent> padMotions = new java.util.HashMap<>();
-    private static boolean questBridgeReady;
-    private static final BrowserPageTabs pageTabs = new BrowserPageTabs();
-    private static final java.util.Map<Integer, android.os.Bundle> pageHistory = new java.util.HashMap<>();
-    private static Activity ownerActivity;
-    private static volatile String pageSnapshot = "{\"selected\":0,\"pages\":[]}";
-    private static BrowserPhysicalGamepad physicalPad;
-    private static final java.util.Set<String> padRouteDiagnostics = new java.util.HashSet<>();
-    private static android.hardware.input.InputManager padInputManager;
-    private static final android.hardware.input.InputManager.InputDeviceListener padDevices = new android.hardware.input.InputManager.InputDeviceListener() {
+    private volatile int state;
+    private VirtualDisplay display;
+    private Presentation presentation;
+    private Surface surface;
+    private SurfaceTexture texture;
+    private WebView web;
+    private LinearLayout root;
+    private FrameLayout content;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
+    private View navigationBar;
+    private EditText address;
+    private Button backButton, forwardButton, reloadButton, fullscreenExit;
+    private TextView pageStatus;
+    private boolean loading;
+    private Runnable fullscreenHide;
+    private boolean editingAddress;
+    private long fullscreenHoverStart, fullscreenLastHover;
+    private SharedPreferences browserPreferences;
+    private BrowserBookmarks bookmarks;
+    private View bookmarkPanel;
+    private boolean bookmarkLoadFailed;
+    private BlockingContext blocker;
+    private View blockingPanel;
+    private int navigationGeneration;
+    private BrowserHistory history;
+    private View privacyPanel;
+    private boolean saveHistory, historyLoadFailed, mainFrameFailed;
+    private int skipHistoryNavigation = -1;
+    private boolean dataClearing, clearingCookies, clearBackHistoryAfterHome;
+    private String pendingClear, completionNotice;
+    private String pageNotice;
+    private long downTime;
+    private boolean pointerPressed;
+    private float pointerX, pointerY;
+    private final java.util.Map<Integer, View> syntheticKeys = new java.util.HashMap<>();
+    private boolean paused, gamepadInputEnabled = true;
+    private String questPad;
+    private long questPadTime;
+    private final java.util.Map<Long, android.view.KeyEvent> padKeys = new java.util.HashMap<>();
+    private final java.util.Map<Integer, MotionEvent> padMotions = new java.util.HashMap<>();
+    private boolean questBridgeReady;
+    private final BrowserPageTabs pageTabs = new BrowserPageTabs();
+    private final java.util.Map<Integer, android.os.Bundle> pageHistory = new java.util.HashMap<>();
+    private Activity ownerActivity;
+    private volatile String pageSnapshot = "{\"selected\":0,\"pages\":[]}";
+    private BrowserPhysicalGamepad physicalPad;
+    private final java.util.Set<String> padRouteDiagnostics = new java.util.HashSet<>();
+    private android.hardware.input.InputManager padInputManager;
+    private final android.hardware.input.InputManager.InputDeviceListener padDevices = new android.hardware.input.InputManager.InputDeviceListener() {
         public void onInputDeviceAdded(int id) {}
         public void onInputDeviceChanged(int id) { releasePhysicalGamepad(); }
         public void onInputDeviceRemoved(int id) { releasePhysicalGamepad(); }
     };
 
-    private BrowserPrototype() {}
+    private Session(int browserId) { this.browserId = browserId; }
 
-    public static void open(Activity activity, Surface target, SurfaceTexture source, int width, int height) {
+    public void open(Activity activity, Surface target, SurfaceTexture source, int width, int height) {
         final int token = generation.incrementAndGet();
         state = 1;
         UI.post(() -> {
@@ -104,12 +213,13 @@ public final class BrowserPrototype {
                 return;
             }
             dispose();
+            if (focusedId < 0) focusOnUi(browserId);
             surface = target;
             texture = source;
             try {
                 if (activity == null || activity.isFinishing()) throw new IllegalStateException("No activity");
                 browserPreferences = activity.getApplicationContext().getSharedPreferences("nightfall_browser", Context.MODE_PRIVATE);
-                blocker = BrowserAdblock.get(activity);
+                blocker = new BlockingContext(activity);
                 saveHistory = browserPreferences.getBoolean("save_history", false);
                 historyLoadFailed = false;
                 try { history = BrowserHistory.decode(browserPreferences.getString("history_v1", "")); }
@@ -124,7 +234,7 @@ public final class BrowserPrototype {
                     if (token == generation.get()) frame.set(true);
                 }, UI);
                 DisplayManager manager = (DisplayManager) activity.getSystemService(Context.DISPLAY_SERVICE);
-                display = manager.createVirtualDisplay("Nightfall browser prototype", width, height, 160,
+                display = manager.createVirtualDisplay("Nightfall browser " + browserId, width, height, 160,
                         surface, DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                                 | DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION);
                 if (display == null) throw new IllegalStateException("No virtual display");
@@ -205,9 +315,9 @@ public final class BrowserPrototype {
         });
     }
 
-    public static String tabs() { return pageSnapshot; }
+    public String tabs() { return pageSnapshot; }
 
-    private static void publishPages() {
+    private void publishPages() {
         BrowserPageTabs.Page selected = pageTabs.find(pageTabs.selected);
         if (selected != null && web != null && web.getTitle() != null) {
             String title = web.getTitle().replaceAll("[\\p{Cntrl}]", " ");
@@ -230,7 +340,8 @@ public final class BrowserPrototype {
 
     // Only one WebView is alive. Suspended tabs keep back/forward state in RAM,
     // not live video, audio or game contexts. Returning to a tab may reload it.
-    private static void retirePage(boolean save) {
+    private void retirePage(boolean save) {
+        releaseFocusInput();
         hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
         releasePhysicalGamepad(); questPad = null;
         if (web == null) return;
@@ -250,7 +361,7 @@ public final class BrowserPrototype {
         web = null; // Invalidate callbacks before destroy can report a renderer loss.
         outgoing.destroy();
     }
-    private static void resumePage(int token) {
+    private void resumePage(int token) {
         boolean inputEnabled = gamepadInputEnabled;
         createPageWebView(ownerActivity, token);
         gamepadInputEnabled = inputEnabled;
@@ -268,7 +379,8 @@ public final class BrowserPrototype {
         }
         publishPages();
     }
-    public static void tabAction(String action, int id) {
+    public void tabAction(String action, int id) {
+        focus(browserId);
         int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || web == null || dataClearing || paused || ownerActivity == null) return;
@@ -296,7 +408,8 @@ public final class BrowserPrototype {
         });
     }
 
-    public static void navigationAction(String action) {
+    public void navigationAction(String action) {
+        focus(browserId);
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || web == null || state != 2 || paused || dataClearing) return;
@@ -324,7 +437,7 @@ public final class BrowserPrototype {
         });
     }
 
-    private static void createPageWebView(Activity activity, int token) {
+    private void createPageWebView(Activity activity, int token) {
     web = new WebView(presentation.getContext());
     final WebView pageView = web;
     web.getSettings().setJavaScriptEnabled(true);
@@ -437,8 +550,10 @@ public final class BrowserPrototype {
                 performDataClear(token);
                 return;
             }
+            saveHistory = browserPreferences.getBoolean("save_history", false);
             if (!dataClearing && saveHistory && !mainFrameFailed && navigationGeneration != skipHistoryNavigation
                     && BrowserHistory.address(url) != null) {
+                reloadHistory();
                 history.visit(view.getTitle(), url, System.currentTimeMillis());
                 browserPreferences.edit().putString("history_v1", history.encode()).apply();
                 historyLoadFailed = false;
@@ -492,7 +607,7 @@ public final class BrowserPrototype {
     });
     }
 
-    private static Button button(LinearLayout bar, String label, Runnable action) {
+    private Button button(LinearLayout bar, String label, Runnable action) {
         Button button = new Button(bar.getContext());
         button.setText(label);
         button.setTextSize(18);
@@ -502,7 +617,7 @@ public final class BrowserPrototype {
         return button;
     }
 
-    private static void navigateAddress() {
+    private void navigateAddress() {
         hidePrivacyPanel();
         String destination = BrowserNavigation.destination(address.getText().toString());
         if (destination == null) {
@@ -518,7 +633,7 @@ public final class BrowserPrototype {
         else navigateTo(destination);
     }
 
-    private static void navigateTo(String url) {
+    private void navigateTo(String url) {
         blocker.page(url);
         if (BrowserGamepadProbe.URL.equals(url)) {
             web.loadDataWithBaseURL(url, BrowserGamepadProbe.html(), "text/html", "UTF-8", url);
@@ -528,7 +643,8 @@ public final class BrowserPrototype {
         web.loadUrl(url);
     }
 
-    private static void loadHome() {
+    private void loadHome() {
+        reloadBookmarks();
         hidePrivacyPanel();
         blocker.page(BrowserNavigation.HOME_URL);
         hideCustomView();
@@ -555,7 +671,30 @@ public final class BrowserPrototype {
         updateNavigation();
     }
 
-    private static void persistBookmarks() {
+    // Mutations execute on UI, so reloading immediately before editing and
+    // SharedPreferences.apply() form one serialized read-modify-write across
+    // browser instances (apply updates the in-memory preferences immediately).
+    private void reloadBookmarks() {
+        try {
+            bookmarks = BrowserBookmarks.decode(browserPreferences.getString("bookmarks_v1", ""));
+            bookmarkLoadFailed = false;
+        } catch (IllegalArgumentException corrupt) {
+            bookmarks = new BrowserBookmarks();
+            bookmarkLoadFailed = true;
+        }
+    }
+
+    private void reloadHistory() {
+        try {
+            history = BrowserHistory.decode(browserPreferences.getString("history_v1", ""));
+            historyLoadFailed = false;
+        } catch (IllegalArgumentException corrupt) {
+            history = new BrowserHistory();
+            historyLoadFailed = true;
+        }
+    }
+
+    private void persistBookmarks() {
         // SharedPreferences writes one versioned snapshot atomically off the UI
         // thread. Preserve unreadable data privately before explicit replacement.
         SharedPreferences.Editor edit = browserPreferences.edit();
@@ -566,7 +705,7 @@ public final class BrowserPrototype {
         edit.putString("bookmarks_v1", bookmarks.encode()).apply();
     }
 
-    private static EditText bookmarkInput(LinearLayout parent, String hint, String value) {
+    private EditText bookmarkInput(LinearLayout parent, String hint, String value) {
         EditText input = new EditText(parent.getContext());
         input.setSingleLine(true);
         input.setShowSoftInputOnFocus(false);
@@ -579,7 +718,8 @@ public final class BrowserPrototype {
         return input;
     }
 
-    private static void showBookmarks(BrowserBookmarks.Entry selected) {
+    private void showBookmarks(BrowserBookmarks.Entry selected) {
+        reloadBookmarks();
         releasePhysicalGamepad();
         questPad = null;
         hidePrivacyPanel();
@@ -624,6 +764,7 @@ public final class BrowserPrototype {
                 if (destination == null || !(BrowserNavigation.allowed(raw)
                         || BrowserNavigation.allowed("https://" + raw)))
                     throw new IllegalArgumentException("Enter an HTTP(S) website address, not search text.");
+                reloadBookmarks();
                 bookmarks.save(selected == null ? null : selected.url, name.getText().toString(), destination);
                 persistBookmarks();
                 showBookmarks(null);
@@ -637,6 +778,7 @@ public final class BrowserPrototype {
                     remove.setText("Confirm remove");
                     message.setText("Press Confirm remove to delete this bookmark, or Close to cancel.");
                 } else {
+                    reloadBookmarks();
                     bookmarks.remove(selected.url);
                     persistBookmarks();
                     showBookmarks(null);
@@ -656,15 +798,15 @@ public final class BrowserPrototype {
             row.addView(label, new LinearLayout.LayoutParams(0, 64, 1));
             button(row, "Open", () -> { hideBookmarks(false); navigateTo(entry.url); web.requestFocus(); });
             button(row, "Edit", () -> showBookmarks(entry));
-            Button up = button(row, "Up", () -> { bookmarks.move(entry.url, -1); persistBookmarks(); showBookmarks(null); });
-            Button down = button(row, "Down", () -> { bookmarks.move(entry.url, 1); persistBookmarks(); showBookmarks(null); });
+            Button up = button(row, "Up", () -> { reloadBookmarks(); bookmarks.move(entry.url, -1); persistBookmarks(); showBookmarks(null); });
+            Button down = button(row, "Down", () -> { reloadBookmarks(); bookmarks.move(entry.url, 1); persistBookmarks(); showBookmarks(null); });
             up.setEnabled(index > 0);
             down.setEnabled(index < bookmarks.entries().size() - 1);
             index++;
         }
     }
 
-    private static void showBlocking() {
+    private void showBlocking() {
         releasePhysicalGamepad();
         questPad = null;
         hidePrivacyPanel();
@@ -730,14 +872,14 @@ public final class BrowserPrototype {
         });
     }
 
-    private static void hideBlockingPanel() {
+    private void hideBlockingPanel() {
         if (blockingPanel != null && blockingPanel.getParent() instanceof ViewGroup)
             ((ViewGroup) blockingPanel.getParent()).removeView(blockingPanel);
         blockingPanel = null;
         if (web != null) web.setVisibility(View.VISIBLE);
     }
 
-    private static void siteNotice(int token, String message) {
+    private void siteNotice(int token, String message) {
         final int navigation = navigationGeneration;
         UI.post(() -> {
             if (token == generation.get() && navigation == navigationGeneration && pageStatus != null) {
@@ -747,12 +889,12 @@ public final class BrowserPrototype {
         });
     }
 
-    private static void setPageStatus(String message) {
+    private void setPageStatus(String message) {
         pageStatus.setText(pageNotice == null ? message : pageNotice);
         publishPages();
     }
 
-    private static void privacyText(LinearLayout panel, String text, int size) {
+    private void privacyText(LinearLayout panel, String text, int size) {
         TextView label = new TextView(panel.getContext());
         label.setText(text);
         label.setTextSize(size);
@@ -761,7 +903,7 @@ public final class BrowserPrototype {
         panel.addView(label);
     }
 
-    private static void confirmAction(LinearLayout panel, String label, String description, Runnable action) {
+    private void confirmAction(LinearLayout panel, String label, String description, Runnable action) {
         privacyText(panel, description, 18);
         LinearLayout row = new LinearLayout(panel.getContext());
         panel.addView(row);
@@ -776,7 +918,9 @@ public final class BrowserPrototype {
         });
     }
 
-    private static void showPrivacy() {
+    private void showPrivacy() {
+        reloadHistory();
+        saveHistory = browserPreferences.getBoolean("save_history", false);
         releasePhysicalGamepad();
         questPad = null;
         hideCustomView();
@@ -802,7 +946,7 @@ public final class BrowserPrototype {
         LinearLayout actions = new LinearLayout(panel.getContext());
         panel.addView(actions);
         button(actions, saveHistory ? "Save history: On" : "Save history: Off", () -> {
-            saveHistory = !saveHistory;
+            saveHistory = !browserPreferences.getBoolean("save_history", false);
             browserPreferences.edit().putBoolean("save_history", saveHistory).apply();
             showPrivacy();
         });
@@ -851,14 +995,14 @@ public final class BrowserPrototype {
         }
     }
 
-    private static void hidePrivacyPanel() {
+    private void hidePrivacyPanel() {
         if (privacyPanel != null && privacyPanel.getParent() instanceof ViewGroup)
             ((ViewGroup) privacyPanel.getParent()).removeView(privacyPanel);
         privacyPanel = null;
         if (web != null) web.setVisibility(View.VISIBLE);
     }
 
-    private static void beginDataClear(String kind) {
+    private void beginDataClear(String kind) {
         releasePhysicalGamepad();
         questPad = null;
         hideCustomView();
@@ -880,7 +1024,7 @@ public final class BrowserPrototype {
         }, 15000);
     }
 
-    private static void performDataClear(int token) {
+    private void performDataClear(int token) {
         String kind = pendingClear;
         pendingClear = null;
         try {
@@ -905,7 +1049,7 @@ public final class BrowserPrototype {
         }
     }
 
-    private static void finishDataClear(int token, String notice) {
+    private void finishDataClear(int token, String notice) {
         if (token != generation.get() || web == null) return;
         dataClearing = false;
         pendingClear = null;
@@ -915,11 +1059,11 @@ public final class BrowserPrototype {
         pageStatus.setText(notice);
     }
 
-    private static void removeCosmetics() {
+    private void removeCosmetics() {
         if (web != null) web.evaluateJavascript("document.getElementById('nightfall-blocking-css')?.remove()", null);
     }
 
-    private static void applyCosmetics(WebView target, String url, int token, int navigation) {
+    private void applyCosmetics(WebView target, String url, int token, int navigation) {
         blocker.cosmeticCss(url, css -> UI.post(() -> {
             if (token != generation.get() || target != web || navigation != navigationGeneration
                     || !url.equals(web.getUrl()) || !blocker.enabled() || blocker.siteDisabled()) return;
@@ -932,7 +1076,7 @@ public final class BrowserPrototype {
         }));
     }
 
-    private static void hideBookmarks(boolean refreshHome) {
+    private void hideBookmarks(boolean refreshHome) {
         if (bookmarkPanel != null && bookmarkPanel.getParent() instanceof ViewGroup)
             ((ViewGroup) bookmarkPanel.getParent()).removeView(bookmarkPanel);
         bookmarkPanel = null;
@@ -943,7 +1087,7 @@ public final class BrowserPrototype {
         }
     }
 
-    private static void updateNavigation() {
+    private void updateNavigation() {
         if (web == null || address == null) return;
         backButton.setEnabled(web.canGoBack());
         forwardButton.setEnabled(web.canGoForward());
@@ -955,7 +1099,7 @@ public final class BrowserPrototype {
         publishPages();
     }
 
-    private static void revealFullscreenExit() {
+    private void revealFullscreenExit() {
         if (fullscreenExit == null || customView == null) return;
         fullscreenExit.setVisibility(View.VISIBLE);
         if (fullscreenHide != null) UI.removeCallbacks(fullscreenHide);
@@ -968,7 +1112,7 @@ public final class BrowserPrototype {
         UI.postDelayed(fullscreenHide, 300);
     }
 
-    private static void updateFullscreenHover(float x, float y, int action) {
+    private void updateFullscreenHover(float x, float y, int action) {
         long now = SystemClock.uptimeMillis();
         boolean corner = customView != null && content != null
                 && x >= content.getWidth() - 240 && y >= 0 && y < 80
@@ -981,17 +1125,22 @@ public final class BrowserPrototype {
         if (now - fullscreenHoverStart >= 600) revealFullscreenExit();
     }
 
-    public static int poll() { return state; }
-    public static boolean consumeFrame() { return frame.getAndSet(false); }
+    public int poll() { return state; }
+    public boolean consumeFrame() { return frame.getAndSet(false); }
 
-    public static void close() {
+    public void close() {
         if (blocker != null) blocker.page(null);
         final int token = generation.incrementAndGet();
         state = 0;
         UI.post(() -> { if (token == generation.get()) dispose(); });
     }
 
-    private static void dispose() {
+    private void dispose() {
+        releaseFocusInput();
+        if (focusedId == browserId) {
+            focusedId = -1;
+            for (Session other : sessions.values()) if (other != this && other.state == 2) { focusedId = other.browserId; break; }
+        }
         pageHistory.clear();
         pageTabs.clear();
         ownerActivity = null;
@@ -1034,7 +1183,7 @@ public final class BrowserPrototype {
         if (surface != null) { surface.release(); surface = null; }
     }
 
-    private static void hideCustomView() {
+    private void hideCustomView() {
         editingAddress = false;
         fullscreenHoverStart = fullscreenLastHover = 0;
         if (fullscreenHide != null) { UI.removeCallbacks(fullscreenHide); fullscreenHide = null; }
@@ -1054,10 +1203,11 @@ public final class BrowserPrototype {
         if (previous != null) DiagnosticLog.info("BrowserPrototype", "Video fullscreen exited");
     }
 
-    public static void pointer(float x, float y, int action) {
+    public void pointer(float x, float y, int action) {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
+            if (action == MotionEvent.ACTION_DOWN) focusOnUi(browserId);
             if (action == MotionEvent.ACTION_DOWN && editingAddress) {
                 editingAddress = false;
                 web.requestFocus();
@@ -1066,6 +1216,9 @@ public final class BrowserPrototype {
             updateFullscreenHover(x, y, action);
             long now = SystemClock.uptimeMillis();
             if (action == MotionEvent.ACTION_DOWN) downTime = now;
+            pointerX = x; pointerY = y;
+            if (action == MotionEvent.ACTION_DOWN) pointerPressed = true;
+            else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) pointerPressed = false;
             MotionEvent event = MotionEvent.obtain(downTime, now, action, x, y, 0);
             if (action == MotionEvent.ACTION_HOVER_MOVE) {
                 event.setSource(android.view.InputDevice.SOURCE_MOUSE);
@@ -1077,7 +1230,7 @@ public final class BrowserPrototype {
         });
     }
 
-    public static void key(int code, boolean pressed, int modifiers) {
+    public void key(int code, boolean pressed, int modifiers) {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
@@ -1116,29 +1269,30 @@ public final class BrowserPrototype {
             }
             android.view.View focus = root.findFocus();
             if (focus == null) return;
+            if (pressed) syntheticKeys.put(code, focus); else syntheticKeys.remove(code);
             long now = SystemClock.uptimeMillis();
             focus.dispatchKeyEvent(new android.view.KeyEvent(now, now, pressed ? 0 : 1,
                     code, 0, modifiers));
         });
     }
 
-    public static void pause(boolean paused) {
+    public void pause(boolean paused) {
         final int token = generation.get();
         UI.post(() -> { if (token == generation.get() && web != null) {
-            BrowserPrototype.paused = paused;
-            if (paused) { releasePhysicalGamepad(); questPad = null; web.onPause(); }
+            this.paused = paused;
+            if (paused) { releaseFocusInput(); web.onPause(); }
             else web.onResume();
         } });
     }
 
     // These entry points run on Android's UI thread, directly from Activity
     // dispatch. Never strip device IDs/sources or turn controller buttons into keys.
-    private static boolean gamepadTarget() {
-        return web != null && state == 2 && !paused && !dataClearing && !editingAddress && gamepadInputEnabled
+    private boolean gamepadTarget() {
+        return focusedId == browserId && web != null && state == 2 && !paused && !dataClearing && !editingAddress && gamepadInputEnabled
             && privacyPanel == null && blockingPanel == null && bookmarkPanel == null
             && (address == null || !address.hasFocus()) && (web.hasFocus() || customView != null);
     }
-    public static boolean physicalGamepadKey(android.view.KeyEvent event) {
+    public boolean physicalGamepadKey(android.view.KeyEvent event) {
         if (!BrowserPhysicalGamepad.accepts(event)) return false;
         if (!gamepadTarget()) { logPadRoute("blocked", event.getDeviceId()); releasePhysicalGamepad(); return false; }
         android.view.InputDevice device = event.getDevice();
@@ -1153,7 +1307,7 @@ public final class BrowserPrototype {
         logPadRoute("key nativeHandled=" + handled + " bridge=" + questBridgeReady, event.getDeviceId());
         return true; // Browser owns this event, even if the provider declines it.
     }
-    public static boolean physicalGamepadMotion(MotionEvent event) {
+    public boolean physicalGamepadMotion(MotionEvent event) {
         if (!event.isFromSource(android.view.InputDevice.SOURCE_JOYSTICK)) return false;
         if (!gamepadTarget()) { logPadRoute("blocked", event.getDeviceId()); releasePhysicalGamepad(); return false; }
         android.view.InputDevice device = event.getDevice();
@@ -1167,7 +1321,22 @@ public final class BrowserPrototype {
         logPadRoute("motion nativeHandled=" + handled + " bridge=" + questBridgeReady, event.getDeviceId());
         return true;
     }
-    private static void releasePhysicalGamepad() {
+    private void releaseFocusInput() {
+        releasePhysicalGamepad();
+        questPad = null;
+        if (pointerPressed && root != null) {
+            MotionEvent cancel = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_CANCEL, pointerX, pointerY, 0);
+            root.dispatchTouchEvent(cancel);
+            cancel.recycle();
+        }
+        pointerPressed = false;
+        long now = SystemClock.uptimeMillis();
+        for (java.util.Map.Entry<Integer, View> key : syntheticKeys.entrySet())
+            key.getValue().dispatchKeyEvent(new android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_UP, key.getKey(), 0));
+        syntheticKeys.clear();
+    }
+
+    private void releasePhysicalGamepad() {
         physicalPad = null;
         if (web != null) {
             for (android.view.KeyEvent event : padKeys.values())
@@ -1196,7 +1365,7 @@ public final class BrowserPrototype {
         for (MotionEvent event : padMotions.values()) event.recycle();
         padMotions.clear();
     }
-    private static void logPadRoute(String route, int device) {
+    private void logPadRoute(String route, int device) {
         // Log transitions only, not button values, browsing URLs or every tick.
         String value = "device=" + device + " " + route + " state=" + state + " paused=" + paused
             + " input=" + gamepadInputEnabled + " webFocus=" + (web != null && web.hasFocus())
@@ -1205,14 +1374,14 @@ public final class BrowserPrototype {
             DiagnosticLog.info("BrowserGamepad", value);
         }
     }
-    public static void setGamepadInputEnabled(boolean enabled) {
+    public void setGamepadInputEnabled(boolean enabled) {
         int token = generation.get();
         UI.post(() -> { if (token == generation.get()) {
             gamepadInputEnabled = enabled;
             if (!enabled) { releasePhysicalGamepad(); questPad = null; }
         } });
     }
-    public static void questGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) {
+    public void questGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) {
         int token = generation.get();
         String snapshot = BrowserGamepadState.json(buttons, lt, rt, lx, ly, rx, ry, SystemClock.uptimeMillis());
         UI.post(() -> { if (token == generation.get() && gamepadTarget() && questBridgeReady) {
@@ -1220,11 +1389,11 @@ public final class BrowserPrototype {
             questPadTime = SystemClock.uptimeMillis();
         } });
     }
-    public static void clearQuestGamepad() {
+    public void clearQuestGamepad() {
         int token = generation.get();
         UI.post(() -> { if (token == generation.get()) questPad = null; });
     }
-    private static void installQuestGamepadBridge() {
+    private void installQuestGamepadBridge() {
         paused = false;
         gamepadInputEnabled = true;
         if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)
@@ -1251,5 +1420,6 @@ public final class BrowserPrototype {
         androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, BrowserGamepadScript.source(), origins);
         questBridgeReady = true;
         DiagnosticLog.info("BrowserPrototype", "Physical gamepad routing and experimental Quest Gamepad API bridge ready");
+    }
     }
 }

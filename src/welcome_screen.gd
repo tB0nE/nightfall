@@ -37,15 +37,46 @@ func build_welcome_ui():
 	build_pin_screen(screens)
 	build_language_picker(root)
 	if OS.has_feature("android"):
-		var browser = Button.new()
-		browser.text = Localization.t("Open Browser")
-		browser.position = Vector2(24, 1000)
-		browser.custom_minimum_size = Vector2(320, 64)
-		browser.add_theme_font_size_override("font_size", 26)
-		browser.pressed.connect(func(): main.screen_sources.choose_source(ScreenContentTab.BROWSER))
-		root.add_child(browser)
+		build_browser_picker(root)
 
 	show_welcome_screen("welcome")
+
+func build_browser_picker(root: Control) -> void:
+	# In-viewport buttons rather than a popup Window, so XR input reaches
+	# every option without another composition layer.
+	var picker := VBoxContainer.new()
+	picker.name = "BrowserPicker"
+	picker.position = Vector2(24, 848)
+	picker.add_theme_constant_override("separation", 8)
+	root.add_child(picker)
+	var options := VBoxContainer.new()
+	options.name = "BrowserOptions"
+	options.add_theme_constant_override("separation", 8)
+	options.visible = false
+	picker.add_child(options)
+	for entry in [["Open browser here", false], ["New browser screen", true]]:
+		var separate: bool = entry[1]
+		var option := Button.new()
+		option.text = Localization.t(entry[0])
+		option.custom_minimum_size = Vector2(360, 64)
+		option.add_theme_font_size_override("font_size", 26)
+		options.add_child(option)
+		option.pressed.connect(func():
+			options.hide()
+			if separate: main.screen_sources.add_browser_screen()
+			else: main.screen_sources.choose_source(ScreenContentTab.BROWSER))
+	var toggle := Button.new()
+	toggle.text = Localization.t("Open Browser") + " ▾"
+	toggle.custom_minimum_size = Vector2(360, 64)
+	toggle.add_theme_font_size_override("font_size", 26)
+	picker.add_child(toggle)
+	toggle.pressed.connect(func():
+		for i in options.get_child_count():
+			options.get_child(i).disabled = not (main.screen_sources.can_add_browser_screen() if i == 1 else main.screen_sources.can_open_browser())
+		options.visible = not options.visible
+		# Keep the toggle in its original bottom-left position as options open.
+		picker.position.y = 856 if options.visible else 1000)
+	picker.position.y = 1000
 
 # Language dropdown in the top-right corner, so a new user can switch language
 # before reaching the in-stream Settings page. It is a plain grid of buttons rather

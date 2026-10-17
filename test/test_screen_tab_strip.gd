@@ -12,11 +12,21 @@ class FakeBrowser extends RefCounted:
 class FakeComp extends RefCounted:
 	var in_use := true
 
+class FakeSources extends RefCounted:
+	var offer_stream := true
+	func can_open_browser(): return true
+	func can_add_browser_screen(): return true
+	func can_offer_stream_screen(): return offer_stream
+	func can_add_stream_screen(): return offer_stream
+	func can_make_primary(_screen): return false
+
 class FakeMain extends Node3D:
 	var browser_prototype := FakeBrowser.new()
 	var primary_screen: VRScreen
 	var is_streaming := false
 	var comp := FakeComp.new()
+	var screens: Array = []
+	var screen_sources: RefCounted
 	func _log(_message: String) -> void: pass
 
 func _init():
@@ -46,6 +56,7 @@ func _init():
 	assert(resolved.screen == screen and resolved.role == &"screen_tab" and resolved.action == &"page:2")
 	screen.free()
 	var owner := FakeMain.new()
+	owner.screen_sources = FakeSources.new()
 	owner.primary_screen = VRScreen.new()
 	owner.primary_screen._comp_cyl_radius = 3.0
 	var viewport := SubViewport.new()
@@ -86,7 +97,20 @@ func _init():
 	strip.invoke(&"close:2")
 	assert(owner.browser_prototype.actions[-1] == ["close", 2], "Close must target the hovered tab, not the selected one")
 	strip.invoke(&"browser")
-	assert(owner.browser_prototype.actions[-1] == ["new", 0], "Far-right Add Browser should create directly")
+	assert(strip.popup == "sources", "Add Browser should offer tab versus screen")
+	strip.update(owner.primary_screen, surface, margin, true)
+	var source_actions := []
+	for item in strip._items: source_actions.append(String(item.action))
+	assert(source_actions.has("stream:new") and source_actions.has("screen:primary"))
+	assert(strip._items[-1].rect.end.y > 0.15, "Hover backdrop must cover all four dropdown rows")
+	owner.screen_sources.offer_stream = false
+	strip._signature = ""
+	strip.update(owner.primary_screen, surface, margin, true)
+	source_actions.clear()
+	for item in strip._items: source_actions.append(String(item.action))
+	assert(not source_actions.has("stream:new") and source_actions.has("screen:primary"))
+	strip.invoke(&"tab:new")
+	assert(owner.browser_prototype.actions[-1] == ["new", 0], "Add tab must create on the current browser")
 	strip.update(owner.primary_screen, surface, margin, false)
 	assert(not strip._items[1].panel.visible)
 	assert(not strip._background.visible)

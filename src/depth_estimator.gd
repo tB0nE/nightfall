@@ -738,8 +738,12 @@ func _set_meteor_in_use(value: bool) -> void:
 	else:
 		if meteor.is_active():
 			main._log("[METEOR] Host depth not arriving; using on-device depth")
-		# Back to the on-device model's size.
-		sync_model_size()
+		# Only a live consumer needs the on-device dimensions now. During
+		# disconnect/close, resizing these render targets invalidates textures
+		# still referenced by retiring shaders. The next apply_stereo() already
+		# calls sync_model_size() before binding the next inference session.
+		if enabled and main.primary_media_active():
+			sync_model_size()
 
 func _native_capture_supported() -> bool:
 	var source = main.primary_capture_source()

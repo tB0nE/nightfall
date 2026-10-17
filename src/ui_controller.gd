@@ -1808,6 +1808,13 @@ func update_indicator_btn(btn: Button, label: String, value: String):
 
 const STATUS_TEXT_MAX_LEN = 160
 
+func refresh_app_fps() -> void:
+	if main._ui_status_label and not is_temporary_status_active():
+		main._ui_status_label.text = PerformanceTelemetry.status_with_app_fps(
+			main._ui_status_label.text, main.telemetry.app_fps)
+		if main.stream_manager:
+			main._ui_status_label.text += main.stream_manager._depth_status_text()
+
 func set_status(text: String):
 	if main._ui_status_label:
 		if text.length() > STATUS_TEXT_MAX_LEN:

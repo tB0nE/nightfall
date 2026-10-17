@@ -78,9 +78,12 @@ func read_settings(config: ConfigFile) -> void:
 	primary_hand = clampi(config.get_value("controller", "primary_hand", PrimaryHand.RIGHT), 0, 2)
 
 func _process(_delta):
-	var browser_pad: bool = main.browser_content_active() and is_gamepad_mode()
+	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
+	var browser_pad: bool = focused_browser != null and focused_browser.active and is_gamepad_mode()
 	if main.browser_prototype and (not active or not browser_pad or main.ui_visible or main.virtual_keyboard.visible):
-		main.browser_prototype.clear_gamepad()
+		var browser = main.browser_prototype
+		if main.get("screen_sources") != null: browser = main.screen_sources.focused_browser()
+		browser.clear_gamepad()
 	if (not main.is_streaming and not browser_pad) or not main.is_xr_active or not active \
 			or (browser_pad and (main.ui_visible or main.virtual_keyboard.visible)):
 		if _kb_held.size() > 0:

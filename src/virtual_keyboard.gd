@@ -444,6 +444,8 @@ func _key_from_pos(pixel_pos: Vector2) -> int:
 
 func _send_key(code: int, action: int) -> void:
 	var browser: RefCounted = main.get("browser_prototype")
+	if main.get("screen_sources") != null:
+		browser = main.screen_sources.focused_browser()
 	if browser and browser.active:
 		browser.key(code, action)
 	else:

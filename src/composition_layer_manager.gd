@@ -128,6 +128,8 @@ func _apply_video_shader_state(color_transfer_type: int):
 		shader = _get_sdr_shader()
 	for s in main.screens:
 		for mat in get_shader_mats(s):
+			if _independent_browser(s):
+				continue
 			if mat and mat.shader != shader:
 				mat.shader = shader
 
@@ -177,6 +179,59 @@ func get_shader_mats(s: VRScreen = null) -> Array:
 	if s == null:
 		s = main.primary_screen
 	return [s.comp_shader_mat, s.comp_shader_mat_left, s.comp_shader_mat_right]
+
+func _independent_browser(s: VRScreen) -> bool:
+	return s != main.primary_screen and main.screen_sources != null \
+		and (main.screen_sources.browser_for_screen(s) != null or _independent_welcome(s))
+
+func _independent_welcome(s: VRScreen) -> bool:
+	return not main.is_streaming and main.screen_sources.has_method("stream_screen") \
+		and main.screen_sources.stream_screen() == s
+
+# Called each presentation frame: a browser texture can arrive after setup.
+# Only the secondary owns this mono viewport; the primary stays native/AI-3D.
+func refresh_browser_screen(s: VRScreen) -> void:
+	if not _independent_browser(s):
+		return
+	var provider = main.screen_sources.browser_for_screen(s)
+	var welcome := _independent_welcome(s)
+	var ready: bool = welcome or (provider != null and not provider.closing and provider.active and provider.texture != null)
+	for layer in [s.comp_cylinder_left, s.comp_cylinder_right]:
+		if layer:
+			layer.visible = false
+	for viewport in [s.comp_viewport_left, s.comp_viewport_right]:
+		if viewport:
+			viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if not ready:
+		if s.comp_cylinder:
+			s.comp_cylinder.visible = false
+		if s.comp_viewport:
+			s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		return
+	for mat in get_shader_mats(s):
+		if mat and mat.shader != _get_sdr_shader():
+			mat.shader = _get_sdr_shader()
+	s.bind_independent_browser_texture(main.welcome_viewport.get_texture() if welcome else provider.texture)
+	_update_cylinder_params_for(s)
+	var content_size: Vector2i = main.welcome_viewport.size if welcome else Vector2i(provider.render_size)
+	if s.comp_base_size != content_size:
+		s.comp_base_size = content_size
+	_update_bezel_for(s)
+	for label in [s.comp_loading_label, s.comp_loading_label_left, s.comp_loading_label_right]:
+		if label:
+			label.visible = false
+	for cursor in [s.comp_stream_cursor, s.comp_stream_cursor_circle]:
+		if cursor:
+			cursor.visible = false
+	if available and in_use and s.comp_cylinder:
+		s.comp_layer = s.comp_cylinder
+		s.comp_layer.set_layer_viewport(s.comp_viewport)
+		s.comp_layer.visible = true
+		s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		if s._original_mat == null:
+			s._original_mat = s.material_override
+		if _transparent_mat:
+			s.material_override = _transparent_mat
 
 func get_stream_cursor_pair(index: int, s: VRScreen = null) -> Array:
 	if s == null:
@@ -240,6 +295,10 @@ func setup_screen(s: VRScreen, with_stereo: bool = true):
 
 	if not with_stereo:
 		return
+	ensure_stereo_layers(s)
+
+func ensure_stereo_layers(s: VRScreen) -> void:
+	if not available or s.comp_cylinder_left != null: return
 
 	s.comp_cylinder_left = OpenXRCompositionLayerCylinder.new()
 	s.comp_cylinder_left.name = "CompCylinderLeft_%s" % s.monitor_id
@@ -1045,6 +1104,8 @@ func bind_yuv_textures():
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
+				if _independent_browser(s):
+					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
 					s.material_override.set_shader_parameter("yuv_mode", 0)
@@ -1092,6 +1153,8 @@ func bind_yuv_textures():
 		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
 		if not in_use:
 			for s in main.screens:
+				if _independent_browser(s):
+					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("tex_y", tex_y)
 					s.material_override.set_shader_parameter("tex_u", tex_u)
@@ -1108,6 +1171,8 @@ func bind_yuv_textures():
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
+				if _independent_browser(s):
+					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
 					s.material_override.set_shader_parameter("yuv_mode", 0)
@@ -1122,6 +1187,8 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: in
 	# whether it's ever used).
 	_apply_video_shader_state(ctt)
 	for s in main.screens:
+		if _independent_browser(s):
+			continue
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue
@@ -1163,6 +1230,8 @@ func bind_fallback_texture(stream_tex):
 	# session's shader state. GLES HDR fallback needs its own explicit plumbing.
 	_apply_video_shader_state(0)
 	for s in main.screens:
+		if _independent_browser(s):
+			continue
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue
@@ -1194,6 +1263,9 @@ func switch_to_comp_layer():
 	if s.comp_viewport_left: s.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	if s.comp_viewport_right: s.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	for scr in main.screens:
+		if _independent_browser(scr):
+			refresh_browser_screen(scr)
+			continue
 		if scr.comp_cylinder:
 			scr.comp_layer = scr.comp_cylinder
 			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
@@ -1242,6 +1314,9 @@ func switch_to_stereo_comp_layer():
 	for scr in main.screens:
 		if scr == s:
 			continue
+		if _independent_browser(scr):
+			refresh_browser_screen(scr)
+			continue
 		if scr.comp_cylinder:
 			scr.comp_layer = scr.comp_cylinder
 			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
@@ -1282,6 +1357,9 @@ func switch_to_mesh_rendering():
 		var mode = main.settings_controller.get_stereo_mode()
 		var runtime_sharpen_active = apply_compositor_sharpen(main.settings.sharpen_mode)
 		for scr in main.screens:
+			if _independent_browser(scr):
+				refresh_browser_screen(scr)
+				continue
 			var mat = scr.material_override
 			if mat:
 				mat.set_shader_parameter("main_texture", main.stream_viewport.get_texture())
@@ -1306,6 +1384,8 @@ func update_layer_size():
 
 func clear_yuv_textures():
 	for s in main.screens:
+		if _independent_browser(s):
+			continue
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue

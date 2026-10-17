@@ -6,6 +6,9 @@ var render_size := Vector2i(1920, 1080)
 # Dedicated uploader retained for the app lifetime: never reuse the decoder's
 # surface, and never destroy it while Android's producer still owns a reference.
 var main: Node3D
+var screen: VRScreen
+var browser_id := 0
+var _held_android_keys: Dictionary = {}
 var uploader: RefCounted
 var active := false
 var closing := false
@@ -20,13 +23,18 @@ var selected_page := 0
 var _pages_poll_at := 0
 var _pages_snapshot := ""
 var navigation: Dictionary = {}
+var _returning_primary := false
+# Browser-local choices must not overwrite a PC host's Meteor/model settings.
+var depth_model_override := SettingsController.ANDROID_MODEL_AUTO
+var depth_backend_override := SettingsController.AI3D_BACKEND_GPU
+var depth_gpu_api_override := 0
 
 func navigation_action(action: String) -> void:
 	if not active or closing: return
 	cancel_pointer()
 	clear_gamepad()
 	var bridge := _gamepad_bridge()
-	if bridge: bridge.browserNavigationAction(action)
+	if bridge: bridge.browserNavigationActionFor(browser_id, action)
 	if action == "address" and main.virtual_keyboard and not main.virtual_keyboard.visible:
 		main.virtual_keyboard.toggle()
 	_pages_poll_at = 0
@@ -38,7 +46,7 @@ func tab_action(action: String, id: int = 0) -> void:
 	clear_gamepad()
 	var bridge := _gamepad_bridge()
 	if bridge:
-		bridge.browserTabAction(action, id)
+		bridge.browserTabActionFor(browser_id, action, id)
 	_pages_poll_at = 0
 
 func _poll_pages() -> void:
@@ -49,7 +57,7 @@ func _poll_pages() -> void:
 	var bridge := _gamepad_bridge()
 	if not bridge:
 		return
-	var snapshot := str(bridge.browserTabs())
+	var snapshot := str(bridge.browserTabsFor(browser_id))
 	if snapshot == _pages_snapshot:
 		return
 	var data = JSON.parse_string(snapshot)
@@ -59,7 +67,7 @@ func _poll_pages() -> void:
 	pages = data.pages
 	selected_page = int(data.get("selected", 0))
 	navigation = data.get("navigation", {})
-	main.screen_sources.sync_browser_pages(pages, selected_page)
+	main.screen_sources.sync_browser_pages(pages, selected_page, screen)
 var _gamepad_java: Object
 var _gamepad_sent := false
 var _gamepad_input_enabled := true
@@ -74,27 +82,41 @@ func _gamepad_bridge() -> Object:
 func gamepad_state(buttons: int, lt: int, rt: int, lx: int, ly: int, rx: int, ry: int) -> void:
 	var bridge := _gamepad_bridge()
 	if active and bridge:
-		bridge.browserGamepad(buttons, lt, rt, lx, ly, rx, ry)
+		bridge.browserGamepadFor(browser_id, buttons, lt, rt, lx, ly, rx, ry)
 		_gamepad_sent = true
 
 func clear_gamepad() -> void:
 	if _gamepad_sent:
 		var bridge := _gamepad_bridge()
 		if bridge:
-			bridge.browserClearGamepad()
+			bridge.browserClearGamepadFor(browser_id)
 		_gamepad_sent = false
 
-func _init(owner: Node3D):
+func _init(owner: Node3D, target: VRScreen = null, id: int = 0):
 	main = owner
+	screen = target
+	browser_id = id
+
+func release_keys() -> void:
+	if uploader:
+		for code in _held_android_keys: uploader.browser_key(code, false, 0)
+	_held_android_keys.clear()
+	_modifiers = 0
 
 func can_infer_depth() -> bool:
-	return active and texture != null and activity == Activity.VISIBLE
+	return self == main.browser_prototype and active and texture != null and activity == Activity.VISIBLE
 
 func start() -> void:
-	if activity == Activity.CLOSED or active or closing or not main.screen_sources.can_open_browser():
+	if activity == Activity.CLOSED or active or closing:
 		return
+	if self == main.browser_prototype and not main.screen_sources.can_open_browser():
+		return
+	if self == main.browser_prototype and not main.screen_sources.allocate_primary_browser_slot(self): return
 	if not uploader:
 		uploader = ClassDB.instantiate("TextureUploader")
+	uploader.set_browser_id(browser_id)
+	if self == main.browser_prototype or screen == null: screen = main.primary_screen
+	main.screen_sources.register_browser(screen, self)
 	active = true
 	_pages_snapshot = ""
 	_pages_poll_at = 0
@@ -104,18 +126,31 @@ func start() -> void:
 	_opening_at = Time.get_ticks_msec()
 	render_size = RESOLUTIONS[clampi(main.settings.browser_resolution, 0, 1)]
 	uploader.start_browser_prototype(render_size.x, render_size.y)
-	main.screen_sources.browser_opened()
+	main.screen_sources.browser_opened(self)
 	main._log("[BROWSER] Opening GPU surface prototype")
 
-func stop() -> void:
-	if not active:
+func stop(close_workspace: bool = false) -> void:
+	if not active or _returning_primary:
 		return
+	if self == main.browser_prototype and main.screen_sources.has_method("stream_screen"):
+		var welcome: VRScreen = main.screen_sources.stream_screen()
+		if welcome != null and welcome != screen:
+			_return_to_welcome_then_stop(welcome)
+			return
 	cancel_pointer()
 	clear_gamepad()
+	release_keys()
 	closing = true
-	main.depth_estimator.set_enabled(false)
-	# Retire the native consumer before closing its SurfaceTexture producer.
-	main.video_presentation.deactivate_native(false)
+	if self == main.browser_prototype:
+		if close_workspace and main.screen_sources.has_method("stop_secondary_browsers"):
+			main.screen_sources.stop_secondary_browsers()
+		main.depth_estimator.set_enabled(false)
+		# Retire the native consumer before closing its SurfaceTexture producer.
+		main.video_presentation.deactivate_native(false)
+	elif screen != null:
+		for layer in [screen.comp_cylinder, screen.comp_cylinder_left, screen.comp_cylinder_right,
+			screen.comp_grab_bar, screen.comp_corner_layer]:
+			if layer: layer.visible = false
 	uploader.close_browser_prototype()
 	active = false
 	pages = []
@@ -125,10 +160,26 @@ func stop() -> void:
 	set_activity(Activity.SUSPENDED)
 	texture = null
 	_modifiers = 0
-	bind_texture()
-	main.screen_sources.browser_closed()
-	_restore_welcome_after_close(generation)
-	main._log("[BROWSER] Closed; draining presentation before welcome restore")
+	if self == main.browser_prototype:
+		bind_texture()
+		main.screen_sources.browser_closed()
+		_restore_welcome_after_close(generation)
+	else:
+		_remove_secondary_after_close(generation)
+	main._log("[BROWSER] Closed id=%d; %s" % [browser_id,
+		"draining before welcome restore" if self == main.browser_prototype else "retiring secondary screen only"])
+
+func _return_to_welcome_then_stop(welcome: VRScreen) -> void:
+	_returning_primary = true
+	var restored: bool = await main.screen_sources.make_primary(welcome)
+	_returning_primary = false
+	if restored: stop()
+
+func _remove_secondary_after_close(token: int) -> void:
+	for _frame in range(3): await main.get_tree().process_frame
+	if generation != token: return
+	closing = false
+	if is_instance_valid(screen): main.screen_sources.remove_browser_screen(screen)
 
 func _restore_welcome_after_close(token: int) -> void:
 	# Do not reacquire the legacy composition swapchain in the same XR frame
@@ -159,7 +210,7 @@ func process() -> void:
 		_gamepad_input_enabled = input_enabled
 		var bridge := _gamepad_bridge()
 		if bridge:
-			bridge.browserInputEnabled(input_enabled)
+			bridge.browserInputEnabledFor(browser_id, input_enabled)
 	var state: int = uploader.poll_browser_prototype()
 	if state < 0 or (state == 0 and Time.get_ticks_msec() - _opening_at > 1000):
 		stop()
@@ -173,11 +224,30 @@ func process() -> void:
 		if not texture:
 			texture = uploader.get_shader_material().get_shader_parameter("tex_y")
 			bind_texture()
-			main.settings_controller.apply_stereo()
+			if self == main.browser_prototype:
+				main.settings_controller.apply_stereo()
+			if main.screen_sources.focused_browser() == self:
+				var bridge := _gamepad_bridge()
+				if bridge: bridge.browserFocus(browser_id)
 			main._log("[BROWSER] First GPU frame ready")
 		frame_available.emit(generation)
 
 func bind_texture() -> void:
+	if self != main.browser_prototype:
+		if screen == null: return
+		for mat in [screen.comp_shader_mat, screen.comp_shader_mat_left, screen.comp_shader_mat_right, screen.material_override]:
+			if mat is ShaderMaterial:
+				mat.set_shader_parameter("main_texture", texture)
+				mat.set_shader_parameter("yuv_mode", 0)
+				mat.set_shader_parameter("stereo_mode", 0)
+				mat.set_shader_parameter("uv_region", Vector4(0, 0, 1, 1))
+		if screen.comp_viewport:
+			screen.comp_base_size = render_size
+			main.comp.update_bezel()
+			screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+		if screen.comp_cylinder: screen.comp_cylinder.visible = true
+		main.comp.update_cylinder_params()
+		return
 	var current: Texture2D = main.get_welcome_content_texture()
 	for mat in [main.comp_shader_mat, main.comp_shader_mat_left, main.comp_shader_mat_right, main.screen_mesh.material_override]:
 		if mat is ShaderMaterial:
@@ -247,3 +317,5 @@ func key(code: int, action: int) -> void:
 		_modifiers = _modifiers | flag if pressed else _modifiers & ~flag
 	if android_code >= 0:
 		uploader.browser_key(android_code, pressed, _modifiers)
+		if pressed: _held_android_keys[android_code] = true
+		else: _held_android_keys.erase(android_code)
