@@ -901,6 +901,9 @@ func _prioritize_tab_overlay() -> void:
 func _reveal_contextual_screen_controls() -> void:
 	if not main.screen_shortcuts:
 		return
+	if main.browser_prototype and main.browser_prototype.active \
+			and main.browser_prototype.navigation.get("editing", false):
+		main.screen_shortcuts.reveal_controls(main.primary_screen)
 	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
 		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
 		return

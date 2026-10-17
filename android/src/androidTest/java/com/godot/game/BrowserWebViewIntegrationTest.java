@@ -65,6 +65,23 @@ public class BrowserWebViewIntegrationTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertTrue(denied[0]);
     }
+
+    @Test public void externalToolbarLeavesContentCleanAndEditsAddress() throws Exception {
+        assertEquals(android.view.View.GONE, ((android.view.View) field("navigationBar")).getVisibility());
+        BrowserPrototype.navigationAction("address");
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        BrowserPrototype.key(android.view.KeyEvent.KEYCODE_A, true, 0);
+        BrowserPrototype.key(android.view.KeyEvent.KEYCODE_A, false, 0);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals("a", ((android.widget.EditText) field("address")).getText().toString());
+        org.json.JSONObject snapshot = new org.json.JSONObject(BrowserPrototype.tabs());
+        assertEquals("a", snapshot.getJSONObject("navigation").getString("address"));
+        assertTrue(snapshot.getJSONObject("navigation").getBoolean("editing"));
+        BrowserPrototype.key(android.view.KeyEvent.KEYCODE_ESCAPE, true, 0);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(Boolean.FALSE, field("editingAddress"));
+        assertEquals(android.view.View.GONE, ((android.view.View) field("navigationBar")).getVisibility());
+    }
     @Test public void explicitlyEnteredHttpIsPermitted() {
         assertTrue(android.security.NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted("10.0.0.13"));
         assertEquals("http://10.0.0.13:32400/web",

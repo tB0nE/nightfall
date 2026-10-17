@@ -376,3 +376,25 @@ checkpoints below describe earlier implementation stages, not current limits.
   backdrop and dropdown together, covering several curvatures and button
   positions. Hit-face subdivision bounds chord error on wide backdrops so
   curved backdrop segments cannot protrude through the smaller button targets.
+
+### Unified two-row screen menu (2026-10-17)
+
+- Moved tabs/add/close to the first row above the screen. Browser navigation
+  occupies the second row: Back, Forward, Reload/Stop, Home, address/search,
+  Go, Saved bookmarks, Blocking and Privacy. Both rows share the corner atlas
+  and its existing OpenXR layer; no new composition layers are allocated.
+- The native browser navigation model remains on Android, but its in-texture
+  toolbar is hidden permanently. Web content now fills the captured surface;
+  the explicit browser Fullscreen button is removed. Chromium video fullscreen
+  remains supported, including its hover-revealed exit control.
+- Navigation metadata crosses the existing cached JSON bridge. Actions dispatch
+  to Android's UI thread with generation checks. The address field opens the
+  existing virtual keyboard, retains native text editing/selection, and keeps
+  the screen menu revealed while editing. Enter/Go navigates; Escape cancels.
+  Website input resumes after clicking the page. Bookmark/privacy/blocking
+  panels remain explicit temporary dialogs on the browser surface.
+- Layout/host regression tests cover two distinct rows above the content and
+  input metadata. An isolated Android instrumentation test covers hidden-toolbar
+  address entry; it must run against the instrumentation flavor, never the
+  installed user's profile. Headset testing remains required for interaction,
+  URL entry, video fullscreen, dialogs and gamepad focus after navigation.

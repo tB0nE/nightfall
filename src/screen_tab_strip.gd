@@ -3,7 +3,7 @@ extends RefCounted
 
 # Shares the corner-controls viewport/layer. Rectangles use screen-width units,
 # with y=0 at the video's top edge and positive y pointing down.
-const TOP_MARGIN_RATIO := 0.075
+const TOP_MARGIN_RATIO := 0.135
 const MAX_VISIBLE := 4
 const BROWSER_ICON := preload("res://src/assets/screen_shortcuts/browser.svg")
 var main: Node3D
@@ -30,7 +30,7 @@ static func page_rects(pages: Array, selected: int) -> Array[Rect2]:
 	var x := -0.43
 	for page in pages:
 		var width := 0.25 if int(page.id) == selected else 0.125
-		result.append(Rect2(x, -0.064, width, 0.038))
+		result.append(Rect2(x, -0.116, width, 0.038))
 		x += width + 0.012
 	return result
 
@@ -93,6 +93,8 @@ func invoke(action: StringName) -> void:
 	elif command.begins_with("list:"):
 		main.browser_prototype.tab_action("select", int(command.trim_prefix("list:")))
 		popup = ""
+	elif command.begins_with("nav:"):
+		main.browser_prototype.navigation_action(command.trim_prefix("nav:"))
 	_signature = ""
 
 func _add(action: StringName, title: String, rect: Rect2, selected := false, enabled := true) -> void:
@@ -177,10 +179,24 @@ func _rebuild() -> void:
 			_add(StringName("page:%d" % int(page.id)), str(page.get("title", "Browser")),
 				rects[i], int(page.id) == selected)
 	else:
-		_add(&"current", "PC monitor" if main.is_streaming else "Welcome", Rect2(-0.43, -0.064, 0.32, 0.038), true, false)
-	_add(&"close", "x", Rect2(0.26, -0.064, 0.05, 0.038), false, browser_active)
-	_add(&"add", "+", Rect2(0.32, -0.064, 0.05, 0.038))
-	_add(&"overflow", "...", Rect2(0.38, -0.064, 0.05, 0.038), false, pages.size() > MAX_VISIBLE)
+		_add(&"current", "PC monitor" if main.is_streaming else "Welcome", Rect2(-0.43, -0.116, 0.32, 0.038), true, false)
+	_add(&"close", "x", Rect2(0.26, -0.116, 0.05, 0.038), false, browser_active)
+	_add(&"add", "+", Rect2(0.32, -0.116, 0.05, 0.038))
+	_add(&"overflow", "...", Rect2(0.38, -0.116, 0.05, 0.038), false, pages.size() > MAX_VISIBLE)
+	if browser_active:
+		var nav: Dictionary = main.browser_prototype.navigation
+		var address_text := str(nav.get("address", ""))
+		if address_text.is_empty(): address_text = "Address or search"
+		var x := -0.43
+		for entry in [["back", "<", 0.045], ["forward", ">", 0.045],
+			["reload", "Stop" if nav.get("loading", false) else "Reload", 0.065],
+			["home", "Home", 0.055], ["address", address_text, 0.29],
+			["go", "Go", 0.045], ["bookmarks", "Saved", 0.075],
+			["blocking", "Blocking", 0.08], ["privacy", "Privacy", 0.075]]:
+			var enabled := bool(nav.get(entry[0], false)) if entry[0] in ["back", "forward"] else true
+			_add(StringName("nav:" + entry[0]), entry[1], Rect2(x, -0.064, entry[2], 0.038),
+				entry[0] == "address" and bool(nav.get("editing", false)), enabled)
+			x += float(entry[2]) + 0.006
 	if popup == "sources":
 		var can_browser: bool = (browser_active and pages.size() < 8) or (not browser_active and main.screen_sources.can_open_browser())
 		_add(&"browser", "Add browser", Rect2(0.12, -0.014, 0.31, 0.04), false, can_browser)
@@ -191,7 +207,7 @@ func _rebuild() -> void:
 			var page: Dictionary = pages[i]
 			_add(StringName("list:%d" % int(page.id)), str(page.get("title", "Browser")),
 				Rect2(0.03, -0.014 + i * 0.036, 0.4, 0.033), int(page.id) == selected)
-	_add(&"hover", "", Rect2(-0.46, -0.085, 0.92, hover_bottom + 0.085))
+	_add(&"hover", "", Rect2(-0.46, -0.132, 0.92, hover_bottom + 0.132))
 	for item in _reuse.values(): _discard(item)
 	_reuse.clear()
 
@@ -201,7 +217,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 	if not revealed and popup != "":
 		popup = ""
 	var signature := str([main.browser_prototype.pages, main.browser_prototype.selected_page,
-		main.browser_prototype.active, main.is_streaming, popup])
+		main.browser_prototype.active, main.browser_prototype.navigation, main.is_streaming, popup])
 	if signature != _signature:
 		_signature = signature
 		_rebuild()

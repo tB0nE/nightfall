@@ -1,7 +1,7 @@
 # Standalone browser verification
 
 Screens now offers Browser Res: 1080p (default, 1920 × 1080) or 1440p
-(2560 × 1440), including toolbar/page content. Close the browser before changing
+(2560 × 1440), now dedicated to page content. Close the browser before changing
 this saved setting, then reopen it; no live session is restarted or discarded.
 Verify persistence, pointer alignment at all corners, fullscreen video and AI 3D
 at both sizes. This does not force a service to supply 1440p video. The larger
@@ -137,3 +137,14 @@ controller path worked before this wiring. Test physical Xbox first, then enable
 Nightfall gamepad mode and test Quest controllers separately. Hide Nightfall's
 menu/keyboard and focus the browser game. Do not infer controller compatibility
 from the probe alone.
+
+## Unified screen-menu follow-up
+
+- Hover above the primary screen: tabs appear on row one and browser controls
+  on row two. Cross gaps and return from the keyboard without losing the menu.
+- Select the address field, type/search with the virtual keyboard, and submit
+  with Enter or Go; Escape cancels editing. Click the page and check text input
+  and gamepad input return to the website.
+- Check Back/Forward enabled state, Reload/Stop, Home, Saved, Blocking, Privacy.
+- Confirm no toolbar remains inside the captured page and that video fullscreen
+  and its hover exit still work. Recheck AI depth on the full browser image.

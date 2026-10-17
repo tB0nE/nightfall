@@ -19,6 +19,17 @@ var pages: Array = []
 var selected_page := 0
 var _pages_poll_at := 0
 var _pages_snapshot := ""
+var navigation: Dictionary = {}
+
+func navigation_action(action: String) -> void:
+	if not active or closing: return
+	cancel_pointer()
+	clear_gamepad()
+	var bridge := _gamepad_bridge()
+	if bridge: bridge.browserNavigationAction(action)
+	if action == "address" and main.virtual_keyboard and not main.virtual_keyboard.visible:
+		main.virtual_keyboard.toggle()
+	_pages_poll_at = 0
 
 func tab_action(action: String, id: int = 0) -> void:
 	if not active or closing:
@@ -47,6 +58,7 @@ func _poll_pages() -> void:
 	_pages_snapshot = snapshot
 	pages = data.pages
 	selected_page = int(data.get("selected", 0))
+	navigation = data.get("navigation", {})
 	main.screen_sources.sync_browser_pages(pages, selected_page)
 var _gamepad_java: Object
 var _gamepad_sent := false
@@ -108,6 +120,7 @@ func stop() -> void:
 	active = false
 	pages = []
 	selected_page = 0
+	navigation = {}
 	generation += 1
 	set_activity(Activity.SUSPENDED)
 	texture = null

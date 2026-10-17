@@ -54,7 +54,7 @@ public final class BrowserPrototype {
     private static TextView pageStatus;
     private static boolean loading;
     private static Runnable fullscreenHide;
-    private static boolean browserFullscreen;
+    private static boolean editingAddress;
     private static long fullscreenHoverStart, fullscreenLastHover;
     private static SharedPreferences browserPreferences;
     private static BrowserBookmarks bookmarks;
@@ -173,7 +173,6 @@ public final class BrowserPrototype {
                 bar.addView(address, new LinearLayout.LayoutParams(0, 64, 1));
                 button(bar, "Go", () -> navigateAddress());
                 button(bar, "Close", () -> close());
-                button(bar, "Fullscreen", () -> enterBrowserFullscreen());
                 pageStatus = new TextView(presentation.getContext());
                 pageStatus.setTextColor(Color.LTGRAY);
                 pageStatus.setTextSize(16);
@@ -181,6 +180,10 @@ public final class BrowserPrototype {
                 pageStatus.setPadding(16, 2, 16, 6);
                 chrome.addView(pageStatus);
                 root.addView(chrome);
+                // Navigation is painted above the screen by the existing
+                // corner-controls atlas. Keep its native editing/model state,
+                // but devote every captured pixel to web content.
+                chrome.setVisibility(View.GONE);
                 createPageWebView(activity, token);
                 ownerActivity = activity;
                 pageTabs.add();
@@ -214,7 +217,14 @@ public final class BrowserPrototype {
             org.json.JSONArray entries = new org.json.JSONArray();
             for (BrowserPageTabs.Page page : pageTabs.pages)
                 entries.put(new org.json.JSONObject().put("id", page.id).put("title", page.title));
-            pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected).put("pages", entries).toString();
+            org.json.JSONObject navigation = new org.json.JSONObject()
+                    .put("address", address == null ? "" : address.getText().toString())
+                    .put("back", web != null && web.canGoBack())
+                    .put("forward", web != null && web.canGoForward())
+                    .put("editing", editingAddress)
+                    .put("loading", loading);
+            pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected)
+                    .put("pages", entries).put("navigation", navigation).toString();
         } catch (org.json.JSONException failure) { DiagnosticLog.info("BrowserPrototype", "Tab metadata unavailable"); }
     }
 
@@ -286,6 +296,34 @@ public final class BrowserPrototype {
         });
     }
 
+    public static void navigationAction(String action) {
+        final int token = generation.get();
+        UI.post(() -> {
+            if (token != generation.get() || web == null || state != 2 || paused || dataClearing) return;
+            if ("address".equals(action)) {
+                hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
+                editingAddress = true;
+                releasePhysicalGamepad(); questPad = null;
+                address.selectAll();
+            } else {
+                editingAddress = false;
+                if ("back".equals(action)) { hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false); if (web.canGoBack()) web.goBack(); }
+                else if ("forward".equals(action)) { hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false); if (web.canGoForward()) web.goForward(); }
+                else if ("reload".equals(action)) {
+                    if (loading) { web.stopLoading(); loading = false; }
+                    else if (BrowserNavigation.HOME_URL.equals(web.getUrl())) loadHome();
+                    else web.reload();
+                }
+                else if ("home".equals(action)) loadHome();
+                else if ("go".equals(action)) navigateAddress();
+                else if ("bookmarks".equals(action)) showBookmarks(null);
+                else if ("blocking".equals(action)) showBlocking();
+                else if ("privacy".equals(action)) showPrivacy();
+            }
+            updateNavigation(); publishPages();
+        });
+    }
+
     private static void createPageWebView(Activity activity, int token) {
     web = new WebView(presentation.getContext());
     final WebView pageView = web;
@@ -340,9 +378,7 @@ public final class BrowserPrototype {
             hideBookmarks(false);
             hidePrivacyPanel();
             hideBlockingPanel();
-            // Retire the browser-chrome exit before replacing it with the
-            // video's exit; otherwise the old overlay remains clickable.
-            if (browserFullscreen) hideCustomView();
+            editingAddress = false;
             // Keep Chromium's video view on our GPU virtual display,
             // never in a separate Activity/OS window outside AI capture.
             customView = view;
@@ -473,6 +509,7 @@ public final class BrowserPrototype {
             pageStatus.setText("Enter an HTTP(S) address or search text; other link types are not supported.");
             return;
         }
+        editingAddress = false;
         address.clearFocus();
         hideBlockingPanel();
         hideBookmarks(false);
@@ -712,6 +749,7 @@ public final class BrowserPrototype {
 
     private static void setPageStatus(String message) {
         pageStatus.setText(pageNotice == null ? message : pageNotice);
+        publishPages();
     }
 
     private static void privacyText(LinearLayout panel, String text, int size) {
@@ -910,14 +948,15 @@ public final class BrowserPrototype {
         backButton.setEnabled(web.canGoBack());
         forwardButton.setEnabled(web.canGoForward());
         reloadButton.setText(loading ? "Stop" : "Reload");
-        if (!address.hasFocus()) {
+        if (!editingAddress && !address.hasFocus()) {
             String url = web.getUrl();
             address.setText(url == null || BrowserNavigation.HOME_URL.equals(url) ? "" : url);
         }
+        publishPages();
     }
 
     private static void revealFullscreenExit() {
-        if (fullscreenExit == null || (customView == null && !browserFullscreen)) return;
+        if (fullscreenExit == null || customView == null) return;
         fullscreenExit.setVisibility(View.VISIBLE);
         if (fullscreenHide != null) UI.removeCallbacks(fullscreenHide);
         final int token = generation.get();
@@ -929,24 +968,9 @@ public final class BrowserPrototype {
         UI.postDelayed(fullscreenHide, 300);
     }
 
-    private static void enterBrowserFullscreen() {
-        if (content == null || web == null || customView != null) return;
-        hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
-        browserFullscreen = true;
-        navigationBar.setVisibility(View.GONE);
-        fullscreenExit = new Button(presentation.getContext());
-        fullscreenExit.setText("Exit fullscreen");
-        fullscreenExit.setAlpha(0.8f);
-        fullscreenExit.setOnClickListener(v -> hideCustomView());
-        content.addView(fullscreenExit, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, 64, Gravity.TOP | Gravity.RIGHT));
-        revealFullscreenExit();
-        web.requestFocus();
-    }
-
     private static void updateFullscreenHover(float x, float y, int action) {
         long now = SystemClock.uptimeMillis();
-        boolean corner = (customView != null || browserFullscreen) && content != null
+        boolean corner = customView != null && content != null
                 && x >= content.getWidth() - 240 && y >= 0 && y < 80
                 && action != MotionEvent.ACTION_CANCEL && action != MotionEvent.ACTION_HOVER_EXIT;
         if (!corner) { fullscreenHoverStart = fullscreenLastHover = 0; return; }
@@ -1011,7 +1035,7 @@ public final class BrowserPrototype {
     }
 
     private static void hideCustomView() {
-        browserFullscreen = false;
+        editingAddress = false;
         fullscreenHoverStart = fullscreenLastHover = 0;
         if (fullscreenHide != null) { UI.removeCallbacks(fullscreenHide); fullscreenHide = null; }
         if (fullscreenExit != null && fullscreenExit.getParent() instanceof ViewGroup)
@@ -1025,7 +1049,7 @@ public final class BrowserPrototype {
             ((ViewGroup) previous.getParent()).removeView(previous);
         }
         if (web != null) web.setVisibility(View.VISIBLE);
-        if (navigationBar != null) navigationBar.setVisibility(View.VISIBLE);
+        if (navigationBar != null) navigationBar.setVisibility(View.GONE);
         if (callback != null) callback.onCustomViewHidden();
         if (previous != null) DiagnosticLog.info("BrowserPrototype", "Video fullscreen exited");
     }
@@ -1034,6 +1058,11 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
+            if (action == MotionEvent.ACTION_DOWN && editingAddress) {
+                editingAddress = false;
+                web.requestFocus();
+                updateNavigation();
+            }
             updateFullscreenHover(x, y, action);
             long now = SystemClock.uptimeMillis();
             if (action == MotionEvent.ACTION_DOWN) downTime = now;
@@ -1067,9 +1096,22 @@ public final class BrowserPrototype {
                 hideBookmarks(true);
                 return;
             }
-            if (pressed && (customView != null || browserFullscreen) && (code == android.view.KeyEvent.KEYCODE_ESCAPE
+            if (pressed && customView != null && (code == android.view.KeyEvent.KEYCODE_ESCAPE
                     || code == android.view.KeyEvent.KEYCODE_BACK)) {
                 hideCustomView();
+                return;
+            }
+            if (editingAddress) {
+                if (code == android.view.KeyEvent.KEYCODE_ENTER) { if (pressed) navigateAddress(); }
+                else if (code == android.view.KeyEvent.KEYCODE_ESCAPE || code == android.view.KeyEvent.KEYCODE_BACK) {
+                    if (pressed) { editingAddress = false; web.requestFocus(); updateNavigation(); }
+                } else {
+                    android.view.KeyEvent event = new android.view.KeyEvent(pressed ? 0 : 1, code);
+                    event = new android.view.KeyEvent(event.getDownTime(), event.getEventTime(),
+                            event.getAction(), code, 0, modifiers);
+                    if (pressed) address.onKeyDown(code, event); else address.onKeyUp(code, event);
+                }
+                publishPages();
                 return;
             }
             android.view.View focus = root.findFocus();
@@ -1092,7 +1134,7 @@ public final class BrowserPrototype {
     // These entry points run on Android's UI thread, directly from Activity
     // dispatch. Never strip device IDs/sources or turn controller buttons into keys.
     private static boolean gamepadTarget() {
-        return web != null && state == 2 && !paused && !dataClearing && gamepadInputEnabled
+        return web != null && state == 2 && !paused && !dataClearing && !editingAddress && gamepadInputEnabled
             && privacyPanel == null && blockingPanel == null && bookmarkPanel == null
             && (address == null || !address.hasFocus()) && (web.hasFocus() || customView != null);
     }

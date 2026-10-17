@@ -5,6 +5,7 @@ class FakeBrowser extends RefCounted:
 	var selected_page := 1
 	var active := true
 	var closing := false
+	var navigation: Dictionary = {"address": "https://example.com", "back": true, "forward": false}
 
 class FakeComp extends RefCounted:
 	var in_use := true
@@ -47,7 +48,11 @@ func _init():
 	var margin := owner.primary_screen.mesh_size.x * ScreenTabStrip.TOP_MARGIN_RATIO
 	var surface := owner.primary_screen.mesh_size + Vector2(0.12, margin * 2.0)
 	strip.update(owner.primary_screen, surface, margin, true)
-	assert(strip._items.size() == 6)
+	assert(strip._items.size() == 15)
+	for item in strip._items:
+		if String(item.action).begins_with("nav:"):
+			assert(item.rect.end.y < 0.0, "Browser controls must stay above web content")
+			assert(item.rect.position.y > strip._items[0].rect.end.y, "Browser controls need a separate row")
 	assert(strip._items[-1].action == &"hover")
 	assert(not strip._items[-1].panel.visible, "Hover backdrop must be invisible")
 	assert(strip._items[0].label.text == "First", "Selected tab should use its title, not WEB")
