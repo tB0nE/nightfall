@@ -6,6 +6,8 @@ class FakeBrowser extends RefCounted:
 	var active := true
 	var closing := false
 	var navigation: Dictionary = {"address": "https://example.com", "back": true, "forward": false}
+	var actions: Array = []
+	func tab_action(action: String, id: int = 0) -> void: actions.append([action, id])
 
 class FakeComp extends RefCounted:
 	var in_use := true
@@ -15,6 +17,7 @@ class FakeMain extends Node3D:
 	var primary_screen: VRScreen
 	var is_streaming := false
 	var comp := FakeComp.new()
+	func _log(_message: String) -> void: pass
 
 func _init():
 	var pages := []
@@ -26,10 +29,13 @@ func _init():
 	assert(ScreenTabStrip.visible_pages(pages.slice(0, 2), 1).size() == 2)
 	assert(ScreenTabStrip.visible_pages([], 0).is_empty())
 	var rects := ScreenTabStrip.page_rects(visible, 8)
-	assert(rects[3].size.x > rects[0].size.x)
+	assert(is_equal_approx(rects[3].size.x, rects[0].size.x))
+	assert(is_equal_approx(rects[0].position.x, -0.48))
 	for i in range(rects.size() - 1):
 		assert(rects[i].end.x < rects[i + 1].position.x)
-	assert(rects[-1].end.x < 0.26, "Page hitboxes must not overlap the close button")
+	assert(is_equal_approx(rects[-1].end.x, 0.32), "Tabs should fill the row up to Add Browser")
+	var overflow_rects := ScreenTabStrip.page_rects(visible, 8, true)
+	assert(overflow_rects[-1].end.x < 0.26, "Overflow list button needs its own slot")
 	# Hitboxes use explicit metadata and remain independent of painted expansion.
 	var screen := VRScreen.new()
 	var target := Area3D.new()
@@ -48,7 +54,11 @@ func _init():
 	var margin := owner.primary_screen.mesh_size.x * ScreenTabStrip.TOP_MARGIN_RATIO
 	var surface := owner.primary_screen.mesh_size + Vector2(0.12, margin * 2.0)
 	strip.update(owner.primary_screen, surface, margin, true)
-	assert(strip._items.size() == 15)
+	assert(strip._items.size() == 11)
+	assert(strip._background.visible)
+	assert(is_equal_approx(strip._background.size.x, owner.primary_screen.mesh_size.x * 1536.0 / surface.x),
+		"Unified panel must match screen width exactly")
+	assert(not strip._dropdown_background.visible)
 	for item in strip._items:
 		if String(item.action).begins_with("nav:"):
 			assert(item.rect.end.y < 0.0, "Browser controls must stay above web content")
@@ -56,7 +66,7 @@ func _init():
 	assert(strip._items[-1].action == &"hover")
 	assert(not strip._items[-1].panel.visible, "Hover backdrop must be invisible")
 	assert(strip._items[0].label.text == "First", "Selected tab should use its title, not WEB")
-	assert(strip._items[1].label.text == "", "Inactive browser tabs should show only their globe")
+	assert(strip._items[1].label.text == "Second", "Full-width tabs should show their titles")
 	var retained_area: Area3D = strip._items[0].area
 	owner.browser_prototype.pages[0].title = "Changed title"
 	strip.update(owner.primary_screen, surface, margin, true)
@@ -66,8 +76,40 @@ func _init():
 	strip.update(owner.primary_screen, surface, margin, true)
 	assert(strip._items[1].area.get_child(0).shape.get_faces() == hit_geometry, "Artwork expansion must not grow hitboxes")
 	assert(strip._items[1].panel.visible)
+	for item in strip._items:
+		if item.action == &"close:2":
+			assert(item.panel.visible and item.area.collision_layer == 2, "Hovered tab must expose its close target")
+		elif item.action == &"close:1":
+			assert(not item.panel.visible and item.area.collision_layer == 0, "Idle close target must not intercept input")
+	assert(strip._items[1].panel.size.is_equal_approx(strip._items[1].rect.size * owner.primary_screen.mesh_size.x * 1536.0 / surface.x),
+		"Hover must not expand across neighbouring tab titles")
+	strip.invoke(&"close:2")
+	assert(owner.browser_prototype.actions[-1] == ["close", 2], "Close must target the hovered tab, not the selected one")
+	strip.invoke(&"browser")
+	assert(owner.browser_prototype.actions[-1] == ["new", 0], "Far-right Add Browser should create directly")
 	strip.update(owner.primary_screen, surface, margin, false)
 	assert(not strip._items[1].panel.visible)
+	assert(not strip._background.visible)
+	strip.popup = "settings"
+	strip.update(owner.primary_screen, surface, margin, true)
+	assert(strip._dropdown_background.visible)
+	var actions := []
+	for item in strip._items: actions.append(String(item.action))
+	for action in ["nav:privacy", "nav:blocking", "nav:bookmarks", "nav:home"]:
+		assert(actions.has(action), "Hamburger menu is missing " + action)
+	assert(not actions.has("nav:go"), "Browser toolbar submits addresses with Enter")
+	var home_index := actions.find("nav:home")
+	assert(home_index < actions.find("nav:privacy") and home_index < actions.find("nav:bookmarks"), "Home must be first in the menu")
+	owner.browser_prototype.active = false
+	strip.update(owner.primary_screen, surface, margin, true)
+	assert(not strip._background.visible and not strip._dropdown_background.visible)
+	assert(strip.popup == "")
+	for item in strip._items:
+		assert(not item.panel.visible and item.area.collision_layer == 0, "Welcome must have no browser menu or invisible targets")
+	owner.browser_prototype.active = true
+	strip.update(owner.primary_screen, surface, margin, true)
+	assert(strip._background.visible, "Opening Browser must restore its menu")
+	assert(strip._items[0].area.collision_layer == 2)
 	owner.primary_screen.free()
 	viewport.free()
 	owner.free()

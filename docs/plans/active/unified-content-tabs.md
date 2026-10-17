@@ -398,3 +398,27 @@ checkpoints below describe earlier implementation stages, not current limits.
   address entry; it must run against the instrumentation flavor, never the
   installed user's profile. Headset testing remains required for interaction,
   URL entry, video fullscreen, dialogs and gamepad focus after navigation.
+
+### Browser panel visual pass
+
+- The shared panel is exactly one screen-width in arc coordinates and follows
+  screen resizing/curvature. Uses the main menu's rounded 32 px background,
+  dark `(0.06, 0.06, 0.10, 0.92)` palette, translucent buttons and blue selection.
+- Bottom row is now Back/Forward/Refresh-or-Stop SVG icons, a wide address field,
+  and a three-line menu. Addresses submit with keyboard Enter. The menu exposes
+  Privacy, Blocking, Bookmarks and Shortcuts (the existing browser home page).
+- Dropdowns use the same panel styling and retained hit-target ordering. The
+  full-width invisible backdrop keeps both rows accessible across the gaps.
+- Verified host layout/physics tests and actual GPU-rendered icon/text output.
+  No additional OpenXR layers. Headset visual and interaction approval pending.
+- Follow-up: equal-width titled tabs fill the top row up to the far-right
+  Add Browser button, with only normal panel padding. Hover is opaque and does
+  not expand across neighbours; a frontmost per-tab close target appears only
+  while that tab/close is hovered and closes that specific page, not the active
+  page by assumption. The global close button is removed. The overflow list
+  appears only above four tabs and is labelled Tabs, distinct from settings.
+  Add Browser creates directly. Settings now starts with Home, followed by
+  Bookmarks, Privacy and Blocking.
+- The welcome screen hides the unified browser panel and disables all of its
+  hit targets; Open Browser remains the entry point. Opening the browser
+  restores the panel, without affecting resize corners sharing its XR layer.

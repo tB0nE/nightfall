@@ -143,8 +143,10 @@ from the probe alone.
 - Hover above the primary screen: tabs appear on row one and browser controls
   on row two. Cross gaps and return from the keyboard without losing the menu.
 - Select the address field, type/search with the virtual keyboard, and submit
-  with Enter or Go; Escape cancels editing. Click the page and check text input
+  with Enter; Escape cancels editing. Click the page and check text input
   and gamepad input return to the website.
-- Check Back/Forward enabled state, Reload/Stop, Home, Saved, Blocking, Privacy.
+- Check Back/Forward enabled state and Refresh/Stop icons. Open the three-line
+  menu and check Privacy, Blocking, Bookmarks and Shortcuts (browser home).
+- Resize/curve the screen; the rounded menu panel must remain screen-width.
 - Confirm no toolbar remains inside the captured page and that video fullscreen
   and its hover exit still work. Recheck AI depth on the full browser image.
