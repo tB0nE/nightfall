@@ -1,6 +1,7 @@
 extends SceneTree
 
 class FakeBrowser extends RefCounted:
+	var render_size := Vector2i(1920, 1080)
 	var active := false
 	var texture: Texture2D
 	var uploader := RefCounted.new()
@@ -25,6 +26,8 @@ func _init():
 	assert(app.primary_media_active(), "Browser AI must not require a stream")
 	assert(app.primary_capture_source() == browser.uploader)
 	assert(app.primary_media_size() == Vector2i(1920, 1080))
+	browser.render_size = Vector2i(2560, 1440)
+	assert(app.primary_media_size() == Vector2i(2560, 1440))
 	assert(not app.is_streaming, "Browser selection must not fake a PC session")
 	browser.active = false
 	assert(not app.primary_media_active())

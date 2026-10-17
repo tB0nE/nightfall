@@ -22,6 +22,8 @@ fi
 mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
+	"test/test_screen_tab_hit_physics.gd"
+	"test/test_screen_tab_strip.gd"
 	"test/test_browser_gamepad.gd"
 	"test/test_depth_welcome_restore.gd"
 	"test/test_app_settings.gd"

@@ -70,6 +70,24 @@ public class BrowserWebViewIntegrationTest {
         assertEquals("http://10.0.0.13:32400/web",
             BrowserNavigation.destination("http://10.0.0.13:32400/web"));
     }
+    @Test public void newSelectCloseKeepsOneLivePage() throws Exception {
+        BrowserPageTabs pages = (BrowserPageTabs) field("pageTabs");
+        int first = pages.selected;
+        WebView original = (WebView) field("web");
+        BrowserPrototype.tabAction("new", 0);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(2, pages.pages.size());
+        assertNotSame(original, field("web"));
+        int second = pages.selected;
+        BrowserPrototype.tabAction("select", first);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(first, pages.selected);
+        assertEquals(2, pages.pages.size());
+        BrowserPrototype.tabAction("close", second);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(1, pages.pages.size());
+        assertEquals(first, pages.selected);
+    }
     @Test public void staleCleanupCannotRestoreClosedBrowser() throws Exception {
         int old = ((java.util.concurrent.atomic.AtomicInteger) field("generation")).get();
         BrowserPrototype.close();

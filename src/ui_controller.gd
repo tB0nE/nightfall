@@ -9,6 +9,7 @@ var _tab_monitors: Control
 var _screen_source_status: Label
 var _open_browser_btn: Button
 var _close_browser_btn: Button
+var _browser_resolution_btn: Button
 var _tab_ai3d: Control
 var _tab_picture: Control
 var _tab_settings: Control
@@ -641,6 +642,15 @@ func _build_screen_sources(parent: VBoxContainer) -> void:
 		main.screen_sources.choose_source(ScreenContentTab.STREAM)
 		update_screen_sources())
 	row.add_child(_close_browser_btn)
+	_browser_resolution_btn = make_option_btn("Browser Res", "1080p")
+	_set_button_tooltip(_browser_resolution_btn, "Browser rendering resolution: 1080p for performance, 1440p for sharper detail. Close the browser before changing this setting; it applies when reopened. Video services choose their own streaming resolution.")
+	_browser_resolution_btn.button_down.connect(func():
+		if main.browser_prototype.active or main.browser_prototype.closing:
+			return
+		main.settings.browser_resolution = (main.settings.browser_resolution + 1) % 2
+		main.state_manager.save_state()
+		update_screen_sources())
+	row.add_child(_browser_resolution_btn)
 	update_screen_sources()
 
 func update_screen_sources() -> void:
@@ -649,6 +659,9 @@ func update_screen_sources() -> void:
 	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
 	_open_browser_btn.disabled = browser_active or not main.screen_sources.can_open_browser()
 	_close_browser_btn.disabled = not browser_active
+	if _browser_resolution_btn:
+		update_option_btn(_browser_resolution_btn, "1440p" if main.settings.browser_resolution == 1 else "1080p")
+		_browser_resolution_btn.disabled = browser_active or main.browser_prototype.closing
 	var source := "Browser" if browser_active else ("PC Stream" if main.is_streaming else "Welcome")
 	_screen_source_status.text = Localization.t("Screen 1: %s") % Localization.t(source)
 

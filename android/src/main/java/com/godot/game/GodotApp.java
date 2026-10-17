@@ -19,6 +19,8 @@ public class GodotApp extends GodotActivity {
 		BrowserPrototype.open(browserActivity.get(), surface, texture, width, height);
 	}
 	public static int pollBrowser() { return BrowserPrototype.poll(); }
+	public static String browserTabs() { return BrowserPrototype.tabs(); }
+	public static void browserTabAction(String action, int id) { BrowserPrototype.tabAction(action, id); }
 	public static boolean consumeBrowserFrame() { return BrowserPrototype.consumeFrame(); }
 	public static void closeBrowser() { BrowserPrototype.close(); }
 	public static void browserPointer(float x, float y, int action) { BrowserPrototype.pointer(x, y, action); }

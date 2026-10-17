@@ -6,6 +6,7 @@ const CORNER_VIEWPORT_SIZE := Vector2i(128, 128)
 const CORNER_LINE_WIDTH := 20
 const CORNER_SIZE_RATIO := 0.027
 const CORNER_ATLAS_WIDTH := 1536
+var _tab_strip: ScreenTabStrip
 
 func setup(scene_root: Node, xr_origin: Node3D, shortcuts: ScreenShortcutBar,
 		screen: VRScreen) -> void:
@@ -37,6 +38,9 @@ func setup(scene_root: Node, xr_origin: Node3D, shortcuts: ScreenShortcutBar,
 		var rect := _make_corner_rect(CORNER_IDS[i])
 		screen.comp_corner_viewport.add_child(rect)
 		screen.comp_corner_rects[i] = rect
+	_tab_strip = scene_root.screen_tab_strip
+	if _tab_strip:
+		_tab_strip.attach(screen, screen.comp_corner_viewport)
 
 func update(screens: Array, active: bool, grab_bars_enabled: bool,
 		corners_enabled: bool, revealed_screen: VRScreen) -> void:
@@ -95,7 +99,8 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool) -> v
 		_set_layer_active(layer, false)
 		return
 	var corner_size := screen.mesh_size.x * CORNER_SIZE_RATIO
-	var surface_size := screen.mesh_size + Vector2(corner_size * 2.0, corner_size * 2.0)
+	var margin := maxf(corner_size, screen.mesh_size.x * ScreenTabStrip.TOP_MARGIN_RATIO) if _tab_strip and screen == _tab_strip.main.primary_screen else corner_size
+	var surface_size := screen.mesh_size + Vector2(corner_size * 2.0, margin * 2.0)
 	var radius := maxf(screen._comp_cyl_radius, 0.001) + 0.003
 	layer.set_radius(radius)
 	layer.set_central_angle(surface_size.x / radius)
@@ -108,6 +113,7 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool) -> v
 	if viewport.size != wanted_size:
 		viewport.size = wanted_size
 	var pixel_size := maxi(1, roundi(CORNER_ATLAS_WIDTH * corner_size / surface_size.x))
+	var vertical_inset := roundi((margin - corner_size) * CORNER_ATLAS_WIDTH / surface_size.x)
 	for i in range(screen.comp_corner_rects.size()):
 		var rect := screen.comp_corner_rects[i] as TextureRect
 		if not rect:
@@ -115,8 +121,10 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool) -> v
 		rect.size = Vector2(pixel_size, pixel_size)
 		rect.position = Vector2(
 			0 if i % 2 == 0 else CORNER_ATLAS_WIDTH - pixel_size,
-			0 if i < 2 else viewport_height - pixel_size)
+			vertical_inset if i < 2 else viewport_height - pixel_size - vertical_inset)
 		rect.visible = artwork_visible
+	if _tab_strip:
+		_tab_strip.update(screen, surface_size, margin, artwork_visible)
 	_set_layer_active(layer, true)
 
 func _make_layer(layer_name: String) -> Node3D:

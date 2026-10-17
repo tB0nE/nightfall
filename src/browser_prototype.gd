@@ -1,5 +1,8 @@
 extends ContentProvider
 
+const RESOLUTIONS := [Vector2i(1920, 1080), Vector2i(2560, 1440)]
+var render_size := Vector2i(1920, 1080)
+
 # Dedicated uploader retained for the app lifetime: never reuse the decoder's
 # surface, and never destroy it while Android's producer still owns a reference.
 var main: Node3D
@@ -12,6 +15,39 @@ var _pressed := false
 var _position := Vector2.ZERO
 var _modifiers := 0
 var new_frame := false
+var pages: Array = []
+var selected_page := 0
+var _pages_poll_at := 0
+var _pages_snapshot := ""
+
+func tab_action(action: String, id: int = 0) -> void:
+	if not active or closing:
+		return
+	cancel_pointer()
+	clear_gamepad()
+	var bridge := _gamepad_bridge()
+	if bridge:
+		bridge.browserTabAction(action, id)
+	_pages_poll_at = 0
+
+func _poll_pages() -> void:
+	var now := Time.get_ticks_msec()
+	if now < _pages_poll_at:
+		return
+	_pages_poll_at = now + 200
+	var bridge := _gamepad_bridge()
+	if not bridge:
+		return
+	var snapshot := str(bridge.browserTabs())
+	if snapshot == _pages_snapshot:
+		return
+	var data = JSON.parse_string(snapshot)
+	if not data is Dictionary or not data.get("pages") is Array:
+		return
+	_pages_snapshot = snapshot
+	pages = data.pages
+	selected_page = int(data.get("selected", 0))
+	main.screen_sources.sync_browser_pages(pages, selected_page)
 var _gamepad_java: Object
 var _gamepad_sent := false
 var _gamepad_input_enabled := true
@@ -48,11 +84,14 @@ func start() -> void:
 	if not uploader:
 		uploader = ClassDB.instantiate("TextureUploader")
 	active = true
+	_pages_snapshot = ""
+	_pages_poll_at = 0
 	_gamepad_input_enabled = true
 	generation += 1
 	set_activity(Activity.VISIBLE)
 	_opening_at = Time.get_ticks_msec()
-	uploader.start_browser_prototype()
+	render_size = RESOLUTIONS[clampi(main.settings.browser_resolution, 0, 1)]
+	uploader.start_browser_prototype(render_size.x, render_size.y)
 	main.screen_sources.browser_opened()
 	main._log("[BROWSER] Opening GPU surface prototype")
 
@@ -67,6 +106,8 @@ func stop() -> void:
 	main.video_presentation.deactivate_native(false)
 	uploader.close_browser_prototype()
 	active = false
+	pages = []
+	selected_page = 0
 	generation += 1
 	set_activity(Activity.SUSPENDED)
 	texture = null
@@ -99,6 +140,7 @@ func process() -> void:
 	new_frame = false
 	if not active:
 		return
+	_poll_pages()
 	var input_enabled: bool = not main.ui_visible and not main.virtual_keyboard.visible
 	if input_enabled != _gamepad_input_enabled:
 		_gamepad_input_enabled = input_enabled
@@ -130,7 +172,7 @@ func bind_texture() -> void:
 			mat.set_shader_parameter("yuv_mode", 0)
 
 func pointer(uv: Vector2, pressed: bool) -> void:
-	_position = uv.clamp(Vector2.ZERO, Vector2.ONE) * Vector2(1920, 1080)
+	_position = uv.clamp(Vector2.ZERO, Vector2.ONE) * Vector2(render_size)
 	var action := 2
 	if pressed != _pressed:
 		action = 0 if pressed else 1

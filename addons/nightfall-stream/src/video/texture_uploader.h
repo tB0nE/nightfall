@@ -70,7 +70,7 @@ public:
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
-    void start_browser_prototype();
+    void start_browser_prototype(int width = 1920, int height = 1080);
     void close_browser_prototype();
     int poll_browser_prototype();
     void browser_pointer(float x, float y, int action);

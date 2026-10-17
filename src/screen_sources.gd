@@ -54,5 +54,32 @@ func browser_opened() -> void:
 
 func browser_closed() -> void:
 	if main.primary_screen:
-		main.primary_screen.content_tabs.remove(PRIMARY_BROWSER)
+		var tabs: ScreenContentTabs = main.primary_screen.content_tabs
+		for tab in tabs.tabs.duplicate():
+			if tab.kind == ScreenContentTab.BROWSER:
+				tabs.remove(tab.id)
+	changed.emit()
+
+func sync_browser_pages(pages: Array, selected: int) -> void:
+	if main.primary_screen == null or pages.is_empty():
+		return
+	var tabs: ScreenContentTabs = main.primary_screen.content_tabs
+	var keep := {}
+	for page in pages:
+		if not page is Dictionary or int(page.get("id", 0)) <= 0:
+			continue
+		var id := StringName("browser:page:%d" % int(page.id))
+		keep[id] = true
+		var tab: ScreenContentTab = tabs.find_tab(id)
+		if tab == null:
+			tab = ScreenContentTab.new()
+			tab.id = id
+			tab.kind = ScreenContentTab.BROWSER
+			tab.locator = {"url": "about:blank"}
+			tabs.add(tab, false)
+		tab.title = str(page.get("title", "Browser"))
+	for tab in tabs.tabs.duplicate():
+		if tab.kind == ScreenContentTab.BROWSER and not keep.has(tab.id):
+			tabs.remove(tab.id)
+	tabs.select(StringName("browser:page:%d" % selected))
 	changed.emit()

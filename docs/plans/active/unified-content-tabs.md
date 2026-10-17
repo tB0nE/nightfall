@@ -2,6 +2,31 @@
 
 ## Agreed product scope
 
+### Compact tab strip milestone — 2026-10-16
+
+- Primary-screen top strip shares the corner-controls composition layer (no
+  extra OpenXR layers). It reveals with grab/corner controls and uses their
+  existing half-second hide delay. Active tab is wider; hovering inactive tabs
+  expands only their artwork, never their physics targets or neighbouring slots.
+- Four visible tabs plus overflow, separate active-tab close, and a `+` source
+  picker. PC-monitor/local-media choices are clearly unavailable where the current
+  backend cannot supply them. Existing Screens layout/monitor controls stay intact.
+- Up to eight standalone browser tabs. Only one WebView is alive on the existing
+  GPU surface. Switching saves navigation state in RAM, destroys the outgoing
+  WebView and restores/reloads the incoming tab. This deliberately stops hidden
+  audio, video and game contexts; it does NOT preserve arbitrary JavaScript state,
+  running cloud-game sessions or opt-in background audio. Cookies remain shared.
+- Titles/identities sync to the primary screen's ScreenContentTabs without URLs
+  entering workspace metadata or diagnostics. Closing the last browser tab uses
+  the existing safe browser-close/welcome handoff.
+- Multiple physical browser screens, mixed PC/browser presentation, local media,
+  cross-screen moves, workspace restore and live background-tab retention remain
+  future provider work. Do not treat a disabled source-picker entry as support.
+- Headset gate: visual alignment on flat/curved/resized screens, no overlapping
+  hitboxes or activation during a held grab, title expansion, overflow selection,
+  new/close/last-close, navigation restore, audio stopping, AI 3D and gamepads after
+  a switch, and no extra submitted layers. Prototype is not yet device-validated.
+
 ### User clarification — 2026-10-15
 
 - Screens extends the existing Monitors menu, retaining monitor counts,
@@ -324,3 +349,30 @@ checkpoints below describe earlier implementation stages, not current limits.
 - Added regression coverage for deferred close, stopped inference, and PC
   connection ownership during close. Full GDScript suite and optimized Android
   build pass. Fullscreen video/AI and repeated close require a headset retest.
+
+### Primary tab strip follow-up (2026-10-16)
+
+- Tabs and source dropdown share the existing corner-controls viewport and
+  composition layer; no additional OpenXR layer is allocated for them.
+- Tab cursor placement uses the same unfiltered hit as input, resetting the
+  steady filter across tab hits and misses. Dropdown hit geometry clears the
+  video's 10 mm-thick collider; regression coverage checks overlapping targets.
+- Inactive browser tabs show only a globe; active/hovered tabs show the title.
+- Browser Fullscreen hides navigation inside the existing capture texture.
+  Hovering the top-right corner continuously for 0.6 seconds reveals the exit;
+  it hides after 0.3 seconds away from the corner.
+  Escape/Back also exits. This is separate from Chromium video fullscreen.
+- Separate browser screens remain outstanding: replace singleton browser state
+  with per-provider instances, route input to the focused screen, integrate
+  source-independent layouts and enforce shared screen/layer/resource budgets.
+  Tabs continue to share one visible browser producer; they are not screens.
+- Follow-up: explicit ray priority prevents the primary screen's differently
+  curved collider from intercepting dropdown input. An invisible non-actionable
+  backdrop keeps controls revealed while traversing gaps and the open dropdown;
+  disabled rows absorb clicks instead of passing them through to web content.
+- Corrected local depth ordering after headset feedback: the viewer is on
+  screen-local +Z, so menu hit faces offset toward +Z and the hover backdrop
+  sits behind them toward -Z. Viewer-side physics tests now include video,
+  backdrop and dropdown together, covering several curvatures and button
+  positions. Hit-face subdivision bounds chord error on wide backdrops so
+  curved backdrop segments cannot protrude through the smaller button targets.

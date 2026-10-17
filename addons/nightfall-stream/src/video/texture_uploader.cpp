@@ -2025,7 +2025,7 @@ PackedByteArray TextureUploader::consume_native_depth_capture() {
 }
 
 void TextureUploader::_bind_methods() {
-    ClassDB::bind_method(D_METHOD("start_browser_prototype"), &TextureUploader::start_browser_prototype);
+    ClassDB::bind_method(D_METHOD("start_browser_prototype", "width", "height"), &TextureUploader::start_browser_prototype, DEFVAL(1920), DEFVAL(1080));
     ClassDB::bind_method(D_METHOD("close_browser_prototype"), &TextureUploader::close_browser_prototype);
     ClassDB::bind_method(D_METHOD("poll_browser_prototype"), &TextureUploader::poll_browser_prototype);
     ClassDB::bind_method(D_METHOD("browser_pointer", "x", "y", "action"), &TextureUploader::browser_pointer);
@@ -2049,15 +2049,16 @@ void TextureUploader::_bind_methods() {
 #endif
 }
 
-void TextureUploader::start_browser_prototype() {
+void TextureUploader::start_browser_prototype(int width, int height) {
 #ifdef __ANDROID__
     if (browser_requested_.exchange(true)) return;
     browser_open_dispatched_.store(false);
     ensure_shader_material();
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
-        gles_surface_width_ = 1920;
-        gles_surface_height_ = 1080;
+        const bool high_resolution = width == 2560 && height == 1440;
+        gles_surface_width_ = high_resolution ? 2560 : 1920;
+        gles_surface_height_ = high_resolution ? 1440 : 1080;
     }
     RenderingServer::get_singleton()->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_open_browser));
 #endif

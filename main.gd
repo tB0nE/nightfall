@@ -294,6 +294,7 @@ var settings_controller: SettingsController
 var state_manager: StateManager
 var controller_mapper: ControllerMapper
 var screen_shortcuts: ScreenShortcutBar
+var screen_tab_strip: ScreenTabStrip
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
@@ -961,9 +962,15 @@ func _update_cursor_layer():
 	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
-		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
+		var hit_point = active_raycast.get_collision_point()
 		var col = active_raycast.get_collider()
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
+		# Tabs use raw hits for input; smoothing their cursor makes it trail
+		# behind and resurrect at the previous tab after pointing away.
+		if t.role == &"screen_tab":
+			_reset_steady_filter()
+		else:
+			hit_point = _get_steady_hit(hit_point)
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
 		# Keep the screen cursor in one composition layer across mono, SBS, and
@@ -1017,6 +1024,7 @@ func _update_cursor_layer():
 				settings.cursor_mode,
 				native_ai_cursor_offset)
 	else:
+		_reset_steady_filter()
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
 	if composition_pointers.has_primary():
@@ -1483,6 +1491,7 @@ func _init_modules():
 	controller_mapper = ControllerMapper.new(self)
 	add_child(controller_mapper)
 	screen_shortcuts = ScreenShortcutBar.new(self)
+	screen_tab_strip = ScreenTabStrip.new(self)
 
 func _init_android_setup():
 	# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
@@ -2232,7 +2241,7 @@ func primary_capture_source():
 
 func primary_media_size() -> Vector2i:
 	if browser_content_active():
-		return Vector2i(1920, 1080)
+		return browser_prototype.render_size
 	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):

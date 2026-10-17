@@ -11,8 +11,21 @@ func _init():
 	_test_host_persistence_round_trip()
 	_test_legacy_host_migrations()
 	_test_controller_settings_persistence()
+	_test_browser_resolution()
 	print("All app_settings tests passed")
 	quit()
+
+func _test_browser_resolution() -> void:
+	var settings := AppSettings.new()
+	assert(settings.browser_resolution == 0)
+	var config := ConfigFile.new()
+	for invalid in [-1, 2, "1440p", true]:
+		config.set_value("browser", "resolution", invalid)
+		SettingsPersistence.read_app(config, settings, false, [0])
+		assert(settings.browser_resolution == 0)
+	settings.browser_resolution = 1
+	settings.reset_general()
+	assert(settings.browser_resolution == 0)
 
 func _test_display_defaults() -> void:
 	var settings := AppSettings.new()
@@ -67,6 +80,7 @@ func _test_platform_policy() -> void:
 func _test_app_persistence_round_trip() -> void:
 	var source := AppSettings.new()
 	source.bezel_enabled = false
+	source.browser_resolution = 1
 	source.passthrough_enabled = true
 	source.background_mode = 2
 	source.sharpen_mode = 7
@@ -98,6 +112,7 @@ func _test_app_persistence_round_trip() -> void:
 	var loaded := AppSettings.new()
 	SettingsPersistence.read_app(config, loaded, true, [0, 6, 7])
 	assert(loaded.android_audio_output == 1)
+	assert(loaded.browser_resolution == 1)
 	assert(not loaded.bezel_enabled)
 	assert(loaded.passthrough_enabled)
 	assert(loaded.background_mode == 2)

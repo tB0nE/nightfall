@@ -10,6 +10,7 @@ const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12]
 
 static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
+	config.set_value("browser", "resolution", settings.browser_resolution)
 	config.set_value("screen", "bezel", settings.bezel_enabled)
 	config.set_value("screen", "passthrough_enabled", settings.passthrough_enabled)
 	config.set_value("screen", "background_mode", settings.background_mode)
@@ -45,6 +46,8 @@ static func read_app(
 		sharpen_choices: Array) -> Dictionary:
 	settings.bezel_enabled = config.get_value(
 		"screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
+	var browser_resolution = config.get_value("browser", "resolution", AppSettings.DEFAULT_BROWSER_RESOLUTION)
+	settings.browser_resolution = browser_resolution if typeof(browser_resolution) == TYPE_INT and browser_resolution in [0, 1] else AppSettings.DEFAULT_BROWSER_RESOLUTION
 	settings.background_mode = config.get_value(
 		"screen", "background_mode", AppSettings.DEFAULT_BACKGROUND_MODE)
 

@@ -54,6 +54,8 @@ public final class BrowserPrototype {
     private static TextView pageStatus;
     private static boolean loading;
     private static Runnable fullscreenHide;
+    private static boolean browserFullscreen;
+    private static long fullscreenHoverStart, fullscreenLastHover;
     private static SharedPreferences browserPreferences;
     private static BrowserBookmarks bookmarks;
     private static View bookmarkPanel;
@@ -75,6 +77,10 @@ public final class BrowserPrototype {
     private static final java.util.Map<Long, android.view.KeyEvent> padKeys = new java.util.HashMap<>();
     private static final java.util.Map<Integer, MotionEvent> padMotions = new java.util.HashMap<>();
     private static boolean questBridgeReady;
+    private static final BrowserPageTabs pageTabs = new BrowserPageTabs();
+    private static final java.util.Map<Integer, android.os.Bundle> pageHistory = new java.util.HashMap<>();
+    private static Activity ownerActivity;
+    private static volatile String pageSnapshot = "{\"selected\":0,\"pages\":[]}";
     private static BrowserPhysicalGamepad physicalPad;
     private static final java.util.Set<String> padRouteDiagnostics = new java.util.HashSet<>();
     private static android.hardware.input.InputManager padInputManager;
@@ -167,6 +173,7 @@ public final class BrowserPrototype {
                 bar.addView(address, new LinearLayout.LayoutParams(0, 64, 1));
                 button(bar, "Go", () -> navigateAddress());
                 button(bar, "Close", () -> close());
+                button(bar, "Fullscreen", () -> enterBrowserFullscreen());
                 pageStatus = new TextView(presentation.getContext());
                 pageStatus.setTextColor(Color.LTGRAY);
                 pageStatus.setTextSize(16);
@@ -174,165 +181,10 @@ public final class BrowserPrototype {
                 pageStatus.setPadding(16, 2, 16, 6);
                 chrome.addView(pageStatus);
                 root.addView(chrome);
-                web = new WebView(presentation.getContext());
-                web.getSettings().setJavaScriptEnabled(true);
-                web.getSettings().setDomStorageEnabled(true);
-                web.getSettings().setAllowFileAccess(false);
-                web.getSettings().setAllowContentAccess(false);
-                web.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
-                web.getSettings().setGeolocationEnabled(false);
-                installQuestGamepadBridge();
-                web.setOnFocusChangeListener((view, focused) -> {
-                    if (!focused) { releasePhysicalGamepad(); questPad = null; }
-                });
-                padInputManager = (android.hardware.input.InputManager) activity.getSystemService(Context.INPUT_SERVICE);
-                if (padInputManager != null) padInputManager.registerInputDeviceListener(padDevices, UI);
-                web.setDownloadListener((url, agent, disposition, mime, length) ->
-                        siteNotice(token, "Downloads are not supported yet. No file was downloaded."));
-                web.setWebChromeClient(new WebChromeClient() {
-                    @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
-                        UI.post(() -> {
-                            try { request.deny(); } catch (IllegalStateException cancelled) { return; }
-                            siteNotice(token, "Camera/microphone and other protected site permissions are not supported yet; request denied.");
-                        });
-                    }
-                    @Override public void onGeolocationPermissionsShowPrompt(String origin,
-                            android.webkit.GeolocationPermissions.Callback callback) {
-                        callback.invoke(origin, false, false);
-                        siteNotice(token, "Location access is disabled.");
-                    }
-                    @Override public boolean onShowFileChooser(WebView view,
-                            android.webkit.ValueCallback<android.net.Uri[]> callback, FileChooserParams parameters) {
-                        callback.onReceiveValue(null);
-                        siteNotice(token, "File uploads are not supported yet; no file access was granted.");
-                        return true;
-                    }
-                    @Override public void onProgressChanged(WebView view, int progress) {
-                        if (token != generation.get() || view != web) return;
-                        if (loading && progress < 100) setPageStatus("Loading " + progress + "%");
-                        updateNavigation();
-                    }
-                    @Override public void onReceivedTitle(WebView view, String title) {
-                        if (token == generation.get() && view == web && !loading) setPageStatus(title);
-                    }
-                    @Override public void onShowCustomView(View view, CustomViewCallback callback) {
-                        if (token != generation.get() || content == null || customView != null) {
-                            callback.onCustomViewHidden();
-                            return;
-                        }
-                        hideBookmarks(false);
-                        hidePrivacyPanel();
-                        hideBlockingPanel();
-                        // Keep Chromium's video view on our GPU virtual display,
-                        // never in a separate Activity/OS window outside AI capture.
-                        customView = view;
-                        customViewCallback = callback;
-                        web.setVisibility(View.GONE);
-                        navigationBar.setVisibility(View.GONE);
-                        content.addView(view, new FrameLayout.LayoutParams(-1, -1));
-                        fullscreenExit = new Button(presentation.getContext());
-                        fullscreenExit.setText("Exit fullscreen");
-                        fullscreenExit.setAlpha(0.8f);
-                        fullscreenExit.setOnClickListener(v -> hideCustomView());
-                        FrameLayout.LayoutParams exitParams = new FrameLayout.LayoutParams(-2, 64, Gravity.TOP | Gravity.RIGHT);
-                        content.addView(fullscreenExit, exitParams);
-                        revealFullscreenExit();
-                        view.requestFocus();
-                        DiagnosticLog.info("BrowserPrototype", "Video fullscreen entered");
-                    }
-                    @Override public void onHideCustomView() {
-                        if (token == generation.get()) hideCustomView();
-                    }
-                });
-                web.setWebViewClient(new WebViewClient() {
-                    @Override public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view,
-                            android.webkit.WebResourceRequest request) {
-                        if (token != generation.get()) return null;
-                        return blocker.intercept(request, false);
-                    }
-                    @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
-                        if (token != generation.get() || view != web) return true;
-                        String destination = request.getUrl().toString();
-                        if (dataClearing) return true;
-                        if (request.isForMainFrame() && BrowserGamepadProbe.URL.equals(destination)) {
-                            navigateTo(destination);
-                            return true;
-                        }
-                        if (!BrowserNavigation.allowed(destination)) {
-                            if (request.isForMainFrame()) siteNotice(token, "This link requires an unsupported scheme or external app. Nothing was opened.");
-                            return true;
-                        }
-                        if (request.isForMainFrame()) blocker.page(destination);
-                        return false;
-                    }
-                    @Override public void onPageStarted(WebView view, String url, Bitmap icon) {
-                        if (token != generation.get() || view != web) return;
-                        navigationGeneration++;
-                        pageNotice = null;
-                        mainFrameFailed = false;
-                        blocker.page(url);
-                        loading = true;
-                        updateNavigation();
-                    }
-                    @Override public void onPageFinished(WebView view, String url) {
-                        if (token != generation.get() || view != web) return;
-                        loading = false;
-                        if (dataClearing && pendingClear != null && "about:blank".equals(url)) {
-                            performDataClear(token);
-                            return;
-                        }
-                        if (!dataClearing && saveHistory && !mainFrameFailed && navigationGeneration != skipHistoryNavigation
-                                && BrowserHistory.address(url) != null) {
-                            history.visit(view.getTitle(), url, System.currentTimeMillis());
-                            browserPreferences.edit().putString("history_v1", history.encode()).apply();
-                            historyLoadFailed = false;
-                        }
-                        if (clearBackHistoryAfterHome && BrowserNavigation.HOME_URL.equals(url)) {
-                            web.clearHistory();
-                            clearBackHistoryAfterHome = false;
-                        }
-                        setPageStatus(view.getTitle());
-                        if (completionNotice != null && BrowserNavigation.HOME_URL.equals(url)) {
-                            pageStatus.setText(completionNotice);
-                            completionNotice = null;
-                        }
-                        updateNavigation();
-                        applyCosmetics(view, url, token, navigationGeneration);
-                    }
-                    @Override public void doUpdateVisitedHistory(WebView view, String url, boolean reload) {
-                        if (token == generation.get() && view == web) updateNavigation();
-                    }
-                    @Override public void onReceivedError(WebView view, android.webkit.WebResourceRequest request,
-                            android.webkit.WebResourceError error) {
-                        if (token != generation.get() || view != web || !request.isForMainFrame()) return;
-                        loading = false;
-                        mainFrameFailed = true;
-                        updateNavigation();
-                        pageStatus.setText("Page could not load. Check the address or connection, then Reload.");
-                    }
-                    @Override public void onReceivedHttpError(WebView view, android.webkit.WebResourceRequest request,
-                            android.webkit.WebResourceResponse response) {
-                        if (token == generation.get() && view == web && request.isForMainFrame()) mainFrameFailed = true;
-                    }
-                    @Override public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler,
-                            android.net.http.SslError error) {
-                        handler.cancel();
-                        if (token == generation.get() && view == web) {
-                            mainFrameFailed = true;
-                            siteNotice(token, "Secure connection failed. The certificate was rejected; no bypass is available.");
-                        }
-                    }
-                    @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-                        // A destroyed/replaced WebView may report its crash
-                        // late. Never let it dispose the newer browser.
-                        if (token != generation.get() || view != web) return true;
-                        DiagnosticLog.info("BrowserPrototype", "Renderer lost; crashed=" + detail.didCrash());
-                        generation.incrementAndGet();
-                        dispose();
-                        state = -1;
-                        return true;
-                    }
-                });
+                createPageWebView(activity, token);
+                ownerActivity = activity;
+                pageTabs.add();
+                publishPages();
                 content = new FrameLayout(presentation.getContext());
                 content.addView(web, new FrameLayout.LayoutParams(-1, -1));
                 root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -348,6 +200,260 @@ public final class BrowserPrototype {
                 DiagnosticLog.error("BrowserPrototype", "GPU display creation failed", e);
             }
         });
+    }
+
+    public static String tabs() { return pageSnapshot; }
+
+    private static void publishPages() {
+        BrowserPageTabs.Page selected = pageTabs.find(pageTabs.selected);
+        if (selected != null && web != null && web.getTitle() != null) {
+            String title = web.getTitle().replaceAll("[\\p{Cntrl}]", " ");
+            selected.title = title.substring(0, Math.min(title.length(), 120));
+        }
+        try {
+            org.json.JSONArray entries = new org.json.JSONArray();
+            for (BrowserPageTabs.Page page : pageTabs.pages)
+                entries.put(new org.json.JSONObject().put("id", page.id).put("title", page.title));
+            pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected).put("pages", entries).toString();
+        } catch (org.json.JSONException failure) { DiagnosticLog.info("BrowserPrototype", "Tab metadata unavailable"); }
+    }
+
+    // Only one WebView is alive. Suspended tabs keep back/forward state in RAM,
+    // not live video, audio or game contexts. Returning to a tab may reload it.
+    private static void retirePage(boolean save) {
+        hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
+        releasePhysicalGamepad(); questPad = null;
+        if (web == null) return;
+        publishPages();
+        if (save && pageTabs.selected != 0) {
+            android.os.Bundle saved = new android.os.Bundle();
+            if (web.saveState(saved) != null) {
+                saved.putString("nightfall_current_url", web.getUrl());
+                pageHistory.put(pageTabs.selected, saved);
+            }
+        }
+        navigationGeneration++;
+        pageNotice = null;
+        web.stopLoading();
+        if (web.getParent() instanceof ViewGroup) ((ViewGroup) web.getParent()).removeView(web);
+        WebView outgoing = web;
+        web = null; // Invalidate callbacks before destroy can report a renderer loss.
+        outgoing.destroy();
+    }
+    private static void resumePage(int token) {
+        boolean inputEnabled = gamepadInputEnabled;
+        createPageWebView(ownerActivity, token);
+        gamepadInputEnabled = inputEnabled;
+        content.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        android.os.Bundle saved = pageHistory.get(pageTabs.selected);
+        String url = saved == null ? null : saved.getString("nightfall_current_url");
+        if (BrowserGamepadProbe.URL.equals(url)) navigateTo(url);
+        else if (saved != null && saved.getBoolean("nightfall_url_only") && BrowserNavigation.allowed(url)
+                && !BrowserNavigation.HOME_URL.equals(url)) navigateTo(url);
+        else if (saved == null || BrowserNavigation.HOME_URL.equals(url) || web.restoreState(saved) == null) loadHome();
+        else {
+            blocker.page(web.getUrl());
+            address.clearFocus(); web.requestFocus();
+            updateNavigation();
+        }
+        publishPages();
+    }
+    public static void tabAction(String action, int id) {
+        int token = generation.get();
+        UI.post(() -> {
+            if (token != generation.get() || web == null || dataClearing || paused || ownerActivity == null) return;
+            if ("select".equals(action) && (pageTabs.find(id) == null || pageTabs.selected == id)) return;
+            if ("close".equals(action) && pageTabs.find(id) == null) return;
+            if ("new".equals(action) && pageTabs.pages.size() >= BrowserPageTabs.LIMIT) {
+                pageStatus.setText("Browser tab limit reached (8)."); return;
+            }
+            try {
+                if ("new".equals(action)) { retirePage(true); pageTabs.add(); resumePage(token); }
+                else if ("select".equals(action)) { retirePage(true); pageTabs.select(id); resumePage(token); }
+                else if ("close".equals(action)) {
+                    boolean current = pageTabs.selected == id;
+                    if (current) retirePage(false);
+                    pageHistory.remove(id); pageTabs.remove(id);
+                    if (pageTabs.pages.isEmpty()) close();
+                    else if (current) resumePage(token);
+                }
+                publishPages();
+                DiagnosticLog.info("BrowserPrototype", "Tab action=" + action + " count=" + pageTabs.pages.size() + " selected=" + pageTabs.selected);
+            } catch (RuntimeException | LinkageError failure) {
+                DiagnosticLog.error("BrowserPrototype", "Tab change failed; closing browser safely", failure);
+                close();
+            }
+        });
+    }
+
+    private static void createPageWebView(Activity activity, int token) {
+    web = new WebView(presentation.getContext());
+    final WebView pageView = web;
+    web.getSettings().setJavaScriptEnabled(true);
+    web.getSettings().setDomStorageEnabled(true);
+    web.getSettings().setAllowFileAccess(false);
+    web.getSettings().setAllowContentAccess(false);
+    web.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
+    web.getSettings().setGeolocationEnabled(false);
+    installQuestGamepadBridge();
+    web.setOnFocusChangeListener((view, focused) -> {
+        if (!focused) { releasePhysicalGamepad(); questPad = null; }
+    });
+    if (padInputManager == null) {
+        padInputManager = (android.hardware.input.InputManager) activity.getSystemService(Context.INPUT_SERVICE);
+        if (padInputManager != null) padInputManager.registerInputDeviceListener(padDevices, UI);
+    }
+    web.setDownloadListener((url, agent, disposition, mime, length) ->
+            siteNotice(token, "Downloads are not supported yet. No file was downloaded."));
+    web.setWebChromeClient(new WebChromeClient() {
+        @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
+            UI.post(() -> {
+                try { request.deny(); } catch (IllegalStateException cancelled) { return; }
+                siteNotice(token, "Camera/microphone and other protected site permissions are not supported yet; request denied.");
+            });
+        }
+        @Override public void onGeolocationPermissionsShowPrompt(String origin,
+                android.webkit.GeolocationPermissions.Callback callback) {
+            callback.invoke(origin, false, false);
+            siteNotice(token, "Location access is disabled.");
+        }
+        @Override public boolean onShowFileChooser(WebView view,
+                android.webkit.ValueCallback<android.net.Uri[]> callback, FileChooserParams parameters) {
+            callback.onReceiveValue(null);
+            siteNotice(token, "File uploads are not supported yet; no file access was granted.");
+            return true;
+        }
+        @Override public void onProgressChanged(WebView view, int progress) {
+            if (token != generation.get() || view != web) return;
+            if (loading && progress < 100) setPageStatus("Loading " + progress + "%");
+            updateNavigation();
+        }
+        @Override public void onReceivedTitle(WebView view, String title) {
+            if (token == generation.get() && view == web && !loading) setPageStatus(title);
+            if (token == generation.get() && view == web) publishPages();
+        }
+        @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+            if (token != generation.get() || pageView != web || content == null || customView != null) {
+                callback.onCustomViewHidden();
+                return;
+            }
+            hideBookmarks(false);
+            hidePrivacyPanel();
+            hideBlockingPanel();
+            // Retire the browser-chrome exit before replacing it with the
+            // video's exit; otherwise the old overlay remains clickable.
+            if (browserFullscreen) hideCustomView();
+            // Keep Chromium's video view on our GPU virtual display,
+            // never in a separate Activity/OS window outside AI capture.
+            customView = view;
+            customViewCallback = callback;
+            web.setVisibility(View.GONE);
+            navigationBar.setVisibility(View.GONE);
+            content.addView(view, new FrameLayout.LayoutParams(-1, -1));
+            fullscreenExit = new Button(presentation.getContext());
+            fullscreenExit.setText("Exit fullscreen");
+            fullscreenExit.setAlpha(0.8f);
+            fullscreenExit.setOnClickListener(v -> hideCustomView());
+            FrameLayout.LayoutParams exitParams = new FrameLayout.LayoutParams(-2, 64, Gravity.TOP | Gravity.RIGHT);
+            content.addView(fullscreenExit, exitParams);
+            revealFullscreenExit();
+            view.requestFocus();
+            DiagnosticLog.info("BrowserPrototype", "Video fullscreen entered");
+        }
+        @Override public void onHideCustomView() {
+            if (token == generation.get() && pageView == web) hideCustomView();
+        }
+    });
+    web.setWebViewClient(new WebViewClient() {
+        @Override public android.webkit.WebResourceResponse shouldInterceptRequest(WebView view,
+                android.webkit.WebResourceRequest request) {
+            if (token != generation.get()) return null;
+            return blocker.intercept(request, false);
+        }
+        @Override public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+            if (token != generation.get() || view != web) return true;
+            String destination = request.getUrl().toString();
+            if (dataClearing) return true;
+            if (request.isForMainFrame() && BrowserGamepadProbe.URL.equals(destination)) {
+                navigateTo(destination);
+                return true;
+            }
+            if (!BrowserNavigation.allowed(destination)) {
+                if (request.isForMainFrame()) siteNotice(token, "This link requires an unsupported scheme or external app. Nothing was opened.");
+                return true;
+            }
+            if (request.isForMainFrame()) blocker.page(destination);
+            return false;
+        }
+        @Override public void onPageStarted(WebView view, String url, Bitmap icon) {
+            if (token != generation.get() || view != web) return;
+            navigationGeneration++;
+            pageNotice = null;
+            mainFrameFailed = false;
+            blocker.page(url);
+            loading = true;
+            updateNavigation();
+        }
+        @Override public void onPageFinished(WebView view, String url) {
+            if (token != generation.get() || view != web) return;
+            loading = false;
+            if (dataClearing && pendingClear != null && "about:blank".equals(url)) {
+                performDataClear(token);
+                return;
+            }
+            if (!dataClearing && saveHistory && !mainFrameFailed && navigationGeneration != skipHistoryNavigation
+                    && BrowserHistory.address(url) != null) {
+                history.visit(view.getTitle(), url, System.currentTimeMillis());
+                browserPreferences.edit().putString("history_v1", history.encode()).apply();
+                historyLoadFailed = false;
+            }
+            if (clearBackHistoryAfterHome && BrowserNavigation.HOME_URL.equals(url)) {
+                web.clearHistory();
+                clearBackHistoryAfterHome = false;
+            }
+            setPageStatus(view.getTitle());
+            if (completionNotice != null && BrowserNavigation.HOME_URL.equals(url)) {
+                pageStatus.setText(completionNotice);
+                completionNotice = null;
+            }
+            updateNavigation();
+            applyCosmetics(view, url, token, navigationGeneration);
+            publishPages();
+        }
+        @Override public void doUpdateVisitedHistory(WebView view, String url, boolean reload) {
+            if (token == generation.get() && view == web) updateNavigation();
+        }
+        @Override public void onReceivedError(WebView view, android.webkit.WebResourceRequest request,
+                android.webkit.WebResourceError error) {
+            if (token != generation.get() || view != web || !request.isForMainFrame()) return;
+            loading = false;
+            mainFrameFailed = true;
+            updateNavigation();
+            pageStatus.setText("Page could not load. Check the address or connection, then Reload.");
+        }
+        @Override public void onReceivedHttpError(WebView view, android.webkit.WebResourceRequest request,
+                android.webkit.WebResourceResponse response) {
+            if (token == generation.get() && view == web && request.isForMainFrame()) mainFrameFailed = true;
+        }
+        @Override public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler,
+                android.net.http.SslError error) {
+            handler.cancel();
+            if (token == generation.get() && view == web) {
+                mainFrameFailed = true;
+                siteNotice(token, "Secure connection failed. The certificate was rejected; no bypass is available.");
+            }
+        }
+        @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+            // A destroyed/replaced WebView may report its crash
+            // late. Never let it dispose the newer browser.
+            if (token != generation.get() || view != web) return true;
+            DiagnosticLog.info("BrowserPrototype", "Renderer lost; crashed=" + detail.didCrash());
+            generation.incrementAndGet();
+            dispose();
+            state = -1;
+            return true;
+        }
+    });
     }
 
     private static Button button(LinearLayout bar, String label, Runnable action) {
@@ -670,6 +776,14 @@ public final class BrowserPrototype {
             historyLoadFailed = false;
             skipHistoryNavigation = navigationGeneration;
             browserPreferences.edit().remove("history_v1").apply();
+            // Keep each open tab's current location, but no suspended tab may
+            // resurrect its old Back/Forward history after a history clear.
+            for (java.util.Map.Entry<Integer, android.os.Bundle> entry : pageHistory.entrySet()) {
+                android.os.Bundle currentOnly = new android.os.Bundle();
+                currentOnly.putString("nightfall_current_url", entry.getValue().getString("nightfall_current_url"));
+                currentOnly.putBoolean("nightfall_url_only", true);
+                entry.setValue(currentOnly);
+            }
             web.clearHistory();
             updateNavigation();
             showPrivacy();
@@ -803,7 +917,7 @@ public final class BrowserPrototype {
     }
 
     private static void revealFullscreenExit() {
-        if (fullscreenExit == null || customView == null) return;
+        if (fullscreenExit == null || (customView == null && !browserFullscreen)) return;
         fullscreenExit.setVisibility(View.VISIBLE);
         if (fullscreenHide != null) UI.removeCallbacks(fullscreenHide);
         final int token = generation.get();
@@ -812,7 +926,35 @@ public final class BrowserPrototype {
             if (token == generation.get() && customView == current && fullscreenExit != null)
                 fullscreenExit.setVisibility(View.GONE);
         };
-        UI.postDelayed(fullscreenHide, 4000);
+        UI.postDelayed(fullscreenHide, 300);
+    }
+
+    private static void enterBrowserFullscreen() {
+        if (content == null || web == null || customView != null) return;
+        hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
+        browserFullscreen = true;
+        navigationBar.setVisibility(View.GONE);
+        fullscreenExit = new Button(presentation.getContext());
+        fullscreenExit.setText("Exit fullscreen");
+        fullscreenExit.setAlpha(0.8f);
+        fullscreenExit.setOnClickListener(v -> hideCustomView());
+        content.addView(fullscreenExit, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, 64, Gravity.TOP | Gravity.RIGHT));
+        revealFullscreenExit();
+        web.requestFocus();
+    }
+
+    private static void updateFullscreenHover(float x, float y, int action) {
+        long now = SystemClock.uptimeMillis();
+        boolean corner = (customView != null || browserFullscreen) && content != null
+                && x >= content.getWidth() - 240 && y >= 0 && y < 80
+                && action != MotionEvent.ACTION_CANCEL && action != MotionEvent.ACTION_HOVER_EXIT;
+        if (!corner) { fullscreenHoverStart = fullscreenLastHover = 0; return; }
+        // Continuous hover samples, not a delayed callback: leaving the screen
+        // cannot reveal an exit at a stale pointer location.
+        if (fullscreenLastHover == 0 || now - fullscreenLastHover > 250) fullscreenHoverStart = now;
+        fullscreenLastHover = now;
+        if (now - fullscreenHoverStart >= 600) revealFullscreenExit();
     }
 
     public static int poll() { return state; }
@@ -826,6 +968,10 @@ public final class BrowserPrototype {
     }
 
     private static void dispose() {
+        pageHistory.clear();
+        pageTabs.clear();
+        ownerActivity = null;
+        publishPages();
         padRouteDiagnostics.clear();
         if (padInputManager != null) { padInputManager.unregisterInputDeviceListener(padDevices); padInputManager = null; }
         releasePhysicalGamepad();
@@ -865,6 +1011,8 @@ public final class BrowserPrototype {
     }
 
     private static void hideCustomView() {
+        browserFullscreen = false;
+        fullscreenHoverStart = fullscreenLastHover = 0;
         if (fullscreenHide != null) { UI.removeCallbacks(fullscreenHide); fullscreenHide = null; }
         if (fullscreenExit != null && fullscreenExit.getParent() instanceof ViewGroup)
             ((ViewGroup) fullscreenExit.getParent()).removeView(fullscreenExit);
@@ -886,9 +1034,7 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
-            // Reveal our fallback exit control at the top edge, without an
-            // extra XR layer or an always-visible overlay on the video.
-            if (customView != null && y < 64 && action != MotionEvent.ACTION_UP) revealFullscreenExit();
+            updateFullscreenHover(x, y, action);
             long now = SystemClock.uptimeMillis();
             if (action == MotionEvent.ACTION_DOWN) downTime = now;
             MotionEvent event = MotionEvent.obtain(downTime, now, action, x, y, 0);
@@ -921,7 +1067,7 @@ public final class BrowserPrototype {
                 hideBookmarks(true);
                 return;
             }
-            if (pressed && customView != null && (code == android.view.KeyEvent.KEYCODE_ESCAPE
+            if (pressed && (customView != null || browserFullscreen) && (code == android.view.KeyEvent.KEYCODE_ESCAPE
                     || code == android.view.KeyEvent.KEYCODE_BACK)) {
                 hideCustomView();
                 return;

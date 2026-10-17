@@ -3,6 +3,8 @@ extends RefCounted
 
 var main: Node3D
 var pointer_on_ui: bool = false
+var _tab_ray_exclusion: CollisionObject3D
+var _tab_priority_ray: RayCast3D
 
 var _active_hand: String = "right"
 var _pinch_start_time: float = 0.0
@@ -369,6 +371,7 @@ func handle_pointer_interaction():
 	if main.browser_prototype and main.browser_prototype.active and shortcut_target.role != &"screen":
 		main.browser_prototype.cancel_pointer()
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
+	var on_primary_tab = shortcut_target.role == &"screen_tab" and shortcut_target.screen == main.primary_screen
 	# A drag started on the grab bar/corner owns this press until release.
 	# The ray can pass over a shortcut as the screen moves underneath it, and
 	# was_clicking may be cleared by another target branch during that motion.
@@ -381,13 +384,26 @@ func handle_pointer_interaction():
 			_click_pending_release = false
 		return
 	if _screen_shortcut_press_active:
+		pointer_on_ui = true
 		if on_primary_shortcut:
 			main.screen_shortcuts.set_hover(shortcut_target.action)
+		elif on_primary_tab:
+			main.screen_tab_strip.set_hover(shortcut_target.action)
 		if not is_now_clicking:
 			_screen_shortcut_press_active = false
 			main.was_clicking = false
 		else:
 			return
+	if on_primary_tab:
+		pointer_on_ui = true
+		main.screen_tab_strip.set_hover(shortcut_target.action)
+		if is_now_clicking and not main.was_clicking:
+			_screen_shortcut_press_active = true
+			main.was_clicking = true
+			main.screen_tab_strip.invoke(shortcut_target.action)
+		elif not is_now_clicking:
+			main.was_clicking = false
+		return
 	if on_primary_shortcut:
 		pointer_on_ui = true
 		main.screen_shortcuts.set_hover(shortcut_target.action)
@@ -841,11 +857,14 @@ func _update_on_screen_tracking():
 	_left_on_screen = _is_hand_on_screen("left")
 
 func process_pointer_frame(delta: float):
+	if main.screen_tab_strip:
+		main.screen_tab_strip.begin_pointer_frame()
 	if main.screen_shortcuts:
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
+	_prioritize_tab_overlay()
 	_reveal_contextual_screen_controls()
 	if not main.mouse_captured_by_stream:
 		handle_pointer_interaction()
@@ -854,6 +873,30 @@ func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
 		for screen in main.screens:
 			main.screen_shortcuts.refresh_visuals(screen)
+
+func _prioritize_tab_overlay() -> void:
+	# Composition video can use a different curvature from its physics mesh.
+	# Resolve overlays explicitly rather than relying on millimetre offsets.
+	if is_instance_valid(_tab_priority_ray) and is_instance_valid(_tab_ray_exclusion):
+		_tab_priority_ray.remove_exception(_tab_ray_exclusion)
+	_tab_ray_exclusion = null
+	_tab_priority_ray = get_active_raycast()
+	var ray := _tab_priority_ray
+	if not ray or not ray.is_inside_tree(): return
+	ray.force_raycast_update()
+	if not ray.is_colliding(): return
+	var collider = ray.get_collider()
+	var target := PointerTarget.resolve(collider)
+	if target.role != &"screen" or target.screen != main.primary_screen: return
+	var query := PhysicsRayQueryParameters3D.create(ray.global_position,
+		ray.to_global(ray.target_position), ray.collision_mask, [collider.get_rid()])
+	query.collide_with_areas = ray.collide_with_areas
+	query.collide_with_bodies = ray.collide_with_bodies
+	var hit := ray.get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty() or PointerTarget.resolve(hit.collider).role != &"screen_tab": return
+	_tab_ray_exclusion = collider
+	ray.add_exception(collider)
+	ray.force_raycast_update()
 
 func _reveal_contextual_screen_controls() -> void:
 	if not main.screen_shortcuts:
@@ -868,7 +911,7 @@ func _reveal_contextual_screen_controls() -> void:
 	if not raycast or not raycast.is_colliding():
 		return
 	var target := PointerTarget.resolve(raycast.get_collider())
-	if target.role in [&"grab_bar", &"corner", &"screen_shortcut"]:
+	if target.role in [&"grab_bar", &"corner", &"screen_shortcut", &"screen_tab"]:
 		main.screen_shortcuts.reveal_controls(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:

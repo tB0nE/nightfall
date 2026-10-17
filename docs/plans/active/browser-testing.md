@@ -1,6 +1,21 @@
 # Standalone browser verification
 
+Screens now offers Browser Res: 1080p (default, 1920 × 1080) or 1440p
+(2560 × 1440), including toolbar/page content. Close the browser before changing
+this saved setting, then reopen it; no live session is restarted or discarded.
+Verify persistence, pointer alignment at all corners, fullscreen video and AI 3D
+at both sizes. This does not force a service to supply 1440p video. The larger
+surface contains about 78% more pixels.
+
 ## Headset feedback — 2026-10-15
+
+Tab-strip feedback on 2026-10-16: position was good, but captions/icons were
+blank and selecting tabs felt unreliable. Replaced nested panel/label layout
+with self-drawing buttons and explicit caption colours/browser icons. Reuse
+existing buttons/physics targets across title and popup updates, and retain UI
+press capture while held. Added real-GPU rendering and physics-ray regression
+tests (flat and curved layouts), plus action-only logs without page titles/URLs.
+Headset confirmation of the rendering change is still required.
 
 Confirmed by user: standalone opening, address/search/invalid input, navigation,
 virtual keyboard, YouTube audio/fullscreen, bookmark editing/reordering/removal
