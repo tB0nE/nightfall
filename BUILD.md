@@ -186,6 +186,7 @@ The `build.sh` script handles everything:
 # Release build (requires .env with keystore credentials, and a version)
 git tag v0.7.12 && ./build.sh --release
 ./build.sh --release --version 0.7.12   # before tagging
+./build.sh --release --version 0.8.2-preview.1  # optimized prerelease
 
 # Build and install via ADB
 ./build.sh --dev --install
@@ -199,6 +200,8 @@ git tag v0.7.12 && ./build.sh --release
 `build.sh` writes the APK's `versionName` and `versionCode` at export time;
 `export_presets.cfg` itself keeps placeholders. The code is
 `MAJOR*10000 + MINOR*100 + PATCH`, so `0.7.12` is `712`.
+Preview suffixes are kept in the version name but not the numeric code:
+`0.8.2-preview.1` and `0.8.2` both use `802`, allowing in-place upgrades.
 
 | Build | Version name | Version code |
 | --- | --- | --- |
