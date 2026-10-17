@@ -996,7 +996,7 @@ func _update_cursor_layer():
 				settings.bezel_enabled,
 				settings.cursor_mode,
 				stereo,
-				settings.host.ai_3d_cursor_position,
+				-1 if browser_prototype and browser_prototype.active else settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
 				primary_screen)
 		elif composition_pointers.has_primary():
@@ -1012,7 +1012,9 @@ func _update_cursor_layer():
 			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen:
 				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
 				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
-				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				var correction_px := VideoPresentation.cursor_calibration_pixels(
+					settings.host.ai_3d_cursor_position, base_h,
+					browser_prototype != null and browser_prototype.active)
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			composition_pointers.show_primary(
