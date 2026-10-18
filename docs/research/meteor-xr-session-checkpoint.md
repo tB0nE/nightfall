@@ -3,6 +3,7 @@
 Branch: `feat/meteor-xr-streaming`. Latest tested headset artifact:
 `Nightfall-Android-arm64-v8a-dev.apk`, optimized/release-signed DEV, ALVR OFF.
 Build/install log: `/tmp/nightfall-tracked-scene-apk.log` (temporary).
+Tracked-scene checkpoint commit: `f86bace`.
 
 ## Current result
 
@@ -54,6 +55,19 @@ required or running as part of this path. No system runtime was registered.
     Quest submits received render poses/FOV in its dedicated LOCAL space.
 14. User visually tested the complete USB path successfully; logs confirm 120
     frames, hardware codec, live poses and clean teardown.
+15. Added an opt-in free-running app mode, leaving the proven stop-and-wait mode
+    as default. Removed per-frame app file-ACK waits only in the new mode; final
+    exact-timestamp acknowledgment is mandatory before swapchain destruction.
+    The isolated scene test initially passed (32 submitted / 28 encoded, four
+    skips, final drained, mean byte error 1.054), but the stronger changing-stripe
+    regression **failed**: first encoded timestamp referred to submitted frame 0,
+    while green=217 corresponded to later source content instead of frame 0's
+    green=0. This is evidence of an image-lifetime/metadata association problem,
+    not merely legitimate frame dropping. The smooth scene's average-error test
+    was not sensitive enough to expose it. Six pure accounting tests pass, but
+    free-running image correctness is NOT established. Keep this opt-in mode as
+    a failing diagnostic reproducer, not a supported streaming option. The
+    headset remains on the proven scene APK and stop-and-wait default.
 
 ## Architecture and ownership
 
@@ -68,10 +82,11 @@ uses a CPU reference renderer/upload/readback strictly for correctness testing;
 do not confuse it with the production compositor's GPU-local video handoff.
 
 The headset render thread does not wait on socket I/O. The host compositor still
-blocks on encoder/network acknowledgments; the app fixture also uses per-frame
-file acknowledgment. These deliberate correctness constraints are not a
-sustained-rate design. The final file ACK prevents app swapchains being destroyed
-before the compositor consumes them.
+blocks on encoder/network acknowledgments. The default app fixture also uses
+per-frame file acknowledgment; opt-in free-running mode removes that app wait,
+but not compositor/encoder/network blocking. Neither is a sustained-rate design.
+The final file ACK prevents app swapchains being destroyed before the compositor
+consumes them.
 
 ## Reproduce / important files
 
@@ -83,6 +98,10 @@ bash tools/build_support/probe_monado_runtime.sh --build
 bash tools/build_support/probe_monado_runtime.sh --test
 python3 test/test_meteor_tracking_endpoint.py
 python3 test/run_monado_tracking_spike.py "$PWD"
+# EXPERIMENT: known image-lifetime failure; not a supported streaming mode:
+NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
+# Stronger changing-stripe regression (currently FAILS):
+NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_monado_nvenc.sh
 NIGHTFALL_PCVR_ALVR=OFF ./build.sh --dev --install
 # Arm only when the tester is ready; button press deadline is 60 seconds:
 NIGHTFALL_ADB=/home/linuxbrew/.linuxbrew/bin/adb \
@@ -107,10 +126,14 @@ Details: [active plan](../plans/active/meteor-xr-monado-spike.md),
 
 ## Next work, with gates
 
-1. Remove **per-frame app file ACK pacing** in an opt-in diagnostic mode while
-   retaining the final exact-timestamp drain ACK. Account for compositor-dropped
-   app frames explicitly and match encoded frames to the correct references.
-   Keep the existing stop-and-wait tests as correctness regressions.
+1. Investigate the failing free-running changing-stripe test before more headset
+   tests. The null-compositor capture hook appears to observe reused image content
+   paired with older submitted metadata. Trace acquired/released image ownership
+   through the multi/null compositor and retain/copy a submitted image until GPU
+   consumption finishes. Do not fix this by relaxing pixel validation or merely
+   relabeling timestamps. Preserve final drain and stop-and-wait defaults.
+   Free-running app-crash accounting is also not supported; the harness rejects
+   that combination rather than misreporting it.
 2. Decouple compositor/encoder/transport with bounded ownership and newest-frame
    policy, explicit completion fences and drain. Do not merely remove a mutex or
    reuse a surface while the encoder/compositor still owns it.

@@ -97,6 +97,9 @@ int main() {
     const char *continuous = std::getenv("METEOR_CONTINUOUS_FRAMES");
     const int frame_count = continuous ? std::atoi(continuous) : 5;
     if (frame_count < 1 || frame_count > 240) return 1;
+    const bool free_running = std::getenv("METEOR_XR_FREE_RUNNING") != nullptr;
+    if (free_running && (!continuous || !std::getenv("METEOR_NVENC_BRIDGE"))) return 2;
+    long long final_timestamp = 0;
     for (int frame = 0; frame < frame_count; ++frame) {
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState state{XR_TYPE_FRAME_STATE};
         check(xrWaitFrame(session, &wait, &state), "wait frame");
@@ -134,10 +137,11 @@ int main() {
         check(xrEndFrame(session, &end), "end frame");
         struct timespec monotonic_time;
         check(xrConvertTimeToTimespecTimeKHR(instance, state.predictedDisplayTime, &monotonic_time), "convert display time");
+        final_timestamp = static_cast<long long>(monotonic_time.tv_sec)*1000000000LL+monotonic_time.tv_nsec;
         std::printf("Frame %d monotonic_ns=%lld\n", frame,
             static_cast<long long>(monotonic_time.tv_sec) * 1000000000LL + monotonic_time.tv_nsec);
         std::printf("Frame %d: two pixel-verified eye images, submitted layers=%u, predicted time %lld\n", frame, end.layerCount, static_cast<long long>(state.predictedDisplayTime));
-        if (continuous) {
+        if (continuous && !free_running) {
             // Stop-and-wait diagnostic ensures each changing pattern is checked;
             // this is bounded backpressure, not a sustainable-rate benchmark.
             bool acknowledged = false;
@@ -156,7 +160,8 @@ int main() {
     bool captured = false;
     for (int attempt = 0; attempt < 2000; ++attempt) {
         std::ifstream done(meteor_probe_path("capture-complete"));
-        if (done.good()) { captured = true; break; }
+        long long received = 0;
+        if (continuous ? ((done >> received) && received == final_timestamp) : done.good()) { captured = true; break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     if (!captured) { std::fprintf(stderr, "Server never acknowledged final stereo capture\n"); return 1; }

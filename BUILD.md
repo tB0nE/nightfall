@@ -444,6 +444,8 @@ after changing its pinned patch, then run:
 bash tools/build_support/probe_monado_runtime.sh --build
 # No headset: moving synthetic poses through Monado/app + scene encode checks:
 python3 test/run_monado_tracking_spike.py "$PWD"
+# EXPERIMENT ONLY: known free-running image-lifetime failure; see checkpoint:
+NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
 # With the latest optimized DEV APK: arm, then press DEV: Meteor decoded stereo.
 bash tools/build_support/probe_headset_xr_tracking_runtime.sh
 ```

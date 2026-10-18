@@ -148,6 +148,15 @@ Quest 3, with all 120 frames and clean teardown. Real-device FOV/IPD negotiation
 sustained-rate streaming and recenter handling remain outstanding. See the
 [tracking report](../../research/meteor-xr-tracking-spike.md).
 
+Next pacing experiment: opt-in `NIGHTFALL_XR_FREE_RUNNING=1` removes per-frame app
+file waits while retaining final exact-timestamp drain. The smooth scene initially
+passed, but changing stripes exposed pixels from a later frame paired with older
+metadata. This mode is a **known failing image-lifetime diagnostic**, not working
+continuous streaming. Six accounting tests cover unknown/duplicate/reordered
+timestamps and missing final drain; they cannot establish image ownership. Next
+trace swapchain-image reuse through the multi/null compositor. Keep the proven
+stop-and-wait default and do not deploy this experiment to testers as working.
+
 1. Nightfall sends timestamped poses/valid velocities before the first video
    frame, not only after decoder initialization. Avoid a startup dependency loop.
 2. Runtime exposes the virtual HMD and predicts app poses for requested times.

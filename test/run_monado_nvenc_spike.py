@@ -12,6 +12,7 @@ import fcntl
 
 from check_nvenc_stereo import validate
 from xr_transport_probe import LiveTransport
+from xr_frame_accounting import match_submitted_frames
 
 
 def run(root: Path, out: Path):
@@ -27,6 +28,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     abort_test = os.environ.get("NIGHTFALL_XR_PROBE_ABORT") == "1"
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
+    free_running = os.environ.get("NIGHTFALL_XR_FREE_RUNNING") == "1"
+    if free_running:
+        print("EXPERIMENT: free-running null-compositor image ownership is NOT validated; changing stripes currently expose stale/reused pixels", flush=True)
+    submitted_count = frame_count
+    if free_running and abort_test:
+        raise ValueError("Free-running app-disconnect accounting is a separate pending test")
     if tracked_scene and not os.environ.get("NIGHTFALL_XR_TRACKING_PORT"):
         raise ValueError("Tracked scene requires explicit live tracking port; no simulated fallback")
     if not 1 <= frame_count <= 240:
@@ -57,6 +64,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
     transport.start()
     env.update(transport.environment())
+    env.pop("METEOR_XR_FREE_RUNNING", None)
+    if free_running:
+        env["METEOR_XR_FREE_RUNNING"] = "1"
     tracking_port = os.environ.get("NIGHTFALL_XR_TRACKING_PORT")
     if tracking_port:
         if not tracking_port.isdecimal() or not 1 <= int(tracking_port) <= 65535:
@@ -124,6 +134,15 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             raise RuntimeError("Disconnect test did not interrupt an active sequence")
         frame_count = len(records)
         expected_times = expected_times[:frame_count]
+    source_indices = list(range(frame_count))
+    if free_running:
+        if len(expected_times) != submitted_count:
+            raise RuntimeError("App submission log incomplete")
+        source_indices = match_submitted_frames(expected_times,
+            [r["display_time_ns"] for r in records], allow_drops=True)
+        frame_count = len(records)
+        expected_times = [expected_times[i] for i in source_indices]
+        print(f"Free-running accounting: submitted={submitted_count} encoded={frame_count} compositor_skipped={submitted_count-frame_count}; final frame drained")
     if len(records) != frame_count or len(expected_times) != frame_count:
         raise RuntimeError("Missing or duplicated frames")
     offset, last_frame, last_time = 0, 0, 0
@@ -160,14 +179,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         right = (out / "scene-right.rgb").read_bytes()
         decoded = (out / "decoded.rgb").read_bytes()
         eye_size = 256*256*3
-        if len(left) != frame_count*eye_size or len(right) != len(left) or len(decoded) != len(left)*2:
+        if len(left) != submitted_count*eye_size or len(right) != len(left) or len(decoded) != frame_count*eye_size*2:
             raise RuntimeError("Scene reference/decoded frame count mismatch")
         # Compare the real encoded/decode output with app-side pixel-verified
         # reference rows, not the old synthetic stripe validator.
         total_error = 0
         for frame in range(frame_count):
             for row in range(256):
-                start = frame*eye_size+row*256*3
+                start = source_indices[frame]*eye_size+row*256*3
                 reference = left[start:start+768]+right[start:start+768]
                 offset = frame*eye_size*2+row*1536
                 total_error += sum(abs(a-b) for a,b in zip(reference,decoded[offset:offset+1536]))
@@ -176,7 +195,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             raise RuntimeError(f"Decoded pose scene differs from app reference: mean byte error {error:.3f}")
         print(f"Scene encode/decode reference mean byte error: {error:.3f}")
     else:
-        validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in range(frame_count)])
+        validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in source_indices])
     label = "unexpected app disconnect" if abort_test else "normal session exit"
     print(f"PASS: {frame_count} changing Monado frames; one persistent encoder/surface; decoded markers, timestamps and bitstream ranges match; clean drain after {label}")
     print(f"Artifacts: {out}")
