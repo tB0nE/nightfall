@@ -53,8 +53,19 @@ cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_ANDROID_NDK="$ANDROID_NDK_ROOT" \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
   -DANDROID_PLATFORM=android-28 \
+  -DNIGHTFALL_PCVR_ALVR="${NIGHTFALL_PCVR_ALVR:-OFF}" \
+  -DNIGHTFALL_ALVR_ARTIFACTS="$PROJECT_ROOT/.build-cache/meteor-xr/artifacts/20.14.1/android-arm64" \
   -DGODOTCPP_CUSTOM_DIR="$NIGHTFALL_GODOT_CPP" \
   -DGODOT_SOURCE_DIR="$NIGHTFALL_GODOT_SOURCE" \
   -DOPENXR_INCLUDE_DIR="$NIGHTFALL_GODOT_SOURCE/thirdparty/openxr/include" \
   -DGODOTCPP_SUFFIX="$GODOT_CPP_SUFFIX"
 cmake --build "$BUILD_DIR" -j "$JOBS"
+if [[ "${NIGHTFALL_PCVR_ALVR:-OFF}" == "ON" ]]; then
+  DEPENDENCIES="$("$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d \
+    "$SCRIPT_DIR/bin/android/libnightfall-xr.android.template_$TARGET.arm64.so")"
+  if ! grep -Fq 'Shared library: [libalvr_client_core.so]' <<< "$DEPENDENCIES" || \
+      grep -Fq 'Shared library: [/' <<< "$DEPENDENCIES"; then
+    echo "Error: PCVR dependency is missing or embeds a build-machine path" >&2
+    exit 1
+  fi
+fi

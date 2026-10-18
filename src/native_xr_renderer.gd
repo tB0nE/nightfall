@@ -63,6 +63,8 @@ func _native_compositor_sharpening() -> int:
 	return 0
 
 func can_render_current_config() -> bool:
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive():
+		return false
 	if not provider_registered or not main.primary_screen:
 		return false
 	# Independent browser outputs do not share the primary decoder or eyes.

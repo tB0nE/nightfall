@@ -38,6 +38,23 @@ func build_welcome_ui():
 	build_language_picker(root)
 	if OS.has_feature("android"):
 		build_browser_picker(root)
+	if "pcvr_test" in main and main.pcvr_test.entry_visible():
+		var test_button := Button.new()
+		test_button.text = "DEV: Synthetic PCVR projection (45s; hold B/Y to exit)"
+		test_button.position = Vector2(480, 1000)
+		test_button.custom_minimum_size = Vector2(1000, 64)
+		test_button.add_theme_font_size_override("font_size", 24)
+		root.add_child(test_button)
+		var test_status := Label.new()
+		test_status.name = "PCVRTestStatus"
+		test_status.position = Vector2(480, 850)
+		test_status.size = Vector2(1400, 44)
+		test_status.add_theme_font_size_override("font_size", 24)
+		test_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		root.add_child(test_status)
+		test_button.pressed.connect(func():
+			main.pcvr_test.start()
+			test_status.text = main.pcvr_test.status)
 
 	show_welcome_screen("welcome")
 
@@ -602,6 +619,7 @@ func build_pin_screen(parent: Node):
 const WELCOME_FRAME := Vector2i(1920, 1080)
 
 func show_welcome_screen(name: String):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	main._welcome_screen = name
 	# A failed connection can navigate here while the ray is still over the
 	# previous screen. Clear the world-space cursor filter before changing the

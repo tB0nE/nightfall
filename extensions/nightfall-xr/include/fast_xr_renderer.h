@@ -15,6 +15,7 @@
 #include <vector>
 
 #ifdef __ANDROID__
+#include <time.h>
 #include <jni.h>
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>

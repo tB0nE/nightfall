@@ -14,6 +14,36 @@ import androidx.activity.EdgeToEdge;
 import androidx.core.splashscreen.SplashScreen;
 
 public class GodotApp extends GodotActivity {
+	private static native boolean initializePcvrContext(Object context);
+	public static boolean preparePcvrContext() {
+		try {
+			GodotApp activity = browserActivity.get();
+			if (activity == null) return false;
+			for (String permission : new String[] {
+					android.Manifest.permission.ACCESS_WIFI_STATE,
+					android.Manifest.permission.WAKE_LOCK}) {
+				if (activity.checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+					DiagnosticLog.info("NightfallPCVR", "Missing required PCVR permission: " + permission);
+					return false;
+				}
+			}
+			// Catch WifiLock security failures in Java before upstream Rust unwraps them.
+			WifiManager wifi = (WifiManager) activity.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+			if (wifi == null) return false;
+			WifiManager.WifiLock probe = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "nightfall-pcvr-preflight");
+			probe.setReferenceCounted(false);
+			try { probe.acquire(); } finally { if (probe.isHeld()) probe.release(); }
+			System.loadLibrary("nightfall-xr.android.template_release.arm64");
+			// Upstream may call requestPermissions(), which requires an Activity.
+			return initializePcvrContext(activity);
+		} catch (UnsatisfiedLinkError error) {
+			Log.e("NightfallPCVR", "DEV PCVR bridge unavailable", error);
+			return false;
+		} catch (RuntimeException error) {
+			DiagnosticLog.error("NightfallPCVR", "PCVR preflight failed", error);
+			return false;
+		}
+	}
 	private static java.lang.ref.WeakReference<GodotApp> browserActivity = new java.lang.ref.WeakReference<>(null);
 	public static void openBrowser(android.view.Surface surface, android.graphics.SurfaceTexture texture, int width, int height) {
 		BrowserPrototype.open(browserActivity.get(), surface, texture, width, height);

@@ -104,6 +104,21 @@ endif()
 
 add_library(${LIBNAME} SHARED)
 
+option(NIGHTFALL_PCVR_ALVR "Enable the pinned developer PCVR decoder bridge" OFF)
+set(NIGHTFALL_ALVR_ARTIFACTS "" CACHE PATH "Verified ALVR probe artifacts")
+if(ANDROID AND NIGHTFALL_PCVR_ALVR)
+    if(NOT EXISTS "${NIGHTFALL_ALVR_ARTIFACTS}/alvr_client_core.h")
+        message(FATAL_ERROR "Run probe_alvr_client.sh --build before enabling PCVR")
+    endif()
+    add_library(nightfall-alvr SHARED IMPORTED)
+    set_target_properties(nightfall-alvr PROPERTIES IMPORTED_LOCATION
+        "${NIGHTFALL_ALVR_ARTIFACTS}/arm64-v8a/libalvr_client_core.so"
+        IMPORTED_NO_SONAME TRUE)
+    target_link_libraries(${LIBNAME} PRIVATE nightfall-alvr)
+    target_include_directories(${LIBNAME} PRIVATE "${NIGHTFALL_ALVR_ARTIFACTS}")
+    target_compile_definitions(${LIBNAME} PRIVATE NIGHTFALL_PCVR_ALVR XR_USE_TIMESPEC)
+endif()
+
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "src/*.cpp" "src/*.h" "src/*.c")
 target_sources(${LIBNAME} PRIVATE ${SOURCE_FILES})
 

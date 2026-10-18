@@ -73,7 +73,15 @@ NATIVE_XR_TARGET="debug"
 if [ "$PRESET" = "NightfallRelease" ]; then
   NATIVE_XR_TARGET="release"
 fi
-bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" "$NATIVE_XR_TARGET"
+PCVR_ALVR="${NIGHTFALL_PCVR_ALVR:-OFF}"
+if [ "$PCVR_ALVR" = "ON" ]; then
+  if [ "$BUILD_KIND" != "dev" ]; then
+    echo "Error: the PCVR bridge is restricted to optimized DEV builds" >&2
+    exit 1
+  fi
+  (cd "$SCRIPT_DIR/.build-cache/meteor-xr/artifacts/20.14.1/android-arm64" && sha256sum -c SHA256SUMS)
+fi
+NIGHTFALL_PCVR_ALVR="$PCVR_ALVR" bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" "$NATIVE_XR_TARGET"
 
 NATIVE_XR_CACHE="${NIGHTFALL_NATIVE_XR_CACHE:-$SCRIPT_DIR/.build-cache/native-xr}"
 PATCHED_GODOT_RUNTIME="${NIGHTFALL_GODOT_ANDROID_RUNTIME:-$NATIVE_XR_CACHE/templates/$NIGHTFALL_GODOT_TEMPLATE_VERSION/android_${NATIVE_XR_TARGET}_arm64.so}"
@@ -98,6 +106,17 @@ sed -i \
   -e "s|^version/code=.*|version/code=$NIGHTFALL_VERSION_CODE|" \
   -e "s|^version/name=.*|version/name=\"$NIGHTFALL_VERSION_NAME\"|" \
   "$CONFIG"
+
+# Explicit export feature: release-signed DEV APKs are not debug builds, and
+# Android Java plugins may not yet be available during provider registration.
+if [ "$BUILD_KIND" = "dev" ]; then
+  sed -i 's/^custom_features=""$/custom_features="nightfall_dev"/' "$CONFIG"
+fi
+if [ "$PCVR_ALVR" = "ON" ]; then
+  # Upstream core acquires a low-latency WifiLock during initialization.
+  sed -i -e 's/^permissions\/access_wifi_state=false$/permissions\/access_wifi_state=true/' \
+    -e 's/^permissions\/wake_lock=false$/permissions\/wake_lock=true/' "$CONFIG"
+fi
 
 if [ "$PRESET" = "NightfallRelease" ]; then
   RELEASE_ENV_FILE="${NIGHTFALL_ENV_FILE:-.env}"
@@ -244,6 +263,11 @@ else
 fi
 
 echo "Exporting $PRESET..."
+if [ "$PCVR_ALVR" = "ON" ]; then
+  mkdir -p android/build/libs/release/arm64-v8a
+  cp .build-cache/meteor-xr/artifacts/20.14.1/android-arm64/arm64-v8a/libalvr_client_core.stripped.so \
+    android/build/libs/release/arm64-v8a/libalvr_client_core.so
+fi
 EXPORT_FLAG="--export-debug"
 
 if [ "$PRESET" = "NightfallRelease" ]; then
@@ -254,6 +278,10 @@ JAVA_HOME="$JAVA_HOME" "$GODOT" --headless --path "$SCRIPT_DIR" $EXPORT_FLAG "$P
 
 if [ ! -f "$OUTPUT" ]; then
   echo "Error: $OUTPUT not created"
+  exit 1
+fi
+if [ "$PCVR_ALVR" = "ON" ] && ! unzip -Z1 "$OUTPUT" | grep -Fx 'lib/arm64-v8a/libalvr_client_core.so' >/dev/null; then
+  echo "Error: optional PCVR core was not packaged" >&2
   exit 1
 fi
 if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libnightfall-stream.android.template_release.arm64.so" >/dev/null; then

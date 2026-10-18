@@ -2,6 +2,8 @@ extends Node3D
 
 var settings: AppSettings = AppSettings.new()
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
+var pcvr_test = preload("res://src/pcvr_test_controller.gd").new(self)
+var _pcvr_screen_retirements := 0
 var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 
 @onready var screen_mesh = $MeshInstance3D
@@ -1097,10 +1099,12 @@ func disconnect_stream():
 	stream_backend.stop_play_stream()
 
 func start_connect_timeout():
+	if pcvr_test.is_exclusive(): return
 	session_lifecycle.arm_connect_timeout()
 	get_tree().create_timer(10.0).timeout.connect(_on_connect_timeout)
 
 func _on_connect_timeout():
+	if pcvr_test.is_exclusive(): return
 	if not session_lifecycle.connect_timeout_pending:
 		return
 	_log("[CONNECT] Connection timed out")
@@ -1108,6 +1112,7 @@ func _on_connect_timeout():
 	restore_after_failed_connect("Failed to connect (timeout)")
 
 func restore_after_failed_connect(status_msg: String, welcome_name: String = "server"):
+	if pcvr_test.is_exclusive(): return
 	# start_stream() resizes the shared source/composition viewports before the
 	# asynchronous launch request is sent. If that request fails, no decoder was
 	# started and therefore no stream_terminated signal arrives to run the normal
@@ -1136,6 +1141,9 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
+	if pcvr_test.is_exclusive():
+		pcvr_test.request_stop()
+		return
 	# The selected display rate was already applied and awaited by
 	# StreamManager.start_stream() before decoder and native swapchain setup.
 	# Do not request it again here: a display transition racing newly-created
@@ -1314,6 +1322,7 @@ func _update_comp_layer_size():
 	comp.update_layer_size()
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
+	if pcvr_test.is_exclusive(): return
 	_log("[NF] _on_stream_terminated: phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
 	if video_presentation:
 		video_presentation.deactivate_native(false)
@@ -1338,6 +1347,7 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
+	if pcvr_test.is_exclusive(): return
 	if depth_estimator:
 		depth_estimator.set_enabled(false)
 	session_lifecycle.finish_cleanup()
@@ -1441,6 +1451,7 @@ func _ready():
 
 	_init_xr(interface)
 	video_presentation.setup_native()
+	pcvr_test.setup()
 	# Composition providers must be registered before the OpenXR session starts.
 	# Only after registration may the refresh transition settle before layer and
 	# stream swapchains are allocated.
@@ -1916,6 +1927,7 @@ func remove_screen(monitor_id: StringName) -> void:
 			return
 
 func _retire_screen_viewports(viewports: Array) -> void:
+	_pcvr_screen_retirements += 1
 	# Layer detachment is queued on the render thread and accesses the old
 	# render target. Keep viewports alive until that work has drained.
 	await get_tree().process_frame
@@ -1923,6 +1935,7 @@ func _retire_screen_viewports(viewports: Array) -> void:
 	for viewport in viewports:
 		if is_instance_valid(viewport):
 			viewport.queue_free()
+	_pcvr_screen_retirements -= 1
 
 func _init_stream_backend():
 	if config_mgr and comp_mgr:
@@ -2207,6 +2220,7 @@ func _init_textures_and_ui():
 	session_lifecycle.show_server_selection()
 
 func _try_auto_connect():
+	if pcvr_test.is_exclusive(): return
 	var saved_ip = parse_ip_port(%IPInput.text)[0]
 	var saved_unique_id: String = ""
 	var save = ConfigFile.new()
@@ -2239,7 +2253,10 @@ func _try_auto_connect():
 				current_host_id = host_id
 				%IPInput.text = host_ip
 				_log("[AUTO-CONNECT] Auto-connecting to host_id=%d ip=%s" % [host_id, host_ip])
+				pcvr_test.auto_connect_pending = true
 				await get_tree().create_timer(1.0).timeout
+				pcvr_test.auto_connect_pending = false
+				if pcvr_test.is_exclusive(): return
 				stream_manager.start_stream(host_id, _selected_app_id)
 
 func _post_ready_check():
@@ -2273,6 +2290,13 @@ func primary_media_size() -> Vector2i:
 	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):
+	if pcvr_test.is_exclusive():
+		pcvr_test.process(delta)
+		_log_flush_timer += delta
+		if _log_flush_timer >= 2.0:
+			_log_flush_timer = 0.0
+			_flush_log()
+		return
 	if browser_prototype:
 		browser_prototype.process()
 	if screen_sources:
@@ -2289,6 +2313,9 @@ func _process(delta):
 		_flush_log()
 
 	_process_button_input()
+	if pcvr_test.is_exclusive():
+		pcvr_test.process(0.0)
+		return
 
 	if right_click_cooldown > 0.0:
 		right_click_cooldown -= delta
@@ -2300,6 +2327,11 @@ func _process(delta):
 	_process_controller_fade(delta)
 
 	xr_interaction.process_pointer_frame(delta)
+	# A welcome click can enter exclusivity inside pointer dispatch. Finish
+	# this frame without ordinary code re-enabling composition/UI layers.
+	if pcvr_test.is_exclusive():
+		pcvr_test.process(0.0)
+		return
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
 	_sync_composition_panels()
@@ -2823,11 +2855,14 @@ func _notification(what):
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		pcvr_test.application_paused = true
+		pcvr_test.request_stop()
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application paused")
 		if meteor_microphone:
 			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		pcvr_test.application_paused = false
 		if meteor_microphone:
 			meteor_microphone.set_paused(false)
 		if xr_interaction:
@@ -2835,11 +2870,15 @@ func _notification(what):
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
+	if pcvr_test.is_exclusive():
+		pcvr_test.handle_input(event)
+		return
 	input_handler.handle_input(event)
 	if is_streaming and (event is InputEventMouseButton or event is InputEventKey or event is InputEventJoypadButton or event is InputEventJoypadMotion):
 		_last_activity_time = Time.get_ticks_msec() / 1000.0
 
 func _toggle_ui():
+	if pcvr_test.is_exclusive(): return
 	ui_visible = not ui_visible
 	_log("[UI] Menu %s (streaming=%s native=%s comp=%s ambient=%s)" % [
 		"opened" if ui_visible else "closed",

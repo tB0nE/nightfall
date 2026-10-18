@@ -1009,6 +1009,7 @@ func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 	apply_stereo()
 
 func apply_stereo():
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	var mode = get_stereo_mode()
 	var media_active: bool = main.primary_media_active()
 	var depth_active: bool = mode >= 3 and media_active
@@ -1152,6 +1153,7 @@ func toggle_passthrough():
 		_schedule_ai_3d_commit()
 
 func apply_passthrough(enable: bool):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	if not main.is_xr_active:
 		return
 	_hide_all_backgrounds()
@@ -1175,6 +1177,7 @@ func cycle_background():
 	_save_setting(main._ui_bg_btn, main.background_labels[main.settings.background_mode])
 
 func apply_background(bg_mode: int):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	if not main.is_xr_active or main.settings.passthrough_enabled:
 		return
 	_hide_all_backgrounds()
