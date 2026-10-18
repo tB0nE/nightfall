@@ -1,0 +1,42 @@
+--- a/src/xrt/compositor/null/null_compositor.c
++++ b/src/xrt/compositor/null/null_compositor.c
+@@ -29,6 +29,7 @@
+ #include "util/u_trace_marker.h"
+ 
+ #include "util/comp_vulkan.h"
++#include "/tests/monado_server_capture.h"
+ 
+ #include "multi/comp_multi_interface.h"
+ #include "xrt/xrt_compositor.h"
+@@ -366,6 +367,7 @@
+ {
+ 	struct null_compositor *c = null_compositor(xc);
+ 	NULL_DEBUG(c, "END_SESSION");
++	meteor_encoder_shutdown();
+ 
+ 	/*
+ 	 * No logic needed here for the null compositor, if using the null
+@@ -500,6 +502,15 @@
+ 	// If you are using the system/multi-compositor (multiple client module), your native compositor
+ 	// can just unref the sync handle. Otherwise please use it.
++	// Diagnostic hook requires the multi-compositor to have consumed synchronization.
++	if (xrt_graphics_sync_handle_is_valid(sync_handle)) {
++		fprintf(stderr, "METEOR_CAPTURE_FAILED unexpected pending synchronization\n");
++		abort();
++	}
+ 	u_graphics_sync_unref(&sync_handle);
++	if (!meteor_capture_layer(c)) {
++		fprintf(stderr, "METEOR_CAPTURE_FAILED\n");
++		abort();
++	}
+ 
+ 	/*
+ 	 * Time keeping needed to keep the pacer happy.
+@@ -533,6 +544,7 @@
+ 	struct vk_bundle *vk = get_vk(c);
+ 
+ 	NULL_DEBUG(c, "NULL_COMP_DESTROY");
++	meteor_encoder_shutdown();
+ 
+ 	comp_swapchain_shared_destroy(vk, &c->base.cscs);
+ 

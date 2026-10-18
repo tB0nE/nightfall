@@ -1,0 +1,8 @@
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config git ca-certificates \
+    libeigen3-dev libcjson-dev libvulkan-dev mesa-vulkan-drivers glslang-tools \
+    libopenxr-dev libudev-dev libx11-dev libxrandr-dev libxcb-randr0-dev \
+    libwayland-dev wayland-protocols libgl-dev libegl-dev libjpeg-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work

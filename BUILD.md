@@ -325,6 +325,111 @@ Opus decoder it compiles from source). `meteor/tools/build_appimage.sh` builds
 the Linux AppImage in a container, and `meteor/tools/build_windows_installer.ps1`
 builds the Windows installer on Windows.
 
+### Experimental Monado runtime probe
+
+The current XR direction is a Meteor-managed Monado runtime, with WiVRn as a
+streaming reference. Linux is the immediate spike; Windows remains a required
+feasibility gate. See the [new plan](docs/plans/active/meteor-xr-monado-spike.md).
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+bash tools/build_support/probe_monado_runtime.sh --test
+```
+
+This pins source revisions, builds release binaries/dependencies in Docker, and
+tests a separate service plus OpenXR app using a simulated HMD and a diagnostic
+capture hook in the null compositor. The source pin stays clean; the hook is
+applied to an output copy under `capture-source/`, built in `capture-build/`.
+It sets `XR_RUNTIME_JSON` only inside the isolated test container, has no network
+or GPU/device passthrough, and does not install/register a host runtime. Passing
+means service/IPC/frame lifecycle and byte-matching stereo swapchain pixels
+captured inside the service. It does not prove general composition, encoding or
+XR streaming. The app and server PPM images remain available for inspection.
+Artifacts and logs remain under `.build-cache/meteor-xr/monado-linux-spike/`.
+
+For the separate **Linux/NVIDIA-only** Vulkan → CUDA → NVENC interop diagnostic:
+
+```bash
+bash tools/build_support/probe_vulkan_nvenc.sh
+python3 test/test_nvenc_stereo_validator.py
+```
+
+Requires host Vulkan development headers/library, C++17 compiler, NVIDIA driver
+with CUDA/NVENC, FFmpeg and Python. It uses SDK declarations from the pinned
+WiVRn reference checkout (run the Monado build above first). No CUDA toolkit is
+needed. Output is `.build-cache/meteor-xr/nvenc-spike/`: a five-frame H.264 stream,
+decoded RGB and encoder log. The script fails rather than substituting software
+encoding. This is an independent synthetic-image test, not yet Monado integration
+or remote streaming. Its initial test pattern is uploaded once from the CPU;
+the subsequent Vulkan → CUDA → NVENC handoff has no image readback. Only compressed
+bitstream bytes return to the CPU. Tiny-frame timings are not XR benchmarks.
+
+To test **actual Monado swapchains → GPU stereo packing → NVENC** on Linux/NVIDIA:
+
+```bash
+# Rebuild the diagnostic service/app after modifying the hook:
+bash tools/build_support/probe_monado_runtime.sh --build
+bash tools/build_support/probe_monado_nvenc.sh
+```
+
+This compiles a diagnostic encoder bridge and runs the built service/app natively
+on the host GPU, not in the software-Vulkan container. It selects the NVIDIA ICD
+and a generated runtime manifest only for its child processes, with a private
+short `/tmp` IPC directory. It does not register a runtime or start SteamVR.
+Host libraries must satisfy the container-built binaries (`ldd` can check).
+
+Artifacts in `.build-cache/meteor-xr/monado-nvenc-spike/` include the H.264 output,
+decoded RGB, per-frame pose/FOV/bitstream-range JSONL, app and service logs.
+The test now submits 32 changing frames through one persistent encoder and one
+reusable GPU surface. It checks every decoded marker, app-to-output monotonic
+display timestamp, frame order and bitstream byte range, then verifies encoder
+drain/resource release. The service pixel-readback branch must not run.
+
+```bash
+NIGHTFALL_XR_PROBE_FRAMES=120 bash tools/build_support/probe_monado_nvenc.sh
+NIGHTFALL_XR_PROBE_ABORT=1 bash tools/build_support/probe_monado_nvenc.sh
+```
+
+The second command deliberately kills only the test OpenXR app after at least
+five encoded frames to test disconnect cleanup. Runs overwrite only their known
+diagnostic outputs. Frame count is 1–240 (at least 16 for the disconnect test).
+This is a stop-and-wait correctness sequence with bounded single-frame
+backpressure, not sustainable-rate/latency measurement. Asynchronous GPU fences,
+realistic resolution/rate and transport remain outstanding.
+
+### Retired ALVR research probe
+
+The exclusive Meteor XR spike is separate from normal APK builds. To check
+the local toolchain or build the pinned Android ALVR client core:
+
+```bash
+bash tools/build_support/probe_alvr_client.sh --check
+bash tools/build_support/probe_alvr_client.sh --build
+```
+
+`--build` downloads pinned source/submodules and local build tools into ignored
+`.build-cache/meteor-xr/`, builds optimized arm64 code, generates the C header,
+checks its C++ ABI and exported symbols, and records artifact hashes. It does
+not install/register a SteamVR driver, change the active XR runtime, start
+SteamVR, add PCVR discovery, or bundle the library into the APK. See the
+[XR plan](docs/plans/active/meteor-xr-streaming-spike.md) and
+[integration audit](docs/research/meteor-xr-alvr-integration.md) before attempting
+the rendering bridge.
+
+Optimized `--dev` APKs also expose **XR Projection Test** on the welcome screen.
+Start from a clean welcome screen with no browser screens or desktop connection.
+This synthetic test submits a tracked stereo floor and spheres through Godot's
+existing OpenXR session; it does not connect to Meteor or stream PC video.
+Hold B or Y for one second to exit, or wait for the 45-second automatic exit.
+Putting the headset into standby also requests an exit. Normal content remains
+hidden until the native projection has drained. This is a rendering bridge
+experiment, not validation of the final network/decoder timing path.
+
+The old ALVR adapter/build switch remains research material. Its remote entry
+has been removed and rejects legacy requests. Ordinary builds do not package or
+initialize it. The temporary host driver/wrapper was retired; see its integration
+audit for backups and restoration evidence. Do not use it as the new spike path.
+
 ## 3. Deploy to Quest
 
 ```bash
