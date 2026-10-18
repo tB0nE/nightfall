@@ -40,3 +40,51 @@
  
  	comp_swapchain_shared_destroy(vk, &c->base.cscs);
  
+--- a/src/xrt/drivers/simulated/simulated_hmd.c
++++ b/src/xrt/drivers/simulated/simulated_hmd.c
+@@ -25,6 +25,7 @@
+ #include "simulated_interface.h"
+ 
+ #include <stdio.h>
++#include "/tests/monado_tracking_dispatch.h"
+ 
+ 
+ /*
+@@ -42,6 +43,7 @@
+ struct simulated_hmd
+ {
+ 	struct xrt_device base;
++	struct meteor_tracking_bridge meteor_tracking;
+ 
+ 	struct xrt_pose pose;
+ 	struct xrt_pose center;
+@@ -77,6 +79,7 @@
+ {
+ 	struct simulated_hmd *dh = simulated_hmd(xdev);
+ 
++	meteor_tracking_release(&dh->meteor_tracking);
+ 	// Remove the variable tracking.
+ 	u_var_remove_root(dh);
+ 
+@@ -99,6 +102,8 @@
+ 		return XRT_ERROR_INPUT_UNSUPPORTED;
+ 	}
+ 
++	if (meteor_tracking_relation(&hmd->meteor_tracking, at_timestamp_ns, out_relation)) return XRT_SUCCESS;
++
+ 	const double time_s = time_ns_to_s(at_timestamp_ns - hmd->created_ns);
+ 	const double d = hmd->diameter_m;
+ 	const double d2 = d * 2;
+@@ -259,6 +264,12 @@
+ 		return NULL;
+ 	}
+ 
++	if (!meteor_tracking_initialize(&hmd->meteor_tracking)) {
++		fprintf(stderr, "METEOR_TRACKING_FAILED initialization (no simulated fallback)\n");
++		simulated_hmd_destroy(&hmd->base);
++		return NULL;
++	}
++
+ 	// Setup variable tracker.
+ 	u_var_add_root(hmd, "Simulated HMD", true);
+ 	u_var_add_pose(hmd, &hmd->pose, "pose");

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "monado_direct_transport.h"
 static void *meteor_encoder_module;
 static meteor_encode_stereo_fn_v1 meteor_encoder_submit;
 static void (*meteor_encoder_finish)(void);
@@ -15,6 +16,7 @@ static void meteor_encoder_shutdown(void)
 {
     if (meteor_encoder_module) {
         meteor_encoder_finish();
+        if (!meteor_direct_finish()) fprintf(stderr, "METEOR_DIRECT_FAILED shutdown\n");
         dlclose(meteor_encoder_module);
         meteor_encoder_module = NULL;
         meteor_last_encoded_time = 0;
@@ -47,6 +49,7 @@ meteor_encode_layer(struct null_compositor *c, const struct comp_layer *layer, c
         .device = vk->device, .queue = vk->main_queue->queue,
         .queue_family = vk->main_queue->family_index,
         .frame_id = (uint64_t)c->base.layer_accum.data.frame_id,
+        .display_ns = (uint64_t)layer->data.timestamp,
     };
     for (int eye = 0; eye < 2; ++eye) {
         struct comp_swapchain *sc = comp_swapchain(layer->sc_array[eye]);
@@ -56,12 +59,27 @@ meteor_encode_layer(struct null_compositor *c, const struct comp_layer *layer, c
             meteor_encoder_shutdown(); return false;
         }
         input.eyes[eye] = sc->vkic.images[index].handle;
+        const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
+        float values[11] = {view->pose.position.x, view->pose.position.y, view->pose.position.z,
+            view->pose.orientation.x, view->pose.orientation.y, view->pose.orientation.z, view->pose.orientation.w,
+            view->fov.angle_left, view->fov.angle_right, view->fov.angle_up, view->fov.angle_down};
+        memcpy(input.views + eye * 11, values, sizeof(values));
     }
+    struct meteor_owned_packet packet = {0};
+    const char *direct_port = getenv("METEOR_XR_DIRECT_PORT");
+    if (direct_port) { input.encoded_callback = meteor_encoded_copy; input.callback_context = &packet; }
     input.output_path = meteor_probe_path("monado-stereo.h264");
     // Borrowed queue: serialize all submissions/waits through Monado's own mutex.
     vk_queue_lock(vk->main_queue);
     meteor_encoder_submit(&input);
     vk_queue_unlock(vk->main_queue);
+    // Delivery uses owned bytes after NVENC unlock and outside the Vulkan queue lock.
+    if (direct_port) {
+        bool delivered = meteor_direct_send(&input, &packet, direct_port);
+        free(packet.bytes);
+        if (!delivered) { fprintf(stderr, "METEOR_DIRECT_FAILED frame\n"); return false; }
+        fprintf(stderr, "METEOR_DIRECT_OK frame=%llu bytes=%u\n", (unsigned long long)input.frame_id, packet.length);
+    }
     struct stat output_stat;
     if (stat(input.output_path, &output_stat) != 0 || (uint64_t)output_stat.st_size <= meteor_encoded_bytes) return false;
     uint64_t offset = meteor_encoded_bytes;

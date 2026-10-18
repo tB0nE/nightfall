@@ -19,6 +19,7 @@ class Backend extends RefCounted:
 	var stops := 0
 	var starts := 0
 	var remote_starts := 0
+	var meteor_starts := 0
 	var state := "starting"
 	var frames := 12
 	func start_test() -> bool:
@@ -27,6 +28,9 @@ class Backend extends RefCounted:
 	func stop_test() -> void: stops += 1
 	func start_stream() -> bool:
 		remote_starts += 1
+		return true
+	func start_meteor_test() -> bool:
+		meteor_starts += 1
 		return true
 	func get_test_status() -> Dictionary:
 		return {"state": state, "frames": frames, "error": "test failure", "session": 1}
@@ -70,6 +74,7 @@ func _run() -> void:
 	assert(controller.backend.remote_starts == 0)
 	_test_preparation_drain(owner)
 	_test_remote_timeout(owner)
+	_test_meteor_timeout(owner)
 	controller.session.enter()
 	controller.session.preparation_finished(controller.session.generation, true)
 	controller.backend.state = "running"
@@ -188,6 +193,25 @@ func _test_remote_timeout(owner: Owner) -> void:
 	controller.process(24.1)
 	assert(controller.session.state == Session.State.STOPPING)
 	assert(controller.session.error.contains("30 seconds"))
+	controller.backend.state = "idle"
+	controller.process(0.01)
+	assert(controller.restores == 1)
+
+func _test_meteor_timeout(owner: Owner) -> void:
+	var controller := Harness.new(owner)
+	controller.backend = Backend.new()
+	controller.meteor_mode = true
+	controller.backend.frames = 0
+	controller._execute(controller.session.enter())
+	var token: int = controller.session.generation
+	assert(controller._preparation_frame(token))
+	controller._preparation_drawn(token)
+	assert(controller.backend.meteor_starts == 1 and controller.backend.starts == 0)
+	controller.process(6.0)
+	assert(controller.session.state == Session.State.CONNECTING)
+	controller.process(9.1)
+	assert(controller.session.state == Session.State.STOPPING)
+	assert(controller.session.error.contains("15 seconds"))
 	controller.backend.state = "idle"
 	controller.process(0.01)
 	assert(controller.restores == 1)

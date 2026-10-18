@@ -303,6 +303,13 @@ int main(int argc, char **argv) {
         NV(api.nvEncLockBitstream(encoder, &lock));
         REQUIRE(lock.outputTimeStamp == timestamp_base + frame, "Encoder frame timestamp mismatch");
         output.write(static_cast<const char *>(lock.bitstreamBufferPtr), lock.bitstreamSizeInBytes);
+#ifdef METEOR_MONADO_BRIDGE
+        if (input->encoded_callback) {
+            REQUIRE(input->encoded_callback(input->callback_context,
+                static_cast<const uint8_t *>(lock.bitstreamBufferPtr), lock.bitstreamSizeInBytes),
+                "Encoded packet callback failed");
+        }
+#endif
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
         std::printf("NVENC timestamp=%llu bytes=%u submit-to-lock-us=%lld (tiny diagnostic, not XR benchmark)\n", static_cast<unsigned long long>(timestamp_base + frame), lock.bitstreamSizeInBytes, static_cast<long long>(us));
         NV(api.nvEncUnlockBitstream(encoder, bitstream.bitstreamBuffer));

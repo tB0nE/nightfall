@@ -3,13 +3,19 @@
 2026-10-18, `feat/meteor-xr-streaming`.
 Plan: [managed runtime spike](../plans/active/meteor-xr-monado-spike.md).
 
+**Current status:** user-confirmed tracked USB scene, 120 hardware-encoded/decoded
+frames and clean teardown. See the [session checkpoint](meteor-xr-session-checkpoint.md)
+for the complete progression and current limits. Earlier sections below describe
+the milestones as they stood when first implemented, not today's remaining work.
+
 ## Decision and product boundary
 
 Replace the ALVR/SteamVR-first host architecture with a Meteor-managed
 Monado-based runtime/service, using WiVRn as the primary streaming reference.
 Linux is the immediate test; Windows remains a required architecture gate.
 One user-facing host/client experience may include several managed binaries.
-No remote XR video stream is working or claimed by this first test.
+The initial runtime test alone did not establish remote video; the later USB
+tracked-scene proof is recorded in the checkpoint above.
 
 ## Source pins and licensing findings
 
@@ -140,6 +146,16 @@ Build/test logs and generated binaries:
 packages/base-image updates are not locked yet.
 
 ## Integration seams to study next
+
+### Loopback transport checkpoint
+
+The next-stage [transport probe](meteor-xr-transport-probe.md) first forwarded the
+live encoder spool to an isolated Rust receiver; it now uses a native owned-packet
+callback by default. Payloads/poses/FOVs/times reach the receiver without spool
+reads and outside Monado's GPU queue lock. 32/120-frame runs passed payload hash,
+metadata and decoded-marker checks; old spool mode remains for regression.
+It does not connect to the headset. Normal Meteor discovery/server is unchanged,
+and the diagnostic receiver binds loopback only without encryption.
 
 ### Persistent encoder and changing-frame sequence (2026-10-18)
 
@@ -320,9 +336,11 @@ The ALVR adapter/probe/audit remains for reference, disabled in ordinary builds.
 Welcome no longer exposes its remote button and legacy entry reports retirement.
 The successful synthetic Nightfall projection and lifecycle tests remain.
 
-## Still not proved
+## Still not proved (updated after tracked USB scene)
 
-Custom Meteor runtime target, actual image submission, GPU encoder interop,
-network protocol, live tracking, Quest decoding/reprojection, controller/haptic/
-audio behavior, automatic Meteor orchestration, Windows execution, Proton and
-OpenVR compatibility. Each needs its own acceptance test before product claims.
+General-purpose composition/output target, sustained-rate asynchronous delivery,
+authenticated LAN transport, negotiated real-device FOV/IPD, prediction/recenter/
+standby, controller/haptic/audio behavior, automatic Meteor orchestration, Windows
+execution, Proton and OpenVR compatibility. Actual app images, GPU encoder interop,
+USB framing, live tracking and Quest projection now have diagnostic evidence;
+that evidence is not a production-readiness claim.

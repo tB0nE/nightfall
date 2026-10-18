@@ -9,6 +9,9 @@ OUT="$ROOT/.build-cache/meteor-xr/monado-nvenc-spike"
 [[ "$(git -C "$REFERENCE" rev-parse HEAD)" == "$NIGHTFALL_WIVRN_REFERENCE_COMMIT" ]]
 [[ -z "$(git -C "$REFERENCE" status --porcelain --untracked-files=no)" ]]
 mkdir -p "$OUT"
+c++ -std=c++17 -O2 -fPIC -shared -pthread -Wall -Wextra -Werror \
+    -I "$ROOT/extensions/nightfall-xr/include" \
+    "$ROOT/test/meteor_tracking_client_bridge.cpp" -o "$OUT/libmeteor-tracking-probe.so"
 c++ -std=c++17 -O2 -fPIC -shared -pthread -DMETEOR_MONADO_BRIDGE \
     -Wall -Wextra -Werror -Wno-missing-field-initializers \
     -I "$REFERENCE/external/ffnvcodec" "$ROOT/test/meteor_vulkan_nvenc_probe.cpp" \

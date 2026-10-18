@@ -74,7 +74,11 @@ int main() {
     session_info.next = &binding;
     XrSession session; check(xrCreateSession(instance, &session_info, &session), "offscreen graphics session");
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL; space_info.poseInReferenceSpace.orientation.w = 1;
+    const bool tracked_scene=std::getenv("METEOR_XR_TRACKED_SCENE") != nullptr;
+    // Monado STAGE is the root space for this simulated device, unlike its
+    // startup-recentered LOCAL. The bridge adopts Quest LOCAL as that root.
+    space_info.referenceSpaceType = tracked_scene ? XR_REFERENCE_SPACE_TYPE_STAGE : XR_REFERENCE_SPACE_TYPE_LOCAL;
+    space_info.poseInReferenceSpace.orientation.w = 1;
     XrSpace space; check(xrCreateReferenceSpace(session, &space_info, &space), "local space");
     bool running = false;
     for (int attempt = 0; attempt < 100 && !running; ++attempt) {
@@ -103,10 +107,19 @@ int main() {
         check(xrLocateViews(session, &locate, &view_state, 2, &count, views), "locate stereo views");
         if (count != 2 || state.predictedDisplayTime <= 0 ||
             !(view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT)) return 1;
+        if (std::getenv("METEOR_TRACKING_BRIDGE")) {
+            std::printf("Tracked view frame=%d left_position=%.6f,%.6f,%.6f orientation=%.6f,%.6f,%.6f,%.6f\n",
+                frame, views[0].pose.position.x, views[0].pose.position.y, views[0].pose.position.z,
+                views[0].pose.orientation.x, views[0].pose.orientation.y, views[0].pose.orientation.z, views[0].pose.orientation.w);
+            std::printf("Tracked center=%.6f,%.6f,%.6f\n",
+                (views[0].pose.position.x+views[1].pose.position.x)*.5f,
+                (views[0].pose.position.y+views[1].pose.position.y)*.5f,
+                (views[0].pose.position.z+views[1].pose.position.z)*.5f);
+        }
         XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.displayTime = state.predictedDisplayTime; end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         XrCompositionLayerProjectionView projection_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
         for (int eye = 0; eye < 2; ++eye) {
-            stereo.write(eye, frame);
+            stereo.write(eye, frame, tracked_scene ? &views[eye] : nullptr);
             projection_views[eye].pose = views[eye].pose; projection_views[eye].fov = views[eye].fov;
             projection_views[eye].subImage.swapchain = stereo.chains[eye];
             projection_views[eye].subImage.imageRect.extent = {static_cast<int32_t>(StereoImages::width), static_cast<int32_t>(StereoImages::height)};

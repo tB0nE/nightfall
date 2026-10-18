@@ -9,6 +9,8 @@
 #include <mutex>
 #include <string>
 #include "pcvr_alvr_client.h"
+#include "pcvr_meteor_receiver.h"
+#include "pcvr_meteor_tracking_endpoint.h"
 #include <memory>
 #ifdef __ANDROID__
 #include <EGL/eglext.h>
@@ -25,6 +27,7 @@ class NightfallXrProjectionTest : public NightfallXrRenderer {
 public:
 	bool start_test();
 	bool start_stream();
+	bool start_meteor_test();
 	bool stream_available() const;
 	Dictionary _get_requested_extensions(uint64_t p_xr_version) override;
 	void stop_test();
@@ -66,15 +69,31 @@ private:
 	bool initialize_render_resources();
 	bool render_scene();
 	void release_render_resources();
-#ifdef NIGHTFALL_PCVR_ALVR
+	std::unique_ptr<PCVRMeteorReceiver> meteor;
+	bool meteor_mode = false, meteor_draining = false;
+	GLuint meteor_texture = 0;
+	EGLImageKHR meteor_image = EGL_NO_IMAGE_KHR;
+	GLsync meteor_fence = nullptr;
+	MeteorXrFrame meteor_frame;
+	PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC meteor_native_buffer = nullptr;
+	PFNEGLCREATEIMAGEKHRPROC meteor_create_image = nullptr;
+	PFNEGLDESTROYIMAGEKHRPROC meteor_destroy_image = nullptr;
+	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC meteor_image_to_texture = nullptr;
+	bool prepare_meteor_image();
+	bool retire_meteor_image();
 	inline static bool clock_extension = false;
-	std::unique_ptr<PCVRAlvrClient> remote;
-	bool remote_mode = false, remote_draining = false;
 	XrSpace head_space = XR_NULL_HANDLE;
 	PFN_xrCreateReferenceSpace create_space = nullptr;
 	PFN_xrDestroySpace destroy_space = nullptr;
 	PFN_xrLocateSpace locate_space = nullptr;
 	PFN_xrConvertTimespecTimeToTimeKHR clock_to_xr = nullptr;
+	std::unique_ptr<MeteorTrackingEndpoint> tracking;
+	uint64_t tracking_epoch = 0;
+	XrSpace tracking_space = XR_NULL_HANDLE;
+	void publish_meteor_tracking();
+#ifdef NIGHTFALL_PCVR_ALVR
+	std::unique_ptr<PCVRAlvrClient> remote;
+	bool remote_mode = false, remote_draining = false;
 	GLuint video_program = 0, video_texture = 0;
 	EGLImageKHR video_image = EGL_NO_IMAGE_KHR;
 	GLsync video_fence = nullptr;

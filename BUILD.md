@@ -397,6 +397,64 @@ This is a stop-and-wait correctness sequence with bounded single-frame
 backpressure, not sustainable-rate/latency measurement. Asynchronous GPU fences,
 realistic resolution/rate and transport remain outstanding.
 
+To include **live diagnostic loopback frame transport** to a Rust receiver:
+
+```bash
+bash tools/build_support/probe_xr_transport.sh
+NIGHTFALL_XR_PROBE_FRAMES=120 bash tools/build_support/probe_xr_transport.sh
+NIGHTFALL_XR_PROBE_ABORT=1 bash tools/build_support/probe_xr_transport.sh
+```
+
+Requires `rustc` in addition to the Monado/NVENC prerequisites. This tests protocol
+framing and native owned-packet delivery, then sends encoder output directly to
+a loopback-only receiver, outside the Vulkan queue lock. No file-spool reads are
+used in delivery; reference files remain for post-run comparison.
+Every received payload, pose/FOV and timestamp must match, and received video is
+decoded again for marker verification. It is not headset streaming or a
+production asynchronous transport. No authentication/encryption; do not expose the diagnostic
+port. See [wire format, limits and remaining work](docs/research/meteor-xr-transport-probe.md).
+
+The previous spool sender remains available for regression comparison:
+
+```bash
+NIGHTFALL_XR_TRANSPORT_MODE=spool bash tools/build_support/probe_xr_transport.sh
+```
+
+Quest decoder/projection diagnostics (optimized DEV APK; ALVR remains OFF):
+
+```bash
+NIGHTFALL_PCVR_ALVR=OFF ./build.sh --dev --install
+# Hardware decoder/ImageReader check only; does not enter XR:
+bash tools/build_support/probe_android_xr_decoder.sh
+# Arm this, then press the new DEV Meteor decoded stereo welcome button:
+bash tools/build_support/probe_headset_xr_projection.sh
+```
+
+Both scripts require an ADB-authorized connected Quest and the existing Monado/
+NVENC host prerequisites. Set `NIGHTFALL_ADB` for a non-default adb executable.
+They use temporary USB-forwarded loopback sockets, not a LAN service. The decoder
+check builds a standalone optimized NDK helper (same receiver as the app); the
+projection check needs a person wearing the headset. Both are fixed-size SDR
+patterns, **not tracked PCVR**. See [ownership, evidence and test steps](docs/research/meteor-xr-headset-decoder-spike.md).
+
+For the next **tracked scene diagnostic**, rebuild the isolated Monado runtime
+after changing its pinned patch, then run:
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+# No headset: moving synthetic poses through Monado/app + scene encode checks:
+python3 test/run_monado_tracking_spike.py "$PWD"
+# With the latest optimized DEV APK: arm, then press DEV: Meteor decoded stereo.
+bash tools/build_support/probe_headset_xr_tracking_runtime.sh
+```
+
+The tracked fixture keeps a separate USB tracking channel live while rendering
+three spheres and a floor. It carries the host render poses/FOV in an explicitly
+adopted Quest LOCAL origin, not Monado's startup-recentered LOCAL. This is a tiny
+CPU-reference scene with hardware video encoding/decoding, not a performance
+benchmark, game-ready stream or normal Meteor feature. Visual world-lock and
+orientation need headset testing. See the [tracking report](docs/research/meteor-xr-tracking-spike.md).
+
 ### Retired ALVR research probe
 
 The exclusive Meteor XR spike is separate from normal APK builds. To check

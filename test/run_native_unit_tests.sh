@@ -29,6 +29,18 @@ echo "Building pcvr_view_validation_test"
   -I"$PROJECT_ROOT/extensions/nightfall-xr/include" \
   -o "$BUILD_ROOT/pcvr_view_validation_test"
 "$BUILD_ROOT/pcvr_view_validation_test"
+echo "Building pcvr_meteor_wire_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  "$PROJECT_ROOT/test/pcvr_meteor_wire_test.cpp" \
+  -I"$PROJECT_ROOT/extensions/nightfall-xr/include" \
+  -o "$BUILD_ROOT/pcvr_meteor_wire_test"
+"$BUILD_ROOT/pcvr_meteor_wire_test"
+echo "Building pcvr_meteor_tracking_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  "$PROJECT_ROOT/test/pcvr_meteor_tracking_test.cpp" \
+  -I"$PROJECT_ROOT/extensions/nightfall-xr/include" \
+  -o "$BUILD_ROOT/pcvr_meteor_tracking_test"
+"$BUILD_ROOT/pcvr_meteor_tracking_test"
 echo "Building decode_unit_queue_test"
 # Word splitting is intentional for compiler and linker flags from pkg-config.
 # shellcheck disable=SC2046

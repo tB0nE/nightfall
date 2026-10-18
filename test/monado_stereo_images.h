@@ -2,6 +2,7 @@
 #pragma once
 #include <fstream>
 #include "monado_probe_paths.h"
+#include "meteor_pose_scene.h"
 
 static void vk_check(VkResult result, const char *operation) {
     if (result != VK_SUCCESS) {
@@ -66,7 +67,7 @@ struct StereoImages {
         vk_check(vkBindBufferMemory(device, buffer, memory, 0), "bind readback");
     }
 
-    void write(int eye, int frame) {
+    void write(int eye, int frame, const XrView *view = nullptr) {
         uint32_t index;
         XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         check(xrAcquireSwapchainImage(chains[eye], &acquire, &index), "acquire eye");
@@ -83,7 +84,14 @@ struct StereoImages {
             input[p+1] = green;
             input[p+2] = eye == 1 ? (y < height/2 ? 255 : 128) : 0;
             input[p+3] = 255;
+            if(view) {
+                auto color=meteor_scene(*view,(x+.5f)/width,(y+.5f)/height);
+                input[p]=uint8_t(std::clamp(color.x,0.f,1.f)*255);
+                input[p+1]=uint8_t(std::clamp(color.y,0.f,1.f)*255);
+                input[p+2]=uint8_t(std::clamp(color.z,0.f,1.f)*255);
+            }
         }
+        std::vector<unsigned char> expected(input,input+width*height*4);
         vkUnmapMemory(device, memory);
         vk_check(vkResetCommandBuffer(command, 0), "reset command");
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -124,10 +132,17 @@ struct StereoImages {
         vk_check(vkQueueWaitIdle(queue), "finish diagnostic readback");
         void *mapped; vk_check(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped), "map readback");
         const auto *pixels = static_cast<const unsigned char *>(mapped);
+        if(view) {
+            if(std::memcmp(pixels,expected.data(),expected.size())) { std::fprintf(stderr,"Scene readback mismatch\n"); std::exit(1); }
+            std::ofstream reference(meteor_probe_path(eye==0 ? "scene-left.rgb" : "scene-right.rgb"),
+                std::ios::binary | (frame==0 ? std::ios::trunc : std::ios::app));
+            for(uint32_t p=0;p<width*height;++p) reference.write(reinterpret_cast<const char *>(pixels+p*4),3);
+            if(!reference) { std::fprintf(stderr,"Cannot write scene reference\n"); std::exit(1); }
+        }
         for (uint32_t p = 0; p < width * height; ++p) {
-            if (pixels[p*4] != (eye == 0 ? (p % width < width/2 ? 255 : 128) : 0) ||
+            if (!view && (pixels[p*4] != (eye == 0 ? (p % width < width/2 ? 255 : 128) : 0) ||
                 pixels[p*4+2] != (eye == 1 ? (p / width < height/2 ? 255 : 128) : 0) ||
-                std::abs(static_cast<int>(pixels[p*4+1]) - green) > 1 || pixels[p*4+3] != 255) {
+                std::abs(static_cast<int>(pixels[p*4+1]) - green) > 1 || pixels[p*4+3] != 255)) {
                 std::fprintf(stderr, "Eye %d frame %d pixel %u mismatch\n", eye, frame, p); std::exit(1);
             }
         }

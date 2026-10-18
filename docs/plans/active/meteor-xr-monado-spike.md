@@ -3,6 +3,10 @@
 Active 2026-10-18, `feat/meteor-xr-streaming`. Supersedes the
 [ALVR-first spike](meteor-xr-streaming-spike.md), retained as historical research.
 
+Latest: **user-confirmed tracked USB scene**, 120 frames, clean teardown. See the
+[session checkpoint](../../research/meteor-xr-session-checkpoint.md) for completed
+steps, evidence, reproduction and ordered next gates. This is not production XR.
+
 ## Product contract
 
 Install Meteor, run Nightfall, pair once. Meteor manages the supporting runtime
@@ -83,7 +87,7 @@ captures the actual submitted stereo textures inside the service. Asymmetric
 eye patterns match app readbacks byte-for-byte after a bounded final-frame
 acknowledgment. Two consecutive runs passed. This establishes raw image handoff,
 not a general compositor: transformed subrects, pose/FOV-driven rendering,
-blending, color conversion, hardware fences and GPU-local encoder handoff remain
+blending, color conversion, asynchronous hardware fences and general encoder integration remain
 outstanding. Do not treat the complete Stage 2 gate as passed yet.
 
 Encoder feasibility: `probe_vulkan_nvenc.sh` proves independent exportable Vulkan
@@ -95,8 +99,8 @@ also passes 32- and 120-frame changing-pattern sequences using one persistent
 encoder and reusable GPU surface, with capacity-one blocking backpressure and
 verified drain/release after normal exit or an intentionally killed app. These
 are stop-and-wait correctness runs, not sustained-rate proof. Next: asynchronous
-GPU synchronization, realistic stereo dimensions/rate, and versioned frame/metadata
-transport. Keep CPU readback capture separate from the actual encode path.
+GPU synchronization and realistic stereo dimensions/rate. Keep CPU readback
+capture separate from the actual encode path.
 
 ## Stage 3: tracking and remote video
 
@@ -104,6 +108,45 @@ Define a versioned XR control/stream protocol separate from GameStream desktop
 and Meteor depth delivery. Pair/authenticate; negotiate dimensions, refresh,
 codec, generation, clock mapping and capabilities. Specify every timestamp unit
 and buffer ownership rule explicitly.
+
+Initial framing proof: a versioned bounded header now transports actual encoded
+frames with frame IDs, host monotonic times and both poses/FOVs to a loopback-only
+Rust receiver. Live spool-forwarding tests pass 32/120 frames and partial output
+after deliberate app disconnect, with byte/metadata/decoded-marker checks.
+Direct callback delivery now replaces spool forwarding by default: a bounded
+owned packet is copied during bitstream lock, then sent after NVENC and Vulkan
+queue unlock. 32/120-frame tests pass. The old spool mode remains diagnostic-only.
+This is an unauthenticated loopback test, not a product server or headset
+transport. See the [transport report](../../research/meteor-xr-transport-probe.md).
+Pairing/encryption, asynchronous delivery, tracking and client clock/reference-
+space mapping remain required before remote deployment.
+
+Headset milestone: the DEV client now has a USB-only receiver, Qualcomm hardware
+AVC decoder and ImageReader/AHardwareBuffer import into its exclusive projection
+test. Standalone device runs passed 32/120 in-order decoded buffers with exact
+PTS-to-metadata matching and teardown. User visual testing confirmed the intended
+left vertical/right horizontal patterns; logs show 120 decoded frames and a
+single projection layer. Changing green deliberately flashes in this fixture.
+This uses local test poses, not mapped host render poses; it is not
+tracked PCVR. See the [headset decoder report](../../research/meteor-xr-headset-decoder-spike.md).
+
+Tracking foundation: `pcvr_meteor_tracking.h` defines a fixed-size, versioned
+LOCAL-space head-pose packet with epoch/sequence/time and quaternion validation,
+plus a four-timestamp lowest-RTT clock mapping helper. Standalone native tests
+cover replay, malformed packets, invalid poses, clock ordering, uncertainty and
+overflow. The headset now publishes explicitly timed LOCAL head poses through a
+separate loopback USB worker, independent of video. A host diagnostic performs
+eight clock exchanges and validates 120 fresh mapped poses; three synthetic
+socket regressions pass, and the optimized Android extension builds. Real
+headset collection passed with 120 fresh poses and approximately 0.144 ms clock
+uncertainty estimate, followed by 120 video frames. An optional live bridge now
+feeds the isolated Monado HMD; changing synthetic poses reached application
+`xrLocateViews` across 32 encoded frames. The new sphere/floor scene uses the
+explicitly adopted root origin and host render poses/FOV. Automated origin and
+encode/decode reference checks pass. User confirmed the live tracked scene on
+Quest 3, with all 120 frames and clean teardown. Real-device FOV/IPD negotiation,
+sustained-rate streaming and recenter handling remain outstanding. See the
+[tracking report](../../research/meteor-xr-tracking-spike.md).
 
 1. Nightfall sends timestamped poses/valid velocities before the first video
    frame, not only after decoder initialization. Avoid a startup dependency loop.

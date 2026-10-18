@@ -1,6 +1,9 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include <stdint.h>
+// Bitstream pointer is borrowed only for this call. The sink must copy it into
+// owned storage before returning; zero reports failure. Never block on network here.
+typedef int (*meteor_encoded_callback_v1)(void *, const uint8_t *, uint32_t);
 // Local diagnostic ABI only. Borrowed handles remain owned by Monado.
 struct meteor_stereo_encode_v1 {
     uint32_t size;
@@ -12,5 +15,9 @@ struct meteor_stereo_encode_v1 {
     VkImage eyes[2];
     uint64_t frame_id;
     const char *output_path;
+    uint64_t display_ns;
+    float views[22];
+    meteor_encoded_callback_v1 encoded_callback;
+    void *callback_context;
 };
 typedef void (*meteor_encode_stereo_fn_v1)(const struct meteor_stereo_encode_v1 *);

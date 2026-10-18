@@ -1,6 +1,6 @@
 class_name PCVRTestController
 extends RefCounted
-## Synthetic provider only: no transport, decoder, audio or OpenXR session owner.
+## DEV projection tests only; never owns a second OpenXR session/frame loop.
 const Session = preload("res://src/pcvr_session.gd")
 const TIMEOUT_SECONDS := 45.0
 const FIRST_FRAME_TIMEOUT_SECONDS := 5.0
@@ -18,6 +18,7 @@ var _hidden: Array[Node] = []
 var _projection_enabled := false
 var _preparation_frame_generation := -1
 var stream_mode := false
+var meteor_mode := false
 var _last_remote_status := ""
 
 func _init(owner) -> void:
@@ -59,7 +60,7 @@ func busy_reason() -> String:
 		return "Start from clean welcome: native video is busy"
 	return ""
 
-func start(remote_stream: bool = false) -> void:
+func start(remote_stream: bool = false, meteor_stream: bool = false) -> void:
 	main._log("[PCVR-TEST] Button pressed remote=%s" % remote_stream)
 	if is_exclusive(): return
 	if remote_stream:
@@ -71,6 +72,7 @@ func start(remote_stream: bool = false) -> void:
 		_report_status(reason)
 		return
 	stream_mode = remote_stream
+	meteor_mode = meteor_stream
 	_last_remote_status = ""
 	session.reset()
 	elapsed = 0.0
@@ -104,7 +106,7 @@ func _execute(commands: Array[Dictionary]) -> void:
 			"connect":
 				_log_transition("connecting")
 				status = "Starting — hold B or Y for 1 second to exit (45s timeout)"
-				var started: bool = backend.start_stream() if stream_mode else backend.start_test()
+				var started: bool = backend.start_meteor_test() if meteor_mode else (backend.start_stream() if stream_mode else backend.start_test())
 				if not started:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
 			"stop":
@@ -191,13 +193,14 @@ func process(delta: float) -> void:
 		return # Only the draw-drain continuation can acknowledge preparation.
 	elif state == "failed":
 		_execute(session.fail(session.generation, str(native_status.get("error", "Native test failed"))))
-	elif session.state == Session.State.CONNECTING and elapsed >= (30.0 if stream_mode else FIRST_FRAME_TIMEOUT_SECONDS) and int(native_status.get("frames", 0)) == 0:
-		_execute(session.fail(session.generation, "No remote frame within 30 seconds" if stream_mode else "No tracked projection frame within 5 seconds"))
+	elif session.state == Session.State.CONNECTING and elapsed >= (15.0 if meteor_mode else (30.0 if stream_mode else FIRST_FRAME_TIMEOUT_SECONDS)) and int(native_status.get("frames", 0)) == 0:
+		_execute(session.fail(session.generation, "No Meteor decoded frame within 15 seconds" if meteor_mode else ("No remote frame within 30 seconds" if stream_mode else "No tracked projection frame within 5 seconds")))
 	elif state == "running" and int(native_status.get("frames", 0)) > 0:
 		if session.state == Session.State.CONNECTING:
 			_log_transition("firstframe")
 		session.connected(session.generation)
 		status = "Running: %d frames, session %d" % [int(native_status.get("frames", 0)), int(native_status.get("session", 0))]
+		if meteor_mode: status += " — " + str(native_status.get("meteor_status", "USB diagnostic"))
 	elif state == "idle" and session.state == Session.State.RUNNING:
 		_execute(session.fail(session.generation, "Native projection ended unexpectedly"))
 

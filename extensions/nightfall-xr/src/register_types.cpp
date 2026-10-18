@@ -8,7 +8,7 @@
 #include <godot_cpp/godot.hpp>
 
 using namespace godot;
-#if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
+#ifdef __ANDROID__
 #include <android/log.h>
 // Register before Godot creates its OpenXR instance, not from scene _ready.
 static NightfallXrProjectionTest *pcvr_clock_request = nullptr;
@@ -23,7 +23,7 @@ void initialize_nightfall_xr_module(ModuleInitializationLevel p_level) {
 	}
 	ClassDB::register_class<NightfallXrRenderer>();
 	ClassDB::register_class<NightfallXrProjectionTest>();
-#if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
+#ifdef __ANDROID__
 	pcvr_clock_request = memnew(NightfallXrProjectionTest);
 	pcvr_clock_request->register_extension_wrapper();
 	__android_log_print(ANDROID_LOG_INFO, "NightfallPCVR", "Clock extension wrapper registered at CORE, before OpenXR instance creation");
@@ -34,7 +34,7 @@ void uninitialize_nightfall_xr_module(ModuleInitializationLevel p_level) {
 	if (p_level != XR_REGISTRATION_LEVEL) {
 		return;
 	}
-#if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
+#ifdef __ANDROID__
 	// Godot owns the registered extension wrapper through OpenXR shutdown.
 	pcvr_clock_request = nullptr;
 #endif

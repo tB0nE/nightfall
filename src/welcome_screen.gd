@@ -55,6 +55,15 @@ func build_welcome_ui():
 		test_button.pressed.connect(func():
 			main.pcvr_test.start()
 			test_status.text = main.pcvr_test.status)
+		var meteor_button := Button.new()
+		meteor_button.text = "DEV: Meteor decoded stereo (USB test; not tracked PCVR)"
+		meteor_button.position = Vector2(480, 920)
+		meteor_button.custom_minimum_size = Vector2(1000, 64)
+		meteor_button.add_theme_font_size_override("font_size", 24)
+		root.add_child(meteor_button)
+		meteor_button.pressed.connect(func():
+			main.pcvr_test.start(false, true)
+			test_status.text = main.pcvr_test.status)
 
 	show_welcome_screen("welcome")
 

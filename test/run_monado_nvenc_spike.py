@@ -11,6 +11,7 @@ import tempfile
 import fcntl
 
 from check_nvenc_stereo import validate
+from xr_transport_probe import LiveTransport
 
 
 def run(root: Path, out: Path):
@@ -18,12 +19,16 @@ def run(root: Path, out: Path):
     with (out / "probe.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with tempfile.TemporaryDirectory(prefix="nf-xr-", dir="/tmp") as socket_dir:
-            run_isolated(root, out, Path(socket_dir))
+            with LiveTransport(os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"), out) as transport:
+                run_isolated(root, out, Path(socket_dir), transport)
 
 
-def run_isolated(root: Path, out: Path, runtime: Path):
+def run_isolated(root: Path, out: Path, runtime: Path, transport):
     abort_test = os.environ.get("NIGHTFALL_XR_PROBE_ABORT") == "1"
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
+    tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
+    if tracked_scene and not os.environ.get("NIGHTFALL_XR_TRACKING_PORT"):
+        raise ValueError("Tracked scene requires explicit live tracking port; no simulated fallback")
     if not 1 <= frame_count <= 240:
         raise ValueError("NIGHTFALL_XR_PROBE_FRAMES must be 1..240")
     if abort_test and frame_count < 16:
@@ -50,6 +55,19 @@ def run_isolated(root: Path, out: Path, runtime: Path):
                VK_ICD_FILENAMES=str(icd), VK_DRIVER_FILES=str(icd),
                METEOR_CONTINUOUS_FRAMES=str(frame_count),
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
+    transport.start()
+    env.update(transport.environment())
+    tracking_port = os.environ.get("NIGHTFALL_XR_TRACKING_PORT")
+    if tracking_port:
+        if not tracking_port.isdecimal() or not 1 <= int(tracking_port) <= 65535:
+            raise ValueError("Tracking port must be a valid loopback/ADB-forwarded port")
+        env["METEOR_TRACKING_PORT"] = tracking_port
+        env["METEOR_TRACKING_BRIDGE"] = str(out / "libmeteor-tracking-probe.so")
+    device_port = os.environ.get("NIGHTFALL_XR_DEVICE_PORT")
+    if device_port:
+        if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
+            raise ValueError("Device port must be a valid ADB-forwarded port, with no local receiver configured")
+        env["METEOR_XR_DIRECT_PORT"] = device_port
     with (out / "service.log").open("w") as log:
         child = subprocess.Popen([str(service)], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -90,6 +108,11 @@ def run_isolated(root: Path, out: Path, runtime: Path):
                     child.kill()
                     child.wait()
     text = (out / "service.log").read_text()
+    if tracking_port and ("METEOR_TRACKING_READY" not in text or
+                          "METEOR_TRACKING_APPLIED" not in text or
+                          "METEOR_TRACKING_FAILED" in text):
+        raise RuntimeError("Live tracking did not reach the Monado virtual HMD")
+    transport.finish()
     if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
     if "METEOR_CAPTURE_EYE" in text or (out / "server-eye-left.ppm").exists():
@@ -132,7 +155,28 @@ def run_isolated(root: Path, out: Path, runtime: Path):
     subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", str(out / "monado-stereo.h264"), "-pix_fmt", "rgb24", "-f", "rawvideo",
                     str(out / "decoded.rgb")], check=True, timeout=20)
-    validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in range(frame_count)])
+    if tracked_scene:
+        left = (out / "scene-left.rgb").read_bytes()
+        right = (out / "scene-right.rgb").read_bytes()
+        decoded = (out / "decoded.rgb").read_bytes()
+        eye_size = 256*256*3
+        if len(left) != frame_count*eye_size or len(right) != len(left) or len(decoded) != len(left)*2:
+            raise RuntimeError("Scene reference/decoded frame count mismatch")
+        # Compare the real encoded/decode output with app-side pixel-verified
+        # reference rows, not the old synthetic stripe validator.
+        total_error = 0
+        for frame in range(frame_count):
+            for row in range(256):
+                start = frame*eye_size+row*256*3
+                reference = left[start:start+768]+right[start:start+768]
+                offset = frame*eye_size*2+row*1536
+                total_error += sum(abs(a-b) for a,b in zip(reference,decoded[offset:offset+1536]))
+        error = total_error/len(decoded)
+        if error > 12:
+            raise RuntimeError(f"Decoded pose scene differs from app reference: mean byte error {error:.3f}")
+        print(f"Scene encode/decode reference mean byte error: {error:.3f}")
+    else:
+        validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in range(frame_count)])
     label = "unexpected app disconnect" if abort_test else "normal session exit"
     print(f"PASS: {frame_count} changing Monado frames; one persistent encoder/surface; decoded markers, timestamps and bitstream ranges match; clean drain after {label}")
     print(f"Artifacts: {out}")
