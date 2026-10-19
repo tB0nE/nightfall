@@ -37,6 +37,8 @@ class TrackingEndpointTests(unittest.TestCase):
                                                      ctypes.POINTER(ctypes.c_uint64)]
         cls.library.meteor_tracking_stop_v1.argtypes = [ctypes.c_void_p]
         cls.library.meteor_tracking_optics_v1.argtypes = [ctypes.c_void_p,ctypes.POINTER(ctypes.c_float)]
+        cls.library.meteor_tracking_controller_v1.argtypes=[ctypes.c_uint,ctypes.c_int64,
+            ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_uint32),ctypes.POINTER(ctypes.c_uint64)]
 
     @classmethod
     def tearDownClass(cls):
@@ -105,6 +107,29 @@ class TrackingEndpointTests(unittest.TestCase):
         with socket.create_connection(("127.0.0.1", self.port), timeout=2) as peer:
             peer.sendall(b"NFXC")
         self.assertEqual(self.child.wait(timeout=3), 1)
+
+    def test_controller_snapshot_bridge_and_disconnect(self):
+        with patch.dict(os.environ,{"METEOR_XR_CONTROLLERS":"1"}):
+            context=self.library.meteor_tracking_start_v1(str(self.port).encode())
+        self.assertTrue(context)
+        # Keep the flag enabled for the worker's later polls too.
+        with patch.dict(os.environ,{"METEOR_XR_CONTROLLERS":"1"}):
+            try:
+                for hand in range(2):
+                    poses=(ctypes.c_float*14)(); values=(ctypes.c_float*2)(); flags=ctypes.c_uint32(); stamp=ctypes.c_uint64()
+                    self.assertEqual(self.library.meteor_tracking_controller_v1(hand,time.monotonic_ns(),poses,values,ctypes.byref(flags),ctypes.byref(stamp)),1)
+                    self.assertEqual(flags.value,7); self.assertAlmostEqual(values[0],.25); self.assertAlmostEqual(values[1],.75)
+                    self.assertAlmostEqual(poses[0],.05 if hand==0 else .45)
+                self.child.terminate(); self.child.wait(timeout=3)
+                deadline=time.monotonic()+3
+                while time.monotonic()<deadline:
+                    if not self.library.meteor_tracking_controller_v1(0,time.monotonic_ns(),poses,values,ctypes.byref(flags),ctypes.byref(stamp)):
+                        self.assertEqual(flags.value,0); self.assertEqual(list(values),[0,0]); break
+                    time.sleep(.01)
+                else:
+                    self.fail("Disconnected controller remained active")
+            finally:
+                self.library.meteor_tracking_stop_v1(context)
 
     def test_monado_bridge_pose_and_query_limits(self):
         context = self.library.meteor_tracking_start_v1(str(self.port).encode())

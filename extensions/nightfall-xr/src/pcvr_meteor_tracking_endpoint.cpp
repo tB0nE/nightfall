@@ -58,7 +58,7 @@ void MeteorTrackingEndpoint::run(uint16_t port) {
         }
         if (peer < 0) break;
         setsockopt(peer, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-        uint64_t sequence = 0, last_ns = 0;
+        uint64_t sequence = 0, last_ns = 0, input_sequence=0, last_input_ns=0;
         while (!stopping.load()) {
             std::array<uint8_t,32> request{};
             uint64_t deadline = now_ns()+2000000000;
@@ -87,6 +87,21 @@ void MeteorTrackingEndpoint::run(uint16_t port) {
                 if(!sample.epoch) break;
                 auto packet=MeteorOpticsWire::encode(sample.optics);
                 if(!io(peer,packet.data(),packet.size(),true,deadline)) break;
+            } else if (!std::memcmp(request.data(),"NFXI",4)) {
+                MeteorTrackingSample sample;
+                while(!stopping.load() && now_ns()<deadline) {
+                    { std::lock_guard<std::mutex> lock(mutex); sample=latest; }
+                    uint64_t now=now_ns();
+                    if(sample.epoch && sample.controllers.epoch==sample.epoch &&
+                        sample.controllers.client_ns>last_input_ns && sample.controllers.client_ns<=now &&
+                        now-sample.controllers.client_ns<=250000000 && MeteorControllerWire::valid(sample.controllers)) break;
+                    sample.epoch=0; std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if(!sample.epoch || input_sequence==UINT64_MAX) break;
+                sample.controllers.sequence=input_sequence++;
+                auto packet=MeteorControllerWire::encode(sample.controllers);
+                if(!io(peer,packet.data(),packet.size(),true,deadline)) break;
+                last_input_ns=sample.controllers.client_ns;
             } else if (!std::memcmp(request.data(),"NFXP",4)) {
                 MeteorTrackingSample sample;
                 while (!stopping.load() && now_ns() < deadline) {

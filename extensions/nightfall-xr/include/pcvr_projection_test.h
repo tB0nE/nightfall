@@ -91,6 +91,11 @@ private:
 	uint64_t tracking_epoch = 0;
 	XrSpace tracking_space = XR_NULL_HANDLE;
 	void publish_meteor_tracking();
+	XrSpace controller_spaces[2][2]{};
+	XrPath controller_paths[2]{};
+	XrAction controller_trigger=XR_NULL_HANDLE,controller_squeeze=XR_NULL_HANDLE;
+	PFN_xrGetActionStateFloat controller_float=nullptr;
+	void initialize_meteor_controllers();
 #ifdef NIGHTFALL_PCVR_ALVR
 	std::unique_ptr<PCVRAlvrClient> remote;
 	bool remote_mode = false, remote_draining = false;

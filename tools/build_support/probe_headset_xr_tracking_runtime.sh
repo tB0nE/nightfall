@@ -21,7 +21,13 @@ TRACKING_PORT="$("$ADB" forward tcp:0 tcp:49091)"
 [[ "$VIDEO_PORT" =~ ^[0-9]+$ && "$TRACKING_PORT" =~ ^[0-9]+$ ]]
 "$ADB" logcat -T 1 -v brief -s NightfallPCVR:I > "$OUT/device.log" 2>&1 &
 LOG_PID=$!
-echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect three colored spheres and a floor; gently move your head.'
+if [[ "${NIGHTFALL_XR_HELLO_XR:-0}" == 1 ]]; then
+    echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect Khronos hello_xr reference-space cubes on a plain background; gently move your head.'
+elif [[ "${NIGHTFALL_XR_RASTER_SCENE:-0}" == 1 ]]; then
+    echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect rotating colored cubes and a checkerboard floor; gently move your head.'
+else
+    echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect three colored spheres and a floor; gently move your head.'
+fi
 echo "Profile: ${NIGHTFALL_XR_EYE_SIZE:-256}x${NIGHTFALL_XR_EYE_SIZE:-256} per eye, target ${NIGHTFALL_XR_TARGET_HZ:-20} Hz; actual timings are recorded separately."
 READY=0
 for attempt in {1..1200}; do

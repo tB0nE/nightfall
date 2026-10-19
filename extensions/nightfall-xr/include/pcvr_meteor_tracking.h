@@ -1,5 +1,6 @@
 #pragma once
 #include "pcvr_meteor_wire.h"
+#include "pcvr_meteor_controllers.h"
 #include <limits>
 
 // Fixed session snapshot: each eye is pose xyz/xyzw relative to VIEW,
@@ -53,6 +54,7 @@ struct MeteorTrackingSample {
     // Position xyz, orientation xyzw; metres and right-handed OpenXR axes.
     std::array<float, 7> pose{0, 0, 0, 0, 0, 0, 1};
     MeteorHeadsetOptics optics;
+    MeteorControllerSample controllers;
 };
 class MeteorTrackingWire {
     uint64_t epoch = 0, sequence = 0, last_ns = 0;

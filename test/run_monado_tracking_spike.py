@@ -43,10 +43,16 @@ def run(root):
         result.check_returncode()
         app_log = (root / ".build-cache/meteor-xr/monado-nvenc-spike/probe.log").read_text()
         positions = [float(x) for x in re.findall(r"Tracked view frame=\d+ left_position=([-0-9.]+),", app_log)]
-        if len(positions) != frames or max(positions)-min(positions) < .005:
+        independent=env.get("NIGHTFALL_XR_HELLO_XR")=="1"
+        if independent:
+            encoded=[json.loads(line) for line in (root / ".build-cache/meteor-xr/monado-nvenc-spike/monado-stereo.jsonl").read_text().splitlines()]
+            positions=[r["views"][0]["position"][0] for r in encoded]
+        if (not independent and len(positions)!=frames) or not positions or max(positions)-min(positions) < .005:
             raise RuntimeError("Injected changing poses did not reach application xrLocateViews")
         centers = [tuple(map(float, xyz)) for xyz in re.findall(r"Tracked center=([-0-9.]+),([-0-9.]+),([-0-9.]+)", app_log)]
-        if len(centers) != frames or any(not (.19 < x < .31 and abs(y)<.001 and abs(z)<.001) for x,y,z in centers):
+        if independent:
+            centers=[tuple((a+b)*.5 for a,b in zip(r["views"][0]["position"],r["views"][1]["position"])) for r in encoded]
+        if (not independent and len(centers)!=frames) or not centers or any(not (.19 < x < .31 and abs(y)<.001 and abs(z)<.001) for x,y,z in centers):
             raise RuntimeError("Host STAGE did not preserve the explicitly adopted Quest LOCAL origin")
         if env.get("NIGHTFALL_XR_HEADSET_OPTICS")=="1":
             records=[json.loads(line) for line in (root / ".build-cache/meteor-xr/monado-nvenc-spike/monado-stereo.jsonl").read_text().splitlines()]
@@ -58,6 +64,20 @@ def run(root):
                     if any(not math.isclose(a,b,abs_tol=1e-5) for a,b in zip(eye["fov"],expected)):
                         raise RuntimeError("Negotiated asymmetric FOV did not reach rendered views")
             print("PASS: negotiated asymmetric FOV and 64 mm eye spacing reached actual encoded render metadata")
+        if env.get("NIGHTFALL_XR_CONTROLLERS")=="1":
+            for hand in (0,1):
+                states=[tuple(map(float,values)) for values in re.findall(
+                    rf"HELLO_XR_HAND hand={hand} position=([-0-9.]+),([-0-9.]+),([-0-9.]+) scale=([0-9.]+)",app_log)]
+                if len(states)<2 or max(s[0] for s in states)-min(s[0] for s in states)<.005:
+                    raise RuntimeError("Remote controller motion did not reach sample hand rendering")
+                if not {0.05,0.1}.issubset({round(s[3],3) for s in states}):
+                    raise RuntimeError("Remote squeeze did not change sample hand cube scale")
+                if any(abs(s[1]+.3)>.001 or abs(s[2]+.5)>.001 for s in states):
+                    raise RuntimeError("Remote controller coordinates do not match adopted root")
+                center=.05 if hand==0 else .45
+                if any(abs(s[0]-center)>.031 for s in states):
+                    raise RuntimeError("Remote left/right controller identities are swapped")
+            print("PASS: both remote controllers moved and squeeze changed actual hello_xr hand cubes")
         if publisher.wait(timeout=5):
             raise RuntimeError("Tracking bridge did not close the publisher cleanly")
         print(result.stdout)

@@ -297,6 +297,7 @@ bool NightfallXrProjectionTest::initialize_render_resources() {
 		if (meteor_mode) {
 			space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
 			if (XR_FAILED(create_space(session, &space_info, &tracking_space))) { fail("Cannot create Meteor LOCAL tracking space"); return false; }
+			initialize_meteor_controllers();
 		}
 	}
 	PCVR_LOG("synthetic projection initialized session=%p, %dx%d per eye; public predicted-time snapshot (synthetic only)", (void *)session, EYE_SIZE, EYE_SIZE);
@@ -387,6 +388,29 @@ bool NightfallXrProjectionTest::render_scene() {
 	return true;
 }
 
+void NightfallXrProjectionTest::initialize_meteor_controllers() {
+	Ref<OpenXRAPIExtension> api=get_openxr_api();
+	auto create_action_space=reinterpret_cast<PFN_xrCreateActionSpace>(api->get_instance_proc_addr("xrCreateActionSpace"));
+	auto string_to_path=reinterpret_cast<PFN_xrStringToPath>(api->get_instance_proc_addr("xrStringToPath"));
+	controller_float=reinterpret_cast<PFN_xrGetActionStateFloat>(api->get_instance_proc_addr("xrGetActionStateFloat"));
+	if(!create_action_space || !string_to_path || !controller_float) { PCVR_LOG("Meteor controller capture unavailable: missing XR entry points"); return; }
+	auto action=[&](const char *name) { RID rid=api->find_action(name,RID()); return rid.is_valid() ? reinterpret_cast<XrAction>(api->action_get_handle(rid)) : XR_NULL_HANDLE; };
+	controller_trigger=action("trigger"); controller_squeeze=action("grip");
+	XrAction poses[2]={action("grip_pose"),action("aim_pose")};
+	if(!controller_trigger || !controller_squeeze || !poses[0] || !poses[1]) { PCVR_LOG("Meteor controller capture unavailable: expected Godot actions missing"); return; }
+	for(int hand=0;hand<2;++hand) {
+		if(XR_FAILED(string_to_path(instance,hand==0 ? "/user/hand/left" : "/user/hand/right",&controller_paths[hand]))) return;
+		for(int pose=0;pose<2;++pose) {
+			XrActionSpaceCreateInfo info{XR_TYPE_ACTION_SPACE_CREATE_INFO}; info.action=poses[pose];
+			info.subactionPath=controller_paths[hand]; info.poseInActionSpace.orientation.w=1;
+			if(XR_FAILED(create_action_space(session,&info,&controller_spaces[hand][pose]))) {
+				PCVR_LOG("Meteor controller capture unavailable: action-space creation failed"); return;
+			}
+		}
+	}
+	PCVR_LOG("Meteor controllers: existing Godot grip/aim/trigger/grip actions; no extra xrSyncActions");
+}
+
 void NightfallXrProjectionTest::publish_meteor_tracking() {
 	if (!tracking || tracking->failed()) { fail("Meteor USB tracking endpoint failed"); return; }
 	timespec now{}; clock_gettime(CLOCK_MONOTONIC, &now);
@@ -416,6 +440,27 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 				v.pose.orientation.x,v.pose.orientation.y,v.pose.orientation.z,v.pose.orientation.w,
 				v.fov.angleLeft,v.fov.angleRight,v.fov.angleUp,v.fov.angleDown};
 			std::memcpy(sample.optics.eyes.data()+i*11,values,sizeof(values));
+		}
+	}
+	sample.controllers.epoch=sample.epoch; sample.controllers.client_ns=sample.client_ns;
+	for(int hand=0;hand<2;++hand) {
+		auto &out=sample.controllers.hands[hand];
+		for(int pose=0;pose<2;++pose) {
+			XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+			if(controller_spaces[hand][pose] && XR_SUCCEEDED(locate_space(controller_spaces[hand][pose],tracking_space,xr_now,&location)) &&
+				(location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) && (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+				const auto &p=location.pose; float values[7]={p.position.x,p.position.y,p.position.z,p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w};
+				std::memcpy(out.poses.data()+pose*7,values,sizeof(values)); out.flags|=1u<<pose;
+			}
+		}
+		if((out.flags&1) && controller_float && controller_trigger && controller_squeeze) {
+			XrActionStateGetInfo query{XR_TYPE_ACTION_STATE_GET_INFO}; query.subactionPath=controller_paths[hand];
+			XrActionStateFloat trigger{XR_TYPE_ACTION_STATE_FLOAT},squeeze{XR_TYPE_ACTION_STATE_FLOAT};
+			query.action=controller_trigger; XrResult t=controller_float(session,&query,&trigger);
+			query.action=controller_squeeze; XrResult s=controller_float(session,&query,&squeeze);
+			if(XR_SUCCEEDED(t) && XR_SUCCEEDED(s) && trigger.isActive && squeeze.isActive) {
+				out.flags|=4; out.trigger=trigger.currentState; out.squeeze=squeeze.currentState;
+			}
 		}
 	}
 	tracking->publish(sample);
@@ -623,6 +668,11 @@ void NightfallXrProjectionTest::release_render_resources() {
 		if (program) glDeleteProgram(program);
 	}
 	framebuffer = vao = program = 0; creation_context = EGL_NO_CONTEXT;
+	for(auto &hand:controller_spaces) for(auto &controller_space:hand) {
+		if(controller_space && api.is_valid() && api->get_session()==session_id.load() && destroy_space) destroy_space(controller_space);
+		controller_space=XR_NULL_HANDLE;
+	}
+	controller_trigger=controller_squeeze=XR_NULL_HANDLE; controller_float=nullptr;
 	if (head_space && api.is_valid() && api->get_session() == session_id.load() && destroy_space) destroy_space(head_space);
 	head_space = XR_NULL_HANDLE;
 	if (tracking_space && api.is_valid() && api->get_session() == session_id.load() && destroy_space) destroy_space(tracking_space);

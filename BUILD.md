@@ -484,6 +484,21 @@ This requires the updated DEV APK; an older client fails explicitly instead
 of silently retaining simulated optics. The no-headset fixture supplies known
 synthetic optics and verifies their propagation. See
 [headset optics](docs/research/meteor-xr-headset-optics.md) for limits and tests.
+Add `NIGHTFALL_XR_RASTER_SCENE=1` alongside the GPU scene/measurement flags to
+render an animated cube grid directly into the OpenXR eye attachments with
+depth testing. It keeps the sphere fixture unchanged and requires no new APK
+after the optics-aware build. See [raster workload](docs/research/meteor-xr-raster-scene.md)
+for smoke checks, reproduction and limitations.
+The independent Khronos sample diagnostic is built separately with
+`bash tools/build_support/build_hello_xr_probe.sh`. Use
+`NIGHTFALL_XR_HELLO_XR=1` instead of internal renderer flags for the tracked
+host/headset fixture. The pinned source stays clean; documented test-only
+adaptations are applied to an output copy. See
+[hello_xr test](docs/research/meteor-xr-hello-xr.md).
+The first controller diagnostic adds `NIGHTFALL_XR_CONTROLLERS=1` to that sample
+test, using the updated optimized DEV APK. It forwards grip/aim poses and
+trigger/squeeze levels through a declared WinMR stand-in profile, not full Touch
+emulation or haptics. See [controller test](docs/research/meteor-xr-controller-spike.md).
 
 ### Retired ALVR research probe
 

@@ -163,6 +163,54 @@ required or running as part of this path. No system runtime was registered.
     final frame drained. Host scheduled cadence 57.27 Hz, not measured Quest
     presentation FPS. App both-eye median 590 us; GPU dispatch/copy 33.984 us
     per eye. Host shutdown clean; device log ends at final-picture hold.
+23. Added optional Vulkan raster workload (`NIGHTFALL_XR_RASTER_SCENE=1`):
+    25 rotating cubes and checkerboard, direct color-attachment rendering,
+    real D32 depth testing and negotiated asymmetric eye projection. Host
+    32- and 120-submission runs passed content smoke checks, transport,
+    image accounting and final drain. Longer run delivered 118 frames;
+    median both-eye app wall 285.5 us, per-eye GPU raster 7.424 us.
+    This remains our lightweight diagnostic app, not independent game support.
+    No APK rebuild needed. Headset confirmation pending. See
+    [raster workload](meteor-xr-raster-scene.md).
+    Headset confirmation: user saw the cubes and reported smoothness. 240
+    submissions / 236 encoded and headset-decoded frames, three pre-worker
+    skips plus one raw replacement, final frame drained. Host scheduled cadence
+    58.02 Hz (not measured headset FPS); both-eye app wall median 678.5 us,
+    per-eye GPU raster 7.616 us. Host shutdown passed; device log ends holding
+    the final picture. Next gate is an independent OpenXR application.
+24. Pinned/built Khronos `hello_xr` (SDK 1.1.65, commit
+    `a9f14c416e383d05c142f5a2539a91fe3931b52a`), using its own Vulkan renderer
+    and session loop. Explicit adapter limits swapchains/format, adds timestamp
+    logging and final drain/exit, and disables unattended keyboard quit.
+    Host 32- and 120-submission runs passed; longer run delivered 118 frames
+    with balanced image ownership, matched timestamps, negotiated optics and
+    clean shutdown. No pixel-oracle/game/controller claim. No APK rebuild
+    needed. Headset confirmation pending. See
+    [independent sample](meteor-xr-hello-xr.md).
+    Quest test passed: user reported everything looked correct. 240 submitted /
+    236 encoded and headset-decoded frames, four pre-worker skips, zero raw
+    replacements, final frame drained, clean host shutdown. Host scheduled
+    cadence 57.79 Hz (not measured Quest FPS). Packing median 284 us,
+    encode/packet-copy 708 us. Device log ends holding the final picture.
+25. Added optional two-controller pose/trigger/squeeze levels over the existing
+    USB tracking channel, with validated epoch/sequence/freshness and cleared
+    disconnected state. Quest samples existing Godot actions without another
+    action set or sync. Monado WinMR stand-in devices consume grip/aim and
+    trigger/squeeze-click; local menu/B/Y stay reserved, haptics not forwarded.
+    Eight socket tests plus native malformed-packet tests pass. Synthetic input
+    reached hello_xr's actual hand positions and squeeze-driven rendered scale;
+    120 submissions / 116 delivered with clean drain. Optimized DEV APK rebuilt;
+    real headset controller confirmation pending. See
+    [controller diagnostic](meteor-xr-controller-spike.md).
+    First Quest run delivered 235 frames with final drain. Actual sample logs
+    show changing positions for both hands and left squeeze changing its cube
+    to 0.05 m (right unsqueezed 0.1 m). User missed most of the live interval;
+    visual confirmation and explicit right-squeeze test remain pending.
+    Retry passed: user confirmed the behavior; both hands logged both 0.05 m
+    and 0.1 m cube scales. 240 submitted / 237 delivered and headset-decoded,
+    two pre-worker skips and one pending replacement, final drain and clean
+    host shutdown. Device log ends at final-picture hold. First controller
+    tracking/squeeze milestone is confirmed; full Touch mapping/haptics remain.
 
 ## Architecture and ownership
 

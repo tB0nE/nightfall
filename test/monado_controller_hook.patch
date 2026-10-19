@@ -1,0 +1,29 @@
+--- a/src/xrt/drivers/simulated/simulated_controller.c
++++ b/src/xrt/drivers/simulated/simulated_controller.c
+@@ -28,1 +28,2 @@
+-#include <assert.h>
++#include <assert.h>
++#include "/tests/monado_controller_dispatch.h"
+@@ -39,1 +40,2 @@
+-	struct xrt_device base;
++	struct xrt_device base;
++	struct meteor_controller_bridge meteor;
+@@ -87,1 +89,2 @@
+-	struct simulated_device *sd = simulated_device(xdev);
++	struct simulated_device *sd = simulated_device(xdev);
++	meteor_controller_release(&sd->meteor);
+@@ -101,1 +104,2 @@
+-	uint64_t now = os_monotonic_get_ns();
++	if (meteor_controller_update(&sd->meteor, xdev)) return XRT_SUCCESS;
++	uint64_t now = os_monotonic_get_ns();
+@@ -129,1 +133,2 @@
+-	switch (name) {
++	if (meteor_controller_pose(&sd->meteor, name, at_timestamp_ns, out_relation)) return XRT_SUCCESS;
++	switch (name) {
+@@ -350,1 +355,5 @@
+-	u_device_populate_function_pointers(&sd->base, simulated_device_get_tracked_pose, simulated_device_destroy);
++	if (!meteor_controller_initialize(&sd->meteor, name, type)) {
++		fprintf(stderr,"METEOR_CONTROLLER_FAILED initialization\n");
++		u_device_free(&sd->base); return NULL;
++	}
++	u_device_populate_function_pointers(&sd->base, simulated_device_get_tracked_pose, simulated_device_destroy);

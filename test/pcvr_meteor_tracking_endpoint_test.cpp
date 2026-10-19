@@ -19,6 +19,13 @@ int main(int argc, char **argv) {
         s.optics.epoch=s.epoch;
         s.optics.eyes={-.032f,0,0,0,0,0,1,-.8f,.7f,.75f,-.65f,
                        .032f,0,0,0,0,0,1,-.7f,.8f,.75f,-.65f};
+        s.controllers.epoch=s.epoch; s.controllers.client_ns=s.client_ns;
+        for(int hand=0;hand<2;++hand) {
+            auto &state=s.controllers.hands[hand]; state.flags=7; state.trigger=.25f; state.squeeze=.75f;
+            state.poses[0]=hand==0 ? .05f : .45f; state.poses[1]=-.3f; state.poses[2]=-.5f;
+            if(argc==3) { state.poses[0]+=.03f*std::sin(double(s.client_ns)*1e-9*7); state.squeeze=float((s.client_ns/100000000)%2); }
+            std::copy(state.poses.begin(),state.poses.begin()+7,state.poses.begin()+7);
+        }
         if (argc==3) s.pose[0]+=.05f*std::sin(double(s.client_ns)*1e-9*3.0);
         endpoint.publish(s);
         if (!ready && endpoint.listening()) { std::puts("READY synthetic tracking publisher"); std::fflush(stdout); ready=true; }

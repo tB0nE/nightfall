@@ -1,3 +1,5 @@
 # Unified-diff context lines deliberately contain a space before source tabs
 # and a single space for blank lines. Preserve that syntax in the pinned patch.
 test/monado_capture_hook.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+test/hello_xr_diagnostic.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+test/monado_controller_hook.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

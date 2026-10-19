@@ -24,6 +24,8 @@ struct Client {
     std::mutex mutex;
     MeteorTrackingSample sample;
     MeteorHeadsetOptics optics;
+    MeteorControllerSample controllers;
+    uint64_t controller_ns=0;
     uint64_t mapped_ns=0;
     int fd=-1;
     ~Client() { stop.store(true); if(worker.joinable()) worker.join(); if(fd>=0) close(fd); }
@@ -47,6 +49,7 @@ struct Client {
         meteor_xr_put(h.data()+4,1,2); meteor_xr_put(h.data()+6,32,2); return h;
     }
     void run() {
+        const bool input_enabled=std::getenv("METEOR_XR_CONTROLLERS")!=nullptr;
         MeteorClockMapping clock;
         for(int i=0;i<8;++i) {
             auto h=request("NFXC"); uint64_t h0=now_ns(); meteor_xr_put(h.data()+8,h0,8);
@@ -68,6 +71,7 @@ struct Client {
                 (unsigned long long)optics.epoch,optics.eyes[0],optics.eyes[11]);
         }
         MeteorTrackingWire wire;
+        MeteorControllerWire input_wire;
         while(!stop.load()) {
             auto h=request("NFXP"); std::array<uint8_t,64> packet{};
             uint64_t deadline=now_ns()+2000000000;
@@ -77,9 +81,17 @@ struct Client {
                 (optics.epoch && incoming.epoch!=optics.epoch)) break;
             uint64_t receipt=now_ns();
             if((mapped>receipt ? mapped-receipt : receipt-mapped)>250000000+clock.uncertainty_ns()) break;
+            MeteorControllerSample input; uint64_t input_ns=0;
+            if(input_enabled) {
+                auto request_input=request("NFXI"); std::array<uint8_t,MeteorControllerWire::size> packet_input{};
+                if(!io(request_input.data(),request_input.size(),true,deadline) || !io(packet_input.data(),packet_input.size(),false,deadline) ||
+                    !input_wire.accept(packet_input,input) || input.epoch!=incoming.epoch || !clock.to_host(input.client_ns,input_ns)) break;
+                uint64_t now=now_ns(); if((input_ns>now ? input_ns-now : now-input_ns)>250000000+clock.uncertainty_ns()) break;
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 sample=incoming; mapped_ns=mapped;
+                controllers=input; controller_ns=input_ns;
             }
             if(!ready.exchange(true)) std::fprintf(stderr,"METEOR_TRACKING_READY epoch=%llu; Quest LOCAL adopted as virtual device origin; latest-only/no prediction\n",(unsigned long long)incoming.epoch);
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -91,6 +103,8 @@ struct Client {
         } else failed.store(true);
     }
 };
+std::mutex active_mutex;
+Client *active_client=nullptr;
 }
 
 extern "C" void *meteor_tracking_start_v1(const char *port_text) {
@@ -113,6 +127,9 @@ extern "C" void *meteor_tracking_start_v1(const char *port_text) {
     while(!c->ready.load() && !c->failed.load() && now_ns()<deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     if(!c->ready.load() || c->failed.load()) { delete c; return nullptr; }
+    bool duplicate=false;
+    { std::lock_guard<std::mutex> lock(active_mutex); duplicate=active_client!=nullptr; if(!duplicate) active_client=c; }
+    if(duplicate) { delete c; return nullptr; }
     return c;
 }
 extern "C" int meteor_tracking_pose_v1(void *context,int64_t at_ns,float pose[7],uint64_t *sample_ns) {
@@ -128,7 +145,25 @@ extern "C" int meteor_tracking_pose_v1(void *context,int64_t at_ns,float pose[7]
         (query>stamp ? query-stamp : stamp-query)>250000000) return 0;
     std::memcpy(pose,c->sample.pose.data(),7*sizeof(float)); *sample_ns=stamp; return 1;
 }
-extern "C" void meteor_tracking_stop_v1(void *context) { delete static_cast<Client *>(context); }
+extern "C" void meteor_tracking_stop_v1(void *context) {
+    { std::lock_guard<std::mutex> lock(active_mutex); if(active_client==context) active_client=nullptr; }
+    delete static_cast<Client *>(context);
+}
+extern "C" int meteor_tracking_controller_v1(unsigned hand,int64_t at_ns,float poses[14],float values[2],uint32_t *flags,uint64_t *stamp) {
+    if(hand>1 || at_ns<=0 || !poses || !values || !flags || !stamp) return 0;
+    *flags=0; values[0]=values[1]=0;
+    std::lock_guard<std::mutex> active_lock(active_mutex);
+    Client *c=active_client;
+    if(!c || c->failed.load()) return 0;
+    std::unique_lock<std::mutex> lock(c->mutex,std::try_to_lock);
+    if(!lock.owns_lock()) return 0;
+    uint64_t now=now_ns(),query=uint64_t(at_ns),sample=c->controller_ns;
+    if(!sample || (sample>now ? sample-now : now-sample)>250000000 ||
+        (query>sample ? query-sample : sample-query)>250000000) return 0;
+    const auto &input=c->controllers.hands[hand];
+    std::memcpy(poses,input.poses.data(),14*sizeof(float)); values[0]=input.trigger; values[1]=input.squeeze;
+    *flags=input.flags; *stamp=sample; return 1;
+}
 extern "C" int meteor_tracking_optics_v1(void *context,float eyes[22]) {
     auto *c=static_cast<Client *>(context);
     if(!c || !eyes || !c->ready.load() || c->failed.load() || !c->optics.epoch) return 0;

@@ -1,6 +1,28 @@
 #include "pcvr_meteor_tracking.h"
 #include <cassert>
 int main() {
+    MeteorControllerSample controllers; controllers.epoch=42; controllers.client_ns=1000;
+    controllers.hands[0].flags=7; controllers.hands[0].trigger=.25f; controllers.hands[0].squeeze=.75f;
+    controllers.hands[0].poses[0]=-.2f;
+    MeteorControllerWire control_wire; MeteorControllerSample control_out;
+    auto controls=MeteorControllerWire::encode(controllers);
+    assert(control_wire.accept(controls,control_out)); assert(control_out.hands[0].trigger==.25f);
+    assert(!control_wire.accept(controls,control_out));
+    controllers.sequence=1; controllers.client_ns=1001; controls=MeteorControllerWire::encode(controllers);
+    for(int offset:{0,4,6,8,16,44,104,184}) {
+        auto bad=controls; bad[offset]=255; assert(!control_wire.accept(bad,control_out));
+    }
+    auto invalid_controls=controllers; invalid_controls.hands[0].trigger=1.1f;
+    assert(!control_wire.accept(MeteorControllerWire::encode(invalid_controls),control_out));
+    invalid_controls=controllers; invalid_controls.hands[0].flags=0;
+    assert(!MeteorControllerWire::valid(invalid_controls));
+    invalid_controls=controllers; invalid_controls.hands[0].flags=4;
+    assert(!MeteorControllerWire::valid(invalid_controls));
+    invalid_controls=controllers; invalid_controls.hands[0].poses[6]=0;
+    assert(!MeteorControllerWire::valid(invalid_controls));
+    invalid_controls=controllers; invalid_controls.hands[1].poses[0]=std::numeric_limits<float>::quiet_NaN();
+    assert(!MeteorControllerWire::valid(invalid_controls));
+    assert(control_wire.accept(controls,control_out));
     MeteorHeadsetOptics optics;
     optics.epoch=42;
     optics.eyes={-.032f,0,0,0,0,0,1,-.8f,.7f,.75f,-.65f,

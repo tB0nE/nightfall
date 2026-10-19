@@ -13,9 +13,11 @@ static void vk_check(VkResult result, const char *operation) {
 }
 
 #include "meteor_gpu_scene.h"
+#include "meteor_raster_scene.h"
 
 struct StereoImages {
     MeteorGpuScene *gpu_scene = nullptr;
+    MeteorRasterScene *raster_scene = nullptr;
     bool measurement = false;
     VkFence completion{};
     VkQueryPool timestamps{};
@@ -89,7 +91,11 @@ struct StereoImages {
         vk_check(vkBindBufferMemory(device, buffer, memory, 0), "bind readback");
         if (const char *shader=std::getenv("METEOR_XR_GPU_SCENE_SHADER")) {
             if (!std::getenv("METEOR_XR_TRACKED_SCENE")) { std::fprintf(stderr,"GPU scene requires tracked scene mode\n"); std::exit(1); }
-            gpu_scene=new MeteorGpuScene(device,buffer,shader);
+            if(const char *directory=std::getenv("METEOR_XR_RASTER_SCENE")) {
+                if(!measurement) { std::fprintf(stderr,"Raster scene requires explicit measurement mode\n"); std::exit(1); }
+                raster_scene=new MeteorRasterScene(gpu,device,width,height,images,directory);
+                std::printf("APP_RASTER_SCENE enabled=1 cubes=25 depth_test=1\n");
+            } else gpu_scene=new MeteorGpuScene(device,buffer,shader);
             std::printf("APP_GPU_SCENE enabled=1 reference_validation=%d\n",measurement ? 0 : 1);
         }
         if(measurement) {
@@ -110,7 +116,7 @@ struct StereoImages {
         }
     }
 
-    void measure(int eye,uint32_t index,const XrView &view) {
+    void measure(int eye,uint32_t index,const XrView &view,uint32_t frame) {
         MeteorSceneCamera camera(view);
         auto start=std::chrono::steady_clock::now();
         vk_check(vkResetCommandBuffer(command,0),"reset GPU scene command");
@@ -118,6 +124,18 @@ struct StereoImages {
         vk_check(vkBeginCommandBuffer(command,&begin),"begin GPU scene command");
         vkCmdResetQueryPool(command,timestamps,0,2);
         vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,timestamps,0);
+        if(raster_scene) {
+            VkImageMemoryBarrier image{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            image.oldLayout=initialized[eye][index] ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
+            image.newLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            image.srcQueueFamilyIndex=image.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+            image.image=images[eye][index].image; image.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+            image.srcAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
+            image.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                0,0,nullptr,0,nullptr,1,&image);
+            raster_scene->render(command,index+(eye ? images[0].size() : 0),camera,frame);
+        } else {
         gpu_scene->render(command,camera,width,height);
         VkBufferMemoryBarrier ready{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         ready.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT; ready.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;
@@ -141,6 +159,7 @@ struct StereoImages {
         image.dstAccessMask=VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             0,0,nullptr,0,nullptr,1,&image);
+        }
         vkCmdWriteTimestamp(command,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,timestamps,1);
         vk_check(vkEndCommandBuffer(command),"end GPU scene command");
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount=1; submit.pCommandBuffers=&command;
@@ -169,7 +188,7 @@ struct StereoImages {
         auto wait_us=elapsed();
         if(measurement) {
             if(!view) { std::fprintf(stderr,"Missing measured view\n"); std::exit(1); }
-            measure(eye,index,*view);
+            measure(eye,index,*view,uint32_t(frame));
             XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             check(xrReleaseSwapchainImage(chains[eye],&release),"release measured eye");
             return;
@@ -292,6 +311,7 @@ struct StereoImages {
     }
 
     void destroy() {
+        delete raster_scene;
         if(timestamps) vkDestroyQueryPool(device,timestamps,nullptr);
         if(completion) vkDestroyFence(device,completion,nullptr);
         delete gpu_scene;

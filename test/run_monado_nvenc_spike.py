@@ -36,6 +36,15 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     gpu_scene = os.environ.get("NIGHTFALL_XR_GPU_SCENE") == "1"
     gpu_measure = os.environ.get("NIGHTFALL_XR_GPU_MEASURE") == "1"
     headset_optics = os.environ.get("NIGHTFALL_XR_HEADSET_OPTICS") == "1"
+    raster_scene = os.environ.get("NIGHTFALL_XR_RASTER_SCENE") == "1"
+    hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
+    controllers=os.environ.get("NIGHTFALL_XR_CONTROLLERS")=="1"
+    if controllers and not tracked_scene:
+        raise ValueError("Controllers require tracked mode")
+    if hello_xr and (gpu_scene or gpu_measure or raster_scene or abort_test or not tracked_scene):
+        raise ValueError("hello_xr requires tracked mode, no internal renderer flags or app-abort mode")
+    if raster_scene and not (gpu_scene and gpu_measure):
+        raise ValueError("Raster scene requires explicit GPU scene and measurement flags")
     if headset_optics and not tracked_scene:
         raise ValueError("Headset optics requires tracked scene mode")
     if gpu_measure and not gpu_scene:
@@ -65,6 +74,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     service = build / "capture-build/src/xrt/targets/service/monado-service"
     library = build / "capture-build/src/xrt/targets/openxr/libopenxr_monado.so"
     app = build / "runtime-probe"
+    if hello_xr:
+        app=root / ".build-cache/meteor-xr/hello-xr-spike/build/src/tests/hello_xr/hello_xr"
+    command=[str(app)] + (["-g","Vulkan2","-s","Stage","-bm","Opaque"] if hello_xr else [])
     for executable in (service, library, app):
         if not executable.is_file():
             raise RuntimeError("Run probe_monado_runtime.sh --build first")
@@ -87,6 +99,18 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
     env.pop("METEOR_XR_GPU_MEASURE", None)
     env.pop("METEOR_XR_HEADSET_OPTICS", None)
+    env.pop("METEOR_XR_RASTER_SCENE", None)
+    env.pop("METEOR_XR_HELLO_DIAGNOSTIC", None)
+    env.pop("METEOR_XR_CONTROLLERS",None)
+    if controllers:
+        env["METEOR_XR_CONTROLLERS"]="1"; env["SIMULATED_LEFT"]="wmr"; env["SIMULATED_RIGHT"]="wmr"
+    if hello_xr:
+        env["METEOR_XR_HELLO_DIAGNOSTIC"]="1"
+    if raster_scene:
+        for stage in ("vert","frag"):
+            if not (build / f"meteor_raster_scene.{stage}.spv").is_file():
+                raise RuntimeError("Rebuild runtime probe to compile raster shaders")
+        env["METEOR_XR_RASTER_SCENE"]=str(build)
     if headset_optics:
         env["METEOR_XR_HEADSET_OPTICS"] = "1"
     if gpu_measure:
@@ -128,7 +152,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 time.sleep(0.05)
             application_start = time.monotonic()
             if abort_test:
-                application = subprocess.Popen([str(app)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                application = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
                     deadline = time.monotonic() + 15
                     while True:
@@ -144,7 +168,13 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     stdout, stderr = application.communicate(timeout=5)
                 result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
             else:
-                result = subprocess.run([str(app)], env=env, timeout=40, capture_output=True, text=True)
+                try:
+                    result = subprocess.run(command, env=env, timeout=40, capture_output=True, text=True)
+                except subprocess.TimeoutExpired as failure:
+                    def output_text(value):
+                        return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
+                    (out / "probe.log").write_text(output_text(failure.stdout)+output_text(failure.stderr))
+                    raise
             (out / "probe.log").write_text(result.stdout + result.stderr)
             application_elapsed = time.monotonic()-application_start
             if not abort_test:
@@ -164,9 +194,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                           "METEOR_TRACKING_APPLIED" not in text or
                           "METEOR_TRACKING_FAILED" in text):
         raise RuntimeError("Live tracking did not reach the Monado virtual HMD")
-    transport.finish()
     if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text or "METEOR_DIRECT_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
+    transport.finish()
     retains = text.count("METEOR_IMAGE_LEASE retain=1 ")
     releases = text.count("METEOR_IMAGE_LEASE retain=0 ")
     if not retains or retains != releases or "METEOR_IMAGE_LEASE_FAILED" in text:
@@ -230,7 +260,15 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", str(out / "monado-stereo.h264"), "-pix_fmt", "rgb24", "-f", "rawvideo",
                     str(out / "decoded.rgb")], check=True, timeout=20)
-    if gpu_measure:
+    if hello_xr:
+        decoded=(out / "decoded.rgb").read_bytes()
+        if len(decoded)!=frame_count*eye_size*eye_size*6 or f"HELLO_XR_FINAL_DRAIN frames={submitted_count}" not in result.stdout:
+            raise RuntimeError("Independent sample decode count/final drain evidence missing")
+        first=decoded[:eye_size*eye_size*6]
+        if max(first)-min(first)<40 or len(set(first[::3]))<16:
+            raise RuntimeError("Independent sample output appears blank")
+        print("PASS: independent hello_xr sample rendered nonblank video; no pixel oracle or controller support claimed")
+    elif gpu_measure:
         decoded = (out / "decoded.rgb").read_bytes()
         if len(decoded) != frame_count*eye_size*eye_size*6:
             raise RuntimeError("Measured scene decoded frame count mismatch")
@@ -238,6 +276,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if len(gpu_samples) != submitted_count*2 or "APP_GPU_SCENE enabled=1 reference_validation=0" not in result.stdout:
             raise RuntimeError("Missing GPU measurement evidence")
         print("MEASUREMENT ONLY: decode count/accounting checked; no per-frame pixel oracle or image readback")
+        if raster_scene:
+            from check_xr_raster_scene import validate_raster_scene
+            validate_raster_scene(decoded,eye_size,frame_count)
+            if "APP_RASTER_SCENE enabled=1 cubes=25 depth_test=1" not in result.stdout:
+                raise RuntimeError("Raster renderer initialization evidence missing")
+            print("PASS: raster scene decoded foreground/background, stereo difference and animation smoke checks")
     elif tracked_scene:
         left = (out / "scene-left.rgb").read_bytes()
         right = (out / "scene-right.rgb").read_bytes()
@@ -270,7 +314,10 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     timings = {"eye_size": eye_size, "target_hz": target_hz, "submitted": submitted_count,
                "gpu_scene": gpu_scene, "measurement_only": gpu_measure,
                "headset_optics": headset_optics,
-               "pixel_reference_validated": not gpu_measure,
+               "raster_scene": raster_scene,
+               "hello_xr": hello_xr,
+               "controllers": controllers,
+               "pixel_reference_validated": not (gpu_measure or hello_xr),
                "encoded": frame_count, "application_elapsed_s": application_elapsed,
                "display_timestamp_cadence_hz": (frame_count-1)*1e9/(records[-1]["display_time_ns"]-records[0]["display_time_ns"]) if frame_count>1 else None,
                "app_reference_frame": summary(r"APP_RENDER frame=\d+ us=(\d+)",result.stdout),
@@ -283,13 +330,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                "nvenc_submit_to_packet_copy": summary(r"submit-to-lock-us=(\d+)",text)}
     if gpu_measure:
         values=sorted(float(sample[0]) for sample in gpu_samples)
-        timings["app_eye_gpu_dispatch_copy"]={"samples":len(values),"p50_us":statistics.median(values),
+        gpu_stage="app_eye_gpu_raster" if raster_scene else "app_eye_gpu_dispatch_copy"
+        timings[gpu_stage]={"samples":len(values),"p50_us":statistics.median(values),
             "p95_us":values[min(len(values)-1,int(len(values)*.95))],"max_us":max(values)}
         timings["app_eye_submit_fence_wait"]=summary(r"APP_GPU_EYE gpu_us=[0-9.]+ submit_wait_us=(\d+)",result.stdout)
     (out / "timing-summary.json").write_text(json.dumps(timings,indent=2)+"\n")
     print(f"Profile: {eye_size}x{eye_size} per eye, target {target_hz} Hz; timing-summary.json records CPU-wall stages (not motion-to-photon)")
     label = "unexpected app disconnect" if abort_test else "normal session exit"
-    evidence = "decode count, timestamps and bitstream accounting checked; pixel oracle disabled" if gpu_measure else "decoded pixels, timestamps and bitstream ranges match"
+    evidence = "decode count, timestamps and bitstream accounting checked; pixel oracle disabled" if (gpu_measure or hello_xr) else "decoded pixels, timestamps and bitstream ranges match"
     print(f"PASS: {frame_count} Monado frames; one persistent encoder/surface; {evidence}; clean drain after {label}")
     print(f"Artifacts: {out}")
 
