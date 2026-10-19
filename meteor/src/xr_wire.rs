@@ -4,7 +4,7 @@ use std::io::{self, Read};
 
 pub const HEADER_LEN: usize = 152;
 pub const MAX_PAYLOAD: usize = 8 * 1024 * 1024;
-pub const MAX_FRAMES: u64 = 240;
+pub const MAX_FRAMES: u64 = 2048;
 
 #[derive(Debug)]
 pub struct Header {
@@ -209,6 +209,22 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+    #[test]
+    fn sustained_session_still_has_a_hard_frame_limit() {
+        let mut reader = Reader::default();
+        for index in 0..MAX_FRAMES {
+            let mut frame = packet();
+            frame[16..24].copy_from_slice(&index.to_le_bytes());
+            frame[24..32].copy_from_slice(&(index + 1).to_le_bytes());
+            frame[32..40].copy_from_slice(&(index + 1).to_le_bytes());
+            reader.read(&mut Cursor::new(frame)).unwrap();
+        }
+        let mut frame = packet();
+        frame[16..24].copy_from_slice(&MAX_FRAMES.to_le_bytes());
+        frame[24..32].copy_from_slice(&(MAX_FRAMES + 1).to_le_bytes());
+        frame[32..40].copy_from_slice(&(MAX_FRAMES + 1).to_le_bytes());
+        assert!(reader.read(&mut Cursor::new(frame)).is_err());
     }
     #[test]
     fn tracked_scene_origin_mode() {

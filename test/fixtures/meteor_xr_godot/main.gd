@@ -69,6 +69,6 @@ func _process(delta: float) -> void:
 			DirAccess.rename_absolute(output.path_join("engine-completion.tmp"), output.path_join("engine-completion.json"))
 			print("ENGINE_XR_COMPLETE encoded_at_least=%d draws=%d" % [encoded, rendered])
 			_request_exit()
-	if elapsed > 20.0:
+	if elapsed > 35.0:
 		push_error("ENGINE_XR_FAILED no encoded frames before deadline")
 		get_tree().quit(3)

@@ -119,7 +119,7 @@ impl Relay {
         self.failed.load(Ordering::Acquire)
     }
     #[cfg(target_os = "linux")]
-    pub fn start_runtime(&mut self, root: std::path::PathBuf) {
+    pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32) {
         let ready = self.attached.clone();
         let mut cancel = self.stop.subscribe();
         let signal = self.stop.clone();
@@ -141,7 +141,7 @@ impl Relay {
                 }
             }
             if let Err(error) =
-                crate::xr_session::runtime_adapter(root, video, tracking, cancel).await
+                crate::xr_session::runtime_adapter(root, video, tracking, hz, cancel).await
             {
                 eprintln!("Meteor XR runtime adapter stopped: {error}");
                 failure.store(true, Ordering::Release);
@@ -446,7 +446,9 @@ mod tests {
         let mut relay = Relay::prepare("127.0.0.1".parse().unwrap(), credentials())
             .await
             .unwrap();
-        relay.start_runtime(root.clone());
+        let hz = std::env::var("NIGHTFALL_XR_RELAY_TEST_HZ")
+            .ok().map(|s| s.parse().unwrap()).unwrap_or(20);
+        relay.start_runtime_profile(root.clone(), hz);
         let child = Process(
             std::process::Command::new(client)
                 .args([

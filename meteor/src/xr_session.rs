@@ -72,8 +72,12 @@ pub(crate) async fn runtime_adapter(
     root: PathBuf,
     video: u16,
     tracking: u16,
+    hz: u32,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> io::Result<()> {
+    if !matches!(hz, 20 | 60) {
+        return Err(io::Error::other("unsupported managed XR profile"));
+    }
     let cache = root.join(".build-cache/meteor-xr");
     let deadline = Instant::now() + Duration::from_secs(5);
     let _lock = loop {
@@ -106,8 +110,6 @@ pub(crate) async fn runtime_adapter(
         ("NIGHTFALL_XR_TOUCH_INPUTS", "1"),
         ("NIGHTFALL_XR_HEADSET_OPTICS", "1"),
         ("NIGHTFALL_XR_EYE_SIZE", "512"),
-        ("NIGHTFALL_XR_TARGET_HZ", "20"),
-        ("NIGHTFALL_XR_PROBE_FRAMES", "200"),
         ("NIGHTFALL_XR_ASYNC_ENCODE", "1"),
         ("NIGHTFALL_XR_ASYNC_DELIVERY", "1"),
         ("NIGHTFALL_XR_FREE_RUNNING", "1"),
@@ -115,6 +117,8 @@ pub(crate) async fn runtime_adapter(
         command.env(key, value);
     }
     command
+        .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
+        .env("NIGHTFALL_XR_PROBE_FRAMES", if hz == 60 { "1200" } else { "200" })
         .env("NIGHTFALL_XR_PROBE_OUTPUT", &output)
         .env("NIGHTFALL_XR_DEVICE_PORT", video.to_string())
         .env("NIGHTFALL_XR_TRACKING_PORT", tracking.to_string())

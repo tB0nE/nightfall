@@ -88,8 +88,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         raise ValueError("Free-running app-disconnect accounting is a separate pending test")
     if tracked_scene and not os.environ.get("NIGHTFALL_XR_TRACKING_PORT"):
         raise ValueError("Tracked scene requires explicit live tracking port; no simulated fallback")
-    if not 1 <= frame_count <= 240:
-        raise ValueError("NIGHTFALL_XR_PROBE_FRAMES must be 1..240")
+    maximum = 1800 if upstream_demo else 240
+    if not 1 <= frame_count <= maximum:
+        raise ValueError(f"NIGHTFALL_XR_PROBE_FRAMES must be 1..{maximum}")
     if abort_test and frame_count < 16:
         raise ValueError("Disconnect test requires at least 16 requested frames")
     build = root / ".build-cache/meteor-xr/monado-linux-spike"

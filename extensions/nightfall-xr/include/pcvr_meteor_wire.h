@@ -41,7 +41,7 @@ public:
             return true;
         }
         // Two bounded SDR profiles; dimensions cannot change within a stream.
-        if (sequence >= 240 || !f.bytes || (f.height != 256 && f.height != 512) || f.width != f.height*2 ||
+        if (sequence >= 2048 || !f.bytes || (f.height != 256 && f.height != 512) || f.width != f.height*2 ||
             (sequence && (f.width != width || f.height != height)) || f.id <= last_id || f.display_ns <= last_time) return false;
         for (unsigned i = 0; i < 22; ++i) {
             uint32_t bits = uint32_t(meteor_xr_le(h.data()+64+i*4,4)); std::memcpy(&f.views[i], &bits,4);

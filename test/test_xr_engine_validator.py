@@ -3,7 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from check_xr_engine import validate_engine
+from check_xr_engine import validate_engine, decode_smoke
+import subprocess
 
 
 class EngineValidatorTests(unittest.TestCase):
@@ -30,8 +31,20 @@ class EngineValidatorTests(unittest.TestCase):
         (self.out / "monado-stereo.jsonl").write_text("\n".join(json.dumps(r) for r in self.records)+"\n")
 
     def validate(self):
-        with patch("check_xr_engine.subprocess.run"):
+        with patch("check_xr_engine.decode_smoke", return_value=(self.out / "decoded.rgb").read_bytes()[:24]):
             validate_engine(self.out,self.app,2,2,self.service)
+
+    def test_streamed_decode_count(self):
+        hashes="# header\n0,0,0,1,24,abcd\n0,1,1,1,24,abcd\n"
+        with patch("check_xr_engine.subprocess.run", side_effect=[
+                subprocess.CompletedProcess([],0,stdout=hashes),
+                subprocess.CompletedProcess([],0,stdout=bytes(24))]):
+            self.assertEqual(len(decode_smoke(self.out / "video",2,2)),24)
+
+    def test_streamed_decode_missing_frame_rejected(self):
+        with patch("check_xr_engine.subprocess.run", return_value=
+                subprocess.CompletedProcess([],0,stdout="0,0,0,1,24,abcd\n")):
+            with self.assertRaises(RuntimeError): decode_smoke(self.out / "video",2,2)
 
     def test_valid(self): self.validate()
 

@@ -4,6 +4,22 @@ import math
 import re
 import subprocess
 
+def decode_smoke(path, frame_count, eye_size):
+    # Decode every frame, but retain only small frame hashes and one RGB frame.
+    # A sustained session must not materialize gigabytes of decoded RGB on disk.
+    base=["ffmpeg", "-nostdin", "-v", "error", "-i", str(path)]
+    hashes=subprocess.run(base+["-pix_fmt","rgb24","-f","framemd5","-"],
+        check=True,capture_output=True,text=True,timeout=40).stdout
+    rows=[line.split(",") for line in hashes.splitlines() if line and not line.startswith("#")]
+    frame_bytes=eye_size*eye_size*6
+    if len(rows)!=frame_count or any(len(row)!=6 or int(row[4])!=frame_bytes for row in rows):
+        raise RuntimeError("Engine decoded frame count/shape mismatch")
+    first=subprocess.run(base+["-frames:v","1","-pix_fmt","rgb24","-f","rawvideo","-"],
+        check=True,capture_output=True,timeout=20).stdout
+    if len(first)!=frame_bytes:
+        raise RuntimeError("Engine first decoded frame incomplete")
+    return first
+
 
 def validate_engine(out, application_log, minimum, eye_size, service_log):
     if "ENGINE_XR_READY renderer=mobile" not in application_log or "ENGINE_XR_COMPLETE" not in application_log:
@@ -21,7 +37,7 @@ def validate_engine(out, application_log, minimum, eye_size, service_log):
         else:
             raise RuntimeError(f"Unexpected engine error: {line}")
     records=[json.loads(line) for line in (out / "monado-stereo.jsonl").read_text().splitlines()]
-    if not minimum<=len(records)<=240:
+    if not minimum<=len(records)<=2048:
         raise RuntimeError("Engine output frame count outside bounded diagnostic window")
     last_time=last_frame=offset=0
     for record in records:
@@ -53,11 +69,9 @@ def validate_engine(out, application_log, minimum, eye_size, service_log):
     delivery=re.findall(r"METEOR_ASYNC_DRAIN delivered=(\d+) peak_pending=(\d+) failed=(\d+)",service_log)
     if delivery and (len(delivery)!=1 or int(delivery[0][0])!=len(records) or not 1<=int(delivery[0][1])<=2 or delivery[0][2]!="0"):
         raise RuntimeError("Engine async delivery accounting failed")
-    subprocess.run(["ffmpeg","-nostdin","-v","error","-y","-i",str(out / "monado-stereo.h264"),
-        "-pix_fmt","rgb24","-f","rawvideo",str(out / "decoded.rgb")],check=True,timeout=20)
-    decoded=(out / "decoded.rgb").read_bytes()
+    decoded=decode_smoke(out / "monado-stereo.h264",len(records),eye_size)
     frame_bytes=eye_size*eye_size*6
-    if len(decoded)!=len(records)*frame_bytes or max(decoded[:frame_bytes])-min(decoded[:frame_bytes])<40:
+    if len(decoded)!=frame_bytes or max(decoded)-min(decoded)<40:
         raise RuntimeError("Engine decoded output blank or incomplete")
     stereo=decoded[:frame_bytes]
     row_bytes=eye_size*6
@@ -71,6 +85,7 @@ def validate_engine(out, application_log, minimum, eye_size, service_log):
         f"METEOR_EYE_SOURCE eye={eye} array_layers=2 slice={eye}" not in service_log for eye in (0,1)):
         raise RuntimeError("Engine did not exercise a shared two-slice swapchain")
     report={"engine":"Godot 4.7","encoded_frames":len(records),"eye_size":eye_size,
+        "display_timestamp_cadence_hz": (len(records)-1)*1e9/(records[-1]["display_time_ns"]-records[0]["display_time_ns"]) if len(records)>1 else None,
         "source_formats":list(map(int,formats[0])),"pixel_oracle":False,"app_submission_timestamp_oracle":False,
         "encoder_drain_verified":True,"image_leases_balanced":True,
         "shutdown_diagnostics":warnings,"engine_shutdown_clean":not warnings}

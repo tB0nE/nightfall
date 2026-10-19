@@ -91,7 +91,7 @@ func _build_xr_control_probe(root: Control, label: Label) -> void:
 	root.add_child(cancel_button)
 	var update := func():
 		if not is_instance_valid(button) or not is_instance_valid(label): return
-		button.text = "Accept XR preparation (no video)" if control.state == "offered" else "DEV: Authenticate Meteor XR control"
+		button.text = "Accept Meteor XR session" if control.state == "offered" else "DEV: Authenticate Meteor XR control"
 		button.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
 		label.text = control.message
 	control.changed.connect(update)

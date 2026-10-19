@@ -47,6 +47,7 @@ struct Session {
     id: String,
     raw_id: [u8; 16],
     accepted: bool,
+    hz: u32,
     expires: tokio::time::Instant,
 }
 #[derive(Default)]
@@ -99,6 +100,7 @@ impl Negotiation {
                     id: id.iter().map(|b| format!("{b:02x}")).collect(),
                     raw_id: id,
                     accepted: false,
+                    hz,
                     expires: tokio::time::Instant::now() + Duration::from_secs(15),
                 });
             }
@@ -108,7 +110,8 @@ impl Negotiation {
                 };
                 current.accepted = true;
                 // Control-only proof leases expire; no indefinite phantom session.
-                current.expires = tokio::time::Instant::now() + IDLE_TIMEOUT;
+                current.expires = tokio::time::Instant::now()
+                    + if current.hz == 60 { Duration::from_secs(60) } else { IDLE_TIMEOUT };
             }
             Request::Stop { session } => {
                 if !self.session.as_ref().is_some_and(|s| s.id == session) {
@@ -296,9 +299,9 @@ async fn connection_mode(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
         let mut reply = if enable_relay
-            && matches!(&request,Request::Offer{width,height,hz} if (*width,*height,*hz)!=(512,512,20))
+            && matches!(&request,Request::Offer{width,height,hz} if (*width,*height)!=(512,512) || !matches!(hz,20|60))
         {
-            negotiation.reply(Some("relay_profile_requires_512_square_20hz"))
+            negotiation.reply(Some("relay_profile_requires_512_square_20_or_60hz"))
         } else {
             negotiation.apply(request)?
         };
@@ -324,7 +327,7 @@ async fn connection_mode(
             );
             #[cfg(target_os = "linux")]
             if let Some(root) = runtime_root.clone() {
-                relay.as_mut().unwrap().start_runtime(root);
+                relay.as_mut().unwrap().start_runtime_profile(root, session.hz);
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());
@@ -501,6 +504,17 @@ mod tests {
                 .state,
             "idle"
         );
+    }
+
+    #[test]
+    fn negotiated_rate_is_retained_for_runtime_launch() {
+        let mut state = Negotiation::default();
+        state.apply(Request::Offer { width: 512, height: 512, hz: 60 }).unwrap();
+        assert_eq!(state.session.as_ref().unwrap().hz, 60);
+        let id = state.session.as_ref().unwrap().id.clone();
+        state.apply(Request::Accept { session: id }).unwrap();
+        assert!(state.session.as_ref().unwrap().expires
+            .duration_since(tokio::time::Instant::now()) > Duration::from_secs(59));
     }
     #[test]
     fn strict_request_schema_and_keys() {

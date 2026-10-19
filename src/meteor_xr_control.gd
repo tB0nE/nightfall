@@ -212,14 +212,18 @@ func connect_offer() -> void:
 	if authenticated.get("state", "") != "idle":
 		_fail("Control authentication rejected or host busy")
 		return
-	var offer := await _request({"type": "offer", "width": 512, "height": 512, "hz": 20}, token)
+	var hz := int(config.get_value("host", "hz", 20))
+	if hz not in [20, 60]:
+		_fail("Unsupported developer XR rate")
+		return
+	var offer := await _request({"type": "offer", "width": 512, "height": 512, "hz": hz}, token)
 	if token != _generation: return
 	_busy = false
 	if offer.get("state", "") != "awaiting_acceptance" or not offer.get("session") is String:
 		_fail("XR offer rejected")
 		return
 	session = offer.session
-	_status("offered", "Accept exclusive XR preparation? Control-only test; no LAN video yet")
+	_status("offered", "Accept exclusive Meteor XR session?" if not _relay_config.is_empty() else "Accept control-only XR preparation?")
 	_watch_lease(token, "offered", 15000)
 
 func accept_offer() -> void:
@@ -232,8 +236,8 @@ func accept_offer() -> void:
 	if reply.get("state", "") != "prepared" or reply.get("session", "") != session or reply.get("lan_video_available", true) != false:
 		_fail("XR acceptance failed or unsupported transport")
 		return
-	_status("prepared", "Authenticated and accepted; LAN video transport not connected yet")
-	_watch_lease(token, "prepared", 30000)
+	_status("prepared", "Preparing authenticated XR transport" if not _relay_config.is_empty() else "Control-only XR preparation accepted")
+	_watch_lease(token, "prepared", 60000)
 	if not _relay_config.is_empty() and reply.get("relay") is Dictionary:
 		_start_relay(reply.relay, token)
 

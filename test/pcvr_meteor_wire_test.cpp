@@ -11,7 +11,18 @@ int main() {
         float view[11]{0,0,0,0,0,0,1,-.8f,.8f,.8f,-.8f};
         for (int i=0;i<11;++i) { uint32_t bits; std::memcpy(&bits,view+i,4); meteor_xr_put(h.data()+64+(eye*11+i)*4,bits,4); }
     }
-    MeteorXrWire wire; MeteorXrFrame frame;
+    MeteorXrWire sustained;
+    MeteorXrFrame frame;
+    auto sequence_header=h;
+    for (uint64_t i=0;i<2048;++i) {
+        meteor_xr_put(sequence_header.data()+16,i,8);
+        meteor_xr_put(sequence_header.data()+24,i+1,8);
+        meteor_xr_put(sequence_header.data()+32,i+1,8);
+        assert(sustained.header(sequence_header,frame) && sustained.accept(frame,payload));
+    }
+    meteor_xr_put(sequence_header.data()+16,2048,8);
+    assert(!sustained.header(sequence_header,frame));
+    MeteorXrWire wire;
     assert(wire.header(h,frame)); assert(wire.accept(frame,payload)); assert(!wire.header(h,frame));
     for (int offset : {0,4,6,40,44,48,49,50,51,88}) {
         auto bad=h; bad[offset]=255;
