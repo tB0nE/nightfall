@@ -1,5 +1,6 @@
 // Authored diagnostic hook for the pinned Monado null compositor.
-// Not a general compositor: exactly one full-rect RGBA8 stereo projection only.
+// Not a general compositor: one square SDR stereo projection, crop/no scaling.
+// Encoder supports bounded source subrects; readback proof remains full-rect.
 #pragma once
 #include "util/comp_swapchain.h"
 #include <stdio.h>
@@ -108,11 +109,12 @@ meteor_capture_layer(struct null_compositor *c)
     if (layer->data.type != XRT_LAYER_PROJECTION || layer->data.view_count != 2) return false;
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_sub_image *sub = &layer->data.proj.v[eye].sub;
-        if (!layer->sc_array[eye] || sub->array_index != 0 || sub->rect.offset.w != 0 || sub->rect.offset.h != 0 ||
+        if (!layer->sc_array[eye] ||
             (sub->rect.extent.w != 256 && sub->rect.extent.w != 512) || sub->rect.extent.h != sub->rect.extent.w) return false;
     }
     const char *bridge = getenv("METEOR_NVENC_BRIDGE");
     if (bridge) return meteor_encode_layer(c, layer, bridge);
+    for(int eye=0;eye<2;++eye) if(layer->data.proj.v[eye].sub.array_index || layer->data.proj.v[eye].sub.rect.offset.w || layer->data.proj.v[eye].sub.rect.offset.h) return false;
     for (int eye = 0; eye < 2; ++eye)
         if (!meteor_capture_eye(&c->base.vk, comp_swapchain(layer->sc_array[eye]), layer->data.proj.v[eye].sub.image_index, eye)) return false;
     fprintf(stderr, "METEOR_CAPTURE_OK frame=%lld timestamp=%lld eyes=2\n",

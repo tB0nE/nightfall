@@ -12,6 +12,7 @@
 #include <fstream>
 #include <chrono>
 #include "monado_nvenc_bridge.h"
+#include "meteor_eye_format.h"
 #ifdef METEOR_MONADO_BRIDGE
 #include <thread>
 #include <mutex>
@@ -116,6 +117,23 @@ int main(int argc, char **argv) {
 #else
     constexpr uint32_t width = 512, height = 256;
 #endif
+    VkFormat packed_format=VK_FORMAT_R8G8B8A8_UNORM;
+#ifdef METEOR_MONADO_BRIDGE
+    REQUIRE(meteor_eye_formats_compatible(input->eye_formats[0],input->eye_formats[1]),"Unsupported/mixed source transfer functions");
+    VkFormat source_formats[2]={input->eye_formats[0],input->eye_formats[1]};
+    if(meteor_eye_format_srgb(source_formats[0])) packed_format=VK_FORMAT_R8G8B8A8_SRGB;
+    for(int eye=0;eye<2;++eye) if(meteor_eye_format_bgra(source_formats[eye])) {
+        VkFormatProperties source{},destination{};
+        vkGetPhysicalDeviceFormatProperties(gpu,source_formats[eye],&source);
+        vkGetPhysicalDeviceFormatProperties(gpu,packed_format,&destination);
+        REQUIRE((source.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_SRC_BIT) &&
+            (destination.optimalTilingFeatures&VK_FORMAT_FEATURE_BLIT_DST_BIT),"Required channel-order blit unavailable");
+        uint32_t count=0; vkGetPhysicalDeviceQueueFamilyProperties(gpu,&count,nullptr);
+        std::vector<VkQueueFamilyProperties> families(count); vkGetPhysicalDeviceQueueFamilyProperties(gpu,&count,families.data());
+        REQUIRE(family<count && (families[family].queueFlags&VK_QUEUE_GRAPHICS_BIT),"Channel-order blit requires graphics queue");
+    }
+    std::fprintf(stderr,"METEOR_SOURCE_FORMAT left=%d right=%d packed=%d preserve_display_bytes=1\n",int(source_formats[0]),int(source_formats[1]),int(packed_format));
+#endif
     VkPhysicalDeviceMemoryProperties memory_props; vkGetPhysicalDeviceMemoryProperties(gpu, &memory_props);
     auto memory_type = [&](uint32_t bits, VkMemoryPropertyFlags flags) {
         for (uint32_t i = 0; i < memory_props.memoryTypeCount; ++i)
@@ -126,7 +144,7 @@ int main(int argc, char **argv) {
     VkPhysicalDeviceExternalImageFormatInfo external_format{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
     external_format.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     VkPhysicalDeviceImageFormatInfo2 format_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
-    format_info.pNext = &external_format; format_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+    format_info.pNext = &external_format; format_info.format = packed_format;
     format_info.type = VK_IMAGE_TYPE_2D; format_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     format_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkExternalImageFormatProperties external_props{VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
@@ -135,7 +153,7 @@ int main(int argc, char **argv) {
     REQUIRE(external_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT,
         "RGBA8 optimal image is not exportable (no fallback)");
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ici.pNext = &external;
-    ici.imageType = VK_IMAGE_TYPE_2D; ici.format = VK_FORMAT_R8G8B8A8_UNORM; ici.extent = {width, height, 1};
+    ici.imageType = VK_IMAGE_TYPE_2D; ici.format = packed_format; ici.extent = {width, height, 1};
     ici.mipLevels = 1; ici.arrayLayers = 1; ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
     ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     VkImage image; VK(vkCreateImage(device, &ici, nullptr, &image));
@@ -194,6 +212,7 @@ int main(int argc, char **argv) {
     REQUIRE(input->device == device && input->gpu == gpu && input->queue == queue && input->queue_family == family,
         "Bridge device changed during session");
     REQUIRE((input->eye_size ? input->eye_size : 256)==eye_size,"Bridge dimensions changed during session");
+    REQUIRE(input->eye_formats[0]==source_formats[0] && input->eye_formats[1]==source_formats[1],"Source formats changed during session");
     auto pack_start=std::chrono::steady_clock::now();
     if (!first_frame) VK(vkResetCommandBuffer(cmd, 0));
 #endif
@@ -214,11 +233,18 @@ int main(int argc, char **argv) {
         src.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         src.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL; src.dstQueueFamilyIndex = family;
         src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; src.image = input->eyes[eye];
-        src.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        src.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, input->eye_slices[eye], 1};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &src);
         VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.srcSubresource.baseArrayLayer=input->eye_slices[eye];
+        copy.srcOffset={input->eye_offsets[eye*2],input->eye_offsets[eye*2+1],0};
         copy.dstOffset.x = eye * eye_size; copy.extent = {eye_size, eye_size, 1};
-        vkCmdCopyImage(cmd, input->eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        if(meteor_eye_format_bgra(input->eye_formats[eye])) {
+            VkImageBlit blit{}; blit.srcSubresource=copy.srcSubresource; blit.dstSubresource=copy.dstSubresource;
+            blit.srcOffsets[0]=copy.srcOffset; blit.srcOffsets[1]={copy.srcOffset.x+int32_t(eye_size),copy.srcOffset.y+int32_t(eye_size),1};
+            blit.dstOffsets[0]=copy.dstOffset; blit.dstOffsets[1]={copy.dstOffset.x+int32_t(eye_size),int32_t(eye_size),1};
+            vkCmdBlitImage(cmd,input->eyes[eye],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_NEAREST);
+        } else vkCmdCopyImage(cmd, input->eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         src.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         src.srcQueueFamilyIndex = family; src.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
         src.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; src.dstAccessMask = 0;
@@ -270,7 +296,8 @@ int main(int argc, char **argv) {
     vui.videoSignalTypePresentFlag=1; vui.videoFormat=NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
     vui.videoFullRangeFlag=0; vui.colourDescriptionPresentFlag=1;
     vui.colourPrimaries=NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-    vui.transferCharacteristics=NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+    vui.transferCharacteristics=packed_format==VK_FORMAT_R8G8B8A8_SRGB ?
+        NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB : NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
     vui.colourMatrix=width>512 ? NV_ENC_VUI_MATRIX_COEFFS_BT709 : NV_ENC_VUI_MATRIX_COEFFS_SMPTE170M;
     NV_ENC_INITIALIZE_PARAMS init{}; init.version = NV_ENC_INITIALIZE_PARAMS_VER;
     init.encodeGUID = NV_ENC_CODEC_H264_GUID; init.presetGUID = NV_ENC_PRESET_P1_GUID;

@@ -127,6 +127,8 @@ int main() {
             stereo.write(eye, frame, tracked_scene ? &views[eye] : nullptr);
             projection_views[eye].pose = views[eye].pose; projection_views[eye].fov = views[eye].fov;
             projection_views[eye].subImage.swapchain = stereo.chains[eye];
+            projection_views[eye].subImage.imageArrayIndex=stereo.slices[eye];
+            projection_views[eye].subImage.imageRect.offset={stereo.offsets[eye][0],stereo.offsets[eye][1]};
             projection_views[eye].subImage.imageRect.extent = {static_cast<int32_t>(stereo.width), static_cast<int32_t>(stereo.height)};
         }
         std::printf("APP_RENDER frame=%d us=%lld\n",frame,(long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-render_start).count());

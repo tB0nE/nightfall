@@ -9,6 +9,10 @@ OUT="$ROOT/.build-cache/meteor-xr/monado-nvenc-spike"
 [[ "$(git -C "$REFERENCE" rev-parse HEAD)" == "$NIGHTFALL_WIVRN_REFERENCE_COMMIT" ]]
 [[ -z "$(git -C "$REFERENCE" status --porcelain --untracked-files=no)" ]]
 mkdir -p "$OUT"
+cc -std=c11 -Wall -Wextra -Werror "$ROOT/test/meteor_eye_rect_test.c" -o "$OUT/eye-rect-tests"
+"$OUT/eye-rect-tests"
+cc -std=c11 -Wall -Wextra -Werror "$ROOT/test/meteor_eye_format_test.c" -o "$OUT/eye-format-tests"
+"$OUT/eye-format-tests"
 cc -std=c11 -Wall -Wextra -Werror "$ROOT/test/monado_image_lease_test.c" -o "$OUT/image-lease-tests"
 "$OUT/image-lease-tests"
 cc -std=c11 -Wall -Wextra -Werror -pthread "$ROOT/test/meteor_latest_job_queue_test.c" -o "$OUT/latest-job-tests"

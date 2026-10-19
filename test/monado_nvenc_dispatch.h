@@ -1,6 +1,8 @@
 #pragma once
 #include "monado_nvenc_bridge.h"
 #include "monado_probe_paths.h"
+#include "meteor_eye_rect.h"
+#include "meteor_eye_format.h"
 #include <dlfcn.h>
 #include <math.h>
 #include <string.h>
@@ -55,15 +57,20 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         .frame_id = frame_id,
         .display_ns = (uint64_t)layer->data.timestamp,
     };
-    input.eye_size=comp_swapchain(layer->sc_array[0])->vkic.info.width;
+    input.eye_size=(uint32_t)layer->data.proj.v[0].sub.rect.extent.w;
     for (int eye = 0; eye < 2; ++eye) {
         struct comp_swapchain *sc = comp_swapchain(layer->sc_array[eye]);
         uint32_t index = layer->data.proj.v[eye].sub.image_index;
-        if (index >= sc->vkic.image_count || sc->vkic.info.format != VK_FORMAT_R8G8B8A8_UNORM ||
-            (input.eye_size != 256 && input.eye_size != 512) || sc->vkic.info.width != input.eye_size ||
-            sc->vkic.info.height != input.eye_size || sc->vkic.info.array_size != 1) {
+        const struct xrt_rect *rect=&layer->data.proj.v[eye].sub.rect;
+        if (index >= sc->vkic.image_count || !meteor_eye_format_valid((VkFormat)sc->vkic.info.format) ||
+            !meteor_eye_rect_valid(sc->vkic.info.width,sc->vkic.info.height,rect->offset.w,rect->offset.h,rect->extent.w,rect->extent.h) ||
+            (uint32_t)rect->extent.w!=input.eye_size ||
+            !meteor_eye_slice_valid(layer->data.proj.v[eye].sub.array_index,sc->vkic.info.array_size,sc->vkic.info.sample_count)) {
             return false;
         }
+        input.eye_offsets[eye*2]=rect->offset.w; input.eye_offsets[eye*2+1]=rect->offset.h;
+        input.eye_slices[eye]=layer->data.proj.v[eye].sub.array_index;
+        input.eye_formats[eye]=(VkFormat)sc->vkic.info.format;
         input.eyes[eye] = sc->vkic.images[index].handle;
         const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
         float values[11] = {view->pose.position.x, view->pose.position.y, view->pose.position.z,
@@ -71,6 +78,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
             view->fov.angle_left, view->fov.angle_right, view->fov.angle_up, view->fov.angle_down};
         memcpy(input.views + eye * 11, values, sizeof(values));
     }
+    if(!meteor_eye_formats_compatible(input.eye_formats[0],input.eye_formats[1])) return false;
     struct meteor_owned_packet packet = {0};
     const char *direct_port = getenv("METEOR_XR_DIRECT_PORT");
     if (direct_port) { input.encoded_callback = meteor_encoded_copy; input.callback_context = &packet; }

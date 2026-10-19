@@ -110,6 +110,21 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_XR_EYE_SIZE=str(eye_size), XRT_COMPOSITOR_NULL_FPS=str(target_hz),
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
     env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
+    env.pop("METEOR_XR_PADDED_SUBRECT",None)
+    env.pop("METEOR_XR_SOURCE_FORMAT",None)
+    source_format=os.environ.get("NIGHTFALL_XR_SOURCE_FORMAT","rgba8")
+    if source_format not in ("rgba8","bgra8","rgba8-srgb","bgra8-srgb"):
+        raise ValueError("Unsupported source format fixture")
+    if source_format!="rgba8":
+        if hello_xr or gpu_scene: raise ValueError("Alternate source format requires reference renderer")
+        env["METEOR_XR_SOURCE_FORMAT"]=source_format
+    env.pop("METEOR_XR_ARRAY_STEREO",None)
+    if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1":
+        if hello_xr or gpu_scene: raise ValueError("Array fixture requires reference renderer")
+        env["METEOR_XR_ARRAY_STEREO"]="1"
+    if os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1":
+        if hello_xr or gpu_scene: raise ValueError("Padded subrect fixture requires the reference renderer")
+        env["METEOR_XR_PADDED_SUBRECT"]="1"
     env.pop("METEOR_XR_GPU_MEASURE", None)
     env.pop("METEOR_XR_HEADSET_OPTICS", None)
     env.pop("METEOR_XR_RASTER_SCENE", None)
@@ -205,6 +220,15 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             application_elapsed = time.monotonic()-application_start
             if not abort_test and not interrupted:
                 result.check_returncode()
+                if not hello_xr and f"APP_SOURCE_FORMAT name={source_format} " not in result.stdout:
+                    raise RuntimeError("Requested source-format fixture did not execute")
+                if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1" and "APP_EYE_ARRAY shared=1 slices=1,0" not in result.stdout:
+                    raise RuntimeError("Array-stereo source fixture did not execute")
+                if os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1":
+                    for eye,x,y in ((0,8,12),(1,12,8)):
+                        evidence=f"APP_EYE_SUBRECT eye={eye} source={eye_size+32}x{eye_size+32} offset={x},{y} extent={eye_size}x{eye_size}"
+                        if evidence not in result.stdout:
+                            raise RuntimeError("Padded subrect source fixture did not execute")
             if child.poll() is not None:
                 raise RuntimeError("Service exited unexpectedly")
         finally:
@@ -216,6 +240,13 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     child.kill()
                     child.wait()
     text = (out / "service.log").read_text()
+    if not hello_xr and not interrupted:
+        formats={"rgba8":37,"bgra8":44,"rgba8-srgb":43,"bgra8-srgb":50} # Stable VkFormat enum values.
+        expected=formats[source_format]
+        packed=43 if source_format.endswith("-srgb") else 37
+        evidence=f"METEOR_SOURCE_FORMAT left={expected} right={expected} packed={packed} preserve_display_bytes=1"
+        if evidence not in text:
+            raise RuntimeError("Requested source/packed formats did not reach the encoder")
     if expect_tracking_loss and not interrupted:
         raise RuntimeError("Expected tracking interruption was not observed")
     if interrupted:
@@ -237,6 +268,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text or "METEOR_DIRECT_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
     transport.finish()
+    if not hello_xr:
+        color=json.loads(subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0",
+            "-show_entries","stream=color_transfer","-of","json",str(out / "monado-stereo.h264")],text=True))
+        expected_transfer="iec61966-2-1" if source_format.endswith("-srgb") else "bt709"
+        if len(color.get("streams",[]))!=1 or color["streams"][0].get("color_transfer")!=expected_transfer:
+            raise RuntimeError("Encoded transfer metadata does not match the selected source color policy")
     retains = text.count("METEOR_IMAGE_LEASE retain=1 ")
     releases = text.count("METEOR_IMAGE_LEASE retain=0 ")
     if not retains or retains != releases or "METEOR_IMAGE_LEASE_FAILED" in text:
@@ -352,6 +389,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         return {"samples": len(values), "p50_us": statistics.median(values),
                 "p95_us": values[min(len(values)-1, int(len(values)*.95))], "max_us": max(values)}
     timings = {"eye_size": eye_size, "target_hz": target_hz, "submitted": submitted_count,
+               "source_format": source_format if not hello_xr else "sample-selected",
+               "array_stereo_fixture": os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1",
+               "padded_subrect_fixture": os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1",
                "gpu_scene": gpu_scene, "measurement_only": gpu_measure,
                "headset_optics": headset_optics,
                "raster_scene": raster_scene,

@@ -420,3 +420,53 @@ termination, and the encoder was released. Outcome records 19 encoded frames,
 `forced_app_termination: false`, `final_drain_verified: false`. Device retired
 projection resources and stopped decoder/receiver on the unchanged session.
 This confirms coordinated early exit, not completion of the full frame fixture.
+
+## Application texture-layout preparation
+
+Committed coordinated host exit as `8aec6a3`. Before independent applications,
+removed the encoder's full-image eye requirement: bounded square subrects can
+now be copied from larger RGBA8 UNORM source images. Output dimensions/wire and
+Quest presentation are unchanged. Added native bounds tests and a magenta-padded
+asymmetric source-region fixture; initial 512 async loopback test passed with
+correct decoded markers and final drain (32 submitted/31 delivered).
+See `meteor-xr-eye-subrects.md` for reproduction and remaining array/color/engine
+compatibility gates. This is a prerequisite, not a real-game compatibility pass.
+Final source-region fixture passed with explicit source-layout log assertions:
+32 submissions/27 delivered frames. Original full-image regression passed 32/29.
+Both validate decoded markers, bounded ownership/worker accounting and final
+drain; do not interpret these short free-running runs as FPS benchmarks.
+
+Texture-array support added next: carries submitted slice indices through the
+encoder ABI; source barriers and copies operate on that slice. The fixture uses
+one shared two-layer swapchain, reversed left/right slice indices, one acquire/
+wait/release per stereo frame and per-slice image initialization. Existing
+two-reference image leases remain balanced for shared images. Bounds/sample-count
+tests reject invalid slices and multisampled inputs. Combined cropped-array 512
+async test passed 32 submitted/29 delivered with decoded marker and final-drain
+checks. Source-format support and an engine-native application test remain next.
+The 256 shared-array strict run passed all 32 frames. Original separate-eye 512
+async regression passed 32 submissions/30 delivered with balanced accounting,
+correct decoded markers and final drain. No new APK required for these host-only
+source-layout changes; hardware/game/validation-layer coverage is not implied.
+
+## SDR source-format compatibility
+
+Added RGBA/BGRA UNORM and sRGB source handling. RGBA uses direct copies; BGRA
+uses a checked nearest GPU blit for channel order, preserving the transfer class
+in the packing surface. Sources carry explicit formats through the encoder ABI;
+unsupported/mixed-transfer/multisample inputs and mid-session format changes
+are rejected. sRGB sources now advertise sRGB H.264 transfer metadata; UNORM
+retains the legacy BT.709 policy. Linear-light UNORM and HDR are not auto-converted.
+
+Native format-policy tests passed. The final four-format 512 async matrix used
+reversed shared-array slices AND padded source rectangles. All passed app/encoder
+format evidence, decoded colors/brightness markers, FFprobe transfer-tag checks,
+bounded worker/lease accounting and final drain. Submissions/delivered counts:
+RGBA UNORM 32/30, BGRA UNORM 32/27, RGBA sRGB 32/30, BGRA sRGB 32/28. The original
+256 separate-image stop-and-wait regression passed all 32 frames. These short
+correctness runs are not comparative throughput measurements.
+
+No new APK required. New sRGB metadata interpretation on Quest is still a visual
+hardware gate. See `meteor-xr-source-formats.md`. Next: an engine-native OpenXR
+fixture with negotiated image size/layout/format, then an independent app; no
+SteamVR/global runtime settings changed. Layout/format work remains uncommitted.

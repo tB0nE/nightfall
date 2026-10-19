@@ -527,6 +527,15 @@ graceful sample exit. USB disconnects produce an explicit interrupted outcome in
 `lifecycle-outcome.json`, not a completed-stream/drain PASS. The harness asks the
 sample to exit and uses a bounded child-only termination fallback if necessary.
 
+`NIGHTFALL_XR_PADDED_SUBRECT=1` on the reference-pattern transport probe tests
+eye regions inside larger images, without changing the packed output or APK.
+`NIGHTFALL_XR_ARRAY_STEREO=1` tests reversed eye slices in one shared texture-array
+swapchain; the two flags can be combined. These are reference fixture options.
+`NIGHTFALL_XR_SOURCE_FORMAT` selects `rgba8` (default), `bgra8`, `rgba8-srgb`
+or `bgra8-srgb` for format/channel/transfer validation. See
+[SDR source formats](docs/research/meteor-xr-source-formats.md) for limits.
+See [source-region validation and compatibility limits](docs/research/meteor-xr-eye-subrects.md).
+
 ### Retired ALVR research probe
 
 The exclusive Meteor XR spike is separate from normal APK builds. To check

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <chrono>
 #include "monado_probe_paths.h"
+#include "meteor_eye_format.h"
 #include "meteor_pose_scene.h"
 
 static void vk_check(VkResult result, const char *operation) {
@@ -24,6 +25,10 @@ struct StereoImages {
     float timestamp_period = 0;
     uint32_t timestamp_bits = 0;
     uint32_t width = 256, height = 256;
+    int32_t offsets[2][2]{};
+    bool array_stereo=false;
+    uint32_t slices[2]{},shared_index=0;
+    VkFormat source_format=VK_FORMAT_R8G8B8A8_UNORM;
     XrSwapchain chains[2]{};
     std::vector<XrSwapchainImageVulkanKHR> images[2];
     std::vector<bool> initialized[2];
@@ -48,14 +53,48 @@ struct StereoImages {
         check(xrEnumerateSwapchainFormats(session, 0, &count, nullptr), "count formats");
         std::vector<int64_t> formats(count);
         check(xrEnumerateSwapchainFormats(session, count, &count, formats.data()), "formats");
+        const char *format_name=std::getenv("METEOR_XR_SOURCE_FORMAT");
+        if(!format_name) format_name="rgba8";
+        if(!std::strcmp(format_name,"rgba8")) source_format=VK_FORMAT_R8G8B8A8_UNORM;
+        else if(!std::strcmp(format_name,"bgra8")) source_format=VK_FORMAT_B8G8R8A8_UNORM;
+        else if(!std::strcmp(format_name,"rgba8-srgb")) source_format=VK_FORMAT_R8G8B8A8_SRGB;
+        else if(!std::strcmp(format_name,"bgra8-srgb")) source_format=VK_FORMAT_B8G8R8A8_SRGB;
+        else { std::fprintf(stderr,"Unknown source format\n"); std::exit(1); }
+        if(source_format!=VK_FORMAT_R8G8B8A8_UNORM && std::getenv("METEOR_XR_GPU_SCENE_SHADER")) {
+            std::fprintf(stderr,"Alternate formats require reference pattern renderer\n"); std::exit(1);
+        }
         bool supported = false;
-        for (auto format : formats) if (format == VK_FORMAT_R8G8B8A8_UNORM) supported = true;
-        if (!supported) { std::fprintf(stderr, "RGBA8 UNORM unavailable\n"); std::exit(1); }
+        for (auto format : formats) if (format == source_format) supported = true;
+        if (!supported) { std::fprintf(stderr, "Requested source format unavailable\n"); std::exit(1); }
+        std::printf("APP_SOURCE_FORMAT name=%s value=%d\n",format_name,int(source_format));
+        array_stereo=std::getenv("METEOR_XR_ARRAY_STEREO")!=nullptr;
+        if(array_stereo) {
+            if(std::getenv("METEOR_XR_GPU_SCENE_SHADER")) {
+                std::fprintf(stderr,"Array fixture requires reference renderer\n"); std::exit(1);
+            }
+            slices[0]=1; slices[1]=0; // Deliberately reversed to catch hardcoded eye indices.
+        }
         for (int eye = 0; eye < 2; ++eye) {
+            bool padded=std::getenv("METEOR_XR_PADDED_SUBRECT")!=nullptr;
+            if(padded && std::getenv("METEOR_XR_GPU_SCENE_SHADER")) {
+                std::fprintf(stderr,"Padded subrect diagnostic requires reference pattern renderer\n"); std::exit(1);
+            }
+            if(padded) { offsets[eye][0]=eye==0 ? 8 : 12; offsets[eye][1]=eye==0 ? 12 : 8; }
+            if(array_stereo && eye==1) {
+                chains[1]=chains[0]; images[1]=images[0]; initialized[1].resize(images[1].size(),false);
+                std::printf("APP_EYE_ARRAY shared=1 slices=1,0\n");
+                if(padded) std::printf("APP_EYE_SUBRECT eye=1 source=%ux%u offset=%d,%d extent=%ux%u\n",
+                    width+32,height+32,offsets[1][0],offsets[1][1],width,height);
+                continue;
+            }
             XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
             info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
-            info.format = VK_FORMAT_R8G8B8A8_UNORM;
+            info.format = source_format;
             info.sampleCount = 1; info.width = width; info.height = height; info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
+            if(padded) { info.width+=32; info.height+=32; }
+            if(array_stereo) info.arraySize=2;
+            if(padded) std::printf("APP_EYE_SUBRECT eye=%d source=%ux%u offset=%d,%d extent=%ux%u\n",
+                eye,info.width,info.height,offsets[eye][0],offsets[eye][1],width,height);
             check(xrCreateSwapchain(session, &info, &chains[eye]), "create eye swapchain");
             check(xrEnumerateSwapchainImages(chains[eye], 0, &count, nullptr), "image count");
             images[eye].resize(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
@@ -181,9 +220,13 @@ struct StereoImages {
         auto elapsed=[&]() { auto now=std::chrono::steady_clock::now(); auto us=std::chrono::duration_cast<std::chrono::microseconds>(now-stamp).count(); stamp=now; return us; };
         uint32_t index;
         XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        check(xrAcquireSwapchainImage(chains[eye], &acquire, &index), "acquire eye");
+        if(array_stereo && eye==1) index=shared_index;
+        else {
+            check(xrAcquireSwapchainImage(chains[eye], &acquire, &index), "acquire eye");
+            if(array_stereo) shared_index=index;
+        }
         XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wait.timeout = 1000000000;
-        auto waited = xrWaitSwapchainImage(chains[eye], &wait);
+        auto waited = (array_stereo && eye==1) ? XR_SUCCESS : xrWaitSwapchainImage(chains[eye], &wait);
         if (waited != XR_SUCCESS) { std::fprintf(stderr, "Eye wait incomplete: %d\n", waited); std::exit(1); }
         auto wait_us=elapsed();
         if(measurement) {
@@ -213,6 +256,7 @@ struct StereoImages {
             }
         }
         std::vector<unsigned char> expected(input,input+width*height*4);
+        if(meteor_eye_format_bgra(source_format)) for(uint32_t p=0;p<width*height;++p) std::swap(input[p*4],input[p*4+2]);
         vkUnmapMemory(device, memory);
         auto generate_us=elapsed();
         vk_check(vkResetCommandBuffer(command, 0), "reset command");
@@ -232,6 +276,7 @@ struct StereoImages {
         barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = images[eye][index].image;
         barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.subresourceRange.baseArrayLayer=slices[eye];
         barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -242,6 +287,16 @@ struct StereoImages {
         uploaded.buffer = buffer; uploaded.size = VK_WHOLE_SIZE;
         if(!gpu_scene) vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1, &uploaded, 0, nullptr);
         VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {width, height, 1};
+        copy.imageSubresource.baseArrayLayer=slices[eye];
+        copy.imageOffset={offsets[eye][0],offsets[eye][1],0};
+        if(offsets[eye][0] || offsets[eye][1]) {
+            VkClearColorValue padding{{1.f,0.f,1.f,1.f}};
+            vkCmdClearColorImage(command,barrier.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&padding,1,&barrier.subresourceRange);
+            VkImageMemoryBarrier clear_to_copy=barrier;
+            clear_to_copy.oldLayout=clear_to_copy.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            clear_to_copy.srcAccessMask=clear_to_copy.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(command,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&clear_to_copy);
+        }
         vkCmdCopyBufferToImage(command, buffer, barrier.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -266,6 +321,7 @@ struct StereoImages {
         // checking pixels/extracting RGB. Snapshot once into ordinary host RAM.
         std::vector<unsigned char> readback(width*height*4);
         std::memcpy(readback.data(),mapped,readback.size());
+        if(meteor_eye_format_bgra(source_format)) for(uint32_t p=0;p<width*height;++p) std::swap(readback[p*4],readback[p*4+2]);
         const auto *pixels = readback.data();
         if(view) {
             if(gpu_scene) {
@@ -305,7 +361,7 @@ struct StereoImages {
         vkUnmapMemory(device, memory); initialized[eye][index] = true;
         auto verify_us=elapsed();
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        check(xrReleaseSwapchainImage(chains[eye], &release), "release eye");
+        if(!array_stereo || eye==1) check(xrReleaseSwapchainImage(chains[eye], &release), "release eye");
         std::printf("APP_EYE wait_us=%lld generate_us=%lld submit_readback_us=%lld verify_artifact_us=%lld release_us=%lld\n",
             (long long)wait_us,(long long)generate_us,(long long)submit_us,(long long)verify_us,(long long)elapsed());
     }
@@ -317,6 +373,6 @@ struct StereoImages {
         delete gpu_scene;
         vkDestroyBuffer(device, buffer, nullptr); vkFreeMemory(device, memory, nullptr);
         vkDestroyCommandPool(device, pool, nullptr);
-        for (auto chain : chains) check(xrDestroySwapchain(chain), "destroy eye swapchain");
+        for (int eye=0;eye<(array_stereo ? 1 : 2);++eye) check(xrDestroySwapchain(chains[eye]), "destroy eye swapchain");
     }
 };
