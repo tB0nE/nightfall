@@ -4,7 +4,7 @@ use std::io::{self, Read};
 
 pub const HEADER_LEN: usize = 152;
 pub const MAX_PAYLOAD: usize = 8 * 1024 * 1024;
-pub const MAX_FRAMES: u64 = 2048;
+pub const MAX_FRAMES: u64 = 4096;
 
 #[derive(Debug)]
 pub struct Header {

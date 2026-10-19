@@ -333,3 +333,142 @@ or a controlled multi-run performance guarantee. Monitor read 581,760 bytes in
 174 polls, total 54,819 us, max 653 us. Median encode-worker time 1,684 us and ACK
 roundtrip 4,269 us remained close to prior values. Copy-fence wait polls 1,197;
 zero metadata-lock, acquire-fence and swapchain waits. Keep fence ownership intact.
+
+## 1024-square-eye profile (next physical gate)
+
+The public developer config accepts `eye_size=1024` alongside `hz=60`; omission
+still selects the proven 512-square baseline. Host negotiation stores the offered
+size and passes it through the managed runtime, simulated HMD recommendation,
+GPU packing and encoder. Both wire validators/rectangle guards explicitly allow
+the new bounded shape. Unsupported sizes still fail instead of being silently
+scaled. The higher profile is restricted to the upstream demo diagnostic.
+
+This is 2048x1024 packed video versus 1024x512 previously: four times the pixels,
+not an FOV or stereo-pose change. The current encoder's existing area-based CBR
+policy raises its nominal target from 16 to 64 Mbps. The Quest projection texture
+was already 1024 square per eye, so its size, fences and ownership are unchanged.
+The session still targets 1,200 encoded frames at 60 Hz with the same exit/deadman
+controls; neither resolution nor rate is advertised as a production capability.
+
+Offline engine validation uses lightweight per-frame CRC output rather than MD5;
+both force full decoding and validate frame count/byte size, with one RGB frame
+retained for the existing nonblank/stereo smoke check. Neither is a pixel oracle
+or a cryptographic integrity check (transport authentication remains unchanged).
+No full raw-video dump is created.
+
+The first local attempt hit an overlooked fixed-size guard in the outer capture
+hook and rejected before encoding; that guard is now updated and the isolated
+runtime rebuilt. Do not infer stability from that rejected attempt. Physical
+testing remains pending successful combined validation and optimized deployment.
+
+Combined 1024 profile passed locally with 1,202 frames, 2048x1024 packed output,
+59.30-Hz encoded cadence, four long timestamp intervals, balanced image leases
+and clean encoder/delivery/engine drain. Artifacts:
+`lan-sessions/1792446584080393610-2975607/`. Regression checks: 92 active Rust
+tests, all 37 GDScript scripts, 27 focused Python tests and standalone native wire
+and rectangle tests pass. Optimized DEV APK and host release binary rebuilt for
+this profile. Physical 1024-square decode/display performance remains unverified.
+
+Physical 1024-square run (`lan-sessions/1792446677322487546-2979148/`, 23:51):
+confirmed 2048x1024 packed output, 1,207 encoded/received/queued/codec outputs;
+1,192 selected/copied and 15 supersessions, zero unselected tail. Encoded cadence
+59.15 Hz, p95 interval 16.67 ms, seven long timestamp intervals. Median encode
+worker 3,533 us (p95 4,216), NVENC 2,849 us, ACK 5,793 us (p95 7,759). One
+delivery backpressure event. Zero acquire-fence/swapchain waits, one metadata-lock
+poll; 1,176 copy-fence wait polls. Clean host validation, ownership/drains and
+native return to idle. Fourfold pixel increase retained similar encoded cadence
+in this run, with higher encode/ACK costs and more accounted supersessions than
+512-square. User reported completion only; visual sharpness/smoothness has not
+been explicitly rated. This is not a full-rate/latency guarantee.
+
+The user subsequently explicitly confirmed that 1024 per eye looked sharper and
+remained smooth. Treat it as the current visually tested baseline.
+
+## Repeat-start helper cache
+
+`probe_monado_nvenc.sh` now delegates helper preparation to
+`test/xr_preflight_cache.py`. Cold preparation compiles and runs the same rectangle,
+format, image-lease, queue and transport regressions, then builds both native
+bridge libraries. Only successful preparation writes the validated manifest.
+The key covers C/C++ helper sources/headers, external NVENC headers, build script,
+cache implementation and compiler identity. Cache hits re-hash every artifact and
+check executable permissions; missing/tampered artifacts or corrupt manifests
+rebuild, never silently bypass validation. A file lock serializes preparation,
+private cache directories isolate it, and independent copies go into each session.
+This remains a trusted local development cache, not signed production packaging.
+
+Measured preparation: 3,411.2 ms cold, 8.5 ms cached. The complete cached 1024/60
+native-worker/runtime test passed with 1,203 frames and clean drain/shutdown;
+its preflight was 10.0 ms and Godot import remained 1,817.0 ms. Artifacts:
+`lan-sessions/1792446945452606114-2993878/`. Source still undergoes headless import
+on every run; no import failure is ignored or converted into success. The final
+cache revision is primed for the next headset run. No APK/native queue change.
+32 focused Python tests cover cache invalidation, tamper/missing artifacts,
+malformed manifests, inputs changing during a build and failed-build rejection
+alongside prior pipeline tests.
+Actual acceptance-to-first-frame improvement still needs headset confirmation.
+
+Physical cache test (`lan-sessions/1792447085344046505-2979148/`, 23:58):
+acceptance at 23:58:06.225, first projection at 23:58:09.676, **3.451 seconds**,
+versus 6.735 seconds in the preceding 1024-square run. Cached preflight 8.3 ms;
+headless import 1,792.2 ms remains. Host cadence 59.12 Hz, clean validation/drains
+and native idle. Device queued/output 1,206, selected/copied 1,150 with 56
+supersessions and zero tail. Counts reconcile, but skips increased from 15 in
+the preceding run; faster startup is confirmed, not improved presentation
+consistency. Zero acquire-fence/swapchain/metadata-lock wait polls. Longer-session
+validation should retain these counters and track their run-to-run variation.
+
+Longer sessions remain the next separate increment. Do not simply raise the
+frame target: the 2,048-frame wire bound, 45-second headset/host deadlines,
+60-second control lease, engine watchdog, fixture timeout and validation budget
+must agree on an explicit bounded longer profile first. Current test duration
+and all exit controls remain unchanged in this cache-only increment.
+
+## Explicit one-minute profile (next physical gate)
+
+Public developer config: `long_run=true`, `hz=60`, `eye_size=1024`. This sends
+the separate strict-schema `offer_long` request; normal `offer` still uses the
+short profile. Long offers at 20 Hz or with arbitrary duration fields are rejected.
+Acceptance keeps the size/rate/long flag bound to that connection-owned session.
+
+Coordinated bounds:
+
+- Target: 3,600 encoded frames, approximately one minute at target cadence.
+- Wire hard cap: 4,096 frames on host, headset and direct transport.
+- Accepted control lease: 120 seconds for long offers (short leases unchanged).
+- Headset deadman: 90 seconds only for explicit long Meteor sessions, 45 for
+  ordinary tests. Hold B/Y one second or suspend the app to exit as before.
+- Engine watchdog: 80 seconds for this frame target; host app harness: 90;
+  managed host task: 100. Synthetic test endpoint/client budgets are 100/110.
+- Normal cancellation still gives the app/service four seconds to exit. Only
+  after Python has reaped both can its `postrun-validation` marker permit up to
+  20 seconds of additional validation-only grace. No XR app is kept alive by it.
+
+The output still includes frame-accounting and timing reports. At nominal
+64 Mbps a one-minute diagnostic can retain roughly 480 MB of encoded video,
+plus logs; caches are development artifacts, not automatically pruned here.
+Short profile remains selectable with `long_run=false`. No change to bitrate,
+resolution, GPU-fence ownership, latest-image policy or ordinary Meteor startup.
+Physical long-session reliability remains pending validation/deployment/test.
+
+Full local long-profile validation passed with 3,606 encoded/delivered/decoded
+frames, 2048x1024 packed output, 59.53-Hz encoded cadence, ten long timestamp
+intervals and clean engine/encoder/transport drain. Application draw span was
+60.59 seconds; the whole harness including preparation and post-run validation
+took 73.41 seconds. Artifacts:
+`lan-sessions/1792447330668272667-3020893/`. The larger validation-only budget
+is exercised without changing image ownership or holding an XR app alive.
+Optimized APK/host builds and local wire hard-cap tests pass; physical one-minute
+headset testing remains pending. The development cache is warm for that test.
+
+Physical one-minute run (`lan-sessions/1792447481844626946-3028687/`, 2026-10-20
+00:05): 60.65-second application draw span, 3,601 encoded/received/queued/codec
+outputs, 3,548 selected/copied and 53 supersessions (1.47%), zero tail. Host
+encoded cadence 59.39 Hz; median/p95 interval 16.67 ms, 25 long intervals, zero
+delivery backpressure. Median encode-worker 3,468 us (p95 4,009), ACK roundtrip
+5,804 us (p95 7,907). Cached preflight 10.2 ms; import 1,834.5 ms. Zero image
+acquire-fence, swapchain and metadata-lock waits; 3,525 nonblocking copy-fence
+wait polls (not dropped-frame counts). Balanced leases/encoder/transport drain,
+clean engine shutdown and native idle. Counts fully reconcile. User reported
+completion; no additional subjective rating was requested for this run.
+This validates one bounded minute, not hours of operation or full game support.

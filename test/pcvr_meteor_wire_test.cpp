@@ -14,13 +14,13 @@ int main() {
     MeteorXrWire sustained;
     MeteorXrFrame frame;
     auto sequence_header=h;
-    for (uint64_t i=0;i<2048;++i) {
+    for (uint64_t i=0;i<4096;++i) {
         meteor_xr_put(sequence_header.data()+16,i,8);
         meteor_xr_put(sequence_header.data()+24,i+1,8);
         meteor_xr_put(sequence_header.data()+32,i+1,8);
         assert(sustained.header(sequence_header,frame) && sustained.accept(frame,payload));
     }
-    meteor_xr_put(sequence_header.data()+16,2048,8);
+    meteor_xr_put(sequence_header.data()+16,4096,8);
     assert(!sustained.header(sequence_header,frame));
     MeteorXrWire wire;
     assert(wire.header(h,frame)); assert(wire.accept(frame,payload)); assert(!wire.header(h,frame));
@@ -53,5 +53,7 @@ int main() {
     auto changed=h; meteor_xr_put(changed.data()+16,1,8); meteor_xr_put(changed.data()+24,2,8); meteor_xr_put(changed.data()+32,2,8);
     assert(!high.header(changed,frame));
     meteor_xr_put(larger.data()+44,2048,2); meteor_xr_put(larger.data()+46,1024,2);
+    assert(MeteorXrWire().header(larger,frame));
+    meteor_xr_put(larger.data()+44,4096,2); meteor_xr_put(larger.data()+46,2048,2);
     assert(!MeteorXrWire().header(larger,frame));
 }

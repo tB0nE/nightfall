@@ -10,6 +10,7 @@ var backend = null
 var available := false
 var status := ""
 var elapsed := 0.0
+var timeout_seconds := TIMEOUT_SECONDS
 var hold_seconds := 0.0
 var native_status: Dictionary = {}
 var auto_connect_pending := false
@@ -62,7 +63,7 @@ func busy_reason() -> String:
 		return "Start from clean welcome: native video is busy"
 	return ""
 
-func start(remote_stream: bool = false, meteor_stream: bool = false) -> void:
+func start(remote_stream: bool = false, meteor_stream: bool = false, maximum_seconds: float = TIMEOUT_SECONDS) -> void:
 	main._log("[PCVR-TEST] Button pressed remote=%s" % remote_stream)
 	if is_exclusive(): return
 	if remote_stream:
@@ -75,6 +76,7 @@ func start(remote_stream: bool = false, meteor_stream: bool = false) -> void:
 		return
 	stream_mode = remote_stream
 	meteor_mode = meteor_stream
+	timeout_seconds = 90.0 if meteor_stream and maximum_seconds == 90.0 else TIMEOUT_SECONDS
 	_last_remote_status = ""
 	session.reset()
 	elapsed = 0.0
@@ -114,7 +116,7 @@ func _execute(commands: Array[Dictionary]) -> void:
 				_queue_preparation_drain(token)
 			"connect":
 				_log_transition("connecting")
-				status = "Starting — hold B or Y for 1 second to exit (45s timeout)"
+				status = "Starting — hold B or Y for 1 second to exit (%ds timeout)" % int(timeout_seconds)
 				var started: bool = backend.start_meteor_test() if meteor_mode else (backend.start_stream() if stream_mode else backend.start_test())
 				if not started:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
@@ -191,7 +193,7 @@ func process(delta: float) -> void:
 	for hand in [main.right_hand, main.left_hand]:
 		if hand and hand.is_button_pressed("by_button"): held = true
 	hold_seconds = hold_seconds + delta if held else 0.0
-	if hold_seconds >= 1.0 or elapsed >= TIMEOUT_SECONDS:
+	if hold_seconds >= 1.0 or elapsed >= timeout_seconds:
 		request_stop()
 	native_status = backend.get_test_status()
 	var remote_message: String = native_status.get("remote_status", "")

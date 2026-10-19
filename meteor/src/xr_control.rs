@@ -27,6 +27,7 @@ fn invalid(message: &str) -> io::Error {
 pub enum Request {
     Authenticate {},
     Offer { width: u32, height: u32, hz: u32 },
+    OfferLong { width: u32, height: u32, hz: u32 },
     Accept { session: String },
     Stop { session: String },
     Status {},
@@ -48,6 +49,8 @@ struct Session {
     raw_id: [u8; 16],
     accepted: bool,
     hz: u32,
+    eye_size: u32,
+    long_run: bool,
     expires: tokio::time::Instant,
 }
 #[derive(Default)]
@@ -82,14 +85,15 @@ impl Negotiation {
         {
             self.session = None;
         }
+        let long_run = matches!(&request, Request::OfferLong { .. });
         match request {
             Request::Authenticate {} => return Ok(self.reply(Some("already_authenticated"))),
             Request::Status {} => {}
-            Request::Offer { width, height, hz } => {
+            Request::Offer { width, height, hz } | Request::OfferLong { width, height, hz } => {
                 if self.session.is_some() {
                     return Ok(self.reply(Some("busy")));
                 }
-                if !matches!((width, height), (512, 512) | (256, 256)) || !matches!(hz, 20 | 60) {
+                if !matches!((width, height), (1024, 1024) | (512, 512) | (256, 256)) || !matches!(hz, 20 | 60) || (long_run && hz != 60) {
                     return Ok(self.reply(Some("unsupported_profile")));
                 }
                 let mut id = [0u8; 16];
@@ -101,6 +105,8 @@ impl Negotiation {
                     raw_id: id,
                     accepted: false,
                     hz,
+                    eye_size: width,
+                    long_run,
                     expires: tokio::time::Instant::now() + Duration::from_secs(15),
                 });
             }
@@ -111,7 +117,7 @@ impl Negotiation {
                 current.accepted = true;
                 // Control-only proof leases expire; no indefinite phantom session.
                 current.expires = tokio::time::Instant::now()
-                    + if current.hz == 60 { Duration::from_secs(60) } else { IDLE_TIMEOUT };
+                    + if current.long_run { Duration::from_secs(120) } else if current.hz == 60 { Duration::from_secs(60) } else { IDLE_TIMEOUT };
             }
             Request::Stop { session } => {
                 if !self.session.as_ref().is_some_and(|s| s.id == session) {
@@ -299,9 +305,9 @@ async fn connection_mode(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
         let mut reply = if enable_relay
-            && matches!(&request,Request::Offer{width,height,hz} if (*width,*height)!=(512,512) || !matches!(hz,20|60))
+            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !matches!((*width,*height),(512,512)|(1024,1024)) || !matches!(hz,20|60))
         {
-            negotiation.reply(Some("relay_profile_requires_512_square_20_or_60hz"))
+            negotiation.reply(Some("relay_profile_requires_512_or_1024_square_20_or_60hz"))
         } else {
             negotiation.apply(request)?
         };
@@ -327,7 +333,7 @@ async fn connection_mode(
             );
             #[cfg(target_os = "linux")]
             if let Some(root) = runtime_root.clone() {
-                relay.as_mut().unwrap().start_runtime_profile(root, session.hz);
+                relay.as_mut().unwrap().start_runtime_profile(root, session.hz, session.eye_size, session.long_run);
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());
@@ -515,6 +521,27 @@ mod tests {
         state.apply(Request::Accept { session: id }).unwrap();
         assert!(state.session.as_ref().unwrap().expires
             .duration_since(tokio::time::Instant::now()) > Duration::from_secs(59));
+    }
+
+    #[test]
+    fn negotiated_high_resolution_is_retained() {
+        let mut state = Negotiation::default();
+        assert_eq!(state.apply(Request::Offer {width:1024,height:1024,hz:60}).unwrap().state,"awaiting_acceptance");
+        assert_eq!(state.session.as_ref().unwrap().eye_size,1024);
+        let mut invalid = Negotiation::default();
+        assert_eq!(invalid.apply(Request::Offer {width:2048,height:2048,hz:60}).unwrap().state,"idle");
+    }
+
+    #[test]
+    fn long_profile_is_explicit_bounded_and_60hz_only() {
+        let mut state = Negotiation::default();
+        assert_eq!(state.apply(Request::OfferLong {width:1024,height:1024,hz:20}).unwrap().state,"idle");
+        let offer=state.apply(Request::OfferLong {width:1024,height:1024,hz:60}).unwrap();
+        assert!(state.session.as_ref().unwrap().long_run);
+        state.apply(Request::Accept {session:offer.session.unwrap()}).unwrap();
+        let remaining=state.session.as_ref().unwrap().expires.duration_since(tokio::time::Instant::now());
+        assert!(remaining > Duration::from_secs(119) && remaining <= Duration::from_secs(120));
+        assert!(serde_json::from_str::<Request>(r#"{"type":"offer_long","width":1024,"height":1024,"hz":60,"seconds":99999}"#).is_err());
     }
     #[test]
     fn strict_request_schema_and_keys() {

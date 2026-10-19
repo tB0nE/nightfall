@@ -8,7 +8,7 @@ def decode_smoke(path, frame_count, eye_size):
     # Decode every frame, but retain only small frame hashes and one RGB frame.
     # A sustained session must not materialize gigabytes of decoded RGB on disk.
     base=["ffmpeg", "-nostdin", "-v", "error", "-i", str(path)]
-    hashes=subprocess.run(base+["-pix_fmt","rgb24","-f","framemd5","-"],
+    hashes=subprocess.run(base+["-pix_fmt","rgb24","-f","framecrc","-"],
         check=True,capture_output=True,text=True,timeout=40).stdout
     rows=[line.split(",") for line in hashes.splitlines() if line and not line.startswith("#")]
     frame_bytes=eye_size*eye_size*6
@@ -37,7 +37,7 @@ def validate_engine(out, application_log, minimum, eye_size, service_log):
         else:
             raise RuntimeError(f"Unexpected engine error: {line}")
     records=[json.loads(line) for line in (out / "monado-stereo.jsonl").read_text().splitlines()]
-    if not minimum<=len(records)<=2048:
+    if not minimum<=len(records)<=4096:
         raise RuntimeError("Engine output frame count outside bounded diagnostic window")
     last_time=last_frame=offset=0
     for record in records:

@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     if (!*argv[1] || *end || port<1 || port>65535) return 2;
     MeteorTrackingEndpoint endpoint;
     if (!endpoint.start(uint16_t(port))) return 1;
-    auto deadline=MeteorTrackingEndpoint::now_ns()+45000000000ULL;
+    auto deadline=MeteorTrackingEndpoint::now_ns()+100000000000ULL;
     bool ready=false;
     bool interrupted=false;
     while (!endpoint.idle() && MeteorTrackingEndpoint::now_ns()<deadline) {

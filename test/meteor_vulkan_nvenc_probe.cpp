@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     REQUIRE(get_fd, "External memory FD export unavailable");
 #ifdef METEOR_MONADO_BRIDGE
     const uint32_t eye_size=input->eye_size ? input->eye_size : 256;
-    REQUIRE(eye_size==256 || eye_size==512,"Unsupported eye-size profile");
+    REQUIRE(eye_size==256 || eye_size==512 || eye_size==1024,"Unsupported eye-size profile");
     const uint32_t width=eye_size*2,height=eye_size;
 #else
     constexpr uint32_t width = 512, height = 256;

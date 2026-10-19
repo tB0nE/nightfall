@@ -20,7 +20,7 @@ static void meteor_tracking_release(struct meteor_tracking_bridge *b) {
 static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b,struct xrt_device *xdev) {
     const char *pixels=getenv("METEOR_XR_EYE_SIZE");
     if(pixels) {
-        if(strcmp(pixels,"256") && strcmp(pixels,"512")) return false;
+        if(strcmp(pixels,"256") && strcmp(pixels,"512") && strcmp(pixels,"1024")) return false;
         uint32_t size=(uint32_t)atoi(pixels);
         for(uint32_t eye=0;eye<xdev->hmd->view_count;++eye) {
             xdev->hmd->views[eye].display.w_pixels=size;

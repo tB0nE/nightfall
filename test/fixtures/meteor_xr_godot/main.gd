@@ -94,7 +94,7 @@ func _process(delta: float) -> void:
 		print("ENGINE_XR_INTERRUPTED tracking disconnected")
 		_request_exit()
 		return
-	if elapsed > 35.0:
+	if elapsed > (80.0 if minimum_frames > 1800 else 35.0):
 		push_error("ENGINE_XR_FAILED no encoded frames before deadline")
 		get_tree().quit(3)
 		return

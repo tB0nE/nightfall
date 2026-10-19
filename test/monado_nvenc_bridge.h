@@ -19,7 +19,7 @@ struct meteor_stereo_encode_v1 {
     float views[22];
     meteor_encoded_callback_v1 encoded_callback;
     void *callback_context;
-    uint32_t eye_size; // 0 is legacy 256; otherwise 256 or 512, fixed per session.
+    uint32_t eye_size; // 0 is legacy 256; otherwise 256, 512 or 1024, fixed per session.
     int32_t eye_offsets[4]; // Source x/y per eye; crop only, no resize.
     uint32_t eye_slices[2]; // Array layer selected by the submitted sub-image.
     VkFormat eye_formats[2]; // Explicit source order/transfer function.

@@ -96,7 +96,7 @@ int main(int argc, char **argv) {
   godot::MeteorXrRelayClient client;
   assert(client.start(config));
   auto deadline = std::chrono::steady_clock::now() +
-                  std::chrono::seconds(argc == 4 ? 50 : 15);
+                  std::chrono::seconds(argc == 4 ? 110 : 15);
   while (!client.idle() && std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   assert(client.idle() && !client.failed() && client.connected_lanes() == 2);

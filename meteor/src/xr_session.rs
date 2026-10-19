@@ -73,9 +73,11 @@ pub(crate) async fn runtime_adapter(
     video: u16,
     tracking: u16,
     hz: u32,
+    eye_size: u32,
+    long_run: bool,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> io::Result<()> {
-    if !matches!(hz, 20 | 60) {
+    if !matches!(hz, 20 | 60) || !matches!(eye_size, 512 | 1024) || (long_run && hz != 60) {
         return Err(io::Error::other("unsupported managed XR profile"));
     }
     let cache = root.join(".build-cache/meteor-xr");
@@ -109,7 +111,6 @@ pub(crate) async fn runtime_adapter(
         ("NIGHTFALL_XR_CONTROLLER_PROFILE", "touch"),
         ("NIGHTFALL_XR_TOUCH_INPUTS", "1"),
         ("NIGHTFALL_XR_HEADSET_OPTICS", "1"),
-        ("NIGHTFALL_XR_EYE_SIZE", "512"),
         ("NIGHTFALL_XR_ASYNC_ENCODE", "1"),
         ("NIGHTFALL_XR_ASYNC_DELIVERY", "1"),
         ("NIGHTFALL_XR_FREE_RUNNING", "1"),
@@ -119,7 +120,8 @@ pub(crate) async fn runtime_adapter(
     command
         .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })
         .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
-        .env("NIGHTFALL_XR_PROBE_FRAMES", if hz == 60 { "1200" } else { "200" })
+        .env("NIGHTFALL_XR_EYE_SIZE", eye_size.to_string())
+        .env("NIGHTFALL_XR_PROBE_FRAMES", if long_run { "3600" } else if hz == 60 { "1200" } else { "200" })
         .env("NIGHTFALL_XR_PROBE_OUTPUT", &output)
         .env("NIGHTFALL_XR_DEVICE_PORT", video.to_string())
         .env("NIGHTFALL_XR_TRACKING_PORT", tracking.to_string())
@@ -132,7 +134,7 @@ pub(crate) async fn runtime_adapter(
         .stderr(Stdio::from(log))
         .process_group(0);
     let mut child = OwnedProcess(command.spawn()?);
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = Instant::now() + Duration::from_secs(if long_run {100} else {45});
     loop {
         if let Some(status) = child.0.try_wait()? {
             return if status.success() {
@@ -154,8 +156,16 @@ pub(crate) async fn runtime_adapter(
                 artifacts.join("engine-request-exit"),
                 "LAN session cancelled\n",
             )?;
-            let until = Instant::now() + Duration::from_secs(4);
-            while child.0.try_wait()?.is_none() && Instant::now() < until {
+            let mut until = Instant::now() + Duration::from_secs(4);
+            let mut validation_grace = false;
+            while child.0.try_wait()?.is_none() {
+                // Only post-run validation may extend cancellation grace: the
+                // adapter writes this marker AFTER its app/service are reaped.
+                if !validation_grace && output.join("postrun-validation").exists() {
+                    until = Instant::now() + Duration::from_secs(20);
+                    validation_grace = true;
+                }
+                if Instant::now() >= until { break; }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             return Ok(());
@@ -359,6 +369,11 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn long_runtime_rejects_unsupported_rate_before_launch() {
+        let (_send,receive)=tokio::sync::watch::channel(false);
+        assert!(runtime_adapter(PathBuf::from("/unused"),1,2,20,1024,true,receive).await.is_err());
+    }
     #[test]
     fn lan_retries_keep_separate_private_artifacts() {
         let cache = std::env::temp_dir().join(format!("meteor-lan-logs-{}", std::process::id()));

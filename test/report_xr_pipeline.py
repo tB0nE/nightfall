@@ -42,6 +42,8 @@ def report(directory, target_hz=60, service_log=None):
         "codec_input_ack_roundtrip":r"METEOR_DIRECT_TIMING frame=\d+ send_us=\d+ ack_us=(\d+)",
     }
     return {"schema":1, "target_hz":target_hz, "encoded_frames":len(records),
+        "packed_width":records[0].get("width") if records else None,
+        "packed_height":records[0].get("height") if records else None,
         "application_diagnostic_monitor":monitor_report,
         "encoded_display_timestamp_hz":1e6/statistics.mean(gaps) if gaps else None,
         "encoded_display_interval":summary(gaps),

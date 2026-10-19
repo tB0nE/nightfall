@@ -18,6 +18,7 @@ var _rx := 0
 var _busy := false
 var _relay
 var _owns_projection := false
+var _long_run := false
 var _relay_config: Dictionary = {}
 
 func _init(node: Node) -> void:
@@ -46,6 +47,7 @@ func cancel(stop_projection: bool = true) -> void:
 	_generation += 1
 	var owned := _owns_projection
 	_owns_projection = false
+	_long_run = false
 	if _relay: _relay.stop()
 	_relay = null
 	_relay_config.clear()
@@ -213,10 +215,12 @@ func connect_offer() -> void:
 		_fail("Control authentication rejected or host busy")
 		return
 	var hz := int(config.get_value("host", "hz", 20))
-	if hz not in [20, 60]:
-		_fail("Unsupported developer XR rate")
+	var eye_size := int(config.get_value("host", "eye_size", 512))
+	_long_run = bool(config.get_value("host", "long_run", false))
+	if hz not in [20, 60] or eye_size not in [512, 1024] or (_long_run and hz != 60):
+		_fail("Unsupported developer XR rate or eye size")
 		return
-	var offer := await _request({"type": "offer", "width": 512, "height": 512, "hz": hz}, token)
+	var offer := await _request({"type": "offer_long" if _long_run else "offer", "width": eye_size, "height": eye_size, "hz": hz}, token)
 	if token != _generation: return
 	_busy = false
 	if offer.get("state", "") != "awaiting_acceptance" or not offer.get("session") is String:
@@ -237,7 +241,7 @@ func accept_offer() -> void:
 		_fail("XR acceptance failed or unsupported transport")
 		return
 	_status("prepared", "Preparing authenticated XR transport" if not _relay_config.is_empty() else "Control-only XR preparation accepted")
-	_watch_lease(token, "prepared", 60000)
+	_watch_lease(token, "prepared", 120000 if _long_run else 60000)
 	if not _relay_config.is_empty() and reply.get("relay") is Dictionary:
 		_start_relay(reply.relay, token)
 
@@ -257,7 +261,7 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	_relay_config["session"] = session.hex_decode()
 	_relay = ClassDB.instantiate("MeteorXrRelay")
 	_owns_projection = true
-	owner.pcvr_test.start(false, true)
+	owner.pcvr_test.start(false, true, 90.0 if _long_run else 45.0)
 	if not owner.pcvr_test.is_exclusive():
 		_fail("Exclusive XR entry rejected")
 		return

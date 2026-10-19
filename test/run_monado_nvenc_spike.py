@@ -28,12 +28,13 @@ def run(root: Path, out: Path):
 
 
 def run_isolated(root: Path, out: Path, runtime: Path, transport):
+    (out / "postrun-validation").unlink(missing_ok=True)
     abort_test = os.environ.get("NIGHTFALL_XR_PROBE_ABORT") == "1"
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
     eye_size = int(os.environ.get("NIGHTFALL_XR_EYE_SIZE", "256"))
     target_hz = int(os.environ.get("NIGHTFALL_XR_TARGET_HZ", "20"))
-    if eye_size not in (256,512) or target_hz not in (20,60):
-        raise ValueError("Diagnostic profiles: eye size 256/512, target rate 20/60")
+    if eye_size not in (256,512,1024) or target_hz not in (20,60):
+        raise ValueError("Diagnostic profiles: eye size 256/512/1024, target rate 20/60")
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
     gpu_scene = os.environ.get("NIGHTFALL_XR_GPU_SCENE") == "1"
     gpu_measure = os.environ.get("NIGHTFALL_XR_GPU_MEASURE") == "1"
@@ -42,6 +43,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
     godot_engine=os.environ.get("NIGHTFALL_XR_GODOT_ENGINE")=="1"
     upstream_demo=os.environ.get("NIGHTFALL_XR_UPSTREAM_DEMO")=="1"
+    if eye_size == 1024 and not upstream_demo:
+        raise ValueError("1024-square profile requires the bounded upstream demo")
     if upstream_demo and not godot_engine:
         raise ValueError("Upstream demo requires Godot engine mode")
     expect_tracking_loss=os.environ.get("NIGHTFALL_XR_EXPECT_TRACKING_LOSS")=="1"
@@ -88,7 +91,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         raise ValueError("Free-running app-disconnect accounting is a separate pending test")
     if tracked_scene and not os.environ.get("NIGHTFALL_XR_TRACKING_PORT"):
         raise ValueError("Tracked scene requires explicit live tracking port; no simulated fallback")
-    maximum = 1800 if upstream_demo else 240
+    maximum = 3600 if upstream_demo else 240
     if not 1 <= frame_count <= maximum:
         raise ValueError(f"NIGHTFALL_XR_PROBE_FRAMES must be 1..{maximum}")
     if abort_test and frame_count < 16:
@@ -106,10 +109,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if upstream_demo:
             from prepare_xr_upstream_demo import prepare
             project=prepare(root)
+            import_start=time.monotonic()
             imported=subprocess.run([str(app),"--headless","--xr-mode","off","--editor","--import",
                             "--path",str(project)],timeout=60,capture_output=True,text=True)
             (out / "godot-import.log").write_text(imported.stdout+imported.stderr)
             imported.check_returncode()
+            print(f"XR_STARTUP import_ms={(time.monotonic()-import_start)*1000:.1f}",flush=True)
         command=[str(app),"--path",str(project),"--display-driver","x11",
             "--rendering-method","mobile","--rendering-driver","vulkan","--xr-mode","on",
             "--audio-driver","Dummy","--resolution","320x180","--position","24,24"]
@@ -241,7 +246,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             else:
                 try:
                     result, interrupted, forced_stop = run_application(command, env=env,
-                        timeout=40+input_seconds, service_log=out / "service.log",
+                        timeout=(90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
                         stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
                         completion_file=out / "engine-completion.json" if godot_engine else None,
                         completion_token=engine_token,completion_target=frame_count)
@@ -273,6 +278,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
+    # App and service have both been reaped by the finally block above. This
+    # permits a bounded validation-only grace after a client finishes its stream.
+    (out / "postrun-validation").write_text("app/service reaped\n")
     text = (out / "service.log").read_text()
     if not (hello_xr or godot_engine) and not interrupted:
         formats={"rgba8":37,"bgra8":44,"rgba8-srgb":43,"bgra8-srgb":50} # Stable VkFormat enum values.

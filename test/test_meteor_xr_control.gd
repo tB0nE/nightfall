@@ -35,9 +35,11 @@ func _init() -> void:
 	assert(client.state == "prepared") # No second acceptance and never presentation.
 	client.cancel()
 	client._owns_projection = true
+	client._long_run = true
 	client._relay_config = {"identity": PackedByteArray([1, 2, 3])}
 	client.cancel()
 	assert(owner.pcvr_test.stops == 1 and client._relay_config.is_empty())
+	assert(not client._long_run)
 	client._owns_projection = true
 	client.cancel(false)
 	assert(owner.pcvr_test.stops == 1) # Native stop path already owns GPU drain.

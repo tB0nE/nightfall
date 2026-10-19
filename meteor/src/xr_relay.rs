@@ -119,7 +119,7 @@ impl Relay {
         self.failed.load(Ordering::Acquire)
     }
     #[cfg(target_os = "linux")]
-    pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32) {
+    pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
         let ready = self.attached.clone();
         let mut cancel = self.stop.subscribe();
         let signal = self.stop.clone();
@@ -141,7 +141,7 @@ impl Relay {
                 }
             }
             if let Err(error) =
-                crate::xr_session::runtime_adapter(root, video, tracking, hz, cancel).await
+                crate::xr_session::runtime_adapter(root, video, tracking, hz, eye_size, long_run, cancel).await
             {
                 eprintln!("Meteor XR runtime adapter stopped: {error}");
                 failure.store(true, Ordering::Release);
@@ -448,7 +448,10 @@ mod tests {
             .unwrap();
         let hz = std::env::var("NIGHTFALL_XR_RELAY_TEST_HZ")
             .ok().map(|s| s.parse().unwrap()).unwrap_or(20);
-        relay.start_runtime_profile(root.clone(), hz);
+        let eye_size = std::env::var("NIGHTFALL_XR_RELAY_TEST_EYE_SIZE")
+            .ok().map(|s| s.parse().unwrap()).unwrap_or(512);
+        let long_run = std::env::var("NIGHTFALL_XR_RELAY_TEST_LONG").as_deref() == Ok("1");
+        relay.start_runtime_profile(root.clone(), hz, eye_size, long_run);
         let child = Process(
             std::process::Command::new(client)
                 .args([
@@ -467,7 +470,7 @@ mod tests {
         .unwrap();
         assert!(result.success());
         assert!(publisher.0.wait().unwrap().success());
-        let until = tokio::time::Instant::now() + Duration::from_secs(10);
+        let until = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let proof = std::fs::read_dir(root.join(".build-cache/meteor-xr/lan-sessions"))
                 .unwrap()
