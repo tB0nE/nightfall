@@ -1,5 +1,6 @@
 // Linux-only diagnostic bridge: live USB poses -> isolated Monado virtual HMD.
 #include "pcvr_meteor_tracking.h"
+#include "pcvr_meteor_haptics.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -27,6 +28,8 @@ struct Client {
     MeteorControllerSample controllers;
     uint64_t controller_ns=0;
     uint64_t mapped_ns=0;
+    std::array<MeteorHaptic,2> haptics{};
+    std::array<bool,2> haptic_pending{};
     int fd=-1;
     ~Client() { stop.store(true); if(worker.joinable()) worker.join(); if(fd>=0) close(fd); }
     bool io(void *data,size_t length,bool writing,uint64_t deadline) {
@@ -50,6 +53,7 @@ struct Client {
     }
     void run() {
         const bool input_enabled=std::getenv("METEOR_XR_CONTROLLERS")!=nullptr;
+        const bool full_input=std::getenv("METEOR_XR_TOUCH_INPUTS")!=nullptr;
         MeteorClockMapping clock;
         for(int i=0;i<8;++i) {
             auto h=request("NFXC"); uint64_t h0=now_ns(); meteor_xr_put(h.data()+8,h0,8);
@@ -71,7 +75,8 @@ struct Client {
                 (unsigned long long)optics.epoch,optics.eyes[0],optics.eyes[11]);
         }
         MeteorTrackingWire wire;
-        MeteorControllerWire input_wire;
+        MeteorControllerWire input_wire(full_input);
+        uint32_t haptic_sequence=0;
         while(!stop.load()) {
             auto h=request("NFXP"); std::array<uint8_t,64> packet{};
             uint64_t deadline=now_ns()+2000000000;
@@ -83,7 +88,7 @@ struct Client {
             if((mapped>receipt ? mapped-receipt : receipt-mapped)>250000000+clock.uncertainty_ns()) break;
             MeteorControllerSample input; uint64_t input_ns=0;
             if(input_enabled) {
-                auto request_input=request("NFXI"); std::array<uint8_t,MeteorControllerWire::size> packet_input{};
+                auto request_input=request(full_input ? "NFXJ" : "NFXI"); std::array<uint8_t,MeteorControllerWire::size> packet_input{};
                 if(!io(request_input.data(),request_input.size(),true,deadline) || !io(packet_input.data(),packet_input.size(),false,deadline) ||
                     !input_wire.accept(packet_input,input) || input.epoch!=incoming.epoch || !clock.to_host(input.client_ns,input_ns)) break;
                 uint64_t now=now_ns(); if((input_ns>now ? input_ns-now : now-input_ns)>250000000+clock.uncertainty_ns()) break;
@@ -94,6 +99,19 @@ struct Client {
                 controllers=input; controller_ns=input_ns;
             }
             if(!ready.exchange(true)) std::fprintf(stderr,"METEOR_TRACKING_READY epoch=%llu; Quest LOCAL adopted as virtual device origin; latest-only/no prediction\n",(unsigned long long)incoming.epoch);
+            for(unsigned hand=0;hand<2;++hand) {
+                MeteorHaptic pulse; bool pending=false;
+                { std::lock_guard<std::mutex> lock(mutex);
+                    pending=haptic_pending[hand]; pulse=haptics[hand]; haptic_pending[hand]=false; }
+                if(!pending || now_ns()-pulse.received_ns>150000000) continue;
+                pulse.epoch=incoming.epoch; pulse.sequence=haptic_sequence++;
+                auto command=MeteorHapticWire::encode(pulse),ack=command;
+                uint64_t end=now_ns()+250000000;
+                if(!io(command.data(),command.size(),true,end) || !io(ack.data(),ack.size(),false,end) || ack!=command) {
+                    failed.store(true); return;
+                }
+                std::fprintf(stderr,"METEOR_HAPTIC_SENT hand=%u amplitude=%.3f duration_ms=%u\n",hand,pulse.amplitude,pulse.duration_ms);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         if(stop.load()) {
@@ -149,9 +167,24 @@ extern "C" void meteor_tracking_stop_v1(void *context) {
     { std::lock_guard<std::mutex> lock(active_mutex); if(active_client==context) active_client=nullptr; }
     delete static_cast<Client *>(context);
 }
-extern "C" int meteor_tracking_controller_v1(unsigned hand,int64_t at_ns,float poses[14],float values[2],uint32_t *flags,uint64_t *stamp) {
-    if(hand>1 || at_ns<=0 || !poses || !values || !flags || !stamp) return 0;
-    *flags=0; values[0]=values[1]=0;
+extern "C" int meteor_tracking_haptic_v1(unsigned hand,float amplitude,int64_t duration_ns) {
+    if(hand>1 || !std::isfinite(amplitude) || amplitude<0 || amplitude>1 || duration_ns< -1) return 0;
+    std::lock_guard<std::mutex> active_lock(active_mutex);
+    Client *c=active_client;
+    if(!c || c->failed.load() || c->stop.load()) return 0;
+    std::unique_lock<std::mutex> lock(c->mutex,std::try_to_lock);
+    uint64_t now=now_ns();
+    if(!lock.owns_lock() || !c->controller_ns || now<c->controller_ns || now-c->controller_ns>250000000) return 0;
+    MeteorHaptic h; h.hand=hand; h.received_ns=now;
+    if(amplitude>0 && duration_ns!=0) {
+        h.amplitude=std::min(amplitude,.5f);
+        h.duration_ms=duration_ns<0 ? 50 : uint32_t(std::min<int64_t>(150,std::max<int64_t>(1,duration_ns/1000000)));
+    }
+    c->haptics[hand]=h; c->haptic_pending[hand]=true; return 1;
+}
+extern "C" int meteor_tracking_controller_v2(unsigned hand,int64_t at_ns,float poses[14],float values[4],uint32_t *buttons,uint32_t *flags,uint64_t *stamp) {
+    if(hand>1 || at_ns<=0 || !poses || !values || !buttons || !flags || !stamp) return 0;
+    *flags=0; *buttons=0; *stamp=0; for(int i=0;i<4;++i) values[i]=0;
     std::lock_guard<std::mutex> active_lock(active_mutex);
     Client *c=active_client;
     if(!c || c->failed.load()) return 0;
@@ -162,7 +195,14 @@ extern "C" int meteor_tracking_controller_v1(unsigned hand,int64_t at_ns,float p
         (query>sample ? query-sample : sample-query)>250000000) return 0;
     const auto &input=c->controllers.hands[hand];
     std::memcpy(poses,input.poses.data(),14*sizeof(float)); values[0]=input.trigger; values[1]=input.squeeze;
+    values[2]=input.stick[0]; values[3]=input.stick[1]; *buttons=input.buttons;
     *flags=input.flags; *stamp=sample; return 1;
+}
+extern "C" int meteor_tracking_controller_v1(unsigned hand,int64_t at_ns,float poses[14],float values[2],uint32_t *flags,uint64_t *stamp) {
+    if(!values) return 0;
+    float all[4]{}; uint32_t buttons=0;
+    int result=meteor_tracking_controller_v2(hand,at_ns,poses,all,&buttons,flags,stamp);
+    values[0]=all[0]; values[1]=all[1]; return result;
 }
 extern "C" int meteor_tracking_optics_v1(void *context,float eyes[22]) {
     auto *c=static_cast<Client *>(context);

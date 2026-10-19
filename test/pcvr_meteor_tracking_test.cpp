@@ -1,6 +1,23 @@
 #include "pcvr_meteor_tracking.h"
+#include "pcvr_meteor_haptics.h"
 #include <cassert>
 int main() {
+    MeteorHaptic pulse; pulse.epoch=42; pulse.hand=1; pulse.amplitude=.5f; pulse.duration_ms=150;
+    MeteorHaptic decoded_pulse;
+    assert(MeteorHapticWire::decode(MeteorHapticWire::encode(pulse),decoded_pulse));
+    assert(decoded_pulse.hand==1 && decoded_pulse.duration_ms==150 && decoded_pulse.amplitude==.5f);
+    for(int field=0;field<6;++field) {
+        auto bad=pulse;
+        if(field==0) bad.epoch=0;
+        if(field==1) bad.hand=2;
+        if(field==2) bad.amplitude=std::numeric_limits<float>::quiet_NaN();
+        if(field==3) bad.amplitude=.6f;
+        if(field==4) bad.duration_ms=151;
+        if(field==5) bad.duration_ms=0;
+        assert(!MeteorHapticWire::decode(MeteorHapticWire::encode(bad),decoded_pulse));
+    }
+    pulse.amplitude=0; pulse.duration_ms=0;
+    assert(MeteorHapticWire::decode(MeteorHapticWire::encode(pulse),decoded_pulse));
     MeteorControllerSample controllers; controllers.epoch=42; controllers.client_ns=1000;
     controllers.hands[0].flags=7; controllers.hands[0].trigger=.25f; controllers.hands[0].squeeze=.75f;
     controllers.hands[0].poses[0]=-.2f;
@@ -23,6 +40,28 @@ int main() {
     invalid_controls=controllers; invalid_controls.hands[1].poses[0]=std::numeric_limits<float>::quiet_NaN();
     assert(!MeteorControllerWire::valid(invalid_controls));
     assert(control_wire.accept(controls,control_out));
+    controllers.sequence=0; controllers.client_ns=1002;
+    controllers.hands[0].flags=15; controllers.hands[0].stick={-.5f,.25f};
+    controllers.hands[0].buttons=31;
+    MeteorControllerWire extended(true);
+    auto v2=MeteorControllerWire::encode(controllers,true);
+    assert(extended.accept(v2,control_out));
+    assert(control_out.hands[0].stick==controllers.hands[0].stick);
+    assert(control_out.hands[0].buttons==31 && control_out.hands[0].flags==15);
+    assert(!extended.accept(v2,control_out));
+    assert(!control_wire.accept(v2,control_out));
+    MeteorControllerWire legacy;
+    assert(legacy.accept(MeteorControllerWire::encode(controllers),control_out));
+    assert(control_out.hands[0].flags==7 && control_out.hands[0].buttons==0);
+    assert(control_out.hands[0].stick[0]==0);
+    for(int field=0;field<4;++field) {
+        auto invalid=controllers;
+        if(field==0) invalid.hands[0].stick[0]=1.1f;
+        if(field==1) invalid.hands[0].stick[1]=std::numeric_limits<float>::quiet_NaN();
+        if(field==2) invalid.hands[0].buttons=32;
+        if(field==3) invalid.hands[0].flags=7;
+        assert(!MeteorControllerWire::valid(invalid));
+    }
     MeteorHeadsetOptics optics;
     optics.epoch=42;
     optics.eyes={-.032f,0,0,0,0,0,1,-.8f,.7f,.75f,-.65f,

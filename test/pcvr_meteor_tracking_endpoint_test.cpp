@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
     if (!*argv[1] || *end || port<1 || port>65535) return 2;
     MeteorTrackingEndpoint endpoint;
     if (!endpoint.start(uint16_t(port))) return 1;
-    auto deadline=MeteorTrackingEndpoint::now_ns()+30000000000ULL;
+    auto deadline=MeteorTrackingEndpoint::now_ns()+45000000000ULL;
     bool ready=false;
     while (!endpoint.idle() && MeteorTrackingEndpoint::now_ns()<deadline) {
         MeteorTrackingSample s; s.epoch=42; s.client_ns=MeteorTrackingEndpoint::now_ns();
@@ -23,11 +23,20 @@ int main(int argc, char **argv) {
         for(int hand=0;hand<2;++hand) {
             auto &state=s.controllers.hands[hand]; state.flags=7; state.trigger=.25f; state.squeeze=.75f;
             state.poses[0]=hand==0 ? .05f : .45f; state.poses[1]=-.3f; state.poses[2]=-.5f;
-            if(argc==3) { state.poses[0]+=.03f*std::sin(double(s.client_ns)*1e-9*7); state.squeeze=float((s.client_ns/100000000)%2); }
+            if(argc==3) { state.poses[0]+=.03f*std::sin(double(s.client_ns)*1e-9*7); state.squeeze=float((s.client_ns/100000000)%3)*.5f; }
             std::copy(state.poses.begin(),state.poses.begin()+7,state.poses.begin()+7);
+            state.flags|=8; state.stick={hand==0 ? -.5f : .5f,.25f}; state.buttons=31;
+            if(argc==3) { state.stick[0]=float(std::sin(double(s.client_ns)*1e-9*6))*(hand==0 ? -1.f : 1.f); state.buttons=((s.client_ns/100000000)%2) ? 31 : 0; }
         }
         if (argc==3) s.pose[0]+=.05f*std::sin(double(s.client_ns)*1e-9*3.0);
         endpoint.publish(s);
+        for(unsigned hand=0;hand<2;++hand) {
+            MeteorHaptic h;
+            if(endpoint.take_haptic(hand,h)) {
+                std::printf("HAPTIC hand=%u amplitude=%.3f duration_ms=%u\n",hand,h.amplitude,h.duration_ms);
+                std::fflush(stdout);
+            }
+        }
         if (!ready && endpoint.listening()) { std::puts("READY synthetic tracking publisher"); std::fflush(stdout); ready=true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }

@@ -106,6 +106,40 @@ local exit. Retained timing evidence:
 
 ## Reproduce
 
+### Next increment: partial native Touch profile
+
+Add `NIGHTFALL_XR_CONTROLLER_PROFILE=touch` to a controllers-enabled invocation
+to select the Oculus Touch interaction profile instead of the original WinMR
+stand-in (`wmr` remains the default baseline). The virtual device registers
+grip pose, aim pose, trigger value and continuous squeeze value against Monado's
+existing native Touch binding metadata. Other Touch inputs are not registered
+as forwarded capabilities yet: no face buttons, thumbsticks, capacitive touches,
+menu/system actions or remote haptics. Do not call this complete Touch emulation.
+
+This needs a rebuilt host runtime only. The installed headset APK already sends
+the full analog squeeze. Protocol version, packet size and C ABI are unchanged.
+The sample now resolves the actual Oculus Touch squeeze binding; half squeeze
+produces an intermediate 7.5 cm hand cube instead of the stand-in's binary
+10/5 cm sizes. Synthetic fixtures cycle through 0, 0.5 and 1 grip values.
+
+The longer host run passed 120 submissions / 118 delivered frames, one pre-worker
+skip and one pending replacement, final drain and clean shutdown. Both hands
+had correct identities/motion and all three expected rendered sizes. Upstream
+logs explicitly named the left/right Oculus Touch squeeze bindings. Evidence:
+`.build-cache/meteor-xr/profiles/512-60-touch-analog-host-timing.json`.
+Headset confirmation passed: the user reported it worked as intended. Logs
+confirm native left/right Oculus Touch squeeze bindings and many intermediate
+hand cube sizes between 0.05 and 0.1 m on both hands, not binary grip conversion.
+240 submissions produced 237 delivered/headset-decoded frames, three pre-worker
+skips and zero raw replacements; final frame drained and host shutdown passed.
+Device log ends holding the final picture, not at the later local exit.
+Evidence: `.build-cache/meteor-xr/profiles/512-60-touch-analog-headset-timing.json`.
+
+The original WinMR and new Touch modes are explicit choices; there is no silent
+profile fallback. Next extend the versioned wire protocol for sticks/buttons
+and their validity before exposing those host inputs; keep the local exit
+shortcut reserved. Add authenticated, bounded haptic delivery separately.
+
 ```bash
 bash tools/build_support/probe_monado_runtime.sh --build
 bash tools/build_support/build_hello_xr_probe.sh
@@ -125,3 +159,76 @@ its small hand cube to follow and shrink/grow; reference-space cubes also remain
 visible. The finite scene lasts only a few seconds. Exit after the live sequence
 by holding B/Y one second. Haptics, sticks/face buttons, controller reconnection,
 standby/origin reset and complete Touch profiles are later gates.
+# Extended Touch inputs (2026-10-19)
+
+Opt in with `NIGHTFALL_XR_TOUCH_INPUTS=1` and
+`NIGHTFALL_XR_CONTROLLER_PROFILE=touch`, alongside the existing controller,
+hello_xr and optics flags. Requires the updated optimized DEV APK and rebuilt
+diagnostic runtime/sample. B/Y/menu/system stay local; haptics remain pending.
+
+The 32-byte request uses NFXJ (request envelope version 1). Its 192-byte response
+uses NFXJ/version 2. Per 80-byte hand record, offset 12 contains a button mask
+(A/X click, stick click, A/X touch, stick touch, trigger touch, bits 0–4), and
+offsets 72/76 contain float stick X/Y. Flag bit 3 means stick active. All other
+fields retain the V1 layout. NFXI/version 1 remains available, zeros reserved
+fields and strips extended flags. Formats never silently substitute for one
+another. Existing monotonic sequence, epoch, finite/range and freshness checks
+remain enforced. Disconnected/invalid bridge queries clear values and activity.
+
+Host validation passed: 120 submitted, 118 encoded/delivered frames, balanced
+drain; both sticks varied across positive/negative values, both A/X and stick
+click states toggled, and trigger values reached real hello_xr OpenXR actions.
+Native wire assertions and nine endpoint/bridge regressions also passed.
+The optimized release-signed DEV APK was built and installed successfully.
+Hardware validation of the new extended inputs is still outstanding.
+
+The sample adds actions to its existing gameplay action set, not another
+action-set/sync loop. It now visualizes each stick with a small marker above
+the hand, widens the hand cube on X/A and makes it taller on stick click.
+Grip still scales the hand cube. Indicators use the preceding action snapshot
+(one diagnostic frame of delay), not a second sync loop.
+
+The first user test exposed the four-second window as too short. The headset
+script now defaults extended Touch tests to 30 seconds, pacing 240 frames at
+roughly 8 updates/s. This preserves packet/memory bounds and needs no APK change;
+only the host sample was rebuilt. It is an interaction test, not a latency or
+smoothness benchmark. Set `NIGHTFALL_XR_INPUT_SECONDS=0` to retain normal cadence.
+
+User confirmed the extended hardware test worked. Actual logs show both stick
+axes near their full range and both states of X/A and stick click for each hand
+(226 active samples each). The host app timed out before final drain; input
+success is not a clean shutdown result. The harness now adds the configured
+input duration to its startup/run timeout; hardware revalidation is pending.
+
+## Bounded haptic output spike
+
+Opt in with `NIGHTFALL_XR_HAPTICS=1` alongside extended Touch. Requires a new
+optimized DEV APK and runtime rebuild. The sample's existing >90% grip action
+requests vibration in that hand. No new action set or sync loop was introduced.
+The headset uses Godot's existing `haptic` action with `XrHapticActionInfo` and
+the matching hand subaction path; it never passes an action handle in place of
+the required info structure. Apply/stop calls run on the existing XR thread.
+
+Host output callbacks only update two bounded latest-pending slots. The existing
+tracking worker sends NFXH requests and verifies echoed acknowledgments; an ACK
+means accepted for processing, not that the motor has physically vibrated.
+Wire format is 32 bytes, little endian: magic NFXH, version u16=1, size u16=32,
+epoch u64 at 8, strict sequence u32 at 16, hand u32 at 20, amplitude float at 24,
+duration milliseconds u32 at 28. No frequency field: XR frequency unspecified.
+
+Host clamps amplitude to .5 and duration to 150 ms. XR minimum duration (-1)
+becomes 50 ms. Zero amplitude or duration becomes an explicit stop. The endpoint
+rejects nonfinite/out-of-range values, replayed sequences and wrong epochs or
+stale tracking; each side expires queued pulses after 150 ms. Endpoint disconnect
+queues stops, and resource teardown explicitly attempts to stop both hands.
+Commands are latest-only per hand, not a buffered vibration timeline. Output
+without the opt-in remains unimplemented. No LAN/public service is added.
+
+Native wire assertions and twelve socket/bridge regressions passed, including
+clamping, wrong epoch, replay and stop commands. Updated optimized release-signed
+DEV APK built and installed. Physical rumble and exit behavior await user test.
+
+Hardware follow-up: user confirmed success. Headset logs show successful apply
+and stop calls (XR_SUCCESS), and local resource/decoder retirement after exit.
+This was an early local exit (about 159 decoded frames), not a 240-frame host
+final-drain confirmation. Repeat entry/exit and interrupted sessions remain gates.

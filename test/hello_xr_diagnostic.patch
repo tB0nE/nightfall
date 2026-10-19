@@ -15,7 +15,11 @@
 -        XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
 +        if(meteor_hello_enabled()) extensions.push_back(XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME);
 +        XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
-@@ -659,1 +661,5 @@
+@@ -500,1 +502,2 @@
+-            suggestedBindings.interactionProfile = oculusTouchInteractionProfilePath;
++            meteor_hello_touch_bindings(m_instance,m_input.actionSet,bindings);
++            suggestedBindings.interactionProfile = oculusTouchInteractionProfilePath;
+@@ -659,1 +662,5 @@
 -            m_depthSwapchainFormat = m_graphicsPlugin->SelectDepthSwapchainFormat(false, swapchainFormats);
 +            m_depthSwapchainFormat = m_graphicsPlugin->SelectDepthSwapchainFormat(false, swapchainFormats);
 +            if(meteor_hello_enabled()) {
@@ -42,9 +46,17 @@
 -        CHECK_XRCMD(xrEndFrame(m_session, &frameEndInfo));
 +        CHECK_XRCMD(xrEndFrame(m_session, &frameEndInfo));
 +        meteor_hello_submitted(m_instance,m_session,frameState.predictedDisplayTime,!layers.empty());
-@@ -1034,1 +1049,2 @@
+@@ -1034,1 +1049,10 @@
 -                    cubes.push_back(Cube{spaceLocation.pose, {scale, scale, scale}});
-+                    cubes.push_back(Cube{spaceLocation.pose, {scale, scale, scale}});
++                    if(meteor_touch_actions[0]) {
++                        unsigned h=unsigned(hand);
++                        cubes.push_back(Cube{spaceLocation.pose, {meteor_touch_ax[h] ? .16f : scale,
++                            meteor_touch_click[h] ? .16f : scale, scale}});
++                        XrPosef marker=spaceLocation.pose;
++                        marker.position.x+=meteor_touch_sticks[h].x*.12f;
++                        marker.position.y+=.20f+meteor_touch_sticks[h].y*.12f;
++                        cubes.push_back(Cube{marker,{.025f,.025f,.025f}});
++                    } else cubes.push_back(Cube{spaceLocation.pose, {scale, scale, scale}});
 +                    if(std::getenv("METEOR_XR_CONTROLLERS")) std::printf("HELLO_XR_HAND hand=%u position=%.6f,%.6f,%.6f scale=%.3f\n",unsigned(hand),spaceLocation.pose.position.x,spaceLocation.pose.position.y,spaceLocation.pose.position.z,scale);
 --- a/src/tests/hello_xr/main.cpp
 +++ b/src/tests/hello_xr/main.cpp

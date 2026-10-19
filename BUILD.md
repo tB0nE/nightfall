@@ -499,6 +499,19 @@ The first controller diagnostic adds `NIGHTFALL_XR_CONTROLLERS=1` to that sample
 test, using the updated optimized DEV APK. It forwards grip/aim poses and
 trigger/squeeze levels through a declared WinMR stand-in profile, not full Touch
 emulation or haptics. See [controller test](docs/research/meteor-xr-controller-spike.md).
+The next opt-in `NIGHTFALL_XR_CONTROLLER_PROFILE=touch` uses partial native Touch
+bindings for poses, trigger and continuous grip. It needs a host runtime rebuild,
+not another APK for analog grip alone. Add `NIGHTFALL_XR_TOUCH_INPUTS=1`
+with the latest optimized DEV APK to test thumbsticks, stick clicks, A/X and
+capacitive touches using the version-2 controller protocol. B/Y/menu/system
+remain local. Haptics require the separate opt-in described below. The sample logs extended actions and
+shows a moving stick marker, wider hand cube on X/A, taller cube on stick click,
+and grip-controlled size. The headset script defaults this input diagnostic to
+30 seconds over 240 frames (about 8 updates/s, not a performance test).
+Add `NIGHTFALL_XR_HAPTICS=1` with the updated optimized DEV APK and rebuilt
+Monado runtime to forward bounded vibration. Fully squeeze each grip separately:
+the sample requests a short pulse on the corresponding controller. Pulses are
+capped at 50% strength and 150 ms; frequency is currently unspecified.
 
 ### Retired ALVR research probe
 

@@ -396,6 +396,14 @@ void NightfallXrProjectionTest::initialize_meteor_controllers() {
 	if(!create_action_space || !string_to_path || !controller_float) { PCVR_LOG("Meteor controller capture unavailable: missing XR entry points"); return; }
 	auto action=[&](const char *name) { RID rid=api->find_action(name,RID()); return rid.is_valid() ? reinterpret_cast<XrAction>(api->action_get_handle(rid)) : XR_NULL_HANDLE; };
 	controller_trigger=action("trigger"); controller_squeeze=action("grip");
+	controller_stick=action("primary");
+	controller_haptic=action("haptic");
+	controller_apply_haptic=reinterpret_cast<PFN_xrApplyHapticFeedback>(api->get_instance_proc_addr("xrApplyHapticFeedback"));
+	controller_stop_haptic=reinterpret_cast<PFN_xrStopHapticFeedback>(api->get_instance_proc_addr("xrStopHapticFeedback"));
+	const char *names[5]={"ax_button","primary_click","ax_touch","primary_touch","trigger_touch"};
+	for(int i=0;i<5;++i) controller_buttons[i]=action(names[i]);
+	controller_bool=reinterpret_cast<PFN_xrGetActionStateBoolean>(api->get_instance_proc_addr("xrGetActionStateBoolean"));
+	controller_vector=reinterpret_cast<PFN_xrGetActionStateVector2f>(api->get_instance_proc_addr("xrGetActionStateVector2f"));
 	XrAction poses[2]={action("grip_pose"),action("aim_pose")};
 	if(!controller_trigger || !controller_squeeze || !poses[0] || !poses[1]) { PCVR_LOG("Meteor controller capture unavailable: expected Godot actions missing"); return; }
 	for(int hand=0;hand<2;++hand) {
@@ -412,6 +420,19 @@ void NightfallXrProjectionTest::initialize_meteor_controllers() {
 }
 
 void NightfallXrProjectionTest::publish_meteor_tracking() {
+	if(tracking && controller_haptic && controller_apply_haptic && controller_stop_haptic) for(unsigned hand=0;hand<2;++hand) {
+		MeteorHaptic pulse;
+		if(!tracking->take_haptic(hand,pulse) || pulse.epoch!=tracking_epoch) continue;
+		XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action=controller_haptic; info.subactionPath=controller_paths[hand];
+		XrResult result;
+		if(pulse.duration_ms && pulse.amplitude>0) {
+			XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+			vibration.amplitude=pulse.amplitude; vibration.duration=XrDuration(pulse.duration_ms)*1000000;
+			vibration.frequency=XR_FREQUENCY_UNSPECIFIED;
+			result=controller_apply_haptic(session,&info,reinterpret_cast<const XrHapticBaseHeader *>(&vibration));
+		} else result=controller_stop_haptic(session,&info);
+		PCVR_LOG("Meteor haptic hand=%u amplitude=%.3f duration_ms=%u result=%d",hand,pulse.amplitude,pulse.duration_ms,int(result));
+	}
 	if (!tracking || tracking->failed()) { fail("Meteor USB tracking endpoint failed"); return; }
 	timespec now{}; clock_gettime(CLOCK_MONOTONIC, &now);
 	XrTime xr_now = 0;
@@ -460,6 +481,16 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 			query.action=controller_squeeze; XrResult s=controller_float(session,&query,&squeeze);
 			if(XR_SUCCEEDED(t) && XR_SUCCEEDED(s) && trigger.isActive && squeeze.isActive) {
 				out.flags|=4; out.trigger=trigger.currentState; out.squeeze=squeeze.currentState;
+				if(controller_stick && controller_vector) {
+					query.action=controller_stick; XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};
+					if(XR_SUCCEEDED(controller_vector(session,&query,&stick)) && stick.isActive) {
+						out.flags|=8; out.stick={stick.currentState.x,stick.currentState.y};
+					}
+				}
+				if(controller_bool) for(int i=0;i<5;++i) if(controller_buttons[i]) {
+					query.action=controller_buttons[i]; XrActionStateBoolean button{XR_TYPE_ACTION_STATE_BOOLEAN};
+					if(XR_SUCCEEDED(controller_bool(session,&query,&button)) && button.isActive && button.currentState) out.buttons|=1u<<i;
+				}
 			}
 		}
 	}
@@ -673,6 +704,13 @@ void NightfallXrProjectionTest::release_render_resources() {
 		controller_space=XR_NULL_HANDLE;
 	}
 	controller_trigger=controller_squeeze=XR_NULL_HANDLE; controller_float=nullptr;
+	if(controller_haptic && controller_stop_haptic && api.is_valid() && api->get_session()==session_id.load()) for(unsigned hand=0;hand<2;++hand) {
+		XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action=controller_haptic; info.subactionPath=controller_paths[hand];
+		controller_stop_haptic(session,&info);
+	}
+	controller_haptic=XR_NULL_HANDLE; controller_apply_haptic=nullptr; controller_stop_haptic=nullptr;
+	controller_stick=XR_NULL_HANDLE; controller_bool=nullptr; controller_vector=nullptr;
+	for(auto &button:controller_buttons) button=XR_NULL_HANDLE;
 	if (head_space && api.is_valid() && api->get_session() == session_id.load() && destroy_space) destroy_space(head_space);
 	head_space = XR_NULL_HANDLE;
 	if (tracking_space && api.is_valid() && api->get_session() == session_id.load() && destroy_space) destroy_space(tracking_space);

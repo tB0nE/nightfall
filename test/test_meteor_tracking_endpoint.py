@@ -39,6 +39,10 @@ class TrackingEndpointTests(unittest.TestCase):
         cls.library.meteor_tracking_optics_v1.argtypes = [ctypes.c_void_p,ctypes.POINTER(ctypes.c_float)]
         cls.library.meteor_tracking_controller_v1.argtypes=[ctypes.c_uint,ctypes.c_int64,
             ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_uint32),ctypes.POINTER(ctypes.c_uint64)]
+        cls.library.meteor_tracking_controller_v2.argtypes=[ctypes.c_uint,ctypes.c_int64,
+            ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_float),ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_uint32),ctypes.POINTER(ctypes.c_uint64)]
+        cls.library.meteor_tracking_haptic_v1.argtypes=[ctypes.c_uint,ctypes.c_float,ctypes.c_int64]
 
     @classmethod
     def tearDownClass(cls):
@@ -73,6 +77,44 @@ class TrackingEndpointTests(unittest.TestCase):
             peer.sendall(request)
             self.assertEqual(peer.recv(1), b"")
         self.assertEqual(self.child.wait(timeout=3), 1)
+
+    def test_haptic_pulse_stop_and_replay(self):
+        with socket.create_connection(("127.0.0.1",self.port),timeout=2) as peer:
+            for sequence,hand,amplitude,duration in ((0,0,.5,150),(1,1,.25,50),(2,0,0,0)):
+                command=struct.pack("<4sHHQIIfI",b"NFXH",1,32,42,sequence,hand,amplitude,duration)
+                peer.sendall(command)
+                ack=b""
+                while len(ack)<32:
+                    chunk=peer.recv(32-len(ack)); self.assertTrue(chunk); ack+=chunk
+                self.assertEqual(ack,command)
+            peer.sendall(command)  # Duplicate sequence must close, not replay vibration.
+            self.assertEqual(peer.recv(1),b"")
+        self.assertEqual(self.child.wait(timeout=3),1)
+
+    def test_haptic_wrong_epoch_rejected(self):
+        with socket.create_connection(("127.0.0.1",self.port),timeout=2) as peer:
+            peer.sendall(struct.pack("<4sHHQIIfI",b"NFXH",1,32,43,0,0,.5,150))
+            self.assertEqual(peer.recv(1),b"")
+        self.assertEqual(self.child.wait(timeout=3),1)
+
+    def test_haptic_bridge_clamps_and_rejects_invalid_values(self):
+        with patch.dict(os.environ,{"METEOR_XR_CONTROLLERS":"1","METEOR_XR_TOUCH_INPUTS":"1"}):
+            context=self.library.meteor_tracking_start_v1(str(self.port).encode())
+            self.assertTrue(context)
+            try:
+                self.assertEqual(self.library.meteor_tracking_haptic_v1(0,1,10_000_000_000),1)
+                self.assertEqual(self.library.meteor_tracking_haptic_v1(1,.25,-1),1)
+                self.assertEqual(self.library.meteor_tracking_haptic_v1(2,.25,50_000_000),0)
+                self.assertEqual(self.library.meteor_tracking_haptic_v1(0,float("nan"),50_000_000),0)
+                self.assertEqual(self.library.meteor_tracking_haptic_v1(0,.25,-2),0)
+                time.sleep(.1)
+            finally:
+                self.library.meteor_tracking_stop_v1(context)
+        self.assertEqual(self.child.wait(timeout=3),0)
+        output=self.child.stdout.read()
+        self.assertIn("HAPTIC hand=0 amplitude=0.500 duration_ms=150",output)
+        self.assertIn("HAPTIC hand=1 amplitude=0.250 duration_ms=50",output)
+        self.assertEqual(self.library.meteor_tracking_haptic_v1(0,.25,50_000_000),0)
 
     def test_optics_packet_and_clean_close(self):
         with socket.create_connection(("127.0.0.1",self.port),timeout=2) as peer:
@@ -146,6 +188,26 @@ class TrackingEndpointTests(unittest.TestCase):
         finally:
             self.library.meteor_tracking_stop_v1(context)
         self.assertEqual(self.child.wait(timeout=3), 0)
+
+    def test_extended_controller_inputs(self):
+        with patch.dict(os.environ,{"METEOR_XR_CONTROLLERS":"1","METEOR_XR_TOUCH_INPUTS":"1"}):
+            context=self.library.meteor_tracking_start_v1(str(self.port).encode())
+            self.assertTrue(context)
+            try:
+                for hand in range(2):
+                    poses=(ctypes.c_float*14)(); values=(ctypes.c_float*4)()
+                    buttons=ctypes.c_uint32(); flags=ctypes.c_uint32(); stamp=ctypes.c_uint64()
+                    self.assertEqual(self.library.meteor_tracking_controller_v2(hand,time.monotonic_ns(),poses,values,
+                        ctypes.byref(buttons),ctypes.byref(flags),ctypes.byref(stamp)),1)
+                    self.assertEqual(flags.value,15); self.assertEqual(buttons.value,31)
+                    self.assertEqual(list(values),[.25,.75,-.5 if hand==0 else .5,.25])
+                self.assertEqual(self.library.meteor_tracking_controller_v2(0,time.monotonic_ns()+1_000_000_000,
+                    poses,values,ctypes.byref(buttons),ctypes.byref(flags),ctypes.byref(stamp)),0)
+                self.assertEqual(list(values),[0,0,0,0]); self.assertEqual(buttons.value,0)
+                self.assertEqual(flags.value,0); self.assertEqual(stamp.value,0)
+            finally:
+                self.library.meteor_tracking_stop_v1(context)
+        self.assertEqual(self.child.wait(timeout=3),0)
 
     def test_monado_bridge_disconnect_invalidates_pose(self):
         context = self.library.meteor_tracking_start_v1(str(self.port).encode())

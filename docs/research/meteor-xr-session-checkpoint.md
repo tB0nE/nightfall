@@ -211,6 +211,19 @@ required or running as part of this path. No system runtime was registered.
     two pre-worker skips and one pending replacement, final drain and clean
     host shutdown. Device log ends at final-picture hold. First controller
     tracking/squeeze milestone is confirmed; full Touch mapping/haptics remain.
+26. Checkpointed all validated raster/independent-app/controller work in
+    `1dc0d23`. Began partial native Touch profile, opt-in via
+    `NIGHTFALL_XR_CONTROLLER_PROFILE=touch`: grip/aim and trigger/continuous
+    squeeze now use actual Touch bindings instead of WinMR click conversion.
+    Host 120-submission test delivered 118 frames and verified each hand's
+    intermediate 7.5 cm cube scale as well as 5/10 cm; actual Touch bindings
+    appeared in upstream logs. No wire/ABI/APK change. Headset confirmation,
+    buttons/sticks and haptics remain pending. This increment is uncommitted.
+    Quest confirmation passed: user reported intended behavior; logs show both
+    native Touch squeeze bindings and many intermediate hand-cube sizes on
+    each hand. 240 submitted / 237 delivered and decoded, three pre-worker
+    skips, no raw replacements, final drain and clean host shutdown. Device
+    log ends at final-picture hold. Buttons/sticks/haptics remain outstanding.
 
 ## Architecture and ownership
 
@@ -292,3 +305,54 @@ Details: [active plan](../plans/active/meteor-xr-monado-spike.md),
    gate; Linux/NVIDIA success is not proof of Windows/AMD/Intel support.
 7. Then controller actions/haptics, audio/mic clocks, OpenVR compatibility,
    installer/licensing review and eventual desktop/browser coexistence.
+# Extended Touch increment — 2026-10-19
+
+After user-confirmed native Touch analog grip, added explicitly versioned V2
+controller packets for thumbsticks, A/X, stick clicks and capacitive touches.
+B/Y/menu/system remain local and haptics remain unimplemented. Host end-to-end
+test passed (120 submitted, 118 delivered, clean drain), with assertions against
+actual hello_xr action queries for both hands. Nine socket/bridge tests and
+native protocol assertions passed. Updated optimized DEV APK installed.
+Next: user headset test, inspect `HELLO_XR_TOUCH` logs for physical inputs;
+sticks/buttons now have visual indicators, while grip changes hand cube scale.
+See `meteor-xr-controller-spike.md` for protocol details and opt-ins.
+
+The initial four-second physical-input test was too short. Added a 30-second
+paced input diagnostic (240 frames, about 8 updates/s) and stick marker/X-A
+width/stick-click height feedback in the host sample. No new APK required.
+Await user confirmation; do not use this deliberately paced mode for latency.
+The 30-second host regression passed: all 240 frames encoded/delivered, no raw
+replacement or skipped submissions, clean final drain; both hands' extended
+actions and existing pose/grip assertions passed.
+
+User confirmed the longer physical controller test looked correct. Logs contain
+226 active samples per hand, stick axes approaching both -1 and +1, and both
+pressed/released states for X/A and both stick clicks. Hardware input validation
+passed. This run hit the harness's 40-second app timeout after 226 submissions,
+so clean final drain is NOT confirmed for this headset run. Increased the app
+timeout by the explicit input-test duration to allow startup plus the longer
+interaction window; this timeout adjustment awaits another hardware run.
+
+## Next increment: bounded controller haptics
+
+Added opt-in `NIGHTFALL_XR_HAPTICS=1` output forwarding through the tracking
+worker (NFXH, epoch/sequence checked, latest-only per hand). OpenXR apply/stop
+uses the existing Godot haptic action and hand subaction paths on the XR thread.
+Cap .5 amplitude/150 ms, stale expiry, disconnect/teardown stop attempts.
+Native protocol assertions and twelve endpoint/bridge tests passed. Optimized
+release-signed DEV APK installed; rebuilt isolated Monado runtime. Hardware test
+pending: fully squeeze each grip separately, feel rumble in that hand only,
+then release/exit and confirm vibration stops. Existing 30-second paced input
+fixture remains available. See controller-spike notes for wire and limits.
+Host integration passed: real hello_xr vibration commands reached both synthetic
+endpoint hands; 120 submitted/119 delivered frames, one pending raw replacement,
+clean final drain. This is not yet evidence of physical headset rumble.
+
+User confirmed the physical haptic test succeeded. Device logs show haptic
+apply/stop returning XR_SUCCESS (result=0), including 50 ms/.5 amplitude pulses
+and zero-duration stops; local resources and decoder were retired after exit.
+The captured run ends around decoded sequence 158, before the 240-frame fixture
+limit, so this confirms physical feedback/local exit, not a completed host
+final-drain sequence. Next checkpoint should preserve the controller/input work,
+then test repeat entry/exit, interrupted transport and standby recovery before
+expanding beyond the isolated sample into real applications/managed service UX.

@@ -39,6 +39,15 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     raster_scene = os.environ.get("NIGHTFALL_XR_RASTER_SCENE") == "1"
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
     controllers=os.environ.get("NIGHTFALL_XR_CONTROLLERS")=="1"
+    controller_profile=os.environ.get("NIGHTFALL_XR_CONTROLLER_PROFILE","wmr")
+    touch_inputs=os.environ.get("NIGHTFALL_XR_TOUCH_INPUTS")=="1"
+    input_seconds=int(os.environ.get("NIGHTFALL_XR_INPUT_SECONDS","0"))
+    if input_seconds and (not touch_inputs or not hello_xr or not 1<=input_seconds<=30):
+        raise ValueError("Input duration requires Touch hello_xr and 1..30 seconds")
+    if touch_inputs and (not controllers or controller_profile!="touch"):
+        raise ValueError("Extended Touch input requires controllers and touch profile")
+    if controller_profile not in ("wmr","touch") or (controller_profile=="touch" and not controllers):
+        raise ValueError("Controller profile must be wmr/touch; touch requires controllers enabled")
     if controllers and not tracked_scene:
         raise ValueError("Controllers require tracked mode")
     if hello_xr and (gpu_scene or gpu_measure or raster_scene or abort_test or not tracked_scene):
@@ -102,8 +111,16 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     env.pop("METEOR_XR_RASTER_SCENE", None)
     env.pop("METEOR_XR_HELLO_DIAGNOSTIC", None)
     env.pop("METEOR_XR_CONTROLLERS",None)
+    env.pop("METEOR_XR_TOUCH_INPUTS",None)
+    env.pop("METEOR_XR_INPUT_SECONDS",None)
+    if input_seconds: env["METEOR_XR_INPUT_SECONDS"]=str(input_seconds)
+    if touch_inputs: env["METEOR_XR_TOUCH_INPUTS"]="1"
+    env.pop("METEOR_XR_HAPTICS",None)
+    if os.environ.get("NIGHTFALL_XR_HAPTICS")=="1":
+        if not touch_inputs: raise ValueError("Haptics require extended Touch inputs")
+        env["METEOR_XR_HAPTICS"]="1"
     if controllers:
-        env["METEOR_XR_CONTROLLERS"]="1"; env["SIMULATED_LEFT"]="wmr"; env["SIMULATED_RIGHT"]="wmr"
+        env["METEOR_XR_CONTROLLERS"]="1"; env["SIMULATED_LEFT"]=controller_profile; env["SIMULATED_RIGHT"]=controller_profile
     if hello_xr:
         env["METEOR_XR_HELLO_DIAGNOSTIC"]="1"
     if raster_scene:
@@ -169,7 +186,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
             else:
                 try:
-                    result = subprocess.run(command, env=env, timeout=40, capture_output=True, text=True)
+                    result = subprocess.run(command, env=env, timeout=40+input_seconds, capture_output=True, text=True)
                 except subprocess.TimeoutExpired as failure:
                     def output_text(value):
                         return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
@@ -267,7 +284,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         first=decoded[:eye_size*eye_size*6]
         if max(first)-min(first)<40 or len(set(first[::3]))<16:
             raise RuntimeError("Independent sample output appears blank")
-        print("PASS: independent hello_xr sample rendered nonblank video; no pixel oracle or controller support claimed")
+        print("PASS: independent hello_xr sample rendered nonblank video; no pixel oracle or general game compatibility claimed")
     elif gpu_measure:
         decoded = (out / "decoded.rgb").read_bytes()
         if len(decoded) != frame_count*eye_size*eye_size*6:
@@ -317,6 +334,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                "raster_scene": raster_scene,
                "hello_xr": hello_xr,
                "controllers": controllers,
+               "controller_profile": controller_profile if controllers else None,
+               "touch_inputs": touch_inputs,
                "pixel_reference_validated": not (gpu_measure or hello_xr),
                "encoded": frame_count, "application_elapsed_s": application_elapsed,
                "display_timestamp_cadence_hz": (frame_count-1)*1e9/(records[-1]["display_time_ns"]-records[0]["display_time_ns"]) if frame_count>1 else None,

@@ -10,6 +10,10 @@ mkdir -p "$OUT"
 VIDEO_PORT=""
 TRACKING_PORT=""
 LOG_PID=""
+if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
+    export NIGHTFALL_XR_INPUT_SECONDS="${NIGHTFALL_XR_INPUT_SECONDS:-30}"
+    export NIGHTFALL_XR_PROBE_FRAMES="${NIGHTFALL_XR_PROBE_FRAMES:-240}"
+fi
 cleanup() {
     if [[ -n "$LOG_PID" ]]; then kill "$LOG_PID" 2>/dev/null || true; wait "$LOG_PID" 2>/dev/null || true; fi
     if [[ -n "$VIDEO_PORT" ]]; then "$ADB" forward --remove "tcp:$VIDEO_PORT" >/dev/null 2>&1 || true; fi
@@ -29,6 +33,12 @@ else
     echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect three colored spheres and a floor; gently move your head.'
 fi
 echo "Profile: ${NIGHTFALL_XR_EYE_SIZE:-256}x${NIGHTFALL_XR_EYE_SIZE:-256} per eye, target ${NIGHTFALL_XR_TARGET_HZ:-20} Hz; actual timings are recorded separately."
+if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
+    echo "Input test: ${NIGHTFALL_XR_INPUT_SECONDS}s, deliberately paced. Stick moves marker; X/A widens hand cube; stick click makes it taller; grip changes size."
+    if [[ "${NIGHTFALL_XR_HAPTICS:-0}" == 1 ]]; then
+        echo 'Haptics: fully squeeze each grip separately; expect a short rumble in that controller only.'
+    fi
+fi
 READY=0
 for attempt in {1..1200}; do
     if rg -q 'Meteor projection receiver requested' "$OUT/device.log" && rg -q 'Listening on loopback :49090' "$OUT/device.log"; then READY=1; break; fi

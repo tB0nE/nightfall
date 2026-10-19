@@ -95,6 +95,13 @@ private:
 	XrPath controller_paths[2]{};
 	XrAction controller_trigger=XR_NULL_HANDLE,controller_squeeze=XR_NULL_HANDLE;
 	PFN_xrGetActionStateFloat controller_float=nullptr;
+	PFN_xrGetActionStateBoolean controller_bool=nullptr;
+	PFN_xrGetActionStateVector2f controller_vector=nullptr;
+	XrAction controller_stick=XR_NULL_HANDLE;
+	XrAction controller_buttons[5]{};
+	XrAction controller_haptic=XR_NULL_HANDLE;
+	PFN_xrApplyHapticFeedback controller_apply_haptic=nullptr;
+	PFN_xrStopHapticFeedback controller_stop_haptic=nullptr;
 	void initialize_meteor_controllers();
 #ifdef NIGHTFALL_PCVR_ALVR
 	std::unique_ptr<PCVRAlvrClient> remote;
