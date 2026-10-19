@@ -31,6 +31,11 @@ struct Client {
     std::array<MeteorHaptic,2> haptics{};
     std::array<bool,2> haptic_pending{};
     int fd=-1;
+    void disconnected() {
+        failed.store(true);
+        std::fprintf(stderr,"METEOR_TRACKING_DISCONNECTED reason=transport_or_protocol\n");
+        std::fflush(stderr);
+    }
     ~Client() { stop.store(true); if(worker.joinable()) worker.join(); if(fd>=0) close(fd); }
     bool io(void *data,size_t length,bool writing,uint64_t deadline) {
         auto *p=static_cast<uint8_t *>(data);
@@ -108,7 +113,7 @@ struct Client {
                 auto command=MeteorHapticWire::encode(pulse),ack=command;
                 uint64_t end=now_ns()+250000000;
                 if(!io(command.data(),command.size(),true,end) || !io(ack.data(),ack.size(),false,end) || ack!=command) {
-                    failed.store(true); return;
+                    disconnected(); return;
                 }
                 std::fprintf(stderr,"METEOR_HAPTIC_SENT hand=%u amplitude=%.3f duration_ms=%u\n",hand,pulse.amplitude,pulse.duration_ms);
             }
@@ -118,7 +123,7 @@ struct Client {
             auto h=request("NFXQ");
             // Best-effort close; destructor closes socket even if peer is gone.
             send(fd,h.data(),h.size(),MSG_NOSIGNAL | MSG_DONTWAIT);
-        } else failed.store(true);
+        } else disconnected();
     }
 };
 std::mutex active_mutex;

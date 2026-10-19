@@ -52,5 +52,9 @@ NIGHTFALL_XR_DEVICE_PORT="$VIDEO_PORT" NIGHTFALL_XR_TRACKING_PORT="$TRACKING_POR
     bash "$TOOL_DIR/probe_monado_nvenc.sh"
 rg -q 'METEOR DECODED.*first frame: ONE projection layer' "$OUT/device.log"
 rg -q 'METEOR TRACKED SCENE: host render poses/FOV mapped' "$OUT/device.log"
+if [[ -f "$ROOT/.build-cache/meteor-xr/monado-nvenc-spike/lifecycle-outcome.json" ]]; then
+    echo 'INTERRUPTED: tracking connection ended; see lifecycle-outcome.json. Not a completed-stream/drain PASS.'
+    exit 0
+fi
 echo 'Scene delivered with live headset tracking and host render poses/FOV. Confirm world-lock and image orientation visually; not a performance benchmark.'
 echo 'Hold B/Y for one second to return to welcome.'

@@ -50,7 +50,18 @@ inline void meteor_hello_touch_log(XrSession session) {
     }
 }
 inline void meteor_hello_submitted(XrInstance instance,XrSession session,XrTime display_time,bool rendered) {
-    if(!meteor_hello_enabled() || !rendered) return;
+    if(!meteor_hello_enabled()) return;
+    static bool disconnect_exit=false;
+    if(std::ifstream(meteor_probe_path("client-disconnected"))) {
+        if(!disconnect_exit) {
+            disconnect_exit=true;
+            std::printf("HELLO_XR_INTERRUPTED tracking_disconnected=1; no final-drain claim\n");
+            std::fflush(stdout);
+            CHECK_XRCMD(xrRequestExitSession(session));
+        }
+        return;
+    }
+    if(!rendered) return;
     meteor_hello_touch_log(session);
     static unsigned submitted=0;
     PFN_xrConvertTimeToTimespecTimeKHR convert=nullptr;

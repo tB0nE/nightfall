@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <chrono>
 #include <thread>
+#include <poll.h>
+#include <unistd.h>
 // Synthetic publisher for exercising the exact endpoint on Linux or Android.
 // A real headset uses xrLocateSpace instead; this fixture is not tracking proof.
 int main(int argc, char **argv) {
@@ -13,7 +15,15 @@ int main(int argc, char **argv) {
     if (!endpoint.start(uint16_t(port))) return 1;
     auto deadline=MeteorTrackingEndpoint::now_ns()+45000000000ULL;
     bool ready=false;
+    bool interrupted=false;
     while (!endpoint.idle() && MeteorTrackingEndpoint::now_ns()<deadline) {
+        if(argc==3 && !std::strcmp(argv[2],"disconnect")) {
+            pollfd input{STDIN_FILENO,POLLIN,0};
+            if(poll(&input,1,0)>0 && (input.revents&POLLIN)) {
+                char command=0;
+                if(read(STDIN_FILENO,&command,1)==1 && command=='q') { interrupted=true; break; }
+            }
+        }
         MeteorTrackingSample s; s.epoch=42; s.client_ns=MeteorTrackingEndpoint::now_ns();
         s.pose[0]=.25f;
         s.optics.epoch=s.epoch;
@@ -40,6 +50,6 @@ int main(int argc, char **argv) {
         if (!ready && endpoint.listening()) { std::puts("READY synthetic tracking publisher"); std::fflush(stdout); ready=true; }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    bool passed=ready && endpoint.idle() && !endpoint.failed();
+    bool passed=ready && (interrupted || (endpoint.idle() && !endpoint.failed()));
     endpoint.request_stop(); return passed ? 0 : 1;
 }

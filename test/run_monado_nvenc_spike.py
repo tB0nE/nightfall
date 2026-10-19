@@ -14,6 +14,7 @@ import statistics
 from check_nvenc_stereo import validate
 from xr_transport_probe import LiveTransport
 from xr_frame_accounting import match_submitted_frames
+from xr_application_lifecycle import run_application
 
 
 def run(root: Path, out: Path):
@@ -38,6 +39,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     headset_optics = os.environ.get("NIGHTFALL_XR_HEADSET_OPTICS") == "1"
     raster_scene = os.environ.get("NIGHTFALL_XR_RASTER_SCENE") == "1"
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
+    expect_tracking_loss=os.environ.get("NIGHTFALL_XR_EXPECT_TRACKING_LOSS")=="1"
+    if expect_tracking_loss and not (hello_xr and tracked_scene):
+        raise ValueError("Tracking-loss regression requires tracked hello_xr")
     controllers=os.environ.get("NIGHTFALL_XR_CONTROLLERS")=="1"
     controller_profile=os.environ.get("NIGHTFALL_XR_CONTROLLER_PROFILE","wmr")
     touch_inputs=os.environ.get("NIGHTFALL_XR_TOUCH_INPUTS")=="1"
@@ -155,6 +159,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         env["METEOR_TRACKING_PORT"] = tracking_port
         env["METEOR_TRACKING_BRIDGE"] = str(out / "libmeteor-tracking-probe.so")
     device_port = os.environ.get("NIGHTFALL_XR_DEVICE_PORT")
+    interrupted = forced_stop = False
+    (out / "lifecycle-outcome.json").unlink(missing_ok=True)
+    (out / "client-disconnected").unlink(missing_ok=True)
     if device_port:
         if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
             raise ValueError("Device port must be a valid ADB-forwarded port, with no local receiver configured")
@@ -186,7 +193,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
             else:
                 try:
-                    result = subprocess.run(command, env=env, timeout=40+input_seconds, capture_output=True, text=True)
+                    result, interrupted, forced_stop = run_application(command, env=env,
+                        timeout=40+input_seconds, service_log=out / "service.log",
+                        stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and hello_xr))
                 except subprocess.TimeoutExpired as failure:
                     def output_text(value):
                         return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
@@ -194,7 +203,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     raise
             (out / "probe.log").write_text(result.stdout + result.stderr)
             application_elapsed = time.monotonic()-application_start
-            if not abort_test:
+            if not abort_test and not interrupted:
                 result.check_returncode()
             if child.poll() is not None:
                 raise RuntimeError("Service exited unexpectedly")
@@ -207,6 +216,20 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     child.kill()
                     child.wait()
     text = (out / "service.log").read_text()
+    if expect_tracking_loss and not interrupted:
+        raise RuntimeError("Expected tracking interruption was not observed")
+    if interrupted:
+        records_path=out / "monado-stereo.jsonl"
+        count=len(records_path.read_text().splitlines()) if records_path.exists() else 0
+        if not count or "METEOR_TRACKING_READY" not in text:
+            raise RuntimeError("Tracking disconnected before a live XR stream was established")
+        outcome={"outcome":"interrupted", "reason":"tracking_transport_or_protocol_disconnected",
+                 "encoded_frames":count,"app_exit_code":result.returncode,
+                 "forced_app_termination":forced_stop,"final_drain_verified":False}
+        (out / "lifecycle-outcome.json").write_text(json.dumps(outcome,indent=2)+"\n")
+        print("INTERRUPTED: headset tracking connection ended; host sample stopped; not a completed stream/drain PASS",flush=True)
+        if forced_stop: print("WARNING: graceful sample exit timed out; exact child was terminated",flush=True)
+        return
     if tracking_port and ("METEOR_TRACKING_READY" not in text or
                           "METEOR_TRACKING_APPLIED" not in text or
                           "METEOR_TRACKING_FAILED" in text):

@@ -7,6 +7,8 @@ import subprocess
 import sys
 import json
 import math
+import threading
+import time
 
 
 def run(root):
@@ -24,7 +26,11 @@ def run(root):
     with socket.socket() as reserve:
         reserve.bind(("127.0.0.1", 0))
         port = reserve.getsockname()[1]
-    publisher = subprocess.Popen([str(endpoint), str(port), "moving"], stdout=subprocess.PIPE, text=True)
+    expect_loss=os.environ.get("NIGHTFALL_XR_EXPECT_TRACKING_LOSS")=="1"
+    publisher = subprocess.Popen([str(endpoint), str(port), "disconnect" if expect_loss else "moving"],
+        stdin=subprocess.PIPE if expect_loss else None,stdout=subprocess.PIPE,text=True)
+    loss_thread=None
+    loss_errors=[]
     try:
         if publisher.stdout.readline().strip() != "READY synthetic tracking publisher":
             raise RuntimeError("Tracking publisher not ready")
@@ -37,10 +43,37 @@ def run(root):
             subprocess.run(["rustc", "--edition=2024", "-O",
                             str(root / "meteor/tools/xr_transport_receiver.rs"), "-o", str(receiver)], check=True)
             env["NIGHTFALL_XR_TRANSPORT_RECEIVER"] = str(receiver)
+        if expect_loss:
+            def interrupt_after_frames():
+                try:
+                    ledger=root / ".build-cache/meteor-xr/monado-nvenc-spike/monado-stereo.jsonl"
+                    # The probe removes old artifacts before its service starts.
+                    started=time.time()
+                    deadline=time.monotonic()+25
+                    while time.monotonic()<deadline:
+                        if ledger.exists() and ledger.stat().st_mtime>=started and len(ledger.read_text().splitlines())>=5:
+                            publisher.stdin.write("q"); publisher.stdin.flush(); return
+                        time.sleep(.02)
+                    raise RuntimeError("No live encoded frames before tracking-loss injection")
+                except Exception as error:
+                    loss_errors.append(error)
+            loss_thread=threading.Thread(target=interrupt_after_frames,daemon=True)
+            loss_thread.start()
         result = subprocess.run(["bash", str(root / "tools/build_support/probe_monado_nvenc.sh")],
                                 env=env, timeout=60, capture_output=True, text=True)
         (out / "probe.log").write_text(result.stdout + result.stderr)
         result.check_returncode()
+        if expect_loss:
+            loss_thread.join(timeout=1)
+            if loss_thread.is_alive() or loss_errors:
+                raise RuntimeError(f"Tracking-loss injection failed: {loss_errors}")
+            outcome=json.loads((root / ".build-cache/meteor-xr/monado-nvenc-spike/lifecycle-outcome.json").read_text())
+            if outcome["outcome"]!="interrupted" or outcome["app_exit_code"]!=0 or outcome["forced_app_termination"] or outcome["final_drain_verified"]:
+                raise RuntimeError("Tracking loss was not handled as a graceful interrupted application exit")
+            if publisher.wait(timeout=3): raise RuntimeError("Synthetic publisher did not stop")
+            print(result.stdout)
+            print("PASS: tracking loss after live frames stopped sample without timeout/forced termination; NOT a full stream/drain pass")
+            return
         app_log = (root / ".build-cache/meteor-xr/monado-nvenc-spike/probe.log").read_text()
         positions = [float(x) for x in re.findall(r"Tracked view frame=\d+ left_position=([-0-9.]+),", app_log)]
         independent=env.get("NIGHTFALL_XR_HELLO_XR")=="1"
@@ -110,6 +143,7 @@ def run(root):
             publisher.terminate()
             publisher.wait(timeout=5)
         publisher.stdout.close()
+        if publisher.stdin: publisher.stdin.close()
 
 
 if __name__ == "__main__":

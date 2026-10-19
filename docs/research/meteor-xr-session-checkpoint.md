@@ -388,3 +388,35 @@ same Godot session (0x1a). No application restart was required. This was another
 early local exit, not a completed 240-frame drain. The host fixture still waits
 for its app timeout after the headset exits; fixing that coordination is the
 next task before treating interrupted runs as clean host lifecycle results.
+
+## Host early-disconnect coordination
+
+The diagnostic tracking bridge now emits a structured disconnect event after
+an established connection fails. The host harness watches that event only for
+USB headset runs (or the explicit tracking-loss regression), writes a run-local
+sample exit request, and allows three seconds for graceful exit before targeting
+only its own sample child for termination. No global runtime/process changes.
+The sample checks requests even when tracking loss prevents visible rendering;
+the first integration attempt exposed that necessary no-layer handling.
+
+Interrupted outcomes write `lifecycle-outcome.json` with reason, encoded-frame
+count, app exit code, forced-termination flag and `final_drain_verified: false`.
+Startup failure before live encoded frames remains an error; normal host runs
+still enforce their full strict frame/drain checks. No clean user-exit claim can
+be inferred from a tracking disconnect alone (transport/protocol faults share
+the event). Raw logs remain available. No new headset APK required.
+
+Six lifecycle-helper tests and thirteen endpoint regressions passed. A real
+OpenXR/NVENC test deliberately closed synthetic tracking after at least five
+encoded frames: sample exited without timeout/forced termination and the run
+was reported as interrupted, not full stream success. Hardware early-exit
+recheck remains pending. Normal-stream regression passed separately: 120 app
+submissions, 118 delivered frames, balanced bounded-worker accounting and clean
+final drain; Touch inputs and haptic assertions also passed.
+
+Hardware prompt-exit recheck succeeded: after user B/Y exit, tracking disconnect
+was detected, hello_xr logged HELLO_XR_INTERRUPTED, returned code 0 without forced
+termination, and the encoder was released. Outcome records 19 encoded frames,
+`forced_app_termination: false`, `final_drain_verified: false`. Device retired
+projection resources and stopped decoder/receiver on the unchanged session.
+This confirms coordinated early exit, not completion of the full frame fixture.

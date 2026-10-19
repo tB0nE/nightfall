@@ -513,6 +513,20 @@ Monado runtime to forward bounded vibration. Fully squeeze each grip separately:
 the sample requests a short pulse on the corresponding controller. Pulses are
 capped at 50% strength and 150 ms; frequency is currently unspecified.
 
+Host disconnect coordination can be regression-tested without a headset:
+
+```bash
+python3 test/test_xr_application_lifecycle.py
+NIGHTFALL_XR_EXPECT_TRACKING_LOSS=1 NIGHTFALL_XR_HELLO_XR=1 \
+  NIGHTFALL_XR_PROBE_FRAMES=120 NIGHTFALL_XR_FREE_RUNNING=1 \
+  python3 test/run_monado_tracking_spike.py "$PWD"
+```
+
+The second test closes synthetic tracking after live encoded frames and requires
+graceful sample exit. USB disconnects produce an explicit interrupted outcome in
+`lifecycle-outcome.json`, not a completed-stream/drain PASS. The harness asks the
+sample to exit and uses a bounded child-only termination fallback if necessary.
+
 ### Retired ALVR research probe
 
 The exclusive Meteor XR spike is separate from normal APK builds. To check
