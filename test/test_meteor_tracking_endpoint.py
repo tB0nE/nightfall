@@ -20,6 +20,7 @@ class TrackingEndpointTests(unittest.TestCase):
         cls.endpoint = str(pathlib.Path(cls.temp.name) / "endpoint")
         cls.host = str(pathlib.Path(cls.temp.name) / "host")
         cls.bridge = str(pathlib.Path(cls.temp.name) / "bridge.so")
+        cls.lifecycle = str(pathlib.Path(cls.temp.name) / "lifecycle")
         common = ["c++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
                   "-I" + str(ROOT / "extensions/nightfall-xr/include")]
         subprocess.run(common + [str(ROOT / "test/pcvr_meteor_tracking_endpoint_test.cpp"),
@@ -27,6 +28,9 @@ class TrackingEndpointTests(unittest.TestCase):
                                  "-pthread", "-o", cls.endpoint], check=True)
         subprocess.run(common + [str(ROOT / "test/meteor_tracking_host_probe.cpp"),
                                  "-o", cls.host], check=True)
+        subprocess.run(common + [str(ROOT / "test/pcvr_meteor_endpoint_lifecycle_test.cpp"),
+                                 str(ROOT / "extensions/nightfall-xr/src/pcvr_meteor_tracking_endpoint.cpp"),
+                                 "-pthread", "-o", cls.lifecycle], check=True)
         subprocess.run(common + [str(ROOT / "test/meteor_tracking_client_bridge.cpp"),
                                  "-pthread", "-shared", "-fPIC", "-o", cls.bridge], check=True)
         cls.library = ctypes.CDLL(cls.bridge)
@@ -69,6 +73,9 @@ class TrackingEndpointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(result.stdout.splitlines()), 120)
         self.assertEqual(self.child.wait(timeout=3), 0)
+
+    def test_same_endpoint_restarts_after_cancel_disconnect_and_stall(self):
+        subprocess.run([self.lifecycle],check=True,timeout=12)
 
     def test_reserved_bytes_rejected(self):
         request = bytearray(struct.pack("<4sHHQQQ", b"NFXC", 1, 32, 1, 0, 0))

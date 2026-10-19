@@ -2855,14 +2855,13 @@ func _notification(what):
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
-		pcvr_test.application_paused = true
-		pcvr_test.request_stop()
+		pcvr_test.set_application_paused(true)
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application paused")
 		if meteor_microphone:
 			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
-		pcvr_test.application_paused = false
+		pcvr_test.set_application_paused(false)
 		if meteor_microphone:
 			meteor_microphone.set_paused(false)
 		if xr_interaction:

@@ -356,3 +356,35 @@ limit, so this confirms physical feedback/local exit, not a completed host
 final-drain sequence. Next checkpoint should preserve the controller/input work,
 then test repeat entry/exit, interrupted transport and standby recovery before
 expanding beyond the isolated sample into real applications/managed service UX.
+
+## Recovery increment after efba816
+
+Committed controller/input/haptic milestone as `efba816`. Standby now goes
+through `PCVRTestController.set_application_paused`: clears the local hold timer,
+requests idempotent teardown, blocks new XR entry while paused, and never starts
+XR automatically on resume. Resume still waits for native idle before restoring
+welcome. Regression tests cover pause in preparation/connection/running, stale
+callbacks, repeated pause, resume before teardown, and explicit fresh re-entry.
+
+Added a real-socket native test reusing the SAME tracking endpoint and port over
+six sessions: stop before connection, clean close, truncated disconnect, silent
+peer timeout, stop during a partial read, and stale epoch rejection. Confirms
+bounded exit, pending haptic stops, clearing pending commands on restart, and
+reset sequence/epoch handling. All thirteen socket/bridge tests and the complete
+GDScript suite passed (desktop logs retain the expected Android-only extension
+warning). Optimized release-signed DEV APK built and installed successfully.
+
+Hardware recovery remains unvalidated: run, hold B/Y to exit, re-enter; then
+remove headset while running, replace it and confirm welcome/no stuck vibration,
+followed by explicit re-entry. A headset-local early exit still interrupts the
+host fixture rather than proving a normal 240-frame drain; graceful host-side
+early-disconnect accounting remains outstanding. Do not label it a drain pass.
+
+Hardware follow-up: user completed local exit, confirmed standby/re-wear behaved
+as expected, then completed explicit post-standby re-entry. Re-entry device logs
+show first-frame tracked projection, decoded video through sequence 85, haptic
+apply/stop XR_SUCCESS for both hands, then resource/decoder retirement on the
+same Godot session (0x1a). No application restart was required. This was another
+early local exit, not a completed 240-frame drain. The host fixture still waits
+for its app timeout after the headset exits; fixing that coordination is the
+next task before treating interrupted runs as clean host lifecycle results.

@@ -75,6 +75,7 @@ func _run() -> void:
 	_test_preparation_drain(owner)
 	_test_remote_timeout(owner)
 	_test_meteor_timeout(owner)
+	_test_pause_recovery(owner)
 	controller.session.enter()
 	controller.session.preparation_finished(controller.session.generation, true)
 	controller.backend.state = "running"
@@ -196,6 +197,39 @@ func _test_remote_timeout(owner: Owner) -> void:
 	controller.backend.state = "idle"
 	controller.process(0.01)
 	assert(controller.restores == 1)
+
+func _test_pause_recovery(owner: Owner) -> void:
+	for phase in [Session.State.PREPARING, Session.State.CONNECTING, Session.State.RUNNING]:
+		var controller := Harness.new(owner)
+		controller.backend = Backend.new()
+		controller._execute(controller.session.enter())
+		var token: int = controller.session.generation
+		if phase != Session.State.PREPARING:
+			assert(controller._preparation_frame(token))
+			controller._preparation_drawn(token)
+		if phase == Session.State.RUNNING:
+			controller.session.connected(token)
+		controller.hold_seconds = 0.8
+		controller.set_application_paused(true)
+		controller.set_application_paused(true)
+		assert(controller.hold_seconds == 0.0)
+		assert(controller.backend.stops == 1 and controller.is_exclusive())
+		assert(controller.busy_reason().contains("Resume"))
+		controller._preparation_drawn(token)
+		assert(controller.session.connected(token).is_empty())
+		controller.set_application_paused(false)
+		assert(controller.is_exclusive() and controller.restores == 0)
+		controller.backend.state = "idle"
+		controller.process(0.01)
+		assert(not controller.is_exclusive() and controller.restores == 1)
+		var starts: int = controller.backend.starts
+		controller.process(0.01)
+		assert(controller.backend.starts == starts) # Resume is never an implicit restart.
+		controller._execute(controller.session.enter())
+		var retry: int = controller.session.generation
+		assert(retry != token and controller._preparation_frame(retry))
+		controller._preparation_drawn(retry)
+		assert(controller.backend.starts == starts + 1)
 
 func _test_meteor_timeout(owner: Owner) -> void:
 	var controller := Harness.new(owner)

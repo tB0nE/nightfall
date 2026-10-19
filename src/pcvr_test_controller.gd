@@ -43,6 +43,8 @@ func is_exclusive() -> bool:
 	return session.is_exclusive()
 
 func busy_reason() -> String:
+	if application_paused:
+		return "Resume the application before starting XR"
 	if not main._startup_ready or main._startup_cover != null or auto_connect_pending:
 		return "Wait for welcome startup to finish"
 	if main._welcome_screen not in ["welcome", "server"]:
@@ -90,6 +92,13 @@ func _report_status(message: String) -> void:
 
 func request_stop() -> void:
 	_execute(session.exit())
+
+func set_application_paused(paused: bool) -> void:
+	application_paused = paused
+	if paused:
+		hold_seconds = 0.0
+		request_stop()
+	# Resume never restarts XR automatically; teardown must acknowledge idle first.
 
 func _execute(commands: Array[Dictionary]) -> void:
 	# Iterative command queue: no recursive coroutine or deferred await races.
