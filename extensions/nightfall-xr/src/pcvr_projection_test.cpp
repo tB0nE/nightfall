@@ -57,6 +57,7 @@ bool NightfallXrProjectionTest::start_test() {
 		error.clear();
 	}
 	frames.store(0);
+	meteor_copy_waits=0; meteor_swapchain_waits=0; meteor_reuses=0;
 	return true;
 #else
 	fail("Synthetic PCVR projection is Android/GLES only");
@@ -95,6 +96,20 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 #ifdef __ANDROID__
 	if (meteor) result["meteor_status"] = String(meteor->message().c_str());
 	result["meteor_endpoints_ready"] = meteor && meteor->listening() && tracking && tracking->listening();
+	if (meteor) {
+		const auto &s=meteor->stats;
+		Dictionary counts;
+		counts["received"]=int64_t(s.received.load()); counts["queued"]=int64_t(s.queued.load());
+		counts["codec_outputs"]=int64_t(s.output.load()); counts["selected"]=int64_t(s.selected.load());
+		counts["superseded_before_selection"]=int64_t(s.superseded.load());
+		counts["metadata_lock_busy_polls"]=int64_t(s.lock_busy.load());
+		counts["no_image_polls"]=int64_t(s.no_image.load()); counts["acquire_fence_wait_polls"]=int64_t(s.acquire_wait.load());
+		counts["copy_fence_wait_polls"]=int64_t(meteor_copy_waits.load());
+		counts["swapchain_wait_polls"]=int64_t(meteor_swapchain_waits.load());
+		counts["reuse_previous_projection_polls"]=int64_t(meteor_reuses.load());
+		counts["projection_copies"]=int64_t(frames.load());
+		result["meteor_device_counts"]=counts;
+	}
 #endif
 #if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
 	if (remote) result["remote_status"] = String(remote->message().c_str());
@@ -322,7 +337,10 @@ bool NightfallXrProjectionTest::render_scene() {
 	uint32_t count = 0;
 	if (XR_FAILED(locate_views(session, &locate, &view_state, 2, &count, views))) { fail("xrLocateViews failed"); return false; }
 	if (count != 2 || !(view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) || !(view_state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) return false;
-	if (meteor_mode && !prepare_meteor_image()) return rendered && state.load() == RUNNING;
+	if (meteor_mode && !prepare_meteor_image()) {
+		if (rendered && state.load() == RUNNING) ++meteor_reuses;
+		return rendered && state.load() == RUNNING;
+	}
 	if (!acquired) {
 		XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
 		if (XR_FAILED(acquire_image(swapchain, &acquire, &acquired_index))) { fail("Cannot acquire synthetic image"); return false; }
@@ -330,7 +348,7 @@ bool NightfallXrProjectionTest::render_scene() {
 	}
 	XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; wait.timeout = 1000000; // 1ms, never an unbounded render-thread wait.
 	XrResult result = wait_image(swapchain, &wait);
-	if (result == XR_TIMEOUT_EXPIRED) return false; // Keep the acquired image and retry next frame.
+	if (result == XR_TIMEOUT_EXPIRED) { if (meteor_mode) ++meteor_swapchain_waits; return false; } // Keep acquired image and retry next frame.
 	if (result != XR_SUCCESS) {
 		// A timed-out acquired image cannot be released before a successful wait.
 		fail("Synthetic swapchain wait timed out/failed"); return false;
@@ -501,7 +519,7 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 bool NightfallXrProjectionTest::retire_meteor_image() {
 	if (meteor_fence) {
 		GLenum result = glClientWaitSync(meteor_fence, 0, 0);
-		if (result == GL_TIMEOUT_EXPIRED) return false;
+		if (result == GL_TIMEOUT_EXPIRED) { ++meteor_copy_waits; return false; }
 		if (result == GL_WAIT_FAILED) { glFinish(); fail("Meteor image sampling fence failed"); }
 		glDeleteSync(meteor_fence); meteor_fence = nullptr;
 	}

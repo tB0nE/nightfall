@@ -167,6 +167,8 @@ func _preparation_drawn(token: int) -> void:
 
 func _log_transition(event: String) -> void:
 	var snapshot: Dictionary = backend.get_test_status() if backend else {}
+	if event in ["stopping", "idle"] and snapshot.has("meteor_device_counts"):
+		main._log("[XR-DEVICE] %s %s" % [event, JSON.stringify(snapshot.meteor_device_counts)])
 	main._log("[PCVR-TEST] %s generation=%d session=%d frames=%d state=%s error=%s" % [
 		event, session.generation, int(snapshot.get("session", 0)),
 		int(snapshot.get("frames", 0)), str(snapshot.get("state", "unavailable")),

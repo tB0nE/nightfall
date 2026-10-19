@@ -8,6 +8,7 @@
 // for a slot; synchronous compositor callers retain fail-fast saturation.
 // No GPU handles are used by the delivery worker.
 struct meteor_delivery {
+    uint64_t queued_us;
     struct meteor_stereo_encode_v1 metadata;
     struct meteor_owned_packet packet;
 };
@@ -37,7 +38,11 @@ static void *meteor_delivery_worker(void *unused)
         meteor_async.head=(meteor_async.head+1)%2; --meteor_async.count;
         pthread_cond_broadcast(&meteor_async.wake);
         pthread_mutex_unlock(&meteor_async.mutex);
+        uint64_t start=meteor_direct_now_us();
         bool ok=meteor_direct_send(&item.metadata,&item.packet,meteor_async.port);
+        fprintf(stderr,"METEOR_DELIVERY_TIMING frame=%llu queue_us=%llu service_us=%llu ok=%d\n",
+            (unsigned long long)item.metadata.frame_id,(unsigned long long)(start-item.queued_us),
+            (unsigned long long)(meteor_direct_now_us()-start),ok);
         if (ok) fprintf(stderr,"METEOR_DIRECT_OK frame=%llu bytes=%u async=1\n",
             (unsigned long long)item.metadata.frame_id,item.packet.length);
         free(item.packet.bytes);
@@ -92,6 +97,7 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
         meteor_async.started=true;
     }
     unsigned index=(meteor_async.head+meteor_async.count)%2;
+    meteor_async.pending[index].queued_us=meteor_direct_now_us();
     // Only wire metadata is retained. Explicitly erase borrowed GPU pointers and
     // callback/path addresses so worker ownership cannot accidentally grow later.
     struct meteor_stereo_encode_v1 *m=&meteor_async.pending[index].metadata;

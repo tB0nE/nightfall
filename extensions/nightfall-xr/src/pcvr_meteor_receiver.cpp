@@ -22,6 +22,7 @@ bool PCVRMeteorReceiver::start() {
     if (!done.load()) return false;
     if (worker.joinable()) worker.join();
     failure.store(false); stop.store(false); done.store(false); ready.store(false); eos = false;
+    stats.reset();
     worker = std::thread(&PCVRMeteorReceiver::run, this); return true;
 }
 void PCVRMeteorReceiver::stop_after_gpu_drain() {
@@ -31,11 +32,12 @@ void PCVRMeteorReceiver::stop_after_gpu_drain() {
 }
 bool PCVRMeteorReceiver::frame(AHardwareBuffer *&buffer, MeteorXrFrame &value) {
     std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
-    if (!lock.owns_lock() || !reader || borrowed) return false;
-    if (!held && AImageReader_acquireLatestImageAsync(reader, &held, &acquire_fence) != AMEDIA_OK) return false;
+    if (!lock.owns_lock()) { ++stats.lock_busy; return false; }
+    if (!reader || borrowed) return false;
+    if (!held && AImageReader_acquireLatestImageAsync(reader, &held, &acquire_fence) != AMEDIA_OK) { ++stats.no_image; return false; }
     if (acquire_fence >= 0) {
         pollfd fd{acquire_fence, POLLIN, 0};
-        if (poll(&fd, 1, 0) <= 0) return false;
+        if (poll(&fd, 1, 0) <= 0) { ++stats.acquire_wait; return false; }
         if (!(fd.revents & POLLIN)) { lock.unlock(); status("Decoder acquire fence failed", true); return false; }
         close(acquire_fence); acquire_fence = -1;
     }
@@ -46,6 +48,7 @@ bool PCVRMeteorReceiver::frame(AHardwareBuffer *&buffer, MeteorXrFrame &value) {
         lock.unlock(); status("Decoded buffer timestamp has no matching frame metadata", true); return false;
     }
     value = metadata.at(timestamp); metadata.erase(metadata.begin(), metadata.upper_bound(timestamp));
+    stats.select(value.sequence);
     borrowed = true;
     __android_log_print(ANDROID_LOG_INFO, "NightfallPCVR", "Meteor decoded frame=%llu sequence=%llu host_ns=%llu image_ns=%lld",
         (unsigned long long)value.id, (unsigned long long)value.sequence, (unsigned long long)value.display_ns, (long long)timestamp);
@@ -75,6 +78,7 @@ bool PCVRMeteorReceiver::drain() {
         bool render;
         { std::lock_guard<std::mutex> lock(mutex); render = metadata.count(info.presentationTimeUs * 1000) != 0; }
         if (AMediaCodec_releaseOutputBuffer(codec, size_t(index), render) != AMEDIA_OK) return false;
+        if (render) ++stats.output;
         if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) eos = true;
     }
     return true;
@@ -174,6 +178,7 @@ void PCVRMeteorReceiver::run() {
                 status("Decoded test stream ended; holding final picture until local exit"); success = true; break;
             }
             if (!codec_started && !decoder(frame.width,frame.height)) break;
+            ++stats.received;
             int64_t pts_us = int64_t(frame.sequence+1)*1000;
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -181,6 +186,7 @@ void PCVRMeteorReceiver::run() {
                 metadata[pts_us * 1000] = frame;
             }
             if (!input(payload, pts_us, false)) break;
+            ++stats.queued;
             uint8_t ack[20]{}; std::memcpy(ack,"NFXA",4); meteor_xr_put(ack+4,frame.sequence,8); meteor_xr_put(ack+12,frame.id,8);
             if (!io(connected,ack,sizeof(ack),true,deadline)) break;
         }

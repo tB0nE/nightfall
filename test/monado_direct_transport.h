@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/socket.h>
@@ -38,6 +39,12 @@ static uint64_t meteor_direct_now_ms(void)
 {
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static uint64_t meteor_direct_now_us(void)
+{
+    struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000 + (uint64_t)now.tv_nsec / 1000;
 }
 
 static bool meteor_direct_wait(short events, uint64_t deadline)
@@ -125,11 +132,18 @@ static bool meteor_direct_send(const struct meteor_stereo_encode_v1 *input, cons
     uint8_t header[152], ack[20], expected[20];
     meteor_direct_header(header, input, packet->length, idr);
     memcpy(expected, "NFXA", 4); meteor_direct_u64(expected + 4, meteor_direct_sequence, 8); meteor_direct_u64(expected + 12, input->frame_id, 8);
+    uint64_t send_start = meteor_direct_now_us();
     if (!meteor_direct_io(header, sizeof(header), true, deadline) ||
-        !meteor_direct_io(packet->bytes, packet->length, true, deadline) ||
-        !meteor_direct_io(ack, sizeof(ack), false, deadline) || memcmp(ack, expected, sizeof(ack))) {
+        !meteor_direct_io(packet->bytes, packet->length, true, deadline)) {
         meteor_direct_close(); return false;
     }
+    uint64_t sent = meteor_direct_now_us();
+    if (!meteor_direct_io(ack, sizeof(ack), false, deadline) || memcmp(ack, expected, sizeof(ack))) {
+        meteor_direct_close(); return false;
+    }
+    fprintf(stderr,"METEOR_DIRECT_TIMING frame=%llu send_us=%llu ack_us=%llu\n",
+        (unsigned long long)input->frame_id, (unsigned long long)(sent-send_start),
+        (unsigned long long)(meteor_direct_now_us()-sent));
     ++meteor_direct_sequence;
     return true;
 }

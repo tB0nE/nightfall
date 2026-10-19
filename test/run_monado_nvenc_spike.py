@@ -134,6 +134,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
     env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
     env.pop("METEOR_XR_ENGINE_FIXTURE",None)
+    env.pop("METEOR_XR_MONITOR_LEGACY",None)
+    if os.environ.get("NIGHTFALL_XR_MONITOR_LEGACY") == "1": env["METEOR_XR_MONITOR_LEGACY"]="1"
     engine_token=secrets.token_hex(16) if godot_engine else None
     env.pop("METEOR_ENGINE_RUN_ID",None)
     if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token

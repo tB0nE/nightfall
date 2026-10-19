@@ -90,5 +90,9 @@ def validate_engine(out, application_log, minimum, eye_size, service_log):
         "encoder_drain_verified":True,"image_leases_balanced":True,
         "shutdown_diagnostics":warnings,"engine_shutdown_clean":not warnings}
     (out / "engine-outcome.json").write_text(json.dumps(report,indent=2)+"\n")
+    from report_xr_pipeline import report as pipeline_report
+    import os
+    (out / "pipeline-timing.json").write_text(json.dumps(
+        pipeline_report(out,int(os.environ.get("NIGHTFALL_XR_TARGET_HZ","20")),service_log),indent=2)+"\n")
     print(f"PASS: Godot OpenXR engine rendered {len(records)} decoded stereo frames; ordered metadata, balanced leases and encoder drain; smoke test, not pixel oracle")
     if warnings: print(f"WARNING: {len(warnings)} Godot shutdown diagnostics remain; not a clean engine-lifecycle pass")

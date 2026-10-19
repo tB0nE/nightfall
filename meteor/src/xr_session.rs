@@ -117,6 +117,7 @@ pub(crate) async fn runtime_adapter(
         command.env(key, value);
     }
     command
+        .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })
         .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
         .env("NIGHTFALL_XR_PROBE_FRAMES", if hz == 60 { "1200" } else { "200" })
         .env("NIGHTFALL_XR_PROBE_OUTPUT", &output)

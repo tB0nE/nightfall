@@ -478,6 +478,9 @@ mod tests {
                         .ok()
                         .and_then(|m| m.modified().ok())
                         .is_some_and(|time| time >= started)
+                        && path.parent().unwrap().join("pipeline-timing.json").exists()
+                        && std::fs::read_to_string(path.parent().unwrap().join("runtime.log"))
+                            .is_ok_and(|log| log.contains("PASS: Godot OpenXR engine rendered"))
                 });
             if let Some(proof) = proof {
                 let report: serde_json::Value =

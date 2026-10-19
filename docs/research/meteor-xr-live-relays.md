@@ -197,3 +197,139 @@ both controllers were not simultaneously active in the sampled input evidence.
 Session artifacts: `lan-sessions/1792445316628755536-2886807/`.
 The user reported completion, not a detailed visual-quality rating. Next useful
 work is cadence/latency instrumentation and profiling before raising resolution.
+
+## Host pipeline timing
+
+Every completed engine validation now also writes `pipeline-timing.json`.
+For an existing session, regenerate/read the report with:
+
+```bash
+.build-cache/model-tester-venv/bin/python test/report_xr_pipeline.py \
+  .build-cache/meteor-xr/lan-sessions/<attempt> --target-hz 60
+```
+
+The report separates raw-job queue wait, encode-worker wall time, GPU-pack wall
+time, NVENC submit-to-lock, delivery queue/service, local socket send and ACK
+roundtrip. All durations use the host monotonic clock; no cross-machine clock
+subtraction is used. ACK means codec input admission on Quest, **not** completed
+decode/presentation (the local native fixture merely acknowledges wire consumption).
+Stages overlap/nest, so adding their percentiles does not produce end-to-end
+latency. Missing instrumentation in older sessions is null, never a zero-time stage.
+
+The completed physical session's existing data shows median pack 242 us and
+NVENC submit-to-lock 951 us, no recorded delivery backpressure, and 145 encoded
+display intervals longer than 1.5 target periods. This alone does not identify
+whether those gaps originated in app rendering, pacing or host scheduling.
+
+Instrumented synthetic/native-worker run: 1,201 frames, clean shutdown/drains,
+59.23-Hz encoded cadence, five intervals longer than 1.5 target periods; median
+raw wait 6 us, encode-worker wall 1,159 us, delivery wait 7 us, delivery service
+429 us, pack 179 us and NVENC submit-to-lock 842 us. These are **not** physical
+Quest/LAN latency numbers or proof of an optimization: only timing instrumentation
+changed. The variation from the prior run requires matched device evidence before
+changing queue, pacing or resolution policy. Artifacts:
+`lan-sessions/1792445543709424848-2904895/pipeline-timing.json`.
+Host instrumentation is rebuilt and ready; the installed APK is unchanged.
+
+Physical instrumented run (`lan-sessions/1792445631473380157-2886807/`): 1,200
+host frames validated, clean host shutdown/drains and Quest return to idle;
+encoded cadence 56.69 Hz. Median encode-worker wall was 1,686 us (p95 2,165),
+raw wait 18 us (p95 30), delivery wait 21 us (p95 34), delivery service 4,607 us
+(p95 6,904), ACK roundtrip 4,408.5 us (p95 6,590), and no delivery backpressure.
+There were 64 encoded timestamp gaps over 1.5 target periods. Neither stage
+medians nor these queues demonstrate a sustained encode/network bottleneck.
+Quest's projection counter was 1,108, below host encoded count. The receiver uses
+`AImageReader_acquireLatestImageAsync`, so superseded images can intentionally be
+skipped; this run does not quantify how much of the difference is latest-image
+replacement, fence/swapchain waits or final teardown. Add device-side stage/skip
+counters before treating all encoded frames as displayed or changing buffering.
+
+### Device counters (next physical run)
+
+The optimized DEV APK now exposes `meteor_device_counts` in native test status.
+The controller logs a JSON `[XR-DEVICE]` snapshot at stopping and again at idle,
+so normal app diagnostics retain it without per-frame log scraping. Use the
+idle snapshot after the decoder and render resources drain for final accounting.
+
+- `received` / `queued`: valid packets reaching codec setup / successful codec
+  input submissions; neither implies decode or presentation.
+- `codec_outputs`: matching decoder outputs released to the image reader.
+- `selected`: image-reader images borrowed for copying to the projection.
+- `superseded_before_selection`: wire sequence numbers skipped before a later
+  image is selected, including initial skips. This is not proof that the reader
+  alone caused the skip, and does not include an unselected tail at shutdown.
+- `projection_copies`: successful projection copies, not compositor display ACKs.
+- Metadata-lock, no-image, acquire-fence, copy-fence and swapchain wait counters
+  count polls, **not unique dropped frames**. Reuse counts report callbacks that
+  keep the preceding projection when a new decoded image cannot yet be used.
+
+For a completed, ordered session, `queued - selected - superseded` describes the
+unselected tail; `selected - projection_copies` can expose a selected but never
+copied image. Compare counts only after idle, not across concurrent live reads.
+No queue policy, image ownership, GPU wait deadline or frame selection changed.
+Portable accounting tests cover initial/interior skips, tail and session reset;
+the native unit runner includes them.
+
+Physical counter run (`lan-sessions/1792445899428588576-2886807/`, 23:38):
+host encoded/validated 1,201 frames at 56.25-Hz encoded timestamp cadence; Quest
+received and queued 1,201, released 1,201 codec outputs, selected/copied 1,199,
+and accounted for exactly two sequence supersessions. Final unselected tail and
+selected-but-not-copied counts were zero. Idle matched stopping counters; clean
+native/host shutdown and balanced leases/drain. This run's entire count difference
+is accounted for, but does not retroactively explain the previous 92-frame gap.
+There were zero metadata-lock, acquire-fence or swapchain wait polls, 1,156
+nonblocking copy-fence wait polls, and 1,373 preceding-projection reuse polls.
+Wait/reuse polls overlap and are not dropped-frame counts; do not remove fences
+or infer a GPU bottleneck from their magnitude. Host medians: encode-worker
+1,705 us, ACK 4,290 us, raw/delivery waits 19/21 us, one delivery backpressure
+event. Remaining cadence loss is already present in host encoded timestamps;
+next investigate application/compositor pacing and diagnostic file/log overhead.
+
+## Diagnostic monitor overhead reduction
+
+The host demo formerly re-read and split its entire growing JSONL ledger every
+application frame. The default monitor now reads only appended bytes, in at most
+128-KiB chunks, at most 10 polls/s. It counts newline-terminated records correctly
+even if a writer/chunk ends mid-record; truncation fails explicitly. Disconnect
+and 35-second watchdog checks still run each application frame. Completion may
+overshoot the frame target by a few frames before the next poll; wire/session
+limits and ordered final drain remain enforced.
+
+For controlled developer comparisons only, launch the host/test with
+`NIGHTFALL_XR_MONITOR_LEGACY=1` to retain the old monitor. This is local CLI
+environment, not a network-selectable app or unlimited profile. The monitor emits
+one aggregate `ENGINE_MONITOR_TIMING` at shutdown; the pipeline report includes
+bytes, poll counts, total/max callback cost and draw-callback spans. Those are CPU
+application callback timings, not GPU or physical presentation measurements.
+
+Measured synthetic-worker baseline: 1,201 frames at 58.12 Hz, 1,222 ledger polls,
+252,508,055 bytes read, 1,572,725 us cumulative monitor work and 3,996 us maximum
+poll. Verified incremental repeat: 1,205 frames at 58.81 Hz, 175 polls, 411,307
+bytes read, 48,428 us cumulative work and 463 us maximum poll. Clear diagnostic
+I/O/CPU savings; the modest cadence change and run-to-run variability do not
+establish that this resolves all frame gaps. GPU fences/queues are unchanged.
+
+First incremental comparison drained host video but failed the synthetic tracking
+publisher's clean-exit assertion; do not call that whole run a PASS. The repeat
+passed the complete native-worker/runtime gate. Preserve the earlier failure at
+`lan-sessions/1792446105883521218-2936163/` for lifecycle follow-up. The Rust
+integration gate now also waits for `pipeline-timing.json` and the final validator
+PASS, preventing test teardown from racing report generation after the earlier
+engine-outcome file appears.
+
+Baseline: `lan-sessions/1792446068775390257-2934049/`; verified repeat:
+`lan-sessions/1792446194838645886-2941967/`. New GDScript regression covers partial
+records, repeated polls, capped chunks and truncation. The next physical run uses
+the updated host monitor with the already-installed APK; no headset rebuild is
+required. Physical cadence improvement remains unverified.
+
+Physical incremental-monitor follow-up (`lan-sessions/1792446282704191621-2886807/`,
+23:44): 1,203 encoded/received/queued/codec-output frames, 1,200 projection copies,
+three accounted supersessions, zero unselected tail; clean host validation/drains
+and native return to idle. Encoded cadence 59.26 Hz, p95 interval 16.67 ms, ten
+intervals over 1.5 target periods, versus 56.25 Hz / 70 long intervals in the prior
+physical monitor run. This is encouraging single-run evidence, not locked 60 Hz
+or a controlled multi-run performance guarantee. Monitor read 581,760 bytes in
+174 polls, total 54,819 us, max 653 us. Median encode-worker time 1,684 us and ACK
+roundtrip 4,269 us remained close to prior values. Copy-fence wait polls 1,197;
+zero metadata-lock, acquire-fence and swapchain waits. Keep fence ownership intact.

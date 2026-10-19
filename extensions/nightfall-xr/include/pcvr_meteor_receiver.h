@@ -1,6 +1,7 @@
 #pragma once
 #ifdef __ANDROID__
 #include "pcvr_meteor_wire.h"
+#include "pcvr_frame_accounting.h"
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
 #include <media/NdkMediaCodec.h>
@@ -22,6 +23,7 @@ public:
     std::string message() const;
     bool frame(AHardwareBuffer *&buffer, MeteorXrFrame &metadata);
     void release_frame(); // Render thread, only after its sampling fence signals.
+    PCVRFrameAccounting stats;
 private:
     std::atomic<bool> done{true}, stop{false}, failure{false};
     std::atomic<bool> ready{false};

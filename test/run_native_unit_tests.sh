@@ -23,6 +23,12 @@ if ! pkg-config --exists libavcodec libavutil; then
 fi
 
 mkdir -p "$BUILD_ROOT"
+echo "Building pcvr_frame_accounting_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  "$PROJECT_ROOT/test/pcvr_frame_accounting_test.cpp" \
+  -I"$PROJECT_ROOT/extensions/nightfall-xr/include" \
+  -o "$BUILD_ROOT/pcvr_frame_accounting_test"
+"$BUILD_ROOT/pcvr_frame_accounting_test"
 echo "Building pcvr_view_validation_test"
 "$CXX" -std=c++17 -Wall -Wextra -Werror \
   "$PROJECT_ROOT/test/pcvr_view_validation_test.cpp" \

@@ -6,12 +6,18 @@ struct meteor_raw_job {
     struct null_compositor *compositor; // Device/context outlive drained worker.
     struct comp_layer layer;
     uint64_t frame_id;
+    uint64_t queued_us;
     char *library;
 };
 static int64_t meteor_last_queued_time;
 static bool meteor_raw_process(void *value) {
     struct meteor_raw_job *job=value;
-    return meteor_encode_layer_now(job->compositor,&job->layer,job->library,job->frame_id);
+    uint64_t start=meteor_direct_now_us();
+    bool ok=meteor_encode_layer_now(job->compositor,&job->layer,job->library,job->frame_id);
+    fprintf(stderr,"METEOR_RAW_TIMING frame=%llu queue_us=%llu encode_us=%llu ok=%d\n",
+        (unsigned long long)job->frame_id,(unsigned long long)(start-job->queued_us),
+        (unsigned long long)(meteor_direct_now_us()-start),ok);
+    return ok;
 }
 static void meteor_raw_dispose(void *value) {
     struct meteor_raw_job *job=value;
@@ -35,6 +41,7 @@ static bool meteor_raw_submit(struct null_compositor *c,const struct comp_layer 
     // references AND image reservations before returning to the compositor.
     for (uint32_t eye=0;eye<2;++eye) xrt_swapchain_reference(&job->layer.sc_array[eye],layer->sc_array[eye]);
     meteor_projection_image_lease(&job->layer.data,job->layer.sc_array,true);
+    job->queued_us=meteor_direct_now_us();
     if (!meteor_jobs_submit(&meteor_raw_queue,job)) { meteor_raw_dispose(job); return false; }
     meteor_last_queued_time=layer->data.timestamp;
     return true;

@@ -42,6 +42,7 @@ private:
 	std::atomic<int> state{IDLE};
 	std::atomic<uint64_t> frames{0};
 	std::atomic<uint64_t> session_id{0};
+	std::atomic<uint64_t> meteor_copy_waits{0}, meteor_swapchain_waits{0}, meteor_reuses{0};
 	mutable std::mutex error_mutex;
 	std::string error;
 	void fail(const char *message);
