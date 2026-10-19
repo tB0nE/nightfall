@@ -23,6 +23,7 @@ mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
 	"test/test_pcvr_session.gd"
+	"test/test_meteor_xr_control.gd"
 	"test/test_pcvr_test_controller.gd"
 	"test/test_browser_depth_policy.gd"
 	"test/test_screen_primary_selection.gd"

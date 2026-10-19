@@ -160,6 +160,13 @@ public class GodotApp extends GodotActivity {
 		}
 	};
 
+	// Public developer endpoint configuration only. The device private identity
+	// stays in Godot's internal user directory and is never exported here.
+	public static String getXrControlConfigPath() {
+		java.io.File directory = appContext == null ? null : appContext.getExternalFilesDir(null);
+		return directory == null ? "" : new java.io.File(directory, "meteor_xr_control.cfg").getAbsolutePath();
+	}
+
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		SplashScreen.installSplashScreen(this);

@@ -534,6 +534,13 @@ swapchain; the two flags can be combined. These are reference fixture options.
 `NIGHTFALL_XR_SOURCE_FORMAT` selects `rgba8` (default), `bgra8`, `rgba8-srgb`
 or `bgra8-srgb` for format/channel/transfer validation. See
 [SDR source formats](docs/research/meteor-xr-source-formats.md) for limits.
+`NIGHTFALL_XR_GODOT_ENGINE=1` instead of sample/reference-renderer flags launches
+an isolated Godot XR game window using engine-selected sRGB array swapchains.
+Use `bash tools/build_support/build_xr_engine_fixture.sh` to build the isolated
+engine cleanup fixes, then explicitly select the resulting executable using
+`NIGHTFALL_GODOT_EDITOR` as documented in the
+[engine fixture instructions](docs/research/meteor-xr-godot-engine.md).
+This does not modify the engine packaged into APKs.
 See [source-region validation and compatibility limits](docs/research/meteor-xr-eye-subrects.md).
 
 ### Retired ALVR research probe

@@ -10,6 +10,7 @@ import time
 import tempfile
 import fcntl
 import statistics
+import secrets
 
 from check_nvenc_stereo import validate
 from xr_transport_probe import LiveTransport
@@ -39,12 +40,20 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     headset_optics = os.environ.get("NIGHTFALL_XR_HEADSET_OPTICS") == "1"
     raster_scene = os.environ.get("NIGHTFALL_XR_RASTER_SCENE") == "1"
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
+    godot_engine=os.environ.get("NIGHTFALL_XR_GODOT_ENGINE")=="1"
+    upstream_demo=os.environ.get("NIGHTFALL_XR_UPSTREAM_DEMO")=="1"
+    if upstream_demo and not godot_engine:
+        raise ValueError("Upstream demo requires Godot engine mode")
     expect_tracking_loss=os.environ.get("NIGHTFALL_XR_EXPECT_TRACKING_LOSS")=="1"
     if expect_tracking_loss and not (hello_xr and tracked_scene):
         raise ValueError("Tracking-loss regression requires tracked hello_xr")
     controllers=os.environ.get("NIGHTFALL_XR_CONTROLLERS")=="1"
+    if godot_engine and (hello_xr or gpu_scene or raster_scene or abort_test or not tracked_scene or (controllers and not upstream_demo)):
+        raise ValueError("Engine fixture requires tracked mode without internal/sample/controller/abort modes")
     controller_profile=os.environ.get("NIGHTFALL_XR_CONTROLLER_PROFILE","wmr")
     touch_inputs=os.environ.get("NIGHTFALL_XR_TOUCH_INPUTS")=="1"
+    if upstream_demo and controllers and (controller_profile!="touch" or not touch_inputs):
+        raise ValueError("Upstream controller test requires extended native Touch inputs")
     input_seconds=int(os.environ.get("NIGHTFALL_XR_INPUT_SECONDS","0"))
     if input_seconds and (not touch_inputs or not hello_xr or not 1<=input_seconds<=30):
         raise ValueError("Input duration requires Touch hello_xr and 1..30 seconds")
@@ -90,6 +99,19 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if hello_xr:
         app=root / ".build-cache/meteor-xr/hello-xr-spike/build/src/tests/hello_xr/hello_xr"
     command=[str(app)] + (["-g","Vulkan2","-s","Stage","-bm","Opaque"] if hello_xr else [])
+    if godot_engine:
+        app=Path(os.environ.get("NIGHTFALL_GODOT_EDITOR","/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"))
+        project=root / "test/fixtures/meteor_xr_godot"
+        if upstream_demo:
+            from prepare_xr_upstream_demo import prepare
+            project=prepare(root)
+            imported=subprocess.run([str(app),"--headless","--xr-mode","off","--editor","--import",
+                            "--path",str(project)],timeout=60,capture_output=True,text=True)
+            (out / "godot-import.log").write_text(imported.stdout+imported.stderr)
+            imported.check_returncode()
+        command=[str(app),"--path",str(project),"--display-driver","x11",
+            "--rendering-method","mobile","--rendering-driver","vulkan","--xr-mode","on",
+            "--audio-driver","Dummy","--resolution","320x180","--position","24,24"]
     for executable in (service, library, app):
         if not executable.is_file():
             raise RuntimeError("Run probe_monado_runtime.sh --build first")
@@ -110,20 +132,26 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_XR_EYE_SIZE=str(eye_size), XRT_COMPOSITOR_NULL_FPS=str(target_hz),
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
     env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
+    env.pop("METEOR_XR_ENGINE_FIXTURE",None)
+    engine_token=secrets.token_hex(16) if godot_engine else None
+    env.pop("METEOR_ENGINE_RUN_ID",None)
+    if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token
+    (out / "engine-request-exit").unlink(missing_ok=True)
+    if godot_engine: env["METEOR_XR_ENGINE_FIXTURE"]="1"
     env.pop("METEOR_XR_PADDED_SUBRECT",None)
     env.pop("METEOR_XR_SOURCE_FORMAT",None)
     source_format=os.environ.get("NIGHTFALL_XR_SOURCE_FORMAT","rgba8")
     if source_format not in ("rgba8","bgra8","rgba8-srgb","bgra8-srgb"):
         raise ValueError("Unsupported source format fixture")
     if source_format!="rgba8":
-        if hello_xr or gpu_scene: raise ValueError("Alternate source format requires reference renderer")
+        if hello_xr or gpu_scene or godot_engine: raise ValueError("Alternate source format requires reference renderer")
         env["METEOR_XR_SOURCE_FORMAT"]=source_format
     env.pop("METEOR_XR_ARRAY_STEREO",None)
     if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1":
-        if hello_xr or gpu_scene: raise ValueError("Array fixture requires reference renderer")
+        if hello_xr or gpu_scene or godot_engine: raise ValueError("Array fixture requires reference renderer")
         env["METEOR_XR_ARRAY_STEREO"]="1"
     if os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1":
-        if hello_xr or gpu_scene: raise ValueError("Padded subrect fixture requires the reference renderer")
+        if hello_xr or gpu_scene or godot_engine: raise ValueError("Padded subrect fixture requires the reference renderer")
         env["METEOR_XR_PADDED_SUBRECT"]="1"
     env.pop("METEOR_XR_GPU_MEASURE", None)
     env.pop("METEOR_XR_HEADSET_OPTICS", None)
@@ -176,6 +204,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     device_port = os.environ.get("NIGHTFALL_XR_DEVICE_PORT")
     interrupted = forced_stop = False
     (out / "lifecycle-outcome.json").unlink(missing_ok=True)
+    (out / "engine-outcome.json").unlink(missing_ok=True)
     (out / "client-disconnected").unlink(missing_ok=True)
     if device_port:
         if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
@@ -210,7 +239,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 try:
                     result, interrupted, forced_stop = run_application(command, env=env,
                         timeout=40+input_seconds, service_log=out / "service.log",
-                        stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and hello_xr))
+                        stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
+                        completion_file=out / "engine-completion.json" if godot_engine else None,
+                        completion_token=engine_token,completion_target=frame_count)
                 except subprocess.TimeoutExpired as failure:
                     def output_text(value):
                         return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
@@ -220,7 +251,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             application_elapsed = time.monotonic()-application_start
             if not abort_test and not interrupted:
                 result.check_returncode()
-                if not hello_xr and f"APP_SOURCE_FORMAT name={source_format} " not in result.stdout:
+                if not (hello_xr or godot_engine) and f"APP_SOURCE_FORMAT name={source_format} " not in result.stdout:
                     raise RuntimeError("Requested source-format fixture did not execute")
                 if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1" and "APP_EYE_ARRAY shared=1 slices=1,0" not in result.stdout:
                     raise RuntimeError("Array-stereo source fixture did not execute")
@@ -240,7 +271,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     child.kill()
                     child.wait()
     text = (out / "service.log").read_text()
-    if not hello_xr and not interrupted:
+    if not (hello_xr or godot_engine) and not interrupted:
         formats={"rgba8":37,"bgra8":44,"rgba8-srgb":43,"bgra8-srgb":50} # Stable VkFormat enum values.
         expected=formats[source_format]
         packed=43 if source_format.endswith("-srgb") else 37
@@ -268,6 +299,28 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text or "METEOR_DIRECT_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
     transport.finish()
+    if godot_engine:
+        from check_xr_engine import validate_engine
+        if upstream_demo and ("ENGINE_XR_UPSTREAM origin_centric_movement" not in result.stdout
+                              or "OpenXR instantiated successfully." not in result.stdout):
+            raise RuntimeError("Upstream application did not initialize its own XR scene")
+        validate_engine(out,result.stdout+result.stderr,frame_count,eye_size,text)
+        if upstream_demo:
+            from prepare_xr_upstream_demo import PIN
+            report_path=out / "engine-outcome.json"
+            report=json.loads(report_path.read_text())
+            report["application"]="godot-demo-projects/xr/openxr_origin_centric_movement"
+            report["application_revision"]=PIN
+            report["application_adaptations"]=["Mobile Vulkan renderer", "depth submission disabled",
+                "diagnostic lifecycle autoload", "gravity call on CharacterBody3D"]
+            report["controller_interaction_verified"]=False
+            if controllers:
+                from check_xr_upstream_input import inspect_input
+                report["controller_input"]=inspect_input(result.stdout,
+                    synthetic=not bool(device_port))
+                report["controller_interaction_verified"]=not bool(device_port)
+            report_path.write_text(json.dumps(report,indent=2)+"\n")
+        return
     if not hello_xr:
         color=json.loads(subprocess.check_output(["ffprobe","-v","error","-select_streams","v:0",
             "-show_entries","stream=color_transfer","-of","json",str(out / "monado-stereo.h264")],text=True))

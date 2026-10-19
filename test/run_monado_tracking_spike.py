@@ -63,6 +63,25 @@ def run(root):
                                 env=env, timeout=60, capture_output=True, text=True)
         (out / "probe.log").write_text(result.stdout + result.stderr)
         result.check_returncode()
+        if env.get("NIGHTFALL_XR_GODOT_ENGINE")=="1":
+            if publisher.wait(timeout=5): raise RuntimeError("Engine did not release the tracking publisher")
+            records=[json.loads(line) for line in (root / ".build-cache/meteor-xr/monado-nvenc-spike/monado-stereo.jsonl").read_text().splitlines()]
+            centers=[tuple((a+b)*.5 for a,b in zip(r["views"][0]["position"],r["views"][1]["position"])) for r in records]
+            application_moves=env.get("NIGHTFALL_XR_UPSTREAM_DEMO")=="1" and env.get("NIGHTFALL_XR_CONTROLLERS")=="1"
+            if not application_moves and (not centers or max(c[0] for c in centers)-min(c[0] for c in centers)<.005 or any(
+                not (.19<x<.31 and abs(y)<.001 and abs(z)<.001) for x,y,z in centers)):
+                raise RuntimeError("Synthetic tracking motion/root did not reach Godot's encoded views")
+            if env.get("NIGHTFALL_XR_HEADSET_OPTICS")=="1":
+                for record in records:
+                    if not math.isclose(math.dist(record["views"][0]["position"],record["views"][1]["position"]),.064,abs_tol=1e-5):
+                        raise RuntimeError("Negotiated eye spacing did not reach Godot")
+                    for view,expected in zip(record["views"],[[-.8,.7,.75,-.65],[-.7,.8,.75,-.65]]):
+                        if any(not math.isclose(a,b,abs_tol=1e-5) for a,b in zip(view["fov"],expected)):
+                            raise RuntimeError("Negotiated FOV did not reach Godot")
+            print(result.stdout)
+            print("PASS: upstream Touch movement observed; encoded optics validated" if application_moves else
+                  "PASS: changing synthetic poses/adopted origin reached the engine's encoded eye metadata")
+            return
         if expect_loss:
             loss_thread.join(timeout=1)
             if loss_thread.is_alive() or loss_errors:

@@ -5,7 +5,7 @@ TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TOOL_DIR/../.." && pwd)"
 source "$TOOL_DIR/monado_xr_versions.sh"
 REFERENCE="$ROOT/.build-cache/meteor-xr/WiVRn"
-OUT="$ROOT/.build-cache/meteor-xr/monado-nvenc-spike"
+OUT="${NIGHTFALL_XR_PROBE_OUTPUT:-$ROOT/.build-cache/meteor-xr/monado-nvenc-spike}"
 [[ "$(git -C "$REFERENCE" rev-parse HEAD)" == "$NIGHTFALL_WIVRN_REFERENCE_COMMIT" ]]
 [[ -z "$(git -C "$REFERENCE" status --porcelain --untracked-files=no)" ]]
 mkdir -p "$OUT"

@@ -21,7 +21,7 @@ void PCVRMeteorReceiver::status(const std::string &value, bool error) {
 bool PCVRMeteorReceiver::start() {
     if (!done.load()) return false;
     if (worker.joinable()) worker.join();
-    failure.store(false); stop.store(false); done.store(false); eos = false;
+    failure.store(false); stop.store(false); done.store(false); ready.store(false); eos = false;
     worker = std::thread(&PCVRMeteorReceiver::run, this); return true;
 }
 void PCVRMeteorReceiver::stop_after_gpu_drain() {
@@ -144,6 +144,7 @@ void PCVRMeteorReceiver::run() {
         int enabled = 1; setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
         sockaddr_in address{}; address.sin_family = AF_INET; address.sin_port = htons(49090); address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) || listen(listener, 1)) break;
+        ready.store(true);
         status("Listening on loopback :49090; USB diagnostic only, no remote tracking");
         while (!stop.load()) {
             pollfd fd{listener, POLLIN, 0};
@@ -189,6 +190,7 @@ void PCVRMeteorReceiver::run() {
         if (connected >= 0) close(connected);
         peer = -1;
     }
+    ready.store(false);
     if (listener >= 0) close(listener);
     if (!success && !stop.load()) status("Receiver/decoder failed or stream truncated (no fallback)", true);
     // Even on failure keep codec/reader alive until render-thread GPU drain.

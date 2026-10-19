@@ -2850,11 +2850,13 @@ func _process_idle_timeout():
 
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if welcome_screen: welcome_screen.cancel_xr_control()
 		if browser_prototype:
 			browser_prototype.stop()
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		if welcome_screen: welcome_screen.cancel_xr_control()
 		pcvr_test.set_application_paused(true)
 		if xr_interaction:
 			xr_interaction.cancel_transient_interactions("application paused")

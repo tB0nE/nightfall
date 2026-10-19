@@ -4,11 +4,13 @@ extends RefCounted
 var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
+var _xr_control: RefCounted
 
 func _init(owner: Node3D):
 	main = owner
 
 func build_welcome_ui():
+	cancel_xr_control()
 	var root = main.welcome_viewport.get_node("WelcomeRoot")
 	for child in root.get_children():
 		child.queue_free()
@@ -64,8 +66,49 @@ func build_welcome_ui():
 		meteor_button.pressed.connect(func():
 			main.pcvr_test.start(false, true)
 			test_status.text = main.pcvr_test.status)
+		_build_xr_control_probe(root, test_status)
 
 	show_welcome_screen("welcome")
+
+func _build_xr_control_probe(root: Control, label: Label) -> void:
+	# Explicit developer provisioning only; never auto-connect through discovery.
+	var control_script = preload("res://src/meteor_xr_control.gd")
+	if not FileAccess.file_exists(control_script.config_path()): return
+	if _xr_control: _xr_control.cancel()
+	_xr_control = control_script.new(main)
+	var control = _xr_control
+	main._log("[XR-CONTROL] Device public key: " + control.public_identity())
+	var button := Button.new()
+	button.position = Vector2(480, 770)
+	button.custom_minimum_size = Vector2(780, 64)
+	button.add_theme_font_size_override("font_size", 24)
+	var cancel_button := Button.new()
+	cancel_button.text = "Cancel"
+	cancel_button.position = Vector2(1280, 770)
+	cancel_button.custom_minimum_size = Vector2(200, 64)
+	cancel_button.add_theme_font_size_override("font_size", 24)
+	root.add_child(button)
+	root.add_child(cancel_button)
+	var update := func():
+		if not is_instance_valid(button) or not is_instance_valid(label): return
+		button.text = "Accept XR preparation (no video)" if control.state == "offered" else "DEV: Authenticate Meteor XR control"
+		button.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
+		label.text = control.message
+	control.changed.connect(update)
+	button.pressed.connect(func():
+		var reason: String = main.pcvr_test.busy_reason()
+		if not reason.is_empty():
+			label.text = reason
+			return
+		if control.state == "offered": control.accept_offer()
+		else:
+			main._log("[XR-CONTROL] Device public key: " + control.public_identity())
+			control.connect_offer())
+	cancel_button.pressed.connect(control.cancel)
+	update.call()
+
+func cancel_xr_control(stop_projection: bool = true) -> void:
+	if _xr_control: _xr_control.cancel(stop_projection)
 
 func build_browser_picker(root: Control) -> void:
 	# In-viewport buttons rather than a popup Window, so XR input reaches

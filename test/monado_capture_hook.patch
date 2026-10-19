@@ -103,7 +103,7 @@
  		return NULL;
  	}
  
-+	if (!meteor_tracking_initialize(&hmd->meteor_tracking)) {
++	if (!meteor_tracking_initialize(&hmd->meteor_tracking, &hmd->base)) {
 +		fprintf(stderr, "METEOR_TRACKING_FAILED initialization (no simulated fallback)\n");
 +		simulated_hmd_destroy(&hmd->base);
 +		return NULL;
@@ -118,11 +118,12 @@
  	u_var_add_pose(hmd, &hmd->pose, "pose");
 --- a/src/xrt/compositor/multi/comp_multi_compositor.c
 +++ b/src/xrt/compositor/multi/comp_multi_compositor.c
-@@ -31,6 +31,7 @@
+@@ -31,6 +31,8 @@
  #include <stdarg.h>
  #include <stdlib.h>
  #include <string.h>
 +#include "/tests/monado_image_lease.h"
++#include "/tests/monado_probe_paths.h"
  
  #ifdef XRT_GRAPHICS_SYNC_HANDLE_IS_FD
  #include <unistd.h>
@@ -134,7 +135,22 @@
  		for (size_t k = 0; k < ARRAY_SIZE(slot->layers[i].xscs); k++) {
  			xrt_swapchain_reference(&slot->layers[i].xscs[k], NULL);
  		}
-@@ -670,6 +672,7 @@
+@@ -515,3 +518,14 @@
+ 	struct multi_compositor *mc = multi_compositor(xc);
++	static bool meteor_engine_exit_sent = false;
++	if (getenv("METEOR_XR_ENGINE_FIXTURE") && !meteor_engine_exit_sent) {
++		FILE *request = fopen(meteor_probe_path("engine-request-exit"), "r");
++		if (request) {
++			fclose(request);
++			union xrt_session_event event = {.type = XRT_SESSION_EVENT_REQUEST_EXIT};
++			if (multi_compositor_push_event(mc, &event) != XRT_SUCCESS) abort();
++			meteor_engine_exit_sent = true;
++			fprintf(stderr, "METEOR_ENGINE_EXIT_REQUESTED\n");
++		}
++	}
+ 	int64_t now_ns = os_monotonic_get_ns();
+ 	os_mutex_lock(&mc->msc->list_and_timing_lock);
+@@ -670,6 +684,7 @@
  		xrt_swapchain_reference(&mc->progress.layers[index].xscs[i], xsc[i]);
  	}
  	mc->progress.layers[index].data = *data;

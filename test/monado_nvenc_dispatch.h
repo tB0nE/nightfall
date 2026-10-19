@@ -36,6 +36,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     // Multi-compositor can repeat the same submitted layer: don't encode duplicates.
     if (layer->data.timestamp == meteor_last_encoded_time) return true;
     if (layer->data.timestamp < meteor_last_encoded_time) return false;
+    bool first_source=meteor_encoder_module==NULL;
     void *module = meteor_encoder_module;
     if (!module) module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
     if (!module) { fprintf(stderr, "Encoder bridge load: %s\n", dlerror()); return false; }
@@ -71,6 +72,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         input.eye_offsets[eye*2]=rect->offset.w; input.eye_offsets[eye*2+1]=rect->offset.h;
         input.eye_slices[eye]=layer->data.proj.v[eye].sub.array_index;
         input.eye_formats[eye]=(VkFormat)sc->vkic.info.format;
+        if(first_source) fprintf(stderr,"METEOR_EYE_SOURCE eye=%d array_layers=%u slice=%u\n",eye,sc->vkic.info.array_size,input.eye_slices[eye]);
         input.eyes[eye] = sc->vkic.images[index].handle;
         const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
         float values[11] = {view->pose.position.x, view->pose.position.y, view->pose.position.z,
@@ -79,6 +81,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         memcpy(input.views + eye * 11, values, sizeof(values));
     }
     if(!meteor_eye_formats_compatible(input.eye_formats[0],input.eye_formats[1])) return false;
+    if(first_source) fprintf(stderr,"METEOR_STEREO_SOURCE shared_image=%d\n",input.eyes[0]==input.eyes[1]);
     struct meteor_owned_packet packet = {0};
     const char *direct_port = getenv("METEOR_XR_DIRECT_PORT");
     if (direct_port) { input.encoded_callback = meteor_encoded_copy; input.callback_context = &packet; }

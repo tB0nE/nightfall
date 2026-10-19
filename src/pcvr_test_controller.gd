@@ -119,6 +119,8 @@ func _execute(commands: Array[Dictionary]) -> void:
 				if not started:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
 			"stop":
+				if "welcome_screen" in main and main.welcome_screen:
+					main.welcome_screen.cancel_xr_control(false)
 				_log_transition("stopping")
 				status = "Stopping; waiting for native projection drain"
 				backend.stop_test()

@@ -1,5 +1,14 @@
 # Meteor XR checkpoint — 2026-10-18
 
+Latest update (2026-10-19): the manually pinned, encrypted LAN path reached the
+upstream demo on the physical Quest 3; user confirmed movement, with 200 received
+frames and native drain to idle. First launch failed and retry succeeded; startup
+reliability remains open. An asynchronous preparation/idle race was fixed in the
+installed optimized DEV APK. Host attempts now retain separate private logs and
+artifacts under `lan-sessions/`; two automated GPU/relay runs and 89 active Rust
+tests pass. See [live relays](meteor-xr-live-relays.md) for current setup/status;
+the chronology below records earlier milestones, not current limitations.
+
 Branch: `feat/meteor-xr-streaming`. Latest installed headset artifact:
 `Nightfall-Android-arm64-v8a-dev.apk`, optimized/release-signed DEV, ALVR OFF.
 Latest build/install log: `/tmp/nightfall-xr-profile-apk.log` (temporary).
@@ -470,3 +479,250 @@ No new APK required. New sRGB metadata interpretation on Quest is still a visual
 hardware gate. See `meteor-xr-source-formats.md`. Next: an engine-native OpenXR
 fixture with negotiated image size/layout/format, then an independent app; no
 SteamVR/global runtime settings changed. Layout/format work remains uncommitted.
+
+## Engine-native OpenXR increment after 6a1b966
+
+Committed all source-region/array/color-format work as `6a1b966`. Added an isolated
+stock Godot 4.7 Mobile/Vulkan game-mode project (fifteen rotating cubes), selected
+with `NIGHTFALL_XR_GODOT_ENGINE=1`. The runtime now advertises the selected square
+eye profile before engine initialization; Godot chooses its own 512×512 shared
+two-layer sRGB swapchain. New logs prove array size/slices/shared-image selection.
+No second frame loop, Nightfall rendering extension or global runtime changes.
+
+Initial direct game quit exposed XR_ERROR_SESSION_NOT_STOPPING. A diagnostic-only
+runtime exit request now sends the normal session REQUEST_EXIT event and Godot
+handles STOPPING before scene exit. Changing the root viewport out of XR during
+teardown introduced framebuffer errors; retaining its original layout removed
+those. Two known engine-side shutdown diagnostics remain (InteractionProfile RID
+leaks and spatial-extension signal disconnect), explicitly reported in
+engine-outcome.json with engine_shutdown_clean=false. No clean lifecycle claim.
+
+Synchronous and async loopback host rendering passed at 32–33 decoded frames,
+balanced leases and encoder release/drain. Seven smoke-validator unit tests and
+fixture script parse check passed. Engine test has no pixel/submission timestamp
+oracle; decoded nonblank stereo and structural metadata are checked. See
+meteor-xr-godot-engine.md. No new APK needed; visual headset validation remains
+pending, as does investigation of the two shutdown diagnostics.
+Final async engine proof passed 33 decoded frames, including changing synthetic
+head motion/adopted origin and 64 mm/asymmetric FOV propagation assertions. The
+existing hello_xr/Touch/haptic regression also passed (120 submissions, 117
+delivered, balanced worker accounting and final drain). Engine implementation
+is still uncommitted pending the next hardware/diagnostic checkpoint.
+
+Quest engine visual check: user reported it looked fine. Device decoded through
+sequence 120 (121 frames); logs prove engine-selected 512-square shared sRGB
+array slices 0/1, ENGINE_XR_COMPLETE and STOPPING, encoder drain/release, and local
+decoder/projection retirement on unchanged session 0x1a. Host exit code was 0
+without forced termination. The headset tracking disconnect overlapped shutdown,
+so the harness conservatively classified this run interrupted and did not execute
+its full normal-completion validation. Do not promote it to a full drain PASS
+solely from drain log lines. Both known Godot shutdown diagnostics persist.
+
+## Isolated engine cleanup and completion reporting
+
+Fixed both engine shutdown causes in a separate reflinked toolchain cache:
+interaction-profile cleanup now records RIDs in the member cleanup array, and
+spatial marker teardown checks that its signal was connected before disconnecting.
+APK engine inputs are unchanged. Build/select instructions are in
+meteor-xr-godot-engine.md and build_xr_engine_fixture.sh.
+
+The fixed engine passed an asynchronous 512-square host run with 33 decoded
+stereo frames, balanced image leases, encoder drain, and synthetic head/origin/
+optics propagation checks. engine-outcome.json reports engine_shutdown_clean=true.
+Log: /tmp/nightfall-xr-engine-cleanup-test.log.
+
+Normal completion now writes an atomic run-ID/encoded-target marker before the
+engine requests exit. This prevents a later headset disconnect from incorrectly
+skipping normal validation, without substituting for decode/ownership/drain checks.
+Eight lifecycle tests and seven engine-validator tests pass. Repeat headset
+validation with the fixed executable is pending; the prior interrupted hardware
+run has not been relabeled as a full drain pass.
+
+Fixed-engine headset recheck succeeded: user confirmed the visual test. The
+USB harness exited successfully and full normal validation checked 121 decoded
+stereo frames at 512 square per eye, ordered metadata, balanced image leases,
+and encoder drain. engine-outcome.json reports no shutdown diagnostics and
+engine_shutdown_clean=true. The completion/disconnect overlap no longer skipped
+normal validation in this run. Log: /tmp/nightfall-headset-godot-cleanup.log.
+This is an engine-compatibility/visual checkpoint, not a performance benchmark.
+
+## Pinned upstream application profile
+
+Added `NIGHTFALL_XR_UPSTREAM_DEMO=1` for the official Godot origin-centric movement
+demo at b761b4cd5718a7118f2c95eb55f181d0a5f004f1. Preparation/staging is isolated
+under .build-cache/meteor-xr; source scenes/bindings/XR startup remain upstream.
+Adaptations: Mobile Vulkan, no optional depth submission, lifecycle observer,
+and a one-line upstream gravity receiver correction. The initial parse-error run
+was rejected; the corrected staged app passed 33 decoded stereo frames, changing
+tracking/root/optics, balanced leases and clean shutdown. No new APK or global
+XR settings changed. Log: /tmp/nightfall-xr-upstream-movement.log.
+
+Two staging tests plus eight lifecycle and seven validator tests pass. The new
+application profile records provenance/adaptations and explicitly does not claim
+controller interaction. Next: headset environment/world-lock check, then upstream
+controller action/movement support. Do not reuse the cube-test visual result for
+this new environment; hardware validation is still pending.
+
+Upstream demo headset check subsequently passed: user reported it looked fine.
+The harness completed normally with 121 decoded stereo frames, balanced leases,
+encoder drain and no shutdown diagnostics. engine-outcome.json records the
+upstream revision/adaptations and controller_interaction_verified=false.
+Log: /tmp/nightfall-headset-upstream-movement.log. This clears the environment
+visual gate only; next is controller action/movement support for this application.
+
+## Upstream controller movement prepared
+
+Enabled the existing extended native Touch bridge for the upstream demo only;
+the cube fixture still rejects controller mode. Its original right-stick move
+binding and placeholder hand cubes are unchanged. Observer logs prove app-level
+tracker/actions and origin position/yaw changes, not just packet arrival.
+Synthetic run passed 121 decoded frames with actual locomotion and encoded
+optics checks, balanced ownership and clean shutdown. Five input tests pass.
+Log: /tmp/nightfall-xr-upstream-input.log. Stationary-origin expectations are
+explicitly excluded for this moving application, not globally weakened.
+
+Next headset profile: 200 frames at 20-Hz target (roughly 10 seconds), right stick
+forward/back to move, sideways for smooth turning, left stick unbound, B/Y hold
+local exit. No new APK required; awaiting user readiness before arming. Movement
+and comfort confirmation remain pending; no audio or haptic claim for this demo.
+
+User reported the upstream movement headset test seemed to work fine. Rendering
+validation passed 201 decoded stereo frames, balanced ownership, clean encoder
+drain and no engine shutdown diagnostics. The additional controller validator
+rejected the run because it did not observe both trackers active simultaneously;
+do not call this a full automated controller pass. Log:
+/tmp/nightfall-headset-upstream-input.log. Preserve the user's positive movement
+feedback separately from that stricter automation result. User requested larger
+development milestones and fewer repetitive small headset checks from here.
+
+## Meteor-managed lifecycle milestone
+
+Added Linux-only `nightfall-meteor --xr-dev <checkout> [--smoke]`, dispatched
+before normal proxy/depth/audio/tray initialization. Rust now supervises the
+validated adapter with single-session locking, fixed profile/environment,
+fresh-result validation, live status/logging, Ctrl+C/SIGTERM graceful requests,
+and bounded owned-process-group cleanup. It does not register a global runtime.
+This is checkout-dependent development orchestration, still USB and bounded;
+automatic app detection, pairing/LAN and continuous play are NOT implemented.
+See meteor-xr-managed-session.md for usage and the next product-size milestone.
+
+Optimized release binary built and passed a 121-frame synthetic managed run.
+Automated concurrency rejection, cancellation during streaming, then clean
+relaunch also passed. Meteor suite: 57 passed, 5 ignored. Input validator now
+accepts an inactive left hand on hardware when only right movement is bound,
+while synthetic assertions still require both trackers (six input tests pass).
+The prior physical input evidence remains recorded separately, not rewritten.
+No APK changes/build; no headset test armed. Next consolidated hardware gate:
+managed launch → interact → local exit → relaunch. Then packaged runtime and
+authenticated LAN session negotiation, not additional tiny rendering fixtures.
+
+Managed USB hardware workflow subsequently passed: user performed launch,
+interaction, local B/Y exit, then relaunch with automatic completion. First run:
+178 encoded frames, app exit 0, no forced termination; correctly interrupted,
+not full drain PASS. Second: completed, 201 decoded stereo frames, balanced
+leases, encoder drain and no shutdown diagnostics. App observations show nonzero
+right stick and actual locomotion; left controller inactive is allowed hardware
+state. No synthetic dual-hand assertion is claimed. Logs:
+/tmp/meteor-managed-headset-first.log and /tmp/meteor-managed-headset-relaunch.log.
+
+## Authenticated control foundation (not end-to-end LAN XR)
+
+Added opt-in `--xr-control-dev <bind> <key-file> <allowed-client-public-key>`.
+Normal Meteor startup/discovery is unchanged; no listener or firewall changes
+were enabled on the user's LAN. Authorization explicitly allowlists a client key
+and requires private-key possession, rather than trusting discovery alone.
+Fresh handshake nonces and direction-separated keys reuse Meteor's existing
+X25519/HKDF/AES-GCM primitives. Strict bounded encrypted requests negotiate an
+expiring offer → explicit matching acceptance → prepared lease, with exact-ID
+stop, connection-owned cleanup, deadlines and exclusive ownership.
+
+Prepared is deliberately NOT streaming: every response advertises LAN video
+unavailable; the endpoint cannot launch commands or expose raw USB video ports.
+This increment has no headset-side client/UI or packaged runtime connection yet.
+See meteor-xr-control-protocol.md for wire contract, security limits and next
+integration steps. No APK rebuild or headset test is needed for this increment.
+
+Socket/security regressions cover replay, tampering, oversize/schema errors,
+wrong keys, spoofed allowlisted public key without its secret, cross-session/
+direction replay, acceptance/expiry, exclusive ownership and disconnect release.
+Optimized Meteor build passed. Full tests and logs:
+/tmp/meteor-xr-control-all-tests.log and /tmp/meteor-xr-control-build.log.
+
+## Nightfall control client / native interoperability
+
+Added nonblocking src/meteor_xr_control.gd and a developer-configured welcome
+probe with a separate explicit Accept action. It pins the host key, persists
+device identity privately, bounds framing/deadlines, checks generations against
+late replies and watches offer/prepared leases. Cancel/pause/close/welcome
+rebuild closes the connection. It never enters exclusive projection or treats
+prepared as a video stream. UI is hidden without developer configuration; no
+automatic discovery trust, pairing UI, LAN video or runtime launch was added.
+
+Native MeteorCipher now supports binary KDF context (nonces contain zero bytes),
+while its original text API is preserved. The real OpenSSL cipher passed an
+encrypted Rust-server authenticate/offer/accept/stop socket test, with legacy
+API ciphertext verified identical. Release Android cipher/wrapper objects and
+full streaming library built successfully. All 36 GDScript scripts passed;
+desktop still reports the known absent Android-only XR extension. Meteor suite:
+67 passed, 6 ignored; cross-language ignored test was explicitly run and passed.
+
+Built optimized release-signed DEV APK, 106M:
+Nightfall-Android-arm64-v8a-dev.apk. Not installed on the headset. BUILD.md was
+read before packaging; no APK script parse errors. No actual Quest control
+handshake claimed yet. See meteor-xr-control-protocol.md for configuration,
+interop reproduction and remaining authenticated video/tracking integration.
+Logs: /tmp/nightfall-xr-control-interop.log,
+/tmp/nightfall-xr-control-client-regressions.log,
+/tmp/nightfall-xr-control-gdscript-tests.log,
+/tmp/nightfall-xr-control-apk-build.log.
+
+## Authenticated data core / recorded video replay
+
+Added Rust and portable native OpenSSL NFXD v1 record framing, with separate
+video, headset-tracking, host-tracking and feedback keys/counters. HKDF context
+binds purpose, control session ID and both handshake nonces. Fixed authenticated
+headers enforce allocation bounds before reads; replay/authentication/inner-wire
+errors poison the receiver. Existing video/pose metadata semantics are retained.
+
+Cross-language loopback replay passed eight recorded real NVENC frames plus END,
+with encrypted synthetic tracking replies in the reverse direction. Recovered
+H.264 bytes matched source exactly and FFprobe counted eight decoded frames.
+The native client retained the actual MeteorXrWire validator and rejected wrong
+session, tamper, poisoned-state reuse and oversized headers. This is NOT live
+headset LAN streaming. No new listener, deployment or APK rebuild for this step.
+See meteor-xr-authenticated-data.md for wire contract and remaining lease/worker/
+decoder/clock integration. Logs: /tmp/nightfall-xr-data-interop.log and
+/tmp/nightfall-xr-data-regressions.log. Keep LAN video capability false until
+that end-to-end integration is implemented and tested.
+
+Final data-core regression run: 85 passed, 7 ignored. The opt-in native recorded
+video interoperability test was separately run and passed (eight decoded frames).
+
+## Live relay / native worker / managed runtime milestone
+
+Implemented optional accepted-lease-owned remote data listeners, per-connection
+challenge-bound attachment proofs and native worker adapters feeding the existing
+loopback decoder/tracking endpoints. Explicit local CLI --relay enables workers;
+an additional trusted checkout path enables only the fixed upstream demo launcher
+after both lanes prove key possession. No network-provided executable, automatic
+listener/discovery change, or plaintext fallback. Runtime lock/cancellation and
+exact process-group cleanup are retained. Lease drop cancels endpoints/workers.
+
+Native frontend waits for projection/loopback listener readiness before proving
+its data lanes. Workers defer local consumer connections until authenticated
+traffic is ready; an initial combined failure exposed their 2-second tracking
+read deadline otherwise including host build/import time. Fixed sequencing, not
+weakened semantic/deadline checks. Android-ready status uses atomics; GPU/fence
+drain ownership is unchanged. A public-only external-files config path enables
+ADB provisioning; device private identity remains internal and is never exported.
+
+Combined host GPU test passed: managed upstream app → real NVENC → authenticated
+relay → native workers/wire consumer, plus synthetic tracking endpoint through
+the encrypted return path. 201 frames decoded/validated, balanced leases/encoder
+drain, no engine shutdown diagnostics. This is NOT Quest MediaCodec or a real-LAN
+physical pass. Native worker integration and accepted-lease Stop/security tests
+also pass. Meteor: 88 passed, 9 ignored; 36 GDScript scripts pass. Optimized APK
+and host build prepared; no headset installation or actual LAN listener started.
+See meteor-xr-live-relays.md for exact scope, commands, proof framing and logs.
+Next single combined physical gate: authenticate, accept, interact, local exit,
+relaunch using the actual headset/LAN with the public pin/allowlist provisioned.

@@ -40,6 +40,12 @@ mod tray_windows;
 mod vda;
 mod video_dump;
 mod video_tap;
+mod xr_control;
+mod xr_data;
+mod xr_relay;
+#[cfg(target_os = "linux")]
+mod xr_session;
+mod xr_wire;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -53,6 +59,34 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--xr-control-dev") {
+        let result = xr_control::command(&args[2..]).await;
+        if let Err(error) = result {
+            eprintln!("Meteor XR control: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // Development-only managed runtime path. Never initialize the ordinary
+    // proxy, depth models, audio devices or tray for this exclusive session.
+    if args.get(1).is_some_and(|arg| arg == "--xr-dev") {
+        #[cfg(target_os = "linux")]
+        {
+            let code = match xr_session::run(&args[2..]).await {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("Meteor XR: {error}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("Managed XR development sessions currently require Linux/NVIDIA.");
+            std::process::exit(2);
+        }
+    }
     logfile::init(args.get(1).map(String::as_str) != Some("--build-tensorrt"));
     // A TensorRT engine build, run by Meteor in a child process.
     if args.get(1).map(String::as_str) == Some("--build-tensorrt") {
@@ -72,6 +106,8 @@ async fn main() {
         println!(
             "nightfall-meteor [options]\n\
              \x20 --no-tray               run without a tray icon\n\
+             \x20 --xr-dev <checkout> [--smoke]  isolated Linux/USB XR development session\n\
+             \x20 --xr-control-dev <bind> <key-file> <client-public-key> [--relay [checkout]]  XR development endpoint\n\
              \x20 --no-depth              don't load the depth model (proxy only)\n\
              \x20 --no-mic                don't create the Nightfall Microphone device\n\
              \x20 --cpu-frames            convert decoded frames on the CPU (for comparison)\n\

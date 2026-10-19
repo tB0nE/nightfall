@@ -94,6 +94,7 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 	result["session"] = static_cast<int64_t>(session_id.load());
 #ifdef __ANDROID__
 	if (meteor) result["meteor_status"] = String(meteor->message().c_str());
+	result["meteor_endpoints_ready"] = meteor && meteor->listening() && tracking && tracking->listening();
 #endif
 #if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
 	if (remote) result["remote_status"] = String(remote->message().c_str());

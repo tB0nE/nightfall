@@ -1,11 +1,25 @@
 """Bounded, child-local shutdown for the USB XR diagnostic (not a LAN policy)."""
 import subprocess
 import time
+import json
+
+
+def valid_completion(path, token, target):
+    if path is None or not token: return False
+    try:
+        record=json.loads(path.read_text())
+        return (record.get("run_id")==token and record.get("state")=="completion_requested"
+            and type(record.get("target")) is int and record["target"]==target and target>0
+            and type(record.get("encoded_at_request")) is int and record["encoded_at_request"]>=target)
+    except (OSError,ValueError,AttributeError):
+        return False
 
 
 def run_application(command, *, env, timeout, service_log, stop_file,
-                    watch_disconnect=False, stop_timeout=3):
+                    watch_disconnect=False, stop_timeout=3,
+                    completion_file=None, completion_token=None, completion_target=0):
     stop_file.unlink(missing_ok=True)
+    if completion_file is not None: completion_file.unlink(missing_ok=True)
     interrupted = False
     forced = False
     deadline = time.monotonic() + timeout
@@ -25,9 +39,12 @@ def run_application(command, *, env, timeout, service_log, stop_file,
                     lines = pending.split("\n")
                     pending = lines.pop()
                     if any(line.startswith("METEOR_TRACKING_DISCONNECTED ") for line in lines):
-                        interrupted = True
-                        # Only the patched sample consumes this run-local request.
-                        stop_file.write_text("tracking disconnected\n")
+                        if not valid_completion(completion_file,completion_token,completion_target):
+                            interrupted = True
+                            # Only the patched sample consumes this run-local request.
+                            stop_file.write_text("tracking disconnected\n")
+                        # A valid completion request permits normal validation, NOT a
+                        # success verdict. Caller must still prove byte counts/drain.
                         deadline = time.monotonic() + stop_timeout
                 if time.monotonic() >= deadline:
                     if not interrupted:

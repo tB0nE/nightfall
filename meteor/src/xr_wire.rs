@@ -25,7 +25,7 @@ fn invalid(message: &str) -> io::Error {
 }
 
 impl Header {
-    fn decode(bytes: &[u8; HEADER_LEN]) -> io::Result<Self> {
+    pub(crate) fn decode(bytes: &[u8; HEADER_LEN]) -> io::Result<Self> {
         let u16_at = |i| u16::from_le_bytes(bytes[i..i + 2].try_into().unwrap());
         let u32_at = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
         let u64_at = |i| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());

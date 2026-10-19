@@ -10,7 +10,9 @@ mkdir -p "$OUT"
 VIDEO_PORT=""
 TRACKING_PORT=""
 LOG_PID=""
-if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
+if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 && "${NIGHTFALL_XR_UPSTREAM_DEMO:-0}" == 1 ]]; then
+    export NIGHTFALL_XR_PROBE_FRAMES="${NIGHTFALL_XR_PROBE_FRAMES:-200}"
+elif [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
     export NIGHTFALL_XR_INPUT_SECONDS="${NIGHTFALL_XR_INPUT_SECONDS:-30}"
     export NIGHTFALL_XR_PROBE_FRAMES="${NIGHTFALL_XR_PROBE_FRAMES:-240}"
 fi
@@ -25,7 +27,11 @@ TRACKING_PORT="$("$ADB" forward tcp:0 tcp:49091)"
 [[ "$VIDEO_PORT" =~ ^[0-9]+$ && "$TRACKING_PORT" =~ ^[0-9]+$ ]]
 "$ADB" logcat -T 1 -v brief -s NightfallPCVR:I > "$OUT/device.log" 2>&1 &
 LOG_PID=$!
-if [[ "${NIGHTFALL_XR_HELLO_XR:-0}" == 1 ]]; then
+if [[ "${NIGHTFALL_XR_UPSTREAM_DEMO:-0}" == 1 ]]; then
+    echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect the official Godot movement-demo environment. With the Touch controller profile, gently use the RIGHT stick to move/turn; left stick is unbound upstream. B/Y hold exits locally.'
+elif [[ "${NIGHTFALL_XR_GODOT_ENGINE:-0}" == 1 ]]; then
+    echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect a Godot-rendered grid of colored rotating cubes. Check head tracking/stereo; no controller interactions in this fixture.'
+elif [[ "${NIGHTFALL_XR_HELLO_XR:-0}" == 1 ]]; then
     echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect Khronos hello_xr reference-space cubes on a plain background; gently move your head.'
 elif [[ "${NIGHTFALL_XR_RASTER_SCENE:-0}" == 1 ]]; then
     echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect rotating colored cubes and a checkerboard floor; gently move your head.'
@@ -33,7 +39,9 @@ else
     echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect three colored spheres and a floor; gently move your head.'
 fi
 echo "Profile: ${NIGHTFALL_XR_EYE_SIZE:-256}x${NIGHTFALL_XR_EYE_SIZE:-256} per eye, target ${NIGHTFALL_XR_TARGET_HZ:-20} Hz; actual timings are recorded separately."
-if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
+if [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 && "${NIGHTFALL_XR_UPSTREAM_DEMO:-0}" == 1 ]]; then
+    echo 'Movement: right stick forward/back moves; left/right smoothly turns. Use small movements for comfort. About 10 seconds at the 200-frame/20-Hz test profile; actual cadence may vary.'
+elif [[ "${NIGHTFALL_XR_TOUCH_INPUTS:-0}" == 1 ]]; then
     echo "Input test: ${NIGHTFALL_XR_INPUT_SECONDS}s, deliberately paced. Stick moves marker; X/A widens hand cube; stick click makes it taller; grip changes size."
     if [[ "${NIGHTFALL_XR_HAPTICS:-0}" == 1 ]]; then
         echo 'Haptics: fully squeeze each grip separately; expect a short rumble in that controller only.'

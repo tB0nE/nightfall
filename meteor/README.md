@@ -553,3 +553,14 @@ cargo test
 ```
 
 Client side: `test/test_meteor_client.gd` (in `test/run_gdscript_tests.sh`).
+
+## Managed XR development spike
+
+Linux/NVIDIA development builds expose `--xr-dev <Nightfall-checkout> [--smoke]`
+to supervise the isolated USB XR workflow without starting proxy/depth/audio.
+This is not a packaged LAN XR feature. See
+[managed session scope and setup](../docs/research/meteor-xr-managed-session.md).
+
+The separate opt-in `--xr-control-dev` command exercises authenticated network
+negotiation only. It cannot launch applications or stream LAN video. See the
+[control prototype contract](../docs/research/meteor-xr-control-protocol.md).
