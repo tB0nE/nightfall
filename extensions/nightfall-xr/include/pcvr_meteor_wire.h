@@ -23,6 +23,7 @@ class MeteorXrWire {
     uint64_t epoch = 0, sequence = 0, last_id = 0, last_time = 0;
     bool ended = false;
     bool quest_local = false;
+    uint16_t width = 0, height = 0;
 public:
     bool header(const std::array<uint8_t, 152> &h, MeteorXrFrame &f) const {
         if (ended || std::memcmp(h.data(), "NFXR", 4) || meteor_xr_le(h.data()+4, 2) != 1 ||
@@ -39,8 +40,9 @@ public:
             for (unsigned i = 64; i < h.size(); ++i) if (h[i]) return false;
             return true;
         }
-        // First decoder spike is deliberately fixed-size, SDR H.264 only.
-        if (sequence >= 240 || !f.bytes || f.width != 512 || f.height != 256 || f.id <= last_id || f.display_ns <= last_time) return false;
+        // Two bounded SDR profiles; dimensions cannot change within a stream.
+        if (sequence >= 240 || !f.bytes || (f.height != 256 && f.height != 512) || f.width != f.height*2 ||
+            (sequence && (f.width != width || f.height != height)) || f.id <= last_id || f.display_ns <= last_time) return false;
         for (unsigned i = 0; i < 22; ++i) {
             uint32_t bits = uint32_t(meteor_xr_le(h.data()+64+i*4,4)); std::memcpy(&f.views[i], &bits,4);
             if (!std::isfinite(f.views[i])) return false;
@@ -62,6 +64,7 @@ public:
             if (!payload[i] && !payload[i+1] && payload[i+2] == 1) nals[payload[i+3]&31] = true;
         if (nals[5] != f.idr || (!sequence && !(nals[5] && nals[7] && nals[8]))) return false;
         epoch = f.epoch; ++sequence; last_id = f.id; last_time = f.display_ns; quest_local = f.quest_local;
+        width=f.width; height=f.height;
         return true;
     }
 };

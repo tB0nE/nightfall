@@ -109,7 +109,7 @@ meteor_capture_layer(struct null_compositor *c)
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_sub_image *sub = &layer->data.proj.v[eye].sub;
         if (!layer->sc_array[eye] || sub->array_index != 0 || sub->rect.offset.w != 0 || sub->rect.offset.h != 0 ||
-            sub->rect.extent.w != 256 || sub->rect.extent.h != 256) return false;
+            (sub->rect.extent.w != 256 && sub->rect.extent.w != 512) || sub->rect.extent.h != sub->rect.extent.w) return false;
     }
     const char *bridge = getenv("METEOR_NVENC_BRIDGE");
     if (bridge) return meteor_encode_layer(c, layer, bridge);

@@ -149,13 +149,41 @@ sustained-rate streaming and recenter handling remain outstanding. See the
 [tracking report](../../research/meteor-xr-tracking-spike.md).
 
 Next pacing experiment: opt-in `NIGHTFALL_XR_FREE_RUNNING=1` removes per-frame app
-file waits while retaining final exact-timestamp drain. The smooth scene initially
-passed, but changing stripes exposed pixels from a later frame paired with older
-metadata. This mode is a **known failing image-lifetime diagnostic**, not working
-continuous streaming. Six accounting tests cover unknown/duplicate/reordered
-timestamps and missing final drain; they cannot establish image ownership. Next
-trace swapchain-image reuse through the multi/null compositor. Keep the proven
-stop-and-wait default and do not deploy this experiment to testers as working.
+file waits while retaining final exact-timestamp drain. Changing stripes exposed
+reused image pixels paired with older metadata. Explicit per-image reservations
+in multi-compositor slots now fix that 32-frame regression without relaxing the
+validator. Six accounting tests and image-reservation balancing tests cover the
+host path. See the [ownership report](../../research/meteor-xr-image-ownership.md).
+The correction conservatively holds a system lock through synchronous native
+capture; this is not the final async design or sustained-rate proof. Keep the
+stop-and-wait default; free-running USB validation remains outstanding.
+
+Update: user confirmed the free-running USB scene remained world-locked; all
+120 frames were delivered and teardown was clean. Next transport stage adds
+opt-in `NIGHTFALL_XR_ASYNC_DELIVERY=1`: two pending owned compressed packets plus
+one in flight, no normal network ACK wait in native capture, explicit queue-full
+failure rather than dropping dependent H.264 packets. Integrated loopback passed
+103 packets from 120 submissions with exact content/metadata, synchronous
+regression passed, and interrupted-app drain passed five packets. Async USB visual
+validation is next; GPU packing/encoding remain synchronous. See the
+[async delivery report](../../research/meteor-xr-async-delivery.md).
+
+Next update: user confirmed asynchronous delivery looked unchanged; 117 packets
+from 120 submissions drained correctly. An independently owned raw encode queue
+is now host-tested under `NIGHTFALL_XR_ASYNC_ENCODE=1` (requires both existing
+opt-ins). It keeps one active and one newest-only pending raw job, preserving
+image reservations/references through encoding. Stripe and tracked-scene tests
+pass, as do original synchronous and software regressions. New-mode headset
+validation is next; resolution/pacing remain diagnostic. See the
+[raw worker report](../../research/meteor-xr-async-encoding.md).
+
+The full worker-driven scene was user-confirmed stable: all 120 frames drained.
+The next profile now supports 512x512 per eye and a 60-Hz target, with the optimized
+APK installed, stripe/scene host checks and standalone Quest decoder checks
+passing. Measured host scheduled cadence was ~46.9 Hz, not a proven 60-Hz stream.
+Detailed profiling exposed and reduced CPU-reference overhead; explicit color
+metadata fixed a larger-profile RGB mismatch. Larger-profile visual confirmation
+is next. See the [profile report](../../research/meteor-xr-resolution-rate-profiles.md).
 
 1. Nightfall sends timestamped poses/valid velocities before the first video
    frame, not only after decoder initialization. Avoid a startup dependency loop.

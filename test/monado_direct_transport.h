@@ -81,7 +81,8 @@ static void meteor_direct_header(uint8_t header[152], const struct meteor_stereo
     meteor_direct_u64(header + 24, input->frame_id, 8);
     meteor_direct_u64(header + 32, input->display_ns, 8);
     meteor_direct_u64(header + 40, length, 4);
-    meteor_direct_u64(header + 44, 512, 2); meteor_direct_u64(header + 46, 256, 2);
+    uint32_t eye_size=input->eye_size ? input->eye_size : 256;
+    meteor_direct_u64(header + 44, eye_size*2, 2); meteor_direct_u64(header + 46, eye_size, 2);
     header[49] = idr ? 1 : 0;
     if (getenv("METEOR_XR_TRACKED_SCENE")) header[49] |= 2; // Render poses/FOV in adopted Quest LOCAL.
     _Static_assert(sizeof(float) == 4, "Wire requires float32");

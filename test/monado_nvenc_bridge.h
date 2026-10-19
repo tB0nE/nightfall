@@ -19,5 +19,6 @@ struct meteor_stereo_encode_v1 {
     float views[22];
     meteor_encoded_callback_v1 encoded_callback;
     void *callback_context;
+    uint32_t eye_size; // 0 is legacy 256; otherwise 256 or 512, fixed per session.
 };
 typedef void (*meteor_encode_stereo_fn_v1)(const struct meteor_stereo_encode_v1 *);

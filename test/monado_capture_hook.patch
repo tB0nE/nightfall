@@ -75,7 +75,31 @@
  	const double time_s = time_ns_to_s(at_timestamp_ns - hmd->created_ns);
  	const double d = hmd->diameter_m;
  	const double d2 = d * 2;
-@@ -259,6 +264,12 @@
+@@ -180,5 +185,23 @@
+  */
+ 
++static xrt_result_t
++simulated_meteor_view_poses(struct xrt_device *xdev,
++                            const struct xrt_vec3 *default_eye_relation,
++                            int64_t at_timestamp_ns,
++                            enum xrt_view_type view_type,
++                            uint32_t view_count,
++                            struct xrt_space_relation *out_head_relation,
++                            struct xrt_fov *out_fovs,
++                            struct xrt_pose *out_poses)
++{
++	xrt_result_t result = u_device_get_view_poses(xdev, default_eye_relation, at_timestamp_ns,
++	                                               view_type, view_count, out_head_relation, out_fovs, out_poses);
++	if (result == XRT_SUCCESS && view_count == 2) {
++		meteor_tracking_eye_geometry(&simulated_hmd(xdev)->meteor_tracking, xdev, out_fovs, out_poses);
++	}
++	return result;
++}
++
+ enum u_logging_level
+ simulated_log_level(void)
+ {
+@@ -259,6 +282,16 @@
  		return NULL;
  	}
  
@@ -84,7 +108,68 @@
 +		simulated_hmd_destroy(&hmd->base);
 +		return NULL;
 +	}
++	if (hmd->meteor_tracking.has_optics) {
++		hmd->base.get_view_poses = simulated_meteor_view_poses;
++		meteor_tracking_eye_geometry(&hmd->meteor_tracking, &hmd->base, NULL, NULL);
++	}
 +
  	// Setup variable tracker.
  	u_var_add_root(hmd, "Simulated HMD", true);
  	u_var_add_pose(hmd, &hmd->pose, "pose");
+--- a/src/xrt/compositor/multi/comp_multi_compositor.c
++++ b/src/xrt/compositor/multi/comp_multi_compositor.c
+@@ -31,6 +31,7 @@
+ #include <stdarg.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include "/tests/monado_image_lease.h"
+ 
+ #ifdef XRT_GRAPHICS_SYNC_HANDLE_IS_FD
+ #include <unistd.h>
+@@ -63,6 +64,7 @@
+ 	}
+ 
+ 	for (size_t i = 0; i < slot->layer_count; i++) {
++		meteor_projection_image_lease(&slot->layers[i].data, slot->layers[i].xscs, false);
+ 		for (size_t k = 0; k < ARRAY_SIZE(slot->layers[i].xscs); k++) {
+ 			xrt_swapchain_reference(&slot->layers[i].xscs[k], NULL);
+ 		}
+@@ -670,6 +672,7 @@
+ 		xrt_swapchain_reference(&mc->progress.layers[index].xscs[i], xsc[i]);
+ 	}
+ 	mc->progress.layers[index].data = *data;
++	meteor_projection_image_lease(data, mc->progress.layers[index].xscs, true);
+ 
+ 	return XRT_SUCCESS;
+ }
+--- a/src/xrt/compositor/multi/comp_multi_system.c
++++ b/src/xrt/compositor/multi/comp_multi_system.c
+@@ -589,9 +589,15 @@
+ 		// Make sure that the clients doesn't go away while we transfer layers.
+ 		os_mutex_lock(&msc->list_and_timing_lock);
+ 		transfer_layers_locked(msc, predicted_display_time_ns, frame_id);
+-		os_mutex_unlock(&msc->list_and_timing_lock);
+-
+-		xrt_comp_layer_commit(xc, XRT_GRAPHICS_SYNC_HANDLE_INVALID);
++		if (getenv("METEOR_NVENC_BRIDGE")) {
++			// Diagnostic synchronous capture: keep delivered slots/leases alive
++			// through GPU consumption, including concurrent client teardown.
++			xrt_comp_layer_commit(xc, XRT_GRAPHICS_SYNC_HANDLE_INVALID);
++			os_mutex_unlock(&msc->list_and_timing_lock);
++		} else {
++			os_mutex_unlock(&msc->list_and_timing_lock);
++			xrt_comp_layer_commit(xc, XRT_GRAPHICS_SYNC_HANDLE_INVALID);
++		}
+ 
+ 		// Re-lock the thread for check in while statement.
+ 		os_thread_helper_lock(&msc->oth);
+--- a/src/xrt/compositor/util/comp_swapchain.c
++++ b/src/xrt/compositor/util/comp_swapchain.c
+@@ -94,7 +94,6 @@
+ 
+ 	sc->images[index].use_count--;
+ 	if (sc->images[index].use_count == 0) {
+-		os_mutex_unlock(&sc->images[index].use_mutex);
+ 		pthread_cond_broadcast(&sc->images[index].use_cond);
+ 	}
+ 

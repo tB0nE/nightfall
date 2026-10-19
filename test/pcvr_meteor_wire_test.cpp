@@ -35,4 +35,12 @@ int main() {
     scene[49]=1; assert(!tracked.header(scene,frame)); // No origin-mode switch.
     auto bad_end=end; bad_end[49]=2; assert(!tracked.header(bad_end,frame));
     assert(tracked.header(end,frame) && tracked.accept(frame,{}));
+    auto larger=h; meteor_xr_put(larger.data()+44,1024,2); meteor_xr_put(larger.data()+46,512,2);
+    MeteorXrWire high;
+    assert(high.header(larger,frame) && frame.width==1024 && frame.height==512);
+    assert(high.accept(frame,payload));
+    auto changed=h; meteor_xr_put(changed.data()+16,1,8); meteor_xr_put(changed.data()+24,2,8); meteor_xr_put(changed.data()+32,2,8);
+    assert(!high.header(changed,frame));
+    meteor_xr_put(larger.data()+44,2048,2); meteor_xr_put(larger.data()+46,1024,2);
+    assert(!MeteorXrWire().header(larger,frame));
 }

@@ -9,6 +9,8 @@ NDK_ROOT="$SDK_ROOT/ndk/$NIGHTFALL_ANDROID_NDK_VERSION"
 ADB="${NIGHTFALL_ADB:-adb}"
 OUT="$ROOT/.build-cache/meteor-xr/android-decoder-spike"
 FRAMES="${NIGHTFALL_XR_PROBE_FRAMES:-32}"
+EYE_SIZE="${NIGHTFALL_XR_EYE_SIZE:-256}"
+[[ "$EYE_SIZE" == 256 || "$EYE_SIZE" == 512 ]]
 [[ "$FRAMES" =~ ^[0-9]+$ ]] && (( FRAMES >= 1 && FRAMES <= 240 ))
 mkdir -p "$OUT"
 "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android32-clang++" \
@@ -26,7 +28,7 @@ cleanup() {
     "$ADB" forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-"$ADB" shell timeout 38s /data/local/tmp/nightfall-xr-decoder-probe "$FRAMES" > "$OUT/device.log" 2>&1 &
+"$ADB" shell timeout 38s /data/local/tmp/nightfall-xr-decoder-probe "$FRAMES" "$EYE_SIZE" > "$OUT/device.log" 2>&1 &
 TEST_PID=$!
 READY=0
 for attempt in {1..100}; do

@@ -444,10 +444,28 @@ after changing its pinned patch, then run:
 bash tools/build_support/probe_monado_runtime.sh --build
 # No headset: moving synthetic poses through Monado/app + scene encode checks:
 python3 test/run_monado_tracking_spike.py "$PWD"
-# EXPERIMENT ONLY: known free-running image-lifetime failure; see checkpoint:
+# EXPERIMENT ONLY: free-running app with image leases; host-tested, not async:
 NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
+# Optional bounded worker delivery with a loopback receiver (host regression):
+NIGHTFALL_XR_ASYNC_DELIVERY=1 NIGHTFALL_XR_FREE_RUNNING=1 \
+  bash tools/build_support/probe_xr_transport.sh
+# Optional raw encode worker as well (requires the previous two opt-ins):
+NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_xr_transport.sh
+# Larger diagnostic profile (target Hz is not a sustained-rate guarantee):
+NIGHTFALL_XR_EYE_SIZE=512 NIGHTFALL_XR_TARGET_HZ=60 \
+  NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_xr_transport.sh
 # With the latest optimized DEV APK: arm, then press DEV: Meteor decoded stereo.
 bash tools/build_support/probe_headset_xr_tracking_runtime.sh
+# GPU scene correctness check (still includes CPU oracle and readback):
+NIGHTFALL_XR_GPU_SCENE=1 NIGHTFALL_XR_EYE_SIZE=512 \
+  NIGHTFALL_XR_TARGET_HZ=60 python3 test/run_monado_tracking_spike.py "$PWD"
+# GPU scene measurement: no app pixel oracle/readback; timestamp queries + fences:
+NIGHTFALL_XR_GPU_MEASURE=1 NIGHTFALL_XR_GPU_SCENE=1 \
+  NIGHTFALL_XR_EYE_SIZE=512 NIGHTFALL_XR_TARGET_HZ=60 \
+  NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
 ```
 
 The tracked fixture keeps a separate USB tracking channel live while rendering
@@ -456,6 +474,16 @@ adopted Quest LOCAL origin, not Monado's startup-recentered LOCAL. This is a tin
 CPU-reference scene with hardware video encoding/decoding, not a performance
 benchmark, game-ready stream or normal Meteor feature. Visual world-lock and
 orientation need headset testing. See the [tracking report](docs/research/meteor-xr-tracking-spike.md).
+The optional [GPU scene](docs/research/meteor-xr-gpu-scene.md) uses a Vulkan
+compute shader built with the runtime probe. It retains CPU oracle/readback
+validation by default. Its explicit measurement mode removes those checks and
+reports GPU timestamps, but is still a short synthetic test, not a game benchmark.
+Add `NIGHTFALL_XR_HEADSET_OPTICS=1` to a tracked-scene invocation to request
+the headset's actual eye-relative poses/FOV before initializing the host HMD.
+This requires the updated DEV APK; an older client fails explicitly instead
+of silently retaining simulated optics. The no-headset fixture supplies known
+synthetic optics and verifies their propagation. See
+[headset optics](docs/research/meteor-xr-headset-optics.md) for limits and tests.
 
 ### Retired ALVR research probe
 

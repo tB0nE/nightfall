@@ -16,6 +16,9 @@ int main(int argc, char **argv) {
     while (!endpoint.idle() && MeteorTrackingEndpoint::now_ns()<deadline) {
         MeteorTrackingSample s; s.epoch=42; s.client_ns=MeteorTrackingEndpoint::now_ns();
         s.pose[0]=.25f;
+        s.optics.epoch=s.epoch;
+        s.optics.eyes={-.032f,0,0,0,0,0,1,-.8f,.7f,.75f,-.65f,
+                       .032f,0,0,0,0,0,1,-.7f,.8f,.75f,-.65f};
         if (argc==3) s.pose[0]+=.05f*std::sin(double(s.client_ns)*1e-9*3.0);
         endpoint.publish(s);
         if (!ready && endpoint.listening()) { std::puts("READY synthetic tracking publisher"); std::fflush(stdout); ready=true; }

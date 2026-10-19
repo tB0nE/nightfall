@@ -38,7 +38,7 @@ private:
     void status(const std::string &value, bool error = false);
     void run();
     bool io(int fd, void *data, size_t size, bool writing, int64_t deadline);
-    bool decoder();
+    bool decoder(uint16_t width, uint16_t height);
     bool drain();
     bool input(const std::vector<uint8_t> &bytes, int64_t pts, bool end);
 };

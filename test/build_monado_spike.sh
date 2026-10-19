@@ -19,6 +19,8 @@ while read -r driver; do args+=("-D$driver=OFF"); done < <(
 args+=(-DXRT_BUILD_DRIVER_SIMULATED=ON)
 cmake "${args[@]}"
 cmake --build /out/capture-build --target monado-service openxr_monado -j 4
-c++ -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
+glslangValidator -V /tests/meteor_gpu_scene.comp -o /out/meteor_gpu_scene.spv
+spirv-val /out/meteor_gpu_scene.spv
+c++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -Wno-missing-field-initializers \
     /tests/monado_runtime_probe.cpp -lopenxr_loader -lvulkan -o /out/runtime-probe
 echo 'Built diagnostic capture/optional encoder-hook service and app; run the separate probes to verify each path.'

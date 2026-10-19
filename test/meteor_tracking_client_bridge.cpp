@@ -23,6 +23,7 @@ struct Client {
     std::thread worker;
     std::mutex mutex;
     MeteorTrackingSample sample;
+    MeteorHeadsetOptics optics;
     uint64_t mapped_ns=0;
     int fd=-1;
     ~Client() { stop.store(true); if(worker.joinable()) worker.join(); if(fd>=0) close(fd); }
@@ -58,13 +59,22 @@ struct Client {
             }
         }
         std::fprintf(stderr,"METEOR_TRACKING_CLOCK uncertainty_ns=%llu\n",(unsigned long long)clock.uncertainty_ns());
+        if(std::getenv("METEOR_XR_HEADSET_OPTICS")) {
+            auto h=request("NFXO"); std::array<uint8_t,MeteorOpticsWire::size> packet{};
+            uint64_t deadline=now_ns()+2000000000;
+            if(!io(h.data(),h.size(),true,deadline) || !io(packet.data(),packet.size(),false,deadline) ||
+                !MeteorOpticsWire::decode(packet,optics)) { failed.store(true); return; }
+            std::fprintf(stderr,"METEOR_HEADSET_OPTICS epoch=%llu left_x=%.6f right_x=%.6f\n",
+                (unsigned long long)optics.epoch,optics.eyes[0],optics.eyes[11]);
+        }
         MeteorTrackingWire wire;
         while(!stop.load()) {
             auto h=request("NFXP"); std::array<uint8_t,64> packet{};
             uint64_t deadline=now_ns()+2000000000;
             MeteorTrackingSample incoming; uint64_t mapped=0;
             if(!io(h.data(),h.size(),true,deadline) || !io(packet.data(),packet.size(),false,deadline) ||
-                !wire.accept(packet,incoming) || !clock.to_host(incoming.client_ns,mapped)) break;
+                !wire.accept(packet,incoming) || !clock.to_host(incoming.client_ns,mapped) ||
+                (optics.epoch && incoming.epoch!=optics.epoch)) break;
             uint64_t receipt=now_ns();
             if((mapped>receipt ? mapped-receipt : receipt-mapped)>250000000+clock.uncertainty_ns()) break;
             {
@@ -119,3 +129,9 @@ extern "C" int meteor_tracking_pose_v1(void *context,int64_t at_ns,float pose[7]
     std::memcpy(pose,c->sample.pose.data(),7*sizeof(float)); *sample_ns=stamp; return 1;
 }
 extern "C" void meteor_tracking_stop_v1(void *context) { delete static_cast<Client *>(context); }
+extern "C" int meteor_tracking_optics_v1(void *context,float eyes[22]) {
+    auto *c=static_cast<Client *>(context);
+    if(!c || !eyes || !c->ready.load() || c->failed.load() || !c->optics.epoch) return 0;
+    // Immutable after worker readiness is published with release/acquire ordering.
+    std::memcpy(eyes,c->optics.eyes.data(),22*sizeof(float)); return 1;
+}

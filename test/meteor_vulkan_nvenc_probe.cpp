@@ -109,7 +109,13 @@ int main(int argc, char **argv) {
 #endif
     auto get_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR"));
     REQUIRE(get_fd, "External memory FD export unavailable");
+#ifdef METEOR_MONADO_BRIDGE
+    const uint32_t eye_size=input->eye_size ? input->eye_size : 256;
+    REQUIRE(eye_size==256 || eye_size==512,"Unsupported eye-size profile");
+    const uint32_t width=eye_size*2,height=eye_size;
+#else
     constexpr uint32_t width = 512, height = 256;
+#endif
     VkPhysicalDeviceMemoryProperties memory_props; vkGetPhysicalDeviceMemoryProperties(gpu, &memory_props);
     auto memory_type = [&](uint32_t bits, VkMemoryPropertyFlags flags) {
         for (uint32_t i = 0; i < memory_props.memoryTypeCount; ++i)
@@ -187,6 +193,8 @@ int main(int argc, char **argv) {
     for (;;) {
     REQUIRE(input->device == device && input->gpu == gpu && input->queue == queue && input->queue_family == family,
         "Bridge device changed during session");
+    REQUIRE((input->eye_size ? input->eye_size : 256)==eye_size,"Bridge dimensions changed during session");
+    auto pack_start=std::chrono::steady_clock::now();
     if (!first_frame) VK(vkResetCommandBuffer(cmd, 0));
 #endif
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; VK(vkBeginCommandBuffer(cmd, &begin));
@@ -209,7 +217,7 @@ int main(int argc, char **argv) {
         src.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &src);
         VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.dstOffset.x = eye * 256; copy.extent = {256, 256, 1};
+        copy.dstOffset.x = eye * eye_size; copy.extent = {eye_size, eye_size, 1};
         vkCmdCopyImage(cmd, input->eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         src.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         src.srcQueueFamilyIndex = family; src.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
@@ -227,6 +235,10 @@ int main(int argc, char **argv) {
     VK(vkEndCommandBuffer(cmd));
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
     VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); VK(vkQueueWaitIdle(queue));
+#ifdef METEOR_MONADO_BRIDGE
+    std::fprintf(stderr,"GPU_PACK frame=%llu us=%lld\n",(unsigned long long)input->frame_id,
+        (long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-pack_start).count());
+#endif
 
 #ifdef METEOR_MONADO_BRIDGE
     if (first_frame) {
@@ -250,8 +262,16 @@ int main(int argc, char **argv) {
     NV_ENC_PRESET_CONFIG preset{}; preset.version = NV_ENC_PRESET_CONFIG_VER; preset.presetCfg.version = NV_ENC_CONFIG_VER;
     NV(api.nvEncGetEncodePresetConfigEx(encoder, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset));
     preset.presetCfg.frameIntervalP = 1; preset.presetCfg.gopLength = 60;
-    preset.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR; preset.presetCfg.rcParams.averageBitRate = 4000000;
+    preset.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR; preset.presetCfg.rcParams.averageBitRate = 4000000*(width/512)*(height/256);
     preset.presetCfg.rcParams.enableLookahead = 0;
+    // Match the driver's RGB conversion profile explicitly. Without VUI,
+    // decoders can assume BT.601 for the wider BT.709 test and corrupt colors.
+    auto &vui=preset.presetCfg.encodeCodecConfig.h264Config.h264VUIParameters;
+    vui.videoSignalTypePresentFlag=1; vui.videoFormat=NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+    vui.videoFullRangeFlag=0; vui.colourDescriptionPresentFlag=1;
+    vui.colourPrimaries=NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+    vui.transferCharacteristics=NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+    vui.colourMatrix=width>512 ? NV_ENC_VUI_MATRIX_COEFFS_BT709 : NV_ENC_VUI_MATRIX_COEFFS_SMPTE170M;
     NV_ENC_INITIALIZE_PARAMS init{}; init.version = NV_ENC_INITIALIZE_PARAMS_VER;
     init.encodeGUID = NV_ENC_CODEC_H264_GUID; init.presetGUID = NV_ENC_PRESET_P1_GUID;
     init.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY; init.encodeWidth = init.darWidth = width;
@@ -311,7 +331,7 @@ int main(int argc, char **argv) {
         }
 #endif
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
-        std::printf("NVENC timestamp=%llu bytes=%u submit-to-lock-us=%lld (tiny diagnostic, not XR benchmark)\n", static_cast<unsigned long long>(timestamp_base + frame), lock.bitstreamSizeInBytes, static_cast<long long>(us));
+        std::fprintf(stderr,"NVENC timestamp=%llu bytes=%u submit-to-lock-us=%lld (tiny diagnostic, not XR benchmark)\n", static_cast<unsigned long long>(timestamp_base + frame), lock.bitstreamSizeInBytes, static_cast<long long>(us));
         NV(api.nvEncUnlockBitstream(encoder, bitstream.bitstreamBuffer));
     }
     output.flush(); REQUIRE(output.good(), "Cannot write bitstream");

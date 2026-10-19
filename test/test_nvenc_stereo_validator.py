@@ -20,6 +20,21 @@ class StereoValidatorTests(unittest.TestCase):
     def test_correct(self):
         validate(self.pattern())
 
+    def test_larger_profile(self):
+        small = self.pattern()[:512*256*3]
+        rows = []
+        for row in range(256):
+            start = row*512*3
+            line = b"".join(small[start+x:start+x+3]*2 for x in range(0,512*3,3))
+            rows.extend((line,line))
+        validate(b"".join(rows),frames=1,eye_size=512)
+        with self.assertRaises(ValueError):
+            validate(b"".join(rows),frames=1,eye_size=256)
+
+    def test_unbounded_profile_rejected(self):
+        with self.assertRaises(ValueError):
+            validate(b"",frames=1,eye_size=1024)
+
     def test_swapped_eyes_rejected(self):
         with self.assertRaises(ValueError):
             validate(self.pattern(swap_eyes=True))

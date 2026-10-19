@@ -1,8 +1,8 @@
 # Meteor XR checkpoint — 2026-10-18
 
-Branch: `feat/meteor-xr-streaming`. Latest tested headset artifact:
+Branch: `feat/meteor-xr-streaming`. Latest installed headset artifact:
 `Nightfall-Android-arm64-v8a-dev.apk`, optimized/release-signed DEV, ALVR OFF.
-Build/install log: `/tmp/nightfall-tracked-scene-apk.log` (temporary).
+Latest build/install log: `/tmp/nightfall-xr-profile-apk.log` (temporary).
 Tracked-scene checkpoint commit: `f86bace`.
 
 ## Current result
@@ -68,6 +68,101 @@ required or running as part of this path. No system runtime was registered.
     free-running image correctness is NOT established. Keep this opt-in mode as
     a failing diagnostic reproducer, not a supported streaming option. The
     headset remains on the proven scene APK and stop-and-wait default.
+16. Corrected the ownership failure in the isolated Monado patch: stereo
+    multi-compositor slots reserve each image until dropped/retired; synchronous
+    native capture keeps those slots alive through consumption. Fixed the pinned
+    image-use decrement's double-unlock. Strict changing-stripe regressions now
+    pass: 32 submitted / 27 encoded and 120 submitted / 108 encoded, with all
+    skipped app frames accounted for and final drain verified. The original
+    32-frame mode and five-frame interrupted-app run also pass with balanced
+    image reservations. No headset APK changes. See the
+    [ownership report](meteor-xr-image-ownership.md) for the temporary system-lock
+    tradeoff and why this is still not asynchronous streaming.
+    The software capture regression also passed, and the free-running tracked
+    scene passed 32 submitted / 31 encoded with root-origin checks and decoded
+    reference mean byte error 1.046. Free-running USB visual confirmation then
+    passed: user saw the spheres remain world-locked, while noting very low
+    resolution/frame rate. Logs show 120 submitted / 120 encoded frames, no
+    compositor skips, final drain, decoded-reference mean byte error 1.123 and
+    clean hardware-decoder/render-resource teardown. This confirms correctness,
+    not acceptable streaming quality or sustained-rate performance.
+17. Added opt-in bounded asynchronous compressed-packet delivery. A worker owns
+    two pending packets plus one in flight, with no borrowed GPU handles. The
+    120-submission loopback stripe run delivered all 103 encoded packets (17
+    compositor skips), exact bytes/metadata/source markers and clean drain;
+    peak pending was one. Original synchronous 32-frame transfer still passed.
+    Stalled-peer/overflow tests verify bounded failure and ownership cleanup.
+    This decouples network delivery only; GPU packing/NVENC still block capture.
+    See the [async delivery report](meteor-xr-async-delivery.md). No APK changes.
+    User then tested async USB delivery and reported the same stable scene:
+    120 submitted / 117 encoded/delivered, three compositor skips, all packets
+    drained, peak pending one, decoded-reference mean byte error 1.095 and device
+    EOS after sequence 116. No latency or quality improvement was measured.
+18. Added a raw encode worker with independent image reservations, swapchain
+    references, saved render metadata/frame ID, one active and one newest-only
+    pending job. The compositor no longer waits for GPU packing/NVENC in this
+    opt-in mode. Full stripe run passed 120 submissions / 106 accepted raw jobs /
+    one pending replacement / 105 encoded and delivered. Tracked-scene host run
+    passed 32 accepted / 31 encoded, mean reference error 1.053. Original 32-frame
+    transport and software pixel-capture regressions passed. See the
+    [raw worker report](meteor-xr-async-encoding.md). No APK changes; new-mode USB
+    confirmation and hardware failure/standby cases remain outstanding.
+    Update: the user confirmed the full worker-driven USB scene was stable.
+    All 120 submissions were accepted, encoded and delivered, with no replacements
+    or skips, network peak pending one, mean reference error 1.182, final drain
+    and clean teardown in the unchanged OpenXR session. Hardware failure/standby
+    recovery and realistic resolution/rate remain unproven.
+19. Added bounded 256/512-per-eye decoder profiles and 20/60-Hz host targets.
+    Installed the optimized DEV APK. The 512/60-target stripe run passed 120
+    frames; tracked scene passed 119 of 120 submissions with one raw replacement;
+    standalone Quest decoding passed 32 1024x512 buffers. Fixed unspecified
+    color-matrix signaling exposed by the wider stream, without relaxing RGB
+    tests. Optimized the reference app and added detailed stage timings: median
+    both-eye app work 12.776 ms, pack 0.195 ms, encode/copy 0.761 ms. Host scheduled
+    display cadence was approximately 46.9 Hz, **not proven 60 Hz headset output**.
+    Larger-profile USB test completed 240 submissions / 239 decoded frames,
+    one raw replacement, mean reference error 0.888 and clean shutdown. User
+    feedback was tentative; this does not establish sustained 60 Hz. See the
+    [profile/timing report](meteor-xr-resolution-rate-profiles.md).
+20. Added opt-in Vulkan compute rendering of the same tracked scene, retaining
+    independent CPU pixel validation before performance work. Initial 32-frame
+    host run passed with 31 delivered and one pending replacement. No new APK
+    is required. GPU-scene headset confirmation and a measurement-only mode
+    remain outstanding. See [GPU scene](meteor-xr-gpu-scene.md).
+21. Added separate `NIGHTFALL_XR_GPU_MEASURE=1` opt-in: device-local storage,
+    no app CPU oracle/readback/artifacts, per-eye completion fences and GPU
+    timestamp queries. 120 submissions yielded 118 decoded frames with all skips
+    accounted for and final drain. Median both-eye app work 335.5 us, GPU
+    dispatch/copy 33.984 us per eye; host scheduled cadence 55.28 Hz, not Quest
+    FPS. Correctness mode remains default. Measurement-path headset confirmation
+    and realistic optics/application workloads remain next gates.
+    Update: user tested on Quest and reported it felt quite smooth. 240
+    submissions / 238 encoded and headset-decoded frames, one pre-worker skip
+    and one raw replacement, final frame drained; host scheduled cadence 58.04
+    Hz. App both-eye median 815 us; GPU dispatch/copy 33.92 us per eye.
+    Host shutdown passed; device log captured the final picture hold, not the
+    later local exit. Real optics and realistic workloads remain outstanding.
+22. Added opt-in headset optics snapshot (`NIGHTFALL_XR_HEADSET_OPTICS=1`).
+    Quest publishes eye poses relative to VIEW and asymmetric FOV; a validated,
+    epoch-bound handshake initializes the Monado virtual HMD before use.
+    Synthetic optics were verified in actual encoded render metadata, with
+    both measurement and full pixel-validation runs passing. Seven socket
+    tests plus native malformed-packet tests pass. Rebuilt and installed the
+    optimized DEV APK; real-headset optics confirmation remains outstanding.
+    See [optics report](meteor-xr-headset-optics.md).
+    First headset attempt negotiated valid optics (62.464 mm separation), but
+    video startup failed when the encoded delivery queue filled before the
+    decoder's first ACK. Added up-to-two-second capacity backpressure only on
+    the off-compositor raw encode worker; fixed queue size and encoded order
+    retained. Delayed-ACK and stalled-peer regressions pass, as does the full
+    120-submission negotiated-optics host run (119 delivered). No APK change
+    needed for this host fix; real-headset retry pending.
+    Retry succeeded: user reported very smooth playback and FOV filling the
+    screen. Real eye separation 62.464 mm; 240 submitted / 237 encoded and
+    headset-decoded frames, two pre-worker skips plus one raw replacement,
+    final frame drained. Host scheduled cadence 57.27 Hz, not measured Quest
+    presentation FPS. App both-eye median 590 us; GPU dispatch/copy 33.984 us
+    per eye. Host shutdown clean; device log ends at final-picture hold.
 
 ## Architecture and ownership
 
@@ -98,9 +193,9 @@ bash tools/build_support/probe_monado_runtime.sh --build
 bash tools/build_support/probe_monado_runtime.sh --test
 python3 test/test_meteor_tracking_endpoint.py
 python3 test/run_monado_tracking_spike.py "$PWD"
-# EXPERIMENT: known image-lifetime failure; not a supported streaming mode:
+# EXPERIMENT: host image leases fixed; still synchronous / not production:
 NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
-# Stronger changing-stripe regression (currently FAILS):
+# Stronger changing-stripe regression (now passes with image leases):
 NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_monado_nvenc.sh
 NIGHTFALL_PCVR_ALVR=OFF ./build.sh --dev --install
 # Arm only when the tester is ready; button press deadline is 60 seconds:
@@ -126,17 +221,18 @@ Details: [active plan](../plans/active/meteor-xr-monado-spike.md),
 
 ## Next work, with gates
 
-1. Investigate the failing free-running changing-stripe test before more headset
-   tests. The null-compositor capture hook appears to observe reused image content
-   paired with older submitted metadata. Trace acquired/released image ownership
-   through the multi/null compositor and retain/copy a submitted image until GPU
-   consumption finishes. Do not fix this by relaxing pixel validation or merely
-   relabeling timestamps. Preserve final drain and stop-and-wait defaults.
-   Free-running app-crash accounting is also not supported; the harness rejects
-   that combination rather than misreporting it.
-2. Decouple compositor/encoder/transport with bounded ownership and newest-frame
-   policy, explicit completion fences and drain. Do not merely remove a mutex or
-   reuse a surface while the encoder/compositor still owns it.
+1. Free-running changing-stripe correctness and USB world-lock are now confirmed.
+   Reproduce the successful USB scene using the same installed APK:
+   `NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_headset_xr_tracking_runtime.sh`.
+   Next address asynchronous delivery and realistic rendering dimensions/rate,
+   rather than treating this tiny CPU-reference scene as a performance result.
+   Preserve final drain and stop-and-wait defaults. Free-running app-crash
+   accounting is still unsupported; the harness rejects that combination.
+2. Network and raw-worker USB testing passed with `NIGHTFALL_XR_ASYNC_ENCODE=1`,
+   `NIGHTFALL_XR_ASYNC_DELIVERY=1`, `NIGHTFALL_XR_FREE_RUNNING=1`.
+   The 512-eye USB sequence passed; next improve sustained-rate
+   measurement, reference rendering and GPU completion fences/pools.
+   Do not merely remove a mutex or reuse a surface while encoding still owns it.
 3. Negotiate real Quest FOV/IPD/resolution/rate, refresh clock calibration and add
    tracking history/valid velocities/prediction, explicit origin generations,
    recenter and standby handling. Test realistic stereo dimensions/rates.

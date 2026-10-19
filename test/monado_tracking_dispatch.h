@@ -9,6 +9,8 @@ struct meteor_tracking_bridge {
     void *module, *client;
     int (*pose)(void *, int64_t, float *, uint64_t *);
     void (*stop)(void *);
+    bool has_optics;
+    float eyes[22];
 };
 static void meteor_tracking_release(struct meteor_tracking_bridge *b) {
     if (b->client && b->stop) b->stop(b->client);
@@ -30,7 +32,28 @@ static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b) {
     if (!start || !b->pose || !b->stop || !(b->client = start(port))) {
         meteor_tracking_release(b); return false;
     }
+    if(getenv("METEOR_XR_HEADSET_OPTICS")) {
+        int (*optics)(void *,float *)=NULL;
+        symbol=dlsym(b->module,"meteor_tracking_optics_v1"); memcpy(&optics,&symbol,sizeof(optics));
+        if(!optics || !optics(b->client,b->eyes)) { meteor_tracking_release(b); return false; }
+        b->has_optics=true;
+    }
     return true;
+}
+static void meteor_tracking_eye_geometry(struct meteor_tracking_bridge *b,struct xrt_device *xdev,
+                                         struct xrt_fov *fovs,struct xrt_pose *poses) {
+    if(!b->has_optics) return;
+    for(int i=0;i<2;++i) {
+        const float *v=b->eyes+i*11;
+        if(poses) {
+            poses[i].position=(struct xrt_vec3){v[0],v[1],v[2]};
+            poses[i].orientation=(struct xrt_quat){v[3],v[4],v[5],v[6]};
+        }
+        struct xrt_fov f={.angle_left=v[7],.angle_right=v[8],.angle_up=v[9],.angle_down=v[10]};
+        if(fovs) fovs[i]=f;
+        // Device-visible static FOV is initialized once before publication.
+        if(!poses && !fovs) xdev->hmd->distortion.fov[i]=f;
+    }
 }
 static bool meteor_tracking_relation(struct meteor_tracking_bridge *b, int64_t at_ns,
                                      struct xrt_space_relation *out) {

@@ -2,12 +2,57 @@
 #include "pcvr_meteor_wire.h"
 #include <limits>
 
+// Fixed session snapshot: each eye is pose xyz/xyzw relative to VIEW,
+// then FOV left/right/up/down. No world-space/head motion in this payload.
+struct MeteorHeadsetOptics {
+    uint64_t epoch = 0;
+    std::array<float,22> eyes{};
+};
+class MeteorOpticsWire {
+public:
+    static constexpr size_t size=112;
+    static bool valid(const MeteorHeadsetOptics &o) {
+        if(!o.epoch) return false;
+        for(float v:o.eyes) if(!std::isfinite(v)) return false;
+        for(size_t eye=0;eye<2;++eye) {
+            const float *p=o.eyes.data()+eye*11;
+            float norm=0;
+            for(size_t i=3;i<7;++i) norm+=p[i]*p[i];
+            if(std::abs(norm-1.f)>.001f) return false;
+            for(size_t i=0;i<3;++i) if(std::abs(p[i])>.15f) return false;
+            for(size_t i=7;i<11;++i) if(std::abs(p[i])>=1.56f) return false;
+            if(!(p[7]<0 && p[8]>0 && p[9]>0 && p[10]<0)) return false;
+        }
+        float distance=0;
+        for(size_t i=0;i<3;++i) { float d=o.eyes[i+11]-o.eyes[i]; distance+=d*d; }
+        return distance>=.04f*.04f && distance<=.09f*.09f && o.eyes[0]<o.eyes[11];
+    }
+    static std::array<uint8_t,size> encode(const MeteorHeadsetOptics &o) {
+        std::array<uint8_t,size> h{};
+        std::memcpy(h.data(),"NFXO",4); meteor_xr_put(h.data()+4,1,2); meteor_xr_put(h.data()+6,size,2);
+        meteor_xr_put(h.data()+8,o.epoch,8);
+        for(size_t i=0;i<22;++i) {
+            uint32_t bits; std::memcpy(&bits,&o.eyes[i],4); meteor_xr_put(h.data()+16+i*4,bits,4);
+        }
+        return h;
+    }
+    static bool decode(const std::array<uint8_t,size> &h,MeteorHeadsetOptics &out) {
+        if(std::memcmp(h.data(),"NFXO",4) || meteor_xr_le(h.data()+4,2)!=1 || meteor_xr_le(h.data()+6,2)!=size) return false;
+        for(size_t i=104;i<size;++i) if(h[i]) return false;
+        MeteorHeadsetOptics o; o.epoch=meteor_xr_le(h.data()+8,8);
+        for(size_t i=0;i<22;++i) { uint32_t bits=uint32_t(meteor_xr_le(h.data()+16+i*4,4)); std::memcpy(&o.eyes[i],&bits,4); }
+        if(!valid(o)) return false;
+        out=o; return true;
+    }
+};
+
 // USB diagnostic protocol only. LOCAL space is shared by explicit session
 // agreement, never inferred from clocks. No prediction or origin conversion.
 struct MeteorTrackingSample {
     uint64_t epoch = 0, sequence = 0, client_ns = 0;
     // Position xyz, orientation xyzw; metres and right-handed OpenXR axes.
     std::array<float, 7> pose{0, 0, 0, 0, 0, 0, 1};
+    MeteorHeadsetOptics optics;
 };
 class MeteorTrackingWire {
     uint64_t epoch = 0, sequence = 0, last_ns = 0;

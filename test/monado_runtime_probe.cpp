@@ -57,7 +57,8 @@ int main() {
     uint32_t queue_count = 0; vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queue_count, nullptr);
     std::vector<VkQueueFamilyProperties> queues(queue_count); vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queue_count, queues.data());
     uint32_t queue_family = queue_count;
-    for (uint32_t i = 0; i < queue_count; ++i) if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { queue_family = i; break; }
+    const VkQueueFlags required_queue=VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    for (uint32_t i = 0; i < queue_count; ++i) if ((queues[i].queueFlags & required_queue)==required_queue) { queue_family = i; break; }
     if (queue_family == queue_count) return 1;
     float priority = 1;
     VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -121,12 +122,14 @@ int main() {
         }
         XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.displayTime = state.predictedDisplayTime; end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         XrCompositionLayerProjectionView projection_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+        auto render_start=std::chrono::steady_clock::now();
         for (int eye = 0; eye < 2; ++eye) {
             stereo.write(eye, frame, tracked_scene ? &views[eye] : nullptr);
             projection_views[eye].pose = views[eye].pose; projection_views[eye].fov = views[eye].fov;
             projection_views[eye].subImage.swapchain = stereo.chains[eye];
-            projection_views[eye].subImage.imageRect.extent = {static_cast<int32_t>(StereoImages::width), static_cast<int32_t>(StereoImages::height)};
+            projection_views[eye].subImage.imageRect.extent = {static_cast<int32_t>(stereo.width), static_cast<int32_t>(stereo.height)};
         }
+        std::printf("APP_RENDER frame=%d us=%lld\n",frame,(long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-render_start).count());
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         layer.space = space; layer.viewCount = 2; layer.views = projection_views;
         const XrCompositionLayerBaseHeader *layers[] = {reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer)};

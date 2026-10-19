@@ -22,6 +22,7 @@ TRACKING_PORT="$("$ADB" forward tcp:0 tcp:49091)"
 "$ADB" logcat -T 1 -v brief -s NightfallPCVR:I > "$OUT/device.log" 2>&1 &
 LOG_PID=$!
 echo 'Fixture armed. Tap DEV: Meteor decoded stereo. Expect three colored spheres and a floor; gently move your head.'
+echo "Profile: ${NIGHTFALL_XR_EYE_SIZE:-256}x${NIGHTFALL_XR_EYE_SIZE:-256} per eye, target ${NIGHTFALL_XR_TARGET_HZ:-20} Hz; actual timings are recorded separately."
 READY=0
 for attempt in {1..1200}; do
     if rg -q 'Meteor projection receiver requested' "$OUT/device.log" && rg -q 'Listening on loopback :49090' "$OUT/device.log"; then READY=1; break; fi

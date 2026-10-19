@@ -79,9 +79,9 @@ bool PCVRMeteorReceiver::drain() {
     }
     return true;
 }
-bool PCVRMeteorReceiver::decoder() {
+bool PCVRMeteorReceiver::decoder(uint16_t width, uint16_t height) {
     AImageReader *created = nullptr;
-    if (AImageReader_newWithUsage(512, 256, AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, 4, &created) != AMEDIA_OK) return false;
+    if (AImageReader_newWithUsage(width, height, AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, 4, &created) != AMEDIA_OK) return false;
     { std::lock_guard<std::mutex> lock(mutex); reader = created; }
     ANativeWindow *window = nullptr;
     if (AImageReader_getWindow(created, &window) != AMEDIA_OK) return false;
@@ -96,7 +96,8 @@ bool PCVRMeteorReceiver::decoder() {
     }
     AMediaFormat *format = AMediaFormat_new();
     AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/avc");
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 512); AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 256);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width); AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, 60);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024);
     AMediaFormat_setInt32(format, "low-latency", 1);
     media_status_t result = AMediaCodec_configure(codec, format, window, nullptr, 0);
@@ -171,7 +172,7 @@ void PCVRMeteorReceiver::run() {
                 if (!io(connected,ack,sizeof(ack),true,deadline)) break;
                 status("Decoded test stream ended; holding final picture until local exit"); success = true; break;
             }
-            if (!codec_started && !decoder()) break;
+            if (!codec_started && !decoder(frame.width,frame.height)) break;
             int64_t pts_us = int64_t(frame.sequence+1)*1000;
             {
                 std::lock_guard<std::mutex> lock(mutex);

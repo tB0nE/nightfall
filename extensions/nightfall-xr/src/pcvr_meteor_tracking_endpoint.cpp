@@ -74,6 +74,19 @@ void MeteorTrackingEndpoint::run(uint16_t port) {
                 meteor_xr_put(request.data()+16,received,8);
                 meteor_xr_put(request.data()+24,now_ns(),8);
                 if (!io(peer,request.data(),request.size(),true,deadline)) break;
+            } else if (!std::memcmp(request.data(),"NFXO",4)) {
+                MeteorTrackingSample sample;
+                while(!stopping.load() && now_ns()<deadline) {
+                    { std::lock_guard<std::mutex> lock(mutex); sample=latest; }
+                    uint64_t now=now_ns();
+                    if(sample.epoch && sample.optics.epoch==sample.epoch && MeteorOpticsWire::valid(sample.optics) &&
+                        sample.client_ns<=now && now-sample.client_ns<=250000000) break;
+                    sample.epoch=0;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                if(!sample.epoch) break;
+                auto packet=MeteorOpticsWire::encode(sample.optics);
+                if(!io(peer,packet.data(),packet.size(),true,deadline)) break;
             } else if (!std::memcmp(request.data(),"NFXP",4)) {
                 MeteorTrackingSample sample;
                 while (!stopping.load() && now_ns() < deadline) {

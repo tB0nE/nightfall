@@ -7,6 +7,8 @@ import subprocess
 import tempfile
 import time
 import unittest
+import os
+from unittest.mock import patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -34,6 +36,7 @@ class TrackingEndpointTests(unittest.TestCase):
                                                      ctypes.POINTER(ctypes.c_float),
                                                      ctypes.POINTER(ctypes.c_uint64)]
         cls.library.meteor_tracking_stop_v1.argtypes = [ctypes.c_void_p]
+        cls.library.meteor_tracking_optics_v1.argtypes = [ctypes.c_void_p,ctypes.POINTER(ctypes.c_float)]
 
     @classmethod
     def tearDownClass(cls):
@@ -68,6 +71,35 @@ class TrackingEndpointTests(unittest.TestCase):
             peer.sendall(request)
             self.assertEqual(peer.recv(1), b"")
         self.assertEqual(self.child.wait(timeout=3), 1)
+
+    def test_optics_packet_and_clean_close(self):
+        with socket.create_connection(("127.0.0.1",self.port),timeout=2) as peer:
+            peer.sendall(struct.pack("<4sHHQQQ",b"NFXO",1,32,0,0,0))
+            packet=b""
+            while len(packet)<112:
+                chunk=peer.recv(112-len(packet))
+                self.assertTrue(chunk); packet+=chunk
+            magic,version,size,epoch=struct.unpack_from("<4sHHQ",packet)
+            self.assertEqual((magic,version,size,epoch),(b"NFXO",1,112,42))
+            eyes=struct.unpack_from("<22f",packet,16)
+            self.assertAlmostEqual(eyes[11]-eyes[0],.064)
+            self.assertAlmostEqual(eyes[7],-.8)
+            self.assertEqual(packet[104:],bytes(8))
+            peer.sendall(struct.pack("<4sHHQQQ",b"NFXQ",1,32,0,0,0))
+        self.assertEqual(self.child.wait(timeout=3),0)
+
+    def test_bridge_requests_optics_when_enabled(self):
+        with patch.dict(os.environ,{"METEOR_XR_HEADSET_OPTICS":"1"}):
+            context=self.library.meteor_tracking_start_v1(str(self.port).encode())
+        self.assertTrue(context)
+        try:
+            eyes=(ctypes.c_float*22)()
+            self.assertEqual(self.library.meteor_tracking_optics_v1(context,eyes),1)
+            self.assertAlmostEqual(eyes[11]-eyes[0],.064)
+            self.assertAlmostEqual(eyes[18],-.7)
+        finally:
+            self.library.meteor_tracking_stop_v1(context)
+        self.assertEqual(self.child.wait(timeout=3),0)
 
     def test_truncated_request_disconnect_is_bounded(self):
         with socket.create_connection(("127.0.0.1", self.port), timeout=2) as peer:

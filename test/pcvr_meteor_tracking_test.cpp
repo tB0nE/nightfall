@@ -1,6 +1,28 @@
 #include "pcvr_meteor_tracking.h"
 #include <cassert>
 int main() {
+    MeteorHeadsetOptics optics;
+    optics.epoch=42;
+    optics.eyes={-.032f,0,0,0,0,0,1,-.8f,.7f,.75f,-.65f,
+                  .032f,0,0,0,0,0,1,-.7f,.8f,.75f,-.65f};
+    MeteorHeadsetOptics decoded;
+    auto optics_packet=MeteorOpticsWire::encode(optics);
+    assert(MeteorOpticsWire::decode(optics_packet,decoded));
+    assert(decoded.eyes==optics.eyes && decoded.epoch==42);
+    for(int offset:{0,4,6,104,111}) {
+        auto bad=optics_packet; bad[offset]=255;
+        assert(!MeteorOpticsWire::decode(bad,decoded));
+    }
+    for(int component:{0,3,7,8,9,10,11,14,18,19,20,21}) {
+        auto bad=optics; bad.eyes[component]=std::numeric_limits<float>::quiet_NaN();
+        assert(!MeteorOpticsWire::decode(MeteorOpticsWire::encode(bad),decoded));
+    }
+    auto invalid=optics; invalid.epoch=0; assert(!MeteorOpticsWire::valid(invalid));
+    invalid=optics; invalid.eyes[6]=0; assert(!MeteorOpticsWire::valid(invalid));
+    invalid=optics; invalid.eyes[11]=invalid.eyes[0]; assert(!MeteorOpticsWire::valid(invalid));
+    invalid=optics; invalid.eyes[11]=.15f; assert(!MeteorOpticsWire::valid(invalid));
+    invalid=optics; invalid.eyes[7]=.5f; assert(!MeteorOpticsWire::valid(invalid));
+    invalid=optics; invalid.eyes[9]=1.57f; assert(!MeteorOpticsWire::valid(invalid));
     MeteorTrackingSample s; s.epoch=42; s.client_ns=1000; s.pose[0]=.25f;
     auto packet=MeteorTrackingWire::encode(s);
     MeteorTrackingWire wire; MeteorTrackingSample out;

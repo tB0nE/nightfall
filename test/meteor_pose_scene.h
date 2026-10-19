@@ -13,14 +13,29 @@ inline float meteor_dot(MeteorSceneVec a,MeteorSceneVec b) { return a.x*b.x+a.y*
 inline MeteorSceneVec meteor_cross(MeteorSceneVec a,MeteorSceneVec b) {
     return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
 }
-inline MeteorSceneVec meteor_scene(const XrView &view,float u,float v) {
-    MeteorSceneVec ray{std::tan(view.fov.angleLeft)*(1-u)+std::tan(view.fov.angleRight)*u,
-        std::tan(view.fov.angleUp)*(1-v)+std::tan(view.fov.angleDown)*v,-1};
-    const auto &q=view.pose.orientation;
-    MeteorSceneVec axis{q.x,q.y,q.z};
-    ray=ray+meteor_cross(axis,meteor_cross(axis,ray)+ray*q.w)*2;
+struct MeteorSceneCamera {
+    XrPosef pose;
+    float left,right,up,down;
+    MeteorSceneVec origin,basis_x,basis_y,basis_z,offsets[3];
+    float sphere_terms[3];
+    explicit MeteorSceneCamera(const XrView &view) : pose(view.pose),
+        left(std::tan(view.fov.angleLeft)),right(std::tan(view.fov.angleRight)),
+        up(std::tan(view.fov.angleUp)),down(std::tan(view.fov.angleDown)) {
+        const auto &q=pose.orientation; MeteorSceneVec axis{q.x,q.y,q.z};
+        auto rotate=[&](MeteorSceneVec v) { return v+meteor_cross(axis,meteor_cross(axis,v)+v*q.w)*2; };
+        basis_x=rotate({1,0,0}); basis_y=rotate({0,1,0}); basis_z=rotate({0,0,-1});
+        origin={pose.position.x,pose.position.y,pose.position.z};
+        for(int i=0;i<3;++i) {
+            offsets[i]=origin-MeteorSceneVec{float(i-1)*1.4f,0,-3.f-float(i)*.5f};
+            sphere_terms[i]=meteor_dot(offsets[i],offsets[i])-.36f;
+        }
+    }
+};
+inline MeteorSceneVec meteor_scene(const MeteorSceneCamera &camera,float u,float v) {
+    MeteorSceneVec ray=camera.basis_x*(camera.left*(1-u)+camera.right*u)+
+        camera.basis_y*(camera.up*(1-v)+camera.down*v)+camera.basis_z;
     ray=ray*(1/std::sqrt(meteor_dot(ray,ray)));
-    const auto &p=view.pose.position; MeteorSceneVec origin{p.x,p.y,p.z};
+    MeteorSceneVec origin=camera.origin;
     float sky=std::clamp(ray.y*.5f+.5f,0.f,1.f);
     MeteorSceneVec color{.03f+.08f*sky,.04f+.12f*sky,.07f+.17f*sky};
     float nearest=1000;
@@ -35,8 +50,7 @@ inline MeteorSceneVec meteor_scene(const XrView &view,float u,float v) {
     const MeteorSceneVec colors[]={{.9f,.18f,.12f},{.12f,.8f,.3f},{.15f,.35f,.95f}};
     for(int i=0;i<3;++i) {
         MeteorSceneVec center{float(i-1)*1.4f,0,-3.f-float(i)*.5f};
-        MeteorSceneVec oc=origin-center;
-        float b=meteor_dot(oc,ray), d=b*b-meteor_dot(oc,oc)+.36f;
+        float b=meteor_dot(camera.offsets[i],ray), d=b*b-camera.sphere_terms[i];
         if(d>0) {
             float t=-b-std::sqrt(d);
             if(t>0 && t<nearest) {

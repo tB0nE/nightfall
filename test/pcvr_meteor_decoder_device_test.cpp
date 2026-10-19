@@ -6,7 +6,9 @@
 int main(int argc, char **argv) {
     std::setvbuf(stdout,nullptr,_IOLBF,0);
     int frames = argc > 1 ? std::atoi(argv[1]) : 32;
+    int eye_size = argc > 2 ? std::atoi(argv[2]) : 256;
     if(frames < 1 || frames > 240) return 2;
+    if(eye_size!=256 && eye_size!=512) return 2;
     PCVRMeteorReceiver receiver;
     if(!receiver.start()) return 1;
     bool ready=false, passed=false; uint64_t last_sequence=UINT64_MAX; unsigned acquired=0;
@@ -17,7 +19,7 @@ int main(int argc, char **argv) {
         AHardwareBuffer *buffer=nullptr; MeteorXrFrame metadata;
         if(receiver.frame(buffer,metadata)) {
             AHardwareBuffer_Desc desc{}; AHardwareBuffer_describe(buffer,&desc);
-            if(desc.width!=512 || desc.height!=256 || metadata.sequence!=acquired) break;
+            if(desc.width!=unsigned(eye_size*2) || desc.height!=unsigned(eye_size) || metadata.sequence!=acquired) break;
             last_sequence=metadata.sequence; ++acquired;
             std::printf("BUFFER seq=%llu frame=%llu host_ns=%llu size=%ux%u\n",(unsigned long long)metadata.sequence,(unsigned long long)metadata.id,(unsigned long long)metadata.display_ns,desc.width,desc.height);
             receiver.release_frame();

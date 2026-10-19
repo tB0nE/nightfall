@@ -9,6 +9,7 @@ import sys
 import time
 import tempfile
 import fcntl
+import statistics
 
 from check_nvenc_stereo import validate
 from xr_transport_probe import LiveTransport
@@ -27,10 +28,30 @@ def run(root: Path, out: Path):
 def run_isolated(root: Path, out: Path, runtime: Path, transport):
     abort_test = os.environ.get("NIGHTFALL_XR_PROBE_ABORT") == "1"
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
+    eye_size = int(os.environ.get("NIGHTFALL_XR_EYE_SIZE", "256"))
+    target_hz = int(os.environ.get("NIGHTFALL_XR_TARGET_HZ", "20"))
+    if eye_size not in (256,512) or target_hz not in (20,60):
+        raise ValueError("Diagnostic profiles: eye size 256/512, target rate 20/60")
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
+    gpu_scene = os.environ.get("NIGHTFALL_XR_GPU_SCENE") == "1"
+    gpu_measure = os.environ.get("NIGHTFALL_XR_GPU_MEASURE") == "1"
+    headset_optics = os.environ.get("NIGHTFALL_XR_HEADSET_OPTICS") == "1"
+    if headset_optics and not tracked_scene:
+        raise ValueError("Headset optics requires tracked scene mode")
+    if gpu_measure and not gpu_scene:
+        raise ValueError("GPU measurement requires explicit GPU scene mode")
+    if gpu_scene and not tracked_scene:
+        raise ValueError("GPU scene requires tracked scene mode")
     free_running = os.environ.get("NIGHTFALL_XR_FREE_RUNNING") == "1"
+    async_delivery = os.environ.get("NIGHTFALL_XR_ASYNC_DELIVERY") == "1"
+    async_encode = os.environ.get("NIGHTFALL_XR_ASYNC_ENCODE") == "1"
+    if async_encode and not (free_running and async_delivery):
+        raise ValueError("Async encoding requires free-running app and asynchronous delivery")
+    if async_delivery and not (os.environ.get("NIGHTFALL_XR_DEVICE_PORT") or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER")):
+        raise ValueError("Async delivery requires a direct loopback/USB receiver")
     if free_running:
-        print("EXPERIMENT: free-running null-compositor image ownership is NOT validated; changing stripes currently expose stale/reused pixels", flush=True)
+        print("EXPERIMENT: free-running diagnostic app; image leases/final drain required; " +
+              ("raw encode worker enabled" if async_encode else "GPU encoding still synchronous"), flush=True)
     submitted_count = frame_count
     if free_running and abort_test:
         raise ValueError("Free-running app-disconnect accounting is a separate pending test")
@@ -61,10 +82,29 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                SIMULATED_ENABLE="1", XRT_COMPOSITOR_NULL="1", XRT_NO_STDIN="1",
                VK_ICD_FILENAMES=str(icd), VK_DRIVER_FILES=str(icd),
                METEOR_CONTINUOUS_FRAMES=str(frame_count),
+               METEOR_XR_EYE_SIZE=str(eye_size), XRT_COMPOSITOR_NULL_FPS=str(target_hz),
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
+    env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
+    env.pop("METEOR_XR_GPU_MEASURE", None)
+    env.pop("METEOR_XR_HEADSET_OPTICS", None)
+    if headset_optics:
+        env["METEOR_XR_HEADSET_OPTICS"] = "1"
+    if gpu_measure:
+        env["METEOR_XR_GPU_MEASURE"] = "1"
+    if gpu_scene:
+        shader = build / "meteor_gpu_scene.spv"
+        if not shader.is_file():
+            raise RuntimeError("Rebuild runtime probe to compile GPU scene shader")
+        env["METEOR_XR_GPU_SCENE_SHADER"] = str(shader)
     transport.start()
     env.update(transport.environment())
     env.pop("METEOR_XR_FREE_RUNNING", None)
+    env.pop("METEOR_XR_ASYNC_DELIVERY", None)
+    env.pop("METEOR_XR_ASYNC_ENCODE", None)
+    if async_encode:
+        env["METEOR_XR_ASYNC_ENCODE"] = "1"
+    if async_delivery:
+        env["METEOR_XR_ASYNC_DELIVERY"] = "1"
     if free_running:
         env["METEOR_XR_FREE_RUNNING"] = "1"
     tracking_port = os.environ.get("NIGHTFALL_XR_TRACKING_PORT")
@@ -86,6 +126,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 if child.poll() is not None or time.monotonic() > deadline:
                     raise RuntimeError(f"Service startup failed; see {out / 'service.log'}")
                 time.sleep(0.05)
+            application_start = time.monotonic()
             if abort_test:
                 application = subprocess.Popen([str(app)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 try:
@@ -105,6 +146,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             else:
                 result = subprocess.run([str(app)], env=env, timeout=40, capture_output=True, text=True)
             (out / "probe.log").write_text(result.stdout + result.stderr)
+            application_elapsed = time.monotonic()-application_start
             if not abort_test:
                 result.check_returncode()
             if child.poll() is not None:
@@ -123,8 +165,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                           "METEOR_TRACKING_FAILED" in text):
         raise RuntimeError("Live tracking did not reach the Monado virtual HMD")
     transport.finish()
-    if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text:
+    if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text or "METEOR_DIRECT_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
+    retains = text.count("METEOR_IMAGE_LEASE retain=1 ")
+    releases = text.count("METEOR_IMAGE_LEASE retain=0 ")
+    if not retains or retains != releases or "METEOR_IMAGE_LEASE_FAILED" in text:
+        raise RuntimeError(f"Unbalanced image ownership: retains={retains} releases={releases}")
     if "METEOR_CAPTURE_EYE" in text or (out / "server-eye-left.ppm").exists():
         raise RuntimeError("CPU readback path unexpectedly ran")
     records = [json.loads(line) for line in (out / "monado-stereo.jsonl").read_text().splitlines()]
@@ -142,14 +188,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             [r["display_time_ns"] for r in records], allow_drops=True)
         frame_count = len(records)
         expected_times = [expected_times[i] for i in source_indices]
-        print(f"Free-running accounting: submitted={submitted_count} encoded={frame_count} compositor_skipped={submitted_count-frame_count}; final frame drained")
+        print(f"Free-running accounting: submitted={submitted_count} encoded={frame_count} submission_skipped={submitted_count-frame_count}; final frame drained")
     if len(records) != frame_count or len(expected_times) != frame_count:
         raise RuntimeError("Missing or duplicated frames")
     offset, last_frame, last_time = 0, 0, 0
     for metadata, expected_time in zip(records, expected_times):
         if metadata["display_time_ns"] != expected_time or expected_time <= last_time:
             raise RuntimeError("Encoded display timestamps do not match submitted frame order")
-        if metadata["frame_id"] <= last_frame or (metadata["width"], metadata["height"]) != (512, 256):
+        if metadata["frame_id"] <= last_frame or (metadata["width"], metadata["height"]) != (eye_size*2, eye_size):
             raise RuntimeError("Invalid output frame metadata")
         if metadata["offset"] != offset or metadata["bytes"] <= 0:
             raise RuntimeError("Invalid bitstream frame boundaries")
@@ -171,33 +217,80 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             f"METEOR_ENCODER_DRAIN frames={frame_count} " not in text or
             text.count("METEOR_ENCODER_RELEASED") != 1):
         raise RuntimeError("Encoder was not initialized once and drained cleanly")
+    if async_delivery:
+        drain = re.findall(r"METEOR_ASYNC_DRAIN delivered=(\d+) peak_pending=(\d+) failed=(\d+)", text)
+        if len(drain)!=1 or int(drain[0][0])!=frame_count or not 1<=int(drain[0][1])<=2 or drain[0][2]!="0":
+            raise RuntimeError("Asynchronous transport did not drain its bounded queue")
+        print(f"Async delivery: {drain[0][0]} packets drained; peak pending={drain[0][1]} (capacity 2)")
+    if async_encode:
+        drain = re.findall(r"METEOR_RAW_DRAIN accepted=(\d+) encoded=(\d+) replaced=(\d+) failed=(\d+)", text)
+        if len(drain)!=1 or int(drain[0][1])!=frame_count or int(drain[0][0])!=frame_count+int(drain[0][2]) or drain[0][3]!="0":
+            raise RuntimeError("Raw encode queue ownership/accounting did not drain cleanly")
+        print(f"Async encoding: accepted={drain[0][0]} encoded={drain[0][1]} pending_replaced={drain[0][2]}")
     subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", str(out / "monado-stereo.h264"), "-pix_fmt", "rgb24", "-f", "rawvideo",
                     str(out / "decoded.rgb")], check=True, timeout=20)
-    if tracked_scene:
+    if gpu_measure:
+        decoded = (out / "decoded.rgb").read_bytes()
+        if len(decoded) != frame_count*eye_size*eye_size*6:
+            raise RuntimeError("Measured scene decoded frame count mismatch")
+        gpu_samples = re.findall(r"APP_GPU_EYE gpu_us=([0-9.]+) submit_wait_us=(\d+)",result.stdout)
+        if len(gpu_samples) != submitted_count*2 or "APP_GPU_SCENE enabled=1 reference_validation=0" not in result.stdout:
+            raise RuntimeError("Missing GPU measurement evidence")
+        print("MEASUREMENT ONLY: decode count/accounting checked; no per-frame pixel oracle or image readback")
+    elif tracked_scene:
         left = (out / "scene-left.rgb").read_bytes()
         right = (out / "scene-right.rgb").read_bytes()
         decoded = (out / "decoded.rgb").read_bytes()
-        eye_size = 256*256*3
-        if len(left) != submitted_count*eye_size or len(right) != len(left) or len(decoded) != frame_count*eye_size*2:
+        eye_bytes = eye_size*eye_size*3
+        row_bytes = eye_size*3
+        if len(left) != submitted_count*eye_bytes or len(right) != len(left) or len(decoded) != frame_count*eye_bytes*2:
             raise RuntimeError("Scene reference/decoded frame count mismatch")
         # Compare the real encoded/decode output with app-side pixel-verified
         # reference rows, not the old synthetic stripe validator.
         total_error = 0
         for frame in range(frame_count):
-            for row in range(256):
-                start = source_indices[frame]*eye_size+row*256*3
-                reference = left[start:start+768]+right[start:start+768]
-                offset = frame*eye_size*2+row*1536
-                total_error += sum(abs(a-b) for a,b in zip(reference,decoded[offset:offset+1536]))
+            for row in range(eye_size):
+                start = source_indices[frame]*eye_bytes+row*row_bytes
+                reference = left[start:start+row_bytes]+right[start:start+row_bytes]
+                offset = frame*eye_bytes*2+row*row_bytes*2
+                total_error += sum(abs(a-b) for a,b in zip(reference,decoded[offset:offset+row_bytes*2]))
         error = total_error/len(decoded)
         if error > 12:
             raise RuntimeError(f"Decoded pose scene differs from app reference: mean byte error {error:.3f}")
         print(f"Scene encode/decode reference mean byte error: {error:.3f}")
     else:
-        validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in source_indices])
+        validate((out / "decoded.rgb").read_bytes(), frames=frame_count, greens=[(i * 73) % 256 for i in source_indices], eye_size=eye_size)
+    def summary(pattern, source):
+        values = sorted(int(value) for value in re.findall(pattern, source))
+        if not values:
+            return None
+        return {"samples": len(values), "p50_us": statistics.median(values),
+                "p95_us": values[min(len(values)-1, int(len(values)*.95))], "max_us": max(values)}
+    timings = {"eye_size": eye_size, "target_hz": target_hz, "submitted": submitted_count,
+               "gpu_scene": gpu_scene, "measurement_only": gpu_measure,
+               "headset_optics": headset_optics,
+               "pixel_reference_validated": not gpu_measure,
+               "encoded": frame_count, "application_elapsed_s": application_elapsed,
+               "display_timestamp_cadence_hz": (frame_count-1)*1e9/(records[-1]["display_time_ns"]-records[0]["display_time_ns"]) if frame_count>1 else None,
+               "app_reference_frame": summary(r"APP_RENDER frame=\d+ us=(\d+)",result.stdout),
+               "app_eye_acquire_wait": summary(r"APP_EYE wait_us=(\d+)",result.stdout),
+               "app_eye_generate": summary(r"APP_EYE wait_us=\d+ generate_us=(\d+)",result.stdout),
+               "app_eye_submit_readback": summary(r"submit_readback_us=(\d+)",result.stdout),
+               "app_eye_verify_artifact": summary(r"verify_artifact_us=(\d+)",result.stdout),
+               "app_eye_release": summary(r"release_us=(\d+)",result.stdout),
+               "pack_record_submit_wait": summary(r"GPU_PACK frame=\d+ us=(\d+)",text),
+               "nvenc_submit_to_packet_copy": summary(r"submit-to-lock-us=(\d+)",text)}
+    if gpu_measure:
+        values=sorted(float(sample[0]) for sample in gpu_samples)
+        timings["app_eye_gpu_dispatch_copy"]={"samples":len(values),"p50_us":statistics.median(values),
+            "p95_us":values[min(len(values)-1,int(len(values)*.95))],"max_us":max(values)}
+        timings["app_eye_submit_fence_wait"]=summary(r"APP_GPU_EYE gpu_us=[0-9.]+ submit_wait_us=(\d+)",result.stdout)
+    (out / "timing-summary.json").write_text(json.dumps(timings,indent=2)+"\n")
+    print(f"Profile: {eye_size}x{eye_size} per eye, target {target_hz} Hz; timing-summary.json records CPU-wall stages (not motion-to-photon)")
     label = "unexpected app disconnect" if abort_test else "normal session exit"
-    print(f"PASS: {frame_count} changing Monado frames; one persistent encoder/surface; decoded markers, timestamps and bitstream ranges match; clean drain after {label}")
+    evidence = "decode count, timestamps and bitstream accounting checked; pixel oracle disabled" if gpu_measure else "decoded pixels, timestamps and bitstream ranges match"
+    print(f"PASS: {frame_count} Monado frames; one persistent encoder/surface; {evidence}; clean drain after {label}")
     print(f"Artifacts: {out}")
 
 

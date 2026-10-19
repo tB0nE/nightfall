@@ -403,6 +403,21 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 	sample.client_ns = uint64_t(now.tv_sec)*1000000000 + uint64_t(now.tv_nsec);
 	sample.pose = {head.pose.position.x, head.pose.position.y, head.pose.position.z,
 		head.pose.orientation.x, head.pose.orientation.y, head.pose.orientation.z, head.pose.orientation.w};
+	XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
+	locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+	locate.displayTime=xr_now; locate.space=head_space;
+	XrViewState state{XR_TYPE_VIEW_STATE};
+	XrView eyes[2]{{XR_TYPE_VIEW},{XR_TYPE_VIEW}}; uint32_t count=0;
+	if(XR_SUCCEEDED(locate_views(session,&locate,&state,2,&count,eyes)) && count==2 &&
+		(state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && (state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT)) {
+		sample.optics.epoch=tracking_epoch;
+		for(size_t i=0;i<2;++i) {
+			const auto &v=eyes[i]; const float values[11]={v.pose.position.x,v.pose.position.y,v.pose.position.z,
+				v.pose.orientation.x,v.pose.orientation.y,v.pose.orientation.z,v.pose.orientation.w,
+				v.fov.angleLeft,v.fov.angleRight,v.fov.angleUp,v.fov.angleDown};
+			std::memcpy(sample.optics.eyes.data()+i*11,values,sizeof(values));
+		}
+	}
 	tracking->publish(sample);
 }
 
@@ -427,7 +442,7 @@ bool NightfallXrProjectionTest::prepare_meteor_image() {
 	AHardwareBuffer *buffer = nullptr;
 	if (!meteor->frame(buffer, meteor_frame)) return false;
 	AHardwareBuffer_Desc desc{}; AHardwareBuffer_describe(buffer, &desc);
-	if (desc.width != 512 || desc.height != 256) { fail("Unexpected Meteor decoded buffer size"); return false; }
+	if (desc.width != meteor_frame.width || desc.height != meteor_frame.height) { fail("Unexpected Meteor decoded buffer size"); return false; }
 	const EGLint attrs[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
 	meteor_image = meteor_create_image(eglGetCurrentDisplay(), EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, meteor_native_buffer(buffer), attrs);
 	if (meteor_image == EGL_NO_IMAGE_KHR) { fail("Cannot import Meteor decoded image"); return false; }

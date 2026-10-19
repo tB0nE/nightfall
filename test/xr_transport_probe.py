@@ -173,8 +173,20 @@ class LiveTransport:
         subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i",
                         str(self.out / "received.h264"), "-pix_fmt", "rgb24", "-f", "rawvideo",
                         str(self.out / "received.rgb")], check=True, timeout=20)
-        validate((self.out / "received.rgb").read_bytes(), frames=len(sent), greens=[(i * 73) % 256 for i in range(len(sent))])
-        print(f"PASS: {self.mode} loopback transfer of {len(sent)} frames; bytes, poses, FOVs, timestamps and decoded markers match")
+        if (self.out / "received.rgb").stat().st_size != sum(frame["width"]*frame["height"]*3 for frame in sent):
+            raise ValueError("Transport decoded dimensions/frame count mismatch")
+        if os.environ.get("METEOR_XR_TRACKED_SCENE") != "1":
+            # App frames may be skipped by the compositor. Marker identity must
+            # come from submitted timestamps, never encoded packet ordinal.
+            submissions = {int(stamp): int(frame) for frame, stamp in re.findall(
+                r"Frame (\d+) monotonic_ns=(\d+)", (self.out / "probe.log").read_text())}
+            try:
+                greens = [(submissions[frame["display_time_ns"]]*73)%256 for frame in sent]
+            except KeyError as error:
+                raise ValueError("Transport frame has no submitted app reference") from error
+            validate((self.out / "received.rgb").read_bytes(), frames=len(sent), greens=greens, eye_size=sent[0]["height"])
+        pixel_evidence = "decode count checked; scene pixel validation belongs to parent harness" if os.environ.get("METEOR_XR_TRACKED_SCENE") == "1" else "decoded markers match"
+        print(f"PASS: {self.mode} loopback transfer of {len(sent)} frames; bytes, poses, FOVs and timestamps match; {pixel_evidence}")
 
     def abort(self):
         self.stop.set()
