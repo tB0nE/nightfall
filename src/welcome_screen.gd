@@ -721,6 +721,9 @@ func browse_mdns():
 		for host in hosts:
 			var ip = host.get("ip", "")
 			var friendly = host.get("friendly_name", host.get("hostname", ip))
+			# The host's HTTP port, as advertised: Sunshine on a custom port
+			# (50000, say) only answers pairing there.
+			var address := pair_address(ip, int(host.get("port", main.DEFAULT_PAIR_PORT)))
 			main._log("[mDNS] Discovered: ip='" + ip + "' friendly='" + friendly + "' port=" + str(host.get("port", "?")))
 			var btn = Button.new()
 			btn.custom_minimum_size = Vector2(400, 60)
@@ -743,7 +746,7 @@ func browse_mdns():
 			press_style.set_bg_color(Color(0.3, 0.35, 0.5, 1.0))
 			btn.add_theme_stylebox_override("pressed", press_style)
 			btn.pressed.connect(func():
-				main._log("[mDNS] Selected host: ip='" + ip + "' friendly='" + friendly + "'")
+				main._log("[mDNS] Selected host: address='" + address + "' friendly='" + friendly + "'")
 				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
 				for h in (_cm4.get_hosts() if _cm4 else []):
 					if main.host_matches_address(h, ip):
@@ -761,10 +764,10 @@ func browse_mdns():
 				# Unknown address: pairing first checks the server's identity,
 				# and if this machine is already paired it just records the new
 				# address on the existing entry instead of pairing again.
-				main.get_node("%IPInput").text = ip
-				save_last_ip(ip)
-				main.state_manager.load_host_state(ip)
-				start_pair(ip)
+				main.get_node("%IPInput").text = address
+				save_last_ip(address)
+				main.state_manager.load_host_state(address)
+				start_pair(address)
 			)
 			discover_list.add_child(btn)
 	if scan_btn:
@@ -876,6 +879,15 @@ func cycle_app():
 	var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
 	if app_btn:
 		app_btn.text = Localization.t("App: %s") % app_name
+
+# The address to pair with, in the form main.parse_ip_port() reads: the bare
+# address on the default port, else "ip:port", or "[v6]:port" for IPv6.
+static func pair_address(ip: String, port: int) -> String:
+	if port <= 0 or port > 65535 or port == 47989:
+		return ip
+	if ip.contains(":"):
+		return "[%s]:%d" % [ip, port]
+	return "%s:%d" % [ip, port]
 
 # Hosts list apps in their own order (vibepollo also pulls in Lutris games), and
 # the first entry is preselected - so pin Desktop, then Steam, ahead of the rest.

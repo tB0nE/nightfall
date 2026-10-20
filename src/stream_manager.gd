@@ -354,19 +354,18 @@ func _on_v2_launch_response(response: Dictionary):
 		if msg.find("Session URL not found") != -1:
 			main._log("[PAIR] Launch failed due to stale pairing, re-pairing...")
 			var ip = ""
+			var http_port: int = main.DEFAULT_PAIR_PORT
 			for h in _b().get_hosts():
 				if h.get("id") == main.current_host_id:
 					ip = h.get("localaddress", "")
+					http_port = int(h.get("http_port", main.DEFAULT_PAIR_PORT))
 					break
 			if not ip.is_empty():
 				_b().get_config_manager().remove_host(main.current_host_id)
 				main._ui_status_label.text = "Re-pairing with " + ip + "..."
-				# Stored host records only keep the plain HTTPS port
-				# (localaddress/https_port), not whatever custom HTTP pairing
-				# port the user originally typed into %IPInput (see
-				# main.parse_ip_port()) - falls back to the default here,
-				# same as before this port-suffix support existed.
-				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
+				# Re-pair on the HTTP port the host was paired on (records
+				# from before it was saved derive it from https_port).
+				var pin = _b().start_pair(ip, http_port)
 				if str(pin) != "" and str(pin) != "0":
 					main.welcome_screen.show_pin_when_needed(str(pin))
 					return
