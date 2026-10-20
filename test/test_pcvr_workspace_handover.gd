@@ -5,6 +5,8 @@ class Native extends RefCounted:
 	var ready := false
 	var activations := 0
 	var reject := false
+	var focused := false
+	func set_workspace_input_focus(value: bool) -> void: focused = value
 	func get_test_status() -> Dictionary:
 		return {"state": "running", "meteor_frame_ready": ready}
 	func activate_meteor_projection() -> bool:
@@ -105,6 +107,13 @@ func _run() -> void:
 	child.visible = false
 	handover._layers_drained(token)
 	assert(handover.state == Handover.State.ACTIVE and owner.pcvr_test.backend.activations == 1)
+	handover.set_desktop_visible(true)
+	assert(owner.visible and handover.owns_workspace() and not handover.blocks_workspace())
+	assert(not owner.native_xr_renderer.presentation_suspended and owner.pcvr_test.backend.focused)
+	assert(not handover.interface.enabled) # Never submit a second base projection.
+	handover.set_desktop_visible(false)
+	assert(not owner.visible and handover.blocks_workspace())
+	assert(owner.native_xr_renderer.presentation_suspended)
 	control.state = "failed"
 	handover.process(.1)
 	assert(handover.state == Handover.State.STOPPING and owner.pcvr_test.stops == 1)

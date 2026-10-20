@@ -158,6 +158,14 @@
  
  	return XRT_SUCCESS;
  }
+@@ -695,6 +710,7 @@
+ 		xrt_swapchain_reference(&mc->progress.layers[index].xscs[i + data->view_count], d_xsc[i]);
+ 	}
+ 	mc->progress.layers[index].data = *data;
++	meteor_projection_image_lease(data, mc->progress.layers[index].xscs, true);
+ 
+ 	return XRT_SUCCESS;
+ }
 --- a/src/xrt/compositor/multi/comp_multi_system.c
 +++ b/src/xrt/compositor/multi/comp_multi_system.c
 @@ -589,9 +589,15 @@

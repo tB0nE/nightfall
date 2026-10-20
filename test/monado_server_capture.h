@@ -106,6 +106,14 @@ meteor_capture_layer(struct null_compositor *c)
     if (accum->layer_count == 0) return true;
     if (accum->layer_count != 1) return false;
     const struct comp_layer *layer = &accum->layers[0];
+    struct comp_layer colour;
+    if (layer->data.type == XRT_LAYER_PROJECTION_DEPTH && layer->data.view_count == 2) {
+        colour = *layer;
+        colour.data.type = XRT_LAYER_PROJECTION;
+        for (int eye = 0; eye < 2; ++eye) colour.data.proj.v[eye] = layer->data.depth.v[eye];
+        colour.data.proj.chroma_key = layer->data.depth.chroma_key;
+        layer = &colour;
+    }
     if (layer->data.type != XRT_LAYER_PROJECTION || layer->data.view_count != 2) return false;
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_sub_image *sub = &layer->data.proj.v[eye].sub;

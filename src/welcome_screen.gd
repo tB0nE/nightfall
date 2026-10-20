@@ -74,9 +74,7 @@ func _build_xr_control_probe(root: Control, label: Label) -> void:
 	# Explicit developer provisioning only; never auto-connect through discovery.
 	var control_script = preload("res://src/meteor_xr_control.gd")
 	if not FileAccess.file_exists(control_script.config_path()): return
-	if _xr_control: _xr_control.cancel()
-	_xr_control = control_script.new(main)
-	var control = _xr_control
+	var control = get_xr_control()
 	main._log("[XR-CONTROL] Device public key: " + control.public_identity())
 	var button := Button.new()
 	button.position = Vector2(480, 770)
@@ -95,17 +93,34 @@ func _build_xr_control_probe(root: Control, label: Label) -> void:
 		button.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
 		label.text = control.message
 	control.changed.connect(update)
-	button.pressed.connect(func():
-		var reason: String = main.pcvr_test.busy_reason()
-		if not reason.is_empty():
-			label.text = reason
-			return
-		if control.state == "offered": control.accept_offer()
-		else:
-			main._log("[XR-CONTROL] Device public key: " + control.public_identity())
-			control.connect_offer())
+	button.pressed.connect(request_xr_control)
 	cancel_button.pressed.connect(control.cancel)
 	update.call()
+
+func get_xr_control() -> RefCounted:
+	# Welcome and the in-stream DEV entry share one lease and one receiver.
+	if not _xr_control:
+		_xr_control = preload("res://src/meteor_xr_control.gd").new(main)
+	return _xr_control
+
+func request_xr_control() -> void:
+	var control = get_xr_control()
+	if control.state not in ["idle", "failed", "offered"]: return
+	var config := ConfigFile.new()
+	config.load(preload("res://src/meteor_xr_control.gd").config_path())
+	var reason := _xr_entry_busy_reason(config)
+	if not reason.is_empty():
+		control.message = reason
+		control.changed.emit()
+		return
+	if control.state == "offered": control.accept_offer()
+	else: control.connect_offer()
+
+func _xr_entry_busy_reason(config: ConfigFile) -> String:
+	# An in-stream entry must never fall through to the old exclusive test,
+	# which is deliberately restricted to a clean welcome workspace.
+	var handover := bool(config.get_value("host", "handover_on_ready", false))
+	return main.pcvr_test.standby_busy_reason() if handover else main.pcvr_test.busy_reason()
 
 func cancel_xr_control(stop_projection: bool = true) -> void:
 	if _xr_control: _xr_control.cancel(stop_projection)

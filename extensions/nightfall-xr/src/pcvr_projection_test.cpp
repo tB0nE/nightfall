@@ -1,6 +1,7 @@
 #include "pcvr_projection_test.h"
 #include "pcvr_view_validation.h"
 #include <godot_cpp/core/class_db.hpp>
+#include <algorithm>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -20,6 +21,27 @@ void NightfallXrProjectionTest::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("stream_available"), &NightfallXrProjectionTest::stream_available);
 	ClassDB::bind_method(D_METHOD("stop_test"), &NightfallXrProjectionTest::stop_test);
 	ClassDB::bind_method(D_METHOD("get_test_status"), &NightfallXrProjectionTest::get_test_status);
+	ClassDB::bind_method(D_METHOD("set_wristwatch", "state"), &NightfallXrProjectionTest::set_wristwatch);
+	ClassDB::bind_method(D_METHOD("set_workspace_input_focus", "focused"), &NightfallXrProjectionTest::set_workspace_input_focus);
+	ClassDB::bind_method(D_METHOD("get_wristwatch_tracking"), &NightfallXrProjectionTest::get_wristwatch_tracking);
+}
+
+PackedFloat32Array NightfallXrProjectionTest::get_wristwatch_tracking() {
+	std::lock_guard<std::mutex> lock(watch_mutex);
+	PackedFloat32Array result;
+	if (watch_tracking_valid) { result.resize(22); for(int i=0;i<22;++i) result.set(i,watch_tracking[i]); }
+	return result;
+}
+
+void NightfallXrProjectionTest::set_wristwatch(PackedFloat32Array data) {
+	std::lock_guard<std::mutex> lock(watch_mutex);
+	watch_state.fill(0);
+	if (data.size() == 15) for (int i=0;i<15;++i) watch_state[i]=data[i];
+}
+
+void NightfallXrProjectionTest::set_workspace_input_focus(bool focused) {
+	if (focused) workspace_wait_release.store(true);
+	workspace_focus.store(focused);
 }
 
 Dictionary NightfallXrProjectionTest::_get_requested_extensions(uint64_t version) {
@@ -260,9 +282,83 @@ const char *METEOR_FRAGMENT = R"GLSL(#version 300 es
 precision highp float;
 uniform samplerExternalOES video;
 uniform float eye_offset;
+uniform vec3 watch_position, eye_position;
+uniform vec4 watch_rotation, eye_rotation, fov_tangents, watch_digits;
+uniform vec2 watch_pointer;
+uniform float watch_visible, desktop_visible;
 in vec2 uv;
 out vec4 color;
-void main() { color = vec4(texture(video, vec2(eye_offset + uv.x * 0.5, 1.0 - uv.y)).rgb, 1.0); }
+vec3 rotate_q(vec4 q,vec3 v) { return v+2.0*cross(q.xyz,cross(q.xyz,v)+q.w*v); }
+float digit(vec2 p,int n) {
+    const int masks[10]=int[10](63,6,91,79,102,109,125,7,127,111);
+    vec2 a[7]=vec2[7](vec2(0.,.8),vec2(.4,.4),vec2(.4,-.4),vec2(0.,-.8),vec2(-.4,-.4),vec2(-.4,.4),vec2(0.,0.));
+    float value=0.;
+    for(int i=0;i<7;++i) if((masks[clamp(n,0,9)] & (1<<i))!=0) {
+        vec2 d=abs(p-a[i])-((i==0||i==3||i==6)?vec2(.31,.065):vec2(.065,.29));
+        value=max(value,1.-smoothstep(0.,.025,max(d.x,d.y)));
+    }
+    return value;
+}
+void main() {
+    color = vec4(texture(video, vec2(eye_offset + uv.x * 0.5, 1.0 - uv.y)).rgb, 1.0);
+    if(watch_visible<.5) return;
+    vec3 rd=rotate_q(eye_rotation,normalize(vec3(mix(fov_tangents.x,fov_tangents.y,uv.x),mix(fov_tangents.z,fov_tangents.w,uv.y),-1.)));
+    vec4 inverse_q=vec4(-watch_rotation.xyz,watch_rotation.w);
+    vec3 ro=rotate_q(inverse_q,eye_position-watch_position);
+    vec3 direction=rotate_q(inverse_q,rd);
+    if(watch_visible>1.5) {
+        // Three numbered rings relative to the raw controller grip. No wrist
+        // normal/gaze gate: all candidate positions remain visible from either side.
+        const vec3 colours[8]=vec3[8](vec3(1.,.12,.12),vec3(1.,.45,.05),vec3(1.,.9,.05),vec3(.15,1.,.2),vec3(.05,1.,1.),vec3(.18,.4,1.),vec3(.65,.2,1.),vec3(1.,.2,.65));
+        vec3 right=rotate_q(inverse_q,rotate_q(eye_rotation,vec3(1.,0.,0.)));
+        vec3 up=rotate_q(inverse_q,rotate_q(eye_rotation,vec3(0.,1.,0.)));
+        float nearest=100.;
+        for(int i=0;i<24;++i) {
+            float angle=float(i%8)*.7853981634;
+            vec3 centre=vec3(.07*cos(angle),.07*sin(angle),-.08+float(i/8)*.12);
+            vec3 offset=ro-centre;
+            float b=dot(offset,direction);
+            float disc=b*b-dot(offset,offset)+.014*.014;
+            if(disc<0.) continue;
+            float t=-b-sqrt(disc);
+            if(t<=0. || t>=nearest) continue;
+            nearest=t;
+            vec3 normal=normalize(ro+direction*t-centre);
+            vec3 rgb=colours[i%8]*(.55+.45*max(dot(normal,-direction),0.));
+            vec2 label=vec2(dot(normal,right),dot(normal,up));
+            int number=i+1;
+            float ink=0.;
+            if(number<10) ink=digit(label/vec2(.65,.65),number);
+            else {
+                ink=max(digit((label-vec2(-.30,0.))/vec2(.42,.58),number/10),digit((label-vec2(.30,0.))/vec2(.42,.58),number%10));
+            }
+            rgb=mix(rgb,vec3(1.),ink);
+            color=vec4(rgb,1.);
+        }
+        return;
+    }
+    if(ro.z<=0. || direction.z>=-.001) return;
+    vec3 point=ro+direction*(-ro.z/direction.z);
+    vec2 p=vec2(point.x/.16+.5,.5-point.y/.10);
+    vec2 edge=abs(p-.5)-vec2(.45,.43);
+    if(length(max(edge,0.))>.05) return;
+    vec3 rgb=vec3(.045,.055,.085);
+    if(p.y>.55) {
+        rgb=mix(vec3(.12,.18,.29),vec3(.14,.34,.60),desktop_visible);
+        if(watch_pointer.x>=0. && watch_pointer.y>=.55) rgb+=vec3(.10);
+        // Desktop monitor glyph; blue fill indicates workspace currently open.
+        vec2 monitor=abs(p-vec2(.5,.73));
+        if(max(monitor.x/.16,monitor.y/.10)<1. && max(monitor.x/.14,monitor.y/.08)>.99) rgb=vec3(.85,.9,1.);
+        if(abs(p.x-.5)<.07 && abs(p.y-.87)<.012) rgb=vec3(.85,.9,1.);
+    } else {
+        for(int i=0;i<4;++i) {
+            vec2 d=(p-vec2(.19+float(i)*.205,.30))/vec2(.15,.21);
+            rgb=mix(rgb,vec3(.85,.91,1.),digit(d,int(watch_digits[i])));
+        }
+    }
+    if(watch_pointer.x>=0. && length((p-watch_pointer)*vec2(1.,.625))<.018) rgb=vec3(.3,.7,1.);
+    color=vec4(rgb,1.);
+}
 )GLSL";
 }
 
@@ -393,6 +489,16 @@ bool NightfallXrProjectionTest::render_scene() {
 		glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glUniform1i(glGetUniformLocation(program, "video"), 0);
 	}
+	std::array<float,15> watch;
+	{ std::lock_guard<std::mutex> lock(watch_mutex); watch=watch_state; }
+	if (meteor_mode) {
+		glUniform3fv(glGetUniformLocation(program,"watch_position"),1,watch.data());
+		glUniform4fv(glGetUniformLocation(program,"watch_rotation"),1,watch.data()+3);
+		glUniform4fv(glGetUniformLocation(program,"watch_digits"),1,watch.data()+7);
+		glUniform2fv(glGetUniformLocation(program,"watch_pointer"),1,watch.data()+11);
+		glUniform1f(glGetUniformLocation(program,"watch_visible"),watch[13]);
+		glUniform1f(glGetUniformLocation(program,"desktop_visible"),watch[14]);
+	}
 	for (int eye = 0; eye < 2; ++eye) {
 		const XrView &view = views[eye];
 		glViewport(eye * EYE_SIZE, 0, EYE_SIZE, EYE_SIZE);
@@ -402,7 +508,6 @@ bool NightfallXrProjectionTest::render_scene() {
 			glUniform4f(glGetUniformLocation(program, "eye_rotation"), view.pose.orientation.x, view.pose.orientation.y, view.pose.orientation.z, view.pose.orientation.w);
 			glUniform3f(glGetUniformLocation(program, "eye_position"), view.pose.position.x, view.pose.position.y, view.pose.position.z);
 		}
-		glDrawArrays(GL_TRIANGLES, 0, 3);
 		projection_views[eye] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
 		projection_views[eye].pose = view.pose; projection_views[eye].fov = view.fov;
 		if (meteor_mode && meteor_frame.quest_local) {
@@ -410,6 +515,14 @@ bool NightfallXrProjectionTest::render_scene() {
 			projection_views[eye].pose = {{v[3],v[4],v[5],v[6]}, {v[0],v[1],v[2]}};
 			projection_views[eye].fov = {v[7],v[8],v[9],v[10]};
 		}
+		if (meteor_mode) {
+			const auto &p=projection_views[eye].pose;
+			const auto &f=projection_views[eye].fov;
+			glUniform4f(glGetUniformLocation(program,"fov_tangents"),std::tan(f.angleLeft),std::tan(f.angleRight),std::tan(f.angleDown),std::tan(f.angleUp));
+			glUniform4f(glGetUniformLocation(program,"eye_rotation"),p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w);
+			glUniform3f(glGetUniformLocation(program,"eye_position"),p.position.x,p.position.y,p.position.z);
+		}
+		glDrawArrays(GL_TRIANGLES, 0, 3);
 		projection_views[eye].subImage = {swapchain, {{eye * EYE_SIZE, 0}, {EYE_SIZE, EYE_SIZE}}, 0};
 	}
 	if (meteor_mode) {
@@ -466,7 +579,7 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 		MeteorHaptic pulse;
 		if(!tracking->take_haptic(hand,pulse) || pulse.epoch!=tracking_epoch) continue;
 		// Drain/discard requests during standby; never replay them on activation.
-		if (!meteor_presentation.input_enabled()) continue;
+		if (!meteor_presentation.input_enabled() || workspace_focus.load() || workspace_wait_release.load()) continue;
 		XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action=controller_haptic; info.subactionPath=controller_paths[hand];
 		XrResult result;
 		if(pulse.duration_ms && pulse.amplitude>0) {
@@ -537,6 +650,23 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 				}
 			}
 		}
+	}
+	{
+		std::lock_guard<std::mutex> lock(watch_mutex);
+		watch_tracking_valid=(sample.controllers.hands[0].flags&1) && (sample.controllers.hands[1].flags&2) && (sample.controllers.hands[1].flags&4);
+		if(watch_tracking_valid) {
+			std::copy(sample.pose.begin(),sample.pose.end(),watch_tracking.begin());
+			std::copy_n(sample.controllers.hands[0].poses.begin(),7,watch_tracking.begin()+7);
+			std::copy_n(sample.controllers.hands[1].poses.begin()+7,7,watch_tracking.begin()+14);
+			watch_tracking[21]=sample.controllers.hands[1].trigger;
+		}
+	}
+	bool held=false;
+	for (auto &hand:sample.controllers.hands)
+		held=held || hand.trigger>.15f || hand.squeeze>.15f || hand.buttons || std::abs(hand.stick[0])>.2f || std::abs(hand.stick[1])>.2f;
+	if (workspace_focus.load() || workspace_wait_release.load()) {
+		for (auto &hand:sample.controllers.hands) { hand.trigger=hand.squeeze=0; hand.buttons=0; hand.stick={0,0}; }
+		if (!workspace_focus.load() && !held) workspace_wait_release.store(false);
 	}
 	tracking->publish(sample);
 }
@@ -822,5 +952,5 @@ uint64_t NightfallXrProjectionTest::_get_composition_layer(int32_t p_index) {
 	return 0;
 }
 
-int32_t NightfallXrProjectionTest::_get_composition_layer_order(int32_t p_index) { return 0; }
+int32_t NightfallXrProjectionTest::_get_composition_layer_order(int32_t p_index) { return -100; }
 }

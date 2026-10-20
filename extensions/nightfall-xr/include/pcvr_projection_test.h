@@ -35,6 +35,9 @@ public:
 	Dictionary _get_requested_extensions(uint64_t p_xr_version) override;
 	void stop_test();
 	Dictionary get_test_status() const;
+	void set_wristwatch(PackedFloat32Array p_state);
+	void set_workspace_input_focus(bool p_focused);
+	PackedFloat32Array get_wristwatch_tracking();
 	int32_t _get_composition_layer_count() override;
 	uint64_t _get_composition_layer(int32_t p_index) override;
 	int32_t _get_composition_layer_order(int32_t p_index) override;
@@ -51,6 +54,11 @@ private:
 	void fail(const char *message);
 	bool start_meteor_mode(bool present_immediately);
 	PCVRPresentationGate meteor_presentation;
+	std::mutex watch_mutex;
+	std::array<float, 15> watch_state{};
+	std::array<float, 22> watch_tracking{};
+	bool watch_tracking_valid=false;
+	std::atomic<bool> workspace_focus{false}, workspace_wait_release{false};
 #ifdef __ANDROID__
 	static constexpr int EYE_SIZE = 1024;
 	XrInstance instance = XR_NULL_HANDLE;

@@ -44,6 +44,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
     godot_engine=os.environ.get("NIGHTFALL_XR_GODOT_ENGINE")=="1"
     upstream_demo=os.environ.get("NIGHTFALL_XR_UPSTREAM_DEMO")=="1"
+    external_spec = os.environ.get("NIGHTFALL_XR_APPLICATION_SPEC")
+    external_command = external_cwd = None
+    if external_spec:
+        if not (godot_engine and upstream_demo):
+            raise ValueError("External applications require the managed runtime profile")
+        from xr_local_application import load_application
+        external_command, external_cwd = load_application(external_spec)
+        print(f"XR_APPLICATION host_local={external_command[0]}", flush=True)
     if eye_size == 1024 and not upstream_demo:
         raise ValueError("1024-square profile requires the bounded upstream demo")
     if upstream_demo and not godot_engine:
@@ -107,7 +115,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if godot_engine:
         app=Path(os.environ.get("NIGHTFALL_GODOT_EDITOR","/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"))
         project=root / "test/fixtures/meteor_xr_godot"
-        if upstream_demo:
+        if upstream_demo and not external_spec:
             from prepare_xr_upstream_demo import prepare
             project=prepare(root)
             import_start=time.monotonic()
@@ -119,6 +127,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         command=[str(app),"--path",str(project),"--display-driver","x11",
             "--rendering-method","mobile","--rendering-driver","vulkan","--xr-mode","on",
             "--audio-driver","Dummy","--resolution","320x180","--position","24,24"]
+    if external_spec:
+        command = external_command
+        app = Path(command[0])
     for executable in (service, library, app):
         if not executable.is_file():
             raise RuntimeError("Run probe_monado_runtime.sh --build first")
@@ -142,7 +153,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     env.pop("METEOR_XR_ENGINE_FIXTURE",None)
     env.pop("METEOR_XR_MONITOR_LEGACY",None)
     if os.environ.get("NIGHTFALL_XR_MONITOR_LEGACY") == "1": env["METEOR_XR_MONITOR_LEGACY"]="1"
-    engine_token=secrets.token_hex(16) if godot_engine else None
+    engine_token=secrets.token_hex(16) if godot_engine and not external_spec else None
     env.pop("METEOR_ENGINE_RUN_ID",None)
     env.pop("METEOR_XR_RUNTIME_GENERATION",None)
     runtime_generation = os.environ.get("NIGHTFALL_XR_RUNTIME_GENERATION")
@@ -152,7 +163,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         env["METEOR_XR_RUNTIME_GENERATION"] = runtime_generation
     if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token
     (out / "engine-request-exit").unlink(missing_ok=True)
-    if godot_engine: env["METEOR_XR_ENGINE_FIXTURE"]="1"
+    if godot_engine and not external_spec: env["METEOR_XR_ENGINE_FIXTURE"]="1"
     env.pop("METEOR_XR_PADDED_SUBRECT",None)
     env.pop("METEOR_XR_SOURCE_FORMAT",None)
     source_format=os.environ.get("NIGHTFALL_XR_SOURCE_FORMAT","rgba8")
@@ -253,8 +264,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 result, interrupted, forced_stop = run_application(command, env=env,
                     timeout=(90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
                     stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
-                    completion_file=out / "engine-completion.json" if godot_engine else None,
-                    completion_token=engine_token,completion_target=frame_count)
+                    completion_file=out / "engine-completion.json" if godot_engine and not external_spec else None,
+                    completion_token=engine_token,completion_target=frame_count,
+                    cwd=external_cwd, terminate_on_stop=bool(external_spec))
             except subprocess.TimeoutExpired as failure:
                 def output_text(value):
                     return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
@@ -305,6 +317,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if "METEOR_ENCODE_OK" not in text or "METEOR_CAPTURE_FAILED" in text or "METEOR_DIRECT_FAILED" in text:
         raise RuntimeError("Encoder bridge did not acknowledge output")
     transport.finish()
+    if external_spec:
+        from xr_local_application import validate_capture
+        count = validate_capture(out, text)
+        (out / "external-application-outcome.json").write_text(json.dumps({
+            "outcome": "completed", "encoded_frames": count,
+            "app_exit_code": result.returncode, "final_drain_verified": True,
+            "automatic_detection": False}, indent=2) + "\n")
+        return
     if godot_engine:
         from check_xr_engine import validate_engine
         if upstream_demo and ("ENGINE_XR_UPSTREAM origin_centric_movement" not in result.stdout

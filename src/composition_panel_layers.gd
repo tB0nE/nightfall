@@ -10,17 +10,19 @@ enum KeyboardMaterialAction {
 var ui_layer: Node3D = null
 var keyboard_layer: Node3D = null
 const UI_VISUAL_OFFSET := Vector3(0, 0.051, 0)
+const UI_SORT_ORDER := 1000
+const KEYBOARD_SORT_ORDER := 999
 
 func setup_ui(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2) -> void:
 	if ui_layer:
 		return
-	ui_layer = _make_panel_layer("CompUILayer", 1000, quad_size, viewport)
+	ui_layer = _make_panel_layer("CompUILayer", UI_SORT_ORDER, quad_size, viewport)
 	xr_origin.add_child(ui_layer)
 
 func setup_keyboard(xr_origin: Node3D, viewport: SubViewport, quad_size: Vector2) -> void:
 	if keyboard_layer:
 		return
-	keyboard_layer = _make_panel_layer("CompKBLayer", 999, quad_size, viewport)
+	keyboard_layer = _make_panel_layer("CompKBLayer", KEYBOARD_SORT_ORDER, quad_size, viewport)
 	xr_origin.add_child(keyboard_layer)
 
 func has_ui() -> bool:

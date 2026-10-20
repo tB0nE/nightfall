@@ -1324,6 +1324,7 @@ func build_ui():
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
 	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
+	_build_xr_workspace_probe(_settings_scroll.get_child(0))
 	_build_language_grid(_settings_scroll.get_child(0))
 	var settings_end_space := Control.new()
 	settings_end_space.name = "SettingsEndSpace"
@@ -1439,6 +1440,44 @@ func build_ui():
 	var ui_buttons = []
 	_collect_buttons(root, ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
+
+func _build_xr_workspace_probe(content: VBoxContainer) -> void:
+	# Explicitly provisioned DEV builds only; no new XR composition layers.
+	var control_script = preload("res://src/meteor_xr_control.gd")
+	if not main.pcvr_test.entry_visible() or not FileAccess.file_exists(control_script.config_path()): return
+	var control = main.welcome_screen.get_xr_control()
+	var section := VBoxContainer.new()
+	section.name = "DevXRHandover"
+	section.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(section)
+	content.move_child(section, 0)
+	section.add_child(_make_section_title("DEV: Meteor XR handover"))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(row)
+	var start := make_action_btn("Connect XR")
+	var cancel := make_action_btn("Cancel XR")
+	_set_button_tooltip(start, "Prepare the fixed XR demo, then accept to hand over this desktop. Hold B/Y for one second to return.")
+	_set_button_tooltip(cancel, "Cancel XR preparation without disconnecting the desktop stream.")
+	for button in [start, cancel]:
+		row.add_child(button)
+		_make_scroll_friendly(button)
+	start.pressed.connect(_on_scroll_friendly_pressed.bind(main.welcome_screen.request_xr_control))
+	cancel.pressed.connect(_on_scroll_friendly_pressed.bind(control.cancel))
+	var status := Label.new()
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(status)
+	var update := func():
+		if not is_instance_valid(start): return
+		start.text = "Accept XR" if control.state == "offered" else "Connect XR"
+		start.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
+		cancel.disabled = control.state == "idle"
+		status.text = control.message if not control.message.is_empty() else "Fixed demo; desktop returns on exit"
+	control.changed.connect(update)
+	update.call()
 
 func _build_tab_buttons(parent: HBoxContainer) -> void:
 	for definition in MenuSchema.get_tab_buttons():

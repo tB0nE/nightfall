@@ -524,3 +524,264 @@ The device DEV config uses `standby_only=true` and `handover_on_ready=true` with
 the dedicated XR listener at `10.0.0.13:47905`; verify listener/config availability
 on resumption without replacing the user's normal Meteor service. Rebuild using
 `./build.sh --dev` when needed, not a debug build.
+
+### Live-desktop handover entry (2026-10-20, implementation)
+
+Resumed on clean `feat/meteor-xr-streaming` at `a07f7e9`. The other agent's
+`fix/pairing` work is isolated in `moonlight-quest-pairing`; no branch switch or
+changes there are needed. Added a provisioned DEV-only section at the beginning
+of Settings: Connect XR, explicit Accept XR, Cancel XR and control status.
+It uses the existing menu viewport, with no new composition layers, and shares
+the welcome screen's control instance/lease. Scroll-drag suppresses accidental
+button activation. Only `handover_on_ready=true` allows the standby readiness
+policy for this entry; other configurations retain the clean-welcome restriction.
+Readiness rejection preserves an offered lease rather than silently accepting or
+replacing it. The fixed demo and bounded runtime are unchanged.
+
+Validation: all 38 GDScript scripts passed, including shared control identity,
+legacy/standby-only versus handover entry policy, explicit acceptance and busy
+rejection without losing the offered state. Device and dedicated DEV listener
+were available at setup; normal Meteor was not restarted.
+
+Physical gate pending: connect one Sunshine desktop stream, open the menu gear,
+use Connect XR then Accept XR, and confirm desktop remains visible until XR is
+ready. Exit with a one-second B/Y hold (or demo end). Confirm the same desktop
+returns without reconnecting and mouse, keyboard, controller and audio recover.
+This change does not establish that live-stream coexistence works until tested.
+
+Built and installed optimized release-signed
+`Nightfall-Android-arm64-v8a-dev.apk`, version
+`0.8.2-preview.1-dev+a07f7e9-dirty` (code 802), on Quest `2G0YC1ZF8P08QN`.
+SHA-256: `b5020287eb03a4bdb108993eb3059df8fc7add37344f58a087b2fc9ef7d5b857`.
+
+### Live stream validated; host-local launcher (2026-10-20)
+
+User confirmed the live Sunshine → XR → same desktop round trip worked perfectly.
+This is a physical validation of the preceding entry/handover gate, not yet proof
+of arbitrary game compatibility, an in-XR desktop overlay or automatic app discovery.
+
+Next implemented step: optional host-local `.build-cache/meteor-xr/application.json`
+selects a direct foreground native OpenXR application instead of the fixed demo.
+Its schema is exactly `{"argv": ["/absolute/executable", "argument"], "cwd":
+"/absolute/directory"}`. Missing configuration retains the fixed demo; invalid
+configuration fails rather than silently selecting a different app. The executable
+must exist and be executable. No shell expansion, remote command fields or custom
+environment overrides are introduced. This configuration is trusted host-local
+code execution; only configure applications you trust. Do not point it at Steam,
+shell wrappers or background launchers that forward to already-running processes.
+
+The selected child inherits the managed runtime's private `XR_RUNTIME_JSON` and
+IPC directory, optics/tracking and existing capture transport. No system runtime
+registration is changed. Demo-specific import, lifecycle autoload and completion
+claims are bypassed for an external app. Exit/cancel stops the owned child without
+requiring a Nightfall-specific exit hook; overall supervisor deadlines remain.
+Normal app completion validates capture byte accounting and encoder/image drain,
+while tracking disconnection remains an interrupted outcome, not a fabricated
+completed-stream PASS. Runtime-origin begin/end events remain the handover signal.
+
+Local validation: 12 Python application-selection/lifecycle tests passed and six
+Rust XR supervisor tests passed. External application GPU/headset validation is
+still pending. The next physical gate uses the independently launched Khronos
+`hello_xr` executable as the smallest native OpenXR app, then a real native game.
+This is explicit app launch after headset acceptance, NOT automatic detection yet:
+starting a managed runtime without launching a fixture/app, publishing a scoped
+launch environment and negotiating on an observed app session remains later work.
+Linux/NVIDIA only for this gate; no Windows or OpenVR/SteamVR claim.
+
+Built optimized Meteor and restarted only the idle dedicated XR DEV listener
+(tool session 3167 at setup) on the same `10.0.0.13:47905` endpoint and public pin.
+Normal Meteor was not restarted. Local ignored `application.json` selects
+`.build-cache/meteor-xr/hello-xr-spike/build/src/tests/hello_xr/hello_xr` with
+`-g Vulkan2 -s Stage -bm Opaque`. No app was automatically launched/accepted.
+The existing headset build's Settings → Connect XR → Accept XR is the entry;
+verify the standalone sample appears and B/Y returns to the existing desktop.
+To return to the fixed movement demo, move the local application JSON aside
+before the next attempt (or remove the selection with user approval).
+
+### External sample startup: background stdin (2026-10-20)
+
+First physical attempts authenticated and launched HelloXR, but it created then
+destroyed its session without a begin event or encoded frames. `probe.log` showed
+`Press any key to shutdown...`; source inspection confirmed its input thread
+unconditionally treats `getchar()` returning EOF as quit. The background host's
+inherited stdin therefore caused exit during initialization, with only the
+downstream encoder-no-output error visible in `runtime.log`.
+
+External child launch now supplies an isolated stdin pipe whose writer stays open
+for that child's lifetime. It neither consumes host terminal input nor sees an
+immediate EOF; normal cancellation still terminates/reaps the exact child. All
+13 Python application/lifecycle tests pass, including a regression checking stdin
+is not readable/EOF. The dedicated listener reads these scripts on each attempt,
+so no APK or listener rebuild/restart is needed. Physical retry remains pending.
+
+### External projection-with-depth capture correction (2026-10-20)
+
+After stdin isolation, device attempts reached a real runtime session-begin event
+but `service.log` ended with `METEOR_CAPTURE_FAILED`. The unadapted sample enables
+`XR_KHR_composition_layer_depth`: our capture hook accepted only ordinary
+projection layers. Added colour-only normalization of two-view depth projections
+for encoding, retaining original poses/FOV/subimages/chroma-key metadata. The
+transport still does not send game depth buffers or implement depth reprojection.
+
+Depth-bearing submissions now acquire colour-image reservations in the
+multi-compositor's depth-projection submission path as well as releasing them on
+slot retirement. A local GPU smoke test exposed the missing acquisition hook as
+a three-frame stall; fixed before the next physical retry. Added depth-image
+selection/lease unit coverage, rebuilt the managed runtime, and validated the
+actual standalone sample with synthetic tracking: 64 encoded frames through the
+same 1024-eye/60-Hz target, Touch, asynchronous encode/delivery profile. Test was
+intentionally interrupted, so this proves sustained startup/capture/transport,
+not physical presentation or completed-stream drain. Diagnostics retained under
+`.build-cache/meteor-xr/external-smoke-25gw0gb5/`; script:
+`test/smoke_xr_local_application.py`. No headset update or listener restart needed;
+the existing listener starts the newly rebuilt managed runtime on its next lease.
+
+### Wristwatch desktop reveal prototype (2026-10-20)
+
+User confirmed independent OpenXR app launch/streaming works on the headset,
+then selected a wristwatch rather than a game-button combination for desktop
+reveal. Added a controller-first left-wrist watch: face it toward the headset
+for 0.2 seconds to reveal a 24-hour local clock and monitor icon. Point the right
+controller at the lower button and press its trigger to show/hide the existing
+desktop workspace. Looking alone does not select it; held triggers cannot repeat
+or click through into the revealed desktop. Watch location/reveal/hit geometry
+uses the exact Quest LOCAL head/grip/aim poses sampled for Meteor, not Godot's
+possibly recentered/STAGE-relative transforms. Tracking loss hides the watch.
+
+The watch is shaded directly into the existing native Meteor projection copy,
+with no added composition layer, viewport, texture or XR session/frame loop.
+Its small procedural display is a prototype, not final watch artwork. XR base
+projection now sorts behind Nightfall's existing desktop/UI layers. Showing the
+workspace resumes ordinary desktop/UI processing and native video presentation
+while keeping Godot's base projection disabled and the XR environment opaque.
+Hiding it suspends desktop presentation again without reconnecting Sunshine.
+Snapshot restoration on XR exit remains gated on native idle.
+
+This first version gives the visible desktop input focus: native XR controller
+poses continue, but game action values are neutral while it is open or the watch
+button is targeted/clicked. Haptics are discarded during that focus. After hiding,
+game actions remain neutral until controls are released, avoiding held-click
+replay. Desktop held inputs are released on both focus transitions. Desktop
+audio/microphone remain paused by the existing handover policy; XR audio is not
+implemented. No hand-tracking watch gestures, wrist preference, in-XR browser or
+multi-screen expansion, hidden-stream bandwidth optimization, or automatic app
+detection is claimed here. Existing DEV B/Y-hold exit remains a recovery path.
+
+Validation: 39 GDScript scripts passed, including watch-facing/ray geometry,
+reveal without activation, click latching/release, tracking loss, ordinary game
+trigger use away from watch, and desktop show/hide ownership/projection checks.
+The actual embedded GLES fragment shader compiled using glslangValidator in the
+existing build container. Native Android release extension and optimized
+release-signed DEV APK builds passed. Physical alignment, comfort, menu/keyboard
+interaction, layer budget and repeated desktop reveal still require headset
+testing; script/shader compilation is not proof of physical usability.
+
+APK: `Nightfall-Android-arm64-v8a-dev.apk`, code 802,
+`0.8.2-preview.1-dev+a07f7e9-dirty`.
+SHA-256: `13f263f88f4e5e1607b25778ad970767fde275157a28d439b472a987d44a6853`.
+
+### Watch feedback and cursor ordering (2026-10-20)
+
+User confirmed the watch works and desktop reveal succeeds. Feedback: mounting
+required turning the left wrist to the right, menu movement lacked animation,
+and menu cursor was invisible although screen cursor worked. Rolled the mount
+60 degrees around controller-local Z toward the outside of the left wrist,
+including its face offset, as an initial down-left ergonomic adjustment. Physical
+confirmation of that interpretation is still needed.
+
+Found independent cursor sort order 999 versus menu 1000 (keyboard also 999).
+Placed the existing primary/secondary cursor layers above both panels, deriving
+the value from shared panel-order constants, without adding layers. Added an
+actual layer-construction/order regression; all 40 GDScript scripts pass.
+
+Movement was not changed in this follow-up: grabbing directly updates transforms;
+there is no tween/animation. The menu's saved screen-relative anchor is restored
+when opened, rather than continuously following a moved screen. Layer transform
+sync also precedes grab handling in the normal frame loop (one-frame delay).
+Clarify whether the feedback means missing smoothing/anchored follow versus
+missing live movement of the grabbed panel before changing interaction semantics.
+
+Follow-up feedback: movement is working fine and cursor correction is confirmed.
+The 60-degree watch tilt still put its face on the wrong side of the wrist.
+Moved its face offset to the opposite wrist surface, reversed the face normal,
+and rotated the display 90 degrees in its plane, per the user's clarification.
+Updated mounting tests verify the opposite surface/normal and quarter-turn.
+This ergonomic correction still needs physical confirmation; movement/cursor
+behavior was deliberately left unchanged.
+
+### Temporary wrist placement markers (2026-10-20)
+
+Opposite-side mounting still required an unnatural palm-up/bent-wrist posture.
+User requested coloured candidate balls instead of more guessed rotations.
+Added temporary DEV calibration mode (instance `calibration_markers=true`) replacing
+the watch display with 24 numbered spheres around the raw left controller grip.
+This is a controller pose, not an anatomical wrist joint. Candidate centres are
+radius 7 cm in controller-local XY at Z=-8 cm, +4 cm and +16 cm, eight positions
+per ring (45-degree steps); sphere radius 1.4 cm. Each ring uses red, orange,
+yellow, green, cyan, blue, purple, pink in order. Labels 1–8, 9–16 and 17–24
+distinguish the rings; all are visible without the wrist-facing/gaze gate.
+
+Markers use the existing native projection shader, not extra composition layers,
+and are non-interactive: no watch click or game input capture. Normal watch
+interaction remains covered by tests with calibration disabled. Once the user
+identifies the preferred number, convert that raw-grip-relative position into the
+mount, calibrate face/text orientation separately, and disable the markers.
+The ordinary controller-tracking validity and XR-session lifetime still apply.
+
+User selected **marker 13** as right on the wrist. Locked the normal watch mount
+to that exact raw-grip-relative position `(-0.07, 0, 0.04)` metres. Face normal is
+controller-local -X (radially outward from that ring); text top is +Z (towards
+forearm), with a right-handed orthonormal basis. Calibration markers default off;
+the mode/shader remain available for future diagnostics. Updated regression tests
+assert the selected location and independent face/text axes. Position is now
+user-selected; face/text orientation still requires confirmation on headset and
+should be adjusted without moving this selected position.
+
+User confirmed marker-13 placement is perfect and requested only a 90-degree
+clockwise rotation of the wrist menu. Applied a local -PI/2 rotation about the
+display's outward normal, preserving position `(-0.07,0,0.04)` and normal -X.
+Updated orientation assertions: display right is controller-local -Z and display
+up is -Y. Physical confirmation of the final text orientation remains pending.
+
+Latest orientation adjustment: user requested moving back "45% counter clock wise",
+interpreted explicitly as 45 degrees counter-clockwise from the preceding build.
+Net display roll is now -PI/4 relative to the marker-13 baseline. Wrist position
+and outward normal are unchanged; orientation tests assert the new diagonal axes.
+
+Latest placement refinement: marker 13 should meet the watch's right edge rather
+than its centre. Kept the calibrated basis/roll and moved its centre left by half
+the 16 cm display width in display-local space. The anchor relation is now
+`centre + basis.x * 0.08 == (-0.07,0,0.04)` in raw grip coordinates, covered by
+the mounting regression. No independent rotation or vertical offset was added.
+
+### Committed-work checkpoint: wristwatch confirmed (2026-10-20)
+
+User confirmed the final right-edge-at-marker-13 placement and 45-degree net
+clockwise display roll are perfect. Earlier feedback confirmed desktop movement
+and restored menu cursor. Live desktop handover, independent sample streaming
+and wristwatch desktop reveal have all received physical user confirmation.
+The latest optimized release-signed DEV APK is installed on Quest
+`2G0YC1ZF8P08QN`; all 40 GDScript scripts pass. Shader compilation, Python
+application/lifecycle tests, native image-lease regression, Rust supervisor tests
+and local asynchronous external-app capture were validated during this work.
+This is not a completed stability/performance/audio/game-compatibility matrix.
+
+On resumption check branch/worktree first: XR work belongs to
+`feat/meteor-xr-streaming`, not the other agent's separate pairing worktree.
+Host-local application selection is still the ignored `.build-cache/meteor-xr/application.json`
+and currently selects HelloXR; private keys/config are not committed. The dedicated
+DEV listener and device configuration need checking after any restart. No automatic
+enrollment/app discovery, Windows integration or SteamVR/OpenVR support is implied.
+
+Recommended next phase: split "runtime armed" from "launch selected application".
+Keep the managed runtime/transport ready while the Sunshine desktop is in use,
+publish a host-local launch environment for a foreground native OpenXR app,
+and trigger the existing handover only from observed session activity plus a
+decoded stereo frame. Preserve initial authorization; do not replace it with
+unrestricted remote execution or globally change the user's active runtime.
+Use the watch to reveal/hide desktop during XR and return on app session end.
+Then test a real native OpenXR application, repeat app start/exit, cancellation,
+headset standby and input-focus transitions before optimizing hidden desktop
+work or extending runtime/session duration. XR audio, microphone/audio focus,
+automatic product integration, packaging and cross-platform compatibility remain
+separate outstanding work.

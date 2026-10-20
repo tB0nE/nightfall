@@ -137,6 +137,12 @@ pub(crate) async fn runtime_adapter_with_status(
     ] {
         command.env(key, value);
     }
+    // Explicit host-local DEV override only. Never take an executable or args
+    // from the headset/control protocol. Missing means the validated demo.
+    let application = cache.join("application.json");
+    if application.exists() {
+        command.env("NIGHTFALL_XR_APPLICATION_SPEC", application);
+    }
     command
         .env("NIGHTFALL_XR_RUNTIME_GENERATION", generation)
         .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })

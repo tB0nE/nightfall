@@ -2,6 +2,7 @@
 import subprocess
 import time
 import json
+import os
 
 
 def valid_completion(path, token, target):
@@ -17,14 +18,25 @@ def valid_completion(path, token, target):
 
 def run_application(command, *, env, timeout, service_log, stop_file,
                     watch_disconnect=False, stop_timeout=3,
-                    completion_file=None, completion_token=None, completion_target=0):
+                    completion_file=None, completion_token=None, completion_target=0,
+                    cwd=None, terminate_on_stop=False):
     stop_file.unlink(missing_ok=True)
     if completion_file is not None: completion_file.unlink(missing_ok=True)
     interrupted = False
     forced = False
     deadline = time.monotonic() + timeout
-    application = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True)
+    # A background app must not consume the host terminal or see an immediate
+    # EOF as "press any key to quit". Keep a private pipe's writer alive without
+    # passing it to the app; communicate() must not own/close that writer.
+    stdin_read, stdin_write = os.pipe() if terminate_on_stop else (None, None)
+    try:
+        application = subprocess.Popen(command, env=env, cwd=cwd, stdin=stdin_read,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except BaseException:
+        if stdin_read is not None:
+            os.close(stdin_read)
+            os.close(stdin_write)
+        raise
     try:
         with service_log.open() as log:
             pending = ""
@@ -34,6 +46,10 @@ def run_application(command, *, env, timeout, service_log, stop_file,
                     break
                 except subprocess.TimeoutExpired:
                     pass
+                if terminate_on_stop and stop_file.exists() and not interrupted:
+                    interrupted = True
+                    application.terminate()
+                    deadline = time.monotonic() + stop_timeout
                 if watch_disconnect and not interrupted:
                     pending += log.read()
                     lines = pending.split("\n")
@@ -43,6 +59,7 @@ def run_application(command, *, env, timeout, service_log, stop_file,
                             interrupted = True
                             # Only the patched sample consumes this run-local request.
                             stop_file.write_text("tracking disconnected\n")
+                            if terminate_on_stop: application.terminate()
                         # A valid completion request permits normal validation, NOT a
                         # success verdict. Caller must still prove byte counts/drain.
                         deadline = time.monotonic() + stop_timeout
@@ -66,3 +83,7 @@ def run_application(command, *, env, timeout, service_log, stop_file,
         if isinstance(failure, subprocess.TimeoutExpired):
             failure.output, failure.stderr = stdout, stderr
         raise
+    finally:
+        if stdin_read is not None:
+            os.close(stdin_read)
+            os.close(stdin_write)

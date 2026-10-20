@@ -14,12 +14,28 @@ var _elapsed := 0.0
 var _hold := 0.0
 var _drain_started := 0.0
 var _saved: Dictionary = {}
+var desktop_visible := false
+var _watch
 
 func _init(owner) -> void:
 	main = owner
 
 func blocks_workspace() -> bool:
+	return owns_workspace() and (not desktop_visible or (_watch != null and _watch.interaction_blocked()))
+
+func owns_workspace() -> bool:
 	return not _saved.is_empty()
+
+func set_desktop_visible(value: bool) -> void:
+	if state != State.ACTIVE or not owns_workspace() or desktop_visible == value: return
+	main.xr_interaction.cancel_transient_interactions("XR desktop focus changed")
+	main.input_handler.release_host_inputs()
+	if main.get("controller_mapper") != null: main.controller_mapper.release_for_focus_loss()
+	if main.virtual_keyboard: main.virtual_keyboard.release_for_focus_loss()
+	desktop_visible = value
+	main.pcvr_test.backend.set_workspace_input_focus(value)
+	main._log("[XR-WATCH] Desktop %s" % ("shown; game actions neutral" if value else "hidden; game actions resume after release"))
+	_enforce_hidden()
 
 func arm(control) -> bool:
 	if state != State.IDLE or not main.pcvr_test.standby_active: return false
@@ -39,10 +55,13 @@ func arm(control) -> bool:
 func process(delta: float) -> void:
 	if state == State.IDLE: return
 	_elapsed += delta
-	if blocks_workspace(): _enforce_hidden()
+	if state == State.ACTIVE:
+		if not _watch: _watch = preload("res://src/pcvr_wristwatch.gd").new(main)
+		_watch.process(delta, self)
+	if owns_workspace(): _enforce_hidden()
 	if state == State.STOPPING:
 		if not main.pcvr_test.standby_active:
-			if blocks_workspace(): _restore_workspace()
+			if owns_workspace(): _restore_workspace()
 			_reset()
 		return
 	if not main.pcvr_test.standby_active or not _control or _control.state != "prepared" or _control.session != _lease:
@@ -85,6 +104,8 @@ func request_stop(reason: String = "Local exit") -> void:
 	generation += 1 # Invalidate every frame/draw continuation before cleanup.
 	error = reason
 	state = State.STOPPING
+	desktop_visible = false
+	if _watch: _watch.reset()
 	main._log("[XR-HANDOVER] Stopping: " + reason)
 	main.pcvr_test.request_stop()
 
@@ -116,10 +137,10 @@ func _capture_and_hide() -> bool:
 func _enforce_hidden() -> void:
 	# Hide the parent, not every child: stream termination and other legitimate
 	# lifecycle callbacks can still update child visibility/content while hidden.
-	main.visible = false
+	main.visible = desktop_visible
 	main.audio_player.stream_paused = true
 	main.meteor_microphone.set_paused(true)
-	main.native_xr_renderer.set_presentation_suspended(true)
+	main.native_xr_renderer.set_presentation_suspended(not desktop_visible)
 	var interface = _xr_interface()
 	if interface:
 		interface.set_submit_projection_layer(false)
@@ -152,6 +173,8 @@ func _restore_workspace() -> void:
 	# restore stale stream state, or overwrite any saved user setting here.
 	var saved := _saved.duplicate()
 	_saved.clear()
+	desktop_visible = false
+	if _watch: _watch.reset()
 	main.native_xr_renderer.set_presentation_suspended(saved.native_suspended)
 	var interface = _xr_interface()
 	if interface:
