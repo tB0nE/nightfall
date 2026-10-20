@@ -2,6 +2,7 @@ class_name MeteorXRControl
 extends RefCounted
 ## DEV authenticated control only. Prepared never starts exclusive presentation.
 signal changed
+signal runtime_changed
 const MAX_FRAME := 4096
 const CONFIG := "user://meteor_xr_control.cfg"
 const IDENTITY := "user://meteor_xr_identity.key"
@@ -9,6 +10,7 @@ var owner: Node
 var state := "idle"
 var message := ""
 var session := ""
+var runtime_status: Dictionary = {}
 var _generation := 0
 var _peer: StreamPeerTCP
 var _send
@@ -19,6 +21,7 @@ var _busy := false
 var _relay
 var _owns_projection := false
 var _long_run := false
+var _standby_only := false
 var _relay_config: Dictionary = {}
 
 func _init(node: Node) -> void:
@@ -48,6 +51,7 @@ func cancel(stop_projection: bool = true) -> void:
 	var owned := _owns_projection
 	_owns_projection = false
 	_long_run = false
+	_standby_only = false
 	if _relay: _relay.stop()
 	_relay = null
 	_relay_config.clear()
@@ -56,6 +60,9 @@ func cancel(stop_projection: bool = true) -> void:
 	_send = null
 	_receive = null
 	session = ""
+	if not runtime_status.is_empty():
+		runtime_status.clear()
+		runtime_changed.emit()
 	_busy = false
 	_status("idle", "Control connection closed")
 	if owned and stop_projection: owner.pcvr_test.request_stop()
@@ -66,6 +73,7 @@ func _fail(text: String) -> void:
 
 func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 	var deadline := Time.get_ticks_msec() + milliseconds
+	var next_status := Time.get_ticks_msec() + 500
 	while token == _generation and state == expected:
 		if not _peer:
 			_fail("Control connection closed")
@@ -74,7 +82,56 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 		if _peer.get_status() != StreamPeerTCP.STATUS_CONNECTED or Time.get_ticks_msec() >= deadline:
 			_fail("Control lease expired or host disconnected")
 			return
+		if expected == "prepared" and Time.get_ticks_msec() >= next_status:
+			# Only this loop issues requests after acceptance; never overlap cipher
+			# counters or reads. Status does not renew the bounded DEV lease.
+			var reply := await _request({"type": "status"}, token)
+			if token != _generation: return
+			if reply.get("state", "") != "prepared" or reply.get("session", "") != session or not _update_runtime(reply):
+				_fail("Invalid or expired XR runtime status")
+				return
+			next_status = Time.get_ticks_msec() + 500
 		await owner.get_tree().process_frame
+
+static func valid_runtime_status(value: Variant) -> bool:
+	if not value is Dictionary: return false
+	if not value.has_all(["phase", "generation", "event_sequence", "active_sessions"]): return false
+	var phase = value.get("phase")
+	if phase not in ["waiting_for_lanes", "starting", "session_created", "session_active", "session_ended", "stopping", "completed", "cancelled", "failed"]: return false
+	var generation = value.get("generation")
+	if generation != null:
+		if not generation is String or generation.length() != 32: return false
+		for digit in generation:
+			if digit not in "0123456789abcdef": return false
+	for field in ["event_sequence", "active_sessions"]:
+		var number = value.get(field)
+		if typeof(number) not in [TYPE_INT, TYPE_FLOAT]: return false
+		if not is_finite(float(number)) or number < 0 or number > 9007199254740991 or number != int(number): return false
+	var active := int(value.active_sessions)
+	if active > 128 or (generation == null and int(value.event_sequence) != 0): return false
+	if phase in ["session_created", "session_active", "session_ended"] and (generation == null or int(value.event_sequence) == 0): return false
+	if phase == "session_active" and (active == 0 or generation == null or int(value.event_sequence) == 0): return false
+	if active > 0 and (generation == null or int(value.event_sequence) == 0): return false
+	if active > 0 and phase not in ["session_active", "stopping"]: return false
+	return true
+
+func _update_runtime(reply: Dictionary) -> bool:
+	if not reply.has("runtime"):
+		# An older host never supplied runtime status. Once supplied for this
+		# lease it must not disappear and erase our generation/replay checks.
+		return runtime_status.is_empty()
+	var value = reply.runtime
+	if not valid_runtime_status(value): return false
+	if not runtime_status.is_empty():
+		var previous = runtime_status.get("generation")
+		if previous != null and value.generation != previous: return false
+		if int(value.event_sequence) < int(runtime_status.event_sequence): return false
+	if runtime_status != value:
+		runtime_status = value.duplicate(true)
+		owner._log("[XR-CONTROL] runtime=%s events=%s active_sessions=%s" % [value.phase, value.event_sequence, value.active_sessions])
+		runtime_changed.emit()
+		changed.emit()
+	return true
 
 static func valid_pin(pin: String) -> bool:
 	if pin.length() != 64 or pin.to_lower() == "0".repeat(64): return false
@@ -217,6 +274,7 @@ func connect_offer() -> void:
 	var hz := int(config.get_value("host", "hz", 20))
 	var eye_size := int(config.get_value("host", "eye_size", 512))
 	_long_run = bool(config.get_value("host", "long_run", false))
+	_standby_only = bool(config.get_value("host", "standby_only", false))
 	if hz not in [20, 60] or eye_size not in [512, 1024] or (_long_run and hz != 60):
 		_fail("Unsupported developer XR rate or eye size")
 		return
@@ -227,7 +285,10 @@ func connect_offer() -> void:
 		_fail("XR offer rejected")
 		return
 	session = offer.session
-	_status("offered", "Accept exclusive Meteor XR session?" if not _relay_config.is_empty() else "Accept control-only XR preparation?")
+	var offer_text := "Accept control-only XR preparation?"
+	if not _relay_config.is_empty():
+		offer_text = "Accept XR standby? Desktop stays visible" if _standby_only else "Accept exclusive Meteor XR session?"
+	_status("offered", offer_text)
 	_watch_lease(token, "offered", 15000)
 
 func accept_offer() -> void:
@@ -239,6 +300,9 @@ func accept_offer() -> void:
 	_busy = false
 	if reply.get("state", "") != "prepared" or reply.get("session", "") != session or reply.get("lan_video_available", true) != false:
 		_fail("XR acceptance failed or unsupported transport")
+		return
+	if not _update_runtime(reply):
+		_fail("Invalid initial XR runtime status")
 		return
 	_status("prepared", "Preparing authenticated XR transport" if not _relay_config.is_empty() else "Control-only XR preparation accepted")
 	_watch_lease(token, "prepared", 120000 if _long_run else 60000)
@@ -252,7 +316,7 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	if session.length() != 32 or session.hex_decode().size() != 16:
 		_fail("Invalid relay session ID")
 		return
-	var reason: String = owner.pcvr_test.busy_reason()
+	var reason: String = owner.pcvr_test.standby_busy_reason() if _standby_only else owner.pcvr_test.busy_reason()
 	if not reason.is_empty():
 		_fail(reason)
 		return
@@ -261,17 +325,23 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	_relay_config["session"] = session.hex_decode()
 	_relay = ClassDB.instantiate("MeteorXrRelay")
 	_owns_projection = true
-	owner.pcvr_test.start(false, true, 90.0 if _long_run else 45.0)
-	if not owner.pcvr_test.is_exclusive():
-		_fail("Exclusive XR entry rejected")
-		return
+	if _standby_only:
+		if not owner.pcvr_test.start_meteor_standby(90.0 if _long_run else 45.0):
+			_fail("XR standby entry rejected")
+			return
+	else:
+		owner.pcvr_test.start(false, true, 90.0 if _long_run else 45.0)
+		if not owner.pcvr_test.is_exclusive():
+			_fail("Exclusive XR entry rejected")
+			return
 	var deadline := Time.get_ticks_msec() + 5000
 	while token == _generation:
 		var native: Dictionary = owner.pcvr_test.backend.get_test_status()
 		if bool(native.get("meteor_endpoints_ready", false)): break
 		# Native idle is expected until the asynchronous render-layer preparation
 		# drains. Do not tear down the accepted lease before start_meteor_test runs.
-		if Time.get_ticks_msec() >= deadline or relay_preparation_failed(str(native.get("state", "failed")), owner.pcvr_test.is_exclusive()):
+		var owns_backend: bool = owner.pcvr_test.standby_active if _standby_only else owner.pcvr_test.is_exclusive()
+		if Time.get_ticks_msec() >= deadline or relay_preparation_failed(str(native.get("state", "failed")), owns_backend):
 			_fail("Local XR endpoints did not become ready")
 			return
 		await owner.get_tree().process_frame

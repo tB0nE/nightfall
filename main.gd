@@ -2290,6 +2290,7 @@ func primary_media_size() -> Vector2i:
 	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):
+	pcvr_test.process_standby(delta)
 	if pcvr_test.is_exclusive():
 		pcvr_test.process(delta)
 		_log_flush_timer += delta

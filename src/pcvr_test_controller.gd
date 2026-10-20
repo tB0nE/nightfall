@@ -21,6 +21,10 @@ var _preparation_frame_generation := -1
 var stream_mode := false
 var meteor_mode := false
 var _last_remote_status := ""
+var standby_active := false
+var _standby_stopping := false
+var _standby_ready_logged := false
+var _standby_elapsed := 0.0
 
 func _init(owner) -> void:
 	main = owner
@@ -44,6 +48,7 @@ func is_exclusive() -> bool:
 	return session.is_exclusive()
 
 func busy_reason() -> String:
+	if standby_active: return "Stop XR standby before starting an exclusive test"
 	if application_paused:
 		return "Resume the application before starting XR"
 	if not main._startup_ready or main._startup_cover != null or auto_connect_pending:
@@ -62,6 +67,47 @@ func busy_reason() -> String:
 	if main.native_xr_renderer.active or main.native_xr_renderer.stream_started:
 		return "Start from clean welcome: native video is busy"
 	return ""
+
+func standby_busy_reason() -> String:
+	if application_paused: return "Resume the application before XR standby"
+	if is_exclusive() or standby_active: return "XR is already preparing or active"
+	if not main._startup_ready or main._startup_cover != null or auto_connect_pending:
+		return "Wait for startup to finish"
+	if main.session_lifecycle.connect_timeout_pending or main.screen_sources.switching_primary:
+		return "Wait for the desktop connection/workspace change to finish"
+	return ""
+
+func start_meteor_standby(maximum_seconds: float = TIMEOUT_SECONDS) -> bool:
+	var reason := standby_busy_reason()
+	if not available or not backend or not backend.has_method("start_meteor_standby"):
+		reason = "Updated native XR standby provider unavailable"
+	if not reason.is_empty():
+		_report_status(reason)
+		return false
+	if not backend.start_meteor_standby(): return false
+	standby_active = true
+	_standby_stopping = false
+	_standby_ready_logged = false
+	_standby_elapsed = 0.0
+	timeout_seconds = 90.0 if maximum_seconds == 90.0 else TIMEOUT_SECONDS
+	main._log("[PCVR-STANDBY] Started without exclusive presentation or workspace changes")
+	return true
+
+func process_standby(delta: float) -> void:
+	if not standby_active: return
+	_standby_elapsed += delta
+	var snapshot: Dictionary = backend.get_test_status()
+	var native_state := str(snapshot.get("state", "failed"))
+	if native_state == "idle":
+		standby_active = false
+		_standby_stopping = false
+		main._log("[PCVR-STANDBY] Native resources drained; desktop unchanged")
+		return
+	if not _standby_stopping and (native_state == "failed" or _standby_elapsed >= timeout_seconds):
+		request_stop()
+	if not _standby_ready_logged and bool(snapshot.get("meteor_frame_ready", false)):
+		_standby_ready_logged = true
+		main._log("[PCVR-STANDBY] Decoded stereo ready; projection remains disabled")
 
 func start(remote_stream: bool = false, meteor_stream: bool = false, maximum_seconds: float = TIMEOUT_SECONDS) -> void:
 	main._log("[PCVR-TEST] Button pressed remote=%s" % remote_stream)
@@ -93,6 +139,13 @@ func _report_status(message: String) -> void:
 		main.ui_controller.show_temporary_status(message, 5.0)
 
 func request_stop() -> void:
+	if standby_active:
+		if not _standby_stopping:
+			_standby_stopping = true
+			if "welcome_screen" in main and main.welcome_screen:
+				main.welcome_screen.cancel_xr_control(false)
+			backend.stop_test()
+		return
 	_execute(session.exit())
 
 func set_application_paused(paused: bool) -> void:

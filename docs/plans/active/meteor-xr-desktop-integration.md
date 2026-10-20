@@ -314,3 +314,119 @@ Next: publish supervised runtime/session state to the normal-process control
 service and validate its combined proxy/XR lifecycle. Then introduce a supported
 local application launcher/session-driven negotiation and the client handover.
 Keep the optics/tracking-before-app-start requirement explicit during that work.
+
+## Phase 1 progress — session state in authenticated control replies
+
+Checkpoint `e8cfcc3` commits the service integration, runtime lifecycle extraction,
+session-event hooks/observer, tests and this plan. Subsequent work adds an optional
+`runtime` object to control replies, owned by the reply's accepted relay/lease.
+It is omitted before acceptance, without a configured runtime, and after stop;
+old replies without it still deserialize. Existing `state: prepared`, explicit
+acceptance and `lan_video_available: false` semantics are unchanged.
+
+The object reports `phase`, optional runtime `generation`, `event_sequence` and
+`active_sessions`. Phases distinguish waiting for authenticated lanes, starting,
+session created/active/ended, stopping, completed, cancelled and failed. Activity
+comes only from validated per-client runtime events, not socket readiness. Active
+session count is cleared after the owned runtime adapter has returned/cleaned up.
+Errors may still close the control connection; this is not an unsolicited event
+subscription or a reliable final-failure-notification protocol. Reply state does
+not prove headset presentation or frame rate. Runtime session deadline expiry now
+returns a timeout error rather than looking like successful fixture completion.
+
+Validation: full suite 109 passed, 10 ignored before the final GPU-test assertion
+extension. The extended real GPU/native-worker fixture also passes: it observes
+an active session while video is running, then a completed runtime with generation,
+at least four lifecycle events and zero active sessions. Artifacts:
+`.build-cache/meteor-xr/lan-sessions/1792473018188992818-96710/`.
+Authenticated socket tests check status before/after acceptance and stop across
+two leases, including no stale status on the next offer. No headset code changed.
+
+Next: exercise the normal-process coexistence entry end to end and add the client
+consumer for runtime state. The client still uses its existing DEV exclusive entry;
+real external-app launching/session-driven offers and desktop handover remain open.
+
+## Phase 1 progress — normal-process validation and client status consumer
+
+Built optimized `meteor/target/release/nightfall-meteor` and ran the new
+`test/run_meteor_xr_coexistence.py` against the normal entry point, not the exclusive
+control CLI. It isolates XDG settings/data/logs, uses fixed test-only identities,
+reserves unused ports and supplies a mock Sunshine HTTP upstream. All three cases
+passed: enabled XR with native OpenSSL authentication/offer/accept/stop plus proxy
+forwarding before and after; deliberately occupied XR port with proxy remaining
+usable; XR disabled. SIGTERM/SIGINT paths exited cleanly. No running service or
+user configuration was changed. This verifies process wiring and TCP forwarding,
+not full GameStream video, active GPU-runtime shutdown via this CLI, or headset
+desktop/XR coexistence. The real GPU/runtime path was tested separately above.
+
+`MeteorXRControl` now consumes the optional runtime object after acceptance and
+polls status every 500 ms through its single serialized control-request path.
+It validates shape, numeric bounds, phase/activity consistency, runtime generation
+and nondecreasing event sequence. A known runtime cannot disappear/change generation
+within a lease; old hosts that never supply the field remain compatible. Cancel
+clears status, and `runtime_changed` lets later handover logic subscribe without
+confusing runtime activity with presentation readiness. No automatic projection
+entry, saved preference change or new button was introduced.
+
+All 37 GDScript test scripts passed, including status validation/reset and old-host
+compatibility. The headless desktop runner still prints the existing unavailable
+Android-only XR-extension diagnostics; these are not a native headset test.
+The release host build produced the existing test-helper dead-code warning for
+`start_runtime_profile`; it succeeded. Installed APK is unchanged.
+
+Next milestone: connected XR standby and safe presentation handover. Separate
+tracking/optics bootstrap from exclusive projection so Meteor can prepare its
+virtual HMD while the desktop remains visible. Then launch an explicitly selected
+native OpenXR app against that runtime, observe its session, and defer hiding the
+desktop until decoded XR video is ready. Keep the DEV fixture as a regression,
+preserve desktop context and keep local exit/rollback available throughout.
+
+## Phase 2 foundation — non-presenting headset standby
+
+Added native `start_meteor_standby()` alongside the unchanged exclusive
+`start_meteor_test()` entry. Standby initializes the existing tracking/optics and
+decoder path using the same OpenXR session and render-loop callbacks, but its
+provider returns zero composition layers. It can prepare/copy decoded frames
+without suppressing the ordinary desktop scene. This still allocates a projection
+swapchain and performs decode/copy work; it is not a low-power indefinitely idle
+service, and its coexistence/performance needs physical validation.
+
+Native status distinguishes `meteor_standby`, `meteor_frame_ready` and
+`meteor_projection_enabled`. The separate `activate_meteor_projection()` API
+requires a running receiver and a copied frame. No current controller calls it:
+the future handover must retire conflicting desktop layers before activation.
+Frame readiness alone cannot hide the workspace or submit an immersive layer.
+Controller poses continue during standby, but buttons/analog input are neutral
+and host haptics are consumed/discarded rather than applied or replayed later.
+
+An explicit `[host] standby_only=true` in the existing DEV headset configuration
+selects this diagnostic. Default remains false. It keeps manual authentication/
+acceptance and the fixed host demo, not automatic external-game detection. The
+standby controller leaves workspace visibility, audio, depth and exclusive-PCVR
+policy untouched. Main ticks its timeout/cleanup independently of exclusive mode;
+pause, timeout and cancellation drain native resources without restoring welcome
+or implicitly restarting on resume. Stable desktop streaming is permitted by the
+standby busy check; startup/connection/workspace changes are rejected at entry.
+
+Validation: the presentation/input gate C++ unit test passes; Android release
+extension rebuild passes (existing OpenXR aggregate-initializer warnings remain).
+All 37 GDScript scripts pass, including no exclusive entry/workspace suppression,
+copied-frame readiness without activation, duplicate start/stop, pause/no automatic
+resume, timeout and native-idle cleanup. Full native runner remains subject to its
+local FFmpeg development-package prerequisite; the new gate test ran standalone.
+Neither a new APK nor changed DEV configuration was installed on the headset.
+
+Packaging update: `./build.sh --dev` successfully produced the optimized,
+release-signed `Nightfall-Android-arm64-v8a-dev.apk` (106 MB), version
+`0.8.2-preview.1-dev+e8cfcc3-dirty`, code 802. The APK contains the release native
+XR library. SHA-256:
+`14cee0142cd4b91b39d4a1d3cb7d7c8884d43efe929b337750ecb144dc7fd94b`.
+Build credentials were restored by the build script. The initial sandbox build
+could not access Gradle's cache; the approved build outside it succeeded. This
+artifact has not been installed and standby has not been visually verified.
+
+Next physical gate: build an optimized DEV APK, explicitly select standby mode,
+and verify the desktop/welcome remains visible while logs show live optics,
+runtime session events and decoded stereo readiness, followed by clean stop with
+the same workspace intact. Only after that introduce snapshot/layer retirement,
+projection activation and rollback into the client handover coordinator.

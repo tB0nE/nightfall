@@ -70,6 +70,15 @@ impl Observer {
         serde_json::json!({"generation":self.generation,"sequence":self.sequence,
             "application_session_observed":self.saw_begin,"sessions":self.sessions})
     }
+    pub(crate) fn runtime_status(&self) -> crate::xr_relay::RuntimeStatus {
+        use crate::xr_relay::{RuntimePhase, RuntimeStatus};
+        let active_sessions = self.sessions.values().filter(|state| **state == State::Begun).count();
+        let phase = if active_sessions > 0 { RuntimePhase::SessionActive }
+            else if self.sessions.values().any(|state| *state == State::Created) { RuntimePhase::SessionCreated }
+            else if self.sequence > 0 { RuntimePhase::SessionEnded }
+            else { RuntimePhase::Starting };
+        RuntimeStatus { phase, generation: Some(self.generation.clone()), event_sequence: self.sequence, active_sessions }
+    }
     pub(crate) fn finish(&mut self, path: &Path) -> io::Result<()> {
         while self.poll(path)? != 0 {}
         if self.pending.starts_with(PREFIX) {
@@ -91,11 +100,15 @@ mod tests {
         observer.line(b"IPC ready").unwrap();
         observer.line(&line("current",1,"created")).unwrap();
         assert!(!observer.saw_begin);
+        assert_eq!(observer.runtime_status().phase, crate::xr_relay::RuntimePhase::SessionCreated);
         observer.line(&line("current",2,"begun")).unwrap();
         assert!(observer.saw_begin);
+        assert_eq!(observer.runtime_status().active_sessions, 1);
         observer.line(&line("current",3,"ended")).unwrap();
+        assert_eq!(observer.runtime_status().phase, crate::xr_relay::RuntimePhase::SessionEnded);
         observer.line(&line("current",4,"begun")).unwrap();
         observer.line(&line("current",5,"destroyed")).unwrap();
+        assert_eq!(observer.runtime_status().active_sessions, 0);
         assert!(observer.line(&line("current",6,"begun")).is_err());
     }
     #[test]

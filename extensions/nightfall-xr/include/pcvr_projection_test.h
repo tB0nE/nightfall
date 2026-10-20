@@ -11,6 +11,7 @@
 #include "pcvr_alvr_client.h"
 #include "pcvr_meteor_receiver.h"
 #include "pcvr_meteor_tracking_endpoint.h"
+#include "pcvr_presentation_gate.h"
 #include <memory>
 #ifdef __ANDROID__
 #include <EGL/eglext.h>
@@ -28,6 +29,8 @@ public:
 	bool start_test();
 	bool start_stream();
 	bool start_meteor_test();
+	bool start_meteor_standby();
+	bool activate_meteor_projection();
 	bool stream_available() const;
 	Dictionary _get_requested_extensions(uint64_t p_xr_version) override;
 	void stop_test();
@@ -46,6 +49,8 @@ private:
 	mutable std::mutex error_mutex;
 	std::string error;
 	void fail(const char *message);
+	bool start_meteor_mode(bool present_immediately);
+	PCVRPresentationGate meteor_presentation;
 #ifdef __ANDROID__
 	static constexpr int EYE_SIZE = 1024;
 	XrInstance instance = XR_NULL_HANDLE;

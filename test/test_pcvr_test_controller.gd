@@ -20,6 +20,8 @@ class Backend extends RefCounted:
 	var starts := 0
 	var remote_starts := 0
 	var meteor_starts := 0
+	var standby_starts := 0
+	var frame_ready := false
 	var state := "starting"
 	var frames := 12
 	func start_test() -> bool:
@@ -32,8 +34,13 @@ class Backend extends RefCounted:
 	func start_meteor_test() -> bool:
 		meteor_starts += 1
 		return true
+	func start_meteor_standby() -> bool:
+		standby_starts += 1
+		state = "starting"
+		frame_ready = false
+		return true
 	func get_test_status() -> Dictionary:
-		return {"state": state, "frames": frames, "error": "test failure", "session": 1}
+		return {"state": state, "frames": frames, "error": "test failure", "session": 1, "meteor_frame_ready": frame_ready}
 
 class Harness extends Controller:
 	var restores := 0
@@ -43,6 +50,12 @@ class Harness extends Controller:
 	func _queue_preparation_drain(token: int) -> void: drains.append(token)
 	func _suppress(_node: Node) -> void: suppressions += 1
 	func _restore() -> void: restores += 1
+
+class StandbyHarness extends Harness:
+	func standby_busy_reason() -> String:
+		if application_paused: return "Resume first"
+		if standby_active or is_exclusive(): return "XR busy"
+		return ""
 
 func _initialize() -> void:
 	_run.call_deferred()
@@ -76,6 +89,7 @@ func _run() -> void:
 	_test_remote_timeout(owner)
 	_test_meteor_timeout(owner)
 	_test_pause_recovery(owner)
+	_test_standby(owner)
 	controller.session.enter()
 	controller.session.preparation_finished(controller.session.generation, true)
 	controller.backend.state = "running"
@@ -178,6 +192,40 @@ func _run() -> void:
 	owner.free()
 	print("All pcvr_test_controller tests passed")
 	quit()
+
+func _test_standby(owner: Owner) -> void:
+	var controller := StandbyHarness.new(owner)
+	controller.backend = Backend.new()
+	controller.available = true
+	assert(controller.start_meteor_standby())
+	assert(not controller.start_meteor_standby())
+	assert(controller.standby_active and not controller.is_exclusive())
+	assert(controller.backend.standby_starts == 1 and controller.backend.starts == 0)
+	controller.backend.state = "running"
+	controller.backend.frame_ready = true
+	controller.process_standby(0.1)
+	assert(controller.session.state == Session.State.IDLE)
+	assert(controller.suppressions == 0 and controller.restores == 0)
+	controller.request_stop()
+	controller.request_stop()
+	assert(controller.backend.stops == 1 and controller.standby_active)
+	controller.backend.state = "idle"
+	controller.process_standby(0.1)
+	assert(not controller.standby_active and controller.restores == 0)
+	assert(controller.start_meteor_standby())
+	controller.set_application_paused(true)
+	assert(controller.backend.stops == 2)
+	controller.backend.state = "idle"
+	controller.process_standby(0.1)
+	assert(not controller.start_meteor_standby())
+	controller.set_application_paused(false)
+	assert(not controller.standby_active and controller.backend.standby_starts == 2)
+	assert(controller.start_meteor_standby())
+	controller.process_standby(45.1)
+	assert(controller.backend.stops == 3 and controller.restores == 0)
+	controller.backend.state = "idle"
+	controller.process_standby(0.1)
+	assert(not controller.standby_active)
 
 func _test_remote_timeout(owner: Owner) -> void:
 	var controller := Harness.new(owner)

@@ -68,6 +68,7 @@ fn lan_session_directory(cache: &Path) -> io::Result<PathBuf> {
     Ok(directory)
 }
 
+#[cfg(test)]
 pub(crate) async fn runtime_adapter(
     root: PathBuf,
     video: u16,
@@ -75,7 +76,20 @@ pub(crate) async fn runtime_adapter(
     hz: u32,
     eye_size: u32,
     long_run: bool,
+    cancel: tokio::sync::watch::Receiver<bool>,
+) -> io::Result<()> {
+    runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, cancel, None).await
+}
+
+pub(crate) async fn runtime_adapter_with_status(
+    root: PathBuf,
+    video: u16,
+    tracking: u16,
+    hz: u32,
+    eye_size: u32,
+    long_run: bool,
     mut cancel: tokio::sync::watch::Receiver<bool>,
+    progress: Option<&crate::xr_relay::RuntimeProgress>,
 ) -> io::Result<()> {
     if !matches!(hz, 20 | 60) || !matches!(eye_size, 512 | 1024) || (long_run && hz != 60) {
         return Err(io::Error::other("unsupported managed XR profile"));
@@ -100,6 +114,7 @@ pub(crate) async fn runtime_adapter(
         .map_err(|_| io::Error::other("XR runtime generation randomness unavailable"))?;
     let generation: String = generation.iter().map(|byte| format!("{byte:02x}")).collect();
     let mut events = crate::xr_events::Observer::new(generation.clone());
+    if let Some(progress) = progress { *progress.lock().unwrap() = events.runtime_status(); }
     let mut command = Command::new("bash");
     command.arg(root.join("tools/build_support/probe_monado_nvenc.sh"));
     for (key, _) in std::env::vars_os() {
@@ -143,10 +158,12 @@ pub(crate) async fn runtime_adapter(
     let deadline = Instant::now() + Duration::from_secs(if long_run {100} else {45});
     loop {
         if events.poll(&output.join("service.log"))? != 0 {
+            if let Some(progress) = progress { *progress.lock().unwrap() = events.runtime_status(); }
             fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
         }
         if let Some(status) = child.0.try_wait()? {
             events.finish(&output.join("service.log"))?;
+            if let Some(progress) = progress { *progress.lock().unwrap() = events.runtime_status(); }
             fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
             if status.success() && !events.saw_begin {
                 return Err(io::Error::other("No runtime session-begin event; rebuild the managed Monado runtime"));
@@ -161,6 +178,8 @@ pub(crate) async fn runtime_adapter(
             };
         }
         if *cancel.borrow() || Instant::now() >= deadline {
+            let timed_out = !*cancel.borrow();
+            if let Some(progress) = progress { progress.lock().unwrap().phase = crate::xr_relay::RuntimePhase::Stopping; }
             let artifacts = &output;
             fs::write(
                 artifacts.join("client-disconnected"),
@@ -184,7 +203,7 @@ pub(crate) async fn runtime_adapter(
             }
             events.finish(&output.join("service.log"))?;
             fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
-            return Ok(());
+            return if timed_out { Err(io::Error::new(io::ErrorKind::TimedOut, "XR runtime exceeded session deadline")) } else { Ok(()) };
         }
         tokio::select! {_=cancel.changed()=>{},_=tokio::time::sleep(Duration::from_millis(50))=>{}}
     }

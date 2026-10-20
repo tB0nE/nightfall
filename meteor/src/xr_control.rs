@@ -42,6 +42,8 @@ pub struct Reply {
     pub lan_video_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay: Option<crate::xr_relay::Ports>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::xr_relay::RuntimeStatus>,
 }
 
 struct Session {
@@ -75,6 +77,7 @@ impl Negotiation {
             reason: reason.map(str::to_owned),
             lan_video_available: false,
             relay: None,
+            runtime: None,
         }
     }
     fn apply(&mut self, request: Request) -> io::Result<Reply> {
@@ -291,6 +294,7 @@ async fn connection_supervised(
             reason: Some("another_control_session".into()),
             lan_video_available: false,
             relay: None,
+            runtime: None,
         };
         return tokio::time::timeout(IO_TIMEOUT, respond(&mut stream, &mut send, &busy))
             .await
@@ -349,6 +353,7 @@ async fn connection_supervised(
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());
+        reply.runtime = relay.as_ref().and_then(|r| r.runtime_status());
         tokio::time::timeout(IO_TIMEOUT, respond(&mut stream, &mut send, &reply))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))??;
@@ -495,6 +500,52 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_replies_without_runtime_status_still_decode() {
+        let reply: Reply = serde_json::from_str(r#"{"state":"idle","session":null,"reason":null,"lan_video_available":false}"#).unwrap();
+        assert!(reply.runtime.is_none());
+        assert!(!serde_json::to_string(&reply).unwrap().contains("runtime"));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn runtime_status_is_bound_to_accepted_control_lease() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut config = service_config();
+        let pin = config.key.public;
+        config.enable_relay = true;
+        config.runtime_root = Some("/must-not-launch-before-lanes".into());
+        let (stop, cancel) = watch::channel(false);
+        let task = tokio::spawn(serve(listener, config, cancel));
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let (mut tx, mut rx) = client_handshake(&mut stream, pin, [2; 32]).await;
+        assert!(reply(&mut stream, &mut rx).await.runtime.is_none());
+        for _ in 0..2 {
+            stream.write_all(&tx.seal(br#"{"type":"offer","width":512,"height":512,"hz":20}"#).unwrap()).await.unwrap();
+            let offer = reply(&mut stream, &mut rx).await;
+            assert!(offer.runtime.is_none());
+            let session = offer.session.unwrap();
+            let accept = serde_json::to_vec(&Request::Accept { session: session.clone() }).unwrap();
+            stream.write_all(&tx.seal(&accept).unwrap()).await.unwrap();
+            let accepted = reply(&mut stream, &mut rx).await;
+            assert_eq!(accepted.state, "prepared");
+            assert!(!accepted.lan_video_available);
+            let runtime = accepted.runtime.unwrap();
+            assert_eq!(runtime.phase, crate::xr_relay::RuntimePhase::WaitingForLanes);
+            assert!(runtime.generation.is_none());
+            assert_eq!(runtime.active_sessions, 0);
+            stream.write_all(&tx.seal(br#"{"type":"status"}"#).unwrap()).await.unwrap();
+            assert_eq!(reply(&mut stream, &mut rx).await.runtime, Some(runtime));
+            let stop_request = serde_json::to_vec(&Request::Stop { session }).unwrap();
+            stream.write_all(&tx.seal(&stop_request).unwrap()).await.unwrap();
+            let stopped = reply(&mut stream, &mut rx).await;
+            assert_eq!(stopped.state, "idle");
+            assert!(stopped.runtime.is_none());
+        }
+        stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+    }
     fn service_config() -> ServiceConfig {
         ServiceConfig {
             key: Arc::new(MeteorKey::from_seed([1; 32])),

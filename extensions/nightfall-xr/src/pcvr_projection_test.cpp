@@ -15,6 +15,8 @@ void NightfallXrProjectionTest::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("start_test"), &NightfallXrProjectionTest::start_test);
 	ClassDB::bind_method(D_METHOD("start_stream"), &NightfallXrProjectionTest::start_stream);
 	ClassDB::bind_method(D_METHOD("start_meteor_test"), &NightfallXrProjectionTest::start_meteor_test);
+	ClassDB::bind_method(D_METHOD("start_meteor_standby"), &NightfallXrProjectionTest::start_meteor_standby);
+	ClassDB::bind_method(D_METHOD("activate_meteor_projection"), &NightfallXrProjectionTest::activate_meteor_projection);
 	ClassDB::bind_method(D_METHOD("stream_available"), &NightfallXrProjectionTest::stream_available);
 	ClassDB::bind_method(D_METHOD("stop_test"), &NightfallXrProjectionTest::stop_test);
 	ClassDB::bind_method(D_METHOD("get_test_status"), &NightfallXrProjectionTest::get_test_status);
@@ -66,16 +68,34 @@ bool NightfallXrProjectionTest::start_test() {
 }
 
 bool NightfallXrProjectionTest::start_meteor_test() {
+	return start_meteor_mode(true);
+}
+
+bool NightfallXrProjectionTest::start_meteor_standby() {
+	return start_meteor_mode(false);
+}
+
+bool NightfallXrProjectionTest::activate_meteor_projection() {
+#ifdef __ANDROID__
+	return state.load() == RUNNING && meteor_mode && meteor_presentation.activate();
+#else
+	return false;
+#endif
+}
+
+bool NightfallXrProjectionTest::start_meteor_mode(bool present_immediately) {
 #ifdef __ANDROID__
 	if (state.load() != IDLE) { PCVR_LOG("Meteor start rejected: projection test not idle"); return false; }
 	if (!clock_extension) { PCVR_LOG("Meteor start rejected: XR_KHR_convert_timespec_time was not enabled at instance creation"); return false; }
+	meteor_presentation.begin(present_immediately);
 	if (!tracking) tracking = std::make_unique<MeteorTrackingEndpoint>();
 	if (!tracking->start()) return false;
 	tracking_epoch = MeteorTrackingEndpoint::now_ns();
 	if (!meteor) meteor = std::make_unique<PCVRMeteorReceiver>();
 	if (!meteor->start()) { tracking->request_stop(); return false; }
 	meteor_mode = true; meteor_draining = false;
-	PCVR_LOG("Meteor projection receiver requested; local-pose USB diagnostic only");
+	if (present_immediately) PCVR_LOG("Meteor projection receiver requested; local-pose USB diagnostic only");
+	else PCVR_LOG("Meteor standby receiver requested; tracking/decode only, no projection submission");
 	return start_test();
 #else
 	return false;
@@ -96,6 +116,9 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 #ifdef __ANDROID__
 	if (meteor) result["meteor_status"] = String(meteor->message().c_str());
 	result["meteor_endpoints_ready"] = meteor && meteor->listening() && tracking && tracking->listening();
+	result["meteor_standby"] = meteor_mode && !meteor_presentation.input_enabled();
+	result["meteor_frame_ready"] = meteor_mode && meteor_presentation.is_ready();
+	result["meteor_projection_enabled"] = meteor_mode && meteor_presentation.present();
 	if (meteor) {
 		const auto &s=meteor->stats;
 		Dictionary counts;
@@ -442,6 +465,8 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 	if(tracking && controller_haptic && controller_apply_haptic && controller_stop_haptic) for(unsigned hand=0;hand<2;++hand) {
 		MeteorHaptic pulse;
 		if(!tracking->take_haptic(hand,pulse) || pulse.epoch!=tracking_epoch) continue;
+		// Drain/discard requests during standby; never replay them on activation.
+		if (!meteor_presentation.input_enabled()) continue;
 		XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO}; info.action=controller_haptic; info.subactionPath=controller_paths[hand];
 		XrResult result;
 		if(pulse.duration_ms && pulse.amplitude>0) {
@@ -493,7 +518,7 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 				std::memcpy(out.poses.data()+pose*7,values,sizeof(values)); out.flags|=1u<<pose;
 			}
 		}
-		if((out.flags&1) && controller_float && controller_trigger && controller_squeeze) {
+		if(meteor_presentation.input_enabled() && (out.flags&1) && controller_float && controller_trigger && controller_squeeze) {
 			XrActionStateGetInfo query{XR_TYPE_ACTION_STATE_GET_INFO}; query.subactionPath=controller_paths[hand];
 			XrActionStateFloat trigger{XR_TYPE_ACTION_STATE_FLOAT},squeeze{XR_TYPE_ACTION_STATE_FLOAT};
 			query.action=controller_trigger; XrResult t=controller_float(session,&query,&trigger);
@@ -757,6 +782,7 @@ int32_t NightfallXrProjectionTest::_get_composition_layer_count() {
 				if (!meteor_draining) { meteor->stop_after_gpu_drain(); tracking->request_stop(); meteor_draining = true; }
 				if (!meteor->idle() || !tracking->idle()) return 0;
 				meteor_mode = false;
+				meteor_presentation.reset();
 			}
 #ifdef NIGHTFALL_PCVR_ALVR
 			if (remote_mode) {
@@ -778,7 +804,12 @@ int32_t NightfallXrProjectionTest::_get_composition_layer_count() {
 #ifdef NIGHTFALL_PCVR_ALVR
 	if (remote_mode) return render_remote() ? 1 : 0;
 #endif
-	return render_scene() ? 1 : 0;
+	const bool available = render_scene();
+	if (meteor_mode) {
+		if (available) meteor_presentation.frame_ready();
+		return available && meteor_presentation.present() ? 1 : 0;
+	}
+	return available ? 1 : 0;
 #else
 	return 0;
 #endif
@@ -786,7 +817,7 @@ int32_t NightfallXrProjectionTest::_get_composition_layer_count() {
 
 uint64_t NightfallXrProjectionTest::_get_composition_layer(int32_t p_index) {
 #ifdef __ANDROID__
-	if (p_index == 0 && rendered && state.load() == RUNNING) return reinterpret_cast<uint64_t>(&projection);
+	if (p_index == 0 && rendered && state.load() == RUNNING && (!meteor_mode || meteor_presentation.present())) return reinterpret_cast<uint64_t>(&projection);
 #endif
 	return 0;
 }

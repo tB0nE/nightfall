@@ -99,6 +99,30 @@ pub struct Ports {
     pub tracking: u16,
     pub framing: u8,
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePhase {
+    #[default]
+    WaitingForLanes,
+    Starting,
+    SessionCreated,
+    SessionActive,
+    SessionEnded,
+    Stopping,
+    Completed,
+    Cancelled,
+    Failed,
+}
+/// Scoped to one relay/accepted control lease. Never a presentation-FPS claim.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeStatus {
+    pub phase: RuntimePhase,
+    pub generation: Option<String>,
+    pub event_sequence: u64,
+    pub active_sessions: usize,
+}
+pub(crate) type RuntimeProgress = Arc<Mutex<RuntimeStatus>>;
 pub struct Relay {
     pub ports: Ports,
     pub local_video: u16,
@@ -107,6 +131,7 @@ pub struct Relay {
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     attached: Arc<AtomicUsize>,
+    runtime: Option<RuntimeProgress>,
 }
 impl Relay {
     pub async fn prepare(bind: IpAddr, credentials: Credentials) -> io::Result<Self> {
@@ -151,10 +176,14 @@ impl Relay {
             stop,
             tasks,
             attached,
+            runtime: None,
         })
     }
     pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
+    }
+    pub fn runtime_status(&self) -> Option<RuntimeStatus> {
+        self.runtime.as_ref().map(|runtime| runtime.lock().unwrap().clone())
     }
     #[cfg(target_os = "linux")]
     pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
@@ -162,6 +191,8 @@ impl Relay {
     }
     #[cfg(target_os = "linux")]
     pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool, owner: Option<&RuntimeTasks>) {
+        let progress = Arc::new(Mutex::new(RuntimeStatus::default()));
+        self.runtime = Some(progress.clone());
         let ready = self.attached.clone();
         let mut cancel = self.stop.subscribe();
         let signal = self.stop.clone();
@@ -173,18 +204,32 @@ impl Relay {
             let deadline = tokio::time::Instant::now() + WAIT;
             while ready.load(Ordering::Acquire) != 2 {
                 if *cancel.borrow() {
+                    progress.lock().unwrap().phase = RuntimePhase::Cancelled;
                     return;
                 }
-                tokio::select! {_=cancel.changed()=>return,_=tokio::time::sleep(Duration::from_millis(20))=>{}}
+                tokio::select! {_=cancel.changed()=>{
+                    progress.lock().unwrap().phase = RuntimePhase::Cancelled;
+                    return;
+                },_=tokio::time::sleep(Duration::from_millis(20))=>{}}
                 if tokio::time::Instant::now() >= deadline {
+                    progress.lock().unwrap().phase = RuntimePhase::Failed;
                     failure.store(true, Ordering::Release);
                     signal.send_replace(true);
                     return;
                 }
             }
-            if let Err(error) =
-                crate::xr_session::runtime_adapter(root, video, tracking, hz, eye_size, long_run, cancel).await
+            progress.lock().unwrap().phase = RuntimePhase::Starting;
+            let cancelled = cancel.clone();
+            let result = crate::xr_session::runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, cancel, Some(&progress)).await;
+            // The adapter has returned and its owned child has been reaped.
             {
+                let mut status = progress.lock().unwrap();
+                status.phase = if result.is_err() { RuntimePhase::Failed }
+                    else if *cancelled.borrow() { RuntimePhase::Cancelled }
+                    else { RuntimePhase::Completed };
+                status.active_sessions = 0;
+            }
+            if let Err(error) = result {
                 eprintln!("Meteor XR runtime adapter stopped: {error}");
                 failure.store(true, Ordering::Release);
                 signal.send_replace(true);
@@ -550,13 +595,20 @@ mod tests {
                 .spawn()
                 .unwrap(),
         );
-        let result = tokio::task::spawn_blocking(move || {
+        let mut completion = tokio::task::spawn_blocking(move || {
             let mut child = child;
             child.0.wait().unwrap()
-        })
-        .await
-        .unwrap();
+        });
+        let mut saw_active_session = false;
+        let result = loop {
+            saw_active_session |= relay.runtime_status().is_some_and(|status| status.phase == RuntimePhase::SessionActive && status.active_sessions > 0);
+            tokio::select! {
+                result = &mut completion => break result.unwrap(),
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {},
+            }
+        };
         assert!(result.success());
+        assert!(saw_active_session, "runtime status never reported an actual active application session");
         assert!(publisher.0.wait().unwrap().success());
         let until = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
@@ -578,7 +630,13 @@ mod tests {
                     serde_json::from_slice(&std::fs::read(&proof).unwrap()).unwrap();
                 assert_eq!(report["engine_shutdown_clean"], true);
                 assert_eq!(report["encoder_drain_verified"], true);
-                break;
+                let status = relay.runtime_status().unwrap();
+                if status.phase == RuntimePhase::Completed {
+                    assert!(status.generation.is_some());
+                    assert!(status.event_sequence >= 4);
+                    assert_eq!(status.active_sessions, 0);
+                    break;
+                }
             }
             assert!(
                 tokio::time::Instant::now() < until,

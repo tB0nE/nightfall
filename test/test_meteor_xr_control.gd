@@ -23,6 +23,30 @@ func _init() -> void:
 	var owner := Owner.new()
 	root.add_child(owner)
 	var client = ControlClient.new(owner)
+	assert(client._update_runtime({})) # Old hosts have no runtime field.
+	var status := {"phase": "starting", "generation": "a".repeat(32), "event_sequence": 0, "active_sessions": 0}
+	assert(client._update_runtime({"runtime": status}))
+	assert(not client._update_runtime({})) # Cannot erase a known generation.
+	status.phase = "session_active"
+	status.event_sequence = 2.0 # JSON numbers decode as floats.
+	status.active_sessions = 1.0
+	assert(client._update_runtime({"runtime": status}))
+	assert(client.state == "idle") # Runtime activity must not trigger projection.
+	var stale := status.duplicate()
+	stale.generation = "b".repeat(32)
+	assert(not client._update_runtime({"runtime": stale}))
+	stale = status.duplicate()
+	stale.event_sequence = 1
+	assert(not client._update_runtime({"runtime": stale}))
+	stale.event_sequence = "2"
+	assert(not ControlClient.valid_runtime_status(stale))
+	stale = status.duplicate()
+	stale.active_sessions = 0
+	assert(not ControlClient.valid_runtime_status(stale))
+	client.cancel()
+	assert(client.runtime_status.is_empty())
+	assert(client._update_runtime({}))
+	assert(not ControlClient.valid_runtime_status({"phase": "starting"}))
 	client.state = "offered"
 	client.session = "stale"
 	var generation: int = client._generation

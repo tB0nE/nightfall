@@ -64,6 +64,21 @@ exit to avoid unsafe GPU-library destructors. The desktop-overlay and real-game
 session-detection work is tracked in
 [the integration plan](../docs/plans/active/meteor-xr-desktop-integration.md).
 
+Process-level coexistence regression (temporary configuration, test-only keys,
+mock Sunshine HTTP upstream; no headset/GPU or running-service replacement):
+
+```sh
+python3 test/run_meteor_xr_coexistence.py \
+  meteor/target/release/nightfall-meteor /path/to/meteor-xr-control-cpp-client
+```
+
+Run that from the repository root with the OpenSSL control fixture built from
+`test/meteor_xr_control_client_test.cpp`. It checks authenticated negotiation plus
+proxy forwarding, XR bind-failure isolation, XR-disabled startup and signal exits.
+It is not full GameStream/video coverage. Runtime status is an optional field on
+authenticated replies; client polling never treats session activity as proof of
+headset presentation or automatically enters XR.
+
 ### Building the AppImage
 
 ```
