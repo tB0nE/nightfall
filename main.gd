@@ -3,6 +3,7 @@ extends Node3D
 var settings: AppSettings = AppSettings.new()
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
 var pcvr_test = preload("res://src/pcvr_test_controller.gd").new(self)
+var pcvr_handover = preload("res://src/pcvr_workspace_handover.gd").new(self)
 var _pcvr_screen_retirements := 0
 var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 
@@ -2291,8 +2292,9 @@ func primary_media_size() -> Vector2i:
 
 func _process(delta):
 	pcvr_test.process_standby(delta)
-	if pcvr_test.is_exclusive():
-		pcvr_test.process(delta)
+	pcvr_handover.process(delta)
+	if pcvr_test.is_exclusive() or pcvr_handover.blocks_workspace():
+		if pcvr_test.is_exclusive(): pcvr_test.process(delta)
 		_log_flush_timer += delta
 		if _log_flush_timer >= 2.0:
 			_log_flush_timer = 0.0
@@ -2857,6 +2859,7 @@ func _notification(what):
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		pcvr_handover.request_stop("Application paused")
 		if welcome_screen: welcome_screen.cancel_xr_control()
 		pcvr_test.set_application_paused(true)
 		if xr_interaction:
@@ -2872,6 +2875,9 @@ func _notification(what):
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
+	if pcvr_handover.blocks_workspace():
+		pcvr_handover.handle_input(event)
+		return
 	if pcvr_test.is_exclusive():
 		pcvr_test.handle_input(event)
 		return
@@ -2880,6 +2886,7 @@ func _input(event):
 		_last_activity_time = Time.get_ticks_msec() / 1000.0
 
 func _toggle_ui():
+	if pcvr_handover.blocks_workspace(): return
 	if pcvr_test.is_exclusive(): return
 	ui_visible = not ui_visible
 	_log("[UI] Menu %s (streaming=%s native=%s comp=%s ambient=%s)" % [

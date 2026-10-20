@@ -78,6 +78,10 @@ func read_settings(config: ConfigFile) -> void:
 	primary_hand = clampi(config.get_value("controller", "primary_hand", PrimaryHand.RIGHT), 0, 2)
 
 func _process(_delta):
+	var handover = main.get("pcvr_handover")
+	if handover != null and handover.blocks_workspace():
+		release_for_focus_loss()
+		return
 	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
 	var browser_pad: bool = focused_browser != null and focused_browser.active and is_gamepad_mode()
 	if main.browser_prototype and (not active or not browser_pad or main.ui_visible or main.virtual_keyboard.visible):
@@ -144,6 +148,12 @@ func _activate():
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 		main.ui_controller.update_ctrl_type_btn()
+
+func release_for_focus_loss() -> void:
+	for code in _kb_held: main.stream_backend.send_keyboard_event(code, 4, 0)
+	_kb_held.clear()
+	_active_key_dirs.clear()
+	_prev_button_flags = -1 # Force current pad state to be sent after focus returns.
 
 func _deactivate():
 	for kc in _kb_held.keys():

@@ -22,6 +22,7 @@ var _relay
 var _owns_projection := false
 var _long_run := false
 var _standby_only := false
+var _handover_on_ready := false
 var _relay_config: Dictionary = {}
 
 func _init(node: Node) -> void:
@@ -52,6 +53,7 @@ func cancel(stop_projection: bool = true) -> void:
 	_owns_projection = false
 	_long_run = false
 	_standby_only = false
+	_handover_on_ready = false
 	if _relay: _relay.stop()
 	_relay = null
 	_relay_config.clear()
@@ -274,7 +276,8 @@ func connect_offer() -> void:
 	var hz := int(config.get_value("host", "hz", 20))
 	var eye_size := int(config.get_value("host", "eye_size", 512))
 	_long_run = bool(config.get_value("host", "long_run", false))
-	_standby_only = bool(config.get_value("host", "standby_only", false))
+	_handover_on_ready = bool(config.get_value("host", "handover_on_ready", false))
+	_standby_only = bool(config.get_value("host", "standby_only", false)) or _handover_on_ready
 	if hz not in [20, 60] or eye_size not in [512, 1024] or (_long_run and hz != 60):
 		_fail("Unsupported developer XR rate or eye size")
 		return
@@ -288,6 +291,7 @@ func connect_offer() -> void:
 	var offer_text := "Accept control-only XR preparation?"
 	if not _relay_config.is_empty():
 		offer_text = "Accept XR standby? Desktop stays visible" if _standby_only else "Accept exclusive Meteor XR session?"
+		if _handover_on_ready: offer_text = "Accept XR handover? Desktop returns on exit"
 	_status("offered", offer_text)
 	_watch_lease(token, "offered", 15000)
 
@@ -348,6 +352,9 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	if token != _generation: return
 	if not _relay.start(_relay_config):
 		_fail("Native relay startup failed")
+		return
+	if _handover_on_ready and not owner.pcvr_handover.arm(self):
+		_fail("XR handover requires a single desktop/welcome screen and updated native provider")
 		return
 	_watch_relay(token)
 

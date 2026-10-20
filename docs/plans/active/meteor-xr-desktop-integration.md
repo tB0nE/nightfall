@@ -430,3 +430,97 @@ and verify the desktop/welcome remains visible while logs show live optics,
 runtime session events and decoded stereo readiness, followed by clean stop with
 the same workspace intact. Only after that introduce snapshot/layer retirement,
 projection activation and rollback into the client handover coordinator.
+
+## Physical standby checkpoint and workspace handover implementation
+
+Standby physical test: `.build-cache/meteor-xr/lan-sessions/1792474738883170441-174125/`.
+The user confirmed the welcome screen stayed visible and usable while the host
+demo ran. Device logs show decoded stereo readiness with projection disabled and
+authenticated `session_active` status. Headset pause at 07:39:26 cancelled the run
+after roughly 19 seconds of video; 1,114 host frames were encoded. Host app exited
+without forced termination; runtime emitted created/begun/ended/destroyed. This
+was an interrupted run, **not** a completed minute/final-delivery-drain PASS.
+
+Implemented opt-in `handover_on_ready=true` (implies standby) using the separate
+`PCVRWorkspaceHandover` coordinator. It waits for both validated host session
+activity and a copied native frame. The first scope is one welcome/desktop screen,
+not browser/multi-screen coexistence. It snapshots root visibility, local projection,
+blend/transparency and audio/microphone pause state; neutralizes held host inputs;
+then hides the workspace and waits three frame/draw boundaries before explicitly
+activating native XR projection. Startup and draw-retirement waits are bounded;
+generation checks cancel stale asynchronous callbacks. The developer offer now
+identifies handover rather than standby-only/exclusive legacy mode.
+
+Added an independent native desktop-renderer presentation-suspend switch. Both
+layer count and retrieval return zero while suspended; the desktop decoder and
+native swapchain are not destroyed solely for handover. Its eye-query frame counter
+does not age while suspended. The manager's refresh is suspended too. Ordinary
+Godot composition layers follow parent visibility, verified against the pinned
+engine source; Godot's own projection is explicitly disabled during XR. The first
+decoded-frame diagnostic now says image copied/presentation requested instead of
+incorrectly claiming one layer was submitted during standby.
+
+On local exit, control loss, application end/failure or headset pause, the coordinator
+stops the prepared receiver and restores presentation only after native idle. It
+never reconnects Sunshine, forces welcome, restores a stale lifecycle state or
+overwrites saved preferences. Child visibility/content may change through normal
+stream callbacks while hidden and is not overwritten on restoration. Mouse/key/
+pad forwarding and independently processing controller/trackpad nodes are gated;
+held keys/buttons/modifiers are released and pads neutralized before transfer.
+Desktop audio/microphone are paused, not replaced with an XR audio implementation.
+Hidden-stream decoder work, inference and bandwidth have not been optimized or
+measured by this change. A desktop overlay during XR remains out of scope.
+
+Validation: all **38 GDScript scripts passed**, including real parent-visibility
+snapshot behavior using a fake XR interface, frame/session readiness, stale-callback
+cancellation, activation/suspend rejection, native-idle ordering, startup/draw timeout,
+pause-sensitive microphone restoration and held-input release/gating. Android release
+extension and optimized release-signed DEV APK builds succeeded; existing aggregate
+initializer and desktop Android-extension warnings remain. These tests do not prove
+physical seamless handover, simultaneous live Sunshine/XR, or arbitrary game support.
+
+Installed `Nightfall-Android-arm64-v8a-dev.apk` (code 802,
+`0.8.2-preview.1-dev+8a8436e-dirty`) on Quest `2G0YC1ZF8P08QN` and enabled the new
+option. SHA-256: `c5eab2e199062f87a8d326edda5bffc48ebf97373951cdbf5c9183384423de44`.
+Before-change config backup:
+`.build-cache/meteor-xr/handover-config-before-8a8436e.cfg`.
+Normal Meteor remains untouched; the existing DEV listener (PID 174125 at setup)
+is available at `10.0.0.13:47905`. Its public pin/allowlist are unchanged. Helper
+preflight cache was warmed and validated. No XR test was automatically accepted.
+
+Next physical gate: authenticate/accept from welcome, see the existing screen until
+XR video is ready, then see the demo. Hold B/Y for one second (or let the bounded
+demo end) and confirm return to the same usable workspace. Verify logs before
+claiming handover success. Then provide an entry from a live desktop and test stream
+preservation, followed by external app/session-driven launch and desktop reveal.
+
+### Handover startup correction (2026-10-20)
+
+Device logs showed successful authentication, host session activation and decoded
+stereo readiness, followed by `Cannot safely suspend desktop presentation`.
+The coordinator checked a guessed getter name instead of the patched engine's
+bound `get_submit_projection_layer()` API. Corrected both coordinator and test
+interface to the actual engine API, and added explicit capability-rejection logs.
+All 38 GDScript test scripts passed. Physical handover remains to be retested;
+this failure occurred before projection activation, not in transport or decoding.
+
+### Validated checkpoint and resume instructions (2026-10-20)
+
+After deploying the corrected optimized, release-signed DEV APK, the user confirmed
+that XR started successfully and that exiting returned to the welcome screen.
+The welcome → XR → welcome physical gate is therefore user-validated. This does
+not yet validate preservation of a live Sunshine stream or automatic XR game launch.
+
+Work is paused here while the user works elsewhere in the repository. Resume on
+`feat/meteor-xr-streaming`: first check the current branch and working tree before
+editing or switching, preserving any unrelated work. Read this checkpoint before
+continuing; do not assume the branch or background services are still active.
+
+Next step: provide/test handover from an active Sunshine desktop stream, then exit
+XR and confirm the same stream returns without reconnection, stale input, audio or
+presentation problems. Afterwards continue external app/session-driven startup and
+desktop reveal. The current fixed demo is not yet the final automatic workflow.
+The device DEV config uses `standby_only=true` and `handover_on_ready=true` with
+the dedicated XR listener at `10.0.0.13:47905`; verify listener/config availability
+on resumption without replacing the user's normal Meteor service. Rebuild using
+`./build.sh --dev` when needed, not a debug build.

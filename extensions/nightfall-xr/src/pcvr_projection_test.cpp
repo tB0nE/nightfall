@@ -424,7 +424,7 @@ bool NightfallXrProjectionTest::render_scene() {
 	if (meteor_mode && meteor_frame.quest_local) projection.space = tracking_space;
 	projection.viewCount = 2; projection.views = projection_views.data();
 	frames.fetch_add(1); rendered = true;
-	if (frames.load() == 1) PCVR_LOG("%s first frame: ONE projection layer, session=%p", meteor_mode ? "METEOR DECODED (local-pose diagnostic, not tracked PCVR)" : "synthetic", (void *)session);
+	if (frames.load() == 1) PCVR_LOG("%s first stereo image copied; presentation_requested=%d, session=%p", meteor_mode ? "METEOR DECODED" : "synthetic", !meteor_mode || meteor_presentation.input_enabled(), (void *)session);
 	if (frames.load() == 1 && meteor_mode && meteor_frame.quest_local)
 		PCVR_LOG("METEOR TRACKED SCENE: host render poses/FOV mapped through adopted Quest LOCAL; latest-only USB diagnostic");
 	return true;

@@ -52,6 +52,8 @@ class NightfallXrRenderer : public OpenXRExtensionWrapperExtension {
 public:
 	NightfallXrRenderer();
 	~NightfallXrRenderer();
+	void set_presentation_suspended(bool value) { presentation_suspended.store(value); }
+	bool is_presentation_suspended() const { return presentation_suspended.load(); }
 
 	// Fetches the handles, resolves swapchain function pointers, and calls
 	// register_composition_layer_provider() -- must happen before the OpenXR
@@ -213,6 +215,7 @@ public:
 #endif
 
 protected:
+	std::atomic<bool> presentation_suspended{false};
 	static void _bind_methods();
 
 private:

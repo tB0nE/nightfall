@@ -11,6 +11,7 @@ var renderer = null
 var provider_registered := false
 var active := false
 var stream_started := false
+var presentation_suspended := false
 var legacy_disabled := false
 var failure_reason := ""
 var _last_size := Vector2i.ZERO
@@ -131,6 +132,7 @@ func _eligible() -> bool:
 	return true
 
 func refresh() -> void:
+	if presentation_suspended: return
 	# A resolution/refresh-rate change defers its actual swapchain rebuild by
 	# a few frames (see start()'s C++ comment) rather than tearing it down
 	# synchronously; if that deferred rebuild failed, the swapchain is gone
@@ -341,6 +343,14 @@ func _process_stats_upload() -> void:
 	# Unlike the former XR quad, these pixels now live in the video swapchain.
 	# A paused/static stream needs one draw to reveal the updated text.
 	_force_redraw = true
+
+func set_presentation_suspended(value: bool) -> bool:
+	if renderer and not renderer.has_method("set_presentation_suspended"):
+		return false
+	presentation_suspended = value
+	if renderer: renderer.set_presentation_suspended(value)
+	if not value: _force_redraw = true
+	return true
 
 func deactivate(restore_legacy: bool) -> void:
 	if main.browser_content_active():

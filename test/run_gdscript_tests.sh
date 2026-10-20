@@ -26,6 +26,7 @@ tests=(
 	"test/test_meteor_xr_control.gd"
 	"test/test_xr_diagnostic_ledger.gd"
 	"test/test_pcvr_test_controller.gd"
+	"test/test_pcvr_workspace_handover.gd"
 	"test/test_browser_depth_policy.gd"
 	"test/test_screen_primary_selection.gd"
 	"test/test_stream_browser_workspace.gd"

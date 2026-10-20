@@ -142,7 +142,7 @@ func _set_active_visual(active: bool):
 	_apply_border_active(_border, active, Color(0.3, 0.3, 0.4, 0.5), Color(0.3, 0.6, 1.0, 0.9))
 
 func _process(_delta):
-	if not visible or not main.is_streaming:
+	if not is_visible_in_tree() or not main.is_streaming:
 		if trackpad_active:
 			trackpad_active = false
 			_trackpad_hand = null

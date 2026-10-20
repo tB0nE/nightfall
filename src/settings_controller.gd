@@ -1153,6 +1153,7 @@ func toggle_passthrough():
 		_schedule_ai_3d_commit()
 
 func apply_passthrough(enable: bool):
+	if "pcvr_handover" in main and main.pcvr_handover.blocks_workspace(): return
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	if not main.is_xr_active:
 		return
