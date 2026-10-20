@@ -1493,7 +1493,7 @@ func _maybe_return_to_usb_link():
 		return
 	_usb_return_probe_in_flight = true
 	var expected_id: String = host.get("server_unique_id", "")
-	cm.connect_to_computer(usb_address, main.DEFAULT_PAIR_PORT, func(result: Dictionary):
+	cm.connect_to_computer(usb_address, int(host.get("http_port", main.DEFAULT_PAIR_PORT)), func(result: Dictionary):
 		_usb_return_probe_in_flight = false
 		if result.get("status", "") != "online":
 			return
