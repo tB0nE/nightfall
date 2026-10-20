@@ -32,6 +32,38 @@ cargo run --release -- --no-tray
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
 area. macOS runs without a tray icon for now.
 
+### Integrated XR development service
+
+On a configured Linux/NVIDIA development checkout, the XR endpoint can run
+alongside the ordinary proxy instead of a separate `--xr-control-dev` process:
+
+```sh
+cargo run --release -- --no-tray --no-depth --no-mic \
+  --xr-service-dev <local-address:port> \
+  --xr-client-key <headset-public-key-hex> \
+  --xr-runtime-root <absolute-nightfall-checkout>
+```
+
+This is opt-in research functionality, not automatic desktop-to-XR handover.
+The optional runtime root launches the same fixed demo after explicit headset
+acceptance and authenticated relay attachment. Without it, only the encrypted
+relay endpoints are prepared. Existing runtime/helper prerequisites still apply.
+Only public keys belong on the command line; never pass a private key or password.
+
+Unlike the standalone DEV endpoint's separate key file, this mode uses Meteor's
+normal `meteor.key` identity. Its **public** key is printed at startup: explicitly
+update the DEV headset host pin if necessary, rather than disabling pin checks.
+The client allowlist remains mandatory; discovery and a streaming IP address are
+not substitutes for device authorization. No XR capability is added to discovery,
+firewall rules are not changed, and the normal client still requires its DEV entry.
+An XR bind/configuration failure leaves the desktop proxy available and is logged.
+
+Tray Quit and termination signals request service shutdown; Meteor awaits XR's
+bounded runtime cleanup, removes its microphone, then uses its existing immediate
+exit to avoid unsafe GPU-library destructors. The desktop-overlay and real-game
+session-detection work is tracked in
+[the integration plan](../docs/plans/active/meteor-xr-desktop-integration.md).
+
 ### Building the AppImage
 
 ```

@@ -16,6 +16,7 @@ from check_nvenc_stereo import validate
 from xr_transport_probe import LiveTransport
 from xr_frame_accounting import match_submitted_frames
 from xr_application_lifecycle import run_application
+from xr_runtime_lifecycle import managed_runtime
 
 
 def run(root: Path, out: Path):
@@ -143,6 +144,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if os.environ.get("NIGHTFALL_XR_MONITOR_LEGACY") == "1": env["METEOR_XR_MONITOR_LEGACY"]="1"
     engine_token=secrets.token_hex(16) if godot_engine else None
     env.pop("METEOR_ENGINE_RUN_ID",None)
+    env.pop("METEOR_XR_RUNTIME_GENERATION",None)
+    runtime_generation = os.environ.get("NIGHTFALL_XR_RUNTIME_GENERATION")
+    if runtime_generation is not None:
+        if not re.fullmatch(r"[0-9a-f]{32}", runtime_generation):
+            raise ValueError("Invalid runtime event generation")
+        env["METEOR_XR_RUNTIME_GENERATION"] = runtime_generation
     if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token
     (out / "engine-request-exit").unlink(missing_ok=True)
     if godot_engine: env["METEOR_XR_ENGINE_FIXTURE"]="1"
@@ -218,67 +225,55 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
             raise ValueError("Device port must be a valid ADB-forwarded port, with no local receiver configured")
         env["METEOR_XR_DIRECT_PORT"] = device_port
-    with (out / "service.log").open("w") as log:
-        child = subprocess.Popen([str(service)], env=env, stdout=log, stderr=subprocess.STDOUT)
-        try:
-            deadline = time.monotonic() + 10
-            while not (runtime / "monado_comp_ipc").is_socket():
-                if child.poll() is not None or time.monotonic() > deadline:
-                    raise RuntimeError(f"Service startup failed; see {out / 'service.log'}")
-                time.sleep(0.05)
-            application_start = time.monotonic()
-            if abort_test:
-                application = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                try:
-                    deadline = time.monotonic() + 15
-                    while True:
-                        ledger = out / "monado-stereo.jsonl"
-                        if ledger.exists() and len(ledger.read_text().splitlines()) >= 5:
-                            break
-                        if application.poll() is not None or time.monotonic() > deadline:
-                            raise RuntimeError("No active encoder frames before disconnect test")
-                        time.sleep(0.005)
-                finally:
-                    if application.poll() is None:
-                        application.kill()  # Exact child deliberately simulates an app crash.
-                    stdout, stderr = application.communicate(timeout=5)
-                result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
-            else:
-                try:
-                    result, interrupted, forced_stop = run_application(command, env=env,
-                        timeout=(90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
-                        stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
-                        completion_file=out / "engine-completion.json" if godot_engine else None,
-                        completion_token=engine_token,completion_target=frame_count)
-                except subprocess.TimeoutExpired as failure:
-                    def output_text(value):
-                        return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
-                    (out / "probe.log").write_text(output_text(failure.stdout)+output_text(failure.stderr))
-                    raise
-            (out / "probe.log").write_text(result.stdout + result.stderr)
-            application_elapsed = time.monotonic()-application_start
-            if not abort_test and not interrupted:
-                result.check_returncode()
-                if not (hello_xr or godot_engine) and f"APP_SOURCE_FORMAT name={source_format} " not in result.stdout:
-                    raise RuntimeError("Requested source-format fixture did not execute")
-                if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1" and "APP_EYE_ARRAY shared=1 slices=1,0" not in result.stdout:
-                    raise RuntimeError("Array-stereo source fixture did not execute")
-                if os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1":
-                    for eye,x,y in ((0,8,12),(1,12,8)):
-                        evidence=f"APP_EYE_SUBRECT eye={eye} source={eye_size+32}x{eye_size+32} offset={x},{y} extent={eye_size}x{eye_size}"
-                        if evidence not in result.stdout:
-                            raise RuntimeError("Padded subrect source fixture did not execute")
-            if child.poll() is not None:
-                raise RuntimeError("Service exited unexpectedly")
-        finally:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.wait()
-    # App and service have both been reaped by the finally block above. This
+    with managed_runtime([str(service)], env=env,
+                         ready_path=runtime / "monado_comp_ipc",
+                         log_path=out / "service.log", state_path=out / "runtime-state.json",
+                         cancel_path=out / "client-disconnected") as child:
+        # Application launch is fixture-owned, not part of service readiness.
+        # Keep this scope until the application has been reaped on every path.
+        application_start = time.monotonic()
+        if abort_test:
+            application = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                deadline = time.monotonic() + 15
+                while True:
+                    ledger = out / "monado-stereo.jsonl"
+                    if ledger.exists() and len(ledger.read_text().splitlines()) >= 5:
+                        break
+                    if application.poll() is not None or time.monotonic() > deadline:
+                        raise RuntimeError("No active encoder frames before disconnect test")
+                    time.sleep(0.005)
+            finally:
+                if application.poll() is None:
+                    application.kill()  # Exact child deliberately simulates an app crash.
+                stdout, stderr = application.communicate(timeout=5)
+            result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
+        else:
+            try:
+                result, interrupted, forced_stop = run_application(command, env=env,
+                    timeout=(90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
+                    stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
+                    completion_file=out / "engine-completion.json" if godot_engine else None,
+                    completion_token=engine_token,completion_target=frame_count)
+            except subprocess.TimeoutExpired as failure:
+                def output_text(value):
+                    return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
+                (out / "probe.log").write_text(output_text(failure.stdout)+output_text(failure.stderr))
+                raise
+        (out / "probe.log").write_text(result.stdout + result.stderr)
+        application_elapsed = time.monotonic()-application_start
+        if not abort_test and not interrupted:
+            result.check_returncode()
+            if not (hello_xr or godot_engine) and f"APP_SOURCE_FORMAT name={source_format} " not in result.stdout:
+                raise RuntimeError("Requested source-format fixture did not execute")
+            if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1" and "APP_EYE_ARRAY shared=1 slices=1,0" not in result.stdout:
+                raise RuntimeError("Array-stereo source fixture did not execute")
+            if os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1":
+                for eye,x,y in ((0,8,12),(1,12,8)):
+                    evidence=f"APP_EYE_SUBRECT eye={eye} source={eye_size+32}x{eye_size+32} offset={x},{y} extent={eye_size}x{eye_size}"
+                    if evidence not in result.stdout:
+                        raise RuntimeError("Padded subrect source fixture did not execute")
+    # App and service have both been reaped by their owned scopes above. This
     # permits a bounded validation-only grace after a client finishes its stream.
     (out / "postrun-validation").write_text("app/service reaped\n")
     text = (out / "service.log").read_text()

@@ -31,6 +31,7 @@ mod proxy;
 mod replay;
 mod refinement;
 mod status;
+mod shutdown;
 mod stream_info;
 mod tensorrt;
 #[cfg(target_os = "linux")]
@@ -42,6 +43,8 @@ mod video_dump;
 mod video_tap;
 mod xr_control;
 mod xr_data;
+#[cfg(target_os = "linux")]
+mod xr_events;
 mod xr_relay;
 #[cfg(target_os = "linux")]
 mod xr_session;
@@ -106,6 +109,9 @@ async fn main() {
         println!(
             "nightfall-meteor [options]\n\
              \x20 --no-tray               run without a tray icon\n\
+             \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
+             \x20 --xr-client-key <hex>    allowlisted headset public key for integrated DEV XR\n\
+             \x20 --xr-runtime-root <dir>  optional fixed-demo checkout for integrated DEV XR\n\
              \x20 --xr-dev <checkout> [--smoke]  isolated Linux/USB XR development session\n\
              \x20 --xr-control-dev <bind> <key-file> <client-public-key> [--relay [checkout]]  XR development endpoint\n\
              \x20 --no-depth              don't load the depth model (proxy only)\n\
@@ -247,6 +253,33 @@ async fn main() {
         depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
             .map(|port| (port, depth))
     });
+    // Register before exposing tray Quit. The coordinator remains alive while
+    // async XR cleanup runs; only then use the existing GPU-safe hard exit.
+    let shutdown = SHUTDOWN.get_or_init(shutdown::Shutdown::new);
+    let xr_service = if let Some(address) = value("--xr-service-dev") {
+        let start = async {
+            let address = address.parse::<std::net::SocketAddr>().map_err(std::io::Error::other)?;
+            let client = value("--xr-client-key").ok_or_else(|| std::io::Error::other("--xr-service-dev requires --xr-client-key"))?;
+            let allowed = xr_control::public_key(&client)?;
+            let key = key.clone().ok_or_else(|| std::io::Error::other("XR requires Meteor's host key"))?;
+            let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from);
+            let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
+            let listener = tokio::net::TcpListener::bind(address).await?;
+            log::info!("DEV XR service alongside proxy at {}; host public key {}. No production XR discovery capability.", listener.local_addr()?, key.public_hex());
+            Ok::<_, std::io::Error>(tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
+                key, allowed, enable_relay: true, runtime_root,
+            }, shutdown.subscribe())))
+        }.await;
+        match start {
+            Ok(task) => Some(task),
+            Err(error) => { log::error!("DEV XR service disabled: {error}; desktop proxy remains available"); None },
+        }
+    } else {
+        if value("--xr-client-key").is_some() || value("--xr-runtime-root").is_some() {
+            log::warn!("XR options ignored without --xr-service-dev");
+        }
+        None
+    };
     let features = discovery::Features {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
@@ -284,14 +317,34 @@ async fn main() {
         }
     }
 
-    wait_for_exit_signal().await;
-    quit();
+    tokio::select! {
+        _ = wait_for_exit_signal() => shutdown.request(),
+        _ = shutdown.requested() => {},
+    }
+    if let Some(task) = xr_service {
+        match task.await {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
+            Err(error) => log::error!("XR service task failed: {error}"),
+        }
+    }
+    finish_quit();
 }
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
+static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
 
-/// Removes the virtual microphone, then exits.
-pub fn quit() -> ! {
+/// Nonblocking tray/thread callback; async main drains services before exiting.
+/// Replay has no service coordinator and retains its existing immediate exit.
+pub fn quit() {
+    if let Some(shutdown) = SHUTDOWN.get() {
+        shutdown.request();
+    } else {
+        finish_quit();
+    }
+}
+
+fn finish_quit() -> ! {
     log::info!("Shutting down");
     if let Some(mic) = MIC.get() {
         mic.shutdown();

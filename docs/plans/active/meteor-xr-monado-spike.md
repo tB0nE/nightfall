@@ -1,5 +1,9 @@
 # Meteor XR: managed Monado runtime spike
 
+Next phase (2026-10-20): [desktop-to-immersive integration](meteor-xr-desktop-integration.md).
+The isolated LAN path has now passed a physical one-minute 1024-per-eye test;
+historical progress entries below retain the evidence and limitations at each step.
+
 Active 2026-10-18, `feat/meteor-xr-streaming`. Supersedes the
 [ALVR-first spike](meteor-xr-streaming-spike.md), retained as historical research.
 

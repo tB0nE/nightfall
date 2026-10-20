@@ -95,6 +95,11 @@ pub(crate) async fn runtime_adapter(
     let output = lan_session_directory(&cache)?;
     println!("Meteor XR session diagnostics: {}", output.display());
     let log = File::create(output.join("runtime.log"))?;
+    let mut generation = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut generation)
+        .map_err(|_| io::Error::other("XR runtime generation randomness unavailable"))?;
+    let generation: String = generation.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut events = crate::xr_events::Observer::new(generation.clone());
     let mut command = Command::new("bash");
     command.arg(root.join("tools/build_support/probe_monado_nvenc.sh"));
     for (key, _) in std::env::vars_os() {
@@ -118,6 +123,7 @@ pub(crate) async fn runtime_adapter(
         command.env(key, value);
     }
     command
+        .env("NIGHTFALL_XR_RUNTIME_GENERATION", generation)
         .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })
         .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
         .env("NIGHTFALL_XR_EYE_SIZE", eye_size.to_string())
@@ -136,7 +142,15 @@ pub(crate) async fn runtime_adapter(
     let mut child = OwnedProcess(command.spawn()?);
     let deadline = Instant::now() + Duration::from_secs(if long_run {100} else {45});
     loop {
+        if events.poll(&output.join("service.log"))? != 0 {
+            fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
+        }
         if let Some(status) = child.0.try_wait()? {
+            events.finish(&output.join("service.log"))?;
+            fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
+            if status.success() && !events.saw_begin {
+                return Err(io::Error::other("No runtime session-begin event; rebuild the managed Monado runtime"));
+            }
             return if status.success() {
                 Ok(())
             } else {
@@ -168,6 +182,8 @@ pub(crate) async fn runtime_adapter(
                 if Instant::now() >= until { break; }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            events.finish(&output.join("service.log"))?;
+            fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;
             return Ok(());
         }
         tokio::select! {_=cancel.changed()=>{},_=tokio::time::sleep(Duration::from_millis(50))=>{}}
@@ -369,6 +385,21 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn runtime_task_drain_reaps_owned_child_before_return() {
+        let child = Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let pid = child.id() as i32;
+        let owned = OwnedProcess(child);
+        let tasks = crate::xr_relay::RuntimeTasks::default();
+        let (stop, mut cancel) = tokio::sync::watch::channel(false);
+        tasks.track(tokio::spawn(async move {
+            let _owned = owned;
+            let _ = cancel.changed().await;
+        }));
+        stop.send_replace(true);
+        tasks.drain().await.unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+    }
     #[tokio::test]
     async fn long_runtime_rejects_unsupported_rate_before_launch() {
         let (_send,receive)=tokio::sync::watch::channel(false);

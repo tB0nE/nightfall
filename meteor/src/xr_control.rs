@@ -10,7 +10,7 @@ use std::{io, net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::Semaphore,
+    sync::{Semaphore, watch},
 };
 
 const MAGIC: &[u8; 8] = b"NFXC\x01\0\0\0";
@@ -223,12 +223,24 @@ async fn connection(
     connection_mode(stream, key, allowed, session_slot, false, None).await
 }
 async fn connection_mode(
+    stream: TcpStream,
+    key: Arc<MeteorKey>,
+    allowed: [u8; 32],
+    session_slot: Arc<Semaphore>,
+    enable_relay: bool,
+    runtime_root: Option<std::path::PathBuf>,
+) -> io::Result<()> {
+    connection_supervised(stream, key, allowed, session_slot, enable_relay, runtime_root, None).await
+}
+
+async fn connection_supervised(
     mut stream: TcpStream,
     key: Arc<MeteorKey>,
     allowed: [u8; 32],
     session_slot: Arc<Semaphore>,
     enable_relay: bool,
     runtime_root: Option<std::path::PathBuf>,
+    _runtime_tasks: Option<crate::xr_relay::RuntimeTasks>,
 ) -> io::Result<()> {
     let bind = stream.local_addr()?.ip();
     let authenticated = tokio::time::timeout(IO_TIMEOUT, async {
@@ -333,7 +345,7 @@ async fn connection_mode(
             );
             #[cfg(target_os = "linux")]
             if let Some(root) = runtime_root.clone() {
-                relay.as_mut().unwrap().start_runtime_profile(root, session.hz, session.eye_size, session.long_run);
+                relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.long_run, _runtime_tasks.as_ref());
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());
@@ -344,7 +356,7 @@ async fn connection_mode(
     // Dropping this connection drops its pending/prepared state and session slot.
 }
 
-fn public_key(hex: &str) -> io::Result<[u8; 32]> {
+pub(crate) fn public_key(hex: &str) -> io::Result<[u8; 32]> {
     if hex.len() != 64 || !hex.is_ascii() {
         return Err(invalid("client public key must be 64 hex characters"));
     }
@@ -359,30 +371,93 @@ fn public_key(hex: &str) -> io::Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Locally authorized service configuration, independent of CLI and signal handling.
+/// `runtime_root` still selects the fixed DEV fixture, not arbitrary applications.
+pub(crate) struct ServiceConfig {
+    pub key: Arc<MeteorKey>,
+    pub allowed: [u8; 32],
+    pub enable_relay: bool,
+    pub runtime_root: Option<std::path::PathBuf>,
+}
+
+/// Serve a caller-owned listener until cancellation. Dropping the cancellation
+/// sender also stops the service. Never installs process-wide signal handlers.
+/// Connection teardown cancels relays; service shutdown awaits runtime child
+/// cleanup before returning, including the bounded forced-abort fallback.
+pub(crate) async fn serve(
+    listener: TcpListener,
+    config: ServiceConfig,
+    mut shutdown: watch::Receiver<bool>,
+) -> io::Result<()> {
+    if config.allowed == [0; 32] || (config.runtime_root.is_some() && !config.enable_relay) {
+        return Err(invalid("invalid XR service authorization or runtime configuration"));
+    }
+    let connections = Arc::new(Semaphore::new(4));
+    let session_slot = Arc::new(Semaphore::new(1));
+    let mut tasks = tokio::task::JoinSet::new();
+    let runtime_tasks = crate::xr_relay::RuntimeTasks::default();
+    let result = loop {
+        if *shutdown.borrow() { break Ok(()); }
+        tokio::select! {
+            biased;
+            _=shutdown.changed()=>break Ok(()),
+            result=listener.accept() => {
+                let (stream,_peer)=match result {
+                    Ok(connection)=>connection,
+                    Err(error)=>break Err(error),
+                };
+                let Ok(permit)=connections.clone().try_acquire_owned() else {continue};
+                let key=config.key.clone();
+                let allowed=config.allowed;
+                let slot=session_slot.clone();
+                let root=config.runtime_root.clone();
+                let relay=config.enable_relay;
+                let owner=runtime_tasks.clone();
+                tasks.spawn(async move {
+                    let _permit=permit;
+                    let result=if relay {
+                        connection_supervised(stream,key,allowed,slot,true,root,Some(owner)).await
+                    } else {
+                        connection(stream,key,allowed,slot).await
+                    };
+                    if let Err(error)=result {
+                        eprintln!("Meteor XR control session ended: {error}");
+                    }
+                });
+            },
+            _=tasks.join_next(), if !tasks.is_empty()=>{},
+        }
+    };
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    let drained = runtime_tasks.drain().await;
+    result.and(drained)
+}
+
+pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
+    let Some(root) = root else { return Ok(None); };
+    if !cfg!(target_os = "linux") {
+        return Err(invalid("Runtime launch currently requires Linux/NVIDIA"));
+    }
+    let root = root.canonicalize()?;
+    for file in [
+        "tools/build_support/probe_monado_nvenc.sh",
+        ".build-cache/meteor-xr/godot-engine-cleanup/bin/godot.linuxbsd.editor.x86_64",
+    ] {
+        if !root.join(file).is_file() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("Missing XR prerequisite: {file}")));
+        }
+    }
+    Ok(Some(root))
+}
+
 pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() != 3 && !((args.len() == 4 || args.len() == 5) && args[3] == "--relay") {
         return Err("usage: --xr-control-dev <bind-address:port> <server-key-file> <allowed-client-public-hex> [--relay [checkout]]".into());
     }
     let address: SocketAddr = args[0].parse()?;
     let enable_relay = args.len() >= 4;
-    let runtime_root = if args.len() == 5 {
-        Some(std::path::PathBuf::from(&args[4]).canonicalize()?)
-    } else {
-        None
-    };
-    if let Some(root) = runtime_root.as_ref() {
-        if !cfg!(target_os = "linux") {
-            return Err("Runtime launch currently requires Linux/NVIDIA".into());
-        }
-        for file in [
-            "tools/build_support/probe_monado_nvenc.sh",
-            ".build-cache/meteor-xr/godot-engine-cleanup/bin/godot.linuxbsd.editor.x86_64",
-        ] {
-            if !root.join(file).is_file() {
-                return Err(format!("Missing XR prerequisite: {file}").into());
-            }
-        }
-    }
+    let runtime_root = validate_runtime_root(args.get(4).map(std::path::PathBuf::from))?;
     let key = Arc::new(MeteorKey::load_or_create(Path::new(&args[1]))?);
     let allowed = public_key(&args[2])?;
     let listener = TcpListener::bind(address).await?;
@@ -402,29 +477,65 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             runtime_root.is_some()
         );
     }
-    let connections = Arc::new(Semaphore::new(4));
-    let session_slot = Arc::new(Semaphore::new(1));
-    let mut tasks = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            result=listener.accept() => {
-                let (stream,_peer)=result?;
-                let Ok(permit)=connections.clone().try_acquire_owned() else {continue};
-                let key=key.clone();let slot=session_slot.clone();let root=runtime_root.clone();
-                tasks.spawn(async move {let _permit=permit;let result=if enable_relay {connection_mode(stream,key,allowed,slot,true,root).await} else {connection(stream,key,allowed,slot).await};if let Err(error)=result {eprintln!("Meteor XR control session ended: {error}");}});
-            },
-            _=tokio::signal::ctrl_c()=>break,
-            _=tasks.join_next(), if !tasks.is_empty()=>{},
-        }
+    let (stop, cancel) = watch::channel(false);
+    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root }, cancel);
+    tokio::pin!(service);
+    tokio::select! {
+        result=&mut service=>result?,
+        result=tokio::signal::ctrl_c()=>{
+            // Preserve errors while still draining connection-owned resources.
+            stop.send_replace(true);
+            service.await?;
+            result?;
+        },
     }
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn service_config() -> ServiceConfig {
+        ServiceConfig {
+            key: Arc::new(MeteorKey::from_seed([1; 32])),
+            allowed: MeteorKey::from_seed([2; 32]).public,
+            enable_relay: false,
+            runtime_root: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn service_shutdown_releases_listener_and_pending_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, cancel) = watch::channel(false);
+        let task = tokio::spawn(serve(listener, service_config(), cancel));
+        let mut client = TcpStream::connect(address).await.unwrap();
+        // Read the server greeting so shutdown exercises an accepted handshake.
+        let mut greeting = [0; 8];
+        tokio::time::timeout(Duration::from_secs(2), client.read_exact(&mut greeting)).await.unwrap().unwrap();
+        stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+        let mut tail = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut tail)).await.unwrap().unwrap();
+        let listener = TcpListener::bind(address).await.unwrap();
+        let (stop, cancel) = watch::channel(false);
+        let task = tokio::spawn(serve(listener, service_config(), cancel));
+        drop(stop);
+        tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn service_rejects_missing_authorization_and_unrelayed_runtime() {
+        for missing_key in [true, false] {
+            let mut config = service_config();
+            if missing_key { config.allowed = [0; 32]; }
+            else { config.runtime_root = Some("/unused".into()); }
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let (_stop, cancel) = watch::channel(false);
+            assert!(serve(listener, config, cancel).await.is_err());
+        }
+    }
     fn pair(direction: &[u8], nonce: u8) -> (Cipher, Cipher) {
         let server = MeteorKey::from_seed([1; 32]);
         let client = MeteorKey::from_seed([2; 32]);

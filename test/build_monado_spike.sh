@@ -6,6 +6,7 @@ mkdir -p /out/capture-source
 cp -a --remove-destination /source/. /out/capture-source/
 patch --batch -d /out/capture-source -p1 < /tests/monado_capture_hook.patch
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_controller_hook.patch
+patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_session_events.patch
 args=(-S /out/capture-source -B /out/capture-build -G Ninja -DCMAKE_BUILD_TYPE=Release
     -DXRT_FEATURE_SERVICE=ON -DXRT_FEATURE_SERVICE_SYSTEMD=OFF
     -DXRT_FEATURE_OPENXR=ON -DXRT_FEATURE_OPENVR=OFF

@@ -11,7 +11,7 @@ use std::{
     io,
     net::IpAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
@@ -25,6 +25,44 @@ use tokio::{
 
 const WAIT: Duration = Duration::from_secs(20);
 const IO: Duration = Duration::from_secs(5);
+
+/// Service-owned runtime tasks outlive connection teardown, but not service drain.
+/// The registry is closed only after every connection task has been joined.
+#[derive(Clone, Default)]
+pub(crate) struct RuntimeTasks(Arc<Mutex<Vec<JoinHandle<()>>>>);
+impl RuntimeTasks {
+    pub(crate) fn track(&self, task: JoinHandle<()>) {
+        let mut tasks = self.0.lock().unwrap();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+
+    pub(crate) async fn drain(&self) -> io::Result<()> {
+        // Runtime cancellation allows four seconds for app exit plus up to
+        // twenty seconds for post-run validation. Use one service-wide budget.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(26);
+        self.drain_until(deadline).await
+    }
+
+    async fn drain_until(&self, deadline: tokio::time::Instant) -> io::Result<()> {
+        let tasks = std::mem::take(&mut *self.0.lock().unwrap());
+        let mut failure = None;
+        for mut task in tasks {
+            match tokio::time::timeout_at(deadline, &mut task).await {
+                Ok(Ok(())) => {},
+                Ok(Err(error)) => { failure = Some(io::Error::other(error)); },
+                Err(_) => {
+                    // Dropping the runtime future invokes owned-process cleanup.
+                    // Join the abort before permitting the caller's hard exit.
+                    task.abort();
+                    let _ = task.await;
+                    failure = Some(io::Error::new(io::ErrorKind::TimedOut, "XR runtime drain exceeded shutdown budget"));
+                },
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
 fn invalid(text: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, text)
 }
@@ -120,6 +158,10 @@ impl Relay {
     }
     #[cfg(target_os = "linux")]
     pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
+        self.start_runtime_supervised(root, hz, eye_size, long_run, None);
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool, owner: Option<&RuntimeTasks>) {
         let ready = self.attached.clone();
         let mut cancel = self.stop.subscribe();
         let signal = self.stop.clone();
@@ -127,7 +169,7 @@ impl Relay {
         let (video, tracking) = (self.local_video, self.local_tracking);
         // Intentionally not aborted by Relay::drop: cancellation is delivered
         // through watch, allowing bounded graceful app teardown before kill.
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let deadline = tokio::time::Instant::now() + WAIT;
             while ready.load(Ordering::Acquire) != 2 {
                 if *cancel.borrow() {
@@ -148,6 +190,7 @@ impl Relay {
                 signal.send_replace(true);
             }
         });
+        if let Some(owner) = owner { owner.track(task); }
     }
 }
 impl Drop for Relay {
@@ -279,6 +322,51 @@ async fn tracking(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct CleanupFlag(Arc<AtomicBool>);
+    impl Drop for CleanupFlag {
+        fn drop(&mut self) { self.0.store(true, Ordering::Release); }
+    }
+
+    #[tokio::test]
+    async fn runtime_drain_waits_for_cooperative_cleanup() {
+        let tasks = RuntimeTasks::default();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let guard = CleanupFlag(cleaned.clone());
+        let (stop, mut cancel) = watch::channel(false);
+        tasks.track(tokio::spawn(async move {
+            let _guard = guard;
+            let _ = cancel.changed().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }));
+        stop.send_replace(true);
+        tasks.drain().await.unwrap();
+        assert!(cleaned.load(Ordering::Acquire));
+        tasks.drain().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_drain_timeout_joins_abort_cleanup() {
+        let tasks = RuntimeTasks::default();
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let guard = CleanupFlag(cleaned.clone());
+        tasks.track(tokio::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        }));
+        let error = tasks.drain_until(tokio::time::Instant::now() + Duration::from_millis(10)).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(cleaned.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn service_owned_runtime_cancels_before_lane_attachment() {
+        let tasks = RuntimeTasks::default();
+        let mut relay = Relay::prepare("127.0.0.1".parse().unwrap(), credentials()).await.unwrap();
+        relay.start_runtime_supervised("/must-not-launch".into(), 60, 1024, false, Some(&tasks));
+        drop(relay);
+        tokio::time::timeout(Duration::from_secs(1), tasks.drain()).await.unwrap().unwrap();
+    }
     fn credentials() -> Credentials {
         Credentials {
             host: Arc::new(MeteorKey::from_seed([1; 32])),
