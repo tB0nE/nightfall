@@ -71,6 +71,34 @@ Not ours, or no change now:
   with RTSS's frame limiter on the host, so it's host frame pacing. Add
   a note to the troubleshooting docs; revisit if others report it.
 
+### Status (2026-10-23)
+
+Done on `fix/user-feedback`, not yet tested on a headset:
+
+- #60, #61 (Mouse Follows Pointer), the shortcut-bar backdrop, refresh
+  rates (debounced; 200/207 Hz behind Settings > High Refresh Rates), the
+  AI 3D switch on the AI 3D tab, the stats model name, "Loading depth
+  model…".
+- Permissions: the client can't ask for more when pairing; the host
+  decides. Nightfall now reads the `Permission` the host reports and
+  explains what to allow. Launch failures show on the welcome screen.
+  Needs the native library rebuilt.
+- USB Link: a Wi-Fi-paired PC's USB address is learned when the link
+  comes up; failed pairing over the cable names `address_family = both`
+  and the Windows Public-network firewall.
+
+Open:
+
+- **Passthrough fade:** Godot's built-in passthrough has no opacity
+  control; it needs a translucent black layer behind the screen, and
+  which layer path works in projectionless mode must be tried on the
+  headset.
+- **Lag after the Meta menu:** needs a log. It happened right after
+  start, possibly the depth model loading rather than the menu.
+- **Our Vibepollo fork:** grant full permissions to clients paired
+  through the PIN prompt (entering the PIN already needs the host's
+  admin login).
+
 ## Environments
 
 The request: a cinema or a living room around the screen. 360° pictures
