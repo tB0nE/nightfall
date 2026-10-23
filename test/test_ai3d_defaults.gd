@@ -28,6 +28,17 @@ func _init():
 	assert(defaults.get_depth_model_index() == 0, "AI 3D stays disabled; selecting GPU must not start inference")
 	owner.settings.host.ai_3d_backend_pref = SettingsController.AI3D_BACKEND_CPU
 	assert(defaults.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU)
+
+	# Stats name the model Auto runs (Rush_iam: EdgePad-512 showed as 384).
+	owner.settings.host.ai_3d_backend_pref = SettingsController.AI3D_BACKEND_GPU
+	owner.settings.host.ai_3d_speed = 1
+	assert(defaults.active_android_depth_model_name() == "EdgePad-512")
+	owner.device_is_quest2 = true
+	assert(defaults.active_android_depth_model_name() == "EdgePad-256")
+	owner.device_is_quest2 = false
+	owner.settings.host.ai_3d_model = SettingsController.ANDROID_MODEL_LEGACY_EDGEPAD_384
+	owner.settings.host.ai_3d_speed = 3
+	assert(defaults.active_android_depth_model_name() == "EdgePad-384 (Reference)")
 	owner.queue_free()
 	print("All ai3d_defaults tests passed")
 	quit()

@@ -2688,34 +2688,7 @@ func _process_performance_overlay(delta: float):
 		lines.append("Depth Sync: %s" % ("on" if settings.host.ai_3d_depth_sync else "off"))
 	elif settings.host.ai_3d_speed > 0 and settings_controller.get_stereo_mode() >= 3:
 		if OS.get_name() == "Android":
-			var depth_model_name := "ZipDepth-384 Standard"
-			if settings_controller.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU:
-				# CPU twins share java_index with several GPU-labeled entries
-				# (e.g. 14 is also "Auto"/"ZipDepth-384-GPU"), so resolve the
-				# label directly instead of matching on java_index below.
-				depth_model_name = settings_controller.get_depth_model_label()
-			elif settings_controller.get_depth_model_index() == 18:
-				depth_model_name = "ZipDepth-256 Fastest"
-			elif settings_controller.get_depth_model_index() == 19:
-				depth_model_name = "ZipDepth-384 Standard-v2"
-			elif settings_controller.get_depth_model_index() == 20:
-				depth_model_name = "ZipDepth-384 Hybrid-v2"
-			elif settings_controller.get_depth_model_index() == 21:
-				depth_model_name = "ZipDepth-384 Standard-v3"
-			elif settings_controller.get_depth_model_index() == 22:
-				depth_model_name = "ZipDepth-384 Direct-192 Fast"
-			elif settings_controller.get_depth_model_index() == 23:
-				depth_model_name = "ZipDepth-384 Standard-Packed"
-			elif settings_controller.get_depth_model_index() == 24:
-				depth_model_name = "ZipDepth-384 Standard-Optimized"
-			elif settings_controller.get_depth_model_index() == 25:
-				depth_model_name = "ZipDepth EdgePad-384"
-			elif settings_controller.get_depth_model_index() == 26:
-				depth_model_name = "ZipDepth EdgePad-256"
-			elif settings_controller.get_depth_model_index() == 27:
-				depth_model_name = "ZipDepth-256 Direct-128"
-			elif settings_controller.get_depth_model_index() == 28:
-				depth_model_name = "ZipDepth EdgePad-224"
+			var depth_model_name := settings_controller.active_android_depth_model_name()
 			lines.append("Depth: %s / %s" % [
 				depth_model_name,
 				settings_controller.get_ai_3d_gpu_api_label()])

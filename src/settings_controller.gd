@@ -783,6 +783,19 @@ func get_depth_model_index() -> int:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[main.settings.host.ai_3d_model].java_index
 
+# The model actually running on Android, for the stats overlay. Under Auto
+# the menu shows "Auto"; this names what Auto chose. Looked up in
+# ai_3d_models rather than a separate list: a hand-kept copy went stale when
+# Java index 25 became EdgePad-512 and kept calling it EdgePad-384.
+func active_android_depth_model_name() -> String:
+	if get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].label
+	var java_index := get_depth_model_index()
+	for model in ai_3d_models:
+		if model.java_index == java_index and model.gpu and model.get("android", false) and model.label != "Auto":
+			return model.label
+	return "ZipDepth (model %d)" % java_index
+
 func get_depth_model_label() -> String:
 	if meteor_depth_selected():
 		return "Meteor"
