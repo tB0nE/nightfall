@@ -53,6 +53,7 @@ tests=(
 	"test/test_content_tabs.gd"
 	"test/test_screen_sources.gd"
 	"test/test_browser_prototype.gd"
+	"test/test_web_apps.gd"
 	"test/test_primary_media.gd"
 	"test/test_browser_close.gd"
 )

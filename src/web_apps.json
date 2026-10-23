@@ -1,0 +1,28 @@
+[
+	{
+		"id": "youtube",
+		"name": "YouTube",
+		"url": "https://www.youtube.com/tv",
+		"user_agent": "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1"
+	},
+	{
+		"id": "plex",
+		"name": "Plex",
+		"url": "https://app.plex.tv/desktop/"
+	},
+	{
+		"id": "xbox",
+		"name": "Xbox Cloud Gaming",
+		"url": "https://www.xbox.com/play"
+	},
+	{
+		"id": "geforce_now",
+		"name": "GeForce NOW",
+		"url": "https://play.geforcenow.com/"
+	},
+	{
+		"id": "webrcade",
+		"name": "webrcade",
+		"url": "https://play.webrcade.com/"
+	}
+]

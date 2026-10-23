@@ -76,6 +76,8 @@ public final class BrowserPrototype {
     public static String tabs(int browserId) { return session(browserId).tabs(); }
     public static boolean consumeFrame() { return consumeFrame(0); }
     public static boolean consumeFrame(int browserId) { return session(browserId).consumeFrame(); }
+    /** A Web App's address and user agent for the next open(); null/empty for the home page. */
+    public static void setStartPage(int browserId, String url, String userAgent) { session(browserId).setStartPage(url, userAgent); }
     public static void close() { close(0); }
     public static void close(int browserId) { session(browserId).close(); }
     public static void tabAction(String action, int id) { tabAction(0, action, id); }
@@ -201,6 +203,17 @@ public final class BrowserPrototype {
 
     private Session(int browserId) { this.browserId = browserId; }
 
+    // Set from Godot's thread just before open(); taken on the UI thread.
+    private volatile String pendingStartUrl, pendingUserAgent;
+    // This session's Web App, if any: its first page and, for every page
+    // WebView it creates, its user agent (e.g. YouTube's TV interface).
+    private String startUrl, userAgent;
+
+    public void setStartPage(String url, String agent) {
+        pendingStartUrl = url == null || url.isEmpty() ? null : url;
+        pendingUserAgent = agent == null || agent.isEmpty() ? null : agent;
+    }
+
     public void open(Activity activity, Surface target, SurfaceTexture source, int width, int height) {
         final int token = generation.incrementAndGet();
         state = 1;
@@ -213,6 +226,10 @@ public final class BrowserPrototype {
                 return;
             }
             dispose();
+            startUrl = pendingStartUrl;
+            userAgent = pendingUserAgent;
+            pendingStartUrl = null;
+            pendingUserAgent = null;
             if (focusedId < 0) focusOnUi(browserId);
             surface = target;
             texture = source;
@@ -304,7 +321,9 @@ public final class BrowserPrototype {
                 presentation.setContentView(root);
                 presentation.show();
                 presentation.getWindow().setLayout(-1, -1);
-                loadHome();
+                if (startUrl != null && BrowserNavigation.allowed(startUrl)) navigateTo(startUrl);
+                else loadHome();
+                startUrl = null;
                 state = 2;
                 DiagnosticLog.info("BrowserPrototype", "GPU virtual display opened " + width + "x" + height);
             } catch (RuntimeException | LinkageError e) {
@@ -446,6 +465,7 @@ public final class BrowserPrototype {
     web.getSettings().setAllowContentAccess(false);
     web.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
     web.getSettings().setGeolocationEnabled(false);
+    if (userAgent != null) web.getSettings().setUserAgentString(userAgent);
     installQuestGamepadBridge();
     web.setOnFocusChangeListener((view, focused) -> {
         if (!focused) { releasePhysicalGamepad(); questPad = null; }

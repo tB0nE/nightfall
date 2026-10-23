@@ -35,6 +35,7 @@ public class GodotApp extends GodotActivity {
 	public static int pollBrowserFor(int id) { return BrowserPrototype.poll(id); }
 	public static boolean consumeBrowserFrameFor(int id) { return BrowserPrototype.consumeFrame(id); }
 	public static void closeBrowserFor(int id) { BrowserPrototype.close(id); }
+	public static void browserStartPageFor(int id, String url, String userAgent) { BrowserPrototype.setStartPage(id, url, userAgent); }
 	public static String browserTabsFor(int id) { return BrowserPrototype.tabs(id); }
 	public static void browserTabActionFor(int id, String action, int page) { BrowserPrototype.tabAction(id, action, page); }
 	public static void browserNavigationActionFor(int id, String action) { BrowserPrototype.navigationAction(id, action); }

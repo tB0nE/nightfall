@@ -106,6 +106,15 @@ func release_keys() -> void:
 func can_infer_depth() -> bool:
 	return self == main.browser_prototype and active and texture != null and activity == Activity.VISIBLE
 
+var _start_app: Dictionary = {}
+
+## Opens the browser on a Web App (see WebApps); false when it can't open now.
+func open_app(app: Dictionary) -> bool:
+	_start_app = app
+	var opened: bool = main.screen_sources.choose_source(ScreenContentTab.BROWSER)
+	_start_app = {}
+	return opened
+
 func start() -> void:
 	if activity == Activity.CLOSED or active or closing:
 		return
@@ -125,6 +134,14 @@ func start() -> void:
 	set_activity(Activity.VISIBLE)
 	_opening_at = Time.get_ticks_msec()
 	render_size = RESOLUTIONS[clampi(main.settings.browser_resolution, 0, 1)]
+	# Always sent, so a plain browser after a Web App gets the home page and
+	# the default user agent again.
+	var bridge := _gamepad_bridge()
+	if bridge:
+		bridge.browserStartPageFor(browser_id, str(_start_app.get("url", "")), str(_start_app.get("user_agent", "")))
+	if not _start_app.is_empty():
+		main._log("[BROWSER] Opening Web App %s" % _start_app.get("id", "?"))
+	_start_app = {}
 	uploader.start_browser_prototype(render_size.x, render_size.y)
 	main.screen_sources.browser_opened(self)
 	main._log("[BROWSER] Opening GPU surface prototype")
