@@ -39,6 +39,15 @@ func _init():
 	owner.settings.host.ai_3d_model = SettingsController.ANDROID_MODEL_LEGACY_EDGEPAD_384
 	owner.settings.host.ai_3d_speed = 3
 	assert(defaults.active_android_depth_model_name() == "EdgePad-384 (Reference)")
+
+	# A GPU model change shows "Loading depth model…"; repeats and CPU don't.
+	var gpu := SettingsController.AI3D_BACKEND_GPU
+	var cpu := SettingsController.AI3D_BACKEND_CPU
+	assert(SettingsController.depth_model_switch_loads(Vector2i(30, gpu), Vector2i(25, gpu)))
+	assert(SettingsController.depth_model_switch_loads(Vector2i(0, cpu), Vector2i(25, gpu)), "turning AI 3D on loads too")
+	assert(not SettingsController.depth_model_switch_loads(Vector2i(25, gpu), Vector2i(25, gpu)))
+	assert(not SettingsController.depth_model_switch_loads(Vector2i(25, gpu), Vector2i(29, cpu)))
+	assert(not SettingsController.depth_model_switch_loads(Vector2i(25, gpu), Vector2i(0, cpu)))
 	owner.queue_free()
 	print("All ai3d_defaults tests passed")
 	quit()

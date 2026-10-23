@@ -1000,6 +1000,13 @@ func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 			return
 	apply_stereo()
 
+const DEPTH_MODEL_LOAD_SEC := 2.5
+# The (model, backend) last sent to configure_depth().
+var _configured_depth := Vector2i.ZERO
+
+static func depth_model_switch_loads(previous: Vector2i, next: Vector2i) -> bool:
+	return next.x != 0 and next.y == AI3D_BACKEND_GPU and next != previous
+
 func apply_stereo():
 	var mode = get_stereo_mode()
 	var display_mode = mode if main.is_streaming else 0
@@ -1066,7 +1073,15 @@ func apply_stereo():
 		var java_class := _android_depth_class()
 		if java_class:
 			java_class.setDepthGpuApi(get_ai_3d_gpu_api_effective())
-	main.stream_backend.configure_depth(model_idx, get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU)
+	var backend = get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU
+	main.stream_backend.configure_depth(model_idx, backend)
+	# A GPU model switch pauses depth for ~2.5 s while the previous model's
+	# GPU context retires and the new one compiles (DepthEstimator.java's
+	# switch cooldown); the 3D effect stands still meanwhile. Say so instead
+	# of looking frozen.
+	if depth_model_switch_loads(_configured_depth, Vector2i(model_idx, backend)) and main.ui_controller:
+		main.ui_controller.show_temporary_status("Loading depth model…", DEPTH_MODEL_LOAD_SEC)
+	_configured_depth = Vector2i(model_idx, backend)
 	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	refresh_depth_backend_status(true)
 	# sync_model_size() (2026-08-27 - moved BEFORE the texture-capture block
