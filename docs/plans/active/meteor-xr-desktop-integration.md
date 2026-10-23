@@ -785,3 +785,414 @@ headset standby and input-focus transitions before optimizing hidden desktop
 work or extending runtime/session duration. XR audio, microphone/audio focus,
 automatic product integration, packaging and cross-platform compatibility remain
 separate outstanding work.
+
+### Armed runtime / separate PC-side launch (2026-10-20)
+
+WiVRn reference `docs/steamvr.md` confirms its OpenVR compatibility path uses
+xrizer or OpenComposite, with `PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1` and
+appropriate `VR_OVERRIDE`/sandbox visibility. VRChat is a compatibility target,
+not ruled out by our OpenXR runtime. No translator or Steam configuration was
+installed/changed by this step; integration/testing remains outstanding.
+
+Added optional `"launch":"manual"` to host-local `application.json` (default
+remains immediate). After runtime IPC readiness, this mode publishes a private,
+generation-bound `application-ready.json` and waits up to 30 seconds for a local
+launch request. `test/request_xr_application.py SESSION_DIRECTORY` publishes an
+atomic, non-overwriting request containing only the matching generation/action;
+the selected executable/arguments still come exclusively from trusted host config.
+It launches inside the existing owned supervisor, not an untracked remote process.
+Cancellation/timeout removes readiness; stale/malformed/repeated requests fail.
+
+Host status `ready_for_application` is distinct from session-created/begun/frame
+readiness. The headset keeps desktop visible in that state with a bounded wait;
+session+decoded-frame still gates handover. Initial video producer attach and
+client first encrypted record wait are now 45 seconds; ordinary per-frame I/O
+remains 5 seconds. Existing total lease/receiver/runtime bounds are retained:
+this is a bounded DEV arm/launch gate, not an indefinitely running product service.
+Full automatic arbitrary-app discovery/Steam launch environment remains next.
+
+Local GPU smoke: 3.02 seconds armed with no encoded frames, then 66 frames after
+the PC-side launch, asynchronous 1024-eye/60-Hz-target/Touch profile. Short idle
+sample for Monado process alone: 75.05 MiB RSS and 6.28% of one CPU core. This
+excludes supervisor/Meteor/transport overhead, GPU memory/power and headset cost;
+it is not an end-to-end performance result. Diagnostics:
+`.build-cache/meteor-xr/external-smoke-7tl8jgfp/armed-idle.json`.
+15 Python application/lifecycle tests and 53 Rust XR tests passed (four explicit
+interop fixtures ignored); 40 GDScript tests passed. Python/Rust socket tests
+require host socket permission. Physical arm/wait/launch test remains pending.
+
+Streaming extension rebuilt using the current Release tree
+`addons/nightfall-stream/build/android` and stripped before APK packaging. The
+old root `build/android` cache failed compiler detection and was not used for the
+artifact. Optimized Meteor rebuilt; ordinary Meteor must remain untouched when
+updating the dedicated XR DEV listener. Local ignored application config now uses
+manual launch; tests must trigger the PC-side helper within the bounded window.
+
+Deployment: optimized release-signed DEV APK
+`0.8.2-preview.1-dev+899cb2d-dirty`, code 802, installed on Quest
+`2G0YC1ZF8P08QN`. SHA-256:
+`9e65997f59463372cb0508800ad8890441f0b9707e63275c92e8b12db8f6e759`.
+Dedicated updated listener is tool session 82218 at setup, same endpoint/pin;
+normal Meteor unchanged. No XR acceptance or application launch was automated.
+For physical test coordinate readiness with user before acceptance, then run the
+local helper against the new session directory while its ready ticket exists.
+Expect desktop to remain usable until application session and video become ready.
+
+### Practical local launcher and compatibility scope (2026-10-20)
+
+User confirmed welcome remained visible until the separate PC-side launch entered
+XR. They did not start Sunshine or recheck the watch in that armed test; those
+combinations remain unverified for the new flow (earlier immediate-launch tests
+covered them). Do not upgrade this result to live-Sunshine/wristwatch validation.
+
+Added `tools/meteor_xr.py` with `status`, `launch [--wait 0..120] [--session DIR]`
+and `compat-check DIRECTORY`. No manual search for session directories is needed:
+discovery chooses the sole live, unexpired, unrequested armed ticket. Multiple
+live sessions are rejected, not silently chosen. Ticket expiry is exported by
+the host and checked along with owner PID/generation before local publication.
+The request remains a local generation+action, not remote command execution.
+
+Host application config can now explicitly select `openvr_compat` and
+`steam_runtime`. Validate the selected tool's `bin/linux64/vrclient.so` ELF identity;
+apply VR_OVERRIDE, Steam OpenXR import and tool-only filesystem visibility to the
+owned application child, not the runtime service, parent shell or global files.
+No compatibility tool is selected for the current HelloXR sample.
+The locally installed WiVRn Flatpak contains an xrizer binary that passed the
+layout/ELF check. `readelf` shows standard C/C++ runtime dependencies; this is
+not a dynamic-loading, Proton or game compatibility test. No tool was installed,
+copied or globally registered. Full usage/limits:
+`docs/development/meteor-xr-launcher.md`.
+
+Validation: 17 Python application/lifecycle tests passed, including expired and
+ambiguous discovery, immutable inherited environment, scoped Steam import and
+ELF rejection. Actual armed local CLI → asynchronous GPU capture smoke passed
+with 60 encoded frames, intentionally interrupted, no pre-launch encoding.
+Diagnostics: `.build-cache/meteor-xr/external-smoke-744cimyq/`. No headset rebuild
+or listener restart is needed for these host-script-only changes.
+
+Next: integrate the real Steam `%command%`/Proton launch chain into the owned
+launcher, preserving the private runtime/IPC environment through pressure-vessel,
+and test xrizer with a real OpenVR application/VRChat. Merely launching a running
+Steam client or setting an environment variable does not complete this step.
+The current helper still launches the foreground application selected in local
+host config; general Steam integration/automatic discovery are not yet claimed.
+
+### Steam foreground command handoff implemented (2026-10-20)
+
+Added `steam-options --app-id ID` (prints only) and `steam-run --app-id ID --
+%command%` to the local launcher. New explicit host `launch:"steam"` mode binds
+the readiness ticket/request to one configured app ID. Only this opt-in mode may
+receive an argv/cwd and allowlisted Steam/Proton environment from the local
+wrapper. The authenticated headset/control protocol still cannot supply commands.
+Runtime/IPC/compatibility environment remains supervisor-owned; no arbitrary
+environment or secrets are forwarded/dumped. Requests are atomic and bounded.
+
+The runtime supervisor, not a background Steam client, launches and owns the
+foreground chain supplied by Steam. The wrapper stays alive and returns the
+game's recorded exit code. Wrapper disappearance cancels/reaps its owned child.
+Generation/app-ID checks prevent stale or wrong-game outcome consumption. The
+ordinary launch action is rejected for Steam profiles, with no fallback app.
+
+Validation: 17 application/lifecycle Python tests plus three Steam-wrapper tests
+passed. Tests cover app/generation binding, environment filtering, no shell
+expansion, wrapper exit propagation and cancellation when wrapper owner ends.
+Real GPU smoke through this wrapper/owned-runner path captured 64 HelloXR frames
+with synthetic tracking, then intentionally interrupted and reported that result
+to the wrapper. Diagnostics: `.build-cache/meteor-xr/external-smoke-6rlt08d9/`.
+This did not run Steam, Proton, xrizer or VRChat. Host-script-only change; no
+additional headset deployment or listener restart required.
+
+Local inspection found installed VRChat at
+`/run/media/system/GAMES/SteamLibrary/steamapps/common/VRChat` and Proton 11.0
+requiring Steam Runtime 4. Installed Runtime 4 libc exports GLIBC_2.41, whereas
+our Monado client requires GLIBC_2.38: a plausible runtime combination, not proof
+of loading or container compatibility. Prepared ignored
+`.build-cache/meteor-xr/application-vrchat.json` with app ID 438100 and the local
+WiVRn Flatpak xrizer directory. It is NOT selected; tested HelloXR configuration
+remains current. No game launch, global runtime edits, per-game Steam launch
+options or Proton preferences have been changed.
+
+Next physical gate requires reviewing/applying per-game Steam wrapper options,
+selecting the prepared host profile and coordinating headset arming/game launch.
+Preserve existing Steam options and do not edit Steam's live cached settings or
+exit Steam without user coordination. Then validate actual pressure-vessel/Proton
+runtime/IPC loading and xrizer graphics/input before claiming VRChat support.
+
+### First Steam/VRChat attempts and probe-session fix (2026-10-20)
+
+After the user exited Steam, applied the per-game wrapper for app 438100 while
+preserving all existing launch flags and GE-Proton10-26-rtsp20. Selected the
+prepared Steam host profile; saved both native HelloXR profile and original Steam
+configuration under ignored `.build-cache/meteor-xr/` (private, not publishable).
+No global runtime registration or other game configuration changed.
+
+The first physical attempts reached the managed runtime: `service.log` records
+clients named `steam` and `wineopenxr test instance`. Steam created, began, ended
+and destroyed a temporary probe session. Headset logs at 13:37:03 and 13:37:20
+then reported `XR-HANDOVER Stopping: XR application ended`, cancelling the owned
+launch before game presentation. The newest VRChat output log was empty. This
+confirms premature handover cancellation, not functional VRChat compatibility.
+
+Changed WAITING handover policy to tolerate `session_ended` before video-backed
+handover. The existing startup deadline continues without resetting on session
+churn. Supervisor `completed`/`cancelled`/`failed` remain terminal; session end
+during DRAINING/ACTIVE still stops and restores the desktop. All 40 GDScript
+tests passed, including repeated startup probes, bounded timeout, post-activation
+session closure and supervisor terminal outcomes. Optimized DEV deployment and
+another physical VRChat attempt are the next gate; Steam/Proton/xrizer and game
+compatibility must still be established.
+
+### VRChat world-load crash: seven layers, not Proton (2026-10-21)
+
+The user intentionally returned to known-working GE-Proton10-26-rtsp20 after
+trying a newer Proton. Keep that selection unchanged. Sessions
+`1792521934591115225-1086187`, `1792524133015683556-1086187`, and
+`1792524198599780158-1086187` reached real encoded game frames and then logged
+`METEOR_CAPTURE_FAILED`. This was not an intentional short-test completion.
+
+Existing core dump PID 2622604 confirms SIGABRT in
+`null_compositor_layer_commit`. Offline disassembly/core inspection recovered
+the exact failing accumulator: **seven layers: one projection (type 0), followed
+by six quads (type 2)**. Projection views are 1024 square. The single-layer guard
+in `test/monado_server_capture.h` rejects the entire frame before encoding it.
+This confirms the host failure independently of the disappearing xrizer popup.
+The popup's exact panic message is not yet captured; do not claim an independent
+xrizer defect or change Proton to address this compositor restriction.
+
+Added structural failure diagnostics (`METEOR_CAPTURE_LAYOUT/LAYER/QUAD/VIEW`)
+before the diagnostic abort and immediate `application-live.log` output for
+owned external applications. Previously app stdout/stderr lived in supervisor
+pipes until normal return; group termination could lose the actual xrizer error.
+Live output now survives interruption/timeouts, without logging environment or
+command arrays. Python application/lifecycle tests: 19 passed. Host Monado
+rebuilt successfully in the existing offline container. This is **diagnostics,
+not the composition fix**; no new headset APK is required for these host changes.
+
+Next implementation: real GPU composition of projection plus quad overlays
+before NVENC. Do not bypass the single-layer guard by dropping quads: game UI
+would silently disappear. Preserve submitted order, per-eye visibility, poses,
+view/reference-space handling, subrect/array slice, alpha/premultiplication,
+transfer function and swapchain synchronization. Async jobs must retain both
+overlay swapchain references and image-use leases until GPU completion, including
+replaced jobs and shutdown. Exercise a local projection-plus-six-quads fixture
+through the real encoder before another physical VRChat attempt. Keep unsupported
+layer types explicit; do not claim a general compositor from a projection-only
+or projection-plus-quad test. Production session duration is also still bounded.
+
+The external-app smoke helper now creates its own HelloXR profile instead of
+inheriting `application.json`; it must never launch the user's selected Steam
+game as a side effect of a diagnostic test.
+
+Post-change real-GPU smoke passed through the Steam wrapper using that isolated
+native HelloXR profile: 65 captured frames, then intentional interruption and
+wrapper exit propagation. Diagnostics: `.build-cache/meteor-xr/external-smoke-g7yg3b27/`;
+`application-live.log` exists and contains the sample output. This validates the
+logging/runner changes only, not multi-layer composition or VRChat world entry.
+
+### Projection + quad GPU composition implemented (2026-10-21)
+
+Replaced the one-layer-only encoder intake with an explicit supported sequence:
+one stereo projection (optionally depth-bearing colour) followed by up to 127
+quads in submitted order. No quad is silently dropped; other layer sequences,
+unsupported formats/MSAA and advanced blend/depth flags are rejected explicitly.
+This remains a limited compositor, not arbitrary OpenXR composition support.
+
+The NVENC bridge now packs the projection as before, then draws the quads into
+the exportable Vulkan image using a load/store colour render pass before CUDA/
+NVENC consumes it. No host pixel readback in the streaming path. Supports eye
+visibility, view/world poses, perspective clipping, atlas subrects, array slices,
+Y flip, opaque/straight/premultiplied alpha and colour scale/bias. SRGB attachments
+and sampled image views retain hardware transfer functions. The shaders are built
+offline with the runtime; source-hash stamps prevent stale generated shaders
+being accepted by the helper cache. Math and projection-only tests remain separate.
+
+Async jobs snapshot overlay data and retain swapchain objects **and image-use
+leases** until GPU work completes; replaced jobs also release them. The initial
+shared-atlas test exposed missing acquisition in `multi_compositor_layer_quad`:
+the common slot cleanup was releasing images that only the worker had reserved.
+Added matching acquisition at submission, balancing slot and worker ownership.
+The regression now proves 192 acquisitions and 192 releases with shared images.
+
+Real-GPU seven-layer test passed:
+`.build-cache/meteor-xr/quad-smoke-1s1321mc/`. One stereo projection plus six quads
+sharing one texture, left-only/right-only/both-eye visibility, straight-alpha
+blending. Eleven encoded/locally transferred frames decoded; independent sample
+checks at all twelve per-eye quad centres matched expected blended/background
+pixels. Raw queue replaced one unencoded job and drained successfully. Encoder
+released exactly once. Warm pack/compose median 0.244ms, max 0.702ms in this tiny
+256-square fixture: **not** a VRChat/1024-square headset performance measurement.
+
+Projection-only Steam wrapper regression also passed: 62 native HelloXR frames,
+then deliberate interruption (`external-smoke-m4el8kbn`). No real Steam/game
+launch in either smoke. Host runtime/shaders/helper rebuilt; new sessions load
+them without replacing/restarting normal Meteor. No headset APK changes needed.
+Next physical gate: same known-working GE-Proton10-26-rtsp20, arm Nightfall, start
+VRChat in VR mode and check world entry plus overlays/controllers. Existing DEV
+session time limits (90s client / 100s host) remain; VRChat compatibility is not
+confirmed solely by the synthetic overlay test.
+
+### Overlay-only loading frames implemented (2026-10-21)
+
+Physical session `1792564460244432895-1086187` got past projection-plus-six-quads
+but aborted on frame 277: **eight quads, no projection**. Six quads were 128x128
+with flags 6, two were 512x512 with flags 22 (colour scale/bias). Persistent
+`application-live.log` captured xrizer's `xrSyncActions` runtime-failure panic
+after the host disappeared. This confirms a second unsupported composition case,
+not a new Proton or original xrizer failure; leave the user's GE selection alone.
+
+The capture path now also accepts quad-only lists, up to 128 quads. It obtains
+current world-space eye poses/FOV from the tracked HMD at the submitted timestamp
+and creates metadata only (no fake/borrowed projection texture). The GPU clears
+the stereo target to opaque black and renders the submitted quads in order.
+Projection images are neither referenced nor image-leased on these frames. Async
+jobs still own all actual overlay images. When projection returns, normal copying
+resumes; no old image or old head pose is used as a loading-screen backdrop.
+Existing source format metadata is retained across projection-less gaps; fresh
+overlay-only startup uses the existing RGBA8 default. Mid-session arbitrary
+projection source-format changes remain subject to the existing bridge checks.
+
+Expanded regression explicitly starts quad-only and executes
+`quad-only -> projection+quads -> quad-only -> projection+quads` using eight
+shared-texture overlays. Real Monado/Vulkan/NVENC/loopback test passed in
+`.build-cache/meteor-xr/quad-smoke-q01xh_vk/`: 22 decoded frames, all four phases
+observed, 352 per-eye overlay-centre colour checks passed, 424 image reservations
+acquired/released and clean encoder drain. Checks distinguish cleared black from
+the old projection backdrop and verify left/right visibility and alpha blending.
+The diagnostic JSON ledger now marks projection presence for this verification;
+the headset transport is unchanged. Host runtime/fixture/helper rebuilt; no new
+headset APK or normal Meteor restart required. Actual VRChat world entry is still
+the next physical gate, with the existing bounded DEV session duration unchanged.
+
+Post-change projection-only wrapper smoke: 64 captured HelloXR frames followed
+by intentional interruption (`external-smoke-qa_dbhiz`). All 69 XR Python tests
+passed outside the sandbox (local socket tests require that access).
+
+### Static-overlay clock fix (2026-10-21)
+
+Session `1792564968499189189-1086187` got further into loading but failed with
+ten quads (including two 800x600). This was within supported composition limits,
+with no worker/format rejection. Offline core PID 425976 proved the actual
+problem: compositor display time `348559061147028`, first overlay submit time
+`348558794480372` (266.667ms old), and last queued/encoded time still equal to
+that old overlay timestamp. The live tracking bridge intentionally refuses queries
+more than 250ms from its current sample. Retained loading overlays were being
+mistaken for the clock at which to locate the current head pose.
+
+Overlay-only capture now uses `layer_accum.data.display_time_ns`, the compositor's
+current display clock. It continuously re-renders retained static overlays with
+fresh tracking while the game loads. No stale tracking extrapolation is enabled.
+A transient unavailable pose skips that frame, without fabricating a pose or
+aborting the app; existing transport/lifecycle timeout policies remain active.
+When projection rendering returns with a source timestamp older than an already
+rendered loading frame, skip it (like a duplicate), rather than aborting or
+inserting a non-monotonic frame into the video stream. Source projection poses
+and timestamps are otherwise preserved. Added a native timestamp-policy test
+using the exact crash values, included in helper-cache validation.
+
+Extended the eight-quad real-GPU regression with a 650ms pause after submitting
+static loading overlays, while its independent tracking publisher keeps running.
+Passed in `.build-cache/meteor-xr/quad-smoke-awp2uzfq/`: 63 encoded/transferred/
+decoded frames, all four overlay/projection phases, 15 frames observed late in
+the static hold (400–650ms after submit), 1008 pixel checks and 806/806 balanced
+image reservations. This exercises the actual stale-overlay failure, not merely
+an increased layer-count cap. Host runtime rebuilt; no new headset APK required.
+Actual VRChat world entry remains the physical gate, with Proton unchanged.
+
+### Live loading-stall instrumentation prepared (2026-10-21)
+
+Session `1792565679126846534-1086187` showed no capture failure: 3021 encoded
+frames spanning ~51.6s, transitioning to ten quad-only loading overlays without
+returning to a projection. VRChat logged room joined, scene finalized and players
+spawned at 08:55:10, but stayed on loading until client/session cancellation at
+08:55:47. Final delivery failure occurred during shutdown; do not mistake that
+for an earlier capture crash. Missing headset logs mean the precise cancellation
+trigger is not yet established (do not assert the 90s deadline caused it).
+
+Prepared opt-in automatic host diagnostics for the next test: local ignored
+`process-diagnostics.enabled` marker is ON. External app supervision samples
+owned process/thread wait states/CPU counters to private `process-waits.jsonl`
+every 3s. Runtime swapchain acquisition logs now record begin/wakeup, PID/TID,
+image/reservation count and elapsed time. This avoids attaching a debugger to
+VRChat/anti-cheat, stopping the process, or capturing memory/argv/environment.
+These are kernel wait channels, not full userspace stacks; conclusions must be
+correlated with swapchain events, game output and render-phase logs. Marker OFF
+disables the optional diagnostics; no global/Proton settings or timeouts changed.
+
+Host rebuilt in offline container. All 73 XR Python tests passed (four new sampler
+tests cover parsing, owned-tree scope, CPU deltas, PID reuse and access failure).
+Real GPU transition/650ms loading-pause smoke passed with diagnostics enabled in
+`quad-smoke-5mtsmtju`: process snapshot present (two owned processes), swapchain
+wait records present, encoder/overlay pixel/drain checks still pass. No APK
+update needed. Next user gate: arm and launch VRChat normally; if it sticks on
+joining, leave it running and report promptly so the live samples cover the stall.
+
+### Apparent joining stall is a Wine codec crash (2026-10-21)
+
+Session `1792566576974148453-1086187` captured the missing evidence. Host remained
+live and drained 2940 encoded frames without capture failure. Twenty owned-process
+snapshots showed VRChat threads largely waiting and UnityCrashHandler becoming
+CPU-active. VRChat wrote a minidump at
+`AppData/Local/Temp/VRChat/VRChat/Crashes/Crash_2026-10-21_071009375/crash.dmp`.
+An earlier joining attempt also left `Crash_2026-10-21_065512765/crash.dmp`.
+
+`application-live.log` line 343 explicitly reports:
+`wine: Call from 00006FFFFFC0D217 to unimplemented function winedmo.dll.winedmo_create_color_converter, aborting`.
+Offline minidump inspection (no live debugger) found exception 0x80000100 in
+kernelbase.dll; its diagnostic arguments point into iyuv_32.dll and resolve to
+`winedmo.dll` / `winedmo_create_color_converter` in the installed image.
+
+Concrete mixed-prefix evidence: the launch log selects GE-Proton10-26-rtsp20,
+but prefix `drive_c/windows/system32/iyuv_32.dll` is a symlink into
+GE-Proton11-7-x86_64 (dated when the user tried that version). The selected GE10
+tree contains winedmo.dll but no iyuv_32.dll. Thus the leftover newer codec is
+requesting a newer Wine internal export from an older runtime. The on-headset
+Joining display is retained loading overlays after the game fault, not evidence
+of another compositor crash or a completed world entry.
+
+Next: with Steam/game fully closed, back up and repair/recreate a consistently
+versioned per-game Proton prefix. Preserve VRChat data/settings/logins and current
+per-game launch options; do not delete the prefix or change Proton silently.
+No prefix modifications have been made. Get user direction before that external
+state change. Keep optional diagnostics enabled for the validating launch.
+
+### World entry, floor origin and five-minute testing window (2026-10-21)
+
+User switched to newer Proton and confirmed entering VRChat world. Keep their
+selection. Session `1792566980057323273-1086187` recorded eye Y from -0.304 to
++0.054m: Quest LOCAL's eye-level origin was being adopted as the desktop floor,
+explaining appearing on the ground. Native Meteor tracking now creates STAGE
+instead. Head, controllers, wristwatch and returned projection all use that same
+origin; no arbitrary height offset. Fail clearly if STAGE unavailable. Historical
+`quest_local` wire member/bit retained and documented as adopted client origin;
+new matching client/host and fresh session required.
+
+Apparent menu crash coincided with DEV limit: session created 09:16:20.057,
+service ended ~89.96s later. Tracking disconnected before delivery failure and
+final capture error. Supports timeout, not an unsupported menu frame, as trigger.
+Retest the short menu press physically; B/Y held one second still intentionally
+exits the DEV session.
+
+Long profile now: client 300s, host supervisor 315s, accepted control lease and
+Steam result wait 360s, 18,000 upstream fixture frames / 300s owned-app timeout.
+Short and arming windows unchanged. Also found and increased independent
+4096-frame sender/Rust/native-receiver cap to 32768 on all ends; otherwise 60Hz
+could stop early despite new timers. Boundary tests still reject exceeding cap.
+Standby now logs explicit timeout reason/elapsed/limit.
+
+All 40 GDScript scripts passed, including 90s survival/300s bounded stop tests;
+53 Rust XR tests passed (4 optional interop tests ignored). Standalone native
+wire/tracking/view tests passed. Full native test wrapper unavailable due to
+missing FFmpeg development packages; no host packages installed. Optimized,
+release-signed DEV APK built/installed with native XR rebuilt, no skip flag.
+Release Meteor rebuilt; only dedicated listener PID 1086187 stopped/restarted
+(new tool session 54843, same port/pin/allowlist); normal Meteor untouched.
+Changes uncommitted on `feat/meteor-xr-streaming`.
+
+Next physical gate: real standing/seated/crouching height, controller placement,
+wristwatch/menu alignment, short game menu press, survival past 90s. Expect stop
+at five minutes from arming; this is not yet an unbounded production game session.
+
+Final validation also passed all 73 XR Python tests and rebuilt Monado's native
+sender (not only Rust). GPU overlay/loading regression passed with that sender:
+`quad-smoke-yzz20e0q`. Installed APK SHA256:
+`26fc01cb93639133cb245b2159da5dcaf008f66fd9ffbfba50cdc8cfe913a02f`.
