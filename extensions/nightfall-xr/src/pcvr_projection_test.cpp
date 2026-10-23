@@ -24,6 +24,8 @@ void NightfallXrProjectionTest::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_wristwatch", "state"), &NightfallXrProjectionTest::set_wristwatch);
 	ClassDB::bind_method(D_METHOD("set_workspace_input_focus", "focused"), &NightfallXrProjectionTest::set_workspace_input_focus);
 	ClassDB::bind_method(D_METHOD("get_wristwatch_tracking"), &NightfallXrProjectionTest::get_wristwatch_tracking);
+	ClassDB::bind_method(D_METHOD("set_meteor_eye_size", "size"), &NightfallXrProjectionTest::set_meteor_eye_size);
+	ClassDB::bind_method(D_METHOD("set_pcvr_post_processing", "sharpen", "sampling"), &NightfallXrProjectionTest::set_pcvr_post_processing);
 }
 
 PackedFloat32Array NightfallXrProjectionTest::get_wristwatch_tracking() {
@@ -48,8 +50,35 @@ Dictionary NightfallXrProjectionTest::_get_requested_extensions(uint64_t version
 	Dictionary requested = NightfallXrRenderer::_get_requested_extensions(version);
 #ifdef __ANDROID__
 	requested["XR_KHR_convert_timespec_time"] = reinterpret_cast<uint64_t>(&clock_extension);
+	requested["XR_FB_composition_layer_settings"] = reinterpret_cast<uint64_t>(&pcvr_layer_settings_supported);
 #endif
 	return requested;
+}
+
+void NightfallXrProjectionTest::_on_instance_created(uint64_t instance_handle) {
+	NightfallXrRenderer::_on_instance_created(instance_handle);
+#ifdef __ANDROID__
+	PCVR_LOG("Instance capabilities: clock=%d pcvr_compositor_filters=%d (shared startup/provider state)", clock_extension, pcvr_layer_settings_supported);
+#endif
+}
+
+void NightfallXrProjectionTest::_on_instance_destroyed() {
+	NightfallXrRenderer::_on_instance_destroyed();
+	pcvr_layer_settings_supported=false;
+#ifdef __ANDROID__
+	clock_extension=false;
+#endif
+}
+
+bool NightfallXrProjectionTest::set_meteor_eye_size(int size) {
+	if (state.load()!=IDLE || (size!=256 && size!=512 && size!=1024 && size!=2048 && size!=2560)) return false;
+	requested_eye_size.store(size);
+	return true;
+}
+
+void NightfallXrProjectionTest::set_pcvr_post_processing(int sharpen, int sampling) {
+	pcvr_sharpen.store(sharpen>=0 && sharpen<=2 ? sharpen : 0);
+	pcvr_sampling.store(sampling>=0 && sampling<=2 ? sampling : 0);
 }
 
 bool NightfallXrProjectionTest::stream_available() const {
@@ -135,6 +164,8 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 	result["state"] = names[state.load()];
 	result["frames"] = static_cast<int64_t>(frames.load());
 	result["session"] = static_cast<int64_t>(session_id.load());
+	result["projection_eye_size"] = projection_eye_size.load();
+	result["pcvr_post_processing_supported"] = pcvr_layer_settings_supported;
 #ifdef __ANDROID__
 	if (meteor) result["meteor_status"] = String(meteor->message().c_str());
 	result["meteor_endpoints_ready"] = meteor && meteor->listening() && tracking && tracking->listening();
@@ -154,6 +185,11 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 		counts["reuse_previous_projection_polls"]=int64_t(meteor_reuses.load());
 		counts["projection_copies"]=int64_t(frames.load());
 		result["meteor_device_counts"]=counts;
+		result["video_width"]=int64_t(meteor->video_width.load());
+		result["video_height"]=int64_t(meteor->video_height.load());
+		result["video_codec"]=int64_t(meteor->video_codec.load());
+		result["video_fps"]=int64_t(meteor->video_fps.load());
+		result["video_bytes"]=int64_t(meteor->received_bytes.load());
 	}
 #endif
 #if defined(__ANDROID__) && defined(NIGHTFALL_PCVR_ALVR)
@@ -345,11 +381,16 @@ void main() {
     vec3 rgb=vec3(.045,.055,.085);
     if(p.y>.55) {
         rgb=mix(vec3(.12,.18,.29),vec3(.14,.34,.60),desktop_visible);
-        if(watch_pointer.x>=0. && watch_pointer.y>=.55) rgb+=vec3(.10);
+        bool gear=p.x>=.65;
+        if(watch_pointer.x>=0. && watch_pointer.y>=.55 && (watch_pointer.x>=.65)==gear) rgb+=vec3(.10);
         // Desktop monitor glyph; blue fill indicates workspace currently open.
-        vec2 monitor=abs(p-vec2(.5,.73));
+        vec2 monitor=abs(p-vec2(.33,.73));
         if(max(monitor.x/.16,monitor.y/.10)<1. && max(monitor.x/.14,monitor.y/.08)>.99) rgb=vec3(.85,.9,1.);
-        if(abs(p.x-.5)<.07 && abs(p.y-.87)<.012) rgb=vec3(.85,.9,1.);
+        if(abs(p.x-.33)<.07 && abs(p.y-.87)<.012) rgb=vec3(.85,.9,1.);
+        vec2 cog=(p-vec2(.79,.74))*vec2(1.,.625);
+        float radius=length(cog);
+        float teeth=.065+.012*cos(atan(cog.y,cog.x)*8.);
+        if(radius>.025 && radius<teeth) rgb=vec3(.85,.9,1.);
     } else {
         for(int i=0;i<4;++i) {
             vec2 d=(p-vec2(.19+float(i)*.205,.30))/vec2(.15,.21);
@@ -363,6 +404,8 @@ void main() {
 }
 
 bool NightfallXrProjectionTest::initialize_render_resources() {
+	const int eye_size=meteor_mode ? requested_eye_size.load() : EYE_SIZE;
+	projection_eye_size.store(eye_size);
 	Ref<OpenXRAPIExtension> api = get_openxr_api();
 	if (api.is_null() || !api->get_instance() || !api->get_session() || eglGetCurrentContext() == EGL_NO_CONTEXT) {
 		fail("No existing OpenXR session/current GLES context"); return false;
@@ -391,7 +434,7 @@ bool NightfallXrProjectionTest::initialize_render_resources() {
 	if (!format) { fail("No supported RGBA swapchain format"); return false; }
 	XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-	info.format = format; info.sampleCount = 1; info.width = EYE_SIZE * 2; info.height = EYE_SIZE;
+	info.format = format; info.sampleCount = 1; info.width = eye_size * 2; info.height = eye_size;
 	info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
 	if (XR_FAILED(create_swapchain(session, &info, &swapchain))) { fail("Cannot create synthetic swapchain"); return false; }
 	if (XR_FAILED(enum_images(swapchain, 0, &count, nullptr)) || count == 0) { fail("No swapchain images"); return false; }
@@ -430,12 +473,16 @@ bool NightfallXrProjectionTest::initialize_render_resources() {
 		space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; space_info.poseInReferenceSpace.orientation.w = 1;
 		if (XR_FAILED(create_space(session, &space_info, &head_space))) { fail("Cannot create head tracking space"); return false; }
 		if (meteor_mode) {
-			space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
-			if (XR_FAILED(create_space(session, &space_info, &tracking_space))) { fail("Cannot create Meteor LOCAL tracking space"); return false; }
+			// Share ONE floor-relative origin for head, grip/aim, wristwatch and
+			// returned projection metadata. LOCAL's startup eye height is near
+			// zero and must not be presented to a desktop runtime as its floor.
+			space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+			if (XR_FAILED(create_space(session, &space_info, &tracking_space))) { fail("Cannot create floor-relative Meteor STAGE tracking space; check headset boundary/floor setup"); return false; }
+			PCVR_LOG("Meteor tracking origin=STAGE floor-relative; head/controllers/projection share origin");
 			initialize_meteor_controllers();
 		}
 	}
-	PCVR_LOG("synthetic projection initialized session=%p, %dx%d per eye; public predicted-time snapshot (synthetic only)", (void *)session, EYE_SIZE, EYE_SIZE);
+	PCVR_LOG("projection initialized session=%p, %dx%d per eye; meteor=%d", (void *)session, eye_size, eye_size,meteor_mode);
 	return true;
 }
 
@@ -501,7 +548,8 @@ bool NightfallXrProjectionTest::render_scene() {
 	}
 	for (int eye = 0; eye < 2; ++eye) {
 		const XrView &view = views[eye];
-		glViewport(eye * EYE_SIZE, 0, EYE_SIZE, EYE_SIZE);
+		const int eye_size=projection_eye_size.load();
+		glViewport(eye * eye_size, 0, eye_size, eye_size);
 		if (meteor_mode) glUniform1f(glGetUniformLocation(program, "eye_offset"), eye * 0.5f);
 		else {
 			glUniform4f(glGetUniformLocation(program, "fov_tangents"), std::tan(view.fov.angleLeft), std::tan(view.fov.angleRight), std::tan(view.fov.angleDown), std::tan(view.fov.angleUp));
@@ -523,7 +571,7 @@ bool NightfallXrProjectionTest::render_scene() {
 			glUniform3f(glGetUniformLocation(program,"eye_position"),p.position.x,p.position.y,p.position.z);
 		}
 		glDrawArrays(GL_TRIANGLES, 0, 3);
-		projection_views[eye].subImage = {swapchain, {{eye * EYE_SIZE, 0}, {EYE_SIZE, EYE_SIZE}}, 0};
+		projection_views[eye].subImage = {swapchain, {{eye * eye_size, 0}, {eye_size, eye_size}}, 0};
 	}
 	if (meteor_mode) {
 		meteor_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -539,7 +587,7 @@ bool NightfallXrProjectionTest::render_scene() {
 	frames.fetch_add(1); rendered = true;
 	if (frames.load() == 1) PCVR_LOG("%s first stereo image copied; presentation_requested=%d, session=%p", meteor_mode ? "METEOR DECODED" : "synthetic", !meteor_mode || meteor_presentation.input_enabled(), (void *)session);
 	if (frames.load() == 1 && meteor_mode && meteor_frame.quest_local)
-		PCVR_LOG("METEOR TRACKED SCENE: host render poses/FOV mapped through adopted Quest LOCAL; latest-only USB diagnostic");
+		PCVR_LOG("METEOR TRACKED SCENE: host render poses/FOV mapped through adopted Quest STAGE; latest-only diagnostic");
 	return true;
 }
 
@@ -555,8 +603,8 @@ void NightfallXrProjectionTest::initialize_meteor_controllers() {
 	controller_haptic=action("haptic");
 	controller_apply_haptic=reinterpret_cast<PFN_xrApplyHapticFeedback>(api->get_instance_proc_addr("xrApplyHapticFeedback"));
 	controller_stop_haptic=reinterpret_cast<PFN_xrStopHapticFeedback>(api->get_instance_proc_addr("xrStopHapticFeedback"));
-	const char *names[5]={"ax_button","primary_click","ax_touch","primary_touch","trigger_touch"};
-	for(int i=0;i<5;++i) controller_buttons[i]=action(names[i]);
+	const char *names[7]={"ax_button","primary_click","ax_touch","primary_touch","trigger_touch","by_button","by_touch"};
+	for(int i=0;i<7;++i) controller_buttons[i]=action(names[i]);
 	controller_bool=reinterpret_cast<PFN_xrGetActionStateBoolean>(api->get_instance_proc_addr("xrGetActionStateBoolean"));
 	controller_vector=reinterpret_cast<PFN_xrGetActionStateVector2f>(api->get_instance_proc_addr("xrGetActionStateVector2f"));
 	XrAction poses[2]={action("grip_pose"),action("aim_pose")};
@@ -644,7 +692,7 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 						out.flags|=8; out.stick={stick.currentState.x,stick.currentState.y};
 					}
 				}
-				if(controller_bool) for(int i=0;i<5;++i) if(controller_buttons[i]) {
+				if(controller_bool) for(int i=0;i<7;++i) if(controller_buttons[i]) {
 					query.action=controller_buttons[i]; XrActionStateBoolean button{XR_TYPE_ACTION_STATE_BOOLEAN};
 					if(XR_SUCCEEDED(controller_bool(session,&query,&button)) && button.isActive && button.currentState) out.buttons|=1u<<i;
 				}
@@ -691,6 +739,7 @@ bool NightfallXrProjectionTest::prepare_meteor_image() {
 	if (meteor_image != EGL_NO_IMAGE_KHR) return true;
 	AHardwareBuffer *buffer = nullptr;
 	if (!meteor->frame(buffer, meteor_frame)) return false;
+	if(meteor_frame.height != projection_eye_size.load()) { meteor->release_frame(); fail("Meteor stream/projection resolution mismatch"); return false; }
 	AHardwareBuffer_Desc desc{}; AHardwareBuffer_describe(buffer, &desc);
 	if (desc.width != meteor_frame.width || desc.height != meteor_frame.height) { fail("Unexpected Meteor decoded buffer size"); return false; }
 	const EGLint attrs[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
@@ -947,7 +996,14 @@ int32_t NightfallXrProjectionTest::_get_composition_layer_count() {
 
 uint64_t NightfallXrProjectionTest::_get_composition_layer(int32_t p_index) {
 #ifdef __ANDROID__
-	if (p_index == 0 && rendered && state.load() == RUNNING && (!meteor_mode || meteor_presentation.present())) return reinterpret_cast<uint64_t>(&projection);
+	if (p_index == 0 && rendered && state.load() == RUNNING && (!meteor_mode || meteor_presentation.present())) {
+		XrCompositionLayerSettingsFlagsFB flags=0;
+		if(pcvr_sharpen.load()) flags |= pcvr_sharpen.load()==2 ? XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB : XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
+		if(pcvr_sampling.load()) flags |= pcvr_sampling.load()==2 ? XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SUPER_SAMPLING_BIT_FB : XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SUPER_SAMPLING_BIT_FB;
+		pcvr_layer_settings.layerFlags=flags;
+		projection.next=meteor_mode && pcvr_layer_settings_supported && flags ? &pcvr_layer_settings : nullptr;
+		return reinterpret_cast<uint64_t>(&projection);
+	}
 #endif
 	return 0;
 }

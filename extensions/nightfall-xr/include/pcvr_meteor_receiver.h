@@ -24,6 +24,8 @@ public:
     bool frame(AHardwareBuffer *&buffer, MeteorXrFrame &metadata);
     void release_frame(); // Render thread, only after its sampling fence signals.
     PCVRFrameAccounting stats;
+    std::atomic<uint32_t> video_width{0}, video_height{0}, video_codec{0}, video_fps{0};
+    std::atomic<uint64_t> received_bytes{0};
 private:
     std::atomic<bool> done{true}, stop{false}, failure{false};
     std::atomic<bool> ready{false};
@@ -42,7 +44,7 @@ private:
     void status(const std::string &value, bool error = false);
     void run();
     bool io(int fd, void *data, size_t size, bool writing, int64_t deadline);
-    bool decoder(uint16_t width, uint16_t height);
+    bool decoder(const MeteorXrFrame &frame);
     bool drain();
     bool input(const std::vector<uint8_t> &bytes, int64_t pts, bool end);
 };

@@ -13,6 +13,7 @@
 #include <chrono>
 #include "monado_nvenc_bridge.h"
 #include "meteor_eye_format.h"
+#include "meteor_encoder_bitrate.h"
 #ifdef METEOR_MONADO_BRIDGE
 #include <thread>
 #include <mutex>
@@ -42,6 +43,9 @@ static void bridge_complete() {
 #define VK(call) do { auto result = (call); if (result != VK_SUCCESS) { std::fprintf(stderr, "%s: Vulkan %d\n", #call, result); std::exit(1); } } while (0)
 #define CU(call) do { auto result = (call); if (result != CUDA_SUCCESS) { std::fprintf(stderr, "%s: CUDA %d\n", #call, result); std::exit(1); } } while (0)
 #define NV(call) do { auto result = (call); if (result != NV_ENC_SUCCESS) { std::fprintf(stderr, "%s: NVENC %d\n", #call, result); std::exit(1); } } while (0)
+#ifdef METEOR_MONADO_BRIDGE
+#include "meteor_quad_compositor.h"
+#endif
 
 #ifdef METEOR_MONADO_BRIDGE
 static void bridge_loop() {
@@ -112,7 +116,7 @@ int main(int argc, char **argv) {
     REQUIRE(get_fd, "External memory FD export unavailable");
 #ifdef METEOR_MONADO_BRIDGE
     const uint32_t eye_size=input->eye_size ? input->eye_size : 256;
-    REQUIRE(eye_size==256 || eye_size==512 || eye_size==1024,"Unsupported eye-size profile");
+    REQUIRE(eye_size==256 || eye_size==512 || eye_size==1024 || eye_size==2048 || eye_size==2560,"Unsupported eye-size profile");
     const uint32_t width=eye_size*2,height=eye_size;
 #else
     constexpr uint32_t width = 512, height = 256;
@@ -146,7 +150,7 @@ int main(int argc, char **argv) {
     VkPhysicalDeviceImageFormatInfo2 format_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
     format_info.pNext = &external_format; format_info.format = packed_format;
     format_info.type = VK_IMAGE_TYPE_2D; format_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    format_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    format_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkExternalImageFormatProperties external_props{VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
     VkImageFormatProperties2 format_props{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2}; format_props.pNext = &external_props;
     VK(vkGetPhysicalDeviceImageFormatProperties2(gpu, &format_info, &format_props));
@@ -155,7 +159,7 @@ int main(int argc, char **argv) {
     VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; ici.pNext = &external;
     ici.imageType = VK_IMAGE_TYPE_2D; ici.format = packed_format; ici.extent = {width, height, 1};
     ici.mipLevels = 1; ici.arrayLayers = 1; ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ici.usage = format_info.usage;
     VkImage image; VK(vkCreateImage(device, &ici, nullptr, &image));
     VkMemoryRequirements req; vkGetImageMemoryRequirements(device, image, &req);
     VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO}; dedicated.image = image;
@@ -208,12 +212,26 @@ int main(int argc, char **argv) {
     REQUIRE(output.good(), "Cannot open output");
     bool first_frame = true;
     uint64_t encoded_count = 0;
+    MeteorQuadCompositor quads;
+    bool quad_initialized=false;
+    uint32_t previous_quads=UINT32_MAX;
+    uint32_t previous_background=UINT32_MAX;
     for (;;) {
     REQUIRE(input->device == device && input->gpu == gpu && input->queue == queue && input->queue_family == family,
         "Bridge device changed during session");
     REQUIRE((input->eye_size ? input->eye_size : 256)==eye_size,"Bridge dimensions changed during session");
     REQUIRE(input->eye_formats[0]==source_formats[0] && input->eye_formats[1]==source_formats[1],"Source formats changed during session");
     auto pack_start=std::chrono::steady_clock::now();
+    REQUIRE(input->quad_count<=METEOR_MAX_QUADS && (!input->quad_count || input->quads),"Invalid quad list");
+    if(input->quad_count && !quad_initialized) {
+        quads.init(device,image,packed_format,eye_size);
+        quad_initialized=true;
+    }
+    if(input->quad_count!=previous_quads || input->background_only!=previous_background) {
+        std::fprintf(stderr,"METEOR_COMPOSITION projection=%u quads=%u gpu=1\n",!input->background_only,input->quad_count);
+        previous_quads=input->quad_count;
+        previous_background=input->background_only;
+    }
     if (!first_frame) VK(vkResetCommandBuffer(cmd, 0));
 #endif
     VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO}; VK(vkBeginCommandBuffer(cmd, &begin));
@@ -228,7 +246,12 @@ int main(int argc, char **argv) {
 #endif
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 #ifdef METEOR_MONADO_BRIDGE
-    for (int eye = 0; eye < 2; ++eye) {
+    if(input->background_only) {
+        VkClearColorValue black{{0,0,0,1}};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+        vkCmdClearColorImage(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);
+    }
+    for (int eye = 0; !input->background_only && eye < 2; ++eye) {
         VkImageMemoryBarrier src{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         src.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         src.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL; src.dstQueueFamilyIndex = family;
@@ -250,14 +273,25 @@ int main(int argc, char **argv) {
         src.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; src.dstAccessMask = 0;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &src);
     }
+    if(input->quad_count) quads.record(cmd,*input,image,family);
 #else
     VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {width, height, 1};
     vkCmdCopyBufferToImage(cmd, upload, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 #endif
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = 0;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+#ifdef METEOR_MONADO_BRIDGE
+    if(input->quad_count) {
+        barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+#endif
     barrier.srcQueueFamilyIndex = family; barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    VkPipelineStageFlags completed_stage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+#ifdef METEOR_MONADO_BRIDGE
+    if(input->quad_count) completed_stage=VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+#endif
+    vkCmdPipelineBarrier(cmd, completed_stage, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     VK(vkEndCommandBuffer(cmd));
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount = 1; submit.pCommandBuffers = &cmd;
     VK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE)); VK(vkQueueWaitIdle(queue));
@@ -286,13 +320,31 @@ int main(int argc, char **argv) {
 #endif
     NV(api.nvEncOpenEncodeSessionEx(&open, &encoder));
     NV_ENC_PRESET_CONFIG preset{}; preset.version = NV_ENC_PRESET_CONFIG_VER; preset.presetCfg.version = NV_ENC_CONFIG_VER;
-    NV(api.nvEncGetEncodePresetConfigEx(encoder, NV_ENC_CODEC_H264_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset));
-    preset.presetCfg.frameIntervalP = 1; preset.presetCfg.gopLength = 60;
-    preset.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR; preset.presetCfg.rcParams.averageBitRate = 4000000*(width/512)*(height/256);
+    const char *codec_text=getenv("METEOR_XR_CODEC");
+    REQUIRE(!codec_text || !strcmp(codec_text,"h264") || !strcmp(codec_text,"h265"),"Unsupported XR codec");
+    const bool hevc=codec_text && !strcmp(codec_text,"h265");
+    const auto codec_guid=hevc ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
+    const char *rate_text=getenv("XRT_COMPOSITOR_NULL_FPS");
+    const uint32_t rate=rate_text ? uint32_t(atoi(rate_text)) : 60;
+    REQUIRE(rate==20 || rate==60 || rate==72,"Unsupported XR encoder rate");
+    NV(api.nvEncGetEncodePresetConfigEx(encoder, codec_guid, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY, &preset));
+    preset.presetCfg.frameIntervalP = 1; preset.presetCfg.gopLength = rate;
+    if(hevc) {
+        preset.presetCfg.profileGUID=NV_ENC_HEVC_PROFILE_MAIN_GUID;
+        preset.presetCfg.encodeCodecConfig.hevcConfig.repeatSPSPPS=1;
+        preset.presetCfg.encodeCodecConfig.hevcConfig.idrPeriod=rate;
+    }
+    uint32_t bitrate_bps=0;
+    REQUIRE(meteor_encoder_bitrate(getenv("METEOR_XR_BITRATE_MBPS"),4000000*(width/512)*(height/256),&bitrate_bps),"Invalid XR bitrate");
+    preset.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    preset.presetCfg.rcParams.averageBitRate = bitrate_bps;
+    preset.presetCfg.rcParams.maxBitRate = bitrate_bps;
+    fprintf(stderr,"METEOR_VIDEO_CONFIG eye_size=%u bitrate_bps=%u\n",width/2,bitrate_bps);
+    fprintf(stderr,"METEOR_VIDEO_CODEC codec=%s fps=%u\n",hevc ? "h265" : "h264",rate);
     preset.presetCfg.rcParams.enableLookahead = 0;
     // Match the driver's RGB conversion profile explicitly. Without VUI,
     // decoders can assume BT.601 for the wider BT.709 test and corrupt colors.
-    auto &vui=preset.presetCfg.encodeCodecConfig.h264Config.h264VUIParameters;
+    auto &vui=hevc ? preset.presetCfg.encodeCodecConfig.hevcConfig.hevcVUIParameters : preset.presetCfg.encodeCodecConfig.h264Config.h264VUIParameters;
     vui.videoSignalTypePresentFlag=1; vui.videoFormat=NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
     vui.videoFullRangeFlag=0; vui.colourDescriptionPresentFlag=1;
     vui.colourPrimaries=NV_ENC_VUI_COLOR_PRIMARIES_BT709;
@@ -300,9 +352,9 @@ int main(int argc, char **argv) {
         NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB : NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
     vui.colourMatrix=width>512 ? NV_ENC_VUI_MATRIX_COEFFS_BT709 : NV_ENC_VUI_MATRIX_COEFFS_SMPTE170M;
     NV_ENC_INITIALIZE_PARAMS init{}; init.version = NV_ENC_INITIALIZE_PARAMS_VER;
-    init.encodeGUID = NV_ENC_CODEC_H264_GUID; init.presetGUID = NV_ENC_PRESET_P1_GUID;
+    init.encodeGUID = codec_guid; init.presetGUID = NV_ENC_PRESET_P1_GUID;
     init.tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY; init.encodeWidth = init.darWidth = width;
-    init.encodeHeight = init.darHeight = height; init.frameRateNum = 60; init.frameRateDen = 1;
+    init.encodeHeight = init.darHeight = height; init.frameRateNum = rate; init.frameRateDen = 1;
     init.enablePTD = 1; init.encodeConfig = &preset.presetCfg;
     NV(api.nvEncInitializeEncoder(encoder, &init));
 #ifndef METEOR_MONADO_BRIDGE
@@ -378,6 +430,9 @@ int main(int argc, char **argv) {
     NV(api.nvEncUnregisterResource(encoder, reg.registeredResource));
     NV(api.nvEncDestroyBitstreamBuffer(encoder, bitstream.bitstreamBuffer)); NV(api.nvEncDestroyEncoder(encoder));
     CU(cuMipmappedArrayDestroy(mip)); CU(cuDestroyExternalMemory(cuda_memory));
+#ifdef METEOR_MONADO_BRIDGE
+    if(quad_initialized) quads.destroy();
+#endif
     vkDestroyCommandPool(device, pool, nullptr);
 #ifndef METEOR_MONADO_BRIDGE
     vkDestroyBuffer(device, upload, nullptr); vkFreeMemory(device, upload_memory, nullptr);

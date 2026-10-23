@@ -33,10 +33,14 @@ public:
 	bool activate_meteor_projection();
 	bool stream_available() const;
 	Dictionary _get_requested_extensions(uint64_t p_xr_version) override;
+	void _on_instance_created(uint64_t p_instance) override;
+	void _on_instance_destroyed() override;
 	void stop_test();
 	Dictionary get_test_status() const;
 	void set_wristwatch(PackedFloat32Array p_state);
 	void set_workspace_input_focus(bool p_focused);
+	bool set_meteor_eye_size(int p_size);
+	void set_pcvr_post_processing(int p_sharpen, int p_sampling);
 	PackedFloat32Array get_wristwatch_tracking();
 	int32_t _get_composition_layer_count() override;
 	uint64_t _get_composition_layer(int32_t p_index) override;
@@ -48,6 +52,11 @@ private:
 	std::atomic<int> state{IDLE};
 	std::atomic<uint64_t> frames{0};
 	std::atomic<uint64_t> session_id{0};
+	std::atomic<int> requested_eye_size{1024}, projection_eye_size{1024};
+	std::atomic<int> pcvr_sharpen{0}, pcvr_sampling{0};
+	// Godot writes this through the CORE wrapper's extension-request pointer.
+	// The later scene-owned projection provider must read the same storage.
+	inline static bool pcvr_layer_settings_supported=false;
 	std::atomic<uint64_t> meteor_copy_waits{0}, meteor_swapchain_waits{0}, meteor_reuses{0};
 	mutable std::mutex error_mutex;
 	std::string error;
@@ -67,6 +76,7 @@ private:
 	std::vector<XrSwapchainImageOpenGLESKHR> images;
 	std::array<XrCompositionLayerProjectionView, 2> projection_views{};
 	XrCompositionLayerProjection projection{};
+	XrCompositionLayerSettingsFB pcvr_layer_settings{XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB};
 	EGLContext creation_context = EGL_NO_CONTEXT;
 	GLuint program = 0, framebuffer = 0, vao = 0;
 	bool acquired = false, image_waited = false, rendered = false;
@@ -112,7 +122,7 @@ private:
 	PFN_xrGetActionStateBoolean controller_bool=nullptr;
 	PFN_xrGetActionStateVector2f controller_vector=nullptr;
 	XrAction controller_stick=XR_NULL_HANDLE;
-	XrAction controller_buttons[5]{};
+	XrAction controller_buttons[7]{};
 	XrAction controller_haptic=XR_NULL_HANDLE;
 	PFN_xrApplyHapticFeedback controller_apply_haptic=nullptr;
 	PFN_xrStopHapticFeedback controller_stop_haptic=nullptr;

@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 typedef int xrt_result_t;
-enum { XRT_SUCCESS, XRT_LAYER_PROJECTION=1, XRT_LAYER_PROJECTION_DEPTH=2 };
+enum { XRT_SUCCESS, XRT_LAYER_PROJECTION=1, XRT_LAYER_PROJECTION_DEPTH=2, XRT_LAYER_QUAD=3 };
 struct xrt_swapchain {
     uint32_t image_count;
     xrt_result_t (*inc_image_use)(struct xrt_swapchain *,uint32_t);
@@ -17,6 +17,7 @@ struct xrt_layer_data {
     uint32_t view_count;
     struct { struct { struct { uint32_t image_index; } sub; } v[2]; } proj;
     struct { struct { struct { uint32_t image_index; } sub; } v[2]; } depth;
+    struct { struct { uint32_t image_index; } sub; } quad;
 };
 #include "monado_image_lease.h"
 static int inc(struct xrt_swapchain *sc,uint32_t index) { ++sc->uses[index]; return 0; }
@@ -50,4 +51,9 @@ int main(void) {
     meteor_projection_image_lease(&data,sc,true); assert(left.uses[2]==2);
     meteor_projection_image_lease(&data,sc,false); assert(!left.uses[2]);
     data.type=99; meteor_projection_image_lease(&data,sc,true); assert(!left.uses[1]);
+    data.type=XRT_LAYER_QUAD; data.view_count=0; data.quad.sub.image_index=1;
+    for(int overlay=0;overlay<6;++overlay) meteor_projection_image_lease(&data,sc,true);
+    assert(left.uses[1]==6);
+    for(int overlay=0;overlay<6;++overlay) meteor_projection_image_lease(&data,sc,false);
+    assert(!left.uses[1]);
 }

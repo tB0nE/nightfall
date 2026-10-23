@@ -27,6 +27,10 @@ for stage in vert frag; do
     glslangValidator -V "/tests/meteor_raster_scene.$stage" -o "/out/meteor_raster_scene.$stage.spv"
     spirv-val "/out/meteor_raster_scene.$stage.spv"
 done
+for stage in vert frag; do
+    glslangValidator -V --vn "meteor_quad_$stage" "/tests/meteor_quad.$stage" -o "/out/meteor_quad.$stage.h"
+    sha256sum "/tests/meteor_quad.$stage" > "/out/meteor_quad.$stage.sha256"
+done
 c++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -Wno-missing-field-initializers \
     /tests/monado_runtime_probe.cpp -lopenxr_loader -lvulkan -o /out/runtime-probe
 echo 'Built diagnostic capture/optional encoder-hook service and app; run the separate probes to verify each path.'

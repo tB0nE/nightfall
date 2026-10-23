@@ -4,13 +4,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 // Diagnostic profiles: original WinMR stand-in and partial native Touch.
-// Extended Touch forwards sticks/A-X/touches; B/Y/menu/system stay local.
+// Extended Touch forwards sticks/A-X/B-Y/touches; menu/system stay local.
 // Haptics are opt-in, bounded and queued; output callbacks never do socket I/O.
 static enum xrt_input_name meteor_touch_inputs[]={
     XRT_INPUT_TOUCH_GRIP_POSE,XRT_INPUT_TOUCH_AIM_POSE,
     XRT_INPUT_TOUCH_TRIGGER_VALUE,XRT_INPUT_TOUCH_SQUEEZE_VALUE,
     XRT_INPUT_TOUCH_THUMBSTICK,XRT_INPUT_TOUCH_THUMBSTICK_CLICK,XRT_INPUT_TOUCH_THUMBSTICK_TOUCH,
     XRT_INPUT_TOUCH_X_CLICK,XRT_INPUT_TOUCH_X_TOUCH,XRT_INPUT_TOUCH_A_CLICK,XRT_INPUT_TOUCH_A_TOUCH,XRT_INPUT_TOUCH_TRIGGER_TOUCH,
+    XRT_INPUT_TOUCH_Y_CLICK,XRT_INPUT_TOUCH_Y_TOUCH,XRT_INPUT_TOUCH_B_CLICK,XRT_INPUT_TOUCH_B_TOUCH,
 };
 static enum xrt_output_name meteor_touch_outputs[]={XRT_OUTPUT_NAME_TOUCH_HAPTIC};
 struct meteor_controller_bridge {
@@ -72,6 +73,10 @@ static bool meteor_controller_update(struct meteor_controller_bridge *b,struct x
         case XRT_INPUT_TOUCH_X_TOUCH: case XRT_INPUT_TOUCH_A_TOUCH:
             input->active=b->query_v2 && (flags&4) && ((input->name==XRT_INPUT_TOUCH_X_TOUCH)==(b->hand==0)); input->value.boolean=input->active && (buttons&4); break;
         case XRT_INPUT_TOUCH_TRIGGER_TOUCH: input->active=b->query_v2 && (flags&4); input->value.boolean=(buttons&16)!=0; break;
+        case XRT_INPUT_TOUCH_Y_CLICK: case XRT_INPUT_TOUCH_B_CLICK:
+            input->active=b->query_v2 && (flags&4) && ((input->name==XRT_INPUT_TOUCH_Y_CLICK)==(b->hand==0)); input->value.boolean=input->active && (buttons&32); break;
+        case XRT_INPUT_TOUCH_Y_TOUCH: case XRT_INPUT_TOUCH_B_TOUCH:
+            input->active=b->query_v2 && (flags&4) && ((input->name==XRT_INPUT_TOUCH_Y_TOUCH)==(b->hand==0)); input->value.boolean=input->active && (buttons&64); break;
         case XRT_INPUT_WMR_SQUEEZE_CLICK: input->active=(flags&4)!=0; input->value.boolean=values[1]>.5f; break;
         default: break; // Menu remains local; no synthetic button presses.
         }

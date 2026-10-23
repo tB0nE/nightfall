@@ -14,15 +14,29 @@ int main() {
     MeteorXrWire sustained;
     MeteorXrFrame frame;
     auto sequence_header=h;
-    for (uint64_t i=0;i<4096;++i) {
+    for (uint64_t i=0;i<32768;++i) {
         meteor_xr_put(sequence_header.data()+16,i,8);
         meteor_xr_put(sequence_header.data()+24,i+1,8);
         meteor_xr_put(sequence_header.data()+32,i+1,8);
         assert(sustained.header(sequence_header,frame) && sustained.accept(frame,payload));
     }
-    meteor_xr_put(sequence_header.data()+16,4096,8);
+    meteor_xr_put(sequence_header.data()+16,32768,8);
     assert(!sustained.header(sequence_header,frame));
     MeteorXrWire wire;
+    auto hevc_header=h;
+    std::vector<uint8_t> hevc_payload{0,0,1,64,1,0,0,1,66,1,0,0,1,68,1,0,0,1,38,1};
+    hevc_header[48]=2; hevc_header[51]=72;
+    meteor_xr_put(hevc_header.data()+40,hevc_payload.size(),4);
+    meteor_xr_put(hevc_header.data()+44,4096,2); meteor_xr_put(hevc_header.data()+46,2048,2);
+    MeteorXrWire hevc;
+    assert(hevc.header(hevc_header,frame) && frame.codec==2 && frame.fps==72);
+    assert(hevc.accept(frame,hevc_payload));
+    meteor_xr_put(hevc_header.data()+16,1,8);
+    meteor_xr_put(hevc_header.data()+24,2,8); meteor_xr_put(hevc_header.data()+32,2,8);
+    hevc_header[48]=1;
+    assert(!hevc.header(hevc_header,frame)); // Mid-session codec changes are forbidden.
+    hevc_header[48]=2; hevc_header[51]=60;
+    assert(!hevc.header(hevc_header,frame));
     assert(wire.header(h,frame)); assert(wire.accept(frame,payload)); assert(!wire.header(h,frame));
     for (int offset : {0,4,6,40,44,48,49,50,51,88}) {
         auto bad=h; bad[offset]=255;
@@ -55,5 +69,9 @@ int main() {
     meteor_xr_put(larger.data()+44,2048,2); meteor_xr_put(larger.data()+46,1024,2);
     assert(MeteorXrWire().header(larger,frame));
     meteor_xr_put(larger.data()+44,4096,2); meteor_xr_put(larger.data()+46,2048,2);
+    assert(MeteorXrWire().header(larger,frame));
+    meteor_xr_put(larger.data()+44,5120,2); meteor_xr_put(larger.data()+46,2560,2);
+    assert(MeteorXrWire().header(larger,frame));
+    meteor_xr_put(larger.data()+44,8192,2); meteor_xr_put(larger.data()+46,4096,2);
     assert(!MeteorXrWire().header(larger,frame));
 }

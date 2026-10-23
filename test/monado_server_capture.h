@@ -1,5 +1,5 @@
 // Authored diagnostic hook for the pinned Monado null compositor.
-// Not a general compositor: one square SDR stereo projection, crop/no scaling.
+// Not a general compositor: one square SDR stereo projection followed by quads.
 // Encoder supports bounded source subrects; readback proof remains full-rect.
 #pragma once
 #include "util/comp_swapchain.h"
@@ -7,7 +7,37 @@
 #include <stdlib.h>
 #include "monado_probe_paths.h"
 #include "monado_nvenc_dispatch.h"
+#include "math/m_api.h"
 static unsigned meteor_captured_green[2];
+
+// Keep failures actionable even when the runtime dies before the owned game
+// runner can flush its output. Only structural metadata, never pixels/paths.
+static void
+meteor_capture_describe(const struct null_compositor *c)
+{
+    const struct comp_layer_accum *accum = &c->base.layer_accum;
+    fprintf(stderr, "METEOR_CAPTURE_LAYOUT frame=%lld layers=%u supported=projection_and_or_quads\n",
+        (long long)accum->data.frame_id, accum->layer_count);
+    for (uint32_t i = 0; i < accum->layer_count && i < XRT_MAX_LAYERS; ++i) {
+        const struct xrt_layer_data *data = &accum->layers[i].data;
+        fprintf(stderr, "METEOR_CAPTURE_LAYER index=%u type=%u views=%u flags=%u\n",
+            i, (unsigned)data->type, data->view_count, (unsigned)data->flags);
+        if (data->type == XRT_LAYER_QUAD) {
+            const struct xrt_sub_image *sub = &data->quad.sub;
+            fprintf(stderr, "METEOR_CAPTURE_QUAD index=%u visibility=%u rect=%d,%d,%d,%d slice=%u\n",
+                i, (unsigned)data->quad.visibility, sub->rect.offset.w, sub->rect.offset.h,
+                sub->rect.extent.w, sub->rect.extent.h, sub->array_index);
+        } else if (data->type == XRT_LAYER_PROJECTION || data->type == XRT_LAYER_PROJECTION_DEPTH) {
+            for (uint32_t eye = 0; eye < data->view_count && eye < 2; ++eye) {
+                const struct xrt_sub_image *sub = data->type == XRT_LAYER_PROJECTION ?
+                    &data->proj.v[eye].sub : &data->depth.v[eye].sub;
+                fprintf(stderr, "METEOR_CAPTURE_VIEW index=%u eye=%u rect=%d,%d,%d,%d slice=%u image=%u\n",
+                    i, eye, sub->rect.offset.w, sub->rect.offset.h,
+                    sub->rect.extent.w, sub->rect.extent.h, sub->array_index, sub->image_index);
+            }
+        }
+    }
+}
 
 // The system multi-compositor waits on client synchronization before layer_commit.
 // Read back synchronously while its layer references keep swapchains alive.
@@ -102,11 +132,53 @@ cleanup:
 static bool
 meteor_capture_layer(struct null_compositor *c)
 {
+    // Isolated deterministic input proof: presentation supplies focus only.
+    // Do not run the pixel/encoder oracle against its arbitrary static image.
+    if (getenv("METEOR_CONTROLLER_FIXTURE")) return true;
     const struct comp_layer_accum *accum = &c->base.layer_accum;
     if (accum->layer_count == 0) return true;
-    if (accum->layer_count != 1) return false;
+    if (accum->layer_count > XRT_MAX_LAYERS) return false;
+    bool overlay_only=accum->layers[0].data.type==XRT_LAYER_QUAD;
+    uint32_t overlay_start=overlay_only ? 0 : 1;
+    for (uint32_t i=overlay_start;i<accum->layer_count;++i) {
+        if (accum->layers[i].data.type!=XRT_LAYER_QUAD) return false;
+    }
     const struct comp_layer *layer = &accum->layers[0];
     struct comp_layer colour;
+    if(overlay_only) {
+        // A loading/menu frame may contain no projection at all. Construct
+        // view metadata from CURRENT tracking, not stale game textures/poses.
+        // No swapchain is attached to this metadata-only projection.
+        const char *size=getenv("METEOR_XR_EYE_SIZE");
+        uint32_t extent=size ? (uint32_t)atoi(size) : 256;
+        if(extent!=256 && extent!=512 && extent!=1024 && extent!=2048 && extent!=2560) return false;
+        struct xrt_vec3 relation={.x=.063f};
+        struct xrt_space_relation head={0};
+        struct xrt_fov fovs[2]; struct xrt_pose poses[2];
+        // Static overlays retain their old submit timestamps while a game is
+        // loading. Query/render at the compositor's current display time, not
+        // the age of the first overlay (the live bridge rejects >250ms history).
+        int64_t timestamp=accum->data.display_time_ns;
+        if(xrt_device_get_view_poses(c->xdev,&relation,timestamp,XRT_VIEW_TYPE_STEREO,2,&head,fovs,poses)!=XRT_SUCCESS) {
+            fprintf(stderr,"METEOR_CAPTURE_REJECT reason=view_pose_query timestamp=%lld\n",(long long)timestamp);
+            return false;
+        }
+        if(!(head.relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT)) {
+            // A transient unavailable tracking sample is not an app crash.
+            // Do not fabricate a pose; ordinary transport timeouts remain live.
+            fprintf(stderr,"METEOR_FRAME_SKIPPED reason=tracking_unavailable timestamp=%lld\n",(long long)timestamp);
+            return true;
+        }
+        memset(&colour,0,sizeof(colour));
+        colour.data.type=XRT_LAYER_PROJECTION; colour.data.view_count=2; colour.data.timestamp=timestamp;
+        for(int eye=0;eye<2;++eye) {
+            math_pose_transform(&head.pose,&poses[eye],&colour.data.proj.v[eye].pose);
+            colour.data.proj.v[eye].fov=fovs[eye];
+            colour.data.proj.v[eye].sub.rect.extent.w=(int32_t)extent;
+            colour.data.proj.v[eye].sub.rect.extent.h=(int32_t)extent;
+        }
+        layer=&colour;
+    }
     if (layer->data.type == XRT_LAYER_PROJECTION_DEPTH && layer->data.view_count == 2) {
         colour = *layer;
         colour.data.type = XRT_LAYER_PROJECTION;
@@ -117,11 +189,13 @@ meteor_capture_layer(struct null_compositor *c)
     if (layer->data.type != XRT_LAYER_PROJECTION || layer->data.view_count != 2) return false;
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_sub_image *sub = &layer->data.proj.v[eye].sub;
-        if (!layer->sc_array[eye] ||
-            (sub->rect.extent.w != 256 && sub->rect.extent.w != 512 && sub->rect.extent.w != 1024) || sub->rect.extent.h != sub->rect.extent.w) return false;
+        if ((!overlay_only && !layer->sc_array[eye]) ||
+            (sub->rect.extent.w != 256 && sub->rect.extent.w != 512 && sub->rect.extent.w != 1024 && sub->rect.extent.w != 2048 && sub->rect.extent.w != 2560) || sub->rect.extent.h != sub->rect.extent.w) return false;
     }
     const char *bridge = getenv("METEOR_NVENC_BRIDGE");
-    if (bridge) return meteor_encode_layer(c, layer, bridge);
+    if (bridge) return meteor_encode_layer(c, layer, bridge, accum->layers+overlay_start, accum->layer_count-overlay_start);
+    if(overlay_only) return false;
+    if (accum->layer_count!=1) return false; // Original pixel-readback fixture.
     for(int eye=0;eye<2;++eye) if(layer->data.proj.v[eye].sub.array_index || layer->data.proj.v[eye].sub.rect.offset.w || layer->data.proj.v[eye].sub.rect.offset.h) return false;
     for (int eye = 0; eye < 2; ++eye)
         if (!meteor_capture_eye(&c->base.vk, comp_swapchain(layer->sc_array[eye]), layer->data.proj.v[eye].sub.image_index, eye)) return false;

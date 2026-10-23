@@ -3,6 +3,7 @@
 #include "monado_probe_paths.h"
 #include "meteor_eye_rect.h"
 #include "meteor_eye_format.h"
+#include "meteor_frame_timestamp.h"
 #include <dlfcn.h>
 #include <math.h>
 #include <string.h>
@@ -14,6 +15,7 @@ static meteor_encode_stereo_fn_v1 meteor_encoder_submit;
 static void (*meteor_encoder_finish)(void);
 static int64_t meteor_last_encoded_time;
 static uint64_t meteor_encoded_bytes;
+static VkFormat meteor_last_source_formats[2];
 static bool meteor_raw_finish(void);
 
 static void meteor_encoder_shutdown(void)
@@ -27,15 +29,17 @@ static void meteor_encoder_shutdown(void)
         meteor_encoder_module = NULL;
         meteor_last_encoded_time = 0;
         meteor_encoded_bytes = 0;
+        memset(meteor_last_source_formats,0,sizeof(meteor_last_source_formats));
     }
 }
 
 static bool
-meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *layer, const char *library, uint64_t frame_id)
+meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *layer, const char *library, uint64_t frame_id,
+                       const struct comp_layer *overlays, uint32_t overlay_count)
 {
     // Multi-compositor can repeat the same submitted layer: don't encode duplicates.
-    if (layer->data.timestamp == meteor_last_encoded_time) return true;
-    if (layer->data.timestamp < meteor_last_encoded_time) return false;
+    if(layer->data.timestamp<=0) return false;
+    if(!meteor_frame_timestamp_new(layer->data.timestamp,meteor_last_encoded_time)) return true;
     bool first_source=meteor_encoder_module==NULL;
     void *module = meteor_encoder_module;
     if (!module) module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
@@ -58,8 +62,43 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         .frame_id = frame_id,
         .display_ns = (uint64_t)layer->data.timestamp,
     };
+    struct meteor_quad_v1 quads[METEOR_MAX_QUADS];
+    input.quads=quads;
+    if(overlay_count>METEOR_MAX_QUADS) return false;
+    for(uint32_t i=0;i<overlay_count;++i) {
+        const struct xrt_layer_data *data=&overlays[i].data;
+        if(data->type!=XRT_LAYER_QUAD) return false;
+        const struct xrt_sub_image *sub=&data->quad.sub;
+        if(data->quad.visibility==XRT_LAYER_EYE_VISIBILITY_NONE) continue;
+        if(!overlays[i].sc_array[0]) return false;
+        struct comp_swapchain *sc=comp_swapchain(overlays[i].sc_array[0]);
+        uint32_t allowed=0x1ff; // Blend, view space, color transform and processing hints.
+        if(((uint32_t)data->flags & ~allowed) || !meteor_eye_format_valid((VkFormat)sc->vkic.info.format) ||
+            sub->image_index>=sc->vkic.image_count || sub->array_index>=sc->vkic.info.array_size || sc->vkic.info.sample_count!=1 ||
+            sub->rect.offset.w<0 || sub->rect.offset.h<0 || sub->rect.extent.w<=0 || sub->rect.extent.h<=0 ||
+            (uint64_t)sub->rect.offset.w+sub->rect.extent.w>sc->vkic.info.width ||
+            (uint64_t)sub->rect.offset.h+sub->rect.extent.h>sc->vkic.info.height ||
+            !isfinite(data->quad.size.x) || !isfinite(data->quad.size.y) || data->quad.size.x<=0 || data->quad.size.y<=0) {
+            fprintf(stderr,"METEOR_QUAD_REJECT index=%u flags=%u format=%lld rect=%d,%d,%d,%d samples=%u\n",
+                i,(unsigned)data->flags,(long long)sc->vkic.info.format,sub->rect.offset.w,sub->rect.offset.h,
+                sub->rect.extent.w,sub->rect.extent.h,sc->vkic.info.sample_count);
+            return false;
+        }
+        struct meteor_quad_v1 *q=&quads[input.quad_count++];
+        *q=(struct meteor_quad_v1){.image=sc->vkic.images[sub->image_index].handle,.format=(VkFormat)sc->vkic.info.format,
+            .width=sc->vkic.info.width,.height=sc->vkic.info.height,.slice=sub->array_index,
+            .rect={sub->rect.offset.w,sub->rect.offset.h,sub->rect.extent.w,sub->rect.extent.h},
+            .pose={data->quad.pose.position.x,data->quad.pose.position.y,data->quad.pose.position.z,
+                   data->quad.pose.orientation.x,data->quad.pose.orientation.y,data->quad.pose.orientation.z,data->quad.pose.orientation.w},
+            .extent={data->quad.size.x,data->quad.size.y},
+            .color_scale={data->color_scale.r,data->color_scale.g,data->color_scale.b,data->color_scale.a},
+            .color_bias={data->color_bias.r,data->color_bias.g,data->color_bias.b,data->color_bias.a},
+            .flags=(uint32_t)data->flags,.visibility=(uint32_t)data->quad.visibility,.flip_y=data->flip_y};
+    }
     input.eye_size=(uint32_t)layer->data.proj.v[0].sub.rect.extent.w;
+    input.background_only=layer->sc_array[0]==NULL;
     for (int eye = 0; eye < 2; ++eye) {
+        if(!input.background_only) {
         struct comp_swapchain *sc = comp_swapchain(layer->sc_array[eye]);
         uint32_t index = layer->data.proj.v[eye].sub.image_index;
         const struct xrt_rect *rect=&layer->data.proj.v[eye].sub.rect;
@@ -74,6 +113,10 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         input.eye_formats[eye]=(VkFormat)sc->vkic.info.format;
         if(first_source) fprintf(stderr,"METEOR_EYE_SOURCE eye=%d array_layers=%u slice=%u\n",eye,sc->vkic.info.array_size,input.eye_slices[eye]);
         input.eyes[eye] = sc->vkic.images[index].handle;
+        meteor_last_source_formats[eye]=input.eye_formats[eye];
+        } else {
+            input.eye_formats[eye]=meteor_last_source_formats[eye] ? meteor_last_source_formats[eye] : VK_FORMAT_R8G8B8A8_UNORM;
+        }
         const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
         float values[11] = {view->pose.position.x, view->pose.position.y, view->pose.position.z,
             view->pose.orientation.x, view->pose.orientation.y, view->pose.orientation.z, view->pose.orientation.w,
@@ -107,7 +150,8 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     bool continuous = getenv("METEOR_CONTINUOUS_FRAMES") != NULL;
     FILE *meta = fopen(meteor_probe_path(continuous ? "monado-stereo.jsonl" : "monado-stereo.json"), continuous ? "a" : "w");
     if (!meta) return false;
-    fprintf(meta, "{\"schema\":1,\"frame_id\":%llu,\"display_time_ns\":%lld,\"offset\":%llu,\"bytes\":%llu,\"width\":%u,\"height\":%u,\"views\":[",
+    fprintf(meta, "{\"schema\":1,\"projection\":%u,\"frame_id\":%llu,\"display_time_ns\":%lld,\"offset\":%llu,\"bytes\":%llu,\"width\":%u,\"height\":%u,\"views\":[",
+        !input.background_only,
         (unsigned long long)input.frame_id, (long long)layer->data.timestamp,
         (unsigned long long)offset, (unsigned long long)bytes,input.eye_size*2,input.eye_size);
     for (int eye = 0; eye < 2; ++eye) {
@@ -130,8 +174,9 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
 }
 
 #include "monado_raw_encode_queue.h"
-static bool meteor_encode_layer(struct null_compositor *c,const struct comp_layer *layer,const char *library)
+static bool meteor_encode_layer(struct null_compositor *c,const struct comp_layer *layer,const char *library,
+                                const struct comp_layer *overlays,uint32_t overlay_count)
 {
     uint64_t id=(uint64_t)c->base.layer_accum.data.frame_id;
-    return getenv("METEOR_XR_ASYNC_ENCODE") ? meteor_raw_submit(c,layer,library,id) : meteor_encode_layer_now(c,layer,library,id);
+    return getenv("METEOR_XR_ASYNC_ENCODE") ? meteor_raw_submit(c,layer,library,id,overlays,overlay_count) : meteor_encode_layer_now(c,layer,library,id,overlays,overlay_count);
 }

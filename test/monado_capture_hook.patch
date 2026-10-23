@@ -16,7 +16,7 @@
  
  	/*
  	 * No logic needed here for the null compositor, if using the null
-@@ -500,6 +502,15 @@
+@@ -500,6 +502,16 @@
  	// If you are using the system/multi-compositor (multiple client module), your native compositor
  	// can just unref the sync handle. Otherwise please use it.
 +	// Diagnostic hook requires the multi-compositor to have consumed synchronization.
@@ -26,6 +26,7 @@
 +	}
  	u_graphics_sync_unref(&sync_handle);
 +	if (!meteor_capture_layer(c)) {
++		meteor_capture_describe(c);
 +		fprintf(stderr, "METEOR_CAPTURE_FAILED\n");
 +		abort();
 +	}
@@ -166,6 +167,14 @@
  
  	return XRT_SUCCESS;
  }
+@@ -708,6 +724,7 @@ multi_compositor_layer_quad(struct xrt_compositor *xc,
+ 	xrt_swapchain_reference(&mc->progress.layers[index].xscs[0], xsc);
+ 	mc->progress.layers[index].data = *data;
++	meteor_projection_image_lease(data, mc->progress.layers[index].xscs, true);
+ 
+ 	return XRT_SUCCESS;
+ }
+ 
 --- a/src/xrt/compositor/multi/comp_multi_system.c
 +++ b/src/xrt/compositor/multi/comp_multi_system.c
 @@ -589,9 +589,15 @@
@@ -189,6 +198,14 @@
  		os_thread_helper_lock(&msc->oth);
 --- a/src/xrt/compositor/util/comp_swapchain.c
 +++ b/src/xrt/compositor/util/comp_swapchain.c
+@@ -27,6 +27,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <errno.h>
++#include "/tests/monado_wait_diagnostics.h"
+ 
+ 
+ /*
 @@ -94,7 +94,6 @@
  
  	sc->images[index].use_count--;
@@ -196,4 +213,15 @@
 -		os_mutex_unlock(&sc->images[index].use_mutex);
  		pthread_cond_broadcast(&sc->images[index].use_cond);
  	}
+ 
+@@ -139,8 +139,10 @@
+ 	int ret = 0;
++	meteor_swapchain_wait_diagnostic(sc,index,sc->images[index].use_count,0,0);
+ 	while (sc->images[index].use_count > 0) {
+ 		// use pthread_cond_timedwait to implement timeout behavior
+ 		ret = pthread_cond_timedwait(&sc->images[index].use_cond, &sc->images[index].use_mutex.mutex, &spec);
+ 
+ 		int64_t now_rt = os_realtime_get_ns();
++		meteor_swapchain_wait_diagnostic(sc,index,sc->images[index].use_count,now_rt-start_wait_rt,ret);
+ 		double diff = time_ns_to_ms_f(now_rt - start_wait_rt);
  

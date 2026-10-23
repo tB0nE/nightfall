@@ -10,11 +10,12 @@ static void meteor_projection_image_lease(const struct xrt_layer_data *data,
                                           bool retain)
 {
     if (!getenv("METEOR_NVENC_BRIDGE") ||
-        (data->type != XRT_LAYER_PROJECTION && data->type != XRT_LAYER_PROJECTION_DEPTH)) return;
-    if (data->view_count != 2) abort();
-    for (uint32_t eye = 0; eye < data->view_count; ++eye) {
+        (data->type != XRT_LAYER_PROJECTION && data->type != XRT_LAYER_PROJECTION_DEPTH && data->type!=XRT_LAYER_QUAD)) return;
+    bool quad=data->type==XRT_LAYER_QUAD;
+    if (!quad && data->view_count != 2) abort();
+    for (uint32_t eye = 0; eye < (quad ? 1 : data->view_count); ++eye) {
         struct xrt_swapchain *sc = images[eye];
-        uint32_t index = data->type == XRT_LAYER_PROJECTION_DEPTH ?
+        uint32_t index = quad ? data->quad.sub.image_index : data->type == XRT_LAYER_PROJECTION_DEPTH ?
             data->depth.v[eye].sub.image_index : data->proj.v[eye].sub.image_index;
         if (!sc || index >= sc->image_count) abort();
         xrt_result_t result = retain ? sc->inc_image_use(sc,index) : sc->dec_image_use(sc,index);

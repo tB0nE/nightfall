@@ -5,7 +5,7 @@ struct MeteorControllerState {
     uint32_t flags=0;
     float trigger=0, squeeze=0;
     std::array<float,2> stick{};
-    uint32_t buttons=0; // AX click, stick click, AX touch, stick touch, trigger touch.
+    uint32_t buttons=0; // AX click, stick click, AX touch, stick touch, trigger touch, BY click, BY touch.
     std::array<float,14> poses{0,0,0,0,0,0,1,0,0,0,0,0,0,1};
 };
 struct MeteorControllerSample {
@@ -21,7 +21,7 @@ public:
     static bool valid(const MeteorControllerSample &s) {
         if(!s.epoch || !s.client_ns) return false;
         for(const auto &hand:s.hands) {
-            if(hand.flags>15 || hand.buttons>31 || ((hand.flags&4) && !(hand.flags&1)) || !std::isfinite(hand.trigger) || !std::isfinite(hand.squeeze) ||
+            if(hand.flags>15 || hand.buttons>127 || ((hand.flags&4) && !(hand.flags&1)) || !std::isfinite(hand.trigger) || !std::isfinite(hand.squeeze) ||
                 hand.trigger<0 || hand.trigger>1 || hand.squeeze<0 || hand.squeeze>1 ||
                 (!(hand.flags&4) && (hand.trigger!=0 || hand.squeeze!=0))) return false;
             for(float v:hand.stick) if(!std::isfinite(v) || v< -1 || v>1) return false;

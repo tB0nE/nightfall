@@ -186,7 +186,7 @@ void MeteorXrRelayClient::run(bool video) {
     for (;;) {
       std::array<uint8_t, Secure::HEADER> header{};
       if (!io(remote, header.data(), header.size(), false,
-              first ? 20000 : 5000))
+              first ? 45000 : 5000))
         return false;
       first = false;
       size_t size = 0;

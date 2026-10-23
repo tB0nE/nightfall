@@ -20,7 +20,7 @@ static void meteor_tracking_release(struct meteor_tracking_bridge *b) {
 static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b,struct xrt_device *xdev) {
     const char *pixels=getenv("METEOR_XR_EYE_SIZE");
     if(pixels) {
-        if(strcmp(pixels,"256") && strcmp(pixels,"512") && strcmp(pixels,"1024")) return false;
+        if(strcmp(pixels,"256") && strcmp(pixels,"512") && strcmp(pixels,"1024") && strcmp(pixels,"2048") && strcmp(pixels,"2560")) return false;
         uint32_t size=(uint32_t)atoi(pixels);
         for(uint32_t eye=0;eye<xdev->hmd->view_count;++eye) {
             xdev->hmd->views[eye].display.w_pixels=size;
@@ -69,6 +69,9 @@ static bool meteor_tracking_relation(struct meteor_tracking_bridge *b, int64_t a
                                      struct xrt_space_relation *out) {
     if (!b->client) return false;
     memset(out, 0, sizeof(*out));
+    // Unavailable tracking must have cleared validity flags, but still carry a
+    // well-formed pose. OpenVR compatibility clients may submit it regardless.
+    out->pose.orientation.w = 1.0f;
     float p[7]; uint64_t stamp = 0;
     if (!b->pose(b->client, at_ns, p, &stamp)) return true; // Explicitly invalid, never simulated fallback.
     out->pose.position = (struct xrt_vec3){p[0],p[1],p[2]};

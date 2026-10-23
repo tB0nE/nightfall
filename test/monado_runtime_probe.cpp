@@ -10,11 +10,15 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <memory>
+#include <fstream>
+#include <string>
 
 static void check(XrResult result, const char *operation) {
     if (XR_FAILED(result)) { std::fprintf(stderr, "%s failed: %d\n", operation, result); std::exit(1); }
 }
 #include "monado_stereo_images.h"
+#include "meteor_openxr_input_probe.h"
 int main() {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     uint32_t count = 0;
@@ -74,10 +78,12 @@ int main() {
     XrSessionCreateInfo session_info{XR_TYPE_SESSION_CREATE_INFO}; session_info.systemId = system;
     session_info.next = &binding;
     XrSession session; check(xrCreateSession(instance, &session_info, &session), "offscreen graphics session");
+    MeteorInputProbe input_probe(instance,session);
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     const bool tracked_scene=std::getenv("METEOR_XR_TRACKED_SCENE") != nullptr;
     // Monado STAGE is the root space for this simulated device, unlike its
-    // startup-recentered LOCAL. The bridge adopts Quest LOCAL as that root.
+    // startup-recentered LOCAL. The bridge adopts the client's tracking space
+    // as that root (floor-relative STAGE on the updated Quest client).
     space_info.referenceSpaceType = tracked_scene ? XR_REFERENCE_SPACE_TYPE_STAGE : XR_REFERENCE_SPACE_TYPE_LOCAL;
     space_info.poseInReferenceSpace.orientation.w = 1;
     XrSpace space; check(xrCreateReferenceSpace(session, &space_info, &space), "local space");
@@ -94,7 +100,19 @@ int main() {
         }
     }
     if (!running) { std::fprintf(stderr, "Session never became READY\n"); return 1; }
+    if(input_probe.enabled) { input_probe.run(); return 0; }
     StereoImages stereo(session, gpu, device, queue_family);
+    const bool quad_fixture=std::getenv("METEOR_XR_QUAD_FIXTURE")!=nullptr;
+    stereo.fixed_background=quad_fixture;
+    std::unique_ptr<StereoImages> quad_images;
+    XrSpace quad_space=XR_NULL_HANDLE;
+    if(quad_fixture) {
+        quad_images=std::make_unique<StereoImages>(session,gpu,device,queue_family);
+        quad_images->quad_texture=true;
+        XrReferenceSpaceCreateInfo view_space{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+        view_space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW; view_space.poseInReferenceSpace.orientation.w=1;
+        check(xrCreateReferenceSpace(session,&view_space,&quad_space),"quad view space");
+    }
     const char *continuous = std::getenv("METEOR_CONTINUOUS_FRAMES");
     const int frame_count = continuous ? std::atoi(continuous) : 5;
     if (frame_count < 1 || frame_count > 240) return 1;
@@ -124,7 +142,7 @@ int main() {
         XrCompositionLayerProjectionView projection_views[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}, {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
         auto render_start=std::chrono::steady_clock::now();
         for (int eye = 0; eye < 2; ++eye) {
-            stereo.write(eye, frame, tracked_scene ? &views[eye] : nullptr);
+            stereo.write(eye, frame, tracked_scene && !quad_fixture ? &views[eye] : nullptr);
             projection_views[eye].pose = views[eye].pose; projection_views[eye].fov = views[eye].fov;
             projection_views[eye].subImage.swapchain = stereo.chains[eye];
             projection_views[eye].subImage.imageArrayIndex=stereo.slices[eye];
@@ -134,11 +152,27 @@ int main() {
         std::printf("APP_RENDER frame=%d us=%lld\n",frame,(long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-render_start).count());
         XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         layer.space = space; layer.viewCount = 2; layer.views = projection_views;
-        const XrCompositionLayerBaseHeader *layers[] = {reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer)};
+        const XrCompositionLayerBaseHeader *layers[9] = {reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer)};
+        XrCompositionLayerQuad quads[8]{};
+        const bool overlay_only_frame=quad_fixture && (frame/6)%2==0;
+        if(quad_fixture) {
+            quad_images->write(0,frame);
+            for(int i=0;i<8;++i) {
+                auto &q=quads[i]; q.type=XR_TYPE_COMPOSITION_LAYER_QUAD; q.space=quad_space;
+                q.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT|XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+                q.eyeVisibility=i==0 ? XR_EYE_VISIBILITY_LEFT : i==1 ? XR_EYE_VISIBILITY_RIGHT : XR_EYE_VISIBILITY_BOTH;
+                q.pose.orientation.w=1; q.pose.position={float(i%3-1)*.8f,.6f-float(i/3)*.6f,-2};
+                q.size={.5f,.4f}; q.subImage.swapchain=quad_images->chains[0];
+                q.subImage.imageRect.extent={int32_t(quad_images->width),int32_t(quad_images->height)};
+                layers[i+1]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&q);
+            }
+            std::printf("APP_QUAD_FIXTURE count=8 projection=%d shared_image=1 straight_alpha=1 visibility=left,right,both\n",!overlay_only_frame);
+        }
         // GPU encode diagnostic submits only the final known frame; otherwise
         // compositor pacing may skip intermediate frames before encoding starts.
         end.layerCount = (continuous || !std::getenv("METEOR_NVENC_BRIDGE") || frame == 4) ? 1 : 0;
-        end.layers = layers;
+        if(quad_fixture && end.layerCount) end.layerCount=overlay_only_frame ? 8 : 9;
+        end.layers = overlay_only_frame ? layers+1 : layers;
         check(xrEndFrame(session, &end), "end frame");
         struct timespec monotonic_time;
         check(xrConvertTimeToTimespecTimeKHR(instance, state.predictedDisplayTime, &monotonic_time), "convert display time");
@@ -146,6 +180,13 @@ int main() {
         std::printf("Frame %d monotonic_ns=%lld\n", frame,
             static_cast<long long>(monotonic_time.tv_sec) * 1000000000LL + monotonic_time.tv_nsec);
         std::printf("Frame %d: two pixel-verified eye images, submitted layers=%u, predicted time %lld\n", frame, end.layerCount, static_cast<long long>(state.predictedDisplayTime));
+        if(quad_fixture && frame==12) {
+            // Model a game loading a world while xrizer retains its last
+            // submitted static overlays. Tracking/presentation must continue.
+            std::printf("APP_QUAD_STATIC_HOLD source_ns=%lld ms=650\n",final_timestamp);
+            std::fflush(stdout);
+            std::this_thread::sleep_for(std::chrono::milliseconds(650));
+        }
         if (continuous && !free_running) {
             // Stop-and-wait diagnostic ensures each changing pattern is checked;
             // this is bounded backpressure, not a sustainable-rate benchmark.
@@ -184,6 +225,7 @@ int main() {
     }
     if (!stopped) { std::fprintf(stderr, "Session never became STOPPING\n"); return 1; }
     stereo.destroy();
+    if(quad_images) { quad_images->destroy(); check(xrDestroySpace(quad_space),"destroy quad space"); }
     check(xrDestroySpace(space), "destroy space"); check(xrDestroySession(session), "destroy session");
     vkDestroyDevice(device, nullptr); vkDestroyInstance(vk_instance, nullptr);
     check(xrDestroyInstance(instance), "destroy instance");

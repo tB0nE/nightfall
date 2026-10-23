@@ -103,7 +103,7 @@ struct Client {
                 sample=incoming; mapped_ns=mapped;
                 controllers=input; controller_ns=input_ns;
             }
-            if(!ready.exchange(true)) std::fprintf(stderr,"METEOR_TRACKING_READY epoch=%llu; Quest LOCAL adopted as virtual device origin; latest-only/no prediction\n",(unsigned long long)incoming.epoch);
+            if(!ready.exchange(true)) std::fprintf(stderr,"METEOR_TRACKING_READY epoch=%llu; client tracking space adopted as virtual floor origin (updated Quest client: STAGE); latest-only/no prediction\n",(unsigned long long)incoming.epoch);
             for(unsigned hand=0;hand<2;++hand) {
                 MeteorHaptic pulse; bool pending=false;
                 { std::lock_guard<std::mutex> lock(mutex);
@@ -158,8 +158,9 @@ extern "C" void *meteor_tracking_start_v1(const char *port_text) {
 extern "C" int meteor_tracking_pose_v1(void *context,int64_t at_ns,float pose[7],uint64_t *sample_ns) {
     auto *c=static_cast<Client *>(context);
     if(!c || c->failed.load() || at_ns<=0 || !pose || !sample_ns) return 0;
-    std::unique_lock<std::mutex> lock(c->mutex,std::try_to_lock);
-    if(!lock.owns_lock()) return 0;
+    // The writer holds this only while copying the latest sample, never for I/O.
+    // A try-lock here manufactured tracking loss during ordinary sample updates.
+    std::lock_guard<std::mutex> lock(c->mutex);
     uint64_t now=now_ns();
     // No velocity/prediction yet. Do not extrapolate stale poses or answer
     // arbitrary historical/far-future queries with the latest sample.
@@ -193,8 +194,8 @@ extern "C" int meteor_tracking_controller_v2(unsigned hand,int64_t at_ns,float p
     std::lock_guard<std::mutex> active_lock(active_mutex);
     Client *c=active_client;
     if(!c || c->failed.load()) return 0;
-    std::unique_lock<std::mutex> lock(c->mutex,std::try_to_lock);
-    if(!lock.owns_lock()) return 0;
+    // As with head poses, ordinary writer contention must not release all inputs.
+    std::lock_guard<std::mutex> lock(c->mutex);
     uint64_t now=now_ns(),query=uint64_t(at_ns),sample=c->controller_ns;
     if(!sample || (sample>now ? sample-now : now-sample)>250000000 ||
         (query>sample ? query-sample : sample-query)>250000000) return 0;

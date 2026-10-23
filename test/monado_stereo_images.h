@@ -20,6 +20,8 @@ struct StereoImages {
     MeteorGpuScene *gpu_scene = nullptr;
     MeteorRasterScene *raster_scene = nullptr;
     bool measurement = false;
+    bool quad_texture = false;
+    bool fixed_background = false;
     VkFence completion{};
     VkQueryPool timestamps{};
     float timestamp_period = 0;
@@ -46,7 +48,7 @@ struct StereoImages {
         }
         const char *size = std::getenv("METEOR_XR_EYE_SIZE");
         if (size) {
-            if (std::strcmp(size,"256") && std::strcmp(size,"512")) { std::fprintf(stderr,"Invalid eye-size profile\n"); std::exit(1); }
+            if (std::strcmp(size,"256") && std::strcmp(size,"512") && std::strcmp(size,"1024") && std::strcmp(size,"2048") && std::strcmp(size,"2560")) { std::fprintf(stderr,"Invalid eye-size profile\n"); std::exit(1); }
             width = height = uint32_t(std::atoi(size));
         }
         uint32_t count = 0;
@@ -88,7 +90,7 @@ struct StereoImages {
                 continue;
             }
             XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-            info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
+            info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
             info.format = source_format;
             info.sampleCount = 1; info.width = width; info.height = height; info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
             if(padded) { info.width+=32; info.height+=32; }
@@ -254,6 +256,8 @@ struct StereoImages {
                 input[p+1]=uint8_t(std::clamp(color.y,0.f,1.f)*255);
                 input[p+2]=uint8_t(std::clamp(color.z,0.f,1.f)*255);
             }
+            if(quad_texture) { input[p]=0; input[p+1]=255; input[p+2]=0; input[p+3]=128; }
+            else if(fixed_background) input[p+1]=64;
         }
         std::vector<unsigned char> expected(input,input+width*height*4);
         if(meteor_eye_format_bgra(source_format)) for(uint32_t p=0;p<width*height;++p) std::swap(input[p*4],input[p*4+2]);
@@ -323,6 +327,9 @@ struct StereoImages {
         std::memcpy(readback.data(),mapped,readback.size());
         if(meteor_eye_format_bgra(source_format)) for(uint32_t p=0;p<width*height;++p) std::swap(readback[p*4],readback[p*4+2]);
         const auto *pixels = readback.data();
+        if((quad_texture || fixed_background) && std::memcmp(pixels,expected.data(),expected.size())) {
+            std::fprintf(stderr,"Quad fixture readback mismatch\n"); std::exit(1);
+        }
         if(view) {
             if(gpu_scene) {
                 // Float arithmetic can move a silhouette/floor boundary by a pixel.
@@ -344,7 +351,7 @@ struct StereoImages {
             if(!reference) { std::fprintf(stderr,"Cannot write scene reference\n"); std::exit(1); }
         }
         for (uint32_t p = 0; p < width * height; ++p) {
-            if (!view && (pixels[p*4] != (eye == 0 ? (p % width < width/2 ? 255 : 128) : 0) ||
+            if (!view && !quad_texture && !fixed_background && (pixels[p*4] != (eye == 0 ? (p % width < width/2 ? 255 : 128) : 0) ||
                 pixels[p*4+2] != (eye == 1 ? (p / width < height/2 ? 255 : 128) : 0) ||
                 std::abs(static_cast<int>(pixels[p*4+1]) - green) > 1 || pixels[p*4+3] != 255)) {
                 std::fprintf(stderr, "Eye %d frame %d pixel %u mismatch\n", eye, frame, p); std::exit(1);

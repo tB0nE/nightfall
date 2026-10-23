@@ -83,15 +83,18 @@ static void meteor_direct_header(uint8_t header[152], const struct meteor_stereo
     meteor_direct_u64(header + 4, 1, 2); meteor_direct_u64(header + 6, 152, 2);
     meteor_direct_u64(header + 8, meteor_direct_epoch, 8);
     meteor_direct_u64(header + 16, meteor_direct_sequence, 8);
-    header[48] = 1;
+    const char *codec=getenv("METEOR_XR_CODEC");
+    header[48] = codec && strcmp(codec,"h265")==0 ? 2 : 1;
     if (!input) { header[50] = 1; return; }
+    const char *rate=getenv("XRT_COMPOSITOR_NULL_FPS");
+    header[51] = rate ? (uint8_t)atoi(rate) : 60;
     meteor_direct_u64(header + 24, input->frame_id, 8);
     meteor_direct_u64(header + 32, input->display_ns, 8);
     meteor_direct_u64(header + 40, length, 4);
     uint32_t eye_size=input->eye_size ? input->eye_size : 256;
     meteor_direct_u64(header + 44, eye_size*2, 2); meteor_direct_u64(header + 46, eye_size, 2);
     header[49] = idr ? 1 : 0;
-    if (getenv("METEOR_XR_TRACKED_SCENE")) header[49] |= 2; // Render poses/FOV in adopted Quest LOCAL.
+    if (getenv("METEOR_XR_TRACKED_SCENE")) header[49] |= 2; // Render poses/FOV in client's adopted origin (Quest STAGE).
     _Static_assert(sizeof(float) == 4, "Wire requires float32");
     for (unsigned i = 0; i < 22; ++i) {
         uint32_t bits; memcpy(&bits, &input->views[i], 4);
@@ -123,12 +126,17 @@ static bool meteor_direct_send(const struct meteor_stereo_encode_v1 *input, cons
 {
     uint64_t deadline = meteor_direct_now_ms() + 2000;
     if (meteor_direct_socket < 0 && !meteor_direct_connect(port, deadline)) { meteor_direct_close(); return false; }
-    if (!packet->bytes || !packet->length || packet->length > 8 * 1024 * 1024 || meteor_direct_sequence >= 4096) {
+    if (!packet->bytes || !packet->length || packet->length > 8 * 1024 * 1024 || meteor_direct_sequence >= 32768) {
         meteor_direct_close(); return false;
     }
     bool idr = false;
+    const char *codec=getenv("METEOR_XR_CODEC");
+    bool hevc=codec && strcmp(codec,"h265")==0;
     for (uint32_t i = 0; i + 3 < packet->length; ++i)
-        if (packet->bytes[i] == 0 && packet->bytes[i+1] == 0 && packet->bytes[i+2] == 1 && (packet->bytes[i+3] & 31) == 5) idr = true;
+        if (packet->bytes[i] == 0 && packet->bytes[i+1] == 0 && packet->bytes[i+2] == 1) {
+            unsigned type=hevc ? ((packet->bytes[i+3]>>1)&63) : (packet->bytes[i+3]&31);
+            if (hevc ? (type==19 || type==20) : type==5) idr=true;
+        }
     uint8_t header[152], ack[20], expected[20];
     meteor_direct_header(header, input, packet->length, idr);
     memcpy(expected, "NFXA", 4); meteor_direct_u64(expected + 4, meteor_direct_sequence, 8); meteor_direct_u64(expected + 12, input->frame_id, 8);

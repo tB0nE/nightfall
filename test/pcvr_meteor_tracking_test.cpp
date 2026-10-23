@@ -42,12 +42,12 @@ int main() {
     assert(control_wire.accept(controls,control_out));
     controllers.sequence=0; controllers.client_ns=1002;
     controllers.hands[0].flags=15; controllers.hands[0].stick={-.5f,.25f};
-    controllers.hands[0].buttons=31;
+    controllers.hands[0].buttons=127;
     MeteorControllerWire extended(true);
     auto v2=MeteorControllerWire::encode(controllers,true);
     assert(extended.accept(v2,control_out));
     assert(control_out.hands[0].stick==controllers.hands[0].stick);
-    assert(control_out.hands[0].buttons==31 && control_out.hands[0].flags==15);
+    assert(control_out.hands[0].buttons==127 && control_out.hands[0].flags==15);
     assert(!extended.accept(v2,control_out));
     assert(!control_wire.accept(v2,control_out));
     MeteorControllerWire legacy;
@@ -58,7 +58,7 @@ int main() {
         auto invalid=controllers;
         if(field==0) invalid.hands[0].stick[0]=1.1f;
         if(field==1) invalid.hands[0].stick[1]=std::numeric_limits<float>::quiet_NaN();
-        if(field==2) invalid.hands[0].buttons=32;
+        if(field==2) invalid.hands[0].buttons=128;
         if(field==3) invalid.hands[0].flags=7;
         assert(!MeteorControllerWire::valid(invalid));
     }

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-ARTIFACTS=("eye-rect-tests", "eye-format-tests", "image-lease-tests",
+ARTIFACTS=("encoder-bitrate-tests", "eye-rect-tests", "eye-format-tests", "image-lease-tests", "quad-math-tests", "frame-time-tests",
            "latest-job-tests", "async-transport-tests",
            "libmeteor-tracking-probe.so", "libmeteor-nvenc-probe.so")
 
@@ -27,6 +27,15 @@ def fingerprint(root, reference):
                      if path.is_file() and path.suffix in (".c",".cpp",".h"))
     for path in sorted(set(files)):
         hashed.update(str(path.resolve()).encode()+b"\0"+path.read_bytes()+b"\0")
+    shaders=root / ".build-cache/meteor-xr/monado-linux-spike"
+    for stage in ("vert","frag"):
+        source=root / "test" / f"meteor_quad.{stage}"
+        if not source.exists(): continue # Minimal unit-test fixture.
+        header=shaders / f"meteor_quad.{stage}.h"
+        stamp=shaders / f"meteor_quad.{stage}.sha256"
+        if not stamp.exists() or stamp.read_text().split()[0]!=digest(source):
+            raise RuntimeError("Quad shaders need rebuilding with probe_monado_runtime.sh --build")
+        hashed.update(source.read_bytes()+header.read_bytes())
     for compiler in ("cc","c++"):
         executable=Path(shutil.which(compiler)).resolve()
         hashed.update(str(executable).encode()+str(executable.stat().st_mtime_ns).encode())
@@ -47,20 +56,36 @@ def valid(directory, key):
 def build(root, reference, directory):
     directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     common=["-Wall","-Wextra","-Werror"]
+    for source,name,extra in (
+        ("meteor_tracking_contention_test.cpp","tracking-contention-tests",
+         ["-pthread","-I",str(root / "extensions/nightfall-xr/include")]),
+        ("monado_tracking_relation_test.cpp","tracking-relation-tests",
+         ["-Wno-unused-function","-ldl"]),
+        ("monado_controller_mapping_test.cpp","controller-mapping-tests",
+         ["-Wno-unused-function","-ldl"])):
+        subprocess.run(["c++","-std=c++20",*common,*extra,str(root / "test" / source),
+                        "-o",str(directory / name)],check=True)
+        subprocess.run([str(directory / name)],check=True,timeout=10)
+    subprocess.run(["c++","-std=c++17",*common,str(root / "test/meteor_encoder_bitrate_test.cpp"),
+                    "-o",str(directory / "encoder-bitrate-tests")],check=True)
+    subprocess.run([str(directory / "encoder-bitrate-tests")],check=True,timeout=10)
     tests=[("meteor_eye_rect_test.c","eye-rect-tests",[]),
+           ("meteor_frame_timestamp_test.c","frame-time-tests",[]),
+           ("meteor_quad_math_test.c","quad-math-tests",[]),
            ("meteor_eye_format_test.c","eye-format-tests",[]),
            ("monado_image_lease_test.c","image-lease-tests",[]),
            ("meteor_latest_job_queue_test.c","latest-job-tests",["-pthread"]),
            ("monado_async_transport_test.c","async-transport-tests",["-pthread","-D_POSIX_C_SOURCE=200809L"])]
     for source,name,extra in tests:
         subprocess.run(["cc","-std=c11",*common,*extra,str(root / "test" / source),
-                        "-o",str(directory / name)],check=True)
+                        "-o",str(directory / name),"-lm"],check=True)
         subprocess.run([str(directory / name)],check=True,timeout=10)
     cpp=["c++","-std=c++17","-O2","-fPIC","-shared","-pthread",*common]
     subprocess.run([*cpp,"-I",str(root / "extensions/nightfall-xr/include"),
         str(root / "test/meteor_tracking_client_bridge.cpp"),"-o",
         str(directory / "libmeteor-tracking-probe.so")],check=True)
     subprocess.run([*cpp,"-DMETEOR_MONADO_BRIDGE","-Wno-missing-field-initializers",
+        "-I",str(root / ".build-cache/meteor-xr/monado-linux-spike"),
         "-I",str(reference / "external/ffnvcodec"),str(root / "test/meteor_vulkan_nvenc_probe.cpp"),
         "-lvulkan","-ldl","-o",str(directory / "libmeteor-nvenc-probe.so")],check=True)
 

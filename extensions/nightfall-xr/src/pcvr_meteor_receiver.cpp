@@ -23,6 +23,7 @@ bool PCVRMeteorReceiver::start() {
     if (worker.joinable()) worker.join();
     failure.store(false); stop.store(false); done.store(false); ready.store(false); eos = false;
     stats.reset();
+    video_width=0; video_height=0; video_codec=0; video_fps=0; received_bytes=0;
     worker = std::thread(&PCVRMeteorReceiver::run, this); return true;
 }
 void PCVRMeteorReceiver::stop_after_gpu_drain() {
@@ -83,30 +84,33 @@ bool PCVRMeteorReceiver::drain() {
     }
     return true;
 }
-bool PCVRMeteorReceiver::decoder(uint16_t width, uint16_t height) {
+bool PCVRMeteorReceiver::decoder(const MeteorXrFrame &frame) {
+    const uint16_t width=frame.width, height=frame.height;
+    const char *mime=frame.codec==2 ? "video/hevc" : "video/avc";
     AImageReader *created = nullptr;
     if (AImageReader_newWithUsage(width, height, AIMAGE_FORMAT_PRIVATE, AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, 4, &created) != AMEDIA_OK) return false;
     { std::lock_guard<std::mutex> lock(mutex); reader = created; }
     ANativeWindow *window = nullptr;
     if (AImageReader_getWindow(created, &window) != AMEDIA_OK) return false;
-    codec = AMediaCodec_createDecoderByType("video/avc");
+    codec = AMediaCodec_createDecoderByType(mime);
     if (!codec) return false;
     char *name = nullptr;
     if (AMediaCodec_getName(codec, &name) != AMEDIA_OK || !name) return false;
     std::string decoder_name(name); AMediaCodec_releaseName(codec, name);
-    status("Decoder selected: " + decoder_name);
+    status("Decoder selected: " + decoder_name + " " + mime + " " + std::to_string(width) + "x" + std::to_string(height) + "@" + std::to_string(frame.fps));
     if (decoder_name.find("qti") == std::string::npos && decoder_name.find("qcom") == std::string::npos) {
-        status("Expected Qualcomm hardware AVC decoder; no software fallback in this test", true); return false;
+        status("Expected Qualcomm hardware video decoder; no software fallback in this test", true); return false;
     }
     AMediaFormat *format = AMediaFormat_new();
-    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/avc");
+    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mime);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width); AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
-    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, 60);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, frame.fps);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024);
     AMediaFormat_setInt32(format, "low-latency", 1);
     media_status_t result = AMediaCodec_configure(codec, format, window, nullptr, 0);
     AMediaFormat_delete(format);
     if (result != AMEDIA_OK || AMediaCodec_start(codec) != AMEDIA_OK) return false;
+    video_width=width; video_height=height; video_codec=frame.codec; video_fps=frame.fps;
     codec_started = true; return true;
 }
 bool PCVRMeteorReceiver::input(const std::vector<uint8_t> &bytes, int64_t pts, bool end) {
@@ -177,8 +181,9 @@ void PCVRMeteorReceiver::run() {
                 if (!io(connected,ack,sizeof(ack),true,deadline)) break;
                 status("Decoded test stream ended; holding final picture until local exit"); success = true; break;
             }
-            if (!codec_started && !decoder(frame.width,frame.height)) break;
+            if (!codec_started && !decoder(frame)) break;
             ++stats.received;
+            received_bytes.fetch_add(payload.size());
             int64_t pts_us = int64_t(frame.sequence+1)*1000;
             {
                 std::lock_guard<std::mutex> lock(mutex);
