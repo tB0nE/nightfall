@@ -1147,9 +1147,47 @@ func apply_passthrough(enable: bool):
 		apply_background(main.settings.background_mode)
 
 func cycle_background():
-	main.settings.background_mode = (main.settings.background_mode + 1) % main.background_labels.size()
+	main.settings.background_mode = next_background(main.settings.background_mode,
+		main.background_labels.size(), main.bg_names.size(), EnvironmentManager.has_custom_room())
 	apply_background(main.settings.background_mode)
 	_save_setting(main._ui_bg_btn, main.background_labels[main.settings.background_mode])
+
+# "Your Room" is skipped until a room has been imported.
+static func next_background(current: int, count: int, particle_backgrounds: int, has_custom_room: bool) -> int:
+	var next := (current + 1) % count
+	if not has_custom_room and EnvironmentManager.room_for_background(next, particle_backgrounds) == EnvironmentManager.CUSTOM:
+		next = (next + 1) % count
+	return next
+
+var _room_import_running := false
+
+# Settings > Import Room: the system file picker (no storage permission),
+# then RoomImport.java copies the .glb into user://rooms/.
+func import_room() -> void:
+	if _room_import_running or OS.get_name() != "Android":
+		return
+	var app = Engine.get_singleton("JavaClassWrapper").wrap("com.godot.game.GodotApp")
+	if app == null:
+		return
+	_room_import_running = true
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://rooms"))
+	app.pickRoomFile(ProjectSettings.globalize_path(EnvironmentManager.CUSTOM_PATH))
+	var status := "picking"
+	while status in ["picking", "copying"]:
+		await main.get_tree().create_timer(0.5).timeout
+		status = str(app.roomImportStatus())
+	_room_import_running = false
+	main._log("[ENV] Room import: %s" % status)
+	if status == "done":
+		var custom_index: int = main.bg_names.size() + 2
+		main.settings.background_mode = custom_index
+		_save_setting(main._ui_bg_btn, main.background_labels[custom_index])
+		# Reload even if Your Room was already showing.
+		main.environment_manager.apply(&"")
+		apply_background(custom_index)
+		main.ui_controller.show_temporary_status("Room imported", 3.0)
+	elif status.begins_with("failed:"):
+		main.ui_controller.set_status("Room import failed: " + status.trim_prefix("failed:"))
 
 func apply_background(bg_mode: int):
 	if not main.is_xr_active or main.settings.passthrough_enabled:

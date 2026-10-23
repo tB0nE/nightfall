@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "재설치 후 Nightfall Meteor가 보내는 다음 키를 신뢰합니다.",
 	"Meteor's key changed; not using it": "Meteor 키가 바뀌어 사용하지 않음",
 	"Meteor keys forgotten": "Meteor 키를 잊었습니다",
-	"Cinema": "영화관"
+	"Cinema": "영화관",
+	"Your Room": "내 공간",
+	"Import Room": "공간 가져오기",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "헤드셋에서 .glb 3D 공간을 고른 뒤 배경에서 내 공간을 선택하세요."
 }

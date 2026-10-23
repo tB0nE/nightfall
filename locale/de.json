@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Dem nächsten Schlüssel von Nightfall Meteor vertrauen, nach Neuinstallation.",
 	"Meteor's key changed; not using it": "Meteor-Schlüssel geändert; wird nicht genutzt",
 	"Meteor keys forgotten": "Meteor-Schlüssel vergessen",
-	"Cinema": "Kino"
+	"Cinema": "Kino",
+	"Your Room": "Dein Raum",
+	"Import Room": "Raum importieren",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Wähle einen .glb-3D-Raum auf dem Headset und dann Hintergrund: Dein Raum."
 }

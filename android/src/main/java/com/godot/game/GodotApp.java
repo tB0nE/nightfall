@@ -15,6 +15,19 @@ import androidx.core.splashscreen.SplashScreen;
 
 public class GodotApp extends GodotActivity {
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
+	private static java.lang.ref.WeakReference<GodotApp> current = new java.lang.ref.WeakReference<>(null);
+
+	// Settings > Import Room: Godot starts the picker, then polls the status.
+	public static void pickRoomFile(String destinationPath) {
+		GodotApp activity = current.get();
+		if (activity != null) activity.runOnUiThread(() -> RoomImport.pick(activity, destinationPath));
+	}
+	public static String roomImportStatus() { return RoomImport.status(); }
+
+	@Override
+	public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+		if (!RoomImport.handle(this, requestCode, resultCode, data)) super.onActivityResult(requestCode, resultCode, data);
+	}
 
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
@@ -101,6 +114,7 @@ public class GodotApp extends GodotActivity {
 		SplashScreen.installSplashScreen(this);
 		EdgeToEdge.enable(this);
 		super.onCreate(savedInstanceState);
+		current = new java.lang.ref.WeakReference<>(this);
 		appContext = getApplicationContext();
 		DiagnosticLog.initialize(appContext);
 		DiagnosticLog.info("GODOT", "Native library initialization: " + jniResult);

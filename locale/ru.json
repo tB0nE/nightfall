@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Доверять следующему ключу Nightfall Meteor после переустановки.",
 	"Meteor's key changed; not using it": "Ключ Meteor изменился; не используется",
 	"Meteor keys forgotten": "Ключи Meteor забыты",
-	"Cinema": "Кинотеатр"
+	"Cinema": "Кинотеатр",
+	"Your Room": "Ваша комната",
+	"Import Room": "Импорт комнаты",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Выберите 3D-комнату .glb на шлеме, затем Фон: Ваша комната."
 }

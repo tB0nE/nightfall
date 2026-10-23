@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Luota Nightfall Meteorin seuraavaan avaimeen uudelleenasennuksen jälkeen.",
 	"Meteor's key changed; not using it": "Meteorin avain vaihtui; ei käytössä",
 	"Meteor keys forgotten": "Meteor-avaimet unohdettu",
-	"Cinema": "Elokuvateatteri"
+	"Cinema": "Elokuvateatteri",
+	"Your Room": "Oma huone",
+	"Import Room": "Tuo huone",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Valitse .glb-3D-huone laseilta ja sitten Tausta: Oma huone."
 }

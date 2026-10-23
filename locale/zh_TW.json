@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "重新安裝後，信任 Nightfall Meteor 傳送的下一個金鑰。",
 	"Meteor's key changed; not using it": "Meteor 的金鑰已變更，不再使用",
 	"Meteor keys forgotten": "已忘記 Meteor 金鑰",
-	"Cinema": "影院"
+	"Cinema": "影院",
+	"Your Room": "我的房間",
+	"Import Room": "匯入房間",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "在頭戴裝置上選擇 .glb 3D 房間，然後將背景設為我的房間。"
 }

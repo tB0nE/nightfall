@@ -150,6 +150,13 @@ static func get_tabs() -> Array:
 				],
 			},
 			{
+				"node_name": &"SettingsBackgroundRow",
+				"title": "Background",
+				"options": [
+					_option(&"_ui_import_room_btn", "Import Room", "", "Pick a .glb 3D room on the headset, then choose Background: Your Room.", TARGET_SETTINGS, &"import_room", OS.get_name() == "Android"),
+				],
+			},
+			{
 				"node_name": &"SettingsConnectionRow",
 				"title": "Connection",
 				"options": [

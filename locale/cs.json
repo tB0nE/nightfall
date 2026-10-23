@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Důvěřovat dalšímu klíči od Nightfall Meteor, po jeho přeinstalaci.",
 	"Meteor's key changed; not using it": "Klíč Meteoru se změnil; nepoužívá se",
 	"Meteor keys forgotten": "Klíče Meteoru zapomenuty",
-	"Cinema": "Kino"
+	"Cinema": "Kino",
+	"Your Room": "Vaše místnost",
+	"Import Room": "Importovat místnost",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Vyberte 3D místnost .glb v headsetu a pak zvolte Pozadí: Vaše místnost."
 }

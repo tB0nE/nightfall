@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Stol på den næste nøgle fra Nightfall Meteor efter geninstallation.",
 	"Meteor's key changed; not using it": "Meteors nøgle er ændret; bruges ikke",
 	"Meteor keys forgotten": "Meteor-nøgler glemt",
-	"Cinema": "Biograf"
+	"Cinema": "Biograf",
+	"Your Room": "Dit rum",
+	"Import Room": "Importér rum",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Vælg et .glb 3D-rum på headsettet, og vælg derefter Baggrund: Dit rum."
 }

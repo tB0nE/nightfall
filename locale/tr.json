@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Yeniden kurulumdan sonra Nightfall Meteor'un sonraki anahtarına güvenin.",
 	"Meteor's key changed; not using it": "Meteor anahtarı değişti; kullanılmıyor",
 	"Meteor keys forgotten": "Meteor anahtarları unutuldu",
-	"Cinema": "Sinema"
+	"Cinema": "Sinema",
+	"Your Room": "Odanız",
+	"Import Room": "Oda içe aktar",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Başlıkta bir .glb 3B oda seçin, ardından Arka plan: Odanız'ı seçin."
 }

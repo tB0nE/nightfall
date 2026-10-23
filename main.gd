@@ -130,7 +130,7 @@ var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 # AUTO_TABLE already accounts for it directly in its tier/model picks.
 var passthrough_supported: bool = false
 # Rooms follow the particle backgrounds (EnvironmentManager.room_for_background()).
-var background_labels: Array = ["Black", "Ash", "Snow", "Data", "Cinema"]
+var background_labels: Array = ["Black", "Ash", "Snow", "Data", "Cinema", "Your Room"]
 var bg_names: Array = ["Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
@@ -530,6 +530,7 @@ var _ui_codec_btn: Button
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
+var _ui_import_room_btn: Button
 var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button

@@ -211,5 +211,8 @@
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Confiar na próxima chave do Nightfall Meteor após reinstalá-lo.",
 	"Meteor's key changed; not using it": "A chave do Meteor mudou; não usado",
 	"Meteor keys forgotten": "Chaves do Meteor esquecidas",
-	"Cinema": "Cinema"
+	"Cinema": "Cinema",
+	"Your Room": "Sua sala",
+	"Import Room": "Importar sala",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Escolha uma sala 3D .glb no headset e depois Fundo: Sua sala."
 }

@@ -11,6 +11,13 @@ extends RefCounted
 const ROOM_RENDER_SCALE := 0.5
 const CINEMA := &"cinema"
 const CINEMA_SCENE := "res://src/assets/environments/psx_cinema.glb"
+# The user's own room: a .glb picked in Settings > Import Room. It's only a
+# backdrop: it can't know where a screen belongs, so the screen stays where
+# the user put it and the room stands on the floor around them.
+const CUSTOM := &"custom"
+const CUSTOM_PATH := "user://rooms/custom.glb"
+# Rooms beyond this are refused; the room competes with depth for the GPU.
+const CUSTOM_MAX_TRIANGLES := 300000
 
 var main: Node3D
 var room: StringName = &""
@@ -28,7 +35,14 @@ func _init(owner: Node3D):
 ## The room a Background index selects: rooms follow Black and the particle
 ## backgrounds.
 static func room_for_background(bg_mode: int, particle_backgrounds: int) -> StringName:
-	return CINEMA if bg_mode == particle_backgrounds + 1 else &""
+	if bg_mode == particle_backgrounds + 1:
+		return CINEMA
+	if bg_mode == particle_backgrounds + 2:
+		return CUSTOM
+	return &""
+
+static func has_custom_room() -> bool:
+	return FileAccess.file_exists(CUSTOM_PATH)
 
 ## True while a room has moved the screen onto its wall; that placement must
 ## not be saved as the user's own.
@@ -49,14 +63,16 @@ func apply(next: StringName) -> void:
 
 func _enable() -> void:
 	var interface = XRServer.find_interface("OpenXR")
-	if not _holding_screen:
+	if not _saved_subsampled_foveation_valid and interface and interface.has_method("get_foveation_with_subsampled_images"):
+		_saved_subsampled_foveation = interface.get_foveation_with_subsampled_images()
+		_saved_subsampled_foveation_valid = true
+	if room == CINEMA and not _holding_screen:
 		_saved_screen_transform = main.primary_screen.global_transform
 		_saved_screen_size = main.primary_screen.mesh_size
 		_holding_screen = true
 		_room_anchor = _current_head_anchor()
-		if interface and interface.has_method("get_foveation_with_subsampled_images"):
-			_saved_subsampled_foveation = interface.get_foveation_with_subsampled_images()
-			_saved_subsampled_foveation_valid = true
+	elif room != CINEMA:
+		_release_screen()
 	main.get_viewport().transparent_bg = false
 	main.world_env.environment.background_mode = Environment.BG_COLOR
 	main.world_env.environment.background_color = Color(0.008, 0.008, 0.012, 1)
@@ -70,8 +86,11 @@ func _enable() -> void:
 		# viewport; regular fixed foveation stays available.
 		if interface.has_method("set_foveation_with_subsampled_images"):
 			interface.set_foveation_with_subsampled_images(false)
+	if room != CINEMA:
+		_room_anchor = _floor_anchor()
 	_rebuild_room()
-	_place_screen()
+	if room == CINEMA:
+		_place_screen()
 	main._log("[ENV] %s on: projection layer at %.0f%% resolution" % [room, ROOM_RENDER_SCALE * 100.0])
 
 func _disable() -> void:
@@ -87,12 +106,21 @@ func _disable() -> void:
 			interface.set_foveation_with_subsampled_images(_saved_subsampled_foveation)
 	_saved_subsampled_foveation_valid = false
 	main.get_viewport().scaling_3d_scale = main._xr_base_render_scale
+	_release_screen()
+	main._log("[ENV] Room off; projectionless rendering restored")
+
+# Gives the user's own screen placement back after the cinema held it.
+func _release_screen() -> void:
 	if _holding_screen and main.primary_screen:
 		main.primary_screen.global_transform = _saved_screen_transform
 		main.primary_screen.mesh_size = _saved_screen_size
 		main.primary_screen.apply_curvature()
 	_holding_screen = false
-	main._log("[ENV] Room off; projectionless rendering restored")
+
+# Facing the way the user looks, on the floor beneath them.
+func _floor_anchor() -> Transform3D:
+	var head := _current_head_anchor()
+	return Transform3D(head.basis, Vector3(head.origin.x, main.xr_origin.global_position.y, head.origin.z))
 
 func _current_head_anchor() -> Transform3D:
 	var yaw = main.xr_camera.global_rotation.y
@@ -125,6 +153,8 @@ func _rebuild_room():
 	room_root.global_transform = _room_anchor
 	if room == CINEMA:
 		_create_cinema()
+	elif room == CUSTOM:
+		_create_custom_room()
 	else:
 		_create_minimal_room()
 
@@ -159,6 +189,62 @@ func _create_cinema():
 	cinema.position = Vector3(0, 0.79, 9.6)
 	room_root.add_child(cinema)
 	_make_room_unlit(cinema)
+
+func _create_custom_room():
+	var scene := load_custom_room(CUSTOM_PATH)
+	if scene.has("error"):
+		main._log("[ENV] Your room not shown: %s" % scene.error)
+		if main.ui_controller:
+			main.ui_controller.set_status("Your room: %s" % scene.error)
+		return
+	var custom: Node3D = scene.node
+	custom.name = "YourRoom"
+	room_root.add_child(custom)
+	_make_room_unlit(custom)
+	# Stand it on the floor, centred on the user.
+	var bounds := scene.bounds as AABB
+	custom.position = Vector3(-bounds.get_center().x, -bounds.position.y, -bounds.get_center().z)
+
+## Loads a .glb into {node, bounds, triangles}, or {error}.
+static func load_custom_room(path: String) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {"error": "no room imported yet (Settings > Import Room)"}
+	var document := GLTFDocument.new()
+	var state := GLTFState.new()
+	if document.append_from_file(path, state) != OK:
+		return {"error": "the .glb couldn't be read"}
+	var node = document.generate_scene(state)
+	if not node is Node3D:
+		if node:
+			node.free()
+		return {"error": "the .glb has no 3D scene"}
+	var counted := _measure(node, Transform3D.IDENTITY)
+	if counted.triangles > CUSTOM_MAX_TRIANGLES:
+		node.free()
+		return {"error": "too detailed (%d triangles; the limit is %d)" % [counted.triangles, CUSTOM_MAX_TRIANGLES]}
+	if counted.bounds == null:
+		node.free()
+		return {"error": "the .glb has no meshes"}
+	return {"node": node, "bounds": counted.bounds, "triangles": counted.triangles}
+
+# Triangle count and bounds (in the root's space) of every mesh under `node`.
+static func _measure(node: Node, parent: Transform3D) -> Dictionary:
+	var result := {"triangles": 0, "bounds": null}
+	var transform: Transform3D = parent * node.transform if node is Node3D else parent
+	if node is MeshInstance3D and (node as MeshInstance3D).mesh:
+		var mesh: Mesh = (node as MeshInstance3D).mesh
+		for surface in mesh.get_surface_count():
+			var arrays := mesh.surface_get_arrays(surface)
+			var indices = arrays[Mesh.ARRAY_INDEX]
+			var vertices = arrays[Mesh.ARRAY_VERTEX]
+			result.triangles += (indices.size() if indices else (vertices.size() if vertices else 0)) / 3
+		result.bounds = transform * mesh.get_aabb()
+	for child in node.get_children():
+		var inner := _measure(child, transform)
+		result.triangles += inner.triangles
+		if inner.bounds != null:
+			result.bounds = inner.bounds if result.bounds == null else (result.bounds as AABB).merge(inner.bounds)
+	return result
 
 func _make_room_unlit(node: Node):
 	if node is MeshInstance3D:
