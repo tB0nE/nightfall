@@ -145,7 +145,7 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.bezel_mesh.visible = main.settings.bezel_enabled and not main.comp.in_use
 	if main.ui_controller:
 		main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
-		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_labels[clampi(main.settings.tracking_mode, 0, main.tracking_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_mode_label())
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.settings.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.settings.background_mode, 0, main.background_labels.size() - 1)])

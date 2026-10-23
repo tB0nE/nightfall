@@ -25,8 +25,30 @@ func _get_mdns():
 		mdns = ClassDB.instantiate("MdnsBrowser")
 	return mdns
 
+var startup_hand_fallback = preload("res://src/startup_hand_fallback.gd").new()
+
+func effective_tracking_mode() -> int:
+	return startup_hand_fallback.effective_mode(settings.tracking_mode)
+
+func tracking_mode_label() -> String:
+	return tracking_labels[clampi(effective_tracking_mode(), 0, tracking_labels.size() - 1)] + (" (Auto)" if startup_hand_fallback.auto_enabled else "")
+
+func _process_startup_hand_fallback(delta: float) -> void:
+	if startup_hand_fallback.decided: return
+	var physical := false
+	for path in [&"/user/hand/left", &"/user/hand/right"]:
+		if startup_hand_fallback.physical_controller_available(XRServer.get_tracker(path)):
+			physical = true
+	var hands := false
+	for path in [&"/user/hand_tracker/left", &"/user/hand_tracker/right"]:
+		var tracker = XRServer.get_tracker(path)
+		if tracker is XRHandTracker and tracker.get_has_tracking_data(): hands = true
+	if startup_hand_fallback.step(delta, settings.tracking_mode, physical, hands):
+		_log("[HAND] No physical controller at startup; enabled session-only hand tracking")
+		state_manager.sync_ui_to_settings(false)
+
 func get_is_hand_tracking() -> bool:
-	if settings.tracking_mode not in [1, 3]:
+	if effective_tracking_mode() not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -35,7 +57,7 @@ func get_is_hand_tracking() -> bool:
 	return false
 
 func get_hand_tracking_has_data() -> bool:
-	if settings.tracking_mode not in [1, 3]:
+	if effective_tracking_mode() not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -74,9 +96,7 @@ var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
 var right_click_cooldown: float = 0.0
-var _was_b_pressed: bool = false
-var _was_a_pressed: bool = false
-var _was_r_stick_click: bool = false
+var primary_controller_shortcuts = preload("res://src/primary_controller_shortcuts.gd").new()
 var _startup_reposition: int = 0  # 0=waiting for tracking, 1=centered, 2=positioning
 var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
@@ -2291,6 +2311,8 @@ func primary_media_size() -> Vector2i:
 	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):
+	if _startup_ready and is_xr_active: _process_startup_hand_fallback(delta)
+	if _startup_ready and controller_mapper: controller_mapper.update_available_hands(delta)
 	pcvr_test.process_standby(delta)
 	pcvr_handover.process(delta)
 	if pcvr_test.is_exclusive() or pcvr_handover.blocks_workspace():
@@ -2494,7 +2516,7 @@ func _apply_hand_rest(side: String, resting: bool):
 	else:
 		left_hand_resting = resting
 		if left_hand_raycast: left_hand_raycast.enabled = not resting
-	if not resting and controller_mapper and controller_mapper.primary_hand == ControllerMapper.PrimaryHand.AUTO \
+	if not resting and controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.AUTO \
 			and not was_clicking and not was_right_clicking and not grabbed_node and grabbed_corner_idx < 0:
 		xr_interaction._auto_primary = side
 		xr_interaction._active_hand = side
@@ -2562,25 +2584,18 @@ func _process_hand_tracking(_delta):
 func _process_button_input():
 	if not is_xr_active:
 		return
-	if not controller_mapper or not controller_mapper.is_active():
-		var b_pressed = right_hand.is_button_pressed("by_button")
-		if b_pressed and not _was_b_pressed:
-			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_MENU)
-		_was_b_pressed = b_pressed
-		var a_pressed = right_hand.is_button_pressed("ax_button")
-		if a_pressed and not _was_a_pressed:
-			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_KEYBOARD)
-		_was_a_pressed = a_pressed
-		var r_stick_click = right_hand.is_button_pressed("primary_click")
-		var l_stick_click = left_hand.is_button_pressed("primary_click") if left_hand else false
-		if r_stick_click and not _was_r_stick_click and not l_stick_click:
-			var tp_exited = virtual_keyboard and virtual_keyboard.thumbstick_exit_flag
-			if not virtual_keyboard or (not virtual_keyboard.trackpad_active and not tp_exited):
-				screen_shortcuts.invoke(ScreenShortcutBar.ACTION_SBS)
-		if not r_stick_click:
-			if virtual_keyboard:
-				virtual_keyboard.thumbstick_exit_flag = false
-		_was_r_stick_click = r_stick_click
+	var side: String = xr_interaction._active_hand if controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.AUTO else ("left" if controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.LEFT else "right")
+	var hand = left_hand if side == "left" else right_hand
+	var other = right_hand if side == "left" else left_hand
+	var menu: bool = hand != null and hand.is_button_pressed("by_button")
+	var keyboard: bool = hand != null and hand.is_button_pressed("ax_button")
+	var stick: bool = hand != null and hand.is_button_pressed("primary_click")
+	var other_stick: bool = other != null and other.is_button_pressed("primary_click")
+	var blocked: bool = _is_using_hands or (controller_mapper != null and controller_mapper.is_active())
+	var trackpad_blocked: bool = virtual_keyboard != null and (virtual_keyboard.trackpad_active or virtual_keyboard.thumbstick_exit_flag)
+	for action in primary_controller_shortcuts.poll(side, menu, keyboard, stick, other_stick, blocked, trackpad_blocked):
+		screen_shortcuts.invoke(action)
+	if not stick and virtual_keyboard: virtual_keyboard.thumbstick_exit_flag = false
 	if _startup_reposition >= 0 and is_xr_active:
 		match _startup_reposition:
 			0:  # Waiting for tracking to produce a meaningful camera position
@@ -2591,6 +2606,9 @@ func _process_button_input():
 			2:  # Position screen in front of user
 				_reposition_screen_and_ui(true)
 				_startup_reposition = -1
+
+func reset_primary_shortcuts() -> void:
+	primary_controller_shortcuts.reset()
 
 func _process_input_release():
 	if Input.is_action_just_pressed("ui_focus_next"):

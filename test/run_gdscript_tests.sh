@@ -22,6 +22,8 @@ fi
 mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
+	"test/test_primary_controller_shortcuts.gd"
+	"test/test_startup_hand_fallback.gd"
 	"test/test_pcvr_session.gd"
 	"test/test_meteor_xr_control.gd"
 	"test/test_xr_diagnostic_ledger.gd"

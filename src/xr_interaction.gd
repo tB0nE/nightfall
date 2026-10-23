@@ -185,13 +185,13 @@ func _update_active_hand():
 		if hand_aim_available():
 			right_has_data = hand_aim_valid("right")
 			left_has_data = hand_aim_valid("left")
-		var primary: int = main.controller_mapper.primary_hand if main.controller_mapper else ControllerMapper.PrimaryHand.RIGHT
+		var primary: int = main.controller_mapper.effective_primary_hand() if main.controller_mapper else ControllerMapper.PrimaryHand.RIGHT
 		_active_hand = _select_tracked_hand(primary, right_has_data, left_has_data,
 			_get_hand_pinch_strength("/user/hand_tracker/right"),
 			_get_hand_pinch_strength("/user/hand_tracker/left"),
 			_is_hand_on_screen("right"), _is_hand_on_screen("left"))
 		return
-	var primary = main.controller_mapper.primary_hand if main.controller_mapper else 0
+	var primary = main.controller_mapper.effective_primary_hand() if main.controller_mapper else 0
 	match primary:
 		ControllerMapper.PrimaryHand.RIGHT:
 			_active_hand = "right"

@@ -184,13 +184,12 @@ func _restore_workspace() -> void:
 	main.visible = saved.visible
 	main.audio_player.stream_paused = saved.audio_paused
 	main.meteor_microphone.set_paused(saved.mic_paused or main.pcvr_test.application_paused)
-	if main.right_hand:
-		main._was_b_pressed = main.right_hand.is_button_pressed("by_button")
-		main._was_a_pressed = main.right_hand.is_button_pressed("ax_button")
+	if main.has_method("reset_primary_shortcuts"): main.reset_primary_shortcuts()
 	main._log("[XR-HANDOVER] Native XR drained; previous workspace restored")
 
 func _reset() -> void:
 	state = State.IDLE
+	if main.get("settings_controller") != null: main.settings_controller.end_pcvr_timing()
 	_control = null
 	_lease = ""
 	_hold = 0.0

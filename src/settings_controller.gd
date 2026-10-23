@@ -1834,7 +1834,9 @@ func _schedule_stream_restart():
 
 func toggle_hand_tracking():
 	var modes := [0, 3, 1]
-	main.settings.tracking_mode = modes[(modes.find(main.settings.tracking_mode) + 1) % modes.size()]
+	var current: int = main.effective_tracking_mode()
+	main.startup_hand_fallback.explicit_choice()
+	main.settings.tracking_mode = modes[(modes.find(current) + 1) % modes.size()]
 	main.state_manager.save_state()
 	main.state_manager.sync_ui_to_settings()
 

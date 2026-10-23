@@ -1818,7 +1818,9 @@ func update_btn_toggle_btn():
 
 func update_primary_btn():
 	if main._ui_primary_btn and main.controller_mapper:
-		update_option_btn(main._ui_primary_btn, main.controller_mapper.primary_labels[main.controller_mapper.primary_hand])
+		var mapper = main.controller_mapper
+		var automatic: bool = not main._is_using_hands and mapper.hand_policy.single_hand >= 0
+		update_option_btn(main._ui_primary_btn, mapper.primary_labels[mapper.effective_primary_hand()] + (" (Auto)" if automatic else ""))
 
 func make_indicator_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()
