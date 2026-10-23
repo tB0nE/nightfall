@@ -732,18 +732,30 @@ func on_pair_pressed():
 			return
 		main.welcome_screen.show_pin_when_needed(str(pin))
 
+# USB Link is IPv6 link-local only. Sunshine and Vibepollo listen on IPv4
+# unless address_family = both, so they refuse it; on Windows the USB network
+# is often a Public network the host's firewall rule doesn't cover, so the
+# request times out with the PIN on screen and nothing on the host
+# (Rush_iam). Name both, whichever way it failed.
+static func pair_failure_message(pair_ip: String, msg: String) -> String:
+	if pair_ip.to_lower().begins_with("fe80:"):
+		return ("Pairing over USB Link failed. The host must listen on IPv6: set "
+			+ "address_family = both in its config and restart it. On Windows, also allow "
+			+ "the host through the firewall on Public networks (the USB link is one).")
+	return "Pairing failed: " + msg
+
 func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
 	main.welcome_screen.pairing_finished()
 	if not success:
-		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
-		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,
-		# so an instant refusal over the cable almost always means this.
 		var pair_ip: String = main.parse_ip_port(main.get_node("%IPInput").text)[0]
-		if pair_ip.to_lower().begins_with("fe80:") and str(_msg).contains("Could not connect"):
-			main._ui_status_label.text = "Server refused the USB connection.\nSet address_family = both in its Sunshine config and restart it."
-			main._log("[PAIR] USB Link host refused connection - Sunshine likely listening on IPv4 only")
+		var why := pair_failure_message(pair_ip, str(_msg))
+		main._ui_status_label.text = why
+		if pair_ip.to_lower().begins_with("fe80:"):
+			main._log("[PAIR] USB Link pairing failed - host not listening on IPv6, or its firewall blocks the USB network")
 		main.welcome_screen.show_welcome_screen("server")
+		# The welcome screens can't show the menu's status line.
+		main.welcome_screen.show_notice(why)
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
 	# Settle delay (2026-08-26) - the mutual-TLS HTTPS endpoint (port 57984)

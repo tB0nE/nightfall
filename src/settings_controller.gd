@@ -1494,8 +1494,56 @@ func poll_usb_link_status(delta: float):
 	var label = "Up" if up else "Requesting..."
 	if main._ui_usb_link_btn.get_meta(UIController.OPTION_VALUE_META, "") != label:
 		main.ui_controller.update_option_btn(main._ui_usb_link_btn, label)
+	if up and not _usb_link_was_up:
+		_learn_usb_addresses()
+	_usb_link_was_up = up
 	if up:
 		_maybe_return_to_usb_link()
+
+var _usb_link_was_up := false
+
+# Streams use the cable only for hosts with a saved usb_address, which used
+# to be learned only by pairing over the cable: a PC paired over Wi-Fi kept
+# streaming over Wi-Fi while USB Link said "Up" (Rush_iam). When the link
+# comes up, find saved hosts on it by their unique ID and save the address.
+func _learn_usb_addresses() -> void:
+	var iface: String = main.stream_manager._usb_link_iface()
+	var cm = main.stream_backend.get_computer_manager()
+	var config = main.stream_backend.get_config_manager()
+	if iface.is_empty() or cm == null or config == null:
+		return
+	var found: Array = []
+	var thread := Thread.new()
+	thread.start(func(): found.append_array(main.stream_backend.browse_mdns_usb(iface, 3.0)))
+	while thread.is_alive():
+		await main.get_tree().create_timer(0.1).timeout
+	thread.wait_to_finish()
+	for usb_host in found:
+		var ip: String = usb_host.get("ip", "")
+		if ip.is_empty():
+			continue
+		cm.connect_to_computer(ip, int(usb_host.get("port", main.DEFAULT_PAIR_PORT)), func(result: Dictionary):
+			if result.get("status", "") != "online":
+				# Seen on the cable (its mDNS reached us) but its web server
+				# doesn't answer there.
+				main._log("[USB] %s advertises on USB Link but doesn't answer there" % ip)
+				main.ui_controller.set_status("USB Link is up, but the PC doesn't answer over it. Set address_family = both in the host's config; on Windows, allow it through the firewall on Public networks.")
+				return
+			var host_id := usb_host_to_update(main.stream_backend.get_hosts(), ip, str(result.get("uniqueid", "")))
+			if host_id >= 0:
+				config.update_host(host_id, {"usb_address": ip})
+				main._log("[USB] Learned USB Link address %s for host %d" % [ip, host_id])
+				main.ui_controller.show_temporary_status("USB Link: PC found on the cable", 3.0))
+
+## The saved host that `unique_id` identifies, if its USB address isn't `ip`
+## yet; -1 otherwise.
+static func usb_host_to_update(hosts: Array, ip: String, unique_id: String) -> int:
+	if unique_id.is_empty():
+		return -1
+	for host in hosts:
+		if str(host.get("server_unique_id", "")) == unique_id:
+			return -1 if str(host.get("usb_address", "")) == ip else int(host.get("id", -1))
+	return -1
 
 var _usb_return_probe_in_flight: bool = false
 var _usb_return_last_probe_ms: int = 0
