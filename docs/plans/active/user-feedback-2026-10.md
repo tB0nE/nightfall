@@ -10,8 +10,8 @@
 | --- | --- | --- |
 | #60 Gamepad right stick scrolls the mouse wheel | Small | `fix/user-feedback` |
 | #61 Pointer moves the mouse without clicking | Small | `fix/user-feedback` |
-| Reddit thread (Rush_iam) | Not read yet | `fix/user-feedback`, cherry-picks |
-| Environments (cinema, living room) | Medium | new `feat/environments` off `main` |
+| Reddit thread (Rush_iam): 12 items | Mostly small | `fix/user-feedback` |
+| Environments (cinema, living room) | Medium–large | new `feat/environments` off `main` |
 | Web Apps on the welcome screen | Medium | `feat/unified-content-tabs` |
 | Netflix, Disney+, Prime Video in 3D | Not feasible in-app | docs only |
 | VR app menu | | `feat/meteor-xr-streaming` (later) |
@@ -42,32 +42,80 @@ desktop and KBM mode; not gamepad mode.
 
 ## Reddit (Rush_iam)
 
-Reddit blocks automated reading, so the thread hasn't been read. Paste
-it in, and each item gets a row here: already fixed (cherry-pick the
-commit onto `fix/user-feedback`), fix now, or later.
+Quest 3, Windows host, Sunshine and Vibepollo. Already done on
+`fix/user-feedback`:
+
+- **Custom host port (50000) never pairs.** Cherry-picked `db94d36`:
+  pair on the port mDNS advertises.
+- **"EdgePad-256 CPU" shown on a fresh install.** Cherry-picked
+  `a2c61f1` from the XR branch, with a test for `main`.
+
+To fix on `fix/user-feedback`:
+
+| Report | Cause / fix | Size |
+| --- | --- | --- |
+| Connect loops back to Select Server; the log says the device lacks "Launch applications" | Vibepollo gives full access only to the first client ever paired; later ones get view-only (`src/nvhttp.cpp`, `PERM::_default`). Not a pairing bug. Show the host's refusal on the welcome screen with what to change, instead of returning to the server list. In our fork, grant launch to clients paired through the PIN prompt. | Small |
+| Cursor doesn't follow the pointer, so no hover feedback in desktop mode | #61 | Small |
+| Menu buttons and the pointer ring vanish against a white wall in passthrough | A darker, adjustable menu background (opacity slider), and an outline on the pointer ring | Small |
+| Passthrough fade level | A passthrough opacity slider next to the background setting | Small |
+| 207 Hz glitches the headset, and cycling from 90 to 72 Hz passes through it | Cycling applies each step. Apply the refresh rate only once cycling stops (short delay), and hide rates above 165 Hz behind an Advanced toggle | Small |
+| AI 3D on/off is hard to find (looked in the 3D tab) | Add the on/off switch to the AI 3D tab too | Small |
+| Stats say EdgePad-384 while 512 runs (the log says 512) | The stats overlay reads the wrong label | Small |
+| 2–3 s freeze switching model (384 → Auto) | Model load; known. Show "Loading model…" instead of a silent freeze | Small |
+| USB Link: pairing to `fe80::…%usb0` never reaches the host; "USB Link: Up" still used Wi-Fi | Investigate. The scoped IPv6 link-local address may be malformed in the pair URL (`%` must be `%25` inside `[...]`) or not routed; prefer the USB interface's IPv4 when there is one | Medium |
+| After opening the Meta menu before connecting, 20–30 s of lag at full CPU/GPU load | Something keeps queuing while the app is paused; find what runs during focus loss | Medium |
+
+Not ours, or no change now:
+
+- **UFO-test stutter at 90 Hz**, also in Moonlight XR. Rush_iam fixed it
+  with RTSS's frame limiter on the host, so it's host frame pacing. Add
+  a note to the troubleshooting docs; revisit if others report it.
 
 ## Environments
 
-The request: a cinema or a living room around the screen, instead of
-black or passthrough.
+The request: a cinema or a living room around the screen. 360° pictures
+look flat, so the direction is real 3D rooms.
 
-What exists: `src/composition_environment_layer.gd` (on `main`) already
-draws an OpenXR equirect composition layer behind the screen, and the
-Display tab has the background setting. `3d-environments` (214 commits
-behind `main`) has an older 3D-room experiment; don't revive it.
+**Start from `3d-environments`, but port it rather than merge it.** Its
+environment work sits in one commit (`6358933`) together with
+performance tools, and the branch is 214 commits behind `main`, whose
+`main.gd` and menus have since been refactored. What to carry over:
 
-Plan:
+- `src/environment_manager.gd`: loads a `.glb` room, turns on Godot's
+  projection layer at 50% render scale for the room only (the stream
+  stays a composition layer, so it stays sharp), turns off subsampled
+  foveation, and places the screen in the room.
+- `src/assets/environments/psx_cinema.glb` with its CC BY 4.0
+  attribution ("VR Cinema Environment" by fangzhangmnm, Sketchfab), and
+  the "Off / Minimal Room / PSX Cinema" setting.
 
-1. **360° image environments.** A picture on the existing equirect layer.
-   The compositor draws it, so it costs almost nothing on the GPU, which
-   the depth model needs. Ship three or four (dark cinema, living room,
-   night sky) from CC0 sources such as Poly Haven, plus "your own image"
-   from the headset's storage.
-2. **Dimming.** Lower the environment's brightness while video plays, like
-   a cinema; a slider in the Display tab.
-3. **Later, maybe:** real 3D rooms, with the screen set into a wall.
-   They cost GPU every frame and conflict with projectionless composition
-   mode; only if users ask after 1–2.
+The rest of that branch (native renderer, LiteRT baseline, GPU priority,
+stats overlay) is unrelated; leave it.
+
+**Cost:** a room means rendering a projection layer every frame, on the
+GPU the depth model uses. Measure depth latency with a room on, and keep
+rooms low-poly with baked lighting.
+
+**Where rooms come from:**
+
+1. **Bundled:** one or two in the APK (the PSX cinema).
+2. **Your own catalogue:** rooms you make or buy, listed in a JSON index
+   and downloaded on demand from GitHub releases, so the APK stays
+   small. Each entry carries its screen anchor (position and size),
+   scale, licence and attribution.
+3. **The user's own file:** a `.glb` from the headset's Downloads. Godot
+   loads glTF at runtime (`GLTFDocument`).
+4. **From a website such as Sketchfab:** feasible, but the most work.
+   Sketchfab's download API needs the user's Sketchfab login (OAuth) and
+   only works for models whose authors allow downloads; licences vary
+   (CC BY needs the attribution shown). Arbitrary models also don't know
+   where the screen goes, may be the wrong scale, and can be far too
+   heavy for the Quest.
+
+Options 3 and 4 need the same safeguards: a file-size and triangle
+budget (refuse or warn), texture downscaling, and a "place screen" step
+that saves the anchor per room. Do 1 and 2 first, then 3; 4 only if
+users ask after that.
 
 ## Web Apps
 
@@ -135,4 +183,5 @@ the PC's SteamVR and OpenXR apps to launch. Not part of this round.
 1. #60 and #61, plus the Reddit fixes, on `fix/user-feedback`; release
    as the next 0.8.x (0.8.2 is taken by the browser preview).
 2. Web Apps on the browser branch, for the next browser preview.
-3. Environments, phases 1–2, on `feat/environments`.
+3. Environments on `feat/environments`: port the room, then the
+   catalogue, then user files.
