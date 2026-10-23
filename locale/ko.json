@@ -210,5 +210,6 @@
 	"Forget Meteor Keys": "Meteor 키 잊기",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "재설치 후 Nightfall Meteor가 보내는 다음 키를 신뢰합니다.",
 	"Meteor's key changed; not using it": "Meteor 키가 바뀌어 사용하지 않음",
-	"Meteor keys forgotten": "Meteor 키를 잊었습니다"
+	"Meteor keys forgotten": "Meteor 키를 잊었습니다",
+	"Cinema": "영화관"
 }

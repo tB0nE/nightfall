@@ -1136,6 +1136,7 @@ func apply_passthrough(enable: bool):
 	if not interface:
 		return
 	if enable:
+		main.environment_manager.apply(&"")
 		main.get_viewport().transparent_bg = true
 		main.world_env.environment.background_mode = Environment.BG_COLOR
 		main.world_env.environment.background_color = Color(0, 0, 0, 0)
@@ -1154,6 +1155,11 @@ func apply_background(bg_mode: int):
 	if not main.is_xr_active or main.settings.passthrough_enabled:
 		return
 	_hide_all_backgrounds()
+	var room := EnvironmentManager.room_for_background(bg_mode, main.bg_names.size())
+	main.environment_manager.apply(room)
+	if room != &"":
+		main._sync_comp_background()
+		return
 	main.world_env.environment.background_color = Color(0, 0, 0, 1 if bg_mode == 0 else 0)
 	if bg_mode > 0:
 		var bg_idx = bg_mode - 1

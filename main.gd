@@ -129,7 +129,8 @@ var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 # no in-app UI disclaimer for this by design; settings_controller.gd's
 # AUTO_TABLE already accounts for it directly in its tier/model picks.
 var passthrough_supported: bool = false
-var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
+# Rooms follow the particle backgrounds (EnvironmentManager.room_for_background()).
+var background_labels: Array = ["Black", "Ash", "Snow", "Data", "Cinema"]
 var bg_names: Array = ["Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
@@ -158,6 +159,8 @@ var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime",
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var _xr_base_render_scale: float = 1.0
+# The runtime's render-target multiplier before a 3D room halves it.
+var _xr_base_target_multiplier: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
 	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
@@ -296,6 +299,7 @@ var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
+var environment_manager: EnvironmentManager
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
@@ -1459,6 +1463,7 @@ func _on_session_phase_changed(previous: int, current: int) -> void:
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
+	environment_manager = EnvironmentManager.new(self)
 	xr_interaction = XRInteraction.new(self)
 	input_handler = InputHandler.new(self)
 	ui_controller = UIController.new(self)
@@ -2019,6 +2024,8 @@ func _init_xr(interface):
 	else:
 		get_viewport().msaa_3d = Viewport.MSAA_2X
 	_xr_base_render_scale = get_viewport().scaling_3d_scale
+	if interface.has_method("get_render_target_size_multiplier"):
+		_xr_base_target_multiplier = interface.get_render_target_size_multiplier()
 	is_xr_active = true
 	# Godot's own comp-layer/texture bindings (connect_welcome_texture() et al)
 	# only ever run once, here at boot, regardless of whether the OpenXR
@@ -2208,6 +2215,7 @@ func _on_joy_changed(device: int, connected: bool):
 func _process(delta):
 	if is_xr_active:
 		_process_hand_tracking(delta)
+		environment_manager.process()
 
 	if DEBUG_RENDER_MODEL_CONTROLLERS:
 		_process_render_model_controllers(delta)

@@ -41,6 +41,7 @@ tests=(
 	"test/test_meteor_client.gd"
 	"test/test_controller_layout.gd"
 	"test/test_hand_aim.gd"
+	"test/test_environments.gd"
 )
 
 for test_file in "${tests[@]}"; do

@@ -210,5 +210,6 @@
 	"Forget Meteor Keys": "忘记 Meteor 密钥",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "重新安装后，信任 Nightfall Meteor 发送的下一个密钥。",
 	"Meteor's key changed; not using it": "Meteor 的密钥已更改，不再使用",
-	"Meteor keys forgotten": "已忘记 Meteor 密钥"
+	"Meteor keys forgotten": "已忘记 Meteor 密钥",
+	"Cinema": "影院"
 }

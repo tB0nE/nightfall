@@ -13,6 +13,7 @@ const GODOT_COMPONENTS := "<godot-components>"
 ## name, a note shown above the text, and the text's file.
 const ENTRIES := [
 	["Nightfall", "Nightfall is free software under the GNU General Public License, version 3. Source code: https://github.com/tB0nE/nightfall", "GPL-3.0.txt"],
+	["VR Cinema Environment", "The Cinema background: \"VR Cinema Environment\" by fangzhangmnm (https://skfb.ly/6VuIX), flattened by the Moonlight Android XR project. Creative Commons Attribution 4.0.", "cc-by-4.0.txt"],
 	["ZipDepth", "The EdgePad depth models are Nightfall's fine-tune of ZipDepth (https://github.com/fabiotosi92/ZipDepth).", "zipdepth.txt"],
 	["Godot Engine", "", GODOT],
 	["Godot components", "Third-party components built into the Godot Engine.", GODOT_COMPONENTS],

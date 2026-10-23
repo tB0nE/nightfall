@@ -18,6 +18,7 @@ Collected on 2026-10-08 from the sources the release builds use:
 | `tensorflow.txt`, `xnnpack.txt`, `pthreadpool.txt`, `cpuinfo.txt`, `fp16.txt`, `fxdiv.txt`, `farmhash.txt`, `fft2d.txt`, `MPL-2.0.txt` (Eigen) | TensorFlow 2.17's Bazel dependencies, which LiteRT bundles |
 | `zipdepth.txt` | `tools/ZipDepth/LICENSE` |
 | `noto-cjk.txt` | `src/assets/fonts/NOTO_CJK_LICENSE.txt` |
+| `cc-by-4.0.txt` | creativecommons.org/licenses/by/4.0/legalcode.txt (the Cinema room, `src/assets/environments/ATTRIBUTION.md`) |
 | `ncnn.txt` | ncnn's `LICENSE.txt` (Linux builds) |
 
 Checked 2026-10-08 against the APK's LiteRT 1.4.2 libraries
