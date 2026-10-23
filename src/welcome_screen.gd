@@ -36,8 +36,47 @@ func build_welcome_ui():
 	build_ip_screen(screens)
 	build_pin_screen(screens)
 	build_language_picker(root)
+	build_notice(root)
 
 	show_welcome_screen("welcome")
+
+# Why the last connection failed. A failed launch returns to the welcome
+# screens, where the in-stream menu's status line isn't visible.
+func build_notice(root: Control) -> void:
+	var panel := PanelContainer.new()
+	panel.name = "WelcomeNotice"
+	panel.anchor_left = 0.5
+	panel.anchor_right = 0.5
+	panel.offset_left = -560
+	panel.offset_right = 560
+	panel.offset_top = 104
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.04, 0.02, 0.82)
+	style.border_color = Color(1.0, 0.75, 0.3, 0.9)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(16)
+	style.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", style)
+	var label := Label.new()
+	label.name = "NoticeText"
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 28)
+	label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.55))
+	panel.add_child(label)
+	root.add_child(panel)
+
+func show_notice(text: String) -> void:
+	var panel = main.welcome_viewport.get_node_or_null("WelcomeRoot/WelcomeNotice")
+	if not panel:
+		return
+	panel.get_node("NoticeText").text = text
+	panel.visible = not text.is_empty()
+
+func clear_notice() -> void:
+	show_notice("")
 
 # Language dropdown in the top-right corner, so a new user can switch language
 # before reaching the in-stream Settings page. It is a plain grid of buttons rather

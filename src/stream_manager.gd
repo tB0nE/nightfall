@@ -33,6 +33,7 @@ var _current_app_id: int = -1
 
 func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
 	main.session_lifecycle.begin_connect()
+	main.welcome_screen.clear_notice()
 	_current_host_id = host_id
 	_current_app_id = app_id
 	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
@@ -324,6 +325,14 @@ func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# A host that only lets this client view can't be fixed by retrying.
+		var permission := int(response.get("host_permission", -1))
+		if HostPermissions.blocks_launch(permission):
+			var why := HostPermissions.explain(HostPermissions.missing(permission))
+			main._log("[STREAM] Host permissions 0x%x: %s" % [permission, why])
+			main.restore_after_failed_connect(why)
+			main.welcome_screen.show_notice(why)
+			return
 		# The host no longer knows this app ID: its app list changed (a
 		# restart can renumber apps), or the welcome screen fell back to its
 		# placeholder Desktop when the list came back empty.
@@ -373,9 +382,18 @@ func _on_v2_launch_response(response: Dictionary):
 			main.welcome_screen.show_welcome_screen("server")
 		else:
 			main._ui_status_label.text = "Launch failed: " + str(msg)
+			main.welcome_screen.show_notice("Launch failed: " + str(msg))
 		return
 
 	_app_id_refreshed = false
+	# Streaming works, but the host may drop mouse, keyboard or controller
+	# input. Say so on the menu's status line and on the welcome screen.
+	var input_missing := HostPermissions.missing(int(response.get("host_permission", -1)))
+	if not input_missing.is_empty():
+		var why := HostPermissions.explain(input_missing)
+		main._log("[STREAM] Host permissions 0x%x: %s" % [int(response.get("host_permission", -1)), why])
+		main.ui_controller.set_status(why)
+		main.welcome_screen.show_notice(why)
 	var server_info = {}
 	server_info["server_codec_mode_support"] = response.get("server_codec_mode_support", 0)
 	var scm = response.get("server_codec_mode_support", 0)

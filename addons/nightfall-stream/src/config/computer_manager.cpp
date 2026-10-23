@@ -609,6 +609,11 @@ void NightfallComputerManager::_on_launch_serverinfo_completed(int code, PackedB
         ctx["gfe_version"] = gfe_version;
     }
 
+    // Apollo-family hosts (Apollo, Vibepollo) report what this client may do;
+    // new clients after the first get only view and list. -1: not reported.
+    String permission_str = _extract_xml_value(xml, "Permission");
+    ctx["host_permission"] = permission_str.is_empty() ? (int64_t)-1 : permission_str.to_int();
+
     String command = (current_game != 0) ? "resume" : "launch";
 
     _perform_launch_request(ctx, command);
