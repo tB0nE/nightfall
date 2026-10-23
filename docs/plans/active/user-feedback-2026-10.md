@@ -63,7 +63,6 @@ To fix on `fix/user-feedback`:
 | Stats say EdgePad-384 while 512 runs (the log says 512) | The stats overlay reads the wrong label | Small |
 | 2–3 s freeze switching model (384 → Auto) | Model load; known. Show "Loading model…" instead of a silent freeze | Small |
 | USB Link: pairing to `fe80::…%usb0` never reaches the host; "USB Link: Up" still used Wi-Fi | Investigate. The scoped IPv6 link-local address may be malformed in the pair URL (`%` must be `%25` inside `[...]`) or not routed; prefer the USB interface's IPv4 when there is one | Medium |
-| After opening the Meta menu before connecting, 20–30 s of lag at full CPU/GPU load | Something keeps queuing while the app is paused; find what runs during focus loss | Medium |
 
 Not ours, or no change now:
 
@@ -87,17 +86,18 @@ Done on `fix/user-feedback`, not yet tested on a headset:
   comes up; failed pairing over the cable names `address_family = both`
   and the Windows Public-network firewall.
 
-Open:
+- Passthrough fade (Settings > Display > Passthrough Fade: Off, 25, 50,
+  75%): Godot's passthrough has no opacity control, so a compositor
+  equirect sphere of translucent black sits behind every other layer;
+  without equirect support it falls back to the projection layer's
+  clear colour. Check on the headset that it darkens the room in both
+  rendering modes and that the screen and menus stay in front of it.
+- Our Vibepollo fork (`nightfall` branch, `0f78785`) gives every paired
+  device full permissions; entering the PIN already needs the host's
+  admin login.
 
-- **Passthrough fade:** Godot's built-in passthrough has no opacity
-  control; it needs a translucent black layer behind the screen, and
-  which layer path works in projectionless mode must be tried on the
-  headset.
-- **Lag after the Meta menu:** needs a log. It happened right after
-  start, possibly the depth model loading rather than the menu.
-- **Our Vibepollo fork:** grant full permissions to clients paired
-  through the PIN prompt (entering the PIN already needs the host's
-  admin login).
+Dropped: the lag after opening the Meta menu was most likely the depth
+model loading at start-up; revisit separately.
 
 ## Environments
 
