@@ -11,14 +11,14 @@ use std::process::Command;
 
 use crate::ports::{CHANNELS, PortMap, Proto};
 
-/// The ports the Quest connects to, by protocol.
-pub fn ports(map: &PortMap, discovery: u16) -> Vec<(u16, Proto)> {
-    let mut ports = vec![
-        (discovery, Proto::Tcp),
-        (crate::depth_server::DEFAULT_DEPTH_PORT, Proto::Tcp),
-        (crate::mic::DEFAULT_MIC_PORT, Proto::Udp),
-    ];
+/// The ports the Quest connects to, by protocol. `host` adds the host's
+/// own ports, for a host Meteor runs (pairing goes to it directly).
+pub fn ports(map: &PortMap, side: crate::config::SidePorts, host: bool) -> Vec<(u16, Proto)> {
+    let mut ports = vec![(side.discovery, Proto::Tcp), (side.depth, Proto::Tcp), (side.mic, Proto::Udp)];
     ports.extend(CHANNELS.iter().map(|c| (map.meteor(*c), c.proto)));
+    if host {
+        ports.extend(CHANNELS.iter().map(|c| (map.sunshine(*c), c.proto)));
+    }
     ports.sort_by_key(|&(port, proto)| (proto == Proto::Udp, port));
     ports
 }
@@ -127,11 +127,15 @@ mod tests {
     #[test]
     fn lists_the_default_ports() {
         let map = PortMap::new(47989, 1000).unwrap();
-        let specs: Vec<String> = ports(&map, 47900).into_iter().map(spec).collect();
+        let side = crate::config::Config::default().side_ports(47989);
+        let specs: Vec<String> = ports(&map, side, false).into_iter().map(spec).collect();
         assert_eq!(
             specs,
             ["47900/tcp", "47901/tcp", "48984/tcp", "48989/tcp", "49010/tcp", "47902/udp", "48998/udp", "48999/udp", "49000/udp", "49002/udp"]
         );
+        let with_host: Vec<String> = ports(&map, side, true).into_iter().map(spec).collect();
+        assert_eq!(with_host.len(), 17);
+        assert!(with_host.contains(&"47989/tcp".to_string()) && with_host.contains(&"47998/udp".to_string()));
     }
 
     #[test]

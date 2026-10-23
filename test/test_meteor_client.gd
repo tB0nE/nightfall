@@ -8,6 +8,7 @@ const INFO := '{"service":"nightfall-meteor","version":"0.1.0","protocol":1,"mod
 
 func _init():
 	_test_parse_info()
+	_test_discovery_port()
 	_test_route_rtsp_url()
 	_test_depth_info()
 	_test_mic_info()
@@ -38,6 +39,10 @@ func _test_parse_info() -> void:
 	assert(MeteorClient.parse_info(INFO.replace('"protocol":1', '"protocol":2'), 47984).is_empty())
 	assert(MeteorClient.parse_info('{"service":"other"}', 47984).is_empty())
 	assert(MeteorClient.parse_info("not json", 47984).is_empty())
+
+func _test_discovery_port() -> void:
+	_check(MeteorClient.discovery_port(47984) == 47900, "default host: Meteor on 47900")
+	_check(MeteorClient.discovery_port(49984) == 49900, "host on base 49989: Meteor on 49900")
 
 func _test_route_rtsp_url() -> void:
 	var info := MeteorClient.parse_info(INFO, 47984)

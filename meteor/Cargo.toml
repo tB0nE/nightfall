@@ -21,6 +21,8 @@ ring = "0.17"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+# The bundled host arrives as a .tar.zst (src/host/install.rs).
+tar = "0.4"
 socket2 = "0.6"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

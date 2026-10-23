@@ -246,6 +246,21 @@ impl Download {
         result
     }
 
+    /// Runs another download (the bundled host's) through the same
+    /// progress and state as `run`.
+    pub fn run_task(&self, total: u64, task: impl FnOnce(&Download) -> Result<(), String>) -> Result<(), String> {
+        self.cancel.store(false, Ordering::Relaxed);
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.set(State::Running);
+        let result = task(self);
+        self.set(match &result {
+            Ok(()) => State::Done,
+            Err(err) => State::Failed(err.clone()),
+        });
+        result
+    }
+
     fn fetch(&self, plan: &Plan) -> Result<(), String> {
         let install = crate::tensorrt::install_dir();
         std::fs::create_dir_all(&install).map_err(|e| format!("{}: {e}", install.display()))?;
@@ -311,7 +326,7 @@ impl Download {
     /// Fetches bytes `start..start + len` of `url` into `path`, carrying on
     /// from whatever `path` already holds, and resuming after a dropped
     /// connection up to RETRIES times.
-    fn resumable(&self, agent: &ureq::Agent, url: &str, start: u64, len: u64, path: &Path) -> Result<(), String> {
+    pub fn resumable(&self, agent: &ureq::Agent, url: &str, start: u64, len: u64, path: &Path) -> Result<(), String> {
         let fail = |e: std::io::Error| format!("{}: {e}", path.display());
         let mut have = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         if have > len {
@@ -387,7 +402,7 @@ impl<R: Read> Read for Counting<'_, R> {
     }
 }
 
-fn agent() -> ureq::Agent {
+pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(20)))
         // A stalled read gives up; a slow but moving one doesn't.

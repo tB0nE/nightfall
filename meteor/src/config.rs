@@ -6,9 +6,15 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// The port the Nightfall client probes to find Meteor. Keep in sync with
-/// src/meteor_client.gd.
+/// The port the Nightfall client probes to find Meteor in front of a host
+/// on the default base port. Keep in sync with src/meteor_client.gd.
 pub const DEFAULT_DISCOVERY_PORT: u16 = 47900;
+/// Meteor's own ports sit this far below the host's base port: discovery,
+/// then depth (+1) and the microphone (+2). The client finds Meteor at the
+/// same distance below the base of the host it streams from, so a second
+/// host and Meteor on another base (49989, say) don't collide with the
+/// first.
+pub const DISCOVERY_BELOW_BASE: u16 = 89;
 pub const DEFAULT_PORT_OFFSET: u16 = 1000;
 pub const DEFAULT_SUNSHINE_PORT: u16 = 47989;
 
@@ -22,7 +28,10 @@ pub struct Config {
     pub sunshine_port: Option<u16>,
     /// Added to every Sunshine port to get the port Meteor listens on.
     pub port_offset: u16,
-    pub discovery_port: u16,
+    /// The port Nightfall probes. Derived from the host's base port when
+    /// unset (see DISCOVERY_BELOW_BASE); depth and the microphone use the
+    /// next two.
+    pub discovery_port: Option<u16>,
     /// libonnxruntime with the CUDA provider. Found next to the binary in
     /// development builds when unset (see onnx.rs).
     pub onnxruntime_lib: Option<PathBuf>,
@@ -37,6 +46,12 @@ pub struct Config {
     pub models_dir: Option<PathBuf>,
     /// Run the depth model with TensorRT fp16 once its engine is built.
     pub tensorrt: bool,
+    /// A Vibepollo build to run as the bundled host instead of the
+    /// downloaded one (development).
+    pub host_binary: Option<PathBuf>,
+    /// Extra environment for the bundled host, e.g. LD_LIBRARY_PATH for a
+    /// development build linked against libraries outside the system's.
+    pub host_env: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -45,13 +60,30 @@ impl Default for Config {
             sunshine_host: "127.0.0.1".into(),
             sunshine_port: None,
             port_offset: DEFAULT_PORT_OFFSET,
-            discovery_port: DEFAULT_DISCOVERY_PORT,
+            discovery_port: None,
             onnxruntime_lib: None,
             ncnn_lib: None,
             tensorrt_dir: None,
             models_dir: None,
             tensorrt: true,
+            host_binary: None,
+            host_env: Default::default(),
         }
+    }
+}
+
+/// Meteor's own ports for a host on `base`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SidePorts {
+    pub discovery: u16,
+    pub depth: u16,
+    pub mic: u16,
+}
+
+impl Config {
+    pub fn side_ports(&self, base: u16) -> SidePorts {
+        let discovery = self.discovery_port.unwrap_or_else(|| base.saturating_sub(DISCOVERY_BELOW_BASE));
+        SidePorts { discovery, depth: discovery.saturating_add(1), mic: discovery.saturating_add(2) }
     }
 }
 
@@ -187,5 +219,14 @@ mod tests {
     fn parses_port_line() {
         assert_eq!(parse_port("address_family = both\nport = 57989\n"), Some(57989));
         assert_eq!(parse_port("# port = 1\nupnp = on\n"), None);
+    }
+
+    #[test]
+    fn side_ports_follow_the_base() {
+        let config = Config::default();
+        assert_eq!(config.side_ports(47989), SidePorts { discovery: 47900, depth: 47901, mic: 47902 });
+        assert_eq!(config.side_ports(49989), SidePorts { discovery: 49900, depth: 49901, mic: 49902 });
+        let pinned = Config { discovery_port: Some(40000), ..Config::default() };
+        assert_eq!(pinned.side_ports(49989), SidePorts { discovery: 40000, depth: 40001, mic: 40002 });
     }
 }

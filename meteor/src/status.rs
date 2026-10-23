@@ -9,7 +9,10 @@ use crate::ports::PortMap;
 pub struct Status {
     pub map: PortMap,
     pub sunshine_host: String,
-    pub discovery_port: u16,
+    /// Meteor's discovery, depth and microphone ports.
+    pub side: crate::config::SidePorts,
+    /// Whether the Quest also needs the host's own ports (Meteor runs it).
+    pub host_ports: bool,
     pub sunshine_up: AtomicBool,
     pub firewall: Mutex<crate::firewall::Status>,
 }
@@ -17,7 +20,7 @@ pub struct Status {
 impl Status {
     /// The ports the Quest needs open.
     pub fn quest_ports(&self) -> Vec<(u16, crate::ports::Proto)> {
-        crate::firewall::ports(&self.map, self.discovery_port)
+        crate::firewall::ports(&self.map, self.side, self.host_ports)
     }
 
     pub fn firewall(&self) -> crate::firewall::Status {

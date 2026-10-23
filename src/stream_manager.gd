@@ -819,17 +819,19 @@ func browse_mdns() -> Array:
 		while t.is_alive():
 			await main.get_tree().create_timer(0.1).timeout
 		t.wait_to_finish()
-	_mdns_result = _merge_mdns_hosts(usb_hosts, lan_hosts)
+	_mdns_result = merge_mdns_hosts(usb_hosts, lan_hosts)
 	main._log("[mDNS] Found %d hosts" % _mdns_result.size())
 	return _mdns_result
 
-# One entry per machine: a PC reachable both ways advertises the same SRV
-# target on each network, and the cable is the path worth taking.
-func _merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
+# One entry per host: a PC reachable both ways advertises the same SRV
+# target and port on each network, and the cable is the path worth taking.
+# The port keeps two hosts on one PC apart (Meteor's bundled host next to
+# Sunshine, say).
+static func merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
 	var merged: Array = []
 	var seen := {}
 	for host in usb_hosts + lan_hosts:
-		var key = str(host.get("hostname", host.get("ip", ""))).to_lower()
+		var key = "%s:%d" % [str(host.get("hostname", host.get("ip", ""))).to_lower(), int(host.get("port", 47989))]
 		if seen.has(key):
 			continue
 		seen[key] = true

@@ -114,6 +114,10 @@ created on demand and captured through PipeWire, on the desktops people use:
   Meteor, captured at 120 fps, with windows movable onto it. GNOME and
   gamescope next.
 
+> **On hold (2026-10-21):** Phases 3 and 4 are replaced, for now, by
+> Meteor running a fork of Vibepollo as its host; extra monitors move to that
+> fork. See [meteor-bundled-host.md](meteor-bundled-host.md).
+
 ### Phase 3: Meteor serves extra monitors
 
 - Meteor becomes a GameStream host **for additional monitors only**. Each

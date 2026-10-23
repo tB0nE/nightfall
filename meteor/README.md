@@ -539,7 +539,11 @@ the tray says "Firewall is blocking the Quest", and "Allow the Quest
 through the firewall" opens the ports with one `pkexec` prompt. With ufw,
 whose rules need root to read, the tray offers to open the ports in ufw.
 The ports are TCP 47900, 47901, 48984, 48989 and 49010, and UDP 47902,
-48998 to 49000 and 49002 (with the default offset).
+48998 to 49000 and 49002 (with the default offset and a host on the
+default base port). Meteor's own ports (discovery, depth, microphone) sit
+89, 88 and 87 below the host's base port, so a host on 49989 moves them to
+49900 to 49902; see docs/plans/active/meteor-bundled-host.md. With the
+bundled host, the host's own ports are opened too.
 
 **Desktop notifications:**
 - Starting Meteor while it's already running shows "already running".

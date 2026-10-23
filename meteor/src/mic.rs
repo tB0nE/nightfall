@@ -41,7 +41,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_MIC_PORT: u16 = 47902;
 pub const FORMAT_PCM_S16LE_48K_MONO: &str = "pcm_s16le_48k_mono";
 pub const FORMAT_OPUS_48K_MONO: &str = "opus_48k_mono";
 const FORMAT_PCM: u8 = 0;
@@ -69,8 +68,48 @@ const IDLE_AFTER: Duration = Duration::from_millis(500);
 const FRAME: Duration = Duration::from_millis(10);
 /// Silence written ahead of each stream (30 ms); see Mic::play.
 const PREROLL_FRAMES: usize = 3;
+/// The PipeWire names. A second Meteor on another base port (see
+/// config::DISCOVERY_BELOW_BASE) gets its own device, so neither removes
+/// the other's as a leftover.
 #[cfg(target_os = "linux")]
-const SOURCE_NAME: &str = "nightfall_mic";
+struct Names {
+    source: String,
+    feed: String,
+    description: String,
+    pipe: String,
+}
+
+#[cfg(target_os = "linux")]
+impl Names {
+    fn for_port(port: u16) -> Names {
+        if port == crate::config::DEFAULT_DISCOVERY_PORT + 2 {
+            return Names {
+                source: "nightfall_mic".into(),
+                feed: "nightfall_mic_feed".into(),
+                description: "Nightfall Microphone".into(),
+                pipe: "nightfall-mic".into(),
+            };
+        }
+        Names {
+            source: format!("nightfall_mic_{port}"),
+            feed: format!("nightfall_mic_{port}_feed"),
+            description: format!("Nightfall Microphone (port {port})"),
+            pipe: format!("nightfall-mic-{port}"),
+        }
+    }
+
+    fn device_props(&self) -> String {
+        format!("device.description=\"{}\" device.icon_name=audio-input-microphone", self.description)
+    }
+}
+
+#[cfg(target_os = "linux")]
+static NAMES: std::sync::OnceLock<Names> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn names() -> &'static Names {
+    NAMES.get_or_init(|| Names::for_port(crate::config::DEFAULT_DISCOVERY_PORT + 2))
+}
 
 #[derive(Default)]
 pub struct MicStats {
@@ -112,6 +151,8 @@ impl Mic {
     /// Creates the virtual device and starts listening. None when the
     /// device can't be created (no PipeWire/PulseAudio or Windows virtual cable).
     pub async fn start(port: u16, key: Arc<crate::crypto::MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<Arc<Mic>> {
+        #[cfg(target_os = "linux")]
+        let _ = NAMES.set(Names::for_port(port));
         let device = match VirtualMic::create() {
             Ok(device) => device,
             Err(err) => {
@@ -130,7 +171,7 @@ impl Mic {
             },
         };
         #[cfg(target_os = "linux")]
-        log::info!("Microphone: UDP :{port} -> PipeWire source \"Nightfall Microphone\" ({SOURCE_NAME}), encrypted");
+        log::info!("Microphone: UDP :{port} -> PipeWire source \"{}\" ({}), encrypted", names().description, names().source);
         #[cfg(windows)]
         log::info!("Microphone: UDP :{port} -> VB-CABLE Input (record from CABLE Output), encrypted");
         let mic = Arc::new(Mic {
@@ -161,7 +202,7 @@ impl Mic {
 
     #[cfg(target_os = "linux")]
     pub fn set_default_input(&self) {
-        match std::process::Command::new("pactl").args(["set-default-source", SOURCE_NAME]).status() {
+        match std::process::Command::new("pactl").args(["set-default-source", names().source.as_str()]).status() {
             Ok(status) if status.success() => log::info!("Nightfall Microphone is now the default input"),
             Ok(status) => log::warn!("pactl set-default-source failed ({status})"),
             Err(err) => log::warn!("Can't run pactl: {err}"),
@@ -426,10 +467,6 @@ enum Feed {
     Pipe(std::fs::File),
 }
 
-#[cfg(target_os = "linux")]
-const FEED_NODE: &str = "nightfall_mic_feed";
-#[cfg(target_os = "linux")]
-const DEVICE_PROPS: &str = "device.description=\"Nightfall Microphone\" device.icon_name=audio-input-microphone";
 
 #[cfg(target_os = "linux")]
 impl VirtualMic {
@@ -447,19 +484,21 @@ impl VirtualMic {
         use std::process::{Command, Stdio};
         let module = pactl_load(&[
             "module-null-sink",
-            &format!("sink_name={SOURCE_NAME}"),
+            &format!("sink_name={}", names().source),
             "media.class=Audio/Source/Virtual",
             "channel_map=mono",
             "rate=48000",
-            &format!("sink_properties='{DEVICE_PROPS}'"),
+            &format!("sink_properties='{}'", names().device_props()),
         ])?;
         let mut child = match Command::new("pw-cat")
             .args(["--playback", "--raw", "--format", "s16", "--rate", "48000", "--channels", "1", "--latency", "10ms"])
             .args([
                 "-P",
                 &format!(
-                    "{{ node.name = {FEED_NODE} node.description = \"Nightfall Microphone feed\" \
-                     node.autoconnect = false node.dont-fallback = true }}"
+                    "{{ node.name = {} node.description = \"{} feed\" \
+                     node.autoconnect = false node.dont-fallback = true }}",
+                    names().feed,
+                    names().description
                 ),
                 "-",
             ])
@@ -480,7 +519,7 @@ impl VirtualMic {
         // The feed node appears asynchronously; link it once it exists.
         let link = || {
             Command::new("pw-link")
-                .args([format!("{FEED_NODE}:output_MONO"), format!("{SOURCE_NAME}:input_MONO")])
+                .args([format!("{}:output_MONO", names().feed), format!("{}:input_MONO", names().source)])
                 .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|s| s.success())
@@ -497,15 +536,15 @@ impl VirtualMic {
     fn create_pipe() -> Result<VirtualMic, String> {
         use std::os::unix::fs::OpenOptionsExt;
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR isn't set")?;
-        let path = std::path::Path::new(&runtime).join("nightfall-mic");
+        let path = std::path::Path::new(&runtime).join(&names().pipe);
         let module = pactl_load(&[
             "module-pipe-source",
-            &format!("source_name={SOURCE_NAME}"),
+            &format!("source_name={}", names().source),
             &format!("file={}", path.display()),
             "format=s16le",
             "rate=48000",
             "channels=1",
-            &format!("source_properties='{DEVICE_PROPS}'"),
+            &format!("source_properties='{}'", names().device_props()),
         ])?;
         // The source keeps the read end open; non-blocking so a stalled
         // PipeWire can never block the playout thread.
@@ -610,7 +649,8 @@ fn unload(module: &str) {
 fn remove_stale_modules() {
     let Ok(output) = std::process::Command::new("pactl").args(["list", "modules", "short"]).output() else { return };
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let ours = line.contains(&format!("source_name={SOURCE_NAME} ")) || line.contains(&format!("sink_name={SOURCE_NAME} "));
+        let source = &names().source;
+        let ours = line.contains(&format!("source_name={source} ")) || line.contains(&format!("sink_name={source} "));
         if ours && let Some(id) = line.split_whitespace().next() {
             log::info!("Removing a Nightfall Microphone left from an earlier run");
             unload(id);
@@ -715,6 +755,19 @@ impl VirtualMic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_second_meteor_gets_its_own_device() {
+        let first = Names::for_port(47902);
+        assert_eq!((first.source.as_str(), first.pipe.as_str()), ("nightfall_mic", "nightfall-mic"));
+        let second = Names::for_port(49902);
+        assert_eq!(second.source, "nightfall_mic_49902");
+        assert_eq!(second.description, "Nightfall Microphone (port 49902)");
+        // The leftover check matches "sink_name=nightfall_mic " with the
+        // space, so neither name matches the other.
+        assert!(!format!("sink_name={} ", second.source).contains(&format!("sink_name={} ", first.source)));
+    }
 
     fn packet(seq: u32, flags: u8) -> Vec<u8> {
         let mut p = MAGIC.to_vec();

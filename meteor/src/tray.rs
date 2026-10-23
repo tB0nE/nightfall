@@ -17,6 +17,7 @@ pub struct MeteorTray {
     pub stats: Arc<Stats>,
     pub depth: Option<Arc<Depth>>,
     pub mic: Option<Arc<Mic>>,
+    pub host: Arc<crate::host::view::View>,
 }
 
 impl ksni::Tray for MeteorTray {
@@ -25,7 +26,7 @@ impl ksni::Tray for MeteorTray {
     }
 
     fn title(&self) -> String {
-        "Nightfall Meteor".into()
+        self.name()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -35,7 +36,7 @@ impl ksni::Tray for MeteorTray {
 
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: "Nightfall Meteor".into(),
+            title: self.name(),
             description: self.summary(),
             ..Default::default()
         }
@@ -48,20 +49,14 @@ impl ksni::Tray for MeteorTray {
         };
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
         vec![
-            info(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION"))),
+            info(format!("{} {}", self.name(), env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,
             info(self.summary()),
-            info(format!(
-                "Sunshine {}:{} - {}",
-                self.status.sunshine_host,
-                self.status.map.sunshine_base,
-                if self.status.sunshine_up.load(Ordering::Relaxed) { "running" } else { "not running" }
-            )),
             info(format!(
                 "Proxy ports from {} (Sunshine + {}), discovery {}",
                 self.status.map.meteor(crate::ports::PortMap::channel("http")),
                 self.status.map.offset,
-                self.status.discovery_port
+                self.status.side.discovery
             )),
             info(format!(
                 "Traffic: {:.1} MB to client, {:.1} MB to Sunshine",
@@ -70,6 +65,7 @@ impl ksni::Tray for MeteorTray {
             )),
         ]
         .into_iter()
+        .chain(self.host_menu())
         .chain(self.firewall_menu())
         .chain([MenuItem::Separator])
         .chain(self.depth_menu())
@@ -115,6 +111,172 @@ impl ksni::Tray for MeteorTray {
 }
 
 impl MeteorTray {
+    /// "Nightfall Meteor", plus the base port when it isn't the default, so
+    /// two Meteors on one PC can be told apart.
+    fn name(&self) -> String {
+        let base = self.status.map.sunshine_base;
+        if base == crate::config::DEFAULT_SUNSHINE_PORT {
+            "Nightfall Meteor".into()
+        } else {
+            format!("Nightfall Meteor (port {base})")
+        }
+    }
+
+    /// The game streaming host: the one the user installed, or Vibepollo
+    /// for Nightfall run by Meteor, and switching between them.
+    fn host_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use crate::host::{Choice, Phase};
+        use ksni::menu::*;
+        let info = |label: String| -> ksni::MenuItem<Self> {
+            StandardItem { label, enabled: false, ..Default::default() }.into()
+        };
+        let host = &self.host;
+        let base = self.status.map.sunshine_base;
+        let up = self.status.sunshine_up.load(Ordering::Relaxed);
+        let own_pid = host.supervisor.as_ref().and_then(|s| s.pid());
+        let others = crate::host::other_hosts(own_pid);
+        let other_names = {
+            let mut names: Vec<&str> = others.iter().map(|(_, n)| n.as_str()).collect();
+            names.dedup();
+            names.join(" and ")
+        };
+        let mut items = vec![MenuItem::Separator];
+        match (&host.supervisor, host.state.choice) {
+            (Some(supervisor), _) => {
+                let line = match supervisor.phase() {
+                    Phase::Running => format!("Host: Vibepollo for Nightfall, port {base}"),
+                    Phase::WaitingForPort if !others.is_empty() => format!("Host: waiting for port {base}; close {other_names}"),
+                    Phase::WaitingForPort => format!("Host: waiting for port {base} to be free"),
+                    Phase::Restarting { failures } => format!("Host: restarting after a crash ({failures})"),
+                    Phase::Stopped => "Host: Vibepollo for Nightfall is stopped".into(),
+                    Phase::Failed(reason) => format!("Host stopped: {reason}"),
+                };
+                items.push(info(line));
+                if !others.is_empty() && base != crate::config::DEFAULT_SUNSHINE_PORT {
+                    items.push(info(format!("{other_names} is also running; Nightfall lists both")));
+                }
+                let running = supervisor.wanted();
+                items.push(
+                    StandardItem {
+                        label: if running { "Stop the host" } else { "Start the host" }.into(),
+                        activate: Box::new(|tray: &mut Self| {
+                            if let Some(s) = &tray.host.supervisor {
+                                s.set_wanted(!s.wanted());
+                            }
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                let appdata = supervisor.instance.appdata();
+                items.push(
+                    SubMenu {
+                        label: "Host settings".into(),
+                        submenu: vec![
+                            StandardItem {
+                                label: "Open the host's web page".into(),
+                                activate: Box::new(move |_| open_url(&format!("https://localhost:{}", base + 1))),
+                                ..Default::default()
+                            }
+                            .into(),
+                            StandardItem {
+                                label: "Open the host's folder (logs, config)".into(),
+                                activate: Box::new(move |_| open_url(&appdata.to_string_lossy())),
+                                ..Default::default()
+                            }
+                            .into(),
+                            StandardItem {
+                                label: "Switch back to my own host (restarts Meteor)".into(),
+                                activate: Box::new(|tray: &mut Self| tray.host.switch(Choice::External)),
+                                ..Default::default()
+                            }
+                            .into(),
+                        ],
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+            (None, Choice::Bundled) => {
+                items.push(info(format!(
+                    "Host: Vibepollo for Nightfall didn't start: {}",
+                    host.error.as_deref().unwrap_or("unknown")
+                )));
+                items.push(
+                    StandardItem {
+                        label: "Use my own host instead (restarts Meteor)".into(),
+                        activate: Box::new(|tray: &mut Self| tray.host.switch(Choice::External)),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+            (None, Choice::External) => {
+                let name = if other_names.is_empty() { "Host".to_string() } else { other_names.clone() };
+                items.push(info(if up {
+                    format!("{name} on port {base}: running")
+                } else {
+                    "No game streaming host found".to_string()
+                }));
+                items.extend(self.bundled_offer(up, &other_names));
+            }
+        }
+        items
+    }
+
+    /// Offers Vibepollo for Nightfall: set up when there's no host, or
+    /// switch to it next to another host.
+    fn bundled_offer(&self, host_up: bool, other_names: &str) -> Vec<ksni::MenuItem<Self>> {
+        use crate::download::State;
+        use ksni::menu::*;
+        let info = |label: String| -> ksni::MenuItem<Self> {
+            StandardItem { label, enabled: false, ..Default::default() }.into()
+        };
+        let host = &self.host;
+        if host.download.state() == State::Running {
+            let mb = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed) / 1_000_000;
+            return vec![
+                info(format!("Downloading Vibepollo for Nightfall: {} of {} MB", mb(&host.download.done), mb(&host.download.total))),
+                StandardItem {
+                    label: "Cancel download".into(),
+                    activate: Box::new(|tray: &mut Self| tray.host.download.cancel.store(true, Ordering::Relaxed)),
+                    ..Default::default()
+                }
+                .into(),
+            ];
+        }
+        let label = if host_up { "Use Vibepollo for Nightfall instead" } else { "Set up Vibepollo for Nightfall" };
+        let mut offer = vec![info("Meteor runs its own game streaming host, kept apart from any other".into())];
+        if host_up && !other_names.is_empty() {
+            offer.push(info(format!("Close {other_names} afterwards so only one host runs")));
+        }
+        if let State::Failed(err) = host.download.state() {
+            offer.push(info(format!("Last download failed: {err}")));
+        }
+        if host.binary.is_some() {
+            offer.push(
+                StandardItem {
+                    label: "Switch (restarts Meteor)".into(),
+                    activate: Box::new(|tray: &mut Self| tray.host.switch(crate::host::Choice::Bundled)),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        } else if let Some(release) = crate::host::RELEASE.as_ref() {
+            offer.push(
+                StandardItem {
+                    label: format!("Download ({} MB) and switch", release.size.div_ceil(1_000_000)),
+                    activate: Box::new(|tray: &mut Self| tray.host.download_and_switch()),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        } else {
+            offer.push(info("Not published yet; set host_binary in the settings file to try a build".into()));
+        }
+        vec![SubMenu { label: label.into(), submenu: offer, ..Default::default() }.into()]
+    }
+
     /// Host depth: on/off, Model and Rate submenus, and a live readout.
     fn depth_menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
