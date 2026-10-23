@@ -839,8 +839,9 @@ func get_depth_process_stage() -> int:
 # ai_3d_models[main.settings.host.ai_3d_model].gpu can never disagree - no need to
 # fall back based on the model's own .gpu flag here.
 func get_depth_backend_index() -> int:
-	if main.settings.host.ai_3d_speed == 0:
-		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	# Preserve the selected backend while AI 3D is off. Returning a CPU sentinel
+	# here mislabeled fresh Auto/OpenCL installs as EdgePad-256-CPU. Inference
+	# enablement remains gated separately by ai_3d_speed/get_depth_model_index().
 	if primary_is_browser():
 		var backend = main.browser_prototype.get("depth_backend_override")
 		return AI3D_BACKEND_GPU if selected_depth_model_index() == ANDROID_MODEL_AUTO or backend == null else int(backend)
