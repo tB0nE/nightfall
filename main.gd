@@ -526,6 +526,7 @@ var _ui_codec_btn: Button
 var _last_activity_time: float = 0.0
 var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
+var _ui_mouse_follows_btn: Button
 var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button

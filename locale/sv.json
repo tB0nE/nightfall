@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Glöm Meteor-nycklar",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Lita på nästa nyckel från Nightfall Meteor efter ominstallation.",
 	"Meteor's key changed; not using it": "Meteors nyckel har ändrats; används inte",
-	"Meteor keys forgotten": "Meteor-nycklar glömda"
+	"Meteor keys forgotten": "Meteor-nycklar glömda",
+	"Input": "Inmatning",
+	"Mouse Follows Pointer": "Musen följer pekaren",
+	"Move the PC cursor wherever you point, without clicking.": "Flytta datorns markör dit du pekar, utan att klicka."
 }

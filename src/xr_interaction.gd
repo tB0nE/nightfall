@@ -274,22 +274,44 @@ func _is_now_gripping() -> bool:
 	return false
 
 func _position_stream_pointer(active_raycast: RayCast3D) -> bool:
-	if not active_raycast or not active_raycast.is_colliding():
+	var host_pt = _stream_host_point(active_raycast)
+	if host_pt == null:
 		return false
+	var ref = main.layout.host_ref()
+	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
+	return true
+
+# The host pixel under the pointer, or null when it isn't on a stream screen.
+func _stream_host_point(active_raycast: RayCast3D) -> Variant:
+	if not active_raycast or not active_raycast.is_colliding():
+		return null
 	var col = active_raycast.get_collider()
 	var target = PointerTarget.resolve(col) if col else {"role": &""}
 	if target.role != &"screen":
-		return false
+		return null
 	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 	var uv = target.screen.hit_point_to_uv(hit_pos)
 	var uv_x = uv.x
 	if main.settings_controller.get_stereo_mode() >= 3:
 		var shift = _compute_parallax_shift(uv_x)
 		uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
-	var host_pt = main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
+	return main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
+
+var _last_hover_host_pt = null
+
+# Mouse Follows Pointer (#61): RTS games preview placement under the cursor
+# before a click, so move the host cursor whenever the pointed-at pixel
+# changes, not only on trigger or grip.
+func _follow_pointer_with_mouse(active_raycast: RayCast3D, blocked: bool) -> void:
+	if blocked or not main.settings.mouse_follows_pointer or not main.is_streaming:
+		_last_hover_host_pt = null
+		return
+	var host_pt = _stream_host_point(active_raycast)
+	if host_pt == null or host_pt == _last_hover_host_pt:
+		return
+	_last_hover_host_pt = host_pt
 	var ref = main.layout.host_ref()
 	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
-	return true
 
 func _send_double_click_chord(active_raycast: RayCast3D) -> bool:
 	if not _position_stream_pointer(active_raycast):
@@ -343,6 +365,8 @@ func handle_pointer_interaction():
 
 	var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
+	_follow_pointer_with_mouse(active_raycast, pad_blocking or tp_blocking \
+		or main.grabbed_node != null or main.grabbed_corner_idx >= 0)
 	var chord_enabled = main.settings.double_click_mode == 1 and not main._is_using_hands \
 		and main.is_streaming and not pad_blocking and not tp_blocking
 	if chord_enabled and not _double_click_chord_active and raw_clicking and is_gripping \
@@ -1254,18 +1278,19 @@ func handle_scroll():
 	var now = Time.get_ticks_msec() / 1000.0
 	if _scroll_cooldown > now:
 		return
-	var right_stick_y = 0.0
-	if main.right_hand:
-		right_stick_y = main.right_hand.get_vector2("primary").y
-	if absf(right_stick_y) < 0.1:
-		for pad in Input.get_connected_joypads():
-			var val = Input.get_joy_axis(pad, JOY_AXIS_RIGHT_Y)
-			if absf(val) > 0.1:
-				right_stick_y = val
-				break
-	if absf(right_stick_y) > 0.5:
-		main.stream_backend.send_scroll_event(1 if right_stick_y > 0 else -1)
+	# Only the Quest controller's stick scrolls. A gamepad's right stick is
+	# already forwarded to the host as a gamepad; also scrolling with it
+	# changes weapons in shooters (#60).
+	var right_stick_y = main.right_hand.get_vector2("primary").y if main.right_hand else 0.0
+	var clicks := scroll_clicks(right_stick_y)
+	if clicks != 0:
+		main.stream_backend.send_scroll_event(clicks)
 		_scroll_cooldown = now + 0.15
+
+static func scroll_clicks(stick_y: float) -> int:
+	if absf(stick_y) <= 0.5:
+		return 0
+	return 1 if stick_y > 0 else -1
 
 func _is_ui_grab_bar(pixel_pos: Vector2) -> bool:
 	var bar = main.ui_viewport.find_child("CompGrabBar", true, false)

@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Meteor-sleutels vergeten",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Vertrouw de volgende sleutel van Nightfall Meteor na herinstallatie.",
 	"Meteor's key changed; not using it": "Sleutel van Meteor gewijzigd; niet gebruikt",
-	"Meteor keys forgotten": "Meteor-sleutels vergeten"
+	"Meteor keys forgotten": "Meteor-sleutels vergeten",
+	"Input": "Invoer",
+	"Mouse Follows Pointer": "Muis volgt aanwijzer",
+	"Move the PC cursor wherever you point, without clicking.": "Verplaats de pc-cursor naar waar je wijst, zonder te klikken."
 }

@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Meteor のキーを忘れる",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "再インストール後、Nightfall Meteor の次のキーを信頼します。",
 	"Meteor's key changed; not using it": "Meteor のキーが変わったため使用しません",
-	"Meteor keys forgotten": "Meteor のキーを忘れました"
+	"Meteor keys forgotten": "Meteor のキーを忘れました",
+	"Input": "入力",
+	"Mouse Follows Pointer": "マウスがポインターに追従",
+	"Move the PC cursor wherever you point, without clicking.": "クリックせずに、指した場所へPCのカーソルを移動します。"
 }

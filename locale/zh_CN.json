@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "忘记 Meteor 密钥",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "重新安装后，信任 Nightfall Meteor 发送的下一个密钥。",
 	"Meteor's key changed; not using it": "Meteor 的密钥已更改，不再使用",
-	"Meteor keys forgotten": "已忘记 Meteor 密钥"
+	"Meteor keys forgotten": "已忘记 Meteor 密钥",
+	"Input": "输入",
+	"Mouse Follows Pointer": "鼠标跟随指针",
+	"Move the PC cursor wherever you point, without clicking.": "无需点击，PC 光标会移动到你所指的位置。"
 }

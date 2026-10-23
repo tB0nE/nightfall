@@ -161,6 +161,7 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.settings.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_mouse_follows_btn, "On" if main.settings.mouse_follows_pointer else "Off")
 		if main._ui_quick_start_btn:
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 		if main._ui_audio_boost_btn:

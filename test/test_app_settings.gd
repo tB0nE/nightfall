@@ -78,6 +78,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.cursor_mode = 0
 	source.pointer_steady = 3
 	source.double_click_mode = 1
+	source.mouse_follows_pointer = true
 	source.codec_preference = 3
 	source.grid_mode_enabled = false
 	source.performance_overlay_enabled = true
@@ -110,6 +111,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(loaded.cursor_mode == 0)
 	assert(loaded.pointer_steady == 3)
 	assert(loaded.double_click_mode == 1)
+	assert(loaded.mouse_follows_pointer)
 	assert(loaded.codec_preference == 3)
 	assert(not loaded.grid_mode_enabled)
 	assert(loaded.performance_overlay_enabled)
@@ -261,6 +263,7 @@ func _test_general_defaults_and_reset() -> void:
 	settings.cursor_mode = 0
 	settings.pointer_steady = 3
 	settings.double_click_mode = 1
+	settings.mouse_follows_pointer = true
 	settings.tracking_mode = 1
 	settings.codec_preference = 3
 	settings.grid_mode_enabled = false
@@ -278,6 +281,7 @@ func _test_general_defaults_and_reset() -> void:
 	assert(settings.cursor_mode == 1)
 	assert(settings.pointer_steady == 1)
 	assert(settings.double_click_mode == 0)
+	assert(not settings.mouse_follows_pointer)
 	assert(settings.tracking_mode == 0)
 	assert(settings.codec_preference == 1)
 	assert(settings.grid_mode_enabled)

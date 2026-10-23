@@ -23,6 +23,7 @@ const DEFAULT_AMBIENT_COLOR := 0
 const DEFAULT_CURSOR_MODE := 1
 const DEFAULT_POINTER_STEADY := 1
 const DEFAULT_DOUBLE_CLICK_MODE := 0
+const DEFAULT_MOUSE_FOLLOWS_POINTER := false
 const DEFAULT_TRACKING_MODE := 0
 const DEFAULT_CODEC_PREFERENCE := 1
 const DEFAULT_GRID_MODE_ENABLED := true
@@ -51,6 +52,8 @@ var ambient_color: int = DEFAULT_AMBIENT_COLOR
 var cursor_mode: int = DEFAULT_CURSOR_MODE
 var pointer_steady: int = DEFAULT_POINTER_STEADY
 var double_click_mode: int = DEFAULT_DOUBLE_CLICK_MODE
+## Move the host cursor wherever the pointer is on the screen, without a click.
+var mouse_follows_pointer: bool = DEFAULT_MOUSE_FOLLOWS_POINTER
 var tracking_mode: int = DEFAULT_TRACKING_MODE
 var codec_preference: int = DEFAULT_CODEC_PREFERENCE
 var grid_mode_enabled: bool = DEFAULT_GRID_MODE_ENABLED
@@ -89,6 +92,7 @@ func reset_general() -> void:
 	cursor_mode = DEFAULT_CURSOR_MODE
 	pointer_steady = DEFAULT_POINTER_STEADY
 	double_click_mode = DEFAULT_DOUBLE_CLICK_MODE
+	mouse_follows_pointer = DEFAULT_MOUSE_FOLLOWS_POINTER
 	tracking_mode = DEFAULT_TRACKING_MODE
 	codec_preference = DEFAULT_CODEC_PREFERENCE
 	grid_mode_enabled = DEFAULT_GRID_MODE_ENABLED

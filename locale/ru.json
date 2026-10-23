@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Забыть ключи Meteor",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Доверять следующему ключу Nightfall Meteor после переустановки.",
 	"Meteor's key changed; not using it": "Ключ Meteor изменился; не используется",
-	"Meteor keys forgotten": "Ключи Meteor забыты"
+	"Meteor keys forgotten": "Ключи Meteor забыты",
+	"Input": "Ввод",
+	"Mouse Follows Pointer": "Мышь следует за указателем",
+	"Move the PC cursor wherever you point, without clicking.": "Перемещает курсор ПК туда, куда вы указываете, без щелчка."
 }

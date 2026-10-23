@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Meteor anahtarlarını unut",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Yeniden kurulumdan sonra Nightfall Meteor'un sonraki anahtarına güvenin.",
 	"Meteor's key changed; not using it": "Meteor anahtarı değişti; kullanılmıyor",
-	"Meteor keys forgotten": "Meteor anahtarları unutuldu"
+	"Meteor keys forgotten": "Meteor anahtarları unutuldu",
+	"Input": "Giriş",
+	"Mouse Follows Pointer": "Fare işaretçiyi izler",
+	"Move the PC cursor wherever you point, without clicking.": "Tıklamadan, PC imlecini işaret ettiğiniz yere taşır."
 }

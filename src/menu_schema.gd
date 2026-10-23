@@ -150,6 +150,13 @@ static func get_tabs() -> Array:
 				],
 			},
 			{
+				"node_name": &"SettingsInputRow",
+				"title": "Input",
+				"options": [
+					_option(&"_ui_mouse_follows_btn", "Mouse Follows Pointer", "Off", "Move the PC cursor wherever you point, without clicking.", TARGET_SETTINGS, &"toggle_mouse_follows_pointer"),
+				],
+			},
+			{
 				"node_name": &"SettingsConnectionRow",
 				"title": "Connection",
 				"options": [

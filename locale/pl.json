@@ -210,5 +210,8 @@
 	"Forget Meteor Keys": "Zapomnij klucze Meteor",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Ufaj kolejnemu kluczowi Nightfall Meteor po jego ponownej instalacji.",
 	"Meteor's key changed; not using it": "Klucz Meteor się zmienił; nieużywany",
-	"Meteor keys forgotten": "Zapomniano klucze Meteor"
+	"Meteor keys forgotten": "Zapomniano klucze Meteor",
+	"Input": "Sterowanie",
+	"Mouse Follows Pointer": "Mysz podąża za wskaźnikiem",
+	"Move the PC cursor wherever you point, without clicking.": "Przesuwa kursor PC tam, gdzie wskazujesz, bez klikania."
 }

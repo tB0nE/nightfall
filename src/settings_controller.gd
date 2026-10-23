@@ -1298,6 +1298,10 @@ func cycle_ambient_color():
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
 
+func toggle_mouse_follows_pointer():
+	main.settings.mouse_follows_pointer = not main.settings.mouse_follows_pointer
+	_save_setting(main._ui_mouse_follows_btn, "On" if main.settings.mouse_follows_pointer else "Off")
+
 func cycle_auto_reconnect():
 	main.settings.auto_reconnect_enabled = not main.settings.auto_reconnect_enabled
 	if main.stream_backend and main.stream_backend._v2:
