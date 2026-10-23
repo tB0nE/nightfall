@@ -5,9 +5,44 @@ var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
 var _xr_control: RefCounted
+var _auto_retry := 0.0
+var _auto_suppressed := false
+
+func resume_auto_xr() -> void:
+	_auto_suppressed = false
+	_auto_retry = 2.0
+
+func process_auto_xr(delta: float) -> void:
+	if not main.is_streaming:
+		_auto_suppressed = false
+		if _xr_control and _xr_control.state == "watching": _xr_control.cancel()
+		return
+	_auto_retry -= delta
+	if _auto_retry > 0 or _auto_suppressed or not main.pcvr_test.entry_visible(): return
+	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
+	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
+	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
+	var script = preload("res://src/meteor_xr_control.gd")
+	if not FileAccess.file_exists(script.config_path()): return
+	var config := ConfigFile.new()
+	if config.load(script.config_path()) != OK: return
+	if not bool(config.get_value("host","auto_xr",true)) or not bool(config.get_value("host","handover_on_ready",false)) or not bool(config.get_value("host","relay",false)): return
+	var address := str(config.get_value("host","address",""))
+	var same_host := false
+	for host in main.stream_backend.get_hosts():
+		if host.get("id") == main.current_host_id and address in [host.get("localaddress",""),host.get("remoteaddress","")]: same_host = true
+	if not same_host: return
+	var control = get_xr_control()
+	if control.state not in ["idle","failed"]: return
+	_auto_retry = 5.0
+	control.connect_offer(true)
 
 func _init(owner: Node3D):
 	main = owner
+
+func xr_settings_available() -> bool:
+	# The authenticated XR watcher proves capability; depth discovery alone does not.
+	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
 
 func build_welcome_ui():
 	cancel_xr_control()
@@ -40,62 +75,8 @@ func build_welcome_ui():
 	build_language_picker(root)
 	if OS.has_feature("android"):
 		build_browser_picker(root)
-	if "pcvr_test" in main and main.pcvr_test.entry_visible():
-		var test_button := Button.new()
-		test_button.text = "DEV: Synthetic PCVR projection (45s; hold B/Y to exit)"
-		test_button.position = Vector2(480, 1000)
-		test_button.custom_minimum_size = Vector2(1000, 64)
-		test_button.add_theme_font_size_override("font_size", 24)
-		root.add_child(test_button)
-		var test_status := Label.new()
-		test_status.name = "PCVRTestStatus"
-		test_status.position = Vector2(480, 850)
-		test_status.size = Vector2(1400, 44)
-		test_status.add_theme_font_size_override("font_size", 24)
-		test_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		root.add_child(test_status)
-		test_button.pressed.connect(func():
-			main.pcvr_test.start()
-			test_status.text = main.pcvr_test.status)
-		var meteor_button := Button.new()
-		meteor_button.text = "DEV: Meteor decoded stereo (USB test; not tracked PCVR)"
-		meteor_button.position = Vector2(480, 920)
-		meteor_button.custom_minimum_size = Vector2(1000, 64)
-		meteor_button.add_theme_font_size_override("font_size", 24)
-		root.add_child(meteor_button)
-		meteor_button.pressed.connect(func():
-			main.pcvr_test.start(false, true)
-			test_status.text = main.pcvr_test.status)
-		_build_xr_control_probe(root, test_status)
 
 	show_welcome_screen("welcome")
-
-func _build_xr_control_probe(root: Control, label: Label) -> void:
-	# Explicit developer provisioning only; never auto-connect through discovery.
-	var control_script = preload("res://src/meteor_xr_control.gd")
-	if not FileAccess.file_exists(control_script.config_path()): return
-	var control = get_xr_control()
-	main._log("[XR-CONTROL] Device public key: " + control.public_identity())
-	var button := Button.new()
-	button.position = Vector2(480, 770)
-	button.custom_minimum_size = Vector2(780, 64)
-	button.add_theme_font_size_override("font_size", 24)
-	var cancel_button := Button.new()
-	cancel_button.text = "Cancel"
-	cancel_button.position = Vector2(1280, 770)
-	cancel_button.custom_minimum_size = Vector2(200, 64)
-	cancel_button.add_theme_font_size_override("font_size", 24)
-	root.add_child(button)
-	root.add_child(cancel_button)
-	var update := func():
-		if not is_instance_valid(button) or not is_instance_valid(label): return
-		button.text = "Accept Meteor XR session" if control.state == "offered" else "DEV: Authenticate Meteor XR control"
-		button.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
-		label.text = control.message
-	control.changed.connect(update)
-	button.pressed.connect(request_xr_control)
-	cancel_button.pressed.connect(control.cancel)
-	update.call()
 
 func get_xr_control() -> RefCounted:
 	# Welcome and the in-stream DEV entry share one lease and one receiver.
@@ -123,6 +104,7 @@ func _xr_entry_busy_reason(config: ConfigFile) -> String:
 	return main.pcvr_test.standby_busy_reason() if handover else main.pcvr_test.busy_reason()
 
 func cancel_xr_control(stop_projection: bool = true) -> void:
+	_auto_suppressed = true
 	if _xr_control: _xr_control.cancel(stop_projection)
 
 func build_browser_picker(root: Control) -> void:

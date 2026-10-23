@@ -11,23 +11,80 @@ var error := ""
 var _control
 var _lease := ""
 var _elapsed := 0.0
-var _hold := 0.0
+var _application_wait := 0.0
 var _drain_started := 0.0
 var _saved: Dictionary = {}
 var desktop_visible := false
+var menu_only := false
+var _menu_hidden: Array[Node3D] = []
+var _menu_collisions: Dictionary = {}
+var _menu_previous_ui := false
 var _watch
 
 func _init(owner) -> void:
 	main = owner
 
 func blocks_workspace() -> bool:
-	return owns_workspace() and (not desktop_visible or (_watch != null and _watch.interaction_blocked()))
+	return owns_workspace() and ((not desktop_visible and not menu_only) or (_watch != null and _watch.interaction_blocked()))
+
+func open_pcvr_menu() -> void:
+	if state != State.ACTIVE or not owns_workspace(): return
+	if not desktop_visible and not menu_only:
+		_menu_previous_ui = main.ui_visible
+		menu_only = true
+		_hide_desktop_visuals(main)
+	main.xr_interaction.cancel_transient_interactions("PCVR menu focus")
+	main.input_handler.release_host_inputs()
+	if main.get("controller_mapper") != null: main.controller_mapper.release_for_focus_loss()
+	_enforce_hidden()
+	main.ui_controller.open_pcvr_page()
+	if not main.ui_visible: main._toggle_ui()
+	main.pcvr_test.backend.set_workspace_input_focus(true)
+
+func close_pcvr_menu() -> void:
+	if not menu_only: return
+	main.ui_visible = false
+	main._set_ui_visible(false)
+	main.composition_panels.hide_ui()
+	_restore_menu_visuals()
+	menu_only = false
+	main.ui_visible = _menu_previous_ui
+	main._set_ui_visible(_menu_previous_ui)
+	main.pcvr_test.backend.set_workspace_input_focus(desktop_visible)
+	_enforce_hidden()
+
+func _hide_desktop_visuals(node: Node) -> void:
+	# Preserve the menu, tracking rig and its interaction visuals. Other visual
+	# leaves are temporarily hidden; do not change stream/renderer ownership.
+	if node == main.ui_panel_3d: return
+	if node is CollisionObject3D and node.collision_layer != 0:
+		_menu_collisions[node] = node.collision_layer
+		node.collision_layer = 0
+	var allowed: Array = [main.composition_panels.ui_layer,
+		main.composition_pointers.cursor_layer, main.composition_pointers.secondary_cursor_layer]
+	if node in allowed: return
+	if node is Node3D and (node is GeometryInstance3D or node.get_class().begins_with("OpenXRCompositionLayer")):
+		if not main.xr_origin.is_ancestor_of(node) or node.get_class().begins_with("OpenXRCompositionLayer"):
+			if node.visible:
+				_menu_hidden.append(node)
+				node.visible = false
+	for child in node.get_children(): _hide_desktop_visuals(child)
+
+func _restore_menu_visuals() -> void:
+	for node in _menu_hidden:
+		if is_instance_valid(node): node.visible = true
+	_menu_hidden.clear()
+	for node in _menu_collisions:
+		if is_instance_valid(node) and node.collision_layer == 0:
+			node.collision_layer = _menu_collisions[node]
+	_menu_collisions.clear()
 
 func owns_workspace() -> bool:
 	return not _saved.is_empty()
 
 func set_desktop_visible(value: bool) -> void:
 	if state != State.ACTIVE or not owns_workspace() or desktop_visible == value: return
+	if menu_only: close_pcvr_menu()
 	main.xr_interaction.cancel_transient_interactions("XR desktop focus changed")
 	main.input_handler.release_host_inputs()
 	if main.get("controller_mapper") != null: main.controller_mapper.release_for_focus_loss()
@@ -48,7 +105,12 @@ func arm(control) -> bool:
 	_control = control
 	_lease = control.session
 	_elapsed = 0.0
-	_hold = 0.0
+	_application_wait = 0.0
+	if main.get("settings_controller") != null:
+		var rate = control.get("session_fps")
+		if not main.settings_controller.pcvr_timing_active() and not main.settings_controller.begin_pcvr_timing(int(rate) if rate != null else 60):
+			request_stop("Cannot establish PCVR display timing")
+			return false
 	main._log("[XR-HANDOVER] Armed; desktop retained until application and decoded frame ready")
 	return true
 
@@ -72,16 +134,28 @@ func process(delta: float) -> void:
 		request_stop("XR native receiver unavailable")
 		return
 	var runtime: Dictionary = _control.runtime_status
-	if str(runtime.get("phase", "")) in ["session_ended", "completed", "cancelled", "failed"]:
+	# Steam/Proton can begin and destroy probe sessions before the game starts.
+	# Before the first video-backed handover, a session ending is not proof that
+	# the owned application exited. Keep the desktop and the bounded startup
+	# timer alive; supervisor completion/failure remains terminal in all states.
+	var phase := str(runtime.get("phase", ""))
+	if phase in ["completed", "cancelled", "failed"] or (phase == "session_ended" and state != State.WAITING):
 		request_stop("XR application ended")
 		return
 	if state == State.DRAINING and _elapsed - _drain_started >= 3.0:
 		request_stop("Desktop layer retirement timed out")
 		return
 	if state == State.WAITING:
+		if runtime.get("phase", "") == "ready_for_application":
+			_application_wait += delta
+			_elapsed = 0.0
+			if _application_wait >= 35.0: request_stop("XR application launch wait timed out")
+			return # Runtime readiness is not permission to hide the desktop.
 		if _elapsed >= STARTUP_TIMEOUT:
 			request_stop("XR handover startup timed out")
 		elif runtime.get("phase", "") == "session_active" and native.get("state", "") == "running" and bool(native.get("meteor_frame_ready", false)):
+			if main.get("settings_controller") != null and not main.settings_controller.pcvr_desktop_timing_ready():
+				return # Finish desktop rate restart before presenting the XR world.
 			if main.screens.size() != 1 or main.browser_content_active():
 				request_stop("Workspace changed during XR startup")
 				return
@@ -92,15 +166,10 @@ func process(delta: float) -> void:
 				return
 			_queue_layer_drain(generation)
 		return
-	if blocks_workspace():
-		var held := false
-		for hand in [main.right_hand, main.left_hand]:
-			if hand and hand.is_button_pressed("by_button"): held = true
-		_hold = _hold + delta if held else 0.0
-		if _hold >= 1.0: request_stop("Local exit")
 
 func request_stop(reason: String = "Local exit") -> void:
 	if state in [State.IDLE, State.STOPPING]: return
+	if menu_only: close_pcvr_menu()
 	generation += 1 # Invalidate every frame/draw continuation before cleanup.
 	error = reason
 	state = State.STOPPING
@@ -137,7 +206,7 @@ func _capture_and_hide() -> bool:
 func _enforce_hidden() -> void:
 	# Hide the parent, not every child: stream termination and other legitimate
 	# lifecycle callbacks can still update child visibility/content while hidden.
-	main.visible = desktop_visible
+	main.visible = desktop_visible or menu_only
 	main.audio_player.stream_paused = true
 	main.meteor_microphone.set_paused(true)
 	main.native_xr_renderer.set_presentation_suspended(not desktop_visible)
@@ -192,7 +261,6 @@ func _reset() -> void:
 	if main.get("settings_controller") != null: main.settings_controller.end_pcvr_timing()
 	_control = null
 	_lease = ""
-	_hold = 0.0
 
 func _xr_interface():
 	return XRServer.find_interface("OpenXR")

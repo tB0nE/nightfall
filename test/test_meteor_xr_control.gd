@@ -10,6 +10,10 @@ class Owner extends Node:
 	func _log(_message: String) -> void: pass
 
 func _init() -> void:
+	assert(ControlClient.valid_launch_notice({"generation":"a".repeat(32),"app_id":"438100"}))
+	assert(not ControlClient.valid_launch_notice({"generation":"a".repeat(31),"app_id":"438100"}))
+	assert(not ControlClient.valid_launch_notice({"generation":"g".repeat(32),"app_id":"438100"}))
+	assert(not ControlClient.valid_launch_notice({"generation":"a".repeat(32),"app_id":"0"}))
 	assert(not ControlClient.relay_preparation_failed("idle", true))
 	assert(not ControlClient.relay_preparation_failed("starting", true))
 	assert(ControlClient.relay_preparation_failed("failed", true))
@@ -25,6 +29,7 @@ func _init() -> void:
 	var client = ControlClient.new(owner)
 	assert(client._update_runtime({})) # Old hosts have no runtime field.
 	var status := {"phase": "starting", "generation": "a".repeat(32), "event_sequence": 0, "active_sessions": 0}
+	assert(ControlClient.valid_runtime_status({"phase":"ready_for_application", "generation":"a".repeat(32), "event_sequence":0, "active_sessions":0}))
 	assert(client._update_runtime({"runtime": status}))
 	assert(not client._update_runtime({})) # Cannot erase a known generation.
 	status.phase = "session_active"

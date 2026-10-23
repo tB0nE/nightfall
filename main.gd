@@ -973,7 +973,7 @@ func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
 func _update_cursor_layer():
-	if not comp.in_use:
+	if not comp.in_use and not pcvr_handover.menu_only:
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
 		return
@@ -1059,7 +1059,7 @@ func _update_cursor_layer():
 			contact_dot.visible = false
 
 func _sync_composition_panels():
-	if not comp.in_use:
+	if not comp.in_use and not pcvr_handover.menu_only:
 		return
 	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
 	match keyboard_action:
@@ -2313,8 +2313,20 @@ func primary_media_size() -> Vector2i:
 func _process(delta):
 	if _startup_ready and is_xr_active: _process_startup_hand_fallback(delta)
 	if _startup_ready and controller_mapper: controller_mapper.update_available_hands(delta)
+	if welcome_screen: welcome_screen.process_auto_xr(delta)
 	pcvr_test.process_standby(delta)
 	pcvr_handover.process(delta)
+	if ui_visible: ui_controller.refresh_pcvr_menu()
+	if pcvr_handover.menu_only and not pcvr_handover.blocks_workspace():
+		# Settings-only presentation must not run ordinary screen/ambient/grab
+		# updates which would reactivate hidden desktop layers behind the menu.
+		_process_controller_fade(delta)
+		xr_interaction.process_pointer_frame(delta)
+		_update_cursor_layer()
+		_sync_composition_panels()
+		_sync_interaction_viewports()
+		_update_laser_layers()
+		return
 	if pcvr_test.is_exclusive() or pcvr_handover.blocks_workspace():
 		if pcvr_test.is_exclusive(): pcvr_test.process(delta)
 		_log_flush_timer += delta
@@ -2885,6 +2897,7 @@ func _notification(what):
 		if meteor_microphone:
 			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if welcome_screen: welcome_screen.resume_auto_xr()
 		pcvr_test.set_application_paused(false)
 		if meteor_microphone:
 			meteor_microphone.set_paused(false)
@@ -2893,6 +2906,12 @@ func _notification(what):
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
+	if pcvr_handover.menu_only:
+		# The XR pointer dispatches settings clicks directly. Do not forward
+		# physical keyboard/gamepad events to an invisible Sunshine desktop.
+		if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+			pcvr_handover.close_pcvr_menu()
+		return
 	if pcvr_handover.blocks_workspace():
 		pcvr_handover.handle_input(event)
 		return
@@ -2904,6 +2923,9 @@ func _input(event):
 		_last_activity_time = Time.get_ticks_msec() / 1000.0
 
 func _toggle_ui():
+	if pcvr_handover.menu_only and ui_visible:
+		pcvr_handover.close_pcvr_menu()
+		return
 	if pcvr_handover.blocks_workspace(): return
 	if pcvr_test.is_exclusive(): return
 	ui_visible = not ui_visible
@@ -2919,7 +2941,7 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings(false)
 		_set_ui_position()
-		if comp.in_use and composition_panels.has_ui():
+		if (comp.in_use or pcvr_handover.menu_only) and composition_panels.has_ui():
 			composition_panels.show_ui(ui_panel_3d)
 			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 				ui_panel_3d.visible = true

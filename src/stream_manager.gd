@@ -16,6 +16,12 @@ func _b() -> StreamBackend:
 func get_current_stream_size() -> Vector2i:
 	return current_stream_size
 
+func effective_stream_fps() -> int:
+	var controller = main.get("settings_controller")
+	if controller != null and controller.has_method("effective_stream_fps"):
+		return controller.effective_stream_fps()
+	return main.settings.host.stream_fps
+
 func _is_local_host(ip: String) -> bool:
 	if ip == "127.0.0.1" or ip == "::1" or ip.to_lower() == "localhost":
 		return true
@@ -93,7 +99,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	elif main.settings.host.double_h:
 		w *= 2
 
-	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, main.settings.host.stream_fps, str(local_capture_mode)])
+	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, effective_stream_fps(), str(local_capture_mode)])
 	if main.settings.host.bitrate_idx >= 0:
 		bitrate = main.bitrates[main.settings.host.bitrate_idx] * 1000
 	else:
@@ -122,7 +128,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 			# inter-frame codecs.
 			bitrate = clampi(bitrate * 4, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS * 4)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
-			bitrate_ref.x, bitrate_ref.y, main.settings.host.stream_fps, float(bitrate) / 1000.0])
+			bitrate_ref.x, bitrate_ref.y, effective_stream_fps(), float(bitrate) / 1000.0])
 	resize_stream_viewport(w, h)
 	var options = {}
 	if local_capture_mode:
@@ -147,7 +153,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		options["width"] = w
 		options["height"] = h
-		options["fps"] = main.settings.host.stream_fps
+		options["fps"] = effective_stream_fps()
 		options["bitrate"] = bitrate
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
@@ -421,7 +427,7 @@ func _on_v2_launch_response(response: Dictionary):
 
 	var w = response.get("width", 1920)
 	var h = response.get("height", 1080)
-	var fps = main.settings.host.stream_fps
+	var fps = effective_stream_fps()
 	var br = response.get("bitrate", 20000)
 
 	var stream_config = {}
@@ -580,6 +586,7 @@ func _auto_bitrate(w: int, h: int) -> int:
 			var weight: float = float(pixels - lower["pixels"]) / span_pixels
 			resolution_mbps = lerpf(lower["mbps_30"], upper["mbps_30"], clampf(weight, 0.0, 1.0))
 			break
+	# Keep desktop bandwidth independent of the temporary PCVR FPS override.
 	var fps_factor: float = AUTO_BITRATE_FPS_FACTORS.get(main.settings.host.stream_fps, 2.0)
 	# Match Moonlight's whole-Mbps rounding so the result remains readable and
 	# stable across tiny custom-resolution changes.
@@ -960,7 +967,7 @@ func update_stats():
 	var bitrate_mbps = bitrate / 1000.0
 	var refresh_hz = main.display_refresh_rate
 	var codec_name = main.codec_labels[main.settings.codec_preference] if main.settings.codec_preference < main.codec_labels.size() else "?"
-	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(main.settings.host.stream_fps) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
+	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(effective_stream_fps()) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
 	txt += " \u2022 Net:" + (str(network_latency_ms) + "ms" if network_latency_ms >= 0 else "?")
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:

@@ -73,6 +73,7 @@ func load_host_state(ip: String):
 	# update_3d_btn_state() - no reason to keep two copies of this in sync.
 	main.ui_controller.update_stereo_shader()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
+	main.settings_controller.refresh_pcvr_timing_ui()
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
 	main.ui_controller.update_monitor_tab()

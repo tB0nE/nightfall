@@ -39,6 +39,9 @@ static func hit(pose: Transform3D, ray: Transform3D) -> Vector2:
 	if uv.x < 0 or uv.x > 1 or uv.y < 0 or uv.y > 1: return Vector2(-1, -1)
 	return uv
 
+static func settings_hit(uv: Vector2) -> bool:
+	return uv.x >= 0.65 and uv.y >= 0.55
+
 func reset() -> void:
 	_reveal = 0
 	_pressed = false
@@ -52,8 +55,8 @@ func reset() -> void:
 func process(delta: float, handover) -> void:
 	var backend = main.pcvr_test.backend
 	if not backend or not backend.has_method("set_wristwatch"): return
-	# Use the exact Quest LOCAL poses sent to Meteor, not Godot's potentially
-	# recentered/STAGE-relative scene transforms.
+	# Use the exact adopted Quest STAGE poses sent to Meteor, not Godot's
+	# potentially recentered scene transforms.
 	var tracking: PackedFloat32Array = backend.get_wristwatch_tracking()
 	var valid := tracking.size() == 22
 	var pose := Transform3D.IDENTITY
@@ -82,11 +85,14 @@ func process(delta: float, handover) -> void:
 	if _reveal < 0.2: _blocked_until_release = down
 	var hovered := uv.x >= 0 and uv.y >= 0.55
 	if hovered and down and not _pressed and not _blocked_until_release:
-		handover.set_desktop_visible(not handover.desktop_visible)
+		if settings_hit(uv):
+			handover.open_pcvr_menu()
+		else:
+			handover.set_desktop_visible(not handover.desktop_visible)
 		_blocked_until_release = true
 		_capture_click = true
 	_pressed = down
-	backend.set_workspace_input_focus(handover.desktop_visible or hovered or _capture_click)
+	backend.set_workspace_input_focus(handover.desktop_visible or handover.menu_only or hovered or _capture_click)
 	var q := pose.basis.get_rotation_quaternion()
 	var time := Time.get_time_dict_from_system()
 	backend.set_wristwatch(PackedFloat32Array([

@@ -1,5 +1,9 @@
 class_name SettingsController
 extends RefCounted
+const PCVRTiming = preload("res://src/pcvr_timing_policy.gd")
+var pcvr_timing := PCVRTiming.new()
+var _pcvr_wait_for_desktop := false
+var _pcvr_previous_render_cap := 0
 
 var main: Node3D
 var _restart_pending: bool = false
@@ -1602,6 +1606,62 @@ func apply_filter():
 				cm.set_shader_parameter("contrast", contrast_val)
 				cm.set_shader_parameter("gamma", gamma_val)
 
+func effective_stream_fps() -> int:
+	return pcvr_timing.effective_fps(main.settings.host.stream_fps)
+
+func pcvr_timing_active() -> bool:
+	return pcvr_timing.active
+
+func prepare_pcvr_timing(fps: int) -> bool:
+	if not begin_pcvr_timing(fps): return false
+	if _pcvr_wait_for_desktop:
+		var deadline := Time.get_ticks_msec() + 12000
+		while pcvr_timing.active and not pcvr_desktop_timing_ready():
+			if Time.get_ticks_msec() >= deadline: return false
+			await main.get_tree().process_frame
+	else:
+		if not await apply_display_refresh_rate(): return false
+	if not pcvr_timing.active: return false
+	var interface = XRServer.find_interface("OpenXR")
+	return interface != null and absf(interface.get_display_refresh_rate() - pcvr_timing.display_hz) < 0.6
+
+func begin_pcvr_timing(fps: int) -> bool:
+	var interface = XRServer.find_interface("OpenXR")
+	if not interface: return false
+	if not pcvr_timing.begin(fps, interface.get_display_refresh_rate()): return false
+	_refresh_request_seq += 1 # Retire any older asynchronous display request.
+	_pcvr_previous_render_cap = Engine.max_fps
+	Engine.max_fps = int(ceil(pcvr_timing.display_hz))
+	main.display_refresh_rate = pcvr_timing.display_hz
+	_pcvr_wait_for_desktop = main.is_streaming and (main.settings.host.stream_fps != fps or absf(interface.get_display_refresh_rate() - pcvr_timing.display_hz) >= 0.6)
+	refresh_pcvr_timing_ui()
+	main._log("[PCVR-TIMING] Override desktop video=%dfps display=%.0fHz; saved desktop=%dfps" % [fps, pcvr_timing.display_hz, main.settings.host.stream_fps])
+	if _pcvr_wait_for_desktop: _schedule_stream_restart()
+	return true
+
+func pcvr_desktop_timing_ready() -> bool:
+	return not _pcvr_wait_for_desktop or (not _restart_pending and main.is_streaming and main.session_lifecycle.phase == SessionLifecycle.Phase.STREAMING)
+
+func end_pcvr_timing() -> void:
+	if not pcvr_timing.active: return
+	var restart: bool = main.is_streaming and effective_stream_fps() != main.settings.host.stream_fps
+	pcvr_timing.end()
+	_refresh_request_seq += 1
+	Engine.max_fps = _pcvr_previous_render_cap
+	_pcvr_wait_for_desktop = false
+	refresh_pcvr_timing_ui()
+	main._log("[PCVR-TIMING] Restoring desktop preference %dfps" % main.settings.host.stream_fps)
+	if restart:
+		_schedule_stream_restart()
+	else:
+		apply_display_refresh_rate()
+
+func refresh_pcvr_timing_ui() -> void:
+	if not main._ui_fps_btn: return
+	main._ui_fps_btn.disabled = pcvr_timing.active
+	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d%s" % [effective_stream_fps(), " (PCVR)" if pcvr_timing.active else ""])
+	main._ui_fps_btn.set_meta(&"nightfall_tooltip", "Controlled by PCVR while active. Your desktop preference is restored on exit." if pcvr_timing.active else "Choose the stream frame rate and matching headset refresh rate.")
+
 func apply_display_refresh_rate() -> bool:
 	if not main.is_xr_active:
 		return false
@@ -1610,8 +1670,9 @@ func apply_display_refresh_rate() -> bool:
 		return false
 	_refresh_request_seq += 1
 	var request_seq = _refresh_request_seq
-	var target_hz: float = float(main.settings.host.stream_fps)
-	match main.settings.host.stream_fps:
+	var stream_fps := effective_stream_fps()
+	var target_hz: float = float(stream_fps)
+	match stream_fps:
 		30: target_hz = 90.0
 		# 2026-08-29: testing 120Hz again now that stereo rendering is
 		# projectionless (no more per-eye mesh reprojection cost) - this was
@@ -1619,8 +1680,9 @@ func apply_display_refresh_rate() -> bool:
 		# the old mesh-projection render path and caused stutter. Revert to
 		# 72.0 if that's still true here.
 		60: target_hz = 120.0
+	if pcvr_timing.active: target_hz = pcvr_timing.display_hz
 	var available = interface.get_available_display_refresh_rates()
-	Engine.max_fps = main.settings.host.stream_fps
+	Engine.max_fps = int(ceil(pcvr_timing.display_hz)) if pcvr_timing.active else stream_fps
 	if available.is_empty():
 		main._log("[REFRESH] No available refresh rates reported")
 		main.display_refresh_rate = target_hz
@@ -1675,7 +1737,9 @@ func apply_display_refresh_rate() -> bool:
 	# reprojection blur") - testing whether that ASW blur was a symptom of
 	# the old mesh-projection render path specifically, now that rendering
 	# is projectionless. Revert to 0 (uncapped) if the blur is still there.
-	if target_already_active:
+	if pcvr_timing.active:
+		main._log("[PCVR-TIMING] Display %.0fHz; desktop video %dfps; app cap %d" % [best, stream_fps, Engine.max_fps])
+	elif target_already_active:
 		main._log("[REFRESH] Preserved active %.0fHz for %dfps, capped render to %dfps" % [best, main.settings.host.stream_fps, main.settings.host.stream_fps])
 	elif absf(best - target_hz) < 0.6:
 		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.settings.host.stream_fps, main.settings.host.stream_fps])
@@ -1699,6 +1763,7 @@ func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	return best
 
 func cycle_fps():
+	if pcvr_timing.active: return
 	var idx = STREAM_FPS_RATES.find(main.settings.host.stream_fps)
 	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
 	main.settings.host.stream_fps = STREAM_FPS_RATES[next_idx]

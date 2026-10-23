@@ -1,5 +1,6 @@
 class_name MeteorXRControl
 extends RefCounted
+const PCVRVideoSettings = preload("res://src/pcvr_stream_settings.gd")
 ## DEV authenticated control only. Prepared never starts exclusive presentation.
 signal changed
 signal runtime_changed
@@ -11,6 +12,8 @@ var state := "idle"
 var message := ""
 var session := ""
 var runtime_status: Dictionary = {}
+var session_fps := 0
+var session_eye_size := 0
 var _generation := 0
 var _peer: StreamPeerTCP
 var _send
@@ -20,6 +23,7 @@ var _rx := 0
 var _busy := false
 var _relay
 var _owns_projection := false
+var _owns_timing := false
 var _long_run := false
 var _standby_only := false
 var _handover_on_ready := false
@@ -62,12 +66,23 @@ func cancel(stop_projection: bool = true) -> void:
 	_send = null
 	_receive = null
 	session = ""
+	session_fps = 0
+	session_eye_size = 0
 	if not runtime_status.is_empty():
 		runtime_status.clear()
 		runtime_changed.emit()
 	_busy = false
 	_status("idle", "Control connection closed")
 	if owned and stop_projection: owner.pcvr_test.request_stop()
+	if _owns_timing:
+		_owns_timing = false
+		_release_timing_when_idle(_generation)
+
+func _release_timing_when_idle(token: int) -> void:
+	while token == _generation and (owner.pcvr_test.standby_active or owner.pcvr_test.is_exclusive()):
+		await owner.get_tree().process_frame
+	if token == _generation:
+		owner.settings_controller.end_pcvr_timing()
 
 func _fail(text: String) -> void:
 	cancel()
@@ -99,7 +114,7 @@ static func valid_runtime_status(value: Variant) -> bool:
 	if not value is Dictionary: return false
 	if not value.has_all(["phase", "generation", "event_sequence", "active_sessions"]): return false
 	var phase = value.get("phase")
-	if phase not in ["waiting_for_lanes", "starting", "session_created", "session_active", "session_ended", "stopping", "completed", "cancelled", "failed"]: return false
+	if phase not in ["waiting_for_lanes", "starting", "ready_for_application", "session_created", "session_active", "session_ended", "stopping", "completed", "cancelled", "failed"]: return false
 	var generation = value.get("generation")
 	if generation != null:
 		if not generation is String or generation.length() != 32: return false
@@ -130,6 +145,10 @@ func _update_runtime(reply: Dictionary) -> bool:
 		if int(value.event_sequence) < int(runtime_status.event_sequence): return false
 	if runtime_status != value:
 		runtime_status = value.duplicate(true)
+		if value.phase == "ready_for_application":
+			message = "XR armed: start the application on the PC (30s window)"
+		elif value.phase == "session_active":
+			message = "XR application active"
 		owner._log("[XR-CONTROL] runtime=%s events=%s active_sessions=%s" % [value.phase, value.event_sequence, value.active_sessions])
 		runtime_changed.emit()
 		changed.emit()
@@ -212,7 +231,7 @@ func _request(request: Dictionary, token: int) -> Dictionary:
 	if decoded.is_empty() or json.parse(decoded.get_string_from_utf8()) != OK or not json.data is Dictionary: return {}
 	return json.data
 
-func connect_offer() -> void:
+func connect_offer(watch_only: bool = false) -> void:
 	if _busy or state not in ["idle", "failed"]: return
 	cancel()
 	if not supported():
@@ -273,14 +292,67 @@ func connect_offer() -> void:
 	if authenticated.get("state", "") != "idle":
 		_fail("Control authentication rejected or host busy")
 		return
-	var hz := int(config.get_value("host", "hz", 20))
+	if watch_only:
+		_busy = false
+		_status("watching", "Automatic XR ready; waiting for a host launch")
+		await _watch_launch_intent(config, token)
+		return
+	await _offer_authenticated(config, token)
+
+static func valid_launch_notice(value: Variant) -> bool:
+	if not value is Dictionary: return false
+	var generation = value.get("generation")
+	var app_id = value.get("app_id")
+	return generation is String and generation.length() == 32 and generation.is_valid_hex_number(false) and app_id is String and app_id.is_valid_int() and int(app_id) > 0 and int(app_id) < 4294967296
+
+func _watch_launch_intent(config: ConfigFile, token: int) -> void:
+	while token == _generation and state == "watching" and owner.is_streaming:
+		var reply := await _request({"type":"pending_launch"},token)
+		if token != _generation: return
+		if reply.get("state", "") != "idle" or reply.get("reason") != null:
+			_fail("Automatic XR watch unavailable on host")
+			return
+		if reply.get("pending_launch") != null:
+			if not valid_launch_notice(reply.pending_launch):
+				_fail("Invalid automatic XR launch notice")
+				return
+			var reason: String = owner.pcvr_test.standby_busy_reason()
+			if not reason.is_empty():
+				await owner.get_tree().create_timer(1.0).timeout
+				continue
+			var claimed := await _request({"type":"claim_launch","generation":reply.pending_launch.generation},token)
+			if token != _generation: return
+			if claimed.get("reason") != null or claimed.get("state", "") != "idle":
+				_fail("Automatic XR launch request expired")
+				return
+			owner._log("[XR-AUTO] Host requested Steam application " + reply.pending_launch.app_id)
+			await _offer_authenticated(config,token)
+			if token == _generation and state == "offered": accept_offer()
+			return
+		await owner.get_tree().create_timer(1.0).timeout
+	if token == _generation and state == "watching": cancel()
+
+func _offer_authenticated(config: ConfigFile, token: int) -> void:
+	_busy = true
+	var quest3: bool = owner.get("device_is_quest3") == true
+	var hz := int(config.get_value("host", "hz", PCVRVideoSettings.QUEST3_STREAM_FPS if quest3 else 20))
 	var eye_size := int(config.get_value("host", "eye_size", 512))
+	var video_settings := PCVRVideoSettings.new(quest3)
+	video_settings.load_from()
+	eye_size = video_settings.effective_eye_size(eye_size)
+	if quest3: hz = PCVRVideoSettings.QUEST3_STREAM_FPS
 	_long_run = bool(config.get_value("host", "long_run", false))
 	_handover_on_ready = bool(config.get_value("host", "handover_on_ready", false))
 	_standby_only = bool(config.get_value("host", "standby_only", false)) or _handover_on_ready
-	if hz not in [20, 60] or eye_size not in [512, 1024] or (_long_run and hz != 60):
+	if hz not in [20, 60, 72] or eye_size not in [512, 1024, 2048, 2560] or (_long_run and hz not in [60, 72]):
 		_fail("Unsupported developer XR rate or eye size")
 		return
+	if video_settings.bitrate_mbps != 0 or quest3:
+		var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": "h265" if quest3 else "h264"}, token)
+		if token != _generation: return
+		if configured.get("state", "") != "idle" or configured.get("reason") != null:
+			_fail("Host rejected PCVR bitrate configuration; update Meteor")
+			return
 	var offer := await _request({"type": "offer_long" if _long_run else "offer", "width": eye_size, "height": eye_size, "hz": hz}, token)
 	if token != _generation: return
 	_busy = false
@@ -288,6 +360,8 @@ func connect_offer() -> void:
 		_fail("XR offer rejected")
 		return
 	session = offer.session
+	session_fps = hz
+	session_eye_size = eye_size
 	var offer_text := "Accept control-only XR preparation?"
 	if not _relay_config.is_empty():
 		offer_text = "Accept XR standby? Desktop stays visible" if _standby_only else "Accept exclusive Meteor XR session?"
@@ -309,7 +383,7 @@ func accept_offer() -> void:
 		_fail("Invalid initial XR runtime status")
 		return
 	_status("prepared", "Preparing authenticated XR transport" if not _relay_config.is_empty() else "Control-only XR preparation accepted")
-	_watch_lease(token, "prepared", 120000 if _long_run else 60000)
+	_watch_lease(token, "prepared", 360000 if _long_run else 60000)
 	if not _relay_config.is_empty() and reply.get("relay") is Dictionary:
 		_start_relay(reply.relay, token)
 
@@ -327,14 +401,28 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	_relay_config["video"] = int(ports.get("video", 0))
 	_relay_config["tracking"] = int(ports.get("tracking", 0))
 	_relay_config["session"] = session.hex_decode()
+	if _handover_on_ready:
+		_owns_timing = true
+		var prepared: bool = await owner.settings_controller.prepare_pcvr_timing(session_fps)
+		if token != _generation: return
+		if not prepared:
+			_fail("Cannot prepare matched PCVR display and desktop timing")
+			return
+	if not owner.pcvr_test.backend.has_method("set_meteor_eye_size") or not owner.pcvr_test.backend.set_meteor_eye_size(session_eye_size):
+		_fail("Cannot configure matching PCVR projection resolution")
+		return
+	if owner.pcvr_test.backend.has_method("set_pcvr_post_processing"):
+		var post := PCVRVideoSettings.new(owner.get("device_is_quest3") == true)
+		post.load_from()
+		owner.pcvr_test.backend.set_pcvr_post_processing(post.sharpen, post.sampling)
 	_relay = ClassDB.instantiate("MeteorXrRelay")
 	_owns_projection = true
 	if _standby_only:
-		if not owner.pcvr_test.start_meteor_standby(90.0 if _long_run else 45.0):
+		if not owner.pcvr_test.start_meteor_standby(300.0 if _long_run else 45.0):
 			_fail("XR standby entry rejected")
 			return
 	else:
-		owner.pcvr_test.start(false, true, 90.0 if _long_run else 45.0)
+		owner.pcvr_test.start(false, true, 300.0 if _long_run else 45.0)
 		if not owner.pcvr_test.is_exclusive():
 			_fail("Exclusive XR entry rejected")
 			return
@@ -356,6 +444,7 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 	if _handover_on_ready and not owner.pcvr_handover.arm(self):
 		_fail("XR handover requires a single desktop/welcome screen and updated native provider")
 		return
+	if _handover_on_ready: _owns_timing = false # Handover now owns drain-before-restore.
 	_watch_relay(token)
 
 static func relay_preparation_failed(native_state: String, exclusive: bool) -> bool:

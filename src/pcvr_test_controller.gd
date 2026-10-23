@@ -3,6 +3,7 @@ extends RefCounted
 ## DEV projection tests only; never owns a second OpenXR session/frame loop.
 const Session = preload("res://src/pcvr_session.gd")
 const TIMEOUT_SECONDS := 45.0
+const LONG_TIMEOUT_SECONDS := 300.0
 const FIRST_FRAME_TIMEOUT_SECONDS := 5.0
 var main
 var session = Session.new()
@@ -89,7 +90,7 @@ func start_meteor_standby(maximum_seconds: float = TIMEOUT_SECONDS) -> bool:
 	_standby_stopping = false
 	_standby_ready_logged = false
 	_standby_elapsed = 0.0
-	timeout_seconds = 90.0 if maximum_seconds == 90.0 else TIMEOUT_SECONDS
+	timeout_seconds = maximum_seconds if maximum_seconds in [90.0, LONG_TIMEOUT_SECONDS] else TIMEOUT_SECONDS
 	main._log("[PCVR-STANDBY] Started without exclusive presentation or workspace changes")
 	return true
 
@@ -104,6 +105,7 @@ func process_standby(delta: float) -> void:
 		main._log("[PCVR-STANDBY] Native resources drained; desktop unchanged")
 		return
 	if not _standby_stopping and (native_state == "failed" or _standby_elapsed >= timeout_seconds):
+		main._log("[PCVR-STANDBY] Stop reason=%s elapsed=%.1fs limit=%.1fs" % ["native failure" if native_state == "failed" else "DEV session timeout", _standby_elapsed, timeout_seconds])
 		request_stop()
 	if not _standby_ready_logged and bool(snapshot.get("meteor_frame_ready", false)):
 		_standby_ready_logged = true
@@ -122,7 +124,7 @@ func start(remote_stream: bool = false, meteor_stream: bool = false, maximum_sec
 		return
 	stream_mode = remote_stream
 	meteor_mode = meteor_stream
-	timeout_seconds = 90.0 if meteor_stream and maximum_seconds == 90.0 else TIMEOUT_SECONDS
+	timeout_seconds = maximum_seconds if meteor_stream and maximum_seconds in [90.0, LONG_TIMEOUT_SECONDS] else TIMEOUT_SECONDS
 	_last_remote_status = ""
 	session.reset()
 	elapsed = 0.0
@@ -169,7 +171,7 @@ func _execute(commands: Array[Dictionary]) -> void:
 				_queue_preparation_drain(token)
 			"connect":
 				_log_transition("connecting")
-				status = "Starting — hold B or Y for 1 second to exit (%ds timeout)" % int(timeout_seconds)
+				status = ("Starting Meteor XR (%ds timeout)" if meteor_mode else "Starting — hold B or Y for 1 second to exit (%ds timeout)") % int(timeout_seconds)
 				var started: bool = backend.start_meteor_test() if meteor_mode else (backend.start_stream() if stream_mode else backend.start_test())
 				if not started:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
@@ -243,8 +245,11 @@ func process(delta: float) -> void:
 	_suppress(main.get_tree().root)
 	elapsed += delta
 	var held := false
-	for hand in [main.right_hand, main.left_hand]:
-		if hand and hand.is_button_pressed("by_button"): held = true
+	# B/Y belong to the streamed game's input bindings, not our exit gesture.
+	# Keep the escape gesture only for standalone diagnostic projection tests.
+	if not meteor_mode:
+		for hand in [main.right_hand, main.left_hand]:
+			if hand and hand.is_button_pressed("by_button"): held = true
 	hold_seconds = hold_seconds + delta if held else 0.0
 	if hold_seconds >= 1.0 or elapsed >= timeout_seconds:
 		request_stop()

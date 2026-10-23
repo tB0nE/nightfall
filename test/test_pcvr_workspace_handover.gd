@@ -1,6 +1,10 @@
 extends SceneTree
 const Handover = preload("res://src/pcvr_workspace_handover.gd")
 
+class HeldHand extends RefCounted:
+	func is_button_pressed(action: String) -> bool:
+		return action == "by_button"
+
 class Native extends RefCounted:
 	var ready := false
 	var activations := 0
@@ -42,7 +46,27 @@ class Inputs extends RefCounted:
 class Interaction extends RefCounted:
 	func cancel_transient_interactions(_reason: String) -> void: pass
 
+class Panels extends RefCounted:
+	var ui_layer = null
+	func hide_ui() -> void: pass
+
+class Pointers extends RefCounted:
+	var cursor_layer = null
+	var secondary_cursor_layer = null
+
+class UI extends RefCounted:
+	var opened := 0
+	func open_pcvr_page() -> void: opened += 1
+
 class Owner extends Node3D:
+	var ui_visible := false
+	var ui_panel_3d := Node3D.new()
+	var xr_origin := Node3D.new()
+	var composition_panels := Panels.new()
+	var composition_pointers := Pointers.new()
+	var ui_controller := UI.new()
+	func _toggle_ui() -> void: ui_visible = not ui_visible
+	func _set_ui_visible(value: bool) -> void: ui_visible = value
 	var pcvr_test := PCVR.new()
 	var native_xr_renderer := Renderer.new()
 	var audio_player := Audio.new()
@@ -58,6 +82,7 @@ class Owner extends Node3D:
 	func _log(_text: String) -> void: pass
 
 class ControlState extends RefCounted:
+	var session_fps := 60
 	var state := "prepared"
 	var session := "a".repeat(32)
 	var runtime_status := {"phase": "starting"}
@@ -75,18 +100,66 @@ class Harness extends Handover:
 	func _xr_interface(): return interface
 	func _queue_layer_drain(token: int) -> void: drains.append(token)
 
+class TimingSettings extends RefCounted:
+	var started := 0
+	var ended := 0
+	var ready := false
+	func pcvr_timing_active() -> bool: return false
+	func begin_pcvr_timing(fps: int) -> bool:
+		assert(fps == 60)
+		started += 1
+		return true
+	func pcvr_desktop_timing_ready() -> bool: return ready
+	func end_pcvr_timing() -> void: ended += 1
+
+class TimingOwner extends Owner:
+	var settings_controller := TimingSettings.new()
+
 func _initialize() -> void:
 	_run.call_deferred()
 
+func _test_timing_handover() -> void:
+	var owner := TimingOwner.new()
+	root.add_child(owner)
+	var control := ControlState.new()
+	var handover := Harness.new(owner)
+	assert(handover.arm(control))
+	assert(owner.settings_controller.started == 1)
+	owner.pcvr_test.backend.ready = true
+	control.runtime_status.phase = "session_active"
+	handover.process(.1)
+	assert(handover.state == Handover.State.WAITING and owner.visible)
+	assert(handover.drains.is_empty(), "Do not hide desktop before its timing restart completes")
+	owner.settings_controller.ready = true
+	handover.process(.1)
+	assert(handover.state == Handover.State.DRAINING)
+	handover.request_stop("Test cancellation")
+	assert(owner.settings_controller.ended == 0, "Do not restore timing before native receiver stops")
+	owner.pcvr_test.standby_active = false
+	handover.process(.1)
+	assert(handover.state == Handover.State.IDLE and owner.settings_controller.ended == 1)
+	handover.process(.1)
+	assert(owner.settings_controller.ended == 1)
+	owner.ui_panel_3d.free()
+	owner.xr_origin.free()
+	owner.free()
+
 func _run() -> void:
+	_test_timing_handover()
 	var owner := Owner.new()
 	root.add_child(owner)
+	owner.add_child(owner.ui_panel_3d)
+	owner.add_child(owner.xr_origin)
 	var child := Node3D.new()
 	owner.add_child(child)
 	var control := ControlState.new()
 	var handover := Harness.new(owner)
 	assert(handover.arm(control))
 	assert(not handover.arm(control))
+	control.runtime_status.phase = "ready_for_application"
+	handover.process(21.0)
+	assert(handover.state == Handover.State.WAITING and owner.visible and not handover.blocks_workspace())
+	control.runtime_status.phase = "starting"
 	owner.pcvr_test.backend.ready = true
 	handover.process(.1)
 	assert(not handover.blocks_workspace() and owner.visible)
@@ -94,6 +167,16 @@ func _run() -> void:
 	owner.pcvr_test.backend.ready = false
 	handover.process(.1)
 	assert(not handover.blocks_workspace())
+	# Steam's runtime probe may begin/end repeatedly before real game video.
+	# Session churn must not stop or reset the bounded startup timer.
+	for _probe in 2:
+		control.runtime_status.phase = "session_ended"
+		handover.process(.1)
+		assert(handover.state == Handover.State.WAITING and owner.visible)
+		assert(owner.pcvr_test.stops == 0 and owner.pcvr_test.backend.activations == 0)
+		control.runtime_status.phase = "session_active"
+		handover.process(.1)
+		assert(handover.state == Handover.State.WAITING)
 	owner.pcvr_test.backend.ready = true
 	handover.process(.1)
 	var token: int = handover.generation
@@ -107,6 +190,13 @@ func _run() -> void:
 	child.visible = false
 	handover._layers_drained(token)
 	assert(handover.state == Handover.State.ACTIVE and owner.pcvr_test.backend.activations == 1)
+	# The automatic standby-to-XR path must leave B/Y entirely to the game.
+	owner.right_hand = HeldHand.new()
+	owner.left_hand = HeldHand.new()
+	handover.process(1.5)
+	assert(handover.state == Handover.State.ACTIVE and owner.pcvr_test.stops == 0)
+	owner.right_hand = null
+	owner.left_hand = null
 	handover.set_desktop_visible(true)
 	assert(owner.visible and handover.owns_workspace() and not handover.blocks_workspace())
 	assert(not owner.native_xr_renderer.presentation_suspended and owner.pcvr_test.backend.focused)
@@ -114,7 +204,23 @@ func _run() -> void:
 	handover.set_desktop_visible(false)
 	assert(not owner.visible and handover.blocks_workspace())
 	assert(owner.native_xr_renderer.presentation_suspended)
-	control.state = "failed"
+	var desktop_mesh := MeshInstance3D.new()
+	owner.add_child(desktop_mesh)
+	var desktop_hit := Area3D.new()
+	desktop_hit.collision_layer = 8
+	desktop_mesh.add_child(desktop_hit)
+	handover.open_pcvr_menu()
+	assert(handover.menu_only and not handover.desktop_visible and owner.visible)
+	assert(not handover.blocks_workspace() and owner.pcvr_test.backend.focused)
+	assert(not desktop_mesh.visible and desktop_hit.collision_layer == 0)
+	assert(owner.ui_visible and owner.ui_controller.opened == 1)
+	assert(owner.native_xr_renderer.presentation_suspended)
+	handover.close_pcvr_menu()
+	assert(not handover.menu_only and not owner.visible and not owner.ui_visible)
+	assert(desktop_mesh.visible and desktop_hit.collision_layer == 8)
+	assert(not owner.pcvr_test.backend.focused)
+	# Once actual video has activated, session end still restores the desktop.
+	control.runtime_status.phase = "session_ended"
 	handover.process(.1)
 	assert(handover.state == Handover.State.STOPPING and owner.pcvr_test.stops == 1)
 	handover.request_stop()
@@ -131,6 +237,7 @@ func _run() -> void:
 	# Cancellation before the draw acknowledgement cannot activate stale work.
 	owner.pcvr_test.standby_active = true
 	control.state = "prepared"
+	control.runtime_status.phase = "session_active"
 	assert(handover.arm(control))
 	handover.process(.1)
 	token = handover.generation
@@ -154,9 +261,10 @@ func _run() -> void:
 	assert(owner.visible and handover.state == Handover.State.IDLE)
 	# Startup timeout must never hide the desktop.
 	owner.pcvr_test.standby_active = true
-	control.runtime_status.phase = "starting"
+	control.runtime_status.phase = "session_ended"
 	assert(handover.arm(control))
 	handover.process(20.1)
+	assert(handover.state == Handover.State.STOPPING and handover.error == "XR handover startup timed out")
 	assert(not handover.blocks_workspace() and owner.visible)
 	owner.pcvr_test.standby_active = false
 	handover.process(.1)
@@ -172,6 +280,16 @@ func _run() -> void:
 	owner.pcvr_test.standby_active = false
 	handover.process(.1)
 	assert(owner.visible)
+	# Real supervisor terminal outcomes are not mistaken for harmless probes.
+	for terminal in ["completed", "cancelled", "failed"]:
+		owner.pcvr_test.standby_active = true
+		control.runtime_status.phase = terminal
+		assert(handover.arm(control))
+		handover.process(.1)
+		assert(handover.state == Handover.State.STOPPING and owner.visible)
+		owner.pcvr_test.standby_active = false
+		handover.process(.1)
+	control.runtime_status.phase = "session_active"
 	# A renderer that cannot suspend must leave presentation untouched.
 	owner.pcvr_test.standby_active = true
 	owner.native_xr_renderer.reject = true

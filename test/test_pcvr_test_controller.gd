@@ -158,6 +158,13 @@ func _run() -> void:
 	controller.backend.state = "running"
 	controller.backend.frames = 12
 	owner.left_hand = Hand.new()
+	owner.right_hand = Hand.new()
+	controller.meteor_mode = true
+	controller.process(1.5)
+	assert(controller.session.state == Session.State.RUNNING)
+	assert(controller.backend.stops == 4 and controller.hold_seconds == 0.0)
+	controller.meteor_mode = false
+	owner.right_hand.held = false
 	controller.process(0.6)
 	assert(controller.session.state == Session.State.RUNNING)
 	owner.left_hand.held = false
@@ -226,6 +233,23 @@ func _test_standby(owner: Owner) -> void:
 	controller.backend.state = "idle"
 	controller.process_standby(0.1)
 	assert(not controller.standby_active)
+	# The game-testing profile survives the old 90s cutoff, but stays bounded.
+	assert(controller.start_meteor_standby(Controller.LONG_TIMEOUT_SECONDS))
+	controller.backend.state = "running"
+	controller.process_standby(90.1)
+	assert(controller.backend.stops == 3 and controller.standby_active)
+	controller.process_standby(209.8)
+	assert(controller.backend.stops == 3)
+	controller.process_standby(.2)
+	assert(controller.backend.stops == 4)
+	assert(owner.logs.any(func(line): return line.contains("DEV session timeout") and line.contains("limit=300.0s")))
+	controller.backend.state = "idle"
+	controller.process_standby(.1)
+	assert(controller.start_meteor_standby(99999.0))
+	assert(controller.timeout_seconds == Controller.TIMEOUT_SECONDS) # Not arbitrary/unbounded.
+	controller.request_stop()
+	controller.backend.state = "idle"
+	controller.process_standby(.1)
 
 func _test_remote_timeout(owner: Owner) -> void:
 	var controller := Harness.new(owner)

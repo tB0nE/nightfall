@@ -14,6 +14,11 @@ class Owner extends RefCounted:
 	var pcvr_test := PCVR.new()
 class Handover extends RefCounted:
 	var desktop_visible := false
+	var menu_only := false
+	var menus := 0
+	func open_pcvr_menu() -> void:
+		menu_only = true
+		menus += 1
 	var toggles := 0
 	func set_desktop_visible(value: bool) -> void:
 		desktop_visible = value
@@ -28,6 +33,8 @@ func _init():
 	assert(Watch.facing(pose, Transform3D.IDENTITY))
 	assert(not Watch.facing(Transform3D(Basis(Vector3.UP, PI),pose.origin), Transform3D.IDENTITY))
 	assert(Watch.hit(pose, Transform3D.IDENTITY).is_equal_approx(Vector2(.5,.5)))
+	assert(Watch.settings_hit(Vector2(.8,.7)))
+	assert(not Watch.settings_hit(Vector2(.3,.7)))
 	assert(Watch.hit(pose, Transform3D(Basis.IDENTITY,Vector3(1,0,0))).x < 0)
 	assert(Watch.hit(pose, Transform3D(Basis(Vector3.UP,PI),Vector3.ZERO)).x < 0)
 	var owner := Owner.new()
@@ -61,6 +68,18 @@ func _init():
 	backend.tracking[21] = 1
 	watch.process(.01,handover)
 	assert(not handover.desktop_visible and handover.toggles == 2)
+	backend.tracking[21] = 0
+	watch.process(.01,handover)
+	var gear_ray := pack_pose(Transform3D(Basis.IDENTITY,Vector3(.048,-.03,0)))
+	for i in 7: backend.tracking[14+i] = gear_ray[i]
+	watch.process(.01,handover)
+	backend.tracking[21] = 1
+	watch.process(.01,handover)
+	assert(handover.menus == 1 and handover.menu_only and not handover.desktop_visible)
+	assert(backend.focused and handover.toggles == 2)
+	watch.process(.01,handover)
+	assert(handover.menus == 1) # Held trigger does not reopen the menu.
+	handover.menu_only = false # Simulate closing settings before tracking loss.
 	backend.tracking = PackedFloat32Array()
 	watch.process(.1,handover)
 	assert(backend.state[13] == 0)
