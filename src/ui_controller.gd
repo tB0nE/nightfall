@@ -249,6 +249,7 @@ func update_stereo_shader():
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
 	update_option_btn(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
+	update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	# Shows main.settings.host.ai_3d_last_mode while Off (disabled/greyed, but still
 	# reflects what the main-page toggle will restore to when turned back on).
 	update_option_btn(main._ui_3d_mode_btn, main.settings_controller.ai_3d_speed_labels[main.settings.host.ai_3d_speed if main.settings.host.ai_3d_speed != 0 else main.settings.host.ai_3d_last_mode])
@@ -280,9 +281,10 @@ func update_stereo_shader():
 
 func update_3d_btn_state():
 	var disabled = main.settings.host.sbs_mode > 0 or main.screens.size() > 1
-	if main._ui_3d_speed_btn:
-		main._ui_3d_speed_btn.disabled = disabled
-		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
+	for enable_btn in [main._ui_3d_speed_btn, main._ui_3d_enable_btn]:
+		if enable_btn:
+			enable_btn.disabled = disabled
+			enable_btn.modulate.a = 0.3 if disabled else 1.0
 	# Android retains the Standard/GPU locks, but exposes its production
 	# ZipDepth Model and GPU API selectors.
 	var locked = main.settings_controller.ai3d_options_locked()
@@ -1166,6 +1168,11 @@ func build_ui():
 	ai3d_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_ai3d.add_child(ai3d_row2)
 
+	# The same On/Off as the Display tab's AI 3D button, where people looking
+	# for it in this tab didn't find it.
+	main._ui_3d_enable_btn = make_option_btn("AI 3D", "Off")
+	_set_button_tooltip(main._ui_3d_enable_btn, "Convert normal video into stereoscopic 3D using local depth inference.")
+	ai3d_row2.add_child(main._ui_3d_enable_btn)
 	main._ui_3d_hz_cap_btn = make_option_btn("Hz Cap", "20hz")
 	_set_button_tooltip(main._ui_3d_hz_cap_btn, "Limit how often the depth model runs each second.")
 	ai3d_row2.add_child(main._ui_3d_hz_cap_btn)
@@ -1358,6 +1365,7 @@ func build_ui():
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
 	if main._ui_3d_gpu_api_btn:
 		main._ui_3d_gpu_api_btn.button_down.connect(func(): on_ai_3d_gpu_api_toggled())
+	main._ui_3d_enable_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())

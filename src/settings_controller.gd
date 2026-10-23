@@ -385,6 +385,7 @@ func toggle_ai_3d_enabled():
 		main.settings.host.ai_3d_last_mode = main.settings.host.ai_3d_speed
 		main.settings.host.ai_3d_speed = 0
 	_save_setting(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
+	main.ui_controller.update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
 

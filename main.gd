@@ -482,6 +482,7 @@ var _ui_grid_mode_btn: Button
 var _ui_hand_tracking_btn: Button
 var _ui_sbs_btn: Button
 var _ui_3d_speed_btn: Button
+var _ui_3d_enable_btn: Button
 var _ui_3d_btn: Button
 var _ui_3d_gpu_api_btn: Button
 var _ui_3d_depth_view_btn: Button
