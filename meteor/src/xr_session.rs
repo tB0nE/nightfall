@@ -78,7 +78,7 @@ pub(crate) async fn runtime_adapter(
     long_run: bool,
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> io::Result<()> {
-    runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, cancel, None).await
+    runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, 0, "h264".into(), None, cancel, None).await
 }
 
 pub(crate) async fn runtime_adapter_with_status(
@@ -88,13 +88,20 @@ pub(crate) async fn runtime_adapter_with_status(
     hz: u32,
     eye_size: u32,
     long_run: bool,
+    bitrate_mbps: u32,
+    codec: String,
+    launch_intent: Option<String>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
     progress: Option<&crate::xr_relay::RuntimeProgress>,
 ) -> io::Result<()> {
-    if !matches!(hz, 20 | 60) || !matches!(eye_size, 512 | 1024) || (long_run && hz != 60) {
+    if !matches!(hz, 20 | 60 | 72) || !matches!(eye_size, 512 | 1024 | 2048 | 2560) || (long_run && !matches!(hz,60 | 72))
+        || (bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps)) || !matches!(codec.as_str(),"h264" | "h265") {
         return Err(io::Error::other("unsupported managed XR profile"));
     }
     let cache = root.join(".build-cache/meteor-xr");
+    if let Some(generation)=launch_intent.as_ref() {
+        if generation.len()!=32 || !generation.bytes().all(|c|c.is_ascii_hexdigit()) {return Err(io::Error::other("invalid launch intent"))}
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     let _lock = loop {
         if *cancel.borrow() {
@@ -140,15 +147,18 @@ pub(crate) async fn runtime_adapter_with_status(
     // Explicit host-local DEV override only. Never take an executable or args
     // from the headset/control protocol. Missing means the validated demo.
     let application = cache.join("application.json");
+    if let Some(generation)=launch_intent {command.env("NIGHTFALL_XR_LAUNCH_INTENT",generation);}
     if application.exists() {
         command.env("NIGHTFALL_XR_APPLICATION_SPEC", application);
     }
     command
-        .env("NIGHTFALL_XR_RUNTIME_GENERATION", generation)
+        .env("NIGHTFALL_XR_RUNTIME_GENERATION", &generation)
         .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })
         .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
         .env("NIGHTFALL_XR_EYE_SIZE", eye_size.to_string())
-        .env("NIGHTFALL_XR_PROBE_FRAMES", if long_run { "3600" } else if hz == 60 { "1200" } else { "200" })
+        .env("NIGHTFALL_XR_BITRATE_MBPS", bitrate_mbps.to_string())
+        .env("NIGHTFALL_XR_CODEC", &codec)
+        .env("NIGHTFALL_XR_PROBE_FRAMES", if long_run { (hz*300).to_string() } else if hz >= 60 { (hz*20).to_string() } else { "200".into() })
         .env("NIGHTFALL_XR_PROBE_OUTPUT", &output)
         .env("NIGHTFALL_XR_DEVICE_PORT", video.to_string())
         .env("NIGHTFALL_XR_TRACKING_PORT", tracking.to_string())
@@ -161,8 +171,17 @@ pub(crate) async fn runtime_adapter_with_status(
         .stderr(Stdio::from(log))
         .process_group(0);
     let mut child = OwnedProcess(command.spawn()?);
-    let deadline = Instant::now() + Duration::from_secs(if long_run {100} else {45});
+    let deadline = Instant::now() + Duration::from_secs(if long_run {315} else {45});
     loop {
+        if let Some(progress) = progress {
+            let mut status = events.runtime_status();
+            if status.event_sequence == 0 && fs::read(output.join("application-ready.json")).ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|value| value["generation"] == generation && value["state"] == "ready") {
+                status.phase = crate::xr_relay::RuntimePhase::ReadyForApplication;
+            }
+            *progress.lock().unwrap() = status;
+        }
         if events.poll(&output.join("service.log"))? != 0 {
             if let Some(progress) = progress { *progress.lock().unwrap() = events.runtime_status(); }
             fs::write(output.join("runtime-session-events.json"), events.snapshot().to_string())?;

@@ -31,6 +31,9 @@ pub enum Request {
     Accept { session: String },
     Stop { session: String },
     Status {},
+    PendingLaunch {},
+    ClaimLaunch { generation:String },
+    ConfigureVideo { bitrate_mbps: u32, #[serde(default)] codec: Option<String> },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -44,6 +47,8 @@ pub struct Reply {
     pub relay: Option<crate::xr_relay::Ports>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::xr_relay::RuntimeStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_launch: Option<crate::xr_launch_intent::LaunchNotice>,
 }
 
 struct Session {
@@ -53,11 +58,17 @@ struct Session {
     hz: u32,
     eye_size: u32,
     long_run: bool,
+    bitrate_mbps: u32,
+    codec: String,
+    launch_intent: Option<String>,
     expires: tokio::time::Instant,
 }
 #[derive(Default)]
 struct Negotiation {
     session: Option<Session>,
+    bitrate_mbps: u32,
+    codec: String,
+    launch_intent: Option<String>,
 }
 impl Negotiation {
     fn reply(&self, reason: Option<&str>) -> Reply {
@@ -78,6 +89,7 @@ impl Negotiation {
             lan_video_available: false,
             relay: None,
             runtime: None,
+            pending_launch: None,
         }
     }
     fn apply(&mut self, request: Request) -> io::Result<Reply> {
@@ -92,11 +104,22 @@ impl Negotiation {
         match request {
             Request::Authenticate {} => return Ok(self.reply(Some("already_authenticated"))),
             Request::Status {} => {}
+            Request::PendingLaunch {} | Request::ClaimLaunch {..} => return Ok(self.reply(Some("launch_watch_unavailable"))),
+            Request::ConfigureVideo { bitrate_mbps, codec } => {
+                if self.session.is_some() { return Ok(self.reply(Some("busy"))); }
+                if bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps) {
+                    return Ok(self.reply(Some("unsupported_bitrate")));
+                }
+                let codec = codec.unwrap_or_else(|| "h264".into());
+                if codec != "h264" && codec != "h265" { return Ok(self.reply(Some("unsupported_codec"))); }
+                self.bitrate_mbps = bitrate_mbps;
+                self.codec = codec;
+            }
             Request::Offer { width, height, hz } | Request::OfferLong { width, height, hz } => {
                 if self.session.is_some() {
                     return Ok(self.reply(Some("busy")));
                 }
-                if !matches!((width, height), (1024, 1024) | (512, 512) | (256, 256)) || !matches!(hz, 20 | 60) || (long_run && hz != 60) {
+                if !matches!((width, height), (2560,2560) | (2048, 2048) | (1024, 1024) | (512, 512) | (256, 256)) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
                     return Ok(self.reply(Some("unsupported_profile")));
                 }
                 let mut id = [0u8; 16];
@@ -110,6 +133,9 @@ impl Negotiation {
                     hz,
                     eye_size: width,
                     long_run,
+                    bitrate_mbps: self.bitrate_mbps,
+                    codec: if self.codec.is_empty() { "h264".into() } else { self.codec.clone() },
+                    launch_intent: self.launch_intent.take(),
                     expires: tokio::time::Instant::now() + Duration::from_secs(15),
                 });
             }
@@ -120,7 +146,7 @@ impl Negotiation {
                 current.accepted = true;
                 // Control-only proof leases expire; no indefinite phantom session.
                 current.expires = tokio::time::Instant::now()
-                    + if current.long_run { Duration::from_secs(120) } else if current.hz == 60 { Duration::from_secs(60) } else { IDLE_TIMEOUT };
+                    + if current.long_run { Duration::from_secs(360) } else if current.hz >= 60 { Duration::from_secs(60) } else { IDLE_TIMEOUT };
             }
             Request::Stop { session } => {
                 if !self.session.as_ref().is_some_and(|s| s.id == session) {
@@ -295,6 +321,7 @@ async fn connection_supervised(
             lan_video_available: false,
             relay: None,
             runtime: None,
+            pending_launch: None,
         };
         return tokio::time::timeout(IO_TIMEOUT, respond(&mut stream, &mut send, &busy))
             .await
@@ -320,10 +347,21 @@ async fn connection_supervised(
         let request = tokio::time::timeout_at(deadline, read_frame(&mut stream, &mut receive))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
-        let mut reply = if enable_relay
-            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !matches!((*width,*height),(512,512)|(1024,1024)) || !matches!(hz,20|60))
+        let mut reply = if matches!(&request,Request::PendingLaunch {}) && negotiation.session.is_none() {
+            let mut reply=negotiation.reply(None);
+            if let Some(root)=runtime_root.as_ref().filter(|_|enable_relay) {
+                reply.pending_launch=crate::xr_launch_intent::pending(root);
+            }
+            reply
+        } else if let Request::ClaimLaunch {generation}=&request {
+            if negotiation.session.is_none() && runtime_root.as_ref().filter(|_|enable_relay).is_some_and(|root|crate::xr_launch_intent::claim(root,generation)) {
+                negotiation.launch_intent=Some(generation.clone());
+                negotiation.reply(None)
+            } else {negotiation.reply(Some("launch_intent_unavailable"))}
+        } else if enable_relay
+            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !matches!((*width,*height),(512,512)|(1024,1024)|(2048,2048)|(2560,2560)) || !matches!(hz,20|60|72))
         {
-            negotiation.reply(Some("relay_profile_requires_512_or_1024_square_20_or_60hz"))
+            negotiation.reply(Some("unsupported_relay_profile"))
         } else {
             negotiation.apply(request)?
         };
@@ -349,7 +387,7 @@ async fn connection_supervised(
             );
             #[cfg(target_os = "linux")]
             if let Some(root) = runtime_root.clone() {
-                relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.long_run, _runtime_tasks.as_ref());
+                relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.long_run, session.bitrate_mbps, session.codec.clone(), session.launch_intent.clone(), _runtime_tasks.as_ref());
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());
@@ -686,12 +724,38 @@ mod tests {
     }
 
     #[test]
+    fn video_bitrate_is_bounded_and_frozen_for_session() {
+        let mut state = Negotiation::default();
+        assert_eq!(state.apply(Request::ConfigureVideo {bitrate_mbps: 161, codec: None}).unwrap().reason.as_deref(), Some("unsupported_bitrate"));
+        assert_eq!(state.bitrate_mbps, 0);
+        assert!(state.apply(Request::ConfigureVideo {bitrate_mbps: 80, codec: Some("h265".into())}).unwrap().reason.is_none());
+        state.apply(Request::OfferLong {width:1024,height:1024,hz:60}).unwrap();
+        assert_eq!(state.session.as_ref().unwrap().bitrate_mbps, 80);
+        assert_eq!(state.apply(Request::ConfigureVideo {bitrate_mbps:32, codec: None}).unwrap().reason.as_deref(), Some("busy"));
+        assert_eq!(state.session.as_ref().unwrap().bitrate_mbps, 80);
+        assert!(serde_json::from_str::<Request>(r#"{"type":"configure_video","bitrate_mbps":-1}"#).is_err());
+    }
+
+    #[test]
     fn negotiated_high_resolution_is_retained() {
         let mut state = Negotiation::default();
         assert_eq!(state.apply(Request::Offer {width:1024,height:1024,hz:60}).unwrap().state,"awaiting_acceptance");
         assert_eq!(state.session.as_ref().unwrap().eye_size,1024);
         let mut invalid = Negotiation::default();
-        assert_eq!(invalid.apply(Request::Offer {width:2048,height:2048,hz:60}).unwrap().state,"idle");
+        assert_eq!(invalid.apply(Request::Offer {width:4096,height:4096,hz:60}).unwrap().state,"idle");
+    }
+
+    #[test]
+    fn quest3_hevc_2k_72_session_profile() {
+        let mut state=Negotiation::default();
+        assert_eq!(state.apply(Request::ConfigureVideo {bitrate_mbps:32,codec:Some("av1".into())}).unwrap().reason.as_deref(),Some("unsupported_codec"));
+        assert_eq!(state.bitrate_mbps,0);
+        state.apply(Request::ConfigureVideo {bitrate_mbps:80,codec:Some("h265".into())}).unwrap();
+        let offer=state.apply(Request::OfferLong {width:2048,height:2048,hz:72}).unwrap();
+        assert_eq!(offer.state,"awaiting_acceptance");
+        let profile=state.session.as_ref().unwrap();
+        assert_eq!((profile.eye_size,profile.hz,profile.bitrate_mbps,profile.codec.as_str()),(2048,72,80,"h265"));
+        assert!(profile.long_run);
     }
 
     #[test]
@@ -702,7 +766,7 @@ mod tests {
         assert!(state.session.as_ref().unwrap().long_run);
         state.apply(Request::Accept {session:offer.session.unwrap()}).unwrap();
         let remaining=state.session.as_ref().unwrap().expires.duration_since(tokio::time::Instant::now());
-        assert!(remaining > Duration::from_secs(119) && remaining <= Duration::from_secs(120));
+        assert!(remaining > Duration::from_secs(359) && remaining <= Duration::from_secs(360));
         assert!(serde_json::from_str::<Request>(r#"{"type":"offer_long","width":1024,"height":1024,"hz":60,"seconds":99999}"#).is_err());
     }
     #[test]
@@ -767,6 +831,34 @@ mod tests {
             .await
             .unwrap();
         (tx, rx)
+    }
+
+    #[tokio::test]
+    async fn authenticated_idle_launch_watch_does_not_prepare_runtime() {
+        let key=Arc::new(MeteorKey::from_seed([31;32]));
+        let pin=key.public;
+        let seed=[32;32];
+        let allowed=x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(seed)).to_bytes();
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let root=std::env::temp_dir().join(format!("meteor-idle-watch-no-runtime-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let checked=root.clone();
+        let task=tokio::spawn(async move {
+            let (stream,_)=listener.accept().await.unwrap();
+            connection_mode(stream,key,allowed,Arc::new(Semaphore::new(1)),true,Some(root)).await
+        });
+        let mut stream=TcpStream::connect(address).await.unwrap();
+        let (mut tx,mut rx)=client_handshake(&mut stream,pin,seed).await;
+        assert_eq!(reply(&mut stream,&mut rx).await.state,"idle");
+        for _ in 0..3 {
+            stream.write_all(&tx.seal(br#"{"type":"pending_launch"}"#).unwrap()).await.unwrap();
+            let value=reply(&mut stream,&mut rx).await;
+            assert_eq!(value.state,"idle");
+            assert!(value.session.is_none() && value.relay.is_none() && value.runtime.is_none() && value.pending_launch.is_none());
+        }
+        assert!(!checked.exists());
+        drop(stream);
+        let _=task.await;
     }
 
     async fn reply(stream: &mut TcpStream, rx: &mut Cipher) -> Reply {

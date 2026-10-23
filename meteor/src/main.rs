@@ -42,6 +42,7 @@ mod vda;
 mod video_dump;
 mod video_tap;
 mod xr_control;
+mod xr_launch_intent;
 mod xr_data;
 #[cfg(target_os = "linux")]
 mod xr_events;

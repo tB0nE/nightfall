@@ -34,8 +34,14 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
     eye_size = int(os.environ.get("NIGHTFALL_XR_EYE_SIZE", "256"))
     target_hz = int(os.environ.get("NIGHTFALL_XR_TARGET_HZ", "20"))
-    if eye_size not in (256,512,1024) or target_hz not in (20,60):
-        raise ValueError("Diagnostic profiles: eye size 256/512/1024, target rate 20/60")
+    codec = os.environ.get("NIGHTFALL_XR_CODEC", "h264")
+    if codec not in ("h264", "h265"):
+        raise ValueError("XR codec must be h264 or h265")
+    bitrate_mbps = int(os.environ.get("NIGHTFALL_XR_BITRATE_MBPS", "0"))
+    if bitrate_mbps != 0 and not 8 <= bitrate_mbps <= 160:
+        raise ValueError("XR bitrate must be Auto (0) or 8..160 Mbps")
+    if eye_size not in (256,512,1024,2048,2560) or target_hz not in (20,60,72):
+        raise ValueError("Diagnostic profiles: eye size 256/512/1024/2048/2560, target rate 20/60/72")
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
     gpu_scene = os.environ.get("NIGHTFALL_XR_GPU_SCENE") == "1"
     gpu_measure = os.environ.get("NIGHTFALL_XR_GPU_MEASURE") == "1"
@@ -52,8 +58,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         from xr_local_application import load_application
         external_command, external_cwd = load_application(external_spec)
         print(f"XR_APPLICATION host_local={external_command[0]}", flush=True)
-    if eye_size == 1024 and not upstream_demo:
-        raise ValueError("1024-square profile requires the bounded upstream demo")
+    if eye_size >= 1024 and not upstream_demo:
+        raise ValueError("High-resolution profile requires the bounded upstream demo")
     if upstream_demo and not godot_engine:
         raise ValueError("Upstream demo requires Godot engine mode")
     expect_tracking_loss=os.environ.get("NIGHTFALL_XR_EXPECT_TRACKING_LOSS")=="1"
@@ -100,7 +106,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         raise ValueError("Free-running app-disconnect accounting is a separate pending test")
     if tracked_scene and not os.environ.get("NIGHTFALL_XR_TRACKING_PORT"):
         raise ValueError("Tracked scene requires explicit live tracking port; no simulated fallback")
-    maximum = 3600 if upstream_demo else 240
+    maximum = target_hz*300 if upstream_demo else 240
     if not 1 <= frame_count <= maximum:
         raise ValueError(f"NIGHTFALL_XR_PROBE_FRAMES must be 1..{maximum}")
     if abort_test and frame_count < 16:
@@ -148,7 +154,12 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                VK_ICD_FILENAMES=str(icd), VK_DRIVER_FILES=str(icd),
                METEOR_CONTINUOUS_FRAMES=str(frame_count),
                METEOR_XR_EYE_SIZE=str(eye_size), XRT_COMPOSITOR_NULL_FPS=str(target_hz),
+               METEOR_XR_BITRATE_MBPS=str(bitrate_mbps),
+               METEOR_XR_CODEC=codec,
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
+    process_diagnostics=bool(external_spec and (root / ".build-cache/meteor-xr/process-diagnostics.enabled").is_file())
+    env.pop("METEOR_XR_WAIT_DIAGNOSTICS",None)
+    if process_diagnostics: env["METEOR_XR_WAIT_DIAGNOSTICS"]="1"
     env.pop("METEOR_XR_GPU_SCENE_SHADER", None)
     env.pop("METEOR_XR_ENGINE_FIXTURE",None)
     env.pop("METEOR_XR_MONITOR_LEGACY",None)
@@ -161,6 +172,11 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if not re.fullmatch(r"[0-9a-f]{32}", runtime_generation):
             raise ValueError("Invalid runtime event generation")
         env["METEOR_XR_RUNTIME_GENERATION"] = runtime_generation
+    launch_intent=os.environ.get("NIGHTFALL_XR_LAUNCH_INTENT")
+    env.pop("METEOR_XR_LAUNCH_INTENT",None)
+    if launch_intent is not None:
+        if not re.fullmatch(r"[0-9a-f]{32}",launch_intent): raise ValueError("Invalid launch intent generation")
+        env["METEOR_XR_LAUNCH_INTENT"]=launch_intent
     if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token
     (out / "engine-request-exit").unlink(missing_ok=True)
     if godot_engine and not external_spec: env["METEOR_XR_ENGINE_FIXTURE"]="1"
@@ -236,12 +252,33 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
             raise ValueError("Device port must be a valid ADB-forwarded port, with no local receiver configured")
         env["METEOR_XR_DIRECT_PORT"] = device_port
+    application_env = env
+    if external_spec:
+        from xr_local_application import application_environment
+        application_env = application_environment(external_spec, env)
     with managed_runtime([str(service)], env=env,
                          ready_path=runtime / "monado_comp_ipc",
                          log_path=out / "service.log", state_path=out / "runtime-state.json",
                          cancel_path=out / "client-disconnected") as child:
         # Application launch is fixture-owned, not part of service readiness.
         # Keep this scope until the application has been reaped on every path.
+        owner_alive = None
+        spec = json.loads(Path(external_spec).read_text()) if external_spec else {}
+        if spec.get("launch") in ("manual","steam"):
+            from xr_local_application import wait_for_local_launch
+            request = wait_for_local_launch(out, env, cancelled=lambda: child.poll() is not None,
+                                            steam_app_id=spec.get("steam_app_id") if spec.get("launch")=="steam" else None)
+            if spec.get("launch")=="steam":
+                command, external_cwd = request["argv"], request["cwd"]
+                # Only validated Steam-specific keys are forwarded. Runtime/IPC
+                # and compatibility selection remain owned by this supervisor.
+                application_env = application_environment(external_spec,dict(env,**request["environment"]))
+                def owner_alive():
+                    try:
+                        os.kill(request["owner_pid"],0)
+                        return True
+                    except OSError:
+                        return False
         application_start = time.monotonic()
         if abort_test:
             application = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -261,18 +298,27 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             result = subprocess.CompletedProcess([str(app)], application.returncode, stdout, stderr)
         else:
             try:
-                result, interrupted, forced_stop = run_application(command, env=env,
-                    timeout=(90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
+                result, interrupted, forced_stop = run_application(command, env=application_env,
+                    timeout=(300 if upstream_demo and frame_count > 3600 else 90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
                     stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
                     completion_file=out / "engine-completion.json" if godot_engine and not external_spec else None,
                     completion_token=engine_token,completion_target=frame_count,
-                    cwd=external_cwd, terminate_on_stop=bool(external_spec))
+                    cwd=external_cwd, terminate_on_stop=bool(external_spec), owner_alive=owner_alive,
+                    output_path=out / "application-live.log" if external_spec else None,
+                    diagnostics_path=out / "process-waits.jsonl" if process_diagnostics else None,
+                    runtime_pid=child.pid)
             except subprocess.TimeoutExpired as failure:
                 def output_text(value):
                     return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
                 (out / "probe.log").write_text(output_text(failure.stdout)+output_text(failure.stderr))
                 raise
         (out / "probe.log").write_text(result.stdout + result.stderr)
+        if spec.get("launch")=="steam":
+            outcome={"generation":env.get("METEOR_XR_RUNTIME_GENERATION"),"app_id":spec["steam_app_id"],
+                     "returncode":result.returncode,"interrupted":interrupted,"forced":forced_stop}
+            temporary=out / "steam-outcome.tmp"
+            temporary.write_text(json.dumps(outcome))
+            temporary.replace(out / "steam-outcome.json")
         application_elapsed = time.monotonic()-application_start
         if not abort_test and not interrupted:
             result.check_returncode()

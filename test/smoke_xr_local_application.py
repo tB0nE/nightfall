@@ -13,9 +13,10 @@ import sys
 import tempfile
 from contextlib import nullcontext
 import time
+import secrets
 
 
-def run(root):
+def run(root, steam_wrapper=False):
     cache = root / ".build-cache/meteor-xr"
     with nullcontext(tempfile.mkdtemp(prefix="external-smoke-", dir=cache)) as directory:
         out = Path(directory)
@@ -35,12 +36,20 @@ def run(root):
             port = reserve.getsockname()[1]
         publisher = subprocess.Popen([str(endpoint), str(port), "moving"], stdout=subprocess.PIPE, text=True)
         probe = None
+        wrapper = None
         try:
             if publisher.stdout.readline().strip() != "READY synthetic tracking publisher":
                 raise RuntimeError("Synthetic tracking failed to start")
             env = {key: value for key, value in os.environ.items()
                    if not key.startswith(("NIGHTFALL_XR_", "METEOR_XR_"))}
-            env.update(NIGHTFALL_XR_APPLICATION_SPEC=str(cache / "application.json"),
+            # A smoke test must never inherit the user's selected Steam game.
+            # Always launch our native sample through an isolated local profile.
+            selection = out / "smoke-application.json"
+            spec = {"argv": [str(cache / "hello-xr-spike/build/src/tests/hello_xr/hello_xr"),
+                             "-g", "Vulkan2", "-s", "Stage", "-bm", "Opaque"],
+                    "cwd": str(root), "launch": "manual"}
+            selection.write_text(json.dumps(spec))
+            env.update(NIGHTFALL_XR_APPLICATION_SPEC=str(selection),
                        NIGHTFALL_XR_GODOT_ENGINE="1", NIGHTFALL_XR_UPSTREAM_DEMO="1",
                        NIGHTFALL_XR_TRACKING_PORT=str(port), METEOR_XR_TRACKED_SCENE="1",
                        NIGHTFALL_XR_HEADSET_OPTICS="1", NIGHTFALL_XR_PROBE_FRAMES="1200",
@@ -50,11 +59,48 @@ def run(root):
                        NIGHTFALL_XR_TRANSPORT_RECEIVER=str(receiver),
                        NIGHTFALL_XR_CONTROLLERS="1", NIGHTFALL_XR_CONTROLLER_PROFILE="touch",
                        NIGHTFALL_XR_TOUCH_INPUTS="1")
+            if steam_wrapper:
+                spec.update(launch="steam",steam_app_id="438100")
+                selection=out/"steam-application.json"
+                selection.write_text(json.dumps(spec))
+                env["NIGHTFALL_XR_APPLICATION_SPEC"]=str(selection)
+                env["NIGHTFALL_XR_RUNTIME_GENERATION"]=secrets.token_hex(16)
             with (out / "smoke.log").open("w") as log:
                 probe = subprocess.Popen(["bash", str(root / "tools/build_support/probe_monado_nvenc.sh")],
                                          env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 deadline = time.monotonic() + 25
+                armed_since = None
+                idle_start = None
+                requested = False
                 while True:
+                    ready = out / "application-ready.json"
+                    if ready.exists() and not requested:
+                        if armed_since is None:
+                            armed_since = time.monotonic()
+                            state = json.loads((out / "runtime-state.json").read_text())
+                            pid = state["pid"]
+                            idle_start = (pid, Path(f"/proc/{pid}/stat").read_text())
+                        if time.monotonic() - armed_since >= 3:
+                            text = (out / "service.log").read_text()
+                            if "METEOR_ENCODER_INIT" in text or "METEOR_ENCODE_OK" in text or (out / "monado-stereo.jsonl").exists():
+                                raise RuntimeError("Armed runtime rendered/encoded before application launch")
+                            pid, before = idle_start
+                            after = Path(f"/proc/{pid}/stat").read_text()
+                            def ticks(value):
+                                fields = value.rsplit(")",1)[1].split()
+                                return int(fields[11])+int(fields[12])
+                            elapsed = time.monotonic()-armed_since
+                            rss = int(Path(f"/proc/{pid}/statm").read_text().split()[1])*os.sysconf("SC_PAGE_SIZE")
+                            result = {"seconds":elapsed,"runtime_cpu_percent_one_core":100*(ticks(after)-ticks(before))/os.sysconf("SC_CLK_TCK")/elapsed,"runtime_rss_mib":rss/1048576,"encoded_before_launch":0}
+                            (out / "armed-idle.json").write_text(json.dumps(result,indent=2)+"\n")
+                            print("Armed idle sample:",json.dumps(result),flush=True)
+                            if steam_wrapper:
+                                # Real wrapper/owned-runner path with a native sample,
+                                # not a claim that Steam/Proton or VRChat ran.
+                                wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--session",str(out),"--",*spec["argv"]],cwd=spec["cwd"])
+                            else:
+                                subprocess.run([sys.executable,str(root / "tools/meteor_xr.py"),"launch","--session",str(out)],check=True)
+                            requested = True
                     ledger = out / "monado-stereo.jsonl"
                     if ledger.exists() and len(ledger.read_text().splitlines()) >= 60:
                         break
@@ -68,10 +114,15 @@ def run(root):
                 probe.wait(timeout=10)
             if probe.returncode:
                 raise RuntimeError((out / "smoke.log").read_text())
+            if wrapper and wrapper.wait(timeout=5)!=130:
+                raise RuntimeError("Steam wrapper did not report the intentional interruption")
             outcome = json.loads((out / "lifecycle-outcome.json").read_text())
             assert outcome["outcome"] == "interrupted" and outcome["encoded_frames"] >= 60
             print(f"PASS: external app captured {outcome['encoded_frames']} frames with synthetic tracking; intentionally interrupted")
         finally:
+            if wrapper and wrapper.poll() is None:
+                wrapper.terminate()
+                wrapper.wait(timeout=3)
             if probe and probe.poll() is None:
                 os.killpg(probe.pid, signal.SIGTERM)
                 try: probe.wait(timeout=3)
@@ -83,4 +134,4 @@ def run(root):
 
 
 if __name__ == "__main__":
-    run(Path(sys.argv[1]).resolve())
+    run(Path(sys.argv[1]).resolve(), "--steam-wrapper" in sys.argv[2:])

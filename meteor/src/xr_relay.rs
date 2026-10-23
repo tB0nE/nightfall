@@ -106,6 +106,7 @@ pub enum RuntimePhase {
     #[default]
     WaitingForLanes,
     Starting,
+    ReadyForApplication,
     SessionCreated,
     SessionActive,
     SessionEnded,
@@ -187,10 +188,10 @@ impl Relay {
     }
     #[cfg(target_os = "linux")]
     pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
-        self.start_runtime_supervised(root, hz, eye_size, long_run, None);
+        self.start_runtime_supervised(root, hz, eye_size, long_run, 0, "h264".into(), None, None);
     }
     #[cfg(target_os = "linux")]
-    pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool, owner: Option<&RuntimeTasks>) {
+    pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool, bitrate_mbps: u32, codec: String, launch_intent: Option<String>, owner: Option<&RuntimeTasks>) {
         let progress = Arc::new(Mutex::new(RuntimeStatus::default()));
         self.runtime = Some(progress.clone());
         let ready = self.attached.clone();
@@ -220,7 +221,7 @@ impl Relay {
             }
             progress.lock().unwrap().phase = RuntimePhase::Starting;
             let cancelled = cancel.clone();
-            let result = crate::xr_session::runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, cancel, Some(&progress)).await;
+            let result = crate::xr_session::runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, bitrate_mbps, codec, launch_intent, cancel, Some(&progress)).await;
             // The adapter has returned and its owned child has been reaped.
             {
                 let mut status = progress.lock().unwrap();
@@ -287,7 +288,12 @@ async fn lane(
     }
     ready.fetch_add(1, Ordering::Release);
     // No trusted-local producer is admitted until remote key possession is proved.
-    let mut local = accept(local).await?;
+    let mut local = if kind == Kind::AttachVideo {
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(45), local.accept()).await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "XR armed video attach timeout"))??;
+        stream.set_nodelay(true)?;
+        stream
+    } else { accept(local).await? };
     if kind == Kind::AttachVideo {
         video(&mut remote, &mut local, &credentials, challenge).await
     } else {
@@ -408,7 +414,7 @@ mod tests {
     async fn service_owned_runtime_cancels_before_lane_attachment() {
         let tasks = RuntimeTasks::default();
         let mut relay = Relay::prepare("127.0.0.1".parse().unwrap(), credentials()).await.unwrap();
-        relay.start_runtime_supervised("/must-not-launch".into(), 60, 1024, false, Some(&tasks));
+        relay.start_runtime_supervised("/must-not-launch".into(), 60, 1024, false, 0, "h264".into(), None, Some(&tasks));
         drop(relay);
         tokio::time::timeout(Duration::from_secs(1), tasks.drain()).await.unwrap().unwrap();
     }

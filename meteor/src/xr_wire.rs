@@ -4,7 +4,8 @@ use std::io::{self, Read};
 
 pub const HEADER_LEN: usize = 152;
 pub const MAX_PAYLOAD: usize = 8 * 1024 * 1024;
-pub const MAX_FRAMES: u64 = 4096;
+// Bounded above a five-minute/60Hz DEV session (18,000 frames).
+pub const MAX_FRAMES: u64 = 32768;
 
 #[derive(Debug)]
 pub struct Header {
@@ -15,6 +16,8 @@ pub struct Header {
     pub payload_len: usize,
     pub width: u16,
     pub height: u16,
+    pub codec: u8,
+    pub fps: u8,
     pub flags: u8,
     pub end: bool,
     pub views: [f32; 22],
@@ -32,10 +35,11 @@ impl Header {
         if &bytes[..4] != b"NFXR" || u16_at(4) != 1 || u16_at(6) as usize != HEADER_LEN {
             return Err(invalid("XR magic/version/header size"));
         }
-        if bytes[48] != 1
+        if !matches!(bytes[48],1 | 2)
             || bytes[49] & !3 != 0
             || bytes[50] > 1
-            || bytes[51..64].iter().any(|b| *b != 0)
+            || !matches!(bytes[51],0 | 20 | 60 | 72)
+            || bytes[52..64].iter().any(|b| *b != 0)
         {
             return Err(invalid("XR codec/flags/kind/reserved"));
         }
@@ -51,6 +55,8 @@ impl Header {
             payload_len: u32_at(40) as usize,
             width: u16_at(44),
             height: u16_at(46),
+            codec: bytes[48],
+            fps: if bytes[51]==0 {60} else {bytes[51]},
             flags: bytes[49],
             end: bytes[50] == 1,
             views,
@@ -110,15 +116,16 @@ pub struct Reader {
     frame_id: u64,
     display_ns: u64,
     dimensions: Option<(u16, u16)>,
+    codec_rate: Option<(u8,u8)>,
     quest_local: Option<bool>,
     ended: bool,
 }
 
-fn nal_types(payload: &[u8]) -> [bool; 32] {
-    let mut types = [false; 32];
+fn nal_types(payload: &[u8], codec: u8) -> [bool; 64] {
+    let mut types = [false; 64];
     for i in 0..payload.len().saturating_sub(3) {
         if payload[i..i + 3] == [0, 0, 1] {
-            types[(payload[i + 3] & 31) as usize] = true;
+            types[if codec==2 {((payload[i+3]>>1)&63) as usize} else {(payload[i+3]&31) as usize}] = true;
         }
     }
     types
@@ -144,6 +151,7 @@ impl Reader {
             return Ok(None);
         }
         if self.sequence >= MAX_FRAMES
+            || self.codec_rate.is_some_and(|value| value != (header.codec,header.fps))
             || self.quest_local.is_some_and(|mode| mode != (header.flags & 2 != 0))
             || header.frame_id <= self.frame_id
             || header.display_ns <= self.display_ns
@@ -156,11 +164,13 @@ impl Reader {
         let mut payload = vec![0; header.payload_len];
         input.read_exact(&mut payload)?;
         if !payload.starts_with(&[0, 0, 1]) && !payload.starts_with(&[0, 0, 0, 1]) {
-            return Err(invalid("XR requires Annex-B H.264"));
+            return Err(invalid("XR requires Annex-B video"));
         }
-        let nals = nal_types(&payload);
-        if nals[5] != (header.flags & 1 != 0)
-            || (self.sequence == 0 && !(nals[5] && nals[7] && nals[8]))
+        let nals = nal_types(&payload,header.codec);
+        let idr=if header.codec==2 {nals[19] || nals[20]} else {nals[5]};
+        let config=if header.codec==2 {nals[32] && nals[33] && nals[34]} else {nals[7] && nals[8]};
+        if idr != (header.flags & 1 != 0)
+            || (self.sequence == 0 && !(idr && config))
         {
             return Err(invalid("XR IDR/config mismatch"));
         }
@@ -169,6 +179,7 @@ impl Reader {
         self.frame_id = header.frame_id;
         self.display_ns = header.display_ns;
         self.dimensions = Some((header.width, header.height));
+        self.codec_rate = Some((header.codec,header.fps));
         self.quest_local = Some(header.flags & 2 != 0);
         Ok(Some(Frame { header, payload }))
     }
@@ -209,6 +220,26 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn hevc_2k_72_profile_and_frozen_codec() {
+        let mut b=packet();
+        let payload=[0,0,1,64,1,0,0,1,66,1,0,0,1,68,1,0,0,1,38,1];
+        b.truncate(HEADER_LEN);
+        b[48]=2; b[51]=72;
+        b[44..46].copy_from_slice(&4096u16.to_le_bytes());
+        b[46..48].copy_from_slice(&2048u16.to_le_bytes());
+        b[40..44].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        b.extend(payload);
+        let mut reader=Reader::default();
+        let frame=reader.read(&mut Cursor::new(&b)).unwrap().unwrap();
+        assert_eq!((frame.header.codec,frame.header.fps),(2,72));
+        b[16..24].copy_from_slice(&1u64.to_le_bytes());
+        b[24..32].copy_from_slice(&2u64.to_le_bytes());
+        b[32..40].copy_from_slice(&2u64.to_le_bytes());
+        b[48]=1;
+        assert!(reader.read(&mut Cursor::new(&b)).is_err());
     }
     #[test]
     fn sustained_session_still_has_a_hard_frame_limit() {
