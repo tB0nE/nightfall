@@ -215,5 +215,7 @@
 	"Mouse Follows Pointer": "滑鼠跟隨指標",
 	"Move the PC cursor wherever you point, without clicking.": "無需點擊，PC 游標會移動到你所指的位置。",
 	"High Refresh Rates": "高更新率",
-	"Offer 200 and 207 Hz. They can glitch the headset.": "提供 200 和 207 Hz 選項，可能導致頭戴裝置出現故障。"
+	"Offer 200 and 207 Hz. They can glitch the headset.": "提供 200 和 207 Hz 選項，可能導致頭戴裝置出現故障。",
+	"Passthrough Fade": "透視調暗",
+	"Darken your surroundings in passthrough so the screen stands out.": "在透視模式下調暗周圍環境，讓螢幕更醒目。"
 }

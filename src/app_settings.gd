@@ -25,6 +25,7 @@ const DEFAULT_POINTER_STEADY := 1
 const DEFAULT_DOUBLE_CLICK_MODE := 0
 const DEFAULT_MOUSE_FOLLOWS_POINTER := false
 const DEFAULT_HIGH_REFRESH_RATES := false
+const DEFAULT_PASSTHROUGH_FADE_PCT := 0
 const DEFAULT_TRACKING_MODE := 0
 const DEFAULT_CODEC_PREFERENCE := 1
 const DEFAULT_GRID_MODE_ENABLED := true
@@ -57,6 +58,8 @@ var double_click_mode: int = DEFAULT_DOUBLE_CLICK_MODE
 var mouse_follows_pointer: bool = DEFAULT_MOUSE_FOLLOWS_POINTER
 ## Offer the 200 and 207 Hz stream rates, which can glitch the headset.
 var high_refresh_rates: bool = DEFAULT_HIGH_REFRESH_RATES
+## How much to darken passthrough, in percent (PassthroughFade.FADE_VALUES).
+var passthrough_fade_pct: int = DEFAULT_PASSTHROUGH_FADE_PCT
 var tracking_mode: int = DEFAULT_TRACKING_MODE
 var codec_preference: int = DEFAULT_CODEC_PREFERENCE
 var grid_mode_enabled: bool = DEFAULT_GRID_MODE_ENABLED
@@ -97,6 +100,7 @@ func reset_general() -> void:
 	double_click_mode = DEFAULT_DOUBLE_CLICK_MODE
 	mouse_follows_pointer = DEFAULT_MOUSE_FOLLOWS_POINTER
 	high_refresh_rates = DEFAULT_HIGH_REFRESH_RATES
+	passthrough_fade_pct = DEFAULT_PASSTHROUGH_FADE_PCT
 	tracking_mode = DEFAULT_TRACKING_MODE
 	codec_preference = DEFAULT_CODEC_PREFERENCE
 	grid_mode_enabled = DEFAULT_GRID_MODE_ENABLED

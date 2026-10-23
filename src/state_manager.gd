@@ -163,6 +163,7 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_mouse_follows_btn, "On" if main.settings.mouse_follows_pointer else "Off")
 		main.ui_controller.update_option_btn(main._ui_high_refresh_btn, "On" if main.settings.high_refresh_rates else "Off")
+		main.ui_controller.update_option_btn(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
 		if main._ui_quick_start_btn:
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 		if main._ui_audio_boost_btn:

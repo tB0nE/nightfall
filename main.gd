@@ -529,6 +529,8 @@ var _ui_idle_btn: Button
 var _ui_reconnect_btn: Button
 var _ui_mouse_follows_btn: Button
 var _ui_high_refresh_btn: Button
+var _ui_pt_fade_btn: Button
+var passthrough_fade := PassthroughFade.new()
 var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button

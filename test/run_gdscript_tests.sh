@@ -46,6 +46,7 @@ tests=(
 	"test/test_host_permissions.gd"
 	"test/test_refresh_rates.gd"
 	"test/test_usb_link.gd"
+	"test/test_passthrough_fade.gd"
 )
 
 for test_file in "${tests[@]}"; do

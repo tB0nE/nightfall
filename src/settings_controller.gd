@@ -1165,10 +1165,15 @@ func apply_passthrough(enable: bool):
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
 		return
+	var fade_layer: bool = main.passthrough_fade.setup(main, main.xr_origin)
+	main.passthrough_fade.apply(enable, main.settings.passthrough_fade_pct)
 	if enable:
 		main.get_viewport().transparent_bg = true
 		main.world_env.environment.background_mode = Environment.BG_COLOR
-		main.world_env.environment.background_color = Color(0, 0, 0, 0)
+		# Without the fade layer, dim through the projection layer instead;
+		# that reaches the compositor only when Godot submits it.
+		var fade_alpha: float = 0.0 if fade_layer else main.settings.passthrough_fade_pct / 100.0
+		main.world_env.environment.background_color = Color(0, 0, 0, fade_alpha)
 		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
 	else:
 		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
@@ -1786,6 +1791,12 @@ func _schedule_display_refresh():
 	await main.get_tree().create_timer(0.8).timeout
 	if _display_refresh_seq == my_seq and not main.is_streaming:
 		apply_display_refresh_rate()
+
+func cycle_passthrough_fade():
+	main.settings.passthrough_fade_pct = PassthroughFade.next_fade(main.settings.passthrough_fade_pct)
+	if main.settings.passthrough_enabled:
+		apply_passthrough(true)
+	_save_setting(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
 
 func toggle_high_refresh_rates():
 	main.settings.high_refresh_rates = not main.settings.high_refresh_rates

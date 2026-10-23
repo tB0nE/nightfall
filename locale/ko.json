@@ -215,5 +215,7 @@
 	"Mouse Follows Pointer": "마우스가 포인터 따라가기",
 	"Move the PC cursor wherever you point, without clicking.": "클릭하지 않아도 가리키는 곳으로 PC 커서를 이동합니다.",
 	"High Refresh Rates": "높은 주사율",
-	"Offer 200 and 207 Hz. They can glitch the headset.": "200 Hz와 207 Hz를 표시합니다. 헤드셋에 문제가 생길 수 있습니다."
+	"Offer 200 and 207 Hz. They can glitch the headset.": "200 Hz와 207 Hz를 표시합니다. 헤드셋에 문제가 생길 수 있습니다.",
+	"Passthrough Fade": "패스스루 어둡게",
+	"Darken your surroundings in passthrough so the screen stands out.": "패스스루에서 주변을 어둡게 해 화면이 잘 보이게 합니다."
 }

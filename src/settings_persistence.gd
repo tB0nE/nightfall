@@ -24,6 +24,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "double_click_mode", settings.double_click_mode)
 	config.set_value("controller", "mouse_follows_pointer", settings.mouse_follows_pointer)
 	config.set_value("screen", "high_refresh_rates", settings.high_refresh_rates)
+	config.set_value("screen", "passthrough_fade_pct", settings.passthrough_fade_pct)
 	config.set_value("screen", "codec_preference", settings.codec_preference)
 	config.set_value("screen", "grid_mode_enabled", settings.grid_mode_enabled)
 	config.set_value("diagnostics", "performance_overlay", settings.performance_overlay_enabled)
@@ -104,6 +105,8 @@ static func read_app(
 		"controller", "mouse_follows_pointer", AppSettings.DEFAULT_MOUSE_FOLLOWS_POINTER))
 	settings.high_refresh_rates = bool(config.get_value(
 		"screen", "high_refresh_rates", AppSettings.DEFAULT_HIGH_REFRESH_RATES))
+	var fade := int(config.get_value("screen", "passthrough_fade_pct", AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT))
+	settings.passthrough_fade_pct = fade if PassthroughFade.FADE_VALUES.has(fade) else AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT
 	settings.codec_preference = config.get_value(
 		"screen", "codec_preference", AppSettings.DEFAULT_CODEC_PREFERENCE)
 	settings.grid_mode_enabled = config.get_value(
