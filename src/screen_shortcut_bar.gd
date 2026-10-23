@@ -33,6 +33,12 @@ const HOVER_COLOR := Color(1.0, 1.0, 1.0, 0.25)
 const ACTIVE_COLOR := Color(0.32, 0.64, 1.0, 0.40)
 const ACTIVE_HOVER_COLOR := ACTIVE_COLOR
 const PRIMARY_BAR_COLOR := Color(0.55, 0.78, 1.0)
+# A dark rounded panel behind the revealed icons, so the faint white icons
+# stay visible against a bright passthrough room (a white wall).
+const BACKDROP_COLOR := Color(0.0, 0.0, 0.0, 0.55)
+const BACKDROP_PAD_RATIO := 0.0045
+const BACKDROP_CORNER := 0.4 # of the panel's height
+const BACKDROP_SHADER := preload("res://src/shaders/rounded_rect.gdshader")
 
 # All dimensions scale with screen width. The composition viewport uses the
 # same normalized layout, so its visuals stay aligned with these hit targets.
@@ -94,6 +100,8 @@ func setup_screen(screen: VRScreen) -> void:
 		screen.add_child(area)
 		screen.shortcut_buttons[action] = icon
 		screen.shortcut_areas[action] = area
+	screen.shortcut_backdrop = _make_backdrop_mesh()
+	screen.add_child(screen.shortcut_backdrop)
 	screen.update_shortcut_positions()
 	refresh_visuals(screen)
 
@@ -119,6 +127,20 @@ func populate_composition_viewport(screen: VRScreen, viewport: SubViewport) -> v
 	bar_style.bg_color = Color(bar_rgb.r, bar_rgb.g, bar_rgb.b, 0.05)
 	bar_style.set_corner_radius_all(6)
 	bar.add_theme_stylebox_override("panel", bar_style)
+
+	var backdrop = Panel.new()
+	backdrop.name = "ShortcutBackdrop"
+	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var backdrop_px = backdrop_size_ratio() / Vector2(world_width, world_height) * Vector2(COMP_VIEWPORT_SIZE)
+	backdrop.position = Vector2((COMP_VIEWPORT_SIZE.x - backdrop_px.x) * 0.5, center_y - backdrop_px.y * 0.5)
+	backdrop.size = backdrop_px
+	var backdrop_style = StyleBoxFlat.new()
+	backdrop_style.bg_color = BACKDROP_COLOR
+	backdrop_style.set_corner_radius_all(int(backdrop_px.y * BACKDROP_CORNER))
+	backdrop_style.anti_aliasing = true
+	backdrop.add_theme_stylebox_override("panel", backdrop_style)
+	backdrop.visible = false
+	root.add_child(backdrop)
 	root.add_child(bar)
 
 	for action in VISIBLE_ACTIONS:
@@ -231,6 +253,13 @@ func refresh_visuals(screen: VRScreen) -> void:
 					style.bg_color = desired_comp_bar
 					bar.add_theme_stylebox_override("panel", style)
 					changed = true
+	if screen.shortcut_backdrop:
+		screen.shortcut_backdrop.visible = show
+	if screen.comp_grab_bar_viewport:
+		var backdrop = screen.comp_grab_bar_viewport.find_child("ShortcutBackdrop", true, false) as Panel
+		if backdrop and backdrop.visible != show:
+			backdrop.visible = show
+			changed = true
 	for action in VISIBLE_ACTIONS:
 		var active = _is_active(action)
 		var color: Color
@@ -298,6 +327,28 @@ func _is_active(action: StringName) -> bool:
 
 func _mic_live() -> bool:
 	return main.meteor_microphone != null and main.meteor_microphone.is_live()
+
+## The backdrop's size as fractions of the screen width: the six icons plus
+## padding. It fits inside the strip, so the composition viewport holds it.
+static func backdrop_size_ratio() -> Vector2:
+	var half_width = _action_x_ratio(ACTION_MENU) + ICON_SIZE_RATIO * 0.5 + BACKDROP_PAD_RATIO * 2.0
+	return Vector2(half_width * 2.0, ICON_SIZE_RATIO + BACKDROP_PAD_RATIO * 2.0)
+
+func _make_backdrop_mesh() -> MeshInstance3D:
+	var backdrop = MeshInstance3D.new()
+	backdrop.name = "ScreenShortcutBackdrop"
+	var quad = QuadMesh.new()
+	quad.orientation = PlaneMesh.FACE_Z
+	backdrop.mesh = quad
+	var material = ShaderMaterial.new()
+	material.shader = BACKDROP_SHADER
+	material.set_shader_parameter("color", BACKDROP_COLOR)
+	material.set_shader_parameter("corner", BACKDROP_CORNER)
+	# Drawn just before the icons (render_priority 127), which also skip depth.
+	material.render_priority = 126
+	backdrop.material_override = material
+	backdrop.visible = false
+	return backdrop
 
 static func _action_x_ratio(action: StringName) -> float:
 	var near = BAR_WIDTH_RATIO * 0.5 + ICON_GAP_RATIO + ICON_SIZE_RATIO * 0.5
