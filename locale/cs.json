@@ -213,5 +213,7 @@
 	"Meteor keys forgotten": "Klíče Meteoru zapomenuty",
 	"Input": "Vstup",
 	"Mouse Follows Pointer": "Myš sleduje ukazatel",
-	"Move the PC cursor wherever you point, without clicking.": "Posouvá kurzor PC tam, kam ukazujete, bez klikání."
+	"Move the PC cursor wherever you point, without clicking.": "Posouvá kurzor PC tam, kam ukazujete, bez klikání.",
+	"High Refresh Rates": "Vysoké obnovovací frekvence",
+	"Offer 200 and 207 Hz. They can glitch the headset.": "Nabízí 200 a 207 Hz. Mohou způsobit chyby headsetu."
 }

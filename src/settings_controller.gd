@@ -1675,14 +1675,44 @@ func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	return best
 
 func cycle_fps():
-	var idx = STREAM_FPS_RATES.find(main.settings.host.stream_fps)
-	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
-	main.settings.host.stream_fps = STREAM_FPS_RATES[next_idx]
+	main.settings.host.stream_fps = next_fps_rate(main.settings.host.stream_fps, main.settings.high_refresh_rates)
 	_save_setting(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
 	if main.is_streaming:
 		_schedule_stream_restart()
 	else:
+		_schedule_display_refresh()
+
+# 200 and 207 Hz glitch some headsets; they're offered only when Settings >
+# High Refresh Rates is on.
+const HIGH_REFRESH_MIN := 200
+
+static func next_fps_rate(current: int, high_refresh_rates: bool) -> int:
+	var rates := STREAM_FPS_RATES.filter(func(rate): return high_refresh_rates or rate < HIGH_REFRESH_MIN)
+	var idx := rates.find(current)
+	if idx < 0:
+		# A hidden rate, or one no longer offered: continue from the next lower one.
+		idx = rates.size() - 1
+		for i in rates.size():
+			if rates[i] > current:
+				idx = i - 1
+				break
+	return rates[(idx + 1) % rates.size()]
+
+var _display_refresh_seq := 0
+
+# Apply the headset rate only once cycling stops, so stepping from 90 to 72 Hz
+# doesn't switch the display through every rate between (Rush_iam: 207 Hz
+# glitched the headset on the way past).
+func _schedule_display_refresh():
+	_display_refresh_seq += 1
+	var my_seq := _display_refresh_seq
+	await main.get_tree().create_timer(0.8).timeout
+	if _display_refresh_seq == my_seq and not main.is_streaming:
 		apply_display_refresh_rate()
+
+func toggle_high_refresh_rates():
+	main.settings.high_refresh_rates = not main.settings.high_refresh_rates
+	_save_setting(main._ui_high_refresh_btn, "On" if main.settings.high_refresh_rates else "Off")
 
 func cycle_resolution():
 	if main.settings.host.is_polaris_host:

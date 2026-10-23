@@ -157,6 +157,13 @@ static func get_tabs() -> Array:
 				],
 			},
 			{
+				"node_name": &"SettingsDisplayRow",
+				"title": "Display",
+				"options": [
+					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
+				],
+			},
+			{
 				"node_name": &"SettingsConnectionRow",
 				"title": "Connection",
 				"options": [
