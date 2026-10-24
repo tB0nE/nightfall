@@ -88,7 +88,7 @@ func _test_app_persistence_round_trip() -> void:
 	source.tracking_mode = 1
 	source.auto_reconnect_enabled = false
 	source.quick_start_enabled = true
-	source.audio_boost_db = 9
+	source.audio_boost_db = 24
 	source.android_audio_output = 1
 	source.microphone_enabled = true
 	source.hdr_enabled = true
@@ -123,7 +123,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(loaded.tracking_mode == 1)
 	assert(not loaded.auto_reconnect_enabled)
 	assert(loaded.quick_start_enabled)
-	assert(loaded.audio_boost_db == 9)
+	assert(loaded.audio_boost_db == 24)
 	assert(loaded.microphone_enabled)
 	assert(loaded.hdr_enabled)
 	assert(loaded.idle_timeout_min == 60)

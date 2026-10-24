@@ -6,7 +6,8 @@ extends RefCounted
 
 const BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
 const PICTURE_SCALE_VALUES: Array = [50, 75, 100, 125, 150]
-const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12]
+# The renderer allows up to +24 dB; a soft limiter keeps loud passages from clipping.
+const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12, 15, 18, 21, 24]
 
 static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
