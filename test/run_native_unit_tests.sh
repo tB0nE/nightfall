@@ -23,6 +23,12 @@ if ! pkg-config --exists libavcodec libavutil; then
 fi
 
 mkdir -p "$BUILD_ROOT"
+echo "Building pcvr_decoded_region_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  "$PROJECT_ROOT/test/pcvr_decoded_region_test.cpp" \
+  -I"$PROJECT_ROOT/extensions/nightfall-xr/include" \
+  -o "$BUILD_ROOT/pcvr_decoded_region_test"
+"$BUILD_ROOT/pcvr_decoded_region_test"
 echo "Building pcvr_presentation_gate_test"
 "$CXX" -std=c++17 -Wall -Wextra -Werror \
   "$PROJECT_ROOT/test/pcvr_presentation_gate_test.cpp" \

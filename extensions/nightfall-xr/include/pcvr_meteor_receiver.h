@@ -2,6 +2,7 @@
 #ifdef __ANDROID__
 #include "pcvr_meteor_wire.h"
 #include "pcvr_frame_accounting.h"
+#include "pcvr_decoded_region.h"
 #include <android/hardware_buffer.h>
 #include <media/NdkImageReader.h>
 #include <media/NdkMediaCodec.h>
@@ -21,7 +22,7 @@ public:
     bool failed() const { return failure.load(); }
     bool listening() const { return ready.load(); }
     std::string message() const;
-    bool frame(AHardwareBuffer *&buffer, MeteorXrFrame &metadata);
+    bool frame(AHardwareBuffer *&buffer, MeteorXrFrame &metadata, PCVRDecodedRegion &region);
     void release_frame(); // Render thread, only after its sampling fence signals.
     PCVRFrameAccounting stats;
     std::atomic<uint32_t> video_width{0}, video_height{0}, video_codec{0}, video_fps{0};
@@ -38,6 +39,7 @@ private:
     AImage *held = nullptr; // Render thread owns held image and acquire fence.
     int acquire_fence = -1;
     bool borrowed = false;
+    uint32_t last_buffer_width=0,last_buffer_height=0;
     AMediaCodec *codec = nullptr; // Worker only.
     bool codec_started = false, eos = false;
     int peer = -1; // Close/shutdown serialized to avoid FD reuse races.

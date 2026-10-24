@@ -25,6 +25,8 @@ void NightfallXrProjectionTest::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_workspace_input_focus", "focused"), &NightfallXrProjectionTest::set_workspace_input_focus);
 	ClassDB::bind_method(D_METHOD("get_wristwatch_tracking"), &NightfallXrProjectionTest::get_wristwatch_tracking);
 	ClassDB::bind_method(D_METHOD("set_meteor_eye_size", "size"), &NightfallXrProjectionTest::set_meteor_eye_size);
+	ClassDB::bind_method(D_METHOD("set_meteor_eye_dimensions", "width", "height"), &NightfallXrProjectionTest::set_meteor_eye_dimensions);
+	ClassDB::bind_method(D_METHOD("get_pcvr_recommended_eye_size"), &NightfallXrProjectionTest::get_pcvr_recommended_eye_size);
 	ClassDB::bind_method(D_METHOD("set_pcvr_post_processing", "sharpen", "sampling"), &NightfallXrProjectionTest::set_pcvr_post_processing);
 }
 
@@ -71,9 +73,31 @@ void NightfallXrProjectionTest::_on_instance_destroyed() {
 }
 
 bool NightfallXrProjectionTest::set_meteor_eye_size(int size) {
-	if (state.load()!=IDLE || (size!=256 && size!=512 && size!=1024 && size!=2048 && size!=2560)) return false;
-	requested_eye_size.store(size);
+	return set_meteor_eye_dimensions(size,size);
+}
+
+bool NightfallXrProjectionTest::set_meteor_eye_dimensions(int width, int height) {
+	if (state.load()!=IDLE || width<256 || width>4096 || width%16 || height<256 || height>4096 || height%16) return false;
+	requested_eye_size.store(width);
+	requested_eye_height.store(height);
 	return true;
+}
+
+Vector2i NightfallXrProjectionTest::get_pcvr_recommended_eye_size() {
+#ifdef __ANDROID__
+	auto api=get_openxr_api();
+	if (api.is_null() || !api->get_instance() || !api->get_system_id()) return {};
+	auto enumerate=reinterpret_cast<PFN_xrEnumerateViewConfigurationViews>(api->get_instance_proc_addr("xrEnumerateViewConfigurationViews"));
+	if (!enumerate) return {};
+	XrViewConfigurationView views[2]={{XR_TYPE_VIEW_CONFIGURATION_VIEW},{XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+	uint32_t count=0;
+	if (XR_FAILED(enumerate(reinterpret_cast<XrInstance>(api->get_instance()),XrSystemId(api->get_system_id()),
+		XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,2,&count,views)) || count!=2) return {};
+	return Vector2i(std::max(views[0].recommendedImageRectWidth,views[1].recommendedImageRectWidth),
+		std::max(views[0].recommendedImageRectHeight,views[1].recommendedImageRectHeight));
+#else
+	return {};
+#endif
 }
 
 void NightfallXrProjectionTest::set_pcvr_post_processing(int sharpen, int sampling) {
@@ -165,6 +189,7 @@ Dictionary NightfallXrProjectionTest::get_test_status() const {
 	result["frames"] = static_cast<int64_t>(frames.load());
 	result["session"] = static_cast<int64_t>(session_id.load());
 	result["projection_eye_size"] = projection_eye_size.load();
+	result["projection_eye_height"] = projection_eye_height.load();
 	result["pcvr_post_processing_supported"] = pcvr_layer_settings_supported;
 #ifdef __ANDROID__
 	if (meteor) result["meteor_status"] = String(meteor->message().c_str());
@@ -318,6 +343,8 @@ const char *METEOR_FRAGMENT = R"GLSL(#version 300 es
 precision highp float;
 uniform samplerExternalOES video;
 uniform float eye_offset;
+uniform vec4 video_uv_rect;
+uniform vec2 video_texel;
 uniform vec3 watch_position, eye_position;
 uniform vec4 watch_rotation, eye_rotation, fov_tangents, watch_digits;
 uniform vec2 watch_pointer;
@@ -336,7 +363,10 @@ float digit(vec2 p,int n) {
     return value;
 }
 void main() {
-    color = vec4(texture(video, vec2(eye_offset + uv.x * 0.5, 1.0 - uv.y)).rgb, 1.0);
+    vec2 video_uv=video_uv_rect.xy+vec2(eye_offset+uv.x*.5,1.-uv.y)*video_uv_rect.zw;
+    vec2 lo=video_uv_rect.xy+vec2(eye_offset,0.)*video_uv_rect.zw+video_texel*.5;
+    vec2 hi=video_uv_rect.xy+vec2(eye_offset+.5,1.)*video_uv_rect.zw-video_texel*.5;
+    color = vec4(texture(video, clamp(video_uv,lo,hi)).rgb, 1.0);
     if(watch_visible<.5) return;
     vec3 rd=rotate_q(eye_rotation,normalize(vec3(mix(fov_tangents.x,fov_tangents.y,uv.x),mix(fov_tangents.z,fov_tangents.w,uv.y),-1.)));
     vec4 inverse_q=vec4(-watch_rotation.xyz,watch_rotation.w);
@@ -405,7 +435,9 @@ void main() {
 
 bool NightfallXrProjectionTest::initialize_render_resources() {
 	const int eye_size=meteor_mode ? requested_eye_size.load() : EYE_SIZE;
+	const int eye_height=meteor_mode ? requested_eye_height.load() : EYE_SIZE;
 	projection_eye_size.store(eye_size);
+	projection_eye_height.store(eye_height);
 	Ref<OpenXRAPIExtension> api = get_openxr_api();
 	if (api.is_null() || !api->get_instance() || !api->get_session() || eglGetCurrentContext() == EGL_NO_CONTEXT) {
 		fail("No existing OpenXR session/current GLES context"); return false;
@@ -434,7 +466,7 @@ bool NightfallXrProjectionTest::initialize_render_resources() {
 	if (!format) { fail("No supported RGBA swapchain format"); return false; }
 	XrSwapchainCreateInfo info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-	info.format = format; info.sampleCount = 1; info.width = eye_size * 2; info.height = eye_size;
+	info.format = format; info.sampleCount = 1; info.width = eye_size * 2; info.height = eye_height;
 	info.faceCount = 1; info.arraySize = 1; info.mipCount = 1;
 	if (XR_FAILED(create_swapchain(session, &info, &swapchain))) { fail("Cannot create synthetic swapchain"); return false; }
 	if (XR_FAILED(enum_images(swapchain, 0, &count, nullptr)) || count == 0) { fail("No swapchain images"); return false; }
@@ -482,7 +514,7 @@ bool NightfallXrProjectionTest::initialize_render_resources() {
 			initialize_meteor_controllers();
 		}
 	}
-	PCVR_LOG("projection initialized session=%p, %dx%d per eye; meteor=%d", (void *)session, eye_size, eye_size,meteor_mode);
+	PCVR_LOG("projection initialized session=%p, %dx%d per eye; meteor=%d", (void *)session, eye_size, eye_height,meteor_mode);
 	return true;
 }
 
@@ -535,6 +567,8 @@ bool NightfallXrProjectionTest::render_scene() {
 		glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 		glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 		glUniform1i(glGetUniformLocation(program, "video"), 0);
+		glUniform4fv(glGetUniformLocation(program,"video_uv_rect"),1,meteor_region.uv);
+		glUniform2fv(glGetUniformLocation(program,"video_texel"),1,meteor_region.texel);
 	}
 	std::array<float,15> watch;
 	{ std::lock_guard<std::mutex> lock(watch_mutex); watch=watch_state; }
@@ -549,7 +583,8 @@ bool NightfallXrProjectionTest::render_scene() {
 	for (int eye = 0; eye < 2; ++eye) {
 		const XrView &view = views[eye];
 		const int eye_size=projection_eye_size.load();
-		glViewport(eye * eye_size, 0, eye_size, eye_size);
+		const int eye_height=projection_eye_height.load();
+		glViewport(eye * eye_size, 0, eye_size, eye_height);
 		if (meteor_mode) glUniform1f(glGetUniformLocation(program, "eye_offset"), eye * 0.5f);
 		else {
 			glUniform4f(glGetUniformLocation(program, "fov_tangents"), std::tan(view.fov.angleLeft), std::tan(view.fov.angleRight), std::tan(view.fov.angleDown), std::tan(view.fov.angleUp));
@@ -571,7 +606,7 @@ bool NightfallXrProjectionTest::render_scene() {
 			glUniform3f(glGetUniformLocation(program,"eye_position"),p.position.x,p.position.y,p.position.z);
 		}
 		glDrawArrays(GL_TRIANGLES, 0, 3);
-		projection_views[eye].subImage = {swapchain, {{eye * eye_size, 0}, {eye_size, eye_size}}, 0};
+		projection_views[eye].subImage = {swapchain, {{eye * eye_size, 0}, {eye_size, eye_height}}, 0};
 	}
 	if (meteor_mode) {
 		meteor_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -738,10 +773,8 @@ bool NightfallXrProjectionTest::prepare_meteor_image() {
 	if (meteor_fence && !retire_meteor_image()) return false;
 	if (meteor_image != EGL_NO_IMAGE_KHR) return true;
 	AHardwareBuffer *buffer = nullptr;
-	if (!meteor->frame(buffer, meteor_frame)) return false;
-	if(meteor_frame.height != projection_eye_size.load()) { meteor->release_frame(); fail("Meteor stream/projection resolution mismatch"); return false; }
-	AHardwareBuffer_Desc desc{}; AHardwareBuffer_describe(buffer, &desc);
-	if (desc.width != meteor_frame.width || desc.height != meteor_frame.height) { fail("Unexpected Meteor decoded buffer size"); return false; }
+	if (!meteor->frame(buffer, meteor_frame, meteor_region)) return false;
+	if(meteor_frame.width != projection_eye_size.load()*2 || meteor_frame.height != projection_eye_height.load()) { meteor->release_frame(); fail("Meteor stream/projection resolution mismatch"); return false; }
 	const EGLint attrs[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
 	meteor_image = meteor_create_image(eglGetCurrentDisplay(), EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, meteor_native_buffer(buffer), attrs);
 	if (meteor_image == EGL_NO_IMAGE_KHR) { fail("Cannot import Meteor decoded image"); return false; }

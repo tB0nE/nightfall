@@ -40,6 +40,8 @@ public:
 	void set_wristwatch(PackedFloat32Array p_state);
 	void set_workspace_input_focus(bool p_focused);
 	bool set_meteor_eye_size(int p_size);
+	bool set_meteor_eye_dimensions(int p_width, int p_height);
+	Vector2i get_pcvr_recommended_eye_size();
 	void set_pcvr_post_processing(int p_sharpen, int p_sampling);
 	PackedFloat32Array get_wristwatch_tracking();
 	int32_t _get_composition_layer_count() override;
@@ -53,6 +55,7 @@ private:
 	std::atomic<uint64_t> frames{0};
 	std::atomic<uint64_t> session_id{0};
 	std::atomic<int> requested_eye_size{1024}, projection_eye_size{1024};
+	std::atomic<int> requested_eye_height{1024}, projection_eye_height{1024};
 	std::atomic<int> pcvr_sharpen{0}, pcvr_sampling{0};
 	// Godot writes this through the CORE wrapper's extension-request pointer.
 	// The later scene-owned projection provider must read the same storage.
@@ -99,6 +102,7 @@ private:
 	EGLImageKHR meteor_image = EGL_NO_IMAGE_KHR;
 	GLsync meteor_fence = nullptr;
 	MeteorXrFrame meteor_frame;
+	PCVRDecodedRegion meteor_region;
 	PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC meteor_native_buffer = nullptr;
 	PFNEGLCREATEIMAGEKHRPROC meteor_create_image = nullptr;
 	PFNEGLDESTROYIMAGEKHRPROC meteor_destroy_image = nullptr;

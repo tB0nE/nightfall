@@ -23,6 +23,7 @@ bool PCVRMeteorReceiver::start() {
     if (worker.joinable()) worker.join();
     failure.store(false); stop.store(false); done.store(false); ready.store(false); eos = false;
     stats.reset();
+    last_buffer_width=0; last_buffer_height=0;
     video_width=0; video_height=0; video_codec=0; video_fps=0; received_bytes=0;
     worker = std::thread(&PCVRMeteorReceiver::run, this); return true;
 }
@@ -31,7 +32,7 @@ void PCVRMeteorReceiver::stop_after_gpu_drain() {
     std::lock_guard<std::mutex> lock(network_mutex);
     if (peer >= 0) shutdown(peer, SHUT_RDWR);
 }
-bool PCVRMeteorReceiver::frame(AHardwareBuffer *&buffer, MeteorXrFrame &value) {
+bool PCVRMeteorReceiver::frame(AHardwareBuffer *&buffer, MeteorXrFrame &value, PCVRDecodedRegion &region) {
     std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
     if (!lock.owns_lock()) { ++stats.lock_busy; return false; }
     if (!reader || borrowed) return false;
@@ -48,7 +49,24 @@ bool PCVRMeteorReceiver::frame(AHardwareBuffer *&buffer, MeteorXrFrame &value) {
         // Don't guess which frame a buffer belongs to.
         lock.unlock(); status("Decoded buffer timestamp has no matching frame metadata", true); return false;
     }
-    value = metadata.at(timestamp); metadata.erase(metadata.begin(), metadata.upper_bound(timestamp));
+    value = metadata.at(timestamp);
+    AHardwareBuffer_Desc desc{};
+    AHardwareBuffer_describe(buffer,&desc);
+    AImageCropRect crop{};
+    if(AImage_getCropRect(held,&crop)!=AMEDIA_OK ||
+       !pcvr_decoded_region(desc.width,desc.height,crop.left,crop.top,crop.right,crop.bottom,value.width,value.height,region)) {
+        lock.unlock();
+        status("Invalid decoded image region: video="+std::to_string(value.width)+"x"+std::to_string(value.height)+
+            " buffer="+std::to_string(desc.width)+"x"+std::to_string(desc.height)+
+            " crop="+std::to_string(crop.left)+","+std::to_string(crop.top)+","+std::to_string(crop.right)+","+std::to_string(crop.bottom),true);
+        return false;
+    }
+    if(last_buffer_width!=desc.width || last_buffer_height!=desc.height) {
+        __android_log_print(ANDROID_LOG_INFO,"NightfallPCVR","Meteor decoded region: video=%ux%u buffer=%ux%u crop=%d,%d,%d,%d",
+            value.width,value.height,desc.width,desc.height,crop.left,crop.top,crop.right,crop.bottom);
+        last_buffer_width=desc.width; last_buffer_height=desc.height;
+    }
+    metadata.erase(metadata.begin(), metadata.upper_bound(timestamp));
     stats.select(value.sequence);
     borrowed = true;
     __android_log_print(ANDROID_LOG_INFO, "NightfallPCVR", "Meteor decoded frame=%llu sequence=%llu host_ns=%llu image_ns=%lld",

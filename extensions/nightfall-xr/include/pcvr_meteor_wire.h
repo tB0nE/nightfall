@@ -46,8 +46,8 @@ public:
             for (unsigned i = 64; i < h.size(); ++i) if (h[i]) return false;
             return true;
         }
-        // Two bounded SDR profiles; dimensions cannot change within a stream.
-        if (sequence >= 32768 || !f.bytes || (f.height != 256 && f.height != 512 && f.height != 1024 && f.height != 2048 && f.height != 2560) || f.width != f.height*2 ||
+        // Bounded, encoder-aligned SDR profiles; frozen within a stream.
+        if (sequence >= 32768 || !f.bytes || f.height<256 || f.height>4096 || f.height%16 || f.width<512 || f.width>8192 || f.width%32 ||
             (sequence && (f.width != width || f.height != height || f.codec != codec || f.fps != fps)) || f.id <= last_id || f.display_ns <= last_time) return false;
         for (unsigned i = 0; i < 22; ++i) {
             uint32_t bits = uint32_t(meteor_xr_le(h.data()+64+i*4,4)); std::memcpy(&f.views[i], &bits,4);

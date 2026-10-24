@@ -23,6 +23,24 @@ int main() {
     meteor_xr_put(sequence_header.data()+16,32768,8);
     assert(!sustained.header(sequence_header,frame));
     MeteorXrWire wire;
+    auto rectangular=h;
+    meteor_xr_put(rectangular.data()+44,4128,2); meteor_xr_put(rectangular.data()+46,2208,2);
+    MeteorXrWire rectangle;
+    assert(rectangle.header(rectangular,frame) && rectangle.accept(frame,payload));
+    auto resized=rectangular;
+    meteor_xr_put(resized.data()+16,1,8); meteor_xr_put(resized.data()+24,2,8); meteor_xr_put(resized.data()+32,2,8);
+    meteor_xr_put(resized.data()+46,2224,2);
+    assert(!rectangle.header(resized,frame));
+    for (unsigned size : {1920u,2208u,2656u,3312u,4096u}) {
+        auto scaled=h;
+        meteor_xr_put(scaled.data()+44,size*2,2); meteor_xr_put(scaled.data()+46,size,2);
+        assert(MeteorXrWire().header(scaled,frame));
+    }
+    for (unsigned size : {240u,2209u,4112u}) {
+        auto invalid=h;
+        meteor_xr_put(invalid.data()+44,size*2,2); meteor_xr_put(invalid.data()+46,size,2);
+        assert(!MeteorXrWire().header(invalid,frame));
+    }
     auto hevc_header=h;
     std::vector<uint8_t> hevc_payload{0,0,1,64,1,0,0,1,66,1,0,0,1,68,1,0,0,1,38,1};
     hevc_header[48]=2; hevc_header[51]=72;
@@ -73,5 +91,7 @@ int main() {
     meteor_xr_put(larger.data()+44,5120,2); meteor_xr_put(larger.data()+46,2560,2);
     assert(MeteorXrWire().header(larger,frame));
     meteor_xr_put(larger.data()+44,8192,2); meteor_xr_put(larger.data()+46,4096,2);
+    assert(MeteorXrWire().header(larger,frame));
+    meteor_xr_put(larger.data()+44,8224,2); meteor_xr_put(larger.data()+46,4112,2);
     assert(!MeteorXrWire().header(larger,frame));
 }
