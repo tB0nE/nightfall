@@ -327,6 +327,16 @@ builds the Windows installer on Windows.
 
 ### Experimental Monado runtime probe
 
+The host layer compatibility suite checks advertised capabilities, real
+H.264/HEVC output, unsupported layer rejection and same-session recovery:
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+.build-cache/model-tester-venv/bin/python test/smoke_xr_layer_compatibility.py .
+```
+
+See [the layer contract and test coverage](docs/plans/active/meteor-xr-layer-compatibility.md).
+
 The current XR direction is a Meteor-managed Monado runtime, with WiVRn as a
 streaming reference. Linux is the immediate spike; Windows remains a required
 feasibility gate. See the [new plan](docs/plans/active/meteor-xr-monado-spike.md).
