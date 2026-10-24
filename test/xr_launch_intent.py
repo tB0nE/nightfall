@@ -7,6 +7,7 @@ from pathlib import Path
 import secrets
 import tempfile
 import time
+from xr_local_application import valid_app_id
 
 
 def process_birth(pid):
@@ -24,7 +25,7 @@ def alive(value):
 def publish_intent(root, app_id, timeout):
     cache=Path(root)/".build-cache/meteor-xr"
     spec=json.loads((cache/"application.json").read_text())
-    if spec.get("launch")!="steam" or spec.get("steam_app_id")!=app_id:
+    if not valid_app_id(app_id) or spec.get("launch")!="steam" or spec.get("steam_app_id") not in (app_id,"*"):
         raise ValueError("Automatic XR launch requires the host-configured Steam application")
     directory=cache/"auto-launch"
     directory.mkdir(mode=0o700,parents=True,exist_ok=True)

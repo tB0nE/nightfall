@@ -1,5 +1,29 @@
 # Automatic XR launch from the Nightfall desktop
 
+## 2026-10-24: multiple Steam games
+
+The original spike pinned `application.json` to VRChat (438100). Host-local
+Steam templates now also accept `"steam_app_id": "*"`. The wrapper publishes
+the actual numeric application ID; Meteor validates and claims the live local
+intent and resolves that ID into a private, session-specific application spec.
+The runtime ticket and command validation still require that exact selected ID.
+A later launch cannot retarget a running session. Numeric configuration remains
+available when a host intentionally wants to restrict launches to one game.
+
+Wildcard selection requires an automatic launch intent; it is not a wildcard
+permission on runtime tickets or remote executable selection. The headset never
+supplies the game command. Steam launch options are still needed per game:
+
+```sh
+.build-cache/model-tester-venv/bin/python tools/meteor_xr.py steam-options --app-id 546560
+```
+
+Copy the printed absolute command into Half-Life: Alyx's launch options. Use
+438100 for VRChat. The current test host uses the wildcard template, with a
+neutral checkout working directory; Steam supplies the game's actual command,
+environment and working directory. No APK changes are necessary. Native Linux
+Alyx compatibility remains a physical test, not guaranteed by launcher tests.
+
 Updated 2026-10-21; `feat/meteor-xr-streaming`. Initial Linux DEV implementation deployed; physical testing pending.
 
 ## Current implementation and test handoff

@@ -43,9 +43,16 @@ class LaunchIntentTests(unittest.TestCase):
                 with publish_intent(root,"123",120): pass
 
     def test_automatic_wrapper_waits_for_intent_bound_runtime(self):
+        self.check_automatic_wrapper("438100", "438100")
+
+    def test_wildcard_wrapper_launches_different_game(self):
+        self.check_automatic_wrapper("*", "546560")
+
+    def check_automatic_wrapper(self, configured_app, app_id):
         with tempfile.TemporaryDirectory() as temporary, ThreadPoolExecutor() as pool:
             root=Path(temporary); cache=self.scaffold(root)
-            wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--wait","10","--",sys.executable,"-c","raise SystemExit(7)"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            (cache/"application.json").write_text(json.dumps({"launch":"steam","steam_app_id":configured_app}))
+            wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id",app_id,"--wait","10","--",sys.executable,"-c","raise SystemExit(7)"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             try:
                 path=cache/"auto-launch/intent.json"
                 deadline=time.monotonic()+3
@@ -55,12 +62,12 @@ class LaunchIntentTests(unittest.TestCase):
                 intent=json.loads(path.read_text())
                 output=cache/"lan-sessions/automatic"
                 output.mkdir(parents=True)
-                future=pool.submit(wait_for_local_launch,output,{"METEOR_XR_RUNTIME_GENERATION":"e"*32,"METEOR_XR_LAUNCH_INTENT":intent["generation"]},timeout=4,steam_app_id="438100")
+                future=pool.submit(wait_for_local_launch,output,{"METEOR_XR_RUNTIME_GENERATION":"e"*32,"METEOR_XR_LAUNCH_INTENT":intent["generation"]},timeout=4,steam_app_id=app_id)
                 value=future.result(timeout=5)
                 self.assertEqual(value["owner_pid"],wrapper.pid)
-                self.assertEqual(value["app_id"],"438100")
+                self.assertEqual(value["app_id"],app_id)
                 game=subprocess.run(value["argv"])
-                (output/"steam-outcome.json").write_text(json.dumps({"generation":"e"*32,"app_id":"438100","returncode":game.returncode,"interrupted":False}))
+                (output/"steam-outcome.json").write_text(json.dumps({"generation":"e"*32,"app_id":app_id,"returncode":game.returncode,"interrupted":False}))
                 _,stderr=wrapper.communicate(timeout=4)
                 self.assertEqual(wrapper.returncode,7,stderr)
                 self.assertFalse(path.exists())

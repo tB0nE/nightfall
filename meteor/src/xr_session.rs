@@ -13,6 +13,20 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+pub(crate) fn session_application(root:&Path, source:&Path, output:&Path, intent:Option<&str>) -> io::Result<PathBuf> {
+    if fs::metadata(source)?.len()>16384 {return Err(io::Error::other("XR application configuration exceeds 16 KiB"))}
+    let mut spec:Value=serde_json::from_slice(&fs::read(source)?)?;
+    if spec["launch"]=="steam" && spec["steam_app_id"]=="*" {
+        let generation=intent.ok_or_else(||io::Error::other("Steam application selection requires a local launch intent"))?;
+        spec["steam_app_id"]=crate::xr_launch_intent::claimed_app_id(root,generation)?.into();
+    }
+    // Freeze the selected app for this session. Later launches cannot retarget it.
+    let path=output.join("application.json");
+    fs::write(&path,serde_json::to_vec(&spec)?)?;
+    fs::set_permissions(&path,fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
 struct SessionLock(File);
 impl SessionLock {
     fn acquire(path: &Path) -> io::Result<Self> {
@@ -147,8 +161,9 @@ pub(crate) async fn runtime_adapter_with_status(
     // Explicit host-local DEV override only. Never take an executable or args
     // from the headset/control protocol. Missing means the validated demo.
     let application = cache.join("application.json");
-    if let Some(generation)=launch_intent {command.env("NIGHTFALL_XR_LAUNCH_INTENT",generation);}
+    if let Some(generation)=launch_intent.as_ref() {command.env("NIGHTFALL_XR_LAUNCH_INTENT",generation);}
     if application.exists() {
+        let application=session_application(&root,&application,&output,launch_intent.as_deref())?;
         command.env("NIGHTFALL_XR_APPLICATION_SPEC", application);
     }
     command

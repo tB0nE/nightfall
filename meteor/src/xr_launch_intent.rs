@@ -31,7 +31,7 @@ fn load(root:&Path) -> io::Result<Option<Intent>> {
     let config_path=root.join(".build-cache/meteor-xr/application.json");
     if fs::metadata(&config_path)?.len()>16384 {return Ok(None)}
     let config:serde_json::Value=serde_json::from_slice(&fs::read(config_path)?)?;
-    if config["launch"]!="steam" || config["steam_app_id"]!=value.app_id {return Ok(None)}
+    if config["launch"]!="steam" || (config["steam_app_id"]!=value.app_id && config["steam_app_id"]!="*") {return Ok(None)}
     Ok(Some(value))
 }
 
@@ -42,6 +42,15 @@ pub fn pending(root:&Path) -> Option<LaunchNotice> {
     }
     let _=root;
     None
+}
+
+/// Resolve a wildcard template only from the live, already claimed local launch.
+pub(crate) fn claimed_app_id(root:&Path,generation:&str) -> io::Result<String> {
+    #[cfg(target_os="linux")]
+    if let Some(value)=load(root)? {
+        if value.state=="claimed" && value.generation==generation {return Ok(value.app_id)}
+    }
+    Err(io::Error::other("missing or stale claimed Steam launch"))
 }
 
 pub fn claim(root:&Path,generation:&str) -> bool {
@@ -100,8 +109,25 @@ mod tests {
         fs::set_permissions(&path,fs::Permissions::from_mode(0o644)).unwrap();
         assert!(pending(&root).is_none());
         fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();
-        fs::write(config,br#"{"launch":"steam","steam_app_id":"123"}"#).unwrap();
+        fs::write(&config,br#"{"launch":"steam","steam_app_id":"123"}"#).unwrap();
         assert!(pending(&root).is_none());
+        fs::write(&config,br#"{"launch":"steam","steam_app_id":"*"}"#).unwrap();
+        value.app_id="546560".into();
+        fs::write(&path,serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(pending(&root).unwrap().app_id,"546560");
+        assert!(claimed_app_id(&root,&value.generation).is_err());
+        assert!(claim(&root,&value.generation));
+        assert_eq!(claimed_app_id(&root,&value.generation).unwrap(),"546560");
+        assert!(claimed_app_id(&root,&"b".repeat(32)).is_err());
+        let output=directory.parent().unwrap().join("session");
+        fs::create_dir(&output).unwrap();
+        assert!(crate::xr_session::session_application(&root,&config,&output,None).is_err());
+        let snapshot=crate::xr_session::session_application(&root,&config,&output,Some(&value.generation)).unwrap();
+        let frozen:serde_json::Value=serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+        assert_eq!(frozen["steam_app_id"],"546560");
+        assert_eq!(fs::metadata(&snapshot).unwrap().permissions().mode()&0o777,0o600);
+        fs::write(&config,br#"{"launch":"steam","steam_app_id":"438100"}"#).unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&fs::read(snapshot).unwrap()).unwrap(),frozen);
         fs::remove_dir_all(root).unwrap();
     }
 }
