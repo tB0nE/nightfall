@@ -7,6 +7,7 @@ struct meteor_raw_job {
     struct comp_layer layer;
     struct comp_layer overlays[METEOR_MAX_QUADS];
     uint32_t overlay_count;
+    float head_pose[7];
     bool has_projection;
     uint64_t frame_id;
     uint64_t queued_us;
@@ -16,7 +17,7 @@ static int64_t meteor_last_queued_time;
 static bool meteor_raw_process(void *value) {
     struct meteor_raw_job *job=value;
     uint64_t start=meteor_direct_now_us();
-    bool ok=meteor_encode_layer_now(job->compositor,&job->layer,job->library,job->frame_id,job->overlays,job->overlay_count);
+    bool ok=meteor_encode_layer_now(job->compositor,&job->layer,job->library,job->frame_id,job->overlays,job->overlay_count,job->head_pose);
     fprintf(stderr,"METEOR_RAW_TIMING frame=%llu queue_us=%llu encode_us=%llu ok=%d\n",
         (unsigned long long)job->frame_id,(unsigned long long)(start-job->queued_us),
         (unsigned long long)(meteor_direct_now_us()-start),ok);
@@ -28,7 +29,7 @@ static void meteor_raw_dispose(void *value) {
     for (uint32_t eye=0;eye<2;++eye) xrt_swapchain_reference(&job->layer.sc_array[eye],NULL);
     for(uint32_t i=0;i<job->overlay_count;++i) {
         meteor_projection_image_lease(&job->overlays[i].data,job->overlays[i].sc_array,false);
-        xrt_swapchain_reference(&job->overlays[i].sc_array[0],NULL);
+        for(uint32_t eye=0;eye<2;++eye) xrt_swapchain_reference(&job->overlays[i].sc_array[eye],NULL);
     }
     free(job->library); free(job);
 }
@@ -37,7 +38,7 @@ static struct meteor_job_queue meteor_raw_queue={
     .process=meteor_raw_process,.dispose=meteor_raw_dispose,
 };
 static bool meteor_raw_submit(struct null_compositor *c,const struct comp_layer *layer,const char *library,uint64_t id,
-                              const struct comp_layer *overlays,uint32_t overlay_count) {
+                              const struct comp_layer *overlays,uint32_t overlay_count,const float *head_pose) {
     if(layer->data.timestamp<=0) return false;
     if (!meteor_frame_timestamp_new(layer->data.timestamp,meteor_last_queued_time)) {
         if(layer->data.timestamp<meteor_last_queued_time) fprintf(stderr,"METEOR_FRAME_SKIPPED reason=stale_render_timestamp render_ns=%lld previous_ns=%lld\n",
@@ -58,9 +59,11 @@ static bool meteor_raw_submit(struct null_compositor *c,const struct comp_layer 
         meteor_projection_image_lease(&job->layer.data,job->layer.sc_array,true);
     }
     job->overlay_count=overlay_count;
+    memcpy(job->head_pose,head_pose,sizeof(job->head_pose));
     for(uint32_t i=0;i<overlay_count;++i) {
         job->overlays[i].data=overlays[i].data;
-        xrt_swapchain_reference(&job->overlays[i].sc_array[0],overlays[i].sc_array[0]);
+        uint32_t count=overlays[i].data.type==XRT_LAYER_PROJECTION ? 2 : 1;
+        for(uint32_t eye=0;eye<count;++eye) xrt_swapchain_reference(&job->overlays[i].sc_array[eye],overlays[i].sc_array[eye]);
         meteor_projection_image_lease(&job->overlays[i].data,job->overlays[i].sc_array,true);
     }
     job->queued_us=meteor_direct_now_us();

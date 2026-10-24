@@ -27,6 +27,21 @@ func _init() -> void:
 	var owner := Owner.new()
 	root.add_child(owner)
 	var client = ControlClient.new(owner)
+	assert(not client.queue_bitrate(80))
+	assert(not client.queue_foveation(true))
+	client.state = "prepared"
+	client.session = "a".repeat(32)
+	assert(client.queue_foveation(true) and client._pending_foveation == 1)
+	assert(client.queue_foveation(false) and client._pending_foveation == 0)
+	assert(not client.queue_bitrate(161))
+	assert(client.queue_bitrate(32))
+	assert(client.queue_bitrate(80) and client._pending_bitrate == 80)
+	client._update_bitrate_status({"state":"applied", "applied_bps":80000000})
+	assert(client.bitrate_message == "Bitrate 80.0 Mbps applied")
+	client._update_bitrate_status({"state":"rejected", "error":"test rejection"})
+	assert(client.bitrate_message == "Bitrate unchanged: test rejection")
+	client.state = "idle"
+	client.session = ""
 	assert(client._update_runtime({})) # Old hosts have no runtime field.
 	var status := {"phase": "starting", "generation": "a".repeat(32), "event_sequence": 0, "active_sessions": 0}
 	assert(ControlClient.valid_runtime_status({"phase":"ready_for_application", "generation":"a".repeat(32), "event_sequence":0, "active_sessions":0}))
@@ -50,6 +65,7 @@ func _init() -> void:
 	assert(not ControlClient.valid_runtime_status(stale))
 	client.cancel()
 	assert(client.runtime_status.is_empty())
+	assert(client._pending_foveation == -1 and client.foveation_message.is_empty())
 	assert(client._update_runtime({}))
 	assert(not ControlClient.valid_runtime_status({"phase": "starting"}))
 	client.state = "offered"

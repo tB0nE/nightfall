@@ -25,14 +25,33 @@ int main() {
     check(xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr), "extensions");
     std::vector<XrExtensionProperties> extensions(count, {XR_TYPE_EXTENSION_PROPERTIES});
     check(xrEnumerateInstanceExtensionProperties(nullptr, count, &count, extensions.data()), "extensions");
+    const bool layer_matrix=std::getenv("METEOR_XR_LAYER_MATRIX")!=nullptr;
+    if(layer_matrix) {
+        bool panorama_supported=false, cylinder_supported=false;
+        for(const auto &extension:extensions) {
+            const char *name=extension.extensionName;
+            if(!std::strcmp(name,XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME)) panorama_supported=true;
+            if(!std::strcmp(name,XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME)) cylinder_supported=true;
+            const char *unsupported[]={"XR_KHR_composition_layer_cube",
+                "XR_KHR_composition_layer_equirect","XR_KHR_composition_layer_depth",
+                "XR_FB_composition_layer_alpha_blend",
+                "XR_FB_composition_layer_depth_test","XR_FB_composition_layer_image_layout",
+                "XR_FB_composition_layer_settings","XR_FB_passthrough","XR_EXT_composition_layer_inverted_alpha"};
+            for(const char *item:unsupported) if(!std::strcmp(name,item)) {
+                std::fprintf(stderr,"Unexpected advertised capture capability: %s\n",name); return 1;
+            }
+        }
+        if(!panorama_supported || !cylinder_supported) { std::fprintf(stderr,"Panorama support missing\n"); return 1; }
+        std::puts("APP_LAYER_MATRIX capabilities=verified");
+    }
     bool vulkan = false;
     for (const auto &extension : extensions) if (!std::strcmp(extension.extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME)) vulkan = true;
     if (!vulkan) { std::fprintf(stderr, "Vulkan binding unavailable\n"); return 1; }
-    const char *enabled[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME};
+    const char *enabled[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME};
     XrInstanceCreateInfo info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strcpy(info.applicationInfo.applicationName, "Nightfall Monado runtime probe");
     info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
-    info.enabledExtensionCount = 2; info.enabledExtensionNames = enabled;
+    info.enabledExtensionCount = std::getenv("METEOR_XR_STACK_FIXTURE") ? 5 : std::getenv("METEOR_XR_CYLINDER_FIXTURE") ? 4 : std::getenv("METEOR_XR_PANORAMA_FIXTURE") ? 3 : 2; info.enabledExtensionNames = enabled;
     XrInstance instance; check(xrCreateInstance(&info, &instance), "create instance");
     XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
     check(xrGetInstanceProperties(instance, &properties), "runtime properties");
@@ -103,11 +122,16 @@ int main() {
     if(input_probe.enabled) { input_probe.run(); return 0; }
     StereoImages stereo(session, gpu, device, queue_family);
     const bool quad_fixture=std::getenv("METEOR_XR_QUAD_FIXTURE")!=nullptr;
+    const bool panorama_fixture=std::getenv("METEOR_XR_PANORAMA_FIXTURE")!=nullptr;
+    const bool cylinder_fixture=std::getenv("METEOR_XR_CYLINDER_FIXTURE")!=nullptr;
+    const bool stack_fixture=std::getenv("METEOR_XR_STACK_FIXTURE")!=nullptr;
     stereo.fixed_background=quad_fixture;
     std::unique_ptr<StereoImages> quad_images;
     XrSpace quad_space=XR_NULL_HANDLE;
     if(quad_fixture) {
-        quad_images=std::make_unique<StereoImages>(session,gpu,device,queue_family);
+        // Overlay sources need not match the output resolution. Keep the
+        // CPU-generated fixture bounded even at headset-native eye sizes.
+        quad_images=std::make_unique<StereoImages>(session,gpu,device,queue_family,256,256);
         quad_images->quad_texture=true;
         XrReferenceSpaceCreateInfo view_space{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
         view_space.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW; view_space.poseInReferenceSpace.orientation.w=1;
@@ -154,6 +178,8 @@ int main() {
         layer.space = space; layer.viewCount = 2; layer.views = projection_views;
         const XrCompositionLayerBaseHeader *layers[9] = {reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer)};
         XrCompositionLayerQuad quads[8]{};
+        XrCompositionLayerEquirect2KHR panorama{XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR};
+        XrCompositionLayerCylinderKHR curved{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
         const bool overlay_only_frame=quad_fixture && (frame/6)%2==0;
         if(quad_fixture) {
             quad_images->write(0,frame);
@@ -173,6 +199,145 @@ int main() {
         end.layerCount = (continuous || !std::getenv("METEOR_NVENC_BRIDGE") || frame == 4) ? 1 : 0;
         if(quad_fixture && end.layerCount) end.layerCount=overlay_only_frame ? 8 : 9;
         end.layers = overlay_only_frame ? layers+1 : layers;
+        if(panorama_fixture && overlay_only_frame && end.layerCount) {
+            panorama.space=quad_space; panorama.pose.orientation.w=1;
+            panorama.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT|XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+            panorama.eyeVisibility=XR_EYE_VISIBILITY_BOTH; panorama.radius=0;
+            panorama.centralHorizontalAngle=6.283185307f;
+            panorama.upperVerticalAngle=1.570796327f; panorama.lowerVerticalAngle=-1.570796327f;
+            panorama.subImage=quads[0].subImage;
+            layers[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panorama);
+            end.layerCount=1; end.layers=layers;
+        }
+        if(cylinder_fixture && end.layerCount) {
+            curved.space=quad_space; curved.pose.orientation.w=1;
+            curved.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT|XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+            curved.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+            const char *radius=std::getenv("METEOR_XR_CYLINDER_RADIUS");
+            curved.radius=radius ? std::strtof(radius,nullptr) : 2;
+            curved.centralAngle=2.4f; curved.aspectRatio=1.2f;
+            curved.subImage=quads[0].subImage;
+            layers[1]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&curved);
+            end.layerCount=overlay_only_frame ? 1 : 2;
+            end.layers=overlay_only_frame ? layers+1 : layers;
+        }
+        XrCompositionLayerColorScaleBiasKHR primary_color{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+        XrCompositionLayerColorScaleBiasKHR overlay_color{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+        XrCompositionLayerColorScaleBiasKHR secondary_color{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
+        XrCompositionLayerProjection secondary=layer;
+        XrCompositionLayerProjectionView second_views[2]={projection_views[0],projection_views[1]};
+        if(stack_fixture) {
+            primary_color.colorScale={.8f,.6f,.4f,.5f}; primary_color.colorBias={.05f,.03f,.02f,0};
+            overlay_color.colorScale={.3f,.4f,.5f,.6f}; overlay_color.colorBias={.04f,.02f,.06f,.1f};
+            secondary_color.colorScale={.25f,.5f,.75f,.25f}; secondary_color.colorBias={.02f,.04f,.01f,0};
+            layer.next=&primary_color;
+            layer.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT|XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+            auto &quad=quads[0]; quad.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+            quad.pose.position={0,0,-2}; quad.size={20,20}; quad.next=&overlay_color;
+            secondary=layer; secondary.views=second_views; secondary.next=&secondary_color;
+            for(int eye=0;eye<2;++eye) {
+                auto &view=second_views[eye];
+                view.fov.angleLeft=std::atan(std::tan(view.fov.angleLeft)*.65f);
+                view.fov.angleRight=std::atan(std::tan(view.fov.angleRight)*.65f);
+                view.fov.angleUp=std::atan(std::tan(view.fov.angleUp)*.65f);
+                view.fov.angleDown=std::atan(std::tan(view.fov.angleDown)*.65f);
+                view.pose.orientation={0,std::sin(.06f),0,std::cos(.06f)};
+            }
+            const auto *p=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
+            const auto *q=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&quad);
+            const int mode=(frame/4)%10;
+            layers[0]=p; end.layers=layers; end.layerCount=1;
+            switch(mode) {
+            case 1: layers[0]=q; layers[1]=p; end.layerCount=2; break;
+            case 2: layers[0]=p; layers[1]=q; layers[2]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&secondary); end.layerCount=3; break;
+            case 3:
+                panorama.space=quad_space; panorama.pose.orientation.w=1;
+                panorama.layerFlags=quad.layerFlags; panorama.eyeVisibility=XR_EYE_VISIBILITY_BOTH;
+                panorama.subImage=quad.subImage; panorama.radius=0; panorama.centralHorizontalAngle=6.283185307f;
+                panorama.upperVerticalAngle=1.570796327f; panorama.lowerVerticalAngle=-1.570796327f;
+                panorama.next=&overlay_color; layers[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panorama); break;
+            case 4:
+                curved.space=quad_space; curved.pose.orientation.w=1; curved.radius=0; curved.centralAngle=6.28f;
+                curved.aspectRatio=.3f; curved.subImage=quad.subImage;
+                curved.eyeVisibility=XR_EYE_VISIBILITY_BOTH; curved.layerFlags=quad.layerFlags;
+                curved.next=&overlay_color; layers[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&curved); break;
+            case 5:
+                quad.layerFlags=XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+                layers[0]=q; break; // Source is already premultiplied in this fixture phase.
+            case 6:
+                for(int eye=0;eye<2;++eye) projection_views[eye].subImage.imageRect.extent.width/=2;
+                break;
+            case 7:
+                primary_color.colorScale={1,1,1,1}; primary_color.colorBias={0,0,0,0};
+                layer.layerFlags=0; break; // Identity transforms retain the direct-copy path.
+            case 8:
+                overlay_color.colorScale={2,2,-1,1}; overlay_color.colorBias={.3f,-.2f,.5f,.8f};
+                layers[0]=q; break; // Exercise clipping, including alpha > 1.
+            case 9:
+                layer.space=quad_space;
+                for(int eye=0;eye<2;++eye) {
+                    projection_views[eye].pose.orientation={0,0,0,1};
+                    projection_views[eye].pose.position={
+                        views[eye].pose.position.x-(views[0].pose.position.x+views[1].pose.position.x)*.5f,
+                        views[eye].pose.position.y-(views[0].pose.position.y+views[1].pose.position.y)*.5f,
+                        views[eye].pose.position.z-(views[0].pose.position.z+views[1].pose.position.z)*.5f};
+                }
+                break;
+            }
+            std::printf("APP_STACK_FIXTURE frame=%d mode=%d\n",frame,mode);
+        }
+        if(layer_matrix && frame==0) {
+            XrFrameEndInfo empty=end; empty.layerCount=0; empty.layers=nullptr;
+            check(xrEndFrame(session,&empty),"empty matrix frame");
+            std::puts("APP_LAYER_MATRIX empty_frame=accepted");
+            continue;
+        }
+        if(layer_matrix && frame>=1 && frame<=7) {
+            XrFrameEndInfo invalid=end;
+            const XrCompositionLayerBaseHeader *bad[2]{};
+            XrCompositionLayerCylinderKHR cylinder{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+            XrCompositionLayerCubeKHR cube{XR_TYPE_COMPOSITION_LAYER_CUBE_KHR};
+            XrCompositionLayerEquirectKHR old_panorama{XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR};
+            XrCompositionLayerProjection wrong_size=layer;
+            XrCompositionLayerProjectionView altered[2]={projection_views[0],projection_views[1]};
+            wrong_size.views=altered;
+            const char *reason="";
+            XrResult expected_rejection=XR_ERROR_LAYER_INVALID;
+            XrCompositionLayerBaseHeader unsupported{}; unsupported.type=XR_TYPE_UNKNOWN;
+            switch(frame) {
+            case 1:
+                wrong_size.viewCount=1;
+                bad[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&wrong_size);
+                invalid.layerCount=1; reason="invalid_view_count";
+                expected_rejection=XR_ERROR_VALIDATION_FAILURE; break;
+            case 2:
+                bad[0]=&unsupported;
+                invalid.layerCount=1; reason="unsupported_type"; break;
+            case 3:
+                altered[0].subImage.imageRect.offset.x=-1;
+                bad[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&wrong_size);
+                invalid.layerCount=1; reason="invalid_source_rect"; expected_rejection=XR_ERROR_SWAPCHAIN_RECT_INVALID; break;
+            case 4:
+                bad[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&cylinder);
+                invalid.layerCount=1; reason="invalid_cylinder"; break;
+            case 5:
+                bad[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&cube);
+                invalid.layerCount=1; reason="cube"; break;
+            case 6:
+                bad[0]=reinterpret_cast<const XrCompositionLayerBaseHeader *>(&old_panorama);
+                invalid.layerCount=1; reason="equirect1"; break;
+            case 7:
+                bad[0]=nullptr; invalid.layerCount=1; reason="null_layer"; break;
+            }
+            invalid.layers=bad;
+            XrResult rejected=xrEndFrame(session,&invalid);
+            if(rejected!=expected_rejection) {
+                std::fprintf(stderr,"Layer rejection %s returned %d\n",reason,rejected); return 1;
+            }
+            std::printf("APP_LAYER_MATRIX rejected=%s expected_error=1\n",reason);
+        }
+        // A rejected submission leaves the same frame available for correction.
+        // Submit a valid frame immediately to prove the runtime remains usable.
         check(xrEndFrame(session, &end), "end frame");
         struct timespec monotonic_time;
         check(xrConvertTimeToTimespecTimeKHR(instance, state.predictedDisplayTime, &monotonic_time), "convert display time");

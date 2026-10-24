@@ -31,9 +31,10 @@ func describe(status: Dictionary, display_hz: float, app_fps: float) -> String:
 	var height := int(status.get("video_height", 0))
 	if width == 0 or height == 0: return "Waiting for decoded XR video…"
 	var projection := int(status.get("projection_eye_size", 0))
+	var projection_height := int(status.get("projection_eye_height", projection))
 	var codec := "HEVC" if int(status.get("video_codec", 0)) == 2 else "H.264"
 	var measured := "—" if fps < 0 else "%.1f" % fps
 	var rate := "—" if mbps < 0 else "%.1f Mbps" % mbps
 	return "Rx %d×%d/eye → XR %d×%d/eye • %s\nVideo %s/%d fps • Display %.0f Hz • Rx %s • App %.0f fps" % [
-		width / 2, height, projection, projection, codec, measured,
+		width / 2, height, projection, projection_height, codec, measured,
 		int(status.get("video_fps", 0)), display_hz, rate, app_fps]

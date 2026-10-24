@@ -10,12 +10,22 @@ class Owner extends Node3D:
 	var welcome_screen
 	var pcvr_test := BackendOwner.new()
 	var display_refresh_rate := 72.0
+	var device_is_quest3 := true
+	func _log(_message: String) -> void: pass
 
 class BackendOwner extends RefCounted:
 	var backend := Backend.new()
 
 class Backend extends RefCounted:
-	func get_test_status() -> Dictionary: return {"pcvr_post_processing_supported": true}
+	var dimensions := Vector2i(2064,2208)
+	var reconfigurations := 0
+	func get_pcvr_recommended_eye_size() -> Vector2i: return Vector2i(2064,2208)
+	func get_test_status() -> Dictionary:
+		return {"pcvr_post_processing_supported": true, "projection_eye_size":dimensions.x, "projection_eye_height":dimensions.y}
+	func set_meteor_eye_dimensions(width: int, height: int) -> bool:
+		reconfigurations += 1
+		dimensions = Vector2i(width,height)
+		return true
 
 class ControlState extends RefCounted:
 	var state := "idle"
@@ -76,6 +86,36 @@ func _initialize() -> void:
 	owner.pcvr_handover.state = Handover.State.ACTIVE
 	ui.refresh_pcvr_menu()
 	assert(exit_button.visible and link.get_theme_color("font_color").g == 1.0)
+	# Resolution cycling saves next-session preferences without touching the
+	# active projection, control connection, or handover state.
+	var path := PCVRStreamSettings.PATH
+	var previous := ConfigFile.new()
+	var existed := previous.load(path) == OK
+	var preferences := PCVRStreamSettings.new(true)
+	assert(preferences.save_to(path) == OK)
+	ui._pcvr_video = preferences
+	var resolution := Button.new()
+	ui._init_option_text(resolution, "Resolution", "100%")
+	ui._pcvr_resolution_btn = resolution
+	ui.refresh_pcvr_menu()
+	assert(not str(resolution.get_meta(UIController.OPTION_VALUE_META)).contains("restart"))
+	ui._cycle_pcvr_video(true)
+	assert(str(resolution.get_meta(UIController.OPTION_VALUE_META)) == "105% (restart)")
+	assert(info.text.contains("2176 × 2320 / eye (restart required)"))
+	assert(owner.pcvr_test.backend.dimensions == Vector2i(2064,2208))
+	assert(owner.pcvr_test.backend.reconfigurations == 0)
+	assert(owner.pcvr_handover.state == Handover.State.ACTIVE and control.state == "watching")
+	preferences.load_from()
+	assert(preferences.resolution_percent == 105)
+	preferences.resolution_percent = 100
+	assert(preferences.save_to(path) == OK)
+	ui._pcvr_video = preferences
+	ui.refresh_pcvr_menu()
+	assert(not str(resolution.get_meta(UIController.OPTION_VALUE_META)).contains("restart"))
+	if existed: assert(previous.save(path) == OK)
+	else: assert(DirAccess.remove_absolute(path) == OK)
+	ui._pcvr_resolution_btn = null
+	resolution.free()
 	owner.pcvr_handover.state = Handover.State.IDLE
 	control.state = "failed"
 	ui.refresh_pcvr_menu()

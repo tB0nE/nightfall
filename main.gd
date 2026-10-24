@@ -1080,7 +1080,7 @@ func _update_laser_layers():
 			left_ray = null
 	composition_controller_rays.update(
 		DEBUG_COMP_LASER,
-		comp.in_use and is_xr_active,
+		(comp.in_use or pcvr_handover.menu_only) and is_xr_active,
 		xr_camera.global_position,
 		right_ray,
 		left_ray)
@@ -2320,6 +2320,9 @@ func _process(delta):
 	if pcvr_handover.menu_only and not pcvr_handover.blocks_workspace():
 		# Settings-only presentation must not run ordinary screen/ambient/grab
 		# updates which would reactivate hidden desktop layers behind the menu.
+		# Ownership and hand poses still need updating: controllers may have
+		# replaced hands while the XR game owned input and this loop was skipped.
+		if is_xr_active: _process_hand_tracking(delta)
 		_process_controller_fade(delta)
 		xr_interaction.process_pointer_frame(delta)
 		_update_cursor_layer()

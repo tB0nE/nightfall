@@ -182,7 +182,7 @@ func _run() -> void:
 	var token: int = handover.generation
 	assert(handover.state == Handover.State.DRAINING and handover.blocks_workspace())
 	assert(not owner.visible and owner.native_xr_renderer.presentation_suspended)
-	assert(owner.audio_player.stream_paused and owner.meteor_microphone._paused)
+	assert(not owner.audio_player.stream_paused and owner.meteor_microphone._paused)
 	assert(owner.input_handler.releases == 1 and owner.is_streaming)
 	assert(not handover.interface.enabled)
 	assert(owner.pcvr_test.backend.activations == 0)
@@ -190,6 +190,20 @@ func _run() -> void:
 	child.visible = false
 	handover._layers_drained(token)
 	assert(handover.state == Handover.State.ACTIVE and owner.pcvr_test.backend.activations == 1)
+	# Retain desktop audio through XR/menu transitions; stop stale playback if
+	# the desktop disconnects, and respect a player paused before handover.
+	owner.is_streaming = false
+	handover.process(.1)
+	assert(owner.audio_player.stream_paused)
+	owner.is_streaming = true
+	handover.process(.1)
+	assert(not owner.audio_player.stream_paused)
+	handover._saved.audio_paused = true
+	handover.process(.1)
+	assert(owner.audio_player.stream_paused)
+	handover._saved.audio_paused = false
+	handover.process(.1)
+	assert(not owner.audio_player.stream_paused)
 	# The automatic standby-to-XR path must leave B/Y entirely to the game.
 	owner.right_hand = HeldHand.new()
 	owner.left_hand = HeldHand.new()
@@ -215,7 +229,7 @@ func _run() -> void:
 	assert(not desktop_mesh.visible and desktop_hit.collision_layer == 0)
 	assert(owner.ui_visible and owner.ui_controller.opened == 1)
 	assert(owner.native_xr_renderer.presentation_suspended)
-	handover.close_pcvr_menu()
+	handover.toggle_pcvr_menu()
 	assert(not handover.menu_only and not owner.visible and not owner.ui_visible)
 	assert(desktop_mesh.visible and desktop_hit.collision_layer == 8)
 	assert(not owner.pcvr_test.backend.focused)

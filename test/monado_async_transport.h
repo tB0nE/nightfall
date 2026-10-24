@@ -103,6 +103,7 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
     struct meteor_stereo_encode_v1 *m=&meteor_async.pending[index].metadata;
     memset(m,0,sizeof(*m)); m->frame_id=input->frame_id; m->display_ns=input->display_ns;
     m->eye_size=input->eye_size;
+    m->eye_height=input->eye_height;
     memcpy(m->views,input->views,sizeof(m->views));
     meteor_async.pending[index].packet=*packet; packet->bytes=NULL; packet->length=0;
     ++meteor_async.count;

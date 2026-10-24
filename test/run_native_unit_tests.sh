@@ -23,6 +23,11 @@ if ! pkg-config --exists libavcodec libavutil; then
 fi
 
 mkdir -p "$BUILD_ROOT"
+echo "Building meteor_live_foveation_test"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  "$PROJECT_ROOT/test/meteor_live_foveation_test.cpp" \
+  -o "$BUILD_ROOT/meteor_live_foveation_test"
+"$BUILD_ROOT/meteor_live_foveation_test"
 echo "Building pcvr_decoded_region_test"
 "$CXX" -std=c++17 -Wall -Wextra -Werror \
   "$PROJECT_ROOT/test/pcvr_decoded_region_test.cpp" \

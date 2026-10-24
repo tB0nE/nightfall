@@ -16,19 +16,18 @@
  
  	/*
  	 * No logic needed here for the null compositor, if using the null
-@@ -500,6 +502,16 @@
+@@ -500,6 +502,15 @@
  	// If you are using the system/multi-compositor (multiple client module), your native compositor
  	// can just unref the sync handle. Otherwise please use it.
-+	// Diagnostic hook requires the multi-compositor to have consumed synchronization.
-+	if (xrt_graphics_sync_handle_is_valid(sync_handle)) {
-+		fprintf(stderr, "METEOR_CAPTURE_FAILED unexpected pending synchronization\n");
-+		abort();
-+	}
++	// Fail through the owning supervisor, never abort the compositor process.
++	bool meteor_pending_sync = xrt_graphics_sync_handle_is_valid(sync_handle);
  	u_graphics_sync_unref(&sync_handle);
-+	if (!meteor_capture_layer(c)) {
++	if (meteor_pending_sync || !meteor_capture_layer(c)) {
 +		meteor_capture_describe(c);
-+		fprintf(stderr, "METEOR_CAPTURE_FAILED\n");
-+		abort();
++		fprintf(stderr, "METEOR_CAPTURE_FAILED reason=%s\n", meteor_pending_sync ? "pending_sync" : "capture_rejected");
++		FILE *failure = fopen(meteor_probe_path("capture-failed"), "w");
++		if (failure) { fputs("Meteor compositor capture failed; see service.log\n", failure); fclose(failure); }
++		return XRT_ERROR_COMPOSITOR_NOT_SUPPORTED;
 +	}
  
  	/*
@@ -175,6 +174,22 @@
  	return XRT_SUCCESS;
  }
  
+@@ -739,6 +756,7 @@ multi_compositor_layer_cylinder(struct xrt_compositor *xc,
+ 	mc->progress.layers[index].xdev = xdev;
+ 	xrt_swapchain_reference(&mc->progress.layers[index].xscs[0], xsc);
+ 	mc->progress.layers[index].data = *data;
++	meteor_projection_image_lease(data, mc->progress.layers[index].xscs, true);
+ 
+ 	return XRT_SUCCESS;
+ }
+@@ -771,6 +788,7 @@ multi_compositor_layer_equirect2(struct xrt_compositor *xc,
+ 	mc->progress.layers[index].xdev = xdev;
+ 	xrt_swapchain_reference(&mc->progress.layers[index].xscs[0], xsc);
+ 	mc->progress.layers[index].data = *data;
++	meteor_projection_image_lease(data, mc->progress.layers[index].xscs, true);
+ 
+ 	return XRT_SUCCESS;
+ }
 --- a/src/xrt/compositor/multi/comp_multi_system.c
 +++ b/src/xrt/compositor/multi/comp_multi_system.c
 @@ -589,9 +589,15 @@

@@ -3,11 +3,12 @@ extends SceneTree
 const Controller = preload("res://src/pcvr_test_controller.gd")
 const Session = preload("res://src/pcvr_session.gd")
 
-class Owner extends Node:
+class Owner extends Node3D:
 	var right_hand = null
 	var left_hand = null
 	var logs: Array[String] = []
 	var welcome_viewport: SubViewport
+	var welcome_screen
 	func _log(message: String) -> void: logs.append(message)
 
 class Hand extends RefCounted:
@@ -201,6 +202,7 @@ func _run() -> void:
 	quit()
 
 func _test_standby(owner: Owner) -> void:
+	owner.welcome_screen = WelcomeScreen.new(owner)
 	var controller := StandbyHarness.new(owner)
 	controller.backend = Backend.new()
 	controller.available = true
@@ -216,6 +218,7 @@ func _test_standby(owner: Owner) -> void:
 	controller.request_stop()
 	controller.request_stop()
 	assert(controller.backend.stops == 1 and controller.standby_active)
+	assert(not owner.welcome_screen._auto_suppressed, "Normal game teardown must allow the next automatic launch")
 	controller.backend.state = "idle"
 	controller.process_standby(0.1)
 	assert(not controller.standby_active and controller.restores == 0)

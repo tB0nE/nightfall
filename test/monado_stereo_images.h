@@ -4,6 +4,7 @@
 #include <chrono>
 #include "monado_probe_paths.h"
 #include "meteor_eye_format.h"
+#include "meteor_eye_rect.h"
 #include "meteor_pose_scene.h"
 
 static void vk_check(VkResult result, const char *operation) {
@@ -41,16 +42,22 @@ struct StereoImages {
     VkBuffer buffer;
     VkDeviceMemory memory;
 
-    StereoImages(XrSession session, VkPhysicalDevice gpu, VkDevice dev, uint32_t family) : device(dev) {
+    StereoImages(XrSession session, VkPhysicalDevice gpu, VkDevice dev, uint32_t family,
+                 uint32_t source_width=0,uint32_t source_height=0) : device(dev) {
         measurement = std::getenv("METEOR_XR_GPU_MEASURE") != nullptr;
         if(measurement && (!std::getenv("METEOR_XR_GPU_SCENE_SHADER") || !std::getenv("METEOR_XR_TRACKED_SCENE"))) {
             std::fprintf(stderr,"Measurement requires GPU tracked scene\n"); std::exit(1);
         }
         const char *size = std::getenv("METEOR_XR_EYE_SIZE");
         if (size) {
-            if (std::strcmp(size,"256") && std::strcmp(size,"512") && std::strcmp(size,"1024") && std::strcmp(size,"2048") && std::strcmp(size,"2560")) { std::fprintf(stderr,"Invalid eye-size profile\n"); std::exit(1); }
-            width = height = uint32_t(std::atoi(size));
+            char *end=nullptr;
+            unsigned long parsed=std::strtoul(size,&end,10);
+            if (!*size || *end || parsed>4096 || !meteor_eye_size_valid(uint32_t(parsed))) { std::fprintf(stderr,"Invalid eye-size profile\n"); std::exit(1); }
+            width = height = uint32_t(parsed);
+            height=meteor_eye_dimension(std::getenv("METEOR_XR_EYE_HEIGHT"),width);
+            if(!height) { std::fprintf(stderr,"Invalid eye height\n"); std::exit(1); }
         }
+        if(source_width && source_height) {width=source_width; height=source_height;}
         uint32_t count = 0;
         check(xrEnumerateSwapchainFormats(session, 0, &count, nullptr), "count formats");
         std::vector<int64_t> formats(count);
@@ -256,7 +263,14 @@ struct StereoImages {
                 input[p+1]=uint8_t(std::clamp(color.y,0.f,1.f)*255);
                 input[p+2]=uint8_t(std::clamp(color.z,0.f,1.f)*255);
             }
-            if(quad_texture) { input[p]=0; input[p+1]=255; input[p+2]=0; input[p+3]=128; }
+            if(quad_texture) {
+                const bool cylinder=std::getenv("METEOR_XR_CYLINDER_FIXTURE")!=nullptr;
+                input[p]=cylinder ? uint8_t((p/4%width)*255/(width-1)) : 0;
+                input[p+1]=255;
+                if(std::getenv("METEOR_XR_STACK_FIXTURE") && (frame/4)%10==5) input[p+1]=128;
+                input[p+2]=cylinder ? uint8_t((p/4/width)*255/(height-1)) : 0;
+                input[p+3]=128;
+            }
             else if(fixed_background) input[p+1]=64;
         }
         std::vector<unsigned char> expected(input,input+width*height*4);

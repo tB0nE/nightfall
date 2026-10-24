@@ -16,6 +16,9 @@ class Handover extends RefCounted:
 	var desktop_visible := false
 	var menu_only := false
 	var menus := 0
+	func toggle_pcvr_menu() -> void:
+		if menu_only: menu_only = false
+		else: open_pcvr_menu()
 	func open_pcvr_menu() -> void:
 		menu_only = true
 		menus += 1
@@ -79,7 +82,13 @@ func _init():
 	assert(backend.focused and handover.toggles == 2)
 	watch.process(.01,handover)
 	assert(handover.menus == 1) # Held trigger does not reopen the menu.
-	handover.menu_only = false # Simulate closing settings before tracking loss.
+	backend.tracking[21] = 0
+	watch.process(.01,handover)
+	backend.tracking[21] = 1
+	watch.process(.01,handover)
+	assert(not handover.menu_only and handover.menus == 1) # Second gear click closes.
+	backend.tracking[21] = 0
+	watch.process(.01,handover)
 	backend.tracking = PackedFloat32Array()
 	watch.process(.1,handover)
 	assert(backend.state[13] == 0)

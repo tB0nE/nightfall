@@ -145,7 +145,7 @@ func request_stop() -> void:
 		if not _standby_stopping:
 			_standby_stopping = true
 			if "welcome_screen" in main and main.welcome_screen:
-				main.welcome_screen.cancel_xr_control(false)
+				main.welcome_screen.cancel_xr_control(false, false)
 			backend.stop_test()
 		return
 	_execute(session.exit())
@@ -177,7 +177,7 @@ func _execute(commands: Array[Dictionary]) -> void:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
 			"stop":
 				if "welcome_screen" in main and main.welcome_screen:
-					main.welcome_screen.cancel_xr_control(false)
+					main.welcome_screen.cancel_xr_control(false, false)
 				_log_transition("stopping")
 				status = "Stopping; waiting for native projection drain"
 				backend.stop_test()

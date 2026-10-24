@@ -35,7 +35,7 @@ static void meteor_encoder_shutdown(void)
 
 static bool
 meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *layer, const char *library, uint64_t frame_id,
-                       const struct comp_layer *overlays, uint32_t overlay_count)
+                       const struct comp_layer *overlays, uint32_t overlay_count,const float *head_pose)
 {
     // Multi-compositor can repeat the same submitted layer: don't encode duplicates.
     if(layer->data.timestamp<=0) return false;
@@ -56,20 +56,59 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     meteor_encoder_submit = encode;
     struct vk_bundle *vk = &c->base.vk;
     struct meteor_stereo_encode_v1 input = {
-        .size = sizeof(input), .instance = vk->instance, .gpu = vk->physical_device,
+        .size = sizeof(input), .layer_abi=METEOR_LAYER_ABI, .layer_stride=sizeof(struct meteor_layer_v2), .instance = vk->instance, .gpu = vk->physical_device,
         .device = vk->device, .queue = vk->main_queue->queue,
         .queue_family = vk->main_queue->family_index,
         .frame_id = frame_id,
         .display_ns = (uint64_t)layer->data.timestamp,
     };
-    struct meteor_quad_v1 quads[METEOR_MAX_QUADS];
+    memcpy(input.head_pose,head_pose,sizeof(input.head_pose));
+    struct meteor_layer_v2 quads[METEOR_MAX_QUADS];
     input.quads=quads;
     if(overlay_count>METEOR_MAX_QUADS) return false;
     for(uint32_t i=0;i<overlay_count;++i) {
         const struct xrt_layer_data *data=&overlays[i].data;
-        if(data->type!=XRT_LAYER_QUAD) return false;
-        const struct xrt_sub_image *sub=&data->quad.sub;
-        if(data->quad.visibility==XRT_LAYER_EYE_VISIBILITY_NONE) continue;
+        if(data->type==XRT_LAYER_PROJECTION) {
+            if(data->view_count!=2 || input.quad_count+2>METEOR_MAX_QUADS) return false;
+            input.projection_present=1;
+            for(int eye=0;eye<2;++eye) {
+                const struct xrt_layer_projection_view_data *view=&data->proj.v[eye];
+                const struct xrt_sub_image *sub=&view->sub;
+                if(!overlays[i].sc_array[eye]) return false;
+                struct comp_swapchain *sc=comp_swapchain(overlays[i].sc_array[eye]);
+                if(!meteor_eye_format_valid((VkFormat)sc->vkic.info.format) ||
+                    sub->image_index>=sc->vkic.image_count ||
+                    (sub->rect.offset.w<0 || sub->rect.offset.h<0 || sub->rect.extent.w<=0 || sub->rect.extent.h<=0 ||
+                        (uint64_t)sub->rect.offset.w+sub->rect.extent.w>sc->vkic.info.width || (uint64_t)sub->rect.offset.h+sub->rect.extent.h>sc->vkic.info.height) ||
+                    !meteor_eye_slice_valid(sub->array_index,sc->vkic.info.array_size,sc->vkic.info.sample_count)) return false;
+                struct meteor_layer_v2 *q=&quads[input.quad_count++];
+                *q=(struct meteor_layer_v2){.image=sc->vkic.images[sub->image_index].handle,.format=(VkFormat)sc->vkic.info.format,
+                    .width=sc->vkic.info.width,.height=sc->vkic.info.height,.slice=sub->array_index,
+                    .rect={sub->rect.offset.w,sub->rect.offset.h,sub->rect.extent.w,sub->rect.extent.h},
+                    .pose={view->pose.position.x,view->pose.position.y,view->pose.position.z,
+                        view->pose.orientation.x,view->pose.orientation.y,view->pose.orientation.z,view->pose.orientation.w},
+                    .color_scale={data->color_scale.r,data->color_scale.g,data->color_scale.b,data->color_scale.a},
+                    .color_bias={data->color_bias.r,data->color_bias.g,data->color_bias.b,data->color_bias.a},
+                    .flags=(uint32_t)data->flags,.visibility=1u<<eye,.flip_y=data->flip_y,.kind=METEOR_LAYER_PROJECTION,
+                    .projection_fov={tanf(view->fov.angle_left),tanf(view->fov.angle_right),tanf(view->fov.angle_up),tanf(view->fov.angle_down)}};
+            }
+            continue;
+        }
+        bool panorama=data->type==XRT_LAYER_EQUIRECT2;
+        bool cylinder=data->type==XRT_LAYER_CYLINDER;
+        if(data->type!=XRT_LAYER_QUAD && !panorama && !cylinder) return false;
+        const struct xrt_sub_image *sub=panorama ? &data->equirect2.sub : cylinder ? &data->cylinder.sub : &data->quad.sub;
+        uint32_t visibility=panorama ? data->equirect2.visibility : cylinder ? data->cylinder.visibility : data->quad.visibility;
+        const struct xrt_pose *pose=panorama ? &data->equirect2.pose : cylinder ? &data->cylinder.pose : &data->quad.pose;
+        if(visibility==XRT_LAYER_EYE_VISIBILITY_NONE || (cylinder && data->cylinder.central_angle==0)) continue;
+        if(panorama && (!isfinite(data->equirect2.radius) || data->equirect2.radius<0 ||
+            !isfinite(data->equirect2.central_horizontal_angle) || data->equirect2.central_horizontal_angle<=0 || data->equirect2.central_horizontal_angle>6.283186f ||
+            !isfinite(data->equirect2.upper_vertical_angle) || !isfinite(data->equirect2.lower_vertical_angle) ||
+            data->equirect2.upper_vertical_angle<=data->equirect2.lower_vertical_angle ||
+            data->equirect2.upper_vertical_angle>1.570797f || data->equirect2.lower_vertical_angle< -1.570797f)) return false;
+        if(cylinder && (isnan(data->cylinder.radius) || data->cylinder.radius<0 ||
+            !isfinite(data->cylinder.central_angle) || data->cylinder.central_angle<=0 || data->cylinder.central_angle>6.283186f ||
+            !isfinite(data->cylinder.aspect_ratio) || data->cylinder.aspect_ratio<=0)) return false;
         if(!overlays[i].sc_array[0]) return false;
         struct comp_swapchain *sc=comp_swapchain(overlays[i].sc_array[0]);
         uint32_t allowed=0x1ff; // Blend, view space, color transform and processing hints.
@@ -78,25 +117,33 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
             sub->rect.offset.w<0 || sub->rect.offset.h<0 || sub->rect.extent.w<=0 || sub->rect.extent.h<=0 ||
             (uint64_t)sub->rect.offset.w+sub->rect.extent.w>sc->vkic.info.width ||
             (uint64_t)sub->rect.offset.h+sub->rect.extent.h>sc->vkic.info.height ||
-            !isfinite(data->quad.size.x) || !isfinite(data->quad.size.y) || data->quad.size.x<=0 || data->quad.size.y<=0) {
+            (!panorama && !cylinder && (!isfinite(data->quad.size.x) || !isfinite(data->quad.size.y) || data->quad.size.x<=0 || data->quad.size.y<=0))) {
             fprintf(stderr,"METEOR_QUAD_REJECT index=%u flags=%u format=%lld rect=%d,%d,%d,%d samples=%u\n",
                 i,(unsigned)data->flags,(long long)sc->vkic.info.format,sub->rect.offset.w,sub->rect.offset.h,
                 sub->rect.extent.w,sub->rect.extent.h,sc->vkic.info.sample_count);
             return false;
         }
-        struct meteor_quad_v1 *q=&quads[input.quad_count++];
-        *q=(struct meteor_quad_v1){.image=sc->vkic.images[sub->image_index].handle,.format=(VkFormat)sc->vkic.info.format,
+        struct meteor_layer_v2 *q=&quads[input.quad_count++];
+        *q=(struct meteor_layer_v2){.image=sc->vkic.images[sub->image_index].handle,.format=(VkFormat)sc->vkic.info.format,
             .width=sc->vkic.info.width,.height=sc->vkic.info.height,.slice=sub->array_index,
             .rect={sub->rect.offset.w,sub->rect.offset.h,sub->rect.extent.w,sub->rect.extent.h},
-            .pose={data->quad.pose.position.x,data->quad.pose.position.y,data->quad.pose.position.z,
-                   data->quad.pose.orientation.x,data->quad.pose.orientation.y,data->quad.pose.orientation.z,data->quad.pose.orientation.w},
-            .extent={data->quad.size.x,data->quad.size.y},
+            .pose={pose->position.x,pose->position.y,pose->position.z,
+                   pose->orientation.x,pose->orientation.y,pose->orientation.z,pose->orientation.w},
+            .extent={(panorama || cylinder) ? 0 : data->quad.size.x,(panorama || cylinder) ? 0 : data->quad.size.y},
             .color_scale={data->color_scale.r,data->color_scale.g,data->color_scale.b,data->color_scale.a},
             .color_bias={data->color_bias.r,data->color_bias.g,data->color_bias.b,data->color_bias.a},
-            .flags=(uint32_t)data->flags,.visibility=(uint32_t)data->quad.visibility,.flip_y=data->flip_y};
+            .flags=(uint32_t)data->flags,.visibility=visibility,.flip_y=data->flip_y,
+            .kind=panorama ? METEOR_LAYER_EQUIRECT2 : cylinder ? METEOR_LAYER_CYLINDER : METEOR_LAYER_QUAD,
+            .radius=panorama ? data->equirect2.radius : cylinder && isfinite(data->cylinder.radius) ? data->cylinder.radius : 0,
+            .horizontal_angle=panorama ? data->equirect2.central_horizontal_angle : cylinder ? data->cylinder.central_angle : 0,
+            .upper_angle=panorama ? data->equirect2.upper_vertical_angle : 0,
+            .lower_angle=panorama ? data->equirect2.lower_vertical_angle : 0,
+            .aspect_ratio=cylinder ? data->cylinder.aspect_ratio : 0};
     }
     input.eye_size=(uint32_t)layer->data.proj.v[0].sub.rect.extent.w;
+    input.eye_height=(uint32_t)layer->data.proj.v[0].sub.rect.extent.h;
     input.background_only=layer->sc_array[0]==NULL;
+    if(!input.background_only) input.projection_present=1;
     for (int eye = 0; eye < 2; ++eye) {
         if(!input.background_only) {
         struct comp_swapchain *sc = comp_swapchain(layer->sc_array[eye]);
@@ -105,6 +152,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         if (index >= sc->vkic.image_count || !meteor_eye_format_valid((VkFormat)sc->vkic.info.format) ||
             !meteor_eye_rect_valid(sc->vkic.info.width,sc->vkic.info.height,rect->offset.w,rect->offset.h,rect->extent.w,rect->extent.h) ||
             (uint32_t)rect->extent.w!=input.eye_size ||
+            (uint32_t)rect->extent.h!=input.eye_height ||
             !meteor_eye_slice_valid(layer->data.proj.v[eye].sub.array_index,sc->vkic.info.array_size,sc->vkic.info.sample_count)) {
             return false;
         }
@@ -116,6 +164,12 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
         meteor_last_source_formats[eye]=input.eye_formats[eye];
         } else {
             input.eye_formats[eye]=meteor_last_source_formats[eye] ? meteor_last_source_formats[eye] : VK_FORMAT_R8G8B8A8_UNORM;
+            if(!meteor_last_source_formats[eye] && input.quad_count) input.eye_formats[eye]=input.quads[0].format;
+            for(uint32_t i=0;i<input.quad_count;++i) if(input.quads[i].kind==METEOR_LAYER_PROJECTION && (input.quads[i].visibility&(1u<<eye))) {
+                input.eye_formats[eye]=input.quads[i].format;
+                break;
+            }
+            meteor_last_source_formats[eye]=input.eye_formats[eye];
         }
         const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
         float values[11] = {view->pose.position.x, view->pose.position.y, view->pose.position.z,
@@ -150,10 +204,11 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     bool continuous = getenv("METEOR_CONTINUOUS_FRAMES") != NULL;
     FILE *meta = fopen(meteor_probe_path(continuous ? "monado-stereo.jsonl" : "monado-stereo.json"), continuous ? "a" : "w");
     if (!meta) return false;
-    fprintf(meta, "{\"schema\":1,\"projection\":%u,\"frame_id\":%llu,\"display_time_ns\":%lld,\"offset\":%llu,\"bytes\":%llu,\"width\":%u,\"height\":%u,\"views\":[",
-        !input.background_only,
+    fprintf(meta,"{\"source_time_ns\":%lld,",(long long)(overlay_count ? overlays[0].data.timestamp : layer->data.timestamp));
+    fprintf(meta, "\"schema\":1,\"projection\":%u,\"frame_id\":%llu,\"display_time_ns\":%lld,\"offset\":%llu,\"bytes\":%llu,\"width\":%u,\"height\":%u,\"views\":[",
+        input.projection_present,
         (unsigned long long)input.frame_id, (long long)layer->data.timestamp,
-        (unsigned long long)offset, (unsigned long long)bytes,input.eye_size*2,input.eye_size);
+        (unsigned long long)offset, (unsigned long long)bytes,input.eye_size*2,input.eye_height);
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_layer_projection_view_data *view = &layer->data.proj.v[eye];
         fprintf(meta, "%s{\"position\":[%.9g,%.9g,%.9g],\"orientation\":[%.9g,%.9g,%.9g,%.9g],\"fov\":[%.9g,%.9g,%.9g,%.9g]}",
@@ -175,8 +230,8 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
 
 #include "monado_raw_encode_queue.h"
 static bool meteor_encode_layer(struct null_compositor *c,const struct comp_layer *layer,const char *library,
-                                const struct comp_layer *overlays,uint32_t overlay_count)
+                                const struct comp_layer *overlays,uint32_t overlay_count,const float *head_pose)
 {
     uint64_t id=(uint64_t)c->base.layer_accum.data.frame_id;
-    return getenv("METEOR_XR_ASYNC_ENCODE") ? meteor_raw_submit(c,layer,library,id,overlays,overlay_count) : meteor_encode_layer_now(c,layer,library,id,overlays,overlay_count);
+    return getenv("METEOR_XR_ASYNC_ENCODE") ? meteor_raw_submit(c,layer,library,id,overlays,overlay_count,head_pose) : meteor_encode_layer_now(c,layer,library,id,overlays,overlay_count,head_pose);
 }

@@ -13,6 +13,10 @@ class ControlProbe extends RefCounted:
 	var message := ""
 	var offers := 0
 	var accepts := 0
+	var stops_projection := false
+	func cancel(stop_projection: bool = true) -> void:
+		stops_projection = stop_projection
+		state = "idle"
 	func connect_offer() -> void: offers += 1
 	func accept_offer() -> void: accepts += 1
 
@@ -25,8 +29,28 @@ class WelcomeProbe extends WelcomeScreen:
 func _init():
 	_test_order_apps()
 	_test_xr_entry()
+	_test_xr_teardown_policy()
 	print("All welcome_screen tests passed")
 	quit()
+
+func _test_xr_teardown_policy() -> void:
+	var owner := Owner.new()
+	var welcome := WelcomeScreen.new(owner)
+	var control := ControlProbe.new()
+	welcome._xr_control = control
+	control.state = "prepared"
+	welcome.cancel_xr_control(false, false)
+	assert(control.state == "idle" and not control.stops_projection)
+	assert(not welcome._auto_suppressed and welcome._auto_retry >= 1.0)
+	# Manual cancel remains deliberate; an ensuing native cleanup cannot
+	# silently undo it. Normal resume explicitly re-enables automatic detection.
+	welcome.cancel_xr_control()
+	assert(welcome._auto_suppressed and control.stops_projection)
+	welcome.cancel_xr_control(false, false)
+	assert(welcome._auto_suppressed)
+	welcome.resume_auto_xr()
+	assert(not welcome._auto_suppressed)
+	owner.free()
 
 func _test_xr_entry() -> void:
 	var owner := Owner.new()

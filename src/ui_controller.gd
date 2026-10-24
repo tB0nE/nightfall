@@ -27,9 +27,11 @@ var _pcvr_link: Button
 var _pcvr_page: VBoxContainer
 var _pcvr_info: Label
 var _pcvr_resolution_btn: Button
+var _pcvr_resolution_range_btn: Button
 var _pcvr_bitrate_btn: Button
 var _pcvr_sharpen_btn: Button
 var _pcvr_sampling_btn: Button
+var _pcvr_foveation_btn: Button
 var _pcvr_status: Label
 var _pcvr_exit_btn: Button
 var _pcvr_telemetry := PCVRTelemetry.new()
@@ -842,6 +844,8 @@ func pcvr_settings_available() -> bool:
 
 func refresh_pcvr_menu() -> void:
 	if not is_instance_valid(_pcvr_link): return
+	if _pcvr_resolution_range_btn:
+		update_option_btn(_pcvr_resolution_range_btn, "On" if _pcvr_video.extended_resolution_range else "Off")
 	if main.get("settings_controller") != null:
 		main.settings_controller.refresh_pcvr_timing_ui()
 	var active: bool = main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE
@@ -854,15 +858,28 @@ func refresh_pcvr_menu() -> void:
 	if _current_tab == PCVR_PAGE and is_instance_valid(_pcvr_info):
 		var backend = main.pcvr_test.backend
 		var status: Dictionary = backend.get_test_status() if backend else {}
-		_pcvr_info.text = "Resolution / bitrate: next session • Filters: live\nDevelopment session limit: 5 minutes." if active else "Ready for XR • Preferences apply to your next session."
+		_pcvr_info.text = "Resolution: next session • Bitrate / foveation / filters: live\nDevelopment session limit: 5 minutes." if active else "Ready for XR • Preferences apply to your next session."
 		if _pcvr_resolution_btn:
-			update_option_btn(_pcvr_resolution_btn, "%d × %d / eye" % [_pcvr_video.eye_size, _pcvr_video.eye_size] if _pcvr_video.eye_size != 0 else "Host profile")
+			var recommended := PCVRVideoSettings.reference_eye_dimensions(backend, main.get("stream_backend"))
+			var size := _pcvr_video.effective_eye_dimensions(512, recommended)
+			var label := "%d%%" % _pcvr_video.resolution_percent if _pcvr_video.resolution_percent > 0 else "Custom"
+			var running := Vector2i(int(status.get("projection_eye_size", 0)), int(status.get("projection_eye_height", status.get("projection_eye_size", 0))))
+			if active and running.x > 0 and running.y > 0 and size != running:
+				label += " (restart)"
+				_pcvr_info.text += "\nNext session: %d × %d / eye (restart required)" % [size.x, size.y]
+			update_option_btn(_pcvr_resolution_btn, label)
+			if not active and recommended.x > 0: _pcvr_info.text += "\nNext session: %d × %d / eye" % [size.x, size.y]
+		if _pcvr_foveation_btn:
+			update_option_btn(_pcvr_foveation_btn, "On" if _pcvr_video.foveated_encoding else "Off")
 		if _pcvr_bitrate_btn:
 			update_option_btn(_pcvr_bitrate_btn, "%d Mbps" % _pcvr_video.bitrate_mbps if _pcvr_video.bitrate_mbps else "Auto")
 		if _pcvr_status:
 			if active:
 				_pcvr_telemetry.sample(status, Time.get_ticks_msec())
 				_pcvr_status.text = _pcvr_telemetry.describe(status, main.display_refresh_rate, Engine.get_frames_per_second())
+				if main.get("welcome_screen") != null:
+					var bitrate_text: String = main.welcome_screen.xr_bitrate_message()
+					if not bitrate_text.is_empty(): _pcvr_status.text += "\n" + bitrate_text
 			else:
 				_pcvr_telemetry = PCVRTelemetry.new()
 				_pcvr_status.text = "No XR session running"
@@ -898,15 +915,42 @@ func _cycle_pcvr_video(resolution: bool) -> void:
 	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
 	pending.load_from()
 	if resolution:
-		var profile := ConfigFile.new()
-		profile.load(MeteorXRControl.config_path())
-		pending.cycle_resolution(int(profile.get_value("host", "eye_size", 512)))
+		pending.cycle_resolution()
 	else:
 		pending.cycle_bitrate()
 	if pending.save_to() != OK:
 		main._log("[PCVR] Could not save video preferences")
 		return
 	_pcvr_video = pending
+	if resolution and main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		var running: Dictionary = main.pcvr_test.backend.get_test_status()
+		main._log("[PCVR] Resolution %d%% saved for next XR session; active %dx%d unchanged" % [pending.resolution_percent, int(running.get("projection_eye_size", 0)), int(running.get("projection_eye_height", running.get("projection_eye_size", 0)))])
+	if not resolution and main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		if not main.welcome_screen.update_xr_bitrate(pending.bitrate_mbps):
+			main._log("[PCVR] Live bitrate unavailable; preference saved for next session")
+	refresh_pcvr_menu()
+
+func toggle_pcvr_resolution_range() -> void:
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	pending.extended_resolution_range = not pending.extended_resolution_range
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save resolution range")
+		return
+	_pcvr_video = pending
+	refresh_pcvr_menu()
+
+func toggle_pcvr_foveation() -> void:
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	pending.foveated_encoding = not pending.foveated_encoding
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save foveated encoding")
+		return
+	_pcvr_video = pending
+	if main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		if not main.welcome_screen.update_xr_foveation(pending.foveated_encoding):
+			main._log("[PCVR] Live foveation unavailable; saved for next session")
 	refresh_pcvr_menu()
 
 func toggle_pcvr_page() -> void:
@@ -917,6 +961,9 @@ func toggle_pcvr_page() -> void:
 		_desktop_tab_before_pcvr = _current_tab
 		switch_tab(PCVR_PAGE)
 	refresh_pcvr_menu()
+
+func is_pcvr_page_open() -> bool:
+	return _current_tab == PCVR_PAGE
 
 func open_pcvr_page() -> void:
 	if _current_tab != PCVR_PAGE:
@@ -1440,6 +1487,7 @@ func build_ui():
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
 	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
+	_build_pcvr_advanced(_settings_scroll.get_child(0))
 	_build_xr_workspace_probe(_settings_scroll.get_child(0))
 	_build_language_grid(_settings_scroll.get_child(0))
 	var settings_end_space := Control.new()
@@ -1478,11 +1526,11 @@ func build_ui():
 	_pcvr_page.add_child(video_row)
 	_pcvr_resolution_btn = make_option_btn("Resolution", "Host profile")
 	_pcvr_resolution_btn.pressed.connect(func(): _cycle_pcvr_video(true))
-	_set_button_tooltip(_pcvr_resolution_btn, "Pixels rendered and encoded per eye. Applies to your next PCVR session, not the desktop stream.")
+	_set_button_tooltip(_pcvr_resolution_btn, "100% uses the native panel resolution on Quest 2/3/3S; other headsets use OpenXR's recommendation. 75–135% in 5% steps; Advanced Settings offers 50–150% in 10% steps. Rounded up to 16 pixels for encoding. Applies next XR session; actual dimensions appear in status.")
 	video_row.add_child(_pcvr_resolution_btn)
 	_pcvr_bitrate_btn = make_option_btn("Bitrate", "Auto")
 	_pcvr_bitrate_btn.pressed.connect(func(): _cycle_pcvr_video(false))
-	_set_button_tooltip(_pcvr_bitrate_btn, "PCVR video target bitrate. Auto keeps the existing resolution-based default. Applies next session.")
+	_set_button_tooltip(_pcvr_bitrate_btn, "PCVR video target bitrate. Updates live during XR; status confirms when applied. Auto uses the current session resolution's default.")
 	video_row.add_child(_pcvr_bitrate_btn)
 	var post_row := HBoxContainer.new()
 	post_row.add_theme_constant_override("separation", 16)
@@ -1492,9 +1540,13 @@ func build_ui():
 	_pcvr_sharpen_btn.pressed.connect(func(): _cycle_pcvr_post(true))
 	post_row.add_child(_pcvr_sharpen_btn)
 	_pcvr_sampling_btn = make_option_btn("Supersampling", "Off")
-	_set_button_tooltip(_pcvr_sampling_btn, "Live OpenXR compositor sampling quality, as used by WiVRn. Can reduce edge shimmer; does not reconstruct missing detail. Requires runtime support.")
+	_set_button_tooltip(_pcvr_sampling_btn, "Live compositor anti-aliasing, as used by WiVRn and ALVR. Reduces edge shimmer when downsampling high-resolution video. Does not increase game resolution or recover missing detail; the runtime may ignore this hint.")
 	_pcvr_sampling_btn.pressed.connect(func(): _cycle_pcvr_post(false))
 	post_row.add_child(_pcvr_sampling_btn)
+	_pcvr_foveation_btn = make_option_btn("Foveated Encode", "Off")
+	_set_button_tooltip(_pcvr_foveation_btn, "Fixed-centre NVENC encoding: preserves centre quality and compresses the edges more. Not eye-tracked. Keeps the same render/decoder resolution; does not reduce game rendering cost. Applies live during XR streaming. Default Off.")
+	_pcvr_foveation_btn.pressed.connect(toggle_pcvr_foveation)
+	post_row.add_child(_pcvr_foveation_btn)
 	_pcvr_exit_btn = make_action_btn("Exit PCVR")
 	_set_button_tooltip(_pcvr_exit_btn, "Stop the XR session and restore your desktop or welcome screen.")
 	_pcvr_exit_btn.pressed.connect(func(): main.pcvr_handover.request_stop("PCVR menu exit"))
@@ -1612,6 +1664,22 @@ func build_ui():
 	_collect_buttons(root, ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
 
+func _build_pcvr_advanced(content: VBoxContainer) -> void:
+	var section := VBoxContainer.new()
+	section.name = "PCVRAdvancedSettings"
+	section.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(section)
+	section.add_child(_make_section_title("PCVR"))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(row)
+	_pcvr_resolution_range_btn = make_option_btn("Extended Resolution", "Off")
+	_set_button_tooltip(_pcvr_resolution_range_btn, "Off: 75–135% in 5% steps. On: 50–150% in 10% steps. Changes the resolution choices only; keeps your current resolution until you select another value.")
+	row.add_child(_pcvr_resolution_range_btn)
+	_make_scroll_friendly(_pcvr_resolution_range_btn)
+	_pcvr_resolution_range_btn.pressed.connect(_on_scroll_friendly_pressed.bind(toggle_pcvr_resolution_range))
+
 func _build_xr_workspace_probe(content: VBoxContainer) -> void:
 	# Explicitly provisioned DEV builds only; no new XR composition layers.
 	var control_script = preload("res://src/meteor_xr_control.gd")
@@ -1635,7 +1703,7 @@ func _build_xr_workspace_probe(content: VBoxContainer) -> void:
 		row.add_child(button)
 		_make_scroll_friendly(button)
 	start.pressed.connect(_on_scroll_friendly_pressed.bind(main.welcome_screen.request_xr_control))
-	cancel.pressed.connect(_on_scroll_friendly_pressed.bind(control.cancel))
+	cancel.pressed.connect(_on_scroll_friendly_pressed.bind(main.welcome_screen.cancel_xr_control))
 	var status := Label.new()
 	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

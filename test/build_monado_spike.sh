@@ -7,9 +7,17 @@ cp -a --remove-destination /source/. /out/capture-source/
 patch --batch -d /out/capture-source -p1 < /tests/monado_capture_hook.patch
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_controller_hook.patch
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_session_events.patch
+patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_layer_policy.patch
 args=(-S /out/capture-source -B /out/capture-build -G Ninja -DCMAKE_BUILD_TYPE=Release
     -DXRT_FEATURE_SERVICE=ON -DXRT_FEATURE_SERVICE_SYSTEMD=OFF
     -DXRT_FEATURE_OPENXR=ON -DXRT_FEATURE_OPENVR=OFF
+    -DXRT_FEATURE_OPENXR_LAYER_CUBE=OFF -DXRT_FEATURE_OPENXR_LAYER_CYLINDER=ON
+    -DXRT_FEATURE_OPENXR_LAYER_EQUIRECT1=OFF -DXRT_FEATURE_OPENXR_LAYER_EQUIRECT2=ON
+    -DXRT_FEATURE_OPENXR_LAYER_DEPTH=OFF
+    -DXRT_FEATURE_OPENXR_LAYER_COLOR_SCALE_BIAS=ON
+    -DXRT_FEATURE_OPENXR_LAYER_FB_ALPHA_BLEND=OFF -DXRT_FEATURE_OPENXR_LAYER_FB_DEPTH_TEST=OFF
+    -DXRT_FEATURE_OPENXR_LAYER_FB_IMAGE_LAYOUT=OFF -DXRT_FEATURE_OPENXR_LAYER_FB_PASSTHROUGH=OFF
+    -DXRT_FEATURE_OPENXR_LAYER_FB_SETTINGS=OFF -DXRT_FEATURE_OPENXR_INVERTED_ALPHA=OFF
     -DXRT_MODULE_COMPOSITOR_MAIN=OFF -DXRT_MODULE_COMPOSITOR_NULL=ON
     -DXRT_FEATURE_DEBUG_GUI=OFF -DXRT_FEATURE_WINDOW_PEEK=OFF
     -DXRT_MODULE_MONADO_GUI=OFF -DBUILD_TESTING=OFF

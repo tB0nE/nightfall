@@ -27,6 +27,15 @@ func _init(owner) -> void:
 func blocks_workspace() -> bool:
 	return owns_workspace() and ((not desktop_visible and not menu_only) or (_watch != null and _watch.interaction_blocked()))
 
+func toggle_pcvr_menu() -> void:
+	if state != State.ACTIVE or not owns_workspace(): return
+	if menu_only:
+		close_pcvr_menu()
+	elif desktop_visible and main.ui_visible and main.ui_controller.is_pcvr_page_open():
+		main._toggle_ui()
+	else:
+		open_pcvr_menu()
+
 func open_pcvr_menu() -> void:
 	if state != State.ACTIVE or not owns_workspace(): return
 	if not desktop_visible and not menu_only:
@@ -207,7 +216,10 @@ func _enforce_hidden() -> void:
 	# Hide the parent, not every child: stream termination and other legitimate
 	# lifecycle callbacks can still update child visibility/content while hidden.
 	main.visible = desktop_visible or menu_only
-	main.audio_player.stream_paused = true
+	# The desktop connection remains alive while its video is hidden. Until XR
+	# has its own audio transport, retain that host's captured game/system audio.
+	# Never resume a previously paused player or replay stale audio after disconnect.
+	main.audio_player.stream_paused = not main.is_streaming or bool(_saved.get("audio_paused", true))
 	main.meteor_microphone.set_paused(true)
 	main.native_xr_renderer.set_presentation_suspended(not desktop_visible)
 	var interface = _xr_interface()

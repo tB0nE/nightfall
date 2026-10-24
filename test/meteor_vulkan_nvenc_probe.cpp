@@ -14,6 +14,10 @@
 #include "monado_nvenc_bridge.h"
 #include "meteor_eye_format.h"
 #include "meteor_encoder_bitrate.h"
+#include "meteor_live_bitrate.h"
+#include "meteor_eye_rect.h"
+#include "meteor_foveated_qp.h"
+#include "meteor_live_foveation.h"
 #ifdef METEOR_MONADO_BRIDGE
 #include <thread>
 #include <mutex>
@@ -116,11 +120,14 @@ int main(int argc, char **argv) {
     REQUIRE(get_fd, "External memory FD export unavailable");
 #ifdef METEOR_MONADO_BRIDGE
     const uint32_t eye_size=input->eye_size ? input->eye_size : 256;
-    REQUIRE(eye_size==256 || eye_size==512 || eye_size==1024 || eye_size==2048 || eye_size==2560,"Unsupported eye-size profile");
-    const uint32_t width=eye_size*2,height=eye_size;
+    const uint32_t eye_height=input->eye_height ? input->eye_height : eye_size;
+    REQUIRE(meteor_eye_size_valid(eye_size) && meteor_eye_size_valid(eye_height),"Unsupported eye-size profile");
+    const uint32_t width=eye_size*2,height=eye_height;
 #else
     constexpr uint32_t width = 512, height = 256;
 #endif
+    bool foveated=getenv("METEOR_XR_FOVEATED_ENCODING") && !std::strcmp(getenv("METEOR_XR_FOVEATED_ENCODING"),"1");
+    std::vector<int8_t> foveated_qp;
     VkFormat packed_format=VK_FORMAT_R8G8B8A8_UNORM;
 #ifdef METEOR_MONADO_BRIDGE
     REQUIRE(meteor_eye_formats_compatible(input->eye_formats[0],input->eye_formats[1]),"Unsupported/mixed source transfer functions");
@@ -208,6 +215,11 @@ int main(int argc, char **argv) {
     NV_ENC_REGISTER_RESOURCE reg{};
     NV_ENC_MAP_INPUT_RESOURCE map{};
     NV_ENC_CREATE_BITSTREAM_BUFFER bitstream{};
+    NV_ENC_CONFIG live_config{};
+    NV_ENC_INITIALIZE_PARAMS live_init{};
+    uint32_t live_bitrate=0;
+    const uint32_t fallback_bitrate=4000000*(width/512)*(height/256);
+    MeteorLiveBitrate bitrate_updates;
     std::ofstream output(input->output_path, std::ios::binary);
     REQUIRE(output.good(), "Cannot open output");
     bool first_frame = true;
@@ -215,22 +227,28 @@ int main(int argc, char **argv) {
     MeteorQuadCompositor quads;
     bool quad_initialized=false;
     uint32_t previous_quads=UINT32_MAX;
-    uint32_t previous_background=UINT32_MAX;
+    uint32_t previous_projection=UINT32_MAX;
+    uint32_t previous_copy_mode=UINT32_MAX;
     for (;;) {
     REQUIRE(input->device == device && input->gpu == gpu && input->queue == queue && input->queue_family == family,
         "Bridge device changed during session");
     REQUIRE((input->eye_size ? input->eye_size : 256)==eye_size,"Bridge dimensions changed during session");
+    REQUIRE((input->eye_height ? input->eye_height : eye_size)==eye_height,"Bridge height changed during session");
     REQUIRE(input->eye_formats[0]==source_formats[0] && input->eye_formats[1]==source_formats[1],"Source formats changed during session");
     auto pack_start=std::chrono::steady_clock::now();
+    if(input->background_only!=previous_copy_mode) {
+        fprintf(stderr,"METEOR_RENDER_PATH mode=%s\n",input->background_only ? "general" : "copy");
+        previous_copy_mode=input->background_only;
+    }
     REQUIRE(input->quad_count<=METEOR_MAX_QUADS && (!input->quad_count || input->quads),"Invalid quad list");
     if(input->quad_count && !quad_initialized) {
-        quads.init(device,image,packed_format,eye_size);
+        quads.init(gpu,device,image,packed_format,eye_size,eye_height);
         quad_initialized=true;
     }
-    if(input->quad_count!=previous_quads || input->background_only!=previous_background) {
-        std::fprintf(stderr,"METEOR_COMPOSITION projection=%u quads=%u gpu=1\n",!input->background_only,input->quad_count);
+    if(input->quad_count!=previous_quads || input->projection_present!=previous_projection) {
+        std::fprintf(stderr,"METEOR_COMPOSITION projection=%u quads=%u gpu=1\n",input->projection_present,input->quad_count);
         previous_quads=input->quad_count;
-        previous_background=input->background_only;
+        previous_projection=input->projection_present;
     }
     if (!first_frame) VK(vkResetCommandBuffer(cmd, 0));
 #endif
@@ -261,11 +279,11 @@ int main(int argc, char **argv) {
         VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copy.srcSubresource.baseArrayLayer=input->eye_slices[eye];
         copy.srcOffset={input->eye_offsets[eye*2],input->eye_offsets[eye*2+1],0};
-        copy.dstOffset.x = eye * eye_size; copy.extent = {eye_size, eye_size, 1};
+        copy.dstOffset.x = eye * eye_size; copy.extent = {eye_size, eye_height, 1};
         if(meteor_eye_format_bgra(input->eye_formats[eye])) {
             VkImageBlit blit{}; blit.srcSubresource=copy.srcSubresource; blit.dstSubresource=copy.dstSubresource;
-            blit.srcOffsets[0]=copy.srcOffset; blit.srcOffsets[1]={copy.srcOffset.x+int32_t(eye_size),copy.srcOffset.y+int32_t(eye_size),1};
-            blit.dstOffsets[0]=copy.dstOffset; blit.dstOffsets[1]={copy.dstOffset.x+int32_t(eye_size),int32_t(eye_size),1};
+            blit.srcOffsets[0]=copy.srcOffset; blit.srcOffsets[1]={copy.srcOffset.x+int32_t(eye_size),copy.srcOffset.y+int32_t(eye_height),1};
+            blit.dstOffsets[0]=copy.dstOffset; blit.dstOffsets[1]={copy.dstOffset.x+int32_t(eye_size),int32_t(eye_height),1};
             vkCmdBlitImage(cmd,input->eyes[eye],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_NEAREST);
         } else vkCmdCopyImage(cmd, input->eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         src.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -339,7 +357,17 @@ int main(int argc, char **argv) {
     preset.presetCfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     preset.presetCfg.rcParams.averageBitRate = bitrate_bps;
     preset.presetCfg.rcParams.maxBitRate = bitrate_bps;
+    foveated_qp=meteor_foveated_qp(width/2,height,hevc ? 32 : 16);
+    {
+        REQUIRE(!foveated_qp.empty(),"Invalid foveated QP map");
+        preset.presetCfg.rcParams.qpMapMode=NV_ENC_QP_MAP_DELTA;
+        preset.presetCfg.rcParams.enableAQ=0;
+        preset.presetCfg.rcParams.enableTemporalAQ=0;
+        if(hevc) preset.presetCfg.encodeCodecConfig.hevcConfig.maxCUSize=NV_ENC_HEVC_CUSIZE_32x32;
+    }
+    fprintf(stderr,"METEOR_FOVEATED_ENCODING enabled=%u mode=qp_delta block=%u bytes=%zu centre_delta=-2 edge_delta=6\n",foveated,hevc ? 32 : 16,foveated_qp.size());
     fprintf(stderr,"METEOR_VIDEO_CONFIG eye_size=%u bitrate_bps=%u\n",width/2,bitrate_bps);
+    fprintf(stderr,"METEOR_VIDEO_DIMENSIONS per_eye=%ux%u packed=%ux%u\n",width/2,height,width,height);
     fprintf(stderr,"METEOR_VIDEO_CODEC codec=%s fps=%u\n",hevc ? "h265" : "h264",rate);
     preset.presetCfg.rcParams.enableLookahead = 0;
     // Match the driver's RGB conversion profile explicitly. Without VUI,
@@ -357,6 +385,11 @@ int main(int argc, char **argv) {
     init.encodeHeight = init.darHeight = height; init.frameRateNum = rate; init.frameRateDen = 1;
     init.enablePTD = 1; init.encodeConfig = &preset.presetCfg;
     NV(api.nvEncInitializeEncoder(encoder, &init));
+#ifdef METEOR_MONADO_BRIDGE
+    live_config=preset.presetCfg;
+    live_init=init; live_init.encodeConfig=&live_config;
+    live_bitrate=bitrate_bps;
+#endif
 #ifndef METEOR_MONADO_BRIDGE
     NV_ENC_REGISTER_RESOURCE reg{};
 #endif
@@ -392,7 +425,24 @@ int main(int argc, char **argv) {
         pic.inputWidth = width; pic.inputHeight = height; pic.outputBitstream = bitstream.bitstreamBuffer;
         pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME; pic.inputTimeStamp = timestamp_base + frame;
 #ifdef METEOR_MONADO_BRIDGE
+        meteor_poll_foveation(getenv("METEOR_PROBE_OUTPUT"),foveated);
+#endif
+        static thread_local std::vector<int8_t> neutral_qp;
+        neutral_qp.resize(foveated_qp.size(),0);
+        pic.qpDeltaMap=foveated ? foveated_qp.data() : neutral_qp.data();
+        pic.qpDeltaMapSize=uint32_t(foveated_qp.size());
+#ifdef METEOR_MONADO_BRIDGE
         if (first_frame) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+        bitrate_updates.poll(getenv("METEOR_PROBE_OUTPUT"),fallback_bitrate,live_bitrate,[&](uint32_t target) {
+            NV_ENC_CONFIG candidate=live_config;
+            candidate.rcParams.averageBitRate=candidate.rcParams.maxBitRate=target;
+            candidate.rcParams.vbvBufferSize=candidate.rcParams.vbvInitialDelay=target/live_init.frameRateNum;
+            NV_ENC_RECONFIGURE_PARAMS change{}; change.version=NV_ENC_RECONFIGURE_PARAMS_VER;
+            change.reInitEncodeParams=live_init; change.reInitEncodeParams.encodeConfig=&candidate;
+            auto result=api.nvEncReconfigureEncoder(encoder,&change);
+            if(result==NV_ENC_SUCCESS) live_config=candidate;
+            return int(result);
+        });
 #else
         if (frame == 0) pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
 #endif
@@ -453,7 +503,7 @@ int main(int argc, char **argv) {
 }
 #ifdef METEOR_MONADO_BRIDGE
 extern "C" void meteor_encode_stereo_v1(const meteor_stereo_encode_v1 *input) {
-    REQUIRE(input && input->size == sizeof(*input), "Bridge ABI size mismatch");
+    REQUIRE(input && input->size == sizeof(*input) && input->layer_abi==METEOR_LAYER_ABI && input->layer_stride==sizeof(meteor_layer_v2), "Bridge ABI size/version mismatch");
     std::unique_lock<std::mutex> lock(channel.mutex);
     REQUIRE(!channel.busy && !channel.pending && !channel.stopping, "Bridge submitted while busy/stopping");
     channel.busy = true;

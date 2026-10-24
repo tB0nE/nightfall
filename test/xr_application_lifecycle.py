@@ -20,7 +20,7 @@ def run_application(command, *, env, timeout, service_log, stop_file,
                     watch_disconnect=False, stop_timeout=3,
                     completion_file=None, completion_token=None, completion_target=0,
                     cwd=None, terminate_on_stop=False, owner_alive=None, output_path=None,
-                    diagnostics_path=None, runtime_pid=None):
+                    diagnostics_path=None, runtime_pid=None, failure_file=None):
     stop_file.unlink(missing_ok=True)
     if completion_file is not None: completion_file.unlink(missing_ok=True)
     interrupted = False
@@ -52,6 +52,8 @@ def run_application(command, *, env, timeout, service_log, stop_file,
         with service_log.open() as log:
             pending = ""
             while True:
+                if failure_file is not None and failure_file.exists():
+                    raise RuntimeError("Meteor compositor capture failed; see service.log")
                 try:
                     stdout, stderr = application.communicate(timeout=.1)
                     break

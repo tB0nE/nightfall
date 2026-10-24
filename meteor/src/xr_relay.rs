@@ -133,6 +133,8 @@ pub struct Relay {
     tasks: Vec<JoinHandle<()>>,
     attached: Arc<AtomicUsize>,
     runtime: Option<RuntimeProgress>,
+    bitrate: crate::xr_bitrate::Control,
+    foveation: crate::xr_foveation::Control,
 }
 impl Relay {
     pub async fn prepare(bind: IpAddr, credentials: Credentials) -> io::Result<Self> {
@@ -178,21 +180,37 @@ impl Relay {
             tasks,
             attached,
             runtime: None,
+            bitrate: crate::xr_bitrate::Control::default(),
+            foveation: crate::xr_foveation::Control::default(),
         })
     }
     pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
     }
+    pub(crate) fn update_bitrate(&mut self, mbps:u32) -> io::Result<()> {
+        if !self.runtime_status().is_some_and(|s| s.phase==RuntimePhase::SessionActive) {
+            return Err(io::Error::other("runtime_not_active"));
+        }
+        self.bitrate.queue(mbps)
+    }
+    pub(crate) fn update_foveation(&mut self, enabled:bool) -> io::Result<()> {
+        if !self.runtime_status().is_some_and(|s|s.phase==RuntimePhase::SessionActive) { return Err(io::Error::other("runtime_not_active")); }
+        self.foveation.directory=self.bitrate.directory.clone();
+        self.foveation.queue(u32::from(enabled))
+    }
+    pub(crate) fn foveation_status(&self) -> Option<crate::xr_foveation::Status> {self.foveation.status()}
+    pub(crate) fn bitrate_status(&self) -> Option<crate::xr_bitrate::Status> {self.bitrate.status()}
     pub fn runtime_status(&self) -> Option<RuntimeStatus> {
         self.runtime.as_ref().map(|runtime| runtime.lock().unwrap().clone())
     }
     #[cfg(target_os = "linux")]
     pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
-        self.start_runtime_supervised(root, hz, eye_size, long_run, 0, "h264".into(), None, None);
+        self.start_runtime_supervised(root, hz, eye_size, eye_size, long_run, 0, "h264".into(), false, None, None);
     }
     #[cfg(target_os = "linux")]
-    pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool, bitrate_mbps: u32, codec: String, launch_intent: Option<String>, owner: Option<&RuntimeTasks>) {
+    pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, eye_height:u32, long_run: bool, bitrate_mbps: u32, codec: String, foveated_encoding:bool, launch_intent: Option<String>, owner: Option<&RuntimeTasks>) {
         let progress = Arc::new(Mutex::new(RuntimeStatus::default()));
+        let bitrate_directory=self.bitrate.directory.clone();
         self.runtime = Some(progress.clone());
         let ready = self.attached.clone();
         let mut cancel = self.stop.subscribe();
@@ -221,7 +239,7 @@ impl Relay {
             }
             progress.lock().unwrap().phase = RuntimePhase::Starting;
             let cancelled = cancel.clone();
-            let result = crate::xr_session::runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, bitrate_mbps, codec, launch_intent, cancel, Some(&progress)).await;
+            let result = crate::xr_session::runtime_adapter_with_status(root, video, tracking, hz, eye_size, eye_height, long_run, bitrate_mbps, codec, foveated_encoding, launch_intent, cancel, Some(&progress), Some(&bitrate_directory)).await;
             // The adapter has returned and its owned child has been reaped.
             {
                 let mut status = progress.lock().unwrap();
@@ -414,7 +432,7 @@ mod tests {
     async fn service_owned_runtime_cancels_before_lane_attachment() {
         let tasks = RuntimeTasks::default();
         let mut relay = Relay::prepare("127.0.0.1".parse().unwrap(), credentials()).await.unwrap();
-        relay.start_runtime_supervised("/must-not-launch".into(), 60, 1024, false, 0, "h264".into(), None, Some(&tasks));
+        relay.start_runtime_supervised("/must-not-launch".into(), 60, 1024, 1024, false, 0, "h264".into(), false, None, Some(&tasks));
         drop(relay);
         tokio::time::timeout(Duration::from_secs(1), tasks.drain()).await.unwrap().unwrap();
     }

@@ -34,6 +34,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     abort_test = os.environ.get("NIGHTFALL_XR_PROBE_ABORT") == "1"
     frame_count = int(os.environ.get("NIGHTFALL_XR_PROBE_FRAMES", "32"))
     eye_size = int(os.environ.get("NIGHTFALL_XR_EYE_SIZE", "256"))
+    eye_height = int(os.environ.get("NIGHTFALL_XR_EYE_HEIGHT", str(eye_size)))
+    foveated = os.environ.get("NIGHTFALL_XR_FOVEATED_ENCODING", "0")
+    if foveated not in ("0", "1"): raise ValueError("Foveated encoding must be 0 or 1")
     target_hz = int(os.environ.get("NIGHTFALL_XR_TARGET_HZ", "20"))
     codec = os.environ.get("NIGHTFALL_XR_CODEC", "h264")
     if codec not in ("h264", "h265"):
@@ -41,8 +44,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     bitrate_mbps = int(os.environ.get("NIGHTFALL_XR_BITRATE_MBPS", "0"))
     if bitrate_mbps != 0 and not 8 <= bitrate_mbps <= 160:
         raise ValueError("XR bitrate must be Auto (0) or 8..160 Mbps")
-    if eye_size not in (256,512,1024,2048,2560) or target_hz not in (20,60,72):
-        raise ValueError("Diagnostic profiles: eye size 256/512/1024/2048/2560, target rate 20/60/72")
+    if not all(256 <= size <= 4096 and size % 16 == 0 for size in (eye_size, eye_height)) or target_hz not in (20,60,72):
+        raise ValueError("Diagnostic profiles: eye size 256..4096, multiple of 16; target rate 20/60/72")
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
     gpu_scene = os.environ.get("NIGHTFALL_XR_GPU_SCENE") == "1"
     gpu_measure = os.environ.get("NIGHTFALL_XR_GPU_MEASURE") == "1"
@@ -144,7 +147,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if not icd.is_file():
         raise RuntimeError("NVIDIA ICD absent; no software fallback")
     runtime.chmod(0o700)
-    for name in ("capture-complete", "monado-stereo.h264", "monado-stereo.json", "monado-stereo.jsonl", "decoded.rgb",
+    for name in ("capture-failed", "capture-complete", "monado-stereo.h264", "monado-stereo.json", "monado-stereo.jsonl", "decoded.rgb",
                  "server-eye-left.ppm", "server-eye-right.ppm"):
         (out / name).unlink(missing_ok=True)
     manifest = out / "runtime.json"
@@ -155,6 +158,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                VK_ICD_FILENAMES=str(icd), VK_DRIVER_FILES=str(icd),
                METEOR_CONTINUOUS_FRAMES=str(frame_count),
                METEOR_XR_EYE_SIZE=str(eye_size), XRT_COMPOSITOR_NULL_FPS=str(target_hz),
+               METEOR_XR_EYE_HEIGHT=str(eye_height), METEOR_XR_FOVEATED_ENCODING=foveated,
                METEOR_XR_BITRATE_MBPS=str(bitrate_mbps),
                METEOR_XR_CODEC=codec,
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
@@ -190,7 +194,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if source_format not in ("rgba8","bgra8","rgba8-srgb","bgra8-srgb"):
         raise ValueError("Unsupported source format fixture")
     if source_format!="rgba8":
-        if hello_xr or gpu_scene or godot_engine: raise ValueError("Alternate source format requires reference renderer")
+        if hello_xr or gpu_scene or (godot_engine and not external_spec): raise ValueError("Alternate source format requires reference renderer")
         env["METEOR_XR_SOURCE_FORMAT"]=source_format
     env.pop("METEOR_XR_ARRAY_STEREO",None)
     if os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1":
@@ -310,7 +314,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                     cwd=external_cwd, terminate_on_stop=bool(external_spec), owner_alive=owner_alive,
                     output_path=out / "application-live.log" if external_spec else None,
                     diagnostics_path=out / "process-waits.jsonl" if process_diagnostics else None,
-                    runtime_pid=child.pid)
+                    runtime_pid=child.pid, failure_file=out / "capture-failed")
             except subprocess.TimeoutExpired as failure:
                 def output_text(value):
                     return value.decode(errors="replace") if isinstance(value,bytes) else (value or "")
@@ -431,7 +435,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     for metadata, expected_time in zip(records, expected_times):
         if metadata["display_time_ns"] != expected_time or expected_time <= last_time:
             raise RuntimeError("Encoded display timestamps do not match submitted frame order")
-        if metadata["frame_id"] <= last_frame or (metadata["width"], metadata["height"]) != (eye_size*2, eye_size):
+        if metadata["frame_id"] <= last_frame or (metadata["width"], metadata["height"]) != (eye_size*2, eye_height):
             raise RuntimeError("Invalid output frame metadata")
         if metadata["offset"] != offset or metadata["bytes"] <= 0:
             raise RuntimeError("Invalid bitstream frame boundaries")
@@ -517,7 +521,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             return None
         return {"samples": len(values), "p50_us": statistics.median(values),
                 "p95_us": values[min(len(values)-1, int(len(values)*.95))], "max_us": max(values)}
-    timings = {"eye_size": eye_size, "target_hz": target_hz, "submitted": submitted_count,
+    timings = {"eye_size": eye_size, "eye_height":eye_height, "target_hz": target_hz, "submitted": submitted_count,
                "source_format": source_format if not hello_xr else "sample-selected",
                "array_stereo_fixture": os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1",
                "padded_subrect_fixture": os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1",
@@ -546,7 +550,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             "p95_us":values[min(len(values)-1,int(len(values)*.95))],"max_us":max(values)}
         timings["app_eye_submit_fence_wait"]=summary(r"APP_GPU_EYE gpu_us=[0-9.]+ submit_wait_us=(\d+)",result.stdout)
     (out / "timing-summary.json").write_text(json.dumps(timings,indent=2)+"\n")
-    print(f"Profile: {eye_size}x{eye_size} per eye, target {target_hz} Hz; timing-summary.json records CPU-wall stages (not motion-to-photon)")
+    print(f"Profile: {eye_size}x{eye_height} per eye, target {target_hz} Hz; timing-summary.json records CPU-wall stages (not motion-to-photon)")
     label = "unexpected app disconnect" if abort_test else "normal session exit"
     evidence = "decode count, timestamps and bitstream accounting checked; pixel oracle disabled" if (gpu_measure or hello_xr) else "decoded pixels, timestamps and bitstream ranges match"
     print(f"PASS: {frame_count} Monado frames; one persistent encoder/surface; {evidence}; clean drain after {label}")

@@ -15,6 +15,11 @@ func _init() -> void:
 	assert(text.contains("HEVC") and text.contains("72.0/72 fps") and text.contains("80.0 Mbps"))
 	status.projection_eye_size = 1024
 	assert(telemetry.describe(status,72,72).contains("XR 1024×1024")) # Never hide a downscale.
+	status.projection_eye_size = 2064
+	status.projection_eye_height = 2208
+	status.video_width = 4128
+	status.video_height = 2208
+	assert(telemetry.describe(status,72,72).contains("2064×2208/eye → XR 2064×2208/eye"))
 	telemetry.sample(status,4000)
 	assert(telemetry.fps < 0) # Do not display a stale rate on reopening the menu.
 	status.video_bytes = 0

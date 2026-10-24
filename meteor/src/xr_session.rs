@@ -13,6 +13,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+pub(crate) fn valid_eye_size(size: u32) -> bool {
+    (256..=4096).contains(&size) && size % 16 == 0
+}
+
 pub(crate) fn session_application(root:&Path, source:&Path, output:&Path, intent:Option<&str>) -> io::Result<PathBuf> {
     if fs::metadata(source)?.len()>16384 {return Err(io::Error::other("XR application configuration exceeds 16 KiB"))}
     let mut spec:Value=serde_json::from_slice(&fs::read(source)?)?;
@@ -92,7 +96,7 @@ pub(crate) async fn runtime_adapter(
     long_run: bool,
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> io::Result<()> {
-    runtime_adapter_with_status(root, video, tracking, hz, eye_size, long_run, 0, "h264".into(), None, cancel, None).await
+    runtime_adapter_with_status(root, video, tracking, hz, eye_size, eye_size, long_run, 0, "h264".into(), false, None, cancel, None, None).await
 }
 
 pub(crate) async fn runtime_adapter_with_status(
@@ -101,14 +105,17 @@ pub(crate) async fn runtime_adapter_with_status(
     tracking: u16,
     hz: u32,
     eye_size: u32,
+    eye_height:u32,
     long_run: bool,
     bitrate_mbps: u32,
     codec: String,
+    foveated_encoding:bool,
     launch_intent: Option<String>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
     progress: Option<&crate::xr_relay::RuntimeProgress>,
+    bitrate_directory: Option<&crate::xr_bitrate::RuntimeDirectory>,
 ) -> io::Result<()> {
-    if !matches!(hz, 20 | 60 | 72) || !matches!(eye_size, 512 | 1024 | 2048 | 2560) || (long_run && !matches!(hz,60 | 72))
+    if !matches!(hz, 20 | 60 | 72) || !valid_eye_size(eye_size) || !valid_eye_size(eye_height) || (long_run && !matches!(hz,60 | 72))
         || (bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps)) || !matches!(codec.as_str(),"h264" | "h265") {
         return Err(io::Error::other("unsupported managed XR profile"));
     }
@@ -128,6 +135,7 @@ pub(crate) async fn runtime_adapter_with_status(
         }
     };
     let output = lan_session_directory(&cache)?;
+    if let Some(directory)=bitrate_directory { *directory.lock().unwrap()=Some(output.clone()); }
     println!("Meteor XR session diagnostics: {}", output.display());
     let log = File::create(output.join("runtime.log"))?;
     let mut generation = [0u8; 16];
@@ -171,6 +179,8 @@ pub(crate) async fn runtime_adapter_with_status(
         .env("NIGHTFALL_XR_MONITOR_LEGACY", if std::env::var("NIGHTFALL_XR_MONITOR_LEGACY").as_deref() == Ok("1") { "1" } else { "0" })
         .env("NIGHTFALL_XR_TARGET_HZ", hz.to_string())
         .env("NIGHTFALL_XR_EYE_SIZE", eye_size.to_string())
+        .env("NIGHTFALL_XR_EYE_HEIGHT", eye_height.to_string())
+        .env("NIGHTFALL_XR_FOVEATED_ENCODING", if foveated_encoding {"1"} else {"0"})
         .env("NIGHTFALL_XR_BITRATE_MBPS", bitrate_mbps.to_string())
         .env("NIGHTFALL_XR_CODEC", &codec)
         .env("NIGHTFALL_XR_PROBE_FRAMES", if long_run { (hz*300).to_string() } else if hz >= 60 { (hz*20).to_string() } else { "200".into() })

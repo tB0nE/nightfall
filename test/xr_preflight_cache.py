@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-ARTIFACTS=("encoder-bitrate-tests", "eye-rect-tests", "eye-format-tests", "image-lease-tests", "quad-math-tests", "frame-time-tests",
+ARTIFACTS=("live-foveation-tests", "foveated-qp-tests", "live-bitrate-tests", "encoder-bitrate-tests", "eye-rect-tests", "eye-format-tests", "image-lease-tests", "quad-math-tests", "frame-time-tests",
            "latest-job-tests", "async-transport-tests",
            "libmeteor-tracking-probe.so", "libmeteor-nvenc-probe.so")
 
@@ -56,6 +56,15 @@ def valid(directory, key):
 def build(root, reference, directory):
     directory.mkdir(mode=0o700,parents=True,exist_ok=True)
     common=["-Wall","-Wextra","-Werror"]
+    subprocess.run(["c++","-std=c++17",*common,str(root / "test/meteor_live_foveation_test.cpp"),
+                    "-o",str(directory / "live-foveation-tests")],check=True)
+    subprocess.run([str(directory / "live-foveation-tests")],check=True,timeout=10)
+    subprocess.run(["c++","-std=c++17",*common,str(root / "test/meteor_foveated_qp_test.cpp"),
+                    "-o",str(directory / "foveated-qp-tests")],check=True)
+    subprocess.run([str(directory / "foveated-qp-tests")],check=True,timeout=10)
+    subprocess.run(["c++","-std=c++17",*common,str(root / "test/meteor_live_bitrate_test.cpp"),
+                    "-o",str(directory / "live-bitrate-tests")],check=True)
+    subprocess.run([str(directory / "live-bitrate-tests")],check=True,timeout=10)
     for source,name,extra in (
         ("meteor_tracking_contention_test.cpp","tracking-contention-tests",
          ["-pthread","-I",str(root / "extensions/nightfall-xr/include")]),

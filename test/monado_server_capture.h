@@ -1,5 +1,5 @@
 // Authored diagnostic hook for the pinned Monado null compositor.
-// Not a general compositor: one square SDR stereo projection followed by quads.
+// Not a general compositor: one SDR stereo projection followed by quads.
 // Encoder supports bounded source subrects; readback proof remains full-rect.
 #pragma once
 #include "util/comp_swapchain.h"
@@ -138,11 +138,42 @@ meteor_capture_layer(struct null_compositor *c)
     const struct comp_layer_accum *accum = &c->base.layer_accum;
     if (accum->layer_count == 0) return true;
     if (accum->layer_count > XRT_MAX_LAYERS) return false;
-    bool overlay_only=accum->layers[0].data.type==XRT_LAYER_QUAD;
-    uint32_t overlay_start=overlay_only ? 0 : 1;
-    for (uint32_t i=overlay_start;i<accum->layer_count;++i) {
-        if (accum->layers[i].data.type!=XRT_LAYER_QUAD) return false;
+    const char *size_text=getenv("METEOR_XR_EYE_SIZE");
+    uint32_t output_width=size_text ? (uint32_t)atoi(size_text) : 256;
+    uint32_t output_height=meteor_eye_dimension(getenv("METEOR_XR_EYE_HEIGHT"),output_width);
+    bool direct=accum->layers[0].data.type==XRT_LAYER_PROJECTION && accum->layers[0].data.view_count==2;
+    for(uint32_t i=0;i<accum->layer_count;++i) {
+        const struct xrt_layer_data *data=&accum->layers[i].data;
+        if(data->type!=XRT_LAYER_PROJECTION && data->type!=XRT_LAYER_QUAD &&
+            data->type!=XRT_LAYER_CYLINDER && data->type!=XRT_LAYER_EQUIRECT2) return false;
+        if(i>0 && data->type==XRT_LAYER_PROJECTION) direct=false;
     }
+    if(direct) {
+        const struct xrt_layer_data *data=&accum->layers[0].data;
+        bool transformed=(data->flags & XRT_LAYER_COMPOSITION_COLOR_BIAS_SCALE) &&
+            (data->color_scale.r!=1 || data->color_scale.g!=1 || data->color_scale.b!=1 || data->color_scale.a!=1 ||
+             data->color_bias.r!=0 || data->color_bias.g!=0 || data->color_bias.b!=0 || data->color_bias.a!=0);
+        if((data->flags & XRT_LAYER_COMPOSITION_BLEND_TEXTURE_SOURCE_ALPHA_BIT) || transformed || (data->flags & XRT_LAYER_COMPOSITION_VIEW_SPACE_BIT) || data->flip_y) direct=false;
+        for(int eye=0;eye<2;++eye) {
+            const struct xrt_rect *rect=&data->proj.v[eye].sub.rect;
+            if(rect->extent.w!=(int32_t)output_width || rect->extent.h!=(int32_t)output_height) direct=false;
+        }
+    }
+    bool overlay_only=!direct; // Metadata-only target for the general composition path.
+    uint32_t overlay_start=direct ? 1 : 0;
+    struct xrt_space_relation output_head={0}; output_head.pose.orientation.w=1;
+    struct xrt_fov output_fovs[2]; struct xrt_pose output_poses[2];
+    bool needs_head=!direct;
+    for(uint32_t i=1;i<accum->layer_count;++i) if(accum->layers[i].data.flags & XRT_LAYER_COMPOSITION_VIEW_SPACE_BIT) needs_head=true;
+    if(needs_head) {
+        struct xrt_vec3 relation={.x=.063f};
+        if(xrt_device_get_view_poses(c->xdev,&relation,accum->data.display_time_ns,XRT_VIEW_TYPE_STEREO,2,&output_head,output_fovs,output_poses)!=XRT_SUCCESS) return false;
+        if(!(output_head.relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT)) {
+            fprintf(stderr,"METEOR_FRAME_SKIPPED reason=tracking_unavailable\n"); return true;
+        }
+    }
+    float head_values[7]={output_head.pose.position.x,output_head.pose.position.y,output_head.pose.position.z,
+        output_head.pose.orientation.x,output_head.pose.orientation.y,output_head.pose.orientation.z,output_head.pose.orientation.w};
     const struct comp_layer *layer = &accum->layers[0];
     struct comp_layer colour;
     if(overlay_only) {
@@ -151,31 +182,25 @@ meteor_capture_layer(struct null_compositor *c)
         // No swapchain is attached to this metadata-only projection.
         const char *size=getenv("METEOR_XR_EYE_SIZE");
         uint32_t extent=size ? (uint32_t)atoi(size) : 256;
-        if(extent!=256 && extent!=512 && extent!=1024 && extent!=2048 && extent!=2560) return false;
-        struct xrt_vec3 relation={.x=.063f};
-        struct xrt_space_relation head={0};
-        struct xrt_fov fovs[2]; struct xrt_pose poses[2];
-        // Static overlays retain their old submit timestamps while a game is
-        // loading. Query/render at the compositor's current display time, not
-        // the age of the first overlay (the live bridge rejects >250ms history).
+        uint32_t height=meteor_eye_dimension(getenv("METEOR_XR_EYE_HEIGHT"),extent);
+        if(!meteor_eye_size_valid(extent) || !height) return false;
         int64_t timestamp=accum->data.display_time_ns;
-        if(xrt_device_get_view_poses(c->xdev,&relation,timestamp,XRT_VIEW_TYPE_STEREO,2,&head,fovs,poses)!=XRT_SUCCESS) {
-            fprintf(stderr,"METEOR_CAPTURE_REJECT reason=view_pose_query timestamp=%lld\n",(long long)timestamp);
-            return false;
-        }
-        if(!(head.relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT)) {
-            // A transient unavailable tracking sample is not an app crash.
-            // Do not fabricate a pose; ordinary transport timeouts remain live.
-            fprintf(stderr,"METEOR_FRAME_SKIPPED reason=tracking_unavailable timestamp=%lld\n",(long long)timestamp);
-            return true;
-        }
         memset(&colour,0,sizeof(colour));
         colour.data.type=XRT_LAYER_PROJECTION; colour.data.view_count=2; colour.data.timestamp=timestamp;
         for(int eye=0;eye<2;++eye) {
-            math_pose_transform(&head.pose,&poses[eye],&colour.data.proj.v[eye].pose);
-            colour.data.proj.v[eye].fov=fovs[eye];
+            math_pose_transform(&output_head.pose,&output_poses[eye],&colour.data.proj.v[eye].pose);
+            colour.data.proj.v[eye].fov=output_fovs[eye];
             colour.data.proj.v[eye].sub.rect.extent.w=(int32_t)extent;
-            colour.data.proj.v[eye].sub.rect.extent.h=(int32_t)extent;
+            colour.data.proj.v[eye].sub.rect.extent.h=(int32_t)height;
+        }
+        for(uint32_t i=0;i<accum->layer_count;++i) if(accum->layers[i].data.type==XRT_LAYER_PROJECTION) {
+            for(int eye=0;eye<2;++eye) {
+                if(accum->layers[i].data.flags & XRT_LAYER_COMPOSITION_VIEW_SPACE_BIT)
+                    math_pose_transform(&output_head.pose,&accum->layers[i].data.proj.v[eye].pose,&colour.data.proj.v[eye].pose);
+                else colour.data.proj.v[eye].pose=accum->layers[i].data.proj.v[eye].pose;
+                colour.data.proj.v[eye].fov=accum->layers[i].data.proj.v[eye].fov;
+            }
+            break;
         }
         layer=&colour;
     }
@@ -190,10 +215,10 @@ meteor_capture_layer(struct null_compositor *c)
     for (int eye = 0; eye < 2; ++eye) {
         const struct xrt_sub_image *sub = &layer->data.proj.v[eye].sub;
         if ((!overlay_only && !layer->sc_array[eye]) ||
-            (sub->rect.extent.w != 256 && sub->rect.extent.w != 512 && sub->rect.extent.w != 1024 && sub->rect.extent.w != 2048 && sub->rect.extent.w != 2560) || sub->rect.extent.h != sub->rect.extent.w) return false;
+            !meteor_eye_size_valid((uint32_t)sub->rect.extent.w) || !meteor_eye_size_valid((uint32_t)sub->rect.extent.h)) return false;
     }
     const char *bridge = getenv("METEOR_NVENC_BRIDGE");
-    if (bridge) return meteor_encode_layer(c, layer, bridge, accum->layers+overlay_start, accum->layer_count-overlay_start);
+    if (bridge) return meteor_encode_layer(c, layer, bridge, accum->layers+overlay_start, accum->layer_count-overlay_start,head_values);
     if(overlay_only) return false;
     if (accum->layer_count!=1) return false; // Original pixel-readback fixture.
     for(int eye=0;eye<2;++eye) if(layer->data.proj.v[eye].sub.array_index || layer->data.proj.v[eye].sub.rect.offset.w || layer->data.proj.v[eye].sub.rect.offset.h) return false;

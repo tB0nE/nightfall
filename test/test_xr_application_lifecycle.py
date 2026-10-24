@@ -10,6 +10,18 @@ from xr_application_lifecycle import run_application, valid_completion
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
+    def test_capture_failure_stops_owned_application_with_clear_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            log=root / "service.log"
+            log.write_text("")
+            marker=root / "capture-failed"
+            marker.write_text("capture failure")
+            with self.assertRaisesRegex(RuntimeError,"compositor capture failed"):
+                run_application([sys.executable,"-c","import time; time.sleep(10)"],
+                    env=dict(os.environ), timeout=15, service_log=log,
+                    stop_file=root / "stop", failure_file=marker)
+
     def test_completion_marker_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'completion.json'

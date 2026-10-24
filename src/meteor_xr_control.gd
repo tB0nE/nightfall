@@ -14,6 +14,13 @@ var session := ""
 var runtime_status: Dictionary = {}
 var session_fps := 0
 var session_eye_size := 0
+var session_eye_height := 0
+var bitrate_message := ""
+var foveation_message := ""
+var _last_foveation_status := ""
+var _pending_foveation := -1
+var _pending_bitrate := -1
+var _bitrate_deadline := 0
 var _generation := 0
 var _peer: StreamPeerTCP
 var _send
@@ -52,6 +59,11 @@ func _status(value: String, text: String) -> void:
 	changed.emit()
 
 func cancel(stop_projection: bool = true) -> void:
+	_pending_foveation = -1
+	foveation_message = ""
+	_last_foveation_status = ""
+	_pending_bitrate = -1
+	bitrate_message = ""
 	_generation += 1
 	var owned := _owns_projection
 	_owns_projection = false
@@ -68,6 +80,7 @@ func cancel(stop_projection: bool = true) -> void:
 	session = ""
 	session_fps = 0
 	session_eye_size = 0
+	session_eye_height = 0
 	if not runtime_status.is_empty():
 		runtime_status.clear()
 		runtime_changed.emit()
@@ -102,13 +115,61 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 		if expected == "prepared" and Time.get_ticks_msec() >= next_status:
 			# Only this loop issues requests after acceptance; never overlap cipher
 			# counters or reads. Status does not renew the bounded DEV lease.
-			var reply := await _request({"type": "status"}, token)
+			var command := {"type": "status"}
+			var updating := _pending_bitrate >= 0
+			if updating:
+				command = {"type":"set_bitrate", "session":session, "bitrate_mbps":_pending_bitrate}
+				_pending_bitrate = -1
+				_bitrate_deadline = Time.get_ticks_msec() + 5000
+			var updating_foveation := _pending_foveation >= 0 and not updating
+			if updating_foveation:
+				command = {"type":"set_foveation", "session":session, "enabled":_pending_foveation == 1}
+				_pending_foveation = -1
+			var reply := await _request(command, token)
 			if token != _generation: return
 			if reply.get("state", "") != "prepared" or reply.get("session", "") != session or not _update_runtime(reply):
 				_fail("Invalid or expired XR runtime status")
 				return
+			if updating and reply.get("reason") != null:
+				bitrate_message = "Bitrate unchanged: " + str(reply.reason)
+			else:
+				_update_bitrate_status(reply.get("bitrate"))
+			if updating_foveation and reply.get("reason") != null:
+				foveation_message = "Foveated encoding unchanged: " + str(reply.reason)
+			else:
+				var result = reply.get("foveation")
+				if result is Dictionary:
+					var signature := str(result)
+					if signature != _last_foveation_status:
+						_last_foveation_status = signature
+						foveation_message = "Foveated encoding %s: %s" % ["On" if int(result.get("requested_enabled", 0)) == 1 else "Off", str(result.get("state", "pending"))]
+						owner._log("[PCVR] " + foveation_message)
 			next_status = Time.get_ticks_msec() + 500
 		await owner.get_tree().process_frame
+
+func queue_foveation(enabled: bool) -> bool:
+	if state != "prepared" or session.is_empty(): return false
+	_pending_foveation = 1 if enabled else 0
+	foveation_message = "Foveated encoding update queued"
+	return true
+
+func queue_bitrate(mbps: int) -> bool:
+	if state != "prepared" or session.is_empty() or mbps not in PCVRVideoSettings.BITRATES: return false
+	_pending_bitrate = mbps # Coalesce rapid cycling; only the control loop owns cipher I/O.
+	bitrate_message = "Bitrate update queued"
+	return true
+
+func _update_bitrate_status(value: Variant) -> void:
+	if not value is Dictionary: return
+	if value.get("state") not in ["pending", "applied", "rejected"]: return
+	if value.state == "applied":
+		bitrate_message = "Bitrate %.1f Mbps applied" % (float(value.get("applied_bps", 0)) / 1000000.0)
+	elif value.state == "rejected":
+		bitrate_message = "Bitrate unchanged: " + str(value.get("error", "encoder rejected update"))
+	elif Time.get_ticks_msec() >= _bitrate_deadline and _bitrate_deadline > 0:
+		bitrate_message = "Bitrate update not yet confirmed"
+	else:
+		bitrate_message = "Bitrate update pending"
 
 static func valid_runtime_status(value: Variant) -> bool:
 	if not value is Dictionary: return false
@@ -339,21 +400,27 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	var eye_size := int(config.get_value("host", "eye_size", 512))
 	var video_settings := PCVRVideoSettings.new(quest3)
 	video_settings.load_from()
-	eye_size = video_settings.effective_eye_size(eye_size)
+	var recommended := PCVRVideoSettings.reference_eye_dimensions(owner.pcvr_test.backend, owner.get("stream_backend"))
+	if video_settings.resolution_percent > 0 and (recommended.x <= 0 or recommended.y <= 0):
+		_fail("Headset OpenXR resolution is not ready")
+		return
+	var dimensions := video_settings.effective_eye_dimensions(eye_size, recommended)
+	eye_size = dimensions.x
+	var eye_height := dimensions.y
 	if quest3: hz = PCVRVideoSettings.QUEST3_STREAM_FPS
 	_long_run = bool(config.get_value("host", "long_run", false))
 	_handover_on_ready = bool(config.get_value("host", "handover_on_ready", false))
 	_standby_only = bool(config.get_value("host", "standby_only", false)) or _handover_on_ready
-	if hz not in [20, 60, 72] or eye_size not in [512, 1024, 2048, 2560] or (_long_run and hz not in [60, 72]):
+	if hz not in [20, 60, 72] or not PCVRVideoSettings.valid_eye_size(eye_size) or not PCVRVideoSettings.valid_eye_size(eye_height) or (_long_run and hz not in [60, 72]):
 		_fail("Unsupported developer XR rate or eye size")
 		return
-	if video_settings.bitrate_mbps != 0 or quest3:
-		var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": "h265" if quest3 else "h264"}, token)
-		if token != _generation: return
-		if configured.get("state", "") != "idle" or configured.get("reason") != null:
-			_fail("Host rejected PCVR bitrate configuration; update Meteor")
-			return
-	var offer := await _request({"type": "offer_long" if _long_run else "offer", "width": eye_size, "height": eye_size, "hz": hz}, token)
+	var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": "h265" if quest3 else "h264", "foveated_encoding":video_settings.foveated_encoding}, token)
+	if token != _generation: return
+	if configured.get("state", "") != "idle" or configured.get("reason") != null:
+		_fail("Host rejected PCVR video configuration; update Meteor")
+		return
+	owner._log("[PCVR] Offer %dx%d per eye, %d%%, centre-priority encoding=%s" % [eye_size, eye_height, video_settings.resolution_percent, video_settings.foveated_encoding])
+	var offer := await _request({"type": "offer_long" if _long_run else "offer", "width": eye_size, "height": eye_height, "hz": hz}, token)
 	if token != _generation: return
 	_busy = false
 	if offer.get("state", "") != "awaiting_acceptance" or not offer.get("session") is String:
@@ -362,6 +429,7 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	session = offer.session
 	session_fps = hz
 	session_eye_size = eye_size
+	session_eye_height = eye_height
 	var offer_text := "Accept control-only XR preparation?"
 	if not _relay_config.is_empty():
 		offer_text = "Accept XR standby? Desktop stays visible" if _standby_only else "Accept exclusive Meteor XR session?"
@@ -408,7 +476,7 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 		if not prepared:
 			_fail("Cannot prepare matched PCVR display and desktop timing")
 			return
-	if not owner.pcvr_test.backend.has_method("set_meteor_eye_size") or not owner.pcvr_test.backend.set_meteor_eye_size(session_eye_size):
+	if not owner.pcvr_test.backend.has_method("set_meteor_eye_dimensions") or not owner.pcvr_test.backend.set_meteor_eye_dimensions(session_eye_size, session_eye_height):
 		_fail("Cannot configure matching PCVR projection resolution")
 		return
 	if owner.pcvr_test.backend.has_method("set_pcvr_post_processing"):

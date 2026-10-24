@@ -16,10 +16,32 @@ struct MeteorQuadCompositor {
     VkPipeline pipeline{};
     VkSampler sampler{};
     std::vector<VkImageView> source_views;
+    struct LayerParameters {float color_scale[4],color_bias[4],geometry[4];};
+    static_assert(sizeof(LayerParameters)==48,"std430 layer stride");
+    VkBuffer parameters{};
+    VkDeviceMemory parameter_memory{};
+    LayerParameters *mapped_parameters{};
     uint32_t eye_size{};
+    uint32_t eye_height{};
 
-    void init(VkDevice dev, VkImage target, VkFormat format, uint32_t size) {
-        device=dev; eye_size=size;
+    void init(VkPhysicalDevice gpu,VkDevice dev, VkImage target, VkFormat format, uint32_t size,uint32_t height) {
+        device=dev; eye_size=size; eye_height=height;
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size=sizeof(LayerParameters)*METEOR_MAX_QUADS; bi.usage=VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        VK(vkCreateBuffer(device,&bi,nullptr,&parameters));
+        VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(device,parameters,&req);
+        VkPhysicalDeviceMemoryProperties memory{}; vkGetPhysicalDeviceMemoryProperties(gpu,&memory);
+        uint32_t type=memory.memoryTypeCount;
+        for(uint32_t i=0;i<memory.memoryTypeCount;++i)
+            if((req.memoryTypeBits&(1u<<i)) && (memory.memoryTypes[i].propertyFlags&
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {type=i; break;}
+        REQUIRE(type<memory.memoryTypeCount,"No coherent layer metadata memory");
+        VkMemoryAllocateInfo ma{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ma.allocationSize=req.size; ma.memoryTypeIndex=type;
+        VK(vkAllocateMemory(device,&ma,nullptr,&parameter_memory));
+        VK(vkBindBufferMemory(device,parameters,parameter_memory,0));
+        void *mapped=nullptr; VK(vkMapMemory(device,parameter_memory,0,VK_WHOLE_SIZE,0,&mapped));
+        mapped_parameters=static_cast<LayerParameters *>(mapped);
         VkAttachmentDescription attachment{};
         attachment.format=format; attachment.samples=VK_SAMPLE_COUNT_1_BIT;
         attachment.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD; attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
@@ -38,15 +60,19 @@ struct MeteorQuadCompositor {
         VK(vkCreateImageView(device,&iv,nullptr,&target_view));
         VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fb.renderPass=pass; fb.attachmentCount=1; fb.pAttachments=&target_view;
-        fb.width=size*2; fb.height=size; fb.layers=1;
+        fb.width=size*2; fb.height=height; fb.layers=1;
         VK(vkCreateFramebuffer(device,&fb,nullptr,&framebuffer));
-        VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+        VkDescriptorSetLayoutBinding binding[]{
+            {0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+            {1,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}};
         VkDescriptorSetLayoutCreateInfo dsl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        dsl.bindingCount=1; dsl.pBindings=&binding;
+        dsl.bindingCount=2; dsl.pBindings=binding;
         VK(vkCreateDescriptorSetLayout(device,&dsl,nullptr,&descriptors));
-        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,METEOR_MAX_QUADS};
+        VkDescriptorPoolSize pool_size[]{
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,METEOR_MAX_QUADS},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,METEOR_MAX_QUADS}};
         VkDescriptorPoolCreateInfo dp{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        dp.maxSets=METEOR_MAX_QUADS; dp.poolSizeCount=1; dp.pPoolSizes=&pool_size;
+        dp.maxSets=METEOR_MAX_QUADS; dp.poolSizeCount=2; dp.pPoolSizes=pool_size;
         VK(vkCreateDescriptorPool(device,&dp,nullptr,&descriptor_pool));
         VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(meteor_quad_push)};
         static_assert(sizeof(meteor_quad_push)==128,"Portable Vulkan push constant limit");
@@ -102,6 +128,12 @@ struct MeteorQuadCompositor {
         std::vector<VkImageMemoryBarrier> barriers;
         for(uint32_t i=0;i<input.quad_count;++i) {
             const auto &q=input.quads[i];
+            auto &values=mapped_parameters[i];
+            for(int k=0;k<4;++k) {values.color_scale[k]=q.color_scale[k]; values.color_bias[k]=q.color_bias[k];}
+            values.geometry[0]=q.horizontal_angle;
+            values.geometry[1]=q.kind==METEOR_LAYER_CYLINDER ? q.aspect_ratio : q.upper_angle;
+            values.geometry[2]=q.lower_angle; values.geometry[3]=q.radius;
+            if(q.kind==METEOR_LAYER_PROJECTION) for(int k=0;k<4;++k) values.geometry[k]=q.projection_fov[k];
             VkImageViewCreateInfo iv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             iv.image=q.image; iv.viewType=VK_IMAGE_VIEW_TYPE_2D; iv.format=q.format;
             iv.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,q.slice,1};
@@ -112,7 +144,12 @@ struct MeteorQuadCompositor {
             VkDescriptorImageInfo image{sampler,view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             write.dstSet=set; write.dstBinding=0; write.descriptorCount=1; write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; write.pImageInfo=&image;
-            vkUpdateDescriptorSets(device,1,&write,0,nullptr);
+            VkDescriptorBufferInfo buffer{parameters,0,sizeof(LayerParameters)*METEOR_MAX_QUADS};
+            VkWriteDescriptorSet buffer_write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            buffer_write.dstSet=set; buffer_write.dstBinding=1; buffer_write.descriptorCount=1;
+            buffer_write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; buffer_write.pBufferInfo=&buffer;
+            VkWriteDescriptorSet writes[]={write,buffer_write};
+            vkUpdateDescriptorSets(device,2,writes,0,nullptr);
             bool seen=false;
             for(const auto &b:barriers) if(b.image==q.image && b.subresourceRange.baseArrayLayer==q.slice) seen=true;
             if(!seen) {
@@ -132,7 +169,7 @@ struct MeteorQuadCompositor {
         target_barrier.image=target; target_barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,0,0,nullptr,0,nullptr,1,&target_barrier);
         VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        begin.renderPass=pass; begin.framebuffer=framebuffer; begin.renderArea.extent={eye_size*2,eye_size};
+        begin.renderPass=pass; begin.framebuffer=framebuffer; begin.renderArea.extent={eye_size*2,eye_height};
         vkCmdBeginRenderPass(cmd,&begin,VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
         float head[3]; for(int k=0;k<3;++k) head[k]=(input.views[k]+input.views[k+11])*.5f;
@@ -141,6 +178,7 @@ struct MeteorQuadCompositor {
             meteor_quad_push push{};
             for(int k=0;k<4;++k) { push.color_scale[k]=q.color_scale[k]; push.color_bias[k]=q.color_bias[k]; }
             push.options[0]=q.flags;
+            push.options[2]=i;
             push.uv_rect[0]=float(q.rect[0])/q.width;
             push.uv_rect[1]=float(q.rect[1])/q.height;
             push.uv_rect[2]=float(q.rect[2])/q.width;
@@ -149,9 +187,16 @@ struct MeteorQuadCompositor {
             vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,layout,0,1,&sets[i],0,nullptr);
             for(int eye=0;eye<2;++eye) {
                 if(!(q.visibility & (1u<<eye))) continue;
-                for(unsigned corner=0;corner<4;++corner) meteor_quad_corner(q.pose,q.extent,input.views+11*eye,head,(q.flags&8)!=0,corner,push.corner[corner]);
-                VkViewport viewport{float(eye*eye_size),0,float(eye_size),float(eye_size),0,1};
-                VkRect2D scissor{{int32_t(eye*eye_size),0},{eye_size,eye_size}};
+                if(q.kind!=METEOR_LAYER_QUAD) {
+                    push.options[1]=q.kind;
+                    float pose[7]; meteor_layer_world_pose(q.pose,input.head_pose,(q.flags&8)!=0,pose);
+                    meteor_panorama_rays(pose,input.views+11*eye,head,false,push.corner,push.color_bias);
+                } else {
+                    float pose[7]; meteor_layer_world_pose(q.pose,input.head_pose,(q.flags&8)!=0,pose);
+                    for(unsigned corner=0;corner<4;++corner) meteor_quad_corner(pose,q.extent,input.views+11*eye,head,false,corner,push.corner[corner]);
+                }
+                VkViewport viewport{float(eye*eye_size),0,float(eye_size),float(eye_height),0,1};
+                VkRect2D scissor{{int32_t(eye*eye_size),0},{eye_size,eye_height}};
                 vkCmdSetViewport(cmd,0,1,&viewport); vkCmdSetScissor(cmd,0,1,&scissor);
                 vkCmdPushConstants(cmd,layout,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(push),&push);
                 vkCmdDraw(cmd,6,1,0,0);
@@ -167,6 +212,8 @@ struct MeteorQuadCompositor {
 
     void destroy() {
         clear_views();
+        vkUnmapMemory(device,parameter_memory);
+        vkDestroyBuffer(device,parameters,nullptr); vkFreeMemory(device,parameter_memory,nullptr);
         vkDestroySampler(device,sampler,nullptr); vkDestroyPipeline(device,pipeline,nullptr);
         vkDestroyPipelineLayout(device,layout,nullptr); vkDestroyDescriptorPool(device,descriptor_pool,nullptr);
         vkDestroyDescriptorSetLayout(device,descriptors,nullptr); vkDestroyFramebuffer(device,framebuffer,nullptr);

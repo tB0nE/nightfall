@@ -44,6 +44,21 @@ func xr_settings_available() -> bool:
 	# The authenticated XR watcher proves capability; depth discovery alone does not.
 	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
 
+func update_xr_foveation(enabled: bool) -> bool:
+	return _xr_control != null and _xr_control.queue_foveation(enabled)
+
+func update_xr_bitrate(mbps: int) -> bool:
+	return _xr_control != null and _xr_control.has_method("queue_bitrate") and _xr_control.queue_bitrate(mbps)
+
+func xr_bitrate_message() -> String:
+	if _xr_control == null: return ""
+	var text = _xr_control.get("bitrate_message")
+	var foveation = _xr_control.get("foveation_message")
+	var messages := PackedStringArray()
+	if text != null and not str(text).is_empty(): messages.append(str(text))
+	if foveation != null and not str(foveation).is_empty(): messages.append(str(foveation))
+	return " • ".join(messages)
+
 func build_welcome_ui():
 	cancel_xr_control()
 	var root = main.welcome_viewport.get_node("WelcomeRoot")
@@ -103,8 +118,11 @@ func _xr_entry_busy_reason(config: ConfigFile) -> String:
 	var handover := bool(config.get_value("host", "handover_on_ready", false))
 	return main.pcvr_test.standby_busy_reason() if handover else main.pcvr_test.busy_reason()
 
-func cancel_xr_control(stop_projection: bool = true) -> void:
-	_auto_suppressed = true
+func cancel_xr_control(stop_projection: bool = true, suppress_auto: bool = true) -> void:
+	# Native teardown also closes this connection. Ending a game must not
+	# disable detection of the next game; an explicit user cancel still does.
+	if suppress_auto: _auto_suppressed = true
+	else: _auto_retry = maxf(_auto_retry, 1.0)
 	if _xr_control: _xr_control.cancel(stop_projection)
 
 func build_browser_picker(root: Control) -> void:

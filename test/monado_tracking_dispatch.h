@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "meteor_eye_rect.h"
 
 struct meteor_tracking_bridge {
     void *module, *client;
@@ -20,13 +21,17 @@ static void meteor_tracking_release(struct meteor_tracking_bridge *b) {
 static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b,struct xrt_device *xdev) {
     const char *pixels=getenv("METEOR_XR_EYE_SIZE");
     if(pixels) {
-        if(strcmp(pixels,"256") && strcmp(pixels,"512") && strcmp(pixels,"1024") && strcmp(pixels,"2048") && strcmp(pixels,"2560")) return false;
-        uint32_t size=(uint32_t)atoi(pixels);
+        char *end=NULL;
+        unsigned long parsed=strtoul(pixels,&end,10);
+        if(!*pixels || *end || parsed>4096 || !meteor_eye_size_valid((uint32_t)parsed)) return false;
+        uint32_t size=(uint32_t)parsed;
+        uint32_t height=meteor_eye_dimension(getenv("METEOR_XR_EYE_HEIGHT"),size);
+        if(!height) return false;
         for(uint32_t eye=0;eye<xdev->hmd->view_count;++eye) {
             xdev->hmd->views[eye].display.w_pixels=size;
-            xdev->hmd->views[eye].display.h_pixels=size;
+            xdev->hmd->views[eye].display.h_pixels=height;
         }
-        fprintf(stderr,"METEOR_RECOMMENDED_EYE_SIZE pixels=%u\n",size);
+        fprintf(stderr,"METEOR_RECOMMENDED_EYE_SIZE pixels=%ux%u\n",size,height);
     }
     const char *library = getenv("METEOR_TRACKING_BRIDGE");
     if (!library) return true; // Original simulated device remains diagnostic default.

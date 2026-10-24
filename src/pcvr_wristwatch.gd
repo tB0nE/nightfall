@@ -86,7 +86,7 @@ func process(delta: float, handover) -> void:
 	var hovered := uv.x >= 0 and uv.y >= 0.55
 	if hovered and down and not _pressed and not _blocked_until_release:
 		if settings_hit(uv):
-			handover.open_pcvr_menu()
+			handover.toggle_pcvr_menu()
 		else:
 			handover.set_desktop_visible(not handover.desktop_visible)
 		_blocked_until_release = true

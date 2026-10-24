@@ -7,9 +7,11 @@ layout(push_constant) uniform Push {
     uvec4 options;
 } pc;
 layout(location=0) out vec2 uv;
+layout(location=1) out vec3 panorama_ray;
 void main() {
     const int indices[6] = int[](0, 1, 2, 2, 1, 3);
     int i = indices[gl_VertexIndex];
-    gl_Position = pc.corner[i];
+    panorama_ray = pc.corner[i].xyz;
+    gl_Position = pc.options.y != 0u ? vec4((i & 1) == 0 ? -1.0 : 1.0, (i & 2) == 0 ? -1.0 : 1.0,0,1) : pc.corner[i];
     uv = pc.uv_rect.xy + vec2(i & 1, i >> 1) * pc.uv_rect.zw;
 }
