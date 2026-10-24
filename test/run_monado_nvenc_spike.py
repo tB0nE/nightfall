@@ -17,6 +17,7 @@ from xr_transport_probe import LiveTransport
 from xr_frame_accounting import match_submitted_frames
 from xr_application_lifecycle import run_application
 from xr_runtime_lifecycle import managed_runtime
+from xr_audio_environment import host_audio_environment
 
 
 def run(root: Path, out: Path):
@@ -157,6 +158,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_XR_BITRATE_MBPS=str(bitrate_mbps),
                METEOR_XR_CODEC=codec,
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
+    # Preserve the actual host audio endpoints BEFORE replacing the runtime
+    # directory for XR IPC. Do not change global defaults or the user's sink.
+    env.update(host_audio_environment(os.environ))
     process_diagnostics=bool(external_spec and (root / ".build-cache/meteor-xr/process-diagnostics.enabled").is_file())
     env.pop("METEOR_XR_WAIT_DIAGNOSTICS",None)
     if process_diagnostics: env["METEOR_XR_WAIT_DIAGNOSTICS"]="1"
