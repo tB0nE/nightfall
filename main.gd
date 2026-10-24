@@ -34,7 +34,7 @@ func tracking_mode_label() -> String:
 	return tracking_labels[clampi(effective_tracking_mode(), 0, tracking_labels.size() - 1)] + (" (Auto)" if startup_hand_fallback.auto_enabled else "")
 
 func _process_startup_hand_fallback(delta: float) -> void:
-	if startup_hand_fallback.decided: return
+	if startup_hand_fallback.decided and not startup_hand_fallback.auto_enabled: return
 	var physical := false
 	for path in [&"/user/hand/left", &"/user/hand/right"]:
 		if startup_hand_fallback.physical_controller_available(XRServer.get_tracker(path)):
@@ -44,7 +44,7 @@ func _process_startup_hand_fallback(delta: float) -> void:
 		var tracker = XRServer.get_tracker(path)
 		if tracker is XRHandTracker and tracker.get_has_tracking_data(): hands = true
 	if startup_hand_fallback.step(delta, settings.tracking_mode, physical, hands):
-		_log("[HAND] No physical controller at startup; enabled session-only hand tracking")
+		_log("[HAND] No physical controller at startup; enabled session-only hand tracking" if startup_hand_fallback.auto_enabled else "[HAND] Physical controller detected; retired startup hand fallback")
 		state_manager.sync_ui_to_settings(false)
 
 func get_is_hand_tracking() -> bool:
