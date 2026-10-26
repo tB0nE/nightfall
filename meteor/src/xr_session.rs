@@ -151,7 +151,13 @@ pub(crate) async fn runtime_adapter_with_status(
     let mut events = crate::xr_events::Observer::new(generation.clone());
     if let Some(progress) = progress { *progress.lock().unwrap() = events.runtime_status(); }
     let mut command = Command::new("bash");
-    command.arg(root.join("tools/build_support/probe_monado_nvenc.sh"));
+    let application = cache.join("application.json");
+    if application.is_file() && root.join("xr-runtime/manifest.json").is_file() {
+        command = Command::new("/usr/bin/python3");
+        command.arg(root.join("tools/meteor_xr_runtime.py"));
+    } else {
+        command.arg(root.join("tools/build_support/probe_monado_nvenc.sh"));
+    }
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
         if name.starts_with("NIGHTFALL_XR_") || name.starts_with("METEOR_XR_") {
@@ -174,7 +180,6 @@ pub(crate) async fn runtime_adapter_with_status(
     }
     // Explicit host-local DEV override only. Never take an executable or args
     // from the headset/control protocol. Missing means the validated demo.
-    let application = cache.join("application.json");
     if let Some(generation)=launch_intent.as_ref() {command.env("NIGHTFALL_XR_LAUNCH_INTENT",generation);}
     if application.exists() {
         let application=session_application(&root,&application,&output,launch_intent.as_deref())?;

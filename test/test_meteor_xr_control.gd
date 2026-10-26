@@ -27,6 +27,13 @@ func _init() -> void:
 	var owner := Owner.new()
 	root.add_child(owner)
 	var client = ControlClient.new(owner)
+	var key := "13be4feaeaf204c7fd3358fc9c00721881d174278128227ec674f37f7fe97b6d"
+	client.set_discovered_host("10.0.0.13", {"key":key,"xr":{"port":47910,"backend":"linux-nvidia","authorization":"allowlist"}})
+	assert(client.current_config().get_value("host", "address") == "10.0.0.13")
+	assert(client.current_config().get_value("host", "handover_on_ready"))
+	assert(ControlClient.approval_code(key) == "0F6D2553")
+	assert(ControlClient.approval_code("invalid").is_empty())
+
 	assert(not client.queue_bitrate(80))
 	assert(not client.queue_foveation(true))
 	assert(not client.request_library("list"))

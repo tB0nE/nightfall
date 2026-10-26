@@ -17,7 +17,7 @@ static void transfer(int fd, uint8_t *data, size_t n, bool sending) {
 }
 
 int main(int argc,char **argv) {
-    assert(argc==2);
+    assert(argc==2 || (argc==3 && std::string(argv[2])=="--authenticate-only"));
     uint8_t server_seed[32],client_seed[32],pin[32];
     memset(server_seed,1,32);memset(client_seed,2,32);
     assert(godot::MeteorCipher::identity_public(server_seed,pin));
@@ -63,6 +63,10 @@ int main(int argc,char **argv) {
         return std::string(reinterpret_cast<char *>(body.data()),body.size()-16);
     };
     assert(request(R"({"type":"authenticate"})").find("\"state\":\"idle\"")!=std::string::npos);
+    if(argc==3) {
+        close(fd);std::cout<<"PASS OpenSSL client / packaged Rust host authentication only\n";
+        return 0;
+    }
     auto offer=request(R"({"type":"offer","width":512,"height":512,"hz":20})");
     assert(offer.find("awaiting_acceptance")!=std::string::npos);
     std::smatch match;assert(std::regex_search(offer,match,std::regex("\"session\":\"([0-9a-f]+)\"")));

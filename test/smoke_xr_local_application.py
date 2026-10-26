@@ -16,7 +16,7 @@ import time
 import secrets
 
 
-def run(root, steam_wrapper=False):
+def run(root, steam_wrapper=False, installed_runtime=None):
     cache = root / ".build-cache/meteor-xr"
     with nullcontext(tempfile.mkdtemp(prefix="external-smoke-", dir=cache)) as directory:
         out = Path(directory)
@@ -66,7 +66,9 @@ def run(root, steam_wrapper=False):
                 env["NIGHTFALL_XR_APPLICATION_SPEC"]=str(selection)
                 env["NIGHTFALL_XR_RUNTIME_GENERATION"]=secrets.token_hex(16)
             with (out / "smoke.log").open("w") as log:
-                probe = subprocess.Popen(["bash", str(root / "tools/build_support/probe_monado_nvenc.sh")],
+                launcher = ([sys.executable, str(installed_runtime / "tools/meteor_xr_runtime.py")]
+                            if installed_runtime else ["bash", str(root / "tools/build_support/probe_monado_nvenc.sh")])
+                probe = subprocess.Popen(launcher,
                                          env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                 deadline = time.monotonic() + 25
                 armed_since = None
@@ -97,9 +99,9 @@ def run(root, steam_wrapper=False):
                             if steam_wrapper:
                                 # Real wrapper/owned-runner path with a native sample,
                                 # not a claim that Steam/Proton or VRChat ran.
-                                wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--session",str(out),"--",*spec["argv"]],cwd=spec["cwd"])
+                                wrapper=subprocess.Popen([sys.executable,str((installed_runtime or root)/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--session",str(out),"--",*spec["argv"]],cwd=spec["cwd"])
                             else:
-                                subprocess.run([sys.executable,str(root / "tools/meteor_xr.py"),"launch","--session",str(out)],check=True)
+                                subprocess.run([sys.executable,str((installed_runtime or root) / "tools/meteor_xr.py"),"launch","--session",str(out)],check=True)
                             requested = True
                     ledger = out / "monado-stereo.jsonl"
                     if ledger.exists() and len(ledger.read_text().splitlines()) >= 60:
@@ -134,4 +136,10 @@ def run(root, steam_wrapper=False):
 
 
 if __name__ == "__main__":
-    run(Path(sys.argv[1]).resolve(), "--steam-wrapper" in sys.argv[2:])
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("checkout",type=Path)
+    parser.add_argument("--steam-wrapper",action="store_true")
+    parser.add_argument("--installed-runtime",type=Path,help="Use installed supervisor and prebuilt bridges")
+    args=parser.parse_args()
+    run(args.checkout.resolve(),args.steam_wrapper,args.installed_runtime.resolve() if args.installed_runtime else None)

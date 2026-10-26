@@ -29,6 +29,14 @@ while read -r driver; do args+=("-D$driver=OFF"); done < <(
 args+=(-DXRT_BUILD_DRIVER_SIMULATED=ON)
 cmake "${args[@]}"
 cmake --build /out/capture-build --target monado-service openxr_monado -j 4
+# Release packaging needs the bridge's shader headers, not a diagnostic app.
+if [[ "${NIGHTFALL_XR_PACKAGE_ONLY:-0}" == 1 ]]; then
+    for stage in vert frag; do
+        glslangValidator -V --vn "meteor_quad_$stage" "/tests/meteor_quad.$stage" -o "/out/meteor_quad.$stage.h"
+        sha256sum "/tests/meteor_quad.$stage" > "/out/meteor_quad.$stage.sha256"
+    done
+    exit 0
+fi
 glslangValidator -V /tests/meteor_gpu_scene.comp -o /out/meteor_gpu_scene.spv
 spirv-val /out/meteor_gpu_scene.spv
 for stage in vert frag; do

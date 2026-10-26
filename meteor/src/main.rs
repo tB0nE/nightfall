@@ -45,6 +45,7 @@ mod video_dump;
 mod video_tap;
 mod video_decoder;
 mod xr_control;
+mod xr_trust;
 mod xr_library;
 mod xr_bitrate;
 mod xr_foveation;
@@ -76,6 +77,20 @@ async fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if args.get(1).is_some_and(|arg| arg == "--install-xr-runtime") {
+        let source = args.get(2).map(std::path::PathBuf::from).or_else(|| {
+            std::env::current_exe().ok()?.parent()?.parent().map(|prefix|
+                prefix.join("share/nightfall-meteor/xr-bundle"))
+        });
+        let Some(source) = source else { eprintln!("Cannot locate bundled XR runtime"); std::process::exit(1); };
+        let result = std::process::Command::new("/usr/bin/python3")
+            .arg(source.join("tools/meteor_xr_install.py")).arg(&source)
+            .arg("--destination").arg(config::data_dir().join("xr")).status();
+        match result {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => { eprintln!("Cannot install XR runtime: {error}"); std::process::exit(1); }
+        }
     }
     // Development-only managed runtime path. Never initialize the ordinary
     // proxy, depth models, audio devices or tray for this exclusive session.
@@ -115,6 +130,7 @@ async fn main() {
     if flag("--help") || flag("-h") {
         println!(
             "nightfall-meteor [options]\n\
+             \x20 --install-xr-runtime [bundle] install bundled XR files into user data and exit\n\
              \x20 --no-tray               run without a tray icon\n\
              \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
              \x20 --xr-client-key <hex>    allowlisted headset public key for integrated DEV XR\n\
@@ -263,23 +279,64 @@ async fn main() {
     // Register before exposing tray Quit. The coordinator remains alive while
     // async XR cleanup runs; only then use the existing GPU-safe hard exit.
     let shutdown = SHUTDOWN.get_or_init(shutdown::Shutdown::new);
-    let xr_service = if let Some(address) = value("--xr-service-dev") {
+    let dev_xr_address = value("--xr-service-dev");
+    let mut xr_discovery = None;
+    let mut xr_trust = None;
+    let xr_address = dev_xr_address.clone().or_else(|| config.xr.enabled.then(|| config.xr.listen.clone()));
+    let xr_service = if let Some(address) = xr_address {
         let start = async {
             let address = address.parse::<std::net::SocketAddr>().map_err(std::io::Error::other)?;
-            let client = value("--xr-client-key").ok_or_else(|| std::io::Error::other("--xr-service-dev requires --xr-client-key"))?;
-            let allowed = xr_control::public_key(&client)?;
+            let client = value("--xr-client-key").or_else(|| config.xr.allowed_client.clone());
+            if dev_xr_address.is_some() && client.is_none() {
+                return Err(std::io::Error::other("DEV XR requires --xr-client-key"));
+            }
+            let allowed = client.as_deref().map(xr_control::public_key).transpose()?.unwrap_or([0;32]);
+            let pairing = if dev_xr_address.is_none() {
+                Some(Arc::new(xr_trust::Trust::load(config::config_dir().join("xr-trusted-headsets.json"))?))
+            } else { None };
             let key = key.clone().ok_or_else(|| std::io::Error::other("XR requires Meteor's host key"))?;
-            let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from);
+            let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
+                .or_else(|| dev_xr_address.is_none().then(|| config.xr.runtime_root()));
             let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
+            if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
+                return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
+            }
+            if dev_xr_address.is_none() {
+                let root = runtime_root.as_ref().unwrap();
+                let check = tokio::time::timeout(std::time::Duration::from_secs(10),
+                    tokio::process::Command::new("/usr/bin/python3")
+                        .arg(root.join("tools/meteor_xr_runtime.py")).arg("--check")
+                        .kill_on_drop(true).output()).await
+                    .map_err(|_| std::io::Error::other("Installed XR runtime check timed out"))??;
+                if !check.status.success() {
+                    return Err(std::io::Error::other(format!("Installed XR runtime validation failed: {}",
+                        String::from_utf8_lossy(&check.stderr).chars().take(1200).collect::<String>())));
+                }
+            }
             let listener = tokio::net::TcpListener::bind(address).await?;
-            log::info!("DEV XR service alongside proxy at {}; host public key {}. No production XR discovery capability.", listener.local_addr()?, key.public_hex());
-            Ok::<_, std::io::Error>(tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
-                key, allowed, enable_relay: true, runtime_root,
-            }, shutdown.subscribe())))
+            let port = listener.local_addr()?.port();
+            let relay_ports = if dev_xr_address.is_none() {
+                let pair = (config.xr.video_port, config.xr.tracking_port);
+                let occupied = firewall::ports(&map, config.discovery_port);
+                if pair.0 == 0 || pair.1 == 0 || pair.0 == pair.1 || pair.0 == port || pair.1 == port ||
+                    occupied.iter().any(|&(other, proto)| proto == ports::Proto::Tcp && [pair.0, pair.1, port].contains(&other)) {
+                    return Err(std::io::Error::other("XR control/video/tracking ports must be distinct and must not overlap desktop services"));
+                }
+                Some(pair)
+            } else { None };
+            if let Some(root) = runtime_root.as_ref() { xr_library::set_runtime_root(root.clone()); }
+            log::info!("Managed XR service alongside proxy at {}; host public key {}", listener.local_addr()?, key.public_hex());
+            xr_trust = pairing.clone();
+            #[cfg(target_os = "linux")]
+            if let Some(trust) = pairing.clone() { desktop::watch_xr_approval(trust); }
+            let advertised = if dev_xr_address.is_none() { Some(port) } else { None };
+            Ok::<_, std::io::Error>((tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
+                key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
+            }, shutdown.subscribe())), advertised))
         }.await;
         match start {
-            Ok(task) => Some(task),
-            Err(error) => { log::error!("DEV XR service disabled: {error}; desktop proxy remains available"); None },
+            Ok((task, port)) => { xr_discovery = port; Some(task) },
+            Err(error) => { log::error!("XR service disabled: {error}; desktop proxy remains available"); None },
         }
     } else {
         if value("--xr-client-key").is_some() || value("--xr-runtime-root").is_some() {
@@ -291,6 +348,7 @@ async fn main() {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
         depth: depth_port,
+        xr_port: xr_discovery,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -298,6 +356,7 @@ async fn main() {
         map,
         sunshine_host: config.sunshine_host.clone(),
         discovery_port: config.discovery_port,
+        xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
         sunshine_up: AtomicBool::new(false),
         firewall: std::sync::Mutex::new(firewall::Status::Checking),
     });
@@ -305,7 +364,7 @@ async fn main() {
     status.check_firewall();
 
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic }).await {
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",

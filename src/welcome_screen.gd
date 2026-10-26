@@ -27,17 +27,15 @@ func process_auto_xr(delta: float) -> void:
 	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
 	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
 	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
-	var script = preload("res://src/meteor_xr_control.gd")
-	if not FileAccess.file_exists(script.config_path()): return
-	var config := ConfigFile.new()
-	if config.load(script.config_path()) != OK: return
+	var control = get_xr_control()
+	var config: ConfigFile = control.current_config()
+	if config == null: return
 	if not bool(config.get_value("host","auto_xr",true)) or not bool(config.get_value("host","handover_on_ready",false)) or not bool(config.get_value("host","relay",false)): return
 	var address := str(config.get_value("host","address",""))
 	var same_host := false
 	for host in main.stream_backend.get_hosts():
 		if host.get("id") == main.current_host_id and address in [host.get("localaddress",""),host.get("remoteaddress","")]: same_host = true
 	if not same_host: return
-	var control = get_xr_control()
 	if control.state not in ["idle","failed"]: return
 	_auto_retry = 5.0
 	control.connect_offer(true)
@@ -108,8 +106,8 @@ func get_xr_control() -> RefCounted:
 func request_xr_control() -> void:
 	var control = get_xr_control()
 	if control.state not in ["idle", "failed", "offered"]: return
-	var config := ConfigFile.new()
-	config.load(preload("res://src/meteor_xr_control.gd").config_path())
+	var config: ConfigFile = control.current_config()
+	if config == null: return
 	var reason := _xr_entry_busy_reason(config)
 	if not reason.is_empty():
 		control.message = reason

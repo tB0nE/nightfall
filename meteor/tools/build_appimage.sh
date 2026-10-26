@@ -37,7 +37,20 @@ OUT="$METEOR/target/appimage"
 WORK="$OUT/work"
 APPDIR="$WORK/AppDir"
 IMAGE=nightfall-meteor-appimage
-ENGINE="$(command -v podman || command -v docker)"
+ENGINE="${NIGHTFALL_CONTAINER_ENGINE:-$(command -v podman || command -v docker)}"
+RUN_ARGS=(--rm --security-opt label=disable)
+if [[ "$(basename "$ENGINE")" == podman ]]; then
+    RUN_ARGS+=(--userns=keep-id)
+else
+    RUN_ARGS+=(--user "$(id -u):$(id -g)")
+fi
+XR_SUFFIX=""
+if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+    METEOR_XR_BUNDLE="$(cd "$METEOR_XR_BUNDLE" && pwd)"
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_runtime.py" --check
+    /usr/bin/python3 "$REPO/tools/audit_meteor_xr_runtime.py" "$METEOR_XR_BUNDLE" --max-glibc 2.35 >/dev/null
+    XR_SUFFIX="-XR-DEV"
+fi
 
 for f in "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin"; do
     [[ -f "$f" ]] || { echo "Missing $f (see models/README.md)" >&2; exit 1; }
@@ -53,7 +66,7 @@ mkdir -p "$WORK/stage"
 
 echo "== Building Meteor in Ubuntu 22.04"
 "$ENGINE" build -q -t "$IMAGE" -f tools/appimage/Containerfile tools/appimage >/dev/null
-"$ENGINE" run --rm --userns=keep-id --security-opt label=disable \
+"$ENGINE" run "${RUN_ARGS[@]}" \
     -v "$METEOR:/src:ro" \
     -v "$OUT/cargo-target:/target" \
     -v "$OUT/cargo-registry:/opt/cargo/registry" \
@@ -98,12 +111,23 @@ install -m644 "$WORK/stage/libmeteor_vda_vulkan.so" "$APPDIR/usr/lib/"
 install -m644 "$WORK/stage/libavcodec.so.62" "$WORK/stage/libavutil.so.60" "$WORK/stage/libswscale.so.9" "$WORK"/stage/libdav1d.so.* "$APPDIR/usr/lib/"
 install -m644 "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
 install -m644 "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
-# VDA Vulkan exports are optional and retain their own checksum manifests.
-for variant in vda_vulkan_518x294 vda_vulkan_392x224; do
-    if [ -f "$MODELS/$variant/manifest.json" ]; then
+# Keep optional VDA weights out of default packages even on a developer machine
+# that has them installed. They remain available from the user model directory.
+if [[ "${METEOR_BUNDLE_VDA_VULKAN:-0}" == 1 ]]; then
+    for variant in vda_vulkan_518x294 vda_vulkan_392x224; do
+        [[ -f "$MODELS/$variant/manifest.json" ]] || { echo "Missing requested VDA export: $variant" >&2; exit 1; }
         cp -a "$MODELS/$variant" "$APPDIR/usr/share/nightfall-meteor/models/"
-    fi
-done
+    done
+fi
+# Optional managed XR bundle. It is copied out to writable per-user storage by
+# --install-xr-runtime; never run session state directly from the AppImage mount.
+if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_runtime.py" --check
+    /usr/bin/python3 "$REPO/tools/audit_meteor_xr_runtime.py" "$METEOR_XR_BUNDLE" \
+        --max-glibc 2.35 --output "$WORK/xr-runtime-audit.json"
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_install.py" "$METEOR_XR_BUNDLE" \
+        --export "$APPDIR/usr/share/nightfall-meteor/xr-bundle"
+fi
 install -m755 tools/appimage/AppRun "$APPDIR/AppRun"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/usr/share/applications/"
@@ -122,6 +146,10 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "- FFmpeg 8.0.1, LGPL 2.1 or later: optional VAAPI/software decoding runtime"
     echo "  Unmodified source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
     echo "- dav1d, BSD 2-Clause: AV1 software decoding"
+    if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+        echo "- Managed Monado XR runtime, bridges and private cJSON: usr/share/nightfall-meteor/xr-bundle"
+        echo "  Upstream and dependency notices are retained inside that verified bundle."
+    fi
     echo "- The Rust crates listed at the end"
     echo
     echo "Choosing Video Depth Anything in the tray downloads NVIDIA TensorRT from"
@@ -172,7 +200,7 @@ echo "$APPIMAGETOOL_SHA256  $TOOL" | sha256sum -c --quiet
 echo "$RUNTIME_SHA256  $RUNTIME" | sha256sum -c --quiet
 # The version is in the name from the start: the .zsync file records the
 # AppImage's file name, so the release asset must keep the name built here.
-TARGET="$OUT/Nightfall-Meteor-$VERSION-x86_64.AppImage"
+TARGET="$OUT/Nightfall-Meteor-$VERSION$XR_SUFFIX-x86_64.AppImage"
 rm -f "$TARGET" "$TARGET.zsync"
 (cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --comp zstd --runtime-file "$RUNTIME" \
     -u "gh-releases-zsync|tB0nE|nightfall|latest|Nightfall-Meteor-*x86_64.AppImage.zsync" \

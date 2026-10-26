@@ -18,6 +18,7 @@ class ControlProbe extends RefCounted:
 	func cancel(stop_projection: bool = true) -> void:
 		stops_projection = stop_projection
 		state = "idle"
+	func current_config() -> ConfigFile: return ConfigFile.new()
 	func connect_offer() -> void: offers += 1
 	func accept_offer() -> void: accepts += 1
 

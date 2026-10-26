@@ -17,6 +17,7 @@ pub struct MeteorTray {
     pub stats: Arc<Stats>,
     pub depth: Option<Arc<Depth>>,
     pub mic: Option<Arc<Mic>>,
+    pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
 }
 
 impl ksni::Tray for MeteorTray {
@@ -48,6 +49,24 @@ impl ksni::Tray for MeteorTray {
         };
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
         vec![
+            StandardItem {
+                label: "Custom Steam Launch Options required: Copy".into(),
+                icon_name: "edit-copy".into(),
+                enabled: crate::xr_library::steam_launch_options().is_ok(),
+                activate: Box::new(|_| { tokio::spawn(async {
+                    match crate::xr_library::steam_launch_options() {
+                        Ok(options) => match crate::desktop::copy_text(&options).await {
+                            Ok(()) => crate::desktop::notify("Steam launch options copied",
+                                "In Steam, right-click your VR game → Properties → General → Launch Options. Paste the copied line. Use the same line for each VR game.").await,
+                            Err(error) => { log::warn!("Cannot copy Steam launch options: {error}");
+                                crate::desktop::notify("Could not copy Steam launch options", &error.to_string()).await; }
+                        },
+                        Err(error) => log::warn!("Cannot create Steam launch options: {error}"),
+                    }
+                }); }),
+                ..Default::default()
+            }.into(),
+            MenuItem::Separator,
             info(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,
             info(self.summary()),
@@ -77,6 +96,7 @@ impl ksni::Tray for MeteorTray {
             activate:Box::new(|_| {if let Err(error)=crate::xr_library::request_open(){log::warn!("Cannot open VR Apps: {error}");}}),
             ..Default::default()
         }.into()])
+        .chain(self.xr_pairing_menu())
         .chain(self.depth_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
@@ -120,6 +140,20 @@ impl ksni::Tray for MeteorTray {
 }
 
 impl MeteorTray {
+    fn xr_pairing_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::StandardItem;
+        let Some(trust) = &self.xr_trust else { return vec![] };
+        let Some((key, code)) = trust.pending() else { return vec![] };
+        let approve = trust.clone(); let reject = trust.clone();
+        vec![
+            StandardItem { label: format!("Approve XR headset {code} (compare headset code)"),
+                activate: Box::new(move |_| { if let Err(error)=approve.approve(key) {log::warn!("XR approval failed: {error}");} }),
+                ..Default::default() }.into(),
+            StandardItem { label: format!("Reject XR headset {code}"),
+                activate: Box::new(move |_| reject.reject(key)), ..Default::default() }.into(),
+        ]
+    }
+
     /// Host depth: on/off, Model and Rate submenus, and a live readout.
     fn depth_menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;

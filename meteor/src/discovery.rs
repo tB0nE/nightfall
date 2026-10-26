@@ -17,6 +17,8 @@ pub struct Features {
     /// Meteor's public key, hex (crypto.rs).
     pub key: Option<String>,
     pub mic_port: Option<u16>,
+    /// Bound, explicitly authorized managed XR control service.
+    pub xr_port: Option<u16>,
     pub depth: Option<(u16, Arc<Depth>)>,
 }
 
@@ -49,6 +51,9 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
             "formats": [crate::mic::FORMAT_OPUS_48K_MONO, crate::mic::FORMAT_PCM_S16LE_48K_MONO],
             "encryption": crate::crypto::ENCRYPTION,
         });
+    }
+    if let Some(port) = features.xr_port {
+        info["xr"] = json!({"port": port, "backend": "linux-nvidia", "authorization": "allowlist", "protocol": 1});
     }
     // Only while a model is loaded and host depth is switched on in the tray.
     if let Some((port, depth)) = &features.depth
@@ -116,4 +121,18 @@ async fn respond(mut stream: TcpStream, body: &str) -> io::Result<String> {
     stream.write_all(response.as_bytes()).await?;
     stream.shutdown().await?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn xr_discovery_is_absent_until_service_supplies_a_port() {
+        let map = PortMap::new(47989, 1000).unwrap();
+        let mut features = Features::default();
+        assert!(info(&map, &features).get("xr").is_none());
+        features.xr_port = Some(47910);
+        assert_eq!(info(&map, &features)["xr"]["port"], 47910);
+        assert_eq!(info(&map, &features)["xr"]["authorization"], "allowlist");
+    }
 }

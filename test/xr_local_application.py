@@ -79,6 +79,19 @@ def application_environment(path, inherited):
         return env
     directory = validate_openvr_compat(spec["openvr_compat"])
     env["VR_OVERRIDE"] = str(directory)
+    # Keep the required OpenVR registry private to this launch. A fresh system
+    # need not have SteamVR or WiVRN installed to provide a global registry.
+    registry = Path(path).resolve().parent / 'openvrpaths.vrpath'
+    if not registry.is_file():
+        # Steam launches use a session-local copy of application.json; the
+        # compatibility path intentionally retains the stable installation link.
+        registry = Path(spec['openvr_compat']).parent.parent / '.build-cache/meteor-xr/openvrpaths.vrpath'
+    private_registry = None
+    if registry.is_file():
+        registered = json.loads(registry.read_text())
+        if registered.get('runtime') == [str(Path(spec['openvr_compat']))]:
+            private_registry = str(registry)
+            env['VR_PATHREG_OVERRIDE'] = private_registry
     if steam_runtime:
         if ":" in str(directory):
             raise ValueError("Steam compatibility paths must not contain colon separators")
@@ -88,6 +101,9 @@ def application_environment(path, inherited):
             # Import only this explicitly selected tool, not an entire drive.
             existing = env.get("PRESSURE_VESSEL_FILESYSTEMS_RO", "")
             env["PRESSURE_VESSEL_FILESYSTEMS_RO"] = ":".join(filter(None,[existing,str(directory)]))
+        if private_registry:
+            env['PRESSURE_VESSEL_FILESYSTEMS_RO'] = ':'.join(filter(None, [
+                env.get('PRESSURE_VESSEL_FILESYSTEMS_RO', ''), private_registry]))
     return env
 
 

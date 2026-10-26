@@ -283,7 +283,7 @@ async fn connection_mode(
     enable_relay: bool,
     runtime_root: Option<std::path::PathBuf>,
 ) -> io::Result<()> {
-    connection_supervised(stream, key, allowed, session_slot, enable_relay, runtime_root, None).await
+    connection_supervised(stream, key, allowed, session_slot, enable_relay, runtime_root, None, None, None).await
 }
 
 async fn connection_supervised(
@@ -294,6 +294,8 @@ async fn connection_supervised(
     enable_relay: bool,
     runtime_root: Option<std::path::PathBuf>,
     _runtime_tasks: Option<crate::xr_relay::RuntimeTasks>,
+    pairing: Option<Arc<crate::xr_trust::Trust>>,
+    relay_ports: Option<(u16, u16)>,
 ) -> io::Result<()> {
     let bind = stream.local_addr()?.ip();
     let authenticated = tokio::time::timeout(IO_TIMEOUT, async {
@@ -308,11 +310,8 @@ async fn connection_supervised(
         let mut client_nonce = [0; 32];
         stream.read_exact(&mut client).await?;
         stream.read_exact(&mut client_nonce).await?;
-        if client != allowed {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "device not paired",
-            ));
+        if client != allowed && pairing.is_none() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "device not paired"));
         }
         let mut receive = cipher(
             &key,
@@ -336,6 +335,16 @@ async fn connection_supervised(
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handshake timeout"))??;
     let (mut receive, mut send, client, server_nonce, client_nonce) = authenticated;
+    if client != allowed && !pairing.as_ref().is_some_and(|trust|trust.allows(&client)) {
+        if let Some(trust) = pairing.as_ref() {
+            let code = trust.request(client);
+            let mut reply = Negotiation::default().reply(Some("approval_pending"));
+            reply.state = "pairing_required".into();
+            if let Some(code) = code { reply.reason = Some(format!("approve_on_host:{code}")); }
+            return respond(&mut stream, &mut send, &reply).await;
+        }
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "device not paired"));
+    }
     // Reserve exclusive session ownership only after proof of the paired key.
     let Ok(_owner) = session_slot.try_acquire_owned() else {
         let busy = Reply {
@@ -421,7 +430,7 @@ async fn connection_supervised(
                 .as_ref()
                 .ok_or_else(|| invalid("no accepted lease"))?;
             relay = Some(
-                crate::xr_relay::Relay::prepare(
+                crate::xr_relay::Relay::prepare_on_ports(
                     bind,
                     crate::xr_relay::Credentials {
                         host: key.clone(),
@@ -430,6 +439,7 @@ async fn connection_supervised(
                         client_nonce,
                         session: session.raw_id,
                     },
+                    relay_ports,
                 )
                 .await?,
             );
@@ -479,6 +489,8 @@ pub(crate) struct ServiceConfig {
     pub allowed: [u8; 32],
     pub enable_relay: bool,
     pub runtime_root: Option<std::path::PathBuf>,
+    pub pairing: Option<Arc<crate::xr_trust::Trust>>,
+    pub relay_ports: Option<(u16, u16)>,
 }
 
 /// Serve a caller-owned listener until cancellation. Dropping the cancellation
@@ -490,7 +502,7 @@ pub(crate) async fn serve(
     config: ServiceConfig,
     mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    if config.allowed == [0; 32] || (config.runtime_root.is_some() && !config.enable_relay) {
+    if (config.allowed == [0; 32] && config.pairing.is_none()) || (config.runtime_root.is_some() && !config.enable_relay) {
         return Err(invalid("invalid XR service authorization or runtime configuration"));
     }
     let connections = Arc::new(Semaphore::new(4));
@@ -514,13 +526,11 @@ pub(crate) async fn serve(
                 let root=config.runtime_root.clone();
                 let relay=config.enable_relay;
                 let owner=runtime_tasks.clone();
+                let pairing=config.pairing.clone();
+                let relay_ports=config.relay_ports;
                 tasks.spawn(async move {
                     let _permit=permit;
-                    let result=if relay {
-                        connection_supervised(stream,key,allowed,slot,true,root,Some(owner)).await
-                    } else {
-                        connection(stream,key,allowed,slot).await
-                    };
+                    let result=connection_supervised(stream,key,allowed,slot,relay,root,Some(owner),pairing,relay_ports).await;
                     if let Err(error)=result {
                         eprintln!("Meteor XR control session ended: {error}");
                     }
@@ -541,10 +551,22 @@ pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Res
         return Err(invalid("Runtime launch currently requires Linux/NVIDIA"));
     }
     let root = root.canonicalize()?;
-    for file in [
-        "tools/build_support/probe_monado_nvenc.sh",
-        ".build-cache/meteor-xr/godot-engine-cleanup/bin/godot.linuxbsd.editor.x86_64",
-    ] {
+    let installed = root.join("xr-runtime/manifest.json").is_file();
+    let files: &[&str] = if installed {
+        &[
+            "tools/meteor_xr_runtime.py",
+            "test/run_monado_nvenc_spike.py",
+            ".build-cache/meteor-xr/application.json",
+            ".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/service/monado-service",
+            ".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/openxr/libopenxr_monado.so",
+        ]
+    } else {
+        &[
+            "tools/build_support/probe_monado_nvenc.sh",
+            ".build-cache/meteor-xr/godot-engine-cleanup/bin/godot.linuxbsd.editor.x86_64",
+        ]
+    };
+    for file in files {
         if !root.join(file).is_file() {
             return Err(io::Error::new(io::ErrorKind::NotFound, format!("Missing XR prerequisite: {file}")));
         }
@@ -579,7 +601,7 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         );
     }
     let (stop, cancel) = watch::channel(false);
-    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root }, cancel);
+    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root, pairing: None, relay_ports: None }, cancel);
     tokio::pin!(service);
     tokio::select! {
         result=&mut service=>result?,
@@ -596,6 +618,29 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn installed_runtime_does_not_require_diagnostic_godot() {
+        let root = std::env::temp_dir().join(format!(
+            "meteor-installed-runtime-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        for relative in [
+            "xr-runtime/manifest.json", "tools/meteor_xr_runtime.py",
+            "test/run_monado_nvenc_spike.py", ".build-cache/meteor-xr/application.json",
+            ".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/service/monado-service",
+            ".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/openxr/libopenxr_monado.so",
+        ] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        assert!(validate_runtime_root(Some(root.clone())).unwrap().is_some());
+        std::fs::remove_file(root.join("tools/meteor_xr_runtime.py")).unwrap();
+        assert!(validate_runtime_root(Some(root.clone())).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn old_replies_without_runtime_status_still_decode() {
         let reply: Reply = serde_json::from_str(r#"{"state":"idle","session":null,"reason":null,"lan_video_available":false}"#).unwrap();
@@ -663,6 +708,8 @@ mod tests {
             allowed: MeteorKey::from_seed([2; 32]).public,
             enable_relay: false,
             runtime_root: None,
+            pairing: None,
+            relay_ports: None,
         }
     }
 
@@ -951,6 +998,41 @@ mod tests {
         assert!(!checked.exists());
         drop(stream);
         let _=task.await;
+    }
+
+    #[tokio::test]
+    async fn pairing_requires_key_proof_and_local_approval_before_control_access() {
+        let directory=std::env::temp_dir().join(format!("meteor-pairing-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let trust=Arc::new(crate::xr_trust::Trust::load(directory.join("trust.json")).unwrap());
+        let mut config=service_config();
+        let pin=config.key.public;
+        config.allowed=[0;32]; config.pairing=Some(trust.clone());
+        let listener=TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let (stop,cancel)=watch::channel(false);
+        let task=tokio::spawn(serve(listener,config,cancel));
+        let seed=[45;32]; let client_key=MeteorKey::from_seed(seed).public;
+        // Merely sending a public identity must not create an approval request.
+        let mut unproved=TcpStream::connect(address).await.unwrap();
+        let mut hello=[0;72]; unproved.read_exact(&mut hello).await.unwrap();
+        unproved.write_all(&client_key).await.unwrap(); unproved.write_all(&[3;32]).await.unwrap();
+        drop(unproved);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(trust.pending().is_none());
+        let mut first=TcpStream::connect(address).await.unwrap();
+        let (_,mut rx)=client_handshake(&mut first,pin,seed).await;
+        let pending=reply(&mut first,&mut rx).await;
+        assert_eq!(pending.state,"pairing_required");
+        assert_eq!(pending.reason,Some(format!("approve_on_host:{}",crate::xr_trust::code(&client_key))));
+        assert!(pending.session.is_none() && pending.relay.is_none());
+        assert!(!trust.allows(&client_key)); drop(first);
+        trust.approve(client_key).unwrap();
+        let mut approved=TcpStream::connect(address).await.unwrap();
+        let (_,mut rx)=client_handshake(&mut approved,pin,seed).await;
+        assert_eq!(reply(&mut approved,&mut rx).await.state,"idle");
+        drop(approved); stop.send_replace(true);
+        task.await.unwrap().unwrap(); std::fs::remove_dir_all(directory).unwrap();
     }
 
     async fn reply(stream: &mut TcpStream, rx: &mut Cipher) -> Reply {

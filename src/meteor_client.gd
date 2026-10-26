@@ -120,6 +120,20 @@ static func meteor_key(info: Dictionary) -> String:
 			return ""
 	return key
 
+## XR control is discovered only after the caller checks the remembered host key.
+static func xr_info(info: Dictionary) -> Dictionary:
+	var xr = info.get("xr", {})
+	if not xr is Dictionary or meteor_key(info).is_empty(): return {}
+	var raw_port = xr.get("port", 0)
+	if not raw_port is int and not raw_port is float: return {}
+	if not is_finite(float(raw_port)) or raw_port < 1 or raw_port > 65535 or raw_port != floor(raw_port): return {}
+	var port := int(raw_port)
+	if xr.get("backend", "") != "linux-nvidia": return {}
+	if xr.get("authorization", "") != "allowlist": return {}
+	var protocol = xr.get("protocol", 1)
+	if (not protocol is int and not protocol is float) or protocol != 1: return {}
+	return {"port": port, "key": meteor_key(info)}
+
 ## Meteor's microphone offer ({port, formats, encryption, key, opus}), or {} when
 ## it has no microphone device, or none in a format and encryption this
 ## client sends.

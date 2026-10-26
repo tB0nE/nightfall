@@ -8,6 +8,7 @@ signal library_reply(value: Dictionary)
 signal library_open_requested
 var _library_queue: Array[Dictionary] = []
 var library_available := false
+var _discovered_config: ConfigFile
 const MAX_FRAME := 4096
 const CONFIG := "user://meteor_xr_control.cfg"
 const IDENTITY := "user://meteor_xr_identity.key"
@@ -55,6 +56,28 @@ static func config_path() -> String:
 			var external: String = relay.get_config_path()
 			if not external.is_empty() and FileAccess.file_exists(external): return external
 	return CONFIG
+
+func set_discovered_host(address: String, info: Dictionary) -> void:
+	var offer := MeteorClient.xr_info(info)
+	if offer.is_empty() or not address.is_valid_ip_address():
+		if state == "watching": cancel()
+		_discovered_config = null
+		return
+	if state == "watching" and _discovered_config != null and (
+		str(_discovered_config.get_value("host", "address", "")) != address or
+		str(_discovered_config.get_value("host", "key", "")) != offer["key"]):
+		cancel()
+	var config := ConfigFile.new()
+	var options := {"address": address, "port": offer["port"], "key": offer["key"],
+		"relay": true, "auto_xr": true, "handover_on_ready": true, "long_run": true}
+	for option in options:
+		config.set_value("host", option, options[option])
+	_discovered_config = config
+
+func current_config() -> ConfigFile:
+	if _discovered_config != null: return _discovered_config
+	var config := ConfigFile.new()
+	return config if config.load(config_path()) == OK else null
 
 func _status(value: String, text: String) -> void:
 	state = value
@@ -318,9 +341,9 @@ func connect_offer(watch_only: bool = false) -> void:
 	if not supported():
 		_fail("Updated native control cipher is required")
 		return
-	var config := ConfigFile.new()
-	if config.load(config_path()) != OK:
-		_fail("Developer host configuration missing")
+	var config := current_config()
+	if config == null:
+		_fail("No discovered XR service or saved host configuration")
 		return
 	var host := str(config.get_value("host", "address", ""))
 	var port := int(config.get_value("host", "port", 0))
@@ -371,6 +394,17 @@ func connect_offer(watch_only: bool = false) -> void:
 	var authenticated := await _request({"type": "authenticate"}, token)
 	_handle_library_reply(authenticated)
 	if token != _generation: return
+	if authenticated.get("state", "") == "pairing_required":
+		var reason := str(authenticated.get("reason", ""))
+		var code := approval_code(public_identity())
+		if not code.is_empty() and reason == "approve_on_host:" + code:
+			var text := "Approve XR headset %s in Meteor on the PC; compare this code" % code
+			_fail(text)
+			var ui = owner.get("ui_controller")
+			if ui != null and ui.has_method("show_temporary_status"): ui.show_temporary_status(text, 4.5)
+		else:
+			_fail("Meteor is waiting for another headset approval; try again shortly")
+		return
 	if authenticated.get("state", "") != "idle":
 		_fail("Control authentication rejected or host busy")
 		return
@@ -380,6 +414,13 @@ func connect_offer(watch_only: bool = false) -> void:
 		await _watch_launch_intent(config, token)
 		return
 	await _offer_authenticated(config, token)
+
+static func approval_code(public_key: String) -> String:
+	if not valid_pin(public_key): return ""
+	var hash := HashingContext.new()
+	hash.start(HashingContext.HASH_SHA256)
+	hash.update(public_key.hex_decode())
+	return hash.finish().slice(0, 4).hex_encode().to_upper()
 
 static func valid_launch_notice(value: Variant) -> bool:
 	if not value is Dictionary: return false

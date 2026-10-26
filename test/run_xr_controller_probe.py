@@ -1,5 +1,6 @@
 """Run built controller probes on the host GPU in a private Monado runtime."""
 import json
+import argparse
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,10 @@ from xr_runtime_lifecycle import managed_runtime
 
 def main():
     root=Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--xrizer', type=Path, default=root / '.build-cache/meteor-xr/xrizer-package/runtime/bin/linux64/vrclient.so')
+    args = parser.parse_args()
+    xrizer = args.xrizer.resolve(strict=True)
     build=root / ".build-cache/meteor-xr/monado-linux-spike"
     output=Path(tempfile.mkdtemp(prefix="controller-host-",dir=build))
     # Unix-domain socket paths have a 108-byte limit; checkout paths are long.
@@ -32,7 +37,7 @@ def main():
                METEOR_PROBE_OUTPUT=str(output),
                VK_ICD_FILENAMES="/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json",
                VK_DRIVER_FILES="/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json",
-               METEOR_XRIZER_LIBRARY="/var/lib/flatpak/app/io.github.wivrn.wivrn/x86_64/stable/active/files/xrizer/bin/linux64/vrclient.so",
+               METEOR_XRIZER_LIBRARY=str(xrizer),
                METEOR_VRCHAT_MANIFEST="/run/media/system/GAMES/SteamLibrary/steamapps/common/VRChat/VRChat_Data/StreamingAssets/SteamVR/actions.json")
     with managed_runtime([str(build / "capture-build/src/xrt/targets/service/monado-service")],
                          env=env,ready_path=runtime / "monado_comp_ipc",log_path=output / "service.log",

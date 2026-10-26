@@ -9,10 +9,51 @@ import os
 import shlex
 import contextlib
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).absolute().parents[1]
 sys.path.insert(0, str(ROOT / "test"))
 from xr_local_application import armed_ticket, find_armed_session, request_local_launch, validate_openvr_compat, request_steam_launch, valid_app_id
 from xr_launch_intent import publish_intent, desktop_mode
+
+
+def steam_app_id(value, environment):
+    if value != 'auto':
+        if not valid_app_id(value):
+            raise ValueError('Invalid Steam application ID')
+        return value
+    candidate = environment.get('SteamAppId', '')
+    if valid_app_id(candidate):
+        return candidate
+    game = environment.get('SteamGameId', '')
+    if game.isascii() and game.isdecimal():
+        number = int(game)
+        if 0 < number < 2**64 and number & 0xffffffff == 0x02000000:
+            candidate = str(number >> 32)
+            if valid_app_id(candidate):
+                return candidate
+    raise ValueError('Steam did not supply a valid game ID; launch this game through Steam')
+
+
+def installed_launcher(root=ROOT, config_path=None, data_root=None):
+    """Keep existing checkout-based Steam shortcuts usable after runtime install."""
+    if (root / "xr-runtime/manifest.json").is_file():
+        return None  # Installed launchers already use their own stable root.
+    config_path = config_path or Path(os.environ.get("XDG_CONFIG_HOME", Path.home()/".config"))/"nightfall-meteor/meteor.toml"
+    if not config_path.is_file(): return None
+    try:
+        import tomllib
+    except ImportError:
+        return None  # Older source environments retain explicit checkout setup.
+    settings = tomllib.loads(config_path.read_text()).get("xr", {})
+    if not isinstance(settings, dict) or settings.get("enabled") is not True: return None
+    data_root = data_root or Path(os.environ.get("XDG_DATA_HOME", Path.home()/".local/share"))/"nightfall-meteor/xr"
+    destination = Path(settings.get("runtime_root") or data_root)
+    if not destination.is_absolute(): raise ValueError("Installed XR runtime path must be absolute")
+    candidate = destination / "tools/meteor_xr.py"
+    if not candidate.is_file() or not (destination / "xr-runtime/manifest.json").is_file():
+        raise ValueError("Configured installed XR runtime is missing; install it through Meteor")
+    from meteor_xr_runtime import validate
+    validate(destination)
+    return candidate
 
 
 def main():
@@ -34,10 +75,17 @@ def main():
     steam.add_argument("command",nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
-        if args.action in ("steam-run","steam-options") and not valid_app_id(args.app_id):
-            raise ValueError("Invalid Steam application ID")
+        # Explicit diagnostic sessions remain attached to the requested checkout.
+        if getattr(args,"session",None) is None and args.action in ("steam-run","steam-options","status","launch"):
+            installed = installed_launcher()
+            if installed is not None:
+                os.execv(sys.executable,[sys.executable,str(installed),*sys.argv[1:]])
+        if args.action == 'steam-run':
+            args.app_id = steam_app_id(args.app_id, os.environ)
+        elif args.action == 'steam-options' and args.app_id != 'auto' and not valid_app_id(args.app_id):
+            raise ValueError('Invalid Steam application ID')
         if args.action == "steam-options":
-            print(shlex.join([sys.executable,str(Path(__file__).resolve()),"steam-run","--app-id",args.app_id,"--wait","120","--"])+" %command%")
+            print(shlex.join([sys.executable,str(Path(__file__).absolute()),"steam-run","--app-id",args.app_id,"--wait","120","--"])+" %command%")
             return 0
         if args.action == "compat-check":
             directory = validate_openvr_compat(str(args.directory))

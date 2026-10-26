@@ -138,8 +138,15 @@ pub struct Relay {
 }
 impl Relay {
     pub async fn prepare(bind: IpAddr, credentials: Credentials) -> io::Result<Self> {
-        let video = TcpListener::bind((bind, 0)).await?;
-        let tracking = TcpListener::bind((bind, 0)).await?;
+        Self::prepare_on_ports(bind, credentials, None).await
+    }
+    pub async fn prepare_on_ports(bind: IpAddr, credentials: Credentials, fixed: Option<(u16, u16)>) -> io::Result<Self> {
+        if fixed.is_some_and(|(video, tracking)| video == 0 || tracking == 0 || video == tracking) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "XR data ports must be distinct and nonzero"));
+        }
+        let (video_port, tracking_port) = fixed.unwrap_or((0, 0));
+        let video = TcpListener::bind((bind, video_port)).await?;
+        let tracking = TcpListener::bind((bind, tracking_port)).await?;
         let local_video = TcpListener::bind("127.0.0.1:0").await?;
         let local_tracking = TcpListener::bind("127.0.0.1:0").await?;
         let ports = Ports {
@@ -436,6 +443,21 @@ mod tests {
         drop(relay);
         tokio::time::timeout(Duration::from_secs(1), tasks.drain()).await.unwrap().unwrap();
     }
+    #[tokio::test]
+    async fn fixed_data_ports_are_used_without_ephemeral_fallback() {
+        let bind = "127.0.0.1".parse().unwrap();
+        let reserved_video = TcpListener::bind((bind, 0)).await.unwrap();
+        let reserved_tracking = TcpListener::bind((bind, 0)).await.unwrap();
+        let ports = (reserved_video.local_addr().unwrap().port(), reserved_tracking.local_addr().unwrap().port());
+        let error = Relay::prepare_on_ports(bind, credentials(), Some(ports)).await.err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+        drop(reserved_video); drop(reserved_tracking);
+        let relay = Relay::prepare_on_ports(bind, credentials(), Some(ports)).await.unwrap();
+        assert_eq!((relay.ports.video, relay.ports.tracking), ports);
+        assert!(Relay::prepare_on_ports(bind, credentials(), Some((0, ports.1))).await.is_err());
+        assert!(Relay::prepare_on_ports(bind, credentials(), Some((ports.0, ports.0))).await.is_err());
+    }
+
     fn credentials() -> Credentials {
         Credentials {
             host: Arc::new(MeteorKey::from_seed([1; 32])),

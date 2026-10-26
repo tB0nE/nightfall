@@ -32,6 +32,61 @@ cargo run --release -- --no-tray
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
 area. macOS runs without a tray icon for now.
 
+### Managed Linux XR (development preview)
+
+The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA
+encoding/tracking bridges and an independently built xrizer OpenVR compatibility
+runtime. WiVRN and SteamVR installations are not required. Install its verified files into your user-data folder:
+
+```sh
+./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --install-xr-runtime
+```
+
+This copies files only; it does not change global OpenXR selection, Steam launch
+options, headset authorization or running services. Python 3, compatible host
+Vulkan/udev/C++ libraries and the NVIDIA driver remain required for XR. AMD depth
+inference is supported separately; AMD XR encoding is not implemented yet.
+
+Enable the installed XR service in `~/.config/nightfall-meteor/meteor.toml`
+(respecting `XDG_CONFIG_HOME`), then restart Meteor:
+
+```toml
+[xr]
+enabled = true
+# Defaults: TCP control 47910, video 47911, tracking 47912.
+```
+
+With the updated Nightfall client streaming the matching desktop, XR discovery
+uses Meteor's remembered host key. A new headset proves its identity, displays an
+approval code, and waits for the matching local Approve action in Meteor's tray.
+Meteor also shows an approval notification with Approve/Reject buttons and the
+matching headset code. If notifications are disabled, use the tray actions.
+Approvals persist across host restarts. An unapproved headset gets no XR session
+or transport. Discovery and Sunshine pairing alone do not grant XR access.
+
+Configured XR ports are included in the existing firewall check/Allow action;
+firewall rules are never changed automatically. An XR startup failure leaves the
+desktop proxy available. Runtime updates preserve settings/logs and refuse to run
+during an active XR session.
+
+The installer selects the bundled xrizer on fresh installs and migrates the known
+WiVRN Flatpak compatibility path, preserving an explicit custom runtime choice.
+Its OpenVR registry is private to owned game launches; global runtime selection
+is unchanged. The pinned upstream revision, source URL and dependency notices
+are included with the runtime.
+
+This is not a finished clean-install release. Steam launch options still need
+configuration. See the [installation plan](../docs/plans/active/meteor-linux-installation.md)
+for the current evidence and remaining work. XR audio currently uses the retained
+Sunshine stream.
+
+At the top of Meteor's tray menu, **Custom Steam Launch Options required: Copy**
+copies the installed launch command. In Steam, right-click each VR game, choose
+**Properties → General → Launch Options**, and paste it. The same command works
+for Steam games and non-Steam shortcuts: it reads the identity Steam supplies.
+Existing per-game commands with explicit app IDs continue to work. Linux copy
+uses KDE's clipboard service, or `wl-copy` / `xclip` on other desktops.
+
 ### Integrated XR development service
 
 On a configured Linux/NVIDIA development checkout, the XR endpoint can run
@@ -44,10 +99,10 @@ cargo run --release -- --no-tray --no-depth --no-mic \
   --xr-runtime-root <absolute-nightfall-checkout>
 ```
 
-This is opt-in research functionality, not automatic desktop-to-XR handover.
-The optional runtime root launches the same fixed demo after explicit headset
-acceptance and authenticated relay attachment. Without it, only the encrypted
-relay endpoints are prepared. Existing runtime/helper prerequisites still apply.
+This legacy CLI path remains opt-in and does not advertise XR in discovery.
+A configured checkout runtime can supervise a host-selected application after
+explicit acceptance and authenticated relay attachment; without it, only the
+encrypted relay endpoints are prepared. Existing checkout prerequisites apply.
 Only public keys belong on the command line; never pass a private key or password.
 
 Unlike the standalone DEV endpoint's separate key file, this mode uses Meteor's
@@ -85,18 +140,38 @@ headset presentation or automatically enters XR.
 meteor/tools/build_appimage.sh [models folder]
 ```
 
-Builds `target/appimage/Nightfall-Meteor-x86_64.AppImage`. Inside:
-- Meteor without ONNX Runtime, built on Ubuntu 22.04 in a container, so it
-  runs on glibc 2.35 or newer;
-- ncnn's 22.04 build and `libgomp`;
-- EdgePad 512 for ncnn;
-- the notices for all of these and the Rust crates
-  (`usr/share/doc/nightfall-meteor/THIRD_PARTY_NOTICES.txt`).
+Builds `meteor/target/appimage/Nightfall-Meteor-<version>-x86_64.AppImage` with:
 
-The script needs podman (or docker) and network access. The models folder
-(default `~/.local/share/nightfall-meteor/models`) must hold
-`zipdepth_wide_512x288.ncnn.{param,bin}`, from `models/convert_ncnn.py`.
-VDA isn't inside; the tray offers it as a download.
+- Meteor without ONNX Runtime, optimized in Ubuntu 22.04 for glibc 2.35+;
+- ncnn, its OpenMP runtime and the portable Vulkan processing library;
+- EdgePad-512 and EdgePad-256;
+- minimal FFmpeg/dav1d runtime and component notices.
+
+Set `NIGHTFALL_CONTAINER_ENGINE=docker` or `podman` to choose the builder.
+The model folder (default `~/.local/share/nightfall-meteor/models`) must contain
+`zipdepth_wide_512x288.ncnn.{param,bin}` and
+`zipdepth_edgepad_256.ncnn.{param,bin}`.
+
+To include the managed XR preview, first prepare its baseline-compatible bundle,
+then build:
+
+```sh
+bash tools/build_support/build_meteor_xr_bundle.sh
+NIGHTFALL_CONTAINER_ENGINE=docker \
+METEOR_XR_BUNDLE="$PWD/.build-cache/meteor-xr/portable-package/bundle" \
+bash meteor/tools/build_appimage.sh
+```
+
+XR builds use the distinct `Nightfall-Meteor-<version>-XR-DEV-x86_64.AppImage`
+filename and remain release-optimized. The build validates runtime integrity and
+ELF compatibility before packaging it. XR notices remain inside the verified
+bundle under `usr/share/nightfall-meteor/xr-bundle`.
+
+Vulkan VDA exports are not included merely because they exist on the build PC.
+Explicit `METEOR_BUNDLE_VDA_VULKAN=1` includes both variants if present, subject to
+the unchanged 100 MB package limit. Installed user models remain available;
+separate Vulkan VDA download delivery is still pending. The existing tray VDA
+download installs the NVIDIA TensorRT assets.
 
 ### Windows release folder
 

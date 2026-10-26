@@ -240,6 +240,7 @@ func meteor_address() -> String:
 	return _meteor_address
 
 func _probe_meteor(host_id: int) -> Dictionary:
+	main.welcome_screen.get_xr_control().set_discovered_host("", {})
 	var cm = _b().get_computer_manager()
 	for host in _b().get_hosts():
 		if host.get("id") != host_id:
@@ -251,6 +252,7 @@ func _probe_meteor(host_id: int) -> Dictionary:
 		if not info.is_empty():
 			# Zoned for USB Link, so the depth and microphone sockets reach it.
 			_meteor_address = MeteorClient.zone_address(address)
+			main.welcome_screen.get_xr_control().set_discovered_host(_meteor_address, info)
 			var ports: Dictionary = info["ports"]
 			main._log("[METEOR] Found Nightfall Meteor %s on %s; streaming through it (https %d, rtsp %d, video %d)" % [
 				info.get("version", "?"), address, int(ports.get("https", 0)), int(ports.get("rtsp", 0)), int(ports.get("video", 0))])

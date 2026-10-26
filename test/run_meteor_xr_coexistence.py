@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -52,7 +53,7 @@ def client_public_key():
     return result.stdout[-32:].hex()
 
 
-def run_case(binary, client, mode, stop_signal):
+def run_case(binary, client, mode, stop_signal, runtime_root=None, diagnostics=None):
     # Reserve a compatible complete proxy layout before releasing it to Meteor.
     for _attempt in range(50):
         upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
@@ -69,6 +70,8 @@ def run_case(binary, client, mode, stop_signal):
             discovery_port = discovery.getsockname()[1]
             xr = reserve(reservations, socket.SOCK_STREAM)
             xr_port = xr.getsockname()[1]
+            video_port = reserve(reservations, socket.SOCK_STREAM).getsockname()[1]
+            tracking_port = reserve(reservations, socket.SOCK_STREAM).getsockname()[1]
             break
         except OSError:
             reservations.close()
@@ -81,6 +84,7 @@ def run_case(binary, client, mode, stop_signal):
         with reservations, tempfile.TemporaryDirectory(prefix="nf-coexist-") as directory:
             root = Path(directory)
             env = dict(os.environ)
+            env["RUST_LOG"] = "info"
             env.pop("APPIMAGE", None)
             for kind in ("CONFIG", "DATA", "CACHE", "STATE"):
                 env[f"XDG_{kind}_HOME"] = str(root / kind.lower())
@@ -88,17 +92,24 @@ def run_case(binary, client, mode, stop_signal):
             config.mkdir(parents=True)
             (config / "meteor.toml").write_text(
                 f'sunshine_host="127.0.0.1"\nsunshine_port={base}\nport_offset=1000\ndiscovery_port={discovery_port}\n')
+            if mode.startswith("installed"):
+                if runtime_root is None: raise ValueError("Installed service test requires an installed runtime")
+                with (config / "meteor.toml").open("a") as settings:
+                    settings.write(f"\n[xr]\nenabled=true\nlisten=\"127.0.0.1:{xr_port}\"\n"
+                        f"video_port={video_port}\ntracking_port={tracking_port}\n"
+                        f"allowed_client={json.dumps(client_public_key())}\n"
+                        f"runtime_root={json.dumps(str(runtime_root))}\n")
             data = root / "data/nightfall-meteor"
             data.mkdir(parents=True)
             key = data / "meteor.key"
             key.write_bytes(bytes([1]) * 32)
             key.chmod(0o600)
             command = [str(binary), "--no-tray", "--no-depth", "--no-mic"]
-            if mode != "disabled":
+            if mode in ("enabled", "bind_failure"):
                 command += ["--xr-service-dev", f"127.0.0.1:{xr_port}",
                             "--xr-client-key", client_public_key()]
             # In the bind-failure case only the XR socket remains occupied.
-            if mode == "bind_failure":
+            if mode in ("bind_failure", "installed_bind_failure"):
                 xr.listen()
                 occupied = xr.dup()
             else:
@@ -118,24 +129,33 @@ def run_case(binary, client, mode, stop_signal):
                             if child.poll() is not None or time.monotonic() >= deadline:
                                 raise RuntimeError((root / "process.log").read_text())
                             time.sleep(.05)
-                    assert "xr" not in info, "DEV XR must not advertise production capability"
+                    if mode == "installed":
+                        assert info["xr"]["port"] == xr_port, "Configured XR was not advertised"
+                    else:
+                        assert "xr" not in info, "Unavailable/DEV XR must not advertise production capability"
                     assert fetch(base + 1000, "/fixture") == b"nightfall-proxy-fixture"
                     if mode == "enabled":
                         # Native OpenSSL client authenticates, offers, accepts,
                         # and stops against the NORMAL Meteor process.
                         subprocess.run([str(client), str(xr_port)], check=True, timeout=10)
+                    if mode == "installed":
+                        # Prove packaged normal startup without accepting/launching an XR app.
+                        subprocess.run([str(client), str(xr_port), "--authenticate-only"], check=True, timeout=10)
                     assert fetch(base + 1000, "/fixture-after-xr") == b"nightfall-proxy-fixture"
-                    if mode == "bind_failure":
-                        assert "DEV XR service disabled:" in (root / "process.log").read_text()
+                    if mode in ("bind_failure", "installed_bind_failure"):
+                        assert "XR service disabled:" in (root / "process.log").read_text()
                     child.send_signal(stop_signal)
                     assert child.wait(timeout=30) == 0
-                    assert "Shutting down" in (root / "process.log").read_text()
+                    assert "Shutting down" in (root / "process.log").read_text(), (root / "process.log").read_text()[-5000:]
                 finally:
                     if child.poll() is None:
                         child.kill()
                         child.wait(timeout=5)
                     if occupied is not None:
                         occupied.close()
+                    if diagnostics is not None:
+                        diagnostics.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(root / "process.log", diagnostics / (mode + ".log"))
             print(f"PASS normal Meteor: XR={mode}, proxy forwarding, clean {stop_signal.name} shutdown")
     finally:
         upstream.shutdown()

@@ -738,6 +738,7 @@ dependencies = [
  "cc",
  "env_logger",
  "flate2",
+ "futures-lite",
  "ksni",
  "libc",
  "libloading",

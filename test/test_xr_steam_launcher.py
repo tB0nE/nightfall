@@ -15,6 +15,21 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class SteamLauncherTests(unittest.TestCase):
+    def test_universal_options_resolve_store_games_and_shortcuts(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from meteor_xr import steam_app_id
+        from meteor_vr_library import wrapper_ready
+        self.assertEqual(steam_app_id('auto', {'SteamAppId': '438100'}), '438100')
+        shortcut = '2944203442'
+        self.assertEqual(steam_app_id('auto', {'SteamAppId': '0',
+            'SteamGameId': str((int(shortcut) << 32) | 0x02000000)}), shortcut)
+        self.assertEqual(steam_app_id('438100', {}), '438100')
+        for environment in ({}, {'SteamAppId': '0'}, {'SteamGameId': str(2**70)},
+                            {'SteamGameId': 'abc'}, {'SteamGameId': '438100'}):
+            with self.assertRaises(ValueError): steam_app_id('auto', environment)
+        self.assertTrue(wrapper_ready('/usr/bin/python3 /data/tools/meteor_xr.py steam-run --app-id auto -- %command%', '438100'))
+        self.assertFalse(wrapper_ready('/usr/bin/python3 /data/tools/meteor_xr.py steam-run --app-id 123 -- %command%', '438100'))
+
     def test_shortcut_zero_app_id_requires_matching_64_bit_game_id(self):
         app_id="2944203442"
         value={"generation":"a"*32,"action":"steam_launch","app_id":app_id,

@@ -134,3 +134,10 @@ packaging integration. Avoid another depth-model optimization detour.
 References: `meteor-pcvr-productization.md`, `meteor-xr-desktop-integration.md`,
 `meteor-xr-automatic-launch.md`, `meteor-vr-app-library.md`,
 `desktop-stream-performance-investigation.md`, `meteor-vulkan-frame-processing.md`.
+
+## Linux installation follow-up
+
+The implementation sequence and first relocatable-runtime extraction are tracked
+in [Meteor Linux installation](meteor-linux-installation.md). This does not yet
+make the normal AppImage a complete XR installation; use that plan for remaining
+packaging, authorization/startup, Vulkan model delivery and AMD XR work.

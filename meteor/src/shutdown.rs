@@ -48,6 +48,8 @@ mod tests {
             allowed: crate::crypto::MeteorKey::from_seed([2; 32]).public,
             enable_relay: true,
             runtime_root: None,
+            pairing: None,
+            relay_ports: None,
         }, shutdown.subscribe()));
         let mut client = TcpStream::connect(address).await.unwrap();
         let mut greeting = [0; 8];

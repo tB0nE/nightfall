@@ -37,6 +37,8 @@ pub struct Config {
     pub models_dir: Option<PathBuf>,
     /// Run the depth model with TensorRT fp16 once its engine is built.
     pub tensorrt: bool,
+    /// Optional managed XR service; disabled until explicitly configured.
+    pub xr: XrConfig,
 }
 
 impl Default for Config {
@@ -51,7 +53,31 @@ impl Default for Config {
             tensorrt_dir: None,
             models_dir: None,
             tensorrt: true,
+            xr: XrConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct XrConfig {
+    pub enabled: bool,
+    pub listen: String,
+    pub video_port: u16,
+    pub tracking_port: u16,
+    pub allowed_client: Option<String>,
+    pub runtime_root: Option<PathBuf>,
+}
+
+impl Default for XrConfig {
+    fn default() -> Self {
+        Self { enabled: false, listen: "0.0.0.0:47910".into(), video_port: 47911, tracking_port: 47912, allowed_client: None, runtime_root: None }
+    }
+}
+
+impl XrConfig {
+    pub fn runtime_root(&self) -> PathBuf {
+        self.runtime_root.clone().unwrap_or_else(|| data_dir().join("xr"))
     }
 }
 
@@ -182,6 +208,17 @@ fn sunshine_config_candidates() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xr_is_opt_in_and_saved_authorization_is_retained() {
+        let old: Config = toml::from_str("sunshine_host = '127.0.0.1'").unwrap();
+        assert!(!old.xr.enabled);
+        assert!(old.xr.allowed_client.is_none());
+        let configured: Config = toml::from_str("[xr]\nenabled = true\nlisten = '127.0.0.1:47910'\nallowed_client = 'authorized-key'\nruntime_root = '/opt/meteor-xr'").unwrap();
+        assert!(configured.xr.enabled);
+        assert_eq!(configured.xr.allowed_client.as_deref(), Some("authorized-key"));
+        assert_eq!(configured.xr.runtime_root(), PathBuf::from("/opt/meteor-xr"));
+    }
 
     #[test]
     fn parses_port_line() {

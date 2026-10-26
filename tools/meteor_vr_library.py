@@ -2,7 +2,7 @@
 """Host-local installed VR library. Only IDs cross the authenticated XR channel."""
 import argparse,base64,io,json,os,re,shutil,struct,subprocess,sys
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).absolute().parents[1]
 CACHE=ROOT/'.build-cache/meteor-xr'
 MAX_FILE=32*1024*1024
 
@@ -61,7 +61,7 @@ def shortcut_records(path):
     return block(),spans
 
 def wrapper_ready(options,app_id):
-    return 'meteor_xr.py' in options and 'steam-run' in options and bool(re.search(r'--app-id\s+'+re.escape(app_id)+r'(?:\s|$)',options))
+    return 'meteor_xr.py' in options and 'steam-run' in options and bool(re.search(r'--app-id\s+(?:'+re.escape(app_id)+r'|auto)(?:\s|$)',options))
 
 def discover():
     result={}
