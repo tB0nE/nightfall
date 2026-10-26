@@ -6,6 +6,7 @@ class FakePCVR extends RefCounted:
 
 class Owner extends Node3D:
 	var pcvr_test := FakePCVR.new()
+	var is_streaming := true
 
 class ControlProbe extends RefCounted:
 	signal changed
@@ -30,8 +31,23 @@ func _init():
 	_test_order_apps()
 	_test_xr_entry()
 	_test_xr_teardown_policy()
+	_test_active_watch_skips_discovery()
 	print("All welcome_screen tests passed")
 	quit()
+
+func _test_active_watch_skips_discovery() -> void:
+	var owner := Owner.new()
+	var welcome := WelcomeScreen.new(owner)
+	var control := ControlProbe.new()
+	welcome._xr_control = control
+	# FakePCVR deliberately has no discovery API: an established watcher
+	# must return before config IO, host enumeration or capability probes.
+	for state in ["watching", "offered", "prepared"]:
+		control.state = state
+		welcome._auto_retry = 0
+		welcome.process_auto_xr(1.0 / 120.0)
+		assert(control.offers == 0)
+	owner.free()
 
 func _test_xr_teardown_policy() -> void:
 	var owner := Owner.new()

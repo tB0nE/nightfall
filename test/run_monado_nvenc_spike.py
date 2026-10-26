@@ -307,7 +307,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         else:
             try:
                 result, interrupted, forced_stop = run_application(command, env=application_env,
-                    timeout=(300 if upstream_demo and frame_count > 3600 else 90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
+                    timeout=None if external_spec else (300 if upstream_demo and frame_count > 3600 else 90 if upstream_demo and frame_count > 1800 else 40)+input_seconds, service_log=out / "service.log",
                     stop_file=out / "client-disconnected", watch_disconnect=bool((device_port or expect_tracking_loss) and (hello_xr or godot_engine)),
                     completion_file=out / "engine-completion.json" if godot_engine and not external_spec else None,
                     completion_token=engine_token,completion_target=frame_count,

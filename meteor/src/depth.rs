@@ -30,11 +30,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::gpu_post::GpuPost;
 use crate::ncnn::{self, NcnnModel};
-use crate::nvdec::{NvDecoder, Pixels};
+use crate::nvdec::Pixels;
+use crate::video_decoder::{self,Backend as DecodeBackend,Decoder as VideoDecoder};
 
 /// Where a model run left its output.
 enum Output {
     Host(Vec<f32>),
+    Resident(crate::vulkan_processing::ResidentDepth),
     /// Device address of the model's output buffer.
     Device(u64),
 }
@@ -42,6 +44,8 @@ use crate::onnx::{Backend, DepthModel};
 use crate::postprocess::{DEPTH_TAU_SECONDS, PostProcessor};
 use crate::stream_info::Codec;
 use crate::vda::{self, VdaModel};
+use crate::vda_vulkan;
+fn is_vda(name:&str)->bool {name==vda::ID || vda_vulkan::is_model(name)}
 use crate::video_tap::Frame;
 
 /// A loaded depth model.
@@ -51,6 +55,7 @@ enum Engine {
     /// Single-frame, on ncnn (Vulkan).
     Ncnn(Box<NcnnModel>),
     Vda(Box<VdaModel>),
+    VdaVulkan(Box<vda_vulkan::Model>),
 }
 
 impl Engine {
@@ -58,17 +63,21 @@ impl Engine {
         match self {
             Engine::Plain(m) => m.backend == Backend::Cpu,
             Engine::Ncnn(m) => m.cpu,
-            Engine::Vda(_) => false,
+            Engine::Vda(_) | Engine::VdaVulkan(_) => false,
         }
     }
-    fn load(models_dir: &Path, name: &str, backend: Backend, cache: &Path) -> Result<Engine, String> {
+    fn load(models_dir: &Path, name: &str, backend: Backend, cache: &Path, gpu: Option<&str>) -> Result<Engine, String> {
+        if vda_vulkan::is_model(name) {
+            if backend==Backend::Cpu {return Err("VDA requires GPU inference".into());}
+            return vda_vulkan::Model::load(models_dir,name,gpu).map(|m|Engine::VdaVulkan(Box::new(m)));
+        }
         if name == vda::ID {
             if backend == Backend::Cpu {
                 return Err("VDA requires GPU inference; select an EdgePad model for CPU".into());
             }
             VdaModel::load(models_dir, backend, cache).map(|m| Engine::Vda(Box::new(m)))
         } else if is_ncnn(name) {
-            NcnnModel::load_backend(&models_dir.join(name), backend == Backend::Cpu).map(|m| Engine::Ncnn(Box::new(m)))
+            NcnnModel::load_on_gpu(&models_dir.join(name), backend == Backend::Cpu, gpu).map(|m| Engine::Ncnn(Box::new(m)))
         } else {
             DepthModel::load(&models_dir.join(name), backend, cache).map(|m| Engine::Plain(Box::new(m)))
         }
@@ -80,6 +89,7 @@ impl Engine {
             Engine::Plain(m) => format!("{}.onnx", m.name),
             Engine::Ncnn(m) => format!("{}{}", m.name, ncnn::PARAM_SUFFIX),
             Engine::Vda(m) => m.name.clone(),
+            Engine::VdaVulkan(m) => m.id.clone(),
         }
     }
 
@@ -89,6 +99,7 @@ impl Engine {
             Engine::Plain(m) => (m.width, m.height),
             Engine::Ncnn(m) => (m.width, m.height),
             Engine::Vda(_) => (vda::WIDTH, vda::HEIGHT),
+            Engine::VdaVulkan(m) => (m.width,m.height),
         }
     }
 
@@ -97,7 +108,7 @@ impl Engine {
         match self {
             Engine::Plain(m) => (m.width, m.height),
             Engine::Ncnn(m) => (m.width, m.height),
-            Engine::Vda(_) => vda::DECODE_SIZE,
+            Engine::Vda(_) | Engine::VdaVulkan(_) => vda::DECODE_SIZE,
         }
     }
 
@@ -106,8 +117,9 @@ impl Engine {
         match self {
             Engine::Plain(m) => format!("{} ({w}x{h}, {})", m.name, m.backend.label()),
             Engine::Ncnn(m) => format!("{} ({w}x{h}, {})", m.name,
-                if m.cpu { format!("CPU fp32, {} threads", crate::onnx::cpu_threads()) } else { "Vulkan fp16".into() }),
+                if m.cpu { format!("CPU fp32, {} threads", crate::onnx::cpu_threads()) } else { format!("Vulkan fp16, {}",m.gpu_name.as_deref().unwrap_or("unknown GPU")) }),
             Engine::Vda(m) => format!("{} ({w}x{h}, {})", vda::LABEL, m.description),
+            Engine::VdaVulkan(m) => format!("{} (Vulkan, {})",model_label(&m.id),m.gpu_name),
         }
     }
 }
@@ -125,10 +137,41 @@ fn stem(name: &str) -> &str {
 /// The models menu's name for a model.
 pub fn model_label(name: &str) -> String {
     match stem(name) {
-        vda::ID => vda::LABEL.to_string(),
+        vda::ID => "VDA 518×294 (TensorRT)".into(),
+        vda_vulkan::FULL => "VDA 518×294 (Vulkan)".into(),
+        vda_vulkan::FAST => "VDA Performance 392×224 (Vulkan)".into(),
+        "zipdepth_edgepad_384" => "EdgePad-384".into(),
+        "zipdepth_wide_512x288" => "EdgePad-512".into(),
+        "zipdepth_wide_672x384" => "EdgePad-672".into(),
         "zipdepth_edgepad_256" => "EdgePad-256 (lower GPU load)".to_string(),
         other => other.to_string(),
     }
+}
+
+/// One menu entry selects a complete inference configuration atomically.
+#[derive(Clone,Debug,PartialEq,Eq)]
+pub struct DepthChoice {pub model:String,pub gpu:Option<String>,pub cpu:bool}
+#[derive(Clone,Debug)]
+pub struct DepthGroup {pub label:String,pub choices:Vec<DepthChoice>}
+
+fn build_choice_groups(models:&[String],gpu_names:Vec<String>,legacy_gpu:bool,supported:impl Fn(Option<&str>)->bool)->Vec<DepthGroup> {
+        let portable:Vec<_>=models.iter().filter(|m|is_ncnn(m)||vda_vulkan::is_model(m)).cloned().collect();
+        let choices=|gpu:Option<String>|portable.iter().filter(|m| !vda_vulkan::is_model(m) || supported(gpu.as_deref())).map(|m|DepthChoice{model:m.clone(),gpu:gpu.clone(),cpu:false}).collect::<Vec<_>>();
+        let mut groups=Vec::new();
+        let mut legacy_added=false;
+        for gpu in gpu_names {
+            let mut entries=choices(Some(gpu.clone()));
+            if legacy_gpu && !legacy_added && gpu.to_lowercase().contains("nvidia") {
+                entries.extend(models.iter().filter(|m|!is_ncnn(m) && !vda_vulkan::is_model(m)).map(|m|DepthChoice{model:m.clone(),gpu:None,cpu:false}));
+                legacy_added=true;
+            }
+            groups.push(DepthGroup{label:gpu,choices:entries});
+        }
+        if legacy_gpu && !legacy_added {
+            groups.push(DepthGroup{label:"NVIDIA GPU".into(),choices:models.iter().filter(|m|!is_ncnn(m) && !vda_vulkan::is_model(m)).map(|m|DepthChoice{model:m.clone(),gpu:None,cpu:false}).collect()});
+        }
+        groups.push(DepthGroup{label:"CPU".into(),choices:models.iter().filter(|m|!is_vda(m)).map(|m|DepthChoice{model:m.clone(),gpu:None,cpu:true}).collect()});
+        groups.retain(|g|!g.choices.is_empty());groups
 }
 
 /// Where Meteor finds the runtimes; each is optional.
@@ -158,6 +201,8 @@ pub const RATES: [u32; 7] = [0, 20, 30, 60, 72, 90, 120];
 #[serde(default)]
 struct SavedState {
     cpu_inference: bool,
+    edgepad_gpu: Option<String>,
+    decode: video_decoder::Settings,
     enabled: bool,
     model: Option<String>,
     rate: u32,
@@ -176,7 +221,7 @@ struct SavedState {
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { cpu_inference: false, enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, edge_alignment: true, contour_cleanup: true }
+        SavedState { cpu_inference: false, edgepad_gpu: None, decode: video_decoder::Settings::default(), enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, edge_alignment: true, contour_cleanup: true }
     }
 }
 
@@ -226,6 +271,9 @@ pub struct Depth {
     /// Post-process on the GPU when frames are on the GPU (default);
     /// `--cpu-post` turns it off.
     pub gpu_post: AtomicBool,
+    /// Portable VDA preparation shares the inference GPU: don't queue filtering
+    /// behind a long temporal model. Short EdgePad jobs retain pipelined input.
+    inference_busy:AtomicBool,
     tensorrt: bool,
     /// Which runtimes loaded: ONNX Runtime, ncnn.
     onnx_ok: bool,
@@ -235,6 +283,7 @@ pub struct Depth {
     available: AtomicBool,
     state: Mutex<SavedState>,
     status: Mutex<String>,
+    decoder_status: Mutex<String>,
     /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
     /// The size the decoder reduces frames to for that model.
@@ -251,6 +300,16 @@ pub struct Depth {
     /// stream keeps its video history.
     pub subscribers: AtomicU32,
     save: Option<(PathBuf, u64)>,
+}
+
+impl SavedState {
+    fn matches_choice(&self,choice:&DepthChoice)->bool {
+        self.model.as_ref()==Some(&choice.model) && self.cpu_inference==choice.cpu
+            && (choice.cpu || (!is_ncnn(&choice.model) && !vda_vulkan::is_model(&choice.model)) || self.edgepad_gpu==choice.gpu)
+    }
+    fn apply_choice(&mut self,choice:&DepthChoice) {
+        self.cpu_inference=choice.cpu;self.edgepad_gpu=choice.gpu.clone();self.model=Some(choice.model.clone());
+    }
 }
 
 impl Depth {
@@ -305,6 +364,7 @@ impl Depth {
             stats: DepthStats::default(),
             gpu_frames: AtomicBool::new(true),
             gpu_post: AtomicBool::new(true),
+            inference_busy:AtomicBool::new(false),
             tensorrt,
             onnx_ok,
             ncnn_ok,
@@ -312,6 +372,7 @@ impl Depth {
             available: AtomicBool::new(false),
             state: Mutex::new(state),
             status: Mutex::new("starting".into()),
+            decoder_status: Mutex::new("Waiting for video".into()),
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
@@ -379,30 +440,61 @@ impl Depth {
         self.state.lock().is_ok_and(|s| s.cpu_inference)
     }
 
-    pub fn cpu_inference_supported(&self) -> bool {
-        self.model().as_deref() != Some(vda::ID)
+    pub fn choice_groups(&self)->Vec<DepthGroup> {
+        let models=self.list_models();let names=self.depth_gpu_names();
+        let legacy=names.iter().any(|n|n.to_lowercase().contains("nvidia")) || (names.is_empty() && models.iter().any(|m|!is_ncnn(m)&&!vda_vulkan::is_model(m)) && (crate::onnx::cuda_backend_present() || crate::tensorrt::installed()));
+        build_choice_groups(&models,names,legacy,vda_vulkan::gpu_supported)
+    }
+    pub fn choice_selected(&self,choice:&DepthChoice)->bool {
+        let Ok(mut state)=self.state.lock().map(|s|s.clone()) else {return false;};
+        if !state.cpu_inference && state.edgepad_gpu.is_none() && (is_ncnn(&choice.model) || vda_vulkan::is_model(&choice.model)) {
+            state.edgepad_gpu=ncnn::resolved_gpu_name(None).ok();
+        }
+        state.matches_choice(choice)
+    }
+    pub fn select_choice(&self,choice:&DepthChoice) {
+        if !self.choice_groups().iter().any(|g|g.choices.contains(choice)) {self.set_status("Selected GPU/model combination is unavailable".into());return;}
+        self.update_state(|s| {s.apply_choice(choice);});
+        self.queue_model(&choice.model);
+    }
+    pub fn selection_label(&self)->String {
+        self.model().map(|m|format!("{} — {}",model_label(&m),self.depth_gpu_label())).unwrap_or_else(||"none".into())
     }
 
-    pub fn set_cpu_inference(&self, cpu: bool) {
-        if cpu && !self.cpu_inference_supported() {
-            self.set_status("VDA requires GPU inference; choose EdgePad for CPU".into());
-            return;
-        }
-        if cpu == self.cpu_inference() {
-            return;
-        }
-        self.update_state(|s| s.cpu_inference = cpu);
-        log::info!("Inference backend requested: {} (NVDEC unchanged)", if cpu { "CPU" } else { "GPU" });
-        if let Some(name) = self.model() {
-            self.select_model(&name);
-        }
+    pub fn depth_gpu_names(&self) -> Vec<String> { ncnn::gpu_names() }
+    pub fn depth_gpu(&self) -> Option<String> { self.state.lock().ok().and_then(|s|s.edgepad_gpu.clone()) }
+    pub fn depth_gpu_label(&self) -> String {
+        if self.cpu_inference() { return "CPU".into(); }
+        if self.model().as_deref().is_some_and(|m|!is_ncnn(m)&&!vda_vulkan::is_model(m)) {return "NVIDIA (default CUDA GPU)".into();}
+        self.depth_gpu().unwrap_or_else(||ncnn::resolved_gpu_name(None).map(|name|format!("Auto ({name})")).unwrap_or_else(|_|"Auto".into()))
+    }
+    pub fn decode_settings(&self) -> video_decoder::Settings {
+        self.state.lock().map(|s|s.decode.clone()).unwrap_or_default()
+    }
+    pub fn set_decode_backend(&self,backend:DecodeBackend) {
+        self.update_state(|s|s.decode.backend=backend);
+        log::info!("Depth decoder requested: {} (next keyframe/stream)",backend.label());
+        self.set_decoder_status("Decoder change pending: next keyframe/stream".into());
+    }
+    pub fn set_vaapi_device(&self,device:Option<String>) {
+        if device.as_ref().is_some_and(|d| !video_decoder::vaapi_devices().iter().any(|(path,_)|path==d)) {return;}
+        self.update_state(|s|s.decode.vaapi_device=device);
+        self.set_decoder_status("Decode device change pending: next keyframe/stream".into());
+    }
+    pub fn set_cpu_processing(&self,on:bool) {
+        self.update_state(|s|s.decode.cpu_processing=on);
+        self.set_decoder_status("Processing change pending: next keyframe/stream".into());
+    }
+    pub fn decoder_status(&self)->String {self.decoder_status.lock().map(|s|s.clone()).unwrap_or_default()}
+    fn set_decoder_status(&self,value:String) {
+        if let Ok(mut status)=self.decoder_status.lock() { *status=value; }
     }
 
     /// Depth smoothing for the chosen model.
     pub fn smoothing(&self) -> bool {
         self.state.lock().is_ok_and(|s| {
             let model = s.model.as_deref().unwrap_or_default();
-            s.model_smoothing.get(stem(model)).copied().unwrap_or(model != vda::ID)
+            s.model_smoothing.get(stem(model)).copied().unwrap_or(!is_vda(model))
         })
     }
 
@@ -476,6 +568,10 @@ impl Depth {
 
     /// The folder a model is loaded from.
     fn model_dir(&self, name: &str) -> PathBuf {
+        if vda_vulkan::is_model(name) {
+            if vda_vulkan::present(&self.models_dir,name) {return self.models_dir.clone();}
+            if let Some(dir)=&self.bundled_dir {if vda_vulkan::present(dir,name) {return dir.clone();}}
+        }
         if name == vda::ID {
             return self.vda_dir().unwrap_or_else(|| self.models_dir.clone());
         }
@@ -518,8 +614,13 @@ impl Depth {
                 }
             })
             .collect();
-        if !self.cpu_inference() && self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::init().is_ok()) {
+        if self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::installed()) {
             models.push(vda::ID.to_string());
+        }
+        if self.ncnn_ok && vda_vulkan::available() {
+            for id in [vda_vulkan::FULL,vda_vulkan::FAST] {
+                if vda_vulkan::present(&self.models_dir,id) || self.bundled_dir.as_ref().is_some_and(|d|vda_vulkan::present(d,id)) {models.push(id.into());}
+            }
         }
         models.sort();
         models
@@ -588,11 +689,14 @@ impl Depth {
     /// Loads a model from the models folder in the background; the engine
     /// switches to it between frames once it is ready.
     pub fn select_model(&self, name: &str) {
-        if name == vda::ID && self.cpu_inference() {
+        if is_vda(name) && self.cpu_inference() {
             self.set_status("VDA requires GPU inference; switch inference to GPU first".into());
             return;
         }
         self.update_state(|s| s.model = Some(name.to_string()));
+        self.queue_model(name);
+    }
+    fn queue_model(&self,name:&str) {
         if let Ok(mut pending) = self.pending_model.lock() {
             self.load_generation.fetch_add(1, Ordering::Relaxed);
             *pending = Some(name.to_string());
@@ -633,6 +737,9 @@ impl Depth {
         let mut post = PostProcessor::default();
         let mut gpu_post: Option<GpuPost> = None;
         let mut gpu_refinement: Option<crate::gpu_refinement::GpuRefinement> = None;
+        let mut vulkan_post:Option<crate::vulkan_processing::Processor>=None;
+        let mut vulkan_post_key:Option<(String,String,usize,usize)>=None;
+        let mut resident_disabled=false;
         let mut refinement_size = None;
         let mut last_stream = None;
         let mut last_run: Option<Instant> = None;
@@ -648,9 +755,11 @@ impl Depth {
             if let Some(name) = self.pending_model.lock().ok().and_then(|mut p| p.take()) {
                 let generation = self.load_generation.load(Ordering::Relaxed);
                 let cpu = self.cpu_inference();
+                let gpu = self.depth_gpu();
+                let target_gpu=ncnn::resolved_gpu_name(gpu.as_deref()).ok();
                 // Never silently keep GPU inference running after CPU was
                 // requested (including when the replacement fails to load).
-                if model.as_ref().is_some_and(|m| m.cpu() != cpu) {
+                if model.as_ref().is_some_and(|m| m.cpu() != cpu || ((is_ncnn(&name)||vda_vulkan::is_model(&name)) && !cpu && match m {Engine::Ncnn(old)=>old.gpu_name!=target_gpu,Engine::VdaVulkan(old)=>Some(old.gpu_name.clone())!=target_gpu,_=>true})) {
                     model = None;
                     gpu_post = None;
                     post.reset();
@@ -662,7 +771,7 @@ impl Depth {
                 let tensorrt = self.tensorrt;
                 let pending = self.tensorrt_pending.clone();
                 let models_dir = self.model_dir(&name);
-                let cuda_present = crate::onnx::cuda_backend_present();
+                let cuda_present = !is_ncnn(&name) && !vda_vulkan::is_model(&name) && crate::onnx::cuda_backend_present();
                 // Without CUDA, VDA has nothing to run on while its engines
                 // build (minutes the first time), so a single-frame model
                 // serves until it's ready, unless one already does.
@@ -680,20 +789,20 @@ impl Depth {
                         let _ = tx.send(Loaded { generation, name: name.clone(), optional, interim, result });
                     };
                     if cpu {
-                        send(false, false, Engine::load(&models_dir, &name, Backend::Cpu, &cache));
+                        send(false, false, Engine::load(&models_dir, &name, Backend::Cpu, &cache, gpu.as_deref()));
                         return;
                     }
-                    if is_ncnn(&name) {
-                        send(false, false, Engine::load(&models_dir, &name, Backend::Cuda, &cache));
+                    if is_ncnn(&name) || vda_vulkan::is_model(&name) {
+                        send(false, false, Engine::load(&models_dir, &name, Backend::Cuda, &cache, gpu.as_deref()));
                         return;
                     }
                     if let Some((dir, interim)) = interim {
                         pending.store(tensorrt, Ordering::Relaxed);
                         let backend = if is_ncnn(&interim) { Backend::Cuda } else { Backend::TensorRt };
-                        send(false, true, Engine::load(&dir, &interim, backend, &cache));
+                        send(false, true, Engine::load(&dir, &interim, backend, &cache, gpu.as_deref()));
                     }
                     let cuda_ok = !cuda_present || {
-                        let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache);
+                        let cuda = Engine::load(&models_dir, &name, Backend::Cuda, &cache, gpu.as_deref());
                         let ok = cuda.is_ok();
                         send(false, false, cuda);
                         ok
@@ -702,7 +811,7 @@ impl Depth {
                         send(false, false, Err("no backend: TensorRT is turned off and there is no CUDA provider".into()));
                     } else if tensorrt && cuda_ok {
                         pending.store(true, Ordering::Relaxed);
-                        let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache);
+                        let trt = Engine::load(&models_dir, &name, Backend::TensorRt, &cache, gpu.as_deref());
                         pending.store(false, Ordering::Relaxed);
                         // TensorRT is optional when CUDA is there.
                         send(cuda_present, false, trt);
@@ -716,6 +825,7 @@ impl Depth {
                 }
                 match result {
                     Ok(loaded) => {
+                        vulkan_post=None;vulkan_post_key=None;resident_disabled=false;
                         if let Ok(mut active) = self.active.lock() {
                             let (w, h) = loaded.output_size();
                             *active = Some((loaded.id(), w, h));
@@ -728,7 +838,7 @@ impl Depth {
                             (false, _) => "",
                             (true, Engine::Vda(_)) => "; building the TensorRT engines (several minutes the first time)",
                             (true, Engine::Plain(_)) => "; building the TensorRT engine (about 90 s the first time)",
-                            (true, Engine::Ncnn(_)) => "",
+                            (true, Engine::Ncnn(_) | Engine::VdaVulkan(_)) => "",
                         };
                         self.set_status(format!("ready: {}{building}", loaded.describe()));
                         // Same model and size: no need to restart smoothing.
@@ -754,7 +864,7 @@ impl Depth {
                     Err(err) => {
                         log::warn!("Can't load depth model: {err}");
                         self.set_status(format!("model failed: {err}"));
-                        if name == vda::ID {
+                        if is_vda(&name) {
                             self.fall_back(model.as_ref().map(Engine::id).or(fallback.clone()), &err);
                         }
                     }
@@ -780,10 +890,7 @@ impl Depth {
                 continue;
             }
             let rate = self.rate();
-            if rate > 0
-                && let Some(last) = last_run
-                && last.elapsed() < Duration::from_secs_f64(1.0 / f64::from(rate)) - Duration::from_millis(1)
-            {
+            if inference_rate_limited(frame.rate_limited,rate,last_run.map(|last|last.elapsed())) {
                 self.stats.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -791,15 +898,15 @@ impl Depth {
 
             let stream = (frame.tag.stream, frame.tag.epoch);
             if last_stream != Some(stream) {
+                vulkan_post=None;vulkan_post_key=None;resident_disabled=false;
                 refinement_size = None;
                 gpu_refinement = None;
                 post.reset();
                 if let Some(g) = &mut gpu_post {
                     g.reset();
                 }
-                if let Engine::Vda(m) = engine {
-                    m.reset("new stream");
-                }
+                if let Engine::Vda(m) = engine {m.reset("new stream");}
+                if let Engine::VdaVulkan(m) = engine {m.reset();}
                 last_stream = Some(stream);
             }
             let depth_tau = if self.smoothing() { DEPTH_TAU_SECONDS } else { 0.0 };
@@ -812,13 +919,14 @@ impl Depth {
             let pixels = width * height;
             // Keep the model output on the GPU for GPU post-processing. VDA's
             // output is always on the GPU; an ONNX model's is when its input
-            // was; ncnn's comes back to the CPU.
+            // was. Portable RGB Vulkan frames use resident depth below; the
+            // ncnn C-API fallback and CUDA-input path still use host outputs.
             let device_output = match engine {
                 Engine::Vda(_) => true,
                 Engine::Plain(m) => m.backend != Backend::Cpu && matches!(frame.pixels, Pixels::Gpu(_)),
-                Engine::Ncnn(_) => false,
+                Engine::Ncnn(_) | Engine::VdaVulkan(_) => false,
             };
-            let on_device = self.gpu_post.load(Ordering::Relaxed)
+            let on_device = !self.decode_settings().cpu_processing && self.gpu_post.load(Ordering::Relaxed)
                 && device_output
                 && (gpu_post.is_some() || {
                     match GpuPost::new(pixels) {
@@ -833,7 +941,22 @@ impl Depth {
             if on_device && gpu_post.as_ref().is_some_and(|g| g.pixels() != pixels) {
                 gpu_post = GpuPost::new(pixels).ok();
             }
+            let resident_gpu=if matches!(&frame.pixels,Pixels::Rgb(_)) && !self.decode_settings().cpu_processing && self.gpu_frames.load(Ordering::Relaxed) && self.gpu_post.load(Ordering::Relaxed) {
+                match engine {Engine::Ncnn(m) if !m.cpu=>m.gpu_name.clone(),Engine::VdaVulkan(m)=>Some(m.gpu_name.clone()),_=>None}
+            }else{None};
+            if let Some(gpu)=resident_gpu.as_ref() {
+                let key=(engine.id(),gpu.clone(),width,height);
+                if vulkan_post_key.as_ref()!=Some(&key) {
+                    vulkan_post_key=Some(key);post.reset();resident_disabled=false;
+                    vulkan_post=match crate::vulkan_processing::Processor::new(Some(gpu),(width,height)) {
+                        Ok(processor)=>{log::info!("Depth postprocessing: Vulkan resident on {gpu}, {width}x{height}");Some(processor)},
+                        Err(error)=>{log::warn!("Vulkan postprocessing unavailable: {error}; using CPU reference");None},
+                    };
+                }
+            }
+            let resident_enabled=resident_gpu.is_some() && vulkan_post.is_some() && !resident_disabled;
             let mut vda_report = None;
+            let busy=InferenceBusy::new(&self.inference_busy);
             let result = match engine {
                 Engine::Plain(model) => match &frame.pixels {
                     Pixels::Gpu(tensor) if same_size && model.backend == Backend::Cpu => {
@@ -851,6 +974,12 @@ impl Depth {
                     Pixels::Gpu(_) => continue,
                 },
                 Engine::Ncnn(model) => match &frame.pixels {
+                    Pixels::Rgb(rgb) if same_size && resident_enabled => {
+                        match model.infer_resident(rgb,vulkan_post.as_mut().unwrap()) {
+                            Ok(depth)=>Ok(Output::Resident(depth)),
+                            Err(error)=>{log::warn!("Resident EdgePad unavailable: {error}; using host depth transfer until model/stream change");resident_disabled=true;model.infer(rgb).map(Output::Host)},
+                        }
+                    },
                     Pixels::Rgb(rgb) if same_size => model.infer(rgb).map(Output::Host),
                     Pixels::Rgb(rgb) => {
                         resize_rgb(rgb, fw, fh, input.0, input.1, &mut resized);
@@ -863,6 +992,19 @@ impl Depth {
                     }
                     Pixels::Gpu(_) => continue,
                 },
+                Engine::VdaVulkan(model) => {
+                    model.cpu_processing=self.decode_settings().cpu_processing || !self.gpu_frames.load(Ordering::Relaxed);
+                    let sigma=vda::SOFTENING[self.edge_softening()].1;
+                    match &frame.pixels {
+                        Pixels::Rgb(rgb) if resident_enabled => match model.infer_rgb_resident(rgb,frame.size,frame.decoded,sigma) {
+                            Ok(Some(depth))=>Ok(Output::Resident(depth)),
+                            Ok(None)=>model.infer_rgb(rgb,frame.size,frame.decoded,sigma).map(Output::Host),
+                            Err(error)=>Err(error),
+                        },
+                        Pixels::Rgb(rgb) => model.infer_rgb(rgb,frame.size,frame.decoded,sigma).map(Output::Host),
+                        Pixels::Gpu(tensor) => tensor.download().and_then(|rgb|model.infer_planar(&rgb,frame.size,frame.decoded,sigma)).map(Output::Host),
+                    }
+                }
                 Engine::Vda(model) => {
                     model.edge_softening = vda::SOFTENING[self.edge_softening()].1;
                     let report = match &frame.pixels {
@@ -882,6 +1024,7 @@ impl Depth {
                     })
                 }
             };
+            drop(busy);
             let output = match result {
                 Ok(output) => {
                     failures = 0;
@@ -889,7 +1032,7 @@ impl Depth {
                 }
                 Err(err) => {
                     log::warn!("Depth inference failed: {err}");
-                    if matches!(engine, Engine::Vda(_)) {
+                    if matches!(engine, Engine::Vda(_) | Engine::VdaVulkan(_)) {
                         failures += 1;
                         if failures >= 3 {
                             model = None;
@@ -902,8 +1045,46 @@ impl Depth {
             let infer_end = Instant::now();
             let infer_time = infer_end - infer_start;
             let post_start = Instant::now();
+            let mut vulkan_processed=false;
             let mut data = match (output, gpu_post.as_mut()) {
-                (Output::Host(raw), _) => post.process(&raw, Instant::now()),
+                (Output::Resident(raw),_) => {
+                    let result=match (&mut vulkan_post,&frame.pixels) {
+                        (Some(processor),Pixels::Rgb(rgb))=>processor.process_resident(&raw,rgb,frame.size,Instant::now(),depth_tau,self.edge_alignment(),self.contour_cleanup()),
+                        _=>Err("Resident depth processor/guide unavailable".into()),
+                    };
+                    match result {
+                        Ok(data)=>{vulkan_processed=true;data},
+                        Err(error)=>{
+                            log::warn!("Resident postprocessing failed: {error}; using host reference until model/stream change");vulkan_post=None;resident_disabled=true;post.reset();
+                            match raw.download(){Ok(raw)=>post.process(&raw,Instant::now()),Err(error)=>{log::warn!("Resident depth readback failed: {error}");continue;} }
+                        }
+                    }
+                },
+                (Output::Host(raw), _) => {
+                    let gpu=if !self.decode_settings().cpu_processing && self.gpu_frames.load(Ordering::Relaxed) && self.gpu_post.load(Ordering::Relaxed) {
+                        match engine {
+                            Engine::Ncnn(model) if !model.cpu=>model.gpu_name.clone(),
+                            Engine::VdaVulkan(model)=>Some(model.gpu_name.clone()),
+                            _=>None,
+                        }
+                    }else{None};
+                    if let (Some(gpu),Pixels::Rgb(rgb))=(gpu,&frame.pixels) {
+                        let key=(engine.id(),gpu.clone(),width,height);
+                        if vulkan_post_key.as_ref()!=Some(&key) {
+                            vulkan_post_key=Some(key);post.reset();
+                            vulkan_post=match crate::vulkan_processing::Processor::new(Some(&gpu),(width,height)) {
+                                Ok(processor)=>{log::info!("Depth postprocessing: Vulkan on {gpu}, {width}x{height}");Some(processor)},
+                                Err(error)=>{log::warn!("Vulkan postprocessing unavailable: {error}; using CPU reference");None},
+                            };
+                        }
+                        if let Some(processor)=vulkan_post.as_mut() {
+                            match processor.process(&raw,rgb,frame.size,Instant::now(),depth_tau,self.edge_alignment(),self.contour_cleanup()) {
+                                Ok(data)=>{vulkan_processed=true;data},
+                                Err(error)=>{log::warn!("Vulkan postprocessing failed: {error}; using CPU reference");vulkan_post=None;post.reset();post.process(&raw,Instant::now())},
+                            }
+                        }else{post.process(&raw,Instant::now())}
+                    }else{post.process(&raw,Instant::now())}
+                },
                 (Output::Device(raw), Some(g)) => {
                     g.depth_tau = depth_tau;
                     match g.process(raw, Instant::now()) {
@@ -919,11 +1100,11 @@ impl Depth {
             // Optional spatial refinement, after smoothing and before
             // sending/snapshots. Never writes back into temporal history.
             // No colour download or additional work when disabled.
-            if self.edge_alignment() {
+            if self.edge_alignment() && !vulkan_processed {
                 let start = Instant::now();
                 let cleanup = self.contour_cleanup();
                 let mut processed = false;
-                if let Pixels::Gpu(tensor) = &frame.pixels {
+                if let Pixels::Gpu(tensor) = &frame.pixels && !self.decode_settings().cpu_processing {
                     if refinement_size != Some(pixels) {
                         refinement_size = Some(pixels);
                         gpu_refinement = match crate::gpu_refinement::GpuRefinement::new(pixels) {
@@ -1014,8 +1195,8 @@ impl Depth {
     fn fall_back(&self, previous: Option<String>, why: &str) {
         let models = self.list_models();
         let target = previous
-            .filter(|m| m != vda::ID && models.contains(m))
-            .or_else(|| preferred_model(&models.iter().filter(|m| *m != vda::ID).cloned().collect::<Vec<_>>()));
+            .filter(|m| !is_vda(m) && models.contains(m))
+            .or_else(|| preferred_model(&models.iter().filter(|m| !is_vda(m)).cloned().collect::<Vec<_>>()));
         let Some(target) = target else {
             log::warn!("{} failed ({why}), and there is no other model", vda::LABEL);
             return;
@@ -1043,6 +1224,22 @@ pub const DEFAULT_MODEL: &str = "zipdepth_wide_512x288";
 /// Picks a default: the 512x288 model, else the first.
 fn preferred_model(models: &[String]) -> Option<String> {
     models.iter().find(|m| *m != vda::ID && stem(m) == DEFAULT_MODEL).or_else(|| models.first()).cloned()
+}
+
+fn inference_rate_limited(prepared_at_rate:bool,rate:u32,elapsed:Option<Duration>)->bool {
+    // Portable decoding limits expensive preparation before inference. Applying
+    // a second independent cap after its variable CPU/download time would drop
+    // otherwise valid maps whenever they arrive slightly closer together.
+    !prepared_at_rate && rate>0 && elapsed.is_some_and(|time|time<Duration::from_secs_f64(1.0/rate as f64).saturating_sub(Duration::from_millis(1)))
+}
+
+struct InferenceBusy<'a>(&'a AtomicBool);
+impl<'a> InferenceBusy<'a> {
+    fn new(flag:&'a AtomicBool)->Self {flag.store(true,Ordering::Release);Self(flag)}
+}
+impl Drop for InferenceBusy<'_> {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+fn prepare_video_frame(rate_ready:bool,portable_gpu:bool,inference_busy:bool)->bool {
+    rate_ready && !(portable_gpu&&inference_busy)
 }
 
 
@@ -1101,92 +1298,185 @@ pub struct Decoded {
     pub decoded: Instant,
     pub size: (usize, usize),
     pub pixels: Pixels,
+    pub rate_limited: bool,
 }
 
 static NEXT_STREAM: AtomicU64 = AtomicU64::new(1);
 
-/// Decodes one video flow's frames with NVDEC for the depth engine. Lives
-/// on the video tap's thread; decoding is synchronous (about a millisecond).
+/// Decodes a video tap without delaying proxy forwarding. Output retains the
+/// timestamp of its source packet, including decoder-reordered frames.
 pub struct DepthFeed {
     depth: Arc<Depth>,
     client: Option<IpAddr>,
-    decoder: Option<(NvDecoder, u64, (usize, usize))>,
+    decoder: Option<(VideoDecoder,u64,(usize,usize),DecodeBackend)>,
     epoch: Option<u32>,
-    /// The decoder couldn't be created for this epoch; don't retry every keyframe.
-    failed: bool,
+    settings: Option<video_decoder::Settings>,
+    inference_affinity: Option<String>,
+    rejected: Vec<DecodeBackend>,
+    tags: BTreeMap<u32,FrameTag>,
+    last_output: Option<Instant>,
 }
-
 impl DepthFeed {
-    pub fn new(depth: Arc<Depth>, client: Option<IpAddr>) -> DepthFeed {
-        DepthFeed { depth, client: client.map(|ip| ip.to_canonical()), decoder: None, epoch: None, failed: false }
+    pub fn new(depth:Arc<Depth>,client:Option<IpAddr>)->Self {
+        Self {depth,client:client.map(|ip|ip.to_canonical()),decoder:None,epoch:None,
+            settings:None,inference_affinity:None,rejected:Vec::new(),tags:BTreeMap::new(),last_output:None}
     }
-
-    pub fn push(&mut self, frame: &Frame, codec: Option<Codec>) {
-        if !self.depth.enabled() {
-            self.decoder = None;
-            return;
-        }
-        if self.epoch != Some(frame.epoch) {
-            self.decoder = None;
-            self.epoch = Some(frame.epoch);
-            self.failed = false;
-        }
-        let model_size = self.depth.input_size();
-        // NVDEC keeps the full-size surfaces. Only its reduction target and
-        // tensor pool change, so a model switch need not wait for an IDR.
-        if let (Some((decoder, _, size)), Some((width, height))) = (&mut self.decoder, model_size)
-            && *size != (width, height)
-        {
-            decoder.set_target(width, height);
-            *size = (width, height);
-            log::info!("Host depth input resized to {width}x{height} for the selected model");
-        }
-        if self.decoder.is_none() {
-            // A decoder can only start on a keyframe.
-            let (Some(codec), true, Some((width, height)), false) = (codec, frame.idr, model_size, self.failed) else {
-                return;
-            };
-            let gpu_frames = self.depth.gpu_frames.load(Ordering::Relaxed);
-            match NvDecoder::new(codec, width, height, gpu_frames) {
-                Ok(decoder) => {
-                    log::info!("Host depth decoding {codec:?} with NVDEC at {width}x{height}");
-                    self.decoder = Some((decoder, NEXT_STREAM.fetch_add(1, Ordering::Relaxed), (width, height)));
+    fn initialize(&mut self,codec:Codec,size:(usize,usize),settings:&video_decoder::Settings)->bool {
+        let gpu_name=ncnn::resolved_gpu_name(self.depth.depth_gpu().as_deref()).unwrap_or_default();
+        let prefer_amd=self.depth.model().as_deref()!=Some(vda::ID) && gpu_name.to_lowercase().contains("amd");
+        for backend in settings.candidates(prefer_amd) {
+            if self.rejected.contains(&backend) {continue;}
+            let auto_device=video_decoder::vaapi_devices().into_iter().find(|(_,label)|label.starts_with("AMD"));
+            let device=settings.vaapi_device.as_deref().or_else(||auto_device.as_ref().map(|(path,_)|path.as_str()));
+            let gpu_frames=self.depth.gpu_frames.load(Ordering::Relaxed) && !settings.cpu_processing;
+            match VideoDecoder::new(codec,backend,device,size,gpu_frames) {
+                Ok(mut decoder)=> {
+                    let portable_gpu=gpu_frames && !self.depth.cpu_inference() && !gpu_name.is_empty() && matches!(decoder,VideoDecoder::Ffmpeg(_));
+                    if portable_gpu && let VideoDecoder::Ffmpeg(decoder)=&mut decoder {decoder.set_processing_gpu(gpu_name.clone());}
+                    let device_label=if backend==DecodeBackend::Vaapi {device.unwrap_or("driver default")} else {""};
+                    let description=format!("{} {device_label}; processing {}",backend.label(),if backend==DecodeBackend::Nvdec && gpu_frames {"CUDA/Auto"} else if portable_gpu {"Vulkan"} else {"CPU"});
+                    self.depth.set_decoder_status(description.clone());
+                    log::info!("Host depth decoding {codec:?}: {description}, {}x{}",size.0,size.1);
+                    self.tags.clear();self.last_output=None;
+                    self.decoder=Some((decoder,NEXT_STREAM.fetch_add(1,Ordering::Relaxed),size,backend));
+                    return true;
                 }
-                Err(err) => {
-                    log::warn!("Host depth decoder failed: {err}");
-                    self.failed = true;
+                Err(error)=> {self.rejected.push(backend);log::warn!("Depth decoder {} unavailable: {error}",backend.label());
+                    self.depth.set_decoder_status(format!("{} failed: {error}",backend.label()));}
+            }
+        } false
+    }
+    pub fn push(&mut self,frame:&Frame,codec:Option<Codec>) {
+        if !self.depth.enabled() {self.decoder=None;self.tags.clear();return;}
+        let requested=self.depth.decode_settings();
+        let affinity=if frame.idr && requested.backend==DecodeBackend::Auto {
+            if self.depth.model().as_deref()==Some(vda::ID) {Some("NVIDIA VDA".into())}
+            else {ncnn::resolved_gpu_name(self.depth.depth_gpu().as_deref()).ok()}
+        } else {self.inference_affinity.clone()};
+        if self.epoch!=Some(frame.epoch) || (frame.idr && (self.settings.as_ref()!=Some(&requested) || affinity!=self.inference_affinity)) {
+            self.decoder=None;self.tags.clear();self.rejected.clear();
+            self.epoch=Some(frame.epoch);self.settings=Some(requested.clone());
+            self.inference_affinity=affinity;
+        }
+        let settings=self.settings.clone().unwrap_or(requested);
+        let Some(size)=self.depth.input_size() else {return;};
+        if let Some((decoder,_,target,_))=&mut self.decoder && *target!=size {decoder.set_target(size);*target=size;}
+        // Auto may retry the same IDR once per backend if surface/profile
+        // initialization fails only when the first packet is submitted.
+        for _ in 0..3 {
+            if self.decoder.is_none() {
+                let (Some(codec),true)=(codec,frame.idr) else {return;};
+                if !self.initialize(codec,size,&settings) {return;}
+            }
+            let Some((decoder,stream,target,backend))=&mut self.decoder else {return;};
+            let queued=Instant::now();
+            self.tags.insert(frame.index,FrameTag {stream:*stream,client:self.client,epoch:frame.epoch,index:frame.index,after_loss:frame.after_loss,queued});
+            while self.tags.len()>128 {self.tags.pop_first();}
+            let rate=self.depth.rate();
+            let rate_limited=rate>0 && matches!(decoder,VideoDecoder::Ffmpeg(_));
+            // Match the engine's 1 ms scheduling tolerance: without it a
+            // nominal 50 ms interval arriving fractionally early gets deferred
+            // by a whole video frame, turning a 20 Hz request into ~15 Hz.
+            let interested=self.depth.subscribers.load(Ordering::Relaxed)>0 || self.depth.save.is_some();
+            let rate_ready=interested && (rate==0 || self.last_output.is_none_or(|last|last.elapsed()>=Duration::from_secs_f64(1.0/rate as f64).saturating_sub(Duration::from_millis(1))));
+            let portable_gpu=matches!(decoder,VideoDecoder::Ffmpeg(decoder) if decoder.gpu_preparation())
+                && self.depth.active_model().is_some_and(|(id,_,_)|vda_vulkan::is_model(&id));
+            let want_pixels=prepare_video_frame(rate_ready,portable_gpu,self.depth.inference_busy.load(Ordering::Acquire));
+            if rate_ready && !want_pixels {self.depth.stats.skipped.fetch_add(1,Ordering::Relaxed);}
+            match decoder.decode(&frame.data,frame.index,want_pixels) {
+                Ok(outputs)=> {
+                    for (index,pixels) in outputs {
+                        if let Some(tag)=self.tags.remove(&index) {
+                            self.depth.submit(Decoded {tag,decoded:Instant::now(),size:*target,pixels,rate_limited});
+                            self.last_output=Some(queued);
+                        } else {log::warn!("Ignoring decoded frame {index}: source metadata unavailable");}
+                    }
                     return;
                 }
-            }
-        }
-        let Some((decoder, stream, size)) = &mut self.decoder else { return };
-        let queued = Instant::now();
-        match decoder.decode(&frame.data, frame.index) {
-            Ok(Some(pixels)) => self.depth.submit(Decoded {
-                tag: FrameTag {
-                    stream: *stream,
-                    client: self.client,
-                    epoch: frame.epoch,
-                    index: frame.index,
-                    after_loss: frame.after_loss,
-                    queued,
-                },
-                decoded: Instant::now(),
-                size: *size,
-                pixels,
-            }),
-            Ok(None) => {}
-            Err(err) => {
-                log::warn!("Host depth decoder: {err}; restarting at the next keyframe");
-                self.decoder = None;
+                Err(error)=> {
+                    log::warn!("Depth decoder {} failed: {error}",backend.label());
+                    self.depth.set_decoder_status(format!("{} failed: {error}",backend.label()));
+                    // First-packet hardware/profile failures may choose the
+                    // next Auto backend. Later bitstream errors retry this
+                    // decoder at the next IDR rather than banning it forever.
+                    if settings.backend==DecodeBackend::Auto && frame.idr && self.last_output.is_none() {self.rejected.push(*backend);}
+                    self.decoder=None;
+                    if settings.backend!=DecodeBackend::Auto || !frame.idr {return;}
+                }
             }
         }
     }
 }
 
 #[cfg(test)]
+#[path = "../tools/depth_hardware_benchmark.rs"]
+mod hardware_benchmark;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_gpu_skips_portable_preparation_without_stalling_other_backends() {
+        assert!(!prepare_video_frame(true,true,true));
+        assert!(prepare_video_frame(true,true,false));
+        assert!(prepare_video_frame(true,false,true));
+        assert!(!prepare_video_frame(false,true,false));
+        let flag=AtomicBool::new(false);
+        {let _busy=InferenceBusy::new(&flag);assert!(flag.load(Ordering::Acquire));}
+        assert!(!flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn model_groups_filter_cpu_and_gpu_capabilities() {
+        let models=vec!["zipdepth_edgepad_256.ncnn.param".into(),vda_vulkan::FULL.into(),vda_vulkan::FAST.into()];
+        let groups=build_choice_groups(&models,vec!["Supported GPU".into(),"Unsupported VDA GPU".into()],false,|gpu|gpu!=Some("Unsupported VDA GPU"));
+        let supported=groups.iter().find(|g|g.label=="Supported GPU").unwrap();assert_eq!(supported.choices.len(),3);
+        let unsupported=groups.iter().find(|g|g.label=="Unsupported VDA GPU").unwrap();assert_eq!(unsupported.choices.len(),1);
+        let cpu=groups.iter().find(|g|g.label=="CPU").unwrap();assert_eq!(cpu.choices.len(),1);assert!(cpu.choices[0].cpu);
+        assert_eq!(groups.len(),3);
+        let no_gpu=build_choice_groups(&models,vec![],false,|_|false);assert_eq!(no_gpu.len(),1);assert_eq!(no_gpu[0].label,"CPU");
+    }
+    #[test]
+    fn one_choice_updates_and_persists_the_complete_configuration() {
+        let mut state=SavedState {cpu_inference:true,model:Some("old.onnx".into()),..SavedState::default()};
+        let choice=DepthChoice {model:vda_vulkan::FAST.into(),gpu:Some("AMD GPU".into()),cpu:false};
+        state.apply_choice(&choice);
+        let saved=toml::to_string(&state).unwrap();let restored:SavedState=toml::from_str(&saved).unwrap();
+        assert_eq!(restored.model.as_deref(),Some(vda_vulkan::FAST));assert_eq!(restored.edgepad_gpu,choice.gpu);assert!(!restored.cpu_inference);
+    }
+
+    #[test]
+    fn legacy_tensorrt_selection_ignores_retained_edgepad_gpu_preference() {
+        let state=SavedState {model:Some(vda::ID.into()),edgepad_gpu:Some("AMD GPU".into()),..SavedState::default()};
+        assert!(state.matches_choice(&DepthChoice {model:vda::ID.into(),gpu:None,cpu:false}));
+        assert!(!state.matches_choice(&DepthChoice {model:vda::ID.into(),gpu:None,cpu:true}));
+    }
+
+    #[test]
+    fn legacy_onnx_gpu_models_remain_available_without_offering_them_on_amd() {
+        let models=vec!["custom_edgepad.onnx".into(),vda::ID.into()];
+        let groups=build_choice_groups(&models,vec!["AMD".into()],false,|_|false);
+        assert_eq!(groups.len(),1);assert_eq!(groups[0].label,"CPU");
+        let groups=build_choice_groups(&models,vec!["NVIDIA".into()],true,|_|false);
+        let legacy=groups.iter().find(|g|g.label=="NVIDIA").unwrap();assert_eq!(legacy.choices.len(),2);
+        assert!(legacy.choices.iter().all(|c|!c.cpu && c.gpu.is_none()));
+        let models=vec!["zipdepth_edgepad_256.ncnn.param".into(),vda::ID.into(),vda_vulkan::FULL.into()];
+        let groups=build_choice_groups(&models,vec!["AMD RX480".into(),"NVIDIA RTX3090".into()],true,|_|true);
+        assert_eq!(groups.len(),3);
+        let nvidia=groups.iter().find(|g|g.label=="NVIDIA RTX3090").unwrap();
+        assert!(nvidia.choices.iter().any(|c|c.model==vda::ID));
+        assert!(nvidia.choices.iter().any(|c|c.model==vda_vulkan::FULL));
+        assert!(!groups[0].choices.iter().any(|c|c.model==vda::ID));
+    }
+
+    #[test]
+    fn portable_preparation_is_not_rate_limited_twice() {
+        assert!(!inference_rate_limited(true,20,Some(Duration::from_millis(35))));
+        assert!(inference_rate_limited(false,20,Some(Duration::from_millis(35))));
+        assert!(!inference_rate_limited(false,20,Some(Duration::from_millis(50))));
+        assert!(!inference_rate_limited(false,0,Some(Duration::ZERO)));
+    }
 
     #[test]
     fn reads_an_older_state_file() {
@@ -1196,6 +1486,7 @@ mod tests {
         assert_eq!(state.rate, 120);
         assert!(state.model_smoothing.is_empty());
         assert!(!state.cpu_inference);
+        assert_eq!(state.decode,video_decoder::Settings::default());
         assert!(state.edge_alignment);
         assert!(state.contour_cleanup);
     }
@@ -1215,6 +1506,15 @@ mod tests {
         let state = SavedState { cpu_inference: true, ..SavedState::default() };
         let restored: SavedState = toml::from_str(&toml::to_string(&state).unwrap()).unwrap();
         assert!(restored.cpu_inference);
+    }
+
+    #[test]
+    fn edgepad_gpu_choice_survives_restart_without_affecting_cpu_or_model() {
+        let state=SavedState {edgepad_gpu:Some("AMD Radeon RX480".into()),model:Some(vda::ID.into()),..SavedState::default()};
+        let restored:SavedState=toml::from_str(&toml::to_string(&state).unwrap()).unwrap();
+        assert_eq!(restored.edgepad_gpu,state.edgepad_gpu);
+        assert_eq!(restored.model,state.model);
+        assert!(!restored.cpu_inference);
     }
 
     #[test]

@@ -104,8 +104,8 @@ func process_standby(delta: float) -> void:
 		_standby_stopping = false
 		main._log("[PCVR-STANDBY] Native resources drained; desktop unchanged")
 		return
-	if not _standby_stopping and (native_state == "failed" or _standby_elapsed >= timeout_seconds):
-		main._log("[PCVR-STANDBY] Stop reason=%s elapsed=%.1fs limit=%.1fs" % ["native failure" if native_state == "failed" else "DEV session timeout", _standby_elapsed, timeout_seconds])
+	if not _standby_stopping and native_state == "failed":
+		main._log("[PCVR-STANDBY] Stop reason=native failure elapsed=%.1fs" % _standby_elapsed)
 		request_stop()
 	if not _standby_ready_logged and bool(snapshot.get("meteor_frame_ready", false)):
 		_standby_ready_logged = true
@@ -152,10 +152,10 @@ func request_stop() -> void:
 
 func set_application_paused(paused: bool) -> void:
 	application_paused = paused
-	if paused:
+	if paused and not meteor_mode and not standby_active:
 		hold_seconds = 0.0
 		request_stop()
-	# Resume never restarts XR automatically; teardown must acknowledge idle first.
+	# Meteor keeps its transport/game alive; standalone diagnostics still drain.
 
 func _execute(commands: Array[Dictionary]) -> void:
 	# Iterative command queue: no recursive coroutine or deferred await races.
@@ -171,7 +171,7 @@ func _execute(commands: Array[Dictionary]) -> void:
 				_queue_preparation_drain(token)
 			"connect":
 				_log_transition("connecting")
-				status = ("Starting Meteor XR (%ds timeout)" if meteor_mode else "Starting — hold B or Y for 1 second to exit (%ds timeout)") % int(timeout_seconds)
+				status = "Starting Meteor XR" if meteor_mode else "Starting — hold B or Y for 1 second to exit (%ds timeout)" % int(timeout_seconds)
 				var started: bool = backend.start_meteor_test() if meteor_mode else (backend.start_stream() if stream_mode else backend.start_test())
 				if not started:
 					pending.append_array(session.fail(token, "Native projection start rejected"))
@@ -251,7 +251,7 @@ func process(delta: float) -> void:
 		for hand in [main.right_hand, main.left_hand]:
 			if hand and hand.is_button_pressed("by_button"): held = true
 	hold_seconds = hold_seconds + delta if held else 0.0
-	if hold_seconds >= 1.0 or elapsed >= timeout_seconds:
+	if hold_seconds >= 1.0 or (not meteor_mode and elapsed >= timeout_seconds):
 		request_stop()
 	native_status = backend.get_test_status()
 	var remote_message: String = native_status.get("remote_status", "")

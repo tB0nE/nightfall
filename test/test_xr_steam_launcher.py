@@ -15,6 +15,17 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class SteamLauncherTests(unittest.TestCase):
+    def test_shortcut_zero_app_id_requires_matching_64_bit_game_id(self):
+        app_id="2944203442"
+        value={"generation":"a"*32,"action":"steam_launch","app_id":app_id,
+               "argv":[sys.executable],"cwd":str(ROOT),"owner_pid":os.getpid(),
+               "environment":{"SteamAppId":"0","STEAM_COMPAT_APP_ID":"0",
+                              "SteamGameId":str((int(app_id)<<32)|0x02000000)}}
+        validate_steam_request(value,"a"*32,app_id)
+        value['environment']['SteamGameId']=str((123<<32)|0x02000000)
+        with self.assertRaisesRegex(ValueError,'ID mismatch'):
+            validate_steam_request(value,"a"*32,app_id)
+
     def test_local_command_is_app_bound_and_secrets_are_not_forwarded(self):
         with tempfile.TemporaryDirectory() as directory, ThreadPoolExecutor() as pool:
             root=Path(directory)

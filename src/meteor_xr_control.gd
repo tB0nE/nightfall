@@ -4,6 +4,10 @@ const PCVRVideoSettings = preload("res://src/pcvr_stream_settings.gd")
 ## DEV authenticated control only. Prepared never starts exclusive presentation.
 signal changed
 signal runtime_changed
+signal library_reply(value: Dictionary)
+signal library_open_requested
+var _library_queue: Array[Dictionary] = []
+var library_available := false
 const MAX_FRAME := 4096
 const CONFIG := "user://meteor_xr_control.cfg"
 const IDENTITY := "user://meteor_xr_identity.key"
@@ -59,6 +63,8 @@ func _status(value: String, text: String) -> void:
 	changed.emit()
 
 func cancel(stop_projection: bool = true) -> void:
+	_library_queue.clear()
+	library_available = false
 	_pending_foveation = -1
 	foveation_message = ""
 	_last_foveation_status = ""
@@ -109,12 +115,12 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 			_fail("Control connection closed")
 			return
 		_peer.poll()
-		if _peer.get_status() != StreamPeerTCP.STATUS_CONNECTED or Time.get_ticks_msec() >= deadline:
+		if _peer.get_status() != StreamPeerTCP.STATUS_CONNECTED or (Time.get_ticks_msec() >= deadline and not (expected == "prepared" and not _relay_config.is_empty())):
 			_fail("Control lease expired or host disconnected")
 			return
 		if expected == "prepared" and Time.get_ticks_msec() >= next_status:
 			# Only this loop issues requests after acceptance; never overlap cipher
-			# counters or reads. Status does not renew the bounded DEV lease.
+			# counters or reads. Active relay status renews the host's idle lease.
 			var command := {"type": "status"}
 			var updating := _pending_bitrate >= 0
 			if updating:
@@ -125,7 +131,9 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 			if updating_foveation:
 				command = {"type":"set_foveation", "session":session, "enabled":_pending_foveation == 1}
 				_pending_foveation = -1
+			if not updating and not updating_foveation and not _library_queue.is_empty(): command = _library_queue.pop_front()
 			var reply := await _request(command, token)
+			_handle_library_reply(reply)
 			if token != _generation: return
 			if reply.get("state", "") != "prepared" or reply.get("session", "") != session or not _update_runtime(reply):
 				_fail("Invalid or expired XR runtime status")
@@ -144,8 +152,20 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 						_last_foveation_status = signature
 						foveation_message = "Foveated encoding %s: %s" % ["On" if int(result.get("requested_enabled", 0)) == 1 else "Off", str(result.get("state", "pending"))]
 						owner._log("[PCVR] " + foveation_message)
-			next_status = Time.get_ticks_msec() + 500
+			next_status = Time.get_ticks_msec() + (50 if not _library_queue.is_empty() else 500)
 		await owner.get_tree().process_frame
+
+func request_library(action: String, key: String = "", offset: int = 0) -> bool:
+	if not library_available or state not in ["watching", "prepared"] or action not in ["list", "art", "launch"]: return false
+	if action in ["list", "launch"]: _library_queue.clear()
+	if _library_queue.size() >= 12: return false
+	_library_queue.append({"type":"library", "action":action, "key":key, "offset":offset})
+	return true
+
+func _handle_library_reply(reply: Dictionary) -> void:
+	library_available = bool(reply.get("library_available", false))
+	if reply.get("library") is Dictionary: library_reply.emit(reply.library)
+	if reply.get("open_library", false): library_open_requested.emit()
 
 func queue_foveation(enabled: bool) -> bool:
 	if state != "prepared" or session.is_empty(): return false
@@ -349,6 +369,7 @@ func connect_offer(watch_only: bool = false) -> void:
 		if token == _generation: _fail("Handshake send failed")
 		return
 	var authenticated := await _request({"type": "authenticate"}, token)
+	_handle_library_reply(authenticated)
 	if token != _generation: return
 	if authenticated.get("state", "") != "idle":
 		_fail("Control authentication rejected or host busy")
@@ -368,7 +389,9 @@ static func valid_launch_notice(value: Variant) -> bool:
 
 func _watch_launch_intent(config: ConfigFile, token: int) -> void:
 	while token == _generation and state == "watching" and owner.is_streaming:
-		var reply := await _request({"type":"pending_launch"},token)
+		var command: Dictionary = _library_queue.pop_front() if not _library_queue.is_empty() else {"type":"pending_launch"}
+		var reply := await _request(command,token)
+		_handle_library_reply(reply)
 		if token != _generation: return
 		if reply.get("state", "") != "idle" or reply.get("reason") != null:
 			_fail("Automatic XR watch unavailable on host")
@@ -390,7 +413,7 @@ func _watch_launch_intent(config: ConfigFile, token: int) -> void:
 			await _offer_authenticated(config,token)
 			if token == _generation and state == "offered": accept_offer()
 			return
-		await owner.get_tree().create_timer(1.0).timeout
+		await owner.get_tree().create_timer(0.05 if not _library_queue.is_empty() else 1.0).timeout
 	if token == _generation and state == "watching": cancel()
 
 func _offer_authenticated(config: ConfigFile, token: int) -> void:

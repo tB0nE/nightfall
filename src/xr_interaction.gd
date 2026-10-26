@@ -39,6 +39,48 @@ var _screen_shortcut_press_active: bool = false
 var _browser_press_owner: RefCounted
 var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
+var _pointer_suspended := false
+var _pointer_rearm_required := false
+
+func set_application_suspended(suspended: bool) -> void:
+	_pointer_suspended = suspended
+	cancel_transient_interactions("application paused" if suspended else "application resumed")
+	if not suspended and not main._is_using_hands:
+		# Hand aiming uses top-level rays. Never reuse its last world-space
+		# transform when physical controllers regain ownership after standby.
+		for ray in [main.hand_raycast, main.left_hand_raycast]:
+			if ray:
+				ray.top_level = false
+				ray.transform = Transform3D.IDENTITY
+
+static func controller_pose_valid(hand: XRController3D) -> bool:
+	if not hand or not hand.get_is_active() or not hand.get_has_tracking_data(): return false
+	var pose := hand.get_pose()
+	return pose != null and pose.has_tracking_data and pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE
+
+func _pointer_input_ready(tracked: bool, pressed: bool) -> bool:
+	if _pointer_suspended or not tracked:
+		_pointer_rearm_required = true
+		return false
+	if _pointer_rearm_required:
+		if pressed: return false
+		_pointer_rearm_required = false
+	return true
+
+func _active_pointer_tracked() -> bool:
+	if not main.is_xr_active: return true
+	if main._is_using_hands:
+		if hand_aim_available(): return hand_aim_valid(_active_hand)
+		var tracker = XRServer.get_tracker("/user/hand_tracker/" + _active_hand)
+		return tracker != null and tracker.get_has_tracking_data()
+	return controller_pose_valid(main.left_hand if _active_hand == "left" else main.right_hand)
+
+func _pointer_controls_held() -> bool:
+	if _is_now_clicking() or _is_now_gripping(): return true
+	if main.is_xr_active and not main._is_using_hands:
+		for hand in [main.left_hand, main.right_hand]:
+			if hand and (hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1): return true
+	return false
 
 # Chord mode waits this long before committing a grip to right-click, giving a
 # near-simultaneous trigger press time to turn the pair into an explicit
@@ -49,6 +91,7 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
+	_pointer_rearm_required = true
 	if main.screen_sources:
 		main.screen_sources.cancel_browser_pointers_except()
 	# Tracking poses are discontinuous across headset removal or app pause.
@@ -877,6 +920,18 @@ func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
+	if not _pointer_input_ready(_active_pointer_tracked(), _pointer_controls_held()):
+		if main.was_clicking or main.was_right_clicking or main.grabbed_node or _other_hand_clicking:
+			cancel_transient_interactions("pointer tracking unavailable or awaiting release")
+		pointer_on_ui = false
+		_primary_ui_pixel = Vector2(-1, -1)
+		_secondary_ui_pixel = Vector2(-1, -1)
+		if main.screen_shortcuts: main.screen_shortcuts.set_hover(&"")
+		if main.pointer_cursor: main.pointer_cursor.visible = false
+		if main.composition_pointers: main.composition_pointers.hide_primary()
+		_hide_other_hand_ui()
+		_apply_ui_hover_states()
+		return
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
 	_prioritize_tab_overlay()
@@ -961,6 +1016,9 @@ func _process_other_hand_ui():
 		_hide_other_hand_ui()
 		return
 	var other = "left" if _active_hand == "right" else "right"
+	if not controller_pose_valid(main.left_hand if other == "left" else main.right_hand):
+		_hide_other_hand_ui()
+		return
 	var rc = _get_hand_raycast(other)
 	if not rc or not rc.is_colliding():
 		_hide_other_hand_ui()

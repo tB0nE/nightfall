@@ -1141,9 +1141,12 @@ func toggle_passthrough():
 		main._log("[PASSTHROUGH] toggle ignored: is_xr_active=%s passthrough_supported=%s" % [str(main.is_xr_active), str(main.passthrough_supported)])
 		return
 	main.settings.passthrough_enabled = not main.settings.passthrough_enabled
+	main._log("[PASSTHROUGH] Begin enable=%s streaming=%s native=%s background=%d pcvr=%d" % [main.settings.passthrough_enabled, main.is_streaming, main.video_presentation.is_native_active(), main.settings.background_mode, main.pcvr_handover.state])
+	main._flush_log()
 	apply_passthrough(main.settings.passthrough_enabled)
 	_save_setting(main._ui_pt_btn, "On" if main.settings.passthrough_enabled else "Off")
 	main._log("[PASSTHROUGH] toggled to %s and saved" % str(main.settings.passthrough_enabled))
+	main._flush_log()
 	# AUTO_TABLE's tier/model/cap picks all key off passthrough_enabled (see
 	# get_auto_selection()) - and manual Fast's resolution cap does too, same
 	# table. Refresh the AI Model button immediately (was showing a stale

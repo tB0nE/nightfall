@@ -18,7 +18,12 @@ func process_auto_xr(delta: float) -> void:
 		if _xr_control and _xr_control.state == "watching": _xr_control.cancel()
 		return
 	_auto_retry -= delta
-	if _auto_retry > 0 or _auto_suppressed or not main.pcvr_test.entry_visible(): return
+	if _auto_retry > 0 or _auto_suppressed: return
+	# An established watcher already owns discovery. Do not reload its config
+	# and enumerate hosts on every rendered desktop frame.
+	if _xr_control != null and _xr_control.state not in ["idle", "failed"]: return
+	_auto_retry = 5.0
+	if not main.pcvr_test.entry_visible(): return
 	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
 	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
 	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
@@ -97,6 +102,7 @@ func get_xr_control() -> RefCounted:
 	# Welcome and the in-stream DEV entry share one lease and one receiver.
 	if not _xr_control:
 		_xr_control = preload("res://src/meteor_xr_control.gd").new(main)
+		_xr_control.library_open_requested.connect(func(): main.ui_controller.open_vr_apps())
 	return _xr_control
 
 func request_xr_control() -> void:

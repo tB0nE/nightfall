@@ -24,6 +24,9 @@ var _tab_btn_picture: Button
 var _tab_btn_settings: Button
 var _settings_gear_btn: Button
 var _pcvr_link: Button
+var _pcvr_refresh_elapsed := 0.0
+var _vr_library: VBoxContainer
+var _vr_library_open := false
 var _pcvr_page: VBoxContainer
 var _pcvr_info: Label
 var _pcvr_resolution_btn: Button
@@ -842,6 +845,12 @@ func update_ui():
 func pcvr_settings_available() -> bool:
 	return main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE or (main.get("welcome_screen") != null and main.welcome_screen.xr_settings_available())
 
+func process_pcvr_menu(delta: float) -> void:
+	_pcvr_refresh_elapsed += delta
+	if _pcvr_refresh_elapsed < 0.25: return
+	_pcvr_refresh_elapsed = 0.0
+	refresh_pcvr_menu()
+
 func refresh_pcvr_menu() -> void:
 	if not is_instance_valid(_pcvr_link): return
 	if _pcvr_resolution_range_btn:
@@ -853,12 +862,14 @@ func refresh_pcvr_menu() -> void:
 		switch_tab(_desktop_tab_before_pcvr)
 	_pcvr_link.visible = pcvr_settings_available() or _current_tab == PCVR_PAGE
 	_pcvr_link.text = "Desktop" if _current_tab == PCVR_PAGE else "PCVR"
-	_pcvr_link.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5) if active else Color(1, 1, 1, 0.6))
+	var link_color := Color(0.35, 1.0, 0.5) if active else Color(1, 1, 1, 0.6)
+	if not _pcvr_link.has_theme_color_override("font_color") or _pcvr_link.get_theme_color("font_color") != link_color:
+		_pcvr_link.add_theme_color_override("font_color", link_color)
 	if _pcvr_exit_btn: _pcvr_exit_btn.visible = active
 	if _current_tab == PCVR_PAGE and is_instance_valid(_pcvr_info):
 		var backend = main.pcvr_test.backend
 		var status: Dictionary = backend.get_test_status() if backend else {}
-		_pcvr_info.text = "Resolution: next session • Bitrate / foveation / filters: live\nDevelopment session limit: 5 minutes." if active else "Ready for XR • Preferences apply to your next session."
+		_pcvr_info.text = "Resolution: next session • Bitrate / foveation / filters: live" if active else "Ready for XR • Preferences apply to your next session."
 		if _pcvr_resolution_btn:
 			var recommended := PCVRVideoSettings.reference_eye_dimensions(backend, main.get("stream_backend"))
 			var size := _pcvr_video.effective_eye_dimensions(512, recommended)
@@ -966,10 +977,29 @@ func is_pcvr_page_open() -> bool:
 	return _current_tab == PCVR_PAGE
 
 func open_pcvr_page() -> void:
+	_vr_library_open = false
+	if _vr_library: _vr_library.visible = false
 	if _current_tab != PCVR_PAGE:
 		_desktop_tab_before_pcvr = _current_tab
 	switch_tab(PCVR_PAGE)
 	refresh_pcvr_menu()
+
+func open_vr_apps() -> void:
+	if not pcvr_settings_available(): return
+	if main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		main.pcvr_handover.open_pcvr_menu()
+	else:
+		open_pcvr_page()
+		if not main.ui_visible: main._toggle_ui()
+	_vr_library_open = true
+	_pcvr_page.visible = false
+	_vr_library.visible = true
+	_vr_library.open_library()
+
+func close_vr_apps() -> void:
+	_vr_library_open = false
+	if _vr_library: _vr_library.visible = false
+	_pcvr_page.visible = _current_tab == PCVR_PAGE
 
 func switch_tab(tab: int):
 	clear_tooltip()
@@ -981,7 +1011,9 @@ func switch_tab(tab: int):
 	if _tab_ai3d: _tab_ai3d.visible = (tab == 3)
 	if _tab_picture: _tab_picture.visible = (tab == 4)
 	if _tab_settings: _tab_settings.visible = (tab == SETTINGS_TAB)
-	if _pcvr_page: _pcvr_page.visible = (tab == PCVR_PAGE)
+	if tab != PCVR_PAGE: _vr_library_open = false
+	if _vr_library: _vr_library.visible = tab == PCVR_PAGE and _vr_library_open
+	if _pcvr_page: _pcvr_page.visible = (tab == PCVR_PAGE and not _vr_library_open)
 	if _settings_gear_btn: _settings_gear_btn.visible = tab != PCVR_PAGE
 	if main._ui_exit_btn: main._ui_exit_btn.visible = tab != PCVR_PAGE
 	if main._ui_disconnect_btn: main._ui_disconnect_btn.visible = main.is_streaming and tab != PCVR_PAGE
@@ -1519,6 +1551,17 @@ func build_ui():
 	_pcvr_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_pcvr_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pcvr_page.add_child(_pcvr_info)
+	var library_button := make_action_btn("VR Apps")
+	library_button.pressed.connect(open_vr_apps)
+	_set_button_tooltip(library_button, "Browse installed Steam VR apps.")
+	_pcvr_page.add_child(library_button)
+	_vr_library = preload("res://src/pcvr_app_library.gd").new()
+	_vr_library.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_vr_library.offset_top = 76
+	_vr_library.offset_left = 24; _vr_library.offset_right = -24; _vr_library.offset_bottom = -24
+	_vr_library.visible = false
+	_vr_library.setup(self)
+	overlay.add_child(_vr_library)
 	_pcvr_video = PCVRVideoSettings.new(main.get("device_is_quest3") == true)
 	_pcvr_video.load_from()
 	var video_row := HBoxContainer.new()
@@ -2025,6 +2068,7 @@ func _compose_option_text(btn: Button) -> void:
 func update_option_btn(btn: Button, value: String):
 	if btn == null or not btn.has_meta(OPTION_LABEL_META):
 		return
+	if btn.get_meta(OPTION_VALUE_META, null) == value: return
 	btn.set_meta(OPTION_VALUE_META, value)
 	_compose_option_text(btn)
 

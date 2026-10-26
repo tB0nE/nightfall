@@ -31,13 +31,14 @@ const CMD_VDA_CANCEL: usize = 11;
 const CMD_VDA_REMOVE: usize = 12;
 const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
-const CMD_INFERENCE_GPU: usize = 15;
-const CMD_INFERENCE_CPU: usize = 16;
 const CMD_EDGE_ALIGNMENT: usize = 17;
 const CMD_CONTOUR_CLEANUP: usize = 18;
 const CMD_RATE_BASE: usize = 100;
-const CMD_MODEL_BASE: usize = 200;
+const CMD_CHOICE_BASE:usize=1000;
+static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex::new(Vec::new());
 const CMD_SOFTEN_BASE: usize = 300;
+const CMD_DECODE_BASE: usize = 500;
+const CMD_CPU_PROCESSING: usize = 19;
 static MIC: OnceLock<Option<Arc<crate::mic::Mic>>> = OnceLock::new();
 static DEPTH: OnceLock<Option<Arc<crate::depth::Depth>>> = OnceLock::new();
 static STATUS: OnceLock<Arc<crate::status::Status>> = OnceLock::new();
@@ -83,14 +84,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
                     let enabled = wide("Host depth enabled");
                     AppendMenuW(menu, MF_STRING | if depth.enabled() { MF_CHECKED } else { 0 }, CMD_DEPTH_ENABLED, enabled.as_ptr());
-                    let inference_menu = CreatePopupMenu();
-                    if !inference_menu.is_null() {
-                        AppendMenuW(inference_menu, MF_STRING | if !depth.cpu_inference() { MF_CHECKED } else { 0 }, CMD_INFERENCE_GPU, wide("GPU").as_ptr());
-                        let cpu_flags = MF_STRING | if depth.cpu_inference() { MF_CHECKED } else { 0 }
-                            | if depth.cpu_inference_supported() { 0 } else { MF_GRAYED };
-                        AppendMenuW(inference_menu, cpu_flags, CMD_INFERENCE_CPU, wide("CPU").as_ptr());
-                        let label = wide(&format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }));
-                        AppendMenuW(menu, MF_POPUP, inference_menu as usize, label.as_ptr());
+                    let pipeline_menu=CreatePopupMenu();
+                    if !pipeline_menu.is_null() {
+                        let settings=depth.decode_settings();
+                        AppendMenuW(pipeline_menu,MF_STRING | MF_GRAYED,0,wide(&format!("Active: {}",depth.decoder_status())).as_ptr());
+                        AppendMenuW(pipeline_menu,MF_STRING | MF_GRAYED,0,wide("Decoder changes: next keyframe or stream").as_ptr());
+                        for (i,backend) in crate::video_decoder::Backend::ALL.iter().enumerate() {
+                            let disabled=if *backend==crate::video_decoder::Backend::Vaapi {MF_GRAYED} else {0};
+                            AppendMenuW(pipeline_menu,MF_STRING | disabled | if *backend==settings.backend {MF_CHECKED} else {0},CMD_DECODE_BASE+i,wide(backend.label()).as_ptr());
+                        }
+                        AppendMenuW(pipeline_menu,MF_STRING | if settings.cpu_processing {MF_CHECKED} else {0},CMD_CPU_PROCESSING,wide("CPU frame processing").as_ptr());
+                        AppendMenuW(menu,MF_POPUP,pipeline_menu as usize,wide("Advanced depth pipeline").as_ptr());
                     }
                     let rate_menu = CreatePopupMenu();
                     if !rate_menu.is_null() {
@@ -103,10 +107,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     }
                     let model_menu = CreatePopupMenu();
                     if !model_menu.is_null() {
-                        let models = depth.list_models();
-                        for (i, model) in models.iter().enumerate() {
-                            let label = wide(&crate::depth::model_label(model));
-                            AppendMenuW(model_menu, MF_STRING | if depth.model().as_deref() == Some(model) { MF_CHECKED } else { 0 }, CMD_MODEL_BASE + i, label.as_ptr());
+                        if let Ok(mut entries)=CHOICES.lock() {
+                            entries.clear();
+                            for group in depth.choice_groups() {
+                                let submenu=CreatePopupMenu();if submenu.is_null() {continue;}
+                                for choice in group.choices {
+                                    if entries.len()>=500 {break;}
+                                    AppendMenuW(submenu,MF_STRING | if depth.choice_selected(&choice) {MF_CHECKED} else {0},CMD_CHOICE_BASE+entries.len(),wide(&crate::depth::model_label(&choice.model)).as_ptr());
+                                    entries.push(choice);
+                                }
+                                AppendMenuW(model_menu,MF_POPUP,submenu as usize,wide(&group.label).as_ptr());
+                            }
                         }
                         match depth.download.state() {
                             crate::download::State::Running => {
@@ -143,7 +154,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                                 }
                             }
                         }
-                        let label = wide("Depth model");
+                        let label = wide(&format!("GPU / model: {}",depth.selection_label()));
                         AppendMenuW(menu, MF_POPUP, model_menu as usize, label.as_ptr());
                     }
                     let smoothing = wide("Depth smoothing");
@@ -203,18 +214,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let command = (wparam as usize) & 0xffff;
             let depth = DEPTH.get().and_then(Option::as_ref);
             if let Some(depth) = depth {
-                if command == CMD_INFERENCE_GPU || command == CMD_INFERENCE_CPU {
-                    depth.set_cpu_inference(command == CMD_INFERENCE_CPU);
-                    return 0;
+                if command==CMD_CPU_PROCESSING {depth.set_cpu_processing(!depth.decode_settings().cpu_processing);return 0;}
+                if (CMD_DECODE_BASE..CMD_DECODE_BASE+crate::video_decoder::Backend::ALL.len()).contains(&command) {
+                    depth.set_decode_backend(crate::video_decoder::Backend::ALL[command-CMD_DECODE_BASE]);return 0;
                 }
                 if (CMD_RATE_BASE..CMD_RATE_BASE + crate::depth::RATES.len()).contains(&command) {
                     depth.set_rate(crate::depth::RATES[command - CMD_RATE_BASE]);
                     return 0;
                 }
-                if (CMD_MODEL_BASE..CMD_SOFTEN_BASE).contains(&command) {
-                    if let Some(model) = depth.list_models().get(command - CMD_MODEL_BASE) {
-                        depth.select_model(model);
-                    }
+                if (CMD_CHOICE_BASE..CMD_CHOICE_BASE+500).contains(&command) {
+                    let choice=CHOICES.lock().ok().and_then(|items|items.get(command-CMD_CHOICE_BASE).cloned());
+                    if let Some(choice)=choice {depth.select_choice(&choice);}
                     return 0;
                 }
                 if (CMD_SOFTEN_BASE..CMD_SOFTEN_BASE + crate::vda::SOFTENING.len()).contains(&command) {

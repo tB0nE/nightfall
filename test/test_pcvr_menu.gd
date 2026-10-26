@@ -51,6 +51,10 @@ func _initialize() -> void:
 	ui._pcvr_link = link
 	ui.refresh_pcvr_menu()
 	assert(not link.visible)
+	var theme_changes := [0]
+	link.theme_changed.connect(func(): theme_changes[0] += 1)
+	for i in range(10): ui.refresh_pcvr_menu()
+	assert(theme_changes[0] == 0, "Unchanged PCVR status must not invalidate the menu theme every frame")
 	owner.pcvr_handover.state = Handover.State.ACTIVE
 	ui.refresh_pcvr_menu()
 	assert(link.visible and link.text == "PCVR")

@@ -199,7 +199,113 @@ but video and audio then go straight to Sunshine. The client logs this.
 
 ## Host depth
 
-The tray menu offers **Inference: GPU / CPU** for EdgePad models. GPU remains
+The **GPU / model** menu groups compatible models beneath each detected GPU.
+Choosing an entry saves the GPU, model and CPU/GPU mode together and queues one
+background reload; the stream does not restart. There is one group per GPU and
+a **CPU** group for single-frame models. Existing automatic GPU selections
+resolve to NVIDIA when available, otherwise ncnn's default GPU.
+Status reports the model and GPU actually loaded. Missing explicitly selected
+GPUs fail visibly. Identical-name GPUs are not yet individually distinguishable.
+
+EdgePad uses ncnn Vulkan on NVIDIA, AMD or Intel with a suitable driver. The new
+Vulkan VDA variants retain the learned reconstruction and temporal history:
+
+- **VDA 518×294**: original resolution.
+- **VDA Performance 392×224**: the lower-compute option.
+
+VDA entries appear when their optional runtime, model exports and GPU capabilities
+are available. VDA is not offered under CPU. On NVIDIA, Vulkan and TensorRT
+models appear together, with the backend in the VDA model label. TensorRT uses
+the default CUDA GPU; with multiple NVIDIA GPUs it is listed only under the first
+detected NVIDIA GPU. Existing saved TensorRT selections retain
+their behavior. Selecting a Vulkan GPU does not move desktop capture, encoding
+or the PCVR compositor. Driver overrides that hide GPUs also hide them here.
+
+#### Building/staging Vulkan VDA
+
+`cargo build --release --no-default-features` builds the optional native runner
+when the matching ncnn SDK is at `meteor/target/ncnn` (Linux), or
+`METEOR_VDA_NCNN_SDK` names its root. Windows packaging supplies the MSVC SDK
+explicitly. Without the SDK, Meteor builds without this optional runtime.
+Packaged runtimes live beside the executable, or in the AppImage's `usr/lib`.
+
+Stage the validated repaired exports, not the unrepaired pnnx graphs:
+
+```sh
+.build-cache/model-tester-venv/bin/python meteor/tools/stage_vda_vulkan_models.py \
+    --source .build-cache/vda-vulkan-spike \
+    --destination ~/.local/share/nightfall-meteor/models
+```
+
+Each variant has its own subdirectory and SHA-256 manifest. This staging tool
+refuses to overwrite different weights. Linux/Windows packaging includes these
+optional model directories when present in its model source folder. Existing
+TensorRT downloads do not install the Vulkan exports.
+
+The persistent runner shares the validated kernels with the research tools.
+NVIDIA uses cooperative-matrix Tensor Core kernels when supported; RX480 uses
+FP32 arithmetic, FP16 storage and wave64 reductions. Other supported GPUs use a
+portable fallback rather than blindly requiring wave64 or Tensor Cores. Intel,
+newer AMD cards and Windows still need hardware validation. History resets on a
+new stream, gaps over 500 ms, hard cuts and nonfinite output. State validity is
+checked on GPU. Initialization settings are thread-local; probe environment flags
+cannot silently change production kernels. Failed VDA inference uses the existing
+three-failure recovery to a single-frame model.
+
+Vulkan frame processing also accelerates the surrounding image operations:
+NV12 footprint filtering, VDA bicubic resize/normalization, scene-cut thumbnail
+reduction, depth softening, and final histogram/smoothing/alignment/cleanup.
+The prepared VDA tensor stays on Vulkan through inference. Portable EdgePad and
+VDA keep their output depth on Vulkan through final processing; only packed 8-bit
+maps and a small validation flag are downloaded. CPU reference processing and
+fallback readback remain available. Decoder surfaces still have host transfers;
+this is not VAAPI/Vulkan zero-copy.
+Portable VDA preparation skips frames while inference is busy rather than queueing
+another GPU filter behind a long model run. Short EdgePad jobs retain pipelined
+preparation. The decoder keeps consuming packets, and the next available VDA frame
+starts fresh preparation. Portable preparation also skips pixel conversion when
+there are no depth subscribers or snapshot requests.
+
+Standalone original-resolution RX480 graph timings were about 75 ms, Performance
+about 43 ms. Live decode, preparation, transfers, validity checks, softening and
+refinement add cost; these are not end-to-end stream latency guarantees.
+
+### Advanced depth pipeline
+
+- **Video decoder:** Auto, NVDEC (NVIDIA), VAAPI (Linux), or Software (CPU).
+  Auto prefers VAAPI when Vulkan inference is assigned to AMD, otherwise NVDEC, and can
+  fall back to VAAPI/software with a logged reason. Explicit choices fail
+  visibly instead of silently selecting a different backend.
+- **VAAPI decode GPU:** Auto or a DRM render device identified by GPU vendor and
+  PCI address. This is independent of the inference GPU; device paths persist
+  across renderD-number reorder.
+- **CPU frame processing:** forces the CPU reference preparation and refinement
+  for EdgePad and Vulkan VDA. With this off, VAAPI/software frames use Vulkan
+  preparation/refinement on the selected inference GPU, falling back to CPU with
+  a logged reason if those optional operations are unavailable. Vulkan VDA does
+  not require CUDA/TensorRT.
+
+Settings are saved under `[decode]` in `state.toml`. Decoder/device changes apply
+at the next keyframe or new stream. Active backend/device and processing are
+shown in the advanced menu and logged. Inference-GPU changes retain their live
+model reload behavior.
+
+On Linux, AMD-only EdgePad now uses in-process FFmpeg VAAPI (or software) decoding,
+the existing 4×4 footprint RGB filter on CPU, ncnn Vulkan inference on AMD, and
+CPU smoothing/alignment/contour cleanup. The optimized footprint filter is tested
+byte-for-byte against the existing reference. Decode output is tagged with its
+actual source frame ID, including B-frame reordering; no ffmpeg subprocess is
+used for the stream. CPU copies and processing can cost more than NVIDIA's CUDA
+path—compare complete stream-to-map latency, not just inference time.
+
+The optional runtime requires FFmpeg 8 ABI libraries: avcodec 62, avutil 60 and
+swscale 9. `METEOR_FFMPEG_DIR` can specify a runtime folder. Linux packaging builds
+and bundles a minimal FFmpeg runtime; VAAPI still requires the host's libva
+runtime and graphics driver. Windows has the software adapter and menu controls,
+but VAAPI is Linux-only, FFmpeg DLL bundling and Windows validation are outstanding.
+TensorRT VDA and the development PCVR compositor/encoder remain NVIDIA-only; Vulkan VDA does not.
+
+The **GPU / model** menu offers GPU and CPU groups for EdgePad models. GPU remains
 the default; CPU reuses the existing ncnn/ONNX weights without retraining.
 Changing this reloads inference without restarting Meteor or the stream, and
 the choice is saved in `state.toml`. CPU uses fp32 and at most four workers
@@ -207,9 +313,10 @@ the choice is saved in `state.toml`. CPU uses fp32 and at most four workers
 Status reports the active backend. A failed CPU load does not silently keep
 the previous GPU inference running.
 
-NVDEC decoding and the existing small CUDA input-conversion kernel remain
-unchanged; CPU inference does not make Meteor NVIDIA-independent or eliminate
-all GPU work. Depth post-processing runs on CPU for CPU model outputs.
+CPU inference is independent of the decoder selection: choose VAAPI/software
+decoding for a path that does not require NVIDIA. NVDEC retains its CUDA input
+conversion unless CPU frame processing is requested. Depth post-processing runs
+on CPU for CPU model outputs.
 VDA's live temporal pipeline still requires GPU: select EdgePad to enable CPU.
 CPU performance is hardware-dependent; test sustained update rate and game
 frame times rather than assuming that spare CPU capacity guarantees low latency.
@@ -229,8 +336,10 @@ reassembly, keeping only the data shards). Each frame then goes through:
    comparison.
 2. **Model:** the EdgePad models run on ncnn's Vulkan backend
    (`src/ncnn.rs`), which loads in under a second and needs no NVIDIA
-   inference libraries. Vulkan can't read CUDA memory, so the input tensor
-   comes back to the CPU first, and post-processing runs on the CPU.
+   inference libraries. Vulkan can't read CUDA memory, so NVDEC input tensors
+   come back through the CPU first; CUDA refinement still uses NVDEC's guide.
+   VAAPI/software decoding instead uses Vulkan footprint filtering and Vulkan
+   depth refinement, with CPU processing as an explicit reference/fallback path.
    Without ncnn (or with `METEOR_NCNN=off`), ONNX Runtime runs the `.onnx`
    versions (`src/onnx.rs`): it starts on CUDA within a second, builds a
    TensorRT fp16 engine in the background, and switches to it. The first

@@ -39,9 +39,13 @@ mod tray;
 #[cfg(windows)]
 mod tray_windows;
 mod vda;
+mod vda_vulkan;
+mod vulkan_processing;
 mod video_dump;
 mod video_tap;
+mod video_decoder;
 mod xr_control;
+mod xr_library;
 mod xr_bitrate;
 mod xr_foveation;
 mod xr_launch_intent;

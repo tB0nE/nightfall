@@ -64,6 +64,10 @@ echo "== Building Meteor in Ubuntu 22.04"
 cd /src
 cargo build --release --locked --no-default-features --target-dir /target
 cp /target/release/nightfall-meteor /stage/
+bash tools/build_ffmpeg_runtime.sh /target/ffmpeg-runtime /target/ffmpeg-build
+cp -L /target/ffmpeg-runtime/lib/libavcodec.so.62 /target/ffmpeg-runtime/lib/libavutil.so.60 /target/ffmpeg-runtime/lib/libswscale.so.9 /stage/
+cp -L /target/ffmpeg-runtime/lib/libdav1d.so.* /stage/
+cp /target/ffmpeg-runtime/FFmpeg-COPYING.LGPLv2.1 /target/ffmpeg-runtime/dav1d-copyright /stage/
 cargo about generate --no-default-features --fail -c tools/appimage/about.toml tools/appimage/about.hbs > /stage/crates.txt
 
 cd /tmp
@@ -73,6 +77,10 @@ curl -fsSL -o ncnn-LICENSE.txt "https://raw.githubusercontent.com/Tencent/ncnn/$
 echo "$NCNN_LICENSE_SHA256  ncnn-LICENSE.txt" | sha256sum -c --quiet
 unzip -q ncnn.zip
 cp "$NCNN_ZIP/lib/libncnn.so.1."* /stage/libncnn.so.1
+c++ -O2 -std=c++17 -shared -fPIC /src/native/vda_vulkan.cpp \
+    -I"$NCNN_ZIP/include/ncnn" -L"$NCNN_ZIP/lib" -lncnn \
+    -o /stage/libmeteor_vda_vulkan.so
+patchelf --set-rpath "\$ORIGIN" /stage/libmeteor_vda_vulkan.so
 cp ncnn-LICENSE.txt /stage/
 # ncnn needs libgomp, which not every distribution installs; it finds the
 # copy next to it.
@@ -86,8 +94,16 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/nightfall-meteor
     "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/732x732/apps" "$APPDIR/usr/share/doc/nightfall-meteor"
 install -m755 "$WORK/stage/nightfall-meteor" "$APPDIR/usr/bin/"
 install -m644 "$WORK/stage/libncnn.so.1" "$WORK/stage/libgomp.so.1" "$APPDIR/usr/lib/"
+install -m644 "$WORK/stage/libmeteor_vda_vulkan.so" "$APPDIR/usr/lib/"
+install -m644 "$WORK/stage/libavcodec.so.62" "$WORK/stage/libavutil.so.60" "$WORK/stage/libswscale.so.9" "$WORK"/stage/libdav1d.so.* "$APPDIR/usr/lib/"
 install -m644 "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
 install -m644 "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
+# VDA Vulkan exports are optional and retain their own checksum manifests.
+for variant in vda_vulkan_518x294 vda_vulkan_392x224; do
+    if [ -f "$MODELS/$variant/manifest.json" ]; then
+        cp -a "$MODELS/$variant" "$APPDIR/usr/share/nightfall-meteor/models/"
+    fi
+done
 install -m755 tools/appimage/AppRun "$APPDIR/AppRun"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/usr/share/applications/"
@@ -103,11 +119,14 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "- EdgePad 512x288 and 256x256 weights: Nightfall's ZipDepth models (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
     echo "- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor (microphone)"
+    echo "- FFmpeg 8.0.1, LGPL 2.1 or later: optional VAAPI/software decoding runtime"
+    echo "  Unmodified source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
+    echo "- dav1d, BSD 2-Clause: AV1 software decoding"
     echo "- The Rust crates listed at the end"
     echo
     echo "Choosing Video Depth Anything in the tray downloads NVIDIA TensorRT from"
     echo "NVIDIA, under NVIDIA's licence: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html"
-    echo "and the Video Depth Anything Small graphs, Apache 2.0. Neither ships in this file."
+    echo "TensorRT graphs are downloaded separately. Optional Vulkan VDA graphs, Apache 2.0, carry their LICENSE in each model directory."
     echo
     echo "=========================================================================="
     echo "ncnn"
@@ -124,6 +143,14 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "=========================================================================="
     echo "libopus"
     cat "$OUT"/cargo-registry/src/*/audiopus_sys-*/opus/COPYING
+    echo
+    echo "=========================================================================="
+    echo "FFmpeg"
+    cat "$WORK/stage/FFmpeg-COPYING.LGPLv2.1"
+    echo
+    echo "=========================================================================="
+    echo "dav1d"
+    cat "$WORK/stage/dav1d-copyright"
     echo
     echo "=========================================================================="
     echo "GCC Runtime Library Exception (libgomp): https://www.gnu.org/licenses/gcc-exception-3.1.html"

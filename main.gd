@@ -2316,7 +2316,7 @@ func _process(delta):
 	if welcome_screen: welcome_screen.process_auto_xr(delta)
 	pcvr_test.process_standby(delta)
 	pcvr_handover.process(delta)
-	if ui_visible: ui_controller.refresh_pcvr_menu()
+	if ui_visible: ui_controller.process_pcvr_menu(delta)
 	if pcvr_handover.menu_only and not pcvr_handover.blocks_workspace():
 		# Settings-only presentation must not run ordinary screen/ambient/grab
 		# updates which would reactivate hidden desktop layers behind the menu.
@@ -2872,6 +2872,13 @@ func _process_performance_overlay(delta: float):
 		int(stats.get("network_latency_ms", 0)), decoder_ms,
 		stream_backend.get_depth_last_inference_ms() if settings.host.ai_3d_speed > 0 else 0.0,
 	])
+	_log("[FRAME-BUDGET] app=%.1ffps process=%.2fms physics=%.2fms native=%s warp_gpu=%.2fms display=%.0fHz cap=%d menu=%s passthrough=%s background=%d screens=%d pcvr=%d" % [
+		Engine.get_frames_per_second(), Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		video_presentation.is_native_active(), native_xr_renderer.get_warp_gpu_ms(),
+		display_refresh_rate, Engine.max_fps, ui_visible, settings.passthrough_enabled,
+		settings.background_mode, screens.size(), pcvr_handover.state,
+	])
 
 func _process_idle_timeout():
 	if not is_streaming or settings.idle_timeout_min <= 0:
@@ -2892,11 +2899,13 @@ func _notification(what):
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
-		pcvr_handover.request_stop("Application paused")
-		if welcome_screen: welcome_screen.cancel_xr_control()
+		# Keep Meteor's owned game/transport alive during headset handoffs.
+		if not pcvr_test.meteor_mode and not pcvr_test.standby_active:
+			pcvr_handover.request_stop("Application paused")
+			if welcome_screen: welcome_screen.cancel_xr_control()
 		pcvr_test.set_application_paused(true)
 		if xr_interaction:
-			xr_interaction.cancel_transient_interactions("application paused")
+			xr_interaction.set_application_suspended(true)
 		if meteor_microphone:
 			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
@@ -2905,7 +2914,7 @@ func _notification(what):
 		if meteor_microphone:
 			meteor_microphone.set_paused(false)
 		if xr_interaction:
-			xr_interaction.cancel_transient_interactions("application resumed")
+			xr_interaction.set_application_suspended(false)
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):

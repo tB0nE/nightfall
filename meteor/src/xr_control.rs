@@ -26,6 +26,7 @@ fn invalid(message: &str) -> io::Error {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Authenticate {},
+    Library {action:String, #[serde(default)] key:String, #[serde(default)] offset:u32},
     Offer { width: u32, height: u32, hz: u32 },
     OfferLong { width: u32, height: u32, hz: u32 },
     Accept { session: String },
@@ -40,6 +41,12 @@ pub enum Request {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Reply {
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub library:Option<serde_json::Value>,
+    #[serde(default)]
+    pub open_library:bool,
+    #[serde(default)]
+    pub library_available:bool,
     pub state: String,
     pub session: Option<String>,
     pub reason: Option<String>,
@@ -77,10 +84,12 @@ struct Negotiation {
     codec: String,
     launch_intent: Option<String>,
     foveated_encoding: bool,
+    library_available:bool,
 }
 impl Negotiation {
     fn reply(&self, reason: Option<&str>) -> Reply {
         Reply {
+            library:None, open_library:false, library_available:self.library_available,
             state: self
                 .session
                 .as_ref()
@@ -112,6 +121,7 @@ impl Negotiation {
         }
         let long_run = matches!(&request, Request::OfferLong { .. });
         match request {
+            Request::Library {..} => return Ok(self.reply(Some("library_unavailable"))),
             Request::Authenticate {} => return Ok(self.reply(Some("already_authenticated"))),
             Request::Status {} => {}
             Request::SetBitrate {..} | Request::SetFoveation {..} => return Ok(self.reply(Some("runtime_not_active"))),
@@ -329,6 +339,7 @@ async fn connection_supervised(
     // Reserve exclusive session ownership only after proof of the paired key.
     let Ok(_owner) = session_slot.try_acquire_owned() else {
         let busy = Reply {
+            library:None, open_library:false, library_available:false,
             state: "busy".into(),
             session: None,
             reason: Some("another_control_session".into()),
@@ -344,6 +355,7 @@ async fn connection_supervised(
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))?;
     };
     let mut negotiation = Negotiation::default();
+    negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root|root.join("tools/meteor_vr_library.py").is_file());
     let mut relay: Option<crate::xr_relay::Relay> = None;
     tokio::time::timeout(
         IO_TIMEOUT,
@@ -363,7 +375,15 @@ async fn connection_supervised(
         let request = tokio::time::timeout_at(deadline, read_frame(&mut stream, &mut receive))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
-        let mut reply = if let Request::SetFoveation {session,enabled}=&request {
+        let mut reply = if let Request::Library {action,key,offset}=&request {
+            let mut reply=negotiation.reply(None);
+            reply.library=Some(if action=="launch" && negotiation.session.is_some() {
+                serde_json::json!({"action":"launch","error":"Exit the current XR session before launching another app"})
+            } else if let Some(root)=runtime_root.as_ref().filter(|_|enable_relay) {
+                crate::xr_library::request(root,action,key,*offset).await
+            } else {serde_json::json!({"action":action,"error":"XR library is unavailable on this host"})});
+            reply
+        } else if let Request::SetFoveation {session,enabled}=&request {
             let reason=if !negotiation.session.as_ref().is_some_and(|s|s.accepted && s.id==*session) {Some("unknown_session".to_string())}
             else if let Some(relay)=relay.as_mut() {relay.update_foveation(*enabled).err().map(|e|e.to_string())}
             else {Some("runtime_not_active".to_string())};
@@ -416,6 +436,14 @@ async fn connection_supervised(
             #[cfg(target_os = "linux")]
             if let Some(root) = runtime_root.clone() {
                 relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.eye_height, session.long_run, session.bitrate_mbps, session.codec.clone(), session.foveated_encoding, session.launch_intent.clone(), _runtime_tasks.as_ref());
+            }
+        }
+        reply.open_library=runtime_root.as_ref().is_some_and(|root|crate::xr_library::take_open(root));
+        // A live authenticated relay is activity-bound, not limited to a fixed
+        // game duration. Retain idle expiry for abandoned/disconnected clients.
+        if relay.is_some() {
+            if let Some(session)=negotiation.session.as_mut().filter(|s|s.accepted) {
+                session.expires=tokio::time::Instant::now()+Duration::from_secs(360);
             }
         }
         reply.relay = relay.as_ref().map(|r| r.ports.clone());

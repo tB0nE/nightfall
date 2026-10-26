@@ -192,8 +192,12 @@ def validate_steam_request(value,generation,app_id):
         raise ValueError("Forbidden Steam environment override")
     if any(not isinstance(v,str) or "\0" in v or len(v)>16384 for v in env.values()):
         raise ValueError("Invalid Steam environment value")
+    # Steam can use AppId 0 for shortcuts, while SteamGameId identifies the
+    # shortcut with a 64-bit non-Steam game ID. Keep the session bound to it.
+    shortcut_identity=env.get("SteamGameId")==str((int(app_id)<<32)|0x02000000)
     for name in ("SteamAppId","STEAM_COMPAT_APP_ID"):
-        if name in env and env[name]!=app_id: raise ValueError("Steam app ID mismatch")
+        if name in env and env[name]!=app_id and not (env[name]=="0" and shortcut_identity):
+            raise ValueError("Steam app ID mismatch")
 
 
 def request_steam_launch(output,app_id,argv,cwd,inherited):

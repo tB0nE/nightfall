@@ -17,6 +17,12 @@ pub(crate) fn valid_eye_size(size: u32) -> bool {
     (256..=4096).contains(&size) && size % 16 == 0
 }
 
+fn runtime_duration(external_application: bool, long_run: bool) -> Option<Duration> {
+    // Real games are owned until exit/cancellation; only diagnostic fixtures
+    // have a fixed wall-clock duration.
+    if external_application { None } else { Some(Duration::from_secs(if long_run {315} else {45})) }
+}
+
 pub(crate) fn session_application(root:&Path, source:&Path, output:&Path, intent:Option<&str>) -> io::Result<PathBuf> {
     if fs::metadata(source)?.len()>16384 {return Err(io::Error::other("XR application configuration exceeds 16 KiB"))}
     let mut spec:Value=serde_json::from_slice(&fs::read(source)?)?;
@@ -196,7 +202,7 @@ pub(crate) async fn runtime_adapter_with_status(
         .stderr(Stdio::from(log))
         .process_group(0);
     let mut child = OwnedProcess(command.spawn()?);
-    let deadline = Instant::now() + Duration::from_secs(if long_run {315} else {45});
+    let deadline = runtime_duration(application.exists(),long_run).map(|duration|Instant::now()+duration);
     loop {
         if let Some(progress) = progress {
             let mut status = events.runtime_status();
@@ -227,7 +233,7 @@ pub(crate) async fn runtime_adapter_with_status(
                 )))
             };
         }
-        if *cancel.borrow() || Instant::now() >= deadline {
+        if *cancel.borrow() || deadline.is_some_and(|until|Instant::now() >= until) {
             let timed_out = !*cancel.borrow();
             if let Some(progress) = progress { progress.lock().unwrap().phase = crate::xr_relay::RuntimePhase::Stopping; }
             let artifacts = &output;
@@ -453,6 +459,13 @@ pub async fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_game_duration_is_not_capped_by_diagnostic_supervisor() {
+        assert_eq!(super::runtime_duration(true,true),None);
+        assert_eq!(super::runtime_duration(true,false),None);
+        assert_eq!(super::runtime_duration(false,true),Some(std::time::Duration::from_secs(315)));
+        assert_eq!(super::runtime_duration(false,false),Some(std::time::Duration::from_secs(45)));
+    }
     use super::*;
     #[tokio::test]
     async fn runtime_task_drain_reaps_owned_child_before_return() {

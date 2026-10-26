@@ -72,6 +72,11 @@ impl ksni::Tray for MeteorTray {
         .into_iter()
         .chain(self.firewall_menu())
         .chain([MenuItem::Separator])
+        .chain([StandardItem {
+            label:"VR Apps".into(),
+            activate:Box::new(|_| {if let Err(error)=crate::xr_library::request_open(){log::warn!("Cannot open VR Apps: {error}");}}),
+            ..Default::default()
+        }.into()])
         .chain(self.depth_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
@@ -142,27 +147,16 @@ impl MeteorTray {
             )
         };
 
-        let models = depth.list_models();
-        let current = depth.model();
-        let model_names = models.clone();
-        let mut model_items: Vec<ksni::MenuItem<Self>> = vec![
-                RadioGroup {
-                    selected: current.as_ref().and_then(|c| models.iter().position(|m| m == c)).unwrap_or(0),
-                    select: Box::new(move |tray: &mut Self, i| {
-                        if let (Some(depth), Some(name)) = (&tray.depth, model_names.get(i)) {
-                            depth.select_model(name);
-                        }
-                    }),
-                    options: models
-                        .iter()
-                        .map(|m| RadioItem { label: crate::depth::model_label(m), ..Default::default() })
-                        .collect(),
-                }
-                .into(),
-        ];
+        let mut model_items:Vec<ksni::MenuItem<Self>>=depth.choice_groups().into_iter().map(|group| {
+            SubMenu {label:group.label,submenu:group.choices.into_iter().map(|choice| {
+                CheckmarkItem {label:crate::depth::model_label(&choice.model),checked:depth.choice_selected(&choice),
+                    activate:Box::new(move |tray:&mut Self| {if let Some(depth)=&tray.depth {depth.select_choice(&choice);}}),
+                    ..Default::default()}.into()
+            }).collect(),..Default::default()}.into()
+        }).collect();
         model_items.extend(self.vda_download_items(depth));
         let model_menu = SubMenu {
-            label: format!("Model: {}", current.as_deref().map_or_else(|| "none".to_string(), crate::depth::model_label)),
+            label: format!("GPU / model: {}",depth.selection_label()),
             submenu: model_items,
             ..Default::default()
         };
@@ -215,21 +209,44 @@ impl MeteorTray {
             }
             .into(),
             model_menu.into(),
-            SubMenu {
-                label: format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }),
-                submenu: vec![RadioGroup {
-                    selected: usize::from(depth.cpu_inference()),
-                    select: Box::new(|tray: &mut Self, i| {
-                        if let Some(depth) = &tray.depth { depth.set_cpu_inference(i == 1); }
-                    }),
-                    options: vec![
-                        RadioItem { label: "GPU".into(), ..Default::default() },
-                        RadioItem { label: if depth.cpu_inference_supported() { "CPU" } else { "CPU (EdgePad only)" }.into(), enabled: depth.cpu_inference_supported(), ..Default::default() },
-                    ],
-                }.into()],
-                ..Default::default()
-            }.into(),
             rate_menu.into(),
+            SubMenu {
+                label:"Advanced depth pipeline".into(),
+                submenu:{
+                    use crate::video_decoder::{Backend,vaapi_devices};
+                    let settings=depth.decode_settings();
+                    let devices=vaapi_devices();
+                    let mut device_options=vec![RadioItem {label:"Auto".into(),..Default::default()}];
+                    device_options.extend(devices.iter().map(|(_,label)|RadioItem {label:label.clone(),..Default::default()}));
+                    vec![
+                        info(format!("Active: {}",depth.decoder_status())),
+                        info("Decoder/device changes apply at the next keyframe or stream".into()),
+                        SubMenu {
+                            label:format!("Video decoder: {}",settings.backend.label()),
+                            submenu:vec![RadioGroup {
+                                selected:Backend::ALL.iter().position(|b|*b==settings.backend).unwrap_or(0),
+                                options:Backend::ALL.iter().map(|b|RadioItem {label:b.label().into(),..Default::default()}).collect(),
+                                select:Box::new(|tray:&mut Self,i|if let (Some(depth),Some(backend))=(&tray.depth,Backend::ALL.get(i)) {depth.set_decode_backend(*backend);}),
+                            }.into()],..Default::default()
+                        }.into(),
+                        SubMenu {
+                            label:"VAAPI decode GPU".into(),
+                            enabled:matches!(settings.backend,Backend::Auto|Backend::Vaapi),
+                            submenu:vec![RadioGroup {
+                                selected:settings.vaapi_device.as_ref().and_then(|p|devices.iter().position(|(path,_)|path==p)).map_or(0,|i|i+1),
+                                options:device_options,
+                                select:Box::new(move |tray:&mut Self,i|if let Some(depth)=&tray.depth {depth.set_vaapi_device(if i==0 {None} else {devices.get(i-1).map(|(path,_)|path.clone())});}),
+                            }.into()],..Default::default()
+                        }.into(),
+                        CheckmarkItem {
+                            label:"CPU frame processing (reference path)".into(),
+                            checked:settings.cpu_processing,
+                            activate:Box::new(|tray:&mut Self|if let Some(depth)=&tray.depth {depth.set_cpu_processing(!depth.decode_settings().cpu_processing);}),
+                            ..Default::default()
+                        }.into(),
+                    ]
+                },..Default::default()
+            }.into(),
             CheckmarkItem {
                 label: "Depth smoothing".into(),
                 checked: depth.smoothing(),

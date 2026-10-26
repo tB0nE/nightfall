@@ -30,6 +30,7 @@ tests=(
 	"test/test_pcvr_menu.gd"
 	"test/test_pcvr_session.gd"
 	"test/test_meteor_xr_control.gd"
+	"test/test_pcvr_app_library.gd"
 	"test/test_xr_diagnostic_ledger.gd"
 	"test/test_pcvr_test_controller.gd"
 	"test/test_pcvr_workspace_handover.gd"

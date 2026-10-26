@@ -25,7 +25,7 @@ def run_application(command, *, env, timeout, service_log, stop_file,
     if completion_file is not None: completion_file.unlink(missing_ok=True)
     interrupted = False
     forced = False
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + timeout if timeout is not None else float('inf')
     # A background app must not consume the host terminal or see an immediate
     # EOF as "press any key to quit". Keep a private pipe's writer alive without
     # passing it to the app; communicate() must not own/close that writer.

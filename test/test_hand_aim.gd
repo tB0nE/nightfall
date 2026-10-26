@@ -14,6 +14,20 @@ func _init():
 		quit(1)
 		return
 	var interaction = script.new(null)
+	# Invalid tracking and application suspension must not turn a held trigger
+	# into a fresh click on the last raycast target after resume.
+	assert(not interaction._pointer_input_ready(false, false))
+	assert(not interaction._pointer_input_ready(true, true))
+	assert(interaction._pointer_input_ready(true, false))
+	assert(interaction._pointer_input_ready(true, true))
+	interaction._pointer_suspended = true
+	assert(not interaction._pointer_input_ready(true, false))
+	interaction._pointer_suspended = false
+	assert(not interaction._pointer_input_ready(true, true))
+	assert(interaction._pointer_input_ready(true, false))
+	var untracked := XRController3D.new()
+	assert(not script.controller_pose_valid(untracked))
+	untracked.free()
 	var activity_owner = main_script.new()
 	activity_owner.xr_interaction = script.new(activity_owner)
 	var resting_controller := XRController3D.new()

@@ -76,8 +76,7 @@ def main():
             print("Requested the host-configured XR application. Handover still waits for its session and video.")
         else:
             print("Steam command handed to the owned XR runtime; waiting for game exit.",flush=True)
-            deadline=time.monotonic()+360
-            while time.monotonic()<deadline:
+            while True:
                 outcome=session/"steam-outcome.json"
                 if outcome.exists():
                     value=json.loads(outcome.read_text())
@@ -91,7 +90,6 @@ def main():
                 if state.exists() and json.loads(state.read_text()).get("state")=="stopped":
                     raise RuntimeError("XR runtime stopped before game outcome")
                 time.sleep(.1)
-            raise RuntimeError("Steam game outcome timed out")
         return 0
     except (OSError,ValueError,RuntimeError,AttributeError) as error:
         print(f"XR launcher: {error}",file=sys.stderr)

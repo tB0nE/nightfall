@@ -29,6 +29,13 @@ func _init() -> void:
 	var client = ControlClient.new(owner)
 	assert(not client.queue_bitrate(80))
 	assert(not client.queue_foveation(true))
+	assert(not client.request_library("list"))
+	client.state = "watching"
+	client.library_available = true
+	assert(client.request_library("art", "steam:438100"))
+	assert(client.request_library("list") and client._library_queue.size() == 1)
+	assert(client._library_queue[0].action == "list")
+	assert(not client.request_library("invalid"))
 	client.state = "prepared"
 	client.session = "a".repeat(32)
 	assert(client.queue_foveation(true) and client._pending_foveation == 1)
@@ -65,6 +72,7 @@ func _init() -> void:
 	assert(not ControlClient.valid_runtime_status(stale))
 	client.cancel()
 	assert(client.runtime_status.is_empty())
+	assert(client._library_queue.is_empty() and not client.library_available)
 	assert(client._pending_foveation == -1 and client.foveation_message.is_empty())
 	assert(client._update_runtime({}))
 	assert(not ControlClient.valid_runtime_status({"phase": "starting"}))

@@ -89,6 +89,7 @@ func _run() -> void:
 	_test_preparation_drain(owner)
 	_test_remote_timeout(owner)
 	_test_meteor_timeout(owner)
+	_test_meteor_survives_handoff_and_long_session(owner)
 	_test_pause_recovery(owner)
 	_test_standby(owner)
 	controller.session.enter()
@@ -224,35 +225,17 @@ func _test_standby(owner: Owner) -> void:
 	assert(not controller.standby_active and controller.restores == 0)
 	assert(controller.start_meteor_standby())
 	controller.set_application_paused(true)
+	assert(controller.backend.stops == 1 and controller.standby_active)
+	controller.backend.state = "running"
+	controller.process_standby(301.0)
+	assert(controller.backend.stops == 1 and controller.standby_active)
+	controller.set_application_paused(false)
+	assert(controller.backend.standby_starts == 2)
+	controller.request_stop()
 	assert(controller.backend.stops == 2)
 	controller.backend.state = "idle"
-	controller.process_standby(0.1)
-	assert(not controller.start_meteor_standby())
-	controller.set_application_paused(false)
-	assert(not controller.standby_active and controller.backend.standby_starts == 2)
-	assert(controller.start_meteor_standby())
-	controller.process_standby(45.1)
-	assert(controller.backend.stops == 3 and controller.restores == 0)
-	controller.backend.state = "idle"
-	controller.process_standby(0.1)
+	controller.process_standby(.1)
 	assert(not controller.standby_active)
-	# The game-testing profile survives the old 90s cutoff, but stays bounded.
-	assert(controller.start_meteor_standby(Controller.LONG_TIMEOUT_SECONDS))
-	controller.backend.state = "running"
-	controller.process_standby(90.1)
-	assert(controller.backend.stops == 3 and controller.standby_active)
-	controller.process_standby(209.8)
-	assert(controller.backend.stops == 3)
-	controller.process_standby(.2)
-	assert(controller.backend.stops == 4)
-	assert(owner.logs.any(func(line): return line.contains("DEV session timeout") and line.contains("limit=300.0s")))
-	controller.backend.state = "idle"
-	controller.process_standby(.1)
-	assert(controller.start_meteor_standby(99999.0))
-	assert(controller.timeout_seconds == Controller.TIMEOUT_SECONDS) # Not arbitrary/unbounded.
-	controller.request_stop()
-	controller.backend.state = "idle"
-	controller.process_standby(.1)
 
 func _test_remote_timeout(owner: Owner) -> void:
 	var controller := Harness.new(owner)
@@ -324,6 +307,25 @@ func _test_meteor_timeout(owner: Owner) -> void:
 	controller.backend.state = "idle"
 	controller.process(0.01)
 	assert(controller.restores == 1)
+
+func _test_meteor_survives_handoff_and_long_session(owner: Owner) -> void:
+	var controller := Harness.new(owner)
+	controller.backend = Backend.new()
+	controller.meteor_mode = true
+	controller._execute(controller.session.enter())
+	var token: int = controller.session.generation
+	assert(controller._preparation_frame(token))
+	controller._preparation_drawn(token)
+	controller.backend.state = "running"
+	controller.process(.1)
+	assert(controller.session.state == Session.State.RUNNING)
+	controller.set_application_paused(true)
+	controller.process(601.0)
+	controller.set_application_paused(false)
+	assert(controller.backend.stops == 0)
+	assert(controller.session.state == Session.State.RUNNING)
+	controller.request_stop()
+	assert(controller.backend.stops == 1)
 
 func _test_preparation_drain(owner: Owner) -> void:
 	var controller := Harness.new(owner)

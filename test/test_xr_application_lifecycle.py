@@ -10,6 +10,18 @@ from xr_application_lifecycle import run_application, valid_completion
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
+    def test_unlimited_application_still_obeys_stop_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);log=root/'service.log';log.write_text('')
+            stop=root/'stop'
+            result,interrupted,forced=run_application(
+                [sys.executable,'-c','import time; time.sleep(30)'],
+                env=dict(os.environ),timeout=None,service_log=log,stop_file=stop,
+                terminate_on_stop=True,owner_alive=lambda:False)
+            self.assertTrue(interrupted)
+            self.assertFalse(forced)
+            self.assertNotEqual(result.returncode,0)
+
     def test_capture_failure_stops_owned_application_with_clear_error(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

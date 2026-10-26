@@ -323,7 +323,10 @@ Meteor, the optional PC companion, builds separately with Cargo; see
 [meteor/README.md](meteor/README.md). It needs Rust 1.92 and CMake (for the
 Opus decoder it compiles from source). `meteor/tools/build_appimage.sh` builds
 the Linux AppImage in a container, and `meteor/tools/build_windows_installer.ps1`
-builds the Windows installer on Windows.
+builds the Windows installer on Windows. The optional persistent Vulkan VDA
+runner builds against the matching ncnn SDK (`METEOR_VDA_NCNN_SDK`, or
+`meteor/target/ncnn` on Linux). Both packaging scripts include the runner and any
+staged VDA model directories; see Meteor's README for manifests and model staging.
 
 ### Experimental Monado runtime probe
 
