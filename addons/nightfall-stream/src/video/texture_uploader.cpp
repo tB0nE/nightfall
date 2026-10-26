@@ -838,9 +838,9 @@ ANativeWindow *TextureUploader::create_android_gles_decoder_surface(int width, i
     if (!rs) return nullptr;
     {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
-        if (gles_decoder_window_ && gles_surface_width_ == width && gles_surface_height_ == height) {
-            return gles_decoder_window_;
-        }
+        // Never reuse a window from the decoder thread: cleanup of the previous
+        // connection may still be queued on the render thread. Returning it here
+        // would let MediaCodec attach to a surface that cleanup then abandons.
         gles_surface_width_ = width;
         gles_surface_height_ = height;
         gles_surface_ready_ = false;
@@ -860,6 +860,9 @@ ANativeWindow *TextureUploader::create_android_gles_decoder_surface(int width, i
 void TextureUploader::_render_thread_create_android_gles_surface() {
     const int width = gles_surface_width_;
     const int height = gles_surface_height_;
+    // Creation runs after previously queued cleanup. Also retire any remaining
+    // surface here so every decoder connection owns a fresh BufferQueue.
+    _render_thread_destroy_android_gles_surface();
     auto fail = [this] {
         std::lock_guard<std::mutex> lock(gles_surface_mutex_);
         gles_surface_failed_ = true;
@@ -977,6 +980,8 @@ void TextureUploader::_render_thread_create_android_gles_surface() {
         return;
     }
     gles_decoder_window_ = ANativeWindow_fromSurface(env, local_surface);
+    NF_LOG("TextureUploader", "Created GLES decoder surface %p (%dx%d)",
+        static_cast<void *>(gles_decoder_window_), width, height);
     env->DeleteLocalRef(local_surface);
     gles_surface_texture_java_ = env->NewGlobalRef(local_surface_texture);
     jfloatArray local_matrix = env->NewFloatArray(16);
@@ -1600,6 +1605,8 @@ void TextureUploader::_render_thread_destroy_android_gles_surface() {
     JavaVM *vm = nullptr;
     JNIEnv *env = get_gles_jni_env(vm);
     if (gles_decoder_window_) {
+        NF_LOG("TextureUploader", "Destroying GLES decoder surface %p",
+            static_cast<void *>(gles_decoder_window_));
         ANativeWindow_release(gles_decoder_window_);
         gles_decoder_window_ = nullptr;
     }
