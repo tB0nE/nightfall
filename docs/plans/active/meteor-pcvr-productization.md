@@ -1,6 +1,15 @@
 # Meteor PCVR: outstanding work and implementation order
 
-## Current handoff: core layer expansion ready for application testing
+## Current checkpoint — 26 October 2026
+
+Use the [branch review](meteor-branch-review-20261026.md) for current capabilities,
+validation and outstanding work. Alyx and VRChat have since been tested, the VR
+app library is implemented, and the fixed gameplay-duration limits were removed.
+Further depth optimization is paused; resume Linux XR validation and startup/
+packaging integration. Earlier checkpoints below are historical, including their
+five-minute limits and unchecked phase lists.
+
+## Historical handoff: core layer expansion ready for application testing
 
 The core [layer expansion](meteor-xr-layer-expansion.md) is now implemented:
 cylinders, complete colour scale/bias, ordered projection/overlay stacks and

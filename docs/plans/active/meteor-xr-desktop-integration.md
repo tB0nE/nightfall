@@ -1,6 +1,8 @@
 # Meteor XR: desktop-to-immersive integration
 
-Status: Phase 1 in progress; 2026-10-20. Branch: `feat/meteor-xr-streaming`.
+Historical implementation plan, 2026-10-20. For current status and outstanding
+work, use the [26 October branch review](meteor-branch-review-20261026.md).
+Branch: `feat/meteor-xr-streaming`.
 Baseline: `adc97b7`. This plan succeeds the isolated
 [Monado spike](meteor-xr-monado-spike.md); retain that plan and the
 [live-relay evidence](../../research/meteor-xr-live-relays.md) as research history.

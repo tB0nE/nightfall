@@ -1,5 +1,10 @@
 # Automatic XR launch from the Nightfall desktop
 
+Current checkpoint: [26 October branch review](meteor-branch-review-20261026.md).
+The launch-intent implementation below is present. Its older five-minute DEV
+limits were subsequently removed; wrapper-free startup and production packaging
+remain future work.
+
 ## 2026-10-24: multiple Steam games
 
 The original spike pinned `application.json` to VRChat (438100). Host-local
