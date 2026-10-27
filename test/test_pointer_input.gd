@@ -4,7 +4,11 @@ class Backend extends RefCounted:
 	var scrolls: Array = []
 	var positions: Array = []
 	func send_scroll_event(clicks: int): scrolls.append(clicks)
+	var follows: Array = []
+	var follow_stops := 0
 	func send_mouse_position_event(x: int, y: int, ref_w: int, ref_h: int): positions.append(Vector2i(x, y))
+	func follow_mouse_position_event(x: int, y: int, ref_w: int, ref_h: int): follows.append(Vector2i(x, y))
+	func stop_mouse_follow(): follow_stops += 1
 
 class Layout extends RefCounted:
 	func host_ref() -> Vector2i: return Vector2i(1920, 1080)
@@ -53,28 +57,28 @@ func _test_gamepad_does_not_scroll(owner: Owner) -> void:
 # #61: with the setting on, the host cursor follows the pointer without a click.
 func _test_mouse_follows_pointer(owner: Owner) -> void:
 	var interaction := Interaction.new(owner)
-	var sent: Array = owner.stream_backend.positions
+	var backend = owner.stream_backend
+	var sent: Array = backend.follows
 	interaction.pointed = Vector2i(100, 200)
 	interaction._follow_pointer_with_mouse(null, false)
-	assert(sent.is_empty(), "off by default")
+	assert(sent.is_empty() and backend.follow_stops == 0, "off by default")
 
 	owner.settings.mouse_follows_pointer = true
 	interaction._follow_pointer_with_mouse(null, false)
 	assert(sent == [Vector2i(100, 200)])
 	interaction._follow_pointer_with_mouse(null, false)
-	assert(sent.size() == 1, "an unchanged pixel isn't resent")
+	assert(sent.size() == 2, "an unchanged pixel still updates the native velocity")
 	interaction.pointed = Vector2i(101, 200)
 	interaction._follow_pointer_with_mouse(null, false)
 	assert(sent.back() == Vector2i(101, 200))
+	assert(backend.positions.is_empty(), "following never sends one-off positions")
 
 	interaction.pointed = null
 	interaction._follow_pointer_with_mouse(null, false)
-	assert(sent.size() == 2, "off the screen sends nothing")
-	interaction.pointed = Vector2i(5, 5)
-	interaction._follow_pointer_with_mouse(null, true)
-	assert(sent.size() == 2, "the trackpad, gamepad mode or a grab blocks it")
-	owner.is_streaming = false
+	assert(sent.size() == 3 and backend.follow_stops == 1, "off the screen stops following")
 	interaction._follow_pointer_with_mouse(null, false)
-	assert(sent.size() == 2, "nothing while not streaming")
-	owner.is_streaming = true
-	owner.settings.mouse_follows_pointer = false
+	assert(backend.follow_stops == 1, "stopping is sent once")
+	interaction.pointed = Vector2i(5, 5)
+	interaction._follow_pointer_with_mouse(null, false)
+	interaction._follow_pointer_with_mouse(null, true)
+	assert(sent.size() == 4 and backend.follow_stops == 2, "the trackpad, gamepad mode or a grab stops it")

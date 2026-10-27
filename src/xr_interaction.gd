@@ -349,21 +349,24 @@ func _stream_host_point(active_raycast: RayCast3D) -> Variant:
 		uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
 	return main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
 
-var _last_hover_host_pt = null
+var _mouse_following := false
 
 # Mouse Follows Pointer (#61): RTS games preview placement under the cursor
-# before a click, so move the host cursor whenever the pointed-at pixel
-# changes, not only on trigger or grip.
+# before a click, so move the host cursor with the pointer, not only on
+# trigger or grip. Every frame's sample goes to the native side, which skips
+# unchanged pixels and fills in between frames at 250 Hz.
 func _follow_pointer_with_mouse(active_raycast: RayCast3D, blocked: bool) -> void:
-	if blocked or not main.settings.mouse_follows_pointer or not main.is_streaming:
-		_last_hover_host_pt = null
+	var host_pt = null
+	if not blocked and main.settings.mouse_follows_pointer and main.is_streaming:
+		host_pt = _stream_host_point(active_raycast)
+	if host_pt == null:
+		if _mouse_following:
+			_mouse_following = false
+			main.stream_backend.stop_mouse_follow()
 		return
-	var host_pt = _stream_host_point(active_raycast)
-	if host_pt == null or host_pt == _last_hover_host_pt:
-		return
-	_last_hover_host_pt = host_pt
+	_mouse_following = true
 	var ref = main.layout.host_ref()
-	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
+	main.stream_backend.follow_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
 
 func _send_double_click_chord(active_raycast: RayCast3D) -> bool:
 	if not _position_stream_pointer(active_raycast):
