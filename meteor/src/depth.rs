@@ -638,11 +638,11 @@ impl Depth {
     /// Downloads what VDA needs in the background, then switches to it. The
     /// current model keeps serving meanwhile.
     pub fn download_vda(self: &Arc<Self>) {
-        if self.download.state() == crate::download::State::Running {
+        if !self.download.reserve() {
             return;
         }
         let depth = self.clone();
-        let _ = std::thread::Builder::new().name("vda-download".into()).spawn(move || {
+        let launched = std::thread::Builder::new().name("vda-download".into()).spawn(move || {
             let plan = match crate::download::plan(&depth.models_dir) {
                 Ok(plan) => plan,
                 Err(err) => {
@@ -666,6 +666,37 @@ impl Depth {
                 Err(err) => log::warn!("VDA download stopped: {err}"),
             }
         });
+        if let Err(error)=launched {
+            if let Ok(mut state)=self.download.state.lock() { *state=crate::download::State::Failed(error.to_string()); }
+        }
+    }
+
+    pub fn vulkan_vda_offers(&self) -> Vec<(&'static str,u64)> {
+        if self.download.state()==crate::download::State::Running || !vda_vulkan::available() ||
+            !self.depth_gpu_names().iter().any(|gpu|vda_vulkan::gpu_supported(Some(gpu))) { return vec![]; }
+        [vda_vulkan::FULL,vda_vulkan::FAST].into_iter()
+            .filter(|id|!crate::vda_assets::installed(&self.models_dir,id) &&
+                !self.bundled_dir.as_ref().is_some_and(|directory|crate::vda_assets::installed(directory,id)))
+            .filter_map(|id|crate::vda_assets::bytes(id).ok().map(|bytes|(id,bytes))).collect()
+    }
+
+    pub fn download_vulkan_vda(self: &Arc<Self>, id: &'static str) {
+        if !vda_vulkan::is_model(id) || !self.download.reserve() { return; }
+        let depth=self.clone();
+        if let Err(error)=std::thread::Builder::new().name("vda-vulkan-download".into()).spawn(move || {
+            match depth.download.run_vulkan(&depth.models_dir,id) {
+                Ok(())=> {
+                    log::info!("Vulkan VDA installed: {id}; select it under GPU / model");
+                    #[cfg(target_os="linux")]
+                    if let Ok(runtime)=tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                        runtime.block_on(crate::desktop::notify("Vulkan VDA ready", "Select the downloaded model under your GPU in Meteor's GPU / model menu. Your current model is unchanged."));
+                    }
+                }
+                Err(error)=>log::warn!("Vulkan VDA download stopped: {error}"),
+            }
+        }) {
+            if let Ok(mut state)=self.download.state.lock() { *state=crate::download::State::Failed(error.to_string()); }
+        }
     }
 
     /// Deletes what the VDA download installed, after switching away from

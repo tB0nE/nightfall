@@ -38,7 +38,7 @@ pub fn present(root: &Path, id: &str) -> bool {
         .iter()
         .all(|f| directory(root, id).join(f).is_file())
 }
-fn verify(root: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn verify(root: &Path, id: &str) -> Result<(), String> {
     use std::io::Read;
     let path = directory(root, id);
     let manifest: Manifest = serde_json::from_slice(

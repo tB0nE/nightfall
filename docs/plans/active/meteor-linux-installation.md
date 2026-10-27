@@ -505,3 +505,110 @@ accepted. The implementation is ready to commit.
 
 No further physical approval/copy/relaunch test is outstanding for this batch.
 Longer suspend/resume and gameplay coverage can continue during normal use.
+
+
+## One-click PCVR setup checkpoint (2026-10-26)
+
+Implemented **Enable PCVR — install & restart Meteor** in the tray, below the
+Steam launch-options copy action. It installs the bundled verified runtime into
+its configured user-data location, enables `[xr] enabled = true`, then drains XR
+and restarts Meteor. Existing comments, settings, custom absolute runtime paths
+and approvals are retained. The original settings file gets a backup; changes
+made by another editor during installation cause setup to stop rather than
+silently overwrite them. Duplicate setup clicks are blocked while work runs.
+
+The tray displays setup progress, **PCVR ready (Linux / NVIDIA)**, or a failure
+summary with Retry. Detailed errors are logged and shown in a desktop
+notification. Missing-bundle builds direct users to the XR-enabled AppImage.
+An existing configured XR startup failure now produces a notification as well
+as a tray error. Installing while an XR runtime is active remains refused by
+the existing installer lock. Setup/restart briefly interrupts desktop streams.
+
+A matching `--enable-xr` command performs install/enable and exits for headless
+setup and packaged testing. The older install-only command remains supported.
+Settings are modified with toml_edit to retain comments instead of reserializing
+the whole user file. Restart re-executes the original AppImage (or standalone
+binary), retaining launch arguments; it avoids GPU library exit handlers and
+retains the process chain used by the preview's user service.
+
+Validation: 143 Rust release tests pass; 19 hardware/manual integration tests
+are ignored. Packaged installation tests now verify enable/configuration backup.
+An isolated tray test starts with XR disabled and no runtime in its selected
+location, activates that child's actual D-Bus Enable item, verifies a fresh
+installation, saved setting, process restart, PCVR-ready menu, restored desktop
+forwarding and XR discovery, then quits via that child's tray. It does not send
+menu events to the real user's Meteor instance. All final packaged checks pass:
+`.build-cache/meteor-xr/appimage-validation-20261026-setup-r3/report.json`.
+This covers the packaged standalone executable's restart; physical fresh-machine
+setup and the AppImage re-exec path remain useful user acceptance checks.
+
+New optimized AppImage: 65,235,448 bytes, SHA-256
+`886109cec7861b6cd7e6e243448adc0da4935e94fa49249559a23217fa6b38c1`.
+Restarted the real preview host with this artifact after confirming no active XR
+session. Existing installed runtime and headset approval were retained; no APK
+rebuild was needed. The existing setup should show PCVR ready immediately.
+
+The one-click installation/enabling task in the prior outstanding list is now
+implemented. Remaining work: physical clean-machine acceptance, distribution
+attribution/source/dependency documentation, optional Vulkan VDA delivery, AMD XR
+encoding and Windows support. The one-click setup implementation was subsequently committed as `1d54a32`.
+
+
+## Release packaging and Vulkan VDA downloads (2026-10-27)
+
+Both requested tasks are implemented. The existing `meteor-vda-s-518x294` model
+release now has Vulkan/ncnn Small exports for 518×294 and 392×224, with separate
+manifest/license assets, a README and SHA-256 list. Existing TensorRT assets were
+retained. All twelve model asset sizes and GitHub digests match the compiled
+catalog in `meteor/models/vda-vulkan-downloads.json`.
+
+Meteor offers missing Vulkan variants under GPU / model when a supported Vulkan
+GPU/runtime is available. Downloads require no TensorRT/CUDA package and keep
+the current model/GPU selected. Shared progress/cancel controls work for both
+VDA download paths. A per-model process lock prevents overlapping installations;
+partial files are resumed, checked against pinned hashes and installed from an
+invisible staging directory only after the complete model verifies. Existing
+corrupt model directories are preserved with an actionable error. The CLI also
+supports `--download-vda-vulkan 518|392`.
+
+Release packaging now includes complete libgomp distribution copyright/runtime
+exception text, GPL text, exact baseline package versions, extended Monado source
+attributions, source input hashes and RELEASE.md, available through the tray.
+The source companion includes 569 recorded Nightfall source inputs, the actual
+patched Monado source, pinned xrizer source, vendored Rust dependencies for both,
+Eigen headers, NV codec headers and the exact FFmpeg source archive. Its separate
+`.cargo/vendor-config.toml` files preserve original Cargo settings and allow
+offline resolution. Signing files, user state and compiler outputs are excluded.
+
+Evidence:
+- 147 Rust release tests passed; 19 hardware/manual tests ignored.
+- 15 Python packaging/source-selection tests passed.
+- Both variants downloaded from public GitHub URLs into isolated model folders;
+  all twelve installed files verified, a partial transfer was seeded/resumed,
+  and no TensorRT runtime was downloaded.
+- Full packaged-host checks passed, including fresh one-click setup/restart,
+  pairing/authentication, proxy forwarding, disabled/bind-failure isolation and
+  shutdown: `.build-cache/meteor-release-packaging/release-ready-validation`.
+- Source archive hashes match its 569 inputs and the AppImage's source manifest;
+  both Meteor and xrizer Cargo dependencies resolve offline from extracted source.
+  Source validation: `.build-cache/meteor-release-packaging/source-validation-ready`.
+
+Artifacts in `meteor/target/appimage`:
+- Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage: 65,333,752 bytes;
+  SHA-256 d97f9611af9f848acfa77be74913146cc28d6c092c7f4b9ed753588e11e4652c.
+- Nightfall-Meteor-0.1.1-XR-DEV-sources.tar.gz: 136,490,281 bytes;
+  SHA-256 d609f46c2faae72364054f1197ac6a927a10024e24c377458adcdd393b8f98ae.
+- A matching SHA256SUMS text file and AppImage zsync file are prepared.
+
+The real Meteor preview was updated and is running with PCVR ready, preserving
+settings, models and approvals. A final source-record-only repack did not alter
+its executable code. Both models already exist on this development PC, so their
+download offers are naturally hidden here; public-download acceptance used fresh
+isolated directories. No new application release or APK was published. Model
+assets are public; application/source artifacts are ready locally for release.
+
+One-click setup is committed as `1d54a32`; release packaging and Vulkan model
+downloads are committed with this checkpoint. Outstanding larger work is physical
+fresh-machine acceptance, AMD XR encoding and Windows.
+Vulkan model inference speed/quality is unchanged: the uploaded files match the
+previously tested local exports, and this work adds distribution/installation.

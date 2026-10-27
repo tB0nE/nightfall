@@ -98,6 +98,9 @@ cp ncnn-LICENSE.txt /stage/
 # ncnn needs libgomp, which not every distribution installs; it finds the
 # copy next to it.
 cp /usr/lib/x86_64-linux-gnu/libgomp.so.1 /stage/
+cp /usr/share/doc/libgomp1/copyright /stage/libgomp-copyright.txt
+cp /usr/share/common-licenses/GPL-3 /stage/GPL-3.txt
+dpkg-query -W libgomp1 libdav1d-dev > /stage/baseline-packages.txt
 patchelf --set-rpath "\$ORIGIN" /stage/libncnn.so.1
 echo "glibc needed: $(objdump -T /stage/nightfall-meteor /stage/libncnn.so.1 /stage/libgomp.so.1 | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -1)"
 '
@@ -134,6 +137,9 @@ install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/usr/share/applica
 install -m644 "$REPO/src/assets/nightfall_icon_v1.png" "$APPDIR/nightfall-meteor.png"
 install -m644 "$REPO/src/assets/nightfall_icon_v1.png" "$APPDIR/usr/share/icons/hicolor/732x732/apps/nightfall-meteor.png"
 install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
+install -m644 "$METEOR/RELEASE.md" "$APPDIR/usr/share/doc/nightfall-meteor/RELEASE.md"
+install -m644 "$WORK/stage/libgomp-copyright.txt" "$WORK/stage/GPL-3.txt" "$WORK/stage/baseline-packages.txt" "$APPDIR/usr/share/doc/nightfall-meteor/"
+/usr/bin/python3 "$METEOR/tools/release_metadata.py" --metadata "$APPDIR/usr/share/doc/nightfall-meteor/SOURCE_MANIFEST.json"
 {
     echo "Nightfall Meteor $VERSION is free software under the GNU GPL v3 (LICENSE)."
     echo "It includes the components below, under their own licences."
@@ -147,14 +153,17 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "  Unmodified source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
     echo "- dav1d, BSD 2-Clause: AV1 software decoding"
     if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
-        echo "- Managed Monado XR runtime, bridges and private cJSON: usr/share/nightfall-meteor/xr-bundle"
+        echo "- Managed Monado XR runtime, xrizer (GPL-3.0-or-later), bridges and private cJSON: usr/share/nightfall-meteor/xr-bundle"
         echo "  Upstream and dependency notices are retained inside that verified bundle."
     fi
     echo "- The Rust crates listed at the end"
     echo
-    echo "Choosing Video Depth Anything in the tray downloads NVIDIA TensorRT from"
+    echo "Choosing NVIDIA TensorRT Video Depth Anything in the tray downloads TensorRT from"
     echo "NVIDIA, under NVIDIA's licence: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html"
     echo "TensorRT graphs are downloaded separately. Optional Vulkan VDA graphs, Apache 2.0, carry their LICENSE in each model directory."
+    echo "Vulkan VDA does not download or require TensorRT."
+    echo "Exact Nightfall source hashes and build instructions: SOURCE_MANIFEST.json and RELEASE.md."
+    echo "Distribute the generated source companion archive with public binary releases."
     echo
     echo "=========================================================================="
     echo "ncnn"
@@ -181,7 +190,8 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     cat "$WORK/stage/dav1d-copyright"
     echo
     echo "=========================================================================="
-    echo "GCC Runtime Library Exception (libgomp): https://www.gnu.org/licenses/gcc-exception-3.1.html"
+    echo "GNU OpenMP runtime: full distribution copyright and GCC Runtime Library Exception"
+    cat "$WORK/stage/libgomp-copyright.txt"
     echo
     echo "=========================================================================="
     echo "Rust crates"

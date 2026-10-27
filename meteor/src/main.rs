@@ -42,6 +42,7 @@ mod tray;
 mod tray_windows;
 mod vda;
 mod vda_vulkan;
+mod vda_assets;
 mod vulkan_processing;
 mod video_dump;
 mod video_tap;
@@ -162,6 +163,7 @@ async fn main() {
              \x20 --fps <n>               frame rate for --replay (default 60)\n\
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
+             \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
              \x20                         and the VDA graphs, then exit"
         );
         return;
@@ -172,6 +174,17 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    if let Some(variant)=value("--download-vda-vulkan") {
+        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
+            eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
+        }};
+        let directory=config.models_dir.clone().unwrap_or_else(config::default_models_dir);
+        let download=download::Download::default();
+        match download.run_vulkan(&directory,id) {
+            Ok(())=>{println!("Installed {} in {}",depth::model_label(id),directory.display());return;},
+            Err(error)=>{eprintln!("Vulkan VDA download failed: {error}");std::process::exit(1);},
+        }
+    }
     if flag("--download-vda") {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         std::process::exit(download::command(&models_dir));

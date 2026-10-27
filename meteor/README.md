@@ -34,9 +34,28 @@ area. macOS runs without a tray icon for now.
 
 ### Managed Linux XR (development preview)
 
+Release dependencies, licenses, source companion and reproducible build inputs
+are documented in [RELEASE.md](RELEASE.md), also accessible from the tray's
+**Release information & licenses** item.
+
 The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA
 encoding/tracking bridges and an independently built xrizer OpenVR compatibility
-runtime. WiVRN and SteamVR installations are not required. Install its verified files into your user-data folder:
+runtime. WiVRN and SteamVR installations are not required.
+
+Run the AppImage and select **Enable PCVR — install & restart Meteor** near the
+top of its tray menu. This installs the verified runtime into your user-data
+folder, enables XR and restarts Meteor. Existing settings/comments are retained,
+with a backup before the setting is changed; headset approvals are preserved.
+The menu shows **PCVR ready** when the service is running, or an error and Retry
+action if setup/startup fails. Desktop streams briefly disconnect during restart.
+
+For command-line setup, this performs the same install/enable steps and exits:
+
+```sh
+./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --enable-xr
+```
+
+The install-only command remains available:
 
 ```sh
 ./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --install-xr-runtime
@@ -47,8 +66,8 @@ options, headset authorization or running services. Python 3, compatible host
 Vulkan/udev/C++ libraries and the NVIDIA driver remain required for XR. AMD depth
 inference is supported separately; AMD XR encoding is not implemented yet.
 
-Enable the installed XR service in `~/.config/nightfall-meteor/meteor.toml`
-(respecting `XDG_CONFIG_HOME`), then restart Meteor:
+Advanced users can also enable the installed XR service directly in
+`~/.config/nightfall-meteor/meteor.toml` (respecting `XDG_CONFIG_HOME`), then restart Meteor:
 
 ```toml
 [xr]
@@ -86,6 +105,20 @@ copies the installed launch command. In Steam, right-click each VR game, choose
 for Steam games and non-Steam shortcuts: it reads the identity Steam supplies.
 Existing per-game commands with explicit app IDs continue to work. Linux copy
 uses KDE's clipboard service, or `wl-copy` / `xclip` on other desktops.
+
+### Optional Vulkan VDA models
+
+Under **GPU / model**, choose **Download VDA 518×294 (Vulkan)** or
+**Download VDA Performance 392×224 (Vulkan)**. Both are conversions of the existing
+VDA Small checkpoint and require no TensorRT/CUDA download. Files come from the
+[VDA model release](https://github.com/tB0nE/nightfall/releases/tag/meteor-vda-s-518x294)
+and are pinned by SHA-256. Downloads can be cancelled and resumed. Meteor adds a
+model to compatible GPU groups only after its complete installation; your current
+model and GPU remain selected. Each download includes the Apache 2.0 license.
+
+For headless installation, use `--download-vda-vulkan 518` or
+`--download-vda-vulkan 392`. NVIDIA's separate TensorRT VDA download remains
+available under its clearly labelled menu entry.
 
 ### Integrated XR development service
 

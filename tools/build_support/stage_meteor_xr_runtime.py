@@ -91,6 +91,15 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         checksums[str(target.relative_to(destination))] = hashlib.sha256(target.read_bytes()).hexdigest()
+    copyright_lines = set()
+    for source in notice_root.rglob('*'):
+        if source.is_file() and source.suffix in ('.c', '.cpp', '.h', '.hpp'):
+            for line in source.read_text(errors='replace').splitlines()[:90]:
+                if 'copyright' in line.lower() or 'SPDX-FileCopyrightText:' in line:
+                    copyright_lines.add(line.strip().lstrip('/* ').rstrip('*/ '))
+    copyright_notice = package / 'notices/monado/SOURCE-COPYRIGHTS.txt'
+    copyright_notice.write_text('\n'.join(sorted(copyright_lines))+'\n')
+    checksums[str(copyright_notice.relative_to(destination))] = hashlib.sha256(copyright_notice.read_bytes()).hexdigest()
     headers = root / '.build-cache/meteor-xr/WiVRn/external/ffnvcodec'
     for source in sorted(headers.glob('*.h')):
         text = source.read_text().split('*/', 1)[0] + '*/\n'

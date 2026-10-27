@@ -129,6 +129,17 @@ impl ksni::Tray for MeteorTray {
             }
             .into(),
             StandardItem {
+                label: "Release information & licenses".into(),
+                activate: Box::new(|_| {
+                    if let Ok(executable)=std::env::current_exe() {
+                        if let Some(prefix)=executable.parent().and_then(std::path::Path::parent) {
+                            open_url(&prefix.join("share/doc/nightfall-meteor/RELEASE.md").to_string_lossy());
+                        }
+                    }
+                }),
+                ..Default::default()
+            }.into(),
+            StandardItem {
                 label: "Open log".into(),
                 activate: Box::new(|_| open_url(&crate::logfile::path().to_string_lossy())),
                 ..Default::default()
@@ -202,6 +213,22 @@ impl MeteorTray {
             }).collect(),..Default::default()}.into()
         }).collect();
         model_items.extend(self.vda_download_items(depth));
+        for (id,bytes) in depth.vulkan_vda_offers() {
+            model_items.push(SubMenu {
+                label:format!("Download {} ({} MB)",crate::depth::model_label(id),bytes.div_ceil(1_000_000)),
+                submenu:vec![
+                    info("Vulkan GPU inference — no TensorRT download required".into()),
+                    info("VDA Small weights: Apache 2.0; license included".into()),
+                    info("Adds the model to compatible GPU lists; keeps your current selection".into()),
+                    StandardItem { label:"Download model".into(), activate:Box::new(move |tray:&mut Self| {
+                        if let Some(depth)=&tray.depth { depth.download_vulkan_vda(id); }
+                    }),..Default::default() }.into(),
+                ],..Default::default()
+            }.into());
+        }
+        if let crate::download::State::Failed(error)=depth.download.state() {
+            model_items.push(info(format!("Download failed: {}",error.chars().take(120).collect::<String>())));
+        }
         let model_menu = SubMenu {
             label: format!("GPU / model: {}",depth.selection_label()),
             submenu: model_items,
@@ -372,14 +399,14 @@ impl MeteorTray {
             }
             items.push(
                 SubMenu {
-                    label: format!("Download Video Depth Anything ({} MB)", bytes.div_ceil(1_000_000)),
+                    label: format!("Download VDA (NVIDIA TensorRT, {} MB)", bytes.div_ceil(1_000_000)),
                     submenu: offer,
                     ..Default::default()
                 }
                 .into(),
             );
         } else if crate::download::installed() {
-            items.push(action("Remove the VDA download", |d| d.remove_vda_download()));
+            items.push(action("Remove TensorRT VDA download", |d| d.remove_vda_download()));
         } else {
             items.pop();
         }
