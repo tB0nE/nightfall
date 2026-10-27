@@ -22,6 +22,7 @@ var session_eye_size := 0
 var session_eye_height := 0
 var bitrate_message := ""
 var foveation_message := ""
+var encoder_capabilities: Dictionary = {}
 var _last_foveation_status := ""
 var _pending_foveation := -1
 var _pending_bitrate := -1
@@ -90,6 +91,7 @@ func cancel(stop_projection: bool = true) -> void:
 	library_available = false
 	_pending_foveation = -1
 	foveation_message = ""
+	encoder_capabilities.clear()
 	_last_foveation_status = ""
 	_pending_bitrate = -1
 	bitrate_message = ""
@@ -190,8 +192,32 @@ func _handle_library_reply(reply: Dictionary) -> void:
 	if reply.get("library") is Dictionary: library_reply.emit(reply.library)
 	if reply.get("open_library", false): library_open_requested.emit()
 
+func apply_encoder_capabilities(reply: Dictionary) -> void:
+	var value: Variant = reply.get("encoder")
+	if not value is Dictionary: return # Older hosts retain their existing controls.
+	if typeof(value.get("foveated_encoding")) != TYPE_BOOL or typeof(value.get("live_bitrate")) != TYPE_BOOL: return
+	var updated: Dictionary = value.duplicate(true)
+	if encoder_capabilities == updated: return
+	encoder_capabilities = updated
+	if not foveation_available(): _pending_foveation = -1
+	changed.emit()
+
+func foveation_available() -> bool:
+	return encoder_capabilities.is_empty() or bool(encoder_capabilities.get("foveated_encoding", false))
+
+func effective_foveation(preference: bool) -> bool:
+	return preference and foveation_available()
+
+func preferred_codec(quest3: bool) -> String:
+	var preferred := "h265" if quest3 else "h264"
+	var codecs: Variant = encoder_capabilities.get("codecs")
+	if codecs is Array and not codecs.is_empty() and preferred not in codecs:
+		for codec in codecs:
+			if codec in ["h264", "h265"]: return str(codec)
+	return preferred
+
 func queue_foveation(enabled: bool) -> bool:
-	if state != "prepared" or session.is_empty(): return false
+	if state != "prepared" or session.is_empty() or not foveation_available(): return false
 	_pending_foveation = 1 if enabled else 0
 	foveation_message = "Foveated encoding update queued"
 	return true
@@ -333,6 +359,7 @@ func _request(request: Dictionary, token: int) -> Dictionary:
 	_rx += 1
 	var json := JSON.new()
 	if decoded.is_empty() or json.parse(decoded.get_string_from_utf8()) != OK or not json.data is Dictionary: return {}
+	apply_encoder_capabilities(json.data)
 	return json.data
 
 func connect_offer(watch_only: bool = false) -> void:
@@ -478,12 +505,12 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	if hz not in [20, 60, 72] or not PCVRVideoSettings.valid_eye_size(eye_size) or not PCVRVideoSettings.valid_eye_size(eye_height) or (_long_run and hz not in [60, 72]):
 		_fail("Unsupported developer XR rate or eye size")
 		return
-	var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": "h265" if quest3 else "h264", "foveated_encoding":video_settings.foveated_encoding}, token)
+	var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": preferred_codec(quest3), "foveated_encoding":effective_foveation(video_settings.foveated_encoding)}, token)
 	if token != _generation: return
 	if configured.get("state", "") != "idle" or configured.get("reason") != null:
 		_fail("Host rejected PCVR video configuration; update Meteor")
 		return
-	owner._log("[PCVR] Offer %dx%d per eye, %d%%, centre-priority encoding=%s" % [eye_size, eye_height, video_settings.resolution_percent, video_settings.foveated_encoding])
+	owner._log("[PCVR] Offer %dx%d per eye, %d%%, centre-priority encoding=%s" % [eye_size, eye_height, video_settings.resolution_percent, effective_foveation(video_settings.foveated_encoding)])
 	var offer := await _request({"type": "offer_long" if _long_run else "offer", "width": eye_size, "height": eye_height, "hz": hz}, token)
 	if token != _generation: return
 	_busy = false

@@ -13,8 +13,13 @@ drivers and display/audio session services. VAAPI decoding additionally uses the
 host libva/driver. Neither CUDA, NVIDIA encoder libraries nor AMD drivers are
 copied from the build machine into the package.
 
-PCVR currently requires an NVIDIA GPU/driver with Vulkan, CUDA and NVENC, plus
-Python 3. It includes its own Monado and xrizer; installing WiVRN or SteamVR is
+PCVR requires Python 3 and either NVIDIA Vulkan/CUDA/NVENC or experimental AMD
+Vulkan plus host libva/DRM/Mesa H.264/HEVC encoding and video processing. The AMD
+path includes its private FFmpeg runtime and has passed packaged synthetic tests
+on an RX480; real-game/headset and modern AMD validation remain outstanding.
+Choose the tray's **PCVR encoder** for the next session. Auto prefers NVIDIA on
+mixed systems and checks AMD capabilities otherwise. Foveated Encoding automatically greys out on unsupported encoders; live bitrate changes are rejected, so set the
+bitrate before starting the session. It includes its own Monado and xrizer; installing WiVRN or SteamVR is
 not required. Choose **Enable PCVR — install & restart Meteor**, then copy the
 Steam launch options from the first tray item into each VR game's Properties →
 General → Launch Options. Headset approval is saved per headset. XR audio

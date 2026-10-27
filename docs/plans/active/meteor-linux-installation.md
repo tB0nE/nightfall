@@ -612,3 +612,38 @@ downloads are committed with this checkpoint. Outstanding larger work is physica
 fresh-machine acceptance, AMD XR encoding and Windows.
 Vulkan model inference speed/quality is unchanged: the uploaded files match the
 previously tested local exports, and this work adds distribution/installation.
+
+## Current outstanding work after AMD integration — 2026-10-27
+
+AMD XR encoding is implemented and packaged; it is no longer an unimplemented
+backend. The RX480 passed GPU-only HEVC and H.264 Main, full Monado composition,
+transport, strict decode and baseline package checks. The optimized Meteor and
+APK are deployed. Encoder selection and automatic disabling of unsupported
+foveation are implemented. See [the AMD XR report](meteor-amd-xr-encoding.md)
+for evidence, the observed High-profile corruption and the original unconfirmed
+hang trigger.
+
+Remaining priorities:
+1. Physical AMD game/headset session; foveation grey-out and NVIDIA restoration;
+   exit/relaunch, reconnect and sustained-load checks. Obtain modern AMD and
+   Quest 2/3S acceptance rather than extrapolating from the RX480/Quest 3.
+2. Full Linux regression: automatic handover, wrist/desktop/settings, controllers,
+   audio/microphone, headset removal/sleep/re-wear and long sessions. The earlier
+   passthrough-toggle headset reboot and unexplained Subnautica exit have no
+   conclusive root cause; collect diagnostics if they recur.
+3. A genuinely fresh physical Linux installation with no development checkout,
+   Monado/WiVRN installation, model cache or prior approval. Container relocation
+   and dependency tests do not replace that acceptance test.
+4. Follow-up AMD features: live bitrate, possible driver-supported foveated/ROI
+   encoding and the High-profile compatibility investigation. H.264 Main is the
+   working compatibility path, so High profile is not required to offer H.264.
+5. Windows XR runtime/graphics/encoder integration remains a separate large task.
+6. Before publishing: regenerate the application source companion/checksums for
+   the final tested revision, push/review the branch and prepare release assets.
+   The source archive from before the AMD work is not this build's companion.
+
+Independent XR audio is optional future work: the current route retains the
+Sunshine stream. Broader browser/multi-screen XR combinations and additional
+composition extensions remain separate extensions, not completion gates for the
+current single-desktop XR workflow. Packaging, approval UI, Steam launch-option
+copying and Vulkan VDA model downloads are already implemented.

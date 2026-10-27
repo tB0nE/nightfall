@@ -48,6 +48,7 @@ mod video_dump;
 mod video_tap;
 mod video_decoder;
 mod xr_control;
+mod xr_encoder;
 mod xr_trust;
 mod xr_library;
 mod xr_bitrate;
@@ -121,7 +122,7 @@ async fn main() {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            eprintln!("Managed XR development sessions currently require Linux/NVIDIA.");
+            eprintln!("Managed XR development sessions currently require Linux with NVIDIA or AMD.");
             std::process::exit(2);
         }
     }

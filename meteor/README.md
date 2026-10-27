@@ -38,8 +38,8 @@ Release dependencies, licenses, source companion and reproducible build inputs
 are documented in [RELEASE.md](RELEASE.md), also accessible from the tray's
 **Release information & licenses** item.
 
-The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA
-encoding/tracking bridges and an independently built xrizer OpenVR compatibility
+The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA/AMD
+encoding and tracking bridges and an independently built xrizer OpenVR compatibility
 runtime. WiVRN and SteamVR installations are not required.
 
 Run the AppImage and select **Enable PCVR — install & restart Meteor** near the
@@ -63,8 +63,33 @@ The install-only command remains available:
 
 This copies files only; it does not change global OpenXR selection, Steam launch
 options, headset authorization or running services. Python 3, compatible host
-Vulkan/udev/C++ libraries and the NVIDIA driver remain required for XR. AMD depth
-inference is supported separately; AMD XR encoding is not implemented yet.
+Vulkan/udev/C++ libraries and matching graphics drivers remain required for XR.
+NVIDIA uses CUDA/NVENC. Experimental AMD XR uses host libva/DRM/Mesa with a
+hardware H.264/HEVC encoder and VA video processing. Meteor includes the FFmpeg
+encoder runtime, so a system FFmpeg installation is not required for gameplay.
+The RX480 has passed packaged synthetic/transport tests; modern AMD cards and
+real-game headset sessions still need validation.
+
+**PCVR encoder** in the tray selects Auto, NVIDIA/NVENC or AMD/VA-API for the next
+XR session without restarting Meteor. Auto prefers NVIDIA on mixed systems;
+AMD-only systems select AMD after checking codec/VPP capabilities. Rendering and
+encoding use the same selected GPU; this does not change Sunshine or depth GPU
+selection. Both H.264 and HEVC are available when the GPU advertises them. HEVC
+is preferred on Quest 3; H.264 is the Quest 2 default when supported. Foveated
+encoding is automatically greyed out and effectively Off on unsupported encoders,
+without erasing the saved preference for NVIDIA. Set bitrate before the session; live bitrate changes
+are explicitly rejected on AMD rather than silently ignored.
+
+For multiple AMD GPUs, select the host-local render node in the config:
+
+```toml
+[xr]
+encoder_backend = "vaapi" # auto | nvenc | vaapi
+render_device = "/dev/dri/renderD128" # Check the actual node on this machine.
+```
+
+Selecting Auto or NVIDIA in the tray clears that explicit AMD override. Cards
+without a supported hardware encoder are rejected; there is no CPU fallback.
 
 Advanced users can also enable the installed XR service directly in
 `~/.config/nightfall-meteor/meteor.toml` (respecting `XDG_CONFIG_HOME`), then restart Meteor:
@@ -178,7 +203,7 @@ Builds `meteor/target/appimage/Nightfall-Meteor-<version>-x86_64.AppImage` with:
 - Meteor without ONNX Runtime, optimized in Ubuntu 22.04 for glibc 2.35+;
 - ncnn, its OpenMP runtime and the portable Vulkan processing library;
 - EdgePad-512 and EdgePad-256;
-- minimal FFmpeg/dav1d runtime and component notices.
+- minimal FFmpeg/dav1d runtime (including HEVC VA-API encoding) and component notices.
 
 Set `NIGHTFALL_CONTAINER_ENGINE=docker` or `podman` to choose the builder.
 The model folder (default `~/.local/share/nightfall-meteor/models`) must contain

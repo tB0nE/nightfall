@@ -42,6 +42,8 @@ pub enum Request {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Reply {
     #[serde(default,skip_serializing_if="Option::is_none")]
+    pub encoder:Option<crate::xr_encoder::Capabilities>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
     pub library:Option<serde_json::Value>,
     #[serde(default)]
     pub open_library:bool,
@@ -79,6 +81,7 @@ struct Session {
 }
 #[derive(Default)]
 struct Negotiation {
+    encoder:Option<crate::xr_encoder::Capabilities>,
     session: Option<Session>,
     bitrate_mbps: u32,
     codec: String,
@@ -89,6 +92,7 @@ struct Negotiation {
 impl Negotiation {
     fn reply(&self, reason: Option<&str>) -> Reply {
         Reply {
+            encoder:self.encoder.clone(),
             library:None, open_library:false, library_available:self.library_available,
             state: self
                 .session
@@ -135,7 +139,7 @@ impl Negotiation {
                 if codec != "h264" && codec != "h265" { return Ok(self.reply(Some("unsupported_codec"))); }
                 self.bitrate_mbps = bitrate_mbps;
                 self.codec = codec;
-                self.foveated_encoding = foveated_encoding;
+                self.foveated_encoding = foveated_encoding && self.encoder.as_ref().is_none_or(|caps|caps.foveated_encoding);
             }
             Request::Offer { width, height, hz } | Request::OfferLong { width, height, hz } => {
                 if self.session.is_some() {
@@ -348,6 +352,7 @@ async fn connection_supervised(
     // Reserve exclusive session ownership only after proof of the paired key.
     let Ok(_owner) = session_slot.try_acquire_owned() else {
         let busy = Reply {
+            encoder:None,
             library:None, open_library:false, library_available:false,
             state: "busy".into(),
             session: None,
@@ -364,6 +369,8 @@ async fn connection_supervised(
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))?;
     };
     let mut negotiation = Negotiation::default();
+    let mut encoder_monitor=crate::xr_encoder::Monitor::default();
+    negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;
     negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root|root.join("tools/meteor_vr_library.py").is_file());
     let mut relay: Option<crate::xr_relay::Relay> = None;
     tokio::time::timeout(
@@ -384,6 +391,7 @@ async fn connection_supervised(
         let request = tokio::time::timeout_at(deadline, read_frame(&mut stream, &mut receive))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
+        if negotiation.session.is_none() {negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;}
         let mut reply = if let Request::Library {action,key,offset}=&request {
             let mut reply=negotiation.reply(None);
             reply.library=Some(if action=="launch" && negotiation.session.is_some() {
@@ -394,6 +402,7 @@ async fn connection_supervised(
             reply
         } else if let Request::SetFoveation {session,enabled}=&request {
             let reason=if !negotiation.session.as_ref().is_some_and(|s|s.accepted && s.id==*session) {Some("unknown_session".to_string())}
+            else if *enabled && negotiation.encoder.as_ref().is_some_and(|caps|!caps.foveated_encoding) {Some("foveated_encoding_not_supported".into())}
             else if let Some(relay)=relay.as_mut() {relay.update_foveation(*enabled).err().map(|e|e.to_string())}
             else {Some("runtime_not_active".to_string())};
             negotiation.reply(reason.as_deref())
@@ -548,7 +557,7 @@ pub(crate) async fn serve(
 pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
     let Some(root) = root else { return Ok(None); };
     if !cfg!(target_os = "linux") {
-        return Err(invalid("Runtime launch currently requires Linux/NVIDIA"));
+        return Err(invalid("Runtime launch currently requires Linux with NVIDIA or AMD"));
     }
     let root = root.canonicalize()?;
     let installed = root.join("xr-runtime/manifest.json").is_file();
@@ -869,6 +878,16 @@ mod tests {
             assert_eq!(profile.session.unwrap().eye_size,size);
         }
         assert_eq!(invalid.apply(Request::Offer {width:2209,height:2209,hz:60}).unwrap().state,"idle");
+    }
+
+    #[test]
+    fn unsupported_encoder_masks_foveation_without_rejecting_stream() {
+        let mut state=Negotiation::default();
+        state.encoder=Some(crate::xr_encoder::Capabilities{backend:"vaapi".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],error:None});
+        let reply=state.apply(Request::ConfigureVideo{bitrate_mbps:32,codec:Some("h264".into()),foveated_encoding:true}).unwrap();
+        assert!(reply.reason.is_none());assert!(!reply.encoder.unwrap().foveated_encoding);
+        state.apply(Request::Offer{width:512,height:512,hz:20}).unwrap();
+        assert!(!state.session.unwrap().foveated_encoding);
     }
 
     #[test]

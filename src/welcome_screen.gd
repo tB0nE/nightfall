@@ -47,6 +47,12 @@ func xr_settings_available() -> bool:
 	# The authenticated XR watcher proves capability; depth discovery alone does not.
 	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
 
+func xr_encoder_capabilities() -> Dictionary:
+	return _xr_control.encoder_capabilities if _xr_control != null else {}
+
+func xr_foveation_available() -> bool:
+	return _xr_control != null and _xr_control.foveation_available()
+
 func update_xr_foveation(enabled: bool) -> bool:
 	return _xr_control != null and _xr_control.queue_foveation(enabled)
 

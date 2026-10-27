@@ -330,6 +330,13 @@ staged VDA model directories; see Meteor's README for manifests and model stagin
 
 ### Experimental Monado runtime probe
 
+The managed Linux XR AppImage now also includes an experimental AMD HEVC backend.
+See [Meteor setup and GPU selection](meteor/README.md) for the **PCVR encoder**
+tray menu, required host drivers and current control limitations. Its FFmpeg
+encoder runtime is bundled; GPU drivers are not. The guarded standalone AMD
+probe is documented in [the AMD XR plan](docs/plans/active/meteor-amd-xr-encoding.md).
+The NVIDIA probes below retain their existing defaults.
+
 The host layer compatibility suite checks advertised capabilities, real
 H.264/HEVC output, unsupported layer rejection and same-session recovery:
 

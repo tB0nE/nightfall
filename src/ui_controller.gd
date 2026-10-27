@@ -881,7 +881,14 @@ func refresh_pcvr_menu() -> void:
 			update_option_btn(_pcvr_resolution_btn, label)
 			if not active and recommended.x > 0: _pcvr_info.text += "\nNext session: %d × %d / eye" % [size.x, size.y]
 		if _pcvr_foveation_btn:
-			update_option_btn(_pcvr_foveation_btn, "On" if _pcvr_video.foveated_encoding else "Off")
+			var foveation_supported: bool = main.welcome_screen.xr_foveation_available()
+			update_option_btn(_pcvr_foveation_btn, "On" if _pcvr_video.foveated_encoding and foveation_supported else "Off")
+			_pcvr_foveation_btn.disabled = not foveation_supported
+			_set_button_tooltip(_pcvr_foveation_btn, "Fixed-centre encoding preserves centre quality and compresses the edges more. Not eye-tracked. Applies live. Default Off." if foveation_supported else "Foveated encoding is unavailable with this host encoder. Your preference is retained for supported encoders.")
+			var encoder_caps: Dictionary = main.welcome_screen.xr_encoder_capabilities()
+			if active and not foveation_supported:
+				_pcvr_info.text = _pcvr_info.text.replace("Bitrate / foveation / filters: live", "Filters: live • Foveated encoding: unavailable")
+				if encoder_caps.get("live_bitrate", true) == false: _pcvr_info.text += " • Bitrate: next session"
 		if _pcvr_bitrate_btn:
 			update_option_btn(_pcvr_bitrate_btn, "%d Mbps" % _pcvr_video.bitrate_mbps if _pcvr_video.bitrate_mbps else "Auto")
 		if _pcvr_status:
@@ -952,6 +959,7 @@ func toggle_pcvr_resolution_range() -> void:
 	refresh_pcvr_menu()
 
 func toggle_pcvr_foveation() -> void:
+	if not main.welcome_screen.xr_foveation_available(): return
 	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
 	pending.load_from()
 	pending.foveated_encoding = not pending.foveated_encoding
