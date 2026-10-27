@@ -69,8 +69,16 @@ func _run():
 	assert(not options.visible and options.get_child_count() == 2)
 	assert(options.get_child(0).text == "Open browser here")
 	assert(options.get_child(1).text == "New browser screen")
+	var closed_y: float = picker.position.y
+	var bottom := func() -> float: return picker.position.y + picker.get_combined_minimum_size().y
+	assert(bottom.call() == WelcomeScreen.BROWSER_PICKER_BOTTOM)
 	picker.get_child(1).pressed.emit()
 	assert(options.visible and options.get_child(0).disabled and options.get_child(1).disabled)
+	assert(picker.position.y < closed_y and bottom.call() == WelcomeScreen.BROWSER_PICKER_BOTTOM,
+		"Opening the options must not move the toggle")
+	# Choosing an option hides the options without the toggle: it must return.
+	options.hide()
+	assert(picker.position.y == closed_y, "Closing the options from an option must restore the toggle")
 	owner.free()
 	print("All stream_browser_workspace tests passed")
 	quit()
