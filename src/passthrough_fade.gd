@@ -7,8 +7,10 @@ extends RefCounted
 # other layer. Composition layers reach the compositor whether or not Godot
 # submits its projection layer, so this works in projectionless mode too.
 
-const FADE_VALUES: Array = [0, 25, 50, 75]
-const SORT_ORDER := -200 # behind the screen and the background equirect (-100)
+const FADE_VALUES: Array = [0, 25, 50, 75, 90]
+# The Meta vendors plugin submits passthrough itself as a layer at -100, so
+# the fade must sit above it, yet below the projection and ambient layers (0).
+const SORT_ORDER := -50
 
 var layer: Node3D = null
 var _viewport: SubViewport = null
