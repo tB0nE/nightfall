@@ -11,6 +11,8 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(target_os = "linux")]
+mod xr_setup;
 #[cfg(windows)]
 mod desktop_windows;
 mod discovery;
@@ -92,6 +94,16 @@ async fn main() {
             Err(error) => { eprintln!("Cannot install XR runtime: {error}"); std::process::exit(1); }
         }
     }
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|arg| arg == "--enable-xr") {
+        let result = async {
+            xr_setup::enable_from(&xr_setup::bundle()?, &config::config_path()).await
+        }.await;
+        match result {
+            Ok(()) => { println!("PCVR runtime installed and enabled. Start or restart Meteor, then copy Steam Launch Options from its tray menu."); return; }
+            Err(error) => { eprintln!("PCVR setup failed: {error}"); std::process::exit(1); }
+        }
+    }
     // Development-only managed runtime path. Never initialize the ordinary
     // proxy, depth models, audio devices or tray for this exclusive session.
     if args.get(1).is_some_and(|arg| arg == "--xr-dev") {
@@ -131,6 +143,7 @@ async fn main() {
         println!(
             "nightfall-meteor [options]\n\
              \x20 --install-xr-runtime [bundle] install bundled XR files into user data and exit\n\
+             \x20 --enable-xr            install and enable bundled Linux PCVR, then exit\n\
              \x20 --no-tray               run without a tray icon\n\
              \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
              \x20 --xr-client-key <hex>    allowlisted headset public key for integrated DEV XR\n\
@@ -282,6 +295,7 @@ async fn main() {
     let dev_xr_address = value("--xr-service-dev");
     let mut xr_discovery = None;
     let mut xr_trust = None;
+    let mut xr_startup_error = None;
     let xr_address = dev_xr_address.clone().or_else(|| config.xr.enabled.then(|| config.xr.listen.clone()));
     let xr_service = if let Some(address) = xr_address {
         let start = async {
@@ -336,7 +350,11 @@ async fn main() {
         }.await;
         match start {
             Ok((task, port)) => { xr_discovery = port; Some(task) },
-            Err(error) => { log::error!("XR service disabled: {error}; desktop proxy remains available"); None },
+            Err(error) => {
+                log::error!("XR service disabled: {error}; desktop proxy remains available");
+                xr_startup_error = Some(error.to_string());
+                None
+            },
         }
     } else {
         if value("--xr-client-key").is_some() || value("--xr-runtime-root").is_some() {
@@ -362,6 +380,9 @@ async fn main() {
     });
     tokio::spawn(status::watch_sunshine(status.clone()));
     status.check_firewall();
+
+    #[cfg(target_os = "linux")]
+    xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
 
     #[cfg(target_os = "linux")]
     if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust }).await {
@@ -399,6 +420,14 @@ async fn main() {
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
 static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static RESTART: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+pub fn restart() {
+    RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+    quit();
+}
 
 /// Nonblocking tray/thread callback; async main drains services before exiting.
 /// Replay has no service coordinator and retains its existing immediate exit.
@@ -414,6 +443,15 @@ fn finish_quit() -> ! {
     log::info!("Shutting down");
     if let Some(mic) = MIC.get() {
         mic.shutdown();
+    }
+    #[cfg(target_os = "linux")]
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::os::unix::process::CommandExt;
+        match xr_setup::restart_command() {
+            Ok(mut command) => log::error!("Cannot restart Meteor: {}", command.exec()),
+            Err(error) => log::error!("Cannot restart Meteor: {error}"),
+        }
+        exit_now(1);
     }
     exit_now(0);
 }

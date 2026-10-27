@@ -92,19 +92,21 @@ def run_case(binary, client, mode, stop_signal, runtime_root=None, diagnostics=N
             config.mkdir(parents=True)
             (config / "meteor.toml").write_text(
                 f'sunshine_host="127.0.0.1"\nsunshine_port={base}\nport_offset=1000\ndiscovery_port={discovery_port}\n')
-            if mode.startswith("installed"):
+            if mode.startswith("installed") or mode == 'setup':
                 if runtime_root is None: raise ValueError("Installed service test requires an installed runtime")
+                selected_runtime = root / 'fresh-xr-runtime' if mode == 'setup' else runtime_root
                 with (config / "meteor.toml").open("a") as settings:
-                    settings.write(f"\n[xr]\nenabled=true\nlisten=\"127.0.0.1:{xr_port}\"\n"
+                    settings.write(f"\n[xr]\nenabled={'false' if mode == 'setup' else 'true'}\nlisten=\"127.0.0.1:{xr_port}\"\n"
                         f"video_port={video_port}\ntracking_port={tracking_port}\n"
                         f"allowed_client={json.dumps(client_public_key())}\n"
-                        f"runtime_root={json.dumps(str(runtime_root))}\n")
+                        f"runtime_root={json.dumps(str(selected_runtime))}\n")
             data = root / "data/nightfall-meteor"
             data.mkdir(parents=True)
             key = data / "meteor.key"
             key.write_bytes(bytes([1]) * 32)
             key.chmod(0o600)
             command = [str(binary), "--no-tray", "--no-depth", "--no-mic"]
+            if mode == 'setup': command.remove('--no-tray')
             if mode in ("enabled", "bind_failure"):
                 command += ["--xr-service-dev", f"127.0.0.1:{xr_port}",
                             "--xr-client-key", client_public_key()]
@@ -134,6 +136,49 @@ def run_case(binary, client, mode, stop_signal, runtime_root=None, diagnostics=N
                     else:
                         assert "xr" not in info, "Unavailable/DEV XR must not advertise production capability"
                     assert fetch(base + 1000, "/fixture") == b"nightfall-proxy-fixture"
+                    if mode == 'setup':
+                        # Activate ONLY this isolated child's tray item. Never
+                        # address the real user's running Meteor service.
+                        service = f'org.kde.StatusNotifierItem-{child.pid}-1'
+                        call = ['/usr/bin/busctl', '--user', '--json=short', 'call', service,
+                                '/MenuBar', 'com.canonical.dbusmenu']
+                        deadline = time.monotonic() + 8
+                        while True:
+                            menu = subprocess.run([*call, 'GetLayout', 'iias', '0', '1', '0'], capture_output=True, text=True)
+                            if menu.returncode == 0:
+                                nodes = json.loads(menu.stdout)['data'][1][2]
+                                selection = next((node['data'][0] for node in nodes
+                                    if node['data'][1].get('label', {}).get('data', '').startswith('Enable PCVR')), None)
+                                if selection is not None: break
+                            if time.monotonic() > deadline: raise RuntimeError('Isolated setup tray did not appear')
+                            time.sleep(.1)
+                        subprocess.run([*call, 'Event', 'isvu', str(selection), 'clicked', 's', '', '0'], check=True, timeout=5)
+                        deadline = time.monotonic() + 40
+                        while True:
+                            if child.poll() is not None: raise RuntimeError('Meteor exited instead of restarting: '+(root/'process.log').read_text()[-4000:])
+                            try:
+                                refreshed = json.loads(fetch(discovery_port, '/meteor'))
+                                if refreshed.get('xr', {}).get('port') == xr_port: break
+                            except (OSError, ValueError): pass
+                            if time.monotonic() > deadline: raise RuntimeError('Setup restart did not advertise XR: '+(root/'process.log').read_text()[-4000:])
+                            time.sleep(.1)
+                        import tomllib
+                        assert tomllib.loads((config/'meteor.toml').read_text())['xr']['enabled']
+                        assert (selected_runtime / 'xr-runtime/xrizer/bin/linux64/vrclient.so').is_file()
+                        assert fetch(base + 1000, '/after-setup-restart') == b'nightfall-proxy-fixture'
+                        # Discovery is available before the tray finishes its
+                        # startup. Wait for the new ready menu, then use its Quit
+                        # action rather than signalling during that startup gap.
+                        deadline = time.monotonic() + 8
+                        while True:
+                            menu = subprocess.run([*call, 'GetLayout', 'iias', '0', '1', '0'], capture_output=True, text=True)
+                            if menu.returncode == 0:
+                                nodes = json.loads(menu.stdout)['data'][1][2]
+                                labels = {node['data'][1].get('label', {}).get('data', ''): node['data'][0] for node in nodes}
+                                if 'PCVR ready (Linux / NVIDIA)' in labels and 'Quit' in labels: break
+                            if time.monotonic() > deadline: raise RuntimeError('Restarted PCVR tray did not become ready')
+                            time.sleep(.1)
+                        print('PASS isolated tray setup: installed runtime, saved settings, restart and XR discovery')
                     if mode == "enabled":
                         # Native OpenSSL client authenticates, offers, accepts,
                         # and stops against the NORMAL Meteor process.
@@ -144,7 +189,10 @@ def run_case(binary, client, mode, stop_signal, runtime_root=None, diagnostics=N
                     assert fetch(base + 1000, "/fixture-after-xr") == b"nightfall-proxy-fixture"
                     if mode in ("bind_failure", "installed_bind_failure"):
                         assert "XR service disabled:" in (root / "process.log").read_text()
-                    child.send_signal(stop_signal)
+                    if mode == 'setup':
+                        subprocess.run([*call, 'Event', 'isvu', str(labels['Quit']), 'clicked', 's', '', '0'], check=True, timeout=5)
+                    else:
+                        child.send_signal(stop_signal)
                     assert child.wait(timeout=30) == 0
                     assert "Shutting down" in (root / "process.log").read_text(), (root / "process.log").read_text()[-5000:]
                 finally:

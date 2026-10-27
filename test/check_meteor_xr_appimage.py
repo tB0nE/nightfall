@@ -32,6 +32,17 @@ def run(appimage, client, root):
     help_text = command([str(artifact), '--help'], 'help')
     if '--install-xr-runtime' not in help_text: raise RuntimeError('Stale or incorrect Meteor binary')
     command([str(artifact), '--install-xr-runtime'], 'install')
+    user_config = root / 'config/nightfall-meteor/meteor.toml'
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    before = '# Keep my settings\nsunshine_host = "127.0.0.1"\n[xr]\nenabled = false # user preference\n'
+    user_config.write_text(before)
+    command([str(artifact), '--enable-xr'], 'enable-xr')
+    import tomllib
+    enabled_text = user_config.read_text()
+    if not tomllib.loads(enabled_text)['xr']['enabled'] or '# Keep my settings' not in enabled_text:
+        raise RuntimeError('PCVR setup did not enable XR while preserving existing comments')
+    if user_config.with_suffix('.before-pcvr-setup.toml').read_text() != before:
+        raise RuntimeError('PCVR setup did not retain the original settings backup')
     installed = root / 'data/nightfall-meteor/xr'
     command(['/usr/bin/python3', str(installed / 'tools/meteor_xr_runtime.py'), '--check'], 'installed-check')
     config = installed / '.build-cache/meteor-xr/application.json'
@@ -61,14 +72,16 @@ def run(appimage, client, root):
     if (bundle / '.build-cache/meteor-xr/application.json').exists():
         raise RuntimeError('Local application configuration leaked into the package')
     binary = appdir / 'usr/bin/nightfall-meteor'
-    for mode in ('installed', 'installed_bind_failure', 'disabled'):
+    for mode in ('installed', 'installed_bind_failure', 'disabled', 'setup'):
         run_case(binary, client, mode, signal.SIGTERM, installed, root / "cases")
     report = {'appimage': artifact.name, 'bytes': artifact.stat().st_size,
               'checks': ['AppImage help', 'bundled runtime installation', 'installed checksums',
+                         'PCVR setup command and preserved configuration',
                          'independent bundled xrizer and notices', 'private OpenVR registry',
                          'stable Steam wrapper', 'EdgePad 512/256 assets', 'local state exclusion',
                          'configured XR discovery/authentication', 'proxy forwarding',
-                         'XR bind failure isolation', 'XR-disabled startup', 'clean shutdown'],
+                         'XR bind failure isolation', 'XR-disabled startup', 'clean shutdown',
+                         'tray PCVR setup, automatic restart and rediscovery'],
               'installed_runtime': str(installed), 'gpu_game_headset_tested': False}
     (root / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))

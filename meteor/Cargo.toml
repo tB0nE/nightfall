@@ -25,6 +25,7 @@ socket2 = "0.6"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal", "process"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 toml = "1.1.6"
+toml_edit = "0.25"
 ureq = "3"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 zstd = "0.13"

@@ -48,6 +48,7 @@ impl ksni::Tray for MeteorTray {
             StandardItem { label, enabled: false, ..Default::default() }.into()
         };
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
+        let setup = crate::xr_setup::state();
         vec![
             StandardItem {
                 label: "Custom Steam Launch Options required: Copy".into(),
@@ -66,6 +67,18 @@ impl ksni::Tray for MeteorTray {
                 }); }),
                 ..Default::default()
             }.into(),
+            StandardItem {
+                label: if setup.ready { "PCVR ready (Linux / NVIDIA)" }
+                    else if setup.busy { "Setting up PCVR…" }
+                    else if setup.error.is_some() { "Retry PCVR setup — install & restart Meteor" }
+                    else { "Enable PCVR — install & restart Meteor" }.into(),
+                icon_name: if setup.ready { "emblem-default" } else { "applications-games" }.into(),
+                enabled: !setup.ready && !setup.busy,
+                activate: Box::new(|_| crate::xr_setup::request_enable()),
+                ..Default::default()
+            }.into(),
+            info(setup.error.as_deref().map(|error| format!("PCVR: {} (see Open log)", error.chars().take(100).collect::<String>()))
+                .unwrap_or_else(|| "PCVR requires Linux / NVIDIA; Steam launch options are per game".into())),
             MenuItem::Separator,
             info(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,

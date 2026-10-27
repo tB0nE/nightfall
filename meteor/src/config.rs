@@ -100,7 +100,8 @@ pub fn load() -> Config {
 }
 
 /// Where the tray remembers its choices (model, rate). Kept apart from
-/// meteor.toml so Meteor never rewrites a file the user edits.
+/// meteor.toml so routine tray choices never rewrite a file the user edits.
+/// Explicit PCVR setup changes only xr.enabled, retaining comments and a backup.
 pub fn state_path() -> PathBuf {
     config_dir().join("state.toml")
 }
