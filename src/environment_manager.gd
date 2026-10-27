@@ -109,6 +109,18 @@ func _disable() -> void:
 	_release_screen()
 	main._log("[ENV] Room off; projectionless rendering restored")
 
+## The centre button: turns the room to where the user is looking, and for
+## the cinema puts the screen back on its wall there.
+func recenter() -> void:
+	if room == &"" or room_root == null:
+		return
+	_room_anchor = _current_head_anchor() if room == CINEMA else _floor_anchor()
+	room_root.global_transform = _room_anchor
+	if _holding_screen:
+		_place_screen()
+	if main.comp:
+		main.comp.update_cylinder_params()
+
 # Gives the user's own screen placement back after the cinema held it.
 func _release_screen() -> void:
 	if _holding_screen and main.primary_screen:
