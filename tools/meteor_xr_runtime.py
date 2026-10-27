@@ -18,8 +18,10 @@ def validate(root):
     manifest = json.loads((package / 'manifest.json').read_text())
     if not isinstance(manifest, dict):
         raise ValueError('Invalid installed XR manifest')
-    if manifest.get('version') != 1 or manifest.get('backend') != 'nvidia':
+    if manifest.get('version') != 1 or manifest.get('backend') not in ('nvidia','linux-gpu'):
         raise ValueError('Unsupported installed XR runtime manifest')
+    backends=manifest.get('backends',['nvenc'])
+    if backends not in (['nvenc'],['nvenc','vaapi']): raise ValueError('Invalid XR encoder backend list')
     # Hashes detect incomplete/corrupt packaging; they are not a signing scheme.
     entries = manifest.get('sha256')
     if not isinstance(entries, dict):
@@ -33,6 +35,9 @@ def validate(root):
         'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
         'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'LICENSE',
     ]
+    if 'vaapi' in backends:
+        required += ['xr-runtime/libmeteor-vaapi-probe.so','test/xr_encoder_backend.py',
+                     'xr-runtime/encoder-lib/libavcodec.so.62','xr-runtime/encoder-lib/libavutil.so.60']
     if any(name not in entries for name in required):
         raise ValueError('Incomplete installed XR runtime manifest')
     if manifest.get('openvr_compat') is not None:
@@ -51,15 +56,16 @@ def validate(root):
 
 
 def prepare(root, output):
-    validate(root)
+    manifest=validate(root)
     package = root / 'xr-runtime'
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in BRIDGES:
+    for name in BRIDGES + (('libmeteor-vaapi-probe.so',) if 'vaapi' in manifest.get('backends',[]) else ()):
         shutil.copy2(package / name, output / name)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--capabilities',action='store_true',help='Query local encoder capabilities without starting XR')
     parser.add_argument('--check', action='store_true', help='Validate files without starting XR')
     args = parser.parse_args()
     if args.check:
@@ -67,6 +73,17 @@ def main():
         with tempfile.TemporaryDirectory(prefix='meteor-xr-check-') as directory:
             prepare(ROOT, Path(directory))
         print('Installed XR runtime files verified (GPU drivers and gameplay not tested).')
+        return
+    if args.capabilities:
+        import tempfile
+        validate(ROOT)
+        os.environ['METEOR_XR_FFMPEG_LIBDIR']=str(ROOT/'xr-runtime/encoder-lib')
+        from xr_encoder_backend import select
+        env=dict(os.environ,NIGHTFALL_XR_CAPABILITIES_ONLY='1')
+        with tempfile.TemporaryDirectory(prefix='meteor-xr-cap-') as temporary:
+            directory=Path(temporary)
+            select(ROOT,directory,env)
+            print((directory/'encoder-selection.json').read_text().replace('\n',''))
         return
     if not os.environ.get('NIGHTFALL_XR_APPLICATION_SPEC'):
         raise ValueError('Installed XR runtime requires a host-local application specification')
@@ -76,6 +93,9 @@ def main():
     if libraries.is_dir():
         os.environ['LD_LIBRARY_PATH'] = str(libraries) + (
             ':' + os.environ['LD_LIBRARY_PATH'] if os.environ.get('LD_LIBRARY_PATH') else '')
+    encoder_libraries=ROOT/'xr-runtime/encoder-lib'
+    if encoder_libraries.is_dir():
+        os.environ['METEOR_XR_FFMPEG_LIBDIR']=str(encoder_libraries)
     from run_monado_nvenc_spike import run
     run(ROOT, output)
 

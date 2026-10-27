@@ -67,11 +67,15 @@ pub struct XrConfig {
     pub tracking_port: u16,
     pub allowed_client: Option<String>,
     pub runtime_root: Option<PathBuf>,
+    /// auto prefers NVIDIA when available; vaapi selects AMD HEVC explicitly.
+    pub encoder_backend: String,
+    /// Optional AMD DRM render node for machines with multiple AMD GPUs.
+    pub render_device: Option<PathBuf>,
 }
 
 impl Default for XrConfig {
     fn default() -> Self {
-        Self { enabled: false, listen: "0.0.0.0:47910".into(), video_port: 47911, tracking_port: 47912, allowed_client: None, runtime_root: None }
+        Self { enabled: false, listen: "0.0.0.0:47910".into(), video_port: 47911, tracking_port: 47912, allowed_client: None, runtime_root: None, encoder_backend: "auto".into(), render_device: None }
     }
 }
 

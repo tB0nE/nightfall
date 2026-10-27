@@ -49,6 +49,9 @@ impl ksni::Tray for MeteorTray {
         };
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
         let setup = crate::xr_setup::state();
+        const XR_ENCODERS: &[(&str,&str)]=&[("auto","Auto (prefer NVIDIA)"),("nvenc","NVIDIA / NVENC"),("vaapi","AMD / VA-API (experimental)")];
+        let encoder=crate::config::load().xr.encoder_backend;
+        let encoder_index=XR_ENCODERS.iter().position(|(id,_)|*id==encoder).unwrap_or(0);
         vec![
             StandardItem {
                 label: "Custom Steam Launch Options required: Copy".into(),
@@ -68,7 +71,7 @@ impl ksni::Tray for MeteorTray {
                 ..Default::default()
             }.into(),
             StandardItem {
-                label: if setup.ready { "PCVR ready (Linux / NVIDIA)" }
+                label: if setup.ready { "PCVR ready (Linux / NVIDIA or AMD)" }
                     else if setup.busy { "Setting up PCVR…" }
                     else if setup.error.is_some() { "Retry PCVR setup — install & restart Meteor" }
                     else { "Enable PCVR — install & restart Meteor" }.into(),
@@ -77,8 +80,25 @@ impl ksni::Tray for MeteorTray {
                 activate: Box::new(|_| crate::xr_setup::request_enable()),
                 ..Default::default()
             }.into(),
+            SubMenu {
+                label: format!("PCVR encoder: {}",XR_ENCODERS[encoder_index].1),
+                enabled: !setup.busy,
+                submenu: vec![RadioGroup {
+                    selected: encoder_index,
+                    select:Box::new(|_:&mut Self,index| {
+                        if let Some((id,_))=XR_ENCODERS.get(index) {
+                            let result=crate::xr_setup::select_encoder(id);
+                            tokio::spawn(async move {match result {
+                                Ok(())=>crate::desktop::notify("PCVR encoder saved","Applies to the next XR session. Unsupported encoder controls are disabled automatically.").await,
+                                Err(error)=>crate::desktop::notify("Could not save PCVR encoder",&error.to_string()).await,
+                            }});
+                        }
+                    }),
+                    options:XR_ENCODERS.iter().map(|(_,label)|RadioItem{label:(*label).into(),..Default::default()}).collect(),
+                }.into()],..Default::default()
+            }.into(),
             info(setup.error.as_deref().map(|error| format!("PCVR: {} (see Open log)", error.chars().take(100).collect::<String>()))
-                .unwrap_or_else(|| "PCVR requires Linux / NVIDIA; Steam launch options are per game".into())),
+                .unwrap_or_else(|| "PCVR requires Linux / NVIDIA or AMD; Steam launch options are per game".into())),
             MenuItem::Separator,
             info(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,

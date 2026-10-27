@@ -19,7 +19,7 @@ cd "$WORK/ffmpeg-$VERSION"
     --enable-avcodec --enable-avutil --enable-swscale --enable-pthreads \
     --disable-avformat --disable-avfilter --disable-avdevice --disable-swresample \
     --enable-decoder=h264,hevc,av1,libdav1d --enable-parser=h264,hevc,av1 \
-    --enable-vaapi --enable-hwaccel=h264_vaapi,hevc_vaapi,av1_vaapi --enable-libdav1d
+    --enable-encoder=h264_vaapi,hevc_vaapi --enable-vaapi --enable-hwaccel=h264_vaapi,hevc_vaapi,av1_vaapi --enable-libdav1d
 make -j"$(nproc)"
 make install
 cp COPYING.LGPLv2.1 "$PREFIX/FFmpeg-COPYING.LGPLv2.1"

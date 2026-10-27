@@ -164,6 +164,12 @@ pub(crate) async fn runtime_adapter_with_status(
             command.env_remove(key);
         }
     }
+    let xr_config=crate::config::load().xr;
+    if !matches!(xr_config.encoder_backend.as_str(),"auto"|"nvenc"|"vaapi") {
+        return Err(io::Error::other("xr.encoder_backend must be auto, nvenc or vaapi"));
+    }
+    command.env("NIGHTFALL_XR_ENCODER_BACKEND", &xr_config.encoder_backend);
+    if let Some(node)=xr_config.render_device {command.env("NIGHTFALL_XR_RENDER_DEVICE",node);}
     for (key, value) in [
         ("NIGHTFALL_XR_GODOT_ENGINE", "1"),
         ("NIGHTFALL_XR_UPSTREAM_DEMO", "1"),

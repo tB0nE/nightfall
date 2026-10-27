@@ -175,7 +175,7 @@ def run_case(binary, client, mode, stop_signal, runtime_root=None, diagnostics=N
                             if menu.returncode == 0:
                                 nodes = json.loads(menu.stdout)['data'][1][2]
                                 labels = {node['data'][1].get('label', {}).get('data', ''): node['data'][0] for node in nodes}
-                                if 'PCVR ready (Linux / NVIDIA)' in labels and 'Quit' in labels: break
+                                if 'PCVR ready (Linux / NVIDIA or AMD)' in labels and 'Quit' in labels: break
                             if time.monotonic() > deadline: raise RuntimeError('Restarted PCVR tray did not become ready')
                             time.sleep(.1)
                         print('PASS isolated tray setup: installed runtime, saved settings, restart and XR discovery')

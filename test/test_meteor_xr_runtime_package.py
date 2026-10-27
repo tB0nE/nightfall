@@ -64,6 +64,26 @@ class RuntimePackageTests(unittest.TestCase):
             self.assertNotIn('openvr_compat', config)
             self.assertNotIn(str(root), json.dumps(config))
 
+    def test_amd_encoder_and_private_ffmpeg_are_verified_and_relocated(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'source';root.mkdir();helpers=self.fixture(root)
+            (root/'test/run_monado_nvenc_spike.py').write_text('from xr_encoder_backend import select\n')
+            (root/'test/xr_encoder_backend.py').write_text('def select(): pass\n')
+            bridge=root/'amd.so';bridge.write_bytes(b'AMD encoder')
+            libraries=[]
+            for name in ('libavcodec.so.62','libavutil.so.60'):
+                source=root/name;source.write_bytes(b'private FFmpeg');libraries.append(source)
+            installed=Path(temporary)/'installed'
+            staging.stage(root,installed,helpers,system_libraries=libraries,vaapi=bridge)
+            prepare(installed,Path(temporary)/'session')
+            self.assertEqual((Path(temporary)/'session/libmeteor-vaapi-probe.so').read_bytes(),b'AMD encoder')
+            self.assertTrue((installed/'xr-runtime/encoder-lib/libavcodec.so.62').is_file())
+            self.assertFalse((installed/'xr-runtime/lib/libavcodec.so.62').exists())
+            (installed/'xr-runtime/encoder-lib/libavcodec.so.62').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError,'checksum mismatch'):
+                prepare(installed,Path(temporary)/'another')
+            self.assertFalse((Path(temporary)/'another').exists())
+
     def test_corrupt_runtime_rejected_before_session_creation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

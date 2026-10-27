@@ -10,7 +10,7 @@ from meteor_xr_runtime import validate
 # These libraries belong to the host OS/driver stack, not an arbitrary build PC.
 HOST_LIBRARIES = {'libc.so.6', 'libm.so.6', 'libdl.so.2', 'libpthread.so.0', 'librt.so.1',
                   'libgcc_s.so.1', 'libstdc++.so.6', 'libudev.so.1', 'libvulkan.so.1',
-                  'ld-linux-x86-64.so.2'}
+                  'ld-linux-x86-64.so.2', 'libva.so.2','libva-drm.so.2','libdrm.so.2'}
 
 
 def version(value):
@@ -56,7 +56,7 @@ def audit(root, maximum='2.35'):
     return {'schema': 1, 'packaging_glibc_baseline': maximum, 'minimum_glibc': minimum,
             'elf_files': files, 'host_libraries': sorted(required & HOST_LIBRARIES),
             'bundle_libraries': sorted(provided), 'missing_bundle_libraries': missing,
-            'dynamic_driver_dependencies': ['libcuda.so.1', 'libnvidia-encode.so.1', 'NVIDIA Vulkan ICD'],
+            'dynamic_driver_dependencies': ['libcuda.so.1', 'libnvidia-encode.so.1', 'NVIDIA Vulkan ICD', 'AMD Vulkan ICD / host libva Mesa driver'],
             'errors': errors, 'static_audit_passed': not errors,
             'scope': 'Static ELF audit only; does not validate host drivers, Python, licensing completeness or gameplay.'}
 

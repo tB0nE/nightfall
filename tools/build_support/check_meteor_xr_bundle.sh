@@ -22,6 +22,12 @@ for relative in [
     ".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/openxr/libopenxr_monado.so",
     "xr-runtime/libmeteor-tracking-probe.so", "xr-runtime/libmeteor-nvenc-probe.so"]:
     ctypes.CDLL(str(root/relative))
+if "vaapi" in manifest.get("backends",[]):
+    ctypes.CDLL(str(root/"xr-runtime/libmeteor-vaapi-probe.so"))
+    ffmpeg=ctypes.CDLL(str(root/"xr-runtime/encoder-lib/libavcodec.so.62"))
+    ffmpeg.avcodec_find_encoder_by_name.argtypes=[ctypes.c_char_p]
+    ffmpeg.avcodec_find_encoder_by_name.restype=ctypes.c_void_p
+    if not ffmpeg.avcodec_find_encoder_by_name(b"hevc_vaapi"): raise RuntimeError("Packaged FFmpeg lacks HEVC VA-API encoding")
 if manifest.get("openvr_compat"):
     ctypes.CDLL(str(root/manifest["openvr_compat"]/"bin/linux64/vrclient.so"))
 service=root/".build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/service/monado-service"

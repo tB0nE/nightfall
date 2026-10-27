@@ -43,7 +43,7 @@ impl Control {
             if sequence==self.sequence && requested==self.requested && applied<=1 {
                 status.applied_enabled=Some(applied);
                 status.state=if code==0 {"applied"} else {"rejected"}.into();
-                if code!=0 {status.error=Some(format!("NVENC reconfiguration error {code}"));}
+                if code!=0 {status.error=Some(if code==95 {"This encoder does not support live foveation changes; change the setting before the next XR session".into()} else {format!("Encoder reconfiguration error {code}")});}
             }
         }
         Some(status)

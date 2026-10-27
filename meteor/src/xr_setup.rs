@@ -90,6 +90,21 @@ pub fn restart_command() -> io::Result<std::process::Command> {
     Ok(command)
 }
 
+fn encoder_config(text: &str, backend: &str) -> io::Result<String> {
+    if !matches!(backend,"auto"|"nvenc"|"vaapi") {return Err(io::Error::other("Unknown PCVR encoder"));}
+    let _: crate::config::Config=toml::from_str(text).map_err(io::Error::other)?;
+    let mut document:toml_edit::DocumentMut=text.parse().map_err(io::Error::other)?;
+    if !document.contains_key("xr") {document["xr"]=toml_edit::Item::Table(toml_edit::Table::new());}
+    document["xr"]["encoder_backend"]=toml_edit::value(backend);
+    if backend!="vaapi" {if let Some(table)=document["xr"].as_table_mut() {table.remove("render_device");}}
+    Ok(document.to_string())
+}
+
+pub fn select_encoder(backend: &str) -> io::Result<()> {
+    let path=crate::config::config_path();let original=read_config(&path)?;
+    save_enabled(&path,&original,&encoder_config(&original,backend)?)
+}
+
 pub fn request_enable() {
     {
         let mut state = STATE.get_or_init(Default::default).lock().unwrap();
@@ -98,7 +113,7 @@ pub fn request_enable() {
         state.error = None;
     }
     tokio::spawn(async {
-        crate::desktop::notify("Setting up PCVR", "Installing the bundled runtime. Meteor will restart briefly; desktop streams will disconnect. Linux PCVR currently requires an NVIDIA encoder.").await;
+        crate::desktop::notify("Setting up PCVR", "Installing the bundled runtime. Meteor will restart briefly; desktop streams will disconnect. Linux PCVR supports NVIDIA NVENC or AMD H.264/HEVC encoding.").await;
         let result = async {
             restart_command()?;
             enable_from(&bundle()?, &crate::config::config_path()).await
@@ -120,6 +135,14 @@ pub fn request_enable() {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn encoder_selection_preserves_settings_and_removes_stale_device_override() {
+        let input="# User settings\n[xr]\nenabled=true\nrender_device='/dev/dri/renderD128'\n";
+        let amd=encoder_config(input,"vaapi").unwrap();assert!(amd.contains("render_device"));
+        let auto=encoder_config(&amd,"auto").unwrap();assert!(!auto.contains("render_device"));
+        assert!(auto.contains("# User settings"));assert!(auto.contains("enabled=true"));
+        let parsed:crate::config::Config=toml::from_str(&auto).unwrap();assert_eq!(parsed.xr.encoder_backend,"auto");
+        assert!(encoder_config(input,"cpu").is_err());
+    }
     #[test] fn config_edit_preserves_comments_custom_runtime_and_other_settings() {
         let text="# My settings\nsunshine_host = '10.0.0.13'\n[xr]\nenabled = false # keep this\nruntime_root = '/custom/xr'\nvideo_port = 48001\n";
         let updated=enabled_config(text).unwrap();

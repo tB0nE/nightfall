@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage a relocatable Linux/NVIDIA XR runtime for packaging validation.
+"""Stage a relocatable Linux NVIDIA/AMD XR runtime for packaging validation.
 
 Build-machine tool only. Does not modify Steam, trust records or running services.
 The destination must not exist. Driver/system libraries are not copied.
@@ -43,7 +43,7 @@ def modules(root):
     return found
 
 
-def stage(root, destination, helpers, system_libraries=(), xrizer=None):
+def stage(root, destination, helpers, system_libraries=(), xrizer=None, vaapi=None):
     manifest = json.loads((helpers / 'validated.json').read_text())
     if not isinstance(manifest, dict) or not isinstance(manifest.get('key'), str):
         raise ValueError('Invalid validated XR helper manifest')
@@ -80,6 +80,12 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None):
     for name in ('libmeteor-tracking-probe.so', 'libmeteor-nvenc-probe.so'):
         shutil.copy2(helpers / name, package / name)
         checksums['xr-runtime/' + name] = hashlib.sha256((package / name).read_bytes()).hexdigest()
+    if vaapi is not None:
+        source=Path(vaapi)
+        if not source.is_file(): raise ValueError('Missing AMD VA-API encoder bridge')
+        target=package/'libmeteor-vaapi-probe.so'
+        shutil.copy2(source,target)
+        checksums[str(target.relative_to(destination))]=hashlib.sha256(target.read_bytes()).hexdigest()
     notice_root = root / '.build-cache/meteor-xr/monado-linux-spike/capture-source'
     notices = [notice_root / 'LICENSE', *sorted((notice_root / 'LICENSES').glob('*.txt')),
                notice_root / 'src/external/cjson/cjson/LICENSE']
@@ -118,9 +124,10 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None):
     for source in system_libraries:
         source = Path(source)
         # Never gather arbitrary GPU/OS libraries from the build host.
-        if source.name != 'libcjson.so.1':
-            raise ValueError('Only the explicitly supplied libcjson.so.1 may be bundled')
-        target = package / 'lib' / source.name
+        allowed=source.name in ('libcjson.so.1','libavcodec.so.62','libavutil.so.60','libswscale.so.9') or source.name.startswith('libdav1d.so.')
+        if not allowed:
+            raise ValueError('Only explicit cJSON/FFmpeg/dav1d private dependencies may be bundled')
+        target = package / ('lib' if source.name=='libcjson.so.1' else 'encoder-lib') / source.name
         target.parent.mkdir(exist_ok=True)
         shutil.copy2(source, target)
         checksums[str(target.relative_to(destination))] = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -133,11 +140,13 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None):
         'Baseline dependency copyright files, when available, are in notices/build-dependencies.\n'
         'Upstream: https://gitlab.freedesktop.org/monado/monado\n'
         'Nightfall build hooks and patches: test/monado_*.patch in the Nightfall source repository.\n'
-        'GPU drivers, Vulkan loader, libudev and host C/C++ runtimes are not bundled here.\n'
+        'FFmpeg 8 LGPLv2.1 and dav1d BSD notices are included when their encoder runtime is bundled.\n'
+        'GPU drivers, libva/DRM, Vulkan loader, libudev and host C/C++ runtimes are not bundled here.\n'
         'A complete compiled-component attribution audit remains required before distribution.\n')
     checksums[str(notice.relative_to(destination))] = hashlib.sha256(notice.read_bytes()).hexdigest()
     (package / 'manifest.json').write_text(json.dumps({
-        'version': 1, 'backend': 'nvidia', 'helper_build': manifest['key'],
+        'version': 1, 'backend': 'linux-gpu' if vaapi else 'nvidia',
+        'backends': ['nvenc','vaapi'] if vaapi else ['nvenc'], 'helper_build': manifest['key'],
         'openvr_compat': 'xr-runtime/xrizer' if xrizer is not None else None,
         'sha256': checksums,
     }, indent=2) + '\n')

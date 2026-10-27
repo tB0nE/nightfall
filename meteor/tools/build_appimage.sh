@@ -149,7 +149,7 @@ install -m644 "$WORK/stage/libgomp-copyright.txt" "$WORK/stage/GPL-3.txt" "$WORK
     echo "- EdgePad 512x288 and 256x256 weights: Nightfall's ZipDepth models (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
     echo "- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor (microphone)"
-    echo "- FFmpeg 8.0.1, LGPL 2.1 or later: optional VAAPI/software decoding runtime"
+    echo "- FFmpeg 8.0.1, LGPL 2.1 or later: VAAPI/software decoding and HEVC VAAPI encoder runtime"
     echo "  Unmodified source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
     echo "- dav1d, BSD 2-Clause: AV1 software decoding"
     if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
