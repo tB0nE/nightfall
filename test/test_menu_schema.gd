@@ -2,7 +2,7 @@ extends SceneTree
 
 func _init():
 	assert(MenuSchema.validate().is_empty(), "Menu schema must be internally valid")
-	assert(_tab_button_labels() == ["Display", "Stream", "Control", "AI 3D", "Picture", "Monitors", "Settings"])
+	assert(_tab_button_labels() == ["Display", "Stream", "Control", "AI 3D", "Picture", "Screens", "Settings"])
 	assert(_tab_ids() == [&"display", &"stream", &"control", &"picture", &"settings"])
 	assert(_option_count(&"display") == 8)
 	assert(_option_count(&"stream") == 8)

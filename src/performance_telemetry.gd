@@ -11,6 +11,12 @@ var _status_elapsed: float = 0.0
 var _overlay_elapsed: float = 0.0
 var _previous_performance_window: Dictionary = {}
 
+static func status_with_app_fps(text: String, fps: float) -> String:
+	var marker := text.rfind(" • App:")
+	if marker >= 0:
+		text = text.substr(0, marker)
+	return text + " • App:%dfps" % roundi(fps)
+
 func reset_session() -> void:
 	app_fps = 0.0
 	video_update_fps = 0.0

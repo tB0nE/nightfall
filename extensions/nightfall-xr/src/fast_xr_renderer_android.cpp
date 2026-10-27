@@ -2164,6 +2164,9 @@ void NightfallXrRenderer::perform_pending_resize_rebuild() {
 }
 
 int32_t NightfallXrRenderer::_get_composition_layer_count() {
+	// Preserve decoder/swapchain ownership during XR handover. No stale quad
+	// may be submitted, and the frame counter must not age eye-query watchdogs.
+	if (presentation_suspended.load()) return 0;
 	if (pending_resize_requested) {
 		if (resize_drain_frames_remaining > 0) {
 			--resize_drain_frames_remaining;
@@ -2189,6 +2192,7 @@ int32_t NightfallXrRenderer::_get_composition_layer_count() {
 }
 
 uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
+	if (presentation_suspended.load()) return 0;
 	// Fetch fresh rather than using the xr_space member cached once in
 	// register_provider(): Godot's play space is created lazily, INSIDE its
 	// own per-frame OpenXRAPI::process() (gated by play_space_is_dirty,

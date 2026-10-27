@@ -17,6 +17,7 @@ pub struct MeteorTray {
     pub stats: Arc<Stats>,
     pub depth: Option<Arc<Depth>>,
     pub mic: Option<Arc<Mic>>,
+    pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
 }
 
 impl ksni::Tray for MeteorTray {
@@ -47,7 +48,58 @@ impl ksni::Tray for MeteorTray {
             StandardItem { label, enabled: false, ..Default::default() }.into()
         };
         let mb = |bytes: u64| bytes as f64 / 1_000_000.0;
+        let setup = crate::xr_setup::state();
+        const XR_ENCODERS: &[(&str,&str)]=&[("auto","Auto (prefer NVIDIA)"),("nvenc","NVIDIA / NVENC"),("vaapi","AMD / VA-API (experimental)")];
+        let encoder=crate::config::load().xr.encoder_backend;
+        let encoder_index=XR_ENCODERS.iter().position(|(id,_)|*id==encoder).unwrap_or(0);
         vec![
+            StandardItem {
+                label: "Custom Steam Launch Options required: Copy".into(),
+                icon_name: "edit-copy".into(),
+                enabled: crate::xr_library::steam_launch_options().is_ok(),
+                activate: Box::new(|_| { tokio::spawn(async {
+                    match crate::xr_library::steam_launch_options() {
+                        Ok(options) => match crate::desktop::copy_text(&options).await {
+                            Ok(()) => crate::desktop::notify("Steam launch options copied",
+                                "In Steam, right-click your VR game → Properties → General → Launch Options. Paste the copied line. Use the same line for each VR game.").await,
+                            Err(error) => { log::warn!("Cannot copy Steam launch options: {error}");
+                                crate::desktop::notify("Could not copy Steam launch options", &error.to_string()).await; }
+                        },
+                        Err(error) => log::warn!("Cannot create Steam launch options: {error}"),
+                    }
+                }); }),
+                ..Default::default()
+            }.into(),
+            StandardItem {
+                label: if setup.ready { "PCVR ready (Linux / NVIDIA or AMD)" }
+                    else if setup.busy { "Setting up PCVR…" }
+                    else if setup.error.is_some() { "Retry PCVR setup — install & restart Meteor" }
+                    else { "Enable PCVR — install & restart Meteor" }.into(),
+                icon_name: if setup.ready { "emblem-default" } else { "applications-games" }.into(),
+                enabled: !setup.ready && !setup.busy,
+                activate: Box::new(|_| crate::xr_setup::request_enable()),
+                ..Default::default()
+            }.into(),
+            SubMenu {
+                label: format!("PCVR encoder: {}",XR_ENCODERS[encoder_index].1),
+                enabled: !setup.busy,
+                submenu: vec![RadioGroup {
+                    selected: encoder_index,
+                    select:Box::new(|_:&mut Self,index| {
+                        if let Some((id,_))=XR_ENCODERS.get(index) {
+                            let result=crate::xr_setup::select_encoder(id);
+                            tokio::spawn(async move {match result {
+                                Ok(())=>crate::desktop::notify("PCVR encoder saved","Applies to the next XR session. Unsupported encoder controls are disabled automatically.").await,
+                                Err(error)=>crate::desktop::notify("Could not save PCVR encoder",&error.to_string()).await,
+                            }});
+                        }
+                    }),
+                    options:XR_ENCODERS.iter().map(|(_,label)|RadioItem{label:(*label).into(),..Default::default()}).collect(),
+                }.into()],..Default::default()
+            }.into(),
+            info(setup.error.as_deref().map(|error| format!("PCVR: {} (see Open log)", error.chars().take(100).collect::<String>()))
+                .unwrap_or_else(|| "PCVR requires Linux / NVIDIA or AMD; Steam launch options are per game".into())),
+            MenuItem::Separator,
             info(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,
             info(self.summary()),
@@ -72,6 +124,12 @@ impl ksni::Tray for MeteorTray {
         .into_iter()
         .chain(self.firewall_menu())
         .chain([MenuItem::Separator])
+        .chain([StandardItem {
+            label:"VR Apps".into(),
+            activate:Box::new(|_| {if let Err(error)=crate::xr_library::request_open(){log::warn!("Cannot open VR Apps: {error}");}}),
+            ..Default::default()
+        }.into()])
+        .chain(self.xr_pairing_menu())
         .chain(self.depth_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
@@ -90,6 +148,17 @@ impl ksni::Tray for MeteorTray {
                 ..Default::default()
             }
             .into(),
+            StandardItem {
+                label: "Release information & licenses".into(),
+                activate: Box::new(|_| {
+                    if let Ok(executable)=std::env::current_exe() {
+                        if let Some(prefix)=executable.parent().and_then(std::path::Path::parent) {
+                            open_url(&prefix.join("share/doc/nightfall-meteor/RELEASE.md").to_string_lossy());
+                        }
+                    }
+                }),
+                ..Default::default()
+            }.into(),
             StandardItem {
                 label: "Open log".into(),
                 activate: Box::new(|_| open_url(&crate::logfile::path().to_string_lossy())),
@@ -115,6 +184,20 @@ impl ksni::Tray for MeteorTray {
 }
 
 impl MeteorTray {
+    fn xr_pairing_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::StandardItem;
+        let Some(trust) = &self.xr_trust else { return vec![] };
+        let Some((key, code)) = trust.pending() else { return vec![] };
+        let approve = trust.clone(); let reject = trust.clone();
+        vec![
+            StandardItem { label: format!("Approve XR headset {code} (compare headset code)"),
+                activate: Box::new(move |_| { if let Err(error)=approve.approve(key) {log::warn!("XR approval failed: {error}");} }),
+                ..Default::default() }.into(),
+            StandardItem { label: format!("Reject XR headset {code}"),
+                activate: Box::new(move |_| reject.reject(key)), ..Default::default() }.into(),
+        ]
+    }
+
     /// Host depth: on/off, Model and Rate submenus, and a live readout.
     fn depth_menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
@@ -142,27 +225,32 @@ impl MeteorTray {
             )
         };
 
-        let models = depth.list_models();
-        let current = depth.model();
-        let model_names = models.clone();
-        let mut model_items: Vec<ksni::MenuItem<Self>> = vec![
-                RadioGroup {
-                    selected: current.as_ref().and_then(|c| models.iter().position(|m| m == c)).unwrap_or(0),
-                    select: Box::new(move |tray: &mut Self, i| {
-                        if let (Some(depth), Some(name)) = (&tray.depth, model_names.get(i)) {
-                            depth.select_model(name);
-                        }
-                    }),
-                    options: models
-                        .iter()
-                        .map(|m| RadioItem { label: crate::depth::model_label(m), ..Default::default() })
-                        .collect(),
-                }
-                .into(),
-        ];
+        let mut model_items:Vec<ksni::MenuItem<Self>>=depth.choice_groups().into_iter().map(|group| {
+            SubMenu {label:group.label,submenu:group.choices.into_iter().map(|choice| {
+                CheckmarkItem {label:crate::depth::model_label(&choice.model),checked:depth.choice_selected(&choice),
+                    activate:Box::new(move |tray:&mut Self| {if let Some(depth)=&tray.depth {depth.select_choice(&choice);}}),
+                    ..Default::default()}.into()
+            }).collect(),..Default::default()}.into()
+        }).collect();
         model_items.extend(self.vda_download_items(depth));
+        for (id,bytes) in depth.vulkan_vda_offers() {
+            model_items.push(SubMenu {
+                label:format!("Download {} ({} MB)",crate::depth::model_label(id),bytes.div_ceil(1_000_000)),
+                submenu:vec![
+                    info("Vulkan GPU inference — no TensorRT download required".into()),
+                    info("VDA Small weights: Apache 2.0; license included".into()),
+                    info("Adds the model to compatible GPU lists; keeps your current selection".into()),
+                    StandardItem { label:"Download model".into(), activate:Box::new(move |tray:&mut Self| {
+                        if let Some(depth)=&tray.depth { depth.download_vulkan_vda(id); }
+                    }),..Default::default() }.into(),
+                ],..Default::default()
+            }.into());
+        }
+        if let crate::download::State::Failed(error)=depth.download.state() {
+            model_items.push(info(format!("Download failed: {}",error.chars().take(120).collect::<String>())));
+        }
         let model_menu = SubMenu {
-            label: format!("Model: {}", current.as_deref().map_or_else(|| "none".to_string(), crate::depth::model_label)),
+            label: format!("GPU / model: {}",depth.selection_label()),
             submenu: model_items,
             ..Default::default()
         };
@@ -215,21 +303,44 @@ impl MeteorTray {
             }
             .into(),
             model_menu.into(),
-            SubMenu {
-                label: format!("Inference: {}", if depth.cpu_inference() { "CPU" } else { "GPU" }),
-                submenu: vec![RadioGroup {
-                    selected: usize::from(depth.cpu_inference()),
-                    select: Box::new(|tray: &mut Self, i| {
-                        if let Some(depth) = &tray.depth { depth.set_cpu_inference(i == 1); }
-                    }),
-                    options: vec![
-                        RadioItem { label: "GPU".into(), ..Default::default() },
-                        RadioItem { label: if depth.cpu_inference_supported() { "CPU" } else { "CPU (EdgePad only)" }.into(), enabled: depth.cpu_inference_supported(), ..Default::default() },
-                    ],
-                }.into()],
-                ..Default::default()
-            }.into(),
             rate_menu.into(),
+            SubMenu {
+                label:"Advanced depth pipeline".into(),
+                submenu:{
+                    use crate::video_decoder::{Backend,vaapi_devices};
+                    let settings=depth.decode_settings();
+                    let devices=vaapi_devices();
+                    let mut device_options=vec![RadioItem {label:"Auto".into(),..Default::default()}];
+                    device_options.extend(devices.iter().map(|(_,label)|RadioItem {label:label.clone(),..Default::default()}));
+                    vec![
+                        info(format!("Active: {}",depth.decoder_status())),
+                        info("Decoder/device changes apply at the next keyframe or stream".into()),
+                        SubMenu {
+                            label:format!("Video decoder: {}",settings.backend.label()),
+                            submenu:vec![RadioGroup {
+                                selected:Backend::ALL.iter().position(|b|*b==settings.backend).unwrap_or(0),
+                                options:Backend::ALL.iter().map(|b|RadioItem {label:b.label().into(),..Default::default()}).collect(),
+                                select:Box::new(|tray:&mut Self,i|if let (Some(depth),Some(backend))=(&tray.depth,Backend::ALL.get(i)) {depth.set_decode_backend(*backend);}),
+                            }.into()],..Default::default()
+                        }.into(),
+                        SubMenu {
+                            label:"VAAPI decode GPU".into(),
+                            enabled:matches!(settings.backend,Backend::Auto|Backend::Vaapi),
+                            submenu:vec![RadioGroup {
+                                selected:settings.vaapi_device.as_ref().and_then(|p|devices.iter().position(|(path,_)|path==p)).map_or(0,|i|i+1),
+                                options:device_options,
+                                select:Box::new(move |tray:&mut Self,i|if let Some(depth)=&tray.depth {depth.set_vaapi_device(if i==0 {None} else {devices.get(i-1).map(|(path,_)|path.clone())});}),
+                            }.into()],..Default::default()
+                        }.into(),
+                        CheckmarkItem {
+                            label:"CPU frame processing (reference path)".into(),
+                            checked:settings.cpu_processing,
+                            activate:Box::new(|tray:&mut Self|if let Some(depth)=&tray.depth {depth.set_cpu_processing(!depth.decode_settings().cpu_processing);}),
+                            ..Default::default()
+                        }.into(),
+                    ]
+                },..Default::default()
+            }.into(),
             CheckmarkItem {
                 label: "Depth smoothing".into(),
                 checked: depth.smoothing(),
@@ -308,14 +419,14 @@ impl MeteorTray {
             }
             items.push(
                 SubMenu {
-                    label: format!("Download Video Depth Anything ({} MB)", bytes.div_ceil(1_000_000)),
+                    label: format!("Download VDA (NVIDIA TensorRT, {} MB)", bytes.div_ceil(1_000_000)),
                     submenu: offer,
                     ..Default::default()
                 }
                 .into(),
             );
         } else if crate::download::installed() {
-            items.push(action("Remove the VDA download", |d| d.remove_vda_download()));
+            items.push(action("Remove TensorRT VDA download", |d| d.remove_vda_download()));
         } else {
             items.pop();
         }

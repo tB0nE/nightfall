@@ -4,7 +4,8 @@ FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates cmake curl patchelf unzip \
+        build-essential ca-certificates cmake curl patchelf unzip pkg-config nasm \
+        libva-dev libdrm-dev libdav1d-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # The toolchain Meteor is developed with.

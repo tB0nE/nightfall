@@ -13,6 +13,9 @@ const GODOT_COMPONENTS := "<godot-components>"
 ## name, a note shown above the text, and the text's file.
 const ENTRIES := [
 	["Nightfall", "Nightfall is free software under the GNU General Public License, version 3. Source code: https://github.com/tB0nE/nightfall", "GPL-3.0.txt"],
+	["ALVR (optional DEV experiment)", "Pinned ALVR 20.14.1 client core. Included only when the experimental PCVR bridge is enabled. https://github.com/alvr-org/ALVR", "alvr.txt"],
+	["Browser ad blocking", "Brave adblock-rust 0.13.3 (MPL-2.0), JNI and pinned Rust dependencies. Unmodified upstream sources and licence notices follow.", "browser-adblock-dependencies.txt"],
+	["EasyList / EasyPrivacy", "Optional filter subscriptions by The EasyList authors (https://easylist.to/). Lists are downloaded directly, not bundled. Source and licensing: https://easylist.to/pages/licence.html and https://github.com/easylist/easylist. GPL version 3 or later option; no Acceptable Ads subscription.", "GPL-3.0.txt"],
 	["ZipDepth", "The EdgePad depth models are Nightfall's fine-tune of ZipDepth (https://github.com/fabiotosi92/ZipDepth).", "zipdepth.txt"],
 	["Godot Engine", "", GODOT],
 	["Godot components", "Third-party components built into the Godot Engine.", GODOT_COMPONENTS],

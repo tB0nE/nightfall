@@ -37,7 +37,20 @@ OUT="$METEOR/target/appimage"
 WORK="$OUT/work"
 APPDIR="$WORK/AppDir"
 IMAGE=nightfall-meteor-appimage
-ENGINE="$(command -v podman || command -v docker)"
+ENGINE="${NIGHTFALL_CONTAINER_ENGINE:-$(command -v podman || command -v docker)}"
+RUN_ARGS=(--rm --security-opt label=disable)
+if [[ "$(basename "$ENGINE")" == podman ]]; then
+    RUN_ARGS+=(--userns=keep-id)
+else
+    RUN_ARGS+=(--user "$(id -u):$(id -g)")
+fi
+XR_SUFFIX=""
+if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+    METEOR_XR_BUNDLE="$(cd "$METEOR_XR_BUNDLE" && pwd)"
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_runtime.py" --check
+    /usr/bin/python3 "$REPO/tools/audit_meteor_xr_runtime.py" "$METEOR_XR_BUNDLE" --max-glibc 2.35 >/dev/null
+    XR_SUFFIX="-XR-DEV"
+fi
 
 for f in "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin"; do
     [[ -f "$f" ]] || { echo "Missing $f (see models/README.md)" >&2; exit 1; }
@@ -53,7 +66,7 @@ mkdir -p "$WORK/stage"
 
 echo "== Building Meteor in Ubuntu 22.04"
 "$ENGINE" build -q -t "$IMAGE" -f tools/appimage/Containerfile tools/appimage >/dev/null
-"$ENGINE" run --rm --userns=keep-id --security-opt label=disable \
+"$ENGINE" run "${RUN_ARGS[@]}" \
     -v "$METEOR:/src:ro" \
     -v "$OUT/cargo-target:/target" \
     -v "$OUT/cargo-registry:/opt/cargo/registry" \
@@ -64,6 +77,10 @@ echo "== Building Meteor in Ubuntu 22.04"
 cd /src
 cargo build --release --locked --no-default-features --target-dir /target
 cp /target/release/nightfall-meteor /stage/
+bash tools/build_ffmpeg_runtime.sh /target/ffmpeg-runtime /target/ffmpeg-build
+cp -L /target/ffmpeg-runtime/lib/libavcodec.so.62 /target/ffmpeg-runtime/lib/libavutil.so.60 /target/ffmpeg-runtime/lib/libswscale.so.9 /stage/
+cp -L /target/ffmpeg-runtime/lib/libdav1d.so.* /stage/
+cp /target/ffmpeg-runtime/FFmpeg-COPYING.LGPLv2.1 /target/ffmpeg-runtime/dav1d-copyright /stage/
 cargo about generate --no-default-features --fail -c tools/appimage/about.toml tools/appimage/about.hbs > /stage/crates.txt
 
 cd /tmp
@@ -73,10 +90,17 @@ curl -fsSL -o ncnn-LICENSE.txt "https://raw.githubusercontent.com/Tencent/ncnn/$
 echo "$NCNN_LICENSE_SHA256  ncnn-LICENSE.txt" | sha256sum -c --quiet
 unzip -q ncnn.zip
 cp "$NCNN_ZIP/lib/libncnn.so.1."* /stage/libncnn.so.1
+c++ -O2 -std=c++17 -shared -fPIC /src/native/vda_vulkan.cpp \
+    -I"$NCNN_ZIP/include/ncnn" -L"$NCNN_ZIP/lib" -lncnn \
+    -o /stage/libmeteor_vda_vulkan.so
+patchelf --set-rpath "\$ORIGIN" /stage/libmeteor_vda_vulkan.so
 cp ncnn-LICENSE.txt /stage/
 # ncnn needs libgomp, which not every distribution installs; it finds the
 # copy next to it.
 cp /usr/lib/x86_64-linux-gnu/libgomp.so.1 /stage/
+cp /usr/share/doc/libgomp1/copyright /stage/libgomp-copyright.txt
+cp /usr/share/common-licenses/GPL-3 /stage/GPL-3.txt
+dpkg-query -W libgomp1 libdav1d-dev > /stage/baseline-packages.txt
 patchelf --set-rpath "\$ORIGIN" /stage/libncnn.so.1
 echo "glibc needed: $(objdump -T /stage/nightfall-meteor /stage/libncnn.so.1 /stage/libgomp.so.1 | grep -o "GLIBC_[0-9.]*" | sort -uV | tail -1)"
 '
@@ -86,14 +110,36 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/nightfall-meteor
     "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/732x732/apps" "$APPDIR/usr/share/doc/nightfall-meteor"
 install -m755 "$WORK/stage/nightfall-meteor" "$APPDIR/usr/bin/"
 install -m644 "$WORK/stage/libncnn.so.1" "$WORK/stage/libgomp.so.1" "$APPDIR/usr/lib/"
+install -m644 "$WORK/stage/libmeteor_vda_vulkan.so" "$APPDIR/usr/lib/"
+install -m644 "$WORK/stage/libavcodec.so.62" "$WORK/stage/libavutil.so.60" "$WORK/stage/libswscale.so.9" "$WORK"/stage/libdav1d.so.* "$APPDIR/usr/lib/"
 install -m644 "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
 install -m644 "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin" "$APPDIR/usr/share/nightfall-meteor/models/"
+# Keep optional VDA weights out of default packages even on a developer machine
+# that has them installed. They remain available from the user model directory.
+if [[ "${METEOR_BUNDLE_VDA_VULKAN:-0}" == 1 ]]; then
+    for variant in vda_vulkan_518x294 vda_vulkan_392x224; do
+        [[ -f "$MODELS/$variant/manifest.json" ]] || { echo "Missing requested VDA export: $variant" >&2; exit 1; }
+        cp -a "$MODELS/$variant" "$APPDIR/usr/share/nightfall-meteor/models/"
+    done
+fi
+# Optional managed XR bundle. It is copied out to writable per-user storage by
+# --install-xr-runtime; never run session state directly from the AppImage mount.
+if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_runtime.py" --check
+    /usr/bin/python3 "$REPO/tools/audit_meteor_xr_runtime.py" "$METEOR_XR_BUNDLE" \
+        --max-glibc 2.35 --output "$WORK/xr-runtime-audit.json"
+    /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_install.py" "$METEOR_XR_BUNDLE" \
+        --export "$APPDIR/usr/share/nightfall-meteor/xr-bundle"
+fi
 install -m755 tools/appimage/AppRun "$APPDIR/AppRun"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/"
 install -m644 tools/appimage/nightfall-meteor.desktop "$APPDIR/usr/share/applications/"
 install -m644 "$REPO/src/assets/nightfall_icon_v1.png" "$APPDIR/nightfall-meteor.png"
 install -m644 "$REPO/src/assets/nightfall_icon_v1.png" "$APPDIR/usr/share/icons/hicolor/732x732/apps/nightfall-meteor.png"
 install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
+install -m644 "$METEOR/RELEASE.md" "$APPDIR/usr/share/doc/nightfall-meteor/RELEASE.md"
+install -m644 "$WORK/stage/libgomp-copyright.txt" "$WORK/stage/GPL-3.txt" "$WORK/stage/baseline-packages.txt" "$APPDIR/usr/share/doc/nightfall-meteor/"
+/usr/bin/python3 "$METEOR/tools/release_metadata.py" --metadata "$APPDIR/usr/share/doc/nightfall-meteor/SOURCE_MANIFEST.json"
 {
     echo "Nightfall Meteor $VERSION is free software under the GNU GPL v3 (LICENSE)."
     echo "It includes the components below, under their own licences."
@@ -103,11 +149,21 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     echo "- EdgePad 512x288 and 256x256 weights: Nightfall's ZipDepth models (Fabio Tosi), MIT: usr/share/nightfall-meteor/models"
     echo "- NVIDIA TensorRT headers, Apache 2.0, compiled into Meteor's TensorRT shim"
     echo "- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor (microphone)"
+    echo "- FFmpeg 8.0.1, LGPL 2.1 or later: VAAPI/software decoding and HEVC VAAPI encoder runtime"
+    echo "  Unmodified source: https://ffmpeg.org/releases/ffmpeg-8.0.1.tar.xz"
+    echo "- dav1d, BSD 2-Clause: AV1 software decoding"
+    if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
+        echo "- Managed Monado XR runtime, xrizer (GPL-3.0-or-later), bridges and private cJSON: usr/share/nightfall-meteor/xr-bundle"
+        echo "  Upstream and dependency notices are retained inside that verified bundle."
+    fi
     echo "- The Rust crates listed at the end"
     echo
-    echo "Choosing Video Depth Anything in the tray downloads NVIDIA TensorRT from"
+    echo "Choosing NVIDIA TensorRT Video Depth Anything in the tray downloads TensorRT from"
     echo "NVIDIA, under NVIDIA's licence: https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html"
-    echo "and the Video Depth Anything Small graphs, Apache 2.0. Neither ships in this file."
+    echo "TensorRT graphs are downloaded separately. Optional Vulkan VDA graphs, Apache 2.0, carry their LICENSE in each model directory."
+    echo "Vulkan VDA does not download or require TensorRT."
+    echo "Exact Nightfall source hashes and build instructions: SOURCE_MANIFEST.json and RELEASE.md."
+    echo "Distribute the generated source companion archive with public binary releases."
     echo
     echo "=========================================================================="
     echo "ncnn"
@@ -126,7 +182,16 @@ install -m644 "$REPO/LICENSE" "$APPDIR/usr/share/doc/nightfall-meteor/LICENSE"
     cat "$OUT"/cargo-registry/src/*/audiopus_sys-*/opus/COPYING
     echo
     echo "=========================================================================="
-    echo "GCC Runtime Library Exception (libgomp): https://www.gnu.org/licenses/gcc-exception-3.1.html"
+    echo "FFmpeg"
+    cat "$WORK/stage/FFmpeg-COPYING.LGPLv2.1"
+    echo
+    echo "=========================================================================="
+    echo "dav1d"
+    cat "$WORK/stage/dav1d-copyright"
+    echo
+    echo "=========================================================================="
+    echo "GNU OpenMP runtime: full distribution copyright and GCC Runtime Library Exception"
+    cat "$WORK/stage/libgomp-copyright.txt"
     echo
     echo "=========================================================================="
     echo "Rust crates"
@@ -145,7 +210,7 @@ echo "$APPIMAGETOOL_SHA256  $TOOL" | sha256sum -c --quiet
 echo "$RUNTIME_SHA256  $RUNTIME" | sha256sum -c --quiet
 # The version is in the name from the start: the .zsync file records the
 # AppImage's file name, so the release asset must keep the name built here.
-TARGET="$OUT/Nightfall-Meteor-$VERSION-x86_64.AppImage"
+TARGET="$OUT/Nightfall-Meteor-$VERSION$XR_SUFFIX-x86_64.AppImage"
 rm -f "$TARGET" "$TARGET.zsync"
 (cd "$OUT" && ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --comp zstd --runtime-file "$RUNTIME" \
     -u "gh-releases-zsync|tB0nE|nightfall|latest|Nightfall-Meteor-*x86_64.AppImage.zsync" \

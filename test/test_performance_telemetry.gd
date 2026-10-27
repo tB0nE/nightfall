@@ -3,9 +3,15 @@ extends SceneTree
 func _init():
 	_test_frame_sampling()
 	_test_timers()
+	_test_status_fps()
 	_test_window_combination()
 	print("All performance_telemetry tests passed")
 	quit()
+
+func _test_status_fps() -> void:
+	assert(PerformanceTelemetry.status_with_app_fps("Ready", 89.6) == "Ready • App:90fps")
+	assert(PerformanceTelemetry.status_with_app_fps("Ready • App:90fps", 72.0) == "Ready • App:72fps")
+	assert(PerformanceTelemetry.status_with_app_fps("Connection failed", 60.0) == "Connection failed • App:60fps")
 
 func _test_frame_sampling() -> void:
 	var telemetry := PerformanceTelemetry.new()

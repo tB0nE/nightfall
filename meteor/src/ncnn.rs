@@ -57,6 +57,7 @@ struct Api {
     get_gpu_info: unsafe extern "C" fn(c_int) -> *const c_void,
     /// `GpuInfo::device_name() const`, with `this` as the argument.
     gpu_info_device_name: unsafe extern "C" fn(*const c_void) -> *const c_char,
+    gpu_info_type: unsafe extern "C" fn(*const c_void) -> c_int,
 }
 
 struct Runtime {
@@ -65,6 +66,7 @@ struct Runtime {
     device: c_int,
     /// For logs and the tray: "ncnn 1.0.20260526, NVIDIA GeForce RTX 3090".
     description: String,
+    devices: Vec<String>,
 }
 
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
@@ -126,6 +128,8 @@ const GET_DEFAULT_GPU_INDEX: &[u8] = b"?get_default_gpu_index@ncnn@@YAHXZ\0";
 const GET_GPU_INFO: &[u8] = b"?get_gpu_info@ncnn@@YAAEBVGpuInfo@1@H@Z\0";
 #[cfg(windows)]
 const GPU_INFO_DEVICE_NAME: &[u8] = b"?device_name@GpuInfo@ncnn@@QEBAPEBDXZ\0";
+#[cfg(windows)]
+const GPU_INFO_TYPE: &[u8] = b"?type@GpuInfo@ncnn@@QEBAHXZ\0";
 #[cfg(not(windows))]
 const CREATE_GPU_INSTANCE: &[u8] = b"_ZN4ncnn19create_gpu_instanceEPKc\0";
 #[cfg(not(windows))]
@@ -136,6 +140,8 @@ const GET_DEFAULT_GPU_INDEX: &[u8] = b"_ZN4ncnn21get_default_gpu_indexEv\0";
 const GET_GPU_INFO: &[u8] = b"_ZN4ncnn12get_gpu_infoEi\0";
 #[cfg(not(windows))]
 const GPU_INFO_DEVICE_NAME: &[u8] = b"_ZNK4ncnn7GpuInfo11device_nameEv\0";
+#[cfg(not(windows))]
+const GPU_INFO_TYPE: &[u8] = b"_ZNK4ncnn7GpuInfo4typeEv\0";
 
 fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
     macro_rules! sym {
@@ -175,18 +181,51 @@ fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
         get_default_gpu_index: sym!(GET_DEFAULT_GPU_INDEX),
         get_gpu_info: sym!(GET_GPU_INFO),
         gpu_info_device_name: sym!(GPU_INFO_DEVICE_NAME),
+        gpu_info_type: sym!(GPU_INFO_TYPE),
     };
     // SAFETY: plain calls into ncnn; the strings it returns are static.
     unsafe {
         let version = CStr::from_ptr((api.version)()).to_string_lossy().into_owned();
         if (api.create_gpu_instance)(std::ptr::null()) != 0 || (api.get_gpu_count)() == 0 {
-            return Ok(Runtime { api, device: -1, description: format!("ncnn {version}, CPU only (no Vulkan GPU)") });
+            return Ok(Runtime { api, device: -1, devices: Vec::new(), description: format!("ncnn {version}, CPU only (no Vulkan GPU)") });
         }
         // ncnn prefers a discrete GPU.
-        let device = (api.get_default_gpu_index)();
+        let devices: Vec<String> = (0..(api.get_gpu_count)()).map(|i|
+            CStr::from_ptr((api.gpu_info_device_name)((api.get_gpu_info)(i))).to_string_lossy().into_owned()).collect();
+        let device = if (0..devices.len()).all(|i|(api.gpu_info_type)((api.get_gpu_info)(i as c_int))==3) {-1}
+            else {resolve_device(&devices, (api.get_default_gpu_index)(), None)?};
+        if device<0 {return Ok(Runtime {api,device,devices,description:format!("ncnn {version}, CPU only (no hardware Vulkan GPU)")});}
         let name = CStr::from_ptr((api.gpu_info_device_name)((api.get_gpu_info)(device))).to_string_lossy().into_owned();
-        Ok(Runtime { api, device, description: format!("ncnn {version}, {name}") })
+        Ok(Runtime { api, device, devices, description: format!("ncnn {version}, {name}") })
     }
+}
+
+/// Names persist across driver enumeration changes; never silently substitute
+/// another device for an explicit user selection.
+pub fn gpu_names() -> Vec<String> {
+    runtime().map(|r|r.devices.iter().enumerate().filter(|(i,_)| {
+        // SAFETY: indices refer to this runtime's immutable GPU enumeration.
+        unsafe {(r.api.gpu_info_type)((r.api.get_gpu_info)(*i as c_int))!=3}
+    }).map(|(_,name)|name.clone()).collect()).unwrap_or_default()
+}
+pub fn gpu_index(requested: Option<&str>) -> Result<c_int,String> {
+    let r=runtime()?;resolve_device(&r.devices,r.device,requested)
+}
+pub fn resolved_gpu_name(requested: Option<&str>) -> Result<String,String> {
+    let r=runtime()?;
+    if r.device<0 {return Err("No hardware Vulkan GPU available".into());}
+    let device=resolve_device(&r.devices,r.device,requested)?;
+    Ok(r.devices[device as usize].clone())
+}
+fn resolve_device(names: &[String], default: c_int, requested: Option<&str>) -> Result<c_int,String> {
+    if let Some(name)=requested {
+        return names.iter().position(|n|n==name).map(|i|i as c_int)
+            .ok_or_else(||format!("Selected Vulkan GPU is unavailable: {name}"));
+    }
+    if names.is_empty() { return Err("No Vulkan GPU available".into()); }
+    // Prefer NVIDIA when present to keep NVDEC and inference on the same GPU.
+    Ok(names.iter().position(|n|n.to_ascii_lowercase().contains("nvidia"))
+        .map(|i|i as c_int).unwrap_or(if default>=0 && (default as usize)<names.len() {default} else {0}))
 }
 
 /// The param file of a model, and its weights next to it.
@@ -215,6 +254,7 @@ pub struct NcnnModel {
     pub width: usize,
     pub height: usize,
     pub cpu: bool,
+    pub gpu_name: Option<String>,
     input: Vec<f32>,
 }
 
@@ -223,6 +263,12 @@ pub struct NcnnModel {
 unsafe impl Send for NcnnModel {}
 
 impl NcnnModel {
+    pub(crate) fn infer_resident(&mut self,rgb:&[u8],processor:&mut crate::vulkan_processing::Processor)->Result<crate::vulkan_processing::ResidentDepth,String> {
+        if self.cpu || processor.size!=(self.width,self.height) || self.gpu_name.as_deref()!=Some(processor.gpu.as_str()) {return Err("Resident ncnn model/device mismatch".into());}
+        // The published ncnn C handle exposes pthis in c_api.h. Our native
+        // bridge uses that declaration and verifies runtime/SDK compatibility.
+        unsafe{processor.infer_edge(self.net,rgb)}
+    }
     /// `param` is `<name>.ncnn.param`; the weights are `<name>.ncnn.bin`.
     #[cfg(test)]
     pub fn load(param: &Path) -> Result<NcnnModel, String> {
@@ -230,12 +276,21 @@ impl NcnnModel {
     }
 
     pub fn load_backend(param: &Path, cpu: bool) -> Result<NcnnModel, String> {
+        Self::load_on_gpu(param,cpu,None)
+    }
+
+    pub fn load_on_gpu(param: &Path, cpu: bool, requested: Option<&str>) -> Result<NcnnModel, String> {
         let started = Instant::now();
         let runtime = runtime()?;
         let api = &runtime.api;
         if !cpu && runtime.device < 0 {
             return Err("ncnn GPU inference requires a Vulkan GPU; select CPU instead".into());
         }
+        let device = if cpu {-1} else {resolve_device(&runtime.devices,runtime.device,requested)?};
+        if !cpu && unsafe {(api.gpu_info_type)((api.get_gpu_info)(device))==3} {
+            return Err("Selected Vulkan device is a software CPU renderer".into());
+        }
+        let gpu_name = if cpu {None} else {Some(runtime.devices[device as usize].clone())};
         let file = param.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         let name = file.strip_suffix(PARAM_SUFFIX).ok_or_else(|| format!("{}: not an ncnn model", param.display()))?;
         let bin = param.with_file_name(format!("{name}{BIN_SUFFIX}"));
@@ -260,11 +315,11 @@ impl NcnnModel {
             (api.net_set_option)(net, opt);
             (api.option_destroy)(opt);
             if !cpu {
-                (api.net_set_vulkan_device)(net, runtime.device);
+                (api.net_set_vulkan_device)(net, device);
             }
             net
         };
-        let model = NcnnModel { api, net, name: name.to_string(), width, height, cpu, input: vec![0.0; 3 * width * height] };
+        let model = NcnnModel { api, net, name: name.to_string(), width, height, cpu, gpu_name, input: vec![0.0; 3 * width * height] };
         // SAFETY: NUL-terminated paths; the net is ours.
         unsafe {
             if (api.net_load_param)(net, param_c.as_ptr()) != 0 {
@@ -278,7 +333,7 @@ impl NcnnModel {
             "Loaded depth model {} ({width}x{height}, {}, {}) in {} ms",
             model.name,
             if cpu { "CPU fp32" } else { "Vulkan fp16" },
-            runtime.description,
+            model.gpu_name.as_deref().unwrap_or("CPU"),
             started.elapsed().as_millis()
         );
         Ok(model)
@@ -491,5 +546,51 @@ mod tests {
             ms[ms.len() * 95 / 100],
             ms[ms.len() - 1]
         );
+    }
+}
+
+#[cfg(test)]
+mod gpu_selection_tests {
+    use super::*;
+    #[test] fn preference_survives_gpu_reordering_and_missing_gpu_is_explicit() {
+        let names=vec!["AMD Radeon RX480".into(),"NVIDIA RTX3090".into()];
+        assert_eq!(resolve_device(&names,0,None).unwrap(),1);
+        assert_eq!(resolve_device(&names,0,Some("AMD Radeon RX480")).unwrap(),0);
+        let reversed=vec![names[1].clone(),names[0].clone()];
+        assert_eq!(resolve_device(&reversed,0,Some("AMD Radeon RX480")).unwrap(),1);
+        assert!(resolve_device(&names,0,Some("Missing GPU")).is_err());
+        assert_eq!(resolve_device(&names[..1],0,None).unwrap(),0);
+    }
+
+    /// Opt-in hardware test: explicitly load the same model on every visible
+    /// Vulkan GPU, run inference, and compare finite outputs across devices.
+    #[test]
+    #[ignore]
+    fn selected_gpu_inference_smoke() {
+        let root=Path::new(env!("CARGO_MANIFEST_DIR"));
+        init(Some(&root.join("target/ncnn/lib").join(LIB_NAME))).unwrap();
+        let param=root.parent().unwrap().join(".build-cache/meteor-library-preview/usr/share/nightfall-meteor/models/zipdepth_wide_512x288.ncnn.param");
+        let names=gpu_names();assert!(!names.is_empty());
+        let mut reference:Option<Vec<f32>>=None;
+        for name in names {
+            let mut model=NcnnModel::load_on_gpu(&param,false,Some(&name)).unwrap();
+            assert_eq!(model.gpu_name.as_deref(),Some(name.as_str()));
+            let rgb:Vec<u8>=(0..model.width*model.height).flat_map(|i|[(i%model.width*255/model.width) as u8,(i/model.width*255/model.height) as u8,128]).collect();
+            let out=model.infer(&rgb).unwrap();
+            assert_eq!(out.len(),model.width*model.height);
+            assert!(out.iter().all(|v|v.is_finite()));
+            let lo=out.iter().copied().fold(f32::INFINITY,f32::min);
+            let hi=out.iter().copied().fold(f32::NEG_INFINITY,f32::max);
+            assert!(hi>lo);
+            if let Some(expected)=&reference {
+                let scale=expected.iter().copied().fold(f32::NEG_INFINITY,f32::max)-expected.iter().copied().fold(f32::INFINITY,f32::min);
+                let error=out.iter().zip(expected).map(|(a,b)|(a-b).abs() as f64).sum::<f64>()/out.len() as f64/scale as f64;
+                eprintln!("{name}: normalized mean difference {error:.6}");
+                assert!(error<0.01,"Cross-GPU outputs differ by more than 1% of reference range");
+            } else {reference=Some(out);}
+            let start=Instant::now();
+            for _ in 0..10 {model.infer(&rgb).unwrap();}
+            eprintln!("{name}: {:.2} ms/inference (10 warm iterations, synthetic input, not end-to-end)",start.elapsed().as_secs_f64()*100.0);
+        }
     }
 }

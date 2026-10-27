@@ -11,6 +11,25 @@ var corner_handles: Array = []
 
 var uv_region: Vector4 = Vector4(0.0, 0.0, 1.0, 1.0)
 var monitor: ScreenLayout.MonitorSpec = null
+var content_tabs: ScreenContentTabs = ScreenContentTabs.new()
+
+# Browser sessions own an RGBA image, not a crop of the primary stream.
+func bind_independent_browser_texture(texture: Texture2D) -> void:
+	uv_region = Vector4(0, 0, 1, 1)
+	var mats: Array = [comp_shader_mat, comp_shader_mat_left, comp_shader_mat_right, _original_mat]
+	if material_override is ShaderMaterial:
+		mats.append(material_override)
+	for mat in mats:
+		if not mat is ShaderMaterial:
+			continue
+		mat.set_shader_parameter("main_texture", texture)
+		mat.set_shader_parameter("uv_region", uv_region)
+		mat.set_shader_parameter("yuv_mode", 0)
+		mat.set_shader_parameter("stereo_mode", 0)
+		mat.set_shader_parameter("depth_texture", null)
+		mat.set_shader_parameter("tex_y", null)
+		mat.set_shader_parameter("tex_u", null)
+		mat.set_shader_parameter("tex_v", null)
 
 # Client-side VR presentation grid state (see MonitorGrid/MonitorPresets).
 # grid_pos is (-1,-1) until this screen has ever been placed by the grid
@@ -22,6 +41,15 @@ var grid_pos: Vector2i = Vector2i(-1, -1)
 
 func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 	monitor = m
+	# Mirror existing monitor content without changing rendering or host input.
+	# Real source selection will be wired after the browser GPU feasibility gate.
+	var tab := ScreenContentTab.for_monitor(m.id)
+	if content_tabs.tabs.is_empty():
+		content_tabs.add(tab)
+	elif content_tabs.tabs.size() == 1 and content_tabs.selected().kind == ScreenContentTab.STREAM:
+		# Existing layout changes reuse a physical screen for another monitor.
+		content_tabs.tabs[0] = tab
+		content_tabs.selected_id = tab.id
 	uv_region = Vector4(
 		float(m.frame_rect.position.x) / float(frame_size.x),
 		float(m.frame_rect.position.y) / float(frame_size.y),
@@ -70,6 +98,8 @@ var comp_stream_cursor_circle_right: ColorRect = null
 # submit_projection_layer=false). Its Area3D grab interaction is unaffected
 # (physics doesn't depend on rendering) - this only adds the missing
 # visual. See CompositionScreenControls.
+# Compatibility aliases: grab bar, shortcuts, corners and browser chrome now
+# share comp_corner_layer/comp_corner_viewport (one controls layer per screen).
 var comp_grab_bar: Node3D = null
 var comp_grab_bar_viewport: SubViewport = null
 var shortcut_buttons: Dictionary = {}

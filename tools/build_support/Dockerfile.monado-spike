@@ -1,0 +1,9 @@
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION}
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build pkg-config git ca-certificates python3 \
+    libva-dev libdrm-dev libdav1d-dev nasm curl libeigen3-dev libcjson-dev libvulkan-dev mesa-vulkan-drivers glslang-tools \
+    libopenxr-dev libudev-dev patchelf libx11-dev libxrandr-dev libxxf86vm-dev libxcb-randr0-dev \
+    libwayland-dev wayland-protocols libgl-dev libegl-dev libjpeg-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /work

@@ -303,7 +303,7 @@ func handle_secondary_key(pixel_pos: Vector2, pressed: bool):
 	if not pressed:
 		for kc in _held_keys_secondary.keys():
 			if kc not in [KEY_SHIFT, KEY_CTRL, KEY_ALT, KEY_CAPSLOCK]:
-				main.stream_backend.send_keyboard_event(kc, 4, 0)
+				_send_key(kc, 4)
 		_held_keys_secondary.clear()
 		return
 	if pixel_pos.x >= _kb_width:
@@ -319,7 +319,7 @@ func handle_secondary_key(pixel_pos: Vector2, pressed: bool):
 		if key_code != KEY_CAPSLOCK:
 			_held_keys_secondary[key_code] = true
 	else:
-		main.stream_backend.send_keyboard_event(key_code, 3, 0)
+		_send_key(key_code, 3)
 		_held_keys_secondary[key_code] = true
 
 func handle_secondary_pointer(pixel_pos: Vector2):
@@ -359,7 +359,7 @@ func _update_tp_hint():
 		_tp_hint_label.add_theme_color_override("font_color", Color(0.45, 0.45, 0.5, 0.4))
 
 func _process(_delta):
-	if not visible or not main.is_streaming:
+	if not is_visible_in_tree() or not main.is_streaming:
 		if trackpad_active:
 			_deactivate_trackpad()
 		return
@@ -442,6 +442,27 @@ func _key_from_pos(pixel_pos: Vector2) -> int:
 			return kd["key"]
 	return -1
 
+func _send_key(code: int, action: int) -> void:
+	var browser: RefCounted = main.get("browser_prototype")
+	if main.get("screen_sources") != null:
+		browser = main.screen_sources.focused_browser()
+	if browser and browser.active:
+		browser.key(code, action)
+	else:
+		main.input_handler.send_stream_key(code, action)
+
+func release_for_focus_loss() -> void:
+	for code in _held_keys:
+		if int(code) >= 0: _send_key(code, 4)
+	for code in _held_keys_secondary:
+		if int(code) >= 0: _send_key(code, 4)
+	_held_keys.clear()
+	_held_keys_secondary.clear()
+	_shift_on = false
+	_ctrl_on = false
+	_alt_on = false
+	_apply_modifier_visuals()
+
 func _on_key_press(key_code: int):
 	if SHORTCUT_CHORDS.has(key_code):
 		_send_shortcut(key_code)
@@ -449,31 +470,31 @@ func _on_key_press(key_code: int):
 	if key_code == KEY_SHIFT:
 		_shift_on = not _shift_on
 		_apply_modifier_visuals()
-		main.stream_backend.send_keyboard_event(KEY_SHIFT, 3 if _shift_on else 4, 0)
+		_send_key(KEY_SHIFT, 3 if _shift_on else 4)
 		if _shift_on:
 			_held_keys[key_code] = true
 		return
 	if key_code == KEY_CTRL:
 		_ctrl_on = not _ctrl_on
 		_apply_modifier_visuals()
-		main.stream_backend.send_keyboard_event(KEY_CTRL, 3 if _ctrl_on else 4, 0)
+		_send_key(KEY_CTRL, 3 if _ctrl_on else 4)
 		if _ctrl_on:
 			_held_keys[key_code] = true
 		return
 	if key_code == KEY_ALT:
 		_alt_on = not _alt_on
 		_apply_modifier_visuals()
-		main.stream_backend.send_keyboard_event(KEY_ALT, 3 if _alt_on else 4, 0)
+		_send_key(KEY_ALT, 3 if _alt_on else 4)
 		if _alt_on:
 			_held_keys[key_code] = true
 		return
 	if key_code == KEY_CAPSLOCK:
 		_caps_on = not _caps_on
 		_apply_modifier_visuals()
-		main.stream_backend.send_keyboard_event(KEY_CAPSLOCK, 3, 0)
-		main.stream_backend.send_keyboard_event(KEY_CAPSLOCK, 4, 0)
+		_send_key(KEY_CAPSLOCK, 3)
+		_send_key(KEY_CAPSLOCK, 4)
 		return
-	main.stream_backend.send_keyboard_event(key_code, 3, 0)
+	_send_key(key_code, 3)
 	_held_keys[key_code] = true
 
 func _send_shortcut(shortcut_code: int) -> void:
@@ -484,10 +505,10 @@ func _send_shortcut(shortcut_code: int) -> void:
 	for key_code in chord:
 		if _modifier_is_latched(key_code):
 			continue
-		main.stream_backend.send_keyboard_event(key_code, 3, 0)
+		_send_key(key_code, 3)
 		pressed_here.append(key_code)
 	for i in range(pressed_here.size() - 1, -1, -1):
-		main.stream_backend.send_keyboard_event(pressed_here[i], 4, 0)
+		_send_key(pressed_here[i], 4)
 
 func _modifier_is_latched(key_code: int) -> bool:
 	match key_code:
@@ -502,7 +523,7 @@ func _modifier_is_latched(key_code: int) -> bool:
 func _on_key_release(key_code: int):
 	if key_code == KEY_SHIFT or key_code == KEY_CTRL or key_code == KEY_ALT:
 		return
-	main.stream_backend.send_keyboard_event(key_code, 4, 0)
+	_send_key(key_code, 4)
 
 func _apply_modifier_visuals():
 	for kd in _key_data:

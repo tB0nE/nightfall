@@ -712,7 +712,7 @@ impl VdaModel {
 #[cfg(test)]
 impl VdaModel {
     /// Runs on an already normalised model input; `first` cold-starts.
-    fn infer_normalized(&mut self, image: &[f32], first: bool) -> Result<(Vec<f32>, StepReport), String> {
+    pub(crate) fn infer_normalized(&mut self, image: &[f32], first: bool) -> Result<(Vec<f32>, StepReport), String> {
         let report = self.with_context(|m| {
             // SAFETY: image holds 3 * WIDTH * HEIGHT floats.
             check("cuMemcpyHtoD", unsafe { (m.api.cu_memcpy_htod)(m.image, image.as_ptr().cast(), image.len() * 4) })?;
@@ -1000,6 +1000,9 @@ impl Telemetry {
 /// the reference for vda_resize_normalize. `src` is planar RGB floats.
 #[cfg(test)]
 fn resize_normalize(src: &[f32], sw: usize, sh: usize) -> Vec<f32> {
+    resize_normalize_size(src,sw,sh,WIDTH,HEIGHT)
+}
+pub(crate) fn resize_normalize_size(src: &[f32], sw: usize, sh: usize, width:usize, height:usize) -> Vec<f32> {
     const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
     const STD: [f32; 3] = [0.229, 0.224, 0.225];
     fn weights(t: f32) -> [f32; 4] {
@@ -1016,11 +1019,11 @@ fn resize_normalize(src: &[f32], sw: usize, sh: usize) -> Vec<f32> {
         let idx: [usize; 4] = std::array::from_fn(|k| (i - 1 + k as i64).clamp(0, n_src as i64 - 1) as usize);
         (idx, w)
     };
-    let mut out = vec![0f32; 3 * WIDTH * HEIGHT];
-    for y in 0..HEIGHT {
-        let (rows, wy) = taps(y, HEIGHT, sh);
-        for x in 0..WIDTH {
-            let (cols, wx) = taps(x, WIDTH, sw);
+    let mut out = vec![0f32; 3 * width * height];
+    for y in 0..height {
+        let (rows, wy) = taps(y, height, sh);
+        for x in 0..width {
+            let (cols, wx) = taps(x, width, sw);
             for c in 0..3 {
                 let channel = &src[c * sw * sh..];
                 let mut sum = 0.0f32;
@@ -1031,7 +1034,7 @@ fn resize_normalize(src: &[f32], sw: usize, sh: usize) -> Vec<f32> {
                     }
                     sum += wy[j] * across;
                 }
-                out[c * WIDTH * HEIGHT + y * WIDTH + x] = (sum - MEAN[c]) / STD[c];
+                out[c * width * height + y * width + x] = (sum - MEAN[c]) / STD[c];
             }
         }
     }
@@ -1040,24 +1043,26 @@ fn resize_normalize(src: &[f32], sw: usize, sh: usize) -> Vec<f32> {
 
 /// vda_blur on the CPU: both passes.
 #[cfg(test)]
-fn blur(depth: &[f32], sigma: f32) -> Vec<f32> {
+fn blur(depth: &[f32], sigma: f32) -> Vec<f32> {blur_size(depth,sigma,WIDTH,HEIGHT)}
+pub(crate) fn blur_size(depth: &[f32], sigma: f32, width:usize, height:usize) -> Vec<f32> {
+    if sigma<=0. {return depth.to_vec();}
     let radius = ((3.0 * sigma).ceil() as i64).min(8);
     let pass = |src: &[f32], horizontal: bool| -> Vec<f32> {
-        let mut out = vec![0f32; WIDTH * HEIGHT];
-        for y in 0..HEIGHT as i64 {
-            for x in 0..WIDTH as i64 {
+        let mut out = vec![0f32; width * height];
+        for y in 0..height as i64 {
+            for x in 0..width as i64 {
                 let (mut num, mut den) = (0.0, 0.0);
                 for t in -radius..=radius {
                     let (sx, sy) = if horizontal {
-                        ((x + t).clamp(0, WIDTH as i64 - 1), y)
+                        ((x + t).clamp(0, width as i64 - 1), y)
                     } else {
-                        (x, (y + t).clamp(0, HEIGHT as i64 - 1))
+                        (x, (y + t).clamp(0, height as i64 - 1))
                     };
                     let w = (-0.5 * (t * t) as f32 / (sigma * sigma)).exp();
-                    num += w * src[sy as usize * WIDTH + sx as usize];
+                    num += w * src[sy as usize * width + sx as usize];
                     den += w;
                 }
-                out[y as usize * WIDTH + x as usize] = num / den;
+                out[y as usize * width + x as usize] = num / den;
             }
         }
         out

@@ -1,5 +1,9 @@
 class_name SettingsController
 extends RefCounted
+const PCVRTiming = preload("res://src/pcvr_timing_policy.gd")
+var pcvr_timing := PCVRTiming.new()
+var _pcvr_wait_for_desktop := false
+var _pcvr_previous_render_cap := 0
 
 var main: Node3D
 var _restart_pending: bool = false
@@ -604,7 +608,16 @@ const MODEL_METEOR := -1
 
 ## The PC's Nightfall Meteor offered host depth for the current stream.
 func meteor_depth_offered() -> bool:
-	return main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+	return not primary_is_browser() and main.is_streaming and main.stream_manager != null and not main.stream_manager.meteor_depth_info().is_empty()
+
+func primary_is_browser() -> bool:
+	return main.get("browser_prototype") != null and main.browser_prototype.active
+
+func selected_depth_model_index() -> int:
+	if primary_is_browser():
+		var choice = main.browser_prototype.get("depth_model_override")
+		return int(choice) if choice != null else ANDROID_MODEL_AUTO
+	return main.settings.host.ai_3d_model
 
 ## Meteor depth is chosen automatically whenever it's offered, unless the
 ## user picked an on-device model while it was (per host, until they pick
@@ -627,10 +640,12 @@ func cycle_ai_3d_model():
 	var offered := meteor_depth_offered()
 	if offered:
 		candidates = [MODEL_METEOR] + candidates
-	var pos = 0 if meteor_depth_selected() else candidates.find(main.settings.host.ai_3d_model)
+	var pos = 0 if meteor_depth_selected() else candidates.find(selected_depth_model_index())
 	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
 	if next == MODEL_METEOR:
 		main.settings.host.ai_3d_meteor_declined = false
+	elif primary_is_browser():
+		main.browser_prototype.depth_model_override = next
 	else:
 		main.settings.host.ai_3d_model = next
 		if offered:
@@ -651,10 +666,10 @@ func get_ai_3d_gpu_api_effective() -> int:
 		# EdgePad-512/OpenCL and uses the 256/OpenGL path only after a real
 		# OpenCL failure.
 		return 1 if main.device_is_quest2 or _auto_depth_fallback else 0
-	return main.settings.host.ai_3d_gpu_api
+	return main.browser_prototype.depth_gpu_api_override if primary_is_browser() else main.settings.host.ai_3d_gpu_api
 
 func is_android_ai3d_auto() -> bool:
-	return OS.get_name() == "Android" and main.settings.host.ai_3d_model == ANDROID_MODEL_AUTO
+	return OS.get_name() == "Android" and selected_depth_model_index() == ANDROID_MODEL_AUTO
 
 func get_ai_3d_gpu_api_label() -> String:
 	if OS.get_name() == "Android" and get_depth_backend_index() == AI3D_BACKEND_CPU:
@@ -669,7 +684,16 @@ func get_ai_3d_gpu_api_label() -> String:
 func cycle_ai_3d_gpu_api() -> void:
 	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
 		return
-	if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
+	if primary_is_browser():
+		var browser = main.browser_prototype
+		if browser.depth_backend_override == AI3D_BACKEND_CPU:
+			browser.depth_backend_override = AI3D_BACKEND_GPU
+			browser.depth_gpu_api_override = 0
+		elif browser.depth_gpu_api_override == 0:
+			browser.depth_gpu_api_override = 1
+		else:
+			browser.depth_backend_override = AI3D_BACKEND_CPU
+	elif main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
 		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
 		main.settings.host.ai_3d_gpu_api = 0
 	elif main.settings.host.ai_3d_gpu_api == 0:
@@ -780,7 +804,7 @@ func get_depth_model_index() -> int:
 		return 14 if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else 3
 	if main.settings.host.ai_3d_speed == 1:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
-	return ai_3d_models[main.settings.host.ai_3d_model].java_index
+	return ai_3d_models[selected_depth_model_index()].java_index
 
 func get_depth_model_label() -> String:
 	if meteor_depth_selected():
@@ -789,13 +813,13 @@ func get_depth_model_label() -> String:
 		return ai_3d_models[_android_cpu_model_index()].label
 	if OS.get_name() == "Linux" and main.settings.host.ai_3d_speed == 1:
 		return "ZipDepth-384-GPU" if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else "MiDaS-256"
-	return ai_3d_models[main.settings.host.ai_3d_model].label
+	return ai_3d_models[selected_depth_model_index()].label
 
 # Which CPU model twin to run while Backend==CPU. Matches whatever Model the
 # locked button is actually showing, so switching Model while on CPU picks the
 # equivalent CPU tier instead of silently always running one fixed size.
 func _android_cpu_model_index() -> int:
-	if main.settings.host.ai_3d_model in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
+	if selected_depth_model_index() in [ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_384]:
 		return ANDROID_MODEL_EDGEPAD_384_CPU
 	return ANDROID_MODEL_EDGEPAD_256_CPU
 
@@ -819,8 +843,12 @@ func get_depth_process_stage() -> int:
 # ai_3d_models[main.settings.host.ai_3d_model].gpu can never disagree - no need to
 # fall back based on the model's own .gpu flag here.
 func get_depth_backend_index() -> int:
-	if main.settings.host.ai_3d_speed == 0:
-		return AI3D_BACKEND_CPU # irrelevant, AI-3D is off
+	# Preserve the selected backend while AI 3D is off. Returning a CPU sentinel
+	# here mislabeled fresh Auto/OpenCL installs as EdgePad-256-CPU. Inference
+	# enablement remains gated separately by ai_3d_speed/get_depth_model_index().
+	if primary_is_browser():
+		var backend = main.browser_prototype.get("depth_backend_override")
+		return AI3D_BACKEND_GPU if selected_depth_model_index() == ANDROID_MODEL_AUTO or backend == null else int(backend)
 	# PyroWave's own decode already costs real GPU time every frame (it's a
 	# Vulkan compute codec) - Auto pairs it with CPU-only inference on every
 	# headset instead of adding GPU-delegate depth work on top.
@@ -901,13 +929,13 @@ func refresh_depth_backend_status(notify_transition: bool = false):
 	# Host settings are restored on the welcome screen, and SBS can override
 	# a saved AI-3D selection. Neither state runs depth inference, so a GPU
 	# warning from their placeholder configuration must not reach the UI.
-	if not main.is_streaming or get_stereo_mode() < 3:
+	if not main.primary_media_active() or get_stereo_mode() < 3:
 		_last_backend_status = ""
 		return
 	var status = main.stream_backend.get_depth_backend_status()
 	if is_android_ai3d_auto() and get_depth_backend_index() == AI3D_BACKEND_GPU \
 			and get_ai_3d_gpu_api_effective() == 0 and not _auto_depth_fallback \
-			and not status.is_empty() and main.is_streaming:
+			and not status.is_empty() and main.primary_media_active():
 		_auto_depth_fallback = true
 		main._log("[DEPTH] Auto: EdgePad-512/OpenCL failed (%s); switching to EdgePad-256/OpenGL for this session" % status)
 		if main.ui_controller:
@@ -986,8 +1014,11 @@ func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 	apply_stereo()
 
 func apply_stereo():
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	var mode = get_stereo_mode()
-	var display_mode = mode if main.is_streaming else 0
+	var media_active: bool = main.primary_media_active()
+	var depth_active: bool = mode >= 3 and media_active
+	var display_mode = mode if media_active else 0
 	# native_xr_renderer.gd's refresh() re-activates on its own the moment the
 	# decoder reports the new stream's video size (normally within a frame or
 	# two of _on_stream_started(), which calls this), calling
@@ -1008,7 +1039,7 @@ func apply_stereo():
 	# rendering then fails to actually start, deactivate(true)'s own
 	# switch_to_comp_layer()/switch_to_stereo_comp_layer() fallback still
 	# covers activating legacy properly.
-	main.video_presentation.apply_mode(display_mode, main.is_streaming)
+	main.video_presentation.apply_mode(display_mode, media_active)
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode", display_mode)
 	if main.depth_estimator:
@@ -1028,7 +1059,7 @@ func apply_stereo():
 		# 11 (MiDaS-Fastest) below is unreachable dead code, left in place
 		# same as this file's other retired-stereo_mode conventions.
 		var warp_tier = resolve_quality_tier() if main.settings.host.ai_3d_speed > 0 else 0
-		main.depth_estimator.set_enabled(mode >= 3, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
+		main.depth_estimator.set_enabled(depth_active, mode == 6 or mode == 7 or mode == 10 or mode == 11 or mode == 12, warp_tier)
 		# Direct decoder textures feed the small depth-input viewport without a
 		# third full-resolution mono render. refresh_stream_source() keeps the
 		# old mono path available only when a backend cannot expose those textures.
@@ -1045,7 +1076,6 @@ func apply_stereo():
 	# every time mode 9 was selected, which then poisoned the other modes
 	# with stale/wrong-quality data the next time they ran, since all modes
 	# share one depth_texture/ImageTexture.
-	var depth_active = mode >= 3 and main.is_streaming
 	var model_idx = get_depth_model_index() if depth_active else 0
 	if OS.get_name() == "Android":
 		var java_class := _android_depth_class()
@@ -1067,7 +1097,7 @@ func apply_stereo():
 	# configure_depth() above must still run first - sync_model_size()
 	# reads get_depth_model_width()/get_depth_model_height(), which only
 	# reflect the new model once the Java side has been reconfigured.
-	if mode >= 3 and main.depth_estimator:
+	if depth_active and main.depth_estimator:
 		main.depth_estimator.sync_model_size()
 		main.depth_estimator.set_separation_pct(main.settings.host.ai_3d_separation_pct)
 		if main.depth_estimator.depth_texture:
@@ -1111,9 +1141,12 @@ func toggle_passthrough():
 		main._log("[PASSTHROUGH] toggle ignored: is_xr_active=%s passthrough_supported=%s" % [str(main.is_xr_active), str(main.passthrough_supported)])
 		return
 	main.settings.passthrough_enabled = not main.settings.passthrough_enabled
+	main._log("[PASSTHROUGH] Begin enable=%s streaming=%s native=%s background=%d pcvr=%d" % [main.settings.passthrough_enabled, main.is_streaming, main.video_presentation.is_native_active(), main.settings.background_mode, main.pcvr_handover.state])
+	main._flush_log()
 	apply_passthrough(main.settings.passthrough_enabled)
 	_save_setting(main._ui_pt_btn, "On" if main.settings.passthrough_enabled else "Off")
 	main._log("[PASSTHROUGH] toggled to %s and saved" % str(main.settings.passthrough_enabled))
+	main._flush_log()
 	# AUTO_TABLE's tier/model/cap picks all key off passthrough_enabled (see
 	# get_auto_selection()) - and manual Fast's resolution cap does too, same
 	# table. Refresh the AI Model button immediately (was showing a stale
@@ -1128,6 +1161,8 @@ func toggle_passthrough():
 		_schedule_ai_3d_commit()
 
 func apply_passthrough(enable: bool):
+	if "pcvr_handover" in main and main.pcvr_handover.owns_workspace(): return
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	if not main.is_xr_active:
 		return
 	_hide_all_backgrounds()
@@ -1151,6 +1186,7 @@ func cycle_background():
 	_save_setting(main._ui_bg_btn, main.background_labels[main.settings.background_mode])
 
 func apply_background(bg_mode: int):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	if not main.is_xr_active or main.settings.passthrough_enabled:
 		return
 	_hide_all_backgrounds()
@@ -1573,6 +1609,62 @@ func apply_filter():
 				cm.set_shader_parameter("contrast", contrast_val)
 				cm.set_shader_parameter("gamma", gamma_val)
 
+func effective_stream_fps() -> int:
+	return pcvr_timing.effective_fps(main.settings.host.stream_fps)
+
+func pcvr_timing_active() -> bool:
+	return pcvr_timing.active
+
+func prepare_pcvr_timing(fps: int) -> bool:
+	if not begin_pcvr_timing(fps): return false
+	if _pcvr_wait_for_desktop:
+		var deadline := Time.get_ticks_msec() + 12000
+		while pcvr_timing.active and not pcvr_desktop_timing_ready():
+			if Time.get_ticks_msec() >= deadline: return false
+			await main.get_tree().process_frame
+	else:
+		if not await apply_display_refresh_rate(): return false
+	if not pcvr_timing.active: return false
+	var interface = XRServer.find_interface("OpenXR")
+	return interface != null and absf(interface.get_display_refresh_rate() - pcvr_timing.display_hz) < 0.6
+
+func begin_pcvr_timing(fps: int) -> bool:
+	var interface = XRServer.find_interface("OpenXR")
+	if not interface: return false
+	if not pcvr_timing.begin(fps, interface.get_display_refresh_rate()): return false
+	_refresh_request_seq += 1 # Retire any older asynchronous display request.
+	_pcvr_previous_render_cap = Engine.max_fps
+	Engine.max_fps = int(ceil(pcvr_timing.display_hz))
+	main.display_refresh_rate = pcvr_timing.display_hz
+	_pcvr_wait_for_desktop = main.is_streaming and (main.settings.host.stream_fps != fps or absf(interface.get_display_refresh_rate() - pcvr_timing.display_hz) >= 0.6)
+	refresh_pcvr_timing_ui()
+	main._log("[PCVR-TIMING] Override desktop video=%dfps display=%.0fHz; saved desktop=%dfps" % [fps, pcvr_timing.display_hz, main.settings.host.stream_fps])
+	if _pcvr_wait_for_desktop: _schedule_stream_restart()
+	return true
+
+func pcvr_desktop_timing_ready() -> bool:
+	return not _pcvr_wait_for_desktop or (not _restart_pending and main.is_streaming and main.session_lifecycle.phase == SessionLifecycle.Phase.STREAMING)
+
+func end_pcvr_timing() -> void:
+	if not pcvr_timing.active: return
+	var restart: bool = main.is_streaming and effective_stream_fps() != main.settings.host.stream_fps
+	pcvr_timing.end()
+	_refresh_request_seq += 1
+	Engine.max_fps = _pcvr_previous_render_cap
+	_pcvr_wait_for_desktop = false
+	refresh_pcvr_timing_ui()
+	main._log("[PCVR-TIMING] Restoring desktop preference %dfps" % main.settings.host.stream_fps)
+	if restart:
+		_schedule_stream_restart()
+	else:
+		apply_display_refresh_rate()
+
+func refresh_pcvr_timing_ui() -> void:
+	if not main._ui_fps_btn: return
+	main._ui_fps_btn.disabled = pcvr_timing.active
+	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d%s" % [effective_stream_fps(), " (PCVR)" if pcvr_timing.active else ""])
+	main._ui_fps_btn.set_meta(&"nightfall_tooltip", "Controlled by PCVR while active. Your desktop preference is restored on exit." if pcvr_timing.active else "Choose the stream frame rate and matching headset refresh rate.")
+
 func apply_display_refresh_rate() -> bool:
 	if not main.is_xr_active:
 		return false
@@ -1581,8 +1673,9 @@ func apply_display_refresh_rate() -> bool:
 		return false
 	_refresh_request_seq += 1
 	var request_seq = _refresh_request_seq
-	var target_hz: float = float(main.settings.host.stream_fps)
-	match main.settings.host.stream_fps:
+	var stream_fps := effective_stream_fps()
+	var target_hz: float = float(stream_fps)
+	match stream_fps:
 		30: target_hz = 90.0
 		# 2026-08-29: testing 120Hz again now that stereo rendering is
 		# projectionless (no more per-eye mesh reprojection cost) - this was
@@ -1590,8 +1683,9 @@ func apply_display_refresh_rate() -> bool:
 		# the old mesh-projection render path and caused stutter. Revert to
 		# 72.0 if that's still true here.
 		60: target_hz = 120.0
+	if pcvr_timing.active: target_hz = pcvr_timing.display_hz
 	var available = interface.get_available_display_refresh_rates()
-	Engine.max_fps = main.settings.host.stream_fps
+	Engine.max_fps = int(ceil(pcvr_timing.display_hz)) if pcvr_timing.active else stream_fps
 	if available.is_empty():
 		main._log("[REFRESH] No available refresh rates reported")
 		main.display_refresh_rate = target_hz
@@ -1646,7 +1740,9 @@ func apply_display_refresh_rate() -> bool:
 	# reprojection blur") - testing whether that ASW blur was a symptom of
 	# the old mesh-projection render path specifically, now that rendering
 	# is projectionless. Revert to 0 (uncapped) if the blur is still there.
-	if target_already_active:
+	if pcvr_timing.active:
+		main._log("[PCVR-TIMING] Display %.0fHz; desktop video %dfps; app cap %d" % [best, stream_fps, Engine.max_fps])
+	elif target_already_active:
 		main._log("[REFRESH] Preserved active %.0fHz for %dfps, capped render to %dfps" % [best, main.settings.host.stream_fps, main.settings.host.stream_fps])
 	elif absf(best - target_hz) < 0.6:
 		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.settings.host.stream_fps, main.settings.host.stream_fps])
@@ -1670,6 +1766,7 @@ func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	return best
 
 func cycle_fps():
+	if pcvr_timing.active: return
 	var idx = STREAM_FPS_RATES.find(main.settings.host.stream_fps)
 	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
 	main.settings.host.stream_fps = STREAM_FPS_RATES[next_idx]
@@ -1806,11 +1903,16 @@ func _schedule_stream_restart():
 
 func toggle_hand_tracking():
 	var modes := [0, 3, 1]
-	main.settings.tracking_mode = modes[(modes.find(main.settings.tracking_mode) + 1) % modes.size()]
+	var current: int = main.effective_tracking_mode()
+	main.startup_hand_fallback.explicit_choice()
+	main.settings.tracking_mode = modes[(modes.find(current) + 1) % modes.size()]
 	main.state_manager.save_state()
 	main.state_manager.sync_ui_to_settings()
 
 func apply_screen_layout(new_layout: ScreenLayout):
+	if main.get("browser_prototype") != null and main.browser_prototype.active and not main.is_streaming:
+		main._log("[LAYOUT] Close browser screens before applying a PC monitor layout")
+		return
 	var err = new_layout.validate(new_layout.frame_size)
 	if err != "":
 		main._log("[LAYOUT] Refusing invalid layout: %s" % err)
@@ -1840,6 +1942,16 @@ func apply_screen_layout(new_layout: ScreenLayout):
 			if s.monitor_id == m.id:
 				existing = s
 				break
+		# A browser workspace already owns the other physical slots. Reuse
+		# the primary welcome surface rather than allocating a fifth screen
+		# temporarily or shifting every browser when the host manifest arrives.
+		if existing == null and m.is_primary and main.primary_screen != null \
+				and not wanted_ids.has(main.primary_screen.monitor_id):
+			for candidate in main.screens:
+				if main.screen_sources.is_browser_screen(candidate):
+					existing = main.primary_screen
+					existing.monitor_id = m.id
+					break
 		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x, m.is_primary)
 		if s == null:
 			continue
@@ -1874,7 +1986,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		# and broken the moment the stream's real manifest swapped primary in.
 		apply_stereo()
 	for s in main.screens.duplicate():
-		if not wanted_ids.has(s.monitor_id):
+		if not wanted_ids.has(s.monitor_id) and not main.screen_sources.is_browser_screen(s):
 			main.remove_screen(s.monitor_id)
 	# resize_screen_to_aspect() now calls update_cylinder_params() itself
 	# (2026-08-20) - no need to pair it here anymore.
