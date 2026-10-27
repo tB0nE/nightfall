@@ -627,7 +627,7 @@ func handle_pointer_interaction():
 		var _col = active_raycast.get_collider()
 		var t_hover = PointerTarget.resolve(_col) if _col else {"role": &""}
 		on_screen = (t_hover.role == &"screen")
-		var hide_on_screen = on_screen and pad_mode_active
+		var hide_on_screen = on_screen and (pad_mode_active or main.hides_screen_cursor(t_hover.screen))
 		var hit_point = main._get_steady_hit(raw_hit) if on_screen else raw_hit
 		var col_normal = active_raycast.get_collision_normal()
 		var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_point).normalized() * 0.025

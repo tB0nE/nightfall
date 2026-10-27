@@ -256,7 +256,7 @@ var bitrates: Array = [5, 10, 15, 20, 30, 40, 50, 60, 80, 100, 120]
 var bitrate_labels: Array = ["Auto", "5", "10", "15", "20", "30", "40", "50", "60", "80", "100", "120"]
 var display_refresh_rate: float = 72.0
 
-var cursor_labels: Array = ["Circle", "Pointer"]
+var cursor_labels: Array = ["Circle", "Pointer", "Hidden"]
 var pointer_steady_labels: Array = ["Off", "Low", "High", "One Euro"]
 # Touch-controller double-click gesture. Standard leaves host-side recognition
 # untouched; Chord maps a near-simultaneous trigger+grip press to two left
@@ -977,6 +977,12 @@ func _get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
 func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
+## Cursor Type Hidden: no VR pointer over a stream screen. Browser screens
+## have no PC cursor to point with, so they keep theirs.
+func hides_screen_cursor(screen: VRScreen) -> bool:
+	return settings.cursor_mode == AppSettings.CURSOR_MODE_HIDDEN and screen != null \
+		and not screen_sources.is_browser_screen(screen)
+
 func _update_cursor_layer():
 	if not comp.in_use and not pcvr_handover.menu_only:
 		composition_pointers.hide_primary()
@@ -1008,7 +1014,7 @@ func _update_cursor_layer():
 			comp.in_use, video_presentation.is_native_active())
 		use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing \
 			and not independent_cursor
-		if on_screen and (pad_on_screen or tp_capturing):
+		if on_screen and (pad_on_screen or tp_capturing or hides_screen_cursor(hovered_screen)):
 			composition_pointers.hide_primary()
 			composition_pointers.hide_all_embedded(screens)
 		elif use_embedded_cursor and on_screen:

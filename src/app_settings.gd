@@ -53,6 +53,9 @@ var gamma_pct: int = DEFAULT_GAMMA_PCT
 var ambient_mode: int = DEFAULT_AMBIENT_MODE
 var ambient_color: int = DEFAULT_AMBIENT_COLOR
 var browser_resolution: int = DEFAULT_BROWSER_RESOLUTION
+## Hidden draws no VR pointer on stream screens, for Mouse Follows Pointer,
+## where the PC's own cursor already shows where you point.
+const CURSOR_MODE_HIDDEN := 2
 var cursor_mode: int = DEFAULT_CURSOR_MODE
 var pointer_steady: int = DEFAULT_POINTER_STEADY
 var double_click_mode: int = DEFAULT_DOUBLE_CLICK_MODE
