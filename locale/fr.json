@@ -229,5 +229,9 @@
 	"High Refresh Rates": "Fréquences élevées",
 	"Offer 200 and 207 Hz. They can glitch the headset.": "Propose 200 et 207 Hz. Elles peuvent perturber le casque.",
 	"PT Fade": "Atténuer PT",
-	"Darken your surroundings in passthrough so the screen stands out.": "Assombrit votre environnement en passthrough pour faire ressortir l'écran."
+	"Darken your surroundings in passthrough so the screen stands out.": "Assombrit votre environnement en passthrough pour faire ressortir l'écran.",
+	"Cinema": "Cinéma",
+	"Your Room": "Votre salle",
+	"Import Room": "Importer une salle",
+	"Pick a .glb 3D room on the headset, then choose Background: Your Room.": "Choisissez une salle 3D .glb sur le casque, puis Arrière-plan : Votre salle."
 }

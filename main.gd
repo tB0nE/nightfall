@@ -152,7 +152,8 @@ var grab_snap_candidate: Vector2i = Vector2i(-1, -1)
 # no in-app UI disclaimer for this by design; settings_controller.gd's
 # AUTO_TABLE already accounts for it directly in its tier/model picks.
 var passthrough_supported: bool = false
-var background_labels: Array = ["Black", "Ash", "Snow", "Data"]
+# Rooms follow the particle backgrounds (EnvironmentManager.room_for_background()).
+var background_labels: Array = ["Black", "Ash", "Snow", "Data", "Cinema", "Your Room"]
 var bg_names: Array = ["Ash", "Snow", "Data"]
 var bg_offsets: Array = [Vector3.ZERO, Vector3(0, 10, 0), Vector3(0, -3, 0)]
 var ui_visible: bool = false
@@ -181,6 +182,8 @@ var sharpen_labels: Array = ["0%", "10%", "20%", "30%", "40%", "50%", "Runtime",
 var ambient_mode_labels: Array = ["Off", "Static", "Slow", "Live"]
 var ambient_color_labels: Array = ["White", "Warm", "Red", "Green", "Blue", "Purple"]
 var _xr_base_render_scale: float = 1.0
+# The runtime's render-target multiplier before a 3D room halves it.
+var _xr_base_target_multiplier: float = 1.0
 var _xr_render_width: int = 2064
 var _mesh_size: Vector2:
 	get: return primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
@@ -322,6 +325,7 @@ var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
+var environment_manager: EnvironmentManager
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
@@ -557,6 +561,7 @@ var _ui_mouse_follows_btn: Button
 var _ui_high_refresh_btn: Button
 var _ui_pt_fade_btn: Button
 var passthrough_fade := PassthroughFade.new()
+var _ui_import_room_btn: Button
 var _ui_exit_btn: Button
 var _ui_disconnect_btn: Button
 var _ui_close_btn: Button
@@ -1520,6 +1525,7 @@ func _on_session_phase_changed(previous: int, current: int) -> void:
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
+	environment_manager = EnvironmentManager.new(self)
 	xr_interaction = XRInteraction.new(self)
 	input_handler = InputHandler.new(self)
 	ui_controller = UIController.new(self)
@@ -2109,6 +2115,8 @@ func _init_xr(interface):
 	else:
 		get_viewport().msaa_3d = Viewport.MSAA_2X
 	_xr_base_render_scale = get_viewport().scaling_3d_scale
+	if interface.has_method("get_render_target_size_multiplier"):
+		_xr_base_target_multiplier = interface.get_render_target_size_multiplier()
 	is_xr_active = true
 	# Godot's own comp-layer/texture bindings (connect_welcome_texture() et al)
 	# only ever run once, here at boot, regardless of whether the OpenXR
@@ -2354,6 +2362,7 @@ func _process(delta):
 		screen_sources.process_secondary_browsers()
 	if is_xr_active:
 		_process_hand_tracking(delta)
+		environment_manager.process()
 
 	if DEBUG_RENDER_MODEL_CONTROLLERS:
 		_process_render_model_controllers(delta)
@@ -3003,16 +3012,30 @@ func set_primary_screen(s: VRScreen) -> void:
 func _set_ui_position():
 	if not is_xr_active:
 		return
+	_place_ui_panel()
+
+# The menu opens beside the user, never out of reach: 2.16 m screens put it
+# about 1.8 m away, but a far screen (a 3D room's wall) would carry it off.
+const UI_MAX_REACH := 2.5
+# The usual menu spot, relative to the head: left of and below the default
+# screen 2.16 m ahead, 0.8 m in front of it.
+const UI_HEAD_OFFSET := Vector3(-1.0, -0.5, -1.36)
+
+func _place_ui_panel() -> void:
 	if _ui_has_saved_offset:
 		_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 	else:
-		var offset = Vector3(-1.0, -0.5, 0.8)
-		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
-		var cam_pos = xr_camera.global_position
-		var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
-		ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
-		ui_panel_3d.rotation.x = -0.15
-		_save_ui_offset()
+		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * Vector3(-1.0, -0.5, 0.8)
+	var cam_pos: Vector3 = xr_camera.global_position
+	var reachable: bool = ui_panel_3d.global_position.distance_to(cam_pos) <= UI_MAX_REACH
+	if reachable and _ui_has_saved_offset:
+		return
+	if not reachable:
+		ui_panel_3d.global_position = cam_pos + Basis(Vector3.UP, xr_camera.global_rotation.y) * UI_HEAD_OFFSET
+	var to_cam: Vector3 = (cam_pos - ui_panel_3d.global_position).normalized()
+	ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
+	ui_panel_3d.rotation.x = -0.15
+	_save_ui_offset()
 
 func _save_ui_offset():
 	var scr_basis = primary_screen.global_transform.basis.inverse()
@@ -3030,16 +3053,7 @@ func _set_ui_visible(vis: bool):
 	if area:
 		area.process_mode = Node.PROCESS_MODE_INHERIT if vis else Node.PROCESS_MODE_DISABLED
 	if is_xr_active and vis:
-		if _ui_has_saved_offset:
-			_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
-		else:
-			var offset = Vector3(-1.0, -0.5, 0.8)
-			ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
-			var cam_pos = xr_camera.global_position
-			var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
-			ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
-			ui_panel_3d.rotation.x = -0.15
-			_save_ui_offset()
+		_place_ui_panel()
 	elif is_xr_active:
 		_save_ui_offset()
 
@@ -3120,6 +3134,8 @@ func _reset_positions():
 	if virtual_keyboard:
 		virtual_keyboard.reset_position()
 	_reposition_screen_and_ui()
+	if environment_manager:
+		environment_manager.recenter()
 	state_manager.save_state()
 
 func _load_controller_models():

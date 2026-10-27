@@ -15,6 +15,10 @@ func save_state():
 	save_host_state()
 
 func save_host_state():
+	# A 3D room moves the screen onto its wall; never save that over the
+	# user's own placement.
+	if main.environment_manager and main.environment_manager.is_holding_screen():
+		return
 	var ip = main.get_node("%IPInput").text
 	if ip.is_empty():
 		return

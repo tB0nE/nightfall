@@ -75,6 +75,7 @@ tests=(
 	"test/test_browser_prototype.gd"
 	"test/test_primary_media.gd"
 	"test/test_browser_close.gd"
+	"test/test_environments.gd"
 )
 
 for test_file in "${tests[@]}"; do

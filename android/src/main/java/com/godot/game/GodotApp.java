@@ -75,6 +75,19 @@ public class GodotApp extends GodotActivity {
 	public static void browserInputEnabledFor(int id, boolean enabled) { BrowserPrototype.setGamepadInputEnabled(id, enabled); }
 	public static void browserFocus(int id) { BrowserPrototype.focus(id); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
+	private static java.lang.ref.WeakReference<GodotApp> current = new java.lang.ref.WeakReference<>(null);
+
+	// Settings > Import Room: Godot starts the picker, then polls the status.
+	public static void pickRoomFile(String destinationPath) {
+		GodotApp activity = current.get();
+		if (activity != null) activity.runOnUiThread(() -> RoomImport.pick(activity, destinationPath));
+	}
+	public static String roomImportStatus() { return RoomImport.status(); }
+
+	@Override
+	public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+		if (!RoomImport.handle(this, requestCode, resultCode, data)) super.onActivityResult(requestCode, resultCode, data);
+	}
 
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
@@ -172,6 +185,7 @@ public class GodotApp extends GodotActivity {
 		SplashScreen.installSplashScreen(this);
 		EdgeToEdge.enable(this);
 		super.onCreate(savedInstanceState);
+		current = new java.lang.ref.WeakReference<>(this);
 		appContext = getApplicationContext();
 		browserActivity = new java.lang.ref.WeakReference<>(this);
 		DiagnosticLog.initialize(appContext);
