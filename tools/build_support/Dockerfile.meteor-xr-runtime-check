@@ -1,0 +1,6 @@
+# Minimal runtime check: deliberately no compiler, Git, Godot or libcjson package.
+FROM ubuntu:22.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    python3 libvulkan1 libudev1 libstdc++6 libva2 libva-drm2 libdrm2 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1

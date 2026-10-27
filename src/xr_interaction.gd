@@ -3,6 +3,8 @@ extends RefCounted
 
 var main: Node3D
 var pointer_on_ui: bool = false
+var _tab_ray_exclusion: CollisionObject3D
+var _tab_priority_ray: RayCast3D
 
 var _active_hand: String = "right"
 var _pinch_start_time: float = 0.0
@@ -34,7 +36,51 @@ var _secondary_ui_pixel: Vector2 = Vector2(-1, -1)
 var _ui_button_states: Array = []
 var _last_ui_style: Dictionary = {}
 var _screen_shortcut_press_active: bool = false
+var _browser_press_owner: RefCounted
+var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
+var _pointer_suspended := false
+var _pointer_rearm_required := false
+
+func set_application_suspended(suspended: bool) -> void:
+	_pointer_suspended = suspended
+	cancel_transient_interactions("application paused" if suspended else "application resumed")
+	if not suspended and not main._is_using_hands:
+		# Hand aiming uses top-level rays. Never reuse its last world-space
+		# transform when physical controllers regain ownership after standby.
+		for ray in [main.hand_raycast, main.left_hand_raycast]:
+			if ray:
+				ray.top_level = false
+				ray.transform = Transform3D.IDENTITY
+
+static func controller_pose_valid(hand: XRController3D) -> bool:
+	if not hand or not hand.get_is_active() or not hand.get_has_tracking_data(): return false
+	var pose := hand.get_pose()
+	return pose != null and pose.has_tracking_data and pose.tracking_confidence != XRPose.XR_TRACKING_CONFIDENCE_NONE
+
+func _pointer_input_ready(tracked: bool, pressed: bool) -> bool:
+	if _pointer_suspended or not tracked:
+		_pointer_rearm_required = true
+		return false
+	if _pointer_rearm_required:
+		if pressed: return false
+		_pointer_rearm_required = false
+	return true
+
+func _active_pointer_tracked() -> bool:
+	if not main.is_xr_active: return true
+	if main._is_using_hands:
+		if hand_aim_available(): return hand_aim_valid(_active_hand)
+		var tracker = XRServer.get_tracker("/user/hand_tracker/" + _active_hand)
+		return tracker != null and tracker.get_has_tracking_data()
+	return controller_pose_valid(main.left_hand if _active_hand == "left" else main.right_hand)
+
+func _pointer_controls_held() -> bool:
+	if _is_now_clicking() or _is_now_gripping(): return true
+	if main.is_xr_active and not main._is_using_hands:
+		for hand in [main.left_hand, main.right_hand]:
+			if hand and (hand.get_float("trigger") > 0.1 or hand.get_float("grip") > 0.1): return true
+	return false
 
 # Chord mode waits this long before committing a grip to right-click, giving a
 # near-simultaneous trigger press time to turn the pair into an explicit
@@ -45,6 +91,9 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
+	_pointer_rearm_required = true
+	if main.screen_sources:
+		main.screen_sources.cancel_browser_pointers_except()
 	# Tracking poses are discontinuous across headset removal or app pause.
 	# A saved drag baseline would move a screen when the next pose arrives.
 	if main.is_streaming and main.stream_backend:
@@ -84,6 +133,7 @@ func cancel_transient_interactions(reason: String = "") -> void:
 	_double_click_chord_active = false
 	_corner_resize_started = false
 	_screen_shortcut_press_active = false
+	_browser_press_owner = null
 	_secondary_press_viewport = null
 	_secondary_press_was_keyboard = false
 	pointer_on_ui = false
@@ -178,13 +228,13 @@ func _update_active_hand():
 		if hand_aim_available():
 			right_has_data = hand_aim_valid("right")
 			left_has_data = hand_aim_valid("left")
-		var primary: int = main.controller_mapper.primary_hand if main.controller_mapper else ControllerMapper.PrimaryHand.RIGHT
+		var primary: int = main.controller_mapper.effective_primary_hand() if main.controller_mapper else ControllerMapper.PrimaryHand.RIGHT
 		_active_hand = _select_tracked_hand(primary, right_has_data, left_has_data,
 			_get_hand_pinch_strength("/user/hand_tracker/right"),
 			_get_hand_pinch_strength("/user/hand_tracker/left"),
 			_is_hand_on_screen("right"), _is_hand_on_screen("left"))
 		return
-	var primary = main.controller_mapper.primary_hand if main.controller_mapper else 0
+	var primary = main.controller_mapper.effective_primary_hand() if main.controller_mapper else 0
 	match primary:
 		ControllerMapper.PrimaryHand.RIGHT:
 			_active_hand = "right"
@@ -274,22 +324,49 @@ func _is_now_gripping() -> bool:
 	return false
 
 func _position_stream_pointer(active_raycast: RayCast3D) -> bool:
-	if not active_raycast or not active_raycast.is_colliding():
+	var host_pt = _stream_host_point(active_raycast)
+	if host_pt == null:
 		return false
+	var ref = main.layout.host_ref()
+	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
+	return true
+
+# The host pixel under the pointer, or null when it isn't on a stream screen.
+func _stream_host_point(active_raycast: RayCast3D) -> Variant:
+	if not active_raycast or not active_raycast.is_colliding():
+		return null
 	var col = active_raycast.get_collider()
 	var target = PointerTarget.resolve(col) if col else {"role": &""}
 	if target.role != &"screen":
-		return false
+		return null
+	if main.screen_sources.is_browser_screen(target.screen):
+		return null
 	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 	var uv = target.screen.hit_point_to_uv(hit_pos)
 	var uv_x = uv.x
 	if main.settings_controller.get_stereo_mode() >= 3:
 		var shift = _compute_parallax_shift(uv_x)
 		uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
-	var host_pt = main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
+	return main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
+
+var _mouse_following := false
+
+# Mouse Follows Pointer (#61): RTS games preview placement under the cursor
+# before a click, so move the host cursor with the pointer, not only on
+# trigger or grip. Every frame's sample goes to the native side, which skips
+# unchanged pixels and fills in between frames at 250 Hz.
+func _follow_pointer_with_mouse(active_raycast: RayCast3D, blocked: bool) -> void:
+	var host_pt = null
+	if not blocked and main.settings.mouse_follows_pointer and main.is_streaming:
+		host_pt = _stream_host_point(active_raycast)
+	if host_pt == null:
+		if _mouse_following:
+			_mouse_following = false
+			main.stream_backend.stop_mouse_follow()
+		return
+	_mouse_following = true
 	var ref = main.layout.host_ref()
-	main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
-	return true
+	main.stream_backend.follow_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
 
 func _send_double_click_chord(active_raycast: RayCast3D) -> bool:
 	if not _position_stream_pointer(active_raycast):
@@ -343,6 +420,8 @@ func handle_pointer_interaction():
 
 	var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
+	_follow_pointer_with_mouse(active_raycast, pad_blocking or tp_blocking \
+		or main.grabbed_node != null or main.grabbed_corner_idx >= 0)
 	var chord_enabled = main.settings.double_click_mode == 1 and not main._is_using_hands \
 		and main.is_streaming and not pad_blocking and not tp_blocking
 	if chord_enabled and not _double_click_chord_active and raw_clicking and is_gripping \
@@ -364,7 +443,11 @@ func handle_pointer_interaction():
 	_grip_was_pressed = is_gripping
 	var is_now_clicking = raw_clicking and not _double_click_chord_active
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
+	if main.screen_sources:
+		main.screen_sources.cancel_browser_pointers_except(shortcut_target.screen if shortcut_target.role == &"screen" else null)
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
+	var tab_menu = main.screen_sources.menu_for_screen(shortcut_target.screen) if shortcut_target.role == &"screen_tab" else null
+	var on_primary_tab = tab_menu != null
 	# A drag started on the grab bar/corner owns this press until release.
 	# The ray can pass over a shortcut as the screen moves underneath it, and
 	# was_clicking may be cleared by another target branch during that motion.
@@ -377,13 +460,26 @@ func handle_pointer_interaction():
 			_click_pending_release = false
 		return
 	if _screen_shortcut_press_active:
+		pointer_on_ui = true
 		if on_primary_shortcut:
 			main.screen_shortcuts.set_hover(shortcut_target.action)
+		elif on_primary_tab:
+			tab_menu.set_hover(shortcut_target.action)
 		if not is_now_clicking:
 			_screen_shortcut_press_active = false
 			main.was_clicking = false
 		else:
 			return
+	if on_primary_tab:
+		pointer_on_ui = true
+		tab_menu.set_hover(shortcut_target.action)
+		if is_now_clicking and not main.was_clicking:
+			_screen_shortcut_press_active = true
+			main.was_clicking = true
+			tab_menu.invoke(shortcut_target.action)
+		elif not is_now_clicking:
+			main.was_clicking = false
+		return
 	if on_primary_shortcut:
 		pointer_on_ui = true
 		main.screen_shortcuts.set_hover(shortcut_target.action)
@@ -399,7 +495,7 @@ func handle_pointer_interaction():
 		_pinch_start_time = now_msec
 		var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 		var t0 = PointerTarget.resolve(col) if col else {"role": &""}
-		if t0.role == &"screen":
+		if t0.role == &"screen" and main.is_streaming and not main.screen_sources.is_browser_screen(t0.screen):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t0.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
@@ -424,7 +520,7 @@ func handle_pointer_interaction():
 		if not pad_blocking and not tp_blocking and right_click_ready and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
-			if t1.role == &"screen":
+			if t1.role == &"screen" and not main.screen_sources.is_browser_screen(t1.screen):
 				var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 				var uv = t1.screen.hit_point_to_uv(hit_pos)
 				var uv_x = uv.x
@@ -531,7 +627,7 @@ func handle_pointer_interaction():
 		var _col = active_raycast.get_collider()
 		var t_hover = PointerTarget.resolve(_col) if _col else {"role": &""}
 		on_screen = (t_hover.role == &"screen")
-		var hide_on_screen = on_screen and pad_mode_active
+		var hide_on_screen = on_screen and (pad_mode_active or main.hides_screen_cursor(t_hover.screen))
 		var hit_point = main._get_steady_hit(raw_hit) if on_screen else raw_hit
 		var col_normal = active_raycast.get_collision_normal()
 		var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_point).normalized() * 0.025
@@ -684,9 +780,20 @@ func handle_pointer_interaction():
 			# handle_corner_resize() elsewhere, not by this hit-test.
 			return
 
-		elif t.role == &"screen" and not main.is_streaming:
+		elif t.role == &"screen" and (not main.is_streaming or main.screen_sources.is_browser_screen(t.screen)):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t.screen.hit_point_to_uv(hit_pos)
+			var browser = main.screen_sources.browser_for_screen(t.screen)
+			if browser and browser.active:
+				if is_now_clicking and not main.was_clicking:
+					_browser_press_owner = browser
+					main.screen_sources.focus_browser(browser)
+				if is_now_clicking and _browser_press_owner != browser:
+					return # A held press must not become a new click on another screen.
+				browser.pointer(uv, is_now_clicking)
+				if not is_now_clicking: _browser_press_owner = null
+				main.was_clicking = is_now_clicking
+				return
 			var wv = main.welcome_viewport
 			var pixel_pos = Vector2(uv.x * wv.size.x, uv.y * wv.size.y)
 
@@ -715,6 +822,8 @@ func handle_pointer_interaction():
 			return
 
 		elif t.role == &"screen" and main.is_streaming:
+			if is_now_clicking and not main.was_clicking:
+				main.screen_sources.focus_browser(null)
 			if main.virtual_keyboard and main.virtual_keyboard.trackpad_active:
 				return
 			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode():
@@ -833,11 +942,33 @@ func _update_on_screen_tracking():
 	_left_on_screen = _is_hand_on_screen("left")
 
 func process_pointer_frame(delta: float):
+	if main.screen_sources:
+		main.screen_sources.begin_pointer_frame()
 	if main.screen_shortcuts:
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
+	if not _pointer_input_ready(_active_pointer_tracked(), _pointer_controls_held()):
+		if main.was_clicking or main.was_right_clicking or main.grabbed_node or _other_hand_clicking:
+			cancel_transient_interactions("pointer tracking unavailable or awaiting release")
+		pointer_on_ui = false
+		_primary_ui_pixel = Vector2(-1, -1)
+		_secondary_ui_pixel = Vector2(-1, -1)
+		if main.screen_shortcuts: main.screen_shortcuts.set_hover(&"")
+		if main.pointer_cursor: main.pointer_cursor.visible = false
+		if main.composition_pointers: main.composition_pointers.hide_primary()
+		_hide_other_hand_ui()
+		_apply_ui_hover_states()
+		return
 	_update_on_screen_tracking()
 	_process_auto_primary(delta)
+	_prioritize_tab_overlay()
+	var pointer_ray := get_active_raycast()
+	var pointer_screen: VRScreen = null
+	if pointer_ray and pointer_ray.is_colliding():
+		pointer_screen = PointerTarget.resolve(pointer_ray.get_collider()).screen
+	if pointer_screen != _last_pointer_screen:
+		main._reset_steady_filter()
+		_last_pointer_screen = pointer_screen
 	_reveal_contextual_screen_controls()
 	if not main.mouse_captured_by_stream:
 		handle_pointer_interaction()
@@ -847,9 +978,38 @@ func process_pointer_frame(delta: float):
 		for screen in main.screens:
 			main.screen_shortcuts.refresh_visuals(screen)
 
+func _prioritize_tab_overlay() -> void:
+	# Composition video can use a different curvature from its physics mesh.
+	# Resolve overlays explicitly rather than relying on millimetre offsets.
+	if is_instance_valid(_tab_priority_ray) and is_instance_valid(_tab_ray_exclusion):
+		_tab_priority_ray.remove_exception(_tab_ray_exclusion)
+	_tab_ray_exclusion = null
+	_tab_priority_ray = get_active_raycast()
+	var ray := _tab_priority_ray
+	if not ray or not ray.is_inside_tree(): return
+	ray.force_raycast_update()
+	if not ray.is_colliding(): return
+	var collider = ray.get_collider()
+	var target := PointerTarget.resolve(collider)
+	if target.role != &"screen": return
+	var query := PhysicsRayQueryParameters3D.create(ray.global_position,
+		ray.to_global(ray.target_position), ray.collision_mask, [collider.get_rid()])
+	query.collide_with_areas = ray.collide_with_areas
+	query.collide_with_bodies = ray.collide_with_bodies
+	var hit := ray.get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty(): return
+	var overlay := PointerTarget.resolve(hit.collider)
+	if overlay.role != &"screen_tab" or overlay.screen != target.screen: return
+	_tab_ray_exclusion = collider
+	ray.add_exception(collider)
+	ray.force_raycast_update()
+
 func _reveal_contextual_screen_controls() -> void:
 	if not main.screen_shortcuts:
 		return
+	var browser = main.screen_sources.focused_browser()
+	if browser and browser.active and browser.navigation.get("editing", false):
+		main.screen_shortcuts.reveal_controls(browser.screen)
 	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
 		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
 		return
@@ -860,7 +1020,7 @@ func _reveal_contextual_screen_controls() -> void:
 	if not raycast or not raycast.is_colliding():
 		return
 	var target := PointerTarget.resolve(raycast.get_collider())
-	if target.role in [&"grab_bar", &"corner", &"screen_shortcut"]:
+	if target.role in [&"grab_bar", &"corner", &"screen_shortcut", &"screen_tab"]:
 		main.screen_shortcuts.reveal_controls(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
@@ -883,6 +1043,9 @@ func _process_other_hand_ui():
 		_hide_other_hand_ui()
 		return
 	var other = "left" if _active_hand == "right" else "right"
+	if not controller_pose_valid(main.left_hand if other == "left" else main.right_hand):
+		_hide_other_hand_ui()
+		return
 	var rc = _get_hand_raycast(other)
 	if not rc or not rc.is_colliding():
 		_hide_other_hand_ui()
@@ -1244,7 +1407,16 @@ func _compute_parallax_shift(uv_x: float) -> float:
 var _scroll_cooldown: float = 0.0
 
 func handle_scroll():
-	if not main.is_xr_active or not main.is_streaming:
+	var browser = main.screen_sources.focused_browser()
+	var ray := get_active_raycast()
+	if ray and ray.is_colliding():
+		var target := PointerTarget.resolve(ray.get_collider())
+		if target.role == &"screen":
+			browser = main.screen_sources.browser_for_screen(target.screen)
+	var browser_active: bool = browser != null and browser.active
+	if not main.is_xr_active or (not main.is_streaming and not browser_active):
+		return
+	if browser_active and main.ui_visible:
 		return
 	if main.controller_mapper and main.controller_mapper.is_active():
 		if main.controller_mapper.ctrl_type != ControllerMapper.CtrlType.KBMOUSE:
@@ -1254,18 +1426,22 @@ func handle_scroll():
 	var now = Time.get_ticks_msec() / 1000.0
 	if _scroll_cooldown > now:
 		return
-	var right_stick_y = 0.0
-	if main.right_hand:
-		right_stick_y = main.right_hand.get_vector2("primary").y
-	if absf(right_stick_y) < 0.1:
-		for pad in Input.get_connected_joypads():
-			var val = Input.get_joy_axis(pad, JOY_AXIS_RIGHT_Y)
-			if absf(val) > 0.1:
-				right_stick_y = val
-				break
-	if absf(right_stick_y) > 0.5:
-		main.stream_backend.send_scroll_event(1 if right_stick_y > 0 else -1)
+	# Only the Quest controller's stick scrolls. A gamepad's right stick is
+	# already forwarded to the host (or the page) as a gamepad; also scrolling
+	# with it changes weapons in shooters (#60).
+	var right_stick_y = main.right_hand.get_vector2("primary").y if main.right_hand else 0.0
+	var clicks := scroll_clicks(right_stick_y)
+	if clicks != 0:
+		if browser_active:
+			browser.scroll(clicks)
+		else:
+			main.stream_backend.send_scroll_event(clicks)
 		_scroll_cooldown = now + 0.15
+
+static func scroll_clicks(stick_y: float) -> int:
+	if absf(stick_y) <= 0.5:
+		return 0
+	return 1 if stick_y > 0 else -1
 
 func _is_ui_grab_bar(pixel_pos: Vector2) -> bool:
 	var bar = main.ui_viewport.find_child("CompGrabBar", true, false)

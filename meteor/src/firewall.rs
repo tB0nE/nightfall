@@ -23,6 +23,17 @@ pub fn ports(map: &PortMap, discovery: u16) -> Vec<(u16, Proto)> {
     ports
 }
 
+/// Configured XR uses a small fixed TCP set; local runtime IPC stays loopback.
+pub fn ports_with_xr(map: &PortMap, discovery: u16, xr: Option<(u16, u16, u16)>) -> Vec<(u16, Proto)> {
+    let mut result = ports(map, discovery);
+    if let Some((control, video, tracking)) = xr {
+        result.extend([control, video, tracking].map(|port| (port, Proto::Tcp)));
+        result.sort_by_key(|&(port, proto)| (proto == Proto::Udp, port));
+        result.dedup();
+    }
+    result
+}
+
 fn spec((port, proto): (u16, Proto)) -> String {
     format!("{port}/{}", if proto == Proto::Tcp { "tcp" } else { "udp" })
 }
@@ -132,6 +143,15 @@ mod tests {
             specs,
             ["47900/tcp", "47901/tcp", "48984/tcp", "48989/tcp", "49010/tcp", "47902/udp", "48998/udp", "48999/udp", "49000/udp", "49002/udp"]
         );
+    }
+
+    #[test]
+    fn xr_firewall_ports_are_exact_and_optional() {
+        let map = PortMap::new(47989, 1000).unwrap();
+        assert_eq!(ports_with_xr(&map, 47900, None), ports(&map, 47900));
+        let configured = ports_with_xr(&map, 47900, Some((47910, 47911, 47912)));
+        for port in [47910, 47911, 47912] { assert!(configured.contains(&(port, Proto::Tcp))); }
+        assert_eq!(configured.len(), ports(&map, 47900).len() + 3);
     }
 
     #[test]

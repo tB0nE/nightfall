@@ -6,10 +6,12 @@ extends RefCounted
 
 const BRIGHTNESS_VALUES: Array = [-20, -10, 0, 10, 20]
 const PICTURE_SCALE_VALUES: Array = [50, 75, 100, 125, 150]
-const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12]
+# The renderer allows up to +24 dB; a soft limiter keeps loud passages from clipping.
+const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12, 15, 18, 21, 24]
 
 static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
+	config.set_value("browser", "resolution", settings.browser_resolution)
 	config.set_value("screen", "bezel", settings.bezel_enabled)
 	config.set_value("screen", "passthrough_enabled", settings.passthrough_enabled)
 	config.set_value("screen", "background_mode", settings.background_mode)
@@ -22,6 +24,9 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "cursor_mode", settings.cursor_mode)
 	config.set_value("screen", "pointer_steady", settings.pointer_steady)
 	config.set_value("screen", "double_click_mode", settings.double_click_mode)
+	config.set_value("controller", "mouse_follows_pointer", settings.mouse_follows_pointer)
+	config.set_value("screen", "high_refresh_rates", settings.high_refresh_rates)
+	config.set_value("screen", "passthrough_fade_pct", settings.passthrough_fade_pct)
 	config.set_value("screen", "codec_preference", settings.codec_preference)
 	config.set_value("screen", "grid_mode_enabled", settings.grid_mode_enabled)
 	config.set_value("diagnostics", "performance_overlay", settings.performance_overlay_enabled)
@@ -45,6 +50,8 @@ static func read_app(
 		sharpen_choices: Array) -> Dictionary:
 	settings.bezel_enabled = config.get_value(
 		"screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
+	var browser_resolution = config.get_value("browser", "resolution", AppSettings.DEFAULT_BROWSER_RESOLUTION)
+	settings.browser_resolution = browser_resolution if typeof(browser_resolution) == TYPE_INT and browser_resolution in [0, 1] else AppSettings.DEFAULT_BROWSER_RESOLUTION
 	settings.background_mode = config.get_value(
 		"screen", "background_mode", AppSettings.DEFAULT_BACKGROUND_MODE)
 
@@ -98,6 +105,12 @@ static func read_app(
 		settings.pointer_steady = clampi(int(saved_steady), 0, 3)
 	settings.double_click_mode = clampi(config.get_value(
 		"screen", "double_click_mode", AppSettings.DEFAULT_DOUBLE_CLICK_MODE), 0, 1)
+	settings.mouse_follows_pointer = bool(config.get_value(
+		"controller", "mouse_follows_pointer", AppSettings.DEFAULT_MOUSE_FOLLOWS_POINTER))
+	settings.high_refresh_rates = bool(config.get_value(
+		"screen", "high_refresh_rates", AppSettings.DEFAULT_HIGH_REFRESH_RATES))
+	var fade := int(config.get_value("screen", "passthrough_fade_pct", AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT))
+	settings.passthrough_fade_pct = fade if PassthroughFade.FADE_VALUES.has(fade) else AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT
 	settings.codec_preference = config.get_value(
 		"screen", "codec_preference", AppSettings.DEFAULT_CODEC_PREFERENCE)
 	settings.grid_mode_enabled = config.get_value(

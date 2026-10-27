@@ -14,6 +14,66 @@ import androidx.activity.EdgeToEdge;
 import androidx.core.splashscreen.SplashScreen;
 
 public class GodotApp extends GodotActivity {
+	private static native boolean initializePcvrContext(Object context);
+	public static boolean preparePcvrContext() {
+		try {
+			GodotApp activity = browserActivity.get();
+			if (activity == null) return false;
+			for (String permission : new String[] {
+					android.Manifest.permission.ACCESS_WIFI_STATE,
+					android.Manifest.permission.WAKE_LOCK}) {
+				if (activity.checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+					DiagnosticLog.info("NightfallPCVR", "Missing required PCVR permission: " + permission);
+					return false;
+				}
+			}
+			// Catch WifiLock security failures in Java before upstream Rust unwraps them.
+			WifiManager wifi = (WifiManager) activity.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+			if (wifi == null) return false;
+			WifiManager.WifiLock probe = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "nightfall-pcvr-preflight");
+			probe.setReferenceCounted(false);
+			try { probe.acquire(); } finally { if (probe.isHeld()) probe.release(); }
+			System.loadLibrary("nightfall-xr.android.template_release.arm64");
+			// Upstream may call requestPermissions(), which requires an Activity.
+			return initializePcvrContext(activity);
+		} catch (UnsatisfiedLinkError error) {
+			Log.e("NightfallPCVR", "DEV PCVR bridge unavailable", error);
+			return false;
+		} catch (RuntimeException error) {
+			DiagnosticLog.error("NightfallPCVR", "PCVR preflight failed", error);
+			return false;
+		}
+	}
+	private static java.lang.ref.WeakReference<GodotApp> browserActivity = new java.lang.ref.WeakReference<>(null);
+	public static void openBrowser(android.view.Surface surface, android.graphics.SurfaceTexture texture, int width, int height) {
+		BrowserPrototype.open(browserActivity.get(), surface, texture, width, height);
+	}
+	public static int pollBrowser() { return BrowserPrototype.poll(); }
+	public static String browserTabs() { return BrowserPrototype.tabs(); }
+	public static void browserTabAction(String action, int id) { BrowserPrototype.tabAction(action, id); }
+	public static void browserNavigationAction(String action) { BrowserPrototype.navigationAction(action); }
+	public static boolean consumeBrowserFrame() { return BrowserPrototype.consumeFrame(); }
+	public static void closeBrowser() { BrowserPrototype.close(); }
+	public static void browserPointer(float x, float y, int action) { BrowserPrototype.pointer(x, y, action); }
+	public static void browserKey(int code, boolean pressed, int modifiers) { BrowserPrototype.key(code, pressed, modifiers); }
+	public static void browserGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) {
+		BrowserPrototype.questGamepad(buttons, lt, rt, lx, ly, rx, ry);
+	}
+	public static void browserClearGamepad() { BrowserPrototype.clearQuestGamepad(); }
+	public static void browserInputEnabled(boolean enabled) { BrowserPrototype.setGamepadInputEnabled(enabled); }
+	public static void openBrowserFor(int id, android.view.Surface surface, android.graphics.SurfaceTexture texture, int width, int height) { BrowserPrototype.open(id, browserActivity.get(), surface, texture, width, height); }
+	public static int pollBrowserFor(int id) { return BrowserPrototype.poll(id); }
+	public static boolean consumeBrowserFrameFor(int id) { return BrowserPrototype.consumeFrame(id); }
+	public static void closeBrowserFor(int id) { BrowserPrototype.close(id); }
+	public static String browserTabsFor(int id) { return BrowserPrototype.tabs(id); }
+	public static void browserTabActionFor(int id, String action, int page) { BrowserPrototype.tabAction(id, action, page); }
+	public static void browserNavigationActionFor(int id, String action) { BrowserPrototype.navigationAction(id, action); }
+	public static void browserPointerFor(int id, float x, float y, int action) { BrowserPrototype.pointer(id, x, y, action); }
+	public static void browserKeyFor(int id, int code, boolean pressed, int modifiers) { BrowserPrototype.key(id, code, pressed, modifiers); }
+	public static void browserGamepadFor(int id, int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { BrowserPrototype.questGamepad(id, buttons, lt, rt, lx, ly, rx, ry); }
+	public static void browserClearGamepadFor(int id) { BrowserPrototype.clearQuestGamepad(id); }
+	public static void browserInputEnabledFor(int id, boolean enabled) { BrowserPrototype.setGamepadInputEnabled(id, enabled); }
+	public static void browserFocus(int id) { BrowserPrototype.focus(id); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
 	private static java.lang.ref.WeakReference<GodotApp> current = new java.lang.ref.WeakReference<>(null);
 
@@ -32,8 +92,7 @@ public class GodotApp extends GodotActivity {
 	@Override
 	public boolean dispatchKeyEvent(KeyEvent event) {
 		InputDevice device = event.getDevice();
-		if (device != null && (event.isFromSource(InputDevice.SOURCE_GAMEPAD)
-				|| event.isFromSource(InputDevice.SOURCE_JOYSTICK))) {
+		if (device != null && BrowserPhysicalGamepad.accepts(event)) {
 			int corrected = GamepadInfo.correctedKeyCode(device, event);
 			String signature = event.getDeviceId() + ":" + event.getScanCode() + ":" + event.getKeyCode();
 			if (event.getAction() == KeyEvent.ACTION_DOWN && loggedPadKeys.add(signature)) {
@@ -49,7 +108,12 @@ public class GodotApp extends GodotActivity {
 						event.getScanCode(), event.getFlags(), event.getSource());
 			}
 		}
+		if (BrowserPrototype.physicalGamepadKey(event)) return true;
 		return super.dispatchKeyEvent(event);
+	}
+	@Override public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+		if (BrowserPrototype.physicalGamepadMotion(event)) return true;
+		return super.dispatchGenericMotionEvent(event);
 	}
 	public static native void initializeMoonlightJNI();
 	public static boolean openAudioTrack(int rate, int channels, int period) { return AudioOutput.open(rate, channels, period); }
@@ -109,6 +173,13 @@ public class GodotApp extends GodotActivity {
 		}
 	};
 
+	// Public developer endpoint configuration only. The device private identity
+	// stays in Godot's internal user directory and is never exported here.
+	public static String getXrControlConfigPath() {
+		java.io.File directory = appContext == null ? null : appContext.getExternalFilesDir(null);
+		return directory == null ? "" : new java.io.File(directory, "meteor_xr_control.cfg").getAbsolutePath();
+	}
+
 	@Override
 	public void onCreate(Bundle savedInstanceState) {
 		SplashScreen.installSplashScreen(this);
@@ -116,7 +187,9 @@ public class GodotApp extends GodotActivity {
 		super.onCreate(savedInstanceState);
 		current = new java.lang.ref.WeakReference<>(this);
 		appContext = getApplicationContext();
+		browserActivity = new java.lang.ref.WeakReference<>(this);
 		DiagnosticLog.initialize(appContext);
+		DiagnosticLog.info("BrowserCapabilities", BrowserCapabilities.describe());
 		DiagnosticLog.info("GODOT", "Native library initialization: " + jniResult);
 		setAndroidContext(appContext);
 		acquireMulticastLock(appContext);
@@ -400,7 +473,20 @@ public class GodotApp extends GodotActivity {
 	@Override
 	public void onResume() {
 		super.onResume();
+		BrowserPrototype.pause(false);
 		updateWindowAppearance.run();
+	}
+
+	@Override
+	public void onPause() {
+		BrowserPrototype.pause(true);
+		super.onPause();
+	}
+
+	@Override
+	public void onDestroy() {
+		BrowserPrototype.closeAll();
+		super.onDestroy();
 	}
 
 	@Override

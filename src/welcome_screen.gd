@@ -4,11 +4,72 @@ extends RefCounted
 var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
+var _xr_control: RefCounted
+var _auto_retry := 0.0
+var _auto_suppressed := false
+
+func resume_auto_xr() -> void:
+	_auto_suppressed = false
+	_auto_retry = 2.0
+
+func process_auto_xr(delta: float) -> void:
+	if not main.is_streaming:
+		_auto_suppressed = false
+		if _xr_control and _xr_control.state == "watching": _xr_control.cancel()
+		return
+	_auto_retry -= delta
+	if _auto_retry > 0 or _auto_suppressed: return
+	# An established watcher already owns discovery. Do not reload its config
+	# and enumerate hosts on every rendered desktop frame.
+	if _xr_control != null and _xr_control.state not in ["idle", "failed"]: return
+	_auto_retry = 5.0
+	if not main.pcvr_test.entry_visible(): return
+	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
+	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
+	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
+	var control = get_xr_control()
+	var config: ConfigFile = control.current_config()
+	if config == null: return
+	if not bool(config.get_value("host","auto_xr",true)) or not bool(config.get_value("host","handover_on_ready",false)) or not bool(config.get_value("host","relay",false)): return
+	var address := str(config.get_value("host","address",""))
+	var same_host := false
+	for host in main.stream_backend.get_hosts():
+		if host.get("id") == main.current_host_id and address in [host.get("localaddress",""),host.get("remoteaddress","")]: same_host = true
+	if not same_host: return
+	if control.state not in ["idle","failed"]: return
+	_auto_retry = 5.0
+	control.connect_offer(true)
 
 func _init(owner: Node3D):
 	main = owner
 
+func xr_settings_available() -> bool:
+	# The authenticated XR watcher proves capability; depth discovery alone does not.
+	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
+
+func xr_encoder_capabilities() -> Dictionary:
+	return _xr_control.encoder_capabilities if _xr_control != null else {}
+
+func xr_foveation_available() -> bool:
+	return _xr_control != null and _xr_control.foveation_available()
+
+func update_xr_foveation(enabled: bool) -> bool:
+	return _xr_control != null and _xr_control.queue_foveation(enabled)
+
+func update_xr_bitrate(mbps: int) -> bool:
+	return _xr_control != null and _xr_control.has_method("queue_bitrate") and _xr_control.queue_bitrate(mbps)
+
+func xr_bitrate_message() -> String:
+	if _xr_control == null: return ""
+	var text = _xr_control.get("bitrate_message")
+	var foveation = _xr_control.get("foveation_message")
+	var messages := PackedStringArray()
+	if text != null and not str(text).is_empty(): messages.append(str(text))
+	if foveation != null and not str(foveation).is_empty(): messages.append(str(foveation))
+	return " • ".join(messages)
+
 func build_welcome_ui():
+	cancel_xr_control()
 	var root = main.welcome_viewport.get_node("WelcomeRoot")
 	for child in root.get_children():
 		child.queue_free()
@@ -36,8 +97,119 @@ func build_welcome_ui():
 	build_ip_screen(screens)
 	build_pin_screen(screens)
 	build_language_picker(root)
+	build_notice(root)
+	if OS.has_feature("android"):
+		build_browser_picker(root)
 
 	show_welcome_screen("welcome")
+
+# Why the last connection failed. A failed launch returns to the welcome
+# screens, where the in-stream menu's status line isn't visible.
+func build_notice(root: Control) -> void:
+	var panel := PanelContainer.new()
+	panel.name = "WelcomeNotice"
+	panel.anchor_left = 0.5
+	panel.anchor_right = 0.5
+	panel.offset_left = -560
+	panel.offset_right = 560
+	panel.offset_top = 104
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.05, 0.04, 0.02, 0.82)
+	style.border_color = Color(1.0, 0.75, 0.3, 0.9)
+	style.set_border_width_all(2)
+	style.set_corner_radius_all(16)
+	style.set_content_margin_all(20)
+	panel.add_theme_stylebox_override("panel", style)
+	var label := Label.new()
+	label.name = "NoticeText"
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 28)
+	label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.55))
+	panel.add_child(label)
+	root.add_child(panel)
+
+func show_notice(text: String) -> void:
+	var panel = main.welcome_viewport.get_node_or_null("WelcomeRoot/WelcomeNotice")
+	if not panel:
+		return
+	panel.get_node("NoticeText").text = text
+	panel.visible = not text.is_empty()
+
+func clear_notice() -> void:
+	show_notice("")
+
+func get_xr_control() -> RefCounted:
+	# Welcome and the in-stream DEV entry share one lease and one receiver.
+	if not _xr_control:
+		_xr_control = preload("res://src/meteor_xr_control.gd").new(main)
+		_xr_control.library_open_requested.connect(func(): main.ui_controller.open_vr_apps())
+	return _xr_control
+
+func request_xr_control() -> void:
+	var control = get_xr_control()
+	if control.state not in ["idle", "failed", "offered"]: return
+	var config: ConfigFile = control.current_config()
+	if config == null: return
+	var reason := _xr_entry_busy_reason(config)
+	if not reason.is_empty():
+		control.message = reason
+		control.changed.emit()
+		return
+	if control.state == "offered": control.accept_offer()
+	else: control.connect_offer()
+
+func _xr_entry_busy_reason(config: ConfigFile) -> String:
+	# An in-stream entry must never fall through to the old exclusive test,
+	# which is deliberately restricted to a clean welcome workspace.
+	var handover := bool(config.get_value("host", "handover_on_ready", false))
+	return main.pcvr_test.standby_busy_reason() if handover else main.pcvr_test.busy_reason()
+
+func cancel_xr_control(stop_projection: bool = true, suppress_auto: bool = true) -> void:
+	# Native teardown also closes this connection. Ending a game must not
+	# disable detection of the next game; an explicit user cancel still does.
+	if suppress_auto: _auto_suppressed = true
+	else: _auto_retry = maxf(_auto_retry, 1.0)
+	if _xr_control: _xr_control.cancel(stop_projection)
+
+# Browser dropdown in the top-left corner, opposite the language picker. The
+# options open below the toggle, so the toggle never moves.
+func build_browser_picker(root: Control) -> void:
+	# In-viewport buttons rather than a popup Window, so XR input reaches
+	# every option without another composition layer.
+	var picker := VBoxContainer.new()
+	picker.name = "BrowserPicker"
+	picker.position = Vector2(24, 24)
+	picker.add_theme_constant_override("separation", 8)
+	root.add_child(picker)
+	var toggle := Button.new()
+	toggle.name = "BrowserToggle"
+	toggle.text = Localization.t("Open Browser") + " ▾"
+	toggle.custom_minimum_size = Vector2(360, 64)
+	toggle.add_theme_font_size_override("font_size", 26)
+	picker.add_child(toggle)
+	var options := VBoxContainer.new()
+	options.name = "BrowserOptions"
+	options.add_theme_constant_override("separation", 8)
+	options.visible = false
+	picker.add_child(options)
+	for entry in [["Open browser here", false], ["New browser screen", true]]:
+		var separate: bool = entry[1]
+		var option := Button.new()
+		option.text = Localization.t(entry[0])
+		option.custom_minimum_size = Vector2(360, 64)
+		option.add_theme_font_size_override("font_size", 26)
+		options.add_child(option)
+		option.pressed.connect(func():
+			options.hide()
+			if separate: main.screen_sources.add_browser_screen()
+			else: main.screen_sources.choose_source(ScreenContentTab.BROWSER))
+	toggle.pressed.connect(func():
+		for i in options.get_child_count():
+			options.get_child(i).disabled = not (main.screen_sources.can_add_browser_screen() if i == 1 else main.screen_sources.can_open_browser())
+		options.visible = not options.visible)
 
 # Language dropdown in the top-right corner, so a new user can switch language
 # before reaching the in-stream Settings page. It is a plain grid of buttons rather
@@ -563,6 +735,7 @@ func build_pin_screen(parent: Node):
 const WELCOME_FRAME := Vector2i(1920, 1080)
 
 func show_welcome_screen(name: String):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	main._welcome_screen = name
 	# A failed connection can navigate here while the ray is still over the
 	# previous screen. Clear the world-space cursor filter before changing the
@@ -721,6 +894,9 @@ func browse_mdns():
 		for host in hosts:
 			var ip = host.get("ip", "")
 			var friendly = host.get("friendly_name", host.get("hostname", ip))
+			# The host's HTTP port, as advertised: Sunshine on a custom port
+			# (50000, say) only answers pairing there.
+			var address := pair_address(ip, int(host.get("port", main.DEFAULT_PAIR_PORT)))
 			main._log("[mDNS] Discovered: ip='" + ip + "' friendly='" + friendly + "' port=" + str(host.get("port", "?")))
 			var btn = Button.new()
 			btn.custom_minimum_size = Vector2(400, 60)
@@ -743,7 +919,7 @@ func browse_mdns():
 			press_style.set_bg_color(Color(0.3, 0.35, 0.5, 1.0))
 			btn.add_theme_stylebox_override("pressed", press_style)
 			btn.pressed.connect(func():
-				main._log("[mDNS] Selected host: ip='" + ip + "' friendly='" + friendly + "'")
+				main._log("[mDNS] Selected host: address='" + address + "' friendly='" + friendly + "'")
 				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
 				for h in (_cm4.get_hosts() if _cm4 else []):
 					if main.host_matches_address(h, ip):
@@ -761,10 +937,10 @@ func browse_mdns():
 				# Unknown address: pairing first checks the server's identity,
 				# and if this machine is already paired it just records the new
 				# address on the existing entry instead of pairing again.
-				main.get_node("%IPInput").text = ip
-				save_last_ip(ip)
-				main.state_manager.load_host_state(ip)
-				start_pair(ip)
+				main.get_node("%IPInput").text = address
+				save_last_ip(address)
+				main.state_manager.load_host_state(address)
+				start_pair(address)
 			)
 			discover_list.add_child(btn)
 	if scan_btn:
@@ -876,6 +1052,15 @@ func cycle_app():
 	var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
 	if app_btn:
 		app_btn.text = Localization.t("App: %s") % app_name
+
+# The address to pair with, in the form main.parse_ip_port() reads: the bare
+# address on the default port, else "ip:port", or "[v6]:port" for IPv6.
+static func pair_address(ip: String, port: int) -> String:
+	if port <= 0 or port > 65535 or port == 47989:
+		return ip
+	if ip.contains(":"):
+		return "[%s]:%d" % [ip, port]
+	return "%s:%d" % [ip, port]
 
 # Hosts list apps in their own order (vibepollo also pulls in Lutris games), and
 # the first entry is preselected - so pin Desktop, then Steam, ahead of the rest.

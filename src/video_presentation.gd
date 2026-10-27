@@ -32,6 +32,12 @@ static func uses_independent_screen_cursor(composition_active: bool, native_acti
 	# Quest GLES. Keep one route for every composition-backed video mode.
 	return composition_active or native_active
 
+static func cursor_calibration_pixels(position: int, base_height: float, browser_active: bool) -> float:
+	# The stream's AI-3D calibration is visual-only. Browser input already
+	# targets the captured WebView directly, so shifting its indicator lies
+	# about where a click will land.
+	return 0.0 if browser_active else float(position + 1) * 12.0 * base_height / 1080.0
+
 func requested_path(stereo_mode: int, media_active: bool = true) -> Path:
 	# The welcome image is ordinary mono UI, even if the next stream is
 	# configured for SBS. Native video cannot present it before a decoder

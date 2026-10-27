@@ -19,6 +19,7 @@ ENGINE_PATCHES=(
   "$PROJECT_ROOT/patches/godot-4.7-projectionless.patch"
   "$PROJECT_ROOT/patches/godot-4.7-projectionless-lifecycle.patch"
   "$PROJECT_ROOT/patches/godot-4.7-compositor-filter.patch"
+  "$PROJECT_ROOT/patches/godot-4.7-gles3-render-target-override.patch"
 )
 
 usage() {

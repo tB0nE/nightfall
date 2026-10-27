@@ -253,6 +253,11 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
                             update_data[field] = pair_ip;
                             config_manager->update_host(h["id"], update_data);
                         }
+                        if ((int)h.get("http_port", 47989) != pair_port) {
+                            Dictionary update_data;
+                            update_data["http_port"] = pair_port;
+                            config_manager->update_host(h["id"], update_data);
+                        }
                         if (!pair_mac.is_empty() && h.get("mac", "") != pair_mac) {
                             Dictionary update_data;
                             update_data["mac"] = pair_mac;
@@ -341,6 +346,7 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             host_data["uuid"] = current_uuid;
             host_data["srvcert"] = server_cert_pem;
             host_data["https_port"] = pair_https_port;
+            host_data["http_port"] = pair_port;
             host_data["server_unique_id"] = server_unique_id;
             if (!pair_mac.is_empty()) {
                 host_data["mac"] = pair_mac;
@@ -602,6 +608,11 @@ void NightfallComputerManager::_on_launch_serverinfo_completed(int code, PackedB
     if (!gfe_version.is_empty()) {
         ctx["gfe_version"] = gfe_version;
     }
+
+    // Apollo-family hosts (Apollo, Vibepollo) report what this client may do;
+    // new clients after the first get only view and list. -1: not reported.
+    String permission_str = _extract_xml_value(xml, "Permission");
+    ctx["host_permission"] = permission_str.is_empty() ? (int64_t)-1 : permission_str.to_int();
 
     String command = (current_game != 0) ? "resume" : "launch";
 

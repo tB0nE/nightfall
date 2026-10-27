@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Client, generated header and host must use this same upstream revision.
+NIGHTFALL_ALVR_VERSION="20.14.1"
+NIGHTFALL_ALVR_COMMIT="a9f6542fa507a841f40ab4f3fcb531427cd02550"
+NIGHTFALL_ALVR_REPOSITORY="https://github.com/alvr-org/ALVR.git"
+NIGHTFALL_ALVR_CARGO_NDK_VERSION="4.1.2"
+NIGHTFALL_ALVR_CBINDGEN_VERSION="0.28.0"
+NIGHTFALL_ALVR_ANDROID_API="28"

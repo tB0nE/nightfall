@@ -1,0 +1,10 @@
+# Reuse Meteor's pinned Rust toolchain on its Ubuntu 22.04 compatibility baseline.
+FROM nightfall-meteor-appimage
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git python3 libx11-dev libxrandr-dev libxcursor-dev libxi-dev libgl-dev \
+    libegl-dev libvulkan-dev libclang-dev glslang-tools \
+    && rm -rf /var/lib/apt/lists/*
+# xrizer passes only INPUT -o OUTPUT. Jammy ships glslangValidator rather
+# than glslc; both compile these GLSL shaders to Vulkan 1.0 SPIR-V.
+RUN printf '#!/bin/sh\nexec glslangValidator -V "$@"\n' > /usr/local/bin/glslc \
+    && chmod +x /usr/local/bin/glslc

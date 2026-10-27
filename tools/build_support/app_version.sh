@@ -15,7 +15,12 @@
 
 nightfall_version_code() {
   local major minor patch
-  IFS=. read -r major minor patch <<<"$1"
+  if [[ ! "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+    echo "Error: invalid version '$1'" >&2
+    return 1
+  fi
+  # Preview and stable APKs share a numeric code for in-place updates.
+  IFS=. read -r major minor patch <<<"${1%%-*}"
   if [[ ! "$major" =~ ^[0-9]+$ || ! "$minor" =~ ^[0-9]+$ || ! "$patch" =~ ^[0-9]+$ ]] \
       || ((10#$minor > 99 || 10#$patch > 99)); then
     echo "Error: version '$1' is not MAJOR.MINOR.PATCH with MINOR and PATCH below 100" >&2

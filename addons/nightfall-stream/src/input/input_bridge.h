@@ -2,7 +2,10 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <chrono>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 
 namespace godot {
 
@@ -247,6 +250,8 @@ public:
     int send_mouse_move(int delta_x, int delta_y);
     int send_mouse_position(int x, int y, int ref_w, int ref_h);
     int send_mouse_move_as_position(int delta_x, int delta_y, int ref_w, int ref_h);
+    int follow_mouse_position(int x, int y, int ref_w, int ref_h);
+    void stop_mouse_follow();
     int send_mouse_button_pressed(int button);
     int send_mouse_button_released(int button);
     int send_keyboard_event(int godot_key, int key_action, int modifiers);
@@ -267,6 +272,35 @@ public:
 
 protected:
     static void _bind_methods();
+
+private:
+    using Clock = std::chrono::steady_clock;
+
+    // Mouse Follows Pointer gets one pointer sample per rendered frame (60-120
+    // Hz), which beats against the host's capture rate and looks jumpy. A
+    // thread sends at FOLLOW_HZ in between, moving along the pointer's
+    // velocity for at most one frame interval, so it adds no latency and
+    // overshoots by at most one frame of motion when the pointer stops.
+    static constexpr int FOLLOW_HZ = 250;
+    static constexpr double FOLLOW_IDLE_SECONDS = 0.1;
+
+    void follow_loop();
+    int send_follow_point_locked(double x, double y);
+
+    std::mutex follow_mutex_;
+    std::thread follow_thread_;
+    bool follow_thread_running_ = false;
+    bool follow_active_ = false;
+    double follow_x_ = 0.0;
+    double follow_y_ = 0.0;
+    double follow_vx_ = 0.0;
+    double follow_vy_ = 0.0;
+    double follow_interval_ = 1.0 / 60.0;
+    int follow_ref_w_ = 0;
+    int follow_ref_h_ = 0;
+    int follow_sent_x_ = -1;
+    int follow_sent_y_ = -1;
+    Clock::time_point follow_sample_time_;
 };
 
 } // namespace godot
