@@ -398,3 +398,98 @@ Remaining physical check: connect the desktop, open PCVR settings, choose AMD in
 Meteor's tray and confirm Foveated Encode greys out/Off automatically. Switch
 back to NVIDIA and confirm availability/preference returns. Real-game/headset
 H.264 stability and modern AMD hardware remain unverified; new work is not yet published.
+
+## RX480 H.264 optimization follow-up — 2026-10-27
+
+### Desktop-reset incident
+
+The diagnostic H.264 Main / VBR run triggered a `vce0` ring timeout at
+11:54:16 local time. The kernel identified `meteor-vulkan-v` (PID 793274), reset
+the RX480, lost its VRAM and reported successful GPU recovery. The desktop X
+session restarted, closing the user's applications; the OS did not reboot.
+This configuration is not safe on the tested stack. VBR was never applied to
+normal Meteor settings. The user subsequently authorized further tests despite
+the possibility of another desktop reset.
+
+The runner now writes `request.json` and flushes the evidence-directory message
+before starting GPU work, so a lost session does not erase the test identity.
+It records only the diagnostic settings and library location, not the complete
+environment. Existing failed-recovery guards remain in place.
+
+### Same-resolution experiments
+
+Standalone, serialized GPU-only pattern; packaged FFmpeg 8.0.1, H.264 Main,
+2048×1024, 40 Mbps CBR, 72 Hz target pacing, 120 frames. These simple synthetic
+images do not measure visual quality or concurrent game performance.
+
+| Variant | Median total | Median encode | Observed throughput |
+| --- | ---: | ---: | ---: |
+| Fresh baseline | 18.49 ms | 17.84 ms | 54.4 fps |
+| Four slices | 18.44 ms | 17.86 ms | 56.4 fps |
+| Implicit VPP-to-encode synchronization | 18.25 ms | 17.86 ms | 56.9 fps |
+| Minimum QP 18 | 18.60 ms | 17.85 ms | 54.3 fps |
+| CAVLC instead of CABAC | 20.27 ms | 18.26 ms | 50.7 fps |
+
+All completed and strictly software-decoded every frame without errors. No new
+GPU timeout occurred in these follow-up tests. The throughput variation is not
+evidence that four slices improve latency: encode medians are effectively equal.
+The implicit-sync result saves only about 0.2 ms and is diagnostic-only, not a
+validated production synchronization change. Production keeps explicit VPP sync.
+
+Earlier quality-level tests also failed to improve the default. Inspecting
+Mesa's `frontends/va/encode.c` and `drivers/radeonsi/mm/radeon_vce.c` explains why:
+quality level zero already selects the speed preset; this driver interprets
+other values through a driver-specific bitfield, with a special case for one.
+Do not treat increasing that number as a universally faster preset.
+
+CQP at QP 24 previously achieved about 12.23 ms median, but it does not enforce
+the requested bitrate and is not a replacement for the current CBR path.
+The experiments establish a rate-control-dependent difference, not its exact
+firmware cause. No production encoder settings changed in this follow-up.
+
+Evidence under `.build-cache/meteor-xr/amd-vaapi/`:
+`followup-matrix.json`, `h264-cavlc.log`, `h264-minqp18.log`,
+`h264-tuning-matrix.json`, and their referenced `run-*` directories.
+
+### Spatial foveation: next implementation
+
+The read-only `meteor-vaapi-features` helper queries actual per-codec VA
+capabilities. RX480 reports `VA_ATTRIB_NOT_SUPPORTED` for ROI on both H.264 Main
+and HEVC Main. NVIDIA's existing QP-map method cannot simply be enabled on it.
+Preserve the current disabled/Off capability until a working alternative exists.
+
+WiVRn's compositor foveation shader and client defoveator provide an architectural
+reference: remap each eye before encoding and undo the mapping when presenting.
+This is a different technique from our current QP maps. It can reduce encoded
+pixel count independently of VA ROI support, while preserving central sampling
+density and full field of view at the expense of peripheral detail.
+
+A **pixel-budget test only**, with no spatial remapping, encoded 1536×768 at the
+same 40 Mbps CBR and reached 72.0 fps paced: 13.60 ms median total, 13.09 ms encode,
+14.08 ms p95 total. All 120 frames strictly decoded. Evidence:
+`h264-spatial-budget.log`, `run-1793099083207903345/`.
+This is not proof of completed foveation, visual quality or headset performance.
+It shows that a hypothetical per-axis 75% encoded size (56.25% of the pixels)
+has sufficient synthetic encoding throughput to justify implementing the remap.
+
+Implementation sequence:
+
+1. Define a versioned per-eye mapping with an analytic inverse, a preserved
+   central region and filtered peripheral downsampling. Test endpoints,
+   monotonicity, inverse accuracy and left/right seam isolation on the CPU.
+2. Apply it to the packed GPU image before VA import/VPP, retaining GPU-resident
+   pixels. Measure remap plus encode together against the full-size baseline.
+3. Add explicit stream metadata for mapping mode/parameters and logical versus
+   encoded eye dimensions. Never let an older client interpret remapped video
+   as an ordinary projection: require negotiated support.
+4. Undo the mapping in the headset presentation shader, preserving decoder crop,
+   texture orientation, eye separation and reprojection. Verify static grids,
+   periphery, overlays, head movement and readable central text.
+5. Keep defaults Off. Expose AMD availability only after both endpoints support
+   the new mode. Initial activation can require session restart because decoder
+   dimensions change; do not advertise live switching until reconfiguration is
+   implemented and tested.
+6. Build/deploy a release-optimized DEV pair and test a real game. Keep NVIDIA's
+   existing QP path and legacy stream compatibility intact.
+
+No new runtime/AppImage/APK was deployed for these diagnostic experiments.

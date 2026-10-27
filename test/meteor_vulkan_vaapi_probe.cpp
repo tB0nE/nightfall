@@ -334,6 +334,20 @@ int main(int argc,char **argv) {
         require(!foveated || !std::strcmp(foveated,"0"),"VA-API spike does not support foveated QP maps");
 #endif
         encoding->time_base={1,encoder_hz};encoding->framerate={encoder_hz,1};encoding->bit_rate=encoder_bitrate;
+#ifndef METEOR_MONADO_BRIDGE
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_QUALITY")) encoding->compression_level=std::stoi(value);
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_REFS")) encoding->refs=std::stoi(value);
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_MIN_QP")) {
+            encoding->qmin=std::stoi(value);require(encoding->qmin>=1 && encoding->qmin<=51,"Invalid minimum QP");
+        }
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_SLICES")) {
+            encoding->slices=std::stoi(value);require(encoding->slices>=1 && encoding->slices<=128,"Invalid slice count");
+        }
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_BUFFER_FRAMES")) {
+            int count=std::stoi(value);require(count>=0 && count<=72,"Invalid VBV frame count");
+            if(count) {encoding->rc_buffer_size=encoder_bitrate*count/encoder_hz;encoding->rc_initial_buffer_occupancy=encoding->rc_buffer_size;encoding->rc_max_rate=encoder_bitrate;}
+        }
+#endif
         encoding->gop_size=encoder_hz;encoding->max_b_frames=0;encoding->hw_frames_ctx=api.av_buffer_ref_fn(frame_pool);
         // Main avoids corrupt High/8x8 output observed on Polaris with the
         // pinned FFmpeg 8.0.1 + Mesa stack; preserve resolution and CABAC.
@@ -361,6 +375,9 @@ int main(int argc,char **argv) {
         if(!std::strcmp(rate_control,"CQP")) api.av_dict_set_fn(&options,"qp","24",0);
 #endif
         std::fprintf(stderr,"VA encoder configuration: codec=%s profile=%d rc=%s fps=%d dimensions=%dx%d\n",hevc?"hevc":"h264",encoding->profile,rate_control,encoder_hz,width,height);
+#ifndef METEOR_MONADO_BRIDGE
+        if(const char *value=std::getenv("METEOR_VAAPI_PROBE_CODER")) {require(!std::strcmp(value,"cavlc")||!std::strcmp(value,"cabac"),"Invalid coder");if(!hevc) api.av_dict_set_fn(&options,"coder",value,0);}
+#endif
         api.av_dict_set_fn(&options,"rc_mode",rate_control,0);api.av_dict_set_fn(&options,"async_depth","1",0);
         api.check(api.avcodec_open2_fn(encoding,encoder,&options),"Opening hardware encoder");api.av_dict_free_fn(&options);
         AVFrame *frame=api.av_frame_alloc_fn();AVPacket *packet=api.av_packet_alloc_fn();require(frame&&packet,"Cannot allocate frame/packet");
@@ -501,7 +518,13 @@ int main(int argc,char **argv) {
             VABufferID conversion_buffer=VA_INVALID_ID;
             VA_CHECK(vaCreateBuffer(display,vpp_context,VAProcPipelineParameterBufferType,sizeof(conversion),1,&conversion,&conversion_buffer));
             VA_CHECK(vaBeginPicture(display,vpp_context,destination));VA_CHECK(vaRenderPicture(display,vpp_context,&conversion_buffer,1));VA_CHECK(vaEndPicture(display,vpp_context));
-            VA_CHECK(vaSyncSurface(display,destination));VA_CHECK(vaDestroyBuffer(display,conversion_buffer));
+            // Diagnostic only: test the driver's implicit VPP -> encode dependency.
+            // Output is still drained before reusing the shared source next frame.
+#ifndef METEOR_MONADO_BRIDGE
+            if(!std::getenv("METEOR_VAAPI_PROBE_IMPLICIT_VPP_SYNC"))
+#endif
+                VA_CHECK(vaSyncSurface(display,destination));
+            VA_CHECK(vaDestroyBuffer(display,conversion_buffer));
             double convert_elapsed=milliseconds(convert_start);
             auto encode_start=Clock::now();frame->pts=i;
             api.check(api.avcodec_send_frame_fn(encoding,frame),"Sending encoder frame");receive();api.av_frame_unref_fn(frame);

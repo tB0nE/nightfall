@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -63,6 +64,14 @@ def run(args):
     env=dict(os.environ,METEOR_VAAPI_PROBE_PACE_HZ=str(args.hz),METEOR_VAAPI_PROBE_RC_MODE=args.rc_mode,METEOR_VAAPI_PROBE_PROFILE=args.profile)
     command=[str(OUTPUT/'meteor-vulkan-vaapi-probe'),args.device or amd_device(),args.codec,str(args.width),str(args.height),
              str(args.frames),str(OUTPUT/'pattern.spv'),str(clip),str(report)]
+    # Persist before touching the GPU: a desktop reset can kill the runner,
+    # including its buffered stdout, before it can produce a timing report.
+    (output/'request.json').write_text(json.dumps({
+        'boot_id':boot_id(),'started_unix':time.time(),'command':command,
+        'settings':vars(args),'ffmpeg_libdir':env.get('METEOR_XR_FFMPEG_LIBDIR'),
+        'probe_overrides':{key:value for key,value in env.items() if key.startswith('METEOR_VAAPI_PROBE_')},
+    },indent=2)+'\n')
+    print('GPU probe evidence:',output,file=sys.stderr,flush=True)
     with (output/'encoder.log').open('w') as log:
         process=subprocess.Popen(command,env=env,stdout=log,stderr=subprocess.STDOUT)
         deadline=time.monotonic()+30

@@ -13,6 +13,8 @@ mkdir -p "$OUT"
 mkdir -p /output/validation
 cp /usr/lib/x86_64-linux-gnu/libVkLayer_khronos_validation.so /usr/lib/x86_64-linux-gnu/libVkLayer_utils.so /output/validation/
 cp /usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json /output/validation/
+c++ -std=c++17 -O2 -Wall -Wextra -Werror /repo/test/meteor_vaapi_features.cpp \
+    $(pkg-config --cflags --libs libva libva-drm) -o /output/meteor-vaapi-features
 glslangValidator -V /repo/test/meteor_vaapi_pattern.comp -o /output/pattern.spv
 c++ -std=c++17 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers \
     /repo/test/meteor_vulkan_vaapi_probe.cpp -I/repo/meteor/third_party/ffmpeg/include \
@@ -30,7 +32,7 @@ from pathlib import Path
 layer=Path("/output/validation/VkLayer_khronos_validation.json")
 value=json.loads(layer.read_text());value["layer"]["library_path"]="./libVkLayer_khronos_validation.so"
 layer.write_text(json.dumps(value,indent=2)+"\n")
-names=["test/meteor_vulkan_vaapi_probe.cpp","test/meteor_vaapi_pattern.comp",
+names=["test/meteor_vaapi_features.cpp","test/meteor_vulkan_vaapi_probe.cpp","test/meteor_vaapi_pattern.comp",
        "tools/build_support/build_meteor_vaapi_probe.sh","tools/build_support/Dockerfile.meteor-vaapi-probe",
        "test/meteor_encoder_channel.h","test/meteor_stereo_compositor.h",
        "test/monado_nvenc_bridge.h","test/meteor_quad_compositor.h","test/meteor_quad_math.h",
