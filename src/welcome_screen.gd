@@ -174,14 +174,22 @@ func cancel_xr_control(stop_projection: bool = true, suppress_auto: bool = true)
 	else: _auto_retry = maxf(_auto_retry, 1.0)
 	if _xr_control: _xr_control.cancel(stop_projection)
 
+# Browser dropdown in the top-left corner, opposite the language picker. The
+# options open below the toggle, so the toggle never moves.
 func build_browser_picker(root: Control) -> void:
 	# In-viewport buttons rather than a popup Window, so XR input reaches
 	# every option without another composition layer.
 	var picker := VBoxContainer.new()
 	picker.name = "BrowserPicker"
-	picker.position = Vector2(24, 848)
+	picker.position = Vector2(24, 24)
 	picker.add_theme_constant_override("separation", 8)
 	root.add_child(picker)
+	var toggle := Button.new()
+	toggle.name = "BrowserToggle"
+	toggle.text = Localization.t("Open Browser") + " ▾"
+	toggle.custom_minimum_size = Vector2(360, 64)
+	toggle.add_theme_font_size_override("font_size", 26)
+	picker.add_child(toggle)
 	var options := VBoxContainer.new()
 	options.name = "BrowserOptions"
 	options.add_theme_constant_override("separation", 8)
@@ -198,18 +206,10 @@ func build_browser_picker(root: Control) -> void:
 			options.hide()
 			if separate: main.screen_sources.add_browser_screen()
 			else: main.screen_sources.choose_source(ScreenContentTab.BROWSER))
-	var toggle := Button.new()
-	toggle.text = Localization.t("Open Browser") + " ▾"
-	toggle.custom_minimum_size = Vector2(360, 64)
-	toggle.add_theme_font_size_override("font_size", 26)
-	picker.add_child(toggle)
 	toggle.pressed.connect(func():
 		for i in options.get_child_count():
 			options.get_child(i).disabled = not (main.screen_sources.can_add_browser_screen() if i == 1 else main.screen_sources.can_open_browser())
-		options.visible = not options.visible
-		# Keep the toggle in its original bottom-left position as options open.
-		picker.position.y = 856 if options.visible else 1000)
-	picker.position.y = 1000
+		options.visible = not options.visible)
 
 # Language dropdown in the top-right corner, so a new user can switch language
 # before reaching the in-stream Settings page. It is a plain grid of buttons rather

@@ -392,3 +392,23 @@ welcome viewport in the mono-capture policy; headset confirmation is pending.
 
 See [browser testing](browser-testing.md) for confirmed checks, remaining tests,
 the isolated Android instrumentation suite, diagnostic page and limitations.
+
+## Web Apps — 2026-10-23, moved 2026-10-27
+
+From user feedback (docs/plans/active/user-feedback-2026-10.md on
+`fix/user-feedback`). A "Web Apps" section on the browser's home page
+opens each service's own website; no custom frontends. A column on the
+welcome screen was tried first and dropped: the user wants them in the
+browser.
+
+- The list is `BrowserNavigation.WEB_APPS` (name, https address): YouTube
+  (`youtube.com/tv`), Plex, Xbox Cloud Gaming (confirmed working), GeForce
+  NOW, webrcade. None needs DRM, so AI 3D works.
+- `BrowserNavigation.userAgent()` picks the user agent by page: a TV one
+  for `youtube.com/tv`, the WebView default elsewhere. The page WebView
+  switches it on link clicks, typed addresses, Back/Forward and redirects,
+  and reloads the page when it changes.
+
+To check on the headset: that YouTube's TV interface loads and takes the
+gamepad (fall back to `youtube.com` if not), that GeForce NOW accepts the
+WebView, and that logins persist across sessions.

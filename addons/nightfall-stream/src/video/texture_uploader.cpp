@@ -814,7 +814,10 @@ void TextureUploader::_render_thread_open_browser() {
     if (!browser_requested_.load()) return;
     BrowserGlState browser_state(true);
     browser_probe_frames_ = 0;
-    if (!gles_decoder_window_) _render_thread_create_android_gles_surface();
+    // Every browser session gets a fresh SurfaceTexture and BufferQueue, as
+    // decoder reconnects do. A reused one never delivered a frame to the next
+    // session's virtual display, so a second browser timed out.
+    _render_thread_create_android_gles_surface();
     if (!browser_requested_.load() || !gles_surface_ready_) return;
     JavaVM *vm = nullptr;
     JNIEnv *env = get_gles_jni_env(vm);

@@ -16,6 +16,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.Gravity;
 import android.view.inputmethod.EditorInfo;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebChromeClient;
 import android.webkit.WebViewClient;
@@ -458,9 +459,12 @@ public final class BrowserPrototype {
             siteNotice(token, "Downloads are not supported yet. No file was downloaded."));
     web.setWebChromeClient(new WebChromeClient() {
         @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
+            boolean drm = java.util.Arrays.asList(request.getResources())
+                    .contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID);
             UI.post(() -> {
                 try { request.deny(); } catch (IllegalStateException cancelled) { return; }
-                siteNotice(token, "Camera/microphone and other protected site permissions are not supported yet; request denied.");
+                siteNotice(token, drm ? BrowserNavigation.drmNotice(BrowserNavigation.drmService(request.getOrigin().toString()))
+                        : "Camera/microphone and other protected site permissions are not supported yet; request denied.");
             });
         }
         @Override public void onGeolocationPermissionsShowPrompt(String origin,
@@ -531,16 +535,29 @@ public final class BrowserPrototype {
                 if (request.isForMainFrame()) siteNotice(token, "This link requires an unsupported scheme or external app. Nothing was opened.");
                 return true;
             }
+            if (request.isForMainFrame() && applyUserAgent(destination)) {
+                navigateTo(destination);
+                return true;
+            }
             if (request.isForMainFrame()) blocker.page(destination);
             return false;
         }
         @Override public void onPageStarted(WebView view, String url, Bitmap icon) {
             if (token != generation.get() || view != web) return;
+            // Back/Forward and redirects skip shouldOverrideUrlLoading.
+            if (!BrowserNavigation.HOME_URL.equals(url) && !BrowserGamepadProbe.URL.equals(url)
+                    && BrowserNavigation.allowed(url) && applyUserAgent(url)) {
+                view.stopLoading();
+                view.loadUrl(url);
+                return;
+            }
             navigationGeneration++;
             pageNotice = null;
             mainFrameFailed = false;
             blocker.page(url);
             loading = true;
+            String drmService = BrowserNavigation.drmService(url);
+            if (drmService != null) siteNotice(token, BrowserNavigation.drmNotice(drmService));
             updateNavigation();
         }
         @Override public void onPageFinished(WebView view, String url) {
@@ -640,7 +657,18 @@ public final class BrowserPrototype {
             web.requestFocus();
             return;
         }
+        applyUserAgent(url);
         web.loadUrl(url);
+    }
+
+    // Sets the page WebView's user agent for `url` (YouTube's TV interface
+    // needs a TV one); true when it changed, so the page must load again.
+    private boolean applyUserAgent(String url) {
+        String wanted = BrowserNavigation.userAgent(url);
+        String target = wanted != null ? wanted : WebSettings.getDefaultUserAgent(web.getContext());
+        if (target.equals(web.getSettings().getUserAgentString())) return false;
+        web.getSettings().setUserAgentString(wanted);
+        return true;
     }
 
     private void loadHome() {
@@ -658,8 +686,7 @@ public final class BrowserPrototype {
                 + "padding:48px}a{display:inline-block;background:#294b76;color:white;padding:26px 38px;"
                 + "border-radius:16px;margin:12px;text-decoration:none}p{color:#b6c5da}</style></head>"
                 + "<body><h1>Nightfall Browser</h1><p>Browse and watch in 3D. No PC required.</p>"
-                + "<a href='https://www.youtube.com/'>YouTube</a>"
-                + "<a href='https://www.xbox.com/play'>Xbox Cloud Gaming</a>"
+                + "<h2>Web Apps</h2>" + webAppLinks()
                 + "<a href='" + BrowserGamepadProbe.URL + "'>Gamepad diagnostic</a>"
                 + "<h2>Your bookmarks</h2>" + bookmarks.homeLinks()
                 + (bookmarks.entries().isEmpty() ? "<p>Use Bookmarks above to save your favourite sites.</p>" : "")
@@ -669,6 +696,13 @@ public final class BrowserPrototype {
                 + "</body></html>", "text/html", "UTF-8", BrowserNavigation.HOME_URL);
         web.requestFocus();
         updateNavigation();
+    }
+
+    private static String webAppLinks() {
+        StringBuilder links = new StringBuilder();
+        for (String[] app : BrowserNavigation.WEB_APPS)
+            links.append("<a href='").append(app[1]).append("'>").append(app[0]).append("</a>");
+        return links.toString();
     }
 
     // Mutations execute on UI, so reloading immediately before editing and
