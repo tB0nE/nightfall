@@ -16,6 +16,7 @@ import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.Gravity;
 import android.view.inputmethod.EditorInfo;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebChromeClient;
 import android.webkit.WebViewClient;
@@ -76,8 +77,6 @@ public final class BrowserPrototype {
     public static String tabs(int browserId) { return session(browserId).tabs(); }
     public static boolean consumeFrame() { return consumeFrame(0); }
     public static boolean consumeFrame(int browserId) { return session(browserId).consumeFrame(); }
-    /** A Web App's address and user agent for the next open(); null/empty for the home page. */
-    public static void setStartPage(int browserId, String url, String userAgent) { session(browserId).setStartPage(url, userAgent); }
     public static void close() { close(0); }
     public static void close(int browserId) { session(browserId).close(); }
     public static void tabAction(String action, int id) { tabAction(0, action, id); }
@@ -203,17 +202,6 @@ public final class BrowserPrototype {
 
     private Session(int browserId) { this.browserId = browserId; }
 
-    // Set from Godot's thread just before open(); taken on the UI thread.
-    private volatile String pendingStartUrl, pendingUserAgent;
-    // This session's Web App, if any: its first page and, for every page
-    // WebView it creates, its user agent (e.g. YouTube's TV interface).
-    private String startUrl, userAgent;
-
-    public void setStartPage(String url, String agent) {
-        pendingStartUrl = url == null || url.isEmpty() ? null : url;
-        pendingUserAgent = agent == null || agent.isEmpty() ? null : agent;
-    }
-
     public void open(Activity activity, Surface target, SurfaceTexture source, int width, int height) {
         final int token = generation.incrementAndGet();
         state = 1;
@@ -226,10 +214,6 @@ public final class BrowserPrototype {
                 return;
             }
             dispose();
-            startUrl = pendingStartUrl;
-            userAgent = pendingUserAgent;
-            pendingStartUrl = null;
-            pendingUserAgent = null;
             if (focusedId < 0) focusOnUi(browserId);
             surface = target;
             texture = source;
@@ -321,9 +305,7 @@ public final class BrowserPrototype {
                 presentation.setContentView(root);
                 presentation.show();
                 presentation.getWindow().setLayout(-1, -1);
-                if (startUrl != null && BrowserNavigation.allowed(startUrl)) navigateTo(startUrl);
-                else loadHome();
-                startUrl = null;
+                loadHome();
                 state = 2;
                 DiagnosticLog.info("BrowserPrototype", "GPU virtual display opened " + width + "x" + height);
             } catch (RuntimeException | LinkageError e) {
@@ -465,7 +447,6 @@ public final class BrowserPrototype {
     web.getSettings().setAllowContentAccess(false);
     web.getSettings().setJavaScriptCanOpenWindowsAutomatically(false);
     web.getSettings().setGeolocationEnabled(false);
-    if (userAgent != null) web.getSettings().setUserAgentString(userAgent);
     installQuestGamepadBridge();
     web.setOnFocusChangeListener((view, focused) -> {
         if (!focused) { releasePhysicalGamepad(); questPad = null; }
@@ -554,11 +535,22 @@ public final class BrowserPrototype {
                 if (request.isForMainFrame()) siteNotice(token, "This link requires an unsupported scheme or external app. Nothing was opened.");
                 return true;
             }
+            if (request.isForMainFrame() && applyUserAgent(destination)) {
+                navigateTo(destination);
+                return true;
+            }
             if (request.isForMainFrame()) blocker.page(destination);
             return false;
         }
         @Override public void onPageStarted(WebView view, String url, Bitmap icon) {
             if (token != generation.get() || view != web) return;
+            // Back/Forward and redirects skip shouldOverrideUrlLoading.
+            if (!BrowserNavigation.HOME_URL.equals(url) && !BrowserGamepadProbe.URL.equals(url)
+                    && BrowserNavigation.allowed(url) && applyUserAgent(url)) {
+                view.stopLoading();
+                view.loadUrl(url);
+                return;
+            }
             navigationGeneration++;
             pageNotice = null;
             mainFrameFailed = false;
@@ -665,7 +657,18 @@ public final class BrowserPrototype {
             web.requestFocus();
             return;
         }
+        applyUserAgent(url);
         web.loadUrl(url);
+    }
+
+    // Sets the page WebView's user agent for `url` (YouTube's TV interface
+    // needs a TV one); true when it changed, so the page must load again.
+    private boolean applyUserAgent(String url) {
+        String wanted = BrowserNavigation.userAgent(url);
+        String target = wanted != null ? wanted : WebSettings.getDefaultUserAgent(web.getContext());
+        if (target.equals(web.getSettings().getUserAgentString())) return false;
+        web.getSettings().setUserAgentString(wanted);
+        return true;
     }
 
     private void loadHome() {
@@ -683,8 +686,7 @@ public final class BrowserPrototype {
                 + "padding:48px}a{display:inline-block;background:#294b76;color:white;padding:26px 38px;"
                 + "border-radius:16px;margin:12px;text-decoration:none}p{color:#b6c5da}</style></head>"
                 + "<body><h1>Nightfall Browser</h1><p>Browse and watch in 3D. No PC required.</p>"
-                + "<a href='https://www.youtube.com/'>YouTube</a>"
-                + "<a href='https://www.xbox.com/play'>Xbox Cloud Gaming</a>"
+                + "<h2>Web Apps</h2>" + webAppLinks()
                 + "<a href='" + BrowserGamepadProbe.URL + "'>Gamepad diagnostic</a>"
                 + "<h2>Your bookmarks</h2>" + bookmarks.homeLinks()
                 + (bookmarks.entries().isEmpty() ? "<p>Use Bookmarks above to save your favourite sites.</p>" : "")
@@ -694,6 +696,13 @@ public final class BrowserPrototype {
                 + "</body></html>", "text/html", "UTF-8", BrowserNavigation.HOME_URL);
         web.requestFocus();
         updateNavigation();
+    }
+
+    private static String webAppLinks() {
+        StringBuilder links = new StringBuilder();
+        for (String[] app : BrowserNavigation.WEB_APPS)
+            links.append("<a href='").append(app[1]).append("'>").append(app[0]).append("</a>");
+        return links.toString();
     }
 
     // Mutations execute on UI, so reloading immediately before editing and

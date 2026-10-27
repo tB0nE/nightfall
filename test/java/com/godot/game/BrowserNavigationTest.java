@@ -41,6 +41,18 @@ public final class BrowserNavigationTest {
         equal(BrowserNavigation.drmService(null), null);
         equal(BrowserNavigation.drmNotice("Netflix").startsWith("Netflix uses DRM"), true);
         equal(BrowserNavigation.drmNotice(null).startsWith("This site's video uses DRM"), true);
+        equal(BrowserNavigation.userAgent("https://www.youtube.com/tv").contains("SMART-TV"), true);
+        equal(BrowserNavigation.userAgent("https://www.youtube.com/tv#/watch?v=x").contains("SMART-TV"), true);
+        equal(BrowserNavigation.userAgent("https://YOUTUBE.com/tv/"), BrowserNavigation.userAgent("https://www.youtube.com/tv"));
+        equal(BrowserNavigation.userAgent("https://www.youtube.com/"), null);
+        equal(BrowserNavigation.userAgent("https://www.youtube.com/tvshows"), null);
+        equal(BrowserNavigation.userAgent("https://evil.example/tv"), null);
+        equal(BrowserNavigation.userAgent(null), null);
+        for (String[] app : BrowserNavigation.WEB_APPS) {
+            equal(app.length, 2);
+            equal(BrowserNavigation.allowed(app[1]) && app[1].startsWith("https://"), true);
+            equal(BrowserNavigation.drmService(app[1]), null);
+        }
         System.out.println("All browser navigation tests passed");
     }
 }

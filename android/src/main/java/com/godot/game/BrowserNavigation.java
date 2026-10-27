@@ -17,7 +17,35 @@ final class BrowserNavigation {
         {"tubitv.com", "Tubi"}, {"crunchyroll.com", "Crunchyroll"}, {"spotify.com", "Spotify"},
         {"music.apple.com", "Apple Music"},
     };
+    // YouTube's TV interface, built for a gamepad and a big screen, only
+    // loads for a TV browser.
+    private static final String YOUTUBE_TV_AGENT = "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) "
+            + "AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1";
+    // Web Apps on the home page: {name, address}. Each is the service's own
+    // website; none needs DRM, so AI 3D works on all of them.
+    static final String[][] WEB_APPS = {
+        {"YouTube", "https://www.youtube.com/tv"},
+        {"Plex", "https://app.plex.tv/desktop/"},
+        {"Xbox Cloud Gaming", "https://www.xbox.com/play"},
+        {"GeForce NOW", "https://play.geforcenow.com/"},
+        {"webrcade", "https://play.webrcade.com/"},
+    };
     private BrowserNavigation() {}
+
+    /** The user agent a page at `value` needs, or null for the WebView default. */
+    static String userAgent(String value) {
+        if (value == null) return null;
+        try {
+            URI uri = new URI(value);
+            String host = uri.getHost(), path = uri.getPath();
+            if (host == null || path == null) return null;
+            host = host.toLowerCase(java.util.Locale.ROOT);
+            boolean youtube = host.equals("youtube.com") || host.equals("www.youtube.com");
+            return youtube && (path.equals("/tv") || path.startsWith("/tv/")) ? YOUTUBE_TV_AGENT : null;
+        } catch (URISyntaxException e) {
+            return null;
+        }
+    }
 
     /** The DRM streaming service `value` belongs to, or null. */
     static String drmService(String value) {

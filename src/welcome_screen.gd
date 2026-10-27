@@ -96,53 +96,11 @@ func build_welcome_ui():
 	build_server_screen(screens)
 	build_ip_screen(screens)
 	build_pin_screen(screens)
-	if OS.has_feature("android"):
-		# Before the language picker, whose open grid then covers it.
-		build_web_apps(root)
 	build_language_picker(root)
 	if OS.has_feature("android"):
 		build_browser_picker(root)
 
 	show_welcome_screen("welcome")
-
-# Web Apps (WebApps, src/web_apps.json) in the bottom-right corner, opposite
-# the browser picker: each opens its service's website in the browser.
-func build_web_apps(root: Control) -> void:
-	var apps := WebApps.load_apps()
-	if apps.is_empty():
-		return
-	var column := VBoxContainer.new()
-	column.name = "WebApps"
-	column.add_theme_constant_override("separation", 8)
-	column.anchor_left = 1.0
-	column.anchor_right = 1.0
-	column.anchor_top = 1.0
-	column.anchor_bottom = 1.0
-	column.offset_left = -384
-	column.offset_right = -24
-	column.offset_bottom = -24
-	column.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(column)
-	var heading := Label.new()
-	heading.text = "Web Apps"
-	heading.add_theme_font_size_override("font_size", 28)
-	heading.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_child(heading)
-	for app in apps:
-		var button := Button.new()
-		button.name = "WebApp_%s" % app["id"]
-		button.text = app["name"]
-		# Service names aren't translated.
-		button.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
-		button.custom_minimum_size = Vector2(360, 64)
-		button.add_theme_font_size_override("font_size", 26)
-		column.add_child(button)
-		button.pressed.connect(func():
-			if not main.browser_prototype.open_app(app):
-				main._log("[BROWSER] Web App %s not opened: a stream is starting or running" % app["id"]))
 
 func get_xr_control() -> RefCounted:
 	# Welcome and the in-stream DEV entry share one lease and one receiver.
