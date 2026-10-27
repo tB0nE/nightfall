@@ -143,9 +143,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     for executable in (service, library, app):
         if not executable.is_file():
             raise RuntimeError("Run probe_monado_runtime.sh --build first")
-    icd = Path("/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json")
-    if not icd.is_file():
-        raise RuntimeError("NVIDIA ICD absent; no software fallback")
+    from xr_encoder_backend import select
+    backend,bridge,icd,device_environment=select(root,out)
     runtime.chmod(0o700)
     for name in ("capture-failed", "capture-complete", "monado-stereo.h264", "monado-stereo.json", "monado-stereo.jsonl", "decoded.rgb",
                  "server-eye-left.ppm", "server-eye-right.ppm"):
@@ -162,6 +161,11 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                METEOR_XR_BITRATE_MBPS=str(bitrate_mbps),
                METEOR_XR_CODEC=codec,
                METEOR_PROBE_OUTPUT=str(out), METEOR_NVENC_BRIDGE=str(out / "libmeteor-nvenc-probe.so"))
+    env["METEOR_NVENC_BRIDGE"]=str(bridge)
+    env.update(device_environment)
+    if backend=="vaapi":
+        env.pop("XRT_COMPOSITOR_FORCE_GPU_INDEX",None)
+        env.pop("XRT_COMPOSITOR_FORCE_CLIENT_GPU_INDEX",None)
     # Preserve the actual host audio endpoints BEFORE replacing the runtime
     # directory for XR IPC. Do not change global defaults or the user's sink.
     env.update(host_audio_environment(os.environ))
@@ -521,7 +525,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
             return None
         return {"samples": len(values), "p50_us": statistics.median(values),
                 "p95_us": values[min(len(values)-1, int(len(values)*.95))], "max_us": max(values)}
-    timings = {"eye_size": eye_size, "eye_height":eye_height, "target_hz": target_hz, "submitted": submitted_count,
+    timings = {"encoder_backend": backend, "eye_size": eye_size, "eye_height":eye_height, "target_hz": target_hz, "submitted": submitted_count,
                "source_format": source_format if not hello_xr else "sample-selected",
                "array_stereo_fixture": os.environ.get("NIGHTFALL_XR_ARRAY_STEREO")=="1",
                "padded_subrect_fixture": os.environ.get("NIGHTFALL_XR_PADDED_SUBRECT")=="1",
@@ -542,6 +546,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                "app_eye_verify_artifact": summary(r"verify_artifact_us=(\d+)",result.stdout),
                "app_eye_release": summary(r"release_us=(\d+)",result.stdout),
                "pack_record_submit_wait": summary(r"GPU_PACK frame=\d+ us=(\d+)",text),
+               "vaapi_encode": summary(r"METEOR_VAAPI_TIMING encode_us=(\d+)",text),
+               "vaapi_vpp": summary(r"METEOR_VAAPI_TIMING encode_us=\d+ vpp_us=(\d+)",text),
                "nvenc_submit_to_packet_copy": summary(r"submit-to-lock-us=(\d+)",text)}
     if gpu_measure:
         values=sorted(float(sample[0]) for sample in gpu_samples)

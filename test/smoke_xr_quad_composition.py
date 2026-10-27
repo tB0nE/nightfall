@@ -20,7 +20,14 @@ def rotate(q, v):
     return v+q[3]*t+np.cross(xyz,t)
 
 
-def run(root, eye_size=256, hz=60, codec="h264", bitrate=32, live_bitrate=False, eye_height=None, foveated=False, live_foveation=False, panorama=False, layer_matrix=False, cylinder=False, cylinder_radius=2.0, stack=False, source_format="rgba8"):
+def run(root, eye_size=256, hz=60, codec="h264", bitrate=32, live_bitrate=False, eye_height=None, foveated=False, live_foveation=False, panorama=False, layer_matrix=False, cylinder=False, cylinder_radius=2.0, stack=False, source_format="rgba8", encoder_backend="nvenc", runtime_bundle=None):
+    if encoder_backend not in ("auto","nvenc","vaapi"): raise ValueError("Unknown encoder backend")
+    if encoder_backend=="vaapi":
+        if codec not in ("h264","h265") or foveated or live_foveation or live_bitrate:
+            raise ValueError("AMD smoke requires H.264/HEVC without NVENC-only live controls")
+        from run_meteor_vaapi_probe import OUTPUT, require_current_build, require_healthy_boot
+        require_healthy_boot(OUTPUT/'failed-boot.json')
+        if runtime_bundle is None: require_current_build()
     eye_height=eye_size if eye_height is None else eye_height
     cache=root / ".build-cache/meteor-xr"
     out=Path(tempfile.mkdtemp(prefix="quad-smoke-",dir=cache))
@@ -45,6 +52,7 @@ def run(root, eye_size=256, hz=60, codec="h264", bitrate=32, live_bitrate=False,
         NIGHTFALL_XR_BITRATE_MBPS=str(bitrate),
         NIGHTFALL_XR_FREE_RUNNING="1",NIGHTFALL_XR_ASYNC_ENCODE="1",NIGHTFALL_XR_ASYNC_DELIVERY="1",
         NIGHTFALL_XR_TRANSPORT_RECEIVER=str(receiver),NIGHTFALL_XR_PROBE_OUTPUT=str(out))
+    env["NIGHTFALL_XR_ENCODER_BACKEND"]=encoder_backend
     if panorama: env["METEOR_XR_PANORAMA_FIXTURE"]="1"
     if layer_matrix: env["METEOR_XR_LAYER_MATRIX"]="1"
     if cylinder:
@@ -100,20 +108,28 @@ def run(root, eye_size=256, hz=60, codec="h264", bitrate=32, live_bitrate=False,
         if live_bitrate: updater.start()
         if live_foveation: foveation_updater.start()
         with (out / "smoke.log").open("w") as log:
-            subprocess.run(["bash",str(root / "tools/build_support/probe_monado_nvenc.sh")],
-                env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=90)
+            command=["bash",str(root / "tools/build_support/probe_monado_nvenc.sh")] if runtime_bundle is None else ["/usr/bin/python3",str(runtime_bundle/"tools/meteor_xr_runtime.py")]
+            subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=90)
     finally:
+        selected=out/'encoder-selection.json'
+        if selected.is_file(): encoder_backend=json.loads(selected.read_text())['backend']
         stop_updates.set()
         if live_bitrate: updater.join(timeout=2)
         if live_foveation: foveation_updater.join(timeout=2)
         publisher.terminate(); publisher.communicate(timeout=3)
+        if encoder_backend=="vaapi":
+            from run_meteor_vaapi_probe import recovery_check
+            recovery_check(out)
     if live_bitrate: assert updates==[40,24],updates
     if live_foveation: assert foveation_updates==[1,0,1,0],foveation_updates
     records=[json.loads(line) for line in (out / "monado-stereo.jsonl").read_text().splitlines()]
     service=(out / "service.log").read_text()
     assert f"METEOR_VIDEO_CONFIG eye_size={eye_size} bitrate_bps={bitrate*1000000}" in service
     assert f"METEOR_VIDEO_CODEC codec={codec} fps={hz}" in service
-    assert f"METEOR_FOVEATED_ENCODING enabled={int(foveated)} mode=qp_delta" in service
+    if encoder_backend=="nvenc":
+        assert f"METEOR_FOVEATED_ENCODING enabled={int(foveated)} mode=qp_delta" in service
+    else:
+        assert "METEOR_ENCODER_INIT backend=vaapi" in service
     if not stack: assert f"METEOR_COMPOSITION projection=0 quads={1 if panorama or cylinder else 8} gpu=1" in service
     if not stack: assert f"METEOR_COMPOSITION projection=1 quads={1 if cylinder else 8} gpu=1" in service
     assert "METEOR_CAPTURE_FAILED" not in service and "METEOR_IMAGE_LEASE_FAILED" not in service
@@ -131,6 +147,10 @@ def run(root, eye_size=256, hz=60, codec="h264", bitrate=32, live_bitrate=False,
     assert held_frames,"Static overlays did not keep rendering beyond the 250ms tracking-history limit"
     # Decode the actual delivered encoder output, not an app-side render.
     video=out / "monado-stereo.h264" # Historical diagnostic basename; inspect actual bitstream.
+    strict=subprocess.run(['ffmpeg','-v','error','-xerror','-err_detect','explode','-hwaccel','none',
+        '-i',str(video),'-f','null','-'],capture_output=True,text=True,timeout=30)
+    (out/'strict-decode.log').write_text(strict.stderr)
+    if strict.returncode: raise RuntimeError(f'Corrupt encoded frames: {out}/strict-decode.log')
     info=json.loads(subprocess.check_output(["ffprobe","-v","error","-show_streams","-of","json",str(video)]))["streams"][0]
     assert (info["width"],info["height"]) == (eye_size*2,eye_height)
     assert info["codec_name"] == ("hevc" if codec=="h265" else "h264")

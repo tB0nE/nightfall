@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdio>
 #include <string>
-inline void meteor_poll_foveation(const char *root,bool &enabled) {
+inline void meteor_poll_foveation(const char *root,bool &enabled,bool supported=true) {
     static thread_local std::string previous_root;
     static thread_local unsigned long long sequence=0;
     if(!root) return;
@@ -12,9 +12,11 @@ inline void meteor_poll_foveation(const char *root,bool &enabled) {
     bool eof=fgetc(file)==EOF; fclose(file);
     unsigned long long next=0; unsigned value=0; char extra=0;
     if(!read || !eof || sscanf(line,"%llu %u %c",&next,&value,&extra)!=2 || !next || next<=sequence || value>1) return;
-    sequence=next; enabled=value!=0;
+    sequence=next;
+    const unsigned code=(!supported && value)?95:0;
+    if(code==0) enabled=value!=0;
     file=fopen((prefix+"ack.tmp").c_str(),"w");
-    if(file) {bool ok=fprintf(file,"%llu %u %u 0\n",next,value,value)>0; if(fclose(file)!=0) ok=false;
+    if(file) {bool ok=fprintf(file,"%llu %u %u %u\n",next,value,unsigned(enabled),code)>0; if(fclose(file)!=0) ok=false;
         if(ok) rename((prefix+"ack.tmp").c_str(),(prefix+"ack").c_str());}
     fprintf(stderr,"METEOR_FOVEATION_UPDATE sequence=%llu enabled=%u\n",next,value);
 }

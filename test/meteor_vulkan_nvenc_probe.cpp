@@ -22,25 +22,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-struct BridgeChannel {
-    std::mutex mutex;
-    std::condition_variable wake;
-    bool pending = false, completed = false, stopping = false, busy = false;
-    meteor_stereo_encode_v1 request{};
-    std::thread worker;
-};
-static BridgeChannel channel;
-static bool bridge_next(meteor_stereo_encode_v1 &request) {
-    std::unique_lock<std::mutex> lock(channel.mutex);
-    channel.wake.wait(lock, [] { return channel.pending || channel.stopping; });
-    if (channel.stopping) return false;
-    request = channel.request; channel.pending = false;
-    return true;
-}
-static void bridge_complete() {
-    std::lock_guard<std::mutex> lock(channel.mutex);
-    channel.completed = true; channel.wake.notify_all();
-}
+#include "meteor_encoder_channel.h"
 #endif
 
 #define REQUIRE(test, msg) do { if (!(test)) { std::fprintf(stderr, "%s\n", msg); std::exit(1); } } while (0)
@@ -48,7 +30,7 @@ static void bridge_complete() {
 #define CU(call) do { auto result = (call); if (result != CUDA_SUCCESS) { std::fprintf(stderr, "%s: CUDA %d\n", #call, result); std::exit(1); } } while (0)
 #define NV(call) do { auto result = (call); if (result != NV_ENC_SUCCESS) { std::fprintf(stderr, "%s: NVENC %d\n", #call, result); std::exit(1); } } while (0)
 #ifdef METEOR_MONADO_BRIDGE
-#include "meteor_quad_compositor.h"
+#include "meteor_stereo_compositor.h"
 #endif
 
 #ifdef METEOR_MONADO_BRIDGE
@@ -264,34 +246,7 @@ int main(int argc, char **argv) {
 #endif
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 #ifdef METEOR_MONADO_BRIDGE
-    if(input->background_only) {
-        VkClearColorValue black{{0,0,0,1}};
-        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-        vkCmdClearColorImage(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&black,1,&range);
-    }
-    for (int eye = 0; !input->background_only && eye < 2; ++eye) {
-        VkImageMemoryBarrier src{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        src.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        src.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL; src.dstQueueFamilyIndex = family;
-        src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; src.image = input->eyes[eye];
-        src.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, input->eye_slices[eye], 1};
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &src);
-        VkImageCopy copy{}; copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        copy.srcSubresource.baseArrayLayer=input->eye_slices[eye];
-        copy.srcOffset={input->eye_offsets[eye*2],input->eye_offsets[eye*2+1],0};
-        copy.dstOffset.x = eye * eye_size; copy.extent = {eye_size, eye_height, 1};
-        if(meteor_eye_format_bgra(input->eye_formats[eye])) {
-            VkImageBlit blit{}; blit.srcSubresource=copy.srcSubresource; blit.dstSubresource=copy.dstSubresource;
-            blit.srcOffsets[0]=copy.srcOffset; blit.srcOffsets[1]={copy.srcOffset.x+int32_t(eye_size),copy.srcOffset.y+int32_t(eye_height),1};
-            blit.dstOffsets[0]=copy.dstOffset; blit.dstOffsets[1]={copy.dstOffset.x+int32_t(eye_size),int32_t(eye_height),1};
-            vkCmdBlitImage(cmd,input->eyes[eye],VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&blit,VK_FILTER_NEAREST);
-        } else vkCmdCopyImage(cmd, input->eyes[eye], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        src.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; src.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        src.srcQueueFamilyIndex = family; src.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
-        src.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; src.dstAccessMask = 0;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &src);
-    }
-    if(input->quad_count) quads.record(cmd,*input,image,family);
+    meteor_record_stereo(cmd,input,image,family,eye_size,eye_height,quads);
 #else
     VkBufferImageCopy copy{}; copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; copy.imageExtent = {width, height, 1};
     vkCmdCopyBufferToImage(cmd, upload, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
