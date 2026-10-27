@@ -12,12 +12,25 @@ class Fixture extends Node3D:
 
 class QuestSettings extends SettingsController:
 	# Exercise Android Auto resolution on a headless Linux test runner.
+	func ai3d_options_locked() -> bool: return true
 	func is_android_ai3d_auto() -> bool:
 		return selected_depth_model_index() == ANDROID_MODEL_AUTO
 
 func _init():
 	var owner := Fixture.new()
 	owner.browser_prototype = preload("res://src/browser_prototype.gd").new(owner)
+	var defaults := QuestSettings.new(owner)
+	owner.is_streaming = false
+	defaults.enforce_ai3d_platform_lock()
+	assert(owner.settings.host.ai_3d_speed == 0)
+	assert(defaults.selected_depth_model_index() == SettingsController.ANDROID_MODEL_AUTO)
+	assert(defaults.get_depth_backend_index() == SettingsController.AI3D_BACKEND_GPU)
+	assert(defaults.get_depth_model_label() == "Auto")
+	assert(defaults.get_ai_3d_gpu_api_label() == "OpenCL")
+	assert(defaults.get_depth_model_index() == 0, "AI 3D stays disabled; selecting GPU must not start inference")
+	owner.settings.host.ai_3d_backend_pref = SettingsController.AI3D_BACKEND_CPU
+	assert(defaults.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU)
+	owner.is_streaming = true
 	owner.settings.host.ai_3d_speed = 3
 	owner.settings.host.ai_3d_model = SettingsController.ANDROID_MODEL_LEGACY_EDGEPAD_384
 	owner.settings.host.ai_3d_backend_pref = SettingsController.AI3D_BACKEND_CPU

@@ -11,6 +11,8 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(target_os = "linux")]
+mod xr_setup;
 #[cfg(windows)]
 mod desktop_windows;
 mod discovery;
@@ -31,6 +33,7 @@ mod proxy;
 mod replay;
 mod refinement;
 mod status;
+mod shutdown;
 mod stream_info;
 mod tensorrt;
 #[cfg(target_os = "linux")]
@@ -38,8 +41,26 @@ mod tray;
 #[cfg(windows)]
 mod tray_windows;
 mod vda;
+mod vda_vulkan;
+mod vda_assets;
+mod vulkan_processing;
 mod video_dump;
 mod video_tap;
+mod video_decoder;
+mod xr_control;
+mod xr_encoder;
+mod xr_trust;
+mod xr_library;
+mod xr_bitrate;
+mod xr_foveation;
+mod xr_launch_intent;
+mod xr_data;
+#[cfg(target_os = "linux")]
+mod xr_events;
+mod xr_relay;
+#[cfg(target_os = "linux")]
+mod xr_session;
+mod xr_wire;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -53,6 +74,58 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|arg| arg == "--xr-control-dev") {
+        let result = xr_control::command(&args[2..]).await;
+        if let Err(error) = result {
+            eprintln!("Meteor XR control: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.get(1).is_some_and(|arg| arg == "--install-xr-runtime") {
+        let source = args.get(2).map(std::path::PathBuf::from).or_else(|| {
+            std::env::current_exe().ok()?.parent()?.parent().map(|prefix|
+                prefix.join("share/nightfall-meteor/xr-bundle"))
+        });
+        let Some(source) = source else { eprintln!("Cannot locate bundled XR runtime"); std::process::exit(1); };
+        let result = std::process::Command::new("/usr/bin/python3")
+            .arg(source.join("tools/meteor_xr_install.py")).arg(&source)
+            .arg("--destination").arg(config::data_dir().join("xr")).status();
+        match result {
+            Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+            Err(error) => { eprintln!("Cannot install XR runtime: {error}"); std::process::exit(1); }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|arg| arg == "--enable-xr") {
+        let result = async {
+            xr_setup::enable_from(&xr_setup::bundle()?, &config::config_path()).await
+        }.await;
+        match result {
+            Ok(()) => { println!("PCVR runtime installed and enabled. Start or restart Meteor, then copy Steam Launch Options from its tray menu."); return; }
+            Err(error) => { eprintln!("PCVR setup failed: {error}"); std::process::exit(1); }
+        }
+    }
+    // Development-only managed runtime path. Never initialize the ordinary
+    // proxy, depth models, audio devices or tray for this exclusive session.
+    if args.get(1).is_some_and(|arg| arg == "--xr-dev") {
+        #[cfg(target_os = "linux")]
+        {
+            let code = match xr_session::run(&args[2..]).await {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("Meteor XR: {error}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("Managed XR development sessions currently require Linux with NVIDIA or AMD.");
+            std::process::exit(2);
+        }
+    }
     logfile::init(args.get(1).map(String::as_str) != Some("--build-tensorrt"));
     // A TensorRT engine build, run by Meteor in a child process.
     if args.get(1).map(String::as_str) == Some("--build-tensorrt") {
@@ -71,7 +144,14 @@ async fn main() {
     if flag("--help") || flag("-h") {
         println!(
             "nightfall-meteor [options]\n\
+             \x20 --install-xr-runtime [bundle] install bundled XR files into user data and exit\n\
+             \x20 --enable-xr            install and enable bundled Linux PCVR, then exit\n\
              \x20 --no-tray               run without a tray icon\n\
+             \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
+             \x20 --xr-client-key <hex>    allowlisted headset public key for integrated DEV XR\n\
+             \x20 --xr-runtime-root <dir>  optional fixed-demo checkout for integrated DEV XR\n\
+             \x20 --xr-dev <checkout> [--smoke]  isolated Linux/USB XR development session\n\
+             \x20 --xr-control-dev <bind> <key-file> <client-public-key> [--relay [checkout]]  XR development endpoint\n\
              \x20 --no-depth              don't load the depth model (proxy only)\n\
              \x20 --no-mic                don't create the Nightfall Microphone device\n\
              \x20 --cpu-frames            convert decoded frames on the CPU (for comparison)\n\
@@ -84,6 +164,7 @@ async fn main() {
              \x20 --fps <n>               frame rate for --replay (default 60)\n\
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
+             \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
              \x20                         and the VDA graphs, then exit"
         );
         return;
@@ -94,6 +175,17 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    if let Some(variant)=value("--download-vda-vulkan") {
+        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
+            eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
+        }};
+        let directory=config.models_dir.clone().unwrap_or_else(config::default_models_dir);
+        let download=download::Download::default();
+        match download.run_vulkan(&directory,id) {
+            Ok(())=>{println!("Installed {} in {}",depth::model_label(id),directory.display());return;},
+            Err(error)=>{eprintln!("Vulkan VDA download failed: {error}");std::process::exit(1);},
+        }
+    }
     if flag("--download-vda") {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         std::process::exit(download::command(&models_dir));
@@ -211,10 +303,84 @@ async fn main() {
         depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
             .map(|port| (port, depth))
     });
+    // Register before exposing tray Quit. The coordinator remains alive while
+    // async XR cleanup runs; only then use the existing GPU-safe hard exit.
+    let shutdown = SHUTDOWN.get_or_init(shutdown::Shutdown::new);
+    let dev_xr_address = value("--xr-service-dev");
+    let mut xr_discovery = None;
+    let mut xr_trust = None;
+    let mut xr_startup_error = None;
+    let xr_address = dev_xr_address.clone().or_else(|| config.xr.enabled.then(|| config.xr.listen.clone()));
+    let xr_service = if let Some(address) = xr_address {
+        let start = async {
+            let address = address.parse::<std::net::SocketAddr>().map_err(std::io::Error::other)?;
+            let client = value("--xr-client-key").or_else(|| config.xr.allowed_client.clone());
+            if dev_xr_address.is_some() && client.is_none() {
+                return Err(std::io::Error::other("DEV XR requires --xr-client-key"));
+            }
+            let allowed = client.as_deref().map(xr_control::public_key).transpose()?.unwrap_or([0;32]);
+            let pairing = if dev_xr_address.is_none() {
+                Some(Arc::new(xr_trust::Trust::load(config::config_dir().join("xr-trusted-headsets.json"))?))
+            } else { None };
+            let key = key.clone().ok_or_else(|| std::io::Error::other("XR requires Meteor's host key"))?;
+            let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
+                .or_else(|| dev_xr_address.is_none().then(|| config.xr.runtime_root()));
+            let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
+            if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
+                return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
+            }
+            if dev_xr_address.is_none() {
+                let root = runtime_root.as_ref().unwrap();
+                let check = tokio::time::timeout(std::time::Duration::from_secs(10),
+                    tokio::process::Command::new("/usr/bin/python3")
+                        .arg(root.join("tools/meteor_xr_runtime.py")).arg("--check")
+                        .kill_on_drop(true).output()).await
+                    .map_err(|_| std::io::Error::other("Installed XR runtime check timed out"))??;
+                if !check.status.success() {
+                    return Err(std::io::Error::other(format!("Installed XR runtime validation failed: {}",
+                        String::from_utf8_lossy(&check.stderr).chars().take(1200).collect::<String>())));
+                }
+            }
+            let listener = tokio::net::TcpListener::bind(address).await?;
+            let port = listener.local_addr()?.port();
+            let relay_ports = if dev_xr_address.is_none() {
+                let pair = (config.xr.video_port, config.xr.tracking_port);
+                let occupied = firewall::ports(&map, config.discovery_port);
+                if pair.0 == 0 || pair.1 == 0 || pair.0 == pair.1 || pair.0 == port || pair.1 == port ||
+                    occupied.iter().any(|&(other, proto)| proto == ports::Proto::Tcp && [pair.0, pair.1, port].contains(&other)) {
+                    return Err(std::io::Error::other("XR control/video/tracking ports must be distinct and must not overlap desktop services"));
+                }
+                Some(pair)
+            } else { None };
+            if let Some(root) = runtime_root.as_ref() { xr_library::set_runtime_root(root.clone()); }
+            log::info!("Managed XR service alongside proxy at {}; host public key {}", listener.local_addr()?, key.public_hex());
+            xr_trust = pairing.clone();
+            #[cfg(target_os = "linux")]
+            if let Some(trust) = pairing.clone() { desktop::watch_xr_approval(trust); }
+            let advertised = if dev_xr_address.is_none() { Some(port) } else { None };
+            Ok::<_, std::io::Error>((tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
+                key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
+            }, shutdown.subscribe())), advertised))
+        }.await;
+        match start {
+            Ok((task, port)) => { xr_discovery = port; Some(task) },
+            Err(error) => {
+                log::error!("XR service disabled: {error}; desktop proxy remains available");
+                xr_startup_error = Some(error.to_string());
+                None
+            },
+        }
+    } else {
+        if value("--xr-client-key").is_some() || value("--xr-runtime-root").is_some() {
+            log::warn!("XR options ignored without --xr-service-dev");
+        }
+        None
+    };
     let features = discovery::Features {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
         depth: depth_port,
+        xr_port: xr_discovery,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -222,6 +388,7 @@ async fn main() {
         map,
         sunshine_host: config.sunshine_host.clone(),
         discovery_port: config.discovery_port,
+        xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
         sunshine_up: AtomicBool::new(false),
         firewall: std::sync::Mutex::new(firewall::Status::Checking),
     });
@@ -229,7 +396,10 @@ async fn main() {
     status.check_firewall();
 
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic }).await {
+    xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
+
+    #[cfg(target_os = "linux")]
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
@@ -248,17 +418,54 @@ async fn main() {
         }
     }
 
-    wait_for_exit_signal().await;
-    quit();
+    tokio::select! {
+        _ = wait_for_exit_signal() => shutdown.request(),
+        _ = shutdown.requested() => {},
+    }
+    if let Some(task) = xr_service {
+        match task.await {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
+            Err(error) => log::error!("XR service task failed: {error}"),
+        }
+    }
+    finish_quit();
 }
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
+static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
+#[cfg(target_os = "linux")]
+static RESTART: AtomicBool = AtomicBool::new(false);
 
-/// Removes the virtual microphone, then exits.
-pub fn quit() -> ! {
+#[cfg(target_os = "linux")]
+pub fn restart() {
+    RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+    quit();
+}
+
+/// Nonblocking tray/thread callback; async main drains services before exiting.
+/// Replay has no service coordinator and retains its existing immediate exit.
+pub fn quit() {
+    if let Some(shutdown) = SHUTDOWN.get() {
+        shutdown.request();
+    } else {
+        finish_quit();
+    }
+}
+
+fn finish_quit() -> ! {
     log::info!("Shutting down");
     if let Some(mic) = MIC.get() {
         mic.shutdown();
+    }
+    #[cfg(target_os = "linux")]
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::os::unix::process::CommandExt;
+        match xr_setup::restart_command() {
+            Ok(mut command) => log::error!("Cannot restart Meteor: {}", command.exec()),
+            Err(error) => log::error!("Cannot restart Meteor: {error}"),
+        }
+        exit_now(1);
     }
     exit_now(0);
 }

@@ -4,11 +4,72 @@ extends RefCounted
 var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
+var _xr_control: RefCounted
+var _auto_retry := 0.0
+var _auto_suppressed := false
+
+func resume_auto_xr() -> void:
+	_auto_suppressed = false
+	_auto_retry = 2.0
+
+func process_auto_xr(delta: float) -> void:
+	if not main.is_streaming:
+		_auto_suppressed = false
+		if _xr_control and _xr_control.state == "watching": _xr_control.cancel()
+		return
+	_auto_retry -= delta
+	if _auto_retry > 0 or _auto_suppressed: return
+	# An established watcher already owns discovery. Do not reload its config
+	# and enumerate hosts on every rendered desktop frame.
+	if _xr_control != null and _xr_control.state not in ["idle", "failed"]: return
+	_auto_retry = 5.0
+	if not main.pcvr_test.entry_visible(): return
+	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
+	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
+	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
+	var control = get_xr_control()
+	var config: ConfigFile = control.current_config()
+	if config == null: return
+	if not bool(config.get_value("host","auto_xr",true)) or not bool(config.get_value("host","handover_on_ready",false)) or not bool(config.get_value("host","relay",false)): return
+	var address := str(config.get_value("host","address",""))
+	var same_host := false
+	for host in main.stream_backend.get_hosts():
+		if host.get("id") == main.current_host_id and address in [host.get("localaddress",""),host.get("remoteaddress","")]: same_host = true
+	if not same_host: return
+	if control.state not in ["idle","failed"]: return
+	_auto_retry = 5.0
+	control.connect_offer(true)
 
 func _init(owner: Node3D):
 	main = owner
 
+func xr_settings_available() -> bool:
+	# The authenticated XR watcher proves capability; depth discovery alone does not.
+	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
+
+func xr_encoder_capabilities() -> Dictionary:
+	return _xr_control.encoder_capabilities if _xr_control != null else {}
+
+func xr_foveation_available() -> bool:
+	return _xr_control != null and _xr_control.foveation_available()
+
+func update_xr_foveation(enabled: bool) -> bool:
+	return _xr_control != null and _xr_control.queue_foveation(enabled)
+
+func update_xr_bitrate(mbps: int) -> bool:
+	return _xr_control != null and _xr_control.has_method("queue_bitrate") and _xr_control.queue_bitrate(mbps)
+
+func xr_bitrate_message() -> String:
+	if _xr_control == null: return ""
+	var text = _xr_control.get("bitrate_message")
+	var foveation = _xr_control.get("foveation_message")
+	var messages := PackedStringArray()
+	if text != null and not str(text).is_empty(): messages.append(str(text))
+	if foveation != null and not str(foveation).is_empty(): messages.append(str(foveation))
+	return " • ".join(messages)
+
 func build_welcome_ui():
+	cancel_xr_control()
 	var root = main.welcome_viewport.get_node("WelcomeRoot")
 	for child in root.get_children():
 		child.queue_free()
@@ -82,6 +143,39 @@ func build_web_apps(root: Control) -> void:
 		button.pressed.connect(func():
 			if not main.browser_prototype.open_app(app):
 				main._log("[BROWSER] Web App %s not opened: a stream is starting or running" % app["id"]))
+
+func get_xr_control() -> RefCounted:
+	# Welcome and the in-stream DEV entry share one lease and one receiver.
+	if not _xr_control:
+		_xr_control = preload("res://src/meteor_xr_control.gd").new(main)
+		_xr_control.library_open_requested.connect(func(): main.ui_controller.open_vr_apps())
+	return _xr_control
+
+func request_xr_control() -> void:
+	var control = get_xr_control()
+	if control.state not in ["idle", "failed", "offered"]: return
+	var config: ConfigFile = control.current_config()
+	if config == null: return
+	var reason := _xr_entry_busy_reason(config)
+	if not reason.is_empty():
+		control.message = reason
+		control.changed.emit()
+		return
+	if control.state == "offered": control.accept_offer()
+	else: control.connect_offer()
+
+func _xr_entry_busy_reason(config: ConfigFile) -> String:
+	# An in-stream entry must never fall through to the old exclusive test,
+	# which is deliberately restricted to a clean welcome workspace.
+	var handover := bool(config.get_value("host", "handover_on_ready", false))
+	return main.pcvr_test.standby_busy_reason() if handover else main.pcvr_test.busy_reason()
+
+func cancel_xr_control(stop_projection: bool = true, suppress_auto: bool = true) -> void:
+	# Native teardown also closes this connection. Ending a game must not
+	# disable detection of the next game; an explicit user cancel still does.
+	if suppress_auto: _auto_suppressed = true
+	else: _auto_retry = maxf(_auto_retry, 1.0)
+	if _xr_control: _xr_control.cancel(stop_projection)
 
 func build_browser_picker(root: Control) -> void:
 	# In-viewport buttons rather than a popup Window, so XR input reaches
@@ -644,6 +738,7 @@ func build_pin_screen(parent: Node):
 const WELCOME_FRAME := Vector2i(1920, 1080)
 
 func show_welcome_screen(name: String):
+	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	main._welcome_screen = name
 	# A failed connection can navigate here while the ray is still over the
 	# previous screen. Clear the world-space cursor filter before changing the

@@ -1,8 +1,12 @@
 # Research spike: streaming PC VR to Nightfall
 
-> Status: Active proposal (2026-10-09). Phase 1 of [meteor-host.md](meteor-host.md),
-> which records the decisions: start from ALVR, two streams for the desktop
-> during VR, Linux first.
+> Superseded 2026-10-18 by [the managed Monado plan](meteor-xr-monado-spike.md).
+> ALVR-first material below is historical, not the current architecture.
+
+> Status: Spike started (2026-10-17), branch `feat/meteor-xr-streaming`.
+> Phase 1 of [meteor-host.md](meteor-host.md). Start from ALVR, Linux first.
+> The exclusive-mode decision below supersedes the earlier desktop/VR
+> coexistence scope for this spike; blending is deferred.
 >
 > Related: [wivrn-nightfall-overlay-experiment.md](wivrn-nightfall-overlay-experiment.md)
 > (Nightfall *inside* a WiVRn stream), [nightfall-gateway-experiment.md](nightfall-gateway-experiment.md)
@@ -20,6 +24,133 @@ second, the PC renders both eyes for that pose, encodes them, and the headset
 shows them with reprojection to hide the round trip. Getting that loop right
 (pose prediction, frame timing, reprojection, encoder tuning) is most of what
 those projects are.
+
+## Agreed first milestone: exclusive XR mode (2026-10-17)
+
+The remote experience visually replaces Nightfall's background, but is a
+tracked stereo **projection layer**, not a desktop video on an equirect sphere.
+Nightfall remains the Quest OpenXR application. Meteor manages a pinned ALVR
+host/driver; the initial XR video transport is ALVR, not GameStream.
+
+Entering XR is an explicit, developer-only action until the manual path works.
+Before the XR decoder starts:
+
+1. Reject duplicate entry; release held browser/host/controller input.
+2. Disable reconnect and invalidate pending connect/model/source-switch timers
+   for this transition without changing saved preferences.
+3. Disconnect GameStream and await decoder/audio shutdown, not just its UI
+   signal. Close every browser producer and drain its rendering consumers.
+4. Stop local inference, Meteor depth delivery and microphone transport. Use
+   ALVR's game audio for the spike; microphone support is deferred.
+5. Stop native screen presentation and hide/unregister legacy screen, keyboard,
+   UI, tooltip, pointer/ray/dot, ambient, backdrop and passthrough layers.
+6. Keep Godot's existing OpenXR session and **single** wait/begin/end-frame loop.
+   Only the remote projection layer may be submitted while XR is running.
+
+Settings are preserved. Exit, stream loss, host failure or initialization
+failure stops the XR consumer first, drains resources, restores welcome with
+saved display settings and does **not** reopen a browser or desktop stream.
+The Meta system menu must remain available. Reserve a deliberate local exit
+gesture before disabling Nightfall's normal controls. Headset removal/pause
+must release input and resume safely, or fail back to welcome.
+
+## Implementation sequence and acceptance gates
+
+### A. Reproducible dependency and feasibility probe
+
+- Pin one official ALVR release and immutable source revision for both ends;
+  never build client headers against a different server protocol version.
+- Cache source/downloads/build output under ignored `.build-cache/meteor-xr/`.
+  Record source revision, artifact hashes, toolchain, C API symbols and licences.
+- Check local SteamVR, Vulkan/encoder, Android toolchain and device availability
+  read-only. Do not replace the active OpenXR runtime or register a SteamVR
+  driver silently. Record any baseline setup still requiring user approval.
+- Build the Android arm64 **release** client core and generate its matching C
+  header. Check ELF architecture, dependencies and required exported symbols.
+- Inspect the pinned API, not master: JNI context, lifecycle, decoding, render
+  context ownership, swapchain formats, pose/time units and frame reporting.
+- Gate: a reproducible client-library build plus a documented integration
+  boundary. A built library is not proof of functioning PCVR streaming.
+
+### B. Stock baseline and exclusive-mode controller
+
+- Run stock, matching ALVR with SteamVR Home before judging Nightfall latency.
+  Record host GPU/driver, codec, eye resolution, refresh, encoder/decoder/network
+  timings, dropped frames and motion-to-photon estimate. Headset testing is
+  manual; building artifacts does not satisfy this gate.
+- Add an isolated state machine: `idle -> preparing -> connecting -> running
+  -> stopping -> idle/failed`. Test cancellation, duplicate entry, delayed
+  callbacks, disconnect and repeated enter/exit without real XR hardware.
+- Keep entry disabled unless the backend and matching host are usable. Do not
+  advertise `pcvr` as available merely because SteamVR is installed.
+
+### C. Tracked projection inside Nightfall
+
+Synthetic precursor implemented on this branch: `NightfallXrProjectionTest`
+registers before session startup and renders a tracked stereo floor and spheres
+through the existing Godot session. Optimized DEV builds expose a welcome-screen
+button, restricted to an idle single-screen workspace. Preparation waits for a
+render drain; exit waits for native swapchain retirement before restoring welcome.
+Hold B/Y for one second to exit; a 45-second timeout and standby exit are provided.
+Lifecycle and preparation-generation tests pass, and the Android native renderer
+compiles. The user confirmed the synthetic test succeeds on Quest 3. No ALVR
+transport or decoder is connected to the synthetic entry.
+Its public predicted-time snapshot is not proof of final streamed-frame timing.
+
+The separate optional ALVR entry now has a core/decoder worker, explicit XR clock
+conversion, head tracking, borrowed-buffer GPU fencing and decoded-pose projection.
+It builds only with `NIGHTFALL_PCVR_ALVR=ON` on optimized DEV builds. Both enabled
+and disabled native configurations compile; lifecycle and metadata checks pass.
+The core is packaged under a portable library name, never a build-machine path.
+Remote streaming remains unverified: next is explicit matching-host setup/trust,
+then first decoded frame, orientation/range, motion, disconnect and repeated exit.
+No SteamVR driver or active-runtime registration has been changed. See the
+integration audit for current restrictions and upstream decoder failure behavior.
+
+- Add a small ALVR adapter in the native XR extension. Register its projection
+  provider during initial OpenXR setup, even though entry is later on demand.
+- Godot owns frame timing; the adapter uses the existing predicted display
+  time/reference space. Convert ALVR's timestamps explicitly; do not equate its
+  nanosecond clock with OpenXR time without checking the pinned implementation.
+- Decode directly to GPU-compatible images, render into owned OpenXR eye
+  swapchains and submit correct render poses/FOVs for runtime reprojection.
+- Start with SDR, fixed resolution/rate, no foveation or custom XR depth, and
+  head tracking. Add controller poses/buttons/haptics and audio next.
+- Gate: SteamVR Home visible and tracked inside Nightfall, no other submitted
+  layers, reliable local exit and failure recovery, followed by one game.
+
+### D. Meteor orchestration and automatic switching
+
+- Add backward-compatible, versioned PCVR capability/state to discovery only
+  after C works. Initially keep driver setup explicit and verified.
+- Meteor controls the matching host through supported, verified interfaces;
+  discovery metadata alone is not authenticated permission to launch software.
+- Switch on an active XR application producing usable frames, not simply a
+  SteamVR process. Debounce transitions; manual entry/exit always wins.
+- Gate: welcome -> exclusive XR -> welcome through Meteor without touching the
+  PC. Only then evaluate Windows and user-facing packaging.
+
+### Deferred intentionally
+
+- Desktop/browser overlays, wrist menus, passthrough, ambient and AI 3D in XR.
+- Simultaneous GameStream/ALVR decoders and multi-screen XR composition.
+- Meteor-native runtime/protocol, direct OpenXR host support and non-SteamVR
+  compatibility beyond what the selected ALVR host supports.
+
+## Spike evidence
+
+- 2026-10-17: branch created from `7aa1d48`; no XR streaming implementation
+  existed at start. SteamVR installation and Android arm64 Rust target found
+  locally. Official latest-release API reports ALVR `v20.14.1`; pinning and
+  client-core build are the first experiment. No host driver/runtime settings
+  have been changed, and no functioning XR stream is claimed yet.
+- Dependency gate completed: pinned Android arm64 release core and generated
+  C/C++ interface verified, including layout/export checks and a stripped
+  11.2 MB candidate. Pure exclusive-mode policy and regression tests added;
+  the full suite passes. Exact hashes, limitations and the EGL-context finding
+  are in [the integration audit](../../research/meteor-xr-alvr-integration.md).
+  Synthetic projection, stock ALVR headset baseline and live integration are
+  still pending. No test APK or driver configuration was deployed in this step.
 
 ## What exists (checked 2026-10-09)
 
@@ -83,22 +214,24 @@ writes down why.
   GLES renderer on Quest.
 - Minimal PC VR mode:
   1. `alvr_initialize` with Nightfall's display capabilities;
-  2. on connection, `alvr_start_stream_opengl` into Nightfall's OpenXR
-     swapchains;
+  2. on connection, initialize ALVR's decoder, retrieve hardware buffers via
+     `alvr_get_frame`, and test importing those in Nightfall's GLES context;
   3. each frame, send tracking (`alvr_send_tracking`, `alvr_send_view_params`)
-     from Nightfall's OpenXR poses, and render with
-     `alvr_render_stream_opengl`;
+     from Nightfall's OpenXR poses, and render a projection layer through
+     Nightfall's own native provider;
   4. map the Quest controllers to `alvr_send_button`.
 - While PC VR mode is active, Nightfall stops rendering its own scene (no
   GameStream screen, no Godot world) and submits only the stream.
 - **Exit:** SteamVR Home tracked in the headset from inside Nightfall, with
   latency and stutter close to experiment 1. Measured, not judged by eye.
 
-The main unknown is the OpenXR session. Nightfall's session belongs to Godot
-plus `nightfall-xr`, and ALVR expects to own frame timing (when to render,
-what predicted display time to use). Experiment 2 has to show the two can
-share one session cleanly. The fallback is a dedicated mode where
-`nightfall-xr` hands frame timing to ALVR and Godot pauses rendering.
+The main unknown is safe graphics/timing integration. The pinned client core
+does not own an OpenXR frame loop; Godot must remain its sole owner. ALVR's
+optional wgpu GLES renderer creates its own EGL context, so calling its render
+API with Godot-context swapchain IDs is not a proven integration path. Prefer
+the decoder-only hardware-buffer bridge first. Pausing Godot's scene rendering
+must not pause the session/frame loop. Detailed findings are recorded in
+[the integration audit](../../research/meteor-xr-alvr-integration.md).
 
 ### 3. Meteor orchestration
 
@@ -108,7 +241,8 @@ share one session cleanly. The fallback is a dedicated mode where
   version).
 - The tray can start and stop SteamVR.
 - In the headset, a "PC VR" entry appears when the PC offers it. Choosing it
-  enters the experiment 2 mode; leaving returns to desktop streaming.
+  enters the experiment 2 mode; leaving returns to welcome without restarting
+  desktop or browser content.
 - **Exit:** from Nightfall's welcome screen to SteamVR Home and back without
   touching the PC.
 
@@ -131,7 +265,7 @@ One page in this file:
 
 | Risk | Mitigation |
 | --- | --- |
-| ALVR's client core assumes it owns the OpenXR frame loop, conflicting with Godot | Experiment 2 tests this first; the fallback is a dedicated mode with Godot paused |
+| ALVR's optional renderer owns a different EGL context; Godot owns XR timing | Test decoder-only hardware-buffer import and a projection provider on Godot's existing frame loop first |
 | ALVR client and streamer versions must match | Pin one ALVR version per Nightfall release; Meteor installs or offers the matching streamer |
 | `alvr_client_core`'s API changes between ALVR releases | Pin, and wrap it in one small C++ layer in `nightfall-xr` |
 | Two video decoders on the headset (GameStream and ALVR) | Only one runs at a time: PC VR mode stops the GameStream session |

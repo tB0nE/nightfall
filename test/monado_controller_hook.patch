@@ -1,0 +1,62 @@
+--- a/src/xrt/drivers/simulated/simulated_controller.c
++++ b/src/xrt/drivers/simulated/simulated_controller.c
+@@ -28,1 +28,2 @@
+-#include <assert.h>
++#include <assert.h>
++#include "/tests/monado_controller_dispatch.h"
+@@ -39,1 +40,2 @@
+-	struct xrt_device base;
++	struct xrt_device base;
++	struct meteor_controller_bridge meteor;
+@@ -84,2 +86,11 @@
+-static void
+-simulated_device_destroy(struct xrt_device *xdev)
++static xrt_result_t
++meteor_device_set_output(struct xrt_device *xdev, enum xrt_output_name name, const struct xrt_output_value *value)
++{
++	struct meteor_controller_bridge *b = &simulated_device(xdev)->meteor;
++	if (b->haptic && name == XRT_OUTPUT_NAME_TOUCH_HAPTIC && value->type == XRT_OUTPUT_VALUE_TYPE_VIBRATION)
++		b->haptic(b->hand, value->vibration.amplitude, value->vibration.duration_ns);
++	return XRT_SUCCESS;
++}
++
++static void
++simulated_device_destroy(struct xrt_device *xdev)
+@@ -87,1 +89,2 @@
+-	struct simulated_device *sd = simulated_device(xdev);
++	struct simulated_device *sd = simulated_device(xdev);
++	meteor_controller_release(&sd->meteor);
+@@ -101,1 +104,2 @@
+-	uint64_t now = os_monotonic_get_ns();
++	if (meteor_controller_update(&sd->meteor, xdev)) return XRT_SUCCESS;
++	uint64_t now = os_monotonic_get_ns();
+@@ -129,1 +133,2 @@
+-	switch (name) {
++	if (meteor_controller_pose(&sd->meteor, name, at_timestamp_ns, out_relation)) return XRT_SUCCESS;
++	switch (name) {
+@@ -317,1 +322,9 @@
+-	case XRT_DEVICE_SIMPLE_CONTROLLER:
++	case XRT_DEVICE_TOUCH_CONTROLLER:
++		name_str = "Meteor Touch (partial)";
++		input_count = ARRAY_SIZE(meteor_touch_inputs);
++		output_count = ARRAY_SIZE(meteor_touch_outputs);
++		inputs = meteor_touch_inputs;
++		outputs = meteor_touch_outputs;
++		handedness = device_type_to_printable_handedness(type);
++		break;
++	case XRT_DEVICE_SIMPLE_CONTROLLER:
+@@ -350,1 +363,6 @@
+-	u_device_populate_function_pointers(&sd->base, simulated_device_get_tracked_pose, simulated_device_destroy);
++	if (!meteor_controller_initialize(&sd->meteor, name, type)) {
++		fprintf(stderr,"METEOR_CONTROLLER_FAILED initialization\n");
++		u_device_free(&sd->base); return NULL;
++	}
++	u_device_populate_function_pointers(&sd->base, simulated_device_get_tracked_pose, simulated_device_destroy);
++	if (sd->meteor.haptic) sd->base.set_output = meteor_device_set_output;
+--- a/src/xrt/targets/common/target_builder_simulated.c
++++ b/src/xrt/targets/common/target_builder_simulated.c
+@@ -57,1 +57,3 @@
+-	} else if (strcmp(str, "wmr") == 0) {
++	} else if (strcmp(str, "touch") == 0 && getenv("METEOR_XR_CONTROLLERS")) {
++		name = XRT_DEVICE_TOUCH_CONTROLLER;
++	} else if (strcmp(str, "wmr") == 0) {

@@ -17,6 +17,10 @@ public:
     // Makes this connection's key pair for Meteor's public key (64 hex
     // digits) and the channel's info string. Returns "" or why it failed.
     String init(const String &meteor_key, const String &info);
+    String init_control(const String &meteor_key, const PackedByteArray &server_nonce,
+        const PackedByteArray &client_nonce, const PackedByteArray &identity, bool sending);
+    PackedByteArray identity_public(const PackedByteArray &identity) const;
+    PackedByteArray seal(int64_t counter, const PackedByteArray &header, const PackedByteArray &payload);
     PackedByteArray get_public_key() const;
     // The decrypted payload (payload includes the tag), or an empty array if
     // the message doesn't authenticate.

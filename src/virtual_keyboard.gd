@@ -359,7 +359,7 @@ func _update_tp_hint():
 		_tp_hint_label.add_theme_color_override("font_color", Color(0.45, 0.45, 0.5, 0.4))
 
 func _process(_delta):
-	if not visible or not main.is_streaming:
+	if not is_visible_in_tree() or not main.is_streaming:
 		if trackpad_active:
 			_deactivate_trackpad()
 		return
@@ -449,7 +449,19 @@ func _send_key(code: int, action: int) -> void:
 	if browser and browser.active:
 		browser.key(code, action)
 	else:
-		main.stream_backend.send_keyboard_event(code, action, 0)
+		main.input_handler.send_stream_key(code, action)
+
+func release_for_focus_loss() -> void:
+	for code in _held_keys:
+		if int(code) >= 0: _send_key(code, 4)
+	for code in _held_keys_secondary:
+		if int(code) >= 0: _send_key(code, 4)
+	_held_keys.clear()
+	_held_keys_secondary.clear()
+	_shift_on = false
+	_ctrl_on = false
+	_alt_on = false
+	_apply_modifier_visuals()
 
 func _on_key_press(key_code: int):
 	if SHORTCUT_CHORDS.has(key_code):

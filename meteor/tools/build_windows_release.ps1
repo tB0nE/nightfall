@@ -47,7 +47,7 @@ if (-not $NcnnDir) {
     $NcnnDir = Join-Path $out 'ncnn-20260526'
     $dll = Join-Path $NcnnDir 'ncnn.dll'
     $licence = Join-Path $NcnnDir 'LICENSE.txt'
-    if (-not ((Test-Path -LiteralPath $dll) -and (Test-Path -LiteralPath $licence))) {
+    if (-not ((Test-Path -LiteralPath $dll) -and (Test-Path -LiteralPath $licence) -and (Test-Path -LiteralPath (Join-Path $NcnnDir "include\ncnn\net.h")))) {
         $archive = Join-Path $out "ncnn-$ncnnVersion-windows-vs2022-shared.zip"
         $extract = Join-Path $out 'ncnn-extract'
         Write-Host "Downloading ncnn $ncnnVersion from Tencent"
@@ -61,6 +61,10 @@ if (-not $NcnnDir) {
         Assert-Hash $downloadedDll.FullName $ncnnDllHash
         New-Item -ItemType Directory -Path $NcnnDir -Force | Out-Null
         Copy-Item -LiteralPath $downloadedDll.FullName -Destination $dll
+        $sdk = Split-Path (Split-Path $downloadedDll.FullName -Parent) -Parent
+        foreach ($folder in @('include','lib')) {
+            Copy-Item -LiteralPath (Join-Path $sdk $folder) -Destination $NcnnDir -Recurse -Force
+        }
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Tencent/ncnn/$ncnnVersion/LICENSE.txt" -OutFile $licence
     }
 }
@@ -77,6 +81,7 @@ Assert-Hash $zipDepthLicence $zipDepthLicenseHash
 Push-Location $meteor
 try {
     Write-Host 'Building Meteor (release, without ONNX Runtime)'
+    $env:METEOR_VDA_NCNN_SDK = $NcnnDir
     & cargo build --release --locked --no-default-features
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)" }
 
@@ -100,6 +105,15 @@ New-Item -ItemType Directory -Path $models, $doc -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $meteor 'target\release\nightfall-meteor.exe'), $ncnnDll -Destination $stage
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepad.ncnn.param"), (Join-Path $ModelsDir "$edgepad.ncnn.bin") -Destination $models
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.param"), (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -Destination $models
+
+$vdaDll = Get-ChildItem -Path (Join-Path $meteor 'target\release\build\nightfall-meteor-*\out\meteor_vda_vulkan.dll') -File |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $vdaDll) { throw 'Missing VDA Vulkan DLL; the matching ncnn headers and import library are required' }
+Copy-Item -LiteralPath $vdaDll.FullName -Destination $stage
+foreach ($variant in @('vda_vulkan_518x294','vda_vulkan_392x224')) {
+    $source = Join-Path $ModelsDir $variant
+    if (Test-Path -LiteralPath (Join-Path $source 'manifest.json')) { Copy-Item -LiteralPath $source -Destination $models -Recurse }
+}
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $doc
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-release\README.txt') -Destination $stage
 
@@ -118,7 +132,7 @@ $notices = @(
     ''
     'Video Depth Anything downloads NVIDIA TensorRT from NVIDIA under its licence:'
     'https://docs.nvidia.com/deeplearning/tensorrt/latest/reference/sla.html'
-    'The VDA graphs are Apache 2.0. Neither ships in this zip.'
+    'TensorRT graphs are downloaded separately. Optional Vulkan VDA graphs are Apache 2.0, with LICENSE in each model directory.'
     ''
     '========================================================================== ncnn'
     (Get-Content -LiteralPath $ncnnLicence -Raw)

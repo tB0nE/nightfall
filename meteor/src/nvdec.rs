@@ -898,6 +898,7 @@ fn convert_on_gpu(
 }
 
 /// YUV-to-RGB coefficients for an H.273 matrix and range.
+#[derive(Clone, Copy)]
 struct Coefficients {
     y_offset: f32,
     y_scale: f32,
@@ -926,6 +927,72 @@ impl Coefficients {
 
 /// Samples per side of the footprint average (the Quest's TAPS).
 const TAPS: usize = 4;
+
+#[derive(Clone,Copy,Default)]
+struct FootprintAxis {a:usize,b:usize,t:f32,c:usize,d:usize,u:f32}
+
+/// Same 4x4 sampling as nv12_box_to_rgb, with geometry computed once and
+/// disjoint output rows shared across at most four short-lived CPU workers.
+pub struct Nv12Footprint {
+    source:(usize,usize), target:(usize,usize),
+    x:Vec<[FootprintAxis;TAPS]>, y:Vec<[FootprintAxis;TAPS]>,
+}
+impl Nv12Footprint {
+    pub fn new(source:(usize,usize),target:(usize,usize))->Self {
+        assert!(source.0>=2 && source.1>=2 && source.0%2==0 && source.1%2==0 && target.0>0 && target.1>0);
+        fn axis(source:usize,target:usize)->Vec<[FootprintAxis;TAPS]> {
+            (0..target).map(|pixel|std::array::from_fn(|tap| {
+                let footprint=1.0/target as f32;
+                let uv=((pixel as f32+0.5)*footprint+((tap as f32+0.5)/TAPS as f32-0.5)*footprint).clamp(0.0,1.0);
+                let coord=|size:usize| {
+                    let value=uv*size as f32-0.5;let base=value.floor();
+                    ((base as i64).clamp(0,size as i64-1) as usize,((base+1.0) as i64).clamp(0,size as i64-1) as usize,value-base)
+                };
+                let (a,b,t)=coord(source);let (c,d,u)=coord(source/2);
+                FootprintAxis {a,b,t,c,d,u}
+            })).collect()
+        }
+        Self {source,target,x:axis(source.0,target.0),y:axis(source.1,target.1)}
+    }
+    pub fn dimensions(&self)->((usize,usize),(usize,usize)) {(self.source,self.target)}
+    pub fn convert(&self,nv12:&[u8],matrix:u8,full:bool)->Vec<u8> {
+        let (sw,sh)=self.source;let (w,h)=self.target;
+        assert_eq!(nv12.len(),sw*sh*3/2);
+        let coefficients=Coefficients::new(matrix,full);
+        let mut output=vec![0;w*h*3];
+        let workers=crate::onnx::cpu_threads();
+        let rows=h.div_ceil(workers);
+        std::thread::scope(|scope| {
+            for (chunk_index,chunk) in output.chunks_mut(rows*w*3).enumerate() {
+                scope.spawn(move || {
+                    // SAFETY: all indices come from clamped axis tables, and
+                    // the tightly packed NV12 length was checked above.
+                    let read=|index:usize|unsafe {*nv12.get_unchecked(index) as f32};
+                    let lerp=|a:f32,b:f32,t:f32|a+(b-a)*t;
+                    let sample=|x0:usize,x1:usize,tx:f32,y0:usize,y1:usize,ty:f32| {
+                        lerp(lerp(read(y0+x0),read(y0+x1),tx),lerp(read(y1+x0),read(y1+x1),tx),ty)
+                    };
+                    let Coefficients {y_offset,y_scale,c_scale,r_v,g_u,g_v,b_u}=coefficients;
+                    for (local_y,row) in chunk.chunks_exact_mut(w*3).enumerate() {
+                        let y=&self.y[chunk_index*rows+local_y];
+                        for (pixel,x) in row.chunks_exact_mut(3).zip(&self.x) {
+                            let mut sum=[0.0f32;3];
+                            for yy in y {for xx in x {
+                                let l=(sample(xx.a,xx.b,xx.t,yy.a*sw,yy.b*sw,yy.t)-y_offset)*y_scale;
+                                let u=(sample(xx.c*2,xx.d*2,xx.u,sw*sh+yy.c*sw,sw*sh+yy.d*sw,yy.u)-128.0)*c_scale;
+                                let v=(sample(xx.c*2+1,xx.d*2+1,xx.u,sw*sh+yy.c*sw,sw*sh+yy.d*sw,yy.u)-128.0)*c_scale;
+                                sum[0]+=(l+r_v*v).clamp(0.0,255.0);
+                                sum[1]+=(l-g_u*u-g_v*v).clamp(0.0,255.0);
+                                sum[2]+=(l+b_u*u).clamp(0.0,255.0);
+                            }}
+                            for c in 0..3 {pixel[c]=(sum[c]/16.0).round_ties_even() as u8;}
+                        }
+                    }
+                });
+            }
+        });output
+    }
+}
 
 /// Bilinear sample of one channel at (x, y) in texel units (texel centres at
 /// +0.5), clamped to the edge; `stride` is 1 for luma, 2 for chroma.
@@ -989,6 +1056,17 @@ pub fn nv12_box_to_rgb(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_parallel_footprint_matches_reference_filter_exactly() {
+        for ((sw,sh),(w,h)) in [((64,36),(13,7)),((16,10),(32,20)),((96,54),(24,14))] {
+            let nv12:Vec<_>=(0..sw*sh*3/2).map(|i|((i*37+i/7)%256) as u8).collect();
+            let cached=Nv12Footprint::new((sw,sh),(w,h));
+            for matrix in [1,5,9] {for full in [false,true] {
+                assert_eq!(cached.convert(&nv12,matrix,full),nv12_box_to_rgb(&nv12,sw,sh,w,h,matrix,full));
+            }}
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

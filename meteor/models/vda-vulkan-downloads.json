@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "base_url": "https://github.com/tB0nE/nightfall/releases/download/meteor-vda-s-518x294/",
+  "models": {
+    "vda_vulkan_518x294": {
+      "width": 518,
+      "height": 294,
+      "checkpoint_sha256": "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609",
+      "files": [
+        {
+          "name": "cold.ncnn.param",
+          "asset": "vda_vulkan_518x294-cold.ncnn.param",
+          "bytes": 38296,
+          "sha256": "d041d528e6bc27baa6050059c8e9f01068ead9c0ba4522deccef6c714c64f389"
+        },
+        {
+          "name": "cold.ncnn.bin",
+          "asset": "vda_vulkan_518x294-cold.ncnn.bin",
+          "bytes": 111866568,
+          "sha256": "0857c1305913c64ae6ec27fe0a12876bd9173431a71204fb6109be142855b163"
+        },
+        {
+          "name": "step.ncnn.param",
+          "asset": "vda_vulkan_518x294-step.ncnn.param",
+          "bytes": 29074,
+          "sha256": "a76aa870b9056a77d5d14b0f8537dc8373f470109304f69b453bc73a69e77359"
+        },
+        {
+          "name": "step.ncnn.bin",
+          "asset": "vda_vulkan_518x294-step.ncnn.bin",
+          "bytes": 115026184,
+          "sha256": "de4ef9215b2bb43a1903adffcc9719f8ea2944270a7c73b1d88349984667f563"
+        },
+        {
+          "name": "LICENSE",
+          "asset": "vda_vulkan_518x294-LICENSE",
+          "bytes": 11356,
+          "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+        },
+        {
+          "name": "manifest.json",
+          "asset": "vda_vulkan_518x294-manifest.json",
+          "bytes": 519,
+          "sha256": "f1f833f177fbcd19e3100477b6743d773fbf55226c7752c1cb70f97f58a6a0d5"
+        }
+      ]
+    },
+    "vda_vulkan_392x224": {
+      "width": 392,
+      "height": 224,
+      "checkpoint_sha256": "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609",
+      "files": [
+        {
+          "name": "cold.ncnn.param",
+          "asset": "vda_vulkan_392x224-cold.ncnn.param",
+          "bytes": 37015,
+          "sha256": "4e86355eac3d0cf1a945cdbdd4d64196150ca50bcb8cea652119ec026ba0a375"
+        },
+        {
+          "name": "cold.ncnn.bin",
+          "asset": "vda_vulkan_392x224-cold.ncnn.bin",
+          "bytes": 111361224,
+          "sha256": "5980b07e3a342ff7b00be9a2f5979dcd771786a9201d202e064820870f5ea576"
+        },
+        {
+          "name": "step.ncnn.param",
+          "asset": "vda_vulkan_392x224-step.ncnn.param",
+          "bytes": 28273,
+          "sha256": "c94d61fe896ed57223555d9053bcb60f31b5243c93c2e731e696f62f40f564d9"
+        },
+        {
+          "name": "step.ncnn.bin",
+          "asset": "vda_vulkan_392x224-step.ncnn.bin",
+          "bytes": 114520840,
+          "sha256": "79aa1b899ba14cb77a980b4c88613a76ba8199129e160b2463745c7889605dc0"
+        },
+        {
+          "name": "LICENSE",
+          "asset": "vda_vulkan_392x224-LICENSE",
+          "bytes": 11356,
+          "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+        },
+        {
+          "name": "manifest.json",
+          "asset": "vda_vulkan_392x224-manifest.json",
+          "bytes": 519,
+          "sha256": "3ea8239c07443ecadcebd7aa4f9d4d8625d5a27297cd7b5dc4d6af0806904952"
+        }
+      ]
+    }
+  }
+}

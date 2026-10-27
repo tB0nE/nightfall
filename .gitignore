@@ -112,4 +112,5 @@ Nightfall.AppDir/
 
 # Nightfall Meteor (host companion app) build output
 meteor/target/
+meteor/tools/__pycache__/
 extensions/browser-adblock/target/

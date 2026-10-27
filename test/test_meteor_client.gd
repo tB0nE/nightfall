@@ -11,6 +11,7 @@ func _init():
 	_test_route_rtsp_url()
 	_test_depth_info()
 	_test_mic_info()
+	_test_xr_info()
 	_test_check_key()
 	_test_parse_depth_messages()
 	_test_pick_depth_map()
@@ -132,3 +133,15 @@ func _test_pick_depth_map() -> void:
 	for frame in range(3, 30):
 		receiver._store({"frame": frame, "epoch": 2, "map": PackedByteArray(), "width": 1, "height": 1, "latency_us": 0})
 	_check(receiver.pick(17).is_empty(), "only the newest maps are kept")
+
+func _test_xr_info() -> void:
+	var info := {"key": KEY, "xr": {"port": 47910, "backend": "linux-nvidia", "authorization": "allowlist", "protocol": 1}}
+	_check(MeteorClient.xr_info(info).get("key") == KEY, "XR retains the pinned Meteor key")
+	info.xr.port = 65536
+	_check(MeteorClient.xr_info(info).is_empty(), "invalid XR port rejected")
+	info.xr.port = 47910
+	info.xr.authorization = "none"
+	_check(MeteorClient.xr_info(info).is_empty(), "unauthorized XR offer rejected")
+	info.xr.authorization = "allowlist"
+	info.key = ""
+	_check(MeteorClient.xr_info(info).is_empty(), "XR requires a host key")

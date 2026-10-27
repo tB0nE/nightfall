@@ -24,8 +24,11 @@ public:
 
     // Makes this session's key pair and derives the key for Meteor's public
     // key, replacing any earlier session. private_key fixes the key pair
-    // (tests only). Returns an empty string, or why it failed.
+    // (tests or an explicitly provisioned control-device identity).
+    // Returns an empty string, or why it failed.
     std::string init(const uint8_t meteor_public[KEY_BYTES], const char *info, const uint8_t *private_key = nullptr);
+    std::string init_bytes(const uint8_t meteor_public[KEY_BYTES], const uint8_t *info, size_t info_len, const uint8_t *private_key);
+    static bool identity_public(const uint8_t private_key[KEY_BYTES], uint8_t public_key[KEY_BYTES]);
     const uint8_t *public_key() const { return public_key_; }
 
     // Encrypts body (body_len bytes) in place and writes the tag after it.

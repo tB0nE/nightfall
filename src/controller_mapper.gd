@@ -9,6 +9,7 @@ var btn_toggle: int = BtnToggle.TILT
 var btn_toggle_labels: Array = ["Head", "Tilt", "None"]
 
 var primary_hand: int = PrimaryHand.RIGHT
+var hand_policy = preload("res://src/controller_hand_policy.gd").new()
 var primary_labels: Array = ["Right", "Left", "Auto"]
 
 var main: Node3D
@@ -78,6 +79,10 @@ func read_settings(config: ConfigFile) -> void:
 	primary_hand = clampi(config.get_value("controller", "primary_hand", PrimaryHand.RIGHT), 0, 2)
 
 func _process(_delta):
+	var handover = main.get("pcvr_handover")
+	if handover != null and handover.blocks_workspace():
+		release_for_focus_loss()
+		return
 	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
 	var browser_pad: bool = focused_browser != null and focused_browser.active and is_gamepad_mode()
 	if main.browser_prototype and (not active or not browser_pad or main.ui_visible or main.virtual_keyboard.visible):
@@ -144,6 +149,12 @@ func _activate():
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 		main.ui_controller.update_ctrl_type_btn()
+
+func release_for_focus_loss() -> void:
+	for code in _kb_held: main.stream_backend.send_keyboard_event(code, 4, 0)
+	_kb_held.clear()
+	_active_key_dirs.clear()
+	_prev_button_flags = -1 # Force current pad state to be sent after focus returns.
 
 func _deactivate():
 	for kc in _kb_held.keys():
@@ -365,6 +376,19 @@ func _handle_button_key(pressed: bool, id: String, keycode: int):
 
 func is_active() -> bool:
 	return active
+
+func effective_primary_hand() -> int:
+	return primary_hand if main._is_using_hands else hand_policy.effective(primary_hand)
+
+func update_available_hands(delta: float) -> void:
+	if not main.is_xr_active or main._is_using_hands: return
+	var policy = preload("res://src/startup_hand_fallback.gd")
+	var right := policy.physical_controller_available(XRServer.get_tracker(&"/user/hand/right"))
+	var left := policy.physical_controller_available(XRServer.get_tracker(&"/user/hand/left"))
+	var busy: bool = main.was_clicking or main.was_right_clicking or main.grabbed_node != null or main.grabbed_corner_idx >= 0
+	if hand_policy.step(delta, right, left, busy):
+		main._log("[CTRL] Tracked controller selection: " + (primary_labels[hand_policy.single_hand] if hand_policy.single_hand >= 0 else "saved preference"))
+		if main.ui_controller: main.ui_controller.update_primary_btn()
 
 func get_mode_label() -> String:
 	if not active:
