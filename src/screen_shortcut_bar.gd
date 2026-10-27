@@ -25,12 +25,13 @@ const LIVE_DOT_COLOR := Color(0.32, 0.64, 1.0, 0.95)
 const LIVE_DOT_SIZE := 0.32 # of the icon size
 const LIVE_DOT_OFFSET := 0.4 # of the icon size, right and up from its centre
 
-# Use the screen grab bar's 0.05 idle opacity, with a stronger 0.25 icon
-# hover and 0.40 while active/open. Active remains blue on hover so toggle
-# state cannot be mistaken for a pointer-position effect.
-const IDLE_COLOR := Color(1.0, 1.0, 1.0, 0.05)
-const HOVER_COLOR := Color(1.0, 1.0, 1.0, 0.25)
-const ACTIVE_COLOR := Color(0.32, 0.64, 1.0, 0.40)
+# The icons only show while the bar is revealed, over the dark backdrop, so
+# idle is a plainly visible grey rather than a faint fade. Hover is near
+# white, and active stays blue on hover so toggle state cannot be mistaken
+# for a pointer-position effect.
+const IDLE_COLOR := Color(1.0, 1.0, 1.0, 0.45)
+const HOVER_COLOR := Color(1.0, 1.0, 1.0, 0.9)
+const ACTIVE_COLOR := Color(0.32, 0.64, 1.0, 0.9)
 const ACTIVE_HOVER_COLOR := ACTIVE_COLOR
 const PRIMARY_BAR_COLOR := Color(0.55, 0.78, 1.0)
 # A dark rounded panel behind the revealed icons, so the faint white icons
