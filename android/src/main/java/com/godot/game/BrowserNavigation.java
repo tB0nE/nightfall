@@ -8,7 +8,36 @@ import java.io.UnsupportedEncodingException;
 /** Pure navigation policy: no Android objects, UI work or browsing diagnostics. */
 final class BrowserNavigation {
     static final String HOME_URL = "https://nightfall.invalid/";
+    // Services whose video or music is Widevine-protected. Protected media only
+    // plays on a secure display, and the browser draws into a texture, so it can't.
+    private static final String[][] DRM_SERVICES = {
+        {"netflix.com", "Netflix"}, {"disneyplus.com", "Disney+"}, {"primevideo.com", "Prime Video"},
+        {"max.com", "Max"}, {"hulu.com", "Hulu"}, {"tv.apple.com", "Apple TV+"},
+        {"paramountplus.com", "Paramount+"}, {"peacocktv.com", "Peacock"},
+        {"tubitv.com", "Tubi"}, {"crunchyroll.com", "Crunchyroll"}, {"spotify.com", "Spotify"},
+        {"music.apple.com", "Apple Music"},
+    };
     private BrowserNavigation() {}
+
+    /** The DRM streaming service `value` belongs to, or null. */
+    static String drmService(String value) {
+        if (value == null) return null;
+        try {
+            String host = new URI(value).getHost();
+            if (host == null) return null;
+            host = host.toLowerCase(java.util.Locale.ROOT);
+            for (String[] service : DRM_SERVICES)
+                if (host.equals(service[0]) || host.endsWith("." + service[0])) return service[1];
+        } catch (URISyntaxException e) {
+            return null;
+        }
+        return null;
+    }
+
+    static String drmNotice(String service) {
+        return (service == null ? "This site's video" : service) + " uses DRM copy protection, so it can't play in the "
+                + "Nightfall browser. Use its own app or the Meta Quest Browser instead.";
+    }
 
     static boolean allowed(String value) {
         if (value == null) return false;

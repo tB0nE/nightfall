@@ -26,6 +26,21 @@ public final class BrowserNavigationTest {
         equal(BrowserNavigation.allowed("https://www.xbox.com/play"), true);
         equal(BrowserNavigation.allowed("HTTP://example.com"), true);
         equal(BrowserNavigation.allowed(null), false);
+        equal(BrowserNavigation.drmService("https://www.netflix.com/browse"), "Netflix");
+        equal(BrowserNavigation.drmService("https://NETFLIX.com/"), "Netflix");
+        equal(BrowserNavigation.drmService("https://www.disneyplus.com/home"), "Disney+");
+        equal(BrowserNavigation.drmService("https://tv.apple.com/"), "Apple TV+");
+        equal(BrowserNavigation.drmService("https://www.apple.com/"), null);
+        equal(BrowserNavigation.drmService("https://tubitv.com/home"), "Tubi");
+        equal(BrowserNavigation.drmService("https://www.crunchyroll.com/"), "Crunchyroll");
+        equal(BrowserNavigation.drmService("https://open.spotify.com/"), "Spotify");
+        equal(BrowserNavigation.drmService("https://music.apple.com/us/browse"), "Apple Music");
+        equal(BrowserNavigation.drmService("https://notnetflix.com/"), null);
+        equal(BrowserNavigation.drmService("https://www.youtube.com/tv"), null);
+        equal(BrowserNavigation.drmService("not a url"), null);
+        equal(BrowserNavigation.drmService(null), null);
+        equal(BrowserNavigation.drmNotice("Netflix").startsWith("Netflix uses DRM"), true);
+        equal(BrowserNavigation.drmNotice(null).startsWith("This site's video uses DRM"), true);
         System.out.println("All browser navigation tests passed");
     }
 }

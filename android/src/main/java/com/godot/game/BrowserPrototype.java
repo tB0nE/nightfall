@@ -478,9 +478,12 @@ public final class BrowserPrototype {
             siteNotice(token, "Downloads are not supported yet. No file was downloaded."));
     web.setWebChromeClient(new WebChromeClient() {
         @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
+            boolean drm = java.util.Arrays.asList(request.getResources())
+                    .contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID);
             UI.post(() -> {
                 try { request.deny(); } catch (IllegalStateException cancelled) { return; }
-                siteNotice(token, "Camera/microphone and other protected site permissions are not supported yet; request denied.");
+                siteNotice(token, drm ? BrowserNavigation.drmNotice(BrowserNavigation.drmService(request.getOrigin().toString()))
+                        : "Camera/microphone and other protected site permissions are not supported yet; request denied.");
             });
         }
         @Override public void onGeolocationPermissionsShowPrompt(String origin,
@@ -561,6 +564,8 @@ public final class BrowserPrototype {
             mainFrameFailed = false;
             blocker.page(url);
             loading = true;
+            String drmService = BrowserNavigation.drmService(url);
+            if (drmService != null) siteNotice(token, BrowserNavigation.drmNotice(drmService));
             updateNavigation();
         }
         @Override public void onPageFinished(WebView view, String url) {
