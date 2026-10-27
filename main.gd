@@ -3012,16 +3012,30 @@ func set_primary_screen(s: VRScreen) -> void:
 func _set_ui_position():
 	if not is_xr_active:
 		return
+	_place_ui_panel()
+
+# The menu opens beside the user, never out of reach: 2.16 m screens put it
+# about 1.8 m away, but a far screen (a 3D room's wall) would carry it off.
+const UI_MAX_REACH := 2.5
+# The usual menu spot, relative to the head: left of and below the default
+# screen 2.16 m ahead, 0.8 m in front of it.
+const UI_HEAD_OFFSET := Vector3(-1.0, -0.5, -1.36)
+
+func _place_ui_panel() -> void:
 	if _ui_has_saved_offset:
 		_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
 	else:
-		var offset = Vector3(-1.0, -0.5, 0.8)
-		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
-		var cam_pos = xr_camera.global_position
-		var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
-		ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
-		ui_panel_3d.rotation.x = -0.15
-		_save_ui_offset()
+		ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * Vector3(-1.0, -0.5, 0.8)
+	var cam_pos: Vector3 = xr_camera.global_position
+	var reachable: bool = ui_panel_3d.global_position.distance_to(cam_pos) <= UI_MAX_REACH
+	if reachable and _ui_has_saved_offset:
+		return
+	if not reachable:
+		ui_panel_3d.global_position = cam_pos + Basis(Vector3.UP, xr_camera.global_rotation.y) * UI_HEAD_OFFSET
+	var to_cam: Vector3 = (cam_pos - ui_panel_3d.global_position).normalized()
+	ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
+	ui_panel_3d.rotation.x = -0.15
+	_save_ui_offset()
 
 func _save_ui_offset():
 	var scr_basis = primary_screen.global_transform.basis.inverse()
@@ -3039,16 +3053,7 @@ func _set_ui_visible(vis: bool):
 	if area:
 		area.process_mode = Node.PROCESS_MODE_INHERIT if vis else Node.PROCESS_MODE_DISABLED
 	if is_xr_active and vis:
-		if _ui_has_saved_offset:
-			_anchor_to_primary(ui_panel_3d, _ui_saved_offset, _ui_saved_rot_y, _ui_saved_rot_x)
-		else:
-			var offset = Vector3(-1.0, -0.5, 0.8)
-			ui_panel_3d.global_position = primary_screen.global_position + primary_screen.global_transform.basis * offset
-			var cam_pos = xr_camera.global_position
-			var to_cam = (cam_pos - ui_panel_3d.global_position).normalized()
-			ui_panel_3d.rotation.y = atan2(to_cam.x, to_cam.z)
-			ui_panel_3d.rotation.x = -0.15
-			_save_ui_offset()
+		_place_ui_panel()
 	elif is_xr_active:
 		_save_ui_offset()
 
@@ -3129,6 +3134,8 @@ func _reset_positions():
 	if virtual_keyboard:
 		virtual_keyboard.reset_position()
 	_reposition_screen_and_ui()
+	if environment_manager:
+		environment_manager.recenter()
 	state_manager.save_state()
 
 func _load_controller_models():
