@@ -738,6 +738,7 @@ dependencies = [
  "cc",
  "env_logger",
  "flate2",
+ "futures-lite",
  "ksni",
  "libc",
  "libloading",
@@ -752,6 +753,7 @@ dependencies = [
  "socket2",
  "tokio",
  "toml",
+ "toml_edit",
  "ureq",
  "wasapi",
  "windows-sys 0.61.2",
@@ -1292,6 +1294,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

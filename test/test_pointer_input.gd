@@ -9,6 +9,10 @@ class Backend extends RefCounted:
 class Layout extends RefCounted:
 	func host_ref() -> Vector2i: return Vector2i(1920, 1080)
 
+class FakeScreenSources extends RefCounted:
+	func focused_browser(): return null
+	func browser_for_screen(_screen): return null
+
 class Owner extends Node3D:
 	var settings := AppSettings.new()
 	var is_xr_active := true
@@ -18,6 +22,10 @@ class Owner extends Node3D:
 	var right_hand = null
 	var stream_backend := Backend.new()
 	var layout := Layout.new()
+	var screen_sources := FakeScreenSources.new()
+	var ui_visible := false
+	var hand_raycast: RayCast3D = null
+	var left_hand_raycast: RayCast3D = null
 
 # Stands in for the raycast: the host pixel the pointer is on, or null.
 class Interaction extends XRInteraction:

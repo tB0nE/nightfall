@@ -70,6 +70,13 @@ public:
 
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
+    void start_browser_prototype(int width = 1920, int height = 1080);
+    void set_browser_id(int id);
+    int get_browser_id() const { return browser_id_; }
+    void close_browser_prototype();
+    int poll_browser_prototype();
+    void browser_pointer(float x, float y, int action);
+    void browser_key(int code, bool pressed, int modifiers);
 
 #ifdef __ANDROID__
     // Raw decoder OES texture + its SurfaceTexture transform, for nightfall-xr's
@@ -114,6 +121,7 @@ protected:
     static void _bind_methods();
 
 private:
+    int browser_id_ = 0; // Immutable while this uploader owns an active browser.
     void _render_thread_setup(int width, int height, int format, int colorspace, int color_range, int color_transfer);
     void _render_thread_setup_bgra(int width, int height);
     void _render_thread_import_native(RID p_tex_rid, int p_width, int p_height);
@@ -165,6 +173,10 @@ private:
 
 #ifdef __ANDROID__
     void _render_thread_create_android_gles_surface();
+    void _render_thread_open_browser();
+    std::atomic<bool> browser_requested_{false};
+    std::atomic<bool> browser_open_dispatched_{false};
+    int browser_probe_frames_ = 0; // Render-thread-only, three startup checks.
     void _render_thread_update_android_gles_texture();
     void _render_thread_destroy_android_gles_surface();
     bool _render_thread_ensure_depth_capture(int width, int height);

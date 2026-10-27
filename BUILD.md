@@ -9,6 +9,10 @@
 - **vcpkg** (for GDExtension dependency management)
 - **Ninja** (build system, used by CMake)
 - **ADB** (for Quest deployment)
+- **Rust 1.92+ and the `aarch64-linux-android` target** for the optional browser
+  filtering engine bundled in Android builds. Install the target with
+  `rustup target add aarch64-linux-android`. `build.sh` builds the pinned native
+  bridge automatically; blocking itself is opt-in and off by default.
 
 ## 0. Install Godot Plugins
 
@@ -182,6 +186,7 @@ The `build.sh` script handles everything:
 # Release build (requires .env with keystore credentials, and a version)
 git tag v0.7.12 && ./build.sh --release
 ./build.sh --release --version 0.7.12   # before tagging
+./build.sh --release --version 0.8.2-preview.1  # optimized prerelease
 
 # Build and install via ADB
 ./build.sh --dev --install
@@ -195,6 +200,8 @@ git tag v0.7.12 && ./build.sh --release
 `build.sh` writes the APK's `versionName` and `versionCode` at export time;
 `export_presets.cfg` itself keeps placeholders. The code is
 `MAJOR*10000 + MINOR*100 + PATCH`, so `0.7.12` is `712`.
+Preview suffixes are kept in the version name but not the numeric code:
+`0.8.2-preview.1` and `0.8.2` both use `802`, allowing in-place upgrades.
 
 | Build | Version name | Version code |
 | --- | --- | --- |
@@ -316,7 +323,278 @@ Meteor, the optional PC companion, builds separately with Cargo; see
 [meteor/README.md](meteor/README.md). It needs Rust 1.92 and CMake (for the
 Opus decoder it compiles from source). `meteor/tools/build_appimage.sh` builds
 the Linux AppImage in a container, and `meteor/tools/build_windows_installer.ps1`
-builds the Windows installer on Windows.
+builds the Windows installer on Windows. The optional persistent Vulkan VDA
+runner builds against the matching ncnn SDK (`METEOR_VDA_NCNN_SDK`, or
+`meteor/target/ncnn` on Linux). Both packaging scripts include the runner and any
+staged VDA model directories; see Meteor's README for manifests and model staging.
+
+### Experimental Monado runtime probe
+
+The managed Linux XR AppImage now also includes an experimental AMD HEVC backend.
+See [Meteor setup and GPU selection](meteor/README.md) for the **PCVR encoder**
+tray menu, required host drivers and current control limitations. Its FFmpeg
+encoder runtime is bundled; GPU drivers are not. The guarded standalone AMD
+probe is documented in [the AMD XR plan](docs/plans/active/meteor-amd-xr-encoding.md).
+The NVIDIA probes below retain their existing defaults.
+
+The host layer compatibility suite checks advertised capabilities, real
+H.264/HEVC output, unsupported layer rejection and same-session recovery:
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+.build-cache/model-tester-venv/bin/python test/smoke_xr_layer_compatibility.py .
+```
+
+See [the layer contract and test coverage](docs/plans/active/meteor-xr-layer-compatibility.md).
+
+The current XR direction is a Meteor-managed Monado runtime, with WiVRn as a
+streaming reference. Linux is the immediate spike; Windows remains a required
+feasibility gate. See the [new plan](docs/plans/active/meteor-xr-monado-spike.md).
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+bash tools/build_support/probe_monado_runtime.sh --test
+```
+
+This pins source revisions, builds release binaries/dependencies in Docker, and
+tests a separate service plus OpenXR app using a simulated HMD and a diagnostic
+capture hook in the null compositor. The source pin stays clean; the hook is
+applied to an output copy under `capture-source/`, built in `capture-build/`.
+It sets `XR_RUNTIME_JSON` only inside the isolated test container, has no network
+or GPU/device passthrough, and does not install/register a host runtime. Passing
+means service/IPC/frame lifecycle and byte-matching stereo swapchain pixels
+captured inside the service. It does not prove general composition, encoding or
+XR streaming. The app and server PPM images remain available for inspection.
+Artifacts and logs remain under `.build-cache/meteor-xr/monado-linux-spike/`.
+
+For the separate **Linux/NVIDIA-only** Vulkan → CUDA → NVENC interop diagnostic:
+
+```bash
+bash tools/build_support/probe_vulkan_nvenc.sh
+python3 test/test_nvenc_stereo_validator.py
+```
+
+Requires host Vulkan development headers/library, C++17 compiler, NVIDIA driver
+with CUDA/NVENC, FFmpeg and Python. It uses SDK declarations from the pinned
+WiVRn reference checkout (run the Monado build above first). No CUDA toolkit is
+needed. Output is `.build-cache/meteor-xr/nvenc-spike/`: a five-frame H.264 stream,
+decoded RGB and encoder log. The script fails rather than substituting software
+encoding. This is an independent synthetic-image test, not yet Monado integration
+or remote streaming. Its initial test pattern is uploaded once from the CPU;
+the subsequent Vulkan → CUDA → NVENC handoff has no image readback. Only compressed
+bitstream bytes return to the CPU. Tiny-frame timings are not XR benchmarks.
+
+To test **actual Monado swapchains → GPU stereo packing → NVENC** on Linux/NVIDIA:
+
+```bash
+# Rebuild the diagnostic service/app after modifying the hook:
+bash tools/build_support/probe_monado_runtime.sh --build
+bash tools/build_support/probe_monado_nvenc.sh
+```
+
+This compiles a diagnostic encoder bridge and runs the built service/app natively
+on the host GPU, not in the software-Vulkan container. It selects the NVIDIA ICD
+and a generated runtime manifest only for its child processes, with a private
+short `/tmp` IPC directory. It does not register a runtime or start SteamVR.
+Host libraries must satisfy the container-built binaries (`ldd` can check).
+
+Artifacts in `.build-cache/meteor-xr/monado-nvenc-spike/` include the H.264 output,
+decoded RGB, per-frame pose/FOV/bitstream-range JSONL, app and service logs.
+The test now submits 32 changing frames through one persistent encoder and one
+reusable GPU surface. It checks every decoded marker, app-to-output monotonic
+display timestamp, frame order and bitstream byte range, then verifies encoder
+drain/resource release. The service pixel-readback branch must not run.
+
+```bash
+NIGHTFALL_XR_PROBE_FRAMES=120 bash tools/build_support/probe_monado_nvenc.sh
+NIGHTFALL_XR_PROBE_ABORT=1 bash tools/build_support/probe_monado_nvenc.sh
+```
+
+The second command deliberately kills only the test OpenXR app after at least
+five encoded frames to test disconnect cleanup. Runs overwrite only their known
+diagnostic outputs. Frame count is 1–240 (at least 16 for the disconnect test).
+This is a stop-and-wait correctness sequence with bounded single-frame
+backpressure, not sustainable-rate/latency measurement. Asynchronous GPU fences,
+realistic resolution/rate and transport remain outstanding.
+
+To include **live diagnostic loopback frame transport** to a Rust receiver:
+
+```bash
+bash tools/build_support/probe_xr_transport.sh
+NIGHTFALL_XR_PROBE_FRAMES=120 bash tools/build_support/probe_xr_transport.sh
+NIGHTFALL_XR_PROBE_ABORT=1 bash tools/build_support/probe_xr_transport.sh
+```
+
+Requires `rustc` in addition to the Monado/NVENC prerequisites. This tests protocol
+framing and native owned-packet delivery, then sends encoder output directly to
+a loopback-only receiver, outside the Vulkan queue lock. No file-spool reads are
+used in delivery; reference files remain for post-run comparison.
+Every received payload, pose/FOV and timestamp must match, and received video is
+decoded again for marker verification. It is not headset streaming or a
+production asynchronous transport. No authentication/encryption; do not expose the diagnostic
+port. See [wire format, limits and remaining work](docs/research/meteor-xr-transport-probe.md).
+
+The previous spool sender remains available for regression comparison:
+
+```bash
+NIGHTFALL_XR_TRANSPORT_MODE=spool bash tools/build_support/probe_xr_transport.sh
+```
+
+Quest decoder/projection diagnostics (optimized DEV APK; ALVR remains OFF):
+
+```bash
+NIGHTFALL_PCVR_ALVR=OFF ./build.sh --dev --install
+# Hardware decoder/ImageReader check only; does not enter XR:
+bash tools/build_support/probe_android_xr_decoder.sh
+# Arm this, then press the new DEV Meteor decoded stereo welcome button:
+bash tools/build_support/probe_headset_xr_projection.sh
+```
+
+Both scripts require an ADB-authorized connected Quest and the existing Monado/
+NVENC host prerequisites. Set `NIGHTFALL_ADB` for a non-default adb executable.
+They use temporary USB-forwarded loopback sockets, not a LAN service. The decoder
+check builds a standalone optimized NDK helper (same receiver as the app); the
+projection check needs a person wearing the headset. Both are fixed-size SDR
+patterns, **not tracked PCVR**. See [ownership, evidence and test steps](docs/research/meteor-xr-headset-decoder-spike.md).
+
+For the next **tracked scene diagnostic**, rebuild the isolated Monado runtime
+after changing its pinned patch, then run:
+
+```bash
+bash tools/build_support/probe_monado_runtime.sh --build
+# No headset: moving synthetic poses through Monado/app + scene encode checks:
+python3 test/run_monado_tracking_spike.py "$PWD"
+# EXPERIMENT ONLY: free-running app with image leases; host-tested, not async:
+NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
+# Optional bounded worker delivery with a loopback receiver (host regression):
+NIGHTFALL_XR_ASYNC_DELIVERY=1 NIGHTFALL_XR_FREE_RUNNING=1 \
+  bash tools/build_support/probe_xr_transport.sh
+# Optional raw encode worker as well (requires the previous two opt-ins):
+NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_xr_transport.sh
+# Larger diagnostic profile (target Hz is not a sustained-rate guarantee):
+NIGHTFALL_XR_EYE_SIZE=512 NIGHTFALL_XR_TARGET_HZ=60 \
+  NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 bash tools/build_support/probe_xr_transport.sh
+# With the latest optimized DEV APK: arm, then press DEV: Meteor decoded stereo.
+bash tools/build_support/probe_headset_xr_tracking_runtime.sh
+# GPU scene correctness check (still includes CPU oracle and readback):
+NIGHTFALL_XR_GPU_SCENE=1 NIGHTFALL_XR_EYE_SIZE=512 \
+  NIGHTFALL_XR_TARGET_HZ=60 python3 test/run_monado_tracking_spike.py "$PWD"
+# GPU scene measurement: no app pixel oracle/readback; timestamp queries + fences:
+NIGHTFALL_XR_GPU_MEASURE=1 NIGHTFALL_XR_GPU_SCENE=1 \
+  NIGHTFALL_XR_EYE_SIZE=512 NIGHTFALL_XR_TARGET_HZ=60 \
+  NIGHTFALL_XR_ASYNC_ENCODE=1 NIGHTFALL_XR_ASYNC_DELIVERY=1 \
+  NIGHTFALL_XR_FREE_RUNNING=1 python3 test/run_monado_tracking_spike.py "$PWD"
+```
+
+The tracked fixture keeps a separate USB tracking channel live while rendering
+three spheres and a floor. It carries the host render poses/FOV in an explicitly
+adopted Quest LOCAL origin, not Monado's startup-recentered LOCAL. This is a tiny
+CPU-reference scene with hardware video encoding/decoding, not a performance
+benchmark, game-ready stream or normal Meteor feature. Visual world-lock and
+orientation need headset testing. See the [tracking report](docs/research/meteor-xr-tracking-spike.md).
+The optional [GPU scene](docs/research/meteor-xr-gpu-scene.md) uses a Vulkan
+compute shader built with the runtime probe. It retains CPU oracle/readback
+validation by default. Its explicit measurement mode removes those checks and
+reports GPU timestamps, but is still a short synthetic test, not a game benchmark.
+Add `NIGHTFALL_XR_HEADSET_OPTICS=1` to a tracked-scene invocation to request
+the headset's actual eye-relative poses/FOV before initializing the host HMD.
+This requires the updated DEV APK; an older client fails explicitly instead
+of silently retaining simulated optics. The no-headset fixture supplies known
+synthetic optics and verifies their propagation. See
+[headset optics](docs/research/meteor-xr-headset-optics.md) for limits and tests.
+Add `NIGHTFALL_XR_RASTER_SCENE=1` alongside the GPU scene/measurement flags to
+render an animated cube grid directly into the OpenXR eye attachments with
+depth testing. It keeps the sphere fixture unchanged and requires no new APK
+after the optics-aware build. See [raster workload](docs/research/meteor-xr-raster-scene.md)
+for smoke checks, reproduction and limitations.
+The independent Khronos sample diagnostic is built separately with
+`bash tools/build_support/build_hello_xr_probe.sh`. Use
+`NIGHTFALL_XR_HELLO_XR=1` instead of internal renderer flags for the tracked
+host/headset fixture. The pinned source stays clean; documented test-only
+adaptations are applied to an output copy. See
+[hello_xr test](docs/research/meteor-xr-hello-xr.md).
+The first controller diagnostic adds `NIGHTFALL_XR_CONTROLLERS=1` to that sample
+test, using the updated optimized DEV APK. It forwards grip/aim poses and
+trigger/squeeze levels through a declared WinMR stand-in profile, not full Touch
+emulation or haptics. See [controller test](docs/research/meteor-xr-controller-spike.md).
+The next opt-in `NIGHTFALL_XR_CONTROLLER_PROFILE=touch` uses partial native Touch
+bindings for poses, trigger and continuous grip. It needs a host runtime rebuild,
+not another APK for analog grip alone. Add `NIGHTFALL_XR_TOUCH_INPUTS=1`
+with the latest optimized DEV APK to test thumbsticks, stick clicks, A/X and
+capacitive touches using the version-2 controller protocol. B/Y/menu/system
+remain local. Haptics require the separate opt-in described below. The sample logs extended actions and
+shows a moving stick marker, wider hand cube on X/A, taller cube on stick click,
+and grip-controlled size. The headset script defaults this input diagnostic to
+30 seconds over 240 frames (about 8 updates/s, not a performance test).
+Add `NIGHTFALL_XR_HAPTICS=1` with the updated optimized DEV APK and rebuilt
+Monado runtime to forward bounded vibration. Fully squeeze each grip separately:
+the sample requests a short pulse on the corresponding controller. Pulses are
+capped at 50% strength and 150 ms; frequency is currently unspecified.
+
+Host disconnect coordination can be regression-tested without a headset:
+
+```bash
+python3 test/test_xr_application_lifecycle.py
+NIGHTFALL_XR_EXPECT_TRACKING_LOSS=1 NIGHTFALL_XR_HELLO_XR=1 \
+  NIGHTFALL_XR_PROBE_FRAMES=120 NIGHTFALL_XR_FREE_RUNNING=1 \
+  python3 test/run_monado_tracking_spike.py "$PWD"
+```
+
+The second test closes synthetic tracking after live encoded frames and requires
+graceful sample exit. USB disconnects produce an explicit interrupted outcome in
+`lifecycle-outcome.json`, not a completed-stream/drain PASS. The harness asks the
+sample to exit and uses a bounded child-only termination fallback if necessary.
+
+`NIGHTFALL_XR_PADDED_SUBRECT=1` on the reference-pattern transport probe tests
+eye regions inside larger images, without changing the packed output or APK.
+`NIGHTFALL_XR_ARRAY_STEREO=1` tests reversed eye slices in one shared texture-array
+swapchain; the two flags can be combined. These are reference fixture options.
+`NIGHTFALL_XR_SOURCE_FORMAT` selects `rgba8` (default), `bgra8`, `rgba8-srgb`
+or `bgra8-srgb` for format/channel/transfer validation. See
+[SDR source formats](docs/research/meteor-xr-source-formats.md) for limits.
+`NIGHTFALL_XR_GODOT_ENGINE=1` instead of sample/reference-renderer flags launches
+an isolated Godot XR game window using engine-selected sRGB array swapchains.
+Use `bash tools/build_support/build_xr_engine_fixture.sh` to build the isolated
+engine cleanup fixes, then explicitly select the resulting executable using
+`NIGHTFALL_GODOT_EDITOR` as documented in the
+[engine fixture instructions](docs/research/meteor-xr-godot-engine.md).
+This does not modify the engine packaged into APKs.
+See [source-region validation and compatibility limits](docs/research/meteor-xr-eye-subrects.md).
+
+### Retired ALVR research probe
+
+The exclusive Meteor XR spike is separate from normal APK builds. To check
+the local toolchain or build the pinned Android ALVR client core:
+
+```bash
+bash tools/build_support/probe_alvr_client.sh --check
+bash tools/build_support/probe_alvr_client.sh --build
+```
+
+`--build` downloads pinned source/submodules and local build tools into ignored
+`.build-cache/meteor-xr/`, builds optimized arm64 code, generates the C header,
+checks its C++ ABI and exported symbols, and records artifact hashes. It does
+not install/register a SteamVR driver, change the active XR runtime, start
+SteamVR, add PCVR discovery, or bundle the library into the APK. See the
+[XR plan](docs/plans/active/meteor-xr-streaming-spike.md) and
+[integration audit](docs/research/meteor-xr-alvr-integration.md) before attempting
+the rendering bridge.
+
+Optimized `--dev` APKs also expose **XR Projection Test** on the welcome screen.
+Start from a clean welcome screen with no browser screens or desktop connection.
+This synthetic test submits a tracked stereo floor and spheres through Godot's
+existing OpenXR session; it does not connect to Meteor or stream PC video.
+Hold B or Y for one second to exit, or wait for the 45-second automatic exit.
+Putting the headset into standby also requests an exit. Normal content remains
+hidden until the native projection has drained. This is a rendering bridge
+experiment, not validation of the final network/decoder timing path.
+
+The old ALVR adapter/build switch remains research material. Its remote entry
+has been removed and rejects legacy requests. Ordinary builds do not package or
+initialize it. The temporary host driver/wrapper was retired; see its integration
+audit for backups and restoration evidence. Do not use it as the new spike path.
 
 ## 3. Deploy to Quest
 

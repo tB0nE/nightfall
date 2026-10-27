@@ -2,6 +2,9 @@ extends Node3D
 
 var settings: AppSettings = AppSettings.new()
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
+var pcvr_test = preload("res://src/pcvr_test_controller.gd").new(self)
+var pcvr_handover = preload("res://src/pcvr_workspace_handover.gd").new(self)
+var _pcvr_screen_retirements := 0
 var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 
 @onready var screen_mesh = $MeshInstance3D
@@ -22,8 +25,30 @@ func _get_mdns():
 		mdns = ClassDB.instantiate("MdnsBrowser")
 	return mdns
 
+var startup_hand_fallback = preload("res://src/startup_hand_fallback.gd").new()
+
+func effective_tracking_mode() -> int:
+	return startup_hand_fallback.effective_mode(settings.tracking_mode)
+
+func tracking_mode_label() -> String:
+	return tracking_labels[clampi(effective_tracking_mode(), 0, tracking_labels.size() - 1)] + (" (Auto)" if startup_hand_fallback.auto_enabled else "")
+
+func _process_startup_hand_fallback(delta: float) -> void:
+	if startup_hand_fallback.decided and not startup_hand_fallback.auto_enabled: return
+	var physical := false
+	for path in [&"/user/hand/left", &"/user/hand/right"]:
+		if startup_hand_fallback.physical_controller_available(XRServer.get_tracker(path)):
+			physical = true
+	var hands := false
+	for path in [&"/user/hand_tracker/left", &"/user/hand_tracker/right"]:
+		var tracker = XRServer.get_tracker(path)
+		if tracker is XRHandTracker and tracker.get_has_tracking_data(): hands = true
+	if startup_hand_fallback.step(delta, settings.tracking_mode, physical, hands):
+		_log("[HAND] No physical controller at startup; enabled session-only hand tracking" if startup_hand_fallback.auto_enabled else "[HAND] Physical controller detected; retired startup hand fallback")
+		state_manager.sync_ui_to_settings(false)
+
 func get_is_hand_tracking() -> bool:
-	if settings.tracking_mode not in [1, 3]:
+	if effective_tracking_mode() not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -32,7 +57,7 @@ func get_is_hand_tracking() -> bool:
 	return false
 
 func get_hand_tracking_has_data() -> bool:
-	if settings.tracking_mode not in [1, 3]:
+	if effective_tracking_mode() not in [1, 3]:
 		return false
 	for tracker_name in ["/user/hand_tracker/right", "/user/hand_tracker/left"]:
 		var tracker = XRServer.get_tracker(tracker_name)
@@ -71,9 +96,7 @@ var is_xr_active: bool = false
 var was_clicking: bool = false
 var was_right_clicking: bool = false
 var right_click_cooldown: float = 0.0
-var _was_b_pressed: bool = false
-var _was_a_pressed: bool = false
-var _was_r_stick_click: bool = false
+var primary_controller_shortcuts = preload("res://src/primary_controller_shortcuts.gd").new()
 var _startup_reposition: int = 0  # 0=waiting for tracking, 1=centered, 2=positioning
 var _startup_cover: MeshInstance3D
 var _startup_ready: bool = false
@@ -287,11 +310,14 @@ var native_xr_renderer: NativeXrRendererManager
 var video_presentation: VideoPresentation
 var virtual_keyboard: VirtualKeyboard
 var welcome_screen: WelcomeScreen
+var browser_prototype: RefCounted
+var screen_sources: ScreenSources
 var screen_manager: ScreenManager
 var settings_controller: SettingsController
 var state_manager: StateManager
 var controller_mapper: ControllerMapper
 var screen_shortcuts: ScreenShortcutBar
+var screen_tab_strip: ScreenTabStrip
 var comp: CompositionLayerManager
 var bg_manager: BackgroundManager
 var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
@@ -952,7 +978,7 @@ func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	return primary_screen.hit_point_to_uv(hit_point)
 
 func _update_cursor_layer():
-	if not comp.in_use:
+	if not comp.in_use and not pcvr_handover.menu_only:
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
 		return
@@ -964,9 +990,15 @@ func _update_cursor_layer():
 	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
 	var hovered_screen: VRScreen = null
 	if active_raycast.is_colliding():
-		var hit_point = _get_steady_hit(active_raycast.get_collision_point())
+		var hit_point = active_raycast.get_collision_point()
 		var col = active_raycast.get_collider()
 		var t = PointerTarget.resolve(col) if col else {"role": &""}
+		# Tabs use raw hits for input; smoothing their cursor makes it trail
+		# behind and resurrect at the previous tab after pointing away.
+		if t.role == &"screen_tab":
+			_reset_steady_filter()
+		else:
+			hit_point = _get_steady_hit(hit_point)
 		on_screen = (t.role == &"screen")
 		hovered_screen = t.screen if on_screen else null
 		# Keep the screen cursor in one composition layer across mono, SBS, and
@@ -991,8 +1023,8 @@ func _update_cursor_layer():
 				hit_point,
 				settings.bezel_enabled,
 				settings.cursor_mode,
-				stereo,
-				settings.host.ai_3d_cursor_position,
+				stereo if hovered_screen == primary_screen else 0,
+				-1 if screen_sources.is_browser_screen(hovered_screen) else settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
 				primary_screen)
 		elif composition_pointers.has_primary():
@@ -1005,10 +1037,12 @@ func _update_cursor_layer():
 			# layer in world space. Convert the legacy branch's exact pixel offset
 			# into screen metres so Left/Default/Right remain resolution-independent.
 			var native_ai_cursor_offset := Vector3.ZERO
-			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen:
+			if on_screen and stereo >= 3 and video_presentation.is_native_active() and hovered_screen == primary_screen:
 				var base_w := maxf(float(hovered_screen.comp_base_size.x), 1.0)
 				var base_h := maxf(float(hovered_screen.comp_base_size.y), 1.0)
-				var correction_px := float(settings.host.ai_3d_cursor_position + 1) * 12.0 * base_h / 1080.0
+				var correction_px := VideoPresentation.cursor_calibration_pixels(
+					settings.host.ai_3d_cursor_position, base_h,
+					screen_sources.is_browser_screen(hovered_screen))
 				var screen_right := hovered_screen.global_transform.basis.x.normalized()
 				native_ai_cursor_offset = screen_right * (correction_px / base_w) * hovered_screen.mesh_size.x
 			composition_pointers.show_primary(
@@ -1020,6 +1054,7 @@ func _update_cursor_layer():
 				settings.cursor_mode,
 				native_ai_cursor_offset)
 	else:
+		_reset_steady_filter()
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
 	if composition_pointers.has_primary():
@@ -1029,7 +1064,7 @@ func _update_cursor_layer():
 			contact_dot.visible = false
 
 func _sync_composition_panels():
-	if not comp.in_use:
+	if not comp.in_use and not pcvr_handover.menu_only:
 		return
 	var keyboard_action := composition_panels.sync_transforms(ui_panel_3d, virtual_keyboard)
 	match keyboard_action:
@@ -1050,7 +1085,7 @@ func _update_laser_layers():
 			left_ray = null
 	composition_controller_rays.update(
 		DEBUG_COMP_LASER,
-		comp.in_use and is_xr_active,
+		(comp.in_use or pcvr_handover.menu_only) and is_xr_active,
 		xr_camera.global_position,
 		right_ray,
 		left_ray)
@@ -1069,8 +1104,8 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
 func _update_grab_bar_layers():
-	# The four corner visuals share one layer, leaving room for menu/keyboard
-	# while keeping their resize targets available after headset resume.
+	# One shared atlas per screen holds grab bar, shortcuts, corners and tabs.
+	# No additional controls layer is submitted as hover changes.
 	composition_screen_controls.update(
 		screens,
 		comp.in_use,
@@ -1079,6 +1114,8 @@ func _update_grab_bar_layers():
 		screen_shortcuts.revealed_screen if screen_shortcuts else null)
 
 func exit_app():
+	if browser_prototype:
+		browser_prototype.stop()
 	get_tree().quit()
 
 func disconnect_stream():
@@ -1088,10 +1125,12 @@ func disconnect_stream():
 	stream_backend.stop_play_stream()
 
 func start_connect_timeout():
+	if pcvr_test.is_exclusive(): return
 	session_lifecycle.arm_connect_timeout()
 	get_tree().create_timer(10.0).timeout.connect(_on_connect_timeout)
 
 func _on_connect_timeout():
+	if pcvr_test.is_exclusive(): return
 	if not session_lifecycle.connect_timeout_pending:
 		return
 	_log("[CONNECT] Connection timed out")
@@ -1099,6 +1138,7 @@ func _on_connect_timeout():
 	restore_after_failed_connect("Failed to connect (timeout)")
 
 func restore_after_failed_connect(status_msg: String, welcome_name: String = "server"):
+	if pcvr_test.is_exclusive(): return
 	# start_stream() resizes the shared source/composition viewports before the
 	# asynchronous launch request is sent. If that request fails, no decoder was
 	# started and therefore no stream_terminated signal arrives to run the normal
@@ -1127,6 +1167,9 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
+	if pcvr_test.is_exclusive():
+		pcvr_test.request_stop()
+		return
 	# The selected display rate was already applied and awaited by
 	# StreamManager.start_stream() before decoder and native swapchain setup.
 	# Do not request it again here: a display transition racing newly-created
@@ -1305,6 +1348,7 @@ func _update_comp_layer_size():
 	comp.update_layer_size()
 
 func _on_stream_terminated(msg: String, err_code: int = 0):
+	if pcvr_test.is_exclusive(): return
 	_log("[NF] _on_stream_terminated: phase=" + session_lifecycle.phase_name() + " msg=" + str(msg) + " err=" + str(err_code))
 	if video_presentation:
 		video_presentation.deactivate_native(false)
@@ -1329,6 +1373,9 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 	_full_disconnect_cleanup("Disconnected: " + str(msg))
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
+	if pcvr_test.is_exclusive(): return
+	if depth_estimator:
+		depth_estimator.set_enabled(false)
 	session_lifecycle.finish_cleanup()
 	_server_codec_support = {}
 	_host_cursor_toggle_supported = false
@@ -1345,13 +1392,13 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	# goes straight to the welcome screen instead of a fresh stream - hide it
 	# again so it doesn't blink away on top of the welcome screen content.
 	comp.hide_loading_dots()
-	comp_shader_mat.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+	comp_shader_mat.set_shader_parameter("main_texture", get_welcome_content_texture())
 	comp_shader_mat.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_left:
-		comp_shader_mat_left.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		comp_shader_mat_left.set_shader_parameter("main_texture", get_welcome_content_texture())
 		comp_shader_mat_left.set_shader_parameter("yuv_mode", 0)
 	if comp_shader_mat_right:
-		comp_shader_mat_right.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		comp_shader_mat_right.set_shader_parameter("main_texture", get_welcome_content_texture())
 		comp_shader_mat_right.set_shader_parameter("yuv_mode", 0)
 	if not comp.in_use and screen_mesh.material_override is ShaderMaterial:
 		screen_mesh.material_override.set_shader_parameter("yuv_mode", 0)
@@ -1365,7 +1412,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 		comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	else:
 		if not comp.in_use:
-			screen_mesh.material_override.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+			screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 		_switch_to_mesh_rendering()
 	if mouse_captured_by_stream:
 		input_handler.release_stream_mouse()
@@ -1430,6 +1477,7 @@ func _ready():
 
 	_init_xr(interface)
 	video_presentation.setup_native()
+	pcvr_test.setup()
 	# Composition providers must be registered before the OpenXR session starts.
 	# Only after registration may the refresh transition settle before layer and
 	# stream swapchains are allocated.
@@ -1461,6 +1509,8 @@ func _on_session_phase_changed(previous: int, current: int) -> void:
 		SessionLifecycle.Phase.keys()[previous].to_lower(),
 		SessionLifecycle.Phase.keys()[current].to_lower(),
 	])
+	if ui_controller and screen_sources:
+		ui_controller.update_screen_sources()
 
 func _init_modules():
 	stream_manager = StreamManager.new(self)
@@ -1473,12 +1523,16 @@ func _init_modules():
 	native_xr_renderer = NativeXrRendererManager.new(self)
 	video_presentation = VideoPresentation.new(null, native_xr_renderer)
 	welcome_screen = WelcomeScreen.new(self)
+	browser_prototype = preload("res://src/browser_prototype.gd").new(self)
+	screen_sources = ScreenSources.new(self)
+	screen_sources.changed.connect(ui_controller.update_screen_sources)
 	screen_manager = ScreenManager.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
 	controller_mapper = ControllerMapper.new(self)
 	add_child(controller_mapper)
 	screen_shortcuts = ScreenShortcutBar.new(self)
+	screen_tab_strip = ScreenTabStrip.new(self)
 
 func _init_android_setup():
 	# AI-3D depth estimation is native (no JNI/JVM) on Linux as of 2026-08-20
@@ -1717,13 +1771,15 @@ func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, a
 				best = cand
 	return best
 
-func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false) -> VRScreen:
+func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: bool = false, browser_provider: RefCounted = null) -> VRScreen:
 	if not screen_registry.can_add():
 		_log("[SCREEN] Refusing to add screen %s: MAX_SCREENS=%d reached" % [String(monitor_id), MAX_SCREENS])
 		return null
 	var s: VRScreen = VR_SCREEN_SCENE.instantiate()
 	add_child(s)
 	s.setup(self, monitor_id)
+	if browser_provider != null:
+		screen_sources.register_browser(s, browser_provider)
 	s.mesh_size = primary_screen.mesh_size if primary_screen else Vector2(2.24, 1.26)
 	s.curvature = primary_screen.curvature if primary_screen else 2
 	if primary_screen:
@@ -1822,8 +1878,7 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 	if comp.available and is_streaming:
 		comp.invalidate_yuv_cache()
 		_bind_yuv_textures()
-	var layer_count = screens.size() + 5
-	_log("[COMP] screens=%d layers=%d" % [screens.size(), layer_count])
+	_log("[COMP] screens=%d controls_layers=%d (one shared atlas per screen; not a total runtime layer count)" % [screens.size(), screens.size()])
 	if comp.available and s.comp_cylinder and not s.comp_cylinder.is_natively_supported():
 		_log("[COMP] Screen %s cylinder not natively supported, falling back to mesh rendering for this screen" % String(monitor_id))
 	return s
@@ -1837,6 +1892,21 @@ func remove_screen(monitor_id: StringName) -> void:
 				return
 			if not screen_registry.remove(s):
 				return
+			# Per-screen controls are parented under the XR origin, not the
+			# screen node: retire them explicitly when closing a browser screen.
+			var retired_controls: Array = []
+			for layer in [s.comp_grab_bar, s.comp_corner_layer]:
+				if is_instance_valid(layer):
+					if retired_controls.has(layer): continue
+					retired_controls.append(layer)
+					layer.visible = false
+					layer.set_layer_viewport(null)
+					layer.queue_free()
+			var retired_viewports: Array = []
+			for viewport in [s.comp_grab_bar_viewport, s.comp_corner_viewport]:
+				if is_instance_valid(viewport) and not retired_viewports.has(viewport):
+					retired_viewports.append(viewport)
+					# Freed after the render-thread layer detachment below.
 			if comp.available:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
@@ -1854,14 +1924,12 @@ func remove_screen(monitor_id: StringName) -> void:
 					xr_origin.remove_child(s.comp_cylinder_right)
 					s.comp_cylinder_right.queue_free()
 				if s.comp_viewport:
-					remove_child(s.comp_viewport)
-					s.comp_viewport.queue_free()
+					retired_viewports.append(s.comp_viewport)
 				if s.comp_viewport_left:
-					remove_child(s.comp_viewport_left)
-					s.comp_viewport_left.queue_free()
+					retired_viewports.append(s.comp_viewport_left)
 				if s.comp_viewport_right:
-					remove_child(s.comp_viewport_right)
-					s.comp_viewport_right.queue_free()
+					retired_viewports.append(s.comp_viewport_right)
+			_retire_screen_viewports(retired_viewports)
 			# screen_mesh is main.gd's own permanent $MeshInstance3D (see
 			# _init_ui()'s screens = [screen_mesh]/primary_screen = screen_mesh) -
 			# reused for the welcome screen and referenced directly all over this
@@ -1883,6 +1951,17 @@ func remove_screen(monitor_id: StringName) -> void:
 				_bind_yuv_textures()
 			_update_cursor_layer()
 			return
+
+func _retire_screen_viewports(viewports: Array) -> void:
+	_pcvr_screen_retirements += 1
+	# Layer detachment is queued on the render thread and accesses the old
+	# render target. Keep viewports alive until that work has drained.
+	await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	for viewport in viewports:
+		if is_instance_valid(viewport):
+			viewport.queue_free()
+	_pcvr_screen_retirements -= 1
 
 func _init_stream_backend():
 	if config_mgr and comp_mgr:
@@ -2157,9 +2236,9 @@ func _init_textures_and_ui():
 
 	stream_manager.bind_texture()
 	if screen_mesh.material_override is ShaderMaterial:
-		screen_mesh.material_override.set_shader_parameter("main_texture", welcome_viewport.get_texture())
+		screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 	comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	var _wt = welcome_viewport.get_texture()
+	var _wt = get_welcome_content_texture()
 
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	ui_controller.update_ui()
@@ -2167,6 +2246,7 @@ func _init_textures_and_ui():
 	session_lifecycle.show_server_selection()
 
 func _try_auto_connect():
+	if pcvr_test.is_exclusive(): return
 	var saved_ip = parse_ip_port(%IPInput.text)[0]
 	var saved_unique_id: String = ""
 	var save = ConfigFile.new()
@@ -2199,18 +2279,73 @@ func _try_auto_connect():
 				current_host_id = host_id
 				%IPInput.text = host_ip
 				_log("[AUTO-CONNECT] Auto-connecting to host_id=%d ip=%s" % [host_id, host_ip])
+				pcvr_test.auto_connect_pending = true
 				await get_tree().create_timer(1.0).timeout
+				pcvr_test.auto_connect_pending = false
+				if pcvr_test.is_exclusive(): return
 				stream_manager.start_stream(host_id, _selected_app_id)
 
 func _post_ready_check():
 	await get_tree().create_timer(0.5).timeout
+	# Browser activation is user-driven. Automated rendering probes must not
+	# leave the app running in a different source when handed back for testing.
 
 
 
 func _on_joy_changed(device: int, connected: bool):
 	input_handler.on_joy_connection_changed(device, connected)
 
+func get_welcome_content_texture() -> Texture2D:
+	if browser_prototype and browser_prototype.active and browser_prototype.texture:
+		return browser_prototype.texture
+	return welcome_viewport.get_texture()
+
+func browser_content_active() -> bool:
+	return browser_prototype != null and browser_prototype.active and browser_prototype.texture != null
+
+func primary_media_active() -> bool:
+	if screen_sources != null and screen_sources.switching_primary: return false
+	return is_streaming or browser_content_active()
+
+func primary_capture_source():
+	return browser_prototype.uploader if browser_content_active() else stream_backend
+
+func primary_media_size() -> Vector2i:
+	if browser_content_active():
+		return browser_prototype.render_size
+	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
+
 func _process(delta):
+	if _startup_ready and is_xr_active: _process_startup_hand_fallback(delta)
+	if _startup_ready and controller_mapper: controller_mapper.update_available_hands(delta)
+	if welcome_screen: welcome_screen.process_auto_xr(delta)
+	pcvr_test.process_standby(delta)
+	pcvr_handover.process(delta)
+	if ui_visible: ui_controller.process_pcvr_menu(delta)
+	if pcvr_handover.menu_only and not pcvr_handover.blocks_workspace():
+		# Settings-only presentation must not run ordinary screen/ambient/grab
+		# updates which would reactivate hidden desktop layers behind the menu.
+		# Ownership and hand poses still need updating: controllers may have
+		# replaced hands while the XR game owned input and this loop was skipped.
+		if is_xr_active: _process_hand_tracking(delta)
+		_process_controller_fade(delta)
+		xr_interaction.process_pointer_frame(delta)
+		_update_cursor_layer()
+		_sync_composition_panels()
+		_sync_interaction_viewports()
+		_update_laser_layers()
+		return
+	if pcvr_test.is_exclusive() or pcvr_handover.blocks_workspace():
+		if pcvr_test.is_exclusive(): pcvr_test.process(delta)
+		_log_flush_timer += delta
+		if _log_flush_timer >= 2.0:
+			_log_flush_timer = 0.0
+			_flush_log()
+		return
+	if browser_prototype:
+		browser_prototype.process()
+	if screen_sources:
+		screen_sources.process_secondary_browsers()
 	if is_xr_active:
 		_process_hand_tracking(delta)
 
@@ -2223,6 +2358,9 @@ func _process(delta):
 		_flush_log()
 
 	_process_button_input()
+	if pcvr_test.is_exclusive():
+		pcvr_test.process(0.0)
+		return
 
 	if right_click_cooldown > 0.0:
 		right_click_cooldown -= delta
@@ -2234,6 +2372,11 @@ func _process(delta):
 	_process_controller_fade(delta)
 
 	xr_interaction.process_pointer_frame(delta)
+	# A welcome click can enter exclusivity inside pointer dispatch. Finish
+	# this frame without ordinary code re-enabling composition/UI layers.
+	if pcvr_test.is_exclusive():
+		pcvr_test.process(0.0)
+		return
 	xr_interaction.handle_scroll()
 	_update_cursor_layer()
 	_sync_composition_panels()
@@ -2393,7 +2536,7 @@ func _apply_hand_rest(side: String, resting: bool):
 	else:
 		left_hand_resting = resting
 		if left_hand_raycast: left_hand_raycast.enabled = not resting
-	if not resting and controller_mapper and controller_mapper.primary_hand == ControllerMapper.PrimaryHand.AUTO \
+	if not resting and controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.AUTO \
 			and not was_clicking and not was_right_clicking and not grabbed_node and grabbed_corner_idx < 0:
 		xr_interaction._auto_primary = side
 		xr_interaction._active_hand = side
@@ -2461,25 +2604,18 @@ func _process_hand_tracking(_delta):
 func _process_button_input():
 	if not is_xr_active:
 		return
-	if not controller_mapper or not controller_mapper.is_active():
-		var b_pressed = right_hand.is_button_pressed("by_button")
-		if b_pressed and not _was_b_pressed:
-			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_MENU)
-		_was_b_pressed = b_pressed
-		var a_pressed = right_hand.is_button_pressed("ax_button")
-		if a_pressed and not _was_a_pressed:
-			screen_shortcuts.invoke(ScreenShortcutBar.ACTION_KEYBOARD)
-		_was_a_pressed = a_pressed
-		var r_stick_click = right_hand.is_button_pressed("primary_click")
-		var l_stick_click = left_hand.is_button_pressed("primary_click") if left_hand else false
-		if r_stick_click and not _was_r_stick_click and not l_stick_click:
-			var tp_exited = virtual_keyboard and virtual_keyboard.thumbstick_exit_flag
-			if not virtual_keyboard or (not virtual_keyboard.trackpad_active and not tp_exited):
-				screen_shortcuts.invoke(ScreenShortcutBar.ACTION_SBS)
-		if not r_stick_click:
-			if virtual_keyboard:
-				virtual_keyboard.thumbstick_exit_flag = false
-		_was_r_stick_click = r_stick_click
+	var side: String = xr_interaction._active_hand if controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.AUTO else ("left" if controller_mapper and controller_mapper.effective_primary_hand() == ControllerMapper.PrimaryHand.LEFT else "right")
+	var hand = left_hand if side == "left" else right_hand
+	var other = right_hand if side == "left" else left_hand
+	var menu: bool = hand != null and hand.is_button_pressed("by_button")
+	var keyboard: bool = hand != null and hand.is_button_pressed("ax_button")
+	var stick: bool = hand != null and hand.is_button_pressed("primary_click")
+	var other_stick: bool = other != null and other.is_button_pressed("primary_click")
+	var blocked: bool = _is_using_hands or (controller_mapper != null and controller_mapper.is_active())
+	var trackpad_blocked: bool = virtual_keyboard != null and (virtual_keyboard.trackpad_active or virtual_keyboard.thumbstick_exit_flag)
+	for action in primary_controller_shortcuts.poll(side, menu, keyboard, stick, other_stick, blocked, trackpad_blocked):
+		screen_shortcuts.invoke(action)
+	if not stick and virtual_keyboard: virtual_keyboard.thumbstick_exit_flag = false
 	if _startup_reposition >= 0 and is_xr_active:
 		match _startup_reposition:
 			0:  # Waiting for tracking to produce a meaningful camera position
@@ -2490,6 +2626,9 @@ func _process_button_input():
 			2:  # Position screen in front of user
 				_reposition_screen_and_ui(true)
 				_startup_reposition = -1
+
+func reset_primary_shortcuts() -> void:
+	primary_controller_shortcuts.reset()
 
 func _process_input_release():
 	if Input.is_action_just_pressed("ui_focus_next"):
@@ -2578,6 +2717,11 @@ func _process_stats(delta):
 	# just while a stream using it is already running.
 	settings_controller.poll_usb_link_status(delta)
 	if not is_streaming:
+		telemetry.record_frame(delta, browser_content_active() and browser_prototype.new_frame)
+		if telemetry.status_update_due(delta, 1.0) and ui_controller:
+			ui_controller.refresh_app_fps()
+		if browser_content_active() and video_presentation:
+			video_presentation.process_frame(browser_prototype.new_frame)
 		if comp:
 			comp.set_stats_visible(false)
 		return
@@ -2706,6 +2850,13 @@ func _process_performance_overlay(delta: float):
 		int(stats.get("network_latency_ms", 0)), decoder_ms,
 		stream_backend.get_depth_last_inference_ms() if settings.host.ai_3d_speed > 0 else 0.0,
 	])
+	_log("[FRAME-BUDGET] app=%.1ffps process=%.2fms physics=%.2fms native=%s warp_gpu=%.2fms display=%.0fHz cap=%d menu=%s passthrough=%s background=%d screens=%d pcvr=%d" % [
+		Engine.get_frames_per_second(), Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+		Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0,
+		video_presentation.is_native_active(), native_xr_renderer.get_warp_gpu_ms(),
+		display_refresh_rate, Engine.max_fps, ui_visible, settings.passthrough_enabled,
+		settings.background_mode, screens.size(), pcvr_handover.state,
+	])
 
 func _process_idle_timeout():
 	if not is_streaming or settings.idle_timeout_min <= 0:
@@ -2720,26 +2871,53 @@ func _process_idle_timeout():
 
 func _notification(what):
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		if welcome_screen: welcome_screen.cancel_xr_control()
+		if browser_prototype:
+			browser_prototype.stop()
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		# Keep Meteor's owned game/transport alive during headset handoffs.
+		if not pcvr_test.meteor_mode and not pcvr_test.standby_active:
+			pcvr_handover.request_stop("Application paused")
+			if welcome_screen: welcome_screen.cancel_xr_control()
+		pcvr_test.set_application_paused(true)
 		if xr_interaction:
-			xr_interaction.cancel_transient_interactions("application paused")
+			xr_interaction.set_application_suspended(true)
 		if meteor_microphone:
 			meteor_microphone.set_paused(true)
 	elif what == NOTIFICATION_APPLICATION_RESUMED:
+		if welcome_screen: welcome_screen.resume_auto_xr()
+		pcvr_test.set_application_paused(false)
 		if meteor_microphone:
 			meteor_microphone.set_paused(false)
 		if xr_interaction:
-			xr_interaction.cancel_transient_interactions("application resumed")
+			xr_interaction.set_application_suspended(false)
 		_schedule_xr_surface_refresh("application resumed")
 
 func _input(event):
+	if pcvr_handover.menu_only:
+		# The XR pointer dispatches settings clicks directly. Do not forward
+		# physical keyboard/gamepad events to an invisible Sunshine desktop.
+		if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+			pcvr_handover.close_pcvr_menu()
+		return
+	if pcvr_handover.blocks_workspace():
+		pcvr_handover.handle_input(event)
+		return
+	if pcvr_test.is_exclusive():
+		pcvr_test.handle_input(event)
+		return
 	input_handler.handle_input(event)
 	if is_streaming and (event is InputEventMouseButton or event is InputEventKey or event is InputEventJoypadButton or event is InputEventJoypadMotion):
 		_last_activity_time = Time.get_ticks_msec() / 1000.0
 
 func _toggle_ui():
+	if pcvr_handover.menu_only and ui_visible:
+		pcvr_handover.close_pcvr_menu()
+		return
+	if pcvr_handover.blocks_workspace(): return
+	if pcvr_test.is_exclusive(): return
 	ui_visible = not ui_visible
 	_log("[UI] Menu %s (streaming=%s native=%s comp=%s ambient=%s)" % [
 		"opened" if ui_visible else "closed",
@@ -2753,7 +2931,7 @@ func _toggle_ui():
 		if state_manager:
 			state_manager.sync_ui_to_settings(false)
 		_set_ui_position()
-		if comp.in_use and composition_panels.has_ui():
+		if (comp.in_use or pcvr_handover.menu_only) and composition_panels.has_ui():
 			composition_panels.show_ui(ui_panel_3d)
 			if RenderingServer.get_current_rendering_method() == "gl_compatibility":
 				ui_panel_3d.visible = true

@@ -1,0 +1,15 @@
+--- a/modules/openxr/openxr_interface.cpp
++++ b/modules/openxr/openxr_interface.cpp
+@@ -380,3 +380,3 @@
+-				if (interaction_profile_array.has(ip)) {
+-					interaction_profile_array.push_back(ip);
++				if (!interaction_profiles.has(ip)) {
++					interaction_profiles.push_back(ip);
+ 				}
+--- a/modules/openxr/extensions/spatial_entities/openxr_spatial_marker_tracking.cpp
++++ b/modules/openxr/extensions/spatial_entities/openxr_spatial_marker_tracking.cpp
+@@ -515,1 +515,3 @@
+-	se_extension->disconnect(SNAME("spatial_discovery_recommended"), callable_mp(this, &OpenXRSpatialMarkerTrackingCapability::_on_spatial_discovery_recommended));
++	if (se_extension->is_connected(SNAME("spatial_discovery_recommended"), callable_mp(this, &OpenXRSpatialMarkerTrackingCapability::_on_spatial_discovery_recommended))) {
++		se_extension->disconnect(SNAME("spatial_discovery_recommended"), callable_mp(this, &OpenXRSpatialMarkerTrackingCapability::_on_spatial_discovery_recommended));
++	}

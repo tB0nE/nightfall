@@ -1,0 +1,14 @@
+#version 450
+layout(local_size_x=16, local_size_y=16) in;
+layout(std430, binding=0) writeonly buffer Pixels { uint pixels[]; };
+layout(push_constant) uniform Parameters { uint width; uint height; uint frame; } params;
+void main() {
+    uvec2 p=gl_GlobalInvocationID.xy;
+    if (p.x>=params.width || p.y>=params.height) return;
+    float y=float(p.y)/float(params.height-1);
+    bool left=p.x<params.width/2;
+    vec3 color=left ? vec3(0.8,0.05+0.4*y,0.05) : vec3(0.05,0.05+0.4*y,0.8);
+    uint bar=(params.frame*7u)%(params.width-16u);
+    if (p.x>=bar && p.x<bar+16u) color=vec3(0.95);
+    pixels[p.y*params.width+p.x]=packUnorm4x8(vec4(color,1));
+}

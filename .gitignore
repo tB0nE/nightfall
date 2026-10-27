@@ -92,6 +92,7 @@ tools/model_tester/*_verification/
 tools/model_tester/output/
 tools/model_tester/__pycache__/
 tools/__pycache__/
+test/__pycache__/
 addons/nightfall-stream/build/
 addons/nightfall-stream/build_android/
 openxr_action_map.tres
@@ -111,3 +112,5 @@ Nightfall.AppDir/
 
 # Nightfall Meteor (host companion app) build output
 meteor/target/
+meteor/tools/__pycache__/
+extensions/browser-adblock/target/

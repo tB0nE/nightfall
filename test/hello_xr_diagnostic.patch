@@ -1,0 +1,70 @@
+--- a/src/tests/hello_xr/openxr_program.cpp
++++ b/src/tests/hello_xr/openxr_program.cpp
+@@ -16,4 +16,5 @@
+ #include <inttypes.h>
+ #include <set>
++#include "/tests/hello_xr_diagnostic.h"
+ 
+ namespace {
+@@ -197,3 +198,3 @@
+             });
+-        if (depthExtensionProperties != extensionProperties.end()) {
++        if (depthExtensionProperties != extensionProperties.end() && !meteor_hello_enabled()) {
+             Log::Write(Log::Level::Info, Fmt("Depth submission supported (%s)", depthExtensionProperties->extensionName));
+@@ -206,1 +207,2 @@
+-        XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
++        if(meteor_hello_enabled()) extensions.push_back(XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME);
++        XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
+@@ -500,1 +502,2 @@
+-            suggestedBindings.interactionProfile = oculusTouchInteractionProfilePath;
++            meteor_hello_touch_bindings(m_instance,m_input.actionSet,bindings);
++            suggestedBindings.interactionProfile = oculusTouchInteractionProfilePath;
+@@ -659,1 +662,5 @@
+-            m_depthSwapchainFormat = m_graphicsPlugin->SelectDepthSwapchainFormat(false, swapchainFormats);
++            m_depthSwapchainFormat = m_graphicsPlugin->SelectDepthSwapchainFormat(false, swapchainFormats);
++            if(meteor_hello_enabled()) {
++                CHECK(std::find(swapchainFormats.begin(),swapchainFormats.end(),VK_FORMAT_R8G8B8A8_UNORM)!=swapchainFormats.end());
++                m_colorSwapchainFormat=VK_FORMAT_R8G8B8A8_UNORM; m_depthSwapchainFormat=-1;
++            }
+@@ -687,3 +693,10 @@
+             for (uint32_t i = 0; i < viewCount; i++) {
+-                const XrViewConfigurationView& vp = m_configViews[i];
++                XrViewConfigurationView vp = m_configViews[i];
++                if(meteor_hello_enabled()) {
++                    const char *size=std::getenv("METEOR_XR_EYE_SIZE");
++                    uint32_t pixels=size ? uint32_t(std::atoi(size)) : 256;
++                    CHECK((pixels==256 || pixels==512) && pixels<=vp.maxImageRectWidth && pixels<=vp.maxImageRectHeight);
++                    vp.recommendedImageRectWidth=vp.recommendedImageRectHeight=pixels;
++                    vp.recommendedSwapchainSampleCount=1;
++                }
+                 Log::Write(Log::Level::Info,
+@@ -703,1 +716,2 @@
+-                swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
++                swapchainCreateInfo.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
++                if(meteor_hello_enabled()) swapchainCreateInfo.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT;
+@@ -975,1 +989,2 @@
+-        CHECK_XRCMD(xrEndFrame(m_session, &frameEndInfo));
++        CHECK_XRCMD(xrEndFrame(m_session, &frameEndInfo));
++        meteor_hello_submitted(m_instance,m_session,frameState.predictedDisplayTime,!layers.empty());
+@@ -1034,1 +1049,10 @@
+-                    cubes.push_back(Cube{spaceLocation.pose, {scale, scale, scale}});
++                    if(meteor_touch_actions[0]) {
++                        unsigned h=unsigned(hand);
++                        cubes.push_back(Cube{spaceLocation.pose, {meteor_touch_ax[h] ? .16f : scale,
++                            meteor_touch_click[h] ? .16f : scale, scale}});
++                        XrPosef marker=spaceLocation.pose;
++                        marker.position.x+=meteor_touch_sticks[h].x*.12f;
++                        marker.position.y+=.20f+meteor_touch_sticks[h].y*.12f;
++                        cubes.push_back(Cube{marker,{.025f,.025f,.025f}});
++                    } else cubes.push_back(Cube{spaceLocation.pose, {scale, scale, scale}});
++                    if(std::getenv("METEOR_XR_CONTROLLERS")) std::printf("HELLO_XR_HAND hand=%u position=%.6f,%.6f,%.6f scale=%.3f\n",unsigned(hand),spaceLocation.pose.position.x,spaceLocation.pose.position.y,spaceLocation.pose.position.z,scale);
+--- a/src/tests/hello_xr/main.cpp
++++ b/src/tests/hello_xr/main.cpp
+@@ -5,1 +5,2 @@
+-#include "pch.h"
++#include "pch.h"
++#include <cstdlib>
+@@ -320,1 +321,2 @@
+-        auto exitPollingThread = std::thread{[] {
++        auto exitPollingThread = std::thread{[] {
++            if(std::getenv("METEOR_XR_HELLO_DIAGNOSTIC")) return; // Frame-bounded unattended test owns exit.

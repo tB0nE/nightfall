@@ -73,7 +73,15 @@ NATIVE_XR_TARGET="debug"
 if [ "$PRESET" = "NightfallRelease" ]; then
   NATIVE_XR_TARGET="release"
 fi
-bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" "$NATIVE_XR_TARGET"
+PCVR_ALVR="${NIGHTFALL_PCVR_ALVR:-OFF}"
+if [ "$PCVR_ALVR" = "ON" ]; then
+  if [ "$BUILD_KIND" != "dev" ]; then
+    echo "Error: the PCVR bridge is restricted to optimized DEV builds" >&2
+    exit 1
+  fi
+  (cd "$SCRIPT_DIR/.build-cache/meteor-xr/artifacts/20.14.1/android-arm64" && sha256sum -c SHA256SUMS)
+fi
+NIGHTFALL_PCVR_ALVR="$PCVR_ALVR" bash "$SCRIPT_DIR/extensions/nightfall-xr/build_android.sh" "$NATIVE_XR_TARGET"
 
 NATIVE_XR_CACHE="${NIGHTFALL_NATIVE_XR_CACHE:-$SCRIPT_DIR/.build-cache/native-xr}"
 PATCHED_GODOT_RUNTIME="${NIGHTFALL_GODOT_ANDROID_RUNTIME:-$NATIVE_XR_CACHE/templates/$NIGHTFALL_GODOT_TEMPLATE_VERSION/android_${NATIVE_XR_TARGET}_arm64.so}"
@@ -99,6 +107,17 @@ sed -i \
   -e "s|^version/name=.*|version/name=\"$NIGHTFALL_VERSION_NAME\"|" \
   "$CONFIG"
 
+# Explicit export feature: release-signed DEV APKs are not debug builds, and
+# Android Java plugins may not yet be available during provider registration.
+if [ "$BUILD_KIND" = "dev" ]; then
+  sed -i 's/^custom_features=""$/custom_features="nightfall_dev"/' "$CONFIG"
+fi
+if [ "$PCVR_ALVR" = "ON" ]; then
+  # Upstream core acquires a low-latency WifiLock during initialization.
+  sed -i -e 's/^permissions\/access_wifi_state=false$/permissions\/access_wifi_state=true/' \
+    -e 's/^permissions\/wake_lock=false$/permissions\/wake_lock=true/' "$CONFIG"
+fi
+
 if [ "$PRESET" = "NightfallRelease" ]; then
   RELEASE_ENV_FILE="${NIGHTFALL_ENV_FILE:-.env}"
   if [ ! -f "$RELEASE_ENV_FILE" ]; then
@@ -122,6 +141,14 @@ rm -rf android/build
 mkdir -p android/build
 cd android/build
 unzip -q "$TEMPLATES"
+# An arbitrary-site browser must support explicitly entered HTTP addresses,
+# including LAN Plex servers. Keep TLS verification and mixed-content defaults
+# unchanged; this only permits HTTP, it never downgrades an HTTPS URL.
+sed -i '/<application$/a\        android:usesCleartextTraffic="true"' src/main/AndroidManifest.xml
+if ! grep -q 'android:usesCleartextTraffic="true"' src/main/AndroidManifest.xml; then
+  echo "Error: failed to enable browser HTTP support in the exported manifest" >&2
+  exit 1
+fi
 sed -i '/tools:targetApi="29" \/>/a\
 \
         <meta-data\
@@ -138,6 +165,8 @@ sed -i '/tools:targetApi="29" \/>/a\
 # lands an arbitrary extra .so in the APK's lib/arm64-v8a/, same as
 # libgodot_android.so above.
 GODOT_AAR="libs/$NATIVE_XR_TARGET/godot-lib.template_${NATIVE_XR_TARGET}.aar"
+bash "$SCRIPT_DIR/extensions/browser-adblock/build_android.sh"
+BLOCKER_LIBRARY="$SCRIPT_DIR/extensions/browser-adblock/target/aarch64-linux-android/release/libnightfall_browser_adblock.so"
 PYROWAVE_LIBRARY="$SCRIPT_DIR/addons/nightfall-stream/bin/android/libpyrowave-shared.so"
 if [ ! -f "$PYROWAVE_LIBRARY" ]; then
   echo "Error: PyroWave shared library not found at $PYROWAVE_LIBRARY"
@@ -148,13 +177,15 @@ if [ -f "$GODOT_AAR" ]; then
   mkdir -p aar_extract/jni/arm64-v8a
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
   cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
-  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so jni/arm64-v8a/libpyrowave-shared.so)
+  cp "$BLOCKER_LIBRARY" aar_extract/jni/arm64-v8a/libnightfall_browser_adblock.so
+  (cd aar_extract && zip -q -u "../$GODOT_AAR" jni/arm64-v8a/libgodot_android.so jni/arm64-v8a/libpyrowave-shared.so jni/arm64-v8a/libnightfall_browser_adblock.so)
 elif [ -d aar_extract/jni/arm64-v8a ]; then
   cp "$PATCHED_GODOT_RUNTIME" aar_extract/jni/arm64-v8a/libgodot_android.so
   cp "$PYROWAVE_LIBRARY" aar_extract/jni/arm64-v8a/libpyrowave-shared.so
   mkdir -p "libs/$NATIVE_XR_TARGET/arm64-v8a"
   cp "$PATCHED_GODOT_RUNTIME" "libs/$NATIVE_XR_TARGET/arm64-v8a/libgodot_android.so"
   cp "$PYROWAVE_LIBRARY" "libs/$NATIVE_XR_TARGET/arm64-v8a/libpyrowave-shared.so"
+  cp "$BLOCKER_LIBRARY" "libs/$NATIVE_XR_TARGET/arm64-v8a/libnightfall_browser_adblock.so"
 else
   echo "Error: Godot Android template has no known runtime location" >&2
   exit 1
@@ -167,6 +198,18 @@ cp android/src/main/java/com/godot/game/DiagnosticLog.java android/build/src/mai
 cp android/src/main/java/com/godot/game/UsbLinkManager.java android/build/src/main/java/com/godot/game/UsbLinkManager.java
 cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/java/com/godot/game/GamepadInfo.java
 cp android/src/main/java/com/godot/game/AudioOutput.java android/build/src/main/java/com/godot/game/AudioOutput.java
+cp android/src/main/java/com/godot/game/BrowserCapabilities.java android/build/src/main/java/com/godot/game/BrowserCapabilities.java
+cp android/src/main/java/com/godot/game/BrowserPrototype.java android/build/src/main/java/com/godot/game/BrowserPrototype.java
+cp android/src/main/java/com/godot/game/BrowserNavigation.java android/build/src/main/java/com/godot/game/BrowserNavigation.java
+cp android/src/main/java/com/godot/game/BrowserPageTabs.java android/build/src/main/java/com/godot/game/BrowserPageTabs.java
+cp android/src/main/java/com/godot/game/BrowserGamepadProbe.java android/build/src/main/java/com/godot/game/BrowserGamepadProbe.java
+cp android/src/main/java/com/godot/game/BrowserGamepadState.java android/build/src/main/java/com/godot/game/BrowserGamepadState.java
+cp android/src/main/java/com/godot/game/BrowserPhysicalGamepad.java android/build/src/main/java/com/godot/game/BrowserPhysicalGamepad.java
+cp android/src/main/java/com/godot/game/BrowserGamepadScript.java android/build/src/main/java/com/godot/game/BrowserGamepadScript.java
+cp android/src/main/java/com/godot/game/BrowserBookmarks.java android/build/src/main/java/com/godot/game/BrowserBookmarks.java
+cp android/src/main/java/com/godot/game/BrowserHistory.java android/build/src/main/java/com/godot/game/BrowserHistory.java
+cp android/src/main/java/com/godot/game/BrowserAdblock.java android/build/src/main/java/com/godot/game/BrowserAdblock.java
+cp android/src/main/java/com/godot/game/BrowserBlockingPolicy.java android/build/src/main/java/com/godot/game/BrowserBlockingPolicy.java
 mkdir -p android/build/src/main/java/com/godot/game/diagnostics
 cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/main/java/com/godot/game/diagnostics/Log.java
 # Godot's own Android export always wipes and repopulates src/main/assets from
@@ -183,6 +226,9 @@ cp android/src/main/java/com/godot/game/diagnostics/Log.java android/build/src/m
 bash "$SCRIPT_DIR/tools/build_support/package_android_models.sh" \
   "$SCRIPT_DIR/android/build/nightfallAssets"
 LITERT_GPU_AAR="${NIGHTFALL_LITERT_GPU_AAR:-$SCRIPT_DIR/android/libs/litert-gpu-nightfall-1.4.2.aar}"
+# Document-start injection is necessary: cloud-game pages may cache getGamepads
+# before onPageFinished. The feature is checked against the actual provider.
+sed -i '/implementation "androidx.documentfile:documentfile/a\    implementation "androidx.webkit:webkit:1.12.1"' android/build/build.gradle
 if [ "$USE_STOCK_LITERT" = "1" ]; then
   echo "Using stock-priority LiteRT GPU 1.4.2"
   sed -i '/implementation "androidx.documentfile:documentfile/a\\n    implementation "com.google.ai.edge.litert:litert:1.4.2"\n    implementation "com.google.ai.edge.litert:litert-gpu:1.4.2"' android/build/build.gradle
@@ -217,6 +263,11 @@ else
 fi
 
 echo "Exporting $PRESET..."
+if [ "$PCVR_ALVR" = "ON" ]; then
+  mkdir -p android/build/libs/release/arm64-v8a
+  cp .build-cache/meteor-xr/artifacts/20.14.1/android-arm64/arm64-v8a/libalvr_client_core.stripped.so \
+    android/build/libs/release/arm64-v8a/libalvr_client_core.so
+fi
 EXPORT_FLAG="--export-debug"
 
 if [ "$PRESET" = "NightfallRelease" ]; then
@@ -227,6 +278,10 @@ JAVA_HOME="$JAVA_HOME" "$GODOT" --headless --path "$SCRIPT_DIR" $EXPORT_FLAG "$P
 
 if [ ! -f "$OUTPUT" ]; then
   echo "Error: $OUTPUT not created"
+  exit 1
+fi
+if [ "$PCVR_ALVR" = "ON" ] && ! unzip -Z1 "$OUTPUT" | grep -Fx 'lib/arm64-v8a/libalvr_client_core.so' >/dev/null; then
+  echo "Error: optional PCVR core was not packaged" >&2
   exit 1
 fi
 if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libnightfall-stream.android.template_release.arm64.so" >/dev/null; then

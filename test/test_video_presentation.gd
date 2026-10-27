@@ -27,6 +27,12 @@ func _init():
 	_test_path_resolution()
 	_test_path_application()
 	_test_cursor_path()
+	for position in [-1, 0, 1]:
+		assert(VideoPresentation.cursor_calibration_pixels(position, 1440.0, true) == 0.0,
+			"Browser pointer must match the unshifted WebView click")
+	assert(VideoPresentation.cursor_calibration_pixels(0, 1080.0, false) == 12.0)
+	assert(VideoPresentation.cursor_calibration_pixels(1, 1440.0, false) == 32.0)
+	assert(VideoPresentation.cursor_calibration_pixels(-1, 1080.0, false) == 0.0)
 	_test_depth_sync_delay()
 	print("All video_presentation tests passed")
 	quit()

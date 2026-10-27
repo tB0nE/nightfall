@@ -20,6 +20,7 @@ const DEFAULT_CONTRAST_PCT := 100
 const DEFAULT_GAMMA_PCT := 100
 const DEFAULT_AMBIENT_MODE := 0
 const DEFAULT_AMBIENT_COLOR := 0
+const DEFAULT_BROWSER_RESOLUTION := 0 # 0=1080p, 1=1440p
 const DEFAULT_CURSOR_MODE := 1
 const DEFAULT_POINTER_STEADY := 1
 const DEFAULT_DOUBLE_CLICK_MODE := 0
@@ -51,6 +52,7 @@ var contrast_pct: int = DEFAULT_CONTRAST_PCT
 var gamma_pct: int = DEFAULT_GAMMA_PCT
 var ambient_mode: int = DEFAULT_AMBIENT_MODE
 var ambient_color: int = DEFAULT_AMBIENT_COLOR
+var browser_resolution: int = DEFAULT_BROWSER_RESOLUTION
 var cursor_mode: int = DEFAULT_CURSOR_MODE
 var pointer_steady: int = DEFAULT_POINTER_STEADY
 var double_click_mode: int = DEFAULT_DOUBLE_CLICK_MODE
@@ -95,6 +97,7 @@ func reset_display() -> void:
 	ambient_color = DEFAULT_AMBIENT_COLOR
 
 func reset_general() -> void:
+	browser_resolution = DEFAULT_BROWSER_RESOLUTION
 	cursor_mode = DEFAULT_CURSOR_MODE
 	pointer_steady = DEFAULT_POINTER_STEADY
 	double_click_mode = DEFAULT_DOUBLE_CLICK_MODE

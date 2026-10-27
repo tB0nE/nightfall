@@ -44,6 +44,7 @@ dependencies {
     implementation "androidx.fragment:fragment:$versions.fragmentVersion"
     implementation "androidx.core:core-splashscreen:$versions.splashscreenVersion"
     implementation "androidx.documentfile:documentfile:$versions.documentfileVersion"
+    implementation "androidx.webkit:webkit:1.12.1"
 
     if (rootProject.findProject(":lib")) {
         implementation project(":lib")

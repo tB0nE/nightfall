@@ -10,6 +10,7 @@ pub struct Status {
     pub map: PortMap,
     pub sunshine_host: String,
     pub discovery_port: u16,
+    pub xr_ports: Option<(u16, u16, u16)>,
     pub sunshine_up: AtomicBool,
     pub firewall: Mutex<crate::firewall::Status>,
 }
@@ -17,7 +18,7 @@ pub struct Status {
 impl Status {
     /// The ports the Quest needs open.
     pub fn quest_ports(&self) -> Vec<(u16, crate::ports::Proto)> {
-        crate::firewall::ports(&self.map, self.discovery_port)
+        crate::firewall::ports_with_xr(&self.map, self.discovery_port, self.xr_ports)
     }
 
     pub fn firewall(&self) -> crate::firewall::Status {

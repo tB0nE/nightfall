@@ -120,6 +120,16 @@ fn candidates() -> Vec<PathBuf> {
     dirs
 }
 
+/// Discover installation files without loading TensorRT/CUDA just to populate
+/// the model menu. Actual compatibility is validated when VDA is selected.
+pub fn installed() -> bool {
+    if !candidates().is_empty() {return true;}
+    let variable=if cfg!(windows) {"PATH"} else {"LD_LIBRARY_PATH"};
+    let mut dirs:Vec<PathBuf>=std::env::var_os(variable).map(|v|std::env::split_paths(&v).collect()).unwrap_or_default();
+    if !cfg!(windows) {dirs.extend(["/usr/lib64","/usr/lib/x86_64-linux-gnu","/usr/lib","/usr/local/lib"].into_iter().map(PathBuf::from));}
+    dirs.iter().any(|d|d.join(NVINFER).is_file() && d.join(PARSER).is_file())
+}
+
 /// Opens TensorRT once it can. Returns its version (for example `10.16.1`).
 pub fn init() -> Result<String, String> {
     let mut opened = OPENED.lock().map_err(|_| "TensorRT's lock is poisoned".to_string())?;
