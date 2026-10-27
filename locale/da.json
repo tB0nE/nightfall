@@ -73,7 +73,7 @@
 	"Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.": "Forstærk svag lyd; høje toppe begrænses blødt.",
 	"Normal": "Normal",
 	"Cursor Type": "Markørtype",
-	"Choose the appearance of the VR pointer.": "Vælg udseendet på VR-markøren.",
+	"Choose the appearance of the VR pointer, or hide it on the screen.": "Vælg VR-markørens udseende, eller skjul den på skærmen.",
 	"Cursor Steady": "Stabilisering",
 	"Adjust pointer-motion smoothing.": "Juster udjævningen af markørens bevægelse.",
 	"Tracking": "Sporing",
@@ -173,6 +173,7 @@
 	"Purple": "Lilla",
 	"Circle": "Cirkel",
 	"Pointer": "Markør",
+	"Hidden": "Skjult",
 	"Low": "Lav",
 	"High": "Høj",
 	"One Euro": "One Euro",
@@ -221,5 +222,12 @@
 	"Forget Meteor Keys": "Glem Meteor-nøgler",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Stol på den næste nøgle fra Nightfall Meteor efter geninstallation.",
 	"Meteor's key changed; not using it": "Meteors nøgle er ændret; bruges ikke",
-	"Meteor keys forgotten": "Meteor-nøgler glemt"
+	"Meteor keys forgotten": "Meteor-nøgler glemt",
+	"Input": "Input",
+	"Follows Pointer": "Følger markør",
+	"Move the PC cursor wherever you point, without clicking.": "Flyt pc'ens markør derhen, hvor du peger, uden at klikke.",
+	"High Refresh Rates": "Høje opdateringshastigheder",
+	"Offer 200 and 207 Hz. They can glitch the headset.": "Tilbyd 200 og 207 Hz. De kan give fejl i headsettet.",
+	"PT Fade": "PT-dæmpning",
+	"Darken your surroundings in passthrough so the screen stands out.": "Gør omgivelserne mørkere i passthrough, så skærmen træder frem."
 }

@@ -1,6 +1,8 @@
 #include "input_bridge.h"
 
 #include <Limelight.h>
+#include <algorithm>
+#include <cmath>
 #include <godot_cpp/classes/global_constants.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -8,7 +10,12 @@ using namespace godot;
 
 InputBridge::InputBridge() {}
 
-InputBridge::~InputBridge() {}
+InputBridge::~InputBridge() {
+    stop_mouse_follow();
+    if (follow_thread_.joinable()) {
+        follow_thread_.join();
+    }
+}
 
 int InputBridge::send_mouse_move(int delta_x, int delta_y) {
     return LiSendMouseMoveEvent((short)delta_x, (short)delta_y);
@@ -16,6 +23,77 @@ int InputBridge::send_mouse_move(int delta_x, int delta_y) {
 
 int InputBridge::send_mouse_position(int x, int y, int ref_w, int ref_h) {
     return LiSendMousePositionEvent((short)x, (short)y, (short)ref_w, (short)ref_h);
+}
+
+int InputBridge::follow_mouse_position(int x, int y, int ref_w, int ref_h) {
+    std::lock_guard<std::mutex> lock(follow_mutex_);
+    const Clock::time_point now = Clock::now();
+    const double dt = std::chrono::duration<double>(now - follow_sample_time_).count();
+    const bool continuing = follow_active_ && ref_w == follow_ref_w_ && ref_h == follow_ref_h_
+        && dt > 0.002 && dt < FOLLOW_IDLE_SECONDS;
+    if (continuing) {
+        // Light smoothing: integer pixels make single-frame velocity noisy.
+        follow_vx_ = follow_vx_ * 0.5 + ((x - follow_x_) / dt) * 0.5;
+        follow_vy_ = follow_vy_ * 0.5 + ((y - follow_y_) / dt) * 0.5;
+        follow_interval_ = follow_interval_ * 0.8 + dt * 0.2;
+    } else {
+        follow_vx_ = 0.0;
+        follow_vy_ = 0.0;
+    }
+    follow_x_ = x;
+    follow_y_ = y;
+    follow_ref_w_ = ref_w;
+    follow_ref_h_ = ref_h;
+    follow_sample_time_ = now;
+    follow_active_ = true;
+    if (!follow_thread_running_) {
+        // A stopped thread released the lock for good before exiting.
+        if (follow_thread_.joinable()) {
+            follow_thread_.join();
+        }
+        follow_thread_running_ = true;
+        follow_thread_ = std::thread(&InputBridge::follow_loop, this);
+    }
+    // The real sample goes out now; the thread only fills the gaps.
+    return send_follow_point_locked(x, y);
+}
+
+void InputBridge::stop_mouse_follow() {
+    std::lock_guard<std::mutex> lock(follow_mutex_);
+    follow_active_ = false;
+    follow_sent_x_ = -1;
+    follow_sent_y_ = -1;
+}
+
+int InputBridge::send_follow_point_locked(double x, double y) {
+    const int px = std::clamp((int)std::lround(x), 0, std::max(0, follow_ref_w_ - 1));
+    const int py = std::clamp((int)std::lround(y), 0, std::max(0, follow_ref_h_ - 1));
+    if (px == follow_sent_x_ && py == follow_sent_y_) {
+        return 0;
+    }
+    follow_sent_x_ = px;
+    follow_sent_y_ = py;
+    return LiSendMousePositionEvent((short)px, (short)py, (short)follow_ref_w_, (short)follow_ref_h_);
+}
+
+void InputBridge::follow_loop() {
+    const auto period = std::chrono::microseconds(1000000 / FOLLOW_HZ);
+    Clock::time_point next = Clock::now();
+    while (true) {
+        {
+            std::lock_guard<std::mutex> lock(follow_mutex_);
+            const double age = std::chrono::duration<double>(Clock::now() - follow_sample_time_).count();
+            if (!follow_active_ || age > FOLLOW_IDLE_SECONDS) {
+                follow_thread_running_ = false;
+                return;
+            }
+            const double t = std::min(age, follow_interval_);
+            send_follow_point_locked(follow_x_ + follow_vx_ * t, follow_y_ + follow_vy_ * t);
+        }
+        // After a late wake, keep the period rather than sending a burst.
+        next = std::max(next + period, Clock::now());
+        std::this_thread::sleep_until(next);
+    }
 }
 
 int InputBridge::send_mouse_move_as_position(int delta_x, int delta_y, int ref_w, int ref_h) {
@@ -442,6 +520,8 @@ void InputBridge::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("send_mouse_move", "delta_x", "delta_y"), &InputBridge::send_mouse_move);
     ClassDB::bind_method(D_METHOD("send_mouse_position", "x", "y", "ref_w", "ref_h"), &InputBridge::send_mouse_position);
+    ClassDB::bind_method(D_METHOD("follow_mouse_position", "x", "y", "ref_w", "ref_h"), &InputBridge::follow_mouse_position);
+    ClassDB::bind_method(D_METHOD("stop_mouse_follow"), &InputBridge::stop_mouse_follow);
     ClassDB::bind_method(D_METHOD("send_mouse_move_as_position", "delta_x", "delta_y", "ref_w", "ref_h"), &InputBridge::send_mouse_move_as_position);
     ClassDB::bind_method(D_METHOD("send_mouse_button_pressed", "button"), &InputBridge::send_mouse_button_pressed);
     ClassDB::bind_method(D_METHOD("send_mouse_button_released", "button"), &InputBridge::send_mouse_button_released);

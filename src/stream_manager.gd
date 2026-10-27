@@ -47,6 +47,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		main.browser_prototype.stop(false)
 	main.screen_sources.focus_browser(null)
 	main.session_lifecycle.begin_connect()
+	main.welcome_screen.clear_notice()
 	_current_host_id = host_id
 	_current_app_id = app_id
 	# Host-specific FPS is loaded after OpenXR's initial startup refresh-rate
@@ -340,6 +341,14 @@ func _on_v2_launch_response(response: Dictionary):
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
+		# A host that only lets this client view can't be fixed by retrying.
+		var permission := int(response.get("host_permission", -1))
+		if HostPermissions.blocks_launch(permission):
+			var why := HostPermissions.explain(HostPermissions.missing(permission))
+			main._log("[STREAM] Host permissions 0x%x: %s" % [permission, why])
+			main.restore_after_failed_connect(why)
+			main.welcome_screen.show_notice(why)
+			return
 		# The host no longer knows this app ID: its app list changed (a
 		# restart can renumber apps), or the welcome screen fell back to its
 		# placeholder Desktop when the list came back empty.
@@ -370,19 +379,18 @@ func _on_v2_launch_response(response: Dictionary):
 		if msg.find("Session URL not found") != -1:
 			main._log("[PAIR] Launch failed due to stale pairing, re-pairing...")
 			var ip = ""
+			var http_port: int = main.DEFAULT_PAIR_PORT
 			for h in _b().get_hosts():
 				if h.get("id") == main.current_host_id:
 					ip = h.get("localaddress", "")
+					http_port = int(h.get("http_port", main.DEFAULT_PAIR_PORT))
 					break
 			if not ip.is_empty():
 				_b().get_config_manager().remove_host(main.current_host_id)
 				main._ui_status_label.text = "Re-pairing with " + ip + "..."
-				# Stored host records only keep the plain HTTPS port
-				# (localaddress/https_port), not whatever custom HTTP pairing
-				# port the user originally typed into %IPInput (see
-				# main.parse_ip_port()) - falls back to the default here,
-				# same as before this port-suffix support existed.
-				var pin = _b().start_pair(ip, main.DEFAULT_PAIR_PORT)
+				# Re-pair on the HTTP port the host was paired on (records
+				# from before it was saved derive it from https_port).
+				var pin = _b().start_pair(ip, http_port)
 				if str(pin) != "" and str(pin) != "0":
 					main.welcome_screen.show_pin_when_needed(str(pin))
 					return
@@ -390,9 +398,18 @@ func _on_v2_launch_response(response: Dictionary):
 			main.welcome_screen.show_welcome_screen("server")
 		else:
 			main._ui_status_label.text = "Launch failed: " + str(msg)
+			main.welcome_screen.show_notice("Launch failed: " + str(msg))
 		return
 
 	_app_id_refreshed = false
+	# Streaming works, but the host may drop mouse, keyboard or controller
+	# input. Say so on the menu's status line and on the welcome screen.
+	var input_missing := HostPermissions.missing(int(response.get("host_permission", -1)))
+	if not input_missing.is_empty():
+		var why := HostPermissions.explain(input_missing)
+		main._log("[STREAM] Host permissions 0x%x: %s" % [int(response.get("host_permission", -1)), why])
+		main.ui_controller.set_status(why)
+		main.welcome_screen.show_notice(why)
 	var server_info = {}
 	server_info["server_codec_mode_support"] = response.get("server_codec_mode_support", 0)
 	var scm = response.get("server_codec_mode_support", 0)
@@ -733,18 +750,30 @@ func on_pair_pressed():
 			return
 		main.welcome_screen.show_pin_when_needed(str(pin))
 
+# USB Link is IPv6 link-local only. Sunshine and Vibepollo listen on IPv4
+# unless address_family = both, so they refuse it; on Windows the USB network
+# is often a Public network the host's firewall rule doesn't cover, so the
+# request times out with the PIN on screen and nothing on the host
+# (Rush_iam). Name both, whichever way it failed.
+static func pair_failure_message(pair_ip: String, msg: String) -> String:
+	if pair_ip.to_lower().begins_with("fe80:"):
+		return ("Pairing over USB Link failed. The host must listen on IPv6: set "
+			+ "address_family = both in its config and restart it. On Windows, also allow "
+			+ "the host through the firewall on Public networks (the USB link is one).")
+	return "Pairing failed: " + msg
+
 func on_pair_completed(success: bool, _msg: String):
 	main._log("[PAIR] pair_completed: success=%s msg=%s" % [str(success), str(_msg)])
 	main.welcome_screen.pairing_finished()
 	if not success:
-		main._ui_status_label.text = "Pair FAILED: " + str(_msg)
-		# Sunshine listens on IPv4 only by default, and USB Link is IPv6-only,
-		# so an instant refusal over the cable almost always means this.
 		var pair_ip: String = main.parse_ip_port(main.get_node("%IPInput").text)[0]
-		if pair_ip.to_lower().begins_with("fe80:") and str(_msg).contains("Could not connect"):
-			main._ui_status_label.text = "Server refused the USB connection.\nSet address_family = both in its Sunshine config and restart it."
-			main._log("[PAIR] USB Link host refused connection - Sunshine likely listening on IPv4 only")
+		var why := pair_failure_message(pair_ip, str(_msg))
+		main._ui_status_label.text = why
+		if pair_ip.to_lower().begins_with("fe80:"):
+			main._log("[PAIR] USB Link pairing failed - host not listening on IPv6, or its firewall blocks the USB network")
 		main.welcome_screen.show_welcome_screen("server")
+		# The welcome screens can't show the menu's status line.
+		main.welcome_screen.show_notice(why)
 		return
 	main._ui_status_label.text = "Pairing successful, starting stream..."
 	# Settle delay (2026-08-26) - the mutual-TLS HTTPS endpoint (port 57984)

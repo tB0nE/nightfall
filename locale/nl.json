@@ -73,7 +73,7 @@
 	"Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.": "Versterk zachte audio; pieken worden zacht begrensd.",
 	"Normal": "Normaal",
 	"Cursor Type": "Cursortype",
-	"Choose the appearance of the VR pointer.": "Kies het uiterlijk van de VR-aanwijzer.",
+	"Choose the appearance of the VR pointer, or hide it on the screen.": "Kies het uiterlijk van de VR-aanwijzer, of verberg hem op het scherm.",
 	"Cursor Steady": "Cursorstabiliteit",
 	"Adjust pointer-motion smoothing.": "Pas de demping van de aanwijzerbeweging aan.",
 	"Tracking": "Tracking",
@@ -173,6 +173,7 @@
 	"Purple": "Paars",
 	"Circle": "Cirkel",
 	"Pointer": "Aanwijzer",
+	"Hidden": "Verborgen",
 	"Low": "Laag",
 	"High": "Hoog",
 	"One Euro": "One Euro",
@@ -221,5 +222,12 @@
 	"Forget Meteor Keys": "Meteor-sleutels vergeten",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Vertrouw de volgende sleutel van Nightfall Meteor na herinstallatie.",
 	"Meteor's key changed; not using it": "Sleutel van Meteor gewijzigd; niet gebruikt",
-	"Meteor keys forgotten": "Meteor-sleutels vergeten"
+	"Meteor keys forgotten": "Meteor-sleutels vergeten",
+	"Input": "Invoer",
+	"Follows Pointer": "Volgt aanwijzer",
+	"Move the PC cursor wherever you point, without clicking.": "Verplaats de pc-cursor naar waar je wijst, zonder te klikken.",
+	"High Refresh Rates": "Hoge verversingssnelheden",
+	"Offer 200 and 207 Hz. They can glitch the headset.": "Biedt 200 en 207 Hz. Deze kunnen de headset laten haperen.",
+	"PT Fade": "PT dimmen",
+	"Darken your surroundings in passthrough so the screen stands out.": "Maakt je omgeving donkerder in passthrough zodat het scherm opvalt."
 }

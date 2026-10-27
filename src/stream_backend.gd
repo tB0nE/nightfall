@@ -134,6 +134,16 @@ func send_mouse_position_event(x: int, y: int, ref_w: int, ref_h: int):
 	if _v2:
 		_v2.get_input_bridge().send_mouse_position(x, y, ref_w, ref_h)
 
+## Mouse Follows Pointer: the native side sends this sample and fills the
+## frames in between at 250 Hz. Call once per frame, even when unchanged.
+func follow_mouse_position_event(x: int, y: int, ref_w: int, ref_h: int):
+	if _v2:
+		_v2.get_input_bridge().follow_mouse_position(x, y, ref_w, ref_h)
+
+func stop_mouse_follow():
+	if _v2:
+		_v2.get_input_bridge().stop_mouse_follow()
+
 func send_mouse_move_event(dx: int, dy: int):
 	if _v2:
 		_v2.get_input_bridge().send_mouse_move(dx, dy)

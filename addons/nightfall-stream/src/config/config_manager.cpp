@@ -135,6 +135,9 @@ Array NightfallConfigManager::get_hosts() {
             host["localaddress"] = config->get_value("hosts", prefix + "localaddress", "");
             host["usb_address"] = config->get_value("hosts", prefix + "usb_address", "");
             host["https_port"] = config->get_value("hosts", prefix + "https_port", 47984);
+            // The HTTP port pairing used. Records saved before it was kept
+            // follow Sunshine's layout: HTTP is the base port, HTTPS base - 5.
+            host["http_port"] = config->get_value("hosts", prefix + "http_port", (int)host["https_port"] + 5);
             host["srvcert"] = config->get_value("hosts", prefix + "srvcert", "");
             host["server_unique_id"] = config->get_value("hosts", prefix + "server_unique_id", "");
             hosts.append(host);

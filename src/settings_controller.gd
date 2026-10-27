@@ -389,6 +389,7 @@ func toggle_ai_3d_enabled():
 		main.settings.host.ai_3d_last_mode = main.settings.host.ai_3d_speed
 		main.settings.host.ai_3d_speed = 0
 	_save_setting(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
+	main.ui_controller.update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_3d_btn_state()
 	_schedule_ai_3d_commit()
 
@@ -806,6 +807,19 @@ func get_depth_model_index() -> int:
 		return ai_3d_models[get_auto_selection().model_idx].java_index
 	return ai_3d_models[selected_depth_model_index()].java_index
 
+# The model actually running on Android, for the stats overlay. Under Auto
+# the menu shows "Auto"; this names what Auto chose. Looked up in
+# ai_3d_models rather than a separate list: a hand-kept copy went stale when
+# Java index 25 became EdgePad-512 and kept calling it EdgePad-384.
+func active_android_depth_model_name() -> String:
+	if get_depth_backend_index() == AI3D_BACKEND_CPU:
+		return ai_3d_models[_android_cpu_model_index()].label
+	var java_index := get_depth_model_index()
+	for model in ai_3d_models:
+		if model.java_index == java_index and model.gpu and model.get("android", false) and model.label != "Auto":
+			return model.label
+	return "ZipDepth (model %d)" % java_index
+
 func get_depth_model_label() -> String:
 	if meteor_depth_selected():
 		return "Meteor"
@@ -1013,6 +1027,13 @@ func _schedule_ai_3d_commit(delay_seconds: float = 0.6):
 			return
 	apply_stereo()
 
+const DEPTH_MODEL_LOAD_SEC := 2.5
+# The (model, backend) last sent to configure_depth().
+var _configured_depth := Vector2i.ZERO
+
+static func depth_model_switch_loads(previous: Vector2i, next: Vector2i) -> bool:
+	return next.x != 0 and next.y == AI3D_BACKEND_GPU and next != previous
+
 func apply_stereo():
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	var mode = get_stereo_mode()
@@ -1081,7 +1102,15 @@ func apply_stereo():
 		var java_class := _android_depth_class()
 		if java_class:
 			java_class.setDepthGpuApi(get_ai_3d_gpu_api_effective())
-	main.stream_backend.configure_depth(model_idx, get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU)
+	var backend = get_depth_backend_index() if depth_active else AI3D_BACKEND_CPU
+	main.stream_backend.configure_depth(model_idx, backend)
+	# A GPU model switch pauses depth for ~2.5 s while the previous model's
+	# GPU context retires and the new one compiles (DepthEstimator.java's
+	# switch cooldown); the 3D effect stands still meanwhile. Say so instead
+	# of looking frozen.
+	if depth_model_switch_loads(_configured_depth, Vector2i(model_idx, backend)) and main.ui_controller:
+		main.ui_controller.show_temporary_status("Loading depth model…", DEPTH_MODEL_LOAD_SEC)
+	_configured_depth = Vector2i(model_idx, backend)
 	main.stream_backend.set_depth_hz_cap(get_effective_hz_cap())
 	refresh_depth_backend_status(true)
 	# sync_model_size() (2026-08-27 - moved BEFORE the texture-capture block
@@ -1170,10 +1199,15 @@ func apply_passthrough(enable: bool):
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface:
 		return
+	var fade_layer: bool = main.passthrough_fade.setup(main, main.xr_origin)
+	main.passthrough_fade.apply(enable, main.settings.passthrough_fade_pct)
 	if enable:
 		main.get_viewport().transparent_bg = true
 		main.world_env.environment.background_mode = Environment.BG_COLOR
-		main.world_env.environment.background_color = Color(0, 0, 0, 0)
+		# Without the fade layer, dim through the projection layer instead;
+		# that reaches the compositor only when Godot submits it.
+		var fade_alpha: float = 0.0 if fade_layer else main.settings.passthrough_fade_pct / 100.0
+		main.world_env.environment.background_color = Color(0, 0, 0, fade_alpha)
 		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_ALPHA_BLEND
 	else:
 		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
@@ -1332,6 +1366,10 @@ func cycle_ambient_color():
 	_save_setting(main._ui_ambient_color_btn, main.ambient_color_labels[main.settings.ambient_color])
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
+
+func toggle_mouse_follows_pointer():
+	main.settings.mouse_follows_pointer = not main.settings.mouse_follows_pointer
+	_save_setting(main._ui_mouse_follows_btn, "On" if main.settings.mouse_follows_pointer else "Off")
 
 func cycle_auto_reconnect():
 	main.settings.auto_reconnect_enabled = not main.settings.auto_reconnect_enabled
@@ -1496,8 +1534,56 @@ func poll_usb_link_status(delta: float):
 	var label = "Up" if up else "Requesting..."
 	if main._ui_usb_link_btn.get_meta(UIController.OPTION_VALUE_META, "") != label:
 		main.ui_controller.update_option_btn(main._ui_usb_link_btn, label)
+	if up and not _usb_link_was_up:
+		_learn_usb_addresses()
+	_usb_link_was_up = up
 	if up:
 		_maybe_return_to_usb_link()
+
+var _usb_link_was_up := false
+
+# Streams use the cable only for hosts with a saved usb_address, which used
+# to be learned only by pairing over the cable: a PC paired over Wi-Fi kept
+# streaming over Wi-Fi while USB Link said "Up" (Rush_iam). When the link
+# comes up, find saved hosts on it by their unique ID and save the address.
+func _learn_usb_addresses() -> void:
+	var iface: String = main.stream_manager._usb_link_iface()
+	var cm = main.stream_backend.get_computer_manager()
+	var config = main.stream_backend.get_config_manager()
+	if iface.is_empty() or cm == null or config == null:
+		return
+	var found: Array = []
+	var thread := Thread.new()
+	thread.start(func(): found.append_array(main.stream_backend.browse_mdns_usb(iface, 3.0)))
+	while thread.is_alive():
+		await main.get_tree().create_timer(0.1).timeout
+	thread.wait_to_finish()
+	for usb_host in found:
+		var ip: String = usb_host.get("ip", "")
+		if ip.is_empty():
+			continue
+		cm.connect_to_computer(ip, int(usb_host.get("port", main.DEFAULT_PAIR_PORT)), func(result: Dictionary):
+			if result.get("status", "") != "online":
+				# Seen on the cable (its mDNS reached us) but its web server
+				# doesn't answer there.
+				main._log("[USB] %s advertises on USB Link but doesn't answer there" % ip)
+				main.ui_controller.set_status("USB Link is up, but the PC doesn't answer over it. Set address_family = both in the host's config; on Windows, allow it through the firewall on Public networks.")
+				return
+			var host_id := usb_host_to_update(main.stream_backend.get_hosts(), ip, str(result.get("uniqueid", "")))
+			if host_id >= 0:
+				config.update_host(host_id, {"usb_address": ip})
+				main._log("[USB] Learned USB Link address %s for host %d" % [ip, host_id])
+				main.ui_controller.show_temporary_status("USB Link: PC found on the cable", 3.0))
+
+## The saved host that `unique_id` identifies, if its USB address isn't `ip`
+## yet; -1 otherwise.
+static func usb_host_to_update(hosts: Array, ip: String, unique_id: String) -> int:
+	if unique_id.is_empty():
+		return -1
+	for host in hosts:
+		if str(host.get("server_unique_id", "")) == unique_id:
+			return -1 if str(host.get("usb_address", "")) == ip else int(host.get("id", -1))
+	return -1
 
 var _usb_return_probe_in_flight: bool = false
 var _usb_return_last_probe_ms: int = 0
@@ -1529,7 +1615,7 @@ func _maybe_return_to_usb_link():
 		return
 	_usb_return_probe_in_flight = true
 	var expected_id: String = host.get("server_unique_id", "")
-	cm.connect_to_computer(usb_address, main.DEFAULT_PAIR_PORT, func(result: Dictionary):
+	cm.connect_to_computer(usb_address, int(host.get("http_port", main.DEFAULT_PAIR_PORT)), func(result: Dictionary):
 		_usb_return_probe_in_flight = false
 		if result.get("status", "") != "online":
 			return
@@ -1767,14 +1853,50 @@ func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 
 func cycle_fps():
 	if pcvr_timing.active: return
-	var idx = STREAM_FPS_RATES.find(main.settings.host.stream_fps)
-	var next_idx = 0 if idx < 0 else (idx + 1) % STREAM_FPS_RATES.size()
-	main.settings.host.stream_fps = STREAM_FPS_RATES[next_idx]
+	main.settings.host.stream_fps = next_fps_rate(main.settings.host.stream_fps, main.settings.high_refresh_rates)
 	_save_setting(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
 	if main.is_streaming:
 		_schedule_stream_restart()
 	else:
+		_schedule_display_refresh()
+
+# 200 and 207 Hz glitch some headsets; they're offered only when Settings >
+# High Refresh Rates is on.
+const HIGH_REFRESH_MIN := 200
+
+static func next_fps_rate(current: int, high_refresh_rates: bool) -> int:
+	var rates := STREAM_FPS_RATES.filter(func(rate): return high_refresh_rates or rate < HIGH_REFRESH_MIN)
+	var idx := rates.find(current)
+	if idx < 0:
+		# A hidden rate, or one no longer offered: continue from the next lower one.
+		idx = rates.size() - 1
+		for i in rates.size():
+			if rates[i] > current:
+				idx = i - 1
+				break
+	return rates[(idx + 1) % rates.size()]
+
+var _display_refresh_seq := 0
+
+# Apply the headset rate only once cycling stops, so stepping from 90 to 72 Hz
+# doesn't switch the display through every rate between (Rush_iam: 207 Hz
+# glitched the headset on the way past).
+func _schedule_display_refresh():
+	_display_refresh_seq += 1
+	var my_seq := _display_refresh_seq
+	await main.get_tree().create_timer(0.8).timeout
+	if _display_refresh_seq == my_seq and not main.is_streaming:
 		apply_display_refresh_rate()
+
+func cycle_passthrough_fade():
+	main.settings.passthrough_fade_pct = PassthroughFade.next_fade(main.settings.passthrough_fade_pct)
+	if main.settings.passthrough_enabled:
+		apply_passthrough(true)
+	_save_setting(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
+
+func toggle_high_refresh_rates():
+	main.settings.high_refresh_rates = not main.settings.high_refresh_rates
+	_save_setting(main._ui_high_refresh_btn, "On" if main.settings.high_refresh_rates else "Off")
 
 func cycle_resolution():
 	if main.settings.host.is_polaris_host:

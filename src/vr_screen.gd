@@ -105,6 +105,7 @@ var comp_grab_bar_viewport: SubViewport = null
 var shortcut_buttons: Dictionary = {}
 var shortcut_areas: Dictionary = {}
 var comp_shortcut_icons: Dictionary = {}
+var shortcut_backdrop: MeshInstance3D = null
 
 # Composition-space corner-handle indicators (2026-08-24) - same rationale
 # as comp_grab_bar: corner_handles are plain 3D scene nodes (MeshInstance3D
@@ -270,6 +271,14 @@ func update_shortcut_positions() -> void:
 		return
 	var icon_size = mesh_size.x * ScreenShortcutBar.ICON_SIZE_RATIO
 	var hit_size = mesh_size.x * ScreenShortcutBar.HIT_SIZE_RATIO
+	if shortcut_backdrop:
+		var backdrop_size = ScreenShortcutBar.backdrop_size_ratio() * mesh_size.x
+		shortcut_backdrop.position = Vector3(0.0, grab_bar.position.y, 0.0015)
+		if shortcut_backdrop.mesh is QuadMesh:
+			shortcut_backdrop.mesh.size = backdrop_size
+		var material = shortcut_backdrop.material_override as ShaderMaterial
+		if material:
+			material.set_shader_parameter("aspect", backdrop_size.x / backdrop_size.y)
 	for action in ScreenShortcutBar.VISIBLE_ACTIONS:
 		var icon = shortcut_buttons.get(action) as MeshInstance3D
 		if not icon:

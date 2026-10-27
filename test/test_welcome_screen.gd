@@ -30,6 +30,7 @@ class WelcomeProbe extends WelcomeScreen:
 
 func _init():
 	_test_order_apps()
+	_test_pair_address()
 	_test_xr_entry()
 	_test_xr_teardown_policy()
 	_test_active_watch_skips_discovery()
@@ -113,3 +114,11 @@ func _test_order_apps() -> void:
 	# Missing entries just fall through; case and whitespace don't matter.
 	assert(_names(WelcomeScreen.order_apps([{"name": "Zed"}, {"name": " steam "}, {"name": "Alpha"}])) == [" steam ", "Zed", "Alpha"])
 	assert(WelcomeScreen.order_apps([]).is_empty())
+
+func _test_pair_address() -> void:
+	# The default port stays implicit, so existing addresses are unchanged.
+	assert(WelcomeScreen.pair_address("192.168.1.20", 47989) == "192.168.1.20")
+	assert(WelcomeScreen.pair_address("192.168.1.20", 50000) == "192.168.1.20:50000")
+	assert(WelcomeScreen.pair_address("fe80::1%usb0", 50000) == "[fe80::1%usb0]:50000")
+	assert(WelcomeScreen.pair_address("fe80::1%usb0", 47989) == "fe80::1%usb0")
+	assert(WelcomeScreen.pair_address("192.168.1.20", 0) == "192.168.1.20")

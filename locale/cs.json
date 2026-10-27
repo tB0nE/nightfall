@@ -73,7 +73,7 @@
 	"Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.": "Zesílí tichý zvuk; hlasité špičky se jemně omezí.",
 	"Normal": "Normální",
 	"Cursor Type": "Typ kurzoru",
-	"Choose the appearance of the VR pointer.": "Vyberte vzhled ukazatele VR.",
+	"Choose the appearance of the VR pointer, or hide it on the screen.": "Zvolte vzhled ukazatele VR, nebo jej na obrazovce skryjte.",
 	"Cursor Steady": "Stabilizace",
 	"Adjust pointer-motion smoothing.": "Upraví vyhlazení pohybu ukazatele.",
 	"Tracking": "Sledování",
@@ -173,6 +173,7 @@
 	"Purple": "Fialová",
 	"Circle": "Kruh",
 	"Pointer": "Ukazatel",
+	"Hidden": "Skrytý",
 	"Low": "Nízká",
 	"High": "Vysoká",
 	"One Euro": "One Euro",
@@ -221,5 +222,12 @@
 	"Forget Meteor Keys": "Zapomenout klíče Meteoru",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Důvěřovat dalšímu klíči od Nightfall Meteor, po jeho přeinstalaci.",
 	"Meteor's key changed; not using it": "Klíč Meteoru se změnil; nepoužívá se",
-	"Meteor keys forgotten": "Klíče Meteoru zapomenuty"
+	"Meteor keys forgotten": "Klíče Meteoru zapomenuty",
+	"Input": "Vstup",
+	"Follows Pointer": "Sleduje ukazatel",
+	"Move the PC cursor wherever you point, without clicking.": "Posouvá kurzor PC tam, kam ukazujete, bez klikání.",
+	"High Refresh Rates": "Vysoké obnovovací frekvence",
+	"Offer 200 and 207 Hz. They can glitch the headset.": "Nabízí 200 a 207 Hz. Mohou způsobit chyby headsetu.",
+	"PT Fade": "Ztmavení PT",
+	"Darken your surroundings in passthrough so the screen stands out.": "Ztmaví okolí v passthrough, aby obrazovka vynikla."
 }

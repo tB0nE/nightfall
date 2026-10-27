@@ -73,7 +73,7 @@
 	"Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.": "Sube el audio bajo; los picos se limitan suavemente.",
 	"Normal": "Normal",
 	"Cursor Type": "Tipo de cursor",
-	"Choose the appearance of the VR pointer.": "Elige el aspecto del puntero de RV.",
+	"Choose the appearance of the VR pointer, or hide it on the screen.": "Elige el aspecto del puntero de RV o ocúltalo en la pantalla.",
 	"Cursor Steady": "Estabilización",
 	"Adjust pointer-motion smoothing.": "Ajusta el suavizado del movimiento del puntero.",
 	"Tracking": "Seguimiento",
@@ -173,6 +173,7 @@
 	"Purple": "Morado",
 	"Circle": "Círculo",
 	"Pointer": "Puntero",
+	"Hidden": "Oculto",
 	"Low": "Baja",
 	"High": "Alta",
 	"One Euro": "One Euro",
@@ -221,5 +222,12 @@
 	"Forget Meteor Keys": "Olvidar claves de Meteor",
 	"Trust the next key Nightfall Meteor sends, after reinstalling it.": "Confía en la próxima clave de Nightfall Meteor tras reinstalarlo.",
 	"Meteor's key changed; not using it": "La clave de Meteor cambió; no se usa",
-	"Meteor keys forgotten": "Claves de Meteor olvidadas"
+	"Meteor keys forgotten": "Claves de Meteor olvidadas",
+	"Input": "Entrada",
+	"Follows Pointer": "Sigue al puntero",
+	"Move the PC cursor wherever you point, without clicking.": "Mueve el cursor del PC adonde apuntes, sin hacer clic.",
+	"High Refresh Rates": "Tasas de refresco altas",
+	"Offer 200 and 207 Hz. They can glitch the headset.": "Ofrece 200 y 207 Hz. Pueden causar fallos en el visor.",
+	"PT Fade": "Atenuar PT",
+	"Darken your surroundings in passthrough so the screen stands out.": "Oscurece tu entorno en passthrough para que la pantalla destaque."
 }
