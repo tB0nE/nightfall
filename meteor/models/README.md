@@ -101,3 +101,20 @@ The nodes and values are unchanged (checked weight by weight on
 files are what the VDA download fetches, and their SHA-256s are pinned in
 `../src/vda.rs`. Re-export or retrain, and the release and the hashes need
 updating together.
+
+
+## Published Vulkan VDA downloads
+
+VDA Small 518×294 and 392×224 ncnn exports are optional downloads in Meteor's
+GPU / model menu, from the existing `meteor-vda-s-518x294` model release.
+`vda-vulkan-downloads.json` pins every asset's public name, byte count and SHA-256.
+Both variants retain the same original checkpoint; neither is newly trained.
+They use the bundled portable Vulkan runtime, without TensorRT/CUDA downloads.
+
+Each installed directory has cold/step `.ncnn.param` and `.ncnn.bin`, a runtime
+manifest and the Apache 2.0 license. Installation is staged outside the visible
+model list, resumed as needed and published only after verification. Downloading
+does not select a different inference model or GPU. Keep the existing
+`stage_vda_vulkan_models.py` exports as the model-release inputs; do not regenerate
+weights simply to make a release. A public integration test is available in
+`test/check_meteor_vda_downloads.py`.

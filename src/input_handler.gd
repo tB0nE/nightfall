@@ -3,6 +3,8 @@ extends RefCounted
 
 var main: Node3D
 var _last_desktop_input_msec: int = -10000
+var _forwarded_keys: Dictionary = {}
+var _forwarded_mouse_buttons: Dictionary = {}
 
 func hand_desktop_suspended() -> bool:
 	return Time.get_ticks_msec() - _last_desktop_input_msec < 2000
@@ -47,6 +49,7 @@ func _init(owner: Node3D):
 	main = owner
 
 func handle_input(event: InputEvent):
+	if desktop_input_blocked(): return
 	# Physical desktop input takes priority without disabling hand menu access.
 	if (event is InputEventKey and event.pressed) or event is InputEventMouseMotion or event is InputEventMouseButton:
 		_last_desktop_input_msec = Time.get_ticks_msec()
@@ -57,7 +60,7 @@ func handle_input(event: InputEvent):
 				if main.mouse_captured_by_stream and main.is_streaming:
 					var button_idx = MOUSE_BUTTON_LEFT if event.keycode == KEY_VOLUMEUP else MOUSE_BUTTON_RIGHT
 					var action = 7 if event.pressed else 8
-					main.stream_backend.send_mouse_button_event(action, button_idx)
+					send_stream_mouse_button(action, button_idx)
 				return
 
 	if main.mouse_captured_by_stream and main.is_streaming:
@@ -74,9 +77,9 @@ func handle_input(event: InputEvent):
 			main.stream_backend.send_mouse_move_event(int(event.relative.x), int(event.relative.y))
 		elif event is InputEventMouseButton:
 			var action = 7 if event.pressed else 8
-			main.stream_backend.send_mouse_button_event(action, event.button_index)
+			send_stream_mouse_button(action, event.button_index)
 		elif event is InputEventKey:
-			main.stream_backend.send_keyboard_event(event.keycode, 3 if event.pressed else 4, 0)
+			send_stream_key(event.keycode, 3 if event.pressed else 4)
 		elif event is InputEventJoypadButton or event is InputEventJoypadMotion:
 			_handle_pad_event(event)
 		return
@@ -96,7 +99,31 @@ func handle_input(event: InputEvent):
 			return
 
 		if event is InputEventKey:
-			main.stream_backend.send_keyboard_event(event.keycode, 3 if event.pressed else 4, 0)
+			send_stream_key(event.keycode, 3 if event.pressed else 4)
+
+func send_stream_key(code: int, action: int) -> void:
+	if action == 3 and desktop_input_blocked(): return
+	if action == 3: _forwarded_keys[code] = true
+	elif action == 4: _forwarded_keys.erase(code)
+	main.stream_backend.send_keyboard_event(code, action, 0)
+
+func send_stream_mouse_button(action: int, button: int) -> void:
+	if action == 7 and desktop_input_blocked(): return
+	if action == 7: _forwarded_mouse_buttons[button] = true
+	elif action == 8: _forwarded_mouse_buttons.erase(button)
+	main.stream_backend.send_mouse_button_event(action, button)
+
+func release_host_inputs() -> void:
+	if main.is_streaming and main.stream_backend:
+		for code in _forwarded_keys: main.stream_backend.send_keyboard_event(code, 4, 0)
+		for button in _forwarded_mouse_buttons: main.stream_backend.send_mouse_button_event(8, button)
+		neutral_host_gamepads()
+	_forwarded_keys.clear()
+	_forwarded_mouse_buttons.clear()
+
+func desktop_input_blocked() -> bool:
+	var handover = main.get("pcvr_handover")
+	return handover != null and handover.blocks_workspace()
 
 func capture_stream_mouse():
 	main.mouse_captured_by_stream = true
@@ -116,12 +143,29 @@ func release_stream_mouse():
 # again on its first input.
 func reset_gamepads() -> void:
 	gamepads.clear()
+	_forwarded_keys.clear()
+	_forwarded_mouse_buttons.clear()
+
+func neutral_host_gamepads() -> void:
+	if not main.is_streaming or not main.stream_backend: return
+	var mask := gamepads.active_mask()
+	for slot in GamepadSlots.MAX_SLOTS:
+		if mask & (1 << slot):
+			main.stream_backend.send_multi_controller_event(slot, mask, 0, 0, 0, 0, 0, 0, 0)
 
 # Sends one source's full state as its own host controller, announcing it
 # first if it is new this session. key: a Godot device ID, or
 # GamepadSlots.QUEST_PAD for the Quest-controller PAD mode.
 func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		lx: int, ly: int, rx: int, ry: int) -> void:
+	if desktop_input_blocked(): return
+	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
+	if focused_browser != null and focused_browser.active:
+		# Physical pads use original Android events directly. Only XR's virtual
+		# pad needs the browser-specific state bridge; never announce it to a PC.
+		if key == GamepadSlots.QUEST_PAD:
+			focused_browser.gamepad_state(buttons, lt, rt, lx, ly, rx, ry)
+		return
 	var is_new := not gamepads.has(key)
 	var slot := gamepads.acquire(key)
 	if slot < 0:

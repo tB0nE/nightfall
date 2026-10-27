@@ -1,0 +1,46 @@
+extends SceneTree
+const Fallback = preload("res://src/startup_hand_fallback.gd")
+func _initialize() -> void:
+	var policy := Fallback.new()
+	assert(not policy.step(0.5, 0, false, true))
+	assert(policy.step(1.0, 0, false, true))
+	assert(policy.effective_mode(0) == 1 and policy.auto_enabled)
+	assert(not policy.step(10, 0, false, true))
+	assert(policy.step(.1, 0, true, true))
+	assert(not policy.auto_enabled and policy.effective_mode(0) == 0)
+	assert(not policy.step(10, 0, false, true)) # Putting controllers down cannot re-enable hands.
+	policy = Fallback.new()
+	assert(policy.step(2, 0, false, true))
+	policy.explicit_choice()
+	assert(policy.effective_mode(0) == 0 and not policy.auto_enabled)
+	assert(not policy.step(10, 0, false, true))
+	policy = Fallback.new()
+	assert(not policy.step(2, 0, false, false))
+	assert(policy.step(0.1, 0, false, true)) # Hands can appear late after startup.
+	policy = Fallback.new()
+	assert(not policy.step(5, 0, false, false))
+	assert(not policy.step(20, 0, false, true)) # Never enable after putting controllers down mid-session.
+	assert(policy.decided and not policy.auto_enabled)
+	policy = Fallback.new()
+	assert(not policy.step(0.1, 0, true, true))
+	assert(not policy.step(2, 0, false, true)) # Seen a physical controller: respect Off.
+	for mode in [1, 3]:
+		policy = Fallback.new()
+		assert(not policy.step(2, mode, false, true))
+		assert(policy.effective_mode(mode) == mode)
+	var tracker := XRPositionalTracker.new()
+	tracker.set_tracker_profile("/interaction_profiles/oculus/touch_controller")
+	assert(Fallback.physical_controller_available(tracker)) # Profile present even without a tracked pose.
+	tracker.set_pose("aim", Transform3D.IDENTITY, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+	assert(Fallback.physical_controller_available(tracker))
+	tracker.invalidate_pose("aim")
+	assert(Fallback.physical_controller_available(tracker))
+	tracker.set_pose("aim", Transform3D.IDENTITY, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+	tracker.set_tracker_profile("/interaction_profiles/ext/hand_interaction_ext")
+	assert(not Fallback.physical_controller_available(tracker))
+	tracker.set_tracker_profile("/interaction_profiles/khr/simple_controller")
+	assert(not Fallback.physical_controller_available(tracker))
+	assert(not Fallback.physical_controller_available(null))
+	assert(not Fallback.physical_controller_available(XRHandTracker.new()))
+	print("All startup_hand_fallback tests passed")
+	quit()

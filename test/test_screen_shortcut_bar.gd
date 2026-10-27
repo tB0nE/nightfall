@@ -28,6 +28,11 @@ func _test_layout_order() -> void:
 	var px_per_width := ScreenShortcutBar.COMP_VIEWPORT_SIZE.x / ScreenShortcutBar.STRIP_WIDTH_RATIO
 	var px_per_height := ScreenShortcutBar.COMP_VIEWPORT_SIZE.y / ScreenShortcutBar.STRIP_HEIGHT_RATIO
 	assert(absf(px_per_width - px_per_height) / px_per_height < 0.01, "the viewport keeps the strip's aspect")
+	# The dark backdrop covers every icon and fits the strip's viewport.
+	var backdrop := ScreenShortcutBar.backdrop_size_ratio()
+	assert(backdrop.x <= ScreenShortcutBar.STRIP_WIDTH_RATIO and backdrop.y <= ScreenShortcutBar.STRIP_HEIGHT_RATIO)
+	assert(backdrop.x * 0.5 > x.call(ScreenShortcutBar.ACTION_MENU) + ScreenShortcutBar.ICON_SIZE_RATIO * 0.5)
+	assert(backdrop.y > ScreenShortcutBar.ICON_SIZE_RATIO)
 
 func _test_visible_actions() -> void:
 	assert(ScreenShortcutBar.VISIBLE_ACTIONS == [

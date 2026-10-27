@@ -65,6 +65,7 @@ func set_bezel_enabled(enabled: bool):
 # this fix attempts to solve yet (see MULTI_MONITOR grid work).
 func resize_screen_to_aspect(stream_w: int, stream_h: int):
 	for s in main.screens:
+		if main.screen_sources.is_browser_screen(s): continue
 		var content_w = int(float(stream_w) * s.uv_region.z)
 		var content_h = int(float(stream_h) * s.uv_region.w)
 		s.resize_to_aspect(content_w, content_h)

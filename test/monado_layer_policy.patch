@@ -1,0 +1,23 @@
+--- a/src/xrt/state_trackers/oxr/oxr_session_frame_end.c
++++ b/src/xrt/state_trackers/oxr/oxr_session_frame_end.c
+@@ -32,6 +32,7 @@
+ #include "oxr_api_verify.h"
+ #include "oxr_chain.h"
+ #include "oxr_xret.h"
++#include "/tests/meteor_layer_policy.h"
+ #include "oxr_roles.h"
+ 
+ #include <stdio.h>
+@@ -1915,6 +1916,12 @@
+ 	/*
+ 	 * Done verifying.
+ 	 */
++	const char *meteor_rejection = meteor_layer_policy(frameEndInfo);
++	if (meteor_rejection) {
++		return oxr_error(log, XR_ERROR_LAYER_INVALID,
++		                 "METEOR_LAYER_REJECT reason=%s layers=%u", meteor_rejection,
++		                 frameEndInfo->layerCount);
++	}
+ 
+ 	// Do state change if needed.
+ 	do_synchronize_state_change(log, sess, now_xr);

@@ -1,0 +1,23 @@
+config_version=5
+
+[application]
+config/name="Meteor XR engine fixture"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=320
+window/size/viewport_height=180
+window/vsync/vsync_mode=0
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.025,0.035,0.07,1)
+
+[xr]
+openxr/enabled=true
+openxr/reference_space=1
+openxr/environment_blend_mode=0
+openxr/submit_depth_buffer=false
+shaders/enabled=true

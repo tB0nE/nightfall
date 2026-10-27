@@ -79,7 +79,7 @@ impl View {
     }
 
     /// Saves the choice and restarts Meteor on the new host.
-    pub fn switch(&self, choice: Choice) -> ! {
+    pub fn switch(&self, choice: Choice) {
         let mut state = self.state.clone();
         state.choice = choice;
         if let Err(err) = super::save_state(&state) {

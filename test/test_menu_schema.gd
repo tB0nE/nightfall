@@ -2,16 +2,16 @@ extends SceneTree
 
 func _init():
 	assert(MenuSchema.validate().is_empty(), "Menu schema must be internally valid")
-	assert(_tab_button_labels() == ["Display", "Stream", "Control", "AI 3D", "Picture", "Monitors", "Settings"])
+	assert(_tab_button_labels() == ["Display", "Stream", "Control", "AI 3D", "Picture", "Screens", "Settings"])
 	assert(_tab_ids() == [&"display", &"stream", &"control", &"picture", &"settings"])
 	assert(_option_count(&"display") == 8)
 	assert(_option_count(&"stream") == 8)
 	assert(_option_count(&"control") == 8)
-	assert(_option_count(&"picture") == 4)
+	assert(_option_count(&"picture") == 5)
 	# Desktop: Logs, Stats, hidden 3D Debug, Cursor Position, hidden Android
 	# Depth Sync, Language, Auto-Reconnect, Idle, Quick Start, Forget Meteor
 	# Keys, Microphone, hidden Android Audio Output, Licences.
-	assert(_option_count(&"settings") == 15)
+	assert(_option_count(&"settings") == 17)
 	assert(MenuSchema.get_tab(&"settings").get("scrollable", false))
 	for row in MenuSchema.get_tab(&"settings")["rows"]:
 		assert(not String(row.get("title", "")).is_empty(), "Settings rows need section titles")

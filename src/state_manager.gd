@@ -73,6 +73,7 @@ func load_host_state(ip: String):
 	# update_3d_btn_state() - no reason to keep two copies of this in sync.
 	main.ui_controller.update_stereo_shader()
 	main.ui_controller.update_option_btn(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
+	main.settings_controller.refresh_pcvr_timing_ui()
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
 	main.ui_controller.update_monitor_tab()
@@ -145,7 +146,7 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.bezel_mesh.visible = main.settings.bezel_enabled and not main.comp.in_use
 	if main.ui_controller:
 		main.ui_controller.update_option_btn(main._ui_bezel_btn, "On" if main.settings.bezel_enabled else "Off")
-		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_labels[clampi(main.settings.tracking_mode, 0, main.tracking_labels.size() - 1)])
+		main.ui_controller.update_option_btn(main._ui_hand_tracking_btn, main.tracking_mode_label())
 		main.ui_controller.update_option_btn(main._ui_curve_btn, main.curvature_labels[clampi(main.curvature, 0, main.curvature_labels.size() - 1)])
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On" if main.settings.passthrough_enabled else "Off")
 		main.ui_controller.update_option_btn(main._ui_bg_btn, main.background_labels[clampi(main.settings.background_mode, 0, main.background_labels.size() - 1)])
@@ -161,6 +162,9 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_double_click_btn, main.double_click_mode_labels[clampi(main.settings.double_click_mode, 0, main.double_click_mode_labels.size() - 1)])
 		main.ui_controller.update_codec_btn()
 		main.ui_controller.update_option_btn(main._ui_reconnect_btn, "On" if main.settings.auto_reconnect_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_mouse_follows_btn, "On" if main.settings.mouse_follows_pointer else "Off")
+		main.ui_controller.update_option_btn(main._ui_high_refresh_btn, "On" if main.settings.high_refresh_rates else "Off")
+		main.ui_controller.update_option_btn(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
 		if main._ui_quick_start_btn:
 			main.ui_controller.update_option_btn(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 		if main._ui_audio_boost_btn:

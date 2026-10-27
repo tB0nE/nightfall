@@ -1,11 +1,17 @@
 class_name UIController
 extends RefCounted
+const PCVRVideoSettings = preload("res://src/pcvr_stream_settings.gd")
+const PCVRTelemetry = preload("res://src/pcvr_stream_telemetry.gd")
 
 var main: Node3D
 var _tab_display: Control
 var _tab_stream: Control
 var _tab_control: Control
 var _tab_monitors: Control
+var _screen_source_status: Label
+var _open_browser_btn: Button
+var _close_browser_btn: Button
+var _browser_resolution_btn: Button
 var _tab_ai3d: Control
 var _tab_picture: Control
 var _tab_settings: Control
@@ -17,6 +23,23 @@ var _tab_btn_ai3d: Button
 var _tab_btn_picture: Button
 var _tab_btn_settings: Button
 var _settings_gear_btn: Button
+var _pcvr_link: Button
+var _pcvr_refresh_elapsed := 0.0
+var _vr_library: VBoxContainer
+var _vr_library_open := false
+var _pcvr_page: VBoxContainer
+var _pcvr_info: Label
+var _pcvr_resolution_btn: Button
+var _pcvr_resolution_range_btn: Button
+var _pcvr_bitrate_btn: Button
+var _pcvr_sharpen_btn: Button
+var _pcvr_sampling_btn: Button
+var _pcvr_foveation_btn: Button
+var _pcvr_status: Label
+var _pcvr_exit_btn: Button
+var _pcvr_telemetry := PCVRTelemetry.new()
+var _pcvr_video := PCVRVideoSettings.new()
+var _desktop_tab_before_pcvr := 0
 var _settings_scroll: ScrollContainer
 var _brand_label: Label
 # Hidden while Advanced Settings is open, so its page can use the whole menu
@@ -53,6 +76,7 @@ const TOOLTIP_META := &"nightfall_tooltip"
 const TOOLTIP_DELAY_SEC := 0.55
 const TOOLTIP_VIEWPORT_SIZE := Vector2i(1000, 64)
 const SETTINGS_TAB := 6
+const PCVR_PAGE := 7 # Replacement page, deliberately not an ordinary tab.
 # Space under the menu's last row; the Settings page only needs to clear the
 # rounded corners, since it is already inset 24px from the sides.
 const MENU_BOTTOM_MARGIN_PX := 32
@@ -244,11 +268,12 @@ func on_ai_3d_priority_toggled():
 func update_stereo_shader():
 	if main.screen_mesh.material_override is ShaderMaterial:
 		main.screen_mesh.material_override.set_shader_parameter("stereo_mode",
-			main.settings_controller.get_stereo_mode() if main.is_streaming else 0)
+			main.settings_controller.get_stereo_mode() if main.primary_media_active() else 0)
 	update_option_btn(main._ui_sbs_btn, main.settings_controller.sbs_labels[main.settings.host.sbs_mode])
 	# Main-page control is a plain On/Off toggle now (2026-08-28) - tier
 	# selection moved to the AI 3D tab's own "3D Mode" control below.
 	update_option_btn(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
+	update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	# Shows main.settings.host.ai_3d_last_mode while Off (disabled/greyed, but still
 	# reflects what the main-page toggle will restore to when turned back on).
 	update_option_btn(main._ui_3d_mode_btn, main.settings_controller.ai_3d_speed_labels[main.settings.host.ai_3d_speed if main.settings.host.ai_3d_speed != 0 else main.settings.host.ai_3d_last_mode])
@@ -280,9 +305,10 @@ func update_stereo_shader():
 
 func update_3d_btn_state():
 	var disabled = main.settings.host.sbs_mode > 0 or main.screens.size() > 1
-	if main._ui_3d_speed_btn:
-		main._ui_3d_speed_btn.disabled = disabled
-		main._ui_3d_speed_btn.modulate.a = 0.3 if disabled else 1.0
+	for enable_btn in [main._ui_3d_speed_btn, main._ui_3d_enable_btn]:
+		if enable_btn:
+			enable_btn.disabled = disabled
+			enable_btn.modulate.a = 0.3 if disabled else 1.0
 	# Android retains the Standard/GPU locks, but exposes its production
 	# ZipDepth Model and GPU API selectors.
 	var locked = main.settings_controller.ai3d_options_locked()
@@ -614,6 +640,53 @@ func update_ambient_btn_state():
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
 
+func _build_screen_sources(parent: VBoxContainer) -> void:
+	_screen_source_status = Label.new()
+	_screen_source_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_screen_source_status.add_theme_font_size_override("font_size", 28)
+	_screen_source_status.custom_minimum_size.y = 50
+	_screen_source_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(row)
+	row.add_child(_screen_source_status)
+	_open_browser_btn = make_action_btn("Open Browser")
+	_set_button_tooltip(_open_browser_btn, "Open a browser on the primary screen without a PC.")
+	_open_browser_btn.button_down.connect(func():
+		main.screen_sources.choose_source(ScreenContentTab.BROWSER)
+		update_screen_sources())
+	row.add_child(_open_browser_btn)
+	_close_browser_btn = make_action_btn("Close Browser")
+	_set_button_tooltip(_close_browser_btn, "Close the browser tab and return to the welcome screen.")
+	_close_browser_btn.button_down.connect(func():
+		main.screen_sources.choose_source(ScreenContentTab.STREAM)
+		update_screen_sources())
+	row.add_child(_close_browser_btn)
+	_browser_resolution_btn = make_option_btn("Browser Res", "1080p")
+	_set_button_tooltip(_browser_resolution_btn, "Browser rendering resolution: 1080p for performance, 1440p for sharper detail. Close the browser before changing this setting; it applies when reopened. Video services choose their own streaming resolution.")
+	_browser_resolution_btn.button_down.connect(func():
+		if main.browser_prototype.active or main.browser_prototype.closing:
+			return
+		main.settings.browser_resolution = (main.settings.browser_resolution + 1) % 2
+		main.state_manager.save_state()
+		update_screen_sources())
+	row.add_child(_browser_resolution_btn)
+	update_screen_sources()
+
+func update_screen_sources() -> void:
+	if _open_browser_btn == null or main.screen_sources == null:
+		return
+	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
+	_open_browser_btn.disabled = browser_active or not main.screen_sources.can_open_browser()
+	_close_browser_btn.disabled = not browser_active
+	if _browser_resolution_btn:
+		update_option_btn(_browser_resolution_btn, "1440p" if main.settings.browser_resolution == 1 else "1080p")
+		_browser_resolution_btn.disabled = browser_active or main.browser_prototype.closing
+	var source := "Browser" if browser_active else ("PC Stream" if main.is_streaming else "Welcome")
+	_screen_source_status.text = Localization.t("Screen 1: %s") % Localization.t(source)
+
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
@@ -769,10 +842,177 @@ func toggle_settings_page():
 func update_ui():
 	main.get_node("%Crosshair").visible = (not main.is_xr_active and not main.mouse_captured_by_stream)
 	main.get_node("%Laser").visible = main.is_xr_active
+	refresh_pcvr_menu()
+
+func pcvr_settings_available() -> bool:
+	return main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE or (main.get("welcome_screen") != null and main.welcome_screen.xr_settings_available())
+
+func process_pcvr_menu(delta: float) -> void:
+	_pcvr_refresh_elapsed += delta
+	if _pcvr_refresh_elapsed < 0.25: return
+	_pcvr_refresh_elapsed = 0.0
+	refresh_pcvr_menu()
+
+func refresh_pcvr_menu() -> void:
+	if not is_instance_valid(_pcvr_link): return
+	if _pcvr_resolution_range_btn:
+		update_option_btn(_pcvr_resolution_range_btn, "On" if _pcvr_video.extended_resolution_range else "Off")
+	if main.get("settings_controller") != null:
+		main.settings_controller.refresh_pcvr_timing_ui()
+	var active: bool = main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE
+	if not pcvr_settings_available() and _current_tab == PCVR_PAGE:
+		switch_tab(_desktop_tab_before_pcvr)
+	_pcvr_link.visible = pcvr_settings_available() or _current_tab == PCVR_PAGE
+	_pcvr_link.text = "Desktop" if _current_tab == PCVR_PAGE else "PCVR"
+	var link_color := Color(0.35, 1.0, 0.5) if active else Color(1, 1, 1, 0.6)
+	if not _pcvr_link.has_theme_color_override("font_color") or _pcvr_link.get_theme_color("font_color") != link_color:
+		_pcvr_link.add_theme_color_override("font_color", link_color)
+	if _pcvr_exit_btn: _pcvr_exit_btn.visible = active
+	if _current_tab == PCVR_PAGE and is_instance_valid(_pcvr_info):
+		var backend = main.pcvr_test.backend
+		var status: Dictionary = backend.get_test_status() if backend else {}
+		_pcvr_info.text = "Resolution: next session • Bitrate / foveation / filters: live" if active else "Ready for XR • Preferences apply to your next session."
+		if _pcvr_resolution_btn:
+			var recommended := PCVRVideoSettings.reference_eye_dimensions(backend, main.get("stream_backend"))
+			var size := _pcvr_video.effective_eye_dimensions(512, recommended)
+			var label := "%d%%" % _pcvr_video.resolution_percent if _pcvr_video.resolution_percent > 0 else "Custom"
+			var running := Vector2i(int(status.get("projection_eye_size", 0)), int(status.get("projection_eye_height", status.get("projection_eye_size", 0))))
+			if active and running.x > 0 and running.y > 0 and size != running:
+				label += " (restart)"
+				_pcvr_info.text += "\nNext session: %d × %d / eye (restart required)" % [size.x, size.y]
+			update_option_btn(_pcvr_resolution_btn, label)
+			if not active and recommended.x > 0: _pcvr_info.text += "\nNext session: %d × %d / eye" % [size.x, size.y]
+		if _pcvr_foveation_btn:
+			var foveation_supported: bool = main.welcome_screen.xr_foveation_available()
+			update_option_btn(_pcvr_foveation_btn, "On" if _pcvr_video.foveated_encoding and foveation_supported else "Off")
+			_pcvr_foveation_btn.disabled = not foveation_supported
+			_set_button_tooltip(_pcvr_foveation_btn, "Fixed-centre encoding preserves centre quality and compresses the edges more. Not eye-tracked. Applies live. Default Off." if foveation_supported else "Foveated encoding is unavailable with this host encoder. Your preference is retained for supported encoders.")
+			var encoder_caps: Dictionary = main.welcome_screen.xr_encoder_capabilities()
+			if active and not foveation_supported:
+				_pcvr_info.text = _pcvr_info.text.replace("Bitrate / foveation / filters: live", "Filters: live • Foveated encoding: unavailable")
+				if encoder_caps.get("live_bitrate", true) == false: _pcvr_info.text += " • Bitrate: next session"
+		if _pcvr_bitrate_btn:
+			update_option_btn(_pcvr_bitrate_btn, "%d Mbps" % _pcvr_video.bitrate_mbps if _pcvr_video.bitrate_mbps else "Auto")
+		if _pcvr_status:
+			if active:
+				_pcvr_telemetry.sample(status, Time.get_ticks_msec())
+				_pcvr_status.text = _pcvr_telemetry.describe(status, main.display_refresh_rate, Engine.get_frames_per_second())
+				if main.get("welcome_screen") != null:
+					var bitrate_text: String = main.welcome_screen.xr_bitrate_message()
+					if not bitrate_text.is_empty(): _pcvr_status.text += "\n" + bitrate_text
+			else:
+				_pcvr_telemetry = PCVRTelemetry.new()
+				_pcvr_status.text = "No XR session running"
+		var supported := bool(status.get("pcvr_post_processing_supported", false))
+		for button in [_pcvr_sharpen_btn, _pcvr_sampling_btn]:
+			if button: button.disabled = not supported
+		if _pcvr_sharpen_btn: update_option_btn(_pcvr_sharpen_btn, ["Off", "Normal", "Quality"][_pcvr_video.sharpen] if supported else "Unavailable")
+		if _pcvr_sampling_btn: update_option_btn(_pcvr_sampling_btn, ["Off", "Normal", "Quality"][_pcvr_video.sampling] if supported else "Unavailable")
+		if backend and backend.has_method("set_pcvr_post_processing"):
+			backend.set_pcvr_post_processing(_pcvr_video.sharpen, _pcvr_video.sampling)
+
+func _cycle_pcvr_post(sharpen: bool) -> void:
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	if sharpen: pending.sharpen = (pending.sharpen + 1) % 3
+	else: pending.sampling = (pending.sampling + 1) % 3
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save post-processing preferences")
+		return
+	_pcvr_video = pending
+	refresh_pcvr_menu()
+
+static func square_toolbar_button(button: Button) -> void:
+	button.size_flags_vertical = Control.SIZE_FILL
+	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+		var style = button.get_theme_stylebox(state)
+		if style is StyleBoxFlat:
+			style = style.duplicate()
+			style.set_corner_radius_all(0)
+			button.add_theme_stylebox_override(state, style)
+
+func _cycle_pcvr_video(resolution: bool) -> void:
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	if resolution:
+		pending.cycle_resolution()
+	else:
+		pending.cycle_bitrate()
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save video preferences")
+		return
+	_pcvr_video = pending
+	if resolution and main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		var running: Dictionary = main.pcvr_test.backend.get_test_status()
+		main._log("[PCVR] Resolution %d%% saved for next XR session; active %dx%d unchanged" % [pending.resolution_percent, int(running.get("projection_eye_size", 0)), int(running.get("projection_eye_height", running.get("projection_eye_size", 0)))])
+	if not resolution and main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		if not main.welcome_screen.update_xr_bitrate(pending.bitrate_mbps):
+			main._log("[PCVR] Live bitrate unavailable; preference saved for next session")
+	refresh_pcvr_menu()
+
+func toggle_pcvr_resolution_range() -> void:
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	pending.extended_resolution_range = not pending.extended_resolution_range
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save resolution range")
+		return
+	_pcvr_video = pending
+	refresh_pcvr_menu()
+
+func toggle_pcvr_foveation() -> void:
+	if not main.welcome_screen.xr_foveation_available(): return
+	var pending := PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	pending.load_from()
+	pending.foveated_encoding = not pending.foveated_encoding
+	if pending.save_to() != OK:
+		main._log("[PCVR] Could not save foveated encoding")
+		return
+	_pcvr_video = pending
+	if main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		if not main.welcome_screen.update_xr_foveation(pending.foveated_encoding):
+			main._log("[PCVR] Live foveation unavailable; saved for next session")
+	refresh_pcvr_menu()
+
+func toggle_pcvr_page() -> void:
+	if _current_tab != PCVR_PAGE and not pcvr_settings_available(): return
+	if _current_tab == PCVR_PAGE:
+		switch_tab(_desktop_tab_before_pcvr)
+	else:
+		_desktop_tab_before_pcvr = _current_tab
+		switch_tab(PCVR_PAGE)
+	refresh_pcvr_menu()
+
+func is_pcvr_page_open() -> bool:
+	return _current_tab == PCVR_PAGE
+
+func open_pcvr_page() -> void:
+	_vr_library_open = false
+	if _vr_library: _vr_library.visible = false
+	if _current_tab != PCVR_PAGE:
+		_desktop_tab_before_pcvr = _current_tab
+	switch_tab(PCVR_PAGE)
+	refresh_pcvr_menu()
+
+func open_vr_apps() -> void:
+	if not pcvr_settings_available(): return
+	if main.pcvr_handover.state == main.pcvr_handover.State.ACTIVE:
+		main.pcvr_handover.open_pcvr_menu()
+	else:
+		open_pcvr_page()
+		if not main.ui_visible: main._toggle_ui()
+	_vr_library_open = true
+	_pcvr_page.visible = false
+	_vr_library.visible = true
+	_vr_library.open_library()
+
+func close_vr_apps() -> void:
+	_vr_library_open = false
+	if _vr_library: _vr_library.visible = false
+	_pcvr_page.visible = _current_tab == PCVR_PAGE
 
 func switch_tab(tab: int):
 	clear_tooltip()
-	var entering_monitors_tab = (tab == 5 and _current_tab != 5)
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
@@ -781,6 +1021,12 @@ func switch_tab(tab: int):
 	if _tab_ai3d: _tab_ai3d.visible = (tab == 3)
 	if _tab_picture: _tab_picture.visible = (tab == 4)
 	if _tab_settings: _tab_settings.visible = (tab == SETTINGS_TAB)
+	if tab != PCVR_PAGE: _vr_library_open = false
+	if _vr_library: _vr_library.visible = tab == PCVR_PAGE and _vr_library_open
+	if _pcvr_page: _pcvr_page.visible = (tab == PCVR_PAGE and not _vr_library_open)
+	if _settings_gear_btn: _settings_gear_btn.visible = tab != PCVR_PAGE
+	if main._ui_exit_btn: main._ui_exit_btn.visible = tab != PCVR_PAGE
+	if main._ui_disconnect_btn: main._ui_disconnect_btn.visible = main.is_streaming and tab != PCVR_PAGE
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -819,17 +1065,16 @@ func switch_tab(tab: int):
 		_cull_settings_page.call_deferred()
 	for node in _settings_hidden_chrome:
 		if is_instance_valid(node):
-			node.visible = tab != SETTINGS_TAB
+			node.visible = tab not in [SETTINGS_TAB, PCVR_PAGE]
 	if _brand_label:
-		_brand_label.text = "Advanced Settings" if tab == SETTINGS_TAB else "Nightfall"
+		_brand_label.text = "PCVR Settings" if tab == PCVR_PAGE else ("Advanced Settings" if tab == SETTINGS_TAB else "Nightfall")
 	if _bottom_margin:
 		_bottom_margin.custom_minimum_size.y = SETTINGS_BOTTOM_MARGIN_PX if tab == SETTINGS_TAB else MENU_BOTTOM_MARGIN_PX
 	_tab_btn_display.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 0 else Color(1, 1, 1, 0.5))
 	_tab_btn_stream.add_theme_color_override("font_color", Color(1, 1, 1, 1.0) if tab == 1 else Color(1, 1, 1, 0.5))
 
 	if tab == 5:
-		if entering_monitors_tab:
-			main.settings_controller.sync_staged_from_current_layout()
+		update_screen_sources()
 		update_monitor_tab()
 
 	var ui_buttons = []
@@ -959,6 +1204,15 @@ func build_ui():
 	main._ui_center_btn.add_theme_stylebox_override("hover", center_hover)
 	main._ui_center_btn.add_theme_stylebox_override("pressed", center_hover)
 	top_row.add_child(main._ui_center_btn)
+	_pcvr_link = make_action_btn("PCVR")
+	_pcvr_link.name = "PCVRMenuLink"
+	square_toolbar_button(_pcvr_link)
+	_pcvr_link.custom_minimum_size = Vector2(110, 36)
+	_pcvr_link.add_theme_color_override("font_color", Color(0.35, 1.0, 0.5))
+	_pcvr_link.visible = false
+	_set_button_tooltip(_pcvr_link, "Switch between PCVR and desktop settings without changing screen visibility.")
+	_pcvr_link.pressed.connect(toggle_pcvr_page)
+	top_row.add_child(_pcvr_link)
 
 	# Logs and Stats used to sit here; they moved onto the Settings page,
 	# which this gear opens in place of a seventh tab button.
@@ -1166,6 +1420,11 @@ func build_ui():
 	ai3d_row2.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_ai3d.add_child(ai3d_row2)
 
+	# The same On/Off as the Display tab's AI 3D button, where people looking
+	# for it in this tab didn't find it.
+	main._ui_3d_enable_btn = make_option_btn("AI 3D", "Off")
+	_set_button_tooltip(main._ui_3d_enable_btn, "Convert normal video into stereoscopic 3D using local depth inference.")
+	ai3d_row2.add_child(main._ui_3d_enable_btn)
 	main._ui_3d_hz_cap_btn = make_option_btn("Hz Cap", "20hz")
 	_set_button_tooltip(main._ui_3d_hz_cap_btn, "Limit how often the depth model runs each second.")
 	ai3d_row2.add_child(main._ui_3d_hz_cap_btn)
@@ -1208,6 +1467,14 @@ func build_ui():
 	_tab_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.visible = false
 	vbox.add_child(_tab_monitors)
+	_build_screen_sources(_tab_monitors)
+	# Screens extends the existing monitor UI; keep its layout controls visible.
+	# Host-specific capability checks still apply to PC monitor creation.
+	var legacy_monitors := VBoxContainer.new()
+	legacy_monitors.name = "LegacyMonitorControls"
+	legacy_monitors.visible = true
+	legacy_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_tab_monitors.add_child(legacy_monitors)
 
 	var mon_row1 = HBoxContainer.new()
 	mon_row1.name = "MonRow1"
@@ -1216,7 +1483,7 @@ func build_ui():
 	mon_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	mon_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_row1)
+	legacy_monitors.add_child(mon_row1)
 
 	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
 	_set_button_tooltip(main._ui_monitors_btn, "Choose how many physical host monitors are displayed.")
@@ -1228,7 +1495,7 @@ func build_ui():
 	var mon_gap1 = Control.new()
 	mon_gap1.custom_minimum_size = Vector2(0, 10)
 	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap1)
+	legacy_monitors.add_child(mon_gap1)
 
 	_preset_row = HBoxContainer.new()
 	_preset_row.name = "PresetRow"
@@ -1237,12 +1504,12 @@ func build_ui():
 	_preset_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_preset_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(_preset_row)
+	legacy_monitors.add_child(_preset_row)
 
 	var mon_gap2 = Control.new()
 	mon_gap2.custom_minimum_size = Vector2(0, 10)
 	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_gap2)
+	legacy_monitors.add_child(mon_gap2)
 
 	var mon_actions_row1 = HBoxContainer.new()
 	mon_actions_row1.name = "MonActionsRow1"
@@ -1251,7 +1518,7 @@ func build_ui():
 	mon_actions_row1.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	mon_actions_row1.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_tab_monitors.add_child(mon_actions_row1)
+	legacy_monitors.add_child(mon_actions_row1)
 
 	main._ui_apply_preset_btn = make_action_btn("Apply")
 	_set_button_tooltip(main._ui_apply_preset_btn, "Apply the selected monitor layout.")
@@ -1267,6 +1534,8 @@ func build_ui():
 	mon_actions_row1.add_child(main._ui_grid_mode_btn)
 
 	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
+	_build_pcvr_advanced(_settings_scroll.get_child(0))
+	_build_xr_workspace_probe(_settings_scroll.get_child(0))
 	_build_language_grid(_settings_scroll.get_child(0))
 	var settings_end_space := Control.new()
 	settings_end_space.name = "SettingsEndSpace"
@@ -1282,6 +1551,76 @@ func build_ui():
 	_tab_settings.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_tab_settings.offset_top = 60.0
 	_tab_settings.offset_bottom = -SETTINGS_BOTTOM_MARGIN_PX
+	_pcvr_page = VBoxContainer.new()
+	_pcvr_page.name = "PCVRSettings"
+	_pcvr_page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pcvr_page.offset_top = 76
+	_pcvr_page.offset_left = 24
+	_pcvr_page.offset_right = -24
+	_pcvr_page.offset_bottom = -24
+	_pcvr_page.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_page.visible = false
+	overlay.add_child(_pcvr_page)
+	_pcvr_info = Label.new()
+	_pcvr_info.add_theme_font_size_override("font_size", 22)
+	_pcvr_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_pcvr_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_page.add_child(_pcvr_info)
+	var library_button := make_action_btn("VR Apps")
+	library_button.pressed.connect(open_vr_apps)
+	_set_button_tooltip(library_button, "Browse installed Steam VR apps.")
+	_pcvr_page.add_child(library_button)
+	_vr_library = preload("res://src/pcvr_app_library.gd").new()
+	_vr_library.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_vr_library.offset_top = 76
+	_vr_library.offset_left = 24; _vr_library.offset_right = -24; _vr_library.offset_bottom = -24
+	_vr_library.visible = false
+	_vr_library.setup(self)
+	overlay.add_child(_vr_library)
+	_pcvr_video = PCVRVideoSettings.new(main.get("device_is_quest3") == true)
+	_pcvr_video.load_from()
+	var video_row := HBoxContainer.new()
+	video_row.add_theme_constant_override("separation", 16)
+	_pcvr_page.add_child(video_row)
+	_pcvr_resolution_btn = make_option_btn("Resolution", "Host profile")
+	_pcvr_resolution_btn.pressed.connect(func(): _cycle_pcvr_video(true))
+	_set_button_tooltip(_pcvr_resolution_btn, "100% uses the native panel resolution on Quest 2/3/3S; other headsets use OpenXR's recommendation. 75–135% in 5% steps; Advanced Settings offers 50–150% in 10% steps. Rounded up to 16 pixels for encoding. Applies next XR session; actual dimensions appear in status.")
+	video_row.add_child(_pcvr_resolution_btn)
+	_pcvr_bitrate_btn = make_option_btn("Bitrate", "Auto")
+	_pcvr_bitrate_btn.pressed.connect(func(): _cycle_pcvr_video(false))
+	_set_button_tooltip(_pcvr_bitrate_btn, "PCVR video target bitrate. Updates live during XR; status confirms when applied. Auto uses the current session resolution's default.")
+	video_row.add_child(_pcvr_bitrate_btn)
+	var post_row := HBoxContainer.new()
+	post_row.add_theme_constant_override("separation", 16)
+	_pcvr_page.add_child(post_row)
+	_pcvr_sharpen_btn = make_option_btn("Sharpen", "Off")
+	_set_button_tooltip(_pcvr_sharpen_btn, "Live OpenXR compositor sharpening, as used by WiVRn. Not an AI upscaler; may add halos. Requires runtime support.")
+	_pcvr_sharpen_btn.pressed.connect(func(): _cycle_pcvr_post(true))
+	post_row.add_child(_pcvr_sharpen_btn)
+	_pcvr_sampling_btn = make_option_btn("Supersampling", "Off")
+	_set_button_tooltip(_pcvr_sampling_btn, "Live compositor anti-aliasing, as used by WiVRn and ALVR. Reduces edge shimmer when downsampling high-resolution video. Does not increase game resolution or recover missing detail; the runtime may ignore this hint.")
+	_pcvr_sampling_btn.pressed.connect(func(): _cycle_pcvr_post(false))
+	post_row.add_child(_pcvr_sampling_btn)
+	_pcvr_foveation_btn = make_option_btn("Foveated Encode", "Off")
+	_set_button_tooltip(_pcvr_foveation_btn, "Fixed-centre NVENC encoding: preserves centre quality and compresses the edges more. Not eye-tracked. Keeps the same render/decoder resolution; does not reduce game rendering cost. Applies live during XR streaming. Default Off.")
+	_pcvr_foveation_btn.pressed.connect(toggle_pcvr_foveation)
+	post_row.add_child(_pcvr_foveation_btn)
+	_pcvr_exit_btn = make_action_btn("Exit PCVR")
+	_set_button_tooltip(_pcvr_exit_btn, "Stop the XR session and restore your desktop or welcome screen.")
+	_pcvr_exit_btn.pressed.connect(func(): main.pcvr_handover.request_stop("PCVR menu exit"))
+	_pcvr_page.add_child(_pcvr_exit_btn)
+	var pcvr_space := Control.new()
+	pcvr_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	pcvr_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_page.add_child(pcvr_space)
+	_pcvr_status = Label.new()
+	_pcvr_status.name = "PCVRStatusBar"
+	_pcvr_status.add_theme_font_size_override("font_size", 20)
+	_pcvr_status.add_theme_color_override("font_color", Color(1,1,1,0.6))
+	_pcvr_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_pcvr_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_pcvr_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_page.add_child(_pcvr_status)
 	# Keep the real toolbar last among the panel's children so its drawing and
 	# hit testing stay above the scroll page.
 	overlay.move_child(top_row, overlay.get_child_count() - 1)
@@ -1358,6 +1697,7 @@ func build_ui():
 	main._ui_3d_btn.button_down.connect(func(): on_ai_3d_toggled())
 	if main._ui_3d_gpu_api_btn:
 		main._ui_3d_gpu_api_btn.button_down.connect(func(): on_ai_3d_gpu_api_toggled())
+	main._ui_3d_enable_btn.button_down.connect(func(): on_ai_3d_speed_toggled())
 	main._ui_3d_hz_cap_btn.button_down.connect(func(): on_ai_3d_hz_cap_toggled())
 	main._ui_3d_separation_btn.button_down.connect(func(): on_ai_3d_separation_toggled())
 	main._ui_3d_convergence_btn.button_down.connect(func(): on_ai_3d_convergence_toggled())
@@ -1382,6 +1722,60 @@ func build_ui():
 	var ui_buttons = []
 	_collect_buttons(root, ui_buttons)
 	main.xr_interaction.populate_ui_buttons(ui_buttons)
+
+func _build_pcvr_advanced(content: VBoxContainer) -> void:
+	var section := VBoxContainer.new()
+	section.name = "PCVRAdvancedSettings"
+	section.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(section)
+	section.add_child(_make_section_title("PCVR"))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(row)
+	_pcvr_resolution_range_btn = make_option_btn("Extended Resolution", "Off")
+	_set_button_tooltip(_pcvr_resolution_range_btn, "Off: 75–135% in 5% steps. On: 50–150% in 10% steps. Changes the resolution choices only; keeps your current resolution until you select another value.")
+	row.add_child(_pcvr_resolution_range_btn)
+	_make_scroll_friendly(_pcvr_resolution_range_btn)
+	_pcvr_resolution_range_btn.pressed.connect(_on_scroll_friendly_pressed.bind(toggle_pcvr_resolution_range))
+
+func _build_xr_workspace_probe(content: VBoxContainer) -> void:
+	# Explicitly provisioned DEV builds only; no new XR composition layers.
+	var control_script = preload("res://src/meteor_xr_control.gd")
+	if not main.pcvr_test.entry_visible() or not FileAccess.file_exists(control_script.config_path()): return
+	var control = main.welcome_screen.get_xr_control()
+	var section := VBoxContainer.new()
+	section.name = "DevXRHandover"
+	section.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	content.add_child(section)
+	content.move_child(section, 0)
+	section.add_child(_make_section_title("DEV: Meteor XR handover"))
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(row)
+	var start := make_action_btn("Connect XR")
+	var cancel := make_action_btn("Cancel XR")
+	_set_button_tooltip(start, "Prepare the fixed XR demo, then accept to hand over this desktop. Hold B/Y for one second to return.")
+	_set_button_tooltip(cancel, "Cancel XR preparation without disconnecting the desktop stream.")
+	for button in [start, cancel]:
+		row.add_child(button)
+		_make_scroll_friendly(button)
+	start.pressed.connect(_on_scroll_friendly_pressed.bind(main.welcome_screen.request_xr_control))
+	cancel.pressed.connect(_on_scroll_friendly_pressed.bind(main.welcome_screen.cancel_xr_control))
+	var status := Label.new()
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	status.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	section.add_child(status)
+	var update := func():
+		if not is_instance_valid(start): return
+		start.text = "Accept XR" if control.state == "offered" else "Connect XR"
+		start.disabled = control.state not in ["idle", "failed", "offered"] or not control_script.supported()
+		cancel.disabled = control.state == "idle"
+		status.text = control.message if not control.message.is_empty() else "Fixed demo; desktop returns on exit"
+	control.changed.connect(update)
+	update.call()
 
 func _build_tab_buttons(parent: HBoxContainer) -> void:
 	for definition in MenuSchema.get_tab_buttons():
@@ -1690,6 +2084,7 @@ func _compose_option_text(btn: Button) -> void:
 func update_option_btn(btn: Button, value: String):
 	if btn == null or not btn.has_meta(OPTION_LABEL_META):
 		return
+	if btn.get_meta(OPTION_VALUE_META, null) == value: return
 	btn.set_meta(OPTION_VALUE_META, value)
 	_compose_option_text(btn)
 
@@ -1722,7 +2117,9 @@ func update_btn_toggle_btn():
 
 func update_primary_btn():
 	if main._ui_primary_btn and main.controller_mapper:
-		update_option_btn(main._ui_primary_btn, main.controller_mapper.primary_labels[main.controller_mapper.primary_hand])
+		var mapper = main.controller_mapper
+		var automatic: bool = not main._is_using_hands and mapper.hand_policy.single_hand >= 0
+		update_option_btn(main._ui_primary_btn, mapper.primary_labels[mapper.effective_primary_hand()] + (" (Auto)" if automatic else ""))
 
 func make_indicator_btn(label_text: String, value_text: String) -> Button:
 	var btn = Button.new()
@@ -1750,6 +2147,14 @@ func update_indicator_btn(btn: Button, label: String, value: String):
 	btn.text = label + ": " + value
 
 const STATUS_TEXT_MAX_LEN = 160
+
+func refresh_app_fps() -> void:
+	refresh_pcvr_menu()
+	if main._ui_status_label and not is_temporary_status_active():
+		main._ui_status_label.text = PerformanceTelemetry.status_with_app_fps(
+			main._ui_status_label.text, main.telemetry.app_fps)
+		if main.stream_manager:
+			main._ui_status_label.text += main.stream_manager._depth_status_text()
 
 func set_status(text: String):
 	if main._ui_status_label:

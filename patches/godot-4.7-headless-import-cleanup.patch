@@ -1,0 +1,11 @@
+--- a/editor/editor_node.cpp
++++ b/editor/editor_node.cpp
+@@ -6618,4 +6618,6 @@
+ bool EditorNode::is_cmdline_mode() {
+-	ERR_FAIL_NULL_V(singleton, false);
+-	return singleton->cmdline_mode;
++	// Late filesystem/doc-cache callbacks can outlive the editor node on
++	// headless import shutdown. No editor remains to update in that state.
++	// Treat it as command-line mode rather than entering editor-only work.
++	return singleton == nullptr || singleton->cmdline_mode;
+ }

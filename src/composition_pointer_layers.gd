@@ -205,7 +205,9 @@ func _set_viewport_active(viewport: SubViewport, active: bool) -> void:
 func _make_layer(layer_name: String, quad_size: Vector2) -> Node3D:
 	var layer = OpenXRCompositionLayerQuad.new()
 	layer.name = layer_name
-	layer.set_sort_order(999)
+	# With Godot projection disabled in PCVR, no mesh cursor can mask a bad
+	# layer order: the independent pointer must be above both 2D panels.
+	layer.set_sort_order(maxi(CompositionPanelLayers.UI_SORT_ORDER, CompositionPanelLayers.KEYBOARD_SORT_ORDER) + 1)
 	layer.set_enable_hole_punch(false)
 	layer.set_alpha_blend(true)
 	layer.set_quad_size(quad_size)

@@ -23,6 +23,17 @@ pub fn ports(map: &PortMap, side: crate::config::SidePorts, host: bool) -> Vec<(
     ports
 }
 
+/// Configured XR uses a small fixed TCP set; local runtime IPC stays loopback.
+pub fn ports_with_xr(map: &PortMap, side: crate::config::SidePorts, host: bool, xr: Option<(u16, u16, u16)>) -> Vec<(u16, Proto)> {
+    let mut result = ports(map, side, host);
+    if let Some((control, video, tracking)) = xr {
+        result.extend([control, video, tracking].map(|port| (port, Proto::Tcp)));
+        result.sort_by_key(|&(port, proto)| (proto == Proto::Udp, port));
+        result.dedup();
+    }
+    result
+}
+
 fn spec((port, proto): (u16, Proto)) -> String {
     format!("{port}/{}", if proto == Proto::Tcp { "tcp" } else { "udp" })
 }
@@ -136,6 +147,16 @@ mod tests {
         let with_host: Vec<String> = ports(&map, side, true).into_iter().map(spec).collect();
         assert_eq!(with_host.len(), 17);
         assert!(with_host.contains(&"47989/tcp".to_string()) && with_host.contains(&"47998/udp".to_string()));
+    }
+
+    #[test]
+    fn xr_firewall_ports_are_exact_and_optional() {
+        let map = PortMap::new(47989, 1000).unwrap();
+        let side = crate::config::SidePorts { discovery: 47900, depth: 47901, mic: 47902 };
+        assert_eq!(ports_with_xr(&map, side, false, None), ports(&map, side, false));
+        let configured = ports_with_xr(&map, side, false, Some((47910, 47911, 47912)));
+        for port in [47910, 47911, 47912] { assert!(configured.contains(&(port, Proto::Tcp))); }
+        assert_eq!(configured.len(), ports(&map, side, false).len() + 3);
     }
 
     #[test]

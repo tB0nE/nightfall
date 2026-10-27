@@ -125,9 +125,102 @@ pub async fn notify(summary: &str, body: &str) {
     }
 }
 
+pub async fn copy_text(text: &str) -> std::io::Result<()> {
+    // KDE exposes its clipboard manager over the same session bus as the tray.
+    // Other desktops normally provide wl-copy or xclip. Never execute the text.
+    if let Ok(connection) = zbus::Connection::session().await {
+        if matches!(tokio::time::timeout(std::time::Duration::from_secs(2),
+            connection.call_method(Some("org.kde.klipper"), "/klipper",
+                Some("org.kde.klipper.klipper"), "setClipboardContents", &(text,))).await, Ok(Ok(_))) {
+            return Ok(());
+        }
+    }
+    use tokio::io::AsyncWriteExt;
+    let candidates = [("wl-copy", vec!["--type", "text/plain;charset=utf-8"]),
+                      ("xclip", vec!["-selection", "clipboard"])];
+    for (program, arguments) in candidates {
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            let mut child = tokio::process::Command::new(program).args(arguments)
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()).kill_on_drop(true).spawn()?;
+            let mut input = child.stdin.take().unwrap();
+            input.write_all(text.as_bytes()).await?;
+            drop(input);
+            if child.wait().await?.success() { Ok(()) }
+            else { Err(std::io::Error::other("Clipboard tool failed")) }
+        }).await;
+        if matches!(result, Ok(Ok(()))) { return Ok(()); }
+    }
+    Err(std::io::Error::other("Clipboard unavailable. Enable your desktop clipboard manager or install wl-clipboard (Wayland) / xclip (X11)."))
+}
+
+pub fn watch_xr_approval(trust: std::sync::Arc<crate::xr_trust::Trust>) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tick.tick().await;
+            if let Some((key, code)) = trust.take_notification() {
+                let trust = trust.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = xr_approval_popup(trust, key, code).await {
+                        log::warn!("XR approval popup unavailable ({error}); use Approve in Meteor's tray menu");
+                    }
+                });
+            }
+        }
+    });
+}
+
+async fn xr_approval_popup(trust: std::sync::Arc<crate::xr_trust::Trust>, key: [u8; 32], code: String) -> zbus::Result<()> {
+    use futures_lite::StreamExt;
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(&connection, "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications", "org.freedesktop.Notifications").await?;
+    // Subscribe first: a fast response must not be lost between Notify and listen.
+    let mut actions = proxy.receive_signal("ActionInvoked").await?;
+    let hints: std::collections::HashMap<&str, zbus::zvariant::Value> =
+        [("resident", zbus::zvariant::Value::Bool(true))].into();
+    let body = format!("Headset code: {code}. Compare this with the code in Nightfall. Approve only if they match. You can also approve in Meteor's tray menu.");
+    let id: u32 = proxy.call("Notify", &("Nightfall Meteor", 0u32, "",
+        "Approve Nightfall XR headset", body,
+        vec!["approve", "Approve", "reject", "Reject"], hints, 60_000i32)).await?;
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                if !trust.pending().is_some_and(|(pending, _)| pending == key) { break; }
+            }
+            signal = actions.next() => {
+                let Some(signal) = signal else { break; };
+                if let Ok((notification, action)) = signal.body().deserialize::<(u32, String)>() {
+                    if notification != id { continue; }
+                    match action.as_str() {
+                        "approve" => {
+                            if let Err(error) = trust.approve(key) { log::warn!("XR approval failed: {error}"); }
+                            break;
+                        }
+                        "reject" => { trust.reject(key); break; }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    let _: zbus::Result<()> = proxy.call("CloseNotification", &(id,)).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "manual desktop integration check; writes Steam launch options to the user's clipboard"]
+    async fn copies_installed_steam_options_to_clipboard() {
+        let root = crate::config::load().xr.runtime_root();
+        crate::xr_library::set_runtime_root(root);
+        copy_text(&crate::xr_library::steam_launch_options().unwrap()).await.unwrap();
+    }
 
     #[test]
     fn exec_lines_round_trip() {

@@ -28,6 +28,16 @@ MeteorCipher::~MeteorCipher() {
 }
 
 std::string MeteorCipher::init(const uint8_t meteor_public[KEY_BYTES], const char *info, const uint8_t *private_key) {
+    return init_bytes(meteor_public, reinterpret_cast<const uint8_t *>(info), std::strlen(info), private_key);
+}
+
+bool MeteorCipher::identity_public(const uint8_t private_key[KEY_BYTES], uint8_t public_key[KEY_BYTES]) {
+    Pkey key{EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr, private_key, KEY_BYTES)};
+    size_t len = KEY_BYTES;
+    return key.key && EVP_PKEY_get_raw_public_key(key.key, public_key, &len) > 0 && len == KEY_BYTES;
+}
+
+std::string MeteorCipher::init_bytes(const uint8_t meteor_public[KEY_BYTES], const uint8_t *info, size_t info_len, const uint8_t *private_key) {
     EVP_CIPHER_CTX_free(ctx_);
     EVP_CIPHER_CTX_free(open_ctx_);
     ctx_ = nullptr;
@@ -60,7 +70,7 @@ std::string MeteorCipher::init(const uint8_t meteor_public[KEY_BYTES], const cha
     bool ok = hkdf.ctx && EVP_PKEY_derive_init(hkdf.ctx) > 0 && EVP_PKEY_CTX_set_hkdf_md(hkdf.ctx, EVP_sha256()) > 0 &&
               EVP_PKEY_CTX_set1_hkdf_salt(hkdf.ctx, salt, sizeof(salt)) > 0 &&
               EVP_PKEY_CTX_set1_hkdf_key(hkdf.ctx, shared, sizeof(shared)) > 0 &&
-              EVP_PKEY_CTX_add1_hkdf_info(hkdf.ctx, reinterpret_cast<const unsigned char *>(info), static_cast<int>(std::strlen(info))) > 0 &&
+              EVP_PKEY_CTX_add1_hkdf_info(hkdf.ctx, info, static_cast<int>(info_len)) > 0 &&
               EVP_PKEY_derive(hkdf.ctx, key_, &len) > 0;
     std::memset(shared, 0, sizeof(shared));
     if (!ok) return "can't derive the session key";

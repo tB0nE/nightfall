@@ -1,0 +1,499 @@
+# Unified screens and content tabs
+
+## Agreed product scope
+
+### Independent browser screens — 2026-10-17
+
+- Updated AI budget: one **local** inference owner. A future mixed-source
+  workspace may additionally use Meteor depth on one stream while the headset
+  generates depth for one browser; Meteor is not a second local inference job.
+- First physical-screen test: two browser screens side by side, positioned by
+  existing screen/grid geometry. The cap is now four at the user's request;
+  extra slots place right, left and above the primary. Each slot retains its
+  own reusable uploader and only cleans its own surface on close. No fabricated
+  host monitor is added. Four-screen GPU/layer-budget validation is pending.
+- Each browser owns a WebView session, uploader/surface, selected tab, navigation
+  metadata, menu atlas and generation. Cookies/bookmarks/history/filter settings
+  remain shared browser-profile data, with writes guarded against stale copies.
+- The top Add Browser button offers **Add tab / Add Screen / New stream /
+  Make primary**. New stream appears only without a welcome/connection screen
+  or active/pending PC session, respecting the shared four-screen cap. It opens
+  a welcome surface and makes it primary without closing browsers. Make primary
+  transfers browser source, toolbar, shortcuts and local AI ownership after
+  draining old stereo/native consumers; a running PC stream remains primary
+  for this milestone, so browser promotion is disabled while connected.
+- Closing an auxiliary browser's last tab retires that physical screen. Closing
+  the primary returns to the existing welcome surface if present and removes
+  only that browser; otherwise its surface becomes welcome and other browsers
+  remain open. There is never a reason to create a second connection screen.
+- Keyboard and gamepad route to the focused browser; scrolling targets the
+  hovered browser. Focus changes release held keys, pointer and gamepad state.
+  Held drags do not become new clicks on a different browser screen.
+- Local AI remains on the primary browser for this first test. Secondary is
+  mono and cannot silently inherit the primary's depth/stereo/debug settings.
+  Mixed PC/browser output and UI for transferring the local inference owner
+  remain next steps, not claims of this milestone.
+- Each browser menu reuses that screen's corner-controls layer. Secondary
+  content uses one mono layer; no per-tab layers. Close hides layers first,
+  waits frame boundaries, removes controls and releases/reuses its uploader.
+  Applying host monitor layouts while browsing is guarded until source-neutral
+  layout management exists. Existing PC monitor UI remains intact.
+- Four-screen headset testing hit `XR_ERROR_LAYER_LIMIT_EXCEEDED`: the Quest
+  reported 20 optimized layers against a 16-resource limit. Consolidated the
+  grab bar/shortcuts and corners/browser menu into one cylinder atlas per screen
+  (four controls layers rather than eight). Grab-bar compatibility references
+  alias the shared layer/viewport; teardown deduplicates them. The atlas includes
+  the actual grab-bar position and preserves the bar's always-visible behavior,
+  independent corner/menu hover, existing hitboxes and resize/curvature mapping.
+  This removes four submitted layers; actual runtime budget/headroom, including
+  menu and keyboard combinations, still requires headset verification.
+- Verify independent URLs/tabs, four-screen Add Screen cap, separate navigation/gamepads,
+  close/reopen, resize/grab, primary AI plus secondary 2D, and standby recovery.
+
+### Compact tab strip milestone — 2026-10-16
+
+- Primary-screen top strip shares the corner-controls composition layer (no
+  extra OpenXR layers). It reveals with grab/corner controls and uses their
+  existing half-second hide delay. Active tab is wider; hovering inactive tabs
+  expands only their artwork, never their physics targets or neighbouring slots.
+- Four visible tabs plus overflow, separate active-tab close, and a `+` source
+  picker. PC-monitor/local-media choices are clearly unavailable where the current
+  backend cannot supply them. Existing Screens layout/monitor controls stay intact.
+- Up to eight standalone browser tabs. Only one WebView is alive on the existing
+  GPU surface. Switching saves navigation state in RAM, destroys the outgoing
+  WebView and restores/reloads the incoming tab. This deliberately stops hidden
+  audio, video and game contexts; it does NOT preserve arbitrary JavaScript state,
+  running cloud-game sessions or opt-in background audio. Cookies remain shared.
+- Titles/identities sync to the primary screen's ScreenContentTabs without URLs
+  entering workspace metadata or diagnostics. Closing the last browser tab uses
+  the existing safe browser-close/welcome handoff.
+- Multiple physical browser screens, mixed PC/browser presentation, local media,
+  cross-screen moves, workspace restore and live background-tab retention remain
+  future provider work. Do not treat a disabled source-picker entry as support.
+- Headset gate: visual alignment on flat/curved/resized screens, no overlapping
+  hitboxes or activation during a held grab, title expansion, overflow selection,
+  new/close/last-close, navigation restore, audio stopping, AI 3D and gamepads after
+  a switch, and no extra submitted layers. Prototype is not yet device-validated.
+
+### User clarification — 2026-10-15
+
+- Screens extends the existing Monitors menu, retaining monitor counts,
+  layouts, presets and grid controls; it must not replace or hide them.
+- Standalone: open the app without a PC, explicitly select Browser, and use
+  on-headset AI 3D on that primary browser screen.
+- Screens must offer Add Screen / Add Browser and layout selection for the
+  resulting physical screens. Existing host monitor counts remain distinct
+  from locally created browser screens; do not fabricate host monitors.
+- AI 3D belongs to the primary screen only, whether its selected source is a
+  PC stream or browser. The earlier general AI ownership-switch idea is deferred.
+- Browser startup must be opt-in, including builds handed over after smoke tests.
+- The previous source-picker milestone was insufficient: browser AI, mixed
+  screens and source-independent layout management are still outstanding.
+- Implementation order: restore existing menu and reliable source actions;
+  route browser RGBA frames through inference and final primary-screen warp
+  without a stream; then isolate per-screen presentation/input and implement
+  Add Screen / Add Browser using the existing layout machinery. Preserve
+  source-generation invalidation, GPU teardown safety and one AI owner.
+
+- Quest 3 first; keep platform-specific providers separate for later Quest 2/Linux support.
+- Four physical screens total, shared by PC monitors, browsers and local media.
+- Add Screen creates an empty screen with a source picker. Add Tab uses that same picker.
+- A tab can be a streamed PC monitor, webpage, headset file, SMB item, Plex item or Jellyfin item.
+- Screen position, curvature, size, bezel and controls belong to the physical screen.
+- Navigation/playback state, audio policy and AI settings belong to each tab.
+- Hidden tabs pause and mute by default. Keep Audio Playing is opt-in and retains the
+  necessary playback/decoding resources, but never runs hidden-tab inference.
+- Restore Workspace is optional. Restoring content is separate from automatically
+  reconnecting or resuming playback. Start with explicit user activation after restore.
+- Only ONE screen can run local AI inference at a time. One Meteor-backed stream
+  may additionally use external depth (updated 2026-10-17). Ownership switching
+  needs an explicit UI decision; do not silently transfer it yet.
+- Meteor is only available to sources that actually supply external depth. Local
+  browser/video frames are not automatically sent to a host.
+
+## Architecture
+
+Physical VRScreen -> ScreenContentTabs -> ScreenContentTab -> ContentProvider
+
+1. VRScreen retains geometry, OpenXR presentation and grab/resize targets.
+2. ScreenContentTabs owns ordered tabs and selection independently of MonitorSpec.
+3. ScreenContentTab owns a stable identity, source locator and per-tab preferences.
+4. Providers own content production, input routing, audio and lifecycle. The common
+   interface does NOT require every source to use the same decoding/rendering code.
+5. A workspace service owns physical screen IDs, restoration and the single AI owner.
+6. Stream providers reference a shared stream session plus monitor identity. Hiding
+   or closing a monitor tab must not terminate the shared session. Another visible
+   monitor can still consume it.
+
+## Implementation stages and gates
+
+### 1. Foundation
+
+- Add tested source/tab/selection data structures and the provider lifecycle contract.
+- Give existing monitor screens a matching stream tab without changing presentation.
+- Preserve the current four-screen cap; do not resurrect the eleven-screen layout.
+- Probe the installed Android WebView provider; report unavailable providers clearly.
+- Keep hand-tracking changes separate until their device validation is complete.
+
+### 2. Browser-to-GPU feasibility prototype
+
+- Verify WebView package availability on Quest 3. A package probe is NOT proof that
+  rendering, codecs, cloud gaming, login or DRM work.
+- Evaluate a hardware-accelerated WebView attached to an app-owned virtual display
+  and Presentation, rendered into a Surface consumed by GLES. Compare alternatives
+  if this fails. Validate pointer/keyboard coordinates and surface lifecycle.
+- Do not use per-frame software screenshots as the production video pipeline.
+- Test ordinary pages, unprotected HTML5 video, YouTube, full-screen transitions,
+  cookies/login, audio, controller input, standby and browser renderer-process death.
+- Measure CPU/GPU frame cost, latency, memory and decoder contention WITH a PC stream.
+- Test Quest WebView version/update availability and browser-engine security upkeep.
+- If the system provider is unavailable or insufficient, evaluate a packaged engine
+  (e.g. GeckoView) explicitly for GPU-surface integration, size and update ownership.
+- Treat Netflix and other protected services as independent feasibility gates.
+  Protected frames may not enter our ordinary GPU/inference path; do not promise
+  AI 3D or work around content protection. Explain unavailable capabilities in UI.
+- The competing Depthray thread confirms service-specific features, not a universal
+  browser or a general DRM-to-inference solution.
+
+### 3. UI and provider integration
+
+- Add Screen shortcut opens the shared source picker; enforce the four-screen limit.
+- Tab strip and source-picker visuals share existing control layers where possible.
+  No extra OpenXR layer per tab. Only the selected tab is visually submitted.
+- Implement empty-screen state, close tab/screen, rename, selection and navigation.
+- Reuse monitor placement/curvature, but do NOT fabricate PC monitors for local tabs.
+- Route all pointer, scroll, keyboard, trackpad and gamepad input to the focused
+  provider. Release held inputs before focus/tab changes. Never forward browser
+  passwords or local interactions to the PC stream.
+- Audit global stream resize, YUV binding, ambient, welcome screen and disconnect
+  loops: none may overwrite a non-stream tab's texture, dimensions or lifetime.
+- Implement existing monitor presentation as the first real provider, then browser,
+  then native headset-file playback. Hardware decoding feeds the shared frame API.
+
+### 4. Media sources and persistence
+
+- SMB: file picker, authentication, streaming/seeking and reconnect/error states.
+- Plex/Jellyfin: account/server setup, browsing, playback URLs, direct-play versus
+  transcoding, subtitles and expiry/re-authentication. These are separate integrations,
+  not free functionality inherited from local playback.
+- Persist tab locators/preferences and screen transforms through a versioned schema.
+  Do not store passwords/tokens in ordinary workspace JSON or diagnostic logs.
+- Browser cookies persist in the browser engine's storage; expose clear-site-data.
+- Restore Workspace toggle initially restores placeholders, not auto-playing media.
+
+### 5. AI, audio and performance
+
+- Admit at most one AI screen and process only its selected visible tab.
+- Both inference input and rendered depth must identify source/frame/generation;
+  discard stale completions across switches and clear temporal history.
+- Browser/decoded video must offer actual GPU-readable pixels before AI is enabled.
+- Preserve ordinary flat UI when suitable; investigate video-only AI versus whole
+  page AI rather than assuming text/toolbars should always be warped.
+- Background-audio policy controls providers, not just presentation visibility.
+- Audit audio focus/mixing, per-tab mute/volume, A/V sync and PC audio limitations:
+  a shared PC stream's audio cannot reliably be separated by monitor.
+- Count layers at runtime with four screens, stereo, controls, menu, keyboard,
+  pointers, ambient and passthrough. Reserve headroom for system constraints.
+- Suspend inactive browser/video work by default; release resources on close and
+  preserve asynchronous GPU destruction/model-switch safety.
+
+## Acceptance tests
+
+- Existing monitor streaming is unchanged before enabling new providers.
+- Four-screen cap, mixed tab ordering, source validation and selection are tested.
+- Switching/closing tabs releases input; a stale frame cannot replace current content.
+- PC disconnect leaves browser/local media operational; standalone startup needs no PC.
+- Hidden tabs are silent/paused unless background audio was explicitly selected.
+- One AI screen only; headset and Meteor modes cannot bypass the ownership rule.
+- Login/URLs and credentials stay out of exported diagnostics where sensitive.
+- Standby/resume, browser-process crash, media failure and rapid tab switching recover.
+- Profile a PC game plus browser video plus AI on Quest 3 before calling it usable.
+
+## Next milestone
+
+The browser/GPU/AI proof of concept is working. Per the 2026-10-15 product
+decision, prioritize a useful single standalone browser using the
+[Standalone Nightfall browser plan](standalone-browser.md) before concurrent
+streaming, real tab switching or additional physical screens. Historical
+checkpoints below describe earlier implementation stages, not current limits.
+
+## Resume checkpoint — 2026-10-13
+
+- `feat/unified-content-tabs` fast-forwarded to `80bb643`, retaining all
+  depth-model, controller, hand-tracking, Meteor and audio-comparison fixes.
+- Restored the foundation/probe WIP from its stash. Kept the stash as a backup.
+  Resolved test-list and Android packaging conflicts by retaining both additions.
+- Godot's editor scan recognizes the restored global classes; scripts parse.
+- Quest `dumpsys webviewupdate` reports an enabled `com.android.webview`
+  provider, version `149.1.0.10.52.1018773402`, target SDK 36.
+- This is an OS provider check only. Browser-to-GPU rendering, video, input,
+  lifecycle and DRM remain unvalidated; no browser screen is implemented yet.
+- Next implementation gate remains the isolated GPU-surface browser prototype
+  in stage 2, before new source-picker/tab UI or changes to stream presentation.
+
+## GPU prototype implementation — 2026-10-14
+
+- Temporary **Browser prototype** button on the Android welcome screen. It is
+  opt-in, not persisted and does not replace the normal PC connection flow.
+- Android WebView runs in a private app-owned VirtualDisplay/Presentation at
+  1920×1080. SurfaceTexture feeds the existing OES-to-RGBA GPU uploader; no
+  per-frame screenshots, CPU readback or extra OpenXR layer are used.
+- The browser owns a separate uploader. Closing destroys WebView, Presentation,
+  virtual display and Java Surface; one reusable GPU surface remains allocated
+  until app exit, avoiding destruction races with queued GL callbacks.
+- The local test page includes click, keyboard and drag-to-scroll checks. The
+  address bar, Go, Back and Close browser buttons are inside the same surface.
+  XR pointer and virtual-keyboard input are routed locally, never to the host.
+  Right-stick scrolling initially uses page-up/down rather than precise wheel
+  events. Opening the normal menu does not replace browser content.
+- Closing restores welcome content. Starting a PC stream closes the browser.
+  Provider failure or a 15-second first-frame timeout restores welcome content.
+  Android pause/resume forwards WebView lifecycle; pointer cancellation follows
+  the existing XR transient-input reset.
+- AI 3D for browser frames, browser/PC concurrency, tabs, screen creation,
+  fullscreen-video integration, downloads, permission prompts and DRM are NOT
+  implemented or validated. The existing stream-only AI guard is unchanged.
+- URLs, page contents and typed credentials are not added to diagnostic logs.
+  Browser cookies/storage use WebView defaults; clear-site-data controls remain
+  future work. HTTP(S) navigation only; file/content access is disabled.
+
+### Headset checks for this milestone
+
+1. Open Browser prototype without a PC; verify image orientation, sharpness,
+   click coordinates, typing, URL navigation and scrolling.
+2. Try an ordinary webpage and an unprotected HTML5 video, then YouTube; verify
+   video/audio, not just a painted page. Protected services are a separate gate.
+3. Close and reopen repeatedly, open menu/keyboard, then remove/re-wear headset.
+4. Close browser and connect normally; verify streaming, controls and AI remain
+   unchanged. Watch diagnostic `[BROWSER]`/`BrowserPrototype` messages for failures.
+5. Measure frame cost, memory and video decoder behavior before moving to tabs.
+
+### Initial browser freeze — 2026-10-14
+
+- Found a deterministic re-entrancy deadlock in the shared GLES uploader:
+  `update_android_gles_external_texture()` held `gles_surface_mutex_` while
+  calling `RenderingServer.call_on_render_thread()`. The render callback takes
+  the same mutex. Unlike the decoder-worker caller, browser polling runs on
+  Godot's main/render thread, where the engine executes that callback inline.
+- Release the scheduling mutex before dispatching. Coalescing flags/counters
+  remain protected, and the shared first-frame log counter is now atomic because
+  a decoder and browser can have different uploader instances.
+- Fresh headset reproduction: WebView opened at 09:23:03.343 and finished loading
+  its page at 09:23:03.439; Godot stopped after queuing GLES frame #1 at
+  09:23:03.444, matching the inline-dispatch deadlock.
+- `test/test_gles_render_dispatch.py` compiles the real scheduling function
+  against a minimal inline/deferred RenderingServer stub. Both corrected paths
+  pass; removing the unlock reproduces a timeout. Run with a host C++ compiler
+  and Python 3; this tests scheduling, not actual GL/WebView behavior.
+- Retained Android exit information also recorded a native SIGSEGV after the
+  unresponsive shutdowns; its stack was unavailable. Do not assume this mutex
+  correction explains that separate exit without a fresh capture.
+
+### Black browser image investigation
+
+- After fixing dispatch, logs show successful OES updates and RGBA blits while
+  the user sees black. The virtual display is ON at the intended 1920×1080.
+- Isolate the browser's raw GL copy from Godot canvas state: preserve/restore
+  clipping, depth/stencil, blend/cull, rasterizer-discard, color mask, texture
+  bindings/sampler, active unit, program, framebuffers and viewport. Apply this
+  to browser creation/update only; normal decoder rendering stays unchanged.
+- Three initial browser frames sample nine pixels each and log only nonblack /
+  visible-alpha counts and GL errors. No screenshots or continuous readback.
+- Explicit diagnostic launch: create the one-shot marker
+  `/sdcard/Android/data/app.nightfall.quest/files/browser_gpu_smoke_test` over ADB,
+  then restart the app normally. It removes the marker and opens the test page.
+  Godot intentionally strips command-line extras from exported launchers, so
+  those cannot be used for this test. Normal launches never auto-open a browser.
+- Headset smoke test at 09:52:32: WebView opens, all three RGBA copy probes report
+  `nonblack=9/9`, `visible_alpha=9/9`, draw/probe GL errors zero; Godot reports
+  `First GPU frame ready`. This verifies browser output/copy/binding, not the
+  final visual appearance through OpenXR. The user subsequently confirmed the
+  browser works very well on the headset. Broader video/login/standby coverage
+  remains part of the milestone checklist above.
+
+## Screens source-picker slice — 2026-10-14
+
+- Merged released main (Nightfall 0.8.1 / Meteor 0.1.1) into this branch before
+  resuming. All model, refinement, audio, controller and hand-tracking fixes
+  remain present.
+- Renamed the dormant Monitors tab to **Screens** and enabled it on Android.
+  Its first source-picker slice shows the current primary-screen source and
+  **Open Browser / Close Browser**. The welcome-screen shortcut remains, now
+  labelled Open Browser, and uses the same routing.
+- `ScreenSources` owns this routing. The real browser tab is registered in the
+  primary VRScreen's existing `ScreenContentTabs` while it is open; closing,
+  browser failure/timeout or stream startup removes it and restores PC/welcome
+  selection. It does not fake a PC monitor or alter screen geometry.
+- Browser now follows the `ContentProvider` activity/generation contract and
+  emits generation-tagged frame notifications. Browser AI remains unavailable:
+  GPU output alone does not mean inference routing has been implemented.
+- A browser cannot open while a stream is connecting, streaming, reconnecting,
+  restarting or disconnecting, or with more than one physical screen. No new
+  OpenXR layers and no per-tab rendering layers are created by this UI.
+- Existing monitor layout/Virtual/Apply code is retained but hidden; these
+  host-specific controls are not presented as browser-screen management.
+- Closing currently **destroys** the browser session; this is not a tab strip,
+  hidden-tab suspension, background-audio support or workspace restoration.
+  No navigation URLs/credentials are persisted or added to diagnostics.
+- Guard late WebView renderer-loss and pause callbacks by generation, so an
+  older browser cannot destroy or pause a newer one.
+- Next: isolate stream/browser presentation ownership and per-provider input,
+  then enable one browser alongside a PC stream. Actual tab switching requires
+  reliable hidden-tab pause/mute and state retention first; Add Screen, the
+  four-screen UI and local media providers follow that lifecycle work.
+- Verification: GDScript parse and full test suite pass, including source-picker
+  lifecycle/transition guards and browser provider closure. The C++ inline/
+  deferred GLES dispatch regression test passes. Optimized release-signed DEV
+  APK installed on Quest 3; opt-in browser GPU smoke logged first-frame ready
+  and three probes with 9/9 nonblack, 9/9 visible-alpha and zero GL errors.
+  Screens-menu layout/hit testing and video still need human headset checks.
+
+## Standalone browser AI slice — 2026-10-15
+
+- Restored the existing monitor counts, layout presets, Apply/Save/Remove and
+  grid controls within Screens. Their existing Polaris capability checks are
+  retained: this does not yet make host-only controls manage local browsers.
+- Browser actions use the same button-down activation as the other XR menu
+  actions. Removed the non-interactive warning block and combined source
+  status/actions in one row to leave space for the restored layout controls.
+- Removed automatic browser startup from the diagnostic marker. Builds handed
+  over for testing start normally; browser activation is explicit.
+- Added primary-media routing separate from the PC session lifecycle: a ready
+  browser supplies its own capture uploader and 1920x1080 surface size without
+  pretending that a PC stream is connected.
+- Browser RGBA/OES frames now feed the existing async model-sized PBO capture
+  and on-device depth engine. Static pages can request captures from their
+  retained OES frame even after WebView stops producing new frames.
+- The native XR renderer can present the browser through the production depth,
+  refinement and warp path, including Final Depth Map. Browser rendering keeps
+  its RGBA copy available for the legacy/input-debug fallback. Meteor remains
+  stream-only; browser pages are not sent to Meteor.
+- Closing the browser deactivates its native consumer before closing the
+  producer, then reapplies welcome presentation and inactive inference config.
+- Automated checks: project parse, full GDScript suite (including real primary
+  source-routing tests), native release compilation and GLES dispatch test pass.
+- Still requires headset validation: browser AI/Final Depth Map, repeated
+  open/close, standby, menu input and returning to normal PC streaming.
+- Still outstanding: Add Screen/Add Browser, mixed concurrent sources,
+  source-independent layout selection and real tab switching. No extra physical
+  screens or concurrent browser/PC playback are claimed by this milestone.
+
+### Fullscreen and close follow-up
+
+- User confirmed YouTube playback with browser AI 3D. Fullscreen was missing,
+  and closing the browser crashed the app. Retained headset crash buffer records
+  SIGSEGV at 00:16:10 on 2026-10-15 in Godot's GLThread, fault address 0xe0;
+  available symbols do not establish the exact failing engine function.
+- Added WebChromeClient custom-video-view handling inside the existing virtual
+  display. Fullscreen hides browser navigation without leaving the GPU/AI
+  capture surface. Video controls or virtual-keyboard Escape exit fullscreen.
+  Custom views and WebViews are detached from their parent before destruction.
+- Corrected inactive-media apply_stereo(): a saved AI preference must not
+  re-enable capture or resize model depth textures on the welcome screen.
+- Browser close disables depth, stops native presentation, closes the producer
+  and waits three process-frame boundaries before reacquiring welcome layers.
+  Reopening is blocked during this drain; a newly started PC connection prevents
+  the deferred welcome restore. This is a targeted lifecycle correction, not
+  proof that the recorded native crash is resolved without a headset retest.
+- Added regression coverage for deferred close, stopped inference, and PC
+  connection ownership during close. Full GDScript suite and optimized Android
+  build pass. Fullscreen video/AI and repeated close require a headset retest.
+
+### Primary tab strip follow-up (2026-10-16)
+
+- Tabs and source dropdown share the existing corner-controls viewport and
+  composition layer; no additional OpenXR layer is allocated for them.
+- Tab cursor placement uses the same unfiltered hit as input, resetting the
+  steady filter across tab hits and misses. Dropdown hit geometry clears the
+  video's 10 mm-thick collider; regression coverage checks overlapping targets.
+- Inactive browser tabs show only a globe; active/hovered tabs show the title.
+- Browser Fullscreen hides navigation inside the existing capture texture.
+  Hovering the top-right corner continuously for 0.6 seconds reveals the exit;
+  it hides after 0.3 seconds away from the corner.
+  Escape/Back also exits. This is separate from Chromium video fullscreen.
+- Separate browser screens remain outstanding: replace singleton browser state
+  with per-provider instances, route input to the focused screen, integrate
+  source-independent layouts and enforce shared screen/layer/resource budgets.
+  Tabs continue to share one visible browser producer; they are not screens.
+- Follow-up: explicit ray priority prevents the primary screen's differently
+  curved collider from intercepting dropdown input. An invisible non-actionable
+  backdrop keeps controls revealed while traversing gaps and the open dropdown;
+  disabled rows absorb clicks instead of passing them through to web content.
+- Corrected local depth ordering after headset feedback: the viewer is on
+  screen-local +Z, so menu hit faces offset toward +Z and the hover backdrop
+  sits behind them toward -Z. Viewer-side physics tests now include video,
+  backdrop and dropdown together, covering several curvatures and button
+  positions. Hit-face subdivision bounds chord error on wide backdrops so
+  curved backdrop segments cannot protrude through the smaller button targets.
+
+### Unified two-row screen menu (2026-10-17)
+
+- Moved tabs/add/close to the first row above the screen. Browser navigation
+  occupies the second row: Back, Forward, Reload/Stop, Home, address/search,
+  Go, Saved bookmarks, Blocking and Privacy. Both rows share the corner atlas
+  and its existing OpenXR layer; no new composition layers are allocated.
+- The native browser navigation model remains on Android, but its in-texture
+  toolbar is hidden permanently. Web content now fills the captured surface;
+  the explicit browser Fullscreen button is removed. Chromium video fullscreen
+  remains supported, including its hover-revealed exit control.
+- Navigation metadata crosses the existing cached JSON bridge. Actions dispatch
+  to Android's UI thread with generation checks. The address field opens the
+  existing virtual keyboard, retains native text editing/selection, and keeps
+  the screen menu revealed while editing. Enter/Go navigates; Escape cancels.
+  Website input resumes after clicking the page. Bookmark/privacy/blocking
+  panels remain explicit temporary dialogs on the browser surface.
+- Layout/host regression tests cover two distinct rows above the content and
+  input metadata. An isolated Android instrumentation test covers hidden-toolbar
+  address entry; it must run against the instrumentation flavor, never the
+  installed user's profile. Headset testing remains required for interaction,
+  URL entry, video fullscreen, dialogs and gamepad focus after navigation.
+
+### Browser panel visual pass
+
+- The shared panel is exactly one screen-width in arc coordinates and follows
+  screen resizing/curvature. Uses the main menu's rounded 32 px background,
+  dark `(0.06, 0.06, 0.10, 0.92)` palette, translucent buttons and blue selection.
+- Bottom row is now Back/Forward/Refresh-or-Stop SVG icons, a wide address field,
+  and a three-line menu. Addresses submit with keyboard Enter. The menu exposes
+  Privacy, Blocking, Bookmarks and Shortcuts (the existing browser home page).
+- Dropdowns use the same panel styling and retained hit-target ordering. The
+  full-width invisible backdrop keeps both rows accessible across the gaps.
+- Verified host layout/physics tests and actual GPU-rendered icon/text output.
+  No additional OpenXR layers. Headset visual and interaction approval pending.
+- Follow-up: equal-width titled tabs fill the top row up to the far-right
+  Add Browser button, with only normal panel padding. Hover is opaque and does
+  not expand across neighbours; a frontmost per-tab close target appears only
+  while that tab/close is hovered and closes that specific page, not the active
+  page by assumption. The global close button is removed. The overflow list
+  appears only above four tabs and is labelled Tabs, distinct from settings.
+  Add Browser creates directly. Settings now starts with Home, followed by
+  Bookmarks, Privacy and Blocking.
+- The welcome screen hides the unified browser panel and disables all of its
+  hit targets; Open Browser remains the entry point. Opening the browser
+  restores the panel, without affecting resize corners sharing its XR layer.
+
+### Mixed stream/browser workspace test
+
+- Welcome's Open Browser is an in-viewport dropdown: Open browser here replaces
+  welcome; New browser screen leaves welcome and Connect available and opens an
+  independent browser beside it. No popup window or new controls layer.
+- One PC stream can coexist with independent browser screens, within the shared
+  four-screen cap. Connecting preserves browsers; the host manifest reuses the
+  primary welcome surface instead of temporarily allocating an extra screen.
+  Host monitor cleanup and stream aspect/resolution updates skip browsers.
+- Clicking browser content focuses its keyboard/gamepad destination; clicking
+  stream content releases browser input and returns focus to the host. Stream
+  gamepads are neutralized on browser focus to avoid stuck buttons. Browser
+  scrolling and cursor placement stay independent of primary AI depth offsets.
+- Local AI depth still belongs only to the primary screen: with a PC stream
+  primary, auxiliary browsers remain flat. Concurrent local browser inference
+  plus Meteor stream inference is not implemented by this milestone.
+- Depth selection is source-specific: Meteor is only offered for PC streams;
+  primary browsers default to local Auto with per-browser runtime model/backend
+  overrides. Quest 3/3S uses EdgePad-512/OpenCL; Quest 2 and Auto OpenCL failures
+  use EdgePad-256/OpenGL. Browser choices never overwrite the host's Meteor or
+  model/backend preference. Browser status includes H-AI3D inference timing.
+- Automated coverage includes a full four-screen host-layout transition and
+  dropdown availability. Headset testing: add a browser from welcome, connect,
+  interact with both, switch keyboard/gamepad focus, resize/restart/disconnect
+  the stream, and close/reopen a browser without disturbing the other screen.

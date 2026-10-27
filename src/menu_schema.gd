@@ -13,8 +13,7 @@ static func get_tab_buttons() -> Array:
 		_tab_button(&"_tab_btn_control", "Control", 2, "Configure pointers, hand tracking, and controller mapping."),
 		_tab_button(&"_tab_btn_ai3d", "AI 3D", 3, "Configure local AI stereoscopic depth conversion."),
 		_tab_button(&"_tab_btn_picture", "Picture", 4, "Adjust the streamed image."),
-		# Monitors remains visible as a disabled preview of the feature.
-		_tab_button(&"_tab_btn_monitors", "Monitors", 5, "Configure physical and virtual monitor layouts. Coming soon.", true, true, 0.3),
+		_tab_button(&"_tab_btn_monitors", "Screens", 5, "Choose screen content: PC or browser.", true, OS.get_name() != "Android", 1.0 if OS.get_name() == "Android" else 0.3),
 		# Settings has no tab button: the gear in the top bar opens it.
 		_tab_button(&"_tab_btn_settings", "Settings", 6, "Configure language, diagnostics, and connection options.", false, true),
 	]
@@ -40,7 +39,7 @@ static func get_tabs() -> Array:
 					_option(&"_ui_bg_btn", "Background", "Black", "Choose the virtual background used when passthrough is off.", TARGET_SETTINGS, &"cycle_background"),
 					_option(&"_ui_ambient_btn", "Ambient", "Off", "Add screen lighting using a fixed, slowly sampled, or live sampled colour.", TARGET_SETTINGS, &"cycle_ambient_mode"),
 					_option(&"_ui_ambient_color_btn", "Colour", "White", "Choose the fixed ambient colour. Available in Static mode only.", TARGET_SETTINGS, &"cycle_ambient_color"),
-					_option(&"_ui_bezel_btn", "Bezel", "On", "Show or hide the frame around the screen.", TARGET_SCREEN, &"toggle_bezel"),
+					_option(&"_ui_pt_fade_btn", "PT Fade", "Off", "Darken your surroundings in passthrough so the screen stands out.", TARGET_SETTINGS, &"cycle_passthrough_fade"),
 				],
 			},
 		],
@@ -76,10 +75,10 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"ControlRow1",
 				"options": [
-					_option(&"_ui_cursor_btn", "Cursor Type", "Circle", "Choose the appearance of the VR pointer.", TARGET_SETTINGS, &"cycle_cursor_mode"),
+					_option(&"_ui_cursor_btn", "Cursor Type", "Circle", "Choose the appearance of the VR pointer, or hide it on the screen.", TARGET_SETTINGS, &"cycle_cursor_mode"),
 					_option(&"_ui_steady_btn", "Cursor Steady", "Low", "Adjust pointer-motion smoothing.", TARGET_SETTINGS, &"cycle_steady"),
 					_option(&"_ui_hand_tracking_btn", "Tracking", "Off", "Enable or disable hand tracking.", TARGET_SETTINGS, &"toggle_hand_tracking"),
-					_option(&"_ui_double_click_btn", "Double Click", "Standard", "Choose how double-click input is triggered.", TARGET_SETTINGS, &"cycle_double_click_mode"),
+					_option(&"_ui_mouse_follows_btn", "Follows Pointer", "Off", "Move the PC cursor wherever you point, without clicking.", TARGET_SETTINGS, &"toggle_mouse_follows_pointer"),
 				],
 			},
 			{
@@ -109,6 +108,7 @@ static func get_tabs() -> Array:
 				"node_name": &"PictureRow2",
 				"options": [
 					_option(&"_ui_sharpen_btn", "Sharpen", "Off", "Apply native runtime sharpening to the streamed image.", TARGET_SETTINGS, &"cycle_sharpen_mode"),
+					_option(&"_ui_bezel_btn", "Bezel", "On", "Show or hide the frame around the screen.", TARGET_SCREEN, &"toggle_bezel"),
 				],
 			},
 		],
@@ -147,6 +147,20 @@ static func get_tabs() -> Array:
 				"title": "General",
 				"options": [
 					_option(&"_ui_language_btn", "Language", "English", "Choose the language used by Nightfall's menus.", TARGET_UI, &"on_language_pressed"),
+				],
+			},
+			{
+				"node_name": &"SettingsInputRow",
+				"title": "Input",
+				"options": [
+					_option(&"_ui_double_click_btn", "Double Click", "Standard", "Choose how double-click input is triggered.", TARGET_SETTINGS, &"cycle_double_click_mode"),
+				],
+			},
+			{
+				"node_name": &"SettingsDisplayRow",
+				"title": "Display",
+				"options": [
+					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
 				],
 			},
 			{

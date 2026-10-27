@@ -1,0 +1,41 @@
+--- a/src/xrt/compositor/multi/comp_multi_private.h
++++ b/src/xrt/compositor/multi/comp_multi_private.h
+@@ -105,7 +105,8 @@
+ struct multi_compositor
+ {
+ 	struct xrt_compositor_native base;
++	uint64_t meteor_session_id;
+ 
+ 	// Client info.
+ 	struct xrt_session_info xsi;
+ 
+--- a/src/xrt/compositor/multi/comp_multi_compositor.c
++++ b/src/xrt/compositor/multi/comp_multi_compositor.c
+@@ -33,2 +33,3 @@
+ #include "/tests/monado_probe_paths.h"
++#include "/tests/monado_session_events.h"
+ 
+@@ -484,4 +485,5 @@
+ 		mc->state.session_active = true;
+ 		mc->state.session_view_type = info->view_type;
++		meteor_session_event(mc->meteor_session_id, "begun");
+ 	}
+ 
+@@ -501,4 +503,5 @@
+ 		multi_system_compositor_update_session_status(mc->msc, false);
+ 		mc->state.session_active = false;
++		meteor_session_event(mc->meteor_session_id, "ended");
+ 	}
+ 
+@@ -900,4 +903,5 @@
+ 	struct multi_compositor *mc = multi_compositor(xc);
+ 
++	meteor_session_event(mc->meteor_session_id, "destroyed");
+ 	if (mc->state.session_active) {
+ 		multi_system_compositor_update_session_status(mc->msc, false);
+@@ -1092,4 +1096,5 @@
+ 	*out_xcn = &mc->base;
+ 
++	mc->meteor_session_id = meteor_session_event(0, "created");
+ 	return XRT_SUCCESS;
+ }

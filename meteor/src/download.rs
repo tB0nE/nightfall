@@ -221,6 +221,15 @@ impl Default for Download {
 }
 
 impl Download {
+    pub fn reserve(&self) -> bool {
+        let mut state=self.state.lock().unwrap();
+        if *state==State::Running { return false; }
+        self.cancel.store(false,Ordering::Relaxed);
+        self.done.store(0,Ordering::Relaxed);
+        self.total.store(0,Ordering::Relaxed);
+        *state=State::Running;
+        true
+    }
     pub fn state(&self) -> State {
         self.state.lock().map_or(State::Idle, |s| s.clone())
     }
@@ -234,7 +243,7 @@ impl Download {
     /// Runs `plan` on this thread. Returns once everything is installed, or
     /// with the reason it stopped (also kept in `state`).
     pub fn run(&self, plan: &Plan) -> Result<(), String> {
-        self.cancel.store(false, Ordering::Relaxed);
+        if self.state()!=State::Running { self.cancel.store(false, Ordering::Relaxed); }
         self.done.store(0, Ordering::Relaxed);
         self.total.store(plan.bytes(), Ordering::Relaxed);
         self.set(State::Running);
@@ -259,6 +268,57 @@ impl Download {
             Err(err) => State::Failed(err.clone()),
         });
         result
+    }
+
+    pub fn run_vulkan(&self, models_dir: &Path, id: &str) -> Result<(),String> {
+        if self.state()!=State::Running { self.cancel.store(false,Ordering::Relaxed); }
+        self.done.store(0,Ordering::Relaxed);
+        self.total.store(crate::vda_assets::bytes(id)?,Ordering::Relaxed);
+        self.set(State::Running);
+        let result=self.fetch_vulkan(models_dir,id);
+        self.set(match &result { Ok(())=>State::Done, Err(error)=>State::Failed(error.clone()) });
+        result
+    }
+
+    fn fetch_vulkan(&self, models_dir: &Path, id: &str) -> Result<(),String> {
+        let model=crate::vda_assets::model(id)?;
+        let base=std::env::var("METEOR_VDA_VULKAN_URL").unwrap_or_else(|_|crate::vda_assets::catalog().base_url.clone());
+        self.fetch_vulkan_files(models_dir,id,model,&base)
+    }
+
+    fn fetch_vulkan_files(&self, models_dir: &Path, id: &str, model: &crate::vda_assets::Model, base: &str) -> Result<(),String> {
+        let staging_root=models_dir.join(".vda-vulkan-downloads");
+        std::fs::create_dir_all(&staging_root).map_err(|error|error.to_string())?;
+        let lock=std::fs::OpenOptions::new().create(true).truncate(false).write(true)
+            .open(staging_root.join(format!("{id}.lock"))).map_err(|error|error.to_string())?;
+        let _lock = lock.try_lock().map_err(|_|"This Vulkan VDA model is already being downloaded by another Meteor process")?;
+        let final_path=models_dir.join(id);
+        if final_path.exists() {
+            return crate::vda_vulkan::verify(models_dir,id).map_err(|error|
+                format!("Existing {id} is incomplete or corrupt: {error}. Move that model directory aside before retrying."));
+        }
+        let staging=staging_root.join(id);
+        std::fs::create_dir_all(&staging).map_err(|error|error.to_string())?;
+        let required=model.files.iter().map(|file|file.bytes).sum::<u64>()*2+100_000_000;
+        if free_space(&staging).is_some_and(|free|free<required) { return Err(format!("Vulkan VDA needs {} MB free for installation",required.div_ceil(1_000_000))); }
+        let agent=agent();
+        for file in &model.files {
+            if self.cancel.load(Ordering::Relaxed) { return Err("Download cancelled; choose the download again to resume".into()); }
+            let path=staging.join(&file.name);
+            if verified_file(&path,&file.sha256,file.bytes) {
+                self.done.fetch_add(file.bytes,Ordering::Relaxed);
+                continue;
+            }
+            let raw=downloading(&path);
+            self.resumable(&agent,&format!("{}/{}",base.trim_end_matches('/'),file.asset),0,file.bytes,&raw)?;
+            let installed=install_verified(std::fs::File::open(&raw).map_err(|error|error.to_string())?,&path,&file.sha256);
+            let _=std::fs::remove_file(&raw);
+            installed?;
+        }
+        crate::vda_vulkan::verify(&staging_root,id)?;
+        if self.cancel.load(Ordering::Relaxed) { return Err("Download cancelled; choose the download again to resume".into()); }
+        std::fs::rename(staging,final_path).map_err(|error|error.to_string())?;
+        Ok(())
     }
 
     fn fetch(&self, plan: &Plan) -> Result<(), String> {
@@ -339,7 +399,8 @@ impl Download {
         self.done.fetch_add(have, Ordering::Relaxed);
         let mut failures = 0;
         while have < len {
-            let attempt = (|| -> Result<(), String> {
+            let before = have;
+            let mut attempt = (|| -> Result<(), String> {
                 let response = agent
                     .get(url)
                     .header("Range", format!("bytes={}-{}", start + have, start + len - 1))
@@ -364,6 +425,9 @@ impl Download {
                 Ok(())
             })();
             have = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if attempt.is_ok() && have <= before && have < len {
+                attempt = Err(format!("{url}: response ended without download progress"));
+            }
             if let Err(err) = attempt {
                 failures += 1;
                 if self.cancel.load(Ordering::Relaxed) || failures > RETRIES {
@@ -376,6 +440,21 @@ impl Download {
         }
         Ok(())
     }
+}
+
+fn verified_file(path: &Path, expected: &str, bytes: u64) -> bool {
+    let Ok(mut file)=std::fs::File::open(path) else { return false; };
+    if file.metadata().map(|metadata|metadata.len()).ok()!=Some(bytes) { return false; }
+    let mut hash=Sha256::new();
+    let mut buffer=vec![0u8;1<<20];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0)=>break,
+            Ok(count)=>hash.update(&buffer[..count]),
+            Err(_)=>return false,
+        }
+    }
+    hex(&hash.finalize())==expected
 }
 
 /// Where `path` is written while it's still downloading.
@@ -711,6 +790,89 @@ fn members(cd: &[u8]) -> Result<Vec<(String, Member)>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vulkan_download_resumes_verifies_and_publishes_only_complete_models() {
+        use std::net::TcpListener;
+        let id=crate::vda_vulkan::FULL;
+        let root=std::env::temp_dir().join(format!("vda-assets-{}-{}",std::process::id(),std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir(&root).unwrap();
+        let mut bodies=std::collections::BTreeMap::new();
+        let mut hashes=std::collections::BTreeMap::new();
+        for name in ["cold.ncnn.param","cold.ncnn.bin","step.ncnn.param","step.ncnn.bin"] {
+            let body=format!("fixture for {name}").into_bytes();
+            hashes.insert(name,hex(&Sha256::digest(&body)));
+            bodies.insert(name.to_string(),body);
+        }
+        bodies.insert("manifest.json".into(),serde_json::to_vec(&serde_json::json!({"schema":1,"width":518,"height":294,"files":hashes})).unwrap());
+        bodies.insert("LICENSE".into(),b"fixture license".to_vec());
+        let model=crate::vda_assets::Model {width:518,height:294,files:bodies.iter().map(|(name,body)|crate::vda_assets::File {
+            name:name.clone(),asset:format!("{id}-{name}"),bytes:body.len() as u64,sha256:hex(&Sha256::digest(body))}).collect()};
+        let staging=root.join(".vda-vulkan-downloads").join(id);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("cold.ncnn.bin.download"),&bodies["cold.ncnn.bin"][..5]).unwrap();
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=std::thread::spawn(move || {
+            for _ in 0..6 {
+                let (mut stream,_)=listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut request=Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte=[0];stream.read_exact(&mut byte).unwrap();request.push(byte[0]);
+                }
+                let request=String::from_utf8(request).unwrap();
+                let line=request.lines().next().unwrap();
+                let asset=line.split_whitespace().nth(1).unwrap().trim_start_matches('/');
+                let name=asset.strip_prefix(&format!("{id}-")).unwrap();
+                let body=&bodies[name];
+                let start=request.lines().find_map(|line|line.to_ascii_lowercase().strip_prefix("range: bytes=")
+                    .map(|value|value.split('-').next().unwrap().parse::<usize>().unwrap())).unwrap_or(0);
+                if name=="cold.ncnn.bin" {assert_eq!(start,5);}
+                write!(stream,"HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",body.len()-start,start,body.len()-1,body.len()).unwrap();
+                stream.write_all(&body[start..]).unwrap();
+            }
+        });
+        let download=Download::default();
+        assert!(download.reserve());assert!(!download.reserve());
+        assert!(!crate::vda_vulkan::present(&root,id));
+        download.fetch_vulkan_files(&root,id,&model,&format!("http://{address}")).unwrap();
+        server.join().unwrap();
+        crate::vda_vulkan::verify(&root,id).unwrap();
+        assert!(root.join(id).join("LICENSE").is_file());
+        assert!(!staging.exists());
+        // A second install verifies the existing model without needing a server.
+        download.fetch_vulkan_files(&root,id,&model,"http://127.0.0.1:1").unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancellation_is_kept_and_partial_models_are_not_visible() {
+        let root=std::env::temp_dir().join(format!("vda-cancel-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        let model=crate::vda_assets::model(crate::vda_vulkan::FULL).unwrap();
+        let download=Download::default();
+        assert!(download.reserve());
+        download.cancel.store(true,Ordering::Relaxed);
+        let error=download.fetch_vulkan_files(&root,crate::vda_vulkan::FULL,model,"http://127.0.0.1:1").unwrap_err();
+        assert!(error.contains("cancelled"));
+        assert!(!crate::vda_vulkan::present(&root,crate::vda_vulkan::FULL));
+        assert!(!verified_file(&root.join("missing"),"bad",1));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checksum_failure_does_not_replace_existing_verified_files() {
+        let root=std::env::temp_dir().join(format!("vda-checksum-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path=root.join("weights.bin");
+        std::fs::write(&path,b"original").unwrap();
+        let expected=hex(&Sha256::digest(b"expected"));
+        assert!(install_verified(&b"tampered"[..],&path,&expected).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(),b"original");
+        assert!(!path.with_extension("partial").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn finds_a_moved_wheel_in_the_index() {

@@ -32,24 +32,204 @@ cargo run --release -- --no-tray
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
 area. macOS runs without a tray icon for now.
 
+### Managed Linux XR (development preview)
+
+Release dependencies, licenses, source companion and reproducible build inputs
+are documented in [RELEASE.md](RELEASE.md), also accessible from the tray's
+**Release information & licenses** item.
+
+The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA/AMD
+encoding and tracking bridges and an independently built xrizer OpenVR compatibility
+runtime. WiVRN and SteamVR installations are not required.
+
+Run the AppImage and select **Enable PCVR — install & restart Meteor** near the
+top of its tray menu. This installs the verified runtime into your user-data
+folder, enables XR and restarts Meteor. Existing settings/comments are retained,
+with a backup before the setting is changed; headset approvals are preserved.
+The menu shows **PCVR ready** when the service is running, or an error and Retry
+action if setup/startup fails. Desktop streams briefly disconnect during restart.
+
+For command-line setup, this performs the same install/enable steps and exits:
+
+```sh
+./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --enable-xr
+```
+
+The install-only command remains available:
+
+```sh
+./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --install-xr-runtime
+```
+
+This copies files only; it does not change global OpenXR selection, Steam launch
+options, headset authorization or running services. Python 3, compatible host
+Vulkan/udev/C++ libraries and matching graphics drivers remain required for XR.
+NVIDIA uses CUDA/NVENC. Experimental AMD XR uses host libva/DRM/Mesa with a
+hardware H.264/HEVC encoder and VA video processing. Meteor includes the FFmpeg
+encoder runtime, so a system FFmpeg installation is not required for gameplay.
+The RX480 has passed packaged synthetic/transport tests; modern AMD cards and
+real-game headset sessions still need validation.
+
+**PCVR encoder** in the tray selects Auto, NVIDIA/NVENC or AMD/VA-API for the next
+XR session without restarting Meteor. Auto prefers NVIDIA on mixed systems;
+AMD-only systems select AMD after checking codec/VPP capabilities. Rendering and
+encoding use the same selected GPU; this does not change Sunshine or depth GPU
+selection. Both H.264 and HEVC are available when the GPU advertises them. HEVC
+is preferred on Quest 3; H.264 is the Quest 2 default when supported. Foveated
+encoding is automatically greyed out and effectively Off on unsupported encoders,
+without erasing the saved preference for NVIDIA. Set bitrate before the session; live bitrate changes
+are explicitly rejected on AMD rather than silently ignored.
+
+For multiple AMD GPUs, select the host-local render node in the config:
+
+```toml
+[xr]
+encoder_backend = "vaapi" # auto | nvenc | vaapi
+render_device = "/dev/dri/renderD128" # Check the actual node on this machine.
+```
+
+Selecting Auto or NVIDIA in the tray clears that explicit AMD override. Cards
+without a supported hardware encoder are rejected; there is no CPU fallback.
+
+Advanced users can also enable the installed XR service directly in
+`~/.config/nightfall-meteor/meteor.toml` (respecting `XDG_CONFIG_HOME`), then restart Meteor:
+
+```toml
+[xr]
+enabled = true
+# Defaults: TCP control 47910, video 47911, tracking 47912.
+```
+
+With the updated Nightfall client streaming the matching desktop, XR discovery
+uses Meteor's remembered host key. A new headset proves its identity, displays an
+approval code, and waits for the matching local Approve action in Meteor's tray.
+Meteor also shows an approval notification with Approve/Reject buttons and the
+matching headset code. If notifications are disabled, use the tray actions.
+Approvals persist across host restarts. An unapproved headset gets no XR session
+or transport. Discovery and Sunshine pairing alone do not grant XR access.
+
+Configured XR ports are included in the existing firewall check/Allow action;
+firewall rules are never changed automatically. An XR startup failure leaves the
+desktop proxy available. Runtime updates preserve settings/logs and refuse to run
+during an active XR session.
+
+The installer selects the bundled xrizer on fresh installs and migrates the known
+WiVRN Flatpak compatibility path, preserving an explicit custom runtime choice.
+Its OpenVR registry is private to owned game launches; global runtime selection
+is unchanged. The pinned upstream revision, source URL and dependency notices
+are included with the runtime.
+
+This is not a finished clean-install release. Steam launch options still need
+configuration. See the [installation plan](../docs/plans/active/meteor-linux-installation.md)
+for the current evidence and remaining work. XR audio currently uses the retained
+Sunshine stream.
+
+At the top of Meteor's tray menu, **Custom Steam Launch Options required: Copy**
+copies the installed launch command. In Steam, right-click each VR game, choose
+**Properties → General → Launch Options**, and paste it. The same command works
+for Steam games and non-Steam shortcuts: it reads the identity Steam supplies.
+Existing per-game commands with explicit app IDs continue to work. Linux copy
+uses KDE's clipboard service, or `wl-copy` / `xclip` on other desktops.
+
+### Optional Vulkan VDA models
+
+Under **GPU / model**, choose **Download VDA 518×294 (Vulkan)** or
+**Download VDA Performance 392×224 (Vulkan)**. Both are conversions of the existing
+VDA Small checkpoint and require no TensorRT/CUDA download. Files come from the
+[VDA model release](https://github.com/tB0nE/nightfall/releases/tag/meteor-vda-s-518x294)
+and are pinned by SHA-256. Downloads can be cancelled and resumed. Meteor adds a
+model to compatible GPU groups only after its complete installation; your current
+model and GPU remain selected. Each download includes the Apache 2.0 license.
+
+For headless installation, use `--download-vda-vulkan 518` or
+`--download-vda-vulkan 392`. NVIDIA's separate TensorRT VDA download remains
+available under its clearly labelled menu entry.
+
+### Integrated XR development service
+
+On a configured Linux/NVIDIA development checkout, the XR endpoint can run
+alongside the ordinary proxy instead of a separate `--xr-control-dev` process:
+
+```sh
+cargo run --release -- --no-tray --no-depth --no-mic \
+  --xr-service-dev <local-address:port> \
+  --xr-client-key <headset-public-key-hex> \
+  --xr-runtime-root <absolute-nightfall-checkout>
+```
+
+This legacy CLI path remains opt-in and does not advertise XR in discovery.
+A configured checkout runtime can supervise a host-selected application after
+explicit acceptance and authenticated relay attachment; without it, only the
+encrypted relay endpoints are prepared. Existing checkout prerequisites apply.
+Only public keys belong on the command line; never pass a private key or password.
+
+Unlike the standalone DEV endpoint's separate key file, this mode uses Meteor's
+normal `meteor.key` identity. Its **public** key is printed at startup: explicitly
+update the DEV headset host pin if necessary, rather than disabling pin checks.
+The client allowlist remains mandatory; discovery and a streaming IP address are
+not substitutes for device authorization. No XR capability is added to discovery,
+firewall rules are not changed, and the normal client still requires its DEV entry.
+An XR bind/configuration failure leaves the desktop proxy available and is logged.
+
+Tray Quit and termination signals request service shutdown; Meteor awaits XR's
+bounded runtime cleanup, removes its microphone, then uses its existing immediate
+exit to avoid unsafe GPU-library destructors. The desktop-overlay and real-game
+session-detection work is tracked in
+[the integration plan](../docs/plans/active/meteor-xr-desktop-integration.md).
+
+Process-level coexistence regression (temporary configuration, test-only keys,
+mock Sunshine HTTP upstream; no headset/GPU or running-service replacement):
+
+```sh
+python3 test/run_meteor_xr_coexistence.py \
+  meteor/target/release/nightfall-meteor /path/to/meteor-xr-control-cpp-client
+```
+
+Run that from the repository root with the OpenSSL control fixture built from
+`test/meteor_xr_control_client_test.cpp`. It checks authenticated negotiation plus
+proxy forwarding, XR bind-failure isolation, XR-disabled startup and signal exits.
+It is not full GameStream/video coverage. Runtime status is an optional field on
+authenticated replies; client polling never treats session activity as proof of
+headset presentation or automatically enters XR.
+
 ### Building the AppImage
 
 ```
 meteor/tools/build_appimage.sh [models folder]
 ```
 
-Builds `target/appimage/Nightfall-Meteor-x86_64.AppImage`. Inside:
-- Meteor without ONNX Runtime, built on Ubuntu 22.04 in a container, so it
-  runs on glibc 2.35 or newer;
-- ncnn's 22.04 build and `libgomp`;
-- EdgePad 512 for ncnn;
-- the notices for all of these and the Rust crates
-  (`usr/share/doc/nightfall-meteor/THIRD_PARTY_NOTICES.txt`).
+Builds `meteor/target/appimage/Nightfall-Meteor-<version>-x86_64.AppImage` with:
 
-The script needs podman (or docker) and network access. The models folder
-(default `~/.local/share/nightfall-meteor/models`) must hold
-`zipdepth_wide_512x288.ncnn.{param,bin}`, from `models/convert_ncnn.py`.
-VDA isn't inside; the tray offers it as a download.
+- Meteor without ONNX Runtime, optimized in Ubuntu 22.04 for glibc 2.35+;
+- ncnn, its OpenMP runtime and the portable Vulkan processing library;
+- EdgePad-512 and EdgePad-256;
+- minimal FFmpeg/dav1d runtime (including HEVC VA-API encoding) and component notices.
+
+Set `NIGHTFALL_CONTAINER_ENGINE=docker` or `podman` to choose the builder.
+The model folder (default `~/.local/share/nightfall-meteor/models`) must contain
+`zipdepth_wide_512x288.ncnn.{param,bin}` and
+`zipdepth_edgepad_256.ncnn.{param,bin}`.
+
+To include the managed XR preview, first prepare its baseline-compatible bundle,
+then build:
+
+```sh
+bash tools/build_support/build_meteor_xr_bundle.sh
+NIGHTFALL_CONTAINER_ENGINE=docker \
+METEOR_XR_BUNDLE="$PWD/.build-cache/meteor-xr/portable-package/bundle" \
+bash meteor/tools/build_appimage.sh
+```
+
+XR builds use the distinct `Nightfall-Meteor-<version>-XR-DEV-x86_64.AppImage`
+filename and remain release-optimized. The build validates runtime integrity and
+ELF compatibility before packaging it. XR notices remain inside the verified
+bundle under `usr/share/nightfall-meteor/xr-bundle`.
+
+Vulkan VDA exports are not included merely because they exist on the build PC.
+Explicit `METEOR_BUNDLE_VDA_VULKAN=1` includes both variants if present, subject to
+the unchanged 100 MB package limit. Installed user models remain available;
+separate Vulkan VDA download delivery is still pending. The existing tray VDA
+download installs the NVIDIA TensorRT assets.
 
 ### Windows release folder
 
@@ -152,7 +332,113 @@ but video and audio then go straight to Sunshine. The client logs this.
 
 ## Host depth
 
-The tray menu offers **Inference: GPU / CPU** for EdgePad models. GPU remains
+The **GPU / model** menu groups compatible models beneath each detected GPU.
+Choosing an entry saves the GPU, model and CPU/GPU mode together and queues one
+background reload; the stream does not restart. There is one group per GPU and
+a **CPU** group for single-frame models. Existing automatic GPU selections
+resolve to NVIDIA when available, otherwise ncnn's default GPU.
+Status reports the model and GPU actually loaded. Missing explicitly selected
+GPUs fail visibly. Identical-name GPUs are not yet individually distinguishable.
+
+EdgePad uses ncnn Vulkan on NVIDIA, AMD or Intel with a suitable driver. The new
+Vulkan VDA variants retain the learned reconstruction and temporal history:
+
+- **VDA 518×294**: original resolution.
+- **VDA Performance 392×224**: the lower-compute option.
+
+VDA entries appear when their optional runtime, model exports and GPU capabilities
+are available. VDA is not offered under CPU. On NVIDIA, Vulkan and TensorRT
+models appear together, with the backend in the VDA model label. TensorRT uses
+the default CUDA GPU; with multiple NVIDIA GPUs it is listed only under the first
+detected NVIDIA GPU. Existing saved TensorRT selections retain
+their behavior. Selecting a Vulkan GPU does not move desktop capture, encoding
+or the PCVR compositor. Driver overrides that hide GPUs also hide them here.
+
+#### Building/staging Vulkan VDA
+
+`cargo build --release --no-default-features` builds the optional native runner
+when the matching ncnn SDK is at `meteor/target/ncnn` (Linux), or
+`METEOR_VDA_NCNN_SDK` names its root. Windows packaging supplies the MSVC SDK
+explicitly. Without the SDK, Meteor builds without this optional runtime.
+Packaged runtimes live beside the executable, or in the AppImage's `usr/lib`.
+
+Stage the validated repaired exports, not the unrepaired pnnx graphs:
+
+```sh
+.build-cache/model-tester-venv/bin/python meteor/tools/stage_vda_vulkan_models.py \
+    --source .build-cache/vda-vulkan-spike \
+    --destination ~/.local/share/nightfall-meteor/models
+```
+
+Each variant has its own subdirectory and SHA-256 manifest. This staging tool
+refuses to overwrite different weights. Linux/Windows packaging includes these
+optional model directories when present in its model source folder. Existing
+TensorRT downloads do not install the Vulkan exports.
+
+The persistent runner shares the validated kernels with the research tools.
+NVIDIA uses cooperative-matrix Tensor Core kernels when supported; RX480 uses
+FP32 arithmetic, FP16 storage and wave64 reductions. Other supported GPUs use a
+portable fallback rather than blindly requiring wave64 or Tensor Cores. Intel,
+newer AMD cards and Windows still need hardware validation. History resets on a
+new stream, gaps over 500 ms, hard cuts and nonfinite output. State validity is
+checked on GPU. Initialization settings are thread-local; probe environment flags
+cannot silently change production kernels. Failed VDA inference uses the existing
+three-failure recovery to a single-frame model.
+
+Vulkan frame processing also accelerates the surrounding image operations:
+NV12 footprint filtering, VDA bicubic resize/normalization, scene-cut thumbnail
+reduction, depth softening, and final histogram/smoothing/alignment/cleanup.
+The prepared VDA tensor stays on Vulkan through inference. Portable EdgePad and
+VDA keep their output depth on Vulkan through final processing; only packed 8-bit
+maps and a small validation flag are downloaded. CPU reference processing and
+fallback readback remain available. Decoder surfaces still have host transfers;
+this is not VAAPI/Vulkan zero-copy.
+Portable VDA preparation skips frames while inference is busy rather than queueing
+another GPU filter behind a long model run. Short EdgePad jobs retain pipelined
+preparation. The decoder keeps consuming packets, and the next available VDA frame
+starts fresh preparation. Portable preparation also skips pixel conversion when
+there are no depth subscribers or snapshot requests.
+
+Standalone original-resolution RX480 graph timings were about 75 ms, Performance
+about 43 ms. Live decode, preparation, transfers, validity checks, softening and
+refinement add cost; these are not end-to-end stream latency guarantees.
+
+### Advanced depth pipeline
+
+- **Video decoder:** Auto, NVDEC (NVIDIA), VAAPI (Linux), or Software (CPU).
+  Auto prefers VAAPI when Vulkan inference is assigned to AMD, otherwise NVDEC, and can
+  fall back to VAAPI/software with a logged reason. Explicit choices fail
+  visibly instead of silently selecting a different backend.
+- **VAAPI decode GPU:** Auto or a DRM render device identified by GPU vendor and
+  PCI address. This is independent of the inference GPU; device paths persist
+  across renderD-number reorder.
+- **CPU frame processing:** forces the CPU reference preparation and refinement
+  for EdgePad and Vulkan VDA. With this off, VAAPI/software frames use Vulkan
+  preparation/refinement on the selected inference GPU, falling back to CPU with
+  a logged reason if those optional operations are unavailable. Vulkan VDA does
+  not require CUDA/TensorRT.
+
+Settings are saved under `[decode]` in `state.toml`. Decoder/device changes apply
+at the next keyframe or new stream. Active backend/device and processing are
+shown in the advanced menu and logged. Inference-GPU changes retain their live
+model reload behavior.
+
+On Linux, AMD-only EdgePad now uses in-process FFmpeg VAAPI (or software) decoding,
+the existing 4×4 footprint RGB filter on CPU, ncnn Vulkan inference on AMD, and
+CPU smoothing/alignment/contour cleanup. The optimized footprint filter is tested
+byte-for-byte against the existing reference. Decode output is tagged with its
+actual source frame ID, including B-frame reordering; no ffmpeg subprocess is
+used for the stream. CPU copies and processing can cost more than NVIDIA's CUDA
+path—compare complete stream-to-map latency, not just inference time.
+
+The optional runtime requires FFmpeg 8 ABI libraries: avcodec 62, avutil 60 and
+swscale 9. `METEOR_FFMPEG_DIR` can specify a runtime folder. Linux packaging builds
+and bundles a minimal FFmpeg runtime; VAAPI still requires the host's libva
+runtime and graphics driver. Windows has the software adapter and menu controls,
+but VAAPI is Linux-only, FFmpeg DLL bundling and Windows validation are outstanding.
+TensorRT VDA and the development PCVR compositor/encoder remain NVIDIA-only; Vulkan VDA does not.
+
+The **GPU / model** menu offers GPU and CPU groups for EdgePad models. GPU remains
 the default; CPU reuses the existing ncnn/ONNX weights without retraining.
 Changing this reloads inference without restarting Meteor or the stream, and
 the choice is saved in `state.toml`. CPU uses fp32 and at most four workers
@@ -160,9 +446,10 @@ the choice is saved in `state.toml`. CPU uses fp32 and at most four workers
 Status reports the active backend. A failed CPU load does not silently keep
 the previous GPU inference running.
 
-NVDEC decoding and the existing small CUDA input-conversion kernel remain
-unchanged; CPU inference does not make Meteor NVIDIA-independent or eliminate
-all GPU work. Depth post-processing runs on CPU for CPU model outputs.
+CPU inference is independent of the decoder selection: choose VAAPI/software
+decoding for a path that does not require NVIDIA. NVDEC retains its CUDA input
+conversion unless CPU frame processing is requested. Depth post-processing runs
+on CPU for CPU model outputs.
 VDA's live temporal pipeline still requires GPU: select EdgePad to enable CPU.
 CPU performance is hardware-dependent; test sustained update rate and game
 frame times rather than assuming that spare CPU capacity guarantees low latency.
@@ -182,8 +469,10 @@ reassembly, keeping only the data shards). Each frame then goes through:
    comparison.
 2. **Model:** the EdgePad models run on ncnn's Vulkan backend
    (`src/ncnn.rs`), which loads in under a second and needs no NVIDIA
-   inference libraries. Vulkan can't read CUDA memory, so the input tensor
-   comes back to the CPU first, and post-processing runs on the CPU.
+   inference libraries. Vulkan can't read CUDA memory, so NVDEC input tensors
+   come back through the CPU first; CUDA refinement still uses NVDEC's guide.
+   VAAPI/software decoding instead uses Vulkan footprint filtering and Vulkan
+   depth refinement, with CPU processing as an explicit reference/fallback path.
    Without ncnn (or with `METEOR_NCNN=off`), ONNX Runtime runs the `.onnx`
    versions (`src/onnx.rs`): it starts on CUDA within a second, builds a
    TensorRT fp16 engine in the background, and switches to it. The first
@@ -557,3 +846,14 @@ cargo test
 ```
 
 Client side: `test/test_meteor_client.gd` (in `test/run_gdscript_tests.sh`).
+
+## Managed XR development spike
+
+Linux/NVIDIA development builds expose `--xr-dev <Nightfall-checkout> [--smoke]`
+to supervise the isolated USB XR workflow without starting proxy/depth/audio.
+This is not a packaged LAN XR feature. See
+[managed session scope and setup](../docs/research/meteor-xr-managed-session.md).
+
+The separate opt-in `--xr-control-dev` command exercises authenticated network
+negotiation only. It cannot launch applications or stream LAN video. See the
+[control prototype contract](../docs/research/meteor-xr-control-protocol.md).

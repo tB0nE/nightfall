@@ -13,6 +13,7 @@ pub struct Status {
     pub side: crate::config::SidePorts,
     /// Whether the Quest also needs the host's own ports (Meteor runs it).
     pub host_ports: bool,
+    pub xr_ports: Option<(u16, u16, u16)>,
     pub sunshine_up: AtomicBool,
     pub firewall: Mutex<crate::firewall::Status>,
 }
@@ -20,7 +21,7 @@ pub struct Status {
 impl Status {
     /// The ports the Quest needs open.
     pub fn quest_ports(&self) -> Vec<(u16, crate::ports::Proto)> {
-        crate::firewall::ports(&self.map, self.side, self.host_ports)
+        crate::firewall::ports_with_xr(&self.map, self.side, self.host_ports, self.xr_ports)
     }
 
     pub fn firewall(&self) -> crate::firewall::Status {

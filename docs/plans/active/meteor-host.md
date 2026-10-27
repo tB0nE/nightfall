@@ -5,7 +5,7 @@
 >
 > Builds on: [meteor-host-depth.md](meteor-host-depth.md),
 > [meteor-microphone.md](meteor-microphone.md), [meteor-appimage.md](meteor-appimage.md),
-> [meteor-xr-streaming-spike.md](meteor-xr-streaming-spike.md),
+> [meteor-xr-monado-spike.md](meteor-xr-monado-spike.md),
 > [meteor-amd-intel.md](meteor-amd-intel.md).
 
 ## Goal
@@ -30,15 +30,20 @@ headset; the two big gaps are on the host:
   - Nightfall still works with plain Sunshine, Apollo, Polaris and
     Vibepollo hosts (Meteor optional);
   - other Moonlight clients can use Meteor as a host.
-- **Linux first.** Windows already has options (Apollo, Vibepollo,
-  Virtual Desktop); revisit later, if at all.
-- **XR starts from ALVR** (MIT); our own implementation can replace parts
-  later.
+- **XR: Linux spike first, Windows required** (2026-10-18). Both are product
+  goals; Windows is not an optional afterthought.
+- **XR uses a Meteor-managed Monado runtime** (2026-10-18), with WiVRn as the
+  streaming reference. One installer/client experience; no required ALVR dashboard
+  or SteamVR for native OpenXR. Preserve the reusable Nightfall projection work.
 - **Two streams, not one**, when the desktop is shown during VR (2026-10-09
   discussion): the desktop stays a separate stream shown as its own
   compositor layer, so it stays sharp. Decode cost is pixels per second, so
   two streams cost no more than one combined frame, and the desktop stream
   can run at its own rate or pause when hidden.
+- **Exclusive XR first (2026-10-17):** the initial spike disconnects desktop
+  streaming, closes browsers and disables passthrough, ambient, local/host
+  depth and Nightfall overlays. Only remote VR is presented. The two-stream
+  coexistence design above is a later phase, not the first milestone.
 - **Sunshine stays supported.** Meteor's proxy mode remains for anyone who
   prefers their existing host.
 
@@ -65,8 +70,8 @@ headset; the two big gaps are on the host:
 Virtual/real ──► PipeWire capture ──► (depth on the captured frame) ──► NVENC/VAAPI ──► GameStream
 monitors           one session per monitor                                  │      sessions ──► Nightfall
                                                                              │      (or any Moonlight client)
-SteamVR + ALVR driver (installed and controlled by Meteor) ─────────────────┼──► ALVR stream ──► Nightfall
-                                                                             │      (alvr_client_core)
+OpenXR app ──► Meteor-managed Monado runtime ──► XR encoder/transport ─────┼──► Nightfall projection
+                                                                             │      (one local Quest session)
 Audio (PipeWire) · input (uinput: mouse, keyboard, gamepads) · microphone ──┘
 Proxy mode for existing Sunshine-family hosts stays available.
 ```
@@ -76,26 +81,23 @@ Proxy mode for existing Sunshine-family hosts stays available.
 Each phase is useful on its own; stopping after any of them leaves a working
 product.
 
-### Phase 1: XR streaming with ALVR
+### Phase 1: XR streaming with a managed Monado runtime
 
-Details and exit gates: [meteor-xr-streaming-spike.md](meteor-xr-streaming-spike.md).
+Details and exit gates: [meteor-xr-monado-spike.md](meteor-xr-monado-spike.md).
 
-- **Headset:** Nightfall embeds `alvr_client_core` (Rust, C API) in
-  `nightfall-xr`. While a VR session runs, it renders ALVR's stream as the
-  projection layer.
-- **PC:** ALVR's streamer is a SteamVR driver (`server_openvr`, built on the
-  `server_core` library) that SteamVR loads. Meteor installs a pinned build
-  of it, registers it with SteamVR, and controls it as ALVR's dashboard does,
-  so users never install or see ALVR separately. The client and driver
-  versions are pinned together per Nightfall release.
+- **Headset:** retain Nightfall's proven native projection/lifecycle path; connect
+  a versioned XR decoder/tracking transport without an ALVR client-core dependency.
+- **PC:** Meteor owns a pinned Monado-based runtime/service and streaming output
+  target, with WiVRn as the reference. No required SteamVR for native OpenXR apps.
+  OpenVR compatibility is separate work, not an automatic promise.
 - **Switching:**
   - desktop streaming by default;
-  - VR when SteamVR starts, whether the user starts a VR game from Nightfall
-    or Meteor sees SteamVR start;
-  - back to the desktop when SteamVR exits.
+  - VR when an app requests a session through our runtime and Nightfall accepts;
+  - welcome when the XR session ends; desktop coexistence comes later.
 
-  The desktop session stays open in the background, and can be shown over
-  the VR view as its own layer (the two-streams decision).
+  The initial spike disconnects the desktop session and closes browsers;
+  exit returns to welcome. Keeping desktop open and showing it over VR is a
+  later coexistence phase (the two-streams decision), not initial behavior.
 - Independent of the host phases below: it works alongside Sunshine too.
 
 ### Phase 2: virtual monitors on Linux (spike)
@@ -157,11 +159,11 @@ created on demand and captured through PipeWire, on the desktops people use:
 
 ### Later
 
-- **Windows:** the signed driver problem (virtual displays need an IddCx
+- **Windows desktop hosting:** the signed driver problem (virtual displays need an IddCx
   driver like Apollo's SudoVDA; gamepads need ViGEmBus or a replacement)
   decides whether it's worth it.
-- **Our own XR implementation:** replacing ALVR's driver or client core
-  piece by piece, if pinning ALVR becomes limiting.
+- **Windows XR:** required architecture gate in the new runtime plan, independent
+  of Windows virtual-display decisions. Prove actual D3D image/encoder interop.
 - **AMD and Intel:** decode for host depth is planned in
   [meteor-amd-intel.md](meteor-amd-intel.md); encoding (VAAPI) arrives with
   Phase 3.
@@ -182,7 +184,7 @@ created on demand and captured through PipeWire, on the desktops people use:
 | --- | --- |
 | GameStream server is a large surface (pairing, RTSP, ENet, FEC, encryption) | Sunshine's GPL-3 code as reference; Meteor's proxy already parses most of it; Phase 3 needs only a subset (no audio, no gamepads) |
 | Virtual-output APIs differ per desktop and change between releases | Phase 2 spike before committing; start with KDE; gamescope as the desktop-independent route for games |
-| ALVR driver/client version lock | Pin per Nightfall release; Meteor installs the matching driver |
+| Runtime fork and Windows graphics portability | Pin Monado/patches, isolate platform APIs, require real Windows image/encoder proof |
 | Latency or quality worse than Sunshine | Each phase's exit compares against Sunshine on the same PC |
 | Scope creep: a host is a large maintenance commitment | Phases are independent; stop at any phase that doesn't pay off |
 

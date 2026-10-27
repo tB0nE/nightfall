@@ -10,6 +10,7 @@ NightfallXrRenderer::~NightfallXrRenderer() {
 }
 
 void NightfallXrRenderer::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_presentation_suspended", "suspended"), &NightfallXrRenderer::set_presentation_suspended);
 	ClassDB::bind_method(D_METHOD("register_provider"), &NightfallXrRenderer::register_provider);
 	ClassDB::bind_method(D_METHOD("start", "video_width", "video_height"), &NightfallXrRenderer::start);
 	ClassDB::bind_method(D_METHOD("stop_stream"), &NightfallXrRenderer::stop_stream);
