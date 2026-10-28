@@ -19,6 +19,9 @@ func _initialize() -> void:
 	assert(Bridge.enabled(PackedStringArray(), false, true), "debug builds have it")
 	assert(Bridge.enabled(PackedStringArray(["--nf-dev-bridge"]), false, false), "the flag turns it on")
 	assert(not Bridge.enabled(PackedStringArray(), false, false), "release builds don't")
+	assert(Bridge.port(PackedStringArray()) == Bridge.PORT)
+	assert(Bridge.port(PackedStringArray(["--nf-dev-bridge-port=47951"])) == 47951)
+	assert(Bridge.port(PackedStringArray(["--nf-dev-bridge-port=0"])) == Bridge.PORT, "an invalid port is ignored")
 
 	var owner := Owner.new()
 	root.add_child(owner)

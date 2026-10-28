@@ -14,6 +14,7 @@ containerised `python3` can't see ffmpeg, gamescope or the GPU.
 | Anything that only happens on the Quest (Android, OpenXR, passthrough) | `tools/verify.py quest` | headset on adb, a dev build; **ask the user first** |
 | Streaming, decode, depth delivery to the headset | `tools/verify.py stream` | as above, plus a paired host; it connects, samples, then disconnects |
 | PCVR runtime, Monado capture, the XR encoders | `tools/verify.py pcvr` | the installed XR runtime; NVIDIA and AMD GPUs |
+| Anything in the 3D scene: panel placement, layers, recenter, rooms | `tools/verify.py xr` | the installed XR runtime, gamescope, NVIDIA GPU |
 
 Each run writes `build/verify/<check>-<time>/summary.json`, which has the
 check's metrics, failures and artifacts (logs, `ui.json`, screenshots). Read
@@ -134,4 +135,23 @@ synthetic tracking, the installed runtime's Monado and the real encoder.
 On 2026-10-28 runtime 53d31ca1 passed on both GPUs: NVENC 64 frames, VA-API
 62. So that day's VRChat and Moss failures weren't in the basic capture and
 encode path.
+
+## The app in a real XR session on this PC
+
+`verify.py xr` runs Nightfall itself under Meteor's XR runtime
+(`test/run_xr_app.py`). Monado provides a real OpenXR session, and a synthetic
+publisher holds the head and controllers still. The app runs in a headless
+gamescope on the 3090, so nothing appears on the desktop.
+
+- **Scripting:** the bridge answers on port 47951. `verify.py ui` uses 47952.
+  Neither is 47950, which `quest.py forward` may have pointed at the headset.
+- **Seeing the 3D view:** the frames a headset would get are encoded to
+  `<session>/monado-stereo.h264`. The check decodes stereo pictures from it,
+  both eyes side by side: `view-welcome.png`, `view-menu.png`.
+- **What it checks:** the welcome screen, that the menu opens within reach,
+  that no frames are rejected, and that the app logs no script errors.
+
+To script your own run, use `XrAppSession` and `nightfall_argv` from
+`test/run_xr_app.py`, as `check_xr` does. Head poses come from the
+publisher, so the bridge's `pose` has no effect here.
 

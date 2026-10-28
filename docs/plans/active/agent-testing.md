@@ -25,12 +25,13 @@ person.
    - Commands: `ui`, `press`, `select`, `set_text`, `state`, `eval`, `wait`,
      `pose`, `screenshot`, `log`.
    - Covered by `test/test_dev_bridge.gd`.
-3. **The app on the PC with a simulated headset.** Partly done.
-   - Done: `--nf-no-xr` in headless gamescope (`verify.py ui`) covers panels
-     and menus.
-   - Next: run the Linux build with OpenXR on Monado's simulated HMD (already
-     in the XR stack). That adds composition layers and the 3D view, and
-     `pose` works for real.
+3. **The app on the PC with a simulated headset.** Done.
+   - `--nf-no-xr` in headless gamescope (`verify.py ui`) covers panels and
+     menus.
+   - `verify.py xr` runs the app in a real OpenXR session under Meteor's
+     runtime, with synthetic tracking (`test/run_xr_app.py`). It covers
+     composition layers and the encoded 3D view per eye.
+   - Next: let the publisher take scripted poses, so tests can turn the head.
 4. **The full pipeline on the PC's GPUs.**
    - Done:
      - `verify.py depth` (jittered replay, depth rate).

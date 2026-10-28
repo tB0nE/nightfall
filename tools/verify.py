@@ -11,6 +11,8 @@
                       depth source and rate (needs pairing; ask first)
   verify.py pcvr      PCVR on this PC without the headset: a sample OpenXR app,
                       synthetic tracking, the installed runtime, NVENC and VA-API
+  verify.py xr        the app itself in a real OpenXR session on this PC (Meteor's
+                      runtime, synthetic tracking): its 3D view, menu, bridge
 
 Each check writes build/verify/<check>-<time>/summary.json:
   {"check", "ok", "duration_s", "metrics": {...}, "failures": [...], "artifacts": [...]}
@@ -186,10 +188,16 @@ def check_depth(check, args):
 
 # --- ui (desktop app) ----------------------------------------------------
 
+# Bridge ports for runs on this PC: never 47950, which `quest.py forward` may
+# have pointed at the headset.
+DESKTOP_PORT = 47952
+XR_PORT = 47951
+
+
 class DesktopApp:
     """Nightfall on this PC: headless gamescope, isolated user data, dev bridge on."""
 
-    def __init__(self, check, port=nf.PORT):
+    def __init__(self, check, port=DESKTOP_PORT):
         self.check = check
         self.port = port
         self.data = Path(tempfile.mkdtemp(prefix='verify-ui-'))
@@ -201,7 +209,8 @@ class DesktopApp:
             raise RuntimeError(f'something already answers on 127.0.0.1:{self.port}; stop it first')
         env = dict(os.environ, XDG_DATA_HOME=str(self.data), XDG_CONFIG_HOME=str(self.data / 'config'))
         command = [need('gamescope'), '--backend', 'headless', '-W', '1280', '-H', '720', '--',
-                   GODOT, '--xr-mode', 'off', '--path', str(ROOT), '--', '--nf-no-xr', '--nf-dev-bridge']
+                   GODOT, '--xr-mode', 'off', '--path', str(ROOT), '--', '--nf-no-xr', '--nf-dev-bridge',
+                   f'--nf-dev-bridge-port={self.port}']
         self.process = subprocess.Popen(command, env=env, stdout=open(self.log, 'w'), stderr=subprocess.STDOUT,
                                         start_new_session=True)
         deadline = time.monotonic() + 90
@@ -460,8 +469,75 @@ def check_pcvr(check, args):
                        'quads, a second session) are not covered yet')
 
 
+# --- xr (the app in a real OpenXR session on this PC) ------------------------
+
+def decode_frame(check, session, name, frame=-1):
+    """One encoded stereo frame (both eyes side by side) as a PNG."""
+    video = session / 'monado-stereo.h264'
+    out = check.dir / f'{name}.png'
+    count = len((session / 'monado-stereo.jsonl').read_text().splitlines())
+    index = count - 2 if frame < 0 else frame
+    subprocess.run([need('ffmpeg'), '-v', 'error', '-y', '-i', str(video), '-vf', f'select=eq(n\\,{max(index, 0)})',
+                    '-frames:v', '1', str(out)], check=True, capture_output=True)
+    return check.artifact(out)
+
+
+def check_xr(check, args):
+    """Nightfall under Meteor's XR runtime: a real OpenXR session with synthetic
+    tracking. Its encoded frames show the 3D view a headset would get."""
+    sys.path.insert(0, str(ROOT / 'test'))
+    from run_xr_app import XrAppSession, nightfall_argv
+    runtime = installed_runtime(args.runtime)
+    data = Path(tempfile.mkdtemp(prefix='verify-xr-'))
+    bridge = lambda cmd, **payload: nf.request({'cmd': cmd, **payload}, XR_PORT)
+    try:
+        with XrAppSession(ROOT, nightfall_argv(ROOT, GODOT, data, XR_PORT), runtime=runtime) as session:
+            check.artifact(session.dir)
+            session.wait_frames(30, timeout=90)
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    ping = bridge('ping')
+                    break
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(1)
+            check.expect(ping.get('platform') == 'Linux', f'the bridge on port {XR_PORT} is not this PC: {ping}')
+            check.expect(ping.get('xr'), 'the app is not in an XR session')
+            decode_frame(check, session.dir, 'view-welcome')
+            tree = bridge('ui')['viewports']
+            (check.dir / 'ui.json').write_text(json.dumps(tree, indent=2, ensure_ascii=False))
+            welcome = find(tree, 'welcome')
+            check.expect(welcome and any(c.get('text') == 'Pair' for c in welcome['controls']),
+                         'no Pair button on the welcome screen')
+            # Open the menu as a user would, then check it opened within reach.
+            before = session.frames()
+            reply = bridge('eval', expr='_toggle_ui()')
+            check.expect(reply.get('ok'), f'opening the menu failed: {reply}')
+            session.wait_frames(before + 15, timeout=30)
+            state = bridge('state')['state']
+            menu = state.get('menu', {})
+            check.metrics['menu_visible'] = menu.get('visible')
+            check.metrics['menu_distance_m'] = menu.get('distance')
+            check.expect(menu.get('visible'), 'the menu did not open')
+            check.expect(menu.get('distance', 99) <= args.max_reach, f"menu opened {menu.get('distance')} m away")
+            decode_frame(check, session.dir, 'view-menu')
+            check.metrics['render_fps'] = state.get('fps')
+            check.metrics['frames'] = session.frames()
+            rejected = session.service_log().count('METEOR_CAPTURE_FAILED')
+            check.metrics['rejected'] = rejected
+            check.expect(rejected == 0, f'{rejected} frames rejected by the capture hook')
+        live = session.dir / 'application-live.log'
+        errors = [l for l in live.read_text(errors='replace').splitlines() if 'SCRIPT ERROR' in l] if live.exists() else []
+        check.metrics['script_errors'] = len(errors)
+        check.expect(not errors, f'{len(errors)} script errors, first: {errors[0] if errors else ""}')
+    finally:
+        shutil.rmtree(data, ignore_errors=True)
+
+
 CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest,
-          'stream': check_stream, 'pcvr': check_pcvr}
+          'stream': check_stream, 'pcvr': check_pcvr, 'xr': check_xr}
 
 
 def main(argv=None):

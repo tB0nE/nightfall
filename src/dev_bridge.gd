@@ -7,7 +7,8 @@ extends Node
 ## Requests and replies are one JSON object per line. Every reply has "ok", and
 ## an "error" when ok is false; an "id" in the request is echoed back. It binds
 ## to 127.0.0.1 only: on the headset it's reached with
-## `adb forward tcp:47950 tcp:47950`.
+## `adb forward tcp:47950 tcp:47950`. `--nf-dev-bridge-port=N` picks another
+## port, so a run on the PC can't be confused with a forwarded headset.
 ##
 ## Commands: ping, ui, press, select, set_text, state, eval, wait, pose,
 ## screenshot, log.
@@ -34,12 +35,21 @@ func _init(owner) -> void:
 	name = "DevBridge"
 	process_mode = Node.PROCESS_MODE_ALWAYS
 
+static func port(args: PackedStringArray) -> int:
+	for arg in args:
+		if arg.begins_with("--nf-dev-bridge-port="):
+			var value := int(arg.get_slice("=", 1))
+			if value > 0 and value < 65536:
+				return value
+	return PORT
+
 func _ready() -> void:
-	var err := _server.listen(PORT, "127.0.0.1")
+	var listen_port := port(OS.get_cmdline_args() + OS.get_cmdline_user_args())
+	var err := _server.listen(listen_port, "127.0.0.1")
 	if err != OK:
-		main._log("[DEV-BRIDGE] Can't listen on 127.0.0.1:%d (error %d)" % [PORT, err])
+		main._log("[DEV-BRIDGE] Can't listen on 127.0.0.1:%d (error %d)" % [listen_port, err])
 		return
-	main._log("[DEV-BRIDGE] Listening on 127.0.0.1:%d" % PORT)
+	main._log("[DEV-BRIDGE] Listening on 127.0.0.1:%d" % listen_port)
 	_run()
 
 # One request at a time, so commands that wait a frame (press, wait) can't
@@ -385,7 +395,11 @@ func state() -> Dictionary:
 		out["phase"] = lifecycle.phase_name()
 	var panel = main.get("ui_panel_3d")
 	if panel is Node3D:
-		out["menu"] = {"visible": panel.is_visible_in_tree(), "position": _vec(panel.global_position), "distance": _round(panel.global_position.distance_to(head.origin))}
+		# With composition layers the menu is a layer and its node stays hidden,
+		# so "open" is the app's own flag.
+		var open = main.get("ui_visible")
+		out["menu"] = {"visible": bool(open) if open != null else panel.is_visible_in_tree(),
+			"position": _vec(panel.global_position), "distance": _round(panel.global_position.distance_to(head.origin))}
 	var welcome = main.get("welcome_screen")
 	if welcome is Node:
 		out["welcome_visible"] = welcome.is_visible_in_tree() if welcome is Node3D else true
