@@ -42,6 +42,7 @@ the build/deployment entry point.
 - [Nightfall Gateway experiment](plans/active/nightfall-gateway-experiment.md)
 - [Feature pipeline](plans/active/feature-pipeline.md)
 - [Future-feature research](plans/active/future-features.md)
+- [Testing without a person in the headset](plans/active/agent-testing.md)
 
 ## Architecture notes
 
@@ -52,6 +53,7 @@ the build/deployment entry point.
 
 ## Technical guides
 
+- [Testing without a person in the headset](guides/agent-testing.md)
 - [ZipDepth on Quest GPU](guides/zipdepth-quest-gpu.md)
 - [ZipDepth Quest quality tiers and retained experiments](guides/zipdepth-quest-tiers.md)
 - [Training the ZipDepth Hybrid-v2 mobile head](guides/zipdepth-hybrid-v2-training.md)

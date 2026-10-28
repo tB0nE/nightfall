@@ -735,11 +735,13 @@ func on_pair_pressed():
 	var parsed = main.parse_ip_port(raw_text)
 	var ip: String = parsed[0]
 	var pair_port: int = parsed[1]
+	# Several saved hosts can share an address (a bundled host next to the
+	# user's own, on another port): the one picked in the server list wins,
+	# else the first.
 	var paired_host_id = -1
 	for h in _b().get_hosts():
-		if main.host_matches_address(h, ip):
+		if main.host_matches_address(h, ip) and (paired_host_id == -1 or h.id == main.current_host_id):
 			paired_host_id = h.id
-			break
 	if paired_host_id != -1:
 		main.current_host_id = paired_host_id
 		main._ui_status_label.text = "Connecting..."

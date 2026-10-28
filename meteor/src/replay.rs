@@ -1,6 +1,8 @@
 //! `--replay <file>`: runs a recorded elementary stream (for example one
 //! written by `--dump-video`) through the host depth pipeline at its frame
 //! rate, without a client. Used to test decoding, inference and timing.
+//! `--jitter-ms` moves each frame's arrival up to that much earlier or later,
+//! as a network does, repeatably.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,7 +13,7 @@ use crate::depth::{Depth, DepthFeed};
 use crate::stream_info::Codec;
 use crate::video_tap::Frame;
 
-pub fn run(path: &Path, fps: u32, depth: Arc<Depth>) -> Result<(), String> {
+pub fn run(path: &Path, fps: u32, jitter_ms: f64, depth: Arc<Depth>) -> Result<(), String> {
     let codec = match path.extension().and_then(|e| e.to_str()) {
         Some("h264" | "264") => Codec::H264,
         Some("hevc" | "h265" | "265") => Codec::Hevc,
@@ -66,7 +68,12 @@ pub fn run(path: &Path, fps: u32, depth: Arc<Depth>) -> Result<(), String> {
             data: unit.to_vec(),
         };
         feed.push(&frame, Some(codec));
-        if let Some(sleep) = (start + interval * (i as u32 + 1)).checked_duration_since(Instant::now()) {
+        let due = start + interval * (i as u32 + 1);
+        let due = match jitter(i as u64, jitter_ms) {
+            offset if offset >= 0.0 => due + Duration::from_secs_f64(offset / 1000.0),
+            offset => due.checked_sub(Duration::from_secs_f64(-offset / 1000.0)).unwrap_or(due),
+        };
+        if let Some(sleep) = due.checked_duration_since(Instant::now()) {
             std::thread::sleep(sleep);
         }
         let maps = depth.stats.maps.load(Ordering::Relaxed);
@@ -112,6 +119,18 @@ pub fn run(path: &Path, fps: u32, depth: Arc<Depth>) -> Result<(), String> {
         median(p)
     );
     Ok(())
+}
+
+/// A repeatable offset in [-max_ms, max_ms] for frame `i` (SplitMix64).
+fn jitter(i: u64, max_ms: f64) -> f64 {
+    if max_ms <= 0.0 {
+        return 0.0;
+    }
+    let mut z = i.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    ((z >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0) * max_ms
 }
 
 /// Splits an Annex B stream into access units: a new one starts at a
