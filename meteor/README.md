@@ -741,6 +741,8 @@ the CPU code exactly. `--replay` prints the median time of each stage.
 Debugging:
 - `--dump-video <dir>` writes the tapped stream; play it with
   `ffplay -f hevc <file>`.
+- `--dump-video <dir>` writes the tapped video, plus `<file>.frames.tsv`
+  with each frame's arrival time (`tools/verify.py e2e`).
 - `--save-depth <dir>` saves every Nth frame and its map as PNGs.
 - `--replay <file.hevc>` runs a recorded stream through the pipeline without
   a client and prints timings. The depth port is open during a replay, for

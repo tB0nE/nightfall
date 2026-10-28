@@ -13,6 +13,9 @@
                       synthetic tracking, the installed runtime, NVENC and VA-API
   verify.py xr        the app itself in a real OpenXR session on this PC (Meteor's
                       runtime, synthetic tracking): its 3D view, menu, bridge
+  verify.py e2e       a test pattern on the streamed monitor, streamed to the
+                      headset through Meteor: frames lost, repeats, latency
+                      (restarts Meteor, draws on the desktop; ask first)
 
 Each check writes build/verify/<check>-<time>/summary.json:
   {"check", "ok", "duration_s", "metrics": {...}, "failures": [...], "artifacts": [...]}
@@ -536,8 +539,146 @@ def check_xr(check, args):
         shutil.rmtree(data, ignore_errors=True)
 
 
+# --- e2e (a test pattern through the whole stream) -------------------------
+
+class RunningMeteor:
+    """The Meteor running now: restarts it with extra arguments, then puts it
+    back exactly as it was (same command, same environment)."""
+
+    def __init__(self, check, binary=None):
+        self.check = check
+        self.binary = binary
+        pids = subprocess.run(['pgrep', '-x', 'nightfall-meteo'], capture_output=True, text=True).stdout.split()
+        if len(pids) != 1:
+            raise RuntimeError(f'expected one running Meteor, found {len(pids)}')
+        self.pid = int(pids[0])
+        proc = Path(f'/proc/{self.pid}')
+        self.env = dict(item.split('=', 1) for item in proc.joinpath('environ').read_text().split('\0') if '=' in item)
+        argv = proc.joinpath('cmdline').read_text().split('\0')[:-1]
+        # An AppImage runs from a temporary mount; restart the AppImage itself.
+        if self.env.get('APPIMAGE'):
+            argv[0] = self.env['APPIMAGE']
+            for name in ('APPDIR', 'APPIMAGE', 'ARGV0', 'OWD'):
+                self.env.pop(name, None)
+        self.argv = argv
+        self.process = None
+
+    def _stop(self, pid):
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(100):
+            if not Path(f'/proc/{pid}').exists():
+                return
+            time.sleep(0.1)
+        os.kill(pid, signal.SIGKILL)
+
+    def _start(self, extra, log_name):
+        log = open(self.check.artifact(self.check.dir / log_name), 'w')
+        process = subprocess.Popen(self.argv + extra, env=self.env, stdout=log, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        time.sleep(6)  # models load and the ports open
+        if process.poll() is not None:
+            raise RuntimeError(f'Meteor exited on restart; see {log_name}')
+        return process
+
+    def restart_with(self, extra):
+        """Restarts with `extra` arguments, and as `binary` when given (a build
+        with the frames file, e.g. meteor/target/release/nightfall-meteor)."""
+        self._stop(self.pid)
+        original = self.argv
+        if self.binary:
+            self.argv = [str(self.binary)] + original[1:]
+        try:
+            self.process = self._start(extra, 'meteor-test.log')
+        finally:
+            self.argv = original
+
+    def restore(self):
+        if self.process and self.process.poll() is None:
+            self._stop(self.process.pid)
+            self._start([], 'meteor-restored.log')
+            self.check.notes.append(f"restarted Meteor as before: {' '.join(self.argv)}")
+
+
+def headset_bridge(args):
+    adb = quest.Adb(args.serial)
+    adb.shell('am broadcast -a com.oculus.vrpowermanager.prox_close')
+    adb.shell('setprop debug.oculus.guardian_pause 0')
+    quest.launch(adb, quest.PACKAGE, fresh=False)
+    adb.run('forward', f'tcp:{nf.PORT}', f'tcp:{nf.PORT}')
+    time.sleep(2)
+    return adb
+
+
+def check_e2e(check, args):
+    """Draws test/stream_pattern.gd on the streamed monitor while the headset
+    streams it through Meteor, then reads the pattern back from Meteor's
+    copy of the stream: frames the host never sent, repeats, and the time
+    from drawing to arrival at Meteor."""
+    sys.path.insert(0, str(ROOT / 'test'))
+    import analyze_stream_pattern as pattern
+    dump = check.dir / 'dump'
+    meteor = RunningMeteor(check, args.meteor_binary)
+    headset_bridge(args)
+    if nf.request({'cmd': 'eval', 'expr': 'is_streaming'}).get('value'):
+        nf.request({'cmd': 'eval', 'expr': 'disconnect_stream()'})
+        nf.request({'cmd': 'wait', 'expr': 'not is_streaming', 'timeout': 15}, timeout=30)
+    meteor.restart_with(['--dump-video', str(dump)])
+    samples = []
+    try:
+        reply = nf.request({'cmd': 'press', 'target': 'WelcomeConnect'})
+        if not check.expect(reply.get('ok'), f'no Connect button (is the headset paired?): {reply}'):
+            return
+        reply = nf.request({'cmd': 'wait', 'expr': 'is_streaming', 'timeout': 40}, timeout=60)
+        if not check.expect(reply.get('ok'), f"the stream didn't start: {reply.get('error')}"):
+            return
+        time.sleep(4)
+        block = args.block
+        window = f'{(pattern.BLOCKS) * block}x{2 * block}'
+        log = open(check.artifact(check.dir / 'pattern.log'), 'w')
+        drawer = subprocess.Popen([GODOT, '--xr-mode', 'off', '--resolution', window,
+                                   '--position', f'{args.pattern_x},{args.pattern_y}', '--path', str(ROOT),
+                                   '--script', 'test/stream_pattern.gd', '--',
+                                   f'--x={args.pattern_x}', f'--y={args.pattern_y}', f'--block={block}',
+                                   f'--seconds={args.seconds}'], stdout=log, stderr=subprocess.STDOUT)
+        end = time.monotonic() + args.seconds
+        while time.monotonic() < end:
+            time.sleep(min(5, max(0.5, end - time.monotonic())))
+            state = nf.request({'cmd': 'state'})['state']
+            samples.append(parse_status(state.get('status_line', '')))
+        drawer.wait(timeout=30)
+    finally:
+        try:
+            nf.request({'cmd': 'eval', 'expr': 'disconnect_stream()'})
+            time.sleep(3)  # the tap ends and the dump is flushed
+        finally:
+            meteor.restore()
+    (check.dir / 'headset.json').write_text(json.dumps(samples, indent=2))
+    videos = sorted((v for v in dump.glob('meteor-*') if v.suffix in ('.hevc', '.h264')),
+                    key=lambda v: v.stat().st_mtime)
+    if not check.expect(videos, 'Meteor dumped no video: did the stream go through Meteor?'):
+        return
+    video = videos[-1]
+    rows = pattern.decode(video, args.pattern_x, args.pattern_y, args.block)
+    result = pattern.analyze(rows, pattern.arrivals(Path(str(video) + '.frames.tsv')))
+    (check.dir / 'pattern.json').write_text(json.dumps(result, indent=2))
+    check.metrics.update({k: v for k, v in result.items() if k != 'frames'})
+    if samples:
+        last = samples[-1]
+        for key in ('resolution', 'stream_fps', 'net_ms', 'app_fps', 'depth_source', 'depth_hz'):
+            if key in last:
+                check.metrics[f'headset_{key}'] = last[key]
+    if not check.expect(result.get('readable', 0) >= 30, f"only {result.get('readable', 0)} frames carried the pattern "
+                        f'(is it at {args.pattern_x},{args.pattern_y} on the streamed monitor?)'):
+        return
+    check.expect(result['missing_pct'] <= args.max_missing_pct,
+                 f"{result['missing_pct']}% of pattern frames never reached Meteor")
+    if 'latency_ms_p95' in result:
+        check.expect(result['latency_ms_p95'] <= args.max_latency_ms,
+                     f"p95 draw-to-Meteor latency {result['latency_ms_p95']} ms (limit {args.max_latency_ms})")
+
+
 CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest,
-          'stream': check_stream, 'pcvr': check_pcvr, 'xr': check_xr}
+          'stream': check_stream, 'pcvr': check_pcvr, 'xr': check_xr, 'e2e': check_e2e}
 
 
 def main(argv=None):
@@ -557,6 +698,15 @@ def main(argv=None):
     ui.add_argument('--serial')
     ui.add_argument('--fresh', action='store_true', help='quest: restart the app first')
     ui.add_argument('--settle', type=float, default=10.0, help='stream: seconds before sampling')
+    e2e = parser.add_argument_group('e2e')
+    e2e.add_argument('--pattern-x', type=int, default=64, help='desktop = stream pixels on a 1:1 stream')
+    e2e.add_argument('--pattern-y', type=int, default=64)
+    e2e.add_argument('--block', type=int, default=48)
+    e2e.add_argument('--seconds', type=float, default=15.0)
+    e2e.add_argument('--max-missing-pct', type=float, default=1.0)
+    e2e.add_argument('--max-latency-ms', type=float, default=60.0)
+    e2e.add_argument('--meteor-binary', type=Path, default=ROOT / 'meteor/target/release/nightfall-meteor',
+                     help='run this Meteor during the test (it must write the frames file)')
     pcvr = parser.add_argument_group('pcvr')
     pcvr.add_argument('--runtime', help='installed XR runtime: a version prefix or a path (default: the current one)')
     pcvr.add_argument('--encoders', default='nvenc,vaapi')

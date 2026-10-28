@@ -15,6 +15,7 @@ containerised `python3` can't see ffmpeg, gamescope or the GPU.
 | Streaming, decode, depth delivery to the headset | `tools/verify.py stream` | as above, plus a paired host; it connects, samples, then disconnects |
 | PCVR runtime, Monado capture, the XR encoders | `tools/verify.py pcvr` | the installed XR runtime; NVIDIA and AMD GPUs |
 | Anything in the 3D scene: panel placement, layers, recenter, rooms | `tools/verify.py xr` | the installed XR runtime, gamescope, NVIDIA GPU |
+| Frame loss and latency across the whole stream | `tools/verify.py e2e` | headset, a paired host fronted by Meteor; restarts Meteor and draws on the desktop, so **ask first** |
 
 Each run writes `build/verify/<check>-<time>/summary.json`, which has the
 check's metrics, failures and artifacts (logs, `ui.json`, screenshots). Read
@@ -154,4 +155,34 @@ gamescope on the 3090, so nothing appears on the desktop.
 To script your own run, use `XrAppSession` and `nightfall_argv` from
 `test/run_xr_app.py`, as `check_xr` does. Head poses come from the
 publisher, so the bridge's `pose` has no effect here.
+
+## End to end: a test pattern through the stream
+
+`verify.py e2e` measures the stream with a pattern a script can read:
+
+1. **The pattern:** `test/stream_pattern.gd` draws a small window on the
+   streamed monitor, at `--pattern-x/--pattern-y` (default 64,64). Each frame
+   it shows two rows of black and white blocks: a frame counter and the time it
+   was drawn.
+2. **Meteor:** the check restarts the running Meteor with `--dump-video`, as
+   `--meteor-binary` (default: this checkout's release build), keeping its
+   arguments and environment. The dump writes each frame's arrival time to
+   `<video>.frames.tsv`.
+3. **The stream:** the headset streams for `--seconds`; meanwhile the check
+   samples the headset's status line.
+4. **Cleanup:** it disconnects, puts Meteor back as it was, and reads the
+   pattern out of Meteor's copy of the stream (`test/analyze_stream_pattern.py`).
+
+It reports:
+
+- **`missing` / `missing_pct`:** counter values that never reached Meteor.
+  The host didn't capture or send them.
+- **`repeated`:** the same captured frame sent twice.
+- **`latency_ms_*`:** from drawing the pattern to the frame reaching Meteor:
+  display, capture, encode and send on this PC. The network hop and the
+  headset's decode aren't included; the headset's own numbers (network
+  latency, app fps) come from the bridge.
+
+The analyzer also works on any recording: `/usr/bin/python3
+test/analyze_stream_pattern.py VIDEO --x 64 --y 64 --block 48`.
 

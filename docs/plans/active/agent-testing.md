@@ -43,8 +43,11 @@ person.
      - Quad and cylinder layers through `smoke_xr_layer_compatibility.py`. It
        needs a development runtime build.
      - Pixels checked with `test/xr_stack_oracle.py`.
-   - Then: a stream test pattern with a frame counter, for frames dropped and
-     latency end to end.
+   - Done: `verify.py e2e`. A pattern with a frame counter and draw time
+     goes through the host and Meteor, giving frames lost, repeats, and
+     latency from drawing to Meteor.
+   - Next: latency all the way to the headset's display. That needs the
+     headset to read the pattern back, or a camera.
 5. **Windows and downloads.**
    - A Windows install smoke in the existing `windows-2022` workflow: silent
      install, `--no-tray --no-depth`, probe `/meteor`, uninstall.
