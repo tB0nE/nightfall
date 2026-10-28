@@ -773,7 +773,7 @@ impl Depth {
         let mut resident_disabled=false;
         let mut refinement_size = None;
         let mut last_stream = None;
-        let mut last_run: Option<Instant> = None;
+        let mut pace = RatePace::default();
         let mut rate_window = (Instant::now(), 0u32);
         let mut resized = Vec::new();
         let mut telemetry = vda::Telemetry::default();
@@ -921,11 +921,12 @@ impl Depth {
                 continue;
             }
             let rate = self.rate();
-            if inference_rate_limited(frame.rate_limited,rate,last_run.map(|last|last.elapsed())) {
+            let now = Instant::now();
+            if inference_rate_limited(frame.rate_limited,rate,&pace,now) {
                 self.stats.skipped.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            last_run = Some(Instant::now());
+            pace.ran(rate, now);
 
             let stream = (frame.tag.stream, frame.tag.epoch);
             if last_stream != Some(stream) {
@@ -1257,11 +1258,31 @@ fn preferred_model(models: &[String]) -> Option<String> {
     models.iter().find(|m| *m != vda::ID && stem(m) == DEFAULT_MODEL).or_else(|| models.first()).cloned()
 }
 
-fn inference_rate_limited(prepared_at_rate:bool,rate:u32,elapsed:Option<Duration>)->bool {
+/// Paces depth to the tray's rate on a fixed schedule, not "a period since
+/// the last run": a frame may be up to half a period early, and each run moves
+/// the schedule on by one period. Measuring from the last run dropped every
+/// frame that arrived a little early, so a 72 Hz cap on a 72 fps stream ran
+/// at ~55 Hz.
+#[derive(Default)]
+struct RatePace {due:Option<Instant>}
+impl RatePace {
+    fn ready(&self,rate:u32,now:Instant)->bool {
+        rate==0 || self.due.is_none_or(|due|now+period(rate)/2>=due)
+    }
+    fn ran(&mut self,rate:u32,now:Instant) {
+        if rate==0 {self.due=None;return;}
+        let period=period(rate);
+        // After a pause, start over rather than catch up.
+        self.due=Some(match self.due {Some(due) if now<due+period=>due+period,_=>now+period});
+    }
+}
+fn period(rate:u32)->Duration {Duration::from_secs_f64(1.0/rate as f64)}
+
+fn inference_rate_limited(prepared_at_rate:bool,rate:u32,pace:&RatePace,now:Instant)->bool {
     // Portable decoding limits expensive preparation before inference. Applying
     // a second independent cap after its variable CPU/download time would drop
     // otherwise valid maps whenever they arrive slightly closer together.
-    !prepared_at_rate && rate>0 && elapsed.is_some_and(|time|time<Duration::from_secs_f64(1.0/rate as f64).saturating_sub(Duration::from_millis(1)))
+    !prepared_at_rate && !pace.ready(rate,now)
 }
 
 struct InferenceBusy<'a>(&'a AtomicBool);
@@ -1346,11 +1367,12 @@ pub struct DepthFeed {
     rejected: Vec<DecodeBackend>,
     tags: BTreeMap<u32,FrameTag>,
     last_output: Option<Instant>,
+    pace: RatePace,
 }
 impl DepthFeed {
     pub fn new(depth:Arc<Depth>,client:Option<IpAddr>)->Self {
         Self {depth,client:client.map(|ip|ip.to_canonical()),decoder:None,epoch:None,
-            settings:None,inference_affinity:None,rejected:Vec::new(),tags:BTreeMap::new(),last_output:None}
+            settings:None,inference_affinity:None,rejected:Vec::new(),tags:BTreeMap::new(),last_output:None,pace:RatePace::default()}
     }
     fn initialize(&mut self,codec:Codec,size:(usize,usize),settings:&video_decoder::Settings)->bool {
         let gpu_name=ncnn::resolved_gpu_name(self.depth.depth_gpu().as_deref()).unwrap_or_default();
@@ -1368,7 +1390,7 @@ impl DepthFeed {
                     let description=format!("{} {device_label}; processing {}",backend.label(),if backend==DecodeBackend::Nvdec && gpu_frames {"CUDA/Auto"} else if portable_gpu {"Vulkan"} else {"CPU"});
                     self.depth.set_decoder_status(description.clone());
                     log::info!("Host depth decoding {codec:?}: {description}, {}x{}",size.0,size.1);
-                    self.tags.clear();self.last_output=None;
+                    self.tags.clear();self.last_output=None;self.pace=RatePace::default();
                     self.decoder=Some((decoder,NEXT_STREAM.fetch_add(1,Ordering::Relaxed),size,backend));
                     return true;
                 }
@@ -1405,11 +1427,10 @@ impl DepthFeed {
             while self.tags.len()>128 {self.tags.pop_first();}
             let rate=self.depth.rate();
             let rate_limited=rate>0 && matches!(decoder,VideoDecoder::Ffmpeg(_));
-            // Match the engine's 1 ms scheduling tolerance: without it a
-            // nominal 50 ms interval arriving fractionally early gets deferred
-            // by a whole video frame, turning a 20 Hz request into ~15 Hz.
+            // The same schedule as the engine's (RatePace), so a frame
+            // arriving fractionally early isn't deferred by a whole frame.
             let interested=self.depth.subscribers.load(Ordering::Relaxed)>0 || self.depth.save.is_some();
-            let rate_ready=interested && (rate==0 || self.last_output.is_none_or(|last|last.elapsed()>=Duration::from_secs_f64(1.0/rate as f64).saturating_sub(Duration::from_millis(1))));
+            let rate_ready=interested && self.pace.ready(rate,queued);
             let portable_gpu=matches!(decoder,VideoDecoder::Ffmpeg(decoder) if decoder.gpu_preparation())
                 && self.depth.active_model().is_some_and(|(id,_,_)|vda_vulkan::is_model(&id));
             let want_pixels=prepare_video_frame(rate_ready,portable_gpu,self.depth.inference_busy.load(Ordering::Acquire));
@@ -1420,6 +1441,7 @@ impl DepthFeed {
                         if let Some(tag)=self.tags.remove(&index) {
                             self.depth.submit(Decoded {tag,decoded:Instant::now(),size:*target,pixels,rate_limited});
                             self.last_output=Some(queued);
+                            self.pace.ran(rate,queued);
                         } else {log::warn!("Ignoring decoded frame {index}: source metadata unavailable");}
                     }
                     return;
@@ -1503,10 +1525,38 @@ mod tests {
 
     #[test]
     fn portable_preparation_is_not_rate_limited_twice() {
-        assert!(!inference_rate_limited(true,20,Some(Duration::from_millis(35))));
-        assert!(inference_rate_limited(false,20,Some(Duration::from_millis(35))));
-        assert!(!inference_rate_limited(false,20,Some(Duration::from_millis(50))));
-        assert!(!inference_rate_limited(false,0,Some(Duration::ZERO)));
+        let start=Instant::now();
+        let mut pace=RatePace::default();
+        pace.ran(20,start);
+        assert!(!inference_rate_limited(true,20,&pace,start+Duration::from_millis(5)));
+        assert!(inference_rate_limited(false,20,&pace,start+Duration::from_millis(20)));
+        assert!(!inference_rate_limited(false,20,&pace,start+Duration::from_millis(50)));
+        assert!(!inference_rate_limited(false,0,&pace,start));
+    }
+
+    #[test]
+    fn pace_keeps_a_jittery_stream_at_the_cap() {
+        // 72 fps arriving up to 4 ms early or late, capped at 72 Hz: every
+        // frame runs.
+        let start=Instant::now();
+        let mut pace=RatePace::default();
+        let jitter=[0i64,-4,3,-2,4,-4,0,2];
+        let mut runs=0;
+        for i in 0..720i64 {
+            let at=start+Duration::from_micros((i*13_889+jitter[i as usize%8]*1000+10_000) as u64);
+            if pace.ready(72,at) {pace.ran(72,at);runs+=1;}
+        }
+        assert_eq!(runs,720);
+    }
+
+    #[test]
+    fn pace_holds_a_lower_cap_on_average() {
+        // 72 fps capped at 20 Hz: 10 s gives 200 runs, give or take one.
+        let start=Instant::now();
+        let mut pace=RatePace::default();
+        let runs=(0..720u64).map(|i|start+Duration::from_micros(i*13_889))
+            .filter(|&at|{let ready=pace.ready(20,at);if ready {pace.ran(20,at);} ready}).count();
+        assert!((199..=201).contains(&runs),"{runs}");
     }
 
     #[test]
