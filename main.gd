@@ -1464,6 +1464,8 @@ func _ready():
 	_init_android_setup()
 	_init_ui()
 	_init_stream_backend()
+	if DevBridge.wanted():
+		add_child(DevBridge.new(self))
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():
