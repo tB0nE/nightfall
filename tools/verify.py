@@ -289,7 +289,8 @@ def check_quest(check, args):
             break
         except (OSError, ValueError):
             time.sleep(1)
-    if not check.expect(reply and reply.get('ok'), 'no dev bridge on the headset: is a dev build installed?'):
+    if not check.expect(reply and reply.get('ok'),
+                        f'no dev bridge on the headset: is a dev build installed? In front: {quest.focused(adb)}'):
         return
     check.metrics['xr'] = reply.get('xr')
     state = nf.request({'cmd': 'state'})['state']

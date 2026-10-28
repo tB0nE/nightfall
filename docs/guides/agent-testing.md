@@ -72,7 +72,7 @@ tools/nf.py ui
 
 ```sh
 tools/quest.py status              # battery, awake, installed version, running
-tools/quest.py awake               # acts as worn: the app keeps running on the desk
+tools/quest.py awake               # acts as worn, without the Guardian dialog
 tools/quest.py install Nightfall-Android-arm64-v8a-dev.apk
 tools/quest.py launch --fresh
 tools/quest.py forward && tools/nf.py ping
@@ -82,6 +82,12 @@ tools/quest.py sleep               # back to normal
 
 - **Ask first.** Installing and launching changes what the user, or another
   agent, sees in the headset.
+- **When the bridge stops answering, check focus.** The app pauses whenever
+  something else is in front, e.g. the Guardian boundary dialog or Settings.
+  `quest.py status` names what's in front.
+  - `awake` sets `debug.oculus.guardian_pause 0`, which kept Guardian away on
+    the user's Quest 3 (2026-10-28).
+  - `quest.py launch` brings Nightfall back to the front.
 - **Signing:** `install` never uninstalls to get past a signing mismatch,
   because that wipes the user's pairing.
 

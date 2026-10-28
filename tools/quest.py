@@ -2,7 +2,7 @@
 """Run Nightfall on a Quest without wearing it, for agents and scripts.
 
   quest.py status               # device, battery, awake, installed app, running pid
-  quest.py awake                # act as if worn (proximity sensor), so apps keep running
+  quest.py awake                # act as if worn, and keep the Guardian dialog away
   quest.py sleep                # undo awake
   quest.py install APK          # adb install -r, retried (the first try often fails)
   quest.py launch [--fresh]     # start Nightfall; --fresh force-stops it first
@@ -43,6 +43,15 @@ class Adb:
         return self.shell(f'pidof {package}', check=False) or None
 
 
+def focused(adb):
+    """The activity in front: the app pauses (and its bridge goes quiet)
+    whenever something else, such as the Guardian dialog, is."""
+    for line in adb.shell('dumpsys activity activities').splitlines():
+        if 'topResumedActivity=' in line:
+            return line.split()[-2] if len(line.split()) >= 2 else line.strip()
+    return '?'
+
+
 def status(adb, package):
     model = adb.shell('getprop ro.product.model')
     battery = adb.shell('dumpsys battery')
@@ -52,6 +61,8 @@ def status(adb, package):
                     if 'versionName=' in line), None)
     print(f'{model}: battery {level}%, {wake.lower()}')
     print(f'{package}: {version or "not installed"}, ' + (f'running (pid {adb.pid(package)})' if adb.pid(package) else 'not running'))
+    front = focused(adb)
+    print(f'in front: {front}' + ('' if front.startswith(package) else f' ({package} is paused behind it)'))
 
 
 def install(adb, apk, attempts=3):
@@ -129,10 +140,14 @@ def main(argv=None):
         elif args.cmd == 'awake':
             # The proximity sensor reads "worn": the display and apps keep running.
             adb.shell('am broadcast -a com.oculus.vrpowermanager.prox_close')
-            print('headset acts as worn until `quest.py sleep` (or a reboot)')
+            # Waking a headset on a desk brings up the Guardian boundary
+            # dialog, which pauses the app behind it.
+            adb.shell('setprop debug.oculus.guardian_pause 0')
+            print('headset acts as worn, without the Guardian dialog, until `quest.py sleep` (or a reboot)')
         elif args.cmd == 'sleep':
             adb.shell('am broadcast -a com.oculus.vrpowermanager.automation_disable')
-            print('proximity sensor back to normal')
+            adb.shell("setprop debug.oculus.guardian_pause ''", check=False)
+            print('proximity sensor and Guardian back to normal (a reboot restores both for certain)')
         elif args.cmd == 'install':
             install(adb, args.apk)
         elif args.cmd == 'launch':
