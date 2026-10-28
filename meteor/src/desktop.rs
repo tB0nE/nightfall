@@ -171,6 +171,50 @@ pub fn watch_xr_approval(trust: std::sync::Arc<crate::xr_trust::Trust>) {
     });
 }
 
+/// Let the desktop resolve browser preferences. Child xdg-open processes can
+/// otherwise inherit an isolated Meteor profile and launch its fallback browser.
+pub fn open_web_url(url: String) {
+    tokio::spawn(async move {
+        if let Err(error) = portal_open_web_url(&url).await {
+            log::debug!("Desktop URL portal unavailable ({error}); using xdg-open");
+            if let Err(error) = std::process::Command::new("xdg-open").arg(&url).spawn() {
+                log::warn!("Cannot open web link: {error}");
+            }
+        }
+    });
+}
+
+async fn portal_open_web_url(url: &str) -> zbus::Result<()> {
+    use futures_lite::StreamExt;
+    let connection = zbus::Connection::session().await?;
+    let sender = connection.unique_name().expect("session connection has a unique name")
+        .as_str().trim_start_matches(':').replace('.', "_");
+    let path = format!("/org/freedesktop/portal/desktop/request/{sender}/nightfall");
+    let request = zbus::Proxy::new(&connection, "org.freedesktop.portal.Desktop", path.as_str(),
+        "org.freedesktop.portal.Request").await?;
+    // Subscribe before opening: the portal may immediately dispatch the browser.
+    let mut response = request.receive_signal("Response").await?;
+    let portal = zbus::Proxy::new(&connection, "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop", "org.freedesktop.portal.OpenURI").await?;
+    let options: std::collections::HashMap<&str,zbus::zvariant::Value> = [
+        ("handle_token",zbus::zvariant::Value::from("nightfall")),
+        ("ask",zbus::zvariant::Value::Bool(false)),
+    ].into();
+    let _handle: zbus::zvariant::OwnedObjectPath = portal.call("OpenURI", &("",url,options)).await?;
+    match tokio::time::timeout(std::time::Duration::from_secs(60),response.next()).await {
+        Ok(Some(signal)) => {
+            let (status,_): (u32,std::collections::HashMap<String,zbus::zvariant::OwnedValue>) = signal.body().deserialize()?;
+            // Cancellation is intentional: don't launch a fallback browser.
+            if status>1 {return Err(zbus::Error::Failure("Desktop could not open the link".into()));}
+        }
+        _ => {
+            let _:zbus::Result<()> = request.call("Close", &()).await;
+            log::info!("Desktop link request expired");
+        }
+    }
+    Ok(())
+}
+
 pub async fn host_setup_popup(view: std::sync::Arc<crate::host::view::View>) -> zbus::Result<()> {
     use futures_lite::StreamExt;
     let connection=zbus::Connection::session().await?;
@@ -204,6 +248,67 @@ pub async fn host_setup_popup(view: std::sync::Arc<crate::host::view::View>) -> 
                         else {view.download_and_switch();}
                     }
                     if action=="setup" || action=="later" {break;}
+                }
+            }
+        }
+    }
+    let _:zbus::Result<()>=proxy.call("CloseNotification", &(id,)).await;
+    Ok(())
+}
+
+pub async fn input_setup_popup(input: std::sync::Arc<crate::host::input::Access>) -> zbus::Result<()> {
+    use futures_lite::StreamExt;
+    let connection=zbus::Connection::session().await?;
+    let proxy=zbus::Proxy::new(&connection,"org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications","org.freedesktop.Notifications").await?;
+    let mut actions=proxy.receive_signal("ActionInvoked").await?;
+    let id:u32=proxy.call("Notify", &("Nightfall Meteor",0u32,"",
+        "Enable Nightfall keyboard and controller input?",
+        "Meteor cannot access virtual input devices. Enable access for the active desktop session? This requires administrator approval, installs a device-access rule, and restarts Meteor. Any active stream will disconnect. You can also set this up later in the tray.",
+        vec!["setup","Enable input","later","Not now"],std::collections::HashMap::<&str,zbus::zvariant::Value>::new(),60_000i32)).await?;
+    let timeout=tokio::time::sleep(std::time::Duration::from_secs(60));tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _=&mut timeout=>break,
+            signal=actions.next()=>{
+                let Some(signal)=signal else {break};
+                if let Ok((notification,action))=signal.body().deserialize::<(u32,String)>() {
+                    if notification!=id {continue;}
+                    if action=="setup" {input.setup();break;}
+                    if action=="later" {break;}
+                }
+            }
+        }
+    }
+    let _:zbus::Result<()>=proxy.call("CloseNotification", &(id,)).await;
+    Ok(())
+}
+
+pub async fn host_pairing_popup(pairing: std::sync::Arc<crate::host::pairing::Pairing>, request: String) -> zbus::Result<()> {
+    use futures_lite::StreamExt;
+    let Some(pending) = pairing.pending().filter(|p|p.id==request) else { return Ok(()) };
+    let connection = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(&connection, "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications", "org.freedesktop.Notifications").await?;
+    let mut actions = proxy.receive_signal("ActionInvoked").await?;
+    let hints: std::collections::HashMap<&str, zbus::zvariant::Value> =
+        [("resident", zbus::zvariant::Value::Bool(true))].into();
+    let body = format!("Nightfall headset at {} requests desktop streaming. PIN: {}. Compare with the PIN in your headset, then approve only if they match. Approval is also available in Meteor's tray.",pending.peer,pending.pin);
+    let id: u32 = proxy.call("Notify", &("Nightfall Meteor",0u32,"",
+        "Pair Nightfall headset?",body,vec!["approve","Approve","reject","Reject"],hints,60_000i32)).await?;
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            _=tick.tick()=>if !pairing.pending().is_some_and(|p|p.id==request) {break;},
+            signal=actions.next()=>{
+                let Some(signal)=signal else {break};
+                if let Ok((notification,action))=signal.body().deserialize::<(u32,String)>() {
+                    if notification!=id {continue;}
+                    match action.as_str() {
+                        "approve"=>{pairing.approve(&request);break;},
+                        "reject"=>{pairing.reject(&request);break;},
+                        _=>{},
+                    }
                 }
             }
         }

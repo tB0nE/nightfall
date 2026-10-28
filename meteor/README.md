@@ -829,10 +829,25 @@ Profiles and pairings live separately; installing a package does not replace
 them. No system service, firewall or graphics configuration is installed by this
 download. Graphics drivers and desktop/audio libraries still come from your OS.
 
-Initial headset pairing still uses the host web interface and PIN. The managed
-host tray section shows the web username and provides **Copy web UI password**.
+For the managed host, Nightfall sends its PIN encrypted to Meteor. Compare the
+PIN in the headset with the desktop notification, then choose **Approve**. The
+same approval is available in the tray if notifications are hidden. Meteor
+submits the approved PIN to its own host and Nightfall finishes pairing normally.
+Requests expire after 60 seconds and never approve themselves. External hosts
+and older Meteors retain the manual PIN/web-interface flow. The managed host
+tray section still shows the web username and **Copy web UI password** for that
+fallback. Desktop pairing and XR authorization remain separate approvals.
+
+If virtual keyboard/mouse/gamepad access is missing, Meteor shows an input setup
+notification and tray action. **Enable virtual input** requests administrator
+approval to install a narrow udev rule for `uinput`/`uhid` on the active desktop
+seat, loads the existing uinput module if necessary, and rechecks access before
+restarting Meteor. It does not grant world-writable device access or change
+group membership. Cancelling approval leaves streaming configuration unchanged.
+Systems without udev/logind/polkit may need administrator-managed input access.
+
 Changing from an existing host may require selecting and pairing the new host
-in Nightfall; this preview does not migrate an external host's pairings.
+in Nightfall; external host pairings are not imported into the managed host.
 
 For download verification without switching hosts or starting services:
 

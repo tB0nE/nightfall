@@ -14,6 +14,8 @@
 mod detect;
 mod install;
 mod instance;
+pub mod input;
+pub mod pairing;
 mod supervisor;
 pub mod setup;
 pub mod view;

@@ -23,6 +23,8 @@ pub struct View {
     pub supervisor: Option<Arc<Supervisor>>,
     /// The host download, shown in the tray.
     pub download: Arc<Download>,
+    pub input: Arc<super::input::Access>,
+    pub pairing: Option<Arc<super::pairing::Pairing>>,
     instance: Option<Instance>,
     installing: std::sync::atomic::AtomicBool,
 }
@@ -71,11 +73,15 @@ impl View {
     /// host.
     pub fn discovery_info(&self) -> Option<serde_json::Value> {
         self.supervisor.as_ref().map(|_| {
-            json!({
+            let mut info = json!({
                 "kind": "meteor-vibepollo",
                 "managed": true,
                 "version": RELEASE.as_ref().map_or("development", |r| r.version),
-            })
+            });
+            if self.pairing.is_some() {
+                info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION});
+            }
+            info
         })
     }
 

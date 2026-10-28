@@ -692,6 +692,7 @@ func build_pin_screen(parent: Node):
 	screen.add_child(top_spacer)
 
 	var heading = Label.new()
+	heading.name = "PINHeading"
 	heading.text = "Enter PIN on Host"
 	heading.add_theme_font_size_override("font_size", 40)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -730,7 +731,11 @@ func build_pin_screen(parent: Node):
 	bottom_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(bottom_margin)
 
-	back_btn.pressed.connect(func(): show_welcome_screen("server"))
+	back_btn.pressed.connect(func():
+		pairing_finished()
+		var manager = main.stream_backend.get_computer_manager()
+		if manager and manager.has_method("cancel_pair"): manager.cancel_pair()
+		show_welcome_screen("server"))
 
 const WELCOME_FRAME := Vector2i(1920, 1080)
 
@@ -1022,6 +1027,17 @@ func show_pin_when_needed(pin: String) -> void:
 	await main.get_tree().create_timer(PIN_DELAY_SEC).timeout
 	if ticket == _pin_pending:
 		show_welcome_screen("pin")
+		var heading = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/PINScreen/PINHeading")
+		if heading: heading.text = "Enter PIN on Host"
+		var address: Array = main.parse_ip_port(main.get_node("%IPInput").text)
+		var identity: String = main.stream_backend.get_last_paired_unique_id()
+		var offered := await MeteorHostPairing.request(main, address[0], address[1], pin, identity, func(): return ticket == _pin_pending)
+		if offered and ticket == _pin_pending:
+			if heading: heading.text = "Approve pairing in Meteor on your PC"
+			main._log("[PAIR] Meteor is waiting for desktop approval")
+			await main.get_tree().create_timer(60.0).timeout
+			if ticket == _pin_pending and is_instance_valid(heading):
+				heading.text = "Approval expired — enter PIN on Host or retry"
 
 ## Called when pairing finishes, either way: a PIN still waiting stays hidden.
 func pairing_finished() -> void:

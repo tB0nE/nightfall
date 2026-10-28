@@ -1,8 +1,8 @@
 # Meteor's bundled host: Meteor-Vibepollo for Nightfall
 
-> Status: Active (2026-10-21). Phase 2 (Meteor runs the host) works with a
-> development build. The fork's self-contained Linux build (Phase 1) and
-> one-click pairing (Phase 4) are next.
+> Status: Active (2026-10-28). Portable host preview.2 and managed-host streaming
+> are tested. One-click pairing and guided input-permission setup are implemented
+> and awaiting headset/desktop acceptance before the PR.
 >
 > Replaces Phases 3–4 of [meteor-host.md](meteor-host.md) for now.
 
@@ -251,3 +251,60 @@ The original next-step list below records the wider acceptance requirements.
    `pkexec` prompt when the user can't open it. Bazzite already has one.
 4. **Risk:** NvFBC on GeForce cards may need a patched driver; check how
    this PC allows it before relying on it for other users.
+
+## One-click pairing and input setup follow-up (2026-10-28)
+
+- Managed-host discovery advertises an optional `host.pairing` protocol. External
+  hosts do not expose the endpoint. Nightfall keeps the ordinary native PIN
+  handshake and sends its PIN through `MeteorChannelCipher` using a fresh
+  X25519 key, HKDF-SHA256 and AES-256-GCM; channel and AAD are both
+  `nightfall-host-pair-v1`. The remembered Meteor-key check also applies here.
+- `POST /meteor/pair` accepts a bounded JSON envelope with hex `public_key` and
+  encrypted `payload`. The plaintext contains a four-digit PIN and Unix creation
+  time. It is accepted within 30 seconds of the PC clock. Requests have replay
+  protection, rate limiting, one pending approval, a 60-second expiry and no
+  automatic authorization. Browser Origin/chunked requests are rejected.
+- Only a local notification/tray action sends the PIN through the managed host's
+  loopback HTTPS `/api/pin`. The stored web password stays on the PC; proxies and
+  redirects are disabled for that request. Its host-controlled self-signed TLS
+  endpoint is the sole verification exception, fixed to 127.0.0.1 and the managed
+  port. No remote-supplied URL is used. PINs and passwords are not logged.
+- The native HTTP bridge now respects the requested POST content type. Pairing
+  callbacks/retries carry a generation so abandoned requests cannot affect a new
+  attempt. PIN-screen Back cancels that attempt; preflight verification failures
+  do not unpair an already authorized client.
+- Missing virtual-input access produces a notification/tray setup action, not an
+  automatic privileged command. User approval invokes pkexec with a fixed script
+  that installs `/etc/udev/rules.d/70-nightfall-input.rules`, tags uinput/uhid for
+  active-seat uaccess, loads uinput only if missing, and reloads/triggers those
+  device rules. It does not install a driver/service, use setcap, add a user to an
+  input group or grant world-writable access. It rechecks access before restart.
+- On this PC access already works, so the privileged setup was not run. Missing,
+  denied and accessible states are tested using temporary files; shell syntax
+  and the actual udev rule parser pass. Applying the rule remains a fresh-system
+  acceptance item. Reference: [udev rules](https://www.freedesktop.org/software/systemd/man/latest/udev.html).
+- Isolated acceptance profile:
+  `.build-cache/meteor-host-one-click-test-20261028/`. It uses published preview.2
+  and Auto encoding, a new host identity/pairing, and XR disabled for this test.
+  Normal profile checksums and `restore-normal.sh` are retained there. Never clear
+  the headset's saved hosts for this test.
+- Acceptance: Scan Network → select test host → compare PIN and Approve in
+  Meteor (no web login/manual PIN) → stream → reconnect with no further approval.
+  Also verify rejection/Back/retry, manual fallback, and the tray's **Virtual
+  input: ready** on this PC. Fresh-machine permission application needs separate
+  testing before claiming broad distro support.
+- Optimized APK deployed; optimized Meteor AppImage built and isolated test
+  service `nightfall-meteor-one-click-test.service` is running. Discovery advertises
+  pairing protocol 1, and actual HTTP requests with plaintext PIN fields or a
+  malformed public key return 400 without opening an approval. Normal profile,
+  host credentials and pairing-state checksums match their pre-test copies.
+  This PC can open uinput read/write; no privileged permission changes were made.
+  Automated checks cover 174 Meteor tests plus input-denial detection, client
+  capability validation and udev/shell syntax. End-to-end approval needs the
+  headset acceptance steps above.
+- Browser association follow-up: normal KDE preferences resolve HTTPS to Brave,
+  but the isolated XDG test profile resolves it to Firefox. Meteor's web-link
+  actions now use the desktop OpenURI portal, so default-browser lookup occurs
+  in the real desktop session rather than the isolated child environment. Local
+  file/folder actions retain xdg-open, and web links fall back to it if the portal
+  is unavailable. User cancellation is respected; no browser settings changed.

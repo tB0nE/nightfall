@@ -210,6 +210,38 @@ impl MeteorTray {
             names.join(" and ")
         };
         let mut items = vec![MenuItem::Separator];
+        if let Some(pairing) = &host.pairing
+            && let Some(pending) = pairing.pending()
+        {
+            items.push(info(format!("Pair headset {} — PIN {}",pending.peer,pending.pin)));
+            let approve=pairing.clone(); let request=pending.id.clone();
+            items.push(StandardItem { label:"Approve headset pairing".into(),
+                activate:Box::new(move |_|approve.approve(&request)), ..Default::default() }.into());
+            let reject=pairing.clone(); let request=pending.id;
+            items.push(StandardItem { label:"Reject headset pairing".into(),
+                activate:Box::new(move |_|reject.reject(&request)), ..Default::default() }.into());
+        }
+        if host.state.choice == Choice::Bundled {
+            use crate::host::input::Status as InputStatus;
+            let input=crate::host::input::check();
+            if input == InputStatus::Ready {
+                items.push(info("Virtual input: ready".into()));
+            } else {
+                let label=match input {
+                    InputStatus::Missing=>"Virtual input device is not available".into(),
+                    InputStatus::Denied=>"Keyboard/controller input needs permission".into(),
+                    InputStatus::Unavailable(error)=>format!("Virtual input unavailable: {error}"),
+                    InputStatus::Ready=>unreachable!(),
+                };
+                items.push(info(label));
+                let busy=host.input.busy();
+                items.push(StandardItem {
+                    label:if busy {"Waiting for input setup…"} else {"Enable virtual input (administrator approval; restarts Meteor)…"}.into(),
+                    enabled:!busy,
+                    activate:Box::new(|tray:&mut Self|tray.host.input.setup()), ..Default::default()
+                }.into());
+            }
+        }
         match (&host.supervisor, host.state.choice) {
             (Some(supervisor), _) => {
                 let line = match supervisor.phase() {
@@ -701,6 +733,10 @@ fn download_progress(depth: &Depth) -> Option<String> {
 }
 
 fn open_url(url: &str) {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        crate::desktop::open_web_url(url.to_string());
+        return;
+    }
     let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
     if let Err(err) = std::process::Command::new(opener).arg(url).spawn() {
         log::warn!("Can't open {url}: {err}");

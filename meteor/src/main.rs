@@ -416,6 +416,10 @@ async fn main() {
         }
         None
     };
+    #[cfg(target_os = "linux")]
+    if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
+        host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone()));
+    }
     let features = discovery::Features {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
@@ -425,6 +429,8 @@ async fn main() {
         #[cfg(not(target_os = "linux"))]
         host: None,
         xr_port: xr_discovery,
+        #[cfg(target_os = "linux")]
+        pairing: host_view.pairing.clone(),
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -450,6 +456,15 @@ async fn main() {
     let host_view=Arc::new(host_view);
     #[cfg(target_os = "linux")]
     if !no_tray { host::setup::offer(host_view.clone(), &config); }
+    #[cfg(target_os = "linux")]
+    if !no_tray && host_view.state.choice == host::Choice::Bundled && host::input::check() != host::input::Status::Ready {
+        let input=host_view.input.clone();
+        tokio::spawn(async move {
+            if let Err(error)=desktop::input_setup_popup(input).await {
+                log::info!("Input setup notification unavailable ({error}); setup remains in the tray");
+            }
+        });
+    }
     #[cfg(target_os = "linux")]
     if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view }).await {
         desktop::notify(
