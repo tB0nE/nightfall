@@ -1,7 +1,8 @@
 # Testing without a person in the headset
 
-> Status: Active (2026-10-28). Levels 1, 2 and the depth part of 4 are done
-> (`feat/agent-testing`). How to use them: [the guide](../../guides/agent-testing.md).
+> Status: Active (2026-10-28). Levels 1 and 2 are done; level 4 has the depth,
+> headset stream and basic PCVR checks (`feat/agent-testing`). How to use them:
+> [the guide](../../guides/agent-testing.md).
 
 ## Why
 
@@ -31,15 +32,16 @@ person.
      in the XR stack). That adds composition layers and the 3D view, and
      `pose` works for real.
 4. **The full pipeline on the PC's GPUs.**
-   - Done: `verify.py depth` (jittered replay, depth rate).
-   - Next: a PCVR golden test per encoder (NVENC on the 3090, VA-API on the
-     RX 480). It wraps `test/smoke_xr_local_application.py` and asserts:
-     - `ENCODE_OK` ≥ N;
-     - no `CAPTURE_FAILED`;
-     - a second XR session recovers;
-     - pixels check out with `test/xr_stack_oracle.py`.
-     - Not built yet: the other agent is debugging PCVR on the same Monado
-       cache, and the runs share `managed-session.lock`.
+   - Done:
+     - `verify.py depth` (jittered replay, depth rate).
+     - `verify.py stream`: the headset streams and reports fps, latency and
+       depth.
+     - `verify.py pcvr`: hello_xr per encoder, against any installed runtime.
+   - Next for PCVR:
+     - A second XR session in the same app (where Moss failed).
+     - Quad and cylinder layers through `smoke_xr_layer_compatibility.py`. It
+       needs a development runtime build.
+     - Pixels checked with `test/xr_stack_oracle.py`.
    - Then: a stream test pattern with a frame counter, for frames dropped and
      latency end to end.
 5. **Windows and downloads.**

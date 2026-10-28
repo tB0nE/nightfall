@@ -9,6 +9,8 @@
                       (needs a dev build installed; it starts the app, so ask first)
   verify.py stream    the headset streams this PC through Meteor: fps, network,
                       depth source and rate (needs pairing; ask first)
+  verify.py pcvr      PCVR on this PC without the headset: a sample OpenXR app,
+                      synthetic tracking, the installed runtime, NVENC and VA-API
 
 Each check writes build/verify/<check>-<time>/summary.json:
   {"check", "ok", "duration_s", "metrics": {...}, "failures": [...], "artifacts": [...]}
@@ -400,7 +402,66 @@ def check_stream(check, args):
             check.notes.append('disconnected the stream it started')
 
 
-CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest, 'stream': check_stream}
+# --- pcvr ------------------------------------------------------------------
+
+XR_INSTALL = Path.home() / '.local/share/nightfall-meteor/xr'
+
+
+def installed_runtime(choice):
+    """The runtime Meteor runs now (its xr-runtime link), or a version prefix,
+    or a path."""
+    if not choice:
+        return (XR_INSTALL / 'xr-runtime').resolve().parent
+    path = Path(choice)
+    if path.is_dir():
+        return path.resolve()
+    matches = sorted((XR_INSTALL / 'versions').glob(f'{choice}*'))
+    if len(matches) != 1:
+        raise FileNotFoundError(f'{len(matches)} installed XR runtimes match {choice!r} in {XR_INSTALL / "versions"}')
+    return matches[0]
+
+
+def check_pcvr(check, args):
+    """The external-app smoke (hello_xr, synthetic tracking, real Monado and
+    encoder) once per encoder, against an installed runtime."""
+    import contextlib
+    import io
+    sys.path.insert(0, str(ROOT / 'test'))
+    import smoke_xr_local_application as smoke
+    runtime = installed_runtime(args.runtime)
+    check.metrics['runtime'] = runtime.name[:8]
+    for encoder in args.encoders.split(','):
+        output = io.StringIO()
+        error = None
+        try:
+            with contextlib.redirect_stdout(output):
+                smoke.run(ROOT, installed_runtime=runtime, encoder=encoder)
+        except Exception as caught:  # noqa: BLE001 - the smoke raises plain errors
+            error = caught
+        log = check.artifact(check.dir / f'{encoder}.log')
+        log.write_text(output.getvalue() + (f'\n{type(error).__name__}: {error}\n' if error else ''))
+        found = re.search(r'Smoke diagnostics: (\S+)', output.getvalue())
+        session = Path(found[1]) if found else None
+        if session:
+            check.artifact(session)
+        if not check.expect(error is None, f'{encoder}: {str(error).splitlines()[0] if error and str(error) else type(error).__name__} (see {encoder}.log)'):
+            continue
+        selection = json.loads((session / 'encoder-selection.json').read_text())
+        outcome = json.loads((session / 'lifecycle-outcome.json').read_text())
+        service = (session / 'service.log').read_text(errors='replace')
+        rejected = service.count('METEOR_CAPTURE_FAILED')
+        check.metrics[f'{encoder}_frames'] = outcome.get('encoded_frames')
+        check.metrics[f'{encoder}_rejected'] = rejected
+        check.metrics[f'{encoder}_device'] = selection.get('render_device') or 'nvidia'
+        check.expect(selection.get('backend') == encoder, f"{encoder}: the runtime encoded with {selection.get('backend')}")
+        check.expect(rejected == 0, f'{encoder}: {rejected} frames rejected by the capture hook')
+        check.expect(outcome.get('encoded_frames', 0) >= 60, f"{encoder}: only {outcome.get('encoded_frames')} frames encoded")
+    check.notes.append('hello_xr with one projection layer and one XR session; real games (Proton, '
+                       'quads, a second session) are not covered yet')
+
+
+CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest,
+          'stream': check_stream, 'pcvr': check_pcvr}
 
 
 def main(argv=None):
@@ -420,6 +481,9 @@ def main(argv=None):
     ui.add_argument('--serial')
     ui.add_argument('--fresh', action='store_true', help='quest: restart the app first')
     ui.add_argument('--settle', type=float, default=10.0, help='stream: seconds before sampling')
+    pcvr = parser.add_argument_group('pcvr')
+    pcvr.add_argument('--runtime', help='installed XR runtime: a version prefix or a path (default: the current one)')
+    pcvr.add_argument('--encoders', default='nvenc,vaapi')
     args = parser.parse_args(argv)
 
     ok = True

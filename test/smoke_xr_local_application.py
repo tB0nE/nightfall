@@ -16,7 +16,9 @@ import time
 import secrets
 
 
-def run(root, steam_wrapper=False, installed_runtime=None):
+def run(root, steam_wrapper=False, installed_runtime=None, encoder=None):
+    """Returns the diagnostics folder. encoder: nvenc, vaapi or auto (default:
+    the runtime's own default)."""
     cache = root / ".build-cache/meteor-xr"
     with nullcontext(tempfile.mkdtemp(prefix="external-smoke-", dir=cache)) as directory:
         out = Path(directory)
@@ -59,6 +61,8 @@ def run(root, steam_wrapper=False, installed_runtime=None):
                        NIGHTFALL_XR_TRANSPORT_RECEIVER=str(receiver),
                        NIGHTFALL_XR_CONTROLLERS="1", NIGHTFALL_XR_CONTROLLER_PROFILE="touch",
                        NIGHTFALL_XR_TOUCH_INPUTS="1")
+            if encoder:
+                env["NIGHTFALL_XR_ENCODER_BACKEND"] = encoder
             if steam_wrapper:
                 spec.update(launch="steam",steam_app_id="438100")
                 selection=out/"steam-application.json"
@@ -121,6 +125,7 @@ def run(root, steam_wrapper=False, installed_runtime=None):
             outcome = json.loads((out / "lifecycle-outcome.json").read_text())
             assert outcome["outcome"] == "interrupted" and outcome["encoded_frames"] >= 60
             print(f"PASS: external app captured {outcome['encoded_frames']} frames with synthetic tracking; intentionally interrupted")
+            return out
         finally:
             if wrapper and wrapper.poll() is None:
                 wrapper.terminate()
@@ -141,5 +146,6 @@ if __name__ == "__main__":
     parser.add_argument("checkout",type=Path)
     parser.add_argument("--steam-wrapper",action="store_true")
     parser.add_argument("--installed-runtime",type=Path,help="Use installed supervisor and prebuilt bridges")
+    parser.add_argument("--encoder",choices=["auto","nvenc","vaapi"],help="XR encoder backend")
     args=parser.parse_args()
-    run(args.checkout.resolve(),args.steam_wrapper,args.installed_runtime.resolve() if args.installed_runtime else None)
+    run(args.checkout.resolve(),args.steam_wrapper,args.installed_runtime.resolve() if args.installed_runtime else None,args.encoder)

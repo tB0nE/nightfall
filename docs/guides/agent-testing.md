@@ -13,6 +13,7 @@ containerised `python3` can't see ffmpeg, gamescope or the GPU.
 | Menus, welcome, settings, panel placement, anything you'd click | `tools/verify.py ui` | gamescope, GPU |
 | Anything that only happens on the Quest (Android, OpenXR, passthrough) | `tools/verify.py quest` | headset on adb, a dev build; **ask the user first** |
 | Streaming, decode, depth delivery to the headset | `tools/verify.py stream` | as above, plus a paired host; it connects, samples, then disconnects |
+| PCVR runtime, Monado capture, the XR encoders | `tools/verify.py pcvr` | the installed XR runtime; NVIDIA and AMD GPUs |
 
 Each run writes `build/verify/<check>-<time>/summary.json`, which has the
 check's metrics, failures and artifacts (logs, `ui.json`, screenshots). Read
@@ -116,4 +117,21 @@ fps, bitrate, codec, network latency, app fps, and the depth source and rate.
 
 Meteor's depth needs the headset to find Meteor when it connects, so the host
 it streams from must be the one Meteor fronts.
+
+## PCVR check
+
+`verify.py pcvr` runs `test/smoke_xr_local_application.py` once per encoder
+(`--encoders nvenc,vaapi`). Each run uses the sample OpenXR app hello_xr,
+synthetic tracking, the installed runtime's Monado and the real encoder.
+
+- **Passing:** each encoder must be the one that actually ran, encode 60
+  frames or more, and reject none in the capture hook.
+- **Bisecting:** `--runtime <version prefix>` runs an older installed runtime,
+  from `~/.local/share/nightfall-meteor/xr/versions/`.
+- **Not covered:** real games (Proton, quad layers) and a second XR session in
+  the same app.
+
+On 2026-10-28 runtime 53d31ca1 passed on both GPUs: NVENC 64 frames, VA-API
+62. So that day's VRChat and Moss failures weren't in the basic capture and
+encode path.
 
