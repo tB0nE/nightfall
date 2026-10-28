@@ -162,6 +162,7 @@ async fn main() {
              \x20 --save-every <n>        N for --save-depth (default 60)\n\
              \x20 --replay <file>         run a .h264/.hevc file through host depth and exit\n\
              \x20 --fps <n>               frame rate for --replay (default 60)\n\
+             \x20 --jitter-ms <ms>        move each replayed frame up to <ms> early or late\n\
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
              \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
@@ -244,6 +245,7 @@ async fn main() {
     let Some((map, discovery)) = startup else {
         let file = replay_file.unwrap_or_default();
         let fps = value("--fps").and_then(|n| n.parse().ok()).unwrap_or(60);
+        let jitter_ms = value("--jitter-ms").and_then(|n| n.parse().ok()).unwrap_or(0.0);
         let Some(depth) = depth else {
             log::error!("--replay needs host depth");
             exit_now(2);
@@ -263,7 +265,7 @@ async fn main() {
             }
             Err(err) => log::warn!("No key, so no depth port: {err}"),
         }
-        let result = tokio::task::spawn_blocking(move || replay::run(std::path::Path::new(&file), fps, depth)).await;
+        let result = tokio::task::spawn_blocking(move || replay::run(std::path::Path::new(&file), fps, jitter_ms, depth)).await;
         if let Ok(Err(err)) = result {
             log::error!("{err}");
             exit_now(1);

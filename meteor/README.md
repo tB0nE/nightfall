@@ -744,7 +744,8 @@ Debugging:
 - `--save-depth <dir>` saves every Nth frame and its map as PNGs.
 - `--replay <file.hevc>` runs a recorded stream through the pipeline without
   a client and prints timings. The depth port is open during a replay, for
-  a local test client.
+  a local test client. `--jitter-ms <ms>` moves each frame's arrival up to
+  that much early or late, as a network does (`tools/verify.py gpu depth`).
 
 ## Microphone
 
