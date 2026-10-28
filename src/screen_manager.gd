@@ -89,7 +89,7 @@ func resize_screen_to_aspect(stream_w: int, stream_h: int):
 	# (the path actually active for local-capture-mode streaming) was the
 	# one missing it. Doing it here instead of at each call site means no
 	# future caller can miss this pairing again.
-	if main.comp.available:
+	if main.comp and main.comp.available:
 		main.comp.update_cylinder_params()
 
 func cycle_curvature():

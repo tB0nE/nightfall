@@ -1464,11 +1464,16 @@ func _ready():
 	_init_android_setup()
 	_init_ui()
 	_init_stream_backend()
+	if DevBridge.wanted():
+		add_child(DevBridge.new(self))
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():
 		if "--nf-no-xr" in OS.get_cmdline_user_args():
 			_log("[XR] --nf-no-xr set, continuing without OpenXR for desktop testing")
+			# The XR startup that would lift it never runs.
+			_startup_cover.queue_free()
+			_startup_cover = null
 			return
 		_log("[XR] OpenXR not available - cannot run without VR runtime")
 		if not Engine.is_editor_hint():
@@ -2384,15 +2389,17 @@ func _process(delta):
 		pcvr_test.process(0.0)
 		return
 	xr_interaction.handle_scroll()
-	_update_cursor_layer()
-	_sync_composition_panels()
-	_sync_interaction_viewports()
-	_update_laser_layers()
-	_update_marker_layers(delta)
-	_update_hand_indicator_layers()
-	_update_grab_bar_layers()
-	_sync_comp_background()
+	# Without OpenXR (--nf-no-xr, desktop testing) there are no composition
+	# layers to update.
 	if comp:
+		_update_cursor_layer()
+		_sync_composition_panels()
+		_sync_interaction_viewports()
+		_update_laser_layers()
+		_update_marker_layers(delta)
+		_update_hand_indicator_layers()
+		_update_grab_bar_layers()
+		_sync_comp_background()
 		comp.process_ambient(delta)
 
 	_process_background_follow()
@@ -2401,7 +2408,7 @@ func _process(delta):
 
 	if depth_estimator:
 		depth_estimator.process(delta)
-		if depth_estimator.depth_texture and settings.host.ai_3d_speed > 0 and comp.in_use:
+		if depth_estimator.depth_texture and settings.host.ai_3d_speed > 0 and comp and comp.in_use:
 			var dt = depth_estimator.depth_texture
 			if comp_shader_mat_left and not comp_shader_mat_left.get_shader_parameter("depth_texture"):
 				comp_shader_mat_left.set_shader_parameter("depth_texture", dt)

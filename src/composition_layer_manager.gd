@@ -959,7 +959,8 @@ func setup_background_equirect():
 		main._log("[COMP] Keyboard composition layer created")
 
 	available = true
-	if main.primary_screen.comp_cylinder.is_natively_supported():
+	var cylinder = main.primary_screen.comp_cylinder
+	if cylinder and cylinder.is_natively_supported():
 		main._log("[COMP] Composition layer cylinder natively supported")
 	else:
 		main._log("[COMP] Composition layer cylinder NOT natively supported (using fallback mesh)")

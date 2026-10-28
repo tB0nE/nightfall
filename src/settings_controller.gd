@@ -2113,7 +2113,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# resize_screen_to_aspect() now calls update_cylinder_params() itself
 	# (2026-08-20) - no need to pair it here anymore.
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
-	if main.comp.in_use and main.is_streaming:
+	if main.comp and main.comp.in_use and main.is_streaming:
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()
 	main.ui_controller.update_monitor_tab()
