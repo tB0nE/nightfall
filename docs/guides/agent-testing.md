@@ -12,6 +12,7 @@ containerised `python3` can't see ffmpeg, gamescope or the GPU.
 | Host depth: decode, pacing, models (`meteor/src/depth*.rs`, `vda*.rs`, `ncnn.rs`) | `tools/verify.py depth` | NVIDIA GPU, ncnn |
 | Menus, welcome, settings, panel placement, anything you'd click | `tools/verify.py ui` | gamescope, GPU |
 | Anything that only happens on the Quest (Android, OpenXR, passthrough) | `tools/verify.py quest` | headset on adb, a dev build; **ask the user first** |
+| Streaming, decode, depth delivery to the headset | `tools/verify.py stream` | as above, plus a paired host; it connects, samples, then disconnects |
 
 Each run writes `build/verify/<check>-<time>/summary.json`, which has the
 check's metrics, failures and artifacts (logs, `ui.json`, screenshots). Read
@@ -101,3 +102,18 @@ isolated settings. It fails when fewer than 93% of frames get a depth map.
 On 2026-10-28 this reproduced the bug that showed as ~55 fps in the headset.
 The old rate cap made 48 Hz of the 72 requested; the RatePace fix made
 71.2 Hz.
+
+## Stream check
+
+`verify.py stream` brings Nightfall to the front and presses Connect. It waits
+for the stream, then samples the headset's status line three times: resolution,
+fps, bitrate, codec, network latency, app fps, and the depth source and rate.
+
+- **Depth from Meteor:** Meteor's maps must arrive at 90% or more of the
+  stream's fps, capped by the `max_hz` Meteor advertises.
+- **Depth on the headset:** the check notes it, and doesn't test Meteor's depth.
+- **Afterwards:** it disconnects only a stream it started.
+
+Meteor's depth needs the headset to find Meteor when it connects, so the host
+it streams from must be the one Meteor fronts.
+

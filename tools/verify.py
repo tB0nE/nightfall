@@ -7,6 +7,8 @@
                       dev bridge: welcome, menu reach, tabs, screenshots (GPU)
   verify.py quest     the headset: status, launch, bridge, welcome screen
                       (needs a dev build installed; it starts the app, so ask first)
+  verify.py stream    the headset streams this PC through Meteor: fps, network,
+                      depth source and rate (needs pairing; ask first)
 
 Each check writes build/verify/<check>-<time>/summary.json:
   {"check", "ok", "duration_s", "metrics": {...}, "failures": [...], "artifacts": [...]}
@@ -308,7 +310,97 @@ def check_quest(check, args):
         save_shot(check, nf.request({'cmd': 'screenshot', 'viewport': name}), name)
 
 
-CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest}
+# --- stream (headset) ------------------------------------------------------
+
+STATUS = re.compile(r'(?P<w>\d+)x(?P<h>\d+) (?P<fps>\d+)fps (?P<mbps>\d+)Mbps (?P<codec>\S+)'
+                    r'.*?Net:(?P<net>\d+|\?)ms.*?(?P<hz>\d+)Hz.*?App:(?P<app>\d+)fps')
+DEPTH = re.compile(r'(?P<src>[HM])-AI3D:(?P<ms>[\d.]+)ms/(?P<hz>[\d.]+)Hz')
+
+
+def parse_status(line):
+    """The headset's status line, e.g. '2560x1440 72fps 48Mbps HEVC HW • Net:4ms •
+    72Hz • App:72fps • M-AI3D:5.1ms/71.9Hz'."""
+    out = {}
+    match = STATUS.search(line or '')
+    if match:
+        out.update(resolution=f"{match['w']}x{match['h']}", stream_fps=int(match['fps']), mbps=int(match['mbps']),
+                   codec=match['codec'], display_hz=int(match['hz']), app_fps=int(match['app']))
+        if match['net'] != '?':
+            out['net_ms'] = int(match['net'])
+    depth = DEPTH.search(line or '')
+    if depth:
+        out.update(depth_source='meteor' if depth['src'] == 'M' else 'headset',
+                   depth_ms=float(depth['ms']), depth_hz=float(depth['hz']))
+    return out
+
+
+def meteor_info(port=47900):
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{port}/meteor', timeout=3) as reply:
+            return json.load(reply)
+    except OSError:
+        return None
+
+
+def check_stream(check, args):
+    """Streams the PC to the headset and checks what the headset reports."""
+    adb = quest.Adb(args.serial)
+    adb.shell('am broadcast -a com.oculus.vrpowermanager.prox_close')
+    adb.shell('setprop debug.oculus.guardian_pause 0')
+    quest.launch(adb, quest.PACKAGE, fresh=args.fresh)
+    adb.run('forward', f'tcp:{nf.PORT}', f'tcp:{nf.PORT}')
+    time.sleep(2)
+    started = False
+    if not nf.request({'cmd': 'eval', 'expr': 'is_streaming'}).get('value'):
+        reply = nf.request({'cmd': 'press', 'target': 'WelcomeConnect'})
+        if not check.expect(reply.get('ok'), f'no Connect button (is the headset paired?): {reply}'):
+            return
+        started = True
+    try:
+        reply = nf.request({'cmd': 'wait', 'expr': 'is_streaming', 'timeout': 40}, timeout=60)
+        if not check.expect(reply.get('ok'), f"the stream didn't start: {reply.get('error')}"):
+            return
+        check.metrics['connect_s'] = reply.get('waited_s')
+        time.sleep(args.settle)
+        samples = []
+        for _ in range(3):
+            state = nf.request({'cmd': 'state'})['state']
+            sample = parse_status(state.get('status_line', ''))
+            meteor = state.get('depth', {}).get('meteor')
+            if meteor:
+                sample['meteor_received_hz'] = round(meteor.get('received_hz', 0.0), 1)
+                sample['meteor_exact_pct'] = round(meteor.get('exact_pct', 0.0), 1)
+            samples.append(sample)
+            time.sleep(5)
+        (check.dir / 'samples.json').write_text(json.dumps(samples, indent=2))
+        check.artifact(check.dir / 'samples.json')
+        save_shot(check, nf.request({'cmd': 'screenshot', 'viewport': 'ui'}), 'ui')
+        last = samples[-1]
+        if not check.expect('stream_fps' in last, f"couldn't read the status line: {state.get('status_line')!r}"):
+            return
+        for key in ('resolution', 'codec', 'stream_fps', 'display_hz', 'mbps', 'net_ms', 'depth_source'):
+            if key in last:
+                check.metrics[key] = last[key]
+        app = min(s.get('app_fps', 0) for s in samples)
+        check.metrics['app_fps_min'] = app
+        check.expect(app >= 0.9 * last['display_hz'], f"app ran at {app} fps on a {last['display_hz']} Hz display")
+        if last.get('depth_source') == 'meteor':
+            received = min(s.get('meteor_received_hz', 0.0) for s in samples)
+            info = meteor_info() or {}
+            ceiling = min(last['stream_fps'], (info.get('depth') or {}).get('max_hz') or last['stream_fps'])
+            check.metrics.update(meteor_depth_hz_min=received, meteor_depth_ceiling_hz=ceiling)
+            check.expect(received >= 0.9 * ceiling, f'Meteor depth arrived at {received} Hz of {ceiling} Hz')
+        elif 'depth_source' in last:
+            check.metrics['headset_depth_hz'] = last['depth_hz']
+            check.notes.append('depth ran on the headset, so Meteor depth was not checked')
+    finally:
+        if started:
+            nf.request({'cmd': 'eval', 'expr': 'disconnect_stream()'})
+            check.notes.append('disconnected the stream it started')
+
+
+CHECKS = {'unit': check_unit, 'depth': check_depth, 'ui': check_ui, 'quest': check_quest, 'stream': check_stream}
 
 
 def main(argv=None):
@@ -327,6 +419,7 @@ def main(argv=None):
     ui.add_argument('--max-reach', type=float, default=2.5)
     ui.add_argument('--serial')
     ui.add_argument('--fresh', action='store_true', help='quest: restart the app first')
+    ui.add_argument('--settle', type=float, default=10.0, help='stream: seconds before sampling')
     args = parser.parse_args(argv)
 
     ok = True
