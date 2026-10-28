@@ -920,21 +920,8 @@ func browse_mdns():
 			btn.add_theme_stylebox_override("pressed", press_style)
 			btn.pressed.connect(func():
 				main._log("[mDNS] Selected host: address='" + address + "' friendly='" + friendly + "'")
-				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
-				for h in (_cm4.get_hosts() if _cm4 else []):
-					if main.host_matches_address(h, ip):
-						# Already-saved machine: use its saved identity (per-host
-						# settings key off it) whichever path it was found on;
-						# the backend picks USB or network per request.
-						var saved_ip: String = h.get("localaddress", ip)
-						main.get_node("%IPInput").text = saved_ip
-						save_last_ip(saved_ip, h.get("server_unique_id", ""))
-						main.state_manager.load_host_state(saved_ip)
-						main.current_host_id = h.id
-						main.settings_controller.detect_polaris_host(saved_ip, main.current_host_id)
-						show_welcome_screen("welcome")
-						return
-				# Unknown address: pairing first checks the server's identity,
+				# An address can now belong to a different host/profile. Pairing
+				# first checks identity and verifies the saved certificate over TLS,
 				# and if this machine is already paired it just records the new
 				# address on the existing entry instead of pairing again.
 				main.get_node("%IPInput").text = address

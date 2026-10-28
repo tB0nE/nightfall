@@ -229,7 +229,10 @@ void NightfallConfigManager::remove_superseded_hosts(const String &address, int 
         Dictionary h = hosts[i];
         bool same_server = !server_unique_id.is_empty() && String(h.get("server_unique_id", "")) == server_unique_id;
         bool same_endpoint = String(h.get("localaddress", "")) == address && (int)h.get("https_port", 47984) == https_port;
-        if (same_server || same_endpoint) {
+        // Different profiles can take turns on one endpoint. Keep their
+        // certificates; only identity-less legacy entries use endpoint dedup.
+        bool legacy_endpoint = String(h.get("server_unique_id", "")).is_empty() && same_endpoint;
+        if (same_server || legacy_endpoint) {
             NF_LOG("NightfallConfig", "Removing superseded host %d (%s:%d)",
                    (int)h["id"], String(h.get("localaddress", "")).utf8().get_data(), (int)h.get("https_port", 47984));
             remove_host(h["id"]);
@@ -239,13 +242,17 @@ void NightfallConfigManager::remove_superseded_hosts(const String &address, int 
 
 // Older builds appended a new record on every pairing, leaving stale
 // duplicates that address-based lookups would pick first. Keep only the
-// newest (highest index) record for each address:https_port.
+// newest record for each server identity, using the endpoint only for legacy
+// records without an identity. Different hosts can share an endpoint over time.
 void NightfallConfigManager::_remove_duplicate_hosts() {
     Array hosts = get_hosts();
     Dictionary seen;
     for (int i = hosts.size() - 1; i >= 0; i--) {
         Dictionary h = hosts[i];
-        String endpoint = String(h.get("localaddress", "")) + ":" + String::num_int64((int)h.get("https_port", 47984));
+        String server_id = h.get("server_unique_id", "");
+        String endpoint = server_id.is_empty()
+            ? "endpoint:" + String(h.get("localaddress", "")) + ":" + String::num_int64((int)h.get("https_port", 47984))
+            : "identity:" + server_id;
         if (seen.has(endpoint)) {
             NF_LOG("NightfallConfig", "Removing duplicate host %d (%s)", (int)h["id"], endpoint.utf8().get_data());
             remove_host(h["id"]);

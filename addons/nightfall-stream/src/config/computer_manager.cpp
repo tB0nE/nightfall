@@ -183,6 +183,25 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
     }
 
     String xml;
+    // HTTP serverinfo identifies a server but cannot prove that our saved
+    // client certificate remains authorized. Sunshine only supplies PairStatus
+    // on authenticated HTTPS. A reset host must get the PIN flow again.
+    if (step == 6 && code > 0) {
+        xml = body.get_string_from_utf8();
+        if (code == 200 && _extract_xml_value(xml, "PairStatus") == "1" &&
+                _extract_xml_value(xml, "uniqueid") == server_unique_id) {
+            pair_state = PAIR_FINISHED;
+            NF_LOG("NightfallPair", "Saved pairing verified over HTTPS");
+            if (parent_node_) { parent_node_->call("_on_pair_completed", true, "Already paired"); }
+            return;
+        }
+        if (code == 200 || code == 401 || code == 403) {
+            NF_LOG("NightfallPair", "Saved pairing rejected; requesting a new PIN pairing without removing host history");
+            pair_state = PAIR_STAGE_1_GET_CERT;
+            _step_pair();
+            return;
+        }
+    }
     bool is_paired = false;
     if (!failed) {
         xml = body.get_string_from_utf8();
@@ -214,9 +233,13 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
 
     if (failed) {
         NF_LOG("NightfallPair", "Pair FAILED at step %d: %s", step, fail_msg.utf8().get_data());
-        String uuid = _get_uuid();
-        String url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
-        http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(), Callable());
+        // Failure to verify an existing pairing (e.g. a timeout) must not
+        // revoke it. Only abort an actual, partially completed PIN exchange.
+        if (step != 6) {
+            String uuid = _get_uuid();
+            String url = "http://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_port) + "/unpair?uniqueid=" + unique_id + "&uuid=" + uuid;
+            http_requester->request(url, "GET", PackedByteArray(), Dictionary(), Dictionary(), Callable());
+        }
 
         pair_state = PAIR_ERROR;
         if (parent_node_) { parent_node_->call("_on_pair_completed", false, fail_msg); }
@@ -258,6 +281,11 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
                             update_data["http_port"] = pair_port;
                             config_manager->update_host(h["id"], update_data);
                         }
+                        if ((int)h.get("https_port", 47984) != pair_https_port) {
+                            Dictionary update_data;
+                            update_data["https_port"] = pair_https_port;
+                            config_manager->update_host(h["id"], update_data);
+                        }
                         if (!pair_mac.is_empty() && h.get("mac", "") != pair_mac) {
                             Dictionary update_data;
                             update_data["mac"] = pair_mac;
@@ -269,9 +297,10 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             }
 
             if (known_and_paired) {
-                NF_LOG("NightfallPair", "Already paired with this server");
-                pair_state = PAIR_FINISHED;
-                if (parent_node_) { parent_node_->call("_on_pair_completed", true, "Already paired"); }
+                String url = "https://" + _bracket_host(pair_ip) + ":" + String::num_int64(pair_https_port) +
+                    "/serverinfo?uniqueid=" + unique_id + "&uuid=" + current_uuid;
+                http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+                    callable_mp(this, &NightfallComputerManager::_on_pair_request_completed).bind(6), 120000);
                 return;
             }
 

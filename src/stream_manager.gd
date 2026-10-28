@@ -356,6 +356,18 @@ func _on_v2_launch_response(response: Dictionary):
 			_app_id_refreshed = true
 			_retry_with_fresh_app_id()
 			return
+		# An endpoint may now serve a fresh Meteor host with a different
+		# identity, or the host may have reset its authorized clients. Preserve
+		# saved entries and let pairing resolve the server's current identity.
+		var auth_message := str(msg).to_lower()
+		if auth_message.contains("certificate") and auth_message.contains("not authorized"):
+			main.restore_after_failed_connect("Pairing required for this host")
+			for h in _b().get_hosts():
+				if h.get("id") == _current_host_id:
+					var address := WelcomeScreen.pair_address(h.get("localaddress", ""), int(h.get("http_port", main.DEFAULT_PAIR_PORT)))
+					main._log("[PAIR] Host rejected the client certificate; starting pairing without clearing saved hosts")
+					main.welcome_screen.start_pair(address)
+					return
 		# Meteor is experimental: never let it cost a working connection (or
 		# trigger the stale-pairing re-pair below). Retry once without it.
 		if not _meteor.is_empty():
