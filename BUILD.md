@@ -664,6 +664,21 @@ The runner isolates `user://` data under `/tmp`, supplies a writable log path,
 and treats GDScript assertion messages as failures even when Godot exits with
 status zero. Set `NIGHTFALL_GODOT_EDITOR` if Godot 4.7 is installed elsewhere.
 
+### Without the headset
+
+`tools/verify.py` checks most changes without anyone wearing the headset. It
+runs the app on this PC (`ui`, or `xr` for a real OpenXR session), host depth
+(`depth`), PCVR (`pcvr`), and, with the headset on the desk, `quest`,
+`stream` and `e2e`. Each check writes a short `summary.json`.
+
+```bash
+/usr/bin/python3 tools/verify.py unit ui xr
+```
+
+[docs/guides/agent-testing.md](docs/guides/agent-testing.md) says which check
+covers which change. It also covers the dev bridge (`tools/nf.py`) and the
+headset tool (`tools/quest.py`).
+
 Native desktop tests are built through CMake/CTest in
 `addons/nightfall-stream` when `BUILD_TESTING` is enabled. The lightweight
 native runner above builds the decode-queue unit test directly against the
