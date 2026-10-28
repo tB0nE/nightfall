@@ -110,6 +110,133 @@ Meteor and Vibepollo:
 
 ## Next
 
+### Portable host and onboarding implementation (2026-10-28)
+
+- Independent source checkout: `../meteor-vibepollo`, branch
+  `codex/meteor-vibepollo-baseline`, pushed to `tB0nE/Vibepollo`.
+- Portable host source: `4faa7b9fa819b6e73811e9cc5a8d7a87a2459f85`.
+  The release-optimized Ubuntu 22.04 build uses relative assets and private
+  library RUNPATHs. Driver, display and audio libraries remain OS-provided.
+- Host preview: `meteor-host-v0.1.0-preview.1`, with binary and matching source
+  archives. Meteor pins the binary archive's version, size and SHA-256 and
+  validates the installed file manifest before use.
+- Implemented first-run desktop setup notification when no local host is
+  detected. Setup remains available in the tray, with web username and password
+  copy access. Downloading alone never switches hosts; the setup action does.
+- Added `--download-host` for installation verification without starting or
+  selecting a host. Installation is locked, verified and renamed into place;
+  existing profiles and pairing state remain separate.
+- Validation so far: portable launch and isolated credential creation passed;
+  Meteor suite passed (169 tests, 19 manual checks ignored).
+- Public download verified through the optimized AppImage, first in isolated
+  XDG folders and then in the real user-data directory. Meteor was restarted
+  with the downloaded host; discovery reports the preview version on base
+  49989 and startup detects H.264/HEVC through `nvenc_legacy`.
+  The APK is installed and its checksum verified. The previous development
+  binary/library overrides were removed after backing up `meteor.toml` as
+  `meteor.before-portable-host-20261028.toml`; profile and pairing files remain.
+- Still required: a real stream from the newly packaged host, followed by
+  broader hardware/distro testing and a first-run desktop popup interaction.
+  One-click pairing, client host migration and input-permission setup remain
+  separate work. The existing mixed-GPU managed profile retains its explicit
+  X11 / `nvenc_legacy` compatibility settings; this is not a universal default.
+
+The original next-step list below records the wider acceptance requirements.
+
+### Intermittent black desktop stream on reconnect (2026-10-28)
+
+- Export `Nightfall-diagnostics-20261028-112046.txt`: failed sessions at
+  11:20:00 and 11:20:22 receive packets/host depth but display zero video frames.
+  Headset firmware reports `H265_CONFIG_FLAG_MISSING` at those times; successful
+  sessions at 11:20:14, 11:20:32 and 11:20:39 do not.
+- Moonlight starts video delivery before `connectionStarted()`. Nightfall's
+  submit callback previously returned success while discarding frames until
+  that later callback, potentially losing the initial IDR and parameter sets.
+- Fix: accept decode units between the decoder start/stop callbacks, preserve
+  early packets until connection readiness, and notify the waiting decoder
+  when readiness changes. The initial wait no longer exits upon an early
+  queued frame. First-three-frame diagnostics reset for every session and
+  include connection readiness.
+- Release Android extension and optimized `build.sh --dev` APK built;
+  existing native unit suite passed in the cached Ubuntu build container.
+  Requires repeated on-headset reconnect acceptance before claiming resolved.
+
+### Acceptance and clean-profile pairing follow-up (2026-10-28)
+
+- User confirmed reconnects (including app and Meteor restarts), USB Link
+  switching, repeated XR launch/quit, wristwatch menus, input/audio and
+  two-minute headset standby recovery all pass after the startup fix.
+- Isolated onboarding profile: `.build-cache/meteor-host-onboarding-test-20261028/`.
+  Working profile checksums are retained there; restore with its
+  `restore-working-meteor.sh` script. First-run notification download/setup and
+  web login were confirmed. The temporary filesystem view used to suppress
+  this PC's installed Sunshine blocked native execution/GPU access, so after
+  download the separate profile was relaunched normally for hardware testing.
+- Pairing exposed a certificate-not-authorized error: discovered-host selection
+  reused saved entries by IP, while pairing preflight treated a matching saved
+  server ID as authorization. Discovery now always enters identity preflight;
+  known identities verify authorization over HTTPS before skipping the PIN.
+  Launch certificate rejection enters pairing without clearing all saved hosts.
+- Host history deduplicates by server identity, retaining separate identities
+  which take turns at the same address/port. Legacy records without IDs still
+  use endpoint matching. Host-switch pairing needs on-headset acceptance.
+- Hidden pointer now applies only to live desktop screens; welcome/browser/menu
+  surfaces fall back to Circle. Cursor regression and existing welcome, USB and
+  pointer-input tests pass; scripts parse and Release native extension builds.
+- User confirmed the new test host can pair. Streaming then exposed another
+  fresh-install problem: automatic encoder selection chooses native `nvenc`,
+  whose synthetic probe succeeds but real X11 capture fails device creation
+  three times and terminates the session on this AMD-display/NVIDIA-encoder PC.
+  The isolated profile now explicitly uses `encoder = nvenc_legacy`, matching
+  the already-tested working profile, with its previous config backed up as
+  `sunshine.before-encoder-compat.conf`. Pairing files were retained and Meteor
+  restarted. This is a local compatibility setting, not a shipped selection
+  fix: validate real capture during selection or provide an appropriate fallback
+  before treating fresh-install streaming as complete. Do not force an NVIDIA
+  encoder globally on AMD-only systems.
+- Capture-aware automatic NVENC selection is now implemented in the separate
+  host checkout (uncommitted): Auto validates against the actual display rather
+  than a synthetic CUDA display. Explicit native selection retains its existing
+  encoder-only capability check and fail-closed behavior. Other candidates,
+  including VA-API, remain eligible through the existing selection sequence.
+- Optimized local package `0.1.0-preview.2-dev` was built and its per-file manifest
+  verified. It is installed only in the isolated test profile using `host_binary`;
+  the manual `encoder` setting was removed. Startup at 15:29:58 reports real X11
+  validation rejecting native NVENC, then H.264/HEVC passing on `nvenc_legacy`.
+  Selection-policy assertions pass. Actual stream/reconnect acceptance remains
+  pending. The public preview and Meteor's pinned download are still `.1` and
+  must be updated after acceptance; this local dev package is not a release.
+
+### Finalized integration checkpoint (2026-10-28)
+
+- User confirmed streaming with the automatic-selection fix. Host source is
+  committed and pushed as `382bf6acb9520e63f5b47919d2800863f71d4d21` in
+  `tB0nE/Vibepollo`, branch `codex/meteor-vibepollo-baseline`.
+- Published [host preview.2](https://github.com/tB0nE/Vibepollo/releases/tag/meteor-host-v0.1.0-preview.2)
+  with the optimized binary, matching sources and checksums. Binary archive:
+  29,404,669 bytes, SHA-256
+  `b1ce96a6f34b3d7b5b6e79bad4a859e3de4aeb844eed39334ba431c59a9226be`.
+- Meteor pins that release. The rebuilt XR-enabled optimized AppImage downloaded
+  and verified the public archive using `--download-host`; installation did not
+  change the selected host or pairing state. The tray retains setup/retry access
+  if a newly pinned version is missing while the managed host is selected.
+- Normal profile restored through `nightfall-meteor-bundled-preview.service`;
+  isolated `nightfall-meteor-onboarding-test.service` stopped. Discovery reports
+  preview.2 on base 49989. No development binary override remains in the normal
+  Meteor configuration. Its temporary encoder override was removed after backup
+  to `sunshine.before-preview2-auto.conf`. Startup automatically rejects native
+  NVENC for X11 and selects FFmpeg NVENC. XR remains enabled.
+- Normal `host.toml` and `sunshine_state.json` SHA-256 checksums still match the
+  copies recorded before the isolated onboarding test. No headset history was
+  cleared. The test profile, separate pairing and logs remain available.
+- Validation: 54 GDScript test scripts, 169 Meteor tests (19 manual checks
+  ignored), native unit checks, Android Release build, optimized APK deployment,
+  portable host relocation/credentials checks and public-download verification.
+- Remaining immediate acceptance: select the original saved host in Nightfall
+  after returning from the isolated profile; stream and reconnect without a PIN
+  or clearing history. Broader GPU/desktop testing, one-click pairing and input
+  permission setup remain separate follow-up work.
+
 1. **The fork's self-contained Linux build.** Branch `nightfall` from
    `linux-x11-nvfbc-pyrowave`.
    - Build in an Ubuntu 22.04 container with relative assets paths, plus
