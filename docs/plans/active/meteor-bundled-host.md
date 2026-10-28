@@ -1,8 +1,10 @@
 # Meteor's bundled host: Meteor-Vibepollo for Nightfall
 
-> Status: Active (2026-10-28). Portable host preview.2 and managed-host streaming
-> are tested. One-click pairing and guided input-permission setup are implemented
-> and awaiting headset/desktop acceptance before the PR.
+> Status: Active (2026-10-28). Portable host preview.2, managed-host streaming,
+> one-click pairing and desktop browser launching are accepted on this PC.
+> Applying input permissions on a fresh system remains a validation item.
+> Restored multi-monitor host changes are committed, built and unit-tested;
+> real multi-monitor streaming is not yet accepted.
 >
 > Replaces Phases 3–4 of [meteor-host.md](meteor-host.md) for now.
 
@@ -308,3 +310,35 @@ The original next-step list below records the wider acceptance requirements.
   in the real desktop session rather than the isolated child environment. Local
   file/folder actions retain xdg-open, and web links fall back to it if the portal
   is unavailable. User cancellation is respected; no browser settings changed.
+
+## Restored multi-monitor host foundation (2026-10-28)
+
+The original checkout had later work on `feat/multi-monitor` and `nightfall`
+which was absent from the initial portable host baseline. Current Nightfall
+pairing, input-permission and browser work was committed first as `bf66dae`.
+The two existing host commits were then imported with cherry-pick provenance:
+
+- `3ae5345` → `6a574f0`: multiple X11 outputs, Polaris-compatible display
+  manifest, monitor selection, frame packing and mouse-coordinate mapping.
+- `0f78785` → `ea94a2b`: full host permissions for each newly approved paired
+  client. This is separate from Linux uinput/device permissions.
+
+Both are pushed to [the maintained host branch](https://github.com/tB0nE/Vibepollo/tree/codex/meteor-vibepollo-baseline)
+in `../meteor-vibepollo`. Source head `e34df3e` includes the integration notes in
+`METEOR_DEVELOPMENT.md`. Capture-aware automatic NVENC selection remains intact.
+The original `Vibepollo` and `Vibepollo-mm` checkouts were not modified.
+
+Validation: 27 focused tests pass (14 monitor geometry/packing/input cases and
+13 NVENC cases), combined Ubuntu 22.04 Release build passes, and portable launch,
+isolated credential setup and per-file manifest checks pass. The development
+package is
+`../meteor-vibepollo/.build-cache/meteor-host-release/Meteor-Vibepollo-0.1.0-preview.3-dev-linux-x86_64.tar.zst`
+(29,462,203 bytes, SHA-256
+`ff044a25cdc63547f63988ed11ebbae32ad956e092da2341ef6599747784b8de`).
+
+This captures selected monitors into one encoded frame which the client splits
+into screen views. It does not create virtual monitors or provide independent
+per-monitor streams. Wayland multi-monitor capture remains unsupported. Real
+multi-monitor streaming still needs testing. No desktop layout was changed.
+The running host and Meteor's published download pin remain preview.2; this dev
+package has not been deployed or published as a release.
