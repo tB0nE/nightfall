@@ -61,6 +61,8 @@ impl VideoDump {
             && let Err(err) = file
                 .write_all(&frame.data)
                 .and_then(|()| writeln!(frames, "{}\t{arrived}\t{}\t{}", frame.index, frame.data.len(), u8::from(frame.idr)))
+                // Small, and read while Meteor may still be running.
+                .and_then(|()| frames.flush())
         {
             log::warn!("Video dump stopped: {err}");
             self.file = None;

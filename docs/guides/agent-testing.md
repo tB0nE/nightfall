@@ -175,9 +175,12 @@ publisher, so the bridge's `pose` has no effect here.
 
 It reports:
 
-- **`missing` / `missing_pct`:** counter values that never reached Meteor.
-  The host didn't capture or send them.
-- **`repeated`:** the same captured frame sent twice.
+- **`arrival_lost` / `arrival_lost_pct`:** frames the host never delivered,
+  read from gaps in Meteor's arrival times. The check fails on this one
+  (`--max-missing-pct`).
+- **`missing` / `repeated`:** gaps and repeats in the drawn pattern. The
+  pattern is capped at the display rate but isn't in phase with capture, so
+  these measure capture pacing against an app's frames, not the stream.
 - **`latency_ms_*`:** from drawing the pattern to the frame reaching Meteor:
   display, capture, encode and send on this PC. The network hop and the
   headset's decode aren't included; the headset's own numbers (network
@@ -185,4 +188,16 @@ It reports:
 
 The analyzer also works on any recording: `/usr/bin/python3
 test/analyze_stream_pattern.py VIDEO --x 64 --y 64 --block 48`.
+
+Choose the server with `--server <label in the server list>`, e.g.
+`--server 10.0.0.13:47984`. Otherwise Connect goes to whichever host the app
+has selected.
+
+**First live run (2026-10-28):** the user's Vibepollo (NvFBC, NVENC, HEVC
+2560x1440 at 72) behind Meteor, to the Quest 3 over Wi-Fi.
+
+- 72.0 fps reached Meteor, with 0.73% lost.
+- Drawing to Meteor took 34 ms median, 49 ms p95.
+- The headset reported 4 ms of network latency, 72 fps in the app, and
+  Meteor depth at 72 Hz.
 

@@ -348,6 +348,20 @@ def parse_status(line):
     return out
 
 
+def connect(args):
+    """Presses Connect on the headset, first choosing --server (its label in
+    the server list, e.g. 10.0.0.13:47984) when given. Connect otherwise goes
+    to whichever server the app has selected."""
+    if args.server:
+        nf.request({'cmd': 'press', 'target': 'WelcomeChangeServer'})
+        time.sleep(1)
+        reply = nf.request({'cmd': 'press', 'target': args.server})
+        if not reply.get('ok'):
+            return reply
+        time.sleep(1)
+    return nf.request({'cmd': 'press', 'target': 'WelcomeConnect'})
+
+
 def meteor_info(port=47900):
     import urllib.request
     try:
@@ -367,7 +381,7 @@ def check_stream(check, args):
     time.sleep(2)
     started = False
     if not nf.request({'cmd': 'eval', 'expr': 'is_streaming'}).get('value'):
-        reply = nf.request({'cmd': 'press', 'target': 'WelcomeConnect'})
+        reply = connect(args)
         if not check.expect(reply.get('ok'), f'no Connect button (is the headset paired?): {reply}'):
             return
         started = True
@@ -625,7 +639,7 @@ def check_e2e(check, args):
     meteor.restart_with(['--dump-video', str(dump)])
     samples = []
     try:
-        reply = nf.request({'cmd': 'press', 'target': 'WelcomeConnect'})
+        reply = connect(args)
         if not check.expect(reply.get('ok'), f'no Connect button (is the headset paired?): {reply}'):
             return
         reply = nf.request({'cmd': 'wait', 'expr': 'is_streaming', 'timeout': 40}, timeout=60)
@@ -659,7 +673,8 @@ def check_e2e(check, args):
         return
     video = videos[-1]
     rows = pattern.decode(video, args.pattern_x, args.pattern_y, args.block)
-    result = pattern.analyze(rows, pattern.arrivals(Path(str(video) + '.frames.tsv')))
+    stream_fps = next((s['stream_fps'] for s in reversed(samples) if 'stream_fps' in s), None)
+    result = pattern.analyze(rows, pattern.arrivals(Path(str(video) + '.frames.tsv')), stream_fps)
     (check.dir / 'pattern.json').write_text(json.dumps(result, indent=2))
     check.metrics.update({k: v for k, v in result.items() if k != 'frames'})
     if samples:
@@ -670,8 +685,8 @@ def check_e2e(check, args):
     if not check.expect(result.get('readable', 0) >= 30, f"only {result.get('readable', 0)} frames carried the pattern "
                         f'(is it at {args.pattern_x},{args.pattern_y} on the streamed monitor?)'):
         return
-    check.expect(result['missing_pct'] <= args.max_missing_pct,
-                 f"{result['missing_pct']}% of pattern frames never reached Meteor")
+    lost = result.get('arrival_lost_pct', result['missing_pct'])
+    check.expect(lost <= args.max_missing_pct, f'{lost}% of frames never reached Meteor')
     if 'latency_ms_p95' in result:
         check.expect(result['latency_ms_p95'] <= args.max_latency_ms,
                      f"p95 draw-to-Meteor latency {result['latency_ms_p95']} ms (limit {args.max_latency_ms})")
@@ -698,6 +713,7 @@ def main(argv=None):
     ui.add_argument('--serial')
     ui.add_argument('--fresh', action='store_true', help='quest: restart the app first')
     ui.add_argument('--settle', type=float, default=10.0, help='stream: seconds before sampling')
+    ui.add_argument('--server', help='stream/e2e: the server to choose first, as the server list shows it')
     e2e = parser.add_argument_group('e2e')
     e2e.add_argument('--pattern-x', type=int, default=64, help='desktop = stream pixels on a 1:1 stream')
     e2e.add_argument('--pattern-y', type=int, default=64)

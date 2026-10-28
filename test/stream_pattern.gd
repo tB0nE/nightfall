@@ -37,6 +37,10 @@ func _initialize() -> void:
 	window.size = Vector2i((BITS + 2) * block, 2 * block)
 	window.position = Vector2i(x, y)
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED)
+	# A compositor can ignore vsync for a small window; draw no faster than
+	# the display, so each captured frame shows a fresh, evenly timed pattern.
+	var refresh := DisplayServer.screen_get_refresh_rate()
+	Engine.max_fps = int(round(refresh)) if refresh > 0 else 60
 	canvas = Control.new()
 	canvas.set_anchors_preset(Control.PRESET_FULL_RECT)
 	canvas.draw.connect(_draw_pattern)

@@ -84,7 +84,8 @@ def launch(adb, package, fresh):
     if fresh:
         adb.shell(f'am force-stop {package}')
     adb.shell(f'am start -n {package}/{ACTIVITY}')
-    for _ in range(40):
+    # The first start after an install takes a while.
+    for _ in range(120):
         if adb.pid(package):
             print(f'{package} running (pid {adb.pid(package)})')
             return

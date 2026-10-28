@@ -8,9 +8,10 @@ VIDEO is an elementary stream (.hevc/.h264), e.g. from Meteor's --dump-video.
 optional frames file (written by --dump-video next to the video) gives each
 frame's arrival time at Meteor, for latency.
 
-Prints JSON: how many frames carried a readable pattern, frame-counter gaps
-(frames the host never sent) and repeats (the same frame sent twice), and
-the time from drawing the pattern to the frame reaching Meteor.
+Prints JSON: how many frames carried a readable pattern, frames lost (gaps
+in the drawn times longer than a frame period), repeats (the same drawn
+frame sent twice), and the time from drawing the pattern to the frame
+reaching Meteor.
 """
 import argparse
 import json
@@ -72,37 +73,50 @@ def arrivals(path):
         return None
     times = []
     for line in Path(path).read_text().splitlines():
-        if line and not line.startswith('#'):
-            times.append(int(line.split('\t')[1]) / 1000.0)
+        fields = line.split('\t')
+        # A Meteor stopped mid-write leaves the last line short.
+        if line.startswith('#') or len(fields) < 4 or not fields[1].isdigit():
+            continue
+        times.append(int(fields[1]) / 1000.0)
     return times
 
 
-def analyze(rows, arrived=None):
+def analyze(rows, arrived=None, fps=None):
+    """Frames lost come from the drawn times: the pattern draws faster than
+    the stream captures, so consecutive captured frames should be one frame
+    period apart (1/fps, or the median step), and a longer step means frames
+    were lost. A repeated counter is the same drawn frame sent twice."""
     readable = [(i, r) for i, r in enumerate(rows) if r is not None]
     result = {'frames': len(rows), 'readable': len(readable)}
-    if not readable:
+    if len(readable) < 2:
         return result
-    counters = [r[0] for _, r in readable]
-    gaps = repeats = 0
-    for previous, current in zip(counters, counters[1:]):
-        step = (current - previous) % WRAP
-        if step == 0:
-            repeats += 1
-        elif step > 1:
-            gaps += step - 1
-    span = (counters[-1] - counters[0]) % WRAP + 1
-    result.update(pattern_frames=span, missing=gaps, repeated=repeats,
-                  missing_pct=round(100.0 * gaps / span, 2))
-    if arrived and len(arrived) >= len(rows):
-        latency = sorted(((int(arrived[i]) - r[1]) % WRAP) for i, r in readable)
+    pairs = list(zip(readable, readable[1:]))
+    repeats = sum(1 for (_, a), (_, b) in pairs if a[0] == b[0])
+    steps = [((b[1] - a[1]) % WRAP) for (_, a), (_, b) in pairs if a[0] != b[0]]
+    steps = [ms for ms in steps if ms < 10000]
+    period = 1000.0 / fps if fps else statistics.median(steps)
+    missing = sum(max(0, round(ms / period) - 1) for ms in steps)
+    expected = len(steps) + missing
+    result.update(period_ms=round(period, 2), missing=missing, repeated=repeats,
+                  missing_pct=round(100.0 * missing / max(expected, 1), 2),
+                  step_ms_p95=sorted(steps)[int(0.95 * (len(steps) - 1))] if steps else None)
+    if arrived:
+        timed = [(i, r) for i, r in readable if i < len(arrived)]
+        latency = sorted(((int(arrived[i]) - r[1]) % WRAP) for i, r in timed)
         latency = [ms for ms in latency if ms < 10000]  # wrapped or unreadable times
         if latency:
             result.update(latency_ms_median=statistics.median(latency),
                           latency_ms_p95=latency[int(0.95 * (len(latency) - 1))],
                           latency_ms_max=latency[-1])
-        seconds = (arrived[readable[-1][0]] - arrived[readable[0][0]]) / 1000.0
-        if seconds > 0:
-            result['received_fps'] = round((len(readable) - 1) / seconds, 1)
+        if len(timed) > 1:
+            seconds = (arrived[timed[-1][0]] - arrived[timed[0][0]]) / 1000.0
+            if seconds > 0:
+                result['received_fps'] = round((len(timed) - 1) / seconds, 1)
+            # What the host really sent: steps between arrivals at Meteor.
+            gaps = [arrived[b] - arrived[a] for (a, _), (b, _) in zip(timed, timed[1:])]
+            lost = sum(max(0, round(ms / period) - 1) for ms in gaps)
+            result.update(arrival_lost=lost, arrival_lost_pct=round(100.0 * lost / (len(gaps) + lost), 2),
+                          arrival_step_ms_p95=round(sorted(gaps)[int(0.95 * (len(gaps) - 1))], 1))
     return result
 
 
@@ -113,9 +127,10 @@ def main(argv=None):
     parser.add_argument('--x', type=int, default=0)
     parser.add_argument('--y', type=int, default=0)
     parser.add_argument('--block', type=int, default=48)
+    parser.add_argument('--fps', type=float, help='the stream frame rate (default: the median step)')
     args = parser.parse_args(argv)
     frames = args.frames or Path(str(args.video) + '.frames.tsv')
-    result = analyze(decode(args.video, args.x, args.y, args.block), arrivals(frames))
+    result = analyze(decode(args.video, args.x, args.y, args.block), arrivals(frames), args.fps)
     print(json.dumps(result, indent=2))
     return 0 if result.get('readable') else 1
 
