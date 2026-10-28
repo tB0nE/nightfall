@@ -66,6 +66,7 @@ tests=(
 	"test/test_controller_layout.gd"
 	"test/test_hand_aim.gd"
 	"test/test_pointer_input.gd"
+	"test/test_cursor_visibility.gd"
 	"test/test_host_permissions.gd"
 	"test/test_refresh_rates.gd"
 	"test/test_usb_link.gd"

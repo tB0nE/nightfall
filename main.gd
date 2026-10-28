@@ -981,7 +981,12 @@ func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 ## have no PC cursor to point with, so they keep theirs.
 func hides_screen_cursor(screen: VRScreen) -> bool:
 	return settings.cursor_mode == AppSettings.CURSOR_MODE_HIDDEN and screen != null \
-		and not screen_sources.is_browser_screen(screen)
+		and is_streaming and not screen_sources.is_browser_screen(screen)
+
+func screen_cursor_mode(screen: VRScreen) -> int:
+	if settings.cursor_mode == AppSettings.CURSOR_MODE_HIDDEN and not hides_screen_cursor(screen):
+		return 0 # Welcome, browsers and menus always retain a circle pointer.
+	return settings.cursor_mode
 
 func _update_cursor_layer():
 	if not comp.in_use and not pcvr_handover.menu_only:
@@ -1028,7 +1033,7 @@ func _update_cursor_layer():
 				screens,
 				hit_point,
 				settings.bezel_enabled,
-				settings.cursor_mode,
+				screen_cursor_mode(hovered_screen),
 				stereo if hovered_screen == primary_screen else 0,
 				-1 if screen_sources.is_browser_screen(hovered_screen) else settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
@@ -1057,7 +1062,7 @@ func _update_cursor_layer():
 				xr_camera.global_position,
 				hovered_screen.global_position if hovered_screen else hit_point,
 				on_screen,
-				settings.cursor_mode,
+				screen_cursor_mode(hovered_screen),
 				native_ai_cursor_offset)
 	else:
 		_reset_steady_filter()
