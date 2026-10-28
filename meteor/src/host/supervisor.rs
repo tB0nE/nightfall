@@ -230,12 +230,17 @@ mod tests {
         assert_eq!(backoff(4), None);
     }
 
+    /// A fixed port can be some outgoing connection's local port.
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port()
+    }
+
     #[test]
     fn restarts_a_crashing_child_then_fails() {
         let dir = std::env::temp_dir().join(format!("meteor-host-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("vibepollo")).unwrap();
         // A "host" that exits at once, on a port nothing else uses.
-        let instance = Instance { binary: "/bin/false".into(), base: 47123, dir: dir.clone(), env: Vec::new() };
+        let instance = Instance { binary: "/bin/false".into(), base: free_port(), dir: dir.clone(), env: Vec::new() };
         let supervisor = Supervisor::start(instance);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && !matches!(supervisor.phase(), Phase::Restarting { failures: 2 }) {
@@ -256,13 +261,13 @@ mod tests {
         let script = dir.join("host.sh");
         std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let instance = Instance { binary: script, base: 47124, dir: dir.clone(), env: Vec::new() };
+        let instance = Instance { binary: script, base: free_port(), dir: dir.clone(), env: Vec::new() };
         let supervisor = Supervisor::start(instance);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && supervisor.pid().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let pid = supervisor.pid().expect("host started");
+        let pid = supervisor.pid().unwrap_or_else(|| panic!("host not started: {:?}", supervisor.phase()));
         supervisor.shutdown();
         assert!(unsafe { libc::kill(pid as libc::pid_t, 0) } != 0, "child still alive");
         std::fs::remove_dir_all(&dir).unwrap();

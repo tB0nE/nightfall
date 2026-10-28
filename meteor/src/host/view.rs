@@ -71,7 +71,7 @@ impl View {
     pub fn discovery_info(&self) -> Option<serde_json::Value> {
         self.supervisor.as_ref().map(|_| {
             json!({
-                "kind": "vibepollo-nightfall",
+                "kind": "meteor-vibepollo",
                 "managed": true,
                 "version": RELEASE.as_ref().map_or("development", |r| r.version),
             })

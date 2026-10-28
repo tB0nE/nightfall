@@ -1,4 +1,4 @@
-# Meteor's bundled host: Vibepollo for Nightfall
+# Meteor's bundled host: Meteor-Vibepollo for Nightfall
 
 > Status: Active (2026-10-21). Phase 2 (Meteor runs the host) works with a
 > development build. The fork's self-contained Linux build (Phase 1) and
@@ -12,7 +12,7 @@ The answer to "how do I stream PC games to my Quest on Linux" should be:
 install Nightfall on the headset and Meteor on the PC. No wiki, no trial
 and error.
 
-So Meteor can run its own GameStream host: "Vibepollo for Nightfall", our
+So Meteor can run its own GameStream host: "Meteor-Vibepollo for Nightfall", our
 fork of Vibepollo (github.com/tB0nE/Vibepollo). It's a choice in the tray.
 Hosts the user already has (Sunshine, Apollo, Polaris, Vibepollo) keep
 working as before.

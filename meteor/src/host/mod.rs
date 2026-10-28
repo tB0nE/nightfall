@@ -1,4 +1,4 @@
-//! The bundled game streaming host: "Vibepollo for Nightfall", our fork of
+//! The bundled game streaming host: "Meteor-Vibepollo for Nightfall", our fork of
 //! Vibepollo, run by Meteor so a PC needs nothing else installed (Linux).
 //!
 //! It is a choice in the tray, kept in `host.toml` next to meteor.toml.
@@ -35,7 +35,7 @@ pub enum Choice {
     /// A host the user installed; Meteor only finds its port.
     #[default]
     External,
-    /// Meteor runs Vibepollo for Nightfall.
+    /// Meteor runs Meteor-Vibepollo for Nightfall.
     Bundled,
 }
 
@@ -134,7 +134,7 @@ pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result
 /// Gets the bundled host ready to start on `base`: writes its config and,
 /// the first time, its login. Saves host.toml.
 pub fn prepare(config: &crate::config::Config, state: &mut State, base: u16) -> Result<Instance, String> {
-    let binary = binary(config).ok_or("Vibepollo for Nightfall isn't installed")?;
+    let binary = binary(config).ok_or("Meteor-Vibepollo for Nightfall isn't installed")?;
     let env = config.host_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let instance = Instance { binary, base, dir: instance_dir(), env };
     instance.write_config(&instance::host_name())?;
@@ -164,7 +164,7 @@ fn write_kwin_permission(binary: &std::path::Path) {
         .unwrap_or_default();
     let path = base.join("applications").join("nightfall-meteor-host-kwin.desktop");
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Vibepollo for Nightfall (screen capture)\n\
+        "[Desktop Entry]\nType=Application\nName=Meteor-Vibepollo for Nightfall (screen capture)\n\
          Comment=Lets Nightfall Meteor's host capture the screen\nExec={}\n\
          X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1\nNoDisplay=true\n",
         binary.canonicalize().unwrap_or_else(|_| binary.to_path_buf()).display()

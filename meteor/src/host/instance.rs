@@ -78,7 +78,7 @@ fn render_config(existing: &str, always: &[(&str, String)], initial: &[(&str, St
     let key_of = |line: &str| line.split_once('=').map(|(k, _)| k.trim().to_string());
     let mut lines: Vec<String> = Vec::new();
     if existing.trim().is_empty() {
-        lines.push("# Vibepollo for Nightfall, run by Nightfall Meteor.".into());
+        lines.push("# Meteor-Vibepollo for Nightfall, run by Nightfall Meteor.".into());
         lines.push(format!("# Meteor sets {} on every start; other settings are yours.", MANAGED.join(", ")));
     }
     let mut seen: Vec<String> = Vec::new();
@@ -122,7 +122,7 @@ mod tests {
     #[test]
     fn writes_a_new_config() {
         let text = render_config("", &[("port", "49989".into())], &[("sunshine_name", "pc (Nightfall)".into()), ("address_family", "both".into())]);
-        assert!(text.starts_with("# Vibepollo for Nightfall"));
+        assert!(text.starts_with("# Meteor-Vibepollo for Nightfall"));
         assert!(text.contains("\nport = 49989\n"));
         assert!(text.contains("\nsunshine_name = pc (Nightfall)\n"));
         assert!(text.ends_with("address_family = both\n"));

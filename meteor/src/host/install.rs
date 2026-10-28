@@ -1,4 +1,4 @@
-//! Downloads Vibepollo for Nightfall from our fork's GitHub release.
+//! Downloads Meteor-Vibepollo for Nightfall from our fork's GitHub release.
 //!
 //! The release is pinned here (version, URL, size, SHA-256), as the VDA
 //! files are in download.rs, so a host update ships with a Meteor update.

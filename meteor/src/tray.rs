@@ -213,11 +213,11 @@ impl MeteorTray {
         match (&host.supervisor, host.state.choice) {
             (Some(supervisor), _) => {
                 let line = match supervisor.phase() {
-                    Phase::Running => format!("Host: Vibepollo for Nightfall, port {base}"),
+                    Phase::Running => format!("Host: Meteor-Vibepollo for Nightfall, port {base}"),
                     Phase::WaitingForPort if !others.is_empty() => format!("Host: waiting for port {base}; close {other_names}"),
                     Phase::WaitingForPort => format!("Host: waiting for port {base} to be free"),
                     Phase::Restarting { failures } => format!("Host: restarting after a crash ({failures})"),
-                    Phase::Stopped => "Host: Vibepollo for Nightfall is stopped".into(),
+                    Phase::Stopped => "Host: Meteor-Vibepollo for Nightfall is stopped".into(),
                     Phase::Failed(reason) => format!("Host stopped: {reason}"),
                 };
                 items.push(info(line));
@@ -268,7 +268,7 @@ impl MeteorTray {
             }
             (None, Choice::Bundled) => {
                 items.push(info(format!(
-                    "Host: Vibepollo for Nightfall didn't start: {}",
+                    "Host: Meteor-Vibepollo for Nightfall didn't start: {}",
                     host.error.as_deref().unwrap_or("unknown")
                 )));
                 items.push(
@@ -293,7 +293,7 @@ impl MeteorTray {
         items
     }
 
-    /// Offers Vibepollo for Nightfall: set up when there's no host, or
+    /// Offers Meteor-Vibepollo for Nightfall: set up when there's no host, or
     /// switch to it next to another host.
     fn bundled_offer(&self, host_up: bool, other_names: &str) -> Vec<ksni::MenuItem<Self>> {
         use crate::download::State;
@@ -305,7 +305,7 @@ impl MeteorTray {
         if host.download.state() == State::Running {
             let mb = |a: &std::sync::atomic::AtomicU64| a.load(Ordering::Relaxed) / 1_000_000;
             return vec![
-                info(format!("Downloading Vibepollo for Nightfall: {} of {} MB", mb(&host.download.done), mb(&host.download.total))),
+                info(format!("Downloading Meteor-Vibepollo for Nightfall: {} of {} MB", mb(&host.download.done), mb(&host.download.total))),
                 StandardItem {
                     label: "Cancel download".into(),
                     activate: Box::new(|tray: &mut Self| tray.host.download.cancel.store(true, Ordering::Relaxed)),
@@ -314,7 +314,7 @@ impl MeteorTray {
                 .into(),
             ];
         }
-        let label = if host_up { "Use Vibepollo for Nightfall instead" } else { "Set up Vibepollo for Nightfall" };
+        let label = if host_up { "Use Meteor-Vibepollo for Nightfall instead" } else { "Set up Meteor-Vibepollo for Nightfall" };
         let mut offer = vec![info("Meteor runs its own game streaming host, kept apart from any other".into())];
         if host_up && !other_names.is_empty() {
             offer.push(info(format!("Close {other_names} afterwards so only one host runs")));
