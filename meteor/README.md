@@ -814,6 +814,35 @@ commented out:
 When `sunshine_port` is unset, Meteor reads `port` from the Sunshine, Apollo,
 Vibepollo, and Polaris config files and uses the first one that is listening.
 
+### Optional managed streaming host (Linux preview)
+
+On the first desktop launch, if no local Sunshine-family host is running or
+installed/configured, Meteor offers to download and set up **Meteor-Vibepollo**.
+Choose the notification's setup action to proceed, or dismiss it and keep using
+your existing host. The same setup remains available in the tray menu. Headless
+launches do not show this offer.
+
+The portable host comes from the [dedicated preview release](https://github.com/tB0nE/Vibepollo/releases/tag/meteor-host-v0.1.0-preview.2).
+Meteor pins its download size and SHA-256, checks the installed file manifest,
+and installs it under `~/.local/share/nightfall-meteor/host/<version>/`.
+Profiles and pairings live separately; installing a package does not replace
+them. No system service, firewall or graphics configuration is installed by this
+download. Graphics drivers and desktop/audio libraries still come from your OS.
+
+Initial headset pairing still uses the host web interface and PIN. The managed
+host tray section shows the web username and provides **Copy web UI password**.
+Changing from an existing host may require selecting and pairing the new host
+in Nightfall; this preview does not migrate an external host's pairings.
+
+For download verification without switching hosts or starting services:
+
+```sh
+./Nightfall-Meteor.AppImage --download-host
+```
+
+Advanced `host_binary` overrides take precedence over the downloaded release.
+Mixed-GPU streaming and capture backends require hardware testing.
+
 Also in the tray, below the depth and microphone controls:
 - **Start with my computer:** an entry in `~/.config/autostart`. The
   AppImage's first run turns it on, once, and Meteor updates the entry

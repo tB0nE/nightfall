@@ -15,6 +15,7 @@ mod detect;
 mod install;
 mod instance;
 mod supervisor;
+pub mod setup;
 pub mod view;
 
 use std::io::Write;

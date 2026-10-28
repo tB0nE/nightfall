@@ -24,6 +24,7 @@ pub struct View {
     /// The host download, shown in the tray.
     pub download: Arc<Download>,
     instance: Option<Instance>,
+    installing: std::sync::atomic::AtomicBool,
 }
 
 impl View {
@@ -84,6 +85,7 @@ impl View {
         state.choice = choice;
         if let Err(err) = super::save_state(&state) {
             log::error!("Can't save the host choice: {err}");
+            return;
         }
         crate::restart();
     }
@@ -91,13 +93,22 @@ impl View {
     /// Downloads the release on a thread, then switches to it.
     pub fn download_and_switch(self: &Arc<Self>) {
         let Some(release) = RELEASE.as_ref() else { return };
+        if self.installing.compare_exchange(false,true,std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire).is_err() {return;}
         let view = self.clone();
+        let runtime=tokio::runtime::Handle::current();
         std::thread::spawn(move || match Install::run(&view.download, release) {
             Ok(binary) => {
+                view.installing.store(false,std::sync::atomic::Ordering::Release);
                 log::info!("Installed {}", binary.display());
                 view.switch(Choice::Bundled);
             }
-            Err(err) => log::error!("Host download failed: {err}"),
+            Err(err) => {
+                view.installing.store(false,std::sync::atomic::Ordering::Release);
+                log::error!("Host download failed: {err}");
+                runtime.spawn(async move {crate::desktop::notify("Host setup did not finish",
+                    &format!("{err}. You can retry from Meteor's tray menu.")).await;});
+            },
         });
     }
 }

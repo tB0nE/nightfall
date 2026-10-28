@@ -249,6 +249,24 @@ impl MeteorTray {
                             }
                             .into(),
                             StandardItem {
+                                label: format!("Web UI username: {}", host.state.user),
+                                enabled: false,
+                                ..Default::default()
+                            }.into(),
+                            StandardItem {
+                                label: "Copy web UI password".into(),
+                                activate: Box::new(|tray: &mut Self| {
+                                    let password=tray.host.state.password.clone();
+                                    tokio::spawn(async move {
+                                        let result=crate::desktop::copy_text(&password).await;
+                                        let message=if result.is_ok() {"Password copied. Paste it into the host's web login."}
+                                            else {"Could not copy the password. Check that your desktop clipboard manager is running."};
+                                        crate::desktop::notify("Meteor-Vibepollo web login",message).await;
+                                    });
+                                }),
+                                ..Default::default()
+                            }.into(),
+                            StandardItem {
                                 label: "Open the host's folder (logs, config)".into(),
                                 activate: Box::new(move |_| open_url(&appdata.to_string_lossy())),
                                 ..Default::default()
@@ -271,6 +289,11 @@ impl MeteorTray {
                     "Host: Meteor-Vibepollo for Nightfall didn't start: {}",
                     host.error.as_deref().unwrap_or("unknown")
                 )));
+                // A newer Meteor can pin a host version not installed yet.
+                // Keep setup/retry accessible without changing host choice.
+                if host.binary.is_none() {
+                    items.extend(self.bundled_offer(false, &other_names));
+                }
                 items.push(
                     StandardItem {
                         label: "Use my own host instead (restarts Meteor)".into(),

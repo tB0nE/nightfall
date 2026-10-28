@@ -168,6 +168,7 @@ async fn main() {
              \x20 --fps <n>               frame rate for --replay (default 60)\n\
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
+             \x20 --download-host         download/verify the Linux managed host without switching\n\
              \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
              \x20                         and the VDA graphs, then exit"
         );
@@ -179,6 +180,16 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    #[cfg(target_os = "linux")]
+    if flag("--download-host") {
+        let Some(release)=host::RELEASE.as_ref() else {
+            eprintln!("This build does not yet offer a published Meteor-Vibepollo host");std::process::exit(2);
+        };
+        match host::Install::run(&download::Download::default(),release) {
+            Ok(path)=>{println!("Installed Meteor-Vibepollo at {}. Host selection and running services were not changed.",path.display());return;},
+            Err(error)=>{eprintln!("Host download failed: {error}");std::process::exit(1);},
+        }
+    }
     if let Some(variant)=value("--download-vda-vulkan") {
         let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
             eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
@@ -436,7 +447,11 @@ async fn main() {
     xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
 
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: Arc::new(host_view) }).await {
+    let host_view=Arc::new(host_view);
+    #[cfg(target_os = "linux")]
+    if !no_tray { host::setup::offer(host_view.clone(), &config); }
+    #[cfg(target_os = "linux")]
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",

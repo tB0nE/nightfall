@@ -171,6 +171,47 @@ pub fn watch_xr_approval(trust: std::sync::Arc<crate::xr_trust::Trust>) {
     });
 }
 
+pub async fn host_setup_popup(view: std::sync::Arc<crate::host::view::View>) -> zbus::Result<()> {
+    use futures_lite::StreamExt;
+    let connection=zbus::Connection::session().await?;
+    let proxy=zbus::Proxy::new(&connection,"org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications","org.freedesktop.Notifications").await?;
+    let mut actions=proxy.receive_signal("ActionInvoked").await?;
+    let mut closed=proxy.receive_signal("NotificationClosed").await?;
+    let hints:std::collections::HashMap<&str,zbus::zvariant::Value>=
+        [("resident",zbus::zvariant::Value::Bool(true))].into();
+    let (action,body)=if view.binary.is_some() {
+        ("Use Meteor-Vibepollo","No Sunshine-compatible host was detected. Use Meteor-Vibepollo for Nightfall? Meteor will run it with its own settings. You can change this later in Meteor's tray.")
+    } else {
+        ("Download and set up","No Sunshine-compatible host was detected. Download and set up Meteor-Vibepollo for Nightfall? Meteor will check the download, run the host with its own settings and restart. Nothing is installed until you accept. You can also set it up later in the tray.")
+    };
+    let id:u32=proxy.call("Notify", &("Nightfall Meteor",0u32,"",
+        "Set up a streaming host?",body,vec!["setup",action,"later","Not now"],hints,0i32)).await?;
+    let timeout=tokio::time::sleep(std::time::Duration::from_secs(300));tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _=&mut timeout=>break,
+            signal=closed.next()=>{
+                let Some(signal)=signal else {break};
+                if signal.body().deserialize::<(u32,u32)>().is_ok_and(|(notification,_)|notification==id) {break;}
+            },
+            signal=actions.next()=>{
+                let Some(signal)=signal else {break};
+                if let Ok((notification,action))=signal.body().deserialize::<(u32,String)>() {
+                    if notification!=id {continue;}
+                    if action=="setup" {
+                        if view.binary.is_some() {view.switch(crate::host::Choice::Bundled);}
+                        else {view.download_and_switch();}
+                    }
+                    if action=="setup" || action=="later" {break;}
+                }
+            }
+        }
+    }
+    let _:zbus::Result<()>=proxy.call("CloseNotification", &(id,)).await;
+    Ok(())
+}
+
 async fn xr_approval_popup(trust: std::sync::Arc<crate::xr_trust::Trust>, key: [u8; 32], code: String) -> zbus::Result<()> {
     use futures_lite::StreamExt;
     let connection = zbus::Connection::session().await?;
