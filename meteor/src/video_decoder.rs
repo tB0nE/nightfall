@@ -6,9 +6,11 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{CStr, CString, c_char, c_void},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::OnceLock,
 };
+#[cfg(any(test, target_os = "linux"))]
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,15 +19,20 @@ pub enum Backend {
     Auto,
     Nvdec,
     Vaapi,
+    D3d11,
     Software,
 }
 impl Backend {
+    #[cfg(windows)]
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Nvdec, Self::D3d11, Self::Software];
+    #[cfg(not(windows))]
     pub const ALL: [Self; 4] = [Self::Auto, Self::Nvdec, Self::Vaapi, Self::Software];
     pub fn label(self) -> &'static str {
         match self {
             Self::Auto => "Auto",
             Self::Nvdec => "NVDEC (NVIDIA)",
             Self::Vaapi => "VAAPI (Linux)",
+            Self::D3d11 => "D3D11VA (Windows)",
             Self::Software => "Software (CPU)",
         }
     }
@@ -39,9 +46,10 @@ pub struct Settings {
 }
 impl Settings {
     pub fn candidates(&self, prefer_amd: bool) -> Vec<Backend> {
+        let portable = if cfg!(windows) { Backend::D3d11 } else { Backend::Vaapi };
         match self.backend {
-            Backend::Auto if prefer_amd => vec![Backend::Vaapi, Backend::Software],
-            Backend::Auto => vec![Backend::Nvdec, Backend::Vaapi, Backend::Software],
+            Backend::Auto if prefer_amd => vec![portable, Backend::Software],
+            Backend::Auto => vec![Backend::Nvdec, portable, Backend::Software],
             explicit => vec![explicit],
         }
     }
@@ -49,7 +57,7 @@ impl Settings {
 
 /// Persist PCI-based paths rather than renderD numbers, which can reorder.
 pub fn vaapi_devices() -> Vec<(String, String)> {
-    let mut found = Vec::new();
+    let mut found: Vec<(String, String)> = Vec::new();
     #[cfg(target_os = "linux")]
     if let Ok(entries) = std::fs::read_dir("/dev/dri/by-path") {
         for entry in entries.flatten() {
@@ -105,7 +113,7 @@ unsafe extern "C" {
     fn meteor_video_create(
         api: *mut c_void,
         codec: i32,
-        vaapi: bool,
+        hardware: i32,
         device: *const c_char,
         error: *mut c_char,
         size: usize,
@@ -190,12 +198,16 @@ impl Ffmpeg {
         device: Option<&str>,
         target: (usize, usize),
     ) -> Result<Self, String> {
-        if !matches!(backend, Backend::Vaapi | Backend::Software) {
+        if !matches!(backend, Backend::Vaapi | Backend::D3d11 | Backend::Software) {
             return Err("Invalid FFmpeg backend".into());
         }
         #[cfg(not(target_os = "linux"))]
         if backend == Backend::Vaapi {
             return Err("VAAPI decoding requires Linux".into());
+        }
+        #[cfg(not(windows))]
+        if backend == Backend::D3d11 {
+            return Err("D3D11VA decoding requires Windows".into());
         }
         let codec = match codec {
             Codec::H264 => 0,
@@ -203,13 +215,13 @@ impl Ffmpeg {
             Codec::Av1 => 2,
             _ => return Err("Unsupported depth video codec".into()),
         };
-        let name = CString::new(device.unwrap_or("")).map_err(|_| "Invalid VAAPI device")?;
+        let name = CString::new(device.unwrap_or("")).map_err(|_| "Invalid decoder device")?;
         let mut error = [0; 512];
         let handle = unsafe {
             meteor_video_create(
                 runtime()?.0,
                 codec,
-                backend == Backend::Vaapi,
+                match backend { Backend::Vaapi => 1, Backend::D3d11 => 2, _ => 0 },
                 name.as_ptr(),
                 error.as_mut_ptr(),
                 error.len(),
@@ -376,7 +388,7 @@ impl Decoder {
     ) -> Result<Self, String> {
         match backend {
             Backend::Nvdec => NvDecoder::new(codec, size.0, size.1, gpu_frames).map(Self::Nvdec),
-            Backend::Vaapi | Backend::Software => {
+            Backend::Vaapi | Backend::D3d11 | Backend::Software => {
                 Ffmpeg::new(codec, backend, device, size).map(Self::Ffmpeg)
             }
             _ => Err("Decoder Auto must be resolved before creation".into()),
@@ -408,7 +420,7 @@ mod tests {
     use super::*;
     #[test]
     fn explicit_decoder_never_silently_falls_back() {
-        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::Software] {
+        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::D3d11, Backend::Software] {
             assert_eq!(
                 Settings {
                     backend,
@@ -420,7 +432,7 @@ mod tests {
         }
         assert_eq!(
             Settings::default().candidates(true),
-            vec![Backend::Vaapi, Backend::Software]
+            vec![if cfg!(windows) { Backend::D3d11 } else { Backend::Vaapi }, Backend::Software]
         );
         assert_eq!(Settings::default().candidates(false)[0], Backend::Nvdec);
     }
@@ -481,6 +493,10 @@ mod tests {
                     Some(device.expect("AMD render node required").0),
                 ));
             }
+            #[cfg(windows)]
+            if std::env::var_os("METEOR_TEST_D3D11").is_some() {
+                backends.push((Backend::D3d11, Some("vendor:0x1002".into())));
+            }
             let mut reference = std::collections::BTreeMap::new();
             for (backend, device) in backends {
                 let mut decoder = Ffmpeg::new(codec, backend, device.as_deref(), (96, 54)).unwrap();
@@ -517,7 +533,7 @@ mod tests {
                             / rgb.len() as f64;
                         assert!(
                             difference < 1.0,
-                            "VAAPI vs software RGB differs for frame {id}: {difference}"
+                            "Hardware vs software RGB differs for frame {id}: {difference}"
                         );
                     }
                 }

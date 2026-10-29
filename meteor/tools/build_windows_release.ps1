@@ -20,6 +20,9 @@ $ncnnVersion = '20260526'
 $ncnnDllHash = 'd5709a0c84bdc6da1b1e2bd9151a529f083ff76264de60af9bacd0bee63db025'
 $ncnnLicenseHash = '7c974bac98848df46be1af5bdaa3c3c9c01f6082a90f55caeb7f60c6208aa255'
 $zipDepthLicenseHash = '0007e2ff761f1b89ad89327870b807cd4de00cb657b442b62de2f92fdc87d508'
+$ffmpegTag = 'autobuild-2026-02-28-12-59'
+$ffmpegName = 'ffmpeg-n8.0.1-66-g27b8d1a017-win64-lgpl-shared-8.0'
+$ffmpegHash = 'e7b1087c310cf8b91f5467b8ada6d7e47ce26f2777efa2317c7cc271087e5100'
 
 function Assert-Hash([string]$Path, [string]$Expected) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Missing $Path" }
@@ -78,6 +81,24 @@ if (-not (Test-Path -LiteralPath $zipDepthLicence)) {
 }
 Assert-Hash $zipDepthLicence $zipDepthLicenseHash
 
+$ffmpegCache = Join-Path $meteor 'target\windows-ffmpeg'
+$ffmpegArchive = Join-Path $ffmpegCache "$ffmpegName.zip"
+$ffmpegRoot = Join-Path (Join-Path $ffmpegCache 'extract') $ffmpegName
+if (-not (Test-Path -LiteralPath $ffmpegArchive -PathType Leaf)) {
+    New-Item -ItemType Directory -Path $ffmpegCache -Force | Out-Null
+    Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/$ffmpegTag/$ffmpegName.zip" -OutFile $ffmpegArchive
+}
+Assert-Hash $ffmpegArchive $ffmpegHash
+if (-not (Test-Path -LiteralPath (Join-Path $ffmpegRoot 'LICENSE.txt'))) {
+    Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath (Join-Path $ffmpegCache 'extract') -Force
+}
+$ffmpegDlls = @('avcodec-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll')
+foreach ($dllName in $ffmpegDlls) {
+    if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $ffmpegRoot 'bin') $dllName) -PathType Leaf)) {
+        throw "FFmpeg archive is missing $dllName"
+    }
+}
+
 Push-Location $meteor
 try {
     Write-Host 'Building Meteor (release, without ONNX Runtime)'
@@ -103,6 +124,9 @@ $models = Join-Path $stage 'share\nightfall-meteor\models'
 $doc = Join-Path $stage 'share\doc\nightfall-meteor'
 New-Item -ItemType Directory -Path $models, $doc -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $meteor 'target\release\nightfall-meteor.exe'), $ncnnDll -Destination $stage
+foreach ($dllName in $ffmpegDlls) {
+    Copy-Item -LiteralPath (Join-Path (Join-Path $ffmpegRoot 'bin') $dllName) -Destination $stage
+}
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepad.ncnn.param"), (Join-Path $ModelsDir "$edgepad.ncnn.bin") -Destination $models
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.param"), (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -Destination $models
 
@@ -115,6 +139,7 @@ foreach ($variant in @('vda_vulkan_518x294','vda_vulkan_392x224')) {
     if (Test-Path -LiteralPath (Join-Path $source 'manifest.json')) { Copy-Item -LiteralPath $source -Destination $models -Recurse }
 }
 Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination $doc
+Copy-Item -LiteralPath (Join-Path $ffmpegRoot 'LICENSE.txt') -Destination (Join-Path $doc 'FFmpeg-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'windows-release\README.txt') -Destination $stage
 
 $opus = @(Get-ChildItem -Path (Join-Path $env:USERPROFILE '.cargo\registry\src\*\audiopus_sys-*\opus\COPYING') -File -ErrorAction SilentlyContinue |
@@ -125,6 +150,9 @@ $notices = @(
     'It includes the components below, under their own licences.'
     ''
     "- ncnn $ncnnVersion (Tencent), BSD 3-Clause: ncnn.dll"
+    "- FFmpeg $ffmpegName, LGPL v3: avcodec-62.dll, avutil-60.dll, swscale-9.dll, swresample-6.dll"
+    '  FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/27b8d1a017'
+    "  Build scripts and binary: https://github.com/BtbN/FFmpeg-Builds/releases/tag/$ffmpegTag"
     '- EdgePad 512x288 and 256x256 weights: Nightfall ZipDepth models (Fabio Tosi), MIT: share/nightfall-meteor/models'
     '- NVIDIA TensorRT headers, Apache 2.0, compiled into the TensorRT shim'
     '- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor for microphone audio'

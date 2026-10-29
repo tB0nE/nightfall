@@ -13,10 +13,6 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-pub(crate) fn valid_eye_size(size: u32) -> bool {
-    (256..=4096).contains(&size) && size % 16 == 0
-}
-
 fn runtime_duration(external_application: bool, long_run: bool) -> Option<Duration> {
     // Real games are owned until exit/cancellation; only diagnostic fixtures
     // have a fixed wall-clock duration.
@@ -121,7 +117,7 @@ pub(crate) async fn runtime_adapter_with_status(
     progress: Option<&crate::xr_relay::RuntimeProgress>,
     bitrate_directory: Option<&crate::xr_bitrate::RuntimeDirectory>,
 ) -> io::Result<()> {
-    if !matches!(hz, 20 | 60 | 72) || !valid_eye_size(eye_size) || !valid_eye_size(eye_height) || (long_run && !matches!(hz,60 | 72))
+    if !matches!(hz, 20 | 60 | 72) || !crate::xr_control::valid_eye_size(eye_size) || !crate::xr_control::valid_eye_size(eye_height) || (long_run && !matches!(hz,60 | 72))
         || (bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps)) || !matches!(codec.as_str(),"h264" | "h265") {
         return Err(io::Error::other("unsupported managed XR profile"));
     }

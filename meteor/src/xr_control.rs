@@ -18,6 +18,10 @@ const MAX_FRAME: usize = 4096;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub(crate) fn valid_eye_size(size: u32) -> bool {
+    (256..=4096).contains(&size) && size % 16 == 0
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -145,7 +149,7 @@ impl Negotiation {
                 if self.session.is_some() {
                     return Ok(self.reply(Some("busy")));
                 }
-                if !crate::xr_session::valid_eye_size(height) || !crate::xr_session::valid_eye_size(width) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
+                if !valid_eye_size(height) || !valid_eye_size(width) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
                     return Ok(self.reply(Some("unsupported_profile")));
                 }
                 let mut id = [0u8; 16];
@@ -425,7 +429,7 @@ async fn connection_supervised(
                 negotiation.reply(None)
             } else {negotiation.reply(Some("launch_intent_unavailable"))}
         } else if enable_relay
-            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !crate::xr_session::valid_eye_size(*height) || !crate::xr_session::valid_eye_size(*width) || !matches!(hz,20|60|72))
+            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !valid_eye_size(*height) || !valid_eye_size(*width) || !matches!(hz,20|60|72))
         {
             negotiation.reply(Some("unsupported_relay_profile"))
         } else {

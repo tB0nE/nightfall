@@ -41,10 +41,15 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\ncnn.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\avcodec-62.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\avutil-60.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\swscale-9.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\swresample-6.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\meteor_vda_vulkan.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#Stage}\share\nightfall-meteor\models\zipdepth_wide_512x288.ncnn.param"; DestDir: "{app}\share\nightfall-meteor\models"; Flags: ignoreversion
-Source: "{#Stage}\share\nightfall-meteor\models\zipdepth_wide_512x288.ncnn.bin"; DestDir: "{app}\share\nightfall-meteor\models"; Flags: ignoreversion
+Source: "{#Stage}\share\nightfall-meteor\models\*"; DestDir: "{app}\share\nightfall-meteor\models"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\doc\nightfall-meteor\LICENSE"; DestDir: "{app}\share\doc\nightfall-meteor"; Flags: ignoreversion
+Source: "{#Stage}\share\doc\nightfall-meteor\FFmpeg-LICENSE.txt"; DestDir: "{app}\share\doc\nightfall-meteor"; Flags: ignoreversion
 Source: "{#Stage}\share\doc\nightfall-meteor\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}\share\doc\nightfall-meteor"; Flags: ignoreversion
 
 [Icons]

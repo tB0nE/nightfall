@@ -9,9 +9,37 @@
 > [meteor-appimage.md](meteor-appimage.md) (the Linux release this
 > mirrors), [meteor-microphone.md](meteor-microphone.md) (microphone).
 >
-> Scope: Windows 10/11 x64 hosts with an NVIDIA GPU, running Sunshine,
-> Apollo, Vibepollo or Vibeshine. Other GPUs stay out of scope, as on Linux
-> (decoding is NVDEC).
+> Scope: Windows 10/11 x64 hosts with NVIDIA or AMD GPUs, running Sunshine,
+> Apollo, Vibepollo or Vibeshine. NVIDIA keeps NVDEC; AMD uses D3D11VA and
+> ncnn Vulkan for EdgePad.
+
+## Windows compatibility update (2026-10-29)
+
+- The Windows release build compiles from main on branch
+  `feat/meteor-windows-compat`. An XR profile validator was moved into shared
+  code because the Windows control module could not reference Linux-only
+  `xr_session`.
+- Auto decoder choice on a selected AMD GPU now tries FFmpeg D3D11VA, then
+  software. The advanced decode menu exposes D3D11VA on Windows. FFmpeg's
+  `vendor_id` device option selects the RX 480 in a multi-GPU machine.
+- A 20-frame H.264 and HEVC B-frame replay passed through both software and
+  RX 480 D3D11VA, preserving frame IDs and matching RGB output. The Windows
+  release Rust suite passed: 131 tests, 16 ignored.
+- EdgePad 512x288 produced finite depth on the RX 480 and RTX 3090. On a
+  synthetic frame, ten warm GPU inferences averaged 28.5 ms on RX 480 versus
+  2.2 ms on RTX 3090. This is model-only timing; it does not measure a stream.
+- The release and installer scripts now stage four pinned FFmpeg 8 LGPL DLLs
+  and their licence. The installer also includes the 256 EdgePad model and
+  Vulkan VDA DLL that the previous installer script omitted. Packaging syntax
+  has been checked, but a full installer build still needs the new 256 model
+  files, which are absent from the older Windows model folder.
+- A live RX 480 stream to the headset remains to be checked.
+  Headset checks require user approval under `docs/guides/agent-testing.md`.
+- Windows XR remains the next major compatibility task. The Linux runtime,
+  Vulkan capture and encoder path are not Windows artifacts. First validate a
+  native Windows OpenXR session with a candidate runtime; then add Windows
+  capture and managed lifecycle adapters. Keep OpenVR compatibility as a
+  separate acceptance check.
 
 ## Current Windows status (2026-10-09)
 

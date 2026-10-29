@@ -35,6 +35,7 @@ pub fn request_open()->io::Result<()> {
 }
 pub fn take_open(root:&Path)->bool {std::fs::remove_file(root.join(".build-cache/meteor-xr/open-library")).is_ok()}
 #[cfg(test)] mod tests {
+    #[cfg(unix)]
     #[test] fn universal_steam_options_quote_the_installed_wrapper() {
         let options=super::launch_options_for(std::path::Path::new("/home/Ty's Apps/xr"));
         assert_eq!(options,"/usr/bin/python3 '/home/Ty'\"'\"'s Apps/xr/tools/meteor_xr.py' steam-run --app-id auto --wait 120 -- %command%");

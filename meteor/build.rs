@@ -5,12 +5,11 @@ fn main() {
     build_vda_vulkan();
     println!("cargo:rerun-if-changed=native/video_decoder.cpp");
     println!("cargo:rerun-if-changed=third_party/ffmpeg");
-    cc::Build::new()
-        .cpp(true)
-        .std("c++17")
-        .file("native/video_decoder.cpp")
-        .include("third_party/ffmpeg/include")
-        .compile("meteor_video_decoder");
+    let mut decoder = cc::Build::new();
+    decoder.cpp(true).std("c++17").file("native/video_decoder.cpp")
+        .include("third_party/ffmpeg/include");
+    if decoder.get_compiler().is_like_msvc() { decoder.flag("/EHsc"); }
+    decoder.compile("meteor_video_decoder");
     println!("cargo:rerun-if-changed=native/tensorrt.cpp");
     println!("cargo:rerun-if-changed=third_party/tensorrt");
     let mut build = cc::Build::new();
