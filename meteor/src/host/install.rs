@@ -24,10 +24,10 @@ pub struct Release {
 
 /// Portable host preview, built from the matching source companion.
 pub const RELEASE: Option<Release> = Some(Release {
-    version: "0.1.0-preview.2",
-    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-host-v0.1.0-preview.2/Meteor-Vibepollo-0.1.0-preview.2-linux-x86_64.tar.zst",
-    size: 29_404_669,
-    sha256: "b1ce96a6f34b3d7b5b6e79bad4a859e3de4aeb844eed39334ba431c59a9226be",
+    version: "0.1.0-preview.3",
+    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-host-v0.1.0-preview.3/Meteor-Vibepollo-0.1.0-preview.3-linux-x86_64.tar.zst",
+    size: 29_470_938,
+    sha256: "1d8f3f5302f77cd12244610b19702c319760e818637ad27f0061b4ddd42031d0",
     binary: "bin/meteor-vibepollo",
 });
 

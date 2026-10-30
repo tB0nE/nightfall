@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "nightfall-meteor"
-version = "0.1.1"
+version = "0.9.0-preview.1"
 dependencies = [
  "audiopus_sys",
  "cc",

@@ -851,7 +851,7 @@ Choose the notification's setup action to proceed, or dismiss it and keep using
 your existing host. The same setup remains available in the tray menu. Headless
 launches do not show this offer.
 
-The portable host comes from the [dedicated preview release](https://github.com/tB0nE/Vibepollo/releases/tag/meteor-host-v0.1.0-preview.2).
+The portable host comes from the [dedicated preview release](https://github.com/tB0nE/Vibepollo/releases/tag/meteor-host-v0.1.0-preview.3).
 Meteor pins its download size and SHA-256, checks the installed file manifest,
 and installs it under `~/.local/share/nightfall-meteor/host/<version>/`.
 Profiles and pairings live separately; installing a package does not replace
