@@ -424,6 +424,8 @@ void main() {
     } else {
         for(int i=0;i<4;++i) {
             vec2 d=(p-vec2(.19+float(i)*.205,.30))/vec2(.15,.21);
+            // Face UVs increase downwards; segment coordinates increase upwards.
+            d.y = -d.y;
             rgb=mix(rgb,vec3(.85,.91,1.),digit(d,int(watch_digits[i])));
         }
     }

@@ -205,7 +205,16 @@ void PCVRMeteorReceiver::run() {
             int64_t pts_us = int64_t(frame.sequence+1)*1000;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (metadata.size() >= 8) break;
+                // Desktop decoder/swapchain retirement can briefly block the
+                // render thread while this independent XR decoder keeps running.
+                // Eight timestamp records covered only ~110ms at 72Hz, turning
+                // a desktop restart into a fatal XR transport disconnect. These
+                // are small metadata records, not retained decoded images.
+                if (metadata.size() >= 256) {
+                    __android_log_print(ANDROID_LOG_ERROR, "NightfallPCVR",
+                        "Meteor: render consumer stalled; metadata backlog=%zu", metadata.size());
+                    break;
+                }
                 metadata[pts_us * 1000] = frame;
             }
             if (!input(payload, pts_us, false)) break;
