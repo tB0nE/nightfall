@@ -88,8 +88,17 @@ static func hit_faces(rect: Rect2, mesh_size: Vector2, base_radius: float) -> Pa
 	return faces
 
 func attach(screen: VRScreen, viewport: SubViewport) -> void:
-	if _screen != null and screen != _screen:
-		return
+	if screen != _screen or viewport != _viewport:
+		for item in _items:
+			_discard(item)
+		_items.clear()
+		_reuse.clear()
+		if is_instance_valid(_background): _background.queue_free()
+		if is_instance_valid(_dropdown_background): _dropdown_background.queue_free()
+		_background = null
+		_dropdown_background = null
+		popup = ""
+		hovered = &""
 	_screen = screen
 	_viewport = viewport
 	if not is_instance_valid(_background):
@@ -310,7 +319,11 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 	if not revealed and popup != "":
 		popup = ""
 	var signature := str([browser.pages, browser.selected_page,
-		browser.active, browser.navigation, main.is_streaming, main.screens.size(), main.primary_screen, popup])
+		browser.active, browser.navigation, browser.closing, main.is_streaming,
+		main.screens.size(), main.primary_screen, popup,
+		main.screen_sources.can_open_browser(), main.screen_sources.can_add_browser_screen(),
+		main.screen_sources.can_offer_stream_screen(), main.screen_sources.can_add_stream_screen(),
+		main.screen_sources.can_make_primary(_screen)])
 	if signature != _signature:
 		_signature = signature
 		_rebuild()

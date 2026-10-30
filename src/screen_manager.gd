@@ -6,6 +6,9 @@ var main: Node3D
 func _init(owner: Node3D):
 	main = owner
 
+static func horizontal_offset(screen: Transform3D, origin: Transform3D) -> float:
+	return (screen.origin - origin.origin).dot(origin.basis.x.normalized())
+
 func create_corner_handles():
 	main.primary_screen.create_corner_handles()
 
@@ -68,6 +71,12 @@ func resize_screen_to_aspect(stream_w: int, stream_h: int):
 		if main.screen_sources.is_browser_screen(s): continue
 		var content_w = int(float(stream_w) * s.uv_region.z)
 		var content_h = int(float(stream_h) * s.uv_region.w)
+		# Encoded dimensions can briefly belong to the previous connection.
+		# A monitor's own aspect is stable across those correction restarts.
+		if main.layout != null and main.layout.source == &"host_manifest" and s.monitor != null \
+				and s.monitor.frame_rect.size.x > 0 and s.monitor.frame_rect.size.y > 0:
+			content_w = s.monitor.frame_rect.size.x
+			content_h = s.monitor.frame_rect.size.y
 		s.resize_to_aspect(content_w, content_h)
 	if main.comp_layer and main.comp_layer is OpenXRCompositionLayerQuad:
 		main.comp_layer.set_quad_size(main._mesh_size)

@@ -14,8 +14,10 @@ class FakeComp extends RefCounted:
 
 class FakeSources extends RefCounted:
 	var offer_stream := true
-	func can_open_browser(): return true
-	func can_add_browser_screen(): return true
+	var open_browser_allowed := true
+	var add_browser_allowed := true
+	func can_open_browser(): return open_browser_allowed
+	func can_add_browser_screen(): return add_browser_allowed
 	func can_offer_stream_screen(): return offer_stream
 	func can_add_stream_screen(): return offer_stream
 	func can_make_primary(_screen): return false
@@ -134,7 +136,43 @@ func _init():
 	strip.update(owner.primary_screen, surface, margin, true)
 	assert(strip._background.visible, "Opening Browser must restore its menu")
 	assert(strip._items[0].area.collision_layer == 2)
+	# A stream restart can build the bar while adding a browser is temporarily
+	# unavailable. Becoming ready must refresh it even when screen count,
+	# browser pages and is_streaming have not changed.
+	owner.browser_prototype.active = false
+	owner.is_streaming = true
+	owner.screen_sources.open_browser_allowed = false
+	owner.screen_sources.add_browser_allowed = false
+	strip.popup = ""
+	strip.update(owner.primary_screen, surface, margin, true)
+	var browser_button: Dictionary
+	for item in strip._items:
+		if item.action == &"browser": browser_button = item
+	assert(not browser_button.enabled)
+	var browser_target: Area3D = browser_button.area
+	owner.screen_sources.add_browser_allowed = true
+	strip.update(owner.primary_screen, surface, margin, true)
+	for item in strip._items:
+		if item.action == &"browser": browser_button = item
+	assert(browser_button.enabled, "Browser button must recover after the restart finishes")
+	assert(browser_button.area == browser_target, "Availability changes must preserve the hit target")
+	strip.invoke(&"browser")
+	assert(strip.popup == "sources", "Recovered browser button must open its dropdown")
+	var previous_screen := owner.primary_screen
+	var previous_target: Area3D = strip._items[0].area
+	owner.primary_screen = VRScreen.new()
+	owner.primary_screen._comp_cyl_radius = 3.0
+	var replacement_viewport := SubViewport.new()
+	strip.attach(owner.primary_screen, replacement_viewport)
+	strip.update(owner.primary_screen, surface, margin, true)
+	assert(strip._background.visible, "Toolbar must render after the host replaces primary")
+	assert(strip._background.get_parent() == replacement_viewport)
+	assert(previous_target.collision_layer == 0, "Retired toolbar targets must stop intercepting input")
+	assert(strip._items[0].area.get_parent() == owner.primary_screen,
+		"Toolbar hitboxes must follow the replacement screen")
+	previous_screen.free()
 	owner.primary_screen.free()
+	replacement_viewport.free()
 	viewport.free()
 	owner.free()
 	print("All screen tab strip tests passed")

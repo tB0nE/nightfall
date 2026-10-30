@@ -12,6 +12,7 @@ var _screen_source_status: Label
 var _open_browser_btn: Button
 var _close_browser_btn: Button
 var _browser_resolution_btn: Button
+var _browser_screens_btn: Button
 var _tab_ai3d: Control
 var _tab_picture: Control
 var _tab_settings: Control
@@ -676,6 +677,10 @@ func _build_screen_sources(parent: VBoxContainer) -> void:
 	update_screen_sources()
 
 func update_screen_sources() -> void:
+	# Browsers use the same layout/preset slots as captured monitors.
+	if main.screen_sources != null:
+		main.settings_controller._clear_staged_preset_if_mismatched()
+		update_monitor_tab()
 	if _open_browser_btn == null or main.screen_sources == null:
 		return
 	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
@@ -692,6 +697,8 @@ func update_monitor_tab():
 		return
 	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
 	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
+	if _browser_screens_btn:
+		update_option_btn(_browser_screens_btn, "%d" % main.settings_controller.browser_screen_count())
 	update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
@@ -715,7 +722,7 @@ func update_monitor_tab():
 			card.disabled = not polaris
 
 func _cycle_monitors_btn():
-	var real_total = maxi(main.settings_controller._real_monitor_count(), 1)
+	var real_total = maxi(1, mini(main.settings_controller._real_monitor_count(), main.settings_controller.monitor_screen_capacity()))
 	var n = main._staged_physical_count + 1
 	if n > real_total:
 		n = 1
@@ -723,7 +730,7 @@ func _cycle_monitors_btn():
 	update_monitor_tab()
 
 func _cycle_virtual_btn():
-	var max_virtual = main.MAX_SCREENS - main._staged_physical_count
+	var max_virtual = maxi(0, main.settings_controller.monitor_screen_capacity() - main._staged_physical_count)
 	var n = main._staged_virtual_count + 1
 	if n > max_virtual:
 		n = 0
@@ -1491,6 +1498,10 @@ func build_ui():
 	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
 	_set_button_tooltip(main._ui_virtual_monitors_btn, "Choose how many virtual monitors are created.")
 	mon_row1.add_child(main._ui_virtual_monitors_btn)
+	_browser_screens_btn = make_compact_option_btn("Browsers", "0")
+	_browser_screens_btn.disabled = true
+	_set_button_tooltip(_browser_screens_btn, "Open browser screens. Add or close browser screens using their screen menus.")
+	mon_row1.add_child(_browser_screens_btn)
 
 	var mon_gap1 = Control.new()
 	mon_gap1.custom_minimum_size = Vector2(0, 10)

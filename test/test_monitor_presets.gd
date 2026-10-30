@@ -1,12 +1,57 @@
 extends SceneTree
 
+class FakeSources extends RefCounted:
+	func is_browser_screen(screen): return String(screen.monitor_id).begins_with("browser:")
+
+class LayoutOwner extends Node3D:
+	const MAX_SCREENS := 4
+	var screens: Array[VRScreen] = []
+	var screen_sources := FakeSources.new()
+	var layout := ScreenLayout.single(Vector2i(2560, 1440))
+	var _staged_physical_count := 2
+	var _staged_virtual_count := 0
+	var _staged_preset_id: StringName = &""
+	func _log(_message): pass
+
 func _init():
 	_test_default_presets_shape()
 	_test_default_ids_unique()
 	_test_json_round_trip()
 	_test_custom_preset_file_round_trip()
+	_test_browser_layout_budget()
 	print("All monitor_presets tests passed")
 	quit()
+
+func _test_browser_layout_budget():
+	var owner := LayoutOwner.new()
+	for id in ["m0", "m1", "browser:1"]:
+		var screen := VRScreen.new()
+		screen.monitor_id = StringName(id)
+		owner.screens.append(screen)
+	var second := ScreenLayout.MonitorSpec.new()
+	second.id = &"m1"
+	second.capturable = true
+	second.frame_rect = Rect2i(2560, 0, 1920, 1080)
+	second.desktop_rect = second.frame_rect
+	owner.layout.monitors.append(second)
+	var controller := SettingsController.new(owner)
+	assert(controller.browser_screen_count() == 1)
+	assert(controller.staged_total() == 3, "Two monitors and a browser need three-screen presets")
+	controller.stage_virtual_count(3)
+	assert(owner._staged_virtual_count == 1, "Browser must reserve its screen slot")
+	assert(controller.staged_total() == 4)
+	var browser := VRScreen.new()
+	browser.monitor_id = &"browser:2"
+	owner.screens.append(browser)
+	controller.stage_monitor_count(2)
+	assert(owner._staged_virtual_count == 0)
+	assert(controller.staged_total() == 4, "Two monitors and two browsers fill the shared budget")
+	var target := controller._build_staged_layout()
+	assert(target.enabled_monitors().size() == 2, "Browsers must not become host capture outputs")
+	owner.screens.pop_back().free()
+	assert(controller.staged_total() == 3, "Closing a browser must restore the three-screen preset count")
+	for screen in owner.screens: screen.free()
+	owner.free()
 
 func _test_default_presets_shape():
 	var presets = MonitorPresets.default_presets()

@@ -2095,6 +2095,10 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# grab bars" was this, not a positioning bug in add_screen() itself.
 	if new_primary and new_primary != main.primary_screen:
 		main.set_primary_screen(new_primary)
+		# Host layout changes retire the old primary and its controls atlas.
+		# Carry the primary toolbar to the replacement before removing it.
+		if main.get("screen_tab_strip") != null and new_primary.comp_corner_viewport:
+			main.screen_tab_strip.attach(new_primary, new_primary.comp_corner_viewport)
 		# Stereo/AI-3D (switch_to_stereo_comp_layer()) only ever activates
 		# whatever was primary AT THE TIME it was called - it sets up that
 		# screen's own comp_cylinder_left/right visibility, viewport update
@@ -2136,8 +2140,19 @@ func _real_monitor_count() -> int:
 			count += 1
 	return count
 
+func browser_screen_count() -> int:
+	var sources = main.get("screen_sources")
+	if sources == null: return 0
+	var count := 0
+	for screen in main.screens:
+		if sources.is_browser_screen(screen): count += 1
+	return count
+
+func monitor_screen_capacity() -> int:
+	return maxi(0, main.MAX_SCREENS - browser_screen_count())
+
 func staged_total() -> int:
-	return main._staged_physical_count + main._staged_virtual_count
+	return main._staged_physical_count + main._staged_virtual_count + browser_screen_count()
 
 func _clear_staged_preset_if_mismatched():
 	if main._staged_preset_id == &"":
@@ -2163,13 +2178,13 @@ func sync_staged_from_current_layout():
 	main._staged_preset_id = &""
 
 func stage_monitor_count(n: int):
-	main._staged_physical_count = clampi(n, 1, maxi(_real_monitor_count(), 1))
-	main._staged_virtual_count = clampi(main._staged_virtual_count, 0, main.MAX_SCREENS - main._staged_physical_count)
+	main._staged_physical_count = clampi(n, 1, maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
+	main._staged_virtual_count = clampi(main._staged_virtual_count, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 	main._log("[LAYOUT] stage_monitor_count(%d): real_monitor_count=%d -> staged_physical=%d" % [n, _real_monitor_count(), main._staged_physical_count])
 
 func stage_virtual_count(n: int):
-	main._staged_virtual_count = clampi(n, 0, main.MAX_SCREENS - main._staged_physical_count)
+	main._staged_virtual_count = clampi(n, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 
 func select_monitor_preset(id: StringName):
@@ -2197,7 +2212,7 @@ func _build_staged_layout() -> ScreenLayout:
 	if real_monitors.is_empty():
 		return null
 	real_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
-	var phys_count = clampi(main._staged_physical_count, 1, real_monitors.size())
+	var phys_count = clampi(main._staged_physical_count, 1, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
 	var picked: Array = real_monitors.slice(0, phys_count)
 
 	var new_layout := ScreenLayout.new()
@@ -2217,7 +2232,7 @@ func _build_staged_layout() -> ScreenLayout:
 		nm.is_primary = false
 		new_layout.monitors.append(nm)
 
-	var vcount = clampi(main._staged_virtual_count, 0, main.MAX_SCREENS - phys_count)
+	var vcount = clampi(main._staged_virtual_count, 0, maxi(0, monitor_screen_capacity() - phys_count))
 	_append_virtual_placeholders(new_layout, vcount)
 
 	var enabled := new_layout.enabled_monitors()

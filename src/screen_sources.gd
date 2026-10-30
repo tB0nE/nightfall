@@ -186,6 +186,17 @@ static func browser_grid_offset(id: int) -> Vector2i:
 		3: return Vector2i(0, -MonitorGrid.SPAN)
 	return Vector2i.ZERO
 
+static func free_browser_cell(origin: Vector2i, id: int, occupied: Array[Vector2i]) -> Vector2i:
+	for offset in [browser_grid_offset(id), Vector2i(MonitorGrid.SPAN, 0),
+			Vector2i(-MonitorGrid.SPAN, 0), Vector2i(0, -MonitorGrid.SPAN), Vector2i(0, MonitorGrid.SPAN)]:
+		var candidate: Vector2i = origin + offset
+		if offset == Vector2i.ZERO or not MonitorGrid.cell_in_bounds(candidate.x, candidate.y): continue
+		var overlaps := false
+		for cell in occupied:
+			if MonitorGrid.cells_overlap(candidate, cell): overlaps = true
+		if not overlaps: return candidate
+	return Vector2i(-1, -1)
+
 func add_browser_screen() -> bool:
 	if not can_add_browser_screen(): return false
 	var id := _free_browser_slot()
@@ -193,18 +204,11 @@ func add_browser_screen() -> bool:
 	provider.uploader = _browser_uploaders.get(id)
 	var screen: VRScreen = main.add_screen(StringName("browser-screen:%d" % provider.browser_id), INF, false, provider)
 	if screen == null: return false
-	if main.primary_screen.grid_pos != Vector2i(-1, -1):
-		var cell := Vector2i(-1, -1)
-		for offset in [browser_grid_offset(id), Vector2i(MonitorGrid.SPAN, 0),
-			Vector2i(-MonitorGrid.SPAN, 0), Vector2i(0, -MonitorGrid.SPAN), Vector2i(0, MonitorGrid.SPAN)]:
-			var candidate: Vector2i = main.primary_screen.grid_pos + offset
-			if offset == Vector2i.ZERO or not MonitorGrid.cell_in_bounds(candidate.x, candidate.y): continue
-			var occupied := false
-			for existing in main.screens:
-				if existing != screen and existing.grid_pos == candidate: occupied = true
-			if not occupied:
-				cell = candidate
-				break
+	if main.primary_screen.grid_mode and main.primary_screen.grid_pos != Vector2i(-1, -1):
+		var occupied: Array[Vector2i] = []
+		for existing in main.screens:
+			if existing != screen and existing.grid_pos != Vector2i(-1, -1): occupied.append(existing.grid_pos)
+		var cell := free_browser_cell(main.primary_screen.grid_pos, id, occupied)
 		if cell != Vector2i(-1, -1):
 			screen.grid_pos = cell
 			screen.grid_mode = main.primary_screen.grid_mode
