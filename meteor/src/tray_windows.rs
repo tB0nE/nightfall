@@ -33,6 +33,10 @@ const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
 const CMD_EDGE_ALIGNMENT: usize = 17;
 const CMD_CONTOUR_CLEANUP: usize = 18;
+const CMD_HOST_BUNDLED: usize = 20;
+const CMD_HOST_EXTERNAL: usize = 21;
+const CMD_HOST_TOGGLE: usize = 22;
+const CMD_HOST_FOLDER: usize = 23;
 const CMD_RATE_BASE: usize = 100;
 const CMD_CHOICE_BASE:usize=1000;
 static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex::new(Vec::new());
@@ -43,6 +47,7 @@ static MIC: OnceLock<Option<Arc<crate::mic::Mic>>> = OnceLock::new();
 static DEPTH: OnceLock<Option<Arc<crate::depth::Depth>>> = OnceLock::new();
 static STATUS: OnceLock<Arc<crate::status::Status>> = OnceLock::new();
 static STATS: OnceLock<Arc<crate::proxy::Stats>> = OnceLock::new();
+static HOST: OnceLock<Arc<crate::host::view::View>> = OnceLock::new();
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -77,6 +82,35 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         if status.sunshine_up.load(Ordering::Relaxed) { "running" } else { "not answering" }));
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, sunshine.as_ptr());
                     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                }
+                if let Some(host) = HOST.get() {
+                    use crate::host::{Choice, Phase};
+                    let submenu = CreatePopupMenu();
+                    if !submenu.is_null() {
+                        let label = match (&host.supervisor, host.state.choice) {
+                            (Some(supervisor), _) => match supervisor.phase() {
+                                Phase::Running => format!("Meteor-Vibepollo running on {}", supervisor.instance.base),
+                                Phase::WaitingForPort => format!("Waiting for host port {}", supervisor.instance.base),
+                                Phase::Restarting { failures } => format!("Host restarting ({failures})"),
+                                Phase::Stopped => "Meteor-Vibepollo stopped".into(),
+                                Phase::Failed(error) => format!("Host failed: {error}"),
+                            },
+                            (None, Choice::Bundled) => format!("Host unavailable: {}", host.error.as_deref().unwrap_or("unknown error")),
+                            (None, Choice::External) => "Using an external host".into(),
+                        };
+                        AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide(&label).as_ptr());
+                        AppendMenuW(submenu, MF_SEPARATOR, 0, std::ptr::null());
+                        AppendMenuW(submenu, MF_STRING | if host.state.choice == Choice::External { MF_CHECKED } else { 0 }, CMD_HOST_EXTERNAL, wide("Use my own host").as_ptr());
+                        AppendMenuW(submenu, MF_STRING | if host.binary.is_none() { MF_GRAYED } else if host.state.choice == Choice::Bundled { MF_CHECKED } else { 0 }, CMD_HOST_BUNDLED, wide("Use Meteor-Vibepollo").as_ptr());
+                        if let Some(supervisor) = &host.supervisor {
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_TOGGLE, wide(if supervisor.wanted() { "Stop host" } else { "Start host" }).as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_FOLDER, wide("Open host folder").as_ptr());
+                        } else if host.binary.is_none() {
+                            AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide("Set host_binary in meteor.toml to a Windows host build").as_ptr());
+                        }
+                        AppendMenuW(menu, MF_POPUP, submenu as usize, wide("Game streaming host").as_ptr());
+                        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                    }
                 }
                 if let Some(depth) = DEPTH.get().and_then(Option::as_ref) {
                     let available = depth.available();
@@ -256,6 +290,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         Err(err) => log::warn!("Can't change autostart: {err}"),
                     }
                 }
+                CMD_HOST_BUNDLED => {
+                    if let Some(host) = HOST.get() { host.switch(crate::host::Choice::Bundled); }
+                }
+                CMD_HOST_EXTERNAL => {
+                    if let Some(host) = HOST.get() { host.switch(crate::host::Choice::External); }
+                }
+                CMD_HOST_TOGGLE => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        supervisor.set_wanted(!supervisor.wanted());
+                    }
+                }
+                CMD_HOST_FOLDER => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        open_path(supervisor.instance.appdata());
+                    }
+                }
                 CMD_SOUND => { let _ = std::process::Command::new("control.exe").arg("mmsys.cpl").spawn(); }
                 CMD_INSTALL_CABLE => { let _ = std::process::Command::new("explorer.exe").arg("https://vb-audio.com/Cable/index.htm").spawn(); }
                 CMD_QUIT => crate::quit(),
@@ -299,11 +349,12 @@ fn meteor_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
 }
 
 /// Starts the notification-area icon on a dedicated Win32 message thread.
-pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, mic: Option<Arc<crate::mic::Mic>>, depth: Option<Arc<crate::depth::Depth>>) {
+pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, mic: Option<Arc<crate::mic::Mic>>, depth: Option<Arc<crate::depth::Depth>>, host: Arc<crate::host::view::View>) {
     let _ = STATUS.set(status);
     let _ = STATS.set(stats);
     let _ = MIC.set(mic);
     let _ = DEPTH.set(depth);
+    let _ = HOST.set(host);
     std::thread::spawn(|| unsafe {
         let instance: HINSTANCE = GetModuleHandleW(std::ptr::null());
         let class_name = wide("NightfallMeteorTray");

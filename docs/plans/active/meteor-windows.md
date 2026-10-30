@@ -52,9 +52,51 @@
   Windows and runtime startup is Linux-gated, so a live Windows XR stream is
   not available yet.
 - One active 2560x1440 display was present on this Windows PC during the
-  October 29 check. The current multi-monitor host implementation is Linux
-  specific; a Windows multi-monitor stream needs host capture and a second
-  active display before it can be validated here.
+  October 29 check. On October 30 the RX 480 was removed and Windows reported
+  two active displays: 2560x1440 primary and 1920x1080 secondary, both on the
+  RTX 3090. The fork's `/polaris/v1/display/manifest` still returns a layout
+  only on Linux, so Windows multi-monitor streaming needs host capture and
+  manifest work before these displays can be validated end to end.
+
+## Bundled host and XR checkpoint (2026-10-30)
+
+- `origin/main` remained at `e5dd63c`; the bundled host was on
+  `origin/feat/meteor-bundled-host` at `95dc0a2`. That branch was merged into
+  `feat/meteor-windows-compat`, retaining the Windows depth fixes.
+- Meteor now compiles the bundled-host controller on Windows, shows its choice
+  and lifecycle in the Windows tray, and uses an isolated Windows host config
+  beside the dedicated host executable. It refuses to adopt a non-Meteor host
+  config in that directory. The host process supervisor and restart path are
+  native Windows code. This is integration code, not a validated stream yet.
+- The fork's development branch `codex/meteor-vibepollo-baseline` at `b6efac1`
+  was cloned into ignored `meteor/target/windows-vibepollo-src`. MSYS2 UCRT64
+  and the fork's documented Windows dependencies were installed. A Release
+  `sunshine.exe` build reports `2.0.0-meteor.win.dev` and that revision. Its
+  current Windows `appdata()` is relative to its executable, so package the
+  host in its own directory. Meteor sets `system_tray = false` for the managed
+  copy; the host still needs its tray implementation linked to build.
+- Isolated Windows host smoke: the managed host started on base 51989, Meteor
+  advertised `host.kind = meteor-vibepollo` on discovery port 51900, its proxy
+  returned HTTP 200 for `/serverinfo` on 52989, and the Windows job object
+  terminated the host after Meteor was killed. The normal Windows profile was
+  backed up and configured to use this development host; Meteor and host were
+  left running at those ports for manual desktop-stream testing. Apollo was
+  left running on its own stack.
+- The updated Windows release passed 144 Rust tests (16 ignored, one known
+  GPU fixture skipped), plus 12 host-specific tests including job cleanup.
+  EdgePad 512 replay on RTX 3090 produced 58 maps from a 360-frame 120 fps
+  fixture at a selected 20 Hz rate: 7.9 ms median and 11.6 ms p95
+  frame-to-map latency, with NVDEC and NVIDIA Vulkan inference. This is a
+  replay, not a client stream.
+- The fork's DXGI tool sees both active displays, but the Windows host
+  manifest endpoint is Linux-gated and Windows capture selects one output.
+  The client's `outputs=` multi-monitor flow therefore has no matching
+  Windows host implementation yet.
+- Pinned Monado `eab5ff02` and Khronos `hello_xr` build natively on Windows.
+  With a process-local `XR_RUNTIME_JSON` and simulated HMD, `hello_xr`
+  created both 640x720 eye swapchains. This proves local OpenXR session
+  creation, not Nightfall XR capture, encoding or headset streaming. Meteor's
+  managed XR runtime path remains Linux-gated.
 
 ## Current Windows status (2026-10-09)
 

@@ -14,6 +14,10 @@
 mod detect;
 mod install;
 mod instance;
+#[cfg(unix)]
+mod supervisor;
+#[cfg(windows)]
+#[path = "supervisor_windows.rs"]
 mod supervisor;
 pub mod view;
 
@@ -120,6 +124,15 @@ pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
 /// Meteor keeps that base (and the headset's pairing) even while the host
 /// itself can't start.
 pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result<u16, String> {
+    // On Windows a tray switch starts the replacement before this process has
+    // released its proxy listeners. Reuse the saved base while that predecessor
+    // exits; the discovery bind below still rejects a persistent conflict.
+    #[cfg(windows)]
+    if std::env::var_os("METEOR_RESTARTED").is_some() {
+        if let Some(base) = state.base {
+            return Ok(base);
+        }
+    }
     let base = choose_base(state.base, |base| {
         stack_ports(base, config.port_offset, config.side_ports(base)).into_iter().all(port_free)
     })
@@ -137,6 +150,21 @@ pub fn prepare(config: &crate::config::Config, state: &mut State, base: u16) -> 
     let binary = binary(config).ok_or("Meteor-Vibepollo for Nightfall isn't installed")?;
     let env = config.host_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let instance = Instance { binary, base, dir: instance_dir(), env };
+    #[cfg(windows)]
+    {
+        // The current Windows fork stores state beside its executable. Do not
+        // adopt the config of an installed Apollo/Sunshine/Vibepollo when a
+        // developer accidentally points host_binary at that executable.
+        let appdata = instance.appdata();
+        let marker = appdata.join("meteor-managed-host.txt");
+        if appdata.is_dir() && !marker.is_file() && std::fs::read_dir(&appdata)
+            .map_err(|error| error.to_string())?.next().is_some()
+        {
+            return Err(format!("{} already has host state not owned by Meteor", appdata.display()));
+        }
+        std::fs::create_dir_all(&appdata).map_err(|error| error.to_string())?;
+        std::fs::write(&marker, "Managed by Nightfall Meteor.\n").map_err(|error| error.to_string())?;
+    }
     instance.write_config(&instance::host_name())?;
     if state.password.is_empty() || !instance.appdata().join("sunshine_state.json").is_file() {
         let user = "nightfall".to_string();

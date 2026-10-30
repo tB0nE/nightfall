@@ -20,9 +20,9 @@ mod download;
 mod firewall;
 mod gpu_post;
 mod gpu_refinement;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod host;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use host::view as host_view;
 mod icon;
 mod logfile;
@@ -199,14 +199,14 @@ async fn main() {
     // doubles as a single-instance lock. It's taken before the models start
     // loading, so a second launch exits straight away.
     let replay_file = value("--replay");
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     let mut host_view = host_view::View::default();
     let startup = if replay_file.is_some() {
         None
     } else {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         let bundled_base = host_view.prepare(&config);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         let bundled_base: Option<u16> = None;
         let sunshine_base = config
             .sunshine_port
@@ -256,7 +256,7 @@ async fn main() {
         log::info!("Log: {}", logfile::path().display());
         // Only now: the discovery port is the single-instance lock, so a
         // second launch never starts a second host.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         host_view.start();
         Some((map, discovery, side))
     };
@@ -411,9 +411,9 @@ async fn main() {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
         depth: depth_port,
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         host: host_view.discovery_info(),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         host: None,
         xr_port: xr_discovery,
     };
@@ -423,9 +423,9 @@ async fn main() {
         map,
         sunshine_host: config.sunshine_host.clone(),
         side,
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         host_ports: host_view.supervisor.is_some(),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         host_ports: false,
         xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
         sunshine_up: AtomicBool::new(false),
@@ -449,7 +449,7 @@ async fn main() {
     {
         #[cfg(windows)]
         if !no_tray {
-            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone());
+            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
         }
         let _ = (status, stats, depth, mic);
         if no_tray {
@@ -473,14 +473,14 @@ async fn main() {
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
 static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 static RESTART: AtomicBool = AtomicBool::new(false);
 
 /// Set on the process `restart` starts, so it waits for the old one's
 /// discovery port.
 const RESTART_ENV: &str = "METEOR_RESTARTED";
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn restart() {
     RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
     quit();
@@ -501,9 +501,19 @@ fn finish_quit() -> ! {
     if let Some(mic) = MIC.get() {
         mic.shutdown();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     if let Some(host) = host_view::RUNNING.get() {
         host.shutdown();
+    }
+    #[cfg(windows)]
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        match std::env::current_exe().and_then(|exe| {
+            let mut command = std::process::Command::new(exe);
+            command.args(std::env::args_os().skip(1)).env(RESTART_ENV, "1").spawn()
+        }) {
+            Ok(child) => log::info!("Restarted Meteor as process {}", child.id()),
+            Err(error) => log::error!("Cannot restart Meteor: {error}"),
+        }
     }
     #[cfg(target_os = "linux")]
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) {

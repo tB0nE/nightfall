@@ -117,10 +117,10 @@ mod tests {
     #[test]
     fn keeps_the_current_and_the_previous_version() {
         let root = std::env::temp_dir().join(format!("meteor-prune-{}", std::process::id()));
-        for (i, v) in ["0.1", "0.2", "0.3"].iter().enumerate() {
+        for v in ["0.1", "0.2", "0.3"] {
             std::fs::create_dir_all(root.join(v)).unwrap();
-            let t = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000 + i as u64);
-            std::fs::File::open(root.join(v)).unwrap().set_modified(t).unwrap();
+            // Opening a directory as File to set its mtime fails on Windows.
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
         prune(&root, "0.3");
         assert!(!root.join("0.1").exists());

@@ -21,6 +21,14 @@ const MANAGED: [&str; 1] = ["port"];
 impl Instance {
     /// Vibepollo's data folder: config, state, credentials and logs.
     pub fn appdata(&self) -> PathBuf {
+        #[cfg(windows)]
+        {
+            // Windows Vibepollo stores state beside its executable. A
+            // dedicated installed host directory keeps it separate from
+            // Apollo, Sunshine and the user's own Vibepollo installation.
+            return self.binary.parent().unwrap_or(&self.dir).join("config");
+        }
+        #[cfg(not(windows))]
         self.dir.join("vibepollo")
     }
 
@@ -36,11 +44,10 @@ impl Instance {
         let fail = |e: std::io::Error| format!("{}: {e}", path.display());
         std::fs::create_dir_all(self.appdata()).map_err(fail)?;
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        let text = render_config(
-            &existing,
-            &[("port", self.base.to_string())],
-            &[("sunshine_name", name.to_string()), ("address_family", "both".into())],
-        );
+        let mut initial = vec![("sunshine_name", name.to_string()), ("address_family", "both".into())];
+        #[cfg(windows)]
+        initial.push(("system_tray", "false".into()));
+        let text = render_config(&existing, &[("port", self.base.to_string())], &initial);
         if text != existing {
             std::fs::write(&path, text).map_err(fail)?;
         }
@@ -107,6 +114,9 @@ fn render_config(existing: &str, always: &[(&str, String)], initial: &[(&str, St
 
 /// "my-pc (Nightfall)": the name the headset lists the host under.
 pub fn host_name() -> String {
+    #[cfg(windows)]
+    let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
+    #[cfg(not(windows))]
     let name = std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_string())
