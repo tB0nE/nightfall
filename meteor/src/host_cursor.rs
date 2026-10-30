@@ -20,7 +20,7 @@ impl Control {
             scale: AtomicU32::new(valid_scale(scale)),
             status: Mutex::new(
                 if path.is_some() {
-                    "Stream only; requires X11 capture in Meteor-Vibepollo"
+                    "Stream only; requires X11 or KDE Wayland capture in Meteor-Vibepollo"
                 } else {
                     "Requires the bundled Meteor-Vibepollo host"
                 }
@@ -154,13 +154,13 @@ async fn run(
             }
         }
         let acknowledged = std::fs::read_to_string(path.with_file_name("cursor-scale.supported"))
-            .is_ok_and(|v| v.trim() == "x11-cursor-scale-v1");
+            .is_ok_and(|v| matches!(v.trim(), "x11-cursor-scale-v1" | "wayland-cursor-scale-v1"));
         control.report(if scale == 1 {
             "Stream only; desktop cursor unchanged".into()
         } else if acknowledged {
             format!("Active: {scale}× in the stream only")
         } else {
-            "Waiting for compatible X11 capture in Meteor-Vibepollo".into()
+            "Waiting for compatible X11 or KDE Wayland capture in Meteor-Vibepollo".into()
         });
     }
     if let Err(error) = atomic_write(path, b"1\n") {
