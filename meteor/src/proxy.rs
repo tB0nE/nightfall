@@ -41,6 +41,8 @@ pub struct Stats {
     pub tap: Arc<TapStats>,
     /// Addresses with an open video flow: the clients streaming right now.
     pub video_clients: std::sync::Mutex<HashSet<IpAddr>>,
+    /// Actual video delivery, independent of UDP flows retained for reconnects.
+    pub last_video_ms: AtomicU64,
 }
 
 impl Stats {
@@ -237,6 +239,9 @@ impl Proxy {
         loop {
             match tokio::time::timeout(UDP_FLOW_IDLE, upstream.recv(&mut buf)).await {
                 Ok(Ok(len)) => {
+                    if ch.name == "video" && len > 0 {
+                        self.stats.last_video_ms.store(crate::proxy::now_ms(), Ordering::Relaxed);
+                    }
                     if listener.send_to(&buf[..len], client).await.is_ok() {
                         self.stats.bytes_to_client.fetch_add(len as u64, Ordering::Relaxed);
                     }
@@ -291,6 +296,11 @@ impl Proxy {
             }
         }))
     }
+}
+
+pub(crate) fn now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
 }
 
 /// Asks for an 8 MB receive buffer (the kernel may cap it at net.core.rmem_max).
@@ -538,6 +548,7 @@ mod tests {
         });
 
         let stats = Arc::new(Stats::default());
+        assert_eq!(stats.last_video_ms.load(Ordering::Relaxed), 0);
         let proxy = Proxy::new(map.clone(), "127.0.0.1".into(), stats.clone(), None, None);
         proxy.start().await.unwrap();
 
@@ -557,6 +568,8 @@ mod tests {
         // Replies come from Meteor's port, where the client sent them.
         assert_eq!(from.port(), map.meteor(video));
         assert_eq!(stats.udp_flows.load(Ordering::Relaxed), 1);
+        assert!(stats.last_video_ms.load(Ordering::Relaxed) > 0,
+            "Actual video replies must wake the temporary host-cursor setting");
     }
 
     #[tokio::test]

@@ -6,6 +6,10 @@
 //! it compute depth maps on the host GPU and send them alongside the video.
 
 mod config;
+#[cfg(target_os = "linux")]
+mod host_cursor;
+#[cfg(target_os = "linux")]
+mod legacy_host_cursor;
 mod crypto;
 mod depth;
 mod depth_server;
@@ -348,6 +352,11 @@ async fn main() {
     // Register before exposing tray Quit. The coordinator remains alive while
     // async XR cleanup runs; only then use the existing GPU-safe hard exit.
     let shutdown = SHUTDOWN.get_or_init(shutdown::Shutdown::new);
+    #[cfg(target_os = "linux")]
+    let cursor = host_cursor::Control::new(config.host_cursor_scale,
+        host_view.supervisor.as_ref().map(|host| host.instance.appdata().join("cursor-scale")));
+    #[cfg(target_os = "linux")]
+    let cursor_task = tokio::spawn(host_cursor::watch(cursor.clone(), stats.clone(), shutdown.subscribe()));
     let dev_xr_address = value("--xr-service-dev");
     let mut xr_discovery = None;
     let mut xr_trust = None;
@@ -468,7 +477,7 @@ async fn main() {
         });
     }
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view }).await {
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view, cursor }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
@@ -491,6 +500,8 @@ async fn main() {
         _ = wait_for_exit_signal() => shutdown.request(),
         _ = shutdown.requested() => {},
     }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
     if let Some(task) = xr_service {
         match task.await {
             Ok(Ok(())) => {},

@@ -19,6 +19,7 @@ pub struct MeteorTray {
     pub mic: Option<Arc<Mic>>,
     pub host: Arc<crate::host::view::View>,
     pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
+    pub cursor: Arc<crate::host_cursor::Control>,
 }
 
 impl ksni::Tray for MeteorTray {
@@ -127,6 +128,7 @@ impl ksni::Tray for MeteorTray {
         }.into()])
         .chain(self.xr_pairing_menu())
         .chain(self.depth_menu())
+        .chain(self.cursor_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
         .chain([
@@ -180,6 +182,26 @@ impl ksni::Tray for MeteorTray {
 }
 
 impl MeteorTray {
+    fn cursor_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::*;
+        let scale = self.cursor.scale();
+        vec![SubMenu {
+            label: format!("Host cursor size: {}", if scale == 1 { "Unchanged".into() } else { format!("{scale}×") }),
+            enabled: self.cursor.available(),
+            submenu: vec![RadioGroup {
+                selected: (scale - 1) as usize,
+                options: ["Unchanged", "2×", "3×", "4×"].iter().map(|label| RadioItem { label: (*label).into(), ..Default::default() }).collect(),
+                select: Box::new(|tray: &mut Self, index| {
+                    if let Err(error) = tray.cursor.select(index as u32 + 1) {
+                        log::warn!("Cannot save host cursor size: {error}");
+                        tokio::spawn(async move { crate::desktop::notify("Could not save host cursor size", &error.to_string()).await; });
+                    }
+                }),
+            }.into(), StandardItem {
+                label: self.cursor.status(), enabled: false, ..Default::default()
+            }.into()], ..Default::default()
+        }.into()]
+    }
     /// "Nightfall Meteor", plus the base port when it isn't the default, so
     /// two Meteors on one PC can be told apart.
     fn name(&self) -> String {

@@ -192,6 +192,32 @@ It is not full GameStream/video coverage. Runtime status is an optional field on
 authenticated replies; client polling never treats session activity as proof of
 headset presentation or automatically enters XR.
 
+### Host cursor size (Linux)
+
+The tray's **Host cursor size** menu offers **Unchanged**, **2×**, **3×** and
+**4×**. Meteor-Vibepollo scales the captured cursor bitmap and its hotspot before
+blending it into the video. The physical desktop and Nightfall's own pointer
+are unchanged. Application cursor images work without theme reloads; cursors
+that games draw directly into their framebuffer cannot be separated this way.
+
+This first implementation requires the updated **bundled Meteor-Vibepollo** host
+and **X11 capture**, including the X11 CPU and GPU cursor compositors. Plain
+Sunshine, NvFBC embedded cursors and Wayland capture are not supported by this
+control yet. The menu is disabled for external hosts; its status shows when a
+compatible capture path has acknowledged support.
+
+Changes apply live, without restarting the stream. The host polls Meteor's
+runtime control at most every 100 ms. Meteor resets it roughly two seconds after
+video stops, on normal shutdown, and before starting a new managed host process.
+Multiple streams share the multiplier. The default is **Unchanged**.
+
+The saved `meteor.toml` key is `host_cursor_scale = 1` (allowed values 1–4).
+The private `host/vibepollo/cursor-scale` file controls the host; the host writes
+`cursor-scale.supported` after an X11 cursor capture confirms support. No desktop
+cursor preferences are changed. A one-time migration restores desktop settings
+left by the earlier experimental theme-based implementation, if its recovery
+journal exists.
+
 ### Building the AppImage
 
 ```

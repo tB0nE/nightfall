@@ -46,6 +46,8 @@ pub struct Config {
     pub models_dir: Option<PathBuf>,
     /// Run the depth model with TensorRT fp16 once its engine is built.
     pub tensorrt: bool,
+    /// Captured host cursor multiplier, applied only while desktop video flows.
+    pub host_cursor_scale: u32,
     /// A Vibepollo build to run as the bundled host instead of the
     /// downloaded one (development).
     pub host_binary: Option<PathBuf>,
@@ -68,6 +70,7 @@ impl Default for Config {
             tensorrt_dir: None,
             models_dir: None,
             tensorrt: true,
+            host_cursor_scale: 1,
             host_binary: None,
             host_env: Default::default(),
             xr: XrConfig::default(),
