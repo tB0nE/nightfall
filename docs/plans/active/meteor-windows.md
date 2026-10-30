@@ -75,6 +75,9 @@
   current Windows `appdata()` is relative to its executable, so package the
   host in its own directory. Meteor sets `system_tray = false` for the managed
   copy; the host still needs its tray implementation linked to build.
+- The Windows tray's Game streaming host menu exposes the managed host's
+  status, start/stop, web page, generated login file, and host folder. The
+  web login file is needed for manual pairing until the one-click flow lands.
 - Isolated Windows host smoke: the managed host started on base 51989, Meteor
   advertised `host.kind = meteor-vibepollo` on discovery port 51900, its proxy
   returned HTTP 200 for `/serverinfo` on 52989, and the Windows job object

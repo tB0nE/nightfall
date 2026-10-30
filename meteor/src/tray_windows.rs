@@ -37,6 +37,8 @@ const CMD_HOST_BUNDLED: usize = 20;
 const CMD_HOST_EXTERNAL: usize = 21;
 const CMD_HOST_TOGGLE: usize = 22;
 const CMD_HOST_FOLDER: usize = 23;
+const CMD_HOST_WEB: usize = 24;
+const CMD_HOST_LOGIN: usize = 25;
 const CMD_RATE_BASE: usize = 100;
 const CMD_CHOICE_BASE:usize=1000;
 static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex::new(Vec::new());
@@ -104,6 +106,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         AppendMenuW(submenu, MF_STRING | if host.binary.is_none() { MF_GRAYED } else if host.state.choice == Choice::Bundled { MF_CHECKED } else { 0 }, CMD_HOST_BUNDLED, wide("Use Meteor-Vibepollo").as_ptr());
                         if let Some(supervisor) = &host.supervisor {
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_TOGGLE, wide(if supervisor.wanted() { "Stop host" } else { "Start host" }).as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_WEB, wide("Open host web page").as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_LOGIN, wide("Open host login (host.toml)").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_FOLDER, wide("Open host folder").as_ptr());
                         } else if host.binary.is_none() {
                             AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide("Set host_binary in meteor.toml to a Windows host build").as_ptr());
@@ -305,6 +309,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
                         open_path(supervisor.instance.appdata());
                     }
+                }
+                CMD_HOST_WEB => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        open_url(&format!("https://localhost:{}", supervisor.instance.base + 1));
+                    }
+                }
+                CMD_HOST_LOGIN => {
+                    let _ = std::process::Command::new("notepad.exe").arg(crate::host::state_path()).spawn();
                 }
                 CMD_SOUND => { let _ = std::process::Command::new("control.exe").arg("mmsys.cpl").spawn(); }
                 CMD_INSTALL_CABLE => { let _ = std::process::Command::new("explorer.exe").arg("https://vb-audio.com/Cable/index.htm").spawn(); }
