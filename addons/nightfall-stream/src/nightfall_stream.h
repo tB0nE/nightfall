@@ -112,8 +112,11 @@ public:
 
 protected:
     static void _bind_methods();
+    void _notification(int what);
 
 private:
+    void _stop_stream(bool notify);
+    bool shutting_down_ = false;
     void _on_pair_completed(bool success, const String &msg);
     void _on_stream_started();
     void _on_stream_terminated(int error_code, const String &error_message);

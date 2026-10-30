@@ -38,7 +38,8 @@ static bool is_wayland() {
 NightfallStream::NightfallStream() {}
 
 NightfallStream::~NightfallStream() {
-    stop_stream();
+    shutting_down_ = true;
+    _stop_stream(false);
     delete meteor_mic_;
     meteor_mic_ = nullptr;
     if (http_requester_) {
@@ -47,7 +48,17 @@ NightfallStream::~NightfallStream() {
     }
 }
 
+void NightfallStream::_notification(int what) {
+    if (what == NOTIFICATION_EXIT_TREE) {
+        // Stop while children still exist. Shutdown must not emit signals back
+        // into a scene tree that is already being destroyed.
+        shutting_down_ = true;
+        _stop_stream(false);
+    }
+}
+
 void NightfallStream::_ready() {
+    shutting_down_ = false;
     set_process(true);
     config_manager_.instantiate();
     computer_manager_.instantiate();
@@ -195,6 +206,10 @@ void NightfallStream::start_stream(const String &host, const Dictionary &server_
 }
 
 void NightfallStream::stop_stream() {
+    _stop_stream(!shutting_down_);
+}
+
+void NightfallStream::_stop_stream(bool notify) {
     if (state_ == STATE_IDLE) return;
 
     // Unmute audio
@@ -216,7 +231,7 @@ void NightfallStream::stop_stream() {
         std::string tok = pipewire_capture_->get_restore_token();
         if (!tok.empty()) {
             restore_token_ = String(tok.c_str());
-            emit_signal("restore_token_updated", restore_token_);
+            if (notify) emit_signal("restore_token_updated", restore_token_);
         }
         delete pipewire_capture_;
         pipewire_capture_ = nullptr;
@@ -229,13 +244,13 @@ void NightfallStream::stop_stream() {
     StreamState prev_state = state_;
     state_ = STATE_STOPPING;
     _reset_reconnect();
-    emit_signal("state_changed", (int)state_);
+    if (notify) emit_signal("state_changed", (int)state_);
 
-    stream_connection_->stop();
+    if (stream_connection_) stream_connection_->stop();
 
     state_ = STATE_IDLE;
-    emit_signal("state_changed", (int)state_);
-    if (prev_state == STATE_CONNECTED || prev_state == STATE_RECONNECTING) {
+    if (notify) emit_signal("state_changed", (int)state_);
+    if (notify && (prev_state == STATE_CONNECTED || prev_state == STATE_RECONNECTING)) {
         emit_signal("stream_terminated", 0, "Disconnected");
     }
 }
@@ -527,11 +542,13 @@ Object *NightfallStream::get_stream_connection() const {
 }
 
 void NightfallStream::_on_pair_completed(bool success, const String &msg) {
+    if (shutting_down_) return;
     NF_LOG("NightfallStream", "_on_pair_completed: success=%d msg=%s", success, msg.utf8().get_data());
     emit_signal("pair_completed", success, msg);
 }
 
 void NightfallStream::_on_stream_started() {
+    if (shutting_down_) return;
     NF_LOG("NightfallStream", "_on_stream_started");
     state_ = STATE_CONNECTED;
     _reset_reconnect();
@@ -540,6 +557,7 @@ void NightfallStream::_on_stream_started() {
 }
 
 void NightfallStream::_on_stream_terminated(int error_code, const String &error_message) {
+    if (shutting_down_) return;
     if (state_ == STATE_STOPPING) return;
 
     state_ = STATE_DISCONNECTED;
@@ -565,15 +583,18 @@ void NightfallStream::_on_stream_terminated(int error_code, const String &error_
 }
 
 void NightfallStream::_on_stage_starting(const String &stage_name) {
+    if (shutting_down_) return;
     current_stage_ = stage_name;
     emit_signal("stage_starting", stage_name);
 }
 
 void NightfallStream::_on_stage_complete(const String &stage_name) {
+    if (shutting_down_) return;
     emit_signal("stage_complete", stage_name);
 }
 
 void NightfallStream::_on_stage_failed(const String &stage_name, int error_code) {
+    if (shutting_down_) return;
     emit_signal("stage_failed", stage_name, error_code);
 
     if (reconnect_timer_) {
@@ -593,26 +614,32 @@ void NightfallStream::_on_stage_failed(const String &stage_name, int error_code)
 }
 
 void NightfallStream::_on_connection_status_update(int status) {
+    if (shutting_down_) return;
     emit_signal("connection_status_update", status);
 }
 
 void NightfallStream::_on_log_message(const String &message) {
+    if (shutting_down_) return;
     emit_signal("log_message", message);
 }
 
 void NightfallStream::_on_h264_hw_upgraded() {
+    if (shutting_down_) return;
     emit_signal("h264_hw_upgraded");
 }
 
 void NightfallStream::_on_hdr_mode_changed(bool hdr_enabled, const Dictionary &metadata) {
+    if (shutting_down_) return;
     emit_signal("hdr_mode_changed", hdr_enabled, metadata);
 }
 
 void NightfallStream::_on_controller_rumble(int controller, int low_freq, int high_freq) {
+    if (shutting_down_) return;
     emit_signal("controller_rumble", controller, low_freq, high_freq);
 }
 
 void NightfallStream::_on_controller_trigger_rumble(int controller, int left_motor, int right_motor) {
+    if (shutting_down_) return;
     emit_signal("controller_trigger_rumble", controller, left_motor, right_motor);
 }
 
@@ -648,6 +675,7 @@ void NightfallStream::_attempt_reconnect() {
 }
 
 void NightfallStream::_on_reconnect_timeout() {
+    if (shutting_down_) return;
     if (reconnect_timer_) {
         reconnect_timer_->queue_free();
         reconnect_timer_ = nullptr;
