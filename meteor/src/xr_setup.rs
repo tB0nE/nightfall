@@ -87,6 +87,8 @@ pub fn restart_command() -> io::Result<std::process::Command> {
     let mut command = std::process::Command::new(executable);
     command.args(std::env::args_os().skip(1));
     for name in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] { command.env_remove(name); }
+    // The new process waits for this one's discovery port to close.
+    command.env(crate::RESTART_ENV, "1");
     Ok(command)
 }
 

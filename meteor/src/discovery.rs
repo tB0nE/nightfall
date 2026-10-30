@@ -1,5 +1,6 @@
 //! The endpoint the Nightfall client probes before connecting:
-//! `GET http://<host>:47900/meteor` returns which ports to use.
+//! `GET http://<host>:47900/meteor` returns which ports to use. The port
+//! sits DISCOVERY_BELOW_BASE below the host's base port (config.rs).
 
 use std::io;
 use std::sync::Arc;
@@ -20,6 +21,8 @@ pub struct Features {
     /// Bound, explicitly authorized managed XR control service.
     pub xr_port: Option<u16>,
     pub depth: Option<(u16, Arc<Depth>)>,
+    /// The bundled host, when Meteor runs it (host/view.rs).
+    pub host: Option<serde_json::Value>,
 }
 
 /// Bumped when the client has to change how it talks to Meteor.
@@ -44,6 +47,9 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
     // side channels are encrypted for Meteor's key.
     if let Some(key) = &features.key {
         info["key"] = json!(key);
+    }
+    if let Some(host) = &features.host {
+        info["host"] = host.clone();
     }
     if let Some(port) = features.mic_port {
         info["mic"] = json!({

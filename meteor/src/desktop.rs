@@ -13,7 +13,7 @@ fn autostart_path() -> PathBuf {
 
 /// What autostart runs: the AppImage itself (`$APPIMAGE`, set by its
 /// runtime), else this binary.
-fn launcher() -> Option<PathBuf> {
+pub fn launcher() -> Option<PathBuf> {
     std::env::var_os("APPIMAGE").map(PathBuf::from).or_else(|| std::env::current_exe().ok())
 }
 

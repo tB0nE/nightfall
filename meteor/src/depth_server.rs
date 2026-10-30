@@ -32,7 +32,6 @@ use std::time::{Duration, Instant};
 use crate::crypto::{KEY_BYTES, MeteorKey, TAG_BYTES};
 use crate::depth::{Depth, DepthMap};
 
-pub const DEFAULT_DEPTH_PORT: u16 = 47901;
 pub const FORMAT_L8: &str = "L8";
 pub const HEADER_LEN: usize = 32;
 const MAGIC: &[u8; 4] = b"NFDM";
