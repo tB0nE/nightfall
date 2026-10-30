@@ -11,6 +11,9 @@ const FADE_VALUES: Array = [0, 25, 50, 75, 90]
 # The Meta vendors plugin submits passthrough itself as a layer at -100, so
 # the fade must sit above it, yet below the projection and ambient layers (0).
 const SORT_ORDER := -50
+# The C++ setter stores a float but checks against double PI/2. Exactly
+# 90 degrees rounds above that bound and can leave the default 45-degree cap.
+const VERTICAL_HALF_ANGLE := PI * 0.5 - 0.000001
 
 var layer: Node3D = null
 var _viewport: SubViewport = null
@@ -32,8 +35,8 @@ func setup(scene_root: Node, xr_origin: Node3D) -> bool:
 	layer.set_sort_order(SORT_ORDER)
 	layer.set_radius(40.0)
 	layer.set_central_horizontal_angle(TAU)
-	layer.set_upper_vertical_angle(PI * 0.5)
-	layer.set_lower_vertical_angle(PI * 0.5)
+	layer.set_upper_vertical_angle(VERTICAL_HALF_ANGLE)
+	layer.set_lower_vertical_angle(VERTICAL_HALF_ANGLE)
 	layer.set_enable_hole_punch(false)
 	layer.set_alpha_blend(true)
 	layer.visible = false

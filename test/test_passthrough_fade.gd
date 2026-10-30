@@ -7,6 +7,12 @@ func _init():
 	assert(PassthroughFade.next_fade(33) == 0, "an unknown value starts over")
 	assert(PassthroughFade.label(0) == "Off")
 	assert(PassthroughFade.label(50) == "50%")
+	var sphere := OpenXRCompositionLayerEquirect.new()
+	sphere.set_upper_vertical_angle(PassthroughFade.VERTICAL_HALF_ANGLE)
+	sphere.set_lower_vertical_angle(PassthroughFade.VERTICAL_HALF_ANGLE)
+	assert(sphere.get_upper_vertical_angle() > deg_to_rad(89.9), "Fade must cover the ceiling")
+	assert(sphere.get_lower_vertical_angle() > deg_to_rad(89.9), "Fade must cover the floor")
+	sphere.free()
 	# Above the vendors plugin's passthrough layer (-100), below projection (0).
 	assert(PassthroughFade.SORT_ORDER > -100 and PassthroughFade.SORT_ORDER < 0)
 	# Without an OpenXR runtime there is no layer, and applying is harmless.

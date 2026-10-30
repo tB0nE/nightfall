@@ -1725,7 +1725,7 @@ func begin_pcvr_timing(fps: int) -> bool:
 	_pcvr_wait_for_desktop = main.is_streaming and (main.settings.host.stream_fps != fps or absf(interface.get_display_refresh_rate() - pcvr_timing.display_hz) >= 0.6)
 	refresh_pcvr_timing_ui()
 	main._log("[PCVR-TIMING] Override desktop video=%dfps display=%.0fHz; saved desktop=%dfps" % [fps, pcvr_timing.display_hz, main.settings.host.stream_fps])
-	if _pcvr_wait_for_desktop: _schedule_stream_restart()
+	if _pcvr_wait_for_desktop: _schedule_stream_restart(0.0)
 	return true
 
 func pcvr_desktop_timing_ready() -> bool:
@@ -1741,7 +1741,7 @@ func end_pcvr_timing() -> void:
 	refresh_pcvr_timing_ui()
 	main._log("[PCVR-TIMING] Restoring desktop preference %dfps" % main.settings.host.stream_fps)
 	if restart:
-		_schedule_stream_restart()
+		_schedule_stream_restart(0.0)
 	else:
 		apply_display_refresh_rate()
 
@@ -1984,13 +1984,15 @@ func cycle_double_h():
 	main.state_manager.save_state()
 	_schedule_stream_restart()
 
-func _schedule_stream_restart():
+func _schedule_stream_restart(debounce_seconds: float = 0.8):
 	if not main.is_streaming or main.current_host_id < 0:
 		return
 	_restart_pending = true
 	_restart_seq += 1
 	var my_seq = _restart_seq
-	await main.get_tree().create_timer(0.8).timeout
+	# XR timing changes are already committed; only user-cycled settings
+	# need the debounce. GPU/decoder drain waits below remain unchanged.
+	await main.get_tree().create_timer(debounce_seconds).timeout
 	if _restart_seq != my_seq:
 		return
 	_restart_pending = false
