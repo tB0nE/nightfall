@@ -65,7 +65,11 @@ fn build_vda_vulkan() {
         );
         return;
     }
-    let sdk = sdk.canonicalize().expect("ncnn SDK");
+    // Windows canonicalize() adds a \\?\ verbatim prefix that cl.exe does not
+    // accept in /I and /LIBPATH. An absolute ordinary path works for both.
+    let sdk = if sdk.is_absolute() { sdk } else {
+        std::env::current_dir().expect("Meteor build directory").join(sdk)
+    };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let output = out_dir.join(if os == "windows" {
         "meteor_vda_vulkan.dll"
@@ -83,7 +87,7 @@ fn build_vda_vulkan() {
     let mut command: Command = compiler.to_command();
     if compiler.is_like_msvc() {
         command
-            .args(["/nologo", "/O2", "/std:c++17", "/EHsc", "/LD", "/MD"])
+            .args(["/nologo", "/O2", "/std:c++17", "/EHsc", "/LD", "/MD", "/DNOMINMAX"])
             .arg(format!("/I{}", sdk.join("include/ncnn").display()))
             .arg(format!("/Fo{}", out_dir.join("vda_vulkan.obj").display()))
             .arg("native/vda_vulkan.cpp")

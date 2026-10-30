@@ -28,6 +28,15 @@
 - EdgePad 512x288 produced finite depth on the RX 480 and RTX 3090. On a
   synthetic frame, ten warm GPU inferences averaged 28.5 ms on RX 480 versus
   2.2 ms on RTX 3090. This is model-only timing; it does not measure a stream.
+- A 360-frame, 120 fps Windows host replay with EdgePad 512 at 20 Hz selected
+  RX 480 D3D11VA decoding, ncnn Vulkan inference and Vulkan postprocessing:
+  60 maps, 0 skipped, 43.7 ms median and 49.6 ms p95 frame-to-map latency.
+  Selecting RTX 3090 in a separate state selected NVDEC and NVIDIA inference:
+  58 maps, 9.6 ms median and 11.9 ms p95. These are replay measurements,
+  not headset streaming results. The cached ncnn SDK built the optional
+  Vulkan DLL after fixing MSVC include paths and Windows min/max macros.
+- ncnn listed the RX 480 three times in Vulkan enumeration on this PC. The
+  GPU choice list now keeps one entry per name so the tray does not repeat it.
 - The release and installer scripts now stage four pinned FFmpeg 8 LGPL DLLs
   and their licence. The installer also includes the 256 EdgePad model and
   Vulkan VDA DLL that the previous installer script omitted. Packaging syntax
@@ -39,7 +48,13 @@
   Vulkan capture and encoder path are not Windows artifacts. First validate a
   native Windows OpenXR session with a candidate runtime; then add Windows
   capture and managed lifecycle adapters. Keep OpenVR compatibility as a
-  separate acceptance check.
+  separate acceptance check. Today `xr_control::validate_runtime_root` rejects
+  Windows and runtime startup is Linux-gated, so a live Windows XR stream is
+  not available yet.
+- One active 2560x1440 display was present on this Windows PC during the
+  October 29 check. The current multi-monitor host implementation is Linux
+  specific; a Windows multi-monitor stream needs host capture and a second
+  active display before it can be validated here.
 
 ## Current Windows status (2026-10-09)
 

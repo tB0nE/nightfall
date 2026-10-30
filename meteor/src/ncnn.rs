@@ -203,10 +203,13 @@ fn start(lib: &'static libloading::Library) -> Result<Runtime, String> {
 /// Names persist across driver enumeration changes; never silently substitute
 /// another device for an explicit user selection.
 pub fn gpu_names() -> Vec<String> {
-    runtime().map(|r|r.devices.iter().enumerate().filter(|(i,_)| {
+    runtime().map(|r|{
+        let mut seen=std::collections::HashSet::new();
+        r.devices.iter().enumerate().filter(|(i,_)| {
         // SAFETY: indices refer to this runtime's immutable GPU enumeration.
         unsafe {(r.api.gpu_info_type)((r.api.get_gpu_info)(*i as c_int))!=3}
-    }).map(|(_,name)|name.clone()).collect()).unwrap_or_default()
+        }).map(|(_,name)|name.clone()).filter(|name|seen.insert(name.clone())).collect()
+    }).unwrap_or_default()
 }
 pub fn gpu_index(requested: Option<&str>) -> Result<c_int,String> {
     let r=runtime()?;resolve_device(&r.devices,r.device,requested)
