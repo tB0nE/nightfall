@@ -11,11 +11,11 @@ containerised `python3` can't see ffmpeg, gamescope or the GPU.
 | Meteor Rust code, GDScript logic | `tools/verify.py unit` | nothing |
 | Host depth: decode, pacing, models (`meteor/src/depth*.rs`, `vda*.rs`, `ncnn.rs`) | `tools/verify.py depth` | NVIDIA GPU, ncnn |
 | Menus, welcome, settings, panel placement, anything you'd click | `tools/verify.py ui` | gamescope, GPU |
-| Anything that only happens on the Quest (Android, OpenXR, passthrough) | `tools/verify.py quest` | headset on adb, a dev build; **ask the user first** |
+| Anything that only happens on the Quest (Android, OpenXR, passthrough) | `tools/verify.py quest` | headset on adb, a dev build |
 | Streaming, decode, depth delivery to the headset | `tools/verify.py stream` | as above, plus a paired host; it connects, samples, then disconnects |
 | PCVR runtime, Monado capture, the XR encoders | `tools/verify.py pcvr` | the installed XR runtime; NVIDIA and AMD GPUs |
 | Anything in the 3D scene: panel placement, layers, recenter, rooms | `tools/verify.py xr` | the installed XR runtime, gamescope, NVIDIA GPU |
-| Frame loss and latency across the whole stream | `tools/verify.py e2e` | headset, a paired host fronted by Meteor; restarts Meteor and draws on the desktop, so **ask first** |
+| Frame loss and latency across the whole stream | `tools/verify.py e2e` | headset, a paired host fronted by Meteor; restarts Meteor and draws on the desktop |
 
 Each run writes `build/verify/<check>-<time>/summary.json`, which has the
 check's metrics, failures and artifacts (logs, `ui.json`, screenshots). Read
@@ -84,8 +84,11 @@ tools/quest.py shot quest.png      # the system's view, via the Quest's capture 
 tools/quest.py sleep               # back to normal
 ```
 
-- **Ask first.** Installing and launching changes what the user, or another
-  agent, sees in the headset.
+- **Routine development is authorized.** In-place installs, launches, Meteor
+  restarts and tests within the active task do not need repeated approval.
+  Explain disruptive actions beforehand, coordinate shared devices with other
+  agents, and preserve app data and pairings. Never uninstall to bypass a
+  signing mismatch.
 - **When the bridge stops answering, check focus.** The app pauses whenever
   something else is in front, e.g. the Guardian boundary dialog or Settings.
   `quest.py status` names what's in front.
