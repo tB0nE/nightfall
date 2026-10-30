@@ -1314,6 +1314,7 @@ func _on_stream_started():
 	# stream_connection.cpp's deferred-free GPU resource queue).
 	if settings.host.is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != settings.host.native_resolution:
 		settings.host.native_resolution = layout.frame_size
+		host_resolution = compute_requested_resolution()
 		settings_controller.refresh_resolution_btn_label()
 		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
 		# blocked the retry for exactly the case that needs it most: removing/

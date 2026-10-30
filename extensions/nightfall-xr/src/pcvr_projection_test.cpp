@@ -748,7 +748,9 @@ void NightfallXrProjectionTest::publish_meteor_tracking() {
 	for (auto &hand:sample.controllers.hands)
 		held=held || hand.trigger>.15f || hand.squeeze>.15f || hand.buttons || std::abs(hand.stick[0])>.2f || std::abs(hand.stick[1])>.2f;
 	if (workspace_focus.load() || workspace_wait_release.load()) {
-		for (auto &hand:sample.controllers.hands) { hand.trigger=hand.squeeze=0; hand.buttons=0; hand.stick={0,0}; }
+		// Local watch/pointer tracking was captured above. Only suppress the
+		// game-facing controller sample, including tracked aim/grip validity.
+		for (auto &hand:sample.controllers.hands) { hand.flags=0; hand.trigger=hand.squeeze=0; hand.buttons=0; hand.stick={0,0}; }
 		if (!workspace_focus.load() && !held) workspace_wait_release.store(false);
 	}
 	tracking->publish(sample);

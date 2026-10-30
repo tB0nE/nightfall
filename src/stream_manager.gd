@@ -91,6 +91,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		_b().set_local_capture_mode(false)
 
+	# Timing-only XR restarts must use the latest manifest-corrected size,
+	# not the request cached before the previous monitor selection.
+	main.host_resolution = main.compute_requested_resolution()
 	var w = main.host_resolution.x
 	var h = main.host_resolution.y
 	if forced_resolution.x > 0 and forced_resolution.y > 0:
