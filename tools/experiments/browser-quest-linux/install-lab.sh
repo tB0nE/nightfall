@@ -20,5 +20,5 @@ if [[ -f "$WORK/stability.mp4" ]]; then
   "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/stability.mp4'" < "$WORK/stability.mp4"
 fi
 "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/tmp/forward-audio.sh'" < "$TOOLS/forward-audio.sh"
-echo 'Installed Nightfall Linux Browser Lab. Open it from Unknown Sources.' 
+echo 'Installed Nightfall Linux Browser Lab. Open it from Unknown Sources.'
 echo 'To view the Quest browser on this PC: adb forward tcp:6082 tcp:6082'
