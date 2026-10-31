@@ -141,6 +141,18 @@ rm -rf android/build
 mkdir -p android/build
 cd android/build
 unzip -q "$TEMPLATES"
+# Enable the ordinary protected-media permission only in DEV test exports.
+# Normal release builds keep their existing policy; no output protection changes.
+if [ "$BUILD_KIND" = "dev" ]; then
+  python3 - <<'PY_DRM'
+from pathlib import Path
+p = Path("src/main/AndroidManifest.xml")
+s = p.read_text()
+end = s.index(">", s.index("<application")) + 1
+s = s[:end] + '\n        <meta-data android:name="app.nightfall.browser.protected_media_test" android:value="true" />' + s[end:]
+p.write_text(s)
+PY_DRM
+fi
 # An arbitrary-site browser must support explicitly entered HTTP addresses,
 # including LAN Plex servers. Keep TLS verification and mixed-content defaults
 # unchanged; this only permits HTTP, it never downgrades an HTTPS URL.

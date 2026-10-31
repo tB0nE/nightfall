@@ -8,8 +8,8 @@ import java.io.UnsupportedEncodingException;
 /** Pure navigation policy: no Android objects, UI work or browsing diagnostics. */
 final class BrowserNavigation {
     static final String HOME_URL = "https://nightfall.invalid/";
-    // Services whose video or music is Widevine-protected. Protected media only
-    // plays on a secure display, and the browser draws into a texture, so it can't.
+    // Recognize services for contextual permission notices, not navigation blocks.
+    // Playback and readable-texture support must be tested separately.
     private static final String[][] DRM_SERVICES = {
         {"netflix.com", "Netflix"}, {"disneyplus.com", "Disney+"}, {"primevideo.com", "Prime Video"},
         {"max.com", "Max"}, {"hulu.com", "Hulu"}, {"tv.apple.com", "Apple TV+"},
@@ -17,14 +17,10 @@ final class BrowserNavigation {
         {"tubitv.com", "Tubi"}, {"crunchyroll.com", "Crunchyroll"}, {"spotify.com", "Spotify"},
         {"music.apple.com", "Apple Music"},
     };
-    // YouTube's TV interface, built for a gamepad and a big screen, only
-    // loads for a TV browser.
-    private static final String YOUTUBE_TV_AGENT = "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) "
-            + "AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1";
     // Web Apps on the home page: {name, address}. Each is the service's own
     // website; none needs DRM, so AI 3D works on all of them.
     static final String[][] WEB_APPS = {
-        {"YouTube", "https://www.youtube.com/tv"},
+        {"YouTube", "https://www.youtube.com/"},
         {"Plex", "https://app.plex.tv/desktop/"},
         {"Xbox Cloud Gaming", "https://www.xbox.com/play"},
         {"GeForce NOW", "https://play.geforcenow.com/"},
@@ -32,19 +28,49 @@ final class BrowserNavigation {
     };
     private BrowserNavigation() {}
 
-    /** The user agent a page at `value` needs, or null for the WebView default. */
-    static String userAgent(String value) {
+    /** Request YouTube's desktop layout using the installed WebView's Chrome version. */
+    static String userAgent(String value, String defaultAgent) {
+        return userAgent(value, defaultAgent, false);
+    }
+
+    /** Netflix desktop-site identity is limited to the protected-media DEV experiment. */
+    static String userAgent(String value, String defaultAgent, boolean protectedMediaTest) {
         if (value == null) return null;
         try {
-            URI uri = new URI(value);
-            String host = uri.getHost(), path = uri.getPath();
-            if (host == null || path == null) return null;
+            String host = new URI(value).getHost();
+            if (host == null) return null;
             host = host.toLowerCase(java.util.Locale.ROOT);
-            boolean youtube = host.equals("youtube.com") || host.equals("www.youtube.com");
-            return youtube && (path.equals("/tv") || path.startsWith("/tv/")) ? YOUTUBE_TV_AGENT : null;
+            boolean youtube = host.equals("youtube.com") || host.endsWith(".youtube.com");
+            boolean netflix = host.equals("netflix.com") || host.endsWith(".netflix.com");
+            if (!youtube && !(protectedMediaTest && netflix)) return null;
+            java.util.regex.Matcher version = java.util.regex.Pattern.compile("Chrome/([0-9.]+)")
+                    .matcher(defaultAgent == null ? "" : defaultAgent);
+            String chrome = version.find() ? " Chrome/" + version.group(1) : "";
+            return "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 (KHTML, like Gecko)"
+                    + chrome + " Safari/537.36";
         } catch (URISyntaxException e) {
             return null;
         }
+    }
+
+    static String desktopUrl(String value) {
+        if (!allowed(value)) return value;
+        try {
+            URI uri = new URI(value);
+            if (!"m.youtube.com".equalsIgnoreCase(uri.getHost())) return value;
+            // Keep the original escaping, query and fragment intact.
+            return value.replaceFirst("(?i)^(https?://)m\\.youtube\\.com(?=[:/\\?#]|$)", "$1www.youtube.com");
+        } catch (URISyntaxException e) { return value; }
+    }
+
+    /** DEV-only normal EME permission: never grant camera, microphone or unknown resources. */
+    static String[] protectedMediaResources(String origin, String[] requested, boolean enabled) {
+        final String protectedId = "android.webkit.resource.PROTECTED_MEDIA_ID";
+        if (!enabled || !allowed(origin) || !origin.regionMatches(true, 0, "https://", 0, 8)
+                || requested == null) return new String[0];
+        for (String resource : requested)
+            if (protectedId.equals(resource)) return new String[]{protectedId};
+        return new String[0];
     }
 
     /** The DRM streaming service `value` belongs to, or null. */
@@ -63,8 +89,8 @@ final class BrowserNavigation {
     }
 
     static String drmNotice(String service) {
-        return (service == null ? "This site's video" : service) + " uses DRM copy protection, so it can't play in the "
-                + "Nightfall browser. Use its own app or the Meta Quest Browser instead.";
+        return (service == null ? "This site's video" : service) + " uses protected media. Protected-media requests are disabled in this build; "
+                + "playback support has not been verified.";
     }
 
     static boolean allowed(String value) {

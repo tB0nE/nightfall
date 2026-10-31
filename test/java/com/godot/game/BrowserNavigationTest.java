@@ -39,15 +39,35 @@ public final class BrowserNavigationTest {
         equal(BrowserNavigation.drmService("https://www.youtube.com/tv"), null);
         equal(BrowserNavigation.drmService("not a url"), null);
         equal(BrowserNavigation.drmService(null), null);
-        equal(BrowserNavigation.drmNotice("Netflix").startsWith("Netflix uses DRM"), true);
-        equal(BrowserNavigation.drmNotice(null).startsWith("This site's video uses DRM"), true);
-        equal(BrowserNavigation.userAgent("https://www.youtube.com/tv").contains("SMART-TV"), true);
-        equal(BrowserNavigation.userAgent("https://www.youtube.com/tv#/watch?v=x").contains("SMART-TV"), true);
-        equal(BrowserNavigation.userAgent("https://YOUTUBE.com/tv/"), BrowserNavigation.userAgent("https://www.youtube.com/tv"));
-        equal(BrowserNavigation.userAgent("https://www.youtube.com/"), null);
-        equal(BrowserNavigation.userAgent("https://www.youtube.com/tvshows"), null);
-        equal(BrowserNavigation.userAgent("https://evil.example/tv"), null);
-        equal(BrowserNavigation.userAgent(null), null);
+        equal(BrowserNavigation.drmNotice("Netflix").startsWith("Netflix uses protected media"), true);
+        final String mobileAgent = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/149.1.0.10 Mobile Safari/537.36";
+        for (String url : new String[]{"https://www.youtube.com/", "https://m.youtube.com/watch?v=abc", "https://YOUTUBE.com/tv"}) {
+            String desktop = BrowserNavigation.userAgent(url, mobileAgent);
+            equal(desktop.contains("Chrome/149.1.0.10"), true);
+            equal(desktop.contains("Mobile"), false);
+            equal(desktop.contains("SMART-TV"), false);
+        }
+        equal(BrowserNavigation.userAgent("https://youtube.com.evil.example/", mobileAgent), null);
+        equal(BrowserNavigation.userAgent("https://example.com/", mobileAgent), null);
+        equal(BrowserNavigation.userAgent(null, mobileAgent), null);
+        equal(BrowserNavigation.userAgent("https://www.netflix.com/", mobileAgent), null);
+        String netflixDesktop = BrowserNavigation.userAgent("https://www.netflix.com/browse", mobileAgent, true);
+        equal(netflixDesktop, BrowserNavigation.userAgent("https://www.youtube.com/", mobileAgent));
+        equal(BrowserNavigation.userAgent("https://netflix.com.evil.example/", mobileAgent, true), null);
+        equal(BrowserNavigation.userAgent("https://example.com/", mobileAgent, true), null);
+        equal(BrowserNavigation.desktopUrl("https://m.youtube.com/watch?v=a%2Bb#t=1"), "https://www.youtube.com/watch?v=a%2Bb#t=1");
+        equal(BrowserNavigation.desktopUrl("https://m.youtube.com.evil.example/watch"), "https://m.youtube.com.evil.example/watch");
+        equal(BrowserNavigation.desktopUrl("https://www.youtube.com/"), "https://www.youtube.com/");
+        equal(BrowserNavigation.WEB_APPS[0][1], "https://www.youtube.com/");
+        final String protectedId = "android.webkit.resource.PROTECTED_MEDIA_ID";
+        String[] mixed = new String[]{protectedId, "android.webkit.resource.AUDIO_CAPTURE", "future.permission"};
+        equal(java.util.Arrays.toString(BrowserNavigation.protectedMediaResources("https://www.netflix.com", mixed, true)), "[" + protectedId + "]");
+        equal(BrowserNavigation.protectedMediaResources("https://www.netflix.com", mixed, false).length, 0);
+        equal(BrowserNavigation.protectedMediaResources("http://www.netflix.com", mixed, true).length, 0);
+        equal(BrowserNavigation.protectedMediaResources("https://user:pass@www.netflix.com", mixed, true).length, 0);
+        equal(BrowserNavigation.protectedMediaResources("https://example.com", new String[]{"android.webkit.resource.AUDIO_CAPTURE"}, true).length, 0);
+        equal(BrowserNavigation.protectedMediaResources(null, mixed, true).length, 0);
+        equal(BrowserNavigation.protectedMediaResources("https://example.com", null, true).length, 0);
         for (String[] app : BrowserNavigation.WEB_APPS) {
             equal(app.length, 2);
             equal(BrowserNavigation.allowed(app[1]) && app[1].startsWith("https://"), true);

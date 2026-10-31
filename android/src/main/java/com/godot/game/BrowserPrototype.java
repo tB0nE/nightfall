@@ -146,6 +146,7 @@ public final class BrowserPrototype {
     private final AtomicBoolean frame = new AtomicBoolean();
     // 0 closed, 1 opening, 2 rendering, -1 failed. Read from Godot's thread.
     private volatile int state;
+    private boolean protectedMediaTest;
     private VirtualDisplay display;
     private Presentation presentation;
     private Surface surface;
@@ -219,6 +220,13 @@ public final class BrowserPrototype {
             texture = source;
             try {
                 if (activity == null || activity.isFinishing()) throw new IllegalStateException("No activity");
+                try {
+                    android.os.Bundle metadata = activity.getPackageManager().getApplicationInfo(
+                            activity.getPackageName(), android.content.pm.PackageManager.GET_META_DATA).metaData;
+                    protectedMediaTest = metadata != null && metadata.getBoolean("app.nightfall.browser.protected_media_test", false);
+                } catch (android.content.pm.PackageManager.NameNotFoundException impossible) {
+                    protectedMediaTest = false;
+                }
                 browserPreferences = activity.getApplicationContext().getSharedPreferences("nightfall_browser", Context.MODE_PRIVATE);
                 blocker = new BlockingContext(activity);
                 saveHistory = browserPreferences.getBoolean("save_history", false);
@@ -459,12 +467,26 @@ public final class BrowserPrototype {
             siteNotice(token, "Downloads are not supported yet. No file was downloaded."));
     web.setWebChromeClient(new WebChromeClient() {
         @Override public void onPermissionRequest(android.webkit.PermissionRequest request) {
-            boolean drm = java.util.Arrays.asList(request.getResources())
-                    .contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID);
             UI.post(() -> {
-                try { request.deny(); } catch (IllegalStateException cancelled) { return; }
-                siteNotice(token, drm ? BrowserNavigation.drmNotice(BrowserNavigation.drmService(request.getOrigin().toString()))
-                        : "Camera/microphone and other protected site permissions are not supported yet; request denied.");
+                if (token != generation.get() || web == null) {
+                    try { request.deny(); } catch (IllegalStateException cancelled) { }
+                    return;
+                }
+                String origin = request.getOrigin().toString();
+                String[] granted = BrowserNavigation.protectedMediaResources(origin, request.getResources(), protectedMediaTest);
+                try {
+                    if (granted.length != 0) {
+                        request.grant(granted);
+                        siteNotice(token, "Protected-media test enabled. Playback and video output may still be unsupported.");
+                        DiagnosticLog.info("BrowserPrototype", "DEV protected-media permission granted for " + request.getOrigin().getHost());
+                    } else {
+                        request.deny();
+                        boolean drm = java.util.Arrays.asList(request.getResources())
+                                .contains(android.webkit.PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID);
+                        siteNotice(token, drm ? BrowserNavigation.drmNotice(BrowserNavigation.drmService(origin))
+                                : "Camera/microphone and other protected site permissions are not supported yet; request denied.");
+                    }
+                } catch (IllegalStateException cancelled) { }
             });
         }
         @Override public void onGeolocationPermissionsShowPrompt(String origin,
@@ -535,7 +557,7 @@ public final class BrowserPrototype {
                 if (request.isForMainFrame()) siteNotice(token, "This link requires an unsupported scheme or external app. Nothing was opened.");
                 return true;
             }
-            if (request.isForMainFrame() && applyUserAgent(destination)) {
+            if (request.isForMainFrame() && (!destination.equals(BrowserNavigation.desktopUrl(destination)) || applyUserAgent(destination))) {
                 navigateTo(destination);
                 return true;
             }
@@ -546,9 +568,10 @@ public final class BrowserPrototype {
             if (token != generation.get() || view != web) return;
             // Back/Forward and redirects skip shouldOverrideUrlLoading.
             if (!BrowserNavigation.HOME_URL.equals(url) && !BrowserGamepadProbe.URL.equals(url)
-                    && BrowserNavigation.allowed(url) && applyUserAgent(url)) {
+                    && BrowserNavigation.allowed(url)
+                    && (!url.equals(BrowserNavigation.desktopUrl(url)) || applyUserAgent(url))) {
                 view.stopLoading();
-                view.loadUrl(url);
+                navigateTo(url);
                 return;
             }
             navigationGeneration++;
@@ -556,8 +579,6 @@ public final class BrowserPrototype {
             mainFrameFailed = false;
             blocker.page(url);
             loading = true;
-            String drmService = BrowserNavigation.drmService(url);
-            if (drmService != null) siteNotice(token, BrowserNavigation.drmNotice(drmService));
             updateNavigation();
         }
         @Override public void onPageFinished(WebView view, String url) {
@@ -651,6 +672,7 @@ public final class BrowserPrototype {
     }
 
     private void navigateTo(String url) {
+        url = BrowserNavigation.desktopUrl(url);
         blocker.page(url);
         if (BrowserGamepadProbe.URL.equals(url)) {
             web.loadDataWithBaseURL(url, BrowserGamepadProbe.html(), "text/html", "UTF-8", url);
@@ -661,10 +683,10 @@ public final class BrowserPrototype {
         web.loadUrl(url);
     }
 
-    // Sets the page WebView's user agent for `url` (YouTube's TV interface
-    // needs a TV one); true when it changed, so the page must load again.
+    // YouTube requests desktop layout; the DEV protected-media test also does for Netflix.
+    // True when it changed, so redirects and history navigation can reload.
     private boolean applyUserAgent(String url) {
-        String wanted = BrowserNavigation.userAgent(url);
+        String wanted = BrowserNavigation.userAgent(url, WebSettings.getDefaultUserAgent(web.getContext()), protectedMediaTest);
         String target = wanted != null ? wanted : WebSettings.getDefaultUserAgent(web.getContext());
         if (target.equals(web.getSettings().getUserAgentString())) return false;
         web.getSettings().setUserAgentString(wanted);

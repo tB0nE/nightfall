@@ -62,6 +62,27 @@ public class BrowserWebViewIntegrationTest {
         if (activity != null) activity.finish();
         if (texture != null) texture.release();
     }
+    @Test public void devProtectedMediaDoesNotGrantOtherResources() throws Exception {
+        String[][] granted = {null};
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            try {
+                Object current = session(0);
+                Field enabled = current.getClass().getDeclaredField("protectedMediaTest");
+                enabled.setAccessible(true);
+                enabled.setBoolean(current, true);
+                WebView web = (WebView) field("web");
+                web.getWebChromeClient().onPermissionRequest(new PermissionRequest() {
+                    public android.net.Uri getOrigin() { return android.net.Uri.parse("https://example.org"); }
+                    public String[] getResources() { return new String[]{RESOURCE_PROTECTED_MEDIA_ID, RESOURCE_AUDIO_CAPTURE}; }
+                    public void grant(String[] resources) { granted[0] = resources; }
+                    public void deny() { fail("Expected the DEV protected-media permission"); }
+                });
+            } catch (Exception failure) { throw new AssertionError(failure); }
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertArrayEquals(new String[]{PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID}, granted[0]);
+    }
+
     @Test public void permissionsAreDenied() throws Exception {
         boolean[] denied = {false};
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
