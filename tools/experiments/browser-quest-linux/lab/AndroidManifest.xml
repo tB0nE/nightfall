@@ -1,0 +1,18 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.nightfall.browserlab" android:versionCode="1" android:versionName="0.1-lab">
+    <!-- Legacy target is deliberate: this lab executes downloaded Linux binaries.
+         It does not establish compatibility with Nightfall's shipping target SDK. -->
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <application android:label="Nightfall Linux Browser Lab" android:debuggable="true" android:usesCleartextTraffic="true" android:hardwareAccelerated="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <service android:name=".BrowserLabService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
+        <activity android:name=".BrowserLabActivity" android:exported="true" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

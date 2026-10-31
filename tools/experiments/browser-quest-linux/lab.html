@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Nightfall ARM64 browser experiment</title>
+<style>body{font:18px system-ui;background:#191b2c;color:#eee;max-width:900px;margin:20px auto;padding:16px}a{color:#bfc5ff}pre{white-space:pre-wrap;font-size:15px}li{margin:12px 0}h1{font-size:30px;margin:10px 0}h2{font-size:22px;margin:10px 0}</style>
+<h1>Chrome running on Quest</h1>
+<p>ARM64 Linux userspace through PRoot. No virtual CPU or desktop PC is running this browser.</p>
+<p>This lab requires Chrome's sandbox to be disabled. It is not a production browser.</p>
+<ul><li><a href="https://www.netflix.com/">Test Netflix</a></li><li><a href="https://www.youtube.com/">Test clear video on YouTube</a></li></ul>
+<p>Audio is forwarded to Quest speakers while the lab service runs. The PC viewer itself has no audio.</p>
+<h2>DRM capability check</h2>
+<pre id="result">Checking normal browser DRM APIs. No license or account data is requested.</pre>
+<script>
+(async () => {
+  const result = {secureContext: isSecureContext, emeAvailable: !!navigator.requestMediaKeySystemAccess};
+  try {
+    const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+      initDataTypes: ['cenc'],
+      videoCapabilities: [{contentType: 'video/mp4; codecs="avc1.42E01E"'}],
+      audioCapabilities: [{contentType: 'audio/mp4; codecs="mp4a.40.2"'}],
+      sessionTypes: ['temporary']
+    }]);
+    result.keySystemAccepted = true;
+    await access.createMediaKeys();
+    result.mediaKeysCreated = true;
+    result.note = 'DRM initialization succeeded. This API check does not test Netflix authorization or playback.';
+  } catch (e) { result.error = e.name + ': ' + e.message; }
+  document.getElementById('result').textContent = JSON.stringify(result, null, 2);
+})();
+</script>

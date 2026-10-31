@@ -1,0 +1,21 @@
+{
+  "libandroid-shmem": {
+    "version": "0.7",
+    "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+    "sha256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+  },
+  "libtalloc": {
+    "version": "2.5.0",
+    "url": "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+    "sha256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7"
+  },
+  "proot": {
+    "version": "5.1.107.101",
+    "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.101_aarch64.deb",
+    "sha256": "a28355e9be257e1f87f4e9294b3118470d4fd7a5442fed8b278f4443c83407d7"
+  },
+  "chrome": {
+    "url": "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb",
+    "sha256": "dc66f2d96853153e350c4a0944da4503cae39c2fcbcdb4e0057c64f6c49202ff"
+  }
+}

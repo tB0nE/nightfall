@@ -1,0 +1,54 @@
+#cloud-config
+hostname: nightfall-browser-vm
+manage_etc_hosts: true
+users:
+  - name: browser
+    gecos: Nightfall browser experiment
+    groups: [sudo, audio, video]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+ssh_pwauth: false
+# The command-not-found index is unnecessary in this browser-only guest and
+# expensive to generate under ARM system emulation.
+bootcmd:
+  - [rm, -f, /etc/apt/apt.conf.d/50command-not-found]
+package_update: true
+packages: [ca-certificates, curl, fluxbox, xvfb, x11vnc, x11-utils, dbus-x11, fonts-liberation, fonts-dejavu-core, pulseaudio]
+write_files:
+  - path: /usr/local/bin/nightfall-browser-session
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      export DISPLAY=:0
+      export XDG_RUNTIME_DIR=/home/browser/.cache/nightfall-runtime
+      mkdir -p "$XDG_RUNTIME_DIR"
+      chmod 700 "$XDG_RUNTIME_DIR"
+      Xvfb :0 -screen 0 1280x720x24 -nolisten tcp -ac &
+      for i in $(seq 1 50); do xdpyinfo -display :0 >/dev/null 2>&1 && break; sleep .1; done
+      pulseaudio --start --exit-idle-time=-1 || true
+      x11vnc -display :0 -rfbport 5900 -listen 0.0.0.0 -forever -shared -nopw -noxdamage &
+      exec dbus-run-session -- /bin/bash -c 'fluxbox & google-chrome-stable --no-first-run --disable-gpu --disable-dev-shm-usage --window-size=1280,720 https://www.netflix.com/ & wait'
+  - path: /etc/systemd/system/nightfall-browser.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Nightfall isolated browser experiment
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      User=browser
+      WorkingDirectory=/home/browser
+      ExecStart=/usr/local/bin/nightfall-browser-session
+      Restart=on-failure
+      RestartSec=3
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [bash, -ec, 'curl -fL --retry 3 -o /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb; apt-get install -y /tmp/google-chrome.deb; rm /tmp/google-chrome.deb']
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, nightfall-browser.service]
+final_message: Nightfall browser VM initial setup finished.

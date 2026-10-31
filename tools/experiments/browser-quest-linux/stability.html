@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Quest browser stability test</title>
+<style>body{background:#191b2c;color:#eee;font:18px system-ui;margin:20px}video{width:640px;max-height:390px}pre{position:absolute;left:680px;top:100px;white-space:pre-wrap}button{font:22px system-ui;padding:10px}</style>
+<h1>Native Quest browser: looping audio/video test</h1>
+<button id="start">Start stability test</button>
+<p>Generated 720p H.264/AAC clip. Audio is forwarded from the lab sink to Quest speakers.</p>
+<video id="video" src="stability.mp4" controls loop playsinline></video>
+<pre id="result">Not started.</pre>
+<script>
+const video = document.getElementById('video');
+let started = 0, previous = 0, loops = 0, failure = null;
+document.getElementById('start').onclick = async () => {
+  if (!started) started = performance.now();
+  try { await video.play(); } catch (e) { failure = e.name + ': ' + e.message; }
+};
+setInterval(() => {
+  if (!started) return;
+  if (video.currentTime + 1 < previous) loops++;
+  previous = video.currentTime;
+  const quality = video.getVideoPlaybackQuality();
+  document.getElementById('result').textContent = JSON.stringify({
+    elapsed_s: Math.round((performance.now() - started) / 1000),
+    media_time_s: Math.round(video.currentTime * 10) / 10,
+    loops, decoded_frames: quality.totalVideoFrames,
+    dropped_frames: quality.droppedVideoFrames,
+    paused: video.paused, ready_state: video.readyState,
+    error: failure || (video.error && video.error.message)
+  }, null, 2);
+}, 1000);
+</script>
