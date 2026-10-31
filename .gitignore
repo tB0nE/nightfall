@@ -114,3 +114,6 @@ Nightfall.AppDir/
 meteor/target/
 meteor/tools/__pycache__/
 extensions/browser-adblock/target/
+
+# Godot-generated metadata for documentation-only images.
+/docs/images/*.import

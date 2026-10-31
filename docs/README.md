@@ -6,6 +6,8 @@ the build/deployment entry point.
 
 ## Current documentation
 
+- [Nightfall controls](guides/controls.md): desktop/browser shortcuts, controller
+  mapping, and keyboard trackpad use.
 - [`architecture/`](architecture/) records constraints and design decisions
   that describe the current system.
 - [`guides/`](guides/) contains reproducible technical procedures.
