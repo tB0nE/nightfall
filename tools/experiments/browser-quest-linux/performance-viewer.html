@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Linux browser frame-rate probe</title>
+<style>html,body,#screen{margin:0;width:100%;height:100%;overflow:hidden;background:#111}#stats{position:fixed;top:0;right:0;background:#111d;color:white;padding:8px;font:16px monospace;pointer-events:none;z-index:2}</style>
+<div id="screen"></div><div id="stats">Connecting…</div>
+<script type="module">
+import RFB from './core/rfb.js';
+const rfb = new RFB(document.querySelector('#screen'), `ws://${location.host}/websockify`);
+rfb.scaleViewport = true;
+rfb.resizeSession = false;
+let frames = 0, connected = false, lastFrames = 0, lastTime = performance.now();
+const started = lastTime;
+// Count completed display flips, not queued flips or animation callbacks.
+// This is an RFB presentation rate, not proof that the video pixels changed.
+const display = rfb._display;
+const original = display.flip;
+display.flip = function(fromQueue) {
+  const queued = this._renderQ.length !== 0 && !fromQueue;
+  const result = original.call(this, fromQueue);
+  if (!queued) frames++;
+  return result;
+};
+rfb.addEventListener('connect', () => { connected = true; });
+rfb.addEventListener('disconnect', () => { connected = false; });
+setInterval(() => {
+  const now = performance.now(), fps = (frames-lastFrames)*1000/(now-lastTime);
+  document.querySelector('#stats').textContent = `VNC display: ${fps.toFixed(1)} updates/s`;
+  lastFrames = frames; lastTime = now;
+  navigator.sendBeacon('http://127.0.0.1:6083/', JSON.stringify({
+    source:'viewer', frames, connected, elapsed:(now-started)/1000
+  }));
+}, 1000);
+</script>

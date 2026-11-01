@@ -31,7 +31,11 @@ public final class BrowserLabService extends Service {
                 .setContentText("Browser and audio remain active while you use Nightfall")
                 .setContentIntent(show).addAction(new Notification.Action.Builder(null, "Stop", stop).build())
                 .setOngoing(true).build());
-        if (linux != null && linux.isAlive()) return START_NOT_STICKY;
+        if (linux != null && linux.isAlive()) {
+            if (intent != null && intent.getBooleanExtra("probe_frames", false)) DirectFrameProbe.start(this);
+            return START_NOT_STICKY;
+        }
+        DirectFrameService.stopForRuntime(); // No mapped reader may outlive Xvfb's backing file.
         File base = new File(getFilesDir(), "linux");
         if (!new File(base, "rootfs/opt/google/chrome/chrome").exists()) {
             status = "Linux files have not been deployed yet"; stopSelf(); return START_NOT_STICKY;
@@ -62,6 +66,7 @@ public final class BrowserLabService extends Service {
     }
 
     @Override public void onDestroy() {
+        DirectFrameService.stopForRuntime();
         if (audio != null) audio.stop();
         if (linux != null) { Process current = linux; linux = null; current.destroy(); }
         stopForeground(true);

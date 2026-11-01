@@ -51,6 +51,9 @@ public final class BrowserLabActivity extends Activity {
             unsafe.setChecked(getIntent().getBooleanExtra("unsafe_no_sandbox", false));
             launch(unsafe.isChecked());
         }
+        if (getIntent().getBooleanExtra("probe_frames", false)) {
+            web.postDelayed(() -> DirectFrameProbe.start(this), 1000);
+        }
     }
 
     private void launch(boolean unsafe) {
@@ -59,6 +62,14 @@ public final class BrowserLabActivity extends Activity {
         startForegroundService(start);
         status.setText("Starting Linux browser and headset audio");
         web.postDelayed(() -> { status.setText(BrowserLabService.status); openDesktop(); }, 10000);
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.getBooleanExtra("start_lab", false))
+            launch(intent.getBooleanExtra("unsafe_no_sandbox", false));
+        if (intent.getBooleanExtra("probe_frames", false)) DirectFrameProbe.start(this);
     }
 
     private void openDesktop() {

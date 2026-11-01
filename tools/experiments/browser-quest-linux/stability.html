@@ -9,6 +9,7 @@
 <pre id="result">Not started.</pre>
 <script>
 const video = document.getElementById('video');
+if (new URLSearchParams(location.search).get('rate') === '60') video.src = 'stability-60.mp4';
 let started = 0, previous = 0, loops = 0, failure = null;
 document.getElementById('start').onclick = async () => {
   if (!started) started = performance.now();
@@ -19,6 +20,12 @@ setInterval(() => {
   if (video.currentTime + 1 < previous) loops++;
   previous = video.currentTime;
   const quality = video.getVideoPlaybackQuality();
+  navigator.sendBeacon('http://127.0.0.1:6083/', JSON.stringify({
+    source:'video', frames:quality.totalVideoFrames, dropped:quality.droppedVideoFrames,
+    media_time:video.currentTime, paused:video.paused,
+    width:video.videoWidth, height:video.videoHeight,
+    elapsed:(performance.now()-started)/1000
+  }));
   document.getElementById('result').textContent = JSON.stringify({
     elapsed_s: Math.round((performance.now() - started) / 1000),
     media_time_s: Math.round(video.currentTime * 10) / 10,

@@ -24,6 +24,8 @@ var _pages_poll_at := 0
 var _pages_snapshot := ""
 var navigation: Dictionary = {}
 var _returning_primary := false
+var _linux_timing_poll_at := 0
+var _linux_direct_seen := false
 # Browser-local choices must not overwrite a PC host's Meteor/model settings.
 var depth_model_override := SettingsController.ANDROID_MODEL_AUTO
 var depth_backend_override := SettingsController.AI3D_BACKEND_GPU
@@ -205,6 +207,20 @@ func process() -> void:
 	if not active:
 		return
 	_poll_pages()
+	# Experimental helper only: follow XR timing, bounded by the app's render cap.
+	if OS.get_name() == "Android" and main.has_node("DevBridge") and Time.get_ticks_msec() >= _linux_timing_poll_at:
+		_linux_timing_poll_at = Time.get_ticks_msec() + 1000
+		var timing_bridge := _gamepad_bridge()
+		if timing_bridge:
+			var direct_active: bool = timing_bridge.browserLinuxFramesActiveFor(browser_id)
+			if direct_active and not _linux_direct_seen:
+				# Boot timing can precede loading host preferences. Apply them once
+				# after direct activation instead of inheriting the 60 fps boot cap.
+				main.settings_controller.apply_display_refresh_rate()
+			_linux_direct_seen = direct_active
+			var render_cap := Engine.max_fps if Engine.max_fps > 0 else 120
+			var target_hz := clampi(mini(roundi(main.display_refresh_rate), render_cap), 30, 120)
+			timing_bridge.browserLinuxFrameTimingFor(browser_id, target_hz)
 	var input_enabled: bool = not main.ui_visible and not main.virtual_keyboard.visible
 	if input_enabled != _gamepad_input_enabled:
 		_gamepad_input_enabled = input_enabled

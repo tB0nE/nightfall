@@ -15,9 +15,16 @@ bash "$TOOLS/build-lab.sh"
 "$ADB" shell "run-as app.nightfall.browserlab mkdir -p files/linux/rootfs/tmp files/linux/rootfs/home/browser"
 "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/tmp/start-desktop.sh'" < "$TOOLS/start-desktop.sh"
 "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/lab.html'" < "$TOOLS/lab.html"
+"$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/tmp/frame-metrics.py'" < "$TOOLS/frame-metrics.py"
+"$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/performance-viewer.html'" < "$TOOLS/performance-viewer.html"
+"$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/color-probe.html'" < "$TOOLS/color-probe.html"
+"$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/input-probe.html'" < "$TOOLS/input-probe.html"
 if [[ -f "$WORK/stability.mp4" ]]; then
   "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/stability.html'" < "$TOOLS/stability.html"
   "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/stability.mp4'" < "$WORK/stability.mp4"
+fi
+if [[ -f "$WORK/stability-60.mp4" ]]; then
+  "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/usr/share/novnc/stability-60.mp4'" < "$WORK/stability-60.mp4"
 fi
 "$ADB" shell -T "run-as app.nightfall.browserlab sh -c 'cat > files/linux/rootfs/tmp/forward-audio.sh'" < "$TOOLS/forward-audio.sh"
 echo 'Installed Nightfall Linux Browser Lab. Open it from Unknown Sources.'

@@ -176,5 +176,92 @@ an option to investigate, not a guaranteed equivalent for Netflix.
   thermal status 0. It cannot identify the active playback bottleneck. Hardware
   video decoding is not established; software graphics is explicit in the lab.
 
-No multi-view, touch-input backend, hardware decoder or direct-frame transport has
-been implemented yet. Their design and tests are the next phase after resuming.
+No multi-view, touch-input backend or hardware decoder has been implemented yet.
+
+## 2026-11-01: direct-frame CPU-copy spike
+
+Controlled foreground playback measured about 30 decoded/non-dropped frames/s,
+but only 11 VNC updates/s reaching Nightfall. Faster polling improved that to
+about 13/s, so the conservative settings were restored. App rendering stayed
+at 60 fps; it is not the video cadence.
+
+A DEV-only direct-frame prototype is now implemented and builds:
+
+- Xvfb exposes its XWD framebuffer using `-fbdir` in the helper's private files.
+- The helper validates the layout, memory maps it read-only, copies into a
+  reusable Bitmap and posts to an Android Surface at a target 30 Hz.
+- Nightfall explicitly binds the helper's DirectFrameService and hands over
+  its existing browser Surface. The service validates the calling UID belongs
+  to the installed Nightfall package. Binder death stops that producer.
+- The old virtual-display producer is detached first; the VNC page is blanked
+  and paused. Disabling the test restores the old display and viewer URL.
+- Activation is through the DEV Java bridge only, gated by the existing DEV
+  manifest metadata. No normal UI/default backend or extra XR layer changes.
+- An offscreen ImageReader smoke probe measures Surface deliveries separately
+  from VR presentation. It reports counters only, not media frames.
+
+Both the helper and release-optimized DEV main APK built, and the existing
+browser policy/data/gamepad tests passed. Both APKs were installed in place.
+Initial tests were affected by Guardian/ClearActivity and a missing Android
+package-visibility declaration. The DEV manifest now explicitly queries the
+helper package, and a status-returning Java method diagnoses the handoff.
+
+The direct producer then posted about 29.4 frames/s during active generated-video
+playback, with about 26 changed framebuffer samples/s. Nightfall measured about
+29.5 texture updates/s, versus the earlier VNC path's 11–13. These are short,
+sequential lab runs, not Netflix benchmarks or unique-frame/presentation proof.
+With AI enabled, inference reported 29.1 ms / 19.8 Hz while the producer retained
+about 29.5 posts/s. Stopping and reattaching the producer worked; final cleanup
+fixes restore home correctly and report normal interruption as a stop.
+
+The offscreen probe has not completed successfully and must not be reported as
+passed. Visual correctness, colors, tearing, audio sync, sustained performance
+and standby recovery remain user/device validation. Measurements are in ignored
+`.build-cache/browser-quest-linux/performance-20261101/direct-active-*.json`.
+
+This is a CPU-copy prototype, not zero-copy. Xvfb's mapped framebuffer has no
+frame-completion fences, so tearing is possible. Input still targets the normal
+WebView, not Linux; use the existing RFB desk-side input for controlled tests.
+Before calling it usable, validate pixel layout, frame cadence, stop/reconnect,
+standby, producer ownership/teardown, audio and inference; then build proper
+Linux input and synchronized buffering. Never infer production readiness from
+the code compiling.
+
+### GPU follow-up, completed in the same session
+
+GPU canvas drawing and color conversion now replace software scaling, while a
+native bitmap copy replaces the per-pixel Java conversion for the validated
+little-endian layout. Normal release activation remains disabled. The same screen
+Surface is used, and no additional XR composition layer was introduced.
+
+The helper follows actual refresh bounded by the app render cap. Measured live
+producer rates with a generated 720p60 clip and AI enabled: 60.0 at a 60 fps app
+target, 71.6 at 72, and 90.0 at 90. Source non-dropped rates stayed about 59–60/s.
+The GPU offscreen probe subsequently passed: 299 deliveries in ten seconds at
+30 Hz, zero sampled channel error against a synthetic Xvfb color chart.
+
+Posting jitter remains (p95 approximately 21.4/17.8/16.4 ms at 60/72/90 targets).
+The scheduler is deadline-based, not a proven display-vsync-aligned capture or
+source-frame fence. Preserve explicit GPU/CPU comparison configuration. Remaining
+work is source synchronization, input, sustained real-service tests, A/V sync,
+standby/teardown and the production gates already listed. Do not equate producer
+posts with unique source video frames or final compositor presentation.
+
+Real Netflix playback follow-up: user confirmed the picture looked good with AI.
+An AI-off 25-second window held 72.0 producer posts/s. A subsequent five-minute
+AI-on check completed with 31 samples, 71.98 posts/s, seven missed producer slots,
+no bridge errors and advancing audio. Final inference was 31.8 ms / 19.9 Hz.
+Battery temperature was 41–43 C; final Android thermal status 0. This is encouraging
+real-service evidence, not a decoded-fps, lip-sync or production-readiness proof.
+Lip-sync/fan feedback remains pending. Next functional work is Linux input routing
+and usable navigation while keeping this direct display path.
+
+Direct input is now implemented and installed. The Binder link forwards normalized
+pointer positions and Android key events to the helper's input-only RFB client;
+no framebuffer data is requested on that connection. A controlled native-entry
+point test passed for clicks, dragging, typing, Shift, Insert and normal release.
+Physical pointer alignment and standby/focus-loss behavior still need user tests.
+Nightfall's own address/bookmark UI still belongs to the normal WebView; this
+first step enables interaction with the Linux Chrome screen rather than a fully
+integrated Linux navigation/tabs UI. Netflix quality selection remains controlled
+by Netflix and is independent of the chosen desktop capture resolution.

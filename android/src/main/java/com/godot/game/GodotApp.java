@@ -74,6 +74,11 @@ public class GodotApp extends GodotActivity {
 	public static void browserClearGamepadFor(int id) { BrowserPrototype.clearQuestGamepad(id); }
 	public static void browserInputEnabledFor(int id, boolean enabled) { BrowserPrototype.setGamepadInputEnabled(id, enabled); }
 	public static void browserFocus(int id) { BrowserPrototype.focus(id); }
+	public static String browserLinuxFramesFor(int id, boolean enabled) {
+		return BrowserPrototype.linuxFrames(id, browserActivity.get(), enabled);
+	}
+	public static void browserLinuxFrameTimingFor(int id, int hz) { BrowserPrototype.linuxFrameTiming(id, hz); }
+	public static boolean browserLinuxFramesActiveFor(int id) { return BrowserPrototype.linuxFramesActive(id); }
 	private final java.util.Set<String> loggedPadKeys = new java.util.HashSet<>();
 
 	@Override

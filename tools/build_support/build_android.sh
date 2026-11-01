@@ -148,6 +148,12 @@ if [ "$BUILD_KIND" = "dev" ]; then
 from pathlib import Path
 p = Path("src/main/AndroidManifest.xml")
 s = p.read_text()
+package_query = '<package android:name="app.nightfall.browserlab" />'
+if '</queries>' in s:
+    s = s.replace('</queries>', package_query + '\n    </queries>', 1)
+else:
+    at = s.index('<application')
+    s = s[:at] + '<queries>' + package_query + '</queries>\n    ' + s[at:]
 end = s.index(">", s.index("<application")) + 1
 s = s[:end] + '\n        <meta-data android:name="app.nightfall.browser.protected_media_test" android:value="true" />' + s[end:]
 p.write_text(s)
@@ -212,6 +218,7 @@ cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/
 cp android/src/main/java/com/godot/game/AudioOutput.java android/build/src/main/java/com/godot/game/AudioOutput.java
 cp android/src/main/java/com/godot/game/BrowserCapabilities.java android/build/src/main/java/com/godot/game/BrowserCapabilities.java
 cp android/src/main/java/com/godot/game/BrowserPrototype.java android/build/src/main/java/com/godot/game/BrowserPrototype.java
+cp android/src/main/java/com/godot/game/LinuxFrameLabClient.java android/build/src/main/java/com/godot/game/LinuxFrameLabClient.java
 cp android/src/main/java/com/godot/game/BrowserNavigation.java android/build/src/main/java/com/godot/game/BrowserNavigation.java
 cp android/src/main/java/com/godot/game/BrowserPageTabs.java android/build/src/main/java/com/godot/game/BrowserPageTabs.java
 cp android/src/main/java/com/godot/game/BrowserGamepadProbe.java android/build/src/main/java/com/godot/game/BrowserGamepadProbe.java

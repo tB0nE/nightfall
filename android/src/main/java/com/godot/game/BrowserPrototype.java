@@ -87,7 +87,27 @@ public final class BrowserPrototype {
     public static void pointer(int browserId, float x, float y, int action) { session(browserId).pointer(x, y, action); }
     public static void key(int code, boolean pressed, int modifiers) { key(0, code, pressed, modifiers); }
     public static void key(int browserId, int code, boolean pressed, int modifiers) { session(browserId).key(code, pressed, modifiers); }
+    public static String linuxFrames(int browserId, Activity activity, boolean enabled) {
+        Session current = session(browserId);
+        final int token = current.generation.get();
+        String status = "request=" + enabled + " dev=" + current.protectedMediaTest
+                + " state=" + current.state + " activity=" + (activity != null);
+        DiagnosticLog.info("LinuxFrameLab", status);
+        UI.post(() -> {
+            if (token != current.generation.get() || !current.protectedMediaTest || activity == null) return;
+            current.setLinuxFrames(activity, enabled);
+        });
+        return status;
+    }
+    public static boolean linuxFramesActive(int browserId) { return session(browserId).linuxFrames != null; }
     public static void setGamepadInputEnabled(boolean enabled) { setGamepadInputEnabled(0, enabled); }
+    public static void linuxFrameTiming(int browserId, int hz) {
+        Session current = session(browserId);
+        UI.post(() -> {
+            if (current.protectedMediaTest && current.linuxFrames != null)
+                current.linuxFrames.updateTargetHz(hz);
+        });
+    }
     public static void setGamepadInputEnabled(int browserId, boolean enabled) { session(browserId).setGamepadInputEnabled(enabled); }
     public static void questGamepad(int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { questGamepad(0, buttons, lt, rt, lx, ly, rx, ry); }
     public static void questGamepad(int browserId, int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { session(browserId).questGamepad(buttons, lt, rt, lx, ly, rx, ry); }
@@ -150,6 +170,9 @@ public final class BrowserPrototype {
     private VirtualDisplay display;
     private Presentation presentation;
     private Surface surface;
+    private volatile LinuxFrameLabClient linuxFrames;
+    private String linuxReturnUrl;
+    private int browserSurfaceWidth = 1, browserSurfaceHeight = 1;
     private SurfaceTexture texture;
     private WebView web;
     private LinearLayout root;
@@ -217,6 +240,7 @@ public final class BrowserPrototype {
             dispose();
             if (focusedId < 0) focusOnUi(browserId);
             surface = target;
+            browserSurfaceWidth = width; browserSurfaceHeight = height;
             texture = source;
             try {
                 if (activity == null || activity.isFinishing()) throw new IllegalStateException("No activity");
@@ -711,6 +735,7 @@ public final class BrowserPrototype {
                 + "<h2>Web Apps</h2>" + webAppLinks()
                 + "<a href='" + BrowserGamepadProbe.URL + "'>Gamepad diagnostic</a>"
                 + "<h2>Your bookmarks</h2>" + bookmarks.homeLinks()
+                + (protectedMediaTest ? "<a href='http://127.0.0.1:6082/performance-viewer.html'>Linux Browser Lab</a>" : "")
                 + (bookmarks.entries().isEmpty() ? "<p>Use Bookmarks above to save your favourite sites.</p>" : "")
                 + (bookmarkLoadFailed ? "<p>Saved bookmarks could not be read. They have not been overwritten.</p>" : "")
                 + "<p>Enter a website or search with DuckDuckGo using the address bar above.</p>"
@@ -1184,6 +1209,38 @@ public final class BrowserPrototype {
     public int poll() { return state; }
     public boolean consumeFrame() { return frame.getAndSet(false); }
 
+    private void setLinuxFrames(Activity activity, boolean enabled) {
+        if (!enabled) {
+            if (linuxFrames != null) { linuxFrames.close(); linuxFrames = null; }
+            if (display != null && surface != null) display.setSurface(surface);
+            if (web != null && linuxReturnUrl != null) {
+                String restore = linuxReturnUrl;
+                linuxReturnUrl = null;
+                web.onResume();
+                if (BrowserNavigation.HOME_URL.equals(restore) || !BrowserNavigation.allowed(restore)) loadHome();
+                else web.loadUrl(restore);
+            }
+            return;
+        }
+        if (linuxFrames != null || display == null || surface == null || web == null) return;
+        linuxReturnUrl = web.getUrl();
+        web.stopLoading();
+        web.loadDataWithBaseURL(BrowserNavigation.HOME_URL,
+                "<body style='background:#111;color:white'>Starting direct Linux display…</body>",
+                "text/html", "UTF-8", null);
+        web.onPause();
+        display.setSurface(null); // Retire the old producer before Surface handoff.
+        final int token = generation.get();
+        linuxFrames = new LinuxFrameLabClient(activity, surface, () -> {
+            if (token == generation.get()) setLinuxFrames(activity, false);
+        });
+        try { linuxFrames.start(); }
+        catch (RuntimeException error) {
+            DiagnosticLog.error("LinuxFrameLab", "Direct frame bind failed", error);
+            setLinuxFrames(activity, false);
+        }
+    }
+
     public void close() {
         if (blocker != null) blocker.page(null);
         final int token = generation.incrementAndGet();
@@ -1192,6 +1249,8 @@ public final class BrowserPrototype {
     }
 
     private void dispose() {
+        if (linuxFrames != null) { linuxFrames.close(); linuxFrames = null; }
+        linuxReturnUrl = null;
         releaseFocusInput();
         if (focusedId == browserId) {
             focusedId = -1;
@@ -1264,6 +1323,13 @@ public final class BrowserPrototype {
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
             if (action == MotionEvent.ACTION_DOWN) focusOnUi(browserId);
+            if (linuxFrames != null && !editingAddress) {
+                pointerX = x; pointerY = y;
+                if (action == MotionEvent.ACTION_DOWN) pointerPressed = true;
+                else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) pointerPressed = false;
+                linuxFrames.pointer(x / browserSurfaceWidth, y / browserSurfaceHeight, action);
+                return;
+            }
             if (action == MotionEvent.ACTION_DOWN && editingAddress) {
                 editingAddress = false;
                 web.requestFocus();
@@ -1290,6 +1356,10 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
+            if (linuxFrames != null && !editingAddress) {
+                linuxFrames.key(code, pressed, modifiers);
+                return;
+            }
             if (pressed && privacyPanel != null && (code == android.view.KeyEvent.KEYCODE_ESCAPE
                     || code == android.view.KeyEvent.KEYCODE_BACK)) {
                 hidePrivacyPanel();
@@ -1378,6 +1448,7 @@ public final class BrowserPrototype {
         return true;
     }
     private void releaseFocusInput() {
+        if (linuxFrames != null) linuxFrames.releaseInput();
         releasePhysicalGamepad();
         questPad = null;
         if (pointerPressed && root != null) {
