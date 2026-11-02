@@ -16,6 +16,7 @@ import java.util.Map;
 /** Input-only connection: never requests or decodes VNC framebuffer updates. */
 final class LinuxRfbInput {
     private final File base;
+    private final LinuxBrowserControl touch;
     private final HandlerThread thread = new HandlerThread("LinuxBrowserInput");
     private final Handler handler;
     private volatile Socket socket;
@@ -25,8 +26,8 @@ final class LinuxRfbInput {
     private long pointerEvents, keyEvents, lastStatus;
     private final Map<Integer, Integer> held = new HashMap<>();
 
-    LinuxRfbInput(File base) {
-        this.base = base;
+    LinuxRfbInput(File base, LinuxBrowserControl touch) {
+        this.base = base; this.touch = touch;
         thread.start(); handler = new Handler(thread.getLooper());
         handler.post(() -> {
             try {
@@ -83,21 +84,12 @@ final class LinuxRfbInput {
 
     void pointer(float nx, float ny, int action) {
         if (closed || !Float.isFinite(nx) || !Float.isFinite(ny)) return;
-        handler.post(() -> {
-            if (closed || output == null) return;
-            try {
-                x = Math.max(0, Math.min(width - 1, Math.round(nx * (width - 1))));
-                y = Math.max(0, Math.min(height - 1, Math.round(ny * (height - 1))));
-                if (action == MotionEvent.ACTION_DOWN) buttons = 1;
-                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
-                        || action == MotionEvent.ACTION_HOVER_EXIT) buttons = 0;
-                sendPointer(); pointerEvents++; status("ready", false);
-            } catch (Exception error) { fail(error); }
-        });
+        touch.pointer(nx, ny, action);
     }
 
     void key(int code, boolean down, int modifiers) {
         if (closed) return;
+        if (code == 92 || code == 93) { if (down) touch.scroll(code == 92 ? 1 : -1); return; }
         handler.post(() -> {
             if (closed || output == null) return;
             try {
@@ -145,6 +137,7 @@ final class LinuxRfbInput {
     }
     void release() {
         if (closed) return;
+        touch.release();
         handler.post(() -> {
             if (closed || output == null) return;
             try { releaseHeld(); } catch (Exception error) { fail(error); }

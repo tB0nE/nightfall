@@ -27,7 +27,9 @@ class Handler(BaseHTTPRequestHandler):
                 if k in ('frames', 'dropped', 'callbacks', 'media_time', 'paused',
                          'width', 'height', 'elapsed', 'connected', 'clicks', 'downs', 'ups',
                          'moves_pressed', 'key_downs', 'key_ups', 'insert_count', 'input_length',
-                         'ctrl_held', 'shift_held')
+                         'ctrl_held', 'shift_held', 'touch_starts', 'touch_moves', 'touch_ends',
+                         'touch_cancels', 'scroll_y', 'viewport_width', 'viewport_height',
+                         'profile_actions', 'scrollbar_width', 'media_paused')
                 and isinstance(v, (int, float, bool))}}
         except (ValueError, KeyError, TypeError):
             self.send_error(400)

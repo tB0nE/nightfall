@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.nightfall.browserdisplayprobe" android:versionCode="1" android:versionName="0.1-lab">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries><package android:name="com.oculus.browser" /></queries>
+    <application android:label="Nightfall Browser Display Probe" android:debuggable="true" android:hardwareAccelerated="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".DisplayControlActivity" android:exported="false" android:allowEmbedded="true" android:allowUntrustedActivityEmbedding="true" android:resizeableActivity="true" />
+        <activity android:name=".BrowserDisplayProbe" android:exported="true" android:resizeableActivity="true" />
+    </application>
+</manifest>

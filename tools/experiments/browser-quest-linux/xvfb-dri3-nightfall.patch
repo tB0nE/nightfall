@@ -1,0 +1,100 @@
+--- a/hw/vfb/InitOutput.c
++++ b/hw/vfb/InitOutput.c
+@@ -494,6 +494,32 @@
+     int i;
+ 
+     for (i = 0; i < vfbNumScreens; i++) {
++#ifdef GLAMOR_HAS_GBM
++        /* Nightfall: GPU pixmaps do not update Xvfb's mapped CPU buffer.
++         * Read back at most 60Hz while the server is processing frames. */
++        static CARD32 lastReadback[MAXSCREENS];
++        static int interval = -1;
++        if (interval < 0) {
++            const char *value = getenv("NF_XVFB_READBACK_MS");
++            interval = value ? atoi(value) : 16;
++        }
++        CARD32 now = GetTimeInMillis();
++        if (vfbScreens[i].fd >= 0 && i < screenInfo.numScreens &&
++            vfbScreens[i].pfbMemory && interval > 0 &&
++            now - lastReadback[i] >= (CARD32) interval) {
++            ScreenPtr screen = screenInfo.screens[i];
++            PixmapPtr pixmap = screen->GetScreenPixmap(screen);
++            if (pixmap) {
++                Bool async = getenv("NF_XVFB_ASYNC_READBACK") &&
++                    strcmp(getenv("NF_XVFB_ASYNC_READBACK"), "1") == 0;
++                if (!async || !glamor_nf_capture(screen, pixmap, (uint8_t *)vfbScreens[i].pfbMemory))
++                screen->GetImage(&pixmap->drawable, 0, 0,
++                    screen->width, screen->height, ZPixmap, ~0UL,
++                    vfbScreens[i].pfbMemory);
++                lastReadback[i] = now;
++            }
++        }
++#endif
+ #ifdef MS_ASYNC
+         if (-1 == msync((caddr_t) vfbScreens[i].pXWDHeader,
+                         (size_t) vfbScreens[i].sizeInBytes, MS_ASYNC))
+@@ -746,6 +772,22 @@
+     vfbScreenInfoPtr pvfb = &vfbScreens[pScreen->myNum];
+ 
+     pScreen->CloseScreen = pvfb->closeScreen;
++#ifdef GLAMOR_HAS_GBM
++    if (pvfb->fd >= 0) {
++        /* Let glamor release its root FBO before fb frees the root pixmap.
++         * Keep the device fd alive through the inner EGL/GBM teardown. */
++        if (pvfb->front_bo) {
++            gbm_bo_destroy(pvfb->front_bo);
++            pvfb->front_bo = NULL;
++        }
++        glamor_nf_capture(pScreen, NULL, NULL);
++        Bool result = pScreen->CloseScreen(pScreen);
++        pScreen->devPrivate = NULL;
++        close(pvfb->fd);
++        pvfb->fd = -1;
++        return result;
++    }
++#endif
+ 
+     /*
+      * fb overwrites miCloseScreen, so do this here
+--- a/glamor/glamor_egl.c
++++ b/glamor/glamor_egl.c
+@@ -926,6 +926,10 @@
+         pixmap_priv->image = NULL;
+     }
+     screen->CloseScreen = glamor_egl->saved_close_screen;
++#ifndef GLAMOR_FOR_XORG
++    /* Nightfall: GL objects must be destroyed before their context/GBM device. */
++    Bool close_result = screen->CloseScreen(screen);
++#endif
+ 
+ #ifndef GLAMOR_FOR_XORG
+     if (glamor_egl->display != EGL_NO_DISPLAY) {
+@@ -938,7 +942,11 @@
+         gbm_device_destroy(glamor_egl->gbm);
+ #endif
+ 
++#ifndef GLAMOR_FOR_XORG
++    return close_result;
++#else
+     return screen->CloseScreen(screen);
++#endif
+ }
+ 
+ #ifdef DRI3
+--- a/glamor/glamor_transfer.c
++++ b/glamor/glamor_transfer.c
+@@ -216,3 +216,5 @@
+     glamor_download_boxes(pixmap, &box, 1, 0, 0, 0, 0,
+                           pixmap->devPrivate.ptr, pixmap->devKind);
+ }
++
++#include "glamor-async-capture.c"
+--- a/glamor/glamor.h
++++ b/glamor/glamor.h
+@@ -432,4 +432,6 @@
+                                                     int num_texture_ports);
+ #endif
+ 
++extern _X_EXPORT Bool glamor_nf_capture(ScreenPtr screen, PixmapPtr pixmap, uint8_t *destination);
++
+ #endif                          /* GLAMOR_H */

@@ -1,5 +1,9 @@
 # Native ARM64 Linux browser lab on Quest
 
+> Current checkpoint: [2026-11-02 status and resume notes](../../../docs/handoffs/QUEST_COMPATIBILITY_BROWSER_STATUS_2026-11-02.md).
+> Working software baseline retained; experimental Linux GPU mode disabled.
+
+
 This is a disposable feasibility experiment, not a Nightfall playback feature or
 a hardware VM. PRoot runs ARM64 Linux userspace on the existing Android kernel.
 It uses no root, hypervisor, GPU passthrough or Meta Browser DRM files.
@@ -467,3 +471,228 @@ under `.build-cache/browser-quest-linux/performance-20261101/`:
 Rebuild/install the companion **and** deploy the updated start-desktop.sh;
 restart the Linux runtime before attaching direct display. An old runtime has
 no 5903 listener and will not accept the new helper's input connection.
+
+### One compatibility tab, content-only Chrome and touch input
+
+The next iteration launches Chrome in app/kiosk mode, hides the X desktop cursor,
+and uses `LinuxBrowserControl` for page touch input and navigation. Desktop UA
+is retained. The test-type flag suppresses the lab's Chrome command-line warning;
+it does not fix or enable sandboxing. Existing keyboard input remains on5903.
+The working direct frame/audio paths remain in place.
+
+A loopback DevTools endpoint (9222) supplies touch events and cached page metadata.
+It is a lab control channel, not safe production IPC: other local apps may reach
+loopback. No DevTools profile, network or screenshot extraction is used. A fixed numeric
+expression reads window.innerWidth/innerHeight; no site scripts are modified.
+Only the marked app target is attached; app-private target identity allows
+reattachment after the page navigates. Touch diagnostics contain numeric counters
+and viewport dimensions, never page URLs/titles or typed text.
+
+The release-optimized DEV APK adds a Compatibility browser option to Nightfall's
+browser menu when the lab companion is installed. Ordinary tabs remain WebView.
+One compatibility-tab slot is allowed globally. Native Back/Forward/Reload/Home
+and address entry route to Chrome; metadata returns to Nightfall. Tab switches
+suspend/rebind the Surface rather than send input to a hidden WebView. This
+prototype still requires the Linux service started beforehand. Linux website
+privacy/bookmark/blocking preferences are not integrated with WebView's panels.
+
+Deploy updated start-desktop.sh, input-probe.html and frame-metrics.py with the
+companion APK, restart Linux and install the updated Nightfall DEV APK in place.
+The existing1080p override can remain; no native renderer rebuild changes are
+required beyond the standard main build. After startup, run:
+
+```sh
+ADB=/path/to/adb /usr/bin/python3 tools/experiments/browser-quest-linux/verify-touch.py --restore-netflix
+```
+
+This verifies generated-page touch lifecycles, tap/typing/Insert, scrolling,
+full-size viewport and an ordinary-tab round trip. It exports numeric reports
+under `.build-cache/browser-quest-linux/touch-check-*/summary.json` and optionally
+restores the known Netflix watch URL. It does not establish Netflix playback or
+controller feel. **Update: both APKs and runtime files are now deployed in place. Generated-page
+on-device validation passed; Netflix playback and physical-controller feel still
+need user confirmation.**
+
+On-device touch report: `touch-check-20261101T151104Z/summary.json` under the
+ignored cache directory: tap, typing, Insert, touch lifecycle, scroll and an
+ordinary-tab round trip passed. Native Home/Back/Forward/Reload checks passed in
+`touch-navigation-check.json`; Netflix was selected afterwards. The1920×1080
+source has a1919×1079 inner window (one-pixel outer border), with no browser
+toolbar. The first test found that CDP LayoutViewport excludes the15px scrollbar;
+input now uses the numeric inner window dimensions instead, avoiding a horizontal
+coordinate shift. Validation permits only a0–2px border, not a hidden toolbar.
+
+### Follow-up: close/audio, drag scrolling and desktop controls
+
+User reported sound after closing the tab, failed drag scrolling and Netflix
+controls not activating. Live touch diagnostics showed SocketTimeoutException;
+the original controller stopped permanently on a timeout. Surface teardown also
+left the companion's independent audio player running.
+
+Updated companion installed in place:
+
+- Detaching/closing suspends the AudioTrack/PCM capture independently of CDP.
+  The page's HTML video/audio elements are paused best-effort before disconnect.
+  Reattachment starts audio output again; playback remains paused until resumed.
+  Background audio continuation is not enabled in this iteration. The Linux
+  environment/profile stays available rather than being wiped/reinstalled.
+- Chrome scrollbars are hidden via Emulation.setScrollbarsHidden. A vertical drag
+  above10px cancels the pending touch and scrolls with pixel wheel events, so
+  desktop sites needn't implement touch panning. Horizontal/native touch paths
+  remain available; scrollbar-thumb dragging is unnecessary.
+- Coalesced invisible mouse-hover events support desktop mouseover menus while
+  Xvfb's cursor stays hidden. Taps remain touch events, avoiding a duplicate click.
+- A transient control failure disconnects and retries instead of permanently
+  disabling input. Diagnostics now include the operation and retry count.
+  Periodic metadata polling no longer evaluates JavaScript on every tick.
+
+Stronger generated-page validation passed in
+`touch-check-20261101T152717Z/summary.json`:237px scroll from dragging alone,
+profile-style hover menu activated, zero scrollbar width, balanced touch ends/
+cancels, input/Insert and normal-tab round trip. A quiet generated audio clip was
+playing before closing the last tab; afterwards both page media and Android
+audio output were stopped. Reopening worked and Netflix was restored.
+The generated menu is not proof of Netflix's exact profile UI: user confirmation
+on Netflix remains necessary. Automatic reconnect is implemented but wasn't
+fault-injected in this smoke test.
+
+The old Nightfall homepage Linux Browser Lab link accidentally still opened
+performance-viewer.html, which is the slower VNC viewer. The updated DEV APK
+replaces it with Compatibility Browser and intercepts the legacy shortcut URL
+as well. Native address and WebView hyperlink entry checks pass in
+`direct-shortcut-check.json`. Explicit vnc.html remains a diagnostic fallback.
+Confirm direct mode before comparing playback, cursor behavior or scroll speed.
+
+### Activity-aware CPU scheduling and isolated GPU tests
+
+The DEV Surface client now binds through its Activity with IMPORTANT and
+ADJUST_WITH_ACTIVITY. On the test Quest, helper allocation moved from CPUs0–2
+to0–5. Linux children restarted under that live binding also inherited0–5.
+A headless runtime started before binding still needs that restart; automatic
+cold-start ordering isn't implemented by this change. Verify child allocations,
+not merely the Java helper. See scheduling-restarted-children.json in the cache.
+
+A subsequent20-second active Netflix sample stayed1280×720,600 frames advanced,
+zero dropped (~30fps). The earlier separate sample dropped~16% and fell to432p;
+these short observations aren't a matched sustained benchmark. Existing touch,
+menu, tab and audio-close checks passed on the scheduling build.
+
+probe-linux-egl.py runs inside the guest and defaults to a32×32 surfaceless KGSL
+GLES pbuffer. Set NIGHTFALL_EGL_DRIVER=zink for its alternative. It reports actual
+renderer identity and readback: a passed pixel check with llvmpipe means software,
+not GPU success. Minimal guest EGL/GLES packages were added for this probe.
+
+A pinned, SHA-verified community Mesa build was staged only under
+/opt/mesa-freedreno. With its lib/aarch64-linux-gnu and dri paths explicitly set,
+the KGSL probe hit a memory-allocation permission error; Turnip/Zink failed
+VkDevice allocation. No working hardware renderer has been established. Neither
+candidate is selected by Chrome, whose software baseline is unchanged. Cache
+results and full provenance are recorded in the handoff. Do not enable these
+candidates globally or describe Vulkan's error as proven physical memory shortage.
+
+### Automated-test power limits (2026-11-01)
+
+Playback counters finishing must not leave the headset rendering a movie forever.
+The automated browser-diagnostics.py, measure-playback.py and verify-touch.py
+now arm a test-only on-device shell watchdog before sampling. Normal exit,
+exception or Ctrl+C cleans up immediately: stop the companion and Nightfall,
+restore real proximity sensing and clear the test Guardian override. On host
+crash/USB loss, the detached device watchdog performs that cleanup at its deadline.
+Playback sample durations are capped at120s, with at most20s cleanup allowance;
+verification uses90s. This is not an application/session timeout for normal use.
+The --restore-netflix option now only navigates before cleanup; it doesn't leave
+playback running. For a manual viewing test, reopen the apps intentionally.
+
+The watchdog targets a captured headset serial. A token prevents a stale timer
+from stopping a later test; coordinate users/agents instead of overlapping runs.
+Local tests exercise the real shell script with fake Android commands:
+
+```sh
+/usr/bin/python3 tools/experiments/browser-quest-linux/test_watchdog_test.py
+```
+
+They cover expiry, immediate cleanup, stale-token protection and invalid bounds.
+Device-side behaviour still needs one connected-headset validation. No watchdog
+was started while the headset was absent.
+
+### Allocation API/domain probe (prepared, not yet run on device)
+
+Earlier isolated EGL tests were launched via run-as. That may differ from the
+actual app's SELinux context, so do not equate their permission failures with an
+established restriction on service-launched Chrome. GpuAllocationService runs a
+small static NDK binary from the actual companion process, directly and through
+PRoot. The binary records its SELinux domain and attempts three flag variants of
+GPUMEM_ALLOC_ID and GPUOBJ_ALLOC (4KB each), freeing successful allocations.
+No shaders, GPU commands, video, accounts or DRM are involved. The binary has a
+3s alarm; each service child has a5s cap and the host runner arms20s device cleanup.
+
+Build the helper normally and build the probe with NDK r29:
+
+```sh
+/path/to/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang \
+  -O2 -static -Wall -Wextra -Werror \
+  tools/experiments/browser-quest-linux/kgsl-allocation-probe.c \
+  -o .build-cache/browser-quest-linux/kgsl-probe/kgsl-allocation-probe
+# Install rebuilt companion in place first; preserve its existing signing key.
+ADB=/path/to/adb /usr/bin/python3 tools/experiments/browser-quest-linux/run-allocation-probe.py
+```
+
+The runner never starts Chrome or forces the headset worn. Reports contain
+numeric errno/results and process domain only. Native-vs-PRoot outcomes distinguish
+allocation API, translation and app-context hypotheses; none is established until
+the test runs. The current headset is disconnected/charging, so this is pending.
+
+
+### Native GPU buffer sharing experiment
+
+`build-gpu-buffer-probe.sh` compiles the bounded native helper with NDK r29.
+Build/install the companion in-place using `build-lab.sh`, then run
+`/usr/bin/python3 tools/experiments/browser-quest-linux/run-gpu-buffer-probe.py --hd`
+(with ADB configured). `--share` tests 128x128; `--hd` tests 1280x720.
+Android owns the AHardwareBuffer; Linux renders generated RGB into its shared
+dma-buf, Android validates the same image on its GPU. A 20-second cleanup
+watchdog and shorter child deadlines apply. No browser, accounts or video.
+
+This proves memory interoperability, not sustained playback or integration
+with Nightfall's Surface. Serial glFinish/ack ownership is diagnostic only.
+See the active integration plan for remaining pool, fence and renderer work.
+`gpu-memory-fd-import-probe.c` retains the failed bare opaque-FD import attempt
+for reference; do not use it as the active helper.
+
+
+`run-chrome-gpu-probe.py --gpu-capture` additionally tests generated Chrome
+video through XComposite/DRI3 export, GPU blit to the Android-owned AHB, and
+real native-fence FD handoff. Build the native buffer helper and updated
+companion first. This is an offscreen native consumer, not Nightfall Surface
+presentation. All four output quadrants are checked; `passed` records pixel/
+capability correctness, while `smooth_playback_candidate` separately records
+dropped-frame quality. The current path passes correctness, not smoothness.
+
+
+`--surface-capture` tests the JNI native EGL renderer with an actual generated
+ImageReader Surface sink, including acquire/release fences and delivered
+colour/orientation checks. `--surface-stop-early` deliberately interrupts
+capture and reports `expected_stop_test` independently of the incomplete
+video/quadrant test. The optimized JNI library is built/packaged by build-lab.sh.
+The normal browser still uses its existing renderer: live GPU capture startup
+on display :1 has not yet been integrated. Do not set `gpu_renderer` for
+normal browsing until that lifecycle is implemented.
+
+
+Live GPU runtime (dev opt-in): `gpu_renderer: true` in companion direct-frame
+config selects matched GPU X11/VA startup and a PID-owned :1 capture producer
+attached to the native Surface. Runtime and producer follow their existing
+service/Surface lifecycles; normal browsing has no new session timeout.
+`run-gpu-runtime-probe.py` performs generated 1080p startup/detach/reattach
+checks with a temporary profile and restores config. `run-gpu-nightfall-probe.py`
+attempts the real Nightfall route under a cleanup watchdog; an unavailable or
+paused dev bridge is a test failure, not proof that GPU rendering failed.
+See the active plan for current manual-test status and device preparation.
+
+
+**2026-11-02: GPU mode disabled following confirmed device-wide KGSL hangs.**
+Prior generated frame/colour tests do not establish stability under interactive
+load. Bounded CPU fence waits and failure shutdown are prepared but have not
+been GPU-tested. See the critical incident section in the active plan before
+running these GPU experiments. `gpu-process-groups.sh` is now required by the
+GPU launcher. Software mode remains the default.

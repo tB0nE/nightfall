@@ -1,0 +1,24 @@
+--- a/glamor/glamor_egl.c
++++ b/glamor/glamor_egl.c
+@@ -1268,6 +1268,10 @@
+     }
+ 
+     renderer = glGetString(GL_RENDERER);
++    if (getenv("NF_XVFB_GLES"))
++        fprintf(stderr, "NF_XVFB_CONTEXT_API=%s renderer=%s\n",
++                glGetString(GL_VERSION), renderer ? (const char *)renderer : "none");
++
+     if (!renderer) {
+ #ifdef GLAMOR_FOR_XORG
+         xf86DrvMsg(scrn->scrnIndex, X_ERROR,
+--- a/hw/vfb/InitOutput.c
++++ b/hw/vfb/InitOutput.c
+@@ -879,6 +879,8 @@
+ 
+     pvfb->createScreenResources = pScreen->CreateScreenResources;
+     pScreen->CreateScreenResources = vfbCreateScreenResources;
++    if (getenv("NF_XVFB_GLES"))
++        ErrorF("NF_XVFB_GLES_GLAMOR_READY=1\n");
+     LogMessage(X_INFO, "glamor/DRI3 initialized for VFB screen %d on %s\n", pScreen->myNum, dri_node);
+     return;
+ 

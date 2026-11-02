@@ -126,6 +126,17 @@ func _init():
 	assert(not actions.has("nav:go"), "Browser toolbar submits addresses with Enter")
 	var home_index := actions.find("nav:home")
 	assert(home_index < actions.find("nav:privacy") and home_index < actions.find("nav:bookmarks"), "Home must be first in the menu")
+	assert(not actions.has("nav:compatibility"), "Ordinary browser menu must not expose the lab backend")
+	owner.browser_prototype.navigation["compatibility_available"] = true
+	strip.update(owner.primary_screen, surface, margin, true)
+	var compatibility_rect := Rect2()
+	for item in strip._items:
+		if item.action == &"nav:compatibility": compatibility_rect = item.rect
+	assert(compatibility_rect.size.y > 0, "DEV browser menu must expose compatibility mode")
+	assert(strip._items[-1].rect.encloses(compatibility_rect), "The fifth menu row must remain inside the hover backdrop")
+	assert(strip._dropdown_background.size.y > 0.22 * owner.primary_screen.mesh_size.x * CompositionScreenControls.CORNER_ATLAS_WIDTH / surface.x,
+		"Dropdown artwork must grow to cover the compatibility row")
+	owner.browser_prototype.navigation.erase("compatibility_available")
 	owner.browser_prototype.active = false
 	strip.update(owner.primary_screen, surface, margin, true)
 	assert(not strip._background.visible and not strip._dropdown_background.visible)

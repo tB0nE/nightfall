@@ -1,0 +1,31 @@
+diff --git a/daemon/termux-va.c b/daemon/termux-va.c
+index 6bd8d2b..670a0b2 100644
+--- a/daemon/termux-va.c
++++ b/daemon/termux-va.c
+@@ -966,6 +966,12 @@ static void *input_thread(void *arg)
+             session_abort(s);
+             goto done;
+         }
++        /* Nightfall generated-clip-only diagnostic; opt-in app-private dump. */
++        const char *test_dump = getenv("NF_GENERATED_TEST_DUMP");
++        if (test_dump && *test_dump) {
++            FILE *dump = fopen(test_dump, "ab");
++            if (dump) { fwrite(buf, 1, sz, dump); fclose(dump); }
++        }
+         s->units_in++;
+ 
+         if (is_param_set(s->codec_id, buf, sz)) {      /* parameter set -> CSD */
+@@ -2307,6 +2313,13 @@ static void *session_thread(void *arg)
+     s->codec = AMediaCodec_createDecoderByType(s->mime);
+     if (!s->codec) { dlog(0, "[%d] no available decoder: %s", s->id, s->mime); goto out_fmt; }
+ 
++    /* Nightfall experiment 2026-11-02: log decoder identity only. */
++    char *decoder_name = NULL;
++    if (AMediaCodec_getName(s->codec, &decoder_name) == AMEDIA_OK && decoder_name) {
++        dlog(1, "[%d] selected decoder: %s", s->id, decoder_name);
++        AMediaCodec_releaseName(s->codec, decoder_name);
++    }
++
+     media_status_t st = AMediaCodec_configure(s->codec, fmt, NULL, NULL, 0);
+     if (st != AMEDIA_OK) { dlog(0, "[%d] configure failed: %d", s->id, st); goto out_started; }
+ 

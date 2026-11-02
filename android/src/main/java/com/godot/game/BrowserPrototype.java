@@ -41,6 +41,7 @@ public final class BrowserPrototype {
     // view/input ownership changes run on UI; render threads read atomics only.
     private static final java.util.concurrent.ConcurrentHashMap<Integer, Session> sessions = new java.util.concurrent.ConcurrentHashMap<>();
     private static volatile int focusedId = -1;
+    private static int compatibilityOwner = -1; // UI-thread confined; one compatibility tab globally.
     private static Session session(int id) {
         if (id < 0) throw new IllegalArgumentException("Negative browser ID");
         return sessions.computeIfAbsent(id, Session::new);
@@ -104,8 +105,9 @@ public final class BrowserPrototype {
     public static void linuxFrameTiming(int browserId, int hz) {
         Session current = session(browserId);
         UI.post(() -> {
-            if (current.protectedMediaTest && current.linuxFrames != null)
-                current.linuxFrames.updateTargetHz(hz);
+            if (current.protectedMediaTest && current.linuxFrames != null) {
+                current.linuxFrames.updateTargetHz(hz); current.updateLinuxNavigation();
+            }
         });
     }
     public static void setGamepadInputEnabled(int browserId, boolean enabled) { session(browserId).setGamepadInputEnabled(enabled); }
@@ -167,11 +169,15 @@ public final class BrowserPrototype {
     // 0 closed, 1 opening, 2 rendering, -1 failed. Read from Godot's thread.
     private volatile int state;
     private boolean protectedMediaTest;
+    private boolean compatibilityInstalled;
     private VirtualDisplay display;
     private Presentation presentation;
     private Surface surface;
     private volatile LinuxFrameLabClient linuxFrames;
     private String linuxReturnUrl;
+    private int linuxPageId;
+    private boolean suspendingLinuxPage;
+    private org.json.JSONObject linuxNavigation = new org.json.JSONObject();
     private int browserSurfaceWidth = 1, browserSurfaceHeight = 1;
     private SurfaceTexture texture;
     private WebView web;
@@ -251,6 +257,11 @@ public final class BrowserPrototype {
                 } catch (android.content.pm.PackageManager.NameNotFoundException impossible) {
                     protectedMediaTest = false;
                 }
+                compatibilityInstalled = false;
+                if (protectedMediaTest) try {
+                    activity.getPackageManager().getApplicationInfo("app.nightfall.browserlab", 0);
+                    compatibilityInstalled = true;
+                } catch (android.content.pm.PackageManager.NameNotFoundException absent) { }
                 browserPreferences = activity.getApplicationContext().getSharedPreferences("nightfall_browser", Context.MODE_PRIVATE);
                 blocker = new BlockingContext(activity);
                 saveHistory = browserPreferences.getBoolean("save_history", false);
@@ -352,20 +363,24 @@ public final class BrowserPrototype {
 
     private void publishPages() {
         BrowserPageTabs.Page selected = pageTabs.find(pageTabs.selected);
-        if (selected != null && web != null && web.getTitle() != null) {
+        if (selected != null && selected.id == linuxPageId) {
+            String title = linuxNavigation.optString("title", "Compatibility").replaceAll("[\\p{Cntrl}]", " ");
+            selected.title = title.substring(0, Math.min(title.length(), 120));
+        } else if (selected != null && web != null && web.getTitle() != null) {
             String title = web.getTitle().replaceAll("[\\p{Cntrl}]", " ");
             selected.title = title.substring(0, Math.min(title.length(), 120));
         }
         try {
             org.json.JSONArray entries = new org.json.JSONArray();
             for (BrowserPageTabs.Page page : pageTabs.pages)
-                entries.put(new org.json.JSONObject().put("id", page.id).put("title", page.title));
+                entries.put(new org.json.JSONObject().put("id", page.id).put("title", page.title).put("compatibility", page.id == linuxPageId));
             org.json.JSONObject navigation = new org.json.JSONObject()
                     .put("address", address == null ? "" : address.getText().toString())
-                    .put("back", web != null && web.canGoBack())
-                    .put("forward", web != null && web.canGoForward())
+                    .put("back", linuxFrames != null ? linuxNavigation.optBoolean("back") : web != null && web.canGoBack())
+                    .put("forward", linuxFrames != null ? linuxNavigation.optBoolean("forward") : web != null && web.canGoForward())
                     .put("editing", editingAddress)
-                    .put("loading", loading);
+                    .put("loading", loading).put("compatibility_available", protectedMediaTest && compatibilityInstalled)
+                    .put("compatibility", pageTabs.selected == linuxPageId);
             pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected)
                     .put("pages", entries).put("navigation", navigation).toString();
         } catch (org.json.JSONException failure) { DiagnosticLog.info("BrowserPrototype", "Tab metadata unavailable"); }
@@ -375,6 +390,10 @@ public final class BrowserPrototype {
     // not live video, audio or game contexts. Returning to a tab may reload it.
     private void retirePage(boolean save) {
         releaseFocusInput();
+        if (linuxFrames != null) {
+            suspendingLinuxPage = true;
+            try { setLinuxFrames(ownerActivity, false); } finally { suspendingLinuxPage = false; }
+        }
         hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
         releasePhysicalGamepad(); questPad = null;
         if (web == null) return;
@@ -410,6 +429,7 @@ public final class BrowserPrototype {
             address.clearFocus(); web.requestFocus();
             updateNavigation();
         }
+        if (pageTabs.selected == linuxPageId) setLinuxFrames(ownerActivity, true);
         publishPages();
     }
     public void tabAction(String action, int id) {
@@ -429,6 +449,7 @@ public final class BrowserPrototype {
                     boolean current = pageTabs.selected == id;
                     if (current) retirePage(false);
                     pageHistory.remove(id); pageTabs.remove(id);
+                    if (id == linuxPageId) { linuxPageId = 0; if (compatibilityOwner == browserId) compatibilityOwner = -1; }
                     if (pageTabs.pages.isEmpty()) close();
                     else if (current) resumePage(token);
                 }
@@ -446,6 +467,14 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || web == null || state != 2 || paused || dataClearing) return;
+            if ("compatibility".equals(action) && protectedMediaTest) {
+                setLinuxFrames(ownerActivity, linuxFrames == null); return;
+            }
+            if (linuxFrames != null && !"address".equals(action)
+                    && ("back".equals(action) || "forward".equals(action) || "reload".equals(action) || "home".equals(action))) {
+                editingAddress = false; address.clearFocus();
+                linuxFrames.navigation(action, ""); return;
+            }
             if ("address".equals(action)) {
                 hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
                 editingAddress = true;
@@ -573,6 +602,9 @@ public final class BrowserPrototype {
             if (token != generation.get() || view != web) return true;
             String destination = request.getUrl().toString();
             if (dataClearing) return true;
+            if (request.isForMainFrame() && isCompatibilityLaunch(destination)) {
+                setLinuxFrames(ownerActivity, true); return true;
+            }
             if (request.isForMainFrame() && BrowserGamepadProbe.URL.equals(destination)) {
                 navigateTo(destination);
                 return true;
@@ -695,8 +727,16 @@ public final class BrowserPrototype {
         else navigateTo(destination);
     }
 
+    private boolean isCompatibilityLaunch(String url) {
+        return protectedMediaTest && compatibilityInstalled &&
+                ("http://127.0.0.1:6082/compatibility".equals(url)
+                || "http://127.0.0.1:6082/performance-viewer.html".equals(url));
+    }
+
     private void navigateTo(String url) {
+        if (isCompatibilityLaunch(url)) { setLinuxFrames(ownerActivity, true); return; }
         url = BrowserNavigation.desktopUrl(url);
+        if (linuxFrames != null) { linuxFrames.navigation("go", url); return; }
         blocker.page(url);
         if (BrowserGamepadProbe.URL.equals(url)) {
             web.loadDataWithBaseURL(url, BrowserGamepadProbe.html(), "text/html", "UTF-8", url);
@@ -718,6 +758,7 @@ public final class BrowserPrototype {
     }
 
     private void loadHome() {
+        if (linuxFrames != null) { linuxFrames.navigation("home", ""); return; }
         reloadBookmarks();
         hidePrivacyPanel();
         blocker.page(BrowserNavigation.HOME_URL);
@@ -735,7 +776,7 @@ public final class BrowserPrototype {
                 + "<h2>Web Apps</h2>" + webAppLinks()
                 + "<a href='" + BrowserGamepadProbe.URL + "'>Gamepad diagnostic</a>"
                 + "<h2>Your bookmarks</h2>" + bookmarks.homeLinks()
-                + (protectedMediaTest ? "<a href='http://127.0.0.1:6082/performance-viewer.html'>Linux Browser Lab</a>" : "")
+                + (protectedMediaTest && compatibilityInstalled ? "<a href='http://127.0.0.1:6082/compatibility'>Compatibility Browser</a>" : "")
                 + (bookmarks.entries().isEmpty() ? "<p>Use Bookmarks above to save your favourite sites.</p>" : "")
                 + (bookmarkLoadFailed ? "<p>Saved bookmarks could not be read. They have not been overwritten.</p>" : "")
                 + "<p>Enter a website or search with DuckDuckGo using the address bar above.</p>"
@@ -1170,6 +1211,13 @@ public final class BrowserPrototype {
 
     private void updateNavigation() {
         if (web == null || address == null) return;
+        if (linuxFrames != null) {
+            backButton.setEnabled(linuxNavigation.optBoolean("back"));
+            forwardButton.setEnabled(linuxNavigation.optBoolean("forward"));
+            reloadButton.setText("Reload");
+            if (!editingAddress && !address.hasFocus()) address.setText(linuxNavigation.optString("url"));
+            publishPages(); return;
+        }
         backButton.setEnabled(web.canGoBack());
         forwardButton.setEnabled(web.canGoForward());
         reloadButton.setText(loading ? "Stop" : "Reload");
@@ -1209,8 +1257,19 @@ public final class BrowserPrototype {
     public int poll() { return state; }
     public boolean consumeFrame() { return frame.getAndSet(false); }
 
+    private void updateLinuxNavigation() {
+        if (linuxFrames == null) return;
+        try { linuxNavigation = new org.json.JSONObject(linuxFrames.snapshot()); }
+        catch (Exception ignored) { return; }
+        updateNavigation();
+    }
+
     private void setLinuxFrames(Activity activity, boolean enabled) {
         if (!enabled) {
+            if (!suspendingLinuxPage) {
+                linuxPageId = 0;
+                if (compatibilityOwner == browserId) compatibilityOwner = -1;
+            }
             if (linuxFrames != null) { linuxFrames.close(); linuxFrames = null; }
             if (display != null && surface != null) display.setSurface(surface);
             if (web != null && linuxReturnUrl != null) {
@@ -1223,6 +1282,13 @@ public final class BrowserPrototype {
             return;
         }
         if (linuxFrames != null || display == null || surface == null || web == null) return;
+        if (compatibilityOwner != -1 && compatibilityOwner != browserId) {
+            pageStatus.setText("Only one compatibility tab is available."); return;
+        }
+        if (linuxPageId != 0 && linuxPageId != pageTabs.selected) {
+            pageStatus.setText("Switch to the existing compatibility tab first."); return;
+        }
+        compatibilityOwner = browserId; linuxPageId = pageTabs.selected;
         linuxReturnUrl = web.getUrl();
         web.stopLoading();
         web.loadDataWithBaseURL(BrowserNavigation.HOME_URL,
@@ -1249,6 +1315,8 @@ public final class BrowserPrototype {
     }
 
     private void dispose() {
+        linuxPageId = 0;
+        if (compatibilityOwner == browserId) compatibilityOwner = -1;
         if (linuxFrames != null) { linuxFrames.close(); linuxFrames = null; }
         linuxReturnUrl = null;
         releaseFocusInput();

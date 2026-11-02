@@ -20,7 +20,9 @@ final class LinuxFrameLabClient implements ServiceConnection {
     private int targetHz = 30, sentHz;
 
     LinuxFrameLabClient(Context context, Surface surface, Runnable failed) {
-        this.context = context.getApplicationContext();
+        // Keep the visible Activity token so Android can schedule the bound
+        // renderer alongside its foreground client, instead of a background app.
+        this.context = context;
         this.surface = surface;
         this.failed = failed;
     }
@@ -28,7 +30,8 @@ final class LinuxFrameLabClient implements ServiceConnection {
     void start() {
         Intent intent = new Intent().setComponent(new ComponentName(
                 "app.nightfall.browserlab", "app.nightfall.browserlab.DirectFrameService"));
-        bound = context.bindService(intent, this, Context.BIND_AUTO_CREATE);
+        bound = context.bindService(intent, this, Context.BIND_AUTO_CREATE
+                | Context.BIND_IMPORTANT | Context.BIND_ADJUST_WITH_ACTIVITY);
         if (!bound) failed.run();
     }
 
@@ -82,6 +85,28 @@ final class LinuxFrameLabClient implements ServiceConnection {
         } catch (Exception error) {
             DiagnosticLog.error("LinuxFrameLab", "Linux input forwarding failed", error);
         } finally { data.recycle(); reply.recycle(); }
+    }
+
+    void navigation(String action, String value) {
+        if (remote == null || closed) return;
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("app.nightfall.browserlab.DirectFrames.v1");
+            data.writeString(action); data.writeString(value);
+            if (!remote.transact(7, data, reply, 0)) throw new IllegalStateException("Navigation unavailable");
+            reply.readException();
+        } catch (Exception error) { DiagnosticLog.error("LinuxFrameLab", "Linux navigation failed", error); }
+        finally { data.recycle(); reply.recycle(); }
+    }
+    String snapshot() {
+        if (remote == null || closed) return "{}";
+        Parcel data = Parcel.obtain(), reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("app.nightfall.browserlab.DirectFrames.v1");
+            if (!remote.transact(8, data, reply, 0)) return "{}";
+            reply.readException(); return reply.readString();
+        } catch (Exception error) { return "{}"; }
+        finally { data.recycle(); reply.recycle(); }
     }
 
     void close() {

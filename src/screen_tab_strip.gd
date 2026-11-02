@@ -245,7 +245,7 @@ func _rebuild() -> void:
 	var offer_stream: bool = main.screen_sources != null and main.screen_sources.has_method("can_offer_stream_screen") \
 		and main.screen_sources.can_offer_stream_screen()
 	if popup == "sources": hover_bottom = 0.17 if offer_stream else 0.126
-	elif popup == "settings": hover_bottom = 0.17
+	elif popup == "settings": hover_bottom = 0.214 if browser.navigation.get("compatibility_available", false) else 0.17
 	elif popup == "tabs": hover_bottom = maxf(0.0, pages.size() * 0.036 + 0.025)
 	if browser_active and not pages.is_empty():
 		var visible := visible_pages(pages, selected)
@@ -290,6 +290,8 @@ func _rebuild() -> void:
 	elif popup == "settings":
 		var entries := [["home", "Home"], ["bookmarks", "Bookmarks"],
 			["privacy", "Privacy"], ["blocking", "Blocking"]]
+		if browser.navigation.get("compatibility_available", false):
+			entries.append(["compatibility", "Standard browser" if browser.navigation.get("compatibility", false) else "Compatibility browser"])
 		for i in entries.size():
 			_add(StringName("nav:" + entries[i][0]), entries[i][1], Rect2(0.19, -0.014 + i * 0.044, 0.29, 0.04))
 	elif popup == "tabs":
@@ -333,7 +335,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 	_dropdown_background.visible = revealed and popup != ""
 	if popup != "":
 		var hover_bottom: float = _items[-1].rect.end.y
-		var dropdown_rect := Rect2(0.18, -0.02, 0.31, 0.19) if popup == "settings" else Rect2(0.02, -0.02, 0.47, maxf(0.15, hover_bottom + 0.02))
+		var dropdown_rect := Rect2(0.18, -0.02, 0.31, hover_bottom + 0.02) if popup == "settings" else Rect2(0.02, -0.02, 0.47, maxf(0.15, hover_bottom + 0.02))
 		_position_background(_dropdown_background, dropdown_rect, surface_size, margin, scale_px)
 	for item in _items:
 		var rect: Rect2 = item.rect

@@ -1,0 +1,11 @@
+<!doctype html><meta charset="utf-8"><title>Generated GPU animation test</title>
+<style>
+html,body{margin:0;background:black;overflow:hidden}
+#moving{position:fixed;width:25vw;height:25vh;background:cyan;animation:travel .6s linear infinite alternate}
+@keyframes travel{from{transform:translate(0,0)}to{transform:translate(70vw,70vh)}}
+</style>
+<div id="moving"></div>
+<script>
+// Same known-colour terminal fixture as the video test; no media/decoder use.
+setTimeout(()=>{document.body.innerHTML='';for(const [color,left,top] of [['red',0,0],['lime',50,0],['blue',0,50],['yellow',50,50]]){const d=document.createElement('div');d.style.cssText=`position:fixed;left:${left}vw;top:${top}vh;width:50vw;height:50vh;background:${color}`;document.body.append(d)}},6000);
+</script>

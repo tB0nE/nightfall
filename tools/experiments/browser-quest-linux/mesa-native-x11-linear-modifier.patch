@@ -1,0 +1,11 @@
+--- a/src/gallium/frontends/dri/loader_dri3_helper.c
++++ b/src/gallium/frontends/dri/loader_dri3_helper.c
+@@ -1870,7 +1870,7 @@
+                                                         buffer->strides[2], buffer->offsets[2],
+                                                         buffer->strides[3], buffer->offsets[3],
+                                                         depth, buffer->cpp * 8,
+-                                                        buffer->modifier ? buffer->modifier : 1274,
++                                                        buffer->modifier,
+                                                         buffer_fds);
+    } else {
+       cookie_pix = xcb_dri3_pixmap_from_buffer_checked(draw->conn,

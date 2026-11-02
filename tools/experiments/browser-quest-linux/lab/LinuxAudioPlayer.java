@@ -133,6 +133,7 @@ final class LinuxAudioPlayer {
             AudioTrack t = track;
             if (t != null) { try { t.stop(); } catch (IllegalStateException ignored) {} t.release(); }
             track = null;
+            if (!running) report("stopped", bytes, nonzero, 0, null);
             manager.abandonAudioFocusRequest(focus);
         }
     }

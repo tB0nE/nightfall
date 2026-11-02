@@ -1,0 +1,24 @@
+--- a/src/freedreno/drm/kgsl/kgsl_bo.c
++++ b/src/freedreno/drm/kgsl/kgsl_bo.c
+@@ -340,6 +340,11 @@
+         .size = size,
+     };
+ 
++    /* Honor Mesa's coherent CPU-read staging request on the tested Adreno.
++     * Opt-in until broader hardware/cache-coherency validation is complete. */
++    if ((flags & FD_BO_CACHED_COHERENT) && getenv("NF_KGSL_COHERENT_READBACK"))
++        req.flags |= (3U << 26) | (1U << 31);
++
+     if (flags & FD_BO_GPUREADONLY)
+         req.flags |= KGSL_MEMFLAGS_GPUREADONLY;
+ 
+--- a/src/freedreno/drm/kgsl/kgsl_device.c
++++ b/src/freedreno/drm/kgsl/kgsl_device.c
+@@ -28,6 +28,7 @@
+     dev->funcs = &funcs;
+     dev->fd = fd;
+     dev->version = FD_VERSION_ROBUSTNESS;
++    dev->has_cached_coherent = getenv("NF_KGSL_COHERENT_READBACK") != NULL;
+     dev->features = FD_FEATURE_DIRECT_RESET | FD_FEATURE_IMPORT_DMABUF | FD_FEATURE_KGSL;
+ 
+     /* async submit_queue used for softpin deffered submits */

@@ -1,0 +1,13 @@
+--- a/glamor/glamor_egl.c
++++ b/glamor/glamor_egl.c
+@@ -1189,7 +1189,9 @@
+     GLAMOR_CHECK_EGL_EXTENSION(KHR_surfaceless_context);
+ 
+     glamor_egl->context = EGL_NO_CONTEXT;
+-    if (eglBindAPI(EGL_OPENGL_API)) {
++    /* App-private diagnostic: compare the supported GLES fallback without
++     * changing the system driver or the default desktop GL path. */
++    if (!getenv("NF_XVFB_GLES") && eglBindAPI(EGL_OPENGL_API)) {
+         static const EGLint config_attribs_core[] = {
+             EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
+             EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,

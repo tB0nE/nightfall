@@ -23,8 +23,14 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}', args.label):
         parser.error('Use a short filename-safe label')
-    if not 1 <= args.seconds <= 1800 or not 1 <= args.interval <= 60:
-        parser.error('Use 1–1800 seconds and a 1–60 second interval')
+    if not 1 <= args.seconds <= 120 or not 1 <= args.interval <= 60:
+        parser.error('Use 1–120 seconds and a 1–60 second interval')
+    from test_guard import HeadsetTestGuard
+    with HeadsetTestGuard(min(150, int(args.seconds) + 20)):
+        collect(args)
+
+
+def collect(args):
     adb = os.environ.get('ADB', 'adb')
     output = ROOT / '.build-cache/browser-quest-linux/playback' / (
         args.label + '-' + datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '.json')

@@ -1,0 +1,82 @@
+diff --git a/src/gallium/frontends/va/tva_bridge.c b/src/gallium/frontends/va/tva_bridge.c
+index 31b3aad..ebdac4e 100644
+--- a/src/gallium/frontends/va/tva_bridge.c
++++ b/src/gallium/frontends/va/tva_bridge.c
+@@ -49,6 +49,8 @@
+  * index; frames with unknown indices fall back to FIFO matching.
+  */
+ #include "tva_bridge.h"
++#include "h264-reference-defaults.h"
++/* Nightfall 2026-11-02: infer single-slice PPS defaults only without override. */
+ #include "va_private.h"
+ 
+ #include <stdio.h>
+@@ -3835,33 +3837,44 @@ tva_codec_end_frame(struct pipe_video_codec *codec,
+                 uint8_t *sps_rbsp = NULL, *pps_rbsp = NULL;
+                 static const uint8_t sc[4] = { 0, 0, 0, 1 };
+                 if (!c->h264_pps_defaults_valid) {
+-                    /* VA-API does not preserve the slice override flag, so
+-                     * the per-picture list lengths cannot generally be used
+-                     * as PPS defaults.  Qualcomm's decoder accepts the
+-                     * stable three-reference fallback used by the common
+-                     * four-reference streams, while streams exposing five or
+-                     * more DPB references may rely on the full L0 default in
+-                     * slices without an override. */
+-                    unsigned default_l0 = c->base.max_references
+-                                          ? MIN2(c->base.max_references, 3) - 1
+-                                          : 0;
+-                    c->h264_pps_l0_default = default_l0;
++                    /* Intra/explicit-override pictures do not reveal defaults.
++                     * Zero is a provisional value, not an inferred DPB count. */
++                    c->h264_pps_l0_default = 0;
+                     c->h264_pps_l1_default = 0;
+                     c->h264_pps_defaults_valid = true;
+                 }
+-                /* A stream with a larger DPB can still use the full L0 list
+-                 * as its PPS default.  VA-API exposes only the effective list
+-                 * size for each slice, so promote the stable fallback only
+-                 * after a slice demonstrates the complete configured DPB.
+-                 * This keeps streams such as Bilibili's seven-reference SPS
+-                 * with a two-reference PPS default unchanged while allowing
+-                 * the five-reference vertical AVC stream to select its
+-                 * five-entry default before subsequent no-override slices. */
+-                if (c->base.max_references >= 5 &&
+-                    h264->num_ref_idx_l0_active_minus1 >=
+-                    c->base.max_references - 1 &&
+-                    c->h264_pps_l0_default < c->base.max_references - 1) {
+-                    c->h264_pps_l0_default = c->base.max_references - 1;
++                /* VA retains effective list lengths. For a single slice they
++                 * reveal PPS defaults precisely iff its raw override bit is 0.
++                 * Multi-slice/other PPS IDs require additional frontend metadata
++                 * and deliberately do not participate in this experiment. */
++                if (h264->slice_count == 1) {
++                    struct nf_avc_config cfg = {
++                        .frame_num_bits = h264->pps->sps->log2_max_frame_num_minus4 + 4,
++                        .poc_type = h264->pps->sps->pic_order_cnt_type,
++                        .poc_bits = h264->pps->sps->log2_max_pic_order_cnt_lsb_minus4 + 4,
++                        .separate_plane = h264->pps->sps->separate_colour_plane_flag,
++                        .frame_only = h264->pps->sps->frame_mbs_only_flag,
++                        .delta_always_zero = h264->pps->sps->delta_pic_order_always_zero_flag,
++                        .bottom_poc = h264->pps->bottom_field_pic_order_in_frame_present_flag,
++                        .redundant = h264->pps->redundant_pic_cnt_present_flag,
++                    };
++                    for (size_t i=0;i+4<c->acc_len;i++) {
++                        size_t prefix=0;
++                        if (!c->acc[i] && !c->acc[i+1] && c->acc[i+2]==1) prefix=3;
++                        else if (!c->acc[i] && !c->acc[i+1] && !c->acc[i+2] && c->acc[i+3]==1) prefix=4;
++                        if (!prefix) continue;
++                        const uint8_t *nal=c->acc+i+prefix;
++                        unsigned kind=nal[0]&31;
++                        if (kind!=1 && kind!=5) continue;
++                        bool is_b=false;
++                        if (nf_avc_uses_defaults(nal,c->acc_len-i-prefix,&cfg,&is_b)) {
++                            if (h264->num_ref_idx_l0_active_minus1<32)
++                                c->h264_pps_l0_default=h264->num_ref_idx_l0_active_minus1;
++                            if (is_b && h264->num_ref_idx_l1_active_minus1<32)
++                                c->h264_pps_l1_default=h264->num_ref_idx_l1_active_minus1;
++                        }
++                        break;
++                    }
+                 }
+                 size_t sps_rbsp_len = tva_build_h264_sps(c->base.profile,
+                                                          h264->pps->sps,

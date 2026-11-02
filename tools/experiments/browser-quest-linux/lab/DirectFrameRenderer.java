@@ -20,7 +20,7 @@ import java.nio.channels.FileChannel;
 /** CPU-copy spike: Xvfb's mmap framebuffer directly to an Android Surface.
  * Xvfb does not provide frame fences: tearing remains possible in this experiment.
  */
-final class DirectFrameRenderer {
+final class DirectFrameRenderer implements FrameRenderer {
     private final File base;
     private final Surface surface;
     private volatile boolean running = true;
@@ -48,13 +48,13 @@ final class DirectFrameRenderer {
         worker.start();
     }
 
-    void setTargetHz(int hz) {
+    @Override public void setTargetHz(int hz) {
         if (hz < 30 || hz > 120)
             throw new IllegalArgumentException("Unsupported frame target");
         targetHz = hz;
     }
 
-    void stop() {
+    @Override public void stop() {
         running = false;
         worker.interrupt();
         try { worker.join(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
