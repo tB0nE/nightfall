@@ -529,6 +529,14 @@ func _on_v2_launch_response(response: Dictionary):
 				enabled_in_manifest[0].is_primary = true
 		var layout_err = host_layout.validate(host_layout.frame_size)
 		if layout_err == "":
+			# A launch manifest is authoritative even if the earlier discovery
+			# request failed before pairing or returned no layout. Capability
+			# gates control both monitor selection and capture-aspect resolution.
+			main.settings.host.is_polaris_host = true
+			main.settings.host.native_resolution = host_layout.frame_size
+			main.ui_controller.update_monitor_tab()
+			main.settings_controller.refresh_resolution_btn_label()
+			main.state_manager.save_host_state()
 			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d, desktop_bounds=%s" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y, str(host_layout.desktop_bounds)])
 			for m in host_layout.enabled_monitors():
 				main._log("[LAYOUT]   monitor %s frame_rect=%s desktop_rect=%s primary=%s" % [String(m.id), str(m.frame_rect), str(m.desktop_rect), str(m.is_primary)])

@@ -1,5 +1,11 @@
 #define XR_USE_GRAPHICS_API_VULKAN
+#ifdef _WIN32
+#define XR_USE_PLATFORM_WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
 #define XR_USE_TIMESPEC
+#endif
 #include <time.h>
 #include <vulkan/vulkan.h>
 #include <openxr/openxr.h>
@@ -20,7 +26,9 @@ static void check(XrResult result, const char *operation) {
 #include "monado_stereo_images.h"
 #include "meteor_openxr_input_probe.h"
 int main() {
-    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    // MSVC's CRT requires a nonzero size for buffered streams. Unbuffered
+    // output also preserves startup diagnostics when a probe crashes.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     uint32_t count = 0;
     check(xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr), "extensions");
     std::vector<XrExtensionProperties> extensions(count, {XR_TYPE_EXTENSION_PROPERTIES});
@@ -47,7 +55,13 @@ int main() {
     bool vulkan = false;
     for (const auto &extension : extensions) if (!std::strcmp(extension.extensionName, XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME)) vulkan = true;
     if (!vulkan) { std::fprintf(stderr, "Vulkan binding unavailable\n"); return 1; }
-    const char *enabled[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME, XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME};
+    const char *enabled[] = {XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
+#ifdef _WIN32
+        XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME,
+#else
+        XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME,
+#endif
+        XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME, XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME};
     XrInstanceCreateInfo info{XR_TYPE_INSTANCE_CREATE_INFO};
     std::strcpy(info.applicationInfo.applicationName, "Nightfall Monado runtime probe");
     info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
@@ -63,7 +77,11 @@ int main() {
     GET_XR_PROC(xrCreateVulkanInstanceKHR);
     GET_XR_PROC(xrGetVulkanGraphicsDevice2KHR);
     GET_XR_PROC(xrCreateVulkanDeviceKHR);
+#ifdef _WIN32
+    GET_XR_PROC(xrConvertTimeToWin32PerformanceCounterKHR);
+#else
     GET_XR_PROC(xrConvertTimeToTimespecTimeKHR);
+#endif
 #undef GET_XR_PROC
     XrGraphicsRequirementsVulkan2KHR requirements{XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN2_KHR};
     check(xrGetVulkanGraphicsRequirements2KHR(instance, system, &requirements), "graphics requirements");
@@ -339,11 +357,20 @@ int main() {
         // A rejected submission leaves the same frame available for correction.
         // Submit a valid frame immediately to prove the runtime remains usable.
         check(xrEndFrame(session, &end), "end frame");
+#ifdef _WIN32
+        LARGE_INTEGER counter, frequency;
+        check(xrConvertTimeToWin32PerformanceCounterKHR(instance, state.predictedDisplayTime, &counter), "convert display time");
+        if (!QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) return 1;
+        final_timestamp = (counter.QuadPart / frequency.QuadPart) * 1000000000LL +
+            (counter.QuadPart % frequency.QuadPart) * 1000000000LL / frequency.QuadPart;
+        std::printf("Frame %d monotonic_ns=%lld\n", frame, final_timestamp);
+#else
         struct timespec monotonic_time;
         check(xrConvertTimeToTimespecTimeKHR(instance, state.predictedDisplayTime, &monotonic_time), "convert display time");
         final_timestamp = static_cast<long long>(monotonic_time.tv_sec)*1000000000LL+monotonic_time.tv_nsec;
         std::printf("Frame %d monotonic_ns=%lld\n", frame,
             static_cast<long long>(monotonic_time.tv_sec) * 1000000000LL + monotonic_time.tv_nsec);
+#endif
         std::printf("Frame %d: two pixel-verified eye images, submitted layers=%u, predicted time %lld\n", frame, end.layerCount, static_cast<long long>(state.predictedDisplayTime));
         if(quad_fixture && frame==12) {
             // Model a game loading a world while xrizer retains its last
@@ -356,7 +383,7 @@ int main() {
             // Stop-and-wait diagnostic ensures each changing pattern is checked;
             // this is bounded backpressure, not a sustainable-rate benchmark.
             bool acknowledged = false;
-            const long long expected = static_cast<long long>(monotonic_time.tv_sec) * 1000000000LL + monotonic_time.tv_nsec;
+            const long long expected = final_timestamp;
             for (int attempt = 0; attempt < 2000; ++attempt) {
                 std::ifstream ack(meteor_probe_path("capture-complete"));
                 long long received = 0;

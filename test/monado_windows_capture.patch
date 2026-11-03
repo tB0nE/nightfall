@@ -1,0 +1,39 @@
+diff --git a/src/xrt/compositor/null/null_compositor.c b/src/xrt/compositor/null/null_compositor.c
+index 8420705c..af04e85e 100644
+--- a/src/xrt/compositor/null/null_compositor.c
++++ b/src/xrt/compositor/null/null_compositor.c
+@@ -27,6 +27,7 @@
+ #include "util/u_trace_marker.h"
+ 
+ #include "util/comp_vulkan.h"
++#include "monado_windows_capture.h"
+ 
+ #include "multi/comp_multi_interface.h"
+ #include "xrt/xrt_compositor.h"
+@@ -370,6 +371,7 @@ null_compositor_end_session(struct xrt_compositor *xc)
+ {
+ 	struct null_compositor *c = null_compositor(xc);
+ 	NULL_DEBUG(c, "END_SESSION");
++	meteor_windows_encoder_shutdown();
+ 
+ 	/*
+ 	 * No logic needed here for the null compositor, if using the null
+@@ -500,6 +502,10 @@ null_compositor_layer_commit(struct xrt_compositor *xc, xrt_graphics_sync_handle
+ 	// If you are using the system/multi-compositor (multiple client module), your native compositor
+ 	// can just unref the sync handle. Otherwise please use it.
+ 	u_graphics_sync_unref(&sync_handle);
++	if (!meteor_windows_capture_layer(c)) {
++		fprintf(stderr, "METEOR_WINDOWS_CAPTURE_FAILED frame=%lld\n", (long long)frame_id);
++		return XRT_ERROR_COMPOSITOR_NOT_SUPPORTED;
++	}
+ 
+ 	/*
+ 	 * Time keeping needed to keep the pacer happy.
+@@ -533,6 +539,7 @@ null_compositor_destroy(struct xrt_compositor *xc)
+ 	struct vk_bundle *vk = get_vk(c);
+ 
+ 	NULL_DEBUG(c, "NULL_COMP_DESTROY");
++	meteor_windows_encoder_shutdown();
+ 
+ 	// Make sure we don't have anything to destroy.
+ 	comp_swapchain_shared_garbage_collect(&c->base.cscs);

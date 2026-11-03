@@ -15,6 +15,24 @@
 
 ## Windows compatibility update (2026-10-29)
 
+November 3 acceptance: the user confirmed that both Windows monitors display
+correctly after the manifest capability/resolution correction. Live switching
+between one and two monitors passed. Windows multi-monitor remains an
+experimental SDR/same-adapter/unrotated path; packaging is still pending.
+
+Open input issue (deferred at the user's request): grip right-click feels too
+sensitive or like a simultaneous left-click with Follow pointer enabled;
+turning Follow pointer off avoids it. A Windows low-level hook recorded six
+grip presses as right down/up only, with no left-button events. Do not treat
+this as a proven duplicate-click bug; investigate pointer motion/click target
+stability separately after the main Windows XR work.
+
+Next priority: Windows XR streaming. Native Monado stereo pixel readback and
+Vulkan→CUDA→NVENC encode/decode proofs pass. Windows runtime supervision,
+tracking/controller/haptic transport, live encoded delivery and actual game
+compatibility remain outstanding. Do not describe the diagnostic adapter as
+a finished XR streaming implementation.
+
 - The Windows release build compiles from main on branch
   `feat/meteor-windows-compat`. An XR profile validator was moved into shared
   code because the Windows control module could not reference Linux-only
@@ -100,6 +118,150 @@
   created both 640x720 eye swapchains. This proves local OpenXR session
   creation, not Nightfall XR capture, encoding or headset streaming. Meteor's
   managed XR runtime path remains Linux-gated.
+
+## XR capture and Windows monitor work (2026-10-30)
+
+- Added a reproducible Windows null-compositor capture hook in
+  `test/monado_windows_capture.h`, with a patch and build script beside it.
+  The native Release `monado-service.exe` compiles with it. The hook validates
+  that a submitted stereo projection references two live Vulkan swapchain
+  images and logs their formats, image indices and subrects. It currently
+  stops at metadata: there is no Windows image readback, encoder bridge,
+  tracking transport, or Meteor runtime supervisor yet.
+- In a local simulated-HMD run, `hello_xr` created two 640x720 eye
+  swapchains and the patched service reached the hook, but the sample only
+  triggered an empty layer commit during a 25-second run. Stereo submission
+  is therefore **not proven yet**. A deterministic Windows OpenXR probe that
+  submits a coloured stereo pattern is the next XR gate; reuse the Linux
+  `monado_runtime_probe.cpp` after replacing its POSIX time conversion.
+- October 31: the deterministic probe now builds with MSVC using the OpenXR
+  Win32 performance-counter time extension. Its initial `0xc0000409` startup
+  failure was caused by buffered stdout initialization with a zero buffer
+  size; unbuffered stdout fixed it. A local run submitted five stereo frames
+  with app-side pixel verification. The service logged 18 eye-image
+  references and zero capture validation failures. These logs prove stereo
+  layer delivery to the server; server-side pixel readback and encoding are
+  still pending. `test/windows-probe/CMakeLists.txt` builds the probe, and
+  `test/smoke_monado_windows.ps1 -HelloXr <probe.exe>` runs it locally.
+- Server-side pixel verification now passes on Windows with
+  `METEOR_WINDOWS_PIXEL_PROBE=1`: the probe exits successfully, both eye
+  patterns pass Vulkan readback in Monado, and the final green=255 marker
+  reaches both eyes. The opt-in diagnostic saves server-eye PPMs and writes
+  the completion marker. It uses synchronous GPU readback for proof only;
+  production capture still needs the encoder bridge and asynchronous delivery.
+- Native Windows Vulkan → CUDA → NVENC interop now builds and passes on the
+  RTX 3090. The probe exports opaque Win32 memory, imports it into CUDA on
+  the same UUID-matched GPU, and encodes five 512x256 H.264 frames without
+  CPU pixel readback. NVENC submit-to-lock was 0.44–0.94 ms for this tiny
+  fixture; this is not an XR performance measurement. The Windows path
+  closes the exported handle after CUDA import, as CUDA retains no ownership
+  of opaque Win32 handles. Connecting this encoder to Monado remains pending.
+- The diagnostic Windows Monado encoder adapter now passes a local stereo
+  encode/decode check. With `METEOR_WINDOWS_ENCODER` pointing at
+  `meteor-windows-nvenc.dll`, Monado packs live eye images on the GPU and
+  calls NVENC. Two captured frames decoded correctly with left/right eye
+  identity, RGB channel order, spatial steps and green markers 64/255.
+  The source probe exited successfully and both server pixel checks passed.
+  Session end/destruction drains the encoder worker before unloading its DLL.
+  This adapter supports one opaque projection; overlay composition, tracking,
+  transport and Meteor's Windows runtime lifecycle still need integration.
+- A standalone DXGI composition prototype now builds and runs on Windows:
+  `meteor-dxgi-composite.exe` enumerates active outputs on the first adapter,
+  duplicates each output and submits GPU copies into a shared desktop-sized
+  surface. The one-display check captured DISPLAY1 at 2560x1440. Two-display
+  capture, pixel verification, frame pacing and Vibepollo integration remain
+  pending. The prototype currently supports SDR, unrotated, same-adapter
+  outputs only and is not used by the streaming host yet.
+- With the second monitor connected, the DXGI prototype captured DISPLAY1
+  2560x1440 at (0,0) and DISPLAY2 1920x1080 at (2560,0), producing a
+  4480x1440 GPU surface. Mapping a staging copy completed successfully;
+  both monitor regions contained nonblack pixels and distinct checksums.
+  This verifies actual two-output GPU capture/composition, but does not yet
+  verify continuous capture or stream it through Vibepollo.
+- Continuous prototype check: 600 polling ticks in 5008.9 ms at a requested
+  120 Hz, preserving each monitor's previous pixels when DXGI reports idle.
+  DISPLAY1 delivered 333 updates and DISPLAY2 67; these are desktop-change
+  updates, not encoded fps. CPU capture/copy submission took 117.0 us median,
+  279.3 us p95. Final GPU readback verified populated regions on both outputs.
+  Encoder integration, cursor composition, mode-change recovery and HDR
+  remain pending in the streaming host.
+- Checked the fork's previously untracked `master` at `0f213e6f` before host
+  integration. Relative to the Meteor baseline, its Windows platform changes
+  are in Playnite integration; it does not provide the missing multi-output
+  capture backend. The built host remains on the dedicated Meteor baseline.
+- The fork now builds an experimental `display_multi_t` backend using the
+  existing `display_vram_t` encoder buffers and keyed-mutex synchronization.
+  `METEOR_WINDOWS_MULTIMONITOR=1` selects it explicitly for DXGI encoders.
+  The Release host build passed. The durable source patch is
+  `test/vibepollo_windows_multimonitor.patch`. This is not enabled in the
+  running profile and has not been stream-tested. It currently captures all
+  active outputs on one adapter, supports SDR/unrotated displays, and omits
+  cursor composition. Manifest/selection support, HDR, mode-change handling
+  and a host encode smoke remain required before normal use.
+- An isolated Meteor-managed host startup with the experimental flag passed:
+  discovery and proxied `/serverinfo` returned HTTP 200, H.264/HEVC NVENC
+  initialization passed, and the host died with Meteor. This exercised the
+  fork's synthetic encoder validation, not `display_multi_t`: startup could
+  not acquire a temporary virtual-display lease and selected synthetic
+  surfaces. A real capture-to-encoder check is still required; do not treat
+  this startup smoke as multi-monitor encoding validation.
+- Real-backend encoder validation now passes with both
+  `METEOR_WINDOWS_MULTIMONITOR=1` and `METEOR_WINDOWS_MULTIMONITOR_PROBE=1`.
+  The host initialized two-output 4480x1440 capture and explicitly supplied
+  captured desktop pixels to its encoder probe; H.264 and HEVC NVENC passed.
+  AV1 failed as expected on RTX 3090. This checks capture/conversion/encoding
+  compatibility using the probe's output configurations, not sustained
+  streaming at native combined resolution. Layout metadata, cursor support,
+  output selection and an actual client stream remain pending.
+- Windows manifest and selection implementation added behind the experimental
+  flag: `/polaris/v1/display/manifest` uses the same geometry policy as the
+  DXGI compositor, and `/launch`/`resume` output names select which monitors
+  are copied. Unknown outputs, unsupported layouts and multiple active GPU
+  adapters are rejected. Software capture is refused while the flag is on,
+  so it cannot silently supply a single-output stream with a multi-output
+  manifest. The manifest implementation compiled successfully; authenticated
+  endpoint and selection behavior still need runtime checks. Cursor support
+  remains pending.
+- Live Windows selection checks passed via the host's
+  `--meteor-display-layout` diagnostic: DISPLAY1 alone is 2560x1440,
+  DISPLAY2 alone is 1920x1080 with its frame origin reset to (0,0), both are
+  4480x1440, and an unknown name exits with an error. This exercises the
+  geometry helper shared by capture and the authenticated manifest endpoint.
+- Cursor composition was added using a separate GDI-compatible GPU surface
+  and the Windows cursor hotspot, preserving the cursor-free persistent
+  desktop to avoid trails. The host rebuilt and repeated its captured-pixel
+  H.264/HEVC encoder checks successfully with cursor composition enabled.
+  Cursor appearance and movement across both screens still need visual
+  verification, as does the authenticated manifest endpoint/client stream.
+- November 3 headset check: the physical-display-only trial now streams
+  both monitors. The authenticated host manifest reached Nightfall with a
+  4480x1440 frame, DISPLAY1 2560x1440 at (0,0), DISPLAY2 1920x1080 at
+  (2560,0), both enabled. The client reports two visible screens, HEVC HW,
+  72 fps and about 3 ms network latency. Negotiated video output remains
+  2560x1440, so native combined-resolution quality is not validated yet.
+  The multi-output backend now populates DXGI-derived frame and pacing
+  timestamps; no missing-timestamp warnings appeared after the rebuild.
+  User visual checks for monitor content, aspect and cursor remain pending.
+- The initial two-monitor view was vertically compressed because the client
+  retained `is_polaris_host=false` despite a valid launch manifest. That
+  disabled monitor controls and selected a 2560x1440 preset for the 4480x1440
+  capture, introducing host letterboxing absent from the manifest's UVs.
+  The launch-response handler now treats a validated manifest as authoritative
+  capability evidence and stores its capture size. Applying equivalent live
+  state produced a 4480x1440 HEVC stream with two screens. Reducing to one
+  monitor then passed at 2560x1440/72 fps. The source change needs packaging
+  in a future APK; live host settings were saved for this test. The required
+  unit runner could not start because WSL lacks cargo (see unit verification
+  summary dated 2026-11-03); runtime behavior was checked through the bridge.
+- Vibepollo Windows presently chooses a single `IDXGIOutput` during
+  `display_base_t::init` and makes one `IDXGIOutputDuplication`. Its
+  `/polaris/v1/display/manifest` endpoint is Linux-only. Windows support
+  needs a capture surface spanning selected DXGI outputs, each output copied
+  at its desktop offset (or packed frame offset when the decoder limit is
+  exceeded). Only after this is implemented should the endpoint advertise a
+  Windows layout or accept a multi-output `outputs=` request. The current
+  monitor names are `\\.\DISPLAY1` and `\\.\DISPLAY2` in the fork's DXGI
+  enumeration. The active Windows profile still captures one monitor.
 
 ## Current Windows status (2026-10-09)
 
