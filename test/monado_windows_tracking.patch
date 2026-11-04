@@ -1,0 +1,76 @@
+--- a/src/xrt/drivers/simulated/simulated_hmd.c
++++ b/src/xrt/drivers/simulated/simulated_hmd.c
+@@ -25,6 +25,7 @@
+ #include "simulated_interface.h"
+ 
+ #include <stdio.h>
++#include "monado_tracking_dispatch.h"
+ 
+ 
+ /*
+@@ -42,6 +43,7 @@
+ struct simulated_hmd
+ {
+ 	struct xrt_device base;
++	struct meteor_tracking_bridge meteor_tracking;
+ 
+ 	struct xrt_pose pose;
+ 	struct xrt_pose center;
+@@ -77,6 +79,7 @@
+ {
+ 	struct simulated_hmd *dh = simulated_hmd(xdev);
+ 
++	meteor_tracking_release(&dh->meteor_tracking);
+ 	// Remove the variable tracking.
+ 	u_var_remove_root(dh);
+ 
+@@ -99,6 +102,8 @@
+ 		return XRT_ERROR_INPUT_UNSUPPORTED;
+ 	}
+ 
++	if (meteor_tracking_relation(&hmd->meteor_tracking, at_timestamp_ns, out_relation)) return XRT_SUCCESS;
++
+ 	const double time_s = time_ns_to_s(at_timestamp_ns - hmd->created_ns);
+ 	const double d = hmd->diameter_m;
+ 	const double d2 = d * 2;
+@@ -180,5 +185,23 @@
+  */
+ 
++static xrt_result_t
++simulated_meteor_view_poses(struct xrt_device *xdev,
++                            const struct xrt_vec3 *default_eye_relation,
++                            int64_t at_timestamp_ns,
++                            enum xrt_view_type view_type,
++                            uint32_t view_count,
++                            struct xrt_space_relation *out_head_relation,
++                            struct xrt_fov *out_fovs,
++                            struct xrt_pose *out_poses)
++{
++	xrt_result_t result = u_device_get_view_poses(xdev, default_eye_relation, at_timestamp_ns,
++	                                               view_type, view_count, out_head_relation, out_fovs, out_poses);
++	if (result == XRT_SUCCESS && view_count == 2) {
++		meteor_tracking_eye_geometry(&simulated_hmd(xdev)->meteor_tracking, xdev, out_fovs, out_poses);
++	}
++	return result;
++}
++
+ enum u_logging_level
+ simulated_log_level(void)
+ {
+@@ -259,6 +282,16 @@
+ 		return NULL;
+ 	}
+ 
++	if (!meteor_tracking_initialize(&hmd->meteor_tracking, &hmd->base)) {
++		fprintf(stderr, "METEOR_TRACKING_FAILED initialization (no simulated fallback)\n");
++		simulated_hmd_destroy(&hmd->base);
++		return NULL;
++	}
++	if (hmd->meteor_tracking.has_optics) {
++		hmd->base.get_view_poses = simulated_meteor_view_poses;
++		meteor_tracking_eye_geometry(&hmd->meteor_tracking, &hmd->base, NULL, NULL);
++	}
++
+ 	// Setup variable tracker.
+ 	u_var_add_root(hmd, "Simulated HMD", true);
+ 	u_var_add_pose(hmd, &hmd->pose, "pose");

@@ -6,9 +6,15 @@ pub fn steam_launch_options() -> io::Result<String> {
     let root = RUNTIME_ROOT.get().ok_or_else(|| io::Error::other("Install and enable Meteor XR first"))?;
     Ok(launch_options_for(root))
 }
-fn launch_options_for(root: &Path) -> String {
+#[cfg(not(windows))]
+pub(crate) fn launch_options_for(root: &Path) -> String {
     let wrapper = root.join("tools/meteor_xr.py").to_string_lossy().replace('\'', "'\"'\"'");
     format!("/usr/bin/python3 '{wrapper}' steam-run --app-id auto --wait 120 -- %command%")
+}
+#[cfg(windows)]
+pub(crate) fn launch_options_for(root: &Path) -> String {
+    let executable=std::env::current_exe().unwrap_or_else(|_|"nightfall-meteor.exe".into());
+    format!("\"{}\" --xr-steam-run --root \"{}\" -- %command%",executable.display(),root.display())
 }
 use serde_json::{Value,json};
 

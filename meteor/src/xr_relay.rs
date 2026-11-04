@@ -214,7 +214,7 @@ impl Relay {
     pub fn start_runtime_profile(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, long_run: bool) {
         self.start_runtime_supervised(root, hz, eye_size, eye_size, long_run, 0, "h264".into(), false, None, None);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn start_runtime_supervised(&mut self, root: std::path::PathBuf, hz: u32, eye_size: u32, eye_height:u32, long_run: bool, bitrate_mbps: u32, codec: String, foveated_encoding:bool, launch_intent: Option<String>, owner: Option<&RuntimeTasks>) {
         let progress = Arc::new(Mutex::new(RuntimeStatus::default()));
         let bitrate_directory=self.bitrate.directory.clone();

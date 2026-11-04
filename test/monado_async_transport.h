@@ -1,6 +1,6 @@
 #pragma once
 #include "monado_direct_transport.h"
-#include <pthread.h>
+#include "meteor_delivery_threads.h"
 #include <stdio.h>
 
 // Diagnostic opt-in: two pending compressed packets plus one in flight.
@@ -13,31 +13,31 @@ struct meteor_delivery {
     struct meteor_owned_packet packet;
 };
 static struct {
-    pthread_mutex_t mutex;
-    pthread_cond_t wake;
-    pthread_t thread;
+    meteor_delivery_mutex mutex;
+    meteor_delivery_condition wake;
+    meteor_delivery_thread thread;
     bool started, stopping, failed;
     unsigned head, count, peak;
     uint64_t delivered;
     char port[6];
     struct meteor_delivery pending[2];
-} meteor_async = {.mutex=PTHREAD_MUTEX_INITIALIZER, .wake=PTHREAD_COND_INITIALIZER};
+} meteor_async = {.mutex=METEOR_DELIVERY_MUTEX_INIT, .wake=METEOR_DELIVERY_CONDITION_INIT};
 
 static void *meteor_delivery_worker(void *unused)
 {
     (void)unused;
     for (;;) {
-        pthread_mutex_lock(&meteor_async.mutex);
+        meteor_delivery_lock(&meteor_async.mutex);
         while (!meteor_async.count && !meteor_async.stopping && !meteor_async.failed)
-            pthread_cond_wait(&meteor_async.wake,&meteor_async.mutex);
+            meteor_delivery_wait(&meteor_async.wake,&meteor_async.mutex);
         if (meteor_async.failed || (!meteor_async.count && meteor_async.stopping)) {
-            pthread_mutex_unlock(&meteor_async.mutex); break;
+            meteor_delivery_unlock(&meteor_async.mutex); break;
         }
         struct meteor_delivery item=meteor_async.pending[meteor_async.head];
         memset(&meteor_async.pending[meteor_async.head],0,sizeof(item));
         meteor_async.head=(meteor_async.head+1)%2; --meteor_async.count;
-        pthread_cond_broadcast(&meteor_async.wake);
-        pthread_mutex_unlock(&meteor_async.mutex);
+        meteor_delivery_broadcast(&meteor_async.wake);
+        meteor_delivery_unlock(&meteor_async.mutex);
         uint64_t start=meteor_direct_now_us();
         bool ok=meteor_direct_send(&item.metadata,&item.packet,meteor_async.port);
         fprintf(stderr,"METEOR_DELIVERY_TIMING frame=%llu queue_us=%llu service_us=%llu ok=%d\n",
@@ -46,18 +46,18 @@ static void *meteor_delivery_worker(void *unused)
         if (ok) fprintf(stderr,"METEOR_DIRECT_OK frame=%llu bytes=%u async=1\n",
             (unsigned long long)item.metadata.frame_id,item.packet.length);
         free(item.packet.bytes);
-        pthread_mutex_lock(&meteor_async.mutex);
+        meteor_delivery_lock(&meteor_async.mutex);
         if (ok) ++meteor_async.delivered;
         else meteor_async.failed=true;
-        pthread_cond_broadcast(&meteor_async.wake);
-        pthread_mutex_unlock(&meteor_async.mutex);
+        meteor_delivery_broadcast(&meteor_async.wake);
+        meteor_delivery_unlock(&meteor_async.mutex);
         if (!ok) break;
     }
-    pthread_mutex_lock(&meteor_async.mutex);
+    meteor_delivery_lock(&meteor_async.mutex);
     bool failed=meteor_async.failed;
-    pthread_mutex_unlock(&meteor_async.mutex);
+    meteor_delivery_unlock(&meteor_async.mutex);
     if (!failed && !meteor_direct_finish()) {
-        pthread_mutex_lock(&meteor_async.mutex); meteor_async.failed=true; pthread_mutex_unlock(&meteor_async.mutex);
+        meteor_delivery_lock(&meteor_async.mutex); meteor_async.failed=true; meteor_delivery_unlock(&meteor_async.mutex);
     }
     meteor_direct_close();
     return NULL;
@@ -70,15 +70,19 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
     if (!input || !packet || !packet->bytes || !packet->length || packet->length>8*1024*1024 || !port) return false;
     char *end=NULL; long number=strtol(port,&end,10);
     if (!*port || *end || number<1 || number>65535 || strlen(port)>5) return false;
-    pthread_mutex_lock(&meteor_async.mutex);
-    // Only the off-compositor raw encode worker may backpressure here. During
-    // decoder startup its newest pending raw job can be replaced safely, while
-    // already encoded packets retain order and ownership without growing queues.
-    if(meteor_async.count==2 && !meteor_async.failed && !meteor_async.stopping && getenv("METEOR_XR_ASYNC_ENCODE")) {
-        struct timespec deadline; clock_gettime(CLOCK_REALTIME,&deadline); deadline.tv_sec+=2;
+    meteor_delivery_lock(&meteor_async.mutex);
+    // The raw encode worker and Windows' bounded compositor adapter may wait
+    // through decoder cold start. Linux synchronous callers still fail fast.
+    // Encoded packets retain order and ownership without growing queues.
+    bool can_wait=getenv("METEOR_XR_ASYNC_ENCODE")!=NULL;
+#ifdef _WIN32
+    can_wait=can_wait || getenv("METEOR_XR_ASYNC_DELIVERY")!=NULL;
+#endif
+    if(meteor_async.count==2 && !meteor_async.failed && !meteor_async.stopping && can_wait) {
+        uint64_t deadline=meteor_direct_now_ms()+2000;
         fprintf(stderr,"METEOR_DELIVERY_BACKPRESSURE waiting_for_slot=1\n");
         while(meteor_async.count==2 && !meteor_async.failed && !meteor_async.stopping) {
-            int result=pthread_cond_timedwait(&meteor_async.wake,&meteor_async.mutex,&deadline);
+            int result=meteor_delivery_wait_until(&meteor_async.wake,&meteor_async.mutex,deadline);
             if(result) break;
         }
     }
@@ -86,13 +90,13 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
         (meteor_async.started && strcmp(port,meteor_async.port))) {
         fprintf(stderr,"METEOR_DELIVERY_REJECT pending=%u failed=%d stopping=%d\n",
             meteor_async.count,meteor_async.failed,meteor_async.stopping);
-        meteor_async.failed=true; pthread_cond_broadcast(&meteor_async.wake);
-        pthread_mutex_unlock(&meteor_async.mutex); return false;
+        meteor_async.failed=true; meteor_delivery_broadcast(&meteor_async.wake);
+        meteor_delivery_unlock(&meteor_async.mutex); return false;
     }
     if (!meteor_async.started) {
         strcpy(meteor_async.port,port);
-        if (pthread_create(&meteor_async.thread,NULL,meteor_delivery_worker,NULL)) {
-            meteor_async.failed=true; pthread_mutex_unlock(&meteor_async.mutex); return false;
+        if (meteor_delivery_create(&meteor_async.thread,meteor_delivery_worker,NULL)) {
+            meteor_async.failed=true; meteor_delivery_unlock(&meteor_async.mutex); return false;
         }
         meteor_async.started=true;
     }
@@ -108,18 +112,18 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
     meteor_async.pending[index].packet=*packet; packet->bytes=NULL; packet->length=0;
     ++meteor_async.count;
     if (meteor_async.count>meteor_async.peak) meteor_async.peak=meteor_async.count;
-    pthread_cond_signal(&meteor_async.wake); pthread_mutex_unlock(&meteor_async.mutex);
+    meteor_delivery_signal(&meteor_async.wake); meteor_delivery_unlock(&meteor_async.mutex);
     return true;
 }
 
 static bool meteor_async_finish(void)
 {
-    pthread_mutex_lock(&meteor_async.mutex);
+    meteor_delivery_lock(&meteor_async.mutex);
     bool started=meteor_async.started;
-    meteor_async.stopping=true; pthread_cond_signal(&meteor_async.wake);
-    pthread_mutex_unlock(&meteor_async.mutex);
-    if (started) pthread_join(meteor_async.thread,NULL);
-    pthread_mutex_lock(&meteor_async.mutex);
+    meteor_async.stopping=true; meteor_delivery_signal(&meteor_async.wake);
+    meteor_delivery_unlock(&meteor_async.mutex);
+    if (started) meteor_delivery_join(meteor_async.thread);
+    meteor_delivery_lock(&meteor_async.mutex);
     bool ok=!meteor_async.failed;
     fprintf(stderr,"METEOR_ASYNC_DRAIN delivered=%llu peak_pending=%u failed=%d\n",
         (unsigned long long)meteor_async.delivered,meteor_async.peak,!ok);
@@ -129,6 +133,6 @@ static bool meteor_async_finish(void)
     }
     meteor_async.started=meteor_async.stopping=meteor_async.failed=false;
     meteor_async.head=meteor_async.count=meteor_async.peak=0; meteor_async.delivered=0;
-    pthread_mutex_unlock(&meteor_async.mutex);
+    meteor_delivery_unlock(&meteor_async.mutex);
     return ok;
 }

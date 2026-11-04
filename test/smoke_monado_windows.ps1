@@ -2,6 +2,8 @@ param(
     [string]$Build = (Join-Path $PSScriptRoot '..\meteor\target\windows-monado-vcpkg-build'),
     [string]$HelloXr = (Join-Path $PSScriptRoot '..\meteor\target\windows-openxr-sample-build\src\tests\hello_xr\Release\hello_xr.exe'),
     [int]$Seconds = 10,
+    [ValidateSet('Vulkan','D3D11','D3D12')][string]$Graphics='Vulkan',
+    [ValidateSet('Local','Stage','View')][string]$AppSpace='Local',
     [switch]$PixelProbe
 )
 
@@ -32,7 +34,7 @@ try {
     if ($service.HasExited) { throw 'Monado service exited before sample startup' }
     $sample = [System.Diagnostics.Process]::new()
     $sample.StartInfo.FileName = $HelloXr
-    $sample.StartInfo.Arguments = '-G Vulkan'
+    $sample.StartInfo.Arguments = "-G $Graphics -s $AppSpace"
     $sample.StartInfo.UseShellExecute = $false
     $sample.StartInfo.RedirectStandardInput = $true
     $sample.StartInfo.RedirectStandardOutput = $true
@@ -42,6 +44,10 @@ try {
     $sampleOut = $sample.StandardOutput.ReadToEndAsync()
     $sampleErr = $sample.StandardError.ReadToEndAsync()
     Start-Sleep -Seconds $Seconds
+    if (-not $sample.HasExited -and [IO.Path]::GetFileName($HelloXr) -eq 'hello_xr.exe') {
+        $sample.StandardInput.WriteLine('q')
+        if (-not $sample.WaitForExit(3000)) {throw 'Hello XR did not close after its quit input'}
+    }
     if ($sample.HasExited) { Write-Output "sample_exit=$($sample.ExitCode)" }
 } finally {
     if ($sample -and $sample.Id -and -not $sample.HasExited) { $sample.Kill(); $sample.WaitForExit() }

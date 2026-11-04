@@ -137,7 +137,7 @@ int main() {
         }
     }
     if (!running) { std::fprintf(stderr, "Session never became READY\n"); return 1; }
-    if(input_probe.enabled) { input_probe.run(); return 0; }
+    if(input_probe.enabled && !input_probe.observing) { input_probe.run(); return 0; }
     StereoImages stereo(session, gpu, device, queue_family);
     const bool quad_fixture=std::getenv("METEOR_XR_QUAD_FIXTURE")!=nullptr;
     const bool panorama_fixture=std::getenv("METEOR_XR_PANORAMA_FIXTURE")!=nullptr;
@@ -157,14 +157,15 @@ int main() {
     }
     const char *continuous = std::getenv("METEOR_CONTINUOUS_FRAMES");
     const int frame_count = continuous ? std::atoi(continuous) : 5;
-    if (frame_count < 1 || frame_count > 240) return 1;
+    if (frame_count < 1 || frame_count > 7200) return 1;
     const bool free_running = std::getenv("METEOR_XR_FREE_RUNNING") != nullptr;
-    if (free_running && (!continuous || !std::getenv("METEOR_NVENC_BRIDGE"))) return 2;
+    if (free_running && (!continuous || (!std::getenv("METEOR_NVENC_BRIDGE") && !std::getenv("METEOR_WINDOWS_ENCODER")))) return 2;
     long long final_timestamp = 0;
     for (int frame = 0; frame < frame_count; ++frame) {
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState state{XR_TYPE_FRAME_STATE};
         check(xrWaitFrame(session, &wait, &state), "wait frame");
         XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO}; check(xrBeginFrame(session, &begin), "begin frame");
+        input_probe.observe();
         XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO}; locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         locate.displayTime = state.predictedDisplayTime; locate.space = space;
         XrViewState view_state{XR_TYPE_VIEW_STATE}; XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
@@ -371,7 +372,8 @@ int main() {
         std::printf("Frame %d monotonic_ns=%lld\n", frame,
             static_cast<long long>(monotonic_time.tv_sec) * 1000000000LL + monotonic_time.tv_nsec);
 #endif
-        std::printf("Frame %d: two pixel-verified eye images, submitted layers=%u, predicted time %lld\n", frame, end.layerCount, static_cast<long long>(state.predictedDisplayTime));
+        std::printf("Frame %d: two %s eye images, submitted layers=%u, predicted time %lld\n", frame,
+            std::getenv("METEOR_XR_GPU_MEASURE") ? "GPU-rendered" : "pixel-verified",end.layerCount, static_cast<long long>(state.predictedDisplayTime));
         if(quad_fixture && frame==12) {
             // Model a game loading a world while xrizer retains its last
             // submitted static overlays. Tracking/presentation must continue.
@@ -387,7 +389,15 @@ int main() {
             for (int attempt = 0; attempt < 2000; ++attempt) {
                 std::ifstream ack(meteor_probe_path("capture-complete"));
                 long long received = 0;
-                if ((ack >> received) && received == expected) { acknowledged = true; break; }
+                // Windows OpenXR converts through QPC ticks, quantizing the
+                // same timestamp by less than one microsecond.
+                if ((ack >> received) &&
+#ifdef _WIN32
+                    std::llabs(received-expected)<1000
+#else
+                    received == expected
+#endif
+                ) { acknowledged = true; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
             if (!acknowledged) { std::fprintf(stderr, "Frame %d acknowledgment timed out\n", frame); return 1; }
@@ -399,10 +409,21 @@ int main() {
     for (int attempt = 0; attempt < 2000; ++attempt) {
         std::ifstream done(meteor_probe_path("capture-complete"));
         long long received = 0;
-        if (continuous ? ((done >> received) && received == final_timestamp) : done.good()) { captured = true; break; }
+        if (continuous ? ((done >> received) &&
+#ifdef _WIN32
+            std::llabs(received-final_timestamp)<1000
+#else
+            received == final_timestamp
+#endif
+        ) : done.good()) { captured = true; break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     if (!captured) { std::fprintf(stderr, "Server never acknowledged final stereo capture\n"); return 1; }
+    if (const char *hold=std::getenv("METEOR_PROBE_HOLD_MS")) {
+        char *end=nullptr; long milliseconds=std::strtol(hold,&end,10);
+        if (!*hold || *end || milliseconds<0 || milliseconds>3000) return 2;
+        std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+    }
     check(xrRequestExitSession(session), "request exit");
     bool stopped = false;
     for (int attempt = 0; attempt < 100 && !stopped; ++attempt) {

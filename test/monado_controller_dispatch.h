@@ -1,5 +1,15 @@
 #pragma once
+#ifdef _WIN32
+#include <windows.h>
+static void *meteor_controller_open(const char *path) { return (void *)LoadLibraryA(path); }
+static void *meteor_controller_symbol(void *module,const char *name) { return (void *)GetProcAddress((HMODULE)module,name); }
+static void meteor_controller_close(void *module) { FreeLibrary((HMODULE)module); }
+#else
 #include <dlfcn.h>
+static void *meteor_controller_open(const char *path) { return dlopen(path,RTLD_NOW|RTLD_LOCAL); }
+static void *meteor_controller_symbol(void *module,const char *name) { return dlsym(module,name); }
+static void meteor_controller_close(void *module) { dlclose(module); }
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -25,22 +35,22 @@ static bool meteor_controller_initialize(struct meteor_controller_bridge *b,enum
     if(!getenv("METEOR_XR_CONTROLLERS")) return true;
     if((name!=XRT_DEVICE_WMR_CONTROLLER && name!=XRT_DEVICE_TOUCH_CONTROLLER) || !getenv("METEOR_TRACKING_BRIDGE")) return false;
     b->hand=type==XRT_DEVICE_TYPE_LEFT_HAND_CONTROLLER ? 0 : 1;
-    b->module=dlopen(getenv("METEOR_TRACKING_BRIDGE"),RTLD_NOW|RTLD_LOCAL);
+    b->module=meteor_controller_open(getenv("METEOR_TRACKING_BRIDGE"));
     if(!b->module) return false;
-    void *symbol=dlsym(b->module,"meteor_tracking_controller_v1"); memcpy(&b->query,&symbol,sizeof(b->query));
-    if(!b->query) { dlclose(b->module); b->module=NULL; return false; }
+    void *symbol=meteor_controller_symbol(b->module,"meteor_tracking_controller_v1"); memcpy(&b->query,&symbol,sizeof(b->query));
+    if(!b->query) { meteor_controller_close(b->module); b->module=NULL; return false; }
     if(getenv("METEOR_XR_TOUCH_INPUTS")) {
-        symbol=dlsym(b->module,"meteor_tracking_controller_v2"); memcpy(&b->query_v2,&symbol,sizeof(b->query_v2));
-        if(!b->query_v2) { dlclose(b->module); b->module=NULL; return false; }
+        symbol=meteor_controller_symbol(b->module,"meteor_tracking_controller_v2"); memcpy(&b->query_v2,&symbol,sizeof(b->query_v2));
+        if(!b->query_v2) { meteor_controller_close(b->module); b->module=NULL; return false; }
     }
     if(getenv("METEOR_XR_HAPTICS")) {
-        symbol=dlsym(b->module,"meteor_tracking_haptic_v1"); memcpy(&b->haptic,&symbol,sizeof(b->haptic));
-        if(!b->haptic) { dlclose(b->module); b->module=NULL; return false; }
+        symbol=meteor_controller_symbol(b->module,"meteor_tracking_haptic_v1"); memcpy(&b->haptic,&symbol,sizeof(b->haptic));
+        if(!b->haptic) { meteor_controller_close(b->module); b->module=NULL; return false; }
     }
     return true;
 }
 static void meteor_controller_release(struct meteor_controller_bridge *b) {
-    if(b->module) dlclose(b->module);
+    if(b->module) meteor_controller_close(b->module);
     memset(b,0,sizeof(*b));
 }
 static bool meteor_controller_read(struct meteor_controller_bridge *b,int64_t at,float poses[14],float values[4],uint32_t *buttons,uint32_t *flags,uint64_t *stamp) {

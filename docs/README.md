@@ -20,6 +20,9 @@ the build/deployment entry point.
 
 ## Active plans
 
+Windows XR: [Release development workflow](guides/meteor-windows-xr.md) and
+[tested compatibility checkpoint](plans/active/meteor-windows-vrchat-compat.md).
+
 - [Nightfall Meteor: host-side depth maps](plans/active/meteor-host-depth.md)
 - [Nightfall Meteor: microphone passthrough](plans/active/meteor-microphone.md)
   (supersedes [the in-protocol microphone plan](plans/active/microphone-passthrough.md))

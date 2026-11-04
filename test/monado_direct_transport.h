@@ -1,28 +1,45 @@
-// Linux-only diagnostic packet sink. No files in the delivery path, loopback only.
+// Diagnostic packet sink. No files in the delivery path, loopback only.
 #pragma once
 #include "monado_nvenc_bridge.h"
 #include <stdbool.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/random.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <time.h>
 #include <unistd.h>
+#endif
 
 struct meteor_owned_packet { uint8_t *bytes; uint32_t length; };
+#ifdef _WIN32
+static SOCKET meteor_direct_socket = INVALID_SOCKET;
+#define METEOR_DIRECT_INVALID INVALID_SOCKET
+#else
 static int meteor_direct_socket = -1;
+#define METEOR_DIRECT_INVALID (-1)
+#endif
 static uint64_t meteor_direct_epoch, meteor_direct_sequence;
 
 static void meteor_direct_close(void)
 {
+#ifdef _WIN32
+    if (meteor_direct_socket != INVALID_SOCKET) closesocket(meteor_direct_socket);
+    meteor_direct_socket = INVALID_SOCKET;
+#else
     if (meteor_direct_socket >= 0) close(meteor_direct_socket);
     meteor_direct_socket = -1;
+#endif
 }
 
 static int meteor_encoded_copy(void *context, const uint8_t *data, uint32_t length)
@@ -37,14 +54,25 @@ static int meteor_encoded_copy(void *context, const uint8_t *data, uint32_t leng
 
 static uint64_t meteor_direct_now_ms(void)
 {
+#ifdef _WIN32
+    return GetTickCount64();
+#else
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+#endif
 }
 
 static uint64_t meteor_direct_now_us(void)
 {
+#ifdef _WIN32
+    LARGE_INTEGER now, frequency;
+    QueryPerformanceCounter(&now); QueryPerformanceFrequency(&frequency);
+    return (uint64_t)(now.QuadPart/frequency.QuadPart)*1000000 +
+        (uint64_t)(now.QuadPart%frequency.QuadPart)*1000000/frequency.QuadPart;
+#else
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     return (uint64_t)now.tv_sec * 1000000 + (uint64_t)now.tv_nsec / 1000;
+#endif
 }
 
 static bool meteor_direct_wait(short events, uint64_t deadline)
@@ -52,9 +80,15 @@ static bool meteor_direct_wait(short events, uint64_t deadline)
     for (;;) {
         uint64_t now = meteor_direct_now_ms();
         if (now >= deadline) return false;
+#ifdef _WIN32
+        WSAPOLLFD fd = {.fd = meteor_direct_socket, .events = events};
+        int result = WSAPoll(&fd, 1, (int)(deadline - now));
+        if (result == SOCKET_ERROR && WSAGetLastError() == WSAEINTR) continue;
+#else
         struct pollfd fd = {.fd = meteor_direct_socket, .events = events};
         int result = poll(&fd, 1, (int)(deadline - now));
         if (result < 0 && errno == EINTR) continue;
+#endif
         return result > 0 && (fd.revents & events) != 0;
     }
 }
@@ -64,8 +98,13 @@ static bool meteor_direct_io(void *bytes, size_t length, bool writing, uint64_t 
     uint8_t *cursor = bytes;
     while (length) {
         if (!meteor_direct_wait(writing ? POLLOUT : POLLIN, deadline)) return false;
+#ifdef _WIN32
+        int done = writing ? send(meteor_direct_socket, (const char *)cursor, (int)length, 0) : recv(meteor_direct_socket, (char *)cursor, (int)length, 0);
+        if (done == SOCKET_ERROR && (WSAGetLastError() == WSAEWOULDBLOCK || WSAGetLastError() == WSAEINTR)) continue;
+#else
         ssize_t done = writing ? send(meteor_direct_socket, cursor, length, MSG_NOSIGNAL) : recv(meteor_direct_socket, cursor, length, 0);
         if (done < 0 && (errno == EAGAIN || errno == EINTR || errno == EWOULDBLOCK)) continue;
+#endif
         if (done <= 0) return false;
         cursor += done; length -= (size_t)done;
     }
@@ -106,18 +145,43 @@ static bool meteor_direct_connect(const char *port_text, uint64_t deadline)
 {
     char *end; long port = strtol(port_text, &end, 10);
     if (!*port_text || *end || port < 1 || port > 65535) return false;
+#ifdef _WIN32
+    static bool initialized;
+    if (!initialized) { WSADATA data; if (WSAStartup(MAKEWORD(2,2),&data)) return false; initialized = true; }
+    HMODULE random_module = LoadLibraryA("bcrypt.dll");
+    if (!random_module) return false;
+    typedef LONG (WINAPI *random_fn)(void *, unsigned char *, ULONG, ULONG);
+    random_fn random_bytes = (random_fn)GetProcAddress(random_module,"BCryptGenRandom");
+    bool random_ok = random_bytes && random_bytes(NULL,(unsigned char *)&meteor_direct_epoch,sizeof(meteor_direct_epoch),2) >= 0;
+    FreeLibrary(random_module);
+    if (!random_ok) return false;
+#else
     if (getrandom(&meteor_direct_epoch, sizeof(meteor_direct_epoch), 0) != (ssize_t)sizeof(meteor_direct_epoch)) return false;
+#endif
     if (!meteor_direct_epoch) meteor_direct_epoch = 1;
     meteor_direct_sequence = 0;
+#ifdef _WIN32
+    meteor_direct_socket = socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if (meteor_direct_socket == INVALID_SOCKET) return false;
+    u_long nonblocking = 1;
+    if (ioctlsocket(meteor_direct_socket,FIONBIO,&nonblocking)) return false;
+#else
     meteor_direct_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (meteor_direct_socket < 0) return false;
+#endif
     int enabled = 1;
-    if (setsockopt(meteor_direct_socket, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) != 0) return false;
+    if (setsockopt(meteor_direct_socket, IPPROTO_TCP, TCP_NODELAY, (const char *)&enabled, sizeof(enabled)) != 0) return false;
     struct sockaddr_in address = {.sin_family = AF_INET, .sin_port = htons((uint16_t)port), .sin_addr = {.s_addr = htonl(INADDR_LOOPBACK)}};
     if (connect(meteor_direct_socket, (struct sockaddr *)&address, sizeof(address)) != 0) {
+#ifdef _WIN32
+        if (WSAGetLastError() != WSAEWOULDBLOCK || !meteor_direct_wait(POLLOUT, deadline)) return false;
+        int error, size = sizeof(error);
+        if (getsockopt(meteor_direct_socket,SOL_SOCKET,SO_ERROR,(char *)&error,&size) || error) return false;
+#else
         if (errno != EINPROGRESS || !meteor_direct_wait(POLLOUT, deadline)) return false;
         int error; socklen_t size = sizeof(error);
         if (getsockopt(meteor_direct_socket, SOL_SOCKET, SO_ERROR, &error, &size) != 0 || error) return false;
+#endif
     }
     return true;
 }
@@ -125,7 +189,7 @@ static bool meteor_direct_connect(const char *port_text, uint64_t deadline)
 static bool meteor_direct_send(const struct meteor_stereo_encode_v1 *input, const struct meteor_owned_packet *packet, const char *port)
 {
     uint64_t deadline = meteor_direct_now_ms() + 2000;
-    if (meteor_direct_socket < 0 && !meteor_direct_connect(port, deadline)) { meteor_direct_close(); return false; }
+    if (meteor_direct_socket == METEOR_DIRECT_INVALID && !meteor_direct_connect(port, deadline)) { meteor_direct_close(); return false; }
     if (!packet->bytes || !packet->length || packet->length > 8 * 1024 * 1024 || meteor_direct_sequence >= 32768) {
         meteor_direct_close(); return false;
     }
@@ -158,7 +222,7 @@ static bool meteor_direct_send(const struct meteor_stereo_encode_v1 *input, cons
 
 static bool meteor_direct_finish(void)
 {
-    if (meteor_direct_socket < 0) return true;
+    if (meteor_direct_socket == METEOR_DIRECT_INVALID) return true;
     uint8_t header[152], ack[12], expected[12];
     meteor_direct_header(header, NULL, 0, false);
     memcpy(expected, "NFXE", 4); meteor_direct_u64(expected + 4, meteor_direct_sequence, 8);

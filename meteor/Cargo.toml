@@ -1,9 +1,19 @@
 [package]
 name = "nightfall-meteor"
+default-run = "nightfall-meteor"
 version = "0.1.1"
 edition = "2024"
 description = "Nightfall companion app for the Sunshine host PC"
 license = "GPL-3.0-only"
+
+[[bin]]
+name = "nightfall-meteor"
+path = "src/main.rs"
+
+[[bin]]
+name = "nightfall-meteor-xr-dev"
+path = "src/main.rs"
+required-features = ["xr-dev-binary"]
 
 [dependencies]
 env_logger = "0.11.11"
@@ -25,7 +35,7 @@ sha2 = "0.11.0"
 tar = "0.4"
 socket2 = "0.6"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "signal", "process"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 toml = "1.1.6"
 toml_edit = "0.25"
 ureq = "3"
@@ -46,6 +56,7 @@ wasapi = "0.25.0"
 libc = "0.2"
 
 [features]
+xr-dev-binary = []
 default = ["onnxruntime"]
 # ONNX Runtime: EdgePad's .onnx models, and VDA on CUDA while its engines
 # build. For development comparisons; the AppImage builds without it.

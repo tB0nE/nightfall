@@ -1,0 +1,6 @@
+{
+  "name": "meteor",
+  "alwaysActivate": true,
+  "resourceOnly": false,
+  "hmd_presence": ["*.*"]
+}

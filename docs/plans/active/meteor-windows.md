@@ -1,5 +1,33 @@
 # Nightfall Meteor: Windows
 
+Current checkpoint (2026-11-04): bundled-host multi-monitor streaming, Moss
+through xrizer/Monado, and VRChat through the Meteor SteamVR driver have been
+physically tested on Quest. Audio is audible after increasing desktop volume;
+controller angle improved after the model-origin correction. Keep SteamVR's
+waiting environment; Room Setup no longer launches. XR remains a development
+integration, not part of the existing Windows installer.
+
+Read the [current compatibility checkpoint](meteor-windows-vrchat-compat.md)
+and [build/test guide](../../guides/meteor-windows-xr.md) first. The chronology
+below includes superseded intermediate failures and proposed directions.
+
+Latest direct-runtime investigation (2026-11-04): Windows System popup event 26
+confirms EAC rejects xrizer's `bin/vrclient_x64.dll`, including with normal
+runtime registration and no OpenVR environment overrides. The same DLL and
+VRChat's original Valve API loader pass an unprotected stereo control test.
+[Upstream/support report draft](meteor-windows-vrchat-support-draft.md) is ready,
+not submitted. Signing/approval requirements remain unresolved and are deferred.
+
+VRChat/EAC solution research (2026-11-04):
+[Windows VRChat compatibility options](meteor-windows-vrchat-compat.md).
+User authorized an optional SteamVR driver prototype for protected Windows
+games. Local driver, stereo mirror capture, NVENC and acknowledged Meteor frame
+transport proofs passed. VRChat initialized against the Meteor SteamVR HMD and
+exited without a visible EAC error. Managed VRChat capture then passed with
+1,283 validated encoded frames across a 20-second observation and a captured
+stereo world image. Natural scene exit/END and all 148 Windows unit tests pass.
+Quest validation remains; working Monado/xrizer remains available.
+
 > Status: In progress. The inventory below describes the 2026-10-07
 > starting point. See the current status below for the Windows work since then.
 >
@@ -15,6 +43,585 @@
 
 ## Windows compatibility update (2026-10-29)
 
+November 4 direction change: user requested switching away from Moss to
+VRChat, then explicitly preferred using xrizer consistently with Linux.
+Pause further Moss-specific compatibility work. Target architecture is
+OpenVR game → xrizer → OpenXR/Monado → Meteor on both platforms; native
+OpenXR applications do not need the OpenVR translation layer.
+The installed VRChat build has XRSDKOpenVR/openvr_api.dll, no installed
+OpenXR plugin; SteamVR and a Windows xrizer runtime are absent.
+
+November 4 GitHub investigation found existing Windows D3D11 implementations:
+
+- [webhead2oo9/xrizer, feat/windows-d3d11](https://github.com/webhead2oo9/xrizer/tree/feat/windows-d3d11),
+  pinned candidate `ee62d2647bb84dd0969be91a6ff430bba4f72090`.
+  Includes runtime-LUID adapter queries, D3D11 texture-copy/MSAA/bounds tests,
+  overlay ownership and bounded session shutdown. Its README reports Wine
+  tests, explicitly not native Windows or live headset coverage.
+- [NikNakk/xrizer, windows-openxr-d3d11](https://github.com/NikNakk/xrizer/tree/windows-openxr-d3d11),
+  reviewed `e469039f1254331727be717644865c9ac000d256`.
+  Documents Alyx through Wine/DXMT and Monado on macOS, with Windows cross-build
+  CI, D3D11 timing and a loading-stage implementation. Its documentation still
+  lists temporary-device default-adapter selection as a limitation.
+- Also found `ImSapphire/xrizer:win32`; not yet reviewed.
+
+Reuse and validate an existing port before writing another. First candidate is
+webhead2oo9's pinned branch, using native MSVC rather than Wine. New helper
+`test/build_xrizer_windows.ps1` clones a separate ignored checkout, checks its
+exact revision/cleanliness, builds both packager and DLL in Release with the
+lockfile, runs release library tests, and writes `nightfall-build.json` only
+on success. Windows LLVM 23.1.5 was installed for bindgen; Vulkan SDK supplies
+glslc. Native MSVC Release DLL built successfully. Initial library suite was
+26 passed / 79 failed / 2 ignored: its fake OpenXR runtime only implements
+Vulkan while Windows selected D3D11 for the temporary session. A tracked
+test-only patch (`test/xrizer_windows_tests.patch`) selects Vulkan for that
+fixture; production still selects D3D11. With that patch all **105 tests pass,
+2 ignored**, including real D3D11 texture-copy and MSAA tests. Build provenance
+is in the ignored runtime's `target/release/nightfall-build.json`.
+The Linux upstream pin remains unchanged.
+
+`test/windows_openvr_probe.cpp` exercises Valve's original OpenVR loader from
+the installed VRChat files, without modifying that game, and submits distinct
+D3D11 eye textures. `smoke_windows_xr_application.ps1 -OpenVrRuntime ...` scopes
+`VR_OVERRIDE` and a private `VR_PATHREG_OVERRIDE` to this host-only check.
+The first capture attempt found the missing shared `openxr_loader.dll` (the
+existing sample build uses a static loader). Built the same pinned Khronos
+source into `meteor/target/windows-openxr-loader-build`, Release, with
+`DYNAMIC_LOADER=ON`, `BUILD_TESTS=OFF`, `BUILD_API_LAYERS=OFF`,
+`BUILD_CONFORMANCE_TESTS=OFF`, target `openxr_loader`. Its loader directory is
+added to the isolated application config.
+
+The host-only OpenVR capture test now **passes**: Valve's unchanged VRChat
+OpenVR loader → pinned xrizer DLL → real Monado D3D11 session → Meteor encoded
+video. It validates received frame headers, observes another 2 seconds after
+the first three frames, and verifies owned-process cancellation. xrizer logs
+show temporary-device creation, switching to the probe's D3D11 device, real
+session reaching FOCUSED, swapchain creation and Touch controller profiles.
+This is bounded host capture, not graceful game exit or decoded image-quality
+validation. Steam wrapper integration, VRChat gameplay and headset testing
+through xrizer were outstanding at that checkpoint; see the next update.
+
+November 4 native Steam handoff: `--xr-steam-run --root <config> -- %command%`
+accepts Steam's command without shell reparsing. A waiting runtime publishes a
+short-lived random-token ticket for loopback-only local handoff, validates the
+configured Steam app ID and absolute executable/cwd, and launches it inside the
+owned Windows job. Remote XR control supplies no executable/argv. Optional
+`openvr_runtime` creates a session-private OpenVR registry and scopes
+`VR_OVERRIDE`/`VR_PATHREG_OVERRIDE` to the application. `steam_launch=true` waits
+for this command; `steam_app_id` optionally binds the session to a specific game.
+
+Host smoke checks with `-SteamCommand` passed cancellation (wrapper exit 130)
+and natural exit (wrapper exit 0, 56 validated frames, acknowledged END). Native
+release suite passed 146 tests / 19 ignored before the launcher-child follow-up.
+A protected-launcher trial exposed that bootstrapper exit must not end its
+still-running child game; Windows job accounting now keeps the session alive
+until owned application descendants exit. The regression and existing
+owned-process cleanup test both pass. Final native Release suite recheck:
+**147 passed, 0 failed, 19 ignored**. XR DEV release executable rebuilt with
+the launcher-child fix and bounded ticket/message reads.
+
+`test/configure_windows_xr_steam.ps1` prepares isolated
+`meteor/target/windows-xr-steam/xr-windows.json` and `steam-launch-options.txt`,
+without editing Steam settings. `--xr-steam-options --root ...` prints options.
+`start_windows_xr_headset_trial.ps1 -RuntimeRoot ...` selects this config.
+This DEV handoff still requires connecting XR in Nightfall while the wrapper
+waits (120 seconds); Linux's automatic pending-launch notification/library flow
+has not been ported. Normal packaged Meteor does not yet expose Windows XR.
+For bootstrap launchers, the wrapper currently returns the launcher's status
+after its owned descendants finish; it does not yet recover an independently
+exited child game's exact exit code. The host smoke writes
+`meteor/target/windows-xr-application/smoke-summary.json` with its actual result.
+
+VRChat is currently a compatibility blocker: the user reported Easy Anti-Cheat
+flagging xrizer during the protected-launcher test. No protection was disabled
+or bypassed. The second trial kept the child alive correctly, but delivered no
+XR frames within 45 seconds. VRChat log
+`output_log_2026-11-04_15-25-52.txt` reports
+`Could not initialize OpenVR. Error code: Init_VRClientDLLNotFound` at 15:25:58;
+xrizer's log was not entered for that launch. The EAC bootstrap log only records
+successful EAC startup, not the popup's specific rejection reason. The exact
+EAC rejection is user-reported, consistent with the DLL-load failure, rather
+than independently confirmed by a matching EAC log line. The test was stopped
+and no VRChat/EAC processes remained. Do not call VRChat compatible; use an
+unprotected OpenVR application to validate the next headset step.
+
+November 4 Moss follow-up: normal `-vr -dx11` startup passed 15 seconds through
+the Steam wrapper, but selected native OpenXR (xrizer's log unchanged). It is
+not an xrizer validation. Explicit `-hmd=SteamVR` initially crashed at startup
+with `0xc06d007e`. Testing Moss's original OpenVR 1.5.17 DLL in the native probe
+then isolated an older-loader discovery requirement: error 110 and
+`Unable to read VR Path Registry from ...\Local\openvr\openvrpaths.vrpath`.
+That DLL supports `VR_OVERRIDE`, but ignores `VR_PATHREG_OVERRIDE`.
+
+Added `test/register_windows_openvr.ps1`, which creates the missing standard
+per-user registry pointing to the pinned Windows xrizer runtime. It never
+replaces an existing registry, and does not change OpenXR registration. It was
+run on this PC; this deliberately makes xrizer the default per-user OpenVR
+runtime where none was registered before. Retest of the same old Valve DLL
+through the native probe now passes: real xrizer capture, 2-second observation,
+wrapper cancellation 130. Retesting Moss OpenVR next. This older-loader
+registration prerequisite must be included in future Windows XR installation.
+
+Quest check at this point: USB serial 2G0YC1ZF8P08QN connected, headset asleep,
+Nightfall not running. Restored USB adb forward on tcp:47950, but no dev bridge
+response until Nightfall is brought back up. No headset trial has run yet.
+
+Further Moss isolation: after the registry fix, its SteamVR mode still crashed
+with a delay-load DLL exception. Adding its existing
+`Engine/Binaries/ThirdParty/OpenVR/OpenVRv1_5_17/Win64` directory to this test's
+PATH got it into xrizer (temporary D3D11 session READY), but it then crashed
+at startup with a null access violation; no video within 45 seconds. Do not
+equate that with a passing game test or keep changing Moss-specific behavior.
+
+Added `--scene` to `meteor-openvr-probe`: D3D11 world-space checkerboard floor,
+three coloured spheres, actual OpenVR eye/head transforms and controller-role
+pose spheres. The default solid-colour probe remains available. Builds in
+Release, and the scene passed the local real-xrizer capture test through Moss's
+unchanged old Valve DLL. Decoded stereo image inspected at
+`meteor/target/windows-xr-application/openvr-scene.png`. This is an unprotected
+OpenVR application suitable for the next headset pipeline check. Nightfall was
+reopened, but the first headset attempt stopped at its paused/unresponsive dev
+bridge before changing any XR configuration or starting a stream.
+The retry also failed at that first bridge query, including after temporarily
+broadcasting `com.oculus.vrpowermanager.prox_close`. The outer trial command
+restored `com.oculus.vrpowermanager.automation_disable` in `finally`; no Guardian
+property was changed. Need Nightfall actively running/foreground in the worn
+headset before retrying. Do not count these attempts as XR streaming results.
+Final ADB check: Quest awake, Nightfall PID 15913, but its activity is explicitly
+listed as paused; ClearActivity and Quest shell panels are resumed. This is
+evidence of app focus loss, not evidence that a Guardian dialog is visible.
+
+**November 4 user-ready headset validation succeeded.** First live attempt
+exposed the diagnostic probe's fixed 512-pixel eyes versus the negotiated
+1024-pixel projection, correctly rejected by the client. Scene mode now queries
+OpenVR's recommended width/height and renders to that viewport/texture size;
+the solid-colour diagnostic remains fixed at 512. The headset runner now treats
+a native receiver error as a failure even if XR control has already gone idle.
+
+Retest ran ~60 seconds of live scene over Wi-Fi, host 10.0.0.13 to Quest
+10.0.0.12 (USB ADB only, `usb_reverse=False`). Real Windows D3D11 OpenVR →
+xrizer → Monado/NVENC → encrypted Meteor relay → Quest decoder/projection.
+User confirmed seeing everything, including Nightfall's wristwatch overlay.
+4,208 frames received, 4,207 decoded, 3,979 projected; receiver error empty.
+Active observed rates ~69.65 received/s and ~65.92 projected/s; app reported
+~72 fps. Thus successful video/overlay/tracking validation, not proof of every
+source frame being presented at 72 Hz. 227 frames superseded before selection.
+Real head motion and both controller inputs reached the host: head position
+changed in all axes, both controller flags reached 15, and each trigger/squeeze
+ranged from 0 to 1. Do not infer every action binding or haptics from this.
+
+Session artifacts:
+`%LOCALAPPDATA%\Nightfall Meteor\xr\windows-sessions\1793806256853691800`,
+`meteor/target/windows-xr-headset-trial.jsonl`, and
+`meteor/target/windows-xrizer-headset-summary.json`. Median NVENC submit/lock
+2.141 ms (p95 3.926 ms); relay ACK 4.403 ms (p95 6.543 ms, maximum 160.635 ms).
+These are stage timings, not end-to-end headset latency.
+The planned 60-second stop cancels the owned runtime; no acknowledged END marker
+was written. The summary's strict `transport_ok` is therefore false, despite
+successful live video and an empty decoder error. Graceful END acceptance is
+covered separately by the host-only natural-exit smoke; do not claim it for
+this cancelled headset run. Script restores the original client preferences
+and runtime config after the trial. VRChat/EAC and Moss game compatibility
+remain separate unresolved issues.
+
+November 4 Moss investigation resumed at the user's request. Startup crash
+context `UE4CC-Windows-027D046A46F759AB6EDCAA940BAAFE64_0000` shows a null indirect
+call returning to executable RVA `0xa9eeae`. Read-only disassembly resolves this
+to the plugin's cached `VR_GetGenericInterface` function pointer, called for
+`IVRSystem_020` and then `IVRCompositor_022`. The plugin itself reads
+`VR_OVERRIDE` as an SDK root, constructs `bin\win64\openvr_api.dll`, and resolves
+`VR_IsHmdPresent`/`VR_GetGenericInterface` from that DLL. Our runtime-only override
+lacked this SDK layout. This explains a likely null-pointer startup path;
+confirmation requires the real application retest.
+
+Added optional Windows config `openvr_loader` (absolute path to a local Valve
+DLL, requires `openvr_runtime`). Before launching, the adapter stages an owned
+session directory containing both `bin/vrclient_x64.dll` (pinned xrizer) and
+`bin/win64/openvr_api.dll` (unchanged local Valve loader). It applies the staged
+override and DLL search path to the application only. No game file is replaced
+and no upstream xrizer source is changed. Both local/headset application smoke
+scripts accept `-OpenVrLoader`. Real Moss OpenVR capture test is in progress.
+The real test now **passes**: 15-second startup observation, real game textures
+through xrizer, Focused D3D11 session and Touch profiles. No game files or
+xrizer upstream source were modified. Artifact session
+`1793806630424139300`, local `smoke-summary.json` successful, wrapper cancellation
+130. This confirms the SDK/runtime layout mismatch caused the initial null-call
+failure. Release unit/build checks and a physical-headset Moss trial follow;
+do not yet claim gameplay or long-session stability. xrizer also logs some
+unsupported Vive binding paths/pose types, which are not evidence that the
+active Touch bindings failed.
+Final native release unit recheck: 147 passed, 19 ignored. XR DEV release
+executable rebuilt successfully with the loader staging change. Captured first
+frame black and a 10-second frame showing dark loading geometry; no claim of
+menus/gameplay from those images. Artifacts `moss-xrizer-startup.png` and
+`moss-xrizer-late.png` under `windows-xr-application`.
+
+The subsequent Moss headset attempt stopped at the initial dev-bridge read
+timeout before launching the service/game. Headset must have Nightfall active
+again; no real headset Moss/xrizer gameplay has yet been validated.
+`configure_windows_xr_steam.ps1` now also accepts `-OpenVrLoader`; prepared the
+isolated `windows-xr-steam` configuration for Moss app 846470 with its own Valve
+loader. Previous VRChat configuration was backed up by that helper. Steam's
+userdata/launch options remain untouched; copyable options are in
+`windows-xr-steam/steam-launch-options.txt`.
+
+**November 4 Moss physical-headset trial completed after user said ready.**
+Used `run_windows_xr_scene.ps1 -EyeSize 1024 -Seconds 60` with Moss arguments
+`-vr -dx11 -hmd=SteamVR`, pinned xrizer runtime, Moss's original Valve DLL via
+`-OpenVrLoader`, host 10.0.0.13; USB ADB management, video/tracking over Wi-Fi.
+Session `1793808240248851100` staged the loader, launched Moss, encoded its first
+frame and remained active until the planned stop. 4,329 received and decoded,
+4,118 projected, 210 superseded before selection, receiver error empty. Observed
+60.39-second delivery interval: ~71.57 received/s, ~68.12 projected/s. App reported
+72 fps. Median NVENC submit/lock 2.445 ms (p95 5.577); relay ACK 4.772 ms
+(p95 8.087, max 26.554). As with the scene test, the forced cancellation does
+not produce acknowledged END; strict summary `transport_ok=false` must not be
+misrepresented as graceful-exit acceptance. Artifact
+`meteor/target/windows-moss-xrizer-headset-summary.json`. Await user confirmation
+of visible menus, controller bindings and gameplay; video transport alone does
+not validate them. The earlier Moss startup crash through xrizer is resolved.
+User subsequently confirmed Moss ran great; the remaining complaint was low
+resolution. That successful trial explicitly forced `-EyeSize 1024` and 32 Mbps,
+temporarily setting client `resolution_percent=0`. This was a diagnostic-runner
+override, not a host limitation or ignored negotiation. Checked source path:
+client effective dimensions → offer width/height → Windows adapter
+`METEOR_XR_EYE_SIZE`/`METEOR_XR_EYE_HEIGHT` → Monado recommended view dimensions →
+xrizer `GetRecommendedRenderTargetSize` → Moss render targets. Rectangular
+per-eye dimensions are supported. Current source's Quest 3 reference at 100%
+is 2064×2208 per eye. Saved client percentage could not be read after the test
+because the dev bridge had paused again.
+
+Changed `run_windows_xr_scene.ps1` defaults: `EyeSize=0` follows client selection,
+`BitrateMbps=-1` follows saved client bitrate. Only explicit positive `-EyeSize`
+forces square/custom resolution; explicit `-BitrateMbps` overrides bitrate.
+Foveated encoding remains disabled for this Windows DEV backend. Prior client
+preferences are still restored afterward. PowerShell syntax check passed;
+no new high-resolution headset trial has been performed yet. For the next Moss
+quality check, omit `-EyeSize` and `-BitrateMbps` to validate client-led
+resolution/bitrate negotiation end to end.
+
+November 4 VRChat revisited after the successful Moss headset trial. Repeated
+normal `start_protected_game.exe` launch with app 438100, anti-cheat enabled,
+current per-user OpenVR registry and session-local loader staging using VRChat's
+own `VRChat_Data/Plugins/x86_64/openvr_api.dll`. Game starts in desktop mode
+(user confirmed), but no XR frames within 45 seconds. New client log
+`output_log_2026-11-04_17-16-38.txt` still reports
+`Init_VRClientDLLNotFound`; xrizer's initialization log is not reached.
+First retry session `1793808991938411700`. Reproduction remained desktop-only.
+
+Control experiment with the exact same VRChat Valve loader, staged xrizer
+files, app ID and Steam wrapper, but our unprotected OpenVR scene instead of
+the protected game, passes the 2-second real-capture check. Thus the files and
+generic loader setup work; the remaining failure is specific to loading the
+runtime from VRChat's process. Valve loader version 2.2.3 has a valid Valve
+Authenticode signature; locally built xrizer is unsigned. Windows Code
+Integrity Operational logs had no matching VRChat/xrizer/vrclient rejection.
+New read-only helper `read_windows_vrchat_dialogs.ps1` enumerated visible
+VRChat/EAC windows and found only the VRChat window, no rejection text. No
+debugger, injection, anti-cheat disabling or game-file modification was used.
+Anti-cheat rejection remains plausible given the user's earlier popup, but
+the new diagnostics do not independently confirm its exact reason. Do not
+claim that unsigned status alone proves EAC rejected this DLL.
+
+Valve's matching loader source returns `Init_VRClientDLLNotFound` when
+`SharedLib_Load` fails, before `VRClientCoreFactory` is called; it does not
+distinguish an absent file, dependency load failure or policy denial:
+https://github.com/ValveSoftware/openvr/blob/v2.2.3/src/openvr_api_public.cpp
+No working native Windows VRChat/xrizer integration was found in this search.
+Linux/Virtual Desktop successes do not establish the same native DLL-loading
+path; identify the actual backend before using those as an equivalent control.
+
+**November 4 VRChat rejection confirmed from user screenshot.** User clarified
+that the EAC popup appears on normal game exit, after working desktop gameplay.
+Restarted the normal protected launcher with no automatic shutdown; game log
+`output_log_2026-11-04_17-31-57.txt` again recorded OpenVR DLL-load failure and
+successful anti-cheat session startup. User quit normally and saved
+`C:\Users\Ty\Pictures\Screenshots\Screenshot 2026-11-04 173236.png`.
+Inspected screenshot: Windows Explorer alert, Easy Anti-Cheat,
+**Untrusted system file**, naming the build under
+`...\Users\Ty\Development\nightfall\meteor\target\windows-xrizer-d3d11-src\target\release`.
+The visible text truncates before the final DLL filename, so do not invent the
+full path. This is independent evidence of EAC rejecting the custom runtime;
+the delayed popup does not indicate the VR initialization succeeded earlier.
+It explains the runtime-load failure/desktop fallback, rather than a general
+game launch failure or capture/encoding failure.
+
+VRChat/EAC text reader could not capture this alert because it is owned/titled
+Windows Explorer, not the game/EAC windows that reader filters. The screenshot
+is the evidence; the game/bootstrap logs do not contain that popup text.
+No protections were disabled and no game binaries replaced. Native Windows
+VRChat support now needs an EAC-accepted integration; signing alone must not
+be assumed sufficient without checking the game's policy. Existing Linux
+xrizer and Windows Virtual Desktop success are not proof that this locally
+built Windows xrizer DLL is accepted.
+
+Prepared headset scene command (PowerShell; scopes the runtime config and
+restores preferences on exit):
+
+```powershell
+& .\test\run_windows_xr_scene.ps1 -EyeSize 1024 -Seconds 60 `
+  -Application "$PWD\meteor\target\windows-runtime-probe\Release\meteor-openvr-probe.exe" `
+  -ApplicationArguments @('C:\Program Files (x86)\Steam\steamapps\common\Moss\Engine\Binaries\ThirdParty\OpenVR\OpenVRv1_5_17\Win64\openvr_api.dll','7200','--scene') `
+  -SteamAppId 846470 `
+  -OpenVrRuntime "$PWD\meteor\target\windows-xrizer-d3d11-src\target\release" `
+  -HostAddress 10.0.0.13
+```
+
+Checked out Nightfall's exact Linux xrizer pin
+`a1216c7b53fb562a5bc4de473163e97a483042af` into ignored
+`meteor/target/windows-xrizer-src`, without modifying it. At this revision,
+`src/graphics_backends.rs` supports Vulkan/OpenGL only and rejects DirectX
+textures. OpenGL imports GLX/dlopen unconditionally, and `xbuild` assumes
+`.so` files and Unix symlinks. `build.rs` already recognizes Windows runtime
+directory/library names, but that is not a working Direct3D implementation.
+Prioritize a Windows xrizer build/graphics port and equivalent scoped Steam
+wrapper instead of testing OpenVR games through the current OpenXR-only
+launcher. Native release-profile check is logged in
+`meteor/target/windows-xrizer-check.log`; it is an initial feasibility check,
+not a successful xrizer/VRChat compatibility result.
+The first native check stopped in OpenVR bindgen because Windows libclang
+(`clang.dll`/`libclang.dll`) was not found. Thus core Windows compilation has
+not yet been validated. Next: supply native libclang, isolate Unix build/GLX
+assumptions, add native Direct3D texture support, and implement the shared
+Steam wrapper/environment path. Use xrizer for OpenVR games rather than
+forcing alternate native OpenXR launch modes; retain direct native OpenXR
+support for applications that already use it. The user's priority is parity
+with Linux, not further Moss-specific workarounds.
+
+November 4 pose/lifecycle follow-up: Windows now translates view-relative
+projection poses through the tracked head into world space, including colour
+projections normalized from projection-with-depth. No height offset was added.
+A wire-level standard Hello XR / D3D11 / `-AppSpace View` regression reproduced
+the old error (`centre_y=0`, expected synthetic head `0.5`). After correction,
+673 frames passed the expected-height check with clean END. Pose flags and
+input/output centre heights are logged once per mode change.
+
+Moss itself used world-space projection (`view_space=0`, input/output y=0.5)
+in the local check, so do not claim the view-space fix resolves Moss's reported
+low splash screen. Earlier Wi-Fi logs show actual headset height changing
+from ~0.773 m during startup to ~1.542 m later. An initial-pose-anchored loading
+screen could therefore appear low after the headset is raised; this is an
+inference requiring a repeat with the user wearing it BEFORE launch.
+
+Longer local Moss test now uses neutral controllers (the original fixture
+holds synthetic buttons/axes on). It also monitors premature video closure,
+not just the first three frames. `-ObserveSeconds 40` passed: 2,830 encoded
+frames, application and stream remained alive, and supervisor cancellation
+found the child still running. Later decoded capture reached Moss's controls
+screen: `meteor/target/windows-xr-application/moss-neutral-late.png`.
+The unexplained early Wi-Fi exit did not reproduce in that local run.
+
+New diagnostics: each Windows session directory has `supervisor.log` with
+UTC timestamps, service/application PIDs, first frame, application exit,
+video END while application remains alive, and cancellation child state.
+Monado logs matching `METEOR_WINDOWS_LIFECYCLE` UTC events for session end,
+encoder shutdown/start and compositor destruction. This distinguishes a game
+exit from a session/transport teardown on the next actual headset run.
+The updated capture patch remains reproducible through the build helper.
+Release adapter rebuilt; native Windows Rust suite still 145 passed/19 ignored.
+User was asked to reply ready while wearing the headset and leave controls
+untouched for the first 15 seconds of the next logged Wi-Fi Moss run.
+
+November 4 wireless XR: USB is no longer required for test data/control once
+wireless ADB is configured. Using USB once, `adb -s 2G0YC1ZF8P08QN tcpip 5555`
+enabled Wi-Fi ADB; the Quest's current Wi-Fi address is 10.0.0.12. Connected
+with `adb connect 10.0.0.12:5555`, then forwarded the dev bridge explicitly via
+`adb -s 10.0.0.12:5555 forward tcp:47950 tcp:47950`. After a Quest restart,
+check this connection again; enabling it may require USB again.
+
+The trial scripts accept `-HostAddress 10.0.0.13`, bind control to the actual
+PC LAN address and use it in the headset's temporary config. This skips USB
+reverse forwarding entirely; video/tracking bind the accepted connection's
+LAN address. The native headset receiver's internal loopback endpoint remains
+local to the authenticated relay; its old "USB diagnostic" status text does
+not describe the actual network path.
+`test/enable_windows_xr_wifi.ps1` was elevated with Windows UAC to create
+`NightfallMeteorXRWirelessTrial`: inbound TCP 49100–49102, release XR DEV
+executable only, local 10.0.0.13, remote Quest 10.0.0.12. Rule is enabled;
+normal firewall/network policy was not disabled.
+
+Moss reached the Quest via Wi-Fi at 2048x2048/eye. The service reported
+`host=10.0.0.13 usb_reverse=False`, and native netstat showed the tracking
+connection between 10.0.0.13 and 10.0.0.12. Received/decoded 1,386 frames,
+projected 1,188, 198 superseded; no decoder error and acknowledged END.
+Observed sampled interval approximately 63 received/54 projected fps. It
+ended after about 30s, before the requested 60-second timer, and the desktop
+returned at 72 fps. User feedback on menu/gameplay and why Moss exited is
+pending. Do not claim a complete 60-second game acceptance test.
+Artifact: `meteor/target/windows-xr-moss-wifi-summary.json`. Headset preferences
+and original runtime JSON were restored. Add `-HostAddress 10.0.0.13` to the
+prepared Moss headset command below for subsequent wireless trials.
+
+November 4 application compatibility checkpoint: installed games are Moss VR
+(Steam 846470, executable includes OpenXRHMD) and VRChat (installed OpenVR
+plugin; separate compatibility work). The unchanged Khronos Hello XR app
+initially submitted no captured frames because the Windows adapter ignored
+`XRT_LAYER_PROJECTION_DEPTH`. This was not a proven `shouldRender` problem.
+Windows now normalizes projection-with-depth to its colour projection exactly
+as Linux does, retaining colour subimages, poses/FOV and chroma data; scene
+depth is not transported. Hello XR / Direct3D 11 then passed: 687 validated
+2048x1024 frames over roughly 10s, clean END, exit zero. A decoded image shows
+both eye cube views: `meteor/target/windows-runtime-probe/local-scene/hello-d3d11.png`.
+
+Moss local startup also passed using process-scoped OpenXR configuration:
+the runtime identified `Moss1.2023.10.114435`, delivered validated stereo frames
+at 1024x1024/eye, and stayed running for the 10s observation after first frames.
+709 encoded packets were logged. Captured imagery shows the Unreal startup
+screen; this is startup evidence, not proof of gameplay/menu compatibility.
+Artifact: `meteor/target/windows-xr-application/application-startup.h264`,
+decoded frame `moss-startup.png`. The test cancels the owned process tree;
+it does not establish graceful game exit. Steam started as part of this launch.
+Windows' registered OpenXR runtime and game files were not changed.
+
+Application launches now use the executable's parent as working directory.
+`test/run_windows_xr_scene.ps1` accepts `-Application`, `-SteamAppId`, and
+`-ApplicationArguments`; it restores the original runtime JSON, headset video
+preferences, discovered-host object and watcher state afterward. For an
+application, `-Seconds` is a timed cancellation after first active projection,
+with up to 45s additional startup time. Prepared headset command:
+`powershell.exe -NoProfile -File test/run_windows_xr_scene.ps1 -EyeSize 2048 -Seconds 60 -Application 'C:\Program Files (x86)\Steam\steamapps\common\Moss\Moss\Binaries\Win64\Moss-Win64-Shipping.exe' -SteamAppId 846470`.
+This headset game trial has not run yet. The local application proof is
+`test/smoke_windows_xr_application.ps1`; SDK capture uses
+`test/smoke_windows_xr_scene.ps1 -HelloXr -Graphics D3D11`.
+Updated release XR executable built; native Windows Rust suite: 145 passed,
+19 ignored. Trial PowerShell scripts parse, and `git diff --check` is clean.
+
+November 4 physical controller acceptance: the user-worn 15-second repeat with
+the corrected observer recorded active press AND release transitions for both
+thumbstick clicks, left Y and right B through the real Quest → authenticated
+tracking relay → Windows Monado → OpenXR action path. Session events reached
+FOCUSED (5). All four requested physical actions are now verified; scene
+buttons deliberately have no visual effect. Transport ended cleanly (1,054
+decoded, 939 projected, 115 superseded), and the desktop resumed at 72 fps.
+This validates these buttons, not every analog/pose/haptic interaction or game.
+Summary: `meteor/target/windows-xr-buttons-summary.json`. Remaining work includes
+sustained presentation pacing, real application compatibility and packaging.
+
+November 4 user-worn 60-second XR trial at 2048x2048/eye: 4,272 frames decoded,
+4,168 copied for projection, 104 superseded, clean END and desktop restoration,
+no decoder error. Observed active-interval rates were about 71.3 received and
+69.6 fresh projections/s. User feedback: "It looked good" and many buttons were
+pressed; the scene has no button-driven visual behavior, only action logging.
+The original input observer did not poll post-begin OpenXR events while
+rendering, so its inactive actions are not evidence that physical input failed.
+It now polls/logs session events before syncing actions. Local synthetic scene
+observation passed for both controllers' stick-click and B/Y actions, alongside
+349 wire-validated frames and clean END. Physical transitions need a short repeat
+with the corrected observer. Artifact: `meteor/target/windows-xr-2048-60s-summary.json`.
+
+November 4 full-resolution headset checkpoint: confirmed Nightfall's actual
+Android focused app and live 72 fps desktop stream before testing. The user
+reports no visible Guardian dialog; an activity-list entry alone is not proof
+of a visible boundary interruption. The cause of the reported pauses remains
+unconfirmed; do not attribute them to a headset update without evidence.
+
+The 30-second 2048x2048/eye H.264 USB trial passed transport and handover:
+2,119 frames received/decoded, 2,083 copied for projection, 36 superseded,
+acknowledged END, no decoder error, and the desktop resumed at 72 fps.
+Observed active-interval rates were approximately 70.8 received and 69.7 fresh
+projections/s. Full-resolution summary: `meteor/target/windows-xr-2048-summary.json`.
+The scene runner now pauses/restores the automatic watcher and uses a fresh
+saved config object so the discovered host's original config is not mutated.
+Controller actions remained inactive in the logs; user confirmation of actual
+button testing is pending, so physical controller support is not validated.
+
+After restoring desktop preferences, the client retried its saved Linux XR
+endpoint (10.0.0.13:47905, different pinned public key) every five seconds and
+reported handshake timeout/key mismatch. For the current test session only,
+`welcome_screen._auto_suppressed` was set true and the watcher cancelled.
+Saved pairing/config files were not changed. This stops stale automatic
+retries, but is not proof of the cause of user-visible pauses. The separate
+Windows USB XR service uses loopback port 49100 and the Windows Meteor key.
+
+November 4 restart recovery: normal Meteor was relaunched (PID 10540 at this
+checkpoint); discovery on 49900 and proxy serverinfo on 50989 both returned
+HTTP 200. Quest USB serial 2G0YC1ZF8P08QN reconnected and bridge forwarding was
+restored. GuardianDialogActivity appeared in an activity list while the bridge
+was unresponsive, and the user was asked about the boundary dialog. This did
+not establish that a Guardian prompt was visibly covering the app. See the
+later focused-app/full-resolution checkpoint above for the completed trial.
+
+Independent host proof `test/smoke_windows_xr_scene.ps1 -EyeSize 2048 -Seconds 10`
+passed: 720 source submissions, 693 wire-validated H.264 frames at 4096x2048,
+sample exit zero, no capture failures, all 693 delivery packets drained and
+acknowledged END. Synthetic head pose was applied. This excludes Android
+decode/presentation and physical input. Local fixtures now request ephemeral
+ports and publish readiness, avoiding fixed-port conflicts after reboot.
+Native FFprobe confirmed H.264 4096x2048/yuv420p, and FFmpeg decoded the first
+three received frames with `-xerror` successfully.
+Artifacts are under `meteor/target/windows-runtime-probe/local-scene/` and
+`meteor/target/windows-monado-vcpkg-build/meteor-windows-smoke/`.
+
+November 4 pacing follow-up: Windows now ports Linux's bounded compressed
+delivery worker using native SRW locks, condition variables and a Win32 thread.
+It retains two pending packets plus one in flight, preserves every encoded
+interframe, waits at most two seconds for a slot during decoder cold start,
+and drains the acknowledged END before runtime shutdown. The Windows DEV
+adapter enables this by default; `xr-windows.json` can set `async_delivery`
+false for comparisons. The scene runner also accepts `-AsyncDelivery:$false`.
+No system GPU power policy was changed.
+
+Comparable 30-second 1024x1024/eye USB trials with headset timing telemetry:
+synchronous received 2,025 and projected 2,024 frames (67.7/67.8 fps within the
+sampled active interval); asynchronous received/decoded 2,106 and projected
+2,054 (70.3/68.7 fps). Endpoint differences and polling make these approximate
+rates. The async queue drained all 2,106 packets, peak pending two, no failure.
+The earlier 58 fps presentation result did not repeat consistently: this is
+an incremental improvement, not proof that sustained pacing is solved.
+Headset app telemetry remained at 72 fps/72 Hz. RTX 3090 telemetry showed
+P8 clocks around 210–375 MHz during much of this offscreen workload; current
+headset thermal status was normal. Clock behavior is a lead, not a proven
+cause. Next investigate capture/encode scheduling independently of compositor
+work, then test higher resolutions and physical input/game compatibility.
+
+Local comparison artifacts: `meteor/target/windows-xr-{sync,async}-summary.json`,
+`windows-xr-{sync,async}-telemetry.jsonl`, and `windows-xr-{sync,async}-gpu.csv`.
+Native Windows queue regression passed delayed first ACK (150 ms), four
+preserved frames, incorrect-ACK rejection, restart, and acknowledged END.
+The shared Linux queue regression passed as well (requires unsandboxed local
+socket sends here). Native five-frame stop-and-wait pixel/wire validation passed.
+
+November 4 sustained GPU scene: `test/run_windows_xr_scene.ps1` now runs the
+existing tracked GPU scene with explicit 72 Hz handover, no pixel readbacks,
+and no per-frame file wait. It restores the original headset preferences and
+discovered host afterward. At 1024x1024 per eye, H.264/32 Mbps over USB, the
+30-second matched trial decoded 2,026 frames and projected 1,728; 298 were
+superseded before selection. Approximate rates were 67.6 decoded and 57.6 fresh
+projected frames/s. The short 10-second matched trial projected 692/694 decoded
+frames, but that improvement did not persist. Logs confirmed 72 Hz timing;
+do not attribute the longer-run pacing issue solely to refresh mismatch.
+Both trials acknowledged END and returned to idle without decoder error.
+Median timings in the longer trial: GPU eye 0.369 ms, app render 1.88 ms,
+GPU packing 1.247 ms, NVENC submit-to-lock 6.682 ms, delivery ACK 1.483 ms
+(ACK p95 2.404 ms, max 60.955 ms). These are diagnostic stage timings, not
+end-to-end motion latency. Pacing and real game compatibility remain open.
+`test/summarize_windows_xr_scene.py` separates received/decoded/projected
+counts. Latest local artifact: `meteor/target/windows-xr-scene-1024-summary.json`.
+
+Live stick-click/B/Y observation is available in scene mode. All physical
+actions remained inactive during the unattended tests; physical input is not
+validated. The deterministic native OpenXR controller check still passed all
+10 phases and both hand haptic acknowledgements. Native Windows Rust tests:
+145 passed, 18 ignored. The WSL `tools/verify.py unit` wrapper cannot find Cargo;
+its failed summary is in `build/verify/unit-20261104-072221/summary.json`.
+
+November 4 headset checkpoint: the isolated Windows XR DEV service delivered
+two H.264 stereo frames through authenticated encrypted USB relays to the
+Quest hardware decoder and enabled projection. Real headset optics and head
+tracking reached Monado. Fixed missing runtime generation/sequence metadata,
+disabled Monado console polling with `XRT_NO_STDIN`, and explicitly quiesced
+the tracking lane before terminating the owned runtime. The short trial now
+returns to idle with no decoder/tracking error. This is a diagnostic at
+256x256 per eye, not an image-quality or sustained-rate acceptance result.
+The longer fixture also needs per-frame timestamp acknowledgements; the
+Windows readback hook now writes those when continuous mode is requested.
+Windows QPC conversion rounds timestamps; the probe accepts less than 1 us
+of difference for the same capture acknowledgement. The completed 240-frame
+headset trial received, decoded and projected all 240 frames, reported no
+decoder error, returned to idle, and wrote the acknowledged session END marker.
+This stop-and-wait fixture is not a 72 fps throughput measurement. Original
+headset video preferences and discovered configuration were restored afterward.
+
 November 3 acceptance: the user confirmed that both Windows monitors display
 correctly after the manifest capability/resolution correction. Live switching
 between one and two monitors passed. Windows multi-monitor remains an
@@ -27,11 +634,75 @@ grip presses as right down/up only, with no left-button events. Do not treat
 this as a proven duplicate-click bug; investigate pointer motion/click target
 stability separately after the main Windows XR work.
 
-Next priority: Windows XR streaming. Native Monado stereo pixel readback and
-Vulkan→CUDA→NVENC encode/decode proofs pass. Windows runtime supervision,
-tracking/controller/haptic transport, live encoded delivery and actual game
-compatibility remain outstanding. Do not describe the diagnostic adapter as
-a finished XR streaming implementation.
+Next priority: Windows XR sustained pacing, physical controller interaction,
+and actual game compatibility. Native Monado stereo capture, runtime
+supervision, authenticated delivery, and synthetic tracking/controller/haptic
+proofs pass. Do not describe the diagnostic adapter as a finished XR streaming
+implementation.
+
+November 3 XR delivery checkpoint: `monado_direct_transport.h` now has a
+Winsock path with nonblocking sockets, bounded polling and random per-session
+epochs. The Windows Monado adapter copies encoded callback data and sends it
+outside the Vulkan queue lock, including actual projection poses/FOV. Its
+shutdown sends the wire END before unloading the encoder. The isolated
+`smoke_windows_xr_delivery.ps1` passed: two 512x256 H.264 frames, validated by
+Meteor's actual Rust `xr_wire::Reader`, followed by a clean acknowledged END.
+The received video also passed decoded stereo-pattern checks (initial green=0,
+final green=255). The later server readback saw a newer intermediate marker
+after transport acknowledgement, so this free-running fixture does not prove
+per-frame marker alignment between encode and subsequent readback. This validates
+local delivery framing, not the running Meteor service/headset relay yet.
+
+Windows XR lifecycle groundwork is now compiled into Meteor as
+`xr_runtime_windows::Session`: it owns a configured runtime and application
+in a kill-on-close Windows Job, rejects duplicate application launches and
+detects premature runtime exit. The native Windows release test confirmed
+that dropping a session terminates/reaps both children promptly. Five shared
+XR relay admission/cancellation/drain tests also passed on Windows; the native
+live-worker test remains ignored without its fixture. The session owner is
+not yet wired into authenticated runtime startup: tracking integration and
+runtime configuration validation must precede enabling that launch path.
+
+Windows tracking bridge groundwork: the existing head/optics/controller/haptic
+bridge now builds as `meteor-windows-tracking.dll` using Winsock, preserving
+the Linux implementation behind platform guards. Its actual pose/controller
+contention regression passed on MSVC with assertions enabled. Monado's virtual
+HMD tracking hook and DLL loader now compile natively too, with a reproducible
+`monado_windows_tracking.patch`. Without an explicit tracking bridge it retains
+the isolated simulated diagnostic mode; no live headset tracking has been
+validated yet. The next gate is clock sync, pose validity and disconnect
+behavior through the socket, then controller-driver/haptic hookup.
+
+Windows tracking socket checks now pass against the actual bridge with
+assertions enabled: an independently offset synthetic clock (+5 seconds)
+mapped with about 11 microseconds uncertainty, expected head and both-hand
+poses/buttons/analogs arrived, and both haptic commands were clamped to 0.5
+amplitude/150 ms and acknowledged. A 350 ms tracking pause invalidated head
+and controller state, resumption recovered, and disconnect invalidated poses
+and stopped promptly. This is synthetic loopback protocol coverage; real
+headset tracking and Monado controller-device integration are still pending.
+
+Monado controller-device integration subsequently passed on Windows:
+`smoke_windows_xr_controllers.ps1` verified ten independent left/right
+stick-click and B/Y transitions through real OpenXR action bindings. The
+application also requested haptics for both hands through OpenXR; Monado's
+output callback forwarded them and the synthetic endpoint acknowledged each
+0.4-amplitude/50 ms pulse. `smoke_windows_xr_tracking.ps1` separately verified
+the published head pose reaching Monado while stereo encoding remained active.
+These are native Windows runtime checks with synthetic input, not real
+headset tracking acceptance.
+
+Windows DEV runtime startup is now connected to the shared authenticated relay
+supervisor, gated by an explicit local `xr-windows.json` configuration. It
+starts only after both lanes attach, launches Monado and one configured app
+inside an owned Job, scopes the OpenXR runtime/DLL paths to those children,
+and records session activity only after a captured frame. H.264 is the only
+advertised Windows codec at this checkpoint; live bitrate/foveation and Steam
+launch intents remain unavailable. Normal packaged XR startup stays disabled.
+The native adapter integration test passed with the synthetic tracking source:
+Monado/app startup, a validated stereo frame, acknowledged END and cleanup.
+It caught and fixed a shutdown race: app exit now allows a bounded Monado
+encoder drain before its Job is closed. No headset XR acceptance yet.
 
 - The Windows release build compiles from main on branch
   `feat/meteor-windows-compat`. An XR profile validator was moved into shared

@@ -64,7 +64,14 @@ mod xr_events;
 mod xr_relay;
 #[cfg(target_os = "linux")]
 mod xr_session;
+#[cfg(windows)]
+#[path = "xr_session_windows.rs"]
+mod xr_session;
 mod xr_wire;
+#[cfg(windows)]
+mod xr_runtime_windows;
+#[cfg(windows)]
+mod xr_steam_windows;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -78,6 +85,21 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--xr-steam-options") {
+        if args.len()!=4 || args[2]!="--root" {
+            eprintln!("Usage: --xr-steam-options --root <XR config directory>");std::process::exit(1);
+        }
+        println!("{}",xr_library::launch_options_for(std::path::Path::new(&args[3])));
+        return;
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--xr-steam-run") {
+        match xr_steam_windows::wrapper(&args[2..]) {
+            Ok(code)=>std::process::exit(code),
+            Err(error)=>{eprintln!("Meteor Steam launch: {error}");std::process::exit(1);},
+        }
+    }
     if args.get(1).is_some_and(|arg| arg == "--xr-control-dev") {
         let result = xr_control::command(&args[2..]).await;
         if let Err(error) = result {

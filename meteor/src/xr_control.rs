@@ -456,7 +456,7 @@ async fn connection_supervised(
                 )
                 .await?,
             );
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             if let Some(root) = runtime_root.clone() {
                 relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.eye_height, session.long_run, session.bitrate_mbps, session.codec.clone(), session.foveated_encoding, session.launch_intent.clone(), _runtime_tasks.as_ref());
             }
@@ -558,6 +558,14 @@ pub(crate) async fn serve(
     result.and(drained)
 }
 
+#[cfg(windows)]
+pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
+    let Some(root)=root else {return Ok(None);};
+    let root=root.canonicalize()?;
+    crate::xr_session::load(&root)?;
+    Ok(Some(root))
+}
+#[cfg(not(windows))]
 pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
     let Some(root) = root else { return Ok(None); };
     if !cfg!(target_os = "linux") {
@@ -588,12 +596,18 @@ pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Res
 }
 
 pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.len() != 3 && !((args.len() == 4 || args.len() == 5) && args[3] == "--relay") {
+    if args.len() != 3 && !((args.len() == 4 || args.len() == 5 || args.len()==8) && args[3] == "--relay") {
         return Err("usage: --xr-control-dev <bind-address:port> <server-key-file> <allowed-client-public-hex> [--relay [checkout]]".into());
     }
     let address: SocketAddr = args[0].parse()?;
     let enable_relay = args.len() >= 4;
     let runtime_root = validate_runtime_root(args.get(4).map(std::path::PathBuf::from))?;
+    let relay_ports=if args.len()==8 {
+        if args[5]!="--ports" {return Err("expected --ports <video> <tracking>".into());}
+        let video:u16=args[6].parse()?; let tracking:u16=args[7].parse()?;
+        if video==0 || tracking==0 || video==tracking || [video,tracking].contains(&address.port()) {return Err("XR data ports must be nonzero and distinct".into());}
+        Some((video,tracking))
+    } else {None};
     let key = Arc::new(MeteorKey::load_or_create(Path::new(&args[1]))?);
     let allowed = public_key(&args[2])?;
     let listener = TcpListener::bind(address).await?;
@@ -614,7 +628,7 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         );
     }
     let (stop, cancel) = watch::channel(false);
-    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root, pairing: None, relay_ports: None }, cancel);
+    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root, pairing: None, relay_ports }, cancel);
     tokio::pin!(service);
     tokio::select! {
         result=&mut service=>result?,

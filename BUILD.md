@@ -1,5 +1,10 @@
 # Building Nightfall
 
+For the native Windows Meteor XR development backends, see the
+[Release build and testing workflow](docs/guides/meteor-windows-xr.md).
+The [compatibility checkpoint](docs/plans/active/meteor-windows-vrchat-compat.md)
+lists tested games and the work remaining before installer inclusion.
+
 ## Prerequisites
 
 - **Godot 4.7 stable** (editor + custom export templates)
