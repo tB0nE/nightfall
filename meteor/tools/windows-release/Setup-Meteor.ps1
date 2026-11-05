@@ -1,5 +1,5 @@
 param([switch]$EnableHost,[switch]$EnablePCVR,[string]$SteamRoot='',
-    [string]$Root='',[switch]$Quiet)
+    [string]$Root='',[switch]$Quiet,[switch]$PreviewSteamVRRegistration)
 # Installed setup entry point. All runtime inputs must live beside Meteor.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Meteor-Cli.ps1')
@@ -79,6 +79,11 @@ try {
             $summary.games+=$game
         }
         if($summary.games.Count) {
+            if($steamvr) {
+                $registration=& (Join-Path $PSScriptRoot 'SteamVR-Driver.ps1') -Action Register -AppRoot $PSScriptRoot -SteamVRRoot $steamvr -Preview:$PreviewSteamVRRegistration
+                $summary.steamvr_driver=$registration | ConvertFrom-Json
+                if(-not $summary.steamvr_driver.registered -and -not $PreviewSteamVRRegistration){throw 'Meteor SteamVR driver registration did not complete'}
+            }
             InvokeMeteor -Options @('--xr-windows-enable','--root',$Root)
             $options=Invoke-MeteorCli -Executable $exe -Options @('--xr-steam-options','--root',$Root)
             [IO.File]::WriteAllText((Join-Path $Root 'steam-launch-options.txt'),$options,[Text.UTF8Encoding]::new($false))

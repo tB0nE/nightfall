@@ -38,7 +38,7 @@ public static class PackageDllCheck {
         [void][PackageDllCheck]::FreeLibrary($handle)
         $summary.loaded_dlls+=$relative
     }
-    & (Join-Path $install 'Setup-Meteor.ps1') -EnableHost -EnablePCVR -Quiet | Out-Null
+    & (Join-Path $install 'Setup-Meteor.ps1') -EnableHost -EnablePCVR -Quiet -PreviewSteamVRRegistration | Out-Null
     if($LASTEXITCODE){throw 'Packaged setup failed'}
     $setup=Get-Content (Join-Path $env:LOCALAPPDATA 'Nightfall Meteor\setup-summary.json') -Raw | ConvertFrom-Json
     if(-not $setup.ok -or -not $setup.host_enabled -or -not $setup.pcvr_enabled -or $setup.games.Count -ne 2){throw 'Expected host and both installed VR games to be configured'}
@@ -56,7 +56,7 @@ public static class PackageDllCheck {
         }
         foreach($dir in $config.library_dirs){if(-not $dir.StartsWith($install,[StringComparison]::OrdinalIgnoreCase)){throw 'Profile references a development DLL directory'}}
     }
-    & (Join-Path $install 'Setup-Meteor.ps1') -EnableHost -EnablePCVR -Quiet | Out-Null
+    & (Join-Path $install 'Setup-Meteor.ps1') -EnableHost -EnablePCVR -Quiet -PreviewSteamVRRegistration | Out-Null
     if($LASTEXITCODE){throw 'Repeated packaged setup failed'}
     $summary.setup=$setup;$summary.catalog=$catalog;$summary.executable=$exe;$summary.ok=$true
 } catch {$summary.error=$_.Exception.Message;throw} finally {

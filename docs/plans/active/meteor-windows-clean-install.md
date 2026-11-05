@@ -16,8 +16,11 @@ be rebuilt and retested before another clean-install acceptance run.
 
 Clean-install work still to integrate:
 
-- Register the packaged SteamVR driver during PCVR setup; the successful
-  physical test used the registration helper manually.
+- PCVR setup now registers the packaged SteamVR driver automatically; an
+  isolated integration fixture verifies the helper invocation and host-only
+  setup exclusion without touching real registrations. Package smoke checks
+  explicitly preview registration. Include this change in the next installer;
+  the successful physical test used the helper manually.
 - Make per-game Steam launch setup clear: native SteamVR VRChat no longer
   needs the Meteor wrapper; Moss still needs its Monado/xrizer wrapper.
 - Retest hidden-console startup and pairing UI from the new installer.

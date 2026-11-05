@@ -24,12 +24,14 @@ setup is still planned.
 
 Setup offers the built-in host and PCVR. Supported installed Steam games are
 currently Moss (Monado/xrizer) and VRChat (SteamVR). PCVR requires NVIDIA/NVENC;
-install SteamVR through Steam for VRChat. SteamVR and games are not redistributed.
+install SteamVR through Steam for VRChat. PCVR setup registers Meteor's bundled
+SteamVR driver automatically. SteamVR and games are not redistributed.
 After installing a game, quit Meteor and use Set up Nightfall Meteor in Start.
 Connect Nightfall, pair the desktop host, then compare and approve the PCVR
 headset code in Meteor's tray. VR Apps launches need no Steam launch options.
-For direct Steam launches, use the line in the PCVR profiles folder's
-steam-launch-options.txt as the game's Steam launch options. Existing Steam
+For direct Moss launches from Steam, use the line in the PCVR profiles folder's
+steam-launch-options.txt as Moss's Steam launch options. VRChat uses the
+registered SteamVR driver and needs no Meteor launch options. Existing Steam
 settings are not automatically overwritten by the installer.
 Setup diagnostics: AppData\Local\Nightfall Meteor\setup-summary.json.
 The built-in multi-monitor backend currently supports SDR displays on one GPU.
