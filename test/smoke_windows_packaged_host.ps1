@@ -45,8 +45,9 @@ try {
     $ready=$false
     for($i=0;$i -lt 150;$i++) {
         if($process.HasExited){throw 'Packaged Meteor exited during normal startup'}
-        $text=if(Test-Path $log){Get-Content $log -Raw}else{''}
-        if($text.Contains("Managed XR service alongside proxy at 127.0.0.1:$xrPort") -and $text.Contains("Sunshine is running on port $base")){$ready=$true;break}
+        $text=''
+        if(Test-Path $log){$text=[string](Get-Content $log -Raw)}
+        if(-not [string]::IsNullOrEmpty($text) -and $text.Contains("Managed XR service alongside proxy at 127.0.0.1:$xrPort") -and $text.Contains("Sunshine is running on port $base")){$ready=$true;break}
         Start-Sleep -Milliseconds 200
     }
     if(-not $ready){throw 'Packaged host and XR service did not both become ready'}

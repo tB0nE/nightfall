@@ -10,9 +10,9 @@ and release capture tests. Current Windows checks pass 161 regular Rust tests
 plus the isolated two-cycle capture/game-exit check; GDScript launch-failure
 regressions and the full suite also passed.
 
-The installed release has received additional tested executable/driver and
-APK updates since the last installer was built. The existing installer must
-be rebuilt and retested before another clean-install acceptance run.
+The installed release received additional tested executable/driver and APK
+updates after the original installer. The rebuilt and locally verified
+candidate below incorporates those host-side updates.
 
 Clean-install work still to integrate:
 
@@ -40,6 +40,29 @@ client timeout, so this machine now explicitly uses physical-monitor capture.
 The earlier checklist and issue entries below describe the original test run;
 the checkpoint above supersedes their pending status where acceptance is now
 recorded.
+
+## Rebuilt installer candidate
+
+The rebuilt 0.1.1 release installer includes the accepted SteamVR handoff,
+game-exit handling, automatic driver registration, GUI executable, host helper
+supervision, and default physical-monitor capture. SHA-256:
+`57d14b68cd465944b743c74acb712fd0c6b93c2a5605307925f0cc52dd5d3d37`.
+Artifact: `meteor/target/windows-release/Nightfall-Meteor-0.1.1-Setup-x64.exe`.
+
+Relocated-package checks passed with fresh AppData and a system-only PATH:
+runtime hash verification, eight DLL loads, profiles for both games, repeated
+setup with registration preview, and bundled host plus XR service startup on
+isolated ports. The test tray/host quit normally without forced cleanup;
+the installed Meteor was restored afterward. The packaged executable's PE
+subsystem is Windows GUI. Physical capture defaults were inspected in the
+generated configuration. No headset or real registration was modified.
+
+The next pairing UX change is a direct Windows PIN-entry dialog backed by
+the managed host's authenticated local pairing API. Current Windows menus
+still open the host web page and expose its generated-login file as a manual
+step. This installer does not yet remove that friction or the separate PCVR
+approval step. Do not reset the user's working profile just to inspect these
+remaining changes.
 
 The release installer now stages the tested custom Vibepollo host, Monado,
 xrizer, OpenXR loader, SteamVR direct-capture service/driver, tracking/encoder
