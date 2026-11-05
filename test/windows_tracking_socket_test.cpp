@@ -37,6 +37,7 @@ int main(int argc,char **argv) {
     std::atomic<bool> pause{false},disconnect{false};
     std::atomic<unsigned> haptics{0};
     std::thread server([&] {
+        do {
         SOCKET peer=accept(listener,nullptr,nullptr); assert(peer!=INVALID_SOCKET);
         uint64_t sequence=0;
         uint64_t controller_sequence=0;
@@ -95,6 +96,7 @@ int main(int argc,char **argv) {
             } else break;
         }
         shutdown(peer,SD_BOTH); closesocket(peer);
+        } while(serving && std::getenv("METEOR_TRACKING_RECONNECT"));
     });
     if(serving) {
         std::printf("Synthetic tracking fixture listening on loopback:%u\n",ntohs(address.sin_port)); std::fflush(stdout);

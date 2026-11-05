@@ -190,7 +190,7 @@ static bool meteor_direct_send(const struct meteor_stereo_encode_v1 *input, cons
 {
     uint64_t deadline = meteor_direct_now_ms() + 2000;
     if (meteor_direct_socket == METEOR_DIRECT_INVALID && !meteor_direct_connect(port, deadline)) { meteor_direct_close(); return false; }
-    if (!packet->bytes || !packet->length || packet->length > 8 * 1024 * 1024 || meteor_direct_sequence >= 32768) {
+    if (!packet->bytes || !packet->length || packet->length > 8 * 1024 * 1024 || meteor_direct_sequence == UINT64_MAX) {
         meteor_direct_close(); return false;
     }
     bool idr = false;

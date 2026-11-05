@@ -90,6 +90,11 @@ if [ ! -f "$PATCHED_GODOT_RUNTIME" ]; then
   echo "Run tools/build_support/bootstrap_native_xr.sh first."
   exit 1
 fi
+if ! nightfall_validate_runtime_build "$SCRIPT_DIR" "$PATCHED_GODOT_RUNTIME"; then
+  echo "Error: patched Android runtime is stale or has no verified build stamp: $PATCHED_GODOT_RUNTIME" >&2
+  echo "Rebuild it with bootstrap_native_xr.sh --android-release-only (release), or the full bootstrap (debug)." >&2
+  exit 1
+fi
 
 cleanup() {
   if [ -f "$CONFIG_BACKUP" ]; then

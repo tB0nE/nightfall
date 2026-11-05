@@ -27,7 +27,8 @@ class DirectCapture:public vr::IVRDriverDirectModeComponent {
     std::vector<Submitted> layers;
     std::unique_ptr<MirrorEncoder> encoder;
     std::mutex mutex;
-    uint64_t frame=0;uint32_t sync_misses=0;
+    uint64_t frame=0;uint32_t sync_misses=0,dropped_frames=0;
+    uint64_t timing_count=0,timing_sum[4]{},timing_peak[4]{};
     uint64_t adapter_luid=0;
     bool failed=false,finished=false;
     std::chrono::steady_clock::time_point next_vsync=std::chrono::steady_clock::now();
@@ -74,6 +75,19 @@ public:
         check(D3D11CreateDevice(selected.Get(),D3D_DRIVER_TYPE_UNKNOWN,nullptr,D3D11_CREATE_DEVICE_BGRA_SUPPORT,nullptr,0,D3D11_SDK_VERSION,&device,nullptr,&context));
         vr::VRDriverLog()->Log("METEOR_STEAMVR_DIRECT initialized");
     }
+    void pause_session() {
+        std::lock_guard<std::mutex> lock(mutex);
+        if(!finished) {
+            finished=true;layers.clear();encoder.reset();
+            if(*env("METEOR_XR_DIRECT_PORT"))meteor_steamvr_finish();
+        }
+    }
+    void resume_session() {
+        std::lock_guard<std::mutex> lock(mutex);
+        marker=env("METEOR_WINDOWS_SESSION_MARKER");frame=0;sync_misses=dropped_frames=0;
+        timing_count=0;std::fill(std::begin(timing_sum),std::end(timing_sum),0);std::fill(std::begin(timing_peak),std::end(timing_peak),0);
+        failed=finished=false;layers.clear();next_vsync=std::chrono::steady_clock::now();
+    }
     uint64_t luid() const {return adapter_luid;}
     void CreateSwapTextureSet(uint32_t pid,const SwapTextureSetDesc_t *request,SwapTextureSet_t *out) override {
         std::lock_guard<std::mutex> lock(mutex);*out={};if(failed || finished)return;
@@ -114,6 +128,7 @@ public:
         Submitted layer{};layer.eyes[0]=eyes[0];layer.eyes[1]=eyes[1];layers.push_back(layer);
     }
     void Present(vr::SharedTextureHandle_t sync) override {
+        const int64_t present_begin=now_ns();
         std::lock_guard<std::mutex> lock(mutex);auto submitted=std::move(layers);layers.clear();
         if(failed || finished || submitted.empty())return;
         ComPtr<IDXGIKeyedMutex> keyed;bool acquired=false;
@@ -125,9 +140,11 @@ public:
                 ComPtr<ID3D11Texture2D> texture;check(device->OpenSharedResource(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(sync)),IID_PPV_ARGS(&texture)));
                 check(texture.As(&keyed));synchronization.emplace(sync,keyed);
             } else keyed=it->second;
+            const int64_t sync_begin=now_ns();
             HRESULT ready=keyed->AcquireSync(0,100);
-            if(ready==WAIT_TIMEOUT) {if(++sync_misses>30)throw std::runtime_error("SteamVR GPU synchronization repeatedly timed out");return;}
+            if(ready==WAIT_TIMEOUT) {++dropped_frames;if(++sync_misses>30)throw std::runtime_error("SteamVR GPU synchronization repeatedly timed out");return;}
             if(ready!=S_OK)throw std::runtime_error("SteamVR GPU synchronization was abandoned or failed");acquired=true;sync_misses=0;
+            const int64_t sync_end=now_ns();
             vr::HmdMatrix34_t heads[2]={submitted[0].eyes[0].mHmdPose,submitted[0].eyes[1].mHmdPose};
             if(!meteor_geometry::valid_pose(heads[0]) || !meteor_geometry::valid_pose(heads[1])) {keyed->ReleaseSync(0);return;}
             std::vector<MirrorEncoder::Layer> packed(submitted.size());
@@ -142,25 +159,45 @@ public:
                 packed[n].eyes[eye]=view(source.hTexture);std::memcpy(packed[n].bounds[eye],values,sizeof(values));
             }
             if(!encoder) {encoder=std::make_unique<MirrorEncoder>();encoder->initialize(device.Get(),width,height,hz);}
+            const int64_t encode_begin=now_ns();
             auto bytes=encoder->encode_layers(context.Get(),packed.data(),packed.size(),frame+1);
+            const int64_t encode_end=now_ns();
             check(keyed->ReleaseSync(0));acquired=false;
             float metadata[22]{};meteor_geometry::views(heads,optics,metadata);++frame;
             if(*env("METEOR_XR_DIRECT_PORT")) {
                 if(!meteor_steamvr_deliver(frame,static_cast<uint64_t>(now_ns()),width,height,metadata,bytes.data(),static_cast<uint32_t>(bytes.size())))throw std::runtime_error("SteamVR encoded frame delivery failed");
+            }
+            const int64_t present_end=now_ns();
+            const uint64_t times[]={uint64_t(sync_end-sync_begin)/1000,uint64_t(encode_end-encode_begin)/1000,
+                uint64_t(present_end-encode_end)/1000,uint64_t(present_end-present_begin)/1000};
+            ++timing_count;
+            for(unsigned i=0;i<4;++i) {timing_sum[i]+=times[i];timing_peak[i]=std::max(timing_peak[i],times[i]);}
+            if(frame==1 || frame%120==0) {
+                char log[600];std::snprintf(log,sizeof(log),
+                    "METEOR_STEAMVR_TIMING frame=%llu samples=%llu sync_us=%llu/%llu encode_us=%llu/%llu delivery_us=%llu/%llu present_us=%llu/%llu dropped=%u (mean/peak)",
+                    static_cast<unsigned long long>(frame),static_cast<unsigned long long>(timing_count),
+                    static_cast<unsigned long long>(timing_sum[0]/timing_count),static_cast<unsigned long long>(timing_peak[0]),
+                    static_cast<unsigned long long>(timing_sum[1]/timing_count),static_cast<unsigned long long>(timing_peak[1]),
+                    static_cast<unsigned long long>(timing_sum[2]/timing_count),static_cast<unsigned long long>(timing_peak[2]),
+                    static_cast<unsigned long long>(timing_sum[3]/timing_count),static_cast<unsigned long long>(timing_peak[3]),dropped_frames);
+                vr::VRDriverLog()->Log(log);
+                timing_count=0;std::fill(std::begin(timing_sum),std::end(timing_sum),0);std::fill(std::begin(timing_peak),std::end(timing_peak),0);
             }
             if(frame==1)mark("");
             if(frame==1 || frame%120==0) {char log[200];std::snprintf(log,sizeof(log),"METEOR_STEAMVR_DIRECT frame=%llu layers=%zu head=%.5f,%.5f,%.5f",static_cast<unsigned long long>(frame),submitted.size(),heads[0].m[0][3],heads[0].m[1][3],heads[0].m[2][3]);vr::VRDriverLog()->Log(log);}
         }catch(const std::exception &e) {if(acquired)keyed->ReleaseSync(0);fail(e);}
     }
     void PostPresent(const Throttling_t *) override {
+        std::unique_lock<std::mutex> lock(mutex);if(finished || failed)return;
         auto period=std::chrono::nanoseconds(1000000000/hz);next_vsync+=period;
         auto now=std::chrono::steady_clock::now();if(next_vsync<now)next_vsync=now+period;
-        std::this_thread::sleep_until(next_vsync-std::chrono::milliseconds(2));
+        auto wake=next_vsync-std::chrono::milliseconds(2);lock.unlock();
+        std::this_thread::sleep_until(wake);
         vr::VRServerDriverHost()->VsyncEvent(.002);
     }
     void GetFrameTiming(vr::DriverDirectMode_FrameTiming *timing) override {
         std::lock_guard<std::mutex> lock(mutex);timing->m_nReprojectionFlags=0;timing->m_nNumFramePresents=static_cast<uint32_t>(frame);
-        timing->m_nNumDroppedFrames=sync_misses;timing->m_nNumMisPresented=0;
+        timing->m_nNumDroppedFrames=dropped_frames;timing->m_nNumMisPresented=0;
     }
     void poll_stop() {
         std::lock_guard<std::mutex> lock(mutex);

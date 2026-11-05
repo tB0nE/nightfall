@@ -372,6 +372,11 @@ async fn connection_supervised(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))?;
     };
+    log::info!("Paired headset authenticated for XR control");
+    let mut watch_logged=false;
+    let mut delivered_launch=None;
+    #[cfg(windows)]
+    let mut startup_claim=crate::xr_windows::StartupClaim::new(runtime_root.as_deref());
     let mut negotiation = Negotiation::default();
     let mut encoder_monitor=crate::xr_encoder::Monitor::default();
     negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;
@@ -423,13 +428,23 @@ async fn connection_supervised(
             } else {Some("runtime_not_active".to_string())};
             negotiation.reply(reason.as_deref())
         } else if matches!(&request,Request::PendingLaunch {}) && negotiation.session.is_none() {
+            if !watch_logged {log::info!("Headset is watching for XR launches");watch_logged=true;}
             let mut reply=negotiation.reply(None);
             if let Some(root)=runtime_root.as_ref().filter(|_|enable_relay) {
                 reply.pending_launch=crate::xr_launch_intent::pending(root);
             }
+            if let Some(notice)=&reply.pending_launch {
+                if delivered_launch.as_deref()!=Some(notice.generation.as_str()) {
+                    log::info!("XR launch notice delivered to headset for Steam app {}",notice.app_id);
+                    delivered_launch=Some(notice.generation.clone());
+                }
+            }
             reply
         } else if let Request::ClaimLaunch {generation}=&request {
             if negotiation.session.is_none() && runtime_root.as_ref().filter(|_|enable_relay).is_some_and(|root|crate::xr_launch_intent::claim(root,generation)) {
+                log::info!("Headset claimed XR launch notice");
+                #[cfg(windows)]
+                startup_claim.set(generation);
                 negotiation.launch_intent=Some(generation.clone());
                 negotiation.reply(None)
             } else {negotiation.reply(Some("launch_intent_unavailable"))}

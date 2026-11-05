@@ -23,10 +23,11 @@ func process_auto_xr(delta: float) -> void:
 	# and enumerate hosts on every rendered desktop frame.
 	if _xr_control != null and _xr_control.state not in ["idle", "failed"]: return
 	_auto_retry = 5.0
-	if not main.pcvr_test.entry_visible(): return
+	if not main.pcvr_test.available: return
 	if main.pcvr_test.application_paused or main.pcvr_test.standby_active or main.pcvr_test.is_exclusive(): return
 	if main.pcvr_handover.state != main.pcvr_handover.State.IDLE: return
-	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING or main.screens.size() != 1 or main.browser_content_active(): return
+	# Watching/authentication does not change the desktop workspace.
+	if main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING: return
 	var control = get_xr_control()
 	var config: ConfigFile = control.current_config()
 	if config == null: return
@@ -44,8 +45,8 @@ func _init(owner: Node3D):
 	main = owner
 
 func xr_settings_available() -> bool:
-	# The authenticated XR watcher proves capability; depth discovery alone does not.
-	return main.is_streaming and _xr_control != null and _xr_control.state in ["watching", "prepared"]
+	# Show setup before approval; depth-only discovery still exposes no PCVR UI.
+	return main.is_streaming and _xr_control != null and (_xr_control.state in ["watching", "prepared"] or _xr_control.discovered_service_available())
 
 func xr_encoder_capabilities() -> Dictionary:
 	return _xr_control.encoder_capabilities if _xr_control != null else {}
@@ -173,6 +174,9 @@ func cancel_xr_control(stop_projection: bool = true, suppress_auto: bool = true)
 	if suppress_auto: _auto_suppressed = true
 	else: _auto_retry = maxf(_auto_retry, 1.0)
 	if _xr_control: _xr_control.cancel(stop_projection)
+
+func retains_xr_lease_during_timing_transition() -> bool:
+	return _xr_control != null and _xr_control.retains_lease_during_timing_transition()
 
 # Browser dropdown in the top-left corner, opposite the language picker. The
 # options open below the toggle, so the toggle never moves.

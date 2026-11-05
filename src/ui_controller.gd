@@ -872,6 +872,9 @@ func refresh_pcvr_menu() -> void:
 		var backend = main.pcvr_test.backend
 		var status: Dictionary = backend.get_test_status() if backend else {}
 		_pcvr_info.text = "Resolution: next session • Bitrate / foveation / filters: live" if active else "Ready for XR • Preferences apply to your next session."
+		var xr_control = main.welcome_screen.get_xr_control()
+		if not active and xr_control.state not in ["watching", "prepared"]:
+			_pcvr_info.text = "PCVR setup • Connect and approve this headset in Meteor on your PC."
 		if _pcvr_resolution_btn:
 			var recommended := PCVRVideoSettings.reference_eye_dimensions(backend, main.get("stream_backend"))
 			var size := _pcvr_video.effective_eye_dimensions(512, recommended)
@@ -903,6 +906,7 @@ func refresh_pcvr_menu() -> void:
 			else:
 				_pcvr_telemetry = PCVRTelemetry.new()
 				_pcvr_status.text = "No XR session running"
+				if not xr_control.message.is_empty(): _pcvr_status.text = xr_control.message
 		var supported := bool(status.get("pcvr_post_processing_supported", false))
 		for button in [_pcvr_sharpen_btn, _pcvr_sampling_btn]:
 			if button: button.disabled = not supported

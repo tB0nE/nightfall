@@ -1,7 +1,9 @@
 # Windows XR compatibility checkpoint
 
 Date: 2026-11-05. Working development checkpoint on RTX 3090 / Quest 3;
-not a packaged Windows XR release.
+The later [clean-install checkpoint](meteor-windows-clean-install.md) supersedes
+the packaging status below: the new installer includes these runtime components;
+clean-profile user acceptance is next.
 
 ## Confirmed behaviour
 
@@ -207,3 +209,12 @@ with a backup, and restarted Meteor. The bundled host's read-only probe reported
 DISPLAY1 2560x1440 and DISPLAY2 1920x1080, combined 4480x1440. User confirmed
 the flow test passed after this fix. The per-user setting and backups are local
 state; the repository documents how to retain the flag on other installations.
+
+Session-lifetime audit: normal desktop streaming, both Windows XR backends,
+Steam wrapper completion and the client Meteor projection path already have
+no fixed play-time cap. Diagnostic 45/60/300-second values do not stop active
+Meteor game sessions. The 360-second control lease is renewed by status
+requests; startup, stalled-I/O and cleanup deadlines are retained. No runtime
+or APK changes were required. Release tests still pass (154 passed, 19 ignored).
+This audit does not establish long-session reliability or packaged-release
+readiness; the release tasks above remain outstanding.

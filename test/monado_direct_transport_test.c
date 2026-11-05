@@ -13,10 +13,10 @@ static void child_exact(int fd, void *data, size_t size)
     }
 }
 
-static void test_delivery(bool bad_ack)
+static void test_delivery(bool bad_ack, uint64_t sequence)
 {
     int pair[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
-    meteor_direct_socket = pair[0]; meteor_direct_epoch = 11; meteor_direct_sequence = 0;
+    meteor_direct_socket = pair[0]; meteor_direct_epoch = 11; meteor_direct_sequence = sequence;
     assert(fcntl(pair[0], F_SETFL, O_NONBLOCK) == 0);
     pid_t child = fork(); assert(child >= 0);
     if (!child) {
@@ -26,11 +26,13 @@ static void test_delivery(bool bad_ack)
         assert(!memcmp(header, "NFXR", 4) && header[6] == 152 && header[24] == 9 && header[49] == 1);
         assert(header[40] == 5 && header[44] == 0 && header[45] == 2);
         assert(payload[3] == 0x65);
-        memcpy(ack, bad_ack ? "BAD!" : "NFXA", 4); meteor_direct_u64(ack + 12, 9, 8);
+        memcpy(ack, bad_ack ? "BAD!" : "NFXA", 4); meteor_direct_u64(ack + 4, sequence, 8); meteor_direct_u64(ack + 12, 9, 8);
         assert(write(pair[1], ack, sizeof(ack)) == sizeof(ack));
         if (!bad_ack) {
-            child_exact(pair[1], header, sizeof(header)); assert(header[50] == 1 && header[16] == 1);
-            uint8_t end[12] = {0}; memcpy(end, "NFXE", 4); meteor_direct_u64(end + 4, 1, 8);
+            child_exact(pair[1], header, sizeof(header)); assert(header[50] == 1);
+            uint8_t expected_sequence[8];meteor_direct_u64(expected_sequence,sequence+1,8);
+            assert(!memcmp(header+16,expected_sequence,8));
+            uint8_t end[12] = {0}; memcpy(end, "NFXE", 4); meteor_direct_u64(end + 4, sequence+1, 8);
             assert(write(pair[1], end, sizeof(end)) == sizeof(end));
         }
         close(pair[1]); _exit(0);
@@ -55,7 +57,7 @@ int main(void)
     assert(meteor_encoded_copy(&copy, bytes, sizeof(bytes)));
     bytes[0] = 9; assert(copy.bytes[0] == 1 && copy.length == 3);
     assert(!meteor_encoded_copy(&copy, bytes, sizeof(bytes))); free(copy.bytes);
-    test_delivery(false); test_delivery(true);
+    test_delivery(false,0); test_delivery(false,32768); test_delivery(false,32769); test_delivery(true,32768);
     int pair[2]; assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
     meteor_direct_socket = pair[0]; close(pair[1]);
     struct meteor_stereo_encode_v1 input = {.frame_id = 1};

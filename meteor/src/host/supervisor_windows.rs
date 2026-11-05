@@ -13,15 +13,17 @@ use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_BREAKAWAY_OK,
 };
 
 struct ChildJob(HANDLE);
 
 impl ChildJob {
     fn attach(child: &mut Child) -> Result<Self, String> {
-        // A kill-on-close job stops the host and any helpers if Meteor crashes
-        // or exits through TerminateProcess before shutdown can run.
+        // Stop the host and ordinary children if Meteor crashes. Vibepollo's
+        // keep-alive display helper explicitly requests CREATE_BREAKAWAY_FROM_JOB
+        // so it can restore display state after the host exits. Without this
+        // permission Windows rejects its creation with ERROR_ACCESS_DENIED.
         let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if job.is_null() {
             let _ = child.kill();
@@ -30,7 +32,8 @@ impl ChildJob {
         }
         let guard = Self(job);
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
         let configured = unsafe {
             SetInformationJobObject(
                 guard.0, JobObjectExtendedLimitInformation,
@@ -211,6 +214,36 @@ fn stop(child: &mut Child) -> Result<std::process::ExitStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supervised_host_can_launch_keepalive_helper() {
+        use std::os::windows::process::CommandExt;
+        const GATE: &str = "NIGHTFALL_HOST_JOB_TEST_GATE";
+        if let Some(gate)=std::env::var_os(GATE) {
+            let deadline=Instant::now()+Duration::from_secs(8);
+            while !std::path::Path::new(&gate).exists() && Instant::now()<deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(std::path::Path::new(&gate).exists());
+            let status=std::process::Command::new("cmd.exe")
+                .args(["/d","/c","exit 0"])
+                .creation_flags(0x01000000 | 0x08000000) // BREAKAWAY_FROM_JOB | NO_WINDOW
+                .status().expect("keep-alive helper must launch inside the host job");
+            assert!(status.success());
+            return;
+        }
+        let gate=std::env::temp_dir().join(format!("meteor-host-job-{}-{}",std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut child=std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","host::supervisor::tests::supervised_host_can_launch_keepalive_helper","--nocapture"])
+            .env(GATE,&gate).spawn().unwrap();
+        let job=ChildJob::attach(&mut child).unwrap();
+        std::fs::write(&gate,b"ready").unwrap();
+        let result=child.wait().unwrap();
+        let _=std::fs::remove_file(&gate);
+        drop(job);
+        assert!(result.success());
+    }
 
     #[test]
     fn restart_backoff_is_bounded() {

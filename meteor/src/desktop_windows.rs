@@ -11,6 +11,16 @@ use windows_sys::Win32::System::Registry::{
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const VALUE: &str = "Nightfall Meteor";
 
+/// Keep piped CLI output intact, or reuse the caller's existing console.
+/// A tray launch never allocates a console of its own.
+pub fn attach_parent_console_if_needed() {
+    use windows_sys::Win32::System::Console::{AttachConsole,GetStdHandle,ATTACH_PARENT_PROCESS,STD_OUTPUT_HANDLE};
+    let output=unsafe {GetStdHandle(STD_OUTPUT_HANDLE)};
+    if output.is_null() || output==windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        unsafe {AttachConsole(ATTACH_PARENT_PROCESS);}
+    }
+}
+
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }

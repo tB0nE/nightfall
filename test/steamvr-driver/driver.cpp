@@ -9,20 +9,28 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <atomic>
+#include "bootstrap.h"
 
 static uint32_t width=512,height=512,hz=72;
 static bool synthetic=false;
+static std::atomic<bool> session_connected{false};
 static bool direct_mode=false;
 static float optics[22]={-.032f,0,0,0,0,0,1,-.785398f,.785398f,.785398f,-.785398f,
                          .032f,0,0,0,0,0,1,-.785398f,.785398f,.785398f,-.785398f};
 static int64_t now_ns() {return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();}
-static const char *env(const char *name) {const char *p=std::getenv(name);return p?p:"";}
+static std::map<std::string,std::string> session_settings;
+static const char *env(const char *name) {
+    auto it=session_settings.find(name);if(it!=session_settings.end())return it->second.c_str();
+    const char *p=std::getenv(name);return p?p:"";
+}
 static uint32_t dimension(const char *name,uint32_t fallback) {
     auto value=env(name);if(!*value)return fallback;char *end=nullptr;auto n=std::strtoul(value,&end,10);
     if(*end || n<256 || n>4096 || n%16)throw std::runtime_error("Invalid SteamVR eye dimension");return uint32_t(n);
 }
 struct Tracking {
     HMODULE module=nullptr;void *client=nullptr;
+    float eye_values[22]{};
     void *(*start)(const char *)=nullptr;
     void (*stop)(void *)=nullptr;
     int (*head)(void *,int64_t,float *,uint64_t *)=nullptr;
@@ -32,10 +40,13 @@ struct Tracking {
     template<class T> void symbol(T &out,const char *name) {out=reinterpret_cast<T>(GetProcAddress(module,name));if(!out)throw std::runtime_error("Missing Meteor tracking export");}
     void initialize() {
         if(synthetic)return;
-        module=LoadLibraryA(env("METEOR_TRACKING_BRIDGE"));if(!module)throw std::runtime_error("Missing Meteor tracking bridge");
+        int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,env("METEOR_TRACKING_BRIDGE"),-1,nullptr,0);
+        std::wstring path(n,L'\0');
+        if(!n || !MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,env("METEOR_TRACKING_BRIDGE"),-1,path.data(),n))throw std::runtime_error("Invalid tracking bridge path");
+        module=LoadLibraryExW(path.c_str(),nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);if(!module)throw std::runtime_error("Missing Meteor tracking bridge");
         symbol(start,"meteor_tracking_start_v1");symbol(stop,"meteor_tracking_stop_v1");symbol(head,"meteor_tracking_pose_v1");
         symbol(controller,"meteor_tracking_controller_v2");symbol(haptic,"meteor_tracking_haptic_v1");symbol(eyes,"meteor_tracking_optics_v1");
-        client=start(env("METEOR_TRACKING_PORT"));if(!client || !eyes(client,optics))throw std::runtime_error("Meteor tracking/optics not ready");
+        client=start(env("METEOR_TRACKING_PORT"));if(!client || !eyes(client,eye_values))throw std::runtime_error("Meteor tracking/optics not ready");
     }
     ~Tracking() {if(client && stop)stop(client);if(module)FreeLibrary(module);}
 };
@@ -110,8 +121,20 @@ public:
         vr::VRDriverLog()->Log(hand<0?"METEOR_STEAMVR HMD activated":"METEOR_STEAMVR controller activated");
         return vr::VRInitError_None;
     }
+    void disconnect() {if(capture)capture->pause_session();}
+    void reconnect() {
+        if(capture)capture->resume_session();
+        if(hand<0 && *env("METEOR_STEAMVR_READY_FILE")) {
+            FILE *file=nullptr;fopen_s(&file,env("METEOR_STEAMVR_READY_FILE"),"wb");
+            if(!file)throw std::runtime_error("Cannot mark reconnected SteamVR headset ready");std::fclose(file);
+        }
+    }
     void update() {
         if(index==vr::k_unTrackedDeviceIndexInvalid)return;
+        if(!session_connected.load()) {
+            pose.poseIsValid=false;pose.deviceIsConnected=false;pose.result=vr::TrackingResult_Uninitialized;
+            vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,pose,sizeof(pose));return;
+        }
         float p[14]={0,1.6f,0,0,0,0,1,0,0,0,0,0,0,1},values[4]{};
         uint32_t flags=0,pressed=0;uint64_t stamp=0;bool valid=synthetic;
         if(synthetic && hand>=0) {p[0]=hand==0?-.25f:.25f;p[1]=1.1f;p[2]=-.35f;}
@@ -135,7 +158,7 @@ public:
         }
     }
     void haptic(const vr::VREvent_t &event) {
-        if(hand>=0 && event.data.hapticVibration.componentHandle==vibration && tracking->haptic)
+        if(session_connected.load() && hand>=0 && event.data.hapticVibration.componentHandle==vibration && tracking->haptic)
             tracking->haptic(unsigned(hand),event.data.hapticVibration.fAmplitude,int64_t(event.data.hapticVibration.fDurationSeconds*1e9));
     }
     void Deactivate() override {index=vr::k_unTrackedDeviceIndexInvalid;}
@@ -160,29 +183,117 @@ public:
 };
 class Provider:public vr::IServerTrackedDeviceProvider {
     std::unique_ptr<Device> devices[3];
-public:
-    vr::EVRInitError Init(vr::IVRDriverContext *context) override {
-        if(std::strcmp(env("METEOR_STEAMVR_TRIAL"),"1"))return vr::VRInitError_Driver_Failed;
-        VR_INIT_SERVER_DRIVER_CONTEXT(context);
+    bool initialized=false,failed=false,broker_present=false,managed=false;
+    std::string generation;
+    meteor_bootstrap::Activation activation;
+    meteor_bootstrap::SceneLifetime scene;
+    int64_t next_poll=0;
+    bool prepare(bool legacy) {
+        // Leave an existing physical or third-party HMD untouched.
+        vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+        vr::VRServerDriverHost()->GetRawTrackedDevicePoses(0,poses,vr::k_unMaxTrackedDeviceCount);
+        if(!initialized && poses[0].bDeviceIsConnected)return false;
+        std::map<std::string,std::string> settings;
+        if(!legacy && meteor_bootstrap::read(settings,{},activation.requested(initialized,session_connected.load(),GetTickCount64()),&broker_present)) {
+            const auto marker=settings.find("METEOR_WINDOWS_SESSION_MARKER");
+            if(marker==settings.end() || marker->second.empty())return false;
+            if(initialized && marker->second==generation && session_connected.load())return true;
+            if(initialized) {session_connected=false;for(auto &d:devices)if(d)d->disconnect();tracking.reset();}
+            for(const auto &entry:session_settings)_putenv_s(entry.first.c_str(),"");
+            session_settings=std::move(settings);
+            vr::VRDriverLog()->Log("METEOR_STEAMVR bootstrap settings received");
+            // The shared C transport uses the CRT environment. All keys are
+            // restricted to this driver's configuration namespace.
+            for(const auto &entry:session_settings)_putenv_s(entry.first.c_str(),entry.second.c_str());
+        } else if(!legacy) {
+            if(broker_present && initialized && session_connected.exchange(false)) {for(auto &d:devices)if(d)d->disconnect();tracking.reset();}
+            return false;
+        }
         try {
-            width=dimension("METEOR_XR_EYE_SIZE",512);height=dimension("METEOR_XR_EYE_HEIGHT",width);
-            if(*env("XRT_COMPOSITOR_NULL_FPS"))hz=uint32_t(std::atoi(env("XRT_COMPOSITOR_NULL_FPS")));
+            auto next_width=dimension("METEOR_XR_EYE_SIZE",512),next_height=dimension("METEOR_XR_EYE_HEIGHT",next_width);
+            auto next_hz=*env("XRT_COMPOSITOR_NULL_FPS")?uint32_t(std::atoi(env("XRT_COMPOSITOR_NULL_FPS"))):72;
+            if(initialized && (next_width!=width || next_height!=height || next_hz!=hz))
+                throw std::runtime_error("Restart SteamVR to change its eye dimensions or refresh rate");
+            if(!initialized) {width=next_width;height=next_height;hz=next_hz;}
             if(hz!=20 && hz!=60 && hz!=72)throw std::runtime_error("Unsupported SteamVR display rate");
-            synthetic=!std::strcmp(env("METEOR_STEAMVR_SYNTHETIC"),"1");
-            direct_mode=!std::strcmp(env("METEOR_STEAMVR_DIRECT"),"1");
+            synthetic=legacy && !std::strcmp(env("METEOR_STEAMVR_SYNTHETIC"),"1");
+            bool next_direct=!std::strcmp(env("METEOR_STEAMVR_DIRECT"),"1");
+            if(initialized && next_direct!=direct_mode)throw std::runtime_error("Restart SteamVR to change capture mode");
+            if(!initialized)direct_mode=next_direct;
             tracking=std::make_unique<Tracking>();tracking->initialize();
+            if(!synthetic) {
+                if(initialized)for(unsigned i=0;i<22;++i)if(std::abs(tracking->eye_values[i]-optics[i])>.0001f)
+                    throw std::runtime_error("Restart SteamVR to change headset optics");
+                if(!initialized)std::memcpy(optics,tracking->eye_values,sizeof(optics));
+            }
+            generation=env("METEOR_WINDOWS_SESSION_MARKER");managed=!legacy;
+            session_connected=true;
+            activation.connected();
+            if(initialized) {
+                for(auto &d:devices)if(d)d->reconnect();
+                vr::VRDriverLog()->Log("METEOR_STEAMVR session reconnected");return true;
+            }
             const char *serials[]={"nightfall-meteor-hmd","nightfall-meteor-left","nightfall-meteor-right"};
             for(int i=0;i<3;++i) {
                 devices[i]=std::make_unique<Device>(i-1);
                 if(!vr::VRServerDriverHost()->TrackedDeviceAdded(serials[i],i==0?vr::TrackedDeviceClass_HMD:vr::TrackedDeviceClass_Controller,devices[i].get()))throw std::runtime_error("SteamVR rejected Meteor device");
             }
-            vr::VRDriverLog()->Log("METEOR_STEAMVR provider ready");return vr::VRInitError_None;
-        } catch(const std::exception &e) {vr::VRDriverLog()->Log(e.what());Cleanup();return vr::VRInitError_Driver_Failed;}
+            vr::VRDriverLog()->Log("METEOR_STEAMVR provider ready");initialized=true;return true;
+        } catch(const std::exception &e) {
+            vr::VRDriverLog()->Log(e.what());failed=true;session_connected=false;
+            auto marker=std::string(env("METEOR_WINDOWS_SESSION_MARKER"))+".failed";
+            FILE *file=nullptr;if(!fopen_s(&file,marker.c_str(),"wb") && file) {std::fputs(e.what(),file);std::fclose(file);}
+            return false;
+        }
     }
-    void Cleanup() override {for(auto &d:devices)d.reset();tracking.reset();VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
+public:
+    vr::EVRInitError Init(vr::IVRDriverContext *context) override {
+        VR_INIT_SERVER_DRIVER_CONTEXT(context);
+        initialized=failed=broker_present=false;next_poll=0;activation={};scene={};
+        bool legacy=!std::strcmp(env("METEOR_STEAMVR_TRIAL"),"1");
+        prepare(legacy);
+        // Steam can load the driver before the desktop client has prepared its
+        // video lanes. Allow that authenticated handoff during initial HMD init.
+        auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(8);
+        const bool waiting_for_client=!legacy && broker_present;
+        while(waiting_for_client && !initialized && !failed && std::chrono::steady_clock::now()<deadline) {
+            Sleep(50);prepare(false);
+        }
+        if(failed) {Cleanup();return vr::VRInitError_Driver_Failed;}
+        if(!initialized)vr::VRDriverLog()->Log("METEOR_STEAMVR idle; waiting for a prepared Meteor session");
+        return vr::VRInitError_None;
+    }
+    void Cleanup() override {for(auto &d:devices)d.reset();tracking.reset();session_settings.clear();initialized=failed=false;session_connected=false;VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
     const char *const *GetInterfaceVersions() override {return vr::k_InterfaceVersions;}
-    void RunFrame() override {for(auto &d:devices)if(d) {d->update();d->poll_stop();}vr::VREvent_t event{};while(vr::VRServerDriverHost()->PollNextEvent(&event,sizeof(event)))if(event.eventType==vr::VREvent_Input_HapticVibration)for(auto &d:devices)if(d)d->haptic(event);}
-    bool ShouldBlockStandbyMode() override {return true;}
+    void RunFrame() override {
+        if((!initialized || managed) && !failed && now_ns()>=next_poll) {next_poll=now_ns()+250000000;prepare(false);}
+        for(auto &d:devices)if(d) {d->update();d->poll_stop();}
+        vr::VREvent_t event{};
+        while(vr::VRServerDriverHost()->PollNextEvent(&event,sizeof(event))) {
+            if(event.eventType==vr::VREvent_SceneApplicationChanged && meteor_bootstrap::application_process(event.data.process.pid))
+                scene.scene(event.data.process.pid);
+            if(event.eventType==vr::VREvent_ProcessDisconnected && scene.disconnected(event.data.process.pid)
+                && managed && session_connected.load()) {
+                activation.connected();
+                const auto marker=session_settings.find("METEOR_WINDOWS_SESSION_MARKER");
+                if(marker!=session_settings.end()) {
+                    auto path=marker->second+".game-ended";
+                    FILE *file=nullptr;
+                    if(!fopen_s(&file,path.c_str(),"wb") && file) {
+                        std::fclose(file);
+                        vr::VRDriverLog()->Log("METEOR_STEAMVR scene application exited; ending headset session");
+                    }
+                }
+            }
+            if((event.eventType==vr::VREvent_ProcessConnected || event.eventType==vr::VREvent_SceneApplicationChanged)
+                && !session_connected.load() && meteor_bootstrap::application_process(event.data.process.pid)) {
+                activation.application(GetTickCount64());next_poll=0;
+                vr::VRDriverLog()->Log("METEOR_STEAMVR application requested headset reconnection");
+            }
+            if(event.eventType==vr::VREvent_Input_HapticVibration)for(auto &d:devices)if(d)d->haptic(event);
+        }
+    }
+    bool ShouldBlockStandbyMode() override {return initialized && session_connected.load();}
     void EnterStandby() override {}
     void LeaveStandby() override {}
 };

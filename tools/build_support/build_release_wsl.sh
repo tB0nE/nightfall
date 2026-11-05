@@ -94,4 +94,6 @@ APK="Nightfall-Android-arm64-v8a-dev.apk"
 [[ " ${BUILD_ARGS[*]} " == *" --release "* ]] && APK="Nightfall-Android-arm64-v8a.apk"
 ./build.sh "${BUILD_ARGS[@]}"
 # adb.exe is a Windows binary, so it needs a Windows path to the APK.
-"$CACHE_ROOT/platform-tools/adb.exe" install -r "$(wslpath -w "$PROJECT_ROOT/$APK")"
+if [[ "${NIGHTFALL_SKIP_INSTALL:-0}" != 1 ]]; then
+  "$CACHE_ROOT/platform-tools/adb.exe" install -r "$(wslpath -w "$PROJECT_ROOT/$APK")"
+fi

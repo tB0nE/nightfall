@@ -46,7 +46,14 @@ impl Instance {
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let mut initial = vec![("sunshine_name", name.to_string()), ("address_family", "both".into())];
         #[cfg(windows)]
-        initial.push(("system_tray", "false".into()));
+        {
+            initial.push(("system_tray", "false".into()));
+            // Meteor captures the user's connected monitors by default. The
+            // host's Windows 11 default instead creates a virtual display,
+            // which needs driver access a normal desktop process may lack.
+            // An explicit user choice remains untouched by render_config.
+            initial.push(("virtual_display_mode", "disabled".into()));
+        }
         let text = render_config(&existing, &[("port", self.base.to_string())], &initial);
         if text != existing {
             std::fs::write(&path, text).map_err(fail)?;
@@ -57,6 +64,11 @@ impl Instance {
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
         command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir).envs(self.env.iter().cloned());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
         // A development build finds its web UI files next to itself.
         if let Some(dir) = self.binary.parent() {
             command.current_dir(dir);
@@ -145,5 +157,14 @@ mod tests {
         assert_eq!(text, "# mine\nport = 49989\nsunshine_name = Living room\ncapture = kwin\naddress_family = both\n");
         // Nothing changes on the next start.
         assert_eq!(render_config(&text, &[("port", "49989".into())], &[("sunshine_name", "x".into())]), text);
+    }
+
+    #[test]
+    fn physical_capture_default_preserves_explicit_virtual_display_choice() {
+        let defaults=[("virtual_display_mode", "disabled".into())];
+        assert!(render_config("port = 47989\n", &[], &defaults)
+            .contains("virtual_display_mode = disabled\n"));
+        let explicit="virtual_display_mode = per_client\n";
+        assert_eq!(render_config(explicit, &[], &defaults),explicit);
     }
 }

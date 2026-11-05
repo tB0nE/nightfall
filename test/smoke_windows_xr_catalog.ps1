@@ -1,7 +1,7 @@
 param([Parameter(Mandatory)][string]$Root,[uint32[]]$AppIds=@(846470,438100),
     [ValidateSet('h264','h265')][string]$Codec='h264',
     [ValidateRange(256,4096)][int]$EyeWidth=1024,[ValidateRange(256,4096)][int]$EyeHeight=1024,
-    [switch]$SteamWrapper)
+    [switch]$SteamWrapper,[string]$TestExecutable='')
 # Local synthetic-tracking check of the same catalog/claim path used by Quest.
 # Opens explicitly registered games; never connects to or launches the headset.
 $ErrorActionPreference='Stop'
@@ -27,7 +27,11 @@ try {
     }
     if(-not $env:NIGHTFALL_WINDOWS_TRACKING_PORT){throw 'Tracking publisher not ready'}
         $env:NIGHTFALL_WINDOWS_XR_CATALOG_APP="$id"
-        & cargo test --manifest-path "$target\..\Cargo.toml" --release --locked --no-default-features --bin nightfall-meteor xr_session::tests::configured_application_delivers_frames_before_bounded_stop -- --ignored --nocapture
+        if($TestExecutable) {
+            & $TestExecutable xr_session::tests::configured_application_delivers_frames_before_bounded_stop --ignored --nocapture
+        } else {
+            & cargo test --manifest-path "$target\..\Cargo.toml" --release --locked --no-default-features --bin nightfall-meteor xr_session::tests::configured_application_delivers_frames_before_bounded_stop -- --ignored --nocapture
+        }
         if($LASTEXITCODE){throw "Catalog game $id failed"}
         $format=if($Codec -eq 'h265'){'hevc'}else{'h264'}
         $capture=Join-Path $env:NIGHTFALL_WINDOWS_XR_ROOT "application-startup.$format"

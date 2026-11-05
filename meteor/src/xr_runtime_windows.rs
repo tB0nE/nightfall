@@ -9,6 +9,20 @@ use windows_sys::Win32::{Foundation::{CloseHandle,HANDLE},System::JobObjects::{
     IsProcessInJob,
 }};
 
+pub(crate) fn steamvr_running()->io::Result<bool> {
+    use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE,System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,PROCESSENTRY32W,Process32FirstW,Process32NextW}};
+    let snapshot=unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0)};
+    if snapshot==INVALID_HANDLE_VALUE {return Err(io::Error::last_os_error());}
+    let mut entry:PROCESSENTRY32W=unsafe {std::mem::zeroed()};entry.dwSize=std::mem::size_of_val(&entry) as u32;
+    let mut next=unsafe {Process32FirstW(snapshot,&mut entry)};let mut found=false;
+    while next!=0 {
+        let end=entry.szExeFile.iter().position(|&c|c==0).unwrap_or(entry.szExeFile.len());
+        if String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case("vrserver.exe") {found=true;break;}
+        next=unsafe {Process32NextW(snapshot,&mut entry)};
+    }
+    unsafe {CloseHandle(snapshot);}Ok(found)
+}
+
 fn shutdown_owned_steamvr(job:HANDLE) {
     use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE,System::{
         Diagnostics::ToolHelp::{CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,PROCESSENTRY32W,Process32FirstW,Process32NextW},
@@ -58,11 +72,11 @@ fn shutdown_owned_steamvr(job:HANDLE) {
 fn spawn_owned(command:&mut Command,job:HANDLE)->io::Result<Child> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE,System::{
-        Threading::{CREATE_SUSPENDED,OpenThread,ResumeThread,THREAD_SUSPEND_RESUME},
+        Threading::{CREATE_SUSPENDED,CREATE_NO_WINDOW,OpenThread,ResumeThread,THREAD_SUSPEND_RESUME},
         Diagnostics::ToolHelp::{CreateToolhelp32Snapshot,TH32CS_SNAPTHREAD,THREADENTRY32,Thread32First,Thread32Next},
     }};
     // Assign ownership before any launcher code can create descendants.
-    let mut child=command.creation_flags(CREATE_SUSPENDED).spawn()?;
+    let mut child=command.creation_flags(CREATE_SUSPENDED|CREATE_NO_WINDOW).spawn()?;
     let result=(|| {
         if unsafe {AssignProcessToJobObject(job,child.as_raw_handle() as HANDLE)}==0 {return Err(io::Error::last_os_error());}
         let snapshot=unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0)};
@@ -98,6 +112,12 @@ pub(crate) struct Session {
     application: Option<Child>,
 }
 impl Session {
+    #[cfg(test)]
+    pub(crate) fn runtime_job_alive(&self)->bool {
+        let mut info:JOBOBJECT_BASIC_ACCOUNTING_INFORMATION=unsafe {std::mem::zeroed()};
+        unsafe {QueryInformationJobObject(self.job,JobObjectBasicAccountingInformation,
+            (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),std::mem::size_of_val(&info) as u32,std::ptr::null_mut())!=0 && info.ActiveProcesses>0}
+    }
     pub(crate) fn ensure_runtime_running(&mut self)->io::Result<()> {
         if self.service.try_wait()?.is_some() {return Err(io::Error::other("XR runtime exited before Steam launch"));}
         Ok(())
@@ -137,6 +157,9 @@ impl Session {
         let child=spawn_owned(command,self.application_job)?;
         self.application=Some(child); Ok(())
     }
+    pub(crate) fn poll_session(&mut self,external:bool) -> io::Result<Option<std::process::ExitStatus>> {
+        if external {self.ensure_runtime_running()?;Ok(None)}else{self.poll()}
+    }
     pub(crate) fn poll(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
         if self.service.try_wait()?.is_some() {return Err(io::Error::other("XR runtime exited during session"));}
         let status=self.application.as_mut().ok_or_else(||io::Error::other("XR application not launched"))?.try_wait()?;
@@ -175,6 +198,14 @@ mod tests {
         let mut command=Command::new("cmd.exe");
         command.args(["/D","/C","ping -n 60 127.0.0.1 >NUL"]).stdout(Stdio::null()).stderr(Stdio::null());
         command
+    }
+    #[test]
+    fn external_session_does_not_require_or_own_a_game() {
+        let mut external=Session::start(&mut idle()).unwrap();
+        let mut connection=Session::start(&mut idle()).unwrap();
+        assert!(connection.poll_session(true).unwrap().is_none());
+        drop(connection);
+        external.ensure_runtime_running().unwrap();
     }
     #[test]
     fn drop_terminates_owned_runtime_and_application() {

@@ -5,7 +5,9 @@ through xrizer/Monado, and VRChat through the Meteor SteamVR driver have been
 physically tested on Quest. Audio is audible after increasing desktop volume;
 controller angle improved after the model-origin correction. Keep SteamVR's
 waiting environment; Room Setup no longer launches. XR remains a development
-integration, not part of the existing Windows installer.
+integration. The new November 5 installer includes the runtime components;
+see the [clean-install checkpoint](meteor-windows-clean-install.md) for setup,
+isolated package checks and the upcoming user test.
 
 Read the [current compatibility checkpoint](meteor-windows-vrchat-compat.md)
 and [build/test guide](../../guides/meteor-windows-xr.md) first. The chronology

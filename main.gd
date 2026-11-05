@@ -1307,9 +1307,11 @@ func _on_stream_started():
 	# single connect, restarting over and over chasing a comparison that could
 	# never converge - each restart also being a real cost (see
 	# stream_connection.cpp's deferred-free GPU resource queue).
-	if settings.host.is_polaris_host and layout and layout.frame_size != Vector2i.ZERO and layout.frame_size != settings.host.native_resolution:
+	if settings.host.is_polaris_host and layout and layout.source == &"host_manifest" and layout.frame_size != Vector2i.ZERO:
 		settings.host.native_resolution = layout.frame_size
 		settings_controller.refresh_resolution_btn_label()
+		var corrected_resolution := compute_requested_resolution()
+		if settings.host.double_h: corrected_resolution.x *= 2
 		# Deliberately NOT gated on "not was_restarting" (this used to be) - that
 		# blocked the retry for exactly the case that needs it most: removing/
 		# adding a monitor changes the server's real captured composite size,
@@ -1322,11 +1324,14 @@ func _on_stream_started():
 		# this from cascading (the retry's own reconnect passes a non-zero
 		# forced_resolution, which does not reset it), so was_restarting was
 		# never actually needed for that protection.
-		if not stream_manager._resolution_retry_done:
+		# The launch manifest already updates native_resolution. Compare the
+		# actual request, not that refreshed cache, or a changed capture can
+		# remain letterboxed at the previous monitor selection's dimensions.
+		if stream_manager.capture_resolution_retry_needed(stream_manager.requested_resolution, corrected_resolution, stream_manager._resolution_retry_done):
 			stream_manager._resolution_retry_done = true
 			var retry_host_id = current_host_id
 			var retry_app_id = _selected_app_id
-			var retry_resolution = compute_requested_resolution()
+			var retry_resolution = corrected_resolution
 			_log("[STREAM] Host's real desktop %s doesn't match cached size - reconnecting at %s (%d%%)" % [
 				str(layout.frame_size), str(retry_resolution), settings.host.resolution_scale_pct])
 			session_lifecycle.request_restart()
@@ -2891,7 +2896,8 @@ func _notification(what):
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
 		# Keep Meteor's owned game/transport alive during headset handoffs.
-		if not pcvr_test.meteor_mode and not pcvr_test.standby_active:
+		var preparing_xr := welcome_screen != null and welcome_screen.retains_xr_lease_during_timing_transition()
+		if not pcvr_test.meteor_mode and not pcvr_test.standby_active and not preparing_xr:
 			pcvr_handover.request_stop("Application paused")
 			if welcome_screen: welcome_screen.cancel_xr_control()
 		pcvr_test.set_application_paused(true)

@@ -1,7 +1,8 @@
-# Optional Windows SteamVR prototype
+# Windows SteamVR compatibility driver
 
-This is an explicit DEV compatibility path for protected OpenVR games. It does
-not replace Monado/xrizer or modify game binaries. Not included in installers.
+This is the Windows compatibility path for protected OpenVR games. It is bundled
+in Windows packages and does not modify game binaries. The Monado/xrizer path
+remains available.
 The first mirror-based Quest trial failed image geometry/comfort acceptance.
 Direct-mode capture and the vertical FOV correction pass local moving-image
 checks and physical VRChat trials on Quest. The user reports good image,
@@ -64,3 +65,26 @@ to `run_windows_xr_scene.ps1`. Use a deliberate 1024-per-eye override for the
 first diagnostic; high-resolution codec limits, pose alignment and comfort
 still need checking. Do not equate encoded compositor frame count with newly
 rendered game FPS. Static/loading images may be repeated to maintain delivery.
+
+Managed sessions can receive their settings over Meteor's user-scoped named
+pipe. Without a prepared session, the provider loads idle; explicit synthetic
+smokes retain environment configuration. The registered route supports ordinary SteamVR startup and reconnects with
+the same display profile. Automatic installation remains staged pending headset
+and competing-driver acceptance checks. See the
+[integration plan](../../docs/plans/active/meteor-steamvr-driver-integration.md).
+
+Run `test/check_windows_steamvr_integration.ps1` for Release builds, Windows
+unit tests, native/Rust pipe interoperability and isolated registration previews.
+It writes `meteor/target/windows-steamvr-integration/summary.json` and does not
+start SteamVR or use the headset. Capture timing appears in the vrserver log as
+`METEOR_STEAMVR_TIMING` (mean/peak microseconds per reporting window).
+
+`test/check_windows_steamvr_integration.ps1 -ExternalCapture` exercises ordinary
+SteamVR startup and two connection cycles against one runtime using a private
+registration file. It injects a slow bootstrap reply and checks incompatible
+resolution rejection. It never connects to the headset or edits system driver
+registration. `-Capture` retains the separate owned-runtime regression check.
+
+Resolution, refresh-rate, capture-mode or optics changes currently require a
+SteamVR restart. Returning to desktop does not trigger repeated automatic
+activation; a new authenticated connection can reuse the existing driver.

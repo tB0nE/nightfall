@@ -34,11 +34,11 @@ foreach ($extension in @('param', 'bin')) {
     $path = Join-Path $ModelsDir "$edgepad.ncnn.$extension"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing $path" }
     $smallPath = Join-Path $ModelsDir "$edgepadSmall.ncnn.$extension"
-    if (-not (Test-Path -LiteralPath $smallPath -PathType Leaf)) { throw "Missing $smallPath" }
 }
 $paramFile = Join-Path $ModelsDir "$edgepad.ncnn.param"
 $smallParamFile = Join-Path $ModelsDir "$edgepadSmall.ncnn.param"
-if (-not (Select-String -LiteralPath $smallParamFile -Pattern '^Input .* 0=256 1=256 2=3' -Quiet)) {
+$includeSmall = (Test-Path -LiteralPath $smallParamFile -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -PathType Leaf)
+if ($includeSmall -and -not (Select-String -LiteralPath $smallParamFile -Pattern '^Input .* 0=256 1=256 2=3' -Quiet)) {
     throw "$smallParamFile has no 256x256 input size; convert it with models/convert_ncnn.py"
 }
 if (-not (Select-String -LiteralPath $paramFile -Pattern '^Input .* 0=512 1=288 2=3' -Quiet)) {
@@ -128,7 +128,11 @@ foreach ($dllName in $ffmpegDlls) {
     Copy-Item -LiteralPath (Join-Path (Join-Path $ffmpegRoot 'bin') $dllName) -Destination $stage
 }
 Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepad.ncnn.param"), (Join-Path $ModelsDir "$edgepad.ncnn.bin") -Destination $models
-Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.param"), (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -Destination $models
+if ($includeSmall) {
+    Copy-Item -LiteralPath (Join-Path $ModelsDir "$edgepadSmall.ncnn.param"), (Join-Path $ModelsDir "$edgepadSmall.ncnn.bin") -Destination $models
+} else {
+    Write-Host 'Optional EdgePad-256 weights unavailable; packaging the default EdgePad-512 model.'
+}
 
 $vdaDll = Get-ChildItem -Path (Join-Path $meteor 'target\release\build\nightfall-meteor-*\out\meteor_vda_vulkan.dll') -File |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -153,7 +157,7 @@ $notices = @(
     "- FFmpeg $ffmpegName, LGPL v3: avcodec-62.dll, avutil-60.dll, swscale-9.dll, swresample-6.dll"
     '  FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/27b8d1a017'
     "  Build scripts and binary: https://github.com/BtbN/FFmpeg-Builds/releases/tag/$ffmpegTag"
-    '- EdgePad 512x288 and 256x256 weights: Nightfall ZipDepth models (Fabio Tosi), MIT: share/nightfall-meteor/models'
+    ('- EdgePad '+$(if($includeSmall){'512x288 and 256x256'}else{'512x288'})+' weights: Nightfall ZipDepth models (Fabio Tosi), MIT: share/nightfall-meteor/models')
     '- NVIDIA TensorRT headers, Apache 2.0, compiled into the TensorRT shim'
     '- libopus (Xiph.Org Foundation and others), BSD 3-Clause, compiled into Meteor for microphone audio'
     '- Rust crates listed at the end'
@@ -176,6 +180,7 @@ $notices = @(
 Set-Content -LiteralPath (Join-Path $doc 'THIRD_PARTY_NOTICES.txt') -Value $notices -Encoding UTF8
 
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+& (Join-Path $PSScriptRoot 'stage_windows_runtime.ps1') -Stage $stage
 Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Optimal
 $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
 Write-Host "$zip ($([math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 1)) MiB)"

@@ -310,7 +310,9 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 	if not revealed and popup != "":
 		popup = ""
 	var signature := str([browser.pages, browser.selected_page,
-		browser.active, browser.navigation, main.is_streaming, main.screens.size(), main.primary_screen, popup])
+		browser.active, browser.navigation, main.is_streaming, main.screens.size(), main.primary_screen, popup,
+		main.screen_sources.can_open_browser(), main.screen_sources.can_add_browser_screen(),
+		main.screen_sources.can_offer_stream_screen(), main.screen_sources.can_make_primary(_screen)])
 	if signature != _signature:
 		_signature = signature
 		_rebuild()

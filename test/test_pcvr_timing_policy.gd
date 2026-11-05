@@ -13,6 +13,12 @@ class Owner extends Node3D:
 	var _ui_fps_btn := Button.new()
 
 func _init() -> void:
+	# A launch manifest can refresh the native-size cache before stream start.
+	# Two monitors must still correct the old one-monitor video request.
+	assert(Streams.capture_resolution_retry_needed(Vector2i(2560, 1440), Vector2i(4480, 1440), false))
+	assert(not Streams.capture_resolution_retry_needed(Vector2i(4480, 1440), Vector2i(4480, 1440), false))
+	assert(not Streams.capture_resolution_retry_needed(Vector2i(2560, 1440), Vector2i(4480, 1440), true))
+	assert(not Streams.capture_resolution_retry_needed(Vector2i.ZERO, Vector2i(4480, 1440), false))
 	_test_effective_stream_settings()
 	var timing := Policy.new()
 	assert(timing.effective_fps(90) == 90)

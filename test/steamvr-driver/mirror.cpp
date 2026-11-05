@@ -62,19 +62,39 @@ static std::wstring environment(const wchar_t *name) {
     DWORD n=GetEnvironmentVariableW(name,nullptr,0);if(!n)return {};
     std::wstring value(n,L'\0');GetEnvironmentVariableW(name,value.data(),n);value.resize(n-1);return value;
 }
+#include "bootstrap.h"
+static HANDLE attached_server=nullptr;
 static void start_runtime() {
     HANDLE processes=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);if(processes==INVALID_HANDLE_VALUE)throw std::runtime_error("Cannot inspect SteamVR processes");
-    PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);bool existing=false;
-    if(Process32FirstW(processes,&entry))do {if(!_wcsicmp(entry.szExeFile,L"vrserver.exe") || !_wcsicmp(entry.szExeFile,L"vrcompositor.exe"))existing=true;}while(Process32NextW(processes,&entry));
-    CloseHandle(processes);if(existing)throw std::runtime_error("An existing SteamVR session must be left untouched");
+    PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);bool existing=false;DWORD server_pid=0;
+    if(Process32FirstW(processes,&entry))do {if(!_wcsicmp(entry.szExeFile,L"vrserver.exe"))server_pid=entry.th32ProcessID;if(!_wcsicmp(entry.szExeFile,L"vrserver.exe") || !_wcsicmp(entry.szExeFile,L"vrcompositor.exe"))existing=true;}while(Process32NextW(processes,&entry));
+    CloseHandle(processes);
+    bool attach=environment(L"METEOR_STEAMVR_ATTACH")==L"1";
+    if(existing && !attach)throw std::runtime_error("An existing SteamVR session must be left untouched");
+    if(attach && !server_pid)throw std::runtime_error("SteamVR exited before its headset connection was prepared");
     auto root=environment(L"METEOR_STEAMVR_ROOT");if(root.empty())throw std::runtime_error("SteamVR runtime root missing");
     std::wstring command=L"\""+root+L"\\bin\\win64\\vrstartup.exe\"";
     STARTUPINFOW startup{};startup.cb=sizeof(startup);PROCESS_INFORMATION process{};
-    if(!CreateProcessW(nullptr,command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&process))throw std::runtime_error("Cannot start owned SteamVR runtime");
-    CloseHandle(process.hThread);CloseHandle(process.hProcess);
+    if(attach) {
+        attached_server=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,server_pid);
+        if(!attached_server)throw std::runtime_error("Cannot observe the existing SteamVR server");
+        if(meteor_bootstrap::sid(attached_server)!=meteor_bootstrap::sid(GetCurrentProcess()))
+            throw std::runtime_error("Existing SteamVR belongs to another Windows user");
+        wchar_t path[32768];DWORD size=32768;
+        auto expected=std::filesystem::weakly_canonical(root+L"\\bin\\win64\\vrserver.exe");
+        if(!QueryFullProcessImageNameW(attached_server,0,path,&size) ||
+           _wcsicmp(std::filesystem::weakly_canonical(path).c_str(),expected.c_str()))
+            throw std::runtime_error("Existing SteamVR server does not match the configured runtime");
+    } else {
+        if(!CreateProcessW(nullptr,command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&startup,&process))throw std::runtime_error("Cannot start owned SteamVR runtime");
+        CloseHandle(process.hThread);CloseHandle(process.hProcess);
+    }
     auto ready=environment(L"METEOR_STEAMVR_READY_FILE");if(ready.empty())throw std::runtime_error("SteamVR ready marker missing");
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
-    while(!std::filesystem::is_regular_file(ready)) {if(std::chrono::steady_clock::now()>deadline)throw std::runtime_error("SteamVR device did not become ready");Sleep(25);}
+    while(!std::filesystem::is_regular_file(ready)) {
+        auto marker=environment(L"METEOR_WINDOWS_SESSION_MARKER");
+        if(!marker.empty() && std::filesystem::is_regular_file(marker+L".failed"))throw std::runtime_error("SteamVR driver rejected the session; inspect its failure marker");
+        if(attached_server && WaitForSingleObject(attached_server,0)==WAIT_OBJECT_0)throw std::runtime_error("Attached SteamVR server exited");if(std::chrono::steady_clock::now()>deadline)throw std::runtime_error("SteamVR device did not become ready");Sleep(25);}
 }
 int wmain(int argc,wchar_t **argv) {
     const bool service=argc==2 && !std::wcscmp(argv[1],L"--service");
@@ -103,6 +123,7 @@ int wmain(int argc,wchar_t **argv) {
             auto ready=environment(L"METEOR_STEAMVR_VIDEO_READY_FILE");FILE *file=nullptr;
             _wfopen_s(&file,ready.c_str(),L"wb");if(!file)throw std::runtime_error("Cannot mark direct compositor readiness");std::fclose(file);
             while(!std::filesystem::is_regular_file(prefix+L".ended")) {
+                if(attached_server && WaitForSingleObject(attached_server,0)==WAIT_OBJECT_0)throw std::runtime_error("Attached SteamVR server exited");
                 if(std::filesystem::is_regular_file(prefix+L".failed"))throw std::runtime_error("SteamVR direct capture failed; inspect the driver failure marker and vrserver log");
                 Sleep(20);
             }

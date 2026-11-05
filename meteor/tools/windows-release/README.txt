@@ -6,9 +6,10 @@ the depth model, rate, microphone, and startup controls. Meteor starts with
 EdgePad 512x288. Video Depth Anything is offered as a verified download in
 the tray's Depth model menu; it is not included in this package.
 
-Requirements: Windows 10/11 x64, a Vulkan-capable NVIDIA or AMD GPU and current driver, a
-Sunshine-compatible streaming host, and the Microsoft Visual C++ x64
-Redistributable (for ncnn.dll's C++ and OpenMP runtime). VB-CABLE is needed
+Requirements: Windows 10/11 x64, a Vulkan-capable NVIDIA or AMD GPU and current driver.
+The installer includes the built-in desktop host, Windows XR runtimes, and
+app-local Microsoft C++ runtime DLLs. An external Sunshine-compatible host is
+optional. VB-CABLE is needed
 only for the headset microphone; choose CABLE Output in the recording app.
 On AMD, Meteor uses D3D11VA for video decoding and ncnn Vulkan for EdgePad.
 The included FFmpeg DLLs are required for this path. NVIDIA keeps its NVDEC
@@ -20,6 +21,18 @@ time it runs. Allow private networks so the Quest can reach the proxy and
 depth ports. The installer creates Start menu and uninstall entries for the
 current Windows user. It does not change firewall rules; automated firewall
 setup is still planned.
+
+Setup offers the built-in host and PCVR. Supported installed Steam games are
+currently Moss (Monado/xrizer) and VRChat (SteamVR). PCVR requires NVIDIA/NVENC;
+install SteamVR through Steam for VRChat. SteamVR and games are not redistributed.
+After installing a game, quit Meteor and use Set up Nightfall Meteor in Start.
+Connect Nightfall, pair the desktop host, then compare and approve the PCVR
+headset code in Meteor's tray. VR Apps launches need no Steam launch options.
+For direct Steam launches, use the line in the PCVR profiles folder's
+steam-launch-options.txt as the game's Steam launch options. Existing Steam
+settings are not automatically overwritten by the installer.
+Setup diagnostics: AppData\Local\Nightfall Meteor\setup-summary.json.
+The built-in multi-monitor backend currently supports SDR displays on one GPU.
 
 Settings and state are stored in AppData\Roaming\Nightfall Meteor. Downloads,
 models, the pairing key, and meteor.log are in AppData\Local\Nightfall

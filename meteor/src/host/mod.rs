@@ -116,7 +116,12 @@ pub fn port_free((port, proto): (u16, Proto)) -> bool {
 /// The host to run: `host_binary` from meteor.toml, else the installed
 /// release.
 pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
-    config.host_binary.clone().or_else(|| RELEASE.as_ref().and_then(Install::binary))
+    config.host_binary.clone().or_else(|| RELEASE.as_ref().and_then(Install::binary)).or_else(|| {
+        #[cfg(windows)]
+        { let path=std::env::current_exe().ok()?.parent()?.join("runtime/host/sunshine.exe");path.is_file().then_some(path) }
+        #[cfg(not(windows))]
+        { None }
+    })
 }
 
 /// Picks the bundled host's base port: the one used last when its whole

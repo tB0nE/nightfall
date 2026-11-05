@@ -31,19 +31,30 @@ if ($LASTEXITCODE -ne 0 -or $head -ne $revision) {
     throw "Expected xrizer revision $revision in $Source; refusing to change an existing checkout."
 }
 $testPatch = Join-Path $PSScriptRoot 'xrizer_windows_tests.patch'
+$runtimePatch = Join-Path $PSScriptRoot 'xrizer_windows_injection.patch'
 $changes = & git -C $Source status --porcelain
 if ($LASTEXITCODE -ne 0) { throw 'Could not inspect xrizer checkout' }
 if ($changes) {
     # Only the exact tracked test-fixture patch is permitted on repeated runs.
     $actual = ((& git -C $Source diff --no-ext-diff -- src/graphics_backends.rs src/openxr_data.rs) | Where-Object { $_ -notmatch '^index ' }) -join "`n"
     $expected = (Get-Content $testPatch) -join "`n"
-    $other = @($changes | Where-Object { $_ -notmatch '^ M src/(graphics_backends\.rs|openxr_data\.rs)$' })
+    $other = @($changes | Where-Object { $_ -notmatch '^ M src/(graphics_backends\.rs|openxr_data\.rs|clientcore\.rs)$' })
     if ($actual.Trim() -ne $expected.Trim() -or $other.Count) { throw 'Unexpected local changes in xrizer checkout' }
 } else {
     & git -C $Source apply --check $testPatch
     if ($LASTEXITCODE -ne 0) { throw 'The pinned xrizer test-fixture patch does not apply' }
     & git -C $Source apply $testPatch
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply xrizer test-fixture patch' }
+}
+$actual=((& git -C $Source diff --no-ext-diff -- src/clientcore.rs) | Where-Object {$_ -notmatch '^index '}) -join "`n"
+if($actual.Trim()) {
+    $expected=((Get-Content $runtimePatch) | Where-Object {$_ -notmatch '^index '}) -join "`n"
+    if($actual.Trim() -ne $expected.Trim()){throw 'Unexpected xrizer interface-cache changes'}
+} else {
+    & git -C $Source apply --check $runtimePatch
+    if($LASTEXITCODE){throw 'Interface-cache race patch does not apply'}
+    & git -C $Source apply $runtimePatch
+    if($LASTEXITCODE){throw 'Could not apply interface-cache race patch'}
 }
 $Source = (Resolve-Path $Source).Path
 $previousPath = $env:PATH
@@ -66,6 +77,7 @@ try {
         repository = $repository
         revision = $revision
         test_fixture_patch = (Get-FileHash $testPatch -Algorithm SHA256).Hash.ToLowerInvariant()
+        runtime_patch = (Get-FileHash $runtimePatch -Algorithm SHA256).Hash.ToLowerInvariant()
         profile = 'release'
         runtime = $runtime
         sha256 = (Get-FileHash $runtime -Algorithm SHA256).Hash.ToLowerInvariant()

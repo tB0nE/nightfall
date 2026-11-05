@@ -16,8 +16,9 @@ python meteor/tools/make_host_model.py \
 python meteor/models/convert_ncnn.py ~/.local/share/nightfall-meteor/models/zipdepth_edgepad_256.onnx
 ```
 
-Both Linux and Windows release packaging require the 256 and 512 ncnn
-models. The 256 option is manual and does not change the default.
+Linux release packaging requires the 256 and 512 ncnn models. Windows requires
+the default 512 model and includes the optional 256 model when both its files
+are available. The 256 option is manual and does not change the default.
 
 Local smoke test (RTX 3090, 2026-10-12, desktop `eg_input_1.png`, 20
 back-to-back Vulkan calls including input upload/output download):

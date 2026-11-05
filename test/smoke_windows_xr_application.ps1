@@ -90,8 +90,15 @@ try {
     try {
         $test='xr_session::tests::configured_application_delivers_frames_before_bounded_stop'
         if($NaturalExit) {$test='xr_session::tests::configured_runtime_delivers_frames_and_cleans_up'}
-        & cargo test --release --locked --no-default-features --bin nightfall-meteor $test -- --ignored --nocapture
-        if($LASTEXITCODE) {throw 'Configured Windows application did not pass the local XR capture check'}
+        $nativeErrorAction=$ErrorActionPreference
+        try {
+            # PowerShell 5 turns redirected native warnings into ErrorRecords.
+            # Judge Cargo by its exit code so logging cannot abort the probe.
+            $ErrorActionPreference='Continue'
+            & cargo test --release --locked --no-default-features --bin nightfall-meteor $test -- --ignored --nocapture
+            $captureExit=$LASTEXITCODE
+        } finally {$ErrorActionPreference=$nativeErrorAction}
+        if($captureExit) {throw 'Configured Windows application did not pass the local XR capture check'}
         if($SteamCommand) {
             if(-not $wrapper.WaitForExit(5000)) {throw 'Steam wrapper did not stop after session cancellation'}
             $expected=130

@@ -93,6 +93,42 @@ pub(crate) fn claimed_launch(root:&Path,generation:&str)->io::Result<Claimed> {
     // a headset prepares cannot change which executable that launch will run.
     let launch=slot.take().unwrap();Ok(Claimed {files:launch.files,completion:launch.completion})
 }
+/// A driver requests only a SteamVR connection. No executable or argv crosses
+/// this channel, and it never launches the game Steam has already started.
+pub(crate) fn queue_steamvr(root:&Path)->io::Result<()> {
+    let mut slot=LAUNCH.lock().unwrap();
+    if ACTIVE.load(std::sync::atomic::Ordering::Acquire) || slot.as_ref().is_some_and(|p|p.expires>Instant::now()) {return Ok(());}
+    let profile=games(root)?.into_iter().find_map(|game|game.steamvr)
+        .ok_or_else(||io::Error::other("Register a SteamVR profile before using the installed driver"))?;
+    let mut files=crate::xr_session::load(&profile)?;
+    if files.steamvr_driver.is_none() || files.steamvr_capture!="direct" {
+        return Err(io::Error::other("Automatic SteamVR connection requires direct capture"));
+    }
+    files.external_steamvr=true;
+    queue(&mut slot,root.canonicalize()?,"250820".into(),files)?;
+    log::info!("SteamVR requested an authenticated headset connection");
+    Ok(())
+}
+pub(crate) fn cancel_steamvr(root:&Path) {
+    let mut slot=LAUNCH.lock().unwrap();
+    if slot.as_ref().is_some_and(|p|p.root==root && p.files.external_steamvr) {*slot=None;}
+}
+/// A cancelled preparation must not leave an unconsumed startup notice claimed
+/// for two minutes. Consumed launches and other generations are untouched.
+pub(crate) struct StartupClaim {root:Option<PathBuf>,generation:Option<String>}
+impl StartupClaim {
+    pub(crate) fn new(root:Option<&Path>)->Self {Self {root:root.map(Path::to_path_buf),generation:None}}
+    pub(crate) fn set(&mut self,generation:&str) {self.generation=Some(generation.into());}
+}
+impl Drop for StartupClaim {
+    fn drop(&mut self) {
+        let (Some(root),Some(generation))=(&self.root,&self.generation) else{return;};
+        let mut slot=LAUNCH.lock().unwrap();
+        if slot.as_ref().is_some_and(|p|p.root==*root && p.files.external_steamvr && p.claimed && p.notice.generation==*generation) {
+            *slot=None;
+        }
+    }
+}
 pub(crate) fn queue_steam(root:&Path,launch:crate::xr_steam_windows::Launch,socket:std::net::TcpStream)->io::Result<()> {
     socket.set_nonblocking(true)?;
     let result=(|| {
@@ -166,6 +202,20 @@ pub fn command(args:&[String])->io::Result<String> {
     let root=Path::new(option("--root")?);
     if !root.is_absolute(){return Err(io::Error::other("Use an absolute runtime root"));}
     match args[0].as_str() {
+        "--xr-windows-host"=>{
+            let config=crate::config::load();
+            if crate::host::binary(&config).is_none(){return Err(io::Error::other("The bundled Windows host is missing"));}
+            let path=crate::config::config_path();
+            let original=std::fs::read_to_string(&path).or_else(|e|if e.kind()==io::ErrorKind::NotFound{Ok(String::new())}else{Err(e)})?;
+            let mut document:toml_edit::DocumentMut=original.parse().map_err(io::Error::other)?;
+            document["host_env"]["METEOR_WINDOWS_MULTIMONITOR"]=toml_edit::value("1");
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            if path.exists(){let backup=path.with_extension("before-bundled-host.toml");if !backup.exists(){std::fs::copy(&path,backup)?;}}
+            write(&path,document.to_string().as_bytes())?;
+            let mut state=crate::host::load_state();state.choice=crate::host::Choice::Bundled;
+            crate::host::save_state(&state).map_err(io::Error::other)?;
+            Ok("Built-in host enabled. Restart Meteor to use it.".into())
+        },
         "--xr-windows-register"=>{
             let profile=Path::new(option("--profile")?).canonicalize()?;
             let files=crate::xr_session::load(&profile)?;
@@ -178,8 +228,9 @@ pub fn command(args:&[String])->io::Result<String> {
             let game=&mut catalog[index];game.name=option("--name")?.into();
             if game.name.is_empty() || game.name.chars().count()>96 || game.name.chars().any(char::is_control){return Err(io::Error::other("Invalid game name"));}
             match backend {Backend::Monado=>game.monado=Some(profile),Backend::Steamvr=>game.steamvr=Some(profile)}
-            // Prefer Monado whenever available, including when adding it later.
-            game.backend=if game.monado.is_some(){Backend::Monado}else{Backend::Steamvr};game.files()?;
+            // Reimport/update must retain the user's saved backend choice.
+            if !game.profile(game.backend).is_ok(){game.backend=backend;}
+            game.files()?;
             if catalog.len()>100{return Err(io::Error::other("At most 100 games can be registered"));}
             if !root.join("xr-windows.json").exists(){write(&root.join("xr-windows.json"),&serde_json::to_vec_pretty(&files)?)?;}
             write(&root.join("windows-games.json"),&serde_json::to_vec_pretty(&catalog)?)?;
@@ -210,7 +261,56 @@ pub fn command(args:&[String])->io::Result<String> {
         std::fs::write(root.join("windows-games.json"),br#"[{"app_id":"438100","name":"VRChat","monado":"relative","steamvr":null}]"#).unwrap();
         assert!(games(&root).is_err());std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]fn steamvr_activation_is_idempotent_and_never_selects_a_game_command(){
+        let _serial=TEST_LAUNCH_LOCK.lock().unwrap();
+        let root=std::env::temp_dir().join(format!("meteor-steamvr-activate-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        let runtime=root.join("steamvr");let driver=root.join("driver");let profile=root.join("profile");
+        for path in [runtime.join("bin/vrclient_x64.dll"),runtime.join("bin/win64/vrstartup.exe"),driver.join("driver.vrdrivermanifest"),driver.join("bin/win64/driver_meteor.dll")] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,b"fixture").unwrap();
+        }
+        let exe=std::env::current_exe().unwrap();std::fs::create_dir_all(&profile).unwrap();
+        let value=json!({"service":exe,"manifest":exe,"encoder":exe,"tracking":exe,"application":exe,"steam_app_id":"438100","steamvr_driver":driver,"openvr_runtime":runtime,"external_steamvr":true});
+        std::fs::write(profile.join("xr-windows.json"),serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!crate::xr_session::load(&profile).unwrap().external_steamvr);
+        std::fs::write(root.join("windows-games.json"),serde_json::to_vec(&json!([{"app_id":"438100","name":"VRChat","steamvr":profile,"monado":null,"backend":"steamvr"}])).unwrap()).unwrap();
+        *LAUNCH.lock().unwrap()=None;
+        queue_steamvr(&root).unwrap();let first=pending(&root).unwrap();assert_eq!(first.app_id,"250820");
+        queue_steamvr(&root).unwrap();assert_eq!(pending(&root).unwrap(),first);
+        assert!(claim(&root,&first.generation));let claimed=claimed_launch(&root,&first.generation).unwrap();
+        assert!(claimed.files.external_steamvr);assert!(claimed.completion.is_none());
+        queue_steamvr(&root).unwrap();
+        let cancelled=pending(&root).unwrap();assert!(claim(&root,&cancelled.generation));
+        {
+            let mut guard=StartupClaim::new(Some(&root));guard.set(&cancelled.generation);
+        }
+        assert!(pending(&root).is_none());
+        queue_steamvr(&root).unwrap();assert_ne!(pending(&root).unwrap().generation,cancelled.generation);
+        cancel_steamvr(&root);assert!(pending(&root).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn default_backend_is_monado(){assert_eq!(Backend::default(),Backend::Monado);}
+    #[test]fn setup_reimport_retains_selected_backend(){
+        let root=std::env::temp_dir().join(format!("meteor-reimport-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+        let root=root.canonicalize().unwrap();
+        let runtime=root.join("steamvr");let driver=root.join("driver");
+        for path in [runtime.join("bin/vrclient_x64.dll"),runtime.join("bin/win64/vrstartup.exe"),driver.join("driver.vrdrivermanifest"),driver.join("bin/win64/driver_meteor.dll")] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,b"fixture").unwrap();
+        }
+        let exe=std::env::current_exe().unwrap();
+        let mut files:Files=serde_json::from_value(json!({"service":exe,"manifest":exe,"encoder":exe,"tracking":exe,"application":exe,"steam_app_id":"846470"})).unwrap();
+        for backend in [Backend::Monado,Backend::Steamvr] {
+            let profile=root.join(if backend==Backend::Monado{"monado"}else{"steamvr-profile"});std::fs::create_dir_all(&profile).unwrap();
+            if backend==Backend::Steamvr {files.steamvr_driver=Some(driver.clone());files.openvr_runtime=Some(runtime.clone());}
+            std::fs::write(profile.join("xr-windows.json"),serde_json::to_vec(&files).unwrap()).unwrap();
+            command(&["--xr-windows-register".into(),"--root".into(),root.to_string_lossy().into_owned(),"--profile".into(),profile.to_string_lossy().into_owned(),"--name".into(),"Fixture".into()]).unwrap();
+        }
+        select(&root,"846470",Backend::Steamvr).unwrap();
+        command(&["--xr-windows-register".into(),"--root".into(),root.to_string_lossy().into_owned(),"--profile".into(),root.join("monado").to_string_lossy().into_owned(),"--name".into(),"Fixture".into()]).unwrap();
+        assert_eq!(games(&root).unwrap()[0].backend,Backend::Steamvr);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn launch_is_bound_to_root_snapshot_generation_and_one_claim(){
         let _serial=TEST_LAUNCH_LOCK.lock().unwrap();
         let path=std::env::current_exe().unwrap();

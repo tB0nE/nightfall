@@ -80,6 +80,16 @@ func current_config() -> ConfigFile:
 	var config := ConfigFile.new()
 	return config if config.load(config_path()) == OK else null
 
+func discovered_service_available() -> bool:
+	# Discovery is already pinned by StreamManager. This enables setup UI;
+	# authentication/host approval still gates library access and streaming.
+	return _discovered_config != null
+
+func retains_lease_during_timing_transition() -> bool:
+	# Switching the desktop/display rate can briefly pause Android before the
+	# native standby receiver starts. Preserve only this accepted, timed phase.
+	return state == "prepared" and not session.is_empty() and _handover_on_ready and _owns_timing
+
 func _status(value: String, text: String) -> void:
 	state = value
 	message = text

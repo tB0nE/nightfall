@@ -2,8 +2,10 @@
 
 Release-only workflow for the tested Moss/xrizer and VRChat/SteamVR backends.
 See the [checkpoint and release tasks](../plans/active/meteor-windows-vrchat-compat.md).
-The existing Windows installer does not include this XR integration. For the
-new ordinary Meteor/VR Apps flow, start with [native catalog setup](#native-windows-catalog-integration-2026-11-05).
+The Windows installer now includes the built-in host, both XR backends and
+setup for installed Moss/VRChat games. See the
+[clean-install checkpoint](../plans/active/meteor-windows-clean-install.md).
+Manual development setup remains documented below.
 
 Use native Windows PowerShell for MSVC, Cargo, CMake, D3D11/NVENC and adb.
 WSL is useful for editing and host Python analysis. Commands below run from
@@ -23,7 +25,9 @@ the repository root; substitute the local Steam/library paths as needed.
 Ignored `meteor/target/` contains `windows-monado-src`, its configured build,
 `windows-runtime-probe`, `windows-xr-dev`, `windows-xr-steamvr`,
 `windows-vibepollo-src` and `windows-ffmpeg`. Creating the full layout on a clean
-machine is still a packaging task; cloning Nightfall alone is insufficient.
+machine requires building these dependencies before staging an installer;
+cloning Nightfall alone is insufficient for a source build. Installed users
+do not need these development tools or directories.
 The custom Vibepollo multi-monitor checkpoint is commit `4478ec81` in
 `tB0nE/Vibepollo`; its checkout is clean and maintained separately.
 
@@ -122,8 +126,8 @@ exist but PCVR is disabled, **Enable PCVR (restarts Meteor)** activates it.
 Unavailable backend registrations are disabled; there is no automatic fallback.
 
 Moss selects Monado/xrizer and VRChat selects SteamVR. When both profiles are
-registered for one game, registration prefers Monado, and the explicit host
-choice applies to subsequent launches. Profiles must include the Steam app ID
+registered for one game, setup preserves its saved backend when reimporting.
+The explicit host choice applies to subsequent launches. Profiles include the Steam app ID
 and use direct configured application launch (`steam_launch = false`). Import
 another prepared profile with:
 
@@ -191,6 +195,21 @@ The helper preserves each game's capture and uses ffprobe to verify actual
 codec, dimensions and decoded frame count. One Moss run hit an upstream xrizer
 initialization race before rendering; a subsequent run passed. See the active
 checkpoint rather than treating a successful retry as proof of zero flakiness.
+
+## Session lifetime
+
+Normal desktop streams and Meteor XR game sessions have no fixed play-time
+limit. The Windows application supervisor waits for game exit, explicit stop,
+disconnect or failure. SteamVR runs in `--service` mode until its stop marker;
+the standalone mirror utility's timed mode is only a diagnostic. The headset
+bypasses its diagnostic projection timer when running Meteor. Active XR control
+status requests renew the host's idle lease, so its 360-second value is not a
+maximum session duration.
+
+Startup, unclaimed-launch, stalled-I/O and shutdown deadlines remain bounded.
+These detect abandoned or failed connections rather than limit playing time.
+Timed smoke-test helpers intentionally stop their own sessions; use normal
+Meteor and the Steam/VR Apps launch flow for unrestricted play.
 
 ## Windows multi-monitor startup
 

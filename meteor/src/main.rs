@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! Nightfall Meteor: a companion app for the Sunshine host PC.
 //!
 //! The Nightfall client probes Meteor's discovery port before streaming,
@@ -73,6 +74,8 @@ mod xr_runtime_windows;
 #[cfg(windows)]
 mod xr_steam_windows;
 #[cfg(windows)]
+mod xr_steamvr_windows;
+#[cfg(windows)]
 mod xr_windows;
 
 use std::sync::atomic::AtomicBool;
@@ -87,6 +90,8 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(windows)]
+    if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
     #[cfg(windows)]
     if args.get(1).is_some_and(|arg|arg.starts_with("--xr-windows-")) {
         match xr_windows::command(&args[1..]) {
@@ -393,6 +398,8 @@ async fn main() {
             let steam_broker=if let Some(root)=runtime_root.as_ref().filter(|root|root.join("windows-games.json").is_file()) {
                 Some(xr_steam_windows::start_broker(root)?)
             }else{None};
+            #[cfg(windows)]
+            let steamvr_broker=if steam_broker.is_some() {Some(xr_steamvr_windows::start(runtime_root.as_deref())?)}else{None};
             #[cfg(not(windows))]
             if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
                 return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
@@ -434,6 +441,8 @@ async fn main() {
             Ok::<_, std::io::Error>((tokio::spawn(async move {
                 #[cfg(windows)]
                 let _steam_broker=steam_broker;
+                #[cfg(windows)]
+                let _steamvr_broker=steamvr_broker;
                 xr_control::serve(listener,service_config,cancel).await
             }), advertised))
         }.await;
