@@ -59,7 +59,9 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         });
     }
     if let Some(port) = features.xr_port {
-        info["xr"] = json!({"port": port, "backend": "linux-nvidia", "authorization": "allowlist", "protocol": 1});
+        // Protocol-1 clients gate on this historical backend token. Retain it
+        // for compatibility; expose the real host platform separately.
+        info["xr"] = json!({"port": port, "backend": "linux-nvidia", "platform":std::env::consts::OS, "authorization": "allowlist", "protocol": 1});
     }
     // Only while a model is loaded and host depth is switched on in the tray.
     if let Some((port, depth)) = &features.depth

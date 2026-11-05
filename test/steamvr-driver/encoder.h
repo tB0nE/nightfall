@@ -58,24 +58,29 @@ if(flags.x>0)c=lerp(12.92*c,1.055*pow(max(c,0),1.0/2.4)-.055,step(.0031308,c));r
         if(!create)throw std::runtime_error("NVENC entry point missing");api.version=NV_ENCODE_API_FUNCTION_LIST_VER;nv(create(&api));
         NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS open{};open.version=NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER;
         open.apiVersion=NVENCAPI_VERSION;open.deviceType=NV_ENC_DEVICE_TYPE_DIRECTX;open.device=device;nv(api.nvEncOpenEncodeSessionEx(&open,&session));
+        const char *codec=std::getenv("METEOR_XR_CODEC");
+        if(codec && std::strcmp(codec,"h264") && std::strcmp(codec,"h265"))throw std::runtime_error("Unsupported SteamVR encoder codec");
+        const bool hevc=codec && !std::strcmp(codec,"h265");
+        const auto codec_guid=hevc?NV_ENC_CODEC_HEVC_GUID:NV_ENC_CODEC_H264_GUID;
         auto capability=[&](NV_ENC_CAPS which) {NV_ENC_CAPS_PARAM request{};request.version=NV_ENC_CAPS_PARAM_VER;request.capsToQuery=which;int value=0;
-            nv(api.nvEncGetEncodeCaps(session,NV_ENC_CODEC_H264_GUID,&request,&value));return value;};
+            nv(api.nvEncGetEncodeCaps(session,codec_guid,&request,&value));return value;};
         int max_width=capability(NV_ENC_CAPS_WIDTH_MAX),max_height=capability(NV_ENC_CAPS_HEIGHT_MAX);
-        std::printf("STEAMVR_NVENC_LIMITS codec=h264 max_width=%d max_height=%d requested=%ux%u\n",max_width,max_height,w*2,h);std::fflush(stdout);
+        std::printf("STEAMVR_NVENC_LIMITS codec=%s max_width=%d max_height=%d requested=%ux%u\n",hevc?"h265":"h264",max_width,max_height,w*2,h);std::fflush(stdout);
         if(w*2>static_cast<unsigned>(max_width) || h>static_cast<unsigned>(max_height))
-            throw std::runtime_error("Requested stereo resolution exceeds this GPU's H.264 encoder limits; select a smaller eye resolution");
+            throw std::runtime_error(hevc?"Requested stereo resolution exceeds this GPU's HEVC encoder limits":"Requested stereo resolution exceeds this GPU's H.264 encoder limits; use HEVC for higher resolutions");
         NV_ENC_PRESET_CONFIG preset{};preset.version=NV_ENC_PRESET_CONFIG_VER;preset.presetCfg.version=NV_ENC_CONFIG_VER;
-        nv(api.nvEncGetEncodePresetConfigEx(session,NV_ENC_CODEC_H264_GUID,NV_ENC_PRESET_P1_GUID,NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,&preset));
-        auto &cfg=preset.presetCfg;cfg.profileGUID=NV_ENC_H264_PROFILE_HIGH_GUID;cfg.gopLength=fps;cfg.frameIntervalP=1;
+        nv(api.nvEncGetEncodePresetConfigEx(session,codec_guid,NV_ENC_PRESET_P1_GUID,NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,&preset));
+        auto &cfg=preset.presetCfg;cfg.profileGUID=hevc?NV_ENC_HEVC_PROFILE_MAIN_GUID:NV_ENC_H264_PROFILE_HIGH_GUID;cfg.gopLength=fps;cfg.frameIntervalP=1;
         uint32_t bitrate=0;if(!meteor_encoder_bitrate(std::getenv("METEOR_XR_BITRATE_MBPS"),32000000,&bitrate))throw std::runtime_error("Invalid encoder bitrate");
         cfg.rcParams.rateControlMode=NV_ENC_PARAMS_RC_CBR;cfg.rcParams.averageBitRate=cfg.rcParams.maxBitRate=bitrate;
         cfg.rcParams.enableLookahead=0;cfg.rcParams.zeroReorderDelay=1;
-        cfg.encodeCodecConfig.h264Config.repeatSPSPPS=1;cfg.encodeCodecConfig.h264Config.idrPeriod=fps;
-        auto &vui=cfg.encodeCodecConfig.h264Config.h264VUIParameters;
+        if(hevc){cfg.encodeCodecConfig.hevcConfig.repeatSPSPPS=1;cfg.encodeCodecConfig.hevcConfig.idrPeriod=fps;}
+        else {cfg.encodeCodecConfig.h264Config.repeatSPSPPS=1;cfg.encodeCodecConfig.h264Config.idrPeriod=fps;}
+        auto &vui=hevc?cfg.encodeCodecConfig.hevcConfig.hevcVUIParameters:cfg.encodeCodecConfig.h264Config.h264VUIParameters;
         vui.videoSignalTypePresentFlag=1;vui.videoFormat=NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;vui.videoFullRangeFlag=0;
         vui.colourDescriptionPresentFlag=1;vui.colourPrimaries=NV_ENC_VUI_COLOR_PRIMARIES_BT709;
         vui.transferCharacteristics=NV_ENC_VUI_TRANSFER_CHARACTERISTIC_SRGB;vui.colourMatrix=NV_ENC_VUI_MATRIX_COEFFS_BT709;
-        NV_ENC_INITIALIZE_PARAMS init{};init.version=NV_ENC_INITIALIZE_PARAMS_VER;init.encodeGUID=NV_ENC_CODEC_H264_GUID;
+        NV_ENC_INITIALIZE_PARAMS init{};init.version=NV_ENC_INITIALIZE_PARAMS_VER;init.encodeGUID=codec_guid;
         init.presetGUID=NV_ENC_PRESET_P1_GUID;init.tuningInfo=NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
         init.encodeWidth=init.darWidth=w*2;init.encodeHeight=init.darHeight=h;init.frameRateNum=fps;init.frameRateDen=1;init.enablePTD=1;init.encodeConfig=&cfg;
         nv(api.nvEncInitializeEncoder(session,&init));
@@ -83,7 +88,7 @@ if(flags.x>0)c=lerp(12.92*c,1.055*pow(max(c,0),1.0/2.4)-.055,step(.0031308,c));r
         reg.resourceToRegister=packed.Get();reg.width=w*2;reg.height=h;reg.bufferFormat=NV_ENC_BUFFER_FORMAT_ARGB;reg.bufferUsage=NV_ENC_INPUT_IMAGE;
         nv(api.nvEncRegisterResource(session,&reg));resource=reg.registeredResource;
         NV_ENC_CREATE_BITSTREAM_BUFFER bs{};bs.version=NV_ENC_CREATE_BITSTREAM_BUFFER_VER;nv(api.nvEncCreateBitstreamBuffer(session,&bs));output=bs.bitstreamBuffer;
-        std::printf("STEAMVR_ENCODER per_eye=%ux%u fps=%u bitrate=%u graphics=D3D11 codec=h264\n",w,h,fps,bitrate);std::fflush(stdout);
+        std::printf("STEAMVR_ENCODER per_eye=%ux%u fps=%u bitrate=%u graphics=D3D11 codec=%s\n",w,h,fps,bitrate,hevc?"h265":"h264");std::fflush(stdout);
     }
     std::vector<uint8_t> encode(ID3D11DeviceContext *context,ID3D11ShaderResourceView *const eyes[2],uint64_t frame) {
         Layer layer;layer.eyes[0]=eyes[0];layer.eyes[1]=eyes[1];return encode_layers(context,&layer,1,frame);

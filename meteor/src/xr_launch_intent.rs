@@ -36,12 +36,14 @@ fn load(root:&Path) -> io::Result<Option<Intent>> {
 }
 
 pub fn pending(root:&Path) -> Option<LaunchNotice> {
+    #[cfg(windows)]
+    return crate::xr_windows::pending(root);
     #[cfg(target_os="linux")]
     if let Ok(Some(value))=load(root) {
         if value.state=="pending" {return Some(LaunchNotice {generation:value.generation,app_id:value.app_id})}
     }
-    let _=root;
-    None
+    #[cfg(not(windows))]
+    {let _=root;None}
 }
 
 /// Resolve a wildcard template only from the live, already claimed local launch.
@@ -54,6 +56,8 @@ pub(crate) fn claimed_app_id(root:&Path,generation:&str) -> io::Result<String> {
 }
 
 pub fn claim(root:&Path,generation:&str) -> bool {
+    #[cfg(windows)]
+    return crate::xr_windows::claim(root,generation);
     #[cfg(target_os="linux")]
     {
         use std::io::Write;
@@ -72,7 +76,7 @@ pub fn claim(root:&Path,generation:&str) -> bool {
         if result.is_err() {let _=fs::remove_file(temporary);}
         return result.is_ok();
     }
-    #[cfg(not(target_os="linux"))]
+    #[cfg(not(any(target_os="linux",windows)))]
     {let _=(root,generation); false}
 }
 

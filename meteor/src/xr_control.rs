@@ -375,7 +375,12 @@ async fn connection_supervised(
     let mut negotiation = Negotiation::default();
     let mut encoder_monitor=crate::xr_encoder::Monitor::default();
     negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;
-    negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root|root.join("tools/meteor_vr_library.py").is_file());
+    negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root| {
+        #[cfg(windows)]
+        {crate::xr_windows::games(root).is_ok_and(|games|!games.is_empty())}
+        #[cfg(not(windows))]
+        {root.join("tools/meteor_vr_library.py").is_file()}
+    });
     let mut relay: Option<crate::xr_relay::Relay> = None;
     tokio::time::timeout(
         IO_TIMEOUT,

@@ -2,7 +2,8 @@
 
 Release-only workflow for the tested Moss/xrizer and VRChat/SteamVR backends.
 See the [checkpoint and release tasks](../plans/active/meteor-windows-vrchat-compat.md).
-The existing Windows installer does not include this XR integration.
+The existing Windows installer does not include this XR integration. For the
+new ordinary Meteor/VR Apps flow, start with [native catalog setup](#native-windows-catalog-integration-2026-11-05).
 
 Use native Windows PowerShell for MSVC, Cargo, CMake, D3D11/NVENC and adb.
 WSL is useful for editing and host Python analysis. Commands below run from
@@ -102,3 +103,118 @@ receive/projected rates, reconnect and exit. Use
 `test/summarize_windows_xr_scene.py` with the matching per-session `runtime.log`
 and `windows-xr-headset-trial.jsonl`. Requested refresh is not measured delivery;
 timed cancellation does not establish acknowledged END.
+
+## Native Windows catalog integration (2026-11-05)
+
+Normal `xr.enabled` startup now works without Linux Python. After rebuilding,
+import the two prepared/tested runtimes and enable the service:
+
+```powershell
+./test/setup_windows_xr_catalog.ps1 -Enable
+```
+
+This writes per-user profiles and enables PCVR in `meteor.toml`, retaining other
+settings and a backup. It references prepared runtime builds; it does not yet
+download or bundle them. Restart normal Meteor. Its **PCVR** tray menu shows
+readiness, opens profiles, approves/rejects a headset's displayed code, opens
+VR Apps in Nightfall, and saves each registered game's backend. If profiles
+exist but PCVR is disabled, **Enable PCVR (restarts Meteor)** activates it.
+Unavailable backend registrations are disabled; there is no automatic fallback.
+
+Moss selects Monado/xrizer and VRChat selects SteamVR. When both profiles are
+registered for one game, registration prefers Monado, and the explicit host
+choice applies to subsequent launches. Profiles must include the Steam app ID
+and use direct configured application launch (`steam_launch = false`). Import
+another prepared profile with:
+
+```powershell
+./meteor/target/release/nightfall-meteor.exe --xr-windows-register --root 'C:\absolute\catalog' --profile 'C:\absolute\profile' --name 'Game name'
+```
+
+Nightfall's existing VR Apps list displays registered games and launches by ID.
+Meteor queues a short-lived host-local intent; the authenticated headset claims
+it, and the runtime receives an immutable snapshot of that game's profile.
+Claims are single-use and bound to root and generation. Headsets cannot supply
+executable paths or arguments. Automatic Steam-library import and downloadable
+runtime bundles remain follow-up work.
+
+Steam can use the same catalog and headset handoff. With Meteor running, set
+each registered game's launch options to the line printed by:
+
+```powershell
+./meteor/target/release/nightfall-meteor.exe --xr-steam-options --root "$env:LOCALAPPDATA\Nightfall Meteor\xr\windows"
+```
+
+For this machine's Moss and VRChat registrations,
+`test/configure_windows_steam_catalog.ps1` previews the changes; `-Apply` backs
+up the active user's settings, gracefully restarts Steam, and updates only
+those two launch options. Existing custom options are refused for manual review.
+The wrapper preserves Steam's executable, arguments and working directory,
+uses the saved backend, and waits for the headset to claim the launch. Start
+Nightfall's desktop stream first. Explicit `--no-vr` or `-nohmd` arguments run
+directly in desktop mode. Unknown games fail without starting an XR runtime.
+
+`smoke_windows_xr_catalog.ps1 -SteamWrapper -Codec h265 -EyeWidth 2064
+-EyeHeight 2208` checks this broker handoff without a headset. The November 5
+check decoded 354 Moss and 364 VRChat frames at 4128×2208 and verified bounded
+owned-process cleanup and wrapper cancellation status 130.
+
+Local acceptance commands, without a headset:
+
+```powershell
+./test/smoke_windows_xr_normal_startup.ps1
+./test/smoke_windows_xr_catalog.ps1 -Root 'C:\Users\Ty\AppData\Local\Nightfall Meteor\xr\windows'
+```
+
+The normal-startup check uses isolated settings/ports and starts no game.
+The catalog check starts the registered Moss/VRChat profiles using a fresh
+synthetic tracking fixture for each. Read `windows-normal-xr-summary.json` and
+`windows-catalog-summary.json` in `meteor/target/`.
+
+## Client-requested resolution and HEVC
+
+Windows advertises H.264 and HEVC. Quest 3's existing codec preference selects
+HEVC when supported, preserving the client's requested per-eye width and
+height. The native SteamVR encoder queries NVENC limits for the selected codec.
+H.264's 4096-pixel packed-width limit on the tested GPU cannot fit a 2064-pixel
+per-eye request; HEVC supports that 4128×2208 stereo case without resizing.
+The native Monado Vulkan encoder also supports HEVC. No APK or saved client
+resolution change is needed. Physical throughput remains a separate check.
+
+A local native-catalog check at the exact client dimensions:
+
+```powershell
+./test/smoke_windows_xr_catalog.ps1 -Root 'C:\Users\Ty\AppData\Local\Nightfall Meteor\xr\windows' -Codec h265 -EyeWidth 2064 -EyeHeight 2208
+```
+
+The helper preserves each game's capture and uses ffprobe to verify actual
+codec, dimensions and decoded frame count. One Moss run hit an upstream xrizer
+initialization race before rendering; a subsequent run passed. See the active
+checkpoint rather than treating a successful retry as proof of zero flakiness.
+
+## Windows multi-monitor startup
+
+Windows multi-monitor capture currently needs the experimental bundled-host
+flag. Persist it in `meteor.toml` so normal tray restarts retain support:
+
+```toml
+[host_env]
+METEOR_WINDOWS_MULTIMONITOR = "1"
+```
+
+Restart Meteor and reconnect/reselect the host to refresh its display manifest.
+Without this flag, the Screens tab is disabled because the host supplies no
+multi-monitor manifest. This backend currently targets SDR DXGI capture.
+
+## Steam crash-protection recovery
+
+Meteor requests normal shutdown of its owned SteamVR monitor before using job
+termination as a bounded fallback. This avoids treating every session exit as
+a runtime crash. Unrelated SteamVR processes are not closed.
+
+If Steam itself retains the specific stale initialization flag after earlier
+forced trials, `test/repair_windows_steamvr_crash_marker.ps1` is an explicit
+one-time repair. It refuses an active VR game/runtime, gracefully restarts
+Steam, backs up its config, and clears only the known VR/AttemptingInit marker.
+It does not disable crash protection or edit add-on blocking. Do not run it on
+every launch or use it to conceal a recurring real crash.

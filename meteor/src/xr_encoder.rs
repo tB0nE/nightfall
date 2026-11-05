@@ -18,7 +18,7 @@ impl Monitor {
     pub async fn refresh(&mut self,root:Option<&Path>) -> Option<Capabilities> {
         let root=root?;
         Some(match crate::xr_session::load(root) {
-            Ok(_)=>Capabilities {backend:"nvenc".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into()],error:None},
+            Ok(_)=>Capabilities {backend:"nvenc".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],error:None},
             Err(error)=>unavailable(&error.to_string()),
         })
     }

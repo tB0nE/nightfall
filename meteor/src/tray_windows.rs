@@ -39,6 +39,14 @@ const CMD_HOST_TOGGLE: usize = 22;
 const CMD_HOST_FOLDER: usize = 23;
 const CMD_HOST_WEB: usize = 24;
 const CMD_HOST_LOGIN: usize = 25;
+const CMD_XR_FOLDER:usize=26;
+const CMD_XR_APPROVE:usize=27;
+const CMD_XR_REJECT:usize=28;
+const CMD_XR_ENABLE:usize=29;
+const CMD_XR_LIBRARY:usize=30;
+const CMD_XR_GAME_BASE:usize=2000;
+static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
+static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
 const CMD_RATE_BASE: usize = 100;
 const CMD_CHOICE_BASE:usize=1000;
 static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex::new(Vec::new());
@@ -230,6 +238,37 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     let install = wide("Microphone: install VB-CABLE");
                     AppendMenuW(menu, MF_STRING, CMD_INSTALL_CABLE, install.as_ptr());
                 }
+                let xr_menu=CreatePopupMenu();
+                if !xr_menu.is_null() {
+                    let state=crate::xr_windows::state();
+                    let label=wide(if state.ready {"PCVR ready"}else if state.error.is_some(){"PCVR unavailable — check log"}else{"PCVR not configured"});
+                    AppendMenuW(xr_menu,MF_STRING|MF_GRAYED,0,label.as_ptr());
+                    let label=wide("Open PCVR profiles folder");AppendMenuW(xr_menu,MF_STRING,CMD_XR_FOLDER,label.as_ptr());
+                    if !state.ready {
+                        let label=wide("Enable PCVR (restarts Meteor)");
+                        let available=crate::xr_windows::games(&crate::xr_windows::root()).is_ok_and(|g|!g.is_empty());
+                        AppendMenuW(xr_menu,MF_STRING|if available {0}else{MF_GRAYED},CMD_XR_ENABLE,label.as_ptr());
+                    }
+                    let label=wide("Open VR Apps in Nightfall");AppendMenuW(xr_menu,MF_STRING|if state.ready {0}else{MF_GRAYED},CMD_XR_LIBRARY,label.as_ptr());
+                    let pending=state.trust.as_ref().and_then(|t|t.pending());
+                    *XR_PENDING.lock().unwrap()=pending.as_ref().map(|(key,_)|*key);
+                    if let Some((_,code))=pending {
+                        let label=wide(&format!("Approve headset {code} (compare headset code)"));AppendMenuW(xr_menu,MF_STRING,CMD_XR_APPROVE,label.as_ptr());
+                        let label=wide("Reject headset");AppendMenuW(xr_menu,MF_STRING,CMD_XR_REJECT,label.as_ptr());
+                    }
+                    let games=crate::xr_windows::games(&crate::xr_windows::root()).unwrap_or_default();
+                    *XR_GAMES.lock().unwrap()=games.iter().map(|g|g.app_id.clone()).collect();
+                    for (i,game) in games.iter().enumerate() {
+                        let submenu=CreatePopupMenu();if submenu.is_null(){continue;}
+                        for (j,backend) in [crate::xr_windows::Backend::Monado,crate::xr_windows::Backend::Steamvr].into_iter().enumerate() {
+                            let available=if j==0 {game.monado.is_some()}else{game.steamvr.is_some()};
+                            let label=wide(if j==0 {"Monado / xrizer"}else{"SteamVR"});
+                            AppendMenuW(submenu,MF_STRING|if game.backend==backend {MF_CHECKED}else{0}|if available {0}else{MF_GRAYED},CMD_XR_GAME_BASE+i*2+j,label.as_ptr());
+                        }
+                        let label=wide(&game.name);AppendMenuW(xr_menu,MF_POPUP,submenu as usize,label.as_ptr());
+                    }
+                    let label=wide("PCVR");AppendMenuW(menu,MF_POPUP,xr_menu as usize,label.as_ptr());
+                }
                 let autostart = wide("Start with my computer");
                 AppendMenuW(menu, MF_STRING | if crate::desktop_windows::autostart_enabled() { MF_CHECKED } else { 0 }, CMD_AUTOSTART, autostart.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_LOG, log.as_ptr());
@@ -270,7 +309,32 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     return 0;
                 }
             }
+            if (CMD_XR_GAME_BASE..CMD_XR_GAME_BASE+200).contains(&command) {
+                let index=(command-CMD_XR_GAME_BASE)/2;
+                let id=XR_GAMES.lock().unwrap().get(index).cloned();
+                if let Some(id)=id {
+                    let backend=if (command-CMD_XR_GAME_BASE)%2==0 {crate::xr_windows::Backend::Monado}else{crate::xr_windows::Backend::Steamvr};
+                    if let Err(error)=crate::xr_windows::select(&crate::xr_windows::root(),&id,backend){log::warn!("PCVR backend: {error}");}
+                }
+                return 0;
+            }
             match command {
+                CMD_XR_FOLDER=>{let root=crate::xr_windows::root();let _=std::fs::create_dir_all(&root);open_path(root);},
+                CMD_XR_ENABLE=>{
+                    let root=crate::xr_windows::root();
+                    match crate::xr_windows::command(&["--xr-windows-enable".into(),"--root".into(),root.to_string_lossy().into_owned()]) {
+                        Ok(_)=>crate::restart(),Err(error)=>log::warn!("PCVR setup: {error}"),
+                    }
+                },
+                CMD_XR_LIBRARY=>{if let Err(error)=crate::xr_library::request_open(){log::warn!("PCVR library: {error}");}},
+                CMD_XR_APPROVE|CMD_XR_REJECT=>{
+                    if let Some(key)=*XR_PENDING.lock().unwrap() {
+                        if let Some(trust)=&crate::xr_windows::state().trust {
+                            if command==CMD_XR_APPROVE {if let Err(error)=trust.approve(key){log::warn!("XR approval: {error}");}}
+                            else {trust.reject(key);}
+                        }
+                    }
+                },
                 CMD_OPEN_LOG => open_path(crate::logfile::path()),
                 CMD_OPEN_SETTINGS => crate::open_config_file(),
                 CMD_OPEN_MODELS => open_path(crate::config::default_models_dir()),

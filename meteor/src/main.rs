@@ -72,6 +72,8 @@ mod xr_wire;
 mod xr_runtime_windows;
 #[cfg(windows)]
 mod xr_steam_windows;
+#[cfg(windows)]
+mod xr_windows;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -85,6 +87,14 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg.starts_with("--xr-windows-")) {
+        match xr_windows::command(&args[1..]) {
+            Ok(message)=>println!("{message}"),
+            Err(error)=>{eprintln!("Windows XR setup: {error}");std::process::exit(1);},
+        }
+        return;
+    }
     #[cfg(windows)]
     if args.get(1).is_some_and(|arg|arg=="--xr-steam-options") {
         if args.len()!=4 || args[2]!="--root" {
@@ -379,9 +389,15 @@ async fn main() {
             let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
                 .or_else(|| dev_xr_address.is_none().then(|| config.xr.runtime_root()));
             let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
+            #[cfg(windows)]
+            let steam_broker=if let Some(root)=runtime_root.as_ref().filter(|root|root.join("windows-games.json").is_file()) {
+                Some(xr_steam_windows::start_broker(root)?)
+            }else{None};
+            #[cfg(not(windows))]
             if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
                 return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
             }
+            #[cfg(not(windows))]
             if dev_xr_address.is_none() {
                 let root = runtime_root.as_ref().unwrap();
                 let check = tokio::time::timeout(std::time::Duration::from_secs(10),
@@ -411,9 +427,15 @@ async fn main() {
             #[cfg(target_os = "linux")]
             if let Some(trust) = pairing.clone() { desktop::watch_xr_approval(trust); }
             let advertised = if dev_xr_address.is_none() { Some(port) } else { None };
-            Ok::<_, std::io::Error>((tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
+            let service_config=xr_control::ServiceConfig {
                 key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
-            }, shutdown.subscribe())), advertised))
+            };
+            let cancel=shutdown.subscribe();
+            Ok::<_, std::io::Error>((tokio::spawn(async move {
+                #[cfg(windows)]
+                let _steam_broker=steam_broker;
+                xr_control::serve(listener,service_config,cancel).await
+            }), advertised))
         }.await;
         match start {
             Ok((task, port)) => { xr_discovery = port; Some(task) },
@@ -458,6 +480,8 @@ async fn main() {
 
     #[cfg(target_os = "linux")]
     xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
+    #[cfg(windows)]
+    xr_windows::initialize(xr_discovery.is_some(),xr_startup_error,xr_trust);
 
     #[cfg(target_os = "linux")]
     if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: Arc::new(host_view) }).await {

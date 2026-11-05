@@ -7,7 +7,8 @@ param([Parameter(Mandatory)][string]$Application,[string[]]$ApplicationArguments
     [ValidateRange(1,60)][int]$ObserveSeconds=10,
     [ValidateRange(256,4096)][int]$EyeWidth=1024,
     [ValidateRange(256,4096)][int]$EyeHeight=1024,
-    [ValidateRange(8,160)][int]$BitrateMbps=32)
+    [ValidateRange(8,160)][int]$BitrateMbps=32,
+    [ValidateSet('h264','h265')][string]$Codec='h264')
 # Launch only the explicit application in Meteor's owned process tree. The
 # integration test observes 10s after three validated frames, then cancels;
 # startup is bounded by 45s. This is not a graceful game-exit acceptance test.
@@ -45,6 +46,7 @@ $env:NIGHTFALL_WINDOWS_XR_OBSERVE_SECONDS="$ObserveSeconds"
 $env:NIGHTFALL_WINDOWS_XR_TEST_WIDTH="$EyeWidth"
 $env:NIGHTFALL_WINDOWS_XR_TEST_HEIGHT="$EyeHeight"
 $env:NIGHTFALL_WINDOWS_XR_TEST_BITRATE="$BitrateMbps"
+$env:NIGHTFALL_WINDOWS_XR_TEST_CODEC=$Codec
 $env:METEOR_NEUTRAL_INPUT='1'
 if($SteamAppId) {$env:SteamAppId="$SteamAppId";$env:SteamGameId="$SteamAppId"}
 foreach($name in 'METEOR_XR_GPU_MEASURE','METEOR_XR_GPU_SCENE_SHADER','METEOR_XR_OBSERVE_INPUT','METEOR_XR_FREE_RUNNING','METEOR_CONTINUOUS_FRAMES','METEOR_CONTROLLER_FIXTURE') {

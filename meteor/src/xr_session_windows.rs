@@ -1,15 +1,16 @@
 //! Explicitly configured Windows DEV runtime adapter; normal packaging is separate.
 use std::{io,path::{Path,PathBuf},process::{Command,Stdio},time::{Duration,Instant}};
-use serde::Deserialize;
+use serde::{Deserialize,Serialize};
 use std::io::Write as _;
 
-#[derive(Deserialize)]
+#[derive(Clone,Deserialize,Serialize)]
 pub(crate) struct Files {
     pub service:PathBuf,
     pub manifest:PathBuf,
     pub encoder:PathBuf,
     pub tracking:PathBuf,
     pub application:PathBuf,
+    #[serde(default)] pub working_directory:Option<PathBuf>,
     #[serde(default)] pub openvr_runtime:Option<PathBuf>,
     #[serde(default)] pub openvr_loader:Option<PathBuf>,
     #[serde(default)] pub steamvr_driver:Option<PathBuf>,
@@ -51,6 +52,7 @@ pub(crate) fn load(root:&Path)->io::Result<Files> {
         if !file.is_absolute() || !file.is_file() {return Err(io::Error::other(format!("Missing absolute Windows XR file: {}",file.display())));}
     }
     if files.arguments.len()>64 || files.arguments.iter().any(|s|s.len()>4096) ||
+        files.working_directory.as_ref().is_some_and(|p|!p.is_absolute() || !p.is_dir()) ||
         files.library_dirs.iter().any(|p|!p.is_absolute() || !p.is_dir()) {
         return Err(io::Error::other("Invalid Windows XR arguments/library directories"));
     }
@@ -64,14 +66,19 @@ pub(crate) async fn runtime_adapter_with_status(
     cancel:tokio::sync::watch::Receiver<bool>,progress:Option<&crate::xr_relay::RuntimeProgress>,
     _bitrate_directory:Option<&crate::xr_bitrate::RuntimeDirectory>,
 ) -> io::Result<()> {
-    if intent.is_some() || foveated || codec!="h264" || !matches!(hz,20|60|72) ||
+    if foveated || !matches!(codec.as_str(),"h264"|"h265") || !matches!(hz,20|60|72) ||
         !crate::xr_control::valid_eye_size(eye_size) || !crate::xr_control::valid_eye_size(eye_height) ||
         (bitrate_mbps!=0 && !(8..=160).contains(&bitrate_mbps)) {
         return Err(io::Error::other("Unsupported Windows DEV XR profile"));
     }
-    let files=load(&root)?;
+    let active=crate::xr_windows::ActiveSession::acquire()?;
+    let (files,completion)=match intent.as_deref() {
+        Some(generation)=>{let launch=crate::xr_windows::claimed_launch(&root,generation)?;(launch.files,launch.completion)},
+        None=>(load(&root)?,None),
+    };
     let progress=progress.cloned();
     tokio::task::spawn_blocking(move || {
+        let _active=active;
         use crate::xr_relay::RuntimePhase;
         let cancelled=||*cancel.borrow() || cancel.has_changed().is_err();
         if cancelled() {return Ok(());}
@@ -158,7 +165,7 @@ pub(crate) async fn runtime_adapter_with_status(
         }
         if files.steamvr_driver.is_some() && !steamvr_ready.is_file() {return Err(io::Error::other("SteamVR trial driver did not become ready"));}
         if let Some(p)=&progress {p.lock().unwrap().phase=RuntimePhase::ReadyForApplication;}
-        let mut steam_socket=None;
+        let mut steam_socket=completion;
         let mut app=if files.steam_launch {
             let pending=crate::xr_steam_windows::Pending::create(&root)?;
             event("waiting_for_local_steam_command")?;
@@ -177,7 +184,7 @@ pub(crate) async fn runtime_adapter_with_status(
             steam_socket=Some(socket);app
         } else {
             let mut app=Command::new(&files.application); app.args(&files.arguments);
-            if let Some(directory)=files.application.parent() {app.current_dir(directory);}
+            if let Some(directory)=files.working_directory.as_deref().or_else(||files.application.parent()) {app.current_dir(directory);}
             app
         };
         configure(&mut app)?;
@@ -209,8 +216,23 @@ pub(crate) async fn runtime_adapter_with_status(
         event(&format!("application_started pid={:?} path={}",session.process_ids().1,files.application.display()))?;
         let mut saw_frame=false;let mut saw_end=false;
         loop {
+            if steam_socket.as_ref().is_some_and(crate::xr_steam_windows::disconnected) {
+                event("steam_wrapper_disconnected")?;
+                if files.steamvr_driver.is_some(){std::fs::write(marker.with_extension("stop"),b"")?;}
+                return Err(io::Error::other("Steam launch wrapper disconnected"));
+            }
             if cancelled() {
                 event(&format!("cancel_requested child_state={:?}",session.poll()))?;
+                if files.steamvr_driver.is_some() {
+                    // Stop direct capture before closing vrmonitor. Otherwise
+                    // the compositor can keep submitting to a disappearing
+                    // receiver while SteamVR is trying to exit.
+                    std::fs::write(marker.with_extension("stop"),b"")?;
+                    let deadline=Instant::now()+Duration::from_millis(1500);
+                    while !marker.with_extension("ended").is_file() && !marker.with_extension("failed").is_file() && Instant::now()<deadline {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
                 if let Some(socket)=&mut steam_socket {let _=crate::xr_steam_windows::finish(socket,130);}
                 return Ok(());
             }
@@ -254,12 +276,34 @@ mod tests {
     async fn configured_application_delivers_frames_before_bounded_stop() {
         let observation_seconds=std::env::var("NIGHTFALL_WINDOWS_XR_OBSERVE_SECONDS").ok().map(|value|value.parse::<u64>().unwrap()).unwrap_or(10);
         assert!((1..=60).contains(&observation_seconds));
-        let root=PathBuf::from(std::env::var_os("NIGHTFALL_WINDOWS_XR_ROOT").expect("runtime root"));
+        let root=PathBuf::from(std::env::var_os("NIGHTFALL_WINDOWS_XR_ROOT").expect("runtime root")).canonicalize().unwrap();
+        let mut steam_broker=None;
+        let mut steam_wrapper=None;
+        let launch_intent=std::env::var("NIGHTFALL_WINDOWS_XR_CATALOG_APP").ok().map(|app_id| {
+            if std::env::var_os("NIGHTFALL_WINDOWS_XR_STEAM_WRAPPER").is_some() {
+                steam_broker=Some(crate::xr_steam_windows::start_broker(&root).unwrap());
+                let game=crate::xr_windows::games(&root).unwrap().into_iter().find(|g|g.app_id==app_id).unwrap();
+                let profile=match game.backend {crate::xr_windows::Backend::Monado=>game.monado.unwrap(),crate::xr_windows::Backend::Steamvr=>game.steamvr.unwrap()};
+                let files=load(&profile).unwrap();
+                let mut command=vec![files.application.to_string_lossy().into_owned()];command.extend(files.arguments);
+                let cwd=files.application.parent().unwrap().to_path_buf();let request_root=root.clone();let id=app_id.clone();
+                steam_wrapper=Some(std::thread::spawn(move ||crate::xr_steam_windows::request_launch(&request_root,command,cwd,id)));
+                let deadline=Instant::now()+Duration::from_secs(5);
+                while crate::xr_windows::pending(&root).is_none(){assert!(Instant::now()<deadline,"Steam wrapper did not queue the catalog launch");std::thread::sleep(Duration::from_millis(10));}
+            } else {
+                let result=crate::xr_windows::library(&root,"launch",&format!("steam:{app_id}"),0);
+                assert!(result.get("error").is_none(),"{result}");
+            }
+            let notice=crate::xr_windows::pending(&root).expect("native catalog launch notice");
+            assert_eq!(notice.app_id,app_id);assert!(crate::xr_windows::claim(&root,&notice.generation));
+            notice.generation
+        });
         let tracking=std::env::var("NIGHTFALL_WINDOWS_TRACKING_PORT").unwrap().parse().unwrap();
         let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let video=listener.local_addr().unwrap().port(); listener.set_nonblocking(true).unwrap();
         let (arrived,first_frames)=tokio::sync::oneshot::channel();
-        let capture=root.join("application-startup.h264");
+        let codec=std::env::var("NIGHTFALL_WINDOWS_XR_TEST_CODEC").unwrap_or_else(|_|"h264".into());
+        let capture=root.join(if codec=="h265" {"application-startup.hevc"}else{"application-startup.h264"});
         let metadata_path=root.join("application-frames.jsonl");
         let finished=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let receiver_finished=finished.clone();
@@ -303,7 +347,7 @@ mod tests {
         let width=test_dimension("NIGHTFALL_WINDOWS_XR_TEST_WIDTH");
         let height=test_dimension("NIGHTFALL_WINDOWS_XR_TEST_HEIGHT");
         let bitrate=std::env::var("NIGHTFALL_WINDOWS_XR_TEST_BITRATE").map(|v|v.parse::<u32>().expect("Invalid test bitrate")).unwrap_or(32);
-        let mut runtime=tokio::spawn(runtime_adapter_with_status(root,video,tracking,72,width,height,true,bitrate,"h264".into(),false,None,cancel,None,None));
+        let mut runtime=tokio::spawn(runtime_adapter_with_status(root,video,tracking,72,width,height,true,bitrate,codec,false,launch_intent,cancel,None,None));
         let mut completed=false;
         let mut receiver_result=None;
         let mut outcome=tokio::select! {
@@ -323,6 +367,8 @@ mod tests {
         if !completed {runtime.await.unwrap().unwrap();}
         let count=match receiver_result {Some(result)=>result,None=>receiver.await}.unwrap();
         outcome.unwrap();assert!(count.unwrap()>=3);
+        if let Some(wrapper)=steam_wrapper {assert_eq!(wrapper.join().unwrap().unwrap(),130);println!("PASS: Steam broker selected catalog backend and returned cancellation status 130");}
+        drop(steam_broker);
         println!("PASS: configured Windows application delivered validated frames and remained running for {observation_seconds}s; owned process tree stopped (bounded cancellation, not graceful application exit)");
     }
     #[tokio::test]
