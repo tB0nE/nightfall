@@ -64,9 +64,11 @@ tests=(
 	"test/test_monitor_presets.gd"
 	"test/test_video_presentation.gd"
 	"test/test_meteor_client.gd"
+	"test/test_meteor_host_pairing.gd"
 	"test/test_controller_layout.gd"
 	"test/test_hand_aim.gd"
 	"test/test_pointer_input.gd"
+	"test/test_cursor_visibility.gd"
 	"test/test_host_permissions.gd"
 	"test/test_refresh_rates.gd"
 	"test/test_usb_link.gd"
@@ -77,6 +79,7 @@ tests=(
 	"test/test_primary_media.gd"
 	"test/test_browser_close.gd"
 	"test/test_dev_bridge.gd"
+	"test/test_native_stream_shutdown.gd"
 )
 
 for test_file in "${tests[@]}"; do

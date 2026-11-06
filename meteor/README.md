@@ -192,6 +192,32 @@ It is not full GameStream/video coverage. Runtime status is an optional field on
 authenticated replies; client polling never treats session activity as proof of
 headset presentation or automatically enters XR.
 
+### Host cursor size (Linux)
+
+The tray's **Host cursor size** menu offers **Unchanged**, **2×**, **3×** and
+**4×**. Meteor-Vibepollo scales the captured cursor bitmap and its hotspot before
+blending it into the video. The physical desktop and Nightfall's own pointer
+are unchanged. Application cursor images work without theme reloads; cursors
+that games draw directly into their framebuffer cannot be separated this way.
+
+This first implementation requires the updated **bundled Meteor-Vibepollo** host
+and **X11 capture**, including the X11 CPU and GPU cursor compositors. Plain
+Sunshine, NvFBC embedded cursors and Wayland capture are not supported by this
+control yet. The menu is disabled for external hosts; its status shows when a
+compatible capture path has acknowledged support.
+
+Changes apply live, without restarting the stream. The host polls Meteor's
+runtime control at most every 100 ms. Meteor resets it roughly two seconds after
+video stops, on normal shutdown, and before starting a new managed host process.
+Multiple streams share the multiplier. The default is **Unchanged**.
+
+The saved `meteor.toml` key is `host_cursor_scale = 1` (allowed values 1–4).
+The private `host/vibepollo/cursor-scale` file controls the host; the host writes
+`cursor-scale.supported` after an X11 cursor capture confirms support. No desktop
+cursor preferences are changed. A one-time migration restores desktop settings
+left by the earlier experimental theme-based implementation, if its recovery
+journal exists.
+
 ### Building the AppImage
 
 ```
@@ -816,6 +842,50 @@ commented out:
 
 When `sunshine_port` is unset, Meteor reads `port` from the Sunshine, Apollo,
 Vibepollo, and Polaris config files and uses the first one that is listening.
+
+### Optional managed streaming host (Linux preview)
+
+On the first desktop launch, if no local Sunshine-family host is running or
+installed/configured, Meteor offers to download and set up **Meteor-Vibepollo**.
+Choose the notification's setup action to proceed, or dismiss it and keep using
+your existing host. The same setup remains available in the tray menu. Headless
+launches do not show this offer.
+
+The portable host comes from the [dedicated preview release](https://github.com/tB0nE/Vibepollo/releases/tag/meteor-host-v0.1.0-preview.3).
+Meteor pins its download size and SHA-256, checks the installed file manifest,
+and installs it under `~/.local/share/nightfall-meteor/host/<version>/`.
+Profiles and pairings live separately; installing a package does not replace
+them. No system service, firewall or graphics configuration is installed by this
+download. Graphics drivers and desktop/audio libraries still come from your OS.
+
+For the managed host, Nightfall sends its PIN encrypted to Meteor. Compare the
+PIN in the headset with the desktop notification, then choose **Approve**. The
+same approval is available in the tray if notifications are hidden. Meteor
+submits the approved PIN to its own host and Nightfall finishes pairing normally.
+Requests expire after 60 seconds and never approve themselves. External hosts
+and older Meteors retain the manual PIN/web-interface flow. The managed host
+tray section still shows the web username and **Copy web UI password** for that
+fallback. Desktop pairing and XR authorization remain separate approvals.
+
+If virtual keyboard/mouse/gamepad access is missing, Meteor shows an input setup
+notification and tray action. **Enable virtual input** requests administrator
+approval to install a narrow udev rule for `uinput`/`uhid` on the active desktop
+seat, loads the existing uinput module if necessary, and rechecks access before
+restarting Meteor. It does not grant world-writable device access or change
+group membership. Cancelling approval leaves streaming configuration unchanged.
+Systems without udev/logind/polkit may need administrator-managed input access.
+
+Changing from an existing host may require selecting and pairing the new host
+in Nightfall; external host pairings are not imported into the managed host.
+
+For download verification without switching hosts or starting services:
+
+```sh
+./Nightfall-Meteor.AppImage --download-host
+```
+
+Advanced `host_binary` overrides take precedence over the downloaded release.
+Mixed-GPU streaming and capture backends require hardware testing.
 
 Also in the tray, below the depth and microphone controls:
 - **Start with my computer:** an entry in `~/.config/autostart`. The

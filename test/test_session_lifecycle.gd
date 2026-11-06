@@ -5,6 +5,7 @@ func _init():
 	_test_restart_preserves_intent()
 	_test_reconnect_and_failure()
 	_test_manual_disconnect()
+	_test_old_timeout_cannot_cancel_new_connection()
 	print("All session_lifecycle tests passed")
 	quit()
 
@@ -63,3 +64,16 @@ func _streaming_lifecycle() -> SessionLifecycle:
 	lifecycle.begin_connect()
 	lifecycle.stream_started()
 	return lifecycle
+
+func _test_old_timeout_cannot_cancel_new_connection() -> void:
+	var lifecycle := SessionLifecycle.new()
+	var old_timer := lifecycle.arm_connect_timeout()
+	lifecycle.stream_started()
+	lifecycle.request_disconnect()
+	lifecycle.finish_cleanup()
+	var new_timer := lifecycle.arm_connect_timeout()
+	assert(not lifecycle.is_connect_timeout_current(old_timer),
+		"A previous connection's timer must not fail a newer attempt")
+	assert(lifecycle.is_connect_timeout_current(new_timer))
+	lifecycle.cancel_connect_timeout()
+	assert(not lifecycle.is_connect_timeout_current(new_timer))

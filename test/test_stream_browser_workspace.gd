@@ -9,11 +9,19 @@ class FakeBrowser extends RefCounted:
 class FakeComp extends RefCounted:
 	var available := false
 	var in_use := false
+	func get_shader_mats(_screen): return []
+
+class FakePresentation extends RefCounted:
+	func can_render_native(): return true
 
 class FakeUi extends RefCounted:
 	func update_monitor_tab(): pass
 
 class Fixture extends Node3D:
+	var video_presentation := FakePresentation.new()
+	var settings := AppSettings.new()
+	var stream_viewport := SubViewport.new()
+	var stream_target := ColorRect.new()
 	var primary_screen: VRScreen
 	var screens: Array[VRScreen] = []
 	var browser_prototype := FakeBrowser.new()
@@ -26,6 +34,7 @@ class Fixture extends Node3D:
 	var screen_manager: ScreenManager
 	var ui_controller := FakeUi.new()
 	func _log(_message): pass
+	func get_blur_scale(_screen): return 1.0
 	func add_screen(_id, _x, _primary):
 		assert(false, "A full browser workspace must reuse its primary surface for the stream")
 	func remove_screen(_id):
@@ -36,6 +45,8 @@ func _init(): _run.call_deferred()
 func _run():
 	var owner := Fixture.new()
 	root.add_child(owner)
+	owner.add_child(owner.stream_viewport)
+	owner.add_child(owner.stream_target)
 	owner.primary_screen = load("res://src/vr_screen.tscn").instantiate()
 	owner.add_child(owner.primary_screen)
 	owner.primary_screen.setup(owner, &"welcome")
@@ -58,6 +69,21 @@ func _run():
 	assert(owner.screens == before and owner.screens.size() == 4)
 	assert(owner.primary_screen.monitor_id == owner.layout.enabled_monitors()[0].id)
 	assert(owner.screens[1].mesh_size == browser_size, "Stream resize must not resize independent browsers")
+	owner.layout.source = &"host_manifest"
+	var aspect_before := owner.primary_screen.mesh_size.x / owner.primary_screen.mesh_size.y
+	owner.screen_manager.resize_screen_to_aspect(4480, 1440)
+	assert(is_equal_approx(owner.primary_screen.mesh_size.x / owner.primary_screen.mesh_size.y, aspect_before),
+		"A correction reconnect must preserve the monitor's aspect while the encoded size changes")
+	owner.layout.source = &"client_split"
+	var welcome_geometry := owner.primary_screen.mesh_size
+	var stream := StreamManager.new(owner)
+	stream.resize_stream_viewport(4480, 1440, false)
+	assert(stream.get_current_stream_size() == Vector2i(4480, 1440))
+	assert(owner.primary_screen.mesh_size == welcome_geometry,
+		"Preparing cached decoder dimensions must not reshape the welcome screen")
+	stream.resize_stream_viewport(4480, 1440)
+	assert(owner.primary_screen.mesh_size != welcome_geometry,
+		"Confirmed decoded dimensions must still update non-manifest screen geometry")
 	for screen in owner.screens.slice(1):
 		assert(owner.screen_sources.is_browser_screen(screen))
 	# The dropdown is ordinary viewport UI, not a native popup/layer.

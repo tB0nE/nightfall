@@ -17,9 +17,14 @@ Read that summary rather than the logs.
 | `xr` | the 3D scene: the app in a real OpenXR session, with a picture of each eye | Meteor's XR runtime, NVIDIA |
 | `depth` | Meteor host depth keeps up with a jittery 72 fps stream | NVIDIA, ncnn |
 | `pcvr` | PCVR capture and encode, NVENC and VA-API | Meteor's XR runtime |
-| `quest` | the app on the headset: UI tree, state, screenshots | headset; **ask first** |
-| `stream` | a stream to the headset: fps, latency, depth source and rate | headset, paired host; **ask first** |
-| `e2e` | frames lost and latency through host → Meteor, with a test pattern | headset; restarts Meteor, draws on the desktop; **ask first** |
+| `quest` | the app on the headset: UI tree, state, screenshots | headset |
+| `stream` | a stream to the headset: fps, latency, depth source and rate | headset, paired host |
+| `e2e` | frames lost and latency through host → Meteor, with a test pattern | headset; restarts Meteor, draws on the desktop |
+
+Routine builds, in-place headset updates, app launches, Meteor restarts and
+testing within the active development task are authorized without asking again.
+Explain disruptive actions before running them and coordinate with any other
+agent using the same headset or service. Preserve app data and pairings.
 
 Other tools:
 
@@ -27,8 +32,8 @@ Other tools:
   (`src/dev_bridge.gd`): `ui`, `press`, `select`, `text`, `state`, `eval`,
   `wait`, `shot`, `log`. Dev and debug builds only.
 - **`tools/quest.py`** runs the headset from the desk: `status`, `awake`,
-  `install`, `launch`, `forward`, `shot`, `logcat`. Ask before installing or
-  launching; never uninstall.
+  `install`, `launch`, `forward`, `shot`, `logcat`. Use in-place updates;
+  never uninstall.
 - **`test/run_xr_app.py`** runs any OpenXR app under Meteor's XR runtime,
   with no headset.
 

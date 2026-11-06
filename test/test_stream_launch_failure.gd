@@ -1,6 +1,7 @@
 extends SceneTree
 
 class Lifecycle extends RefCounted:
+	var phase := SessionLifecycle.Phase.CONNECTING
 	func is_reconnecting() -> bool: return false
 
 class Welcome extends RefCounted:

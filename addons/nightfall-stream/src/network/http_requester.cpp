@@ -66,7 +66,16 @@ void HttpRequester::_perform_async(std::shared_ptr<nightfall::PlatformHttp> clie
         if (body.size() > 0) {
             body_vec.assign(body.ptr(), body.ptr() + body.size());
         }
-        resp = client->post(url_std, "application/octet-stream", body_vec);
+        String content_type = "application/octet-stream";
+        Array header_keys = headers.keys();
+        for (int i = 0; i < header_keys.size(); ++i) {
+            Variant key = header_keys[i];
+            if (String(key).to_lower() == "content-type") {
+                content_type = headers[key];
+                break;
+            }
+        }
+        resp = client->post(url_std, content_type.utf8().get_data(), body_vec);
     } else {
         resp.status_code = -1;
         resp.body = "Unsupported method";

@@ -690,6 +690,9 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
     auto *self = active_instance_;
     if (!self) return -1;
 
+    self->accepting_decode_units_.store(false);
+    self->session_submit_count_ = 0;
+
     self->h264_hw_upgrade_pending_.store(false);
     self->h264_hw_upgraded_.store(false);
     if (self->h264_extradata_) {
@@ -857,12 +860,16 @@ int StreamConnection::_cb_decoder_setup(int videoFormat, int width, int height, 
 
 void StreamConnection::_cb_decoder_start() {
     NF_LOG("StreamConnection", "Decoder start");
+    if (auto *self = active_instance_) {
+        self->accepting_decode_units_.store(true);
+    }
 }
 
 void StreamConnection::_cb_decoder_stop() {
     NF_LOG("StreamConnection", "Decoder stop");
     auto *self = active_instance_;
     if (self) {
+        self->accepting_decode_units_.store(false);
         self->decoder_ready_.store(false);
     }
 }
@@ -923,14 +930,12 @@ void StreamConnection::_cb_decoder_cleanup() {
 
 int StreamConnection::_cb_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     auto *self = active_instance_;
-    if (!self || !self->is_streaming_.load()) return DR_OK;
+    if (!self || !self->accepting_decode_units_.load()) return DR_OK;
 
-    static int submit_count = 0;
-    submit_count++;
-    if (submit_count <= 3) {
-        NF_LOG("StreamConnection", "Submit DU #%d: size=%d type=%d frame=%d",
-               submit_count, decodeUnit->fullLength, decodeUnit->frameType,
-               decodeUnit->frameNumber);
+    if (++self->session_submit_count_ <= 3) {
+        NF_LOG("StreamConnection", "Submit DU #%u: size=%d type=%d frame=%d connection_ready=%d",
+               self->session_submit_count_, decodeUnit->fullLength, decodeUnit->frameType,
+               decodeUnit->frameNumber, self->is_streaming_.load());
     }
 
     if (self->local_capture_mode_) {
@@ -1044,7 +1049,11 @@ void StreamConnection::_cb_connection_started() {
     NF_LOG("StreamConnection", "Connection started");
     auto *self = active_instance_;
     if (self) {
-        self->is_streaming_.store(true);
+        {
+            std::lock_guard<std::mutex> lock(self->queue_mutex_);
+            self->is_streaming_.store(true);
+        }
+        self->queue_cv_.notify_all();
         self->call_deferred("emit_signal", "stream_started");
     }
 }
@@ -1275,7 +1284,9 @@ void StreamConnection::_decode_thread_func() {
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         queue_cv_.wait_for(lock, std::chrono::milliseconds(10000), [this] {
-            return is_streaming_.load() || !packet_queue_.empty();
+            // Early video may already be queued while Moonlight starts audio
+            // and input. Do not exit the decode thread during that window.
+            return is_streaming_.load();
         });
         if (!is_streaming_.load()) return;
     }
@@ -1972,6 +1983,7 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
 void StreamConnection::stop() {
     if (!is_streaming_.load() && !connection_thread_.joinable()) return;
 
+    accepting_decode_units_.store(false);
     is_streaming_.store(false);
     decoder_ready_.store(false);
     queue_cv_.notify_all();

@@ -19,6 +19,7 @@ pub struct MeteorTray {
     pub mic: Option<Arc<Mic>>,
     pub host: Arc<crate::host::view::View>,
     pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
+    pub cursor: Arc<crate::host_cursor::Control>,
 }
 
 impl ksni::Tray for MeteorTray {
@@ -127,6 +128,7 @@ impl ksni::Tray for MeteorTray {
         }.into()])
         .chain(self.xr_pairing_menu())
         .chain(self.depth_menu())
+        .chain(self.cursor_menu())
         .chain([MenuItem::Separator])
         .chain(self.mic_menu())
         .chain([
@@ -180,6 +182,26 @@ impl ksni::Tray for MeteorTray {
 }
 
 impl MeteorTray {
+    fn cursor_menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::*;
+        let scale = self.cursor.scale();
+        vec![SubMenu {
+            label: format!("Host cursor size: {}", if scale == 1 { "Unchanged".into() } else { format!("{scale}×") }),
+            enabled: self.cursor.available(),
+            submenu: vec![RadioGroup {
+                selected: (scale - 1) as usize,
+                options: ["Unchanged", "2×", "3×", "4×"].iter().map(|label| RadioItem { label: (*label).into(), ..Default::default() }).collect(),
+                select: Box::new(|tray: &mut Self, index| {
+                    if let Err(error) = tray.cursor.select(index as u32 + 1) {
+                        log::warn!("Cannot save host cursor size: {error}");
+                        tokio::spawn(async move { crate::desktop::notify("Could not save host cursor size", &error.to_string()).await; });
+                    }
+                }),
+            }.into(), StandardItem {
+                label: self.cursor.status(), enabled: false, ..Default::default()
+            }.into()], ..Default::default()
+        }.into()]
+    }
     /// "Nightfall Meteor", plus the base port when it isn't the default, so
     /// two Meteors on one PC can be told apart.
     fn name(&self) -> String {
@@ -210,6 +232,38 @@ impl MeteorTray {
             names.join(" and ")
         };
         let mut items = vec![MenuItem::Separator];
+        if let Some(pairing) = &host.pairing
+            && let Some(pending) = pairing.pending()
+        {
+            items.push(info(format!("Pair headset {} — PIN {}",pending.peer,pending.pin)));
+            let approve=pairing.clone(); let request=pending.id.clone();
+            items.push(StandardItem { label:"Approve headset pairing".into(),
+                activate:Box::new(move |_|approve.approve(&request)), ..Default::default() }.into());
+            let reject=pairing.clone(); let request=pending.id;
+            items.push(StandardItem { label:"Reject headset pairing".into(),
+                activate:Box::new(move |_|reject.reject(&request)), ..Default::default() }.into());
+        }
+        if host.state.choice == Choice::Bundled {
+            use crate::host::input::Status as InputStatus;
+            let input=crate::host::input::check();
+            if input == InputStatus::Ready {
+                items.push(info("Virtual input: ready".into()));
+            } else {
+                let label=match input {
+                    InputStatus::Missing=>"Virtual input device is not available".into(),
+                    InputStatus::Denied=>"Keyboard/controller input needs permission".into(),
+                    InputStatus::Unavailable(error)=>format!("Virtual input unavailable: {error}"),
+                    InputStatus::Ready=>unreachable!(),
+                };
+                items.push(info(label));
+                let busy=host.input.busy();
+                items.push(StandardItem {
+                    label:if busy {"Waiting for input setup…"} else {"Enable virtual input (administrator approval; restarts Meteor)…"}.into(),
+                    enabled:!busy,
+                    activate:Box::new(|tray:&mut Self|tray.host.input.setup()), ..Default::default()
+                }.into());
+            }
+        }
         match (&host.supervisor, host.state.choice) {
             (Some(supervisor), _) => {
                 let line = match supervisor.phase() {
@@ -249,6 +303,24 @@ impl MeteorTray {
                             }
                             .into(),
                             StandardItem {
+                                label: format!("Web UI username: {}", host.state.user),
+                                enabled: false,
+                                ..Default::default()
+                            }.into(),
+                            StandardItem {
+                                label: "Copy web UI password".into(),
+                                activate: Box::new(|tray: &mut Self| {
+                                    let password=tray.host.state.password.clone();
+                                    tokio::spawn(async move {
+                                        let result=crate::desktop::copy_text(&password).await;
+                                        let message=if result.is_ok() {"Password copied. Paste it into the host's web login."}
+                                            else {"Could not copy the password. Check that your desktop clipboard manager is running."};
+                                        crate::desktop::notify("Meteor-Vibepollo web login",message).await;
+                                    });
+                                }),
+                                ..Default::default()
+                            }.into(),
+                            StandardItem {
                                 label: "Open the host's folder (logs, config)".into(),
                                 activate: Box::new(move |_| open_url(&appdata.to_string_lossy())),
                                 ..Default::default()
@@ -271,6 +343,11 @@ impl MeteorTray {
                     "Host: Meteor-Vibepollo for Nightfall didn't start: {}",
                     host.error.as_deref().unwrap_or("unknown")
                 )));
+                // A newer Meteor can pin a host version not installed yet.
+                // Keep setup/retry accessible without changing host choice.
+                if host.binary.is_none() {
+                    items.extend(self.bundled_offer(false, &other_names));
+                }
                 items.push(
                     StandardItem {
                         label: "Use my own host instead (restarts Meteor)".into(),
@@ -678,6 +755,10 @@ fn download_progress(depth: &Depth) -> Option<String> {
 }
 
 fn open_url(url: &str) {
+    if url.starts_with("https://") || url.starts_with("http://") {
+        crate::desktop::open_web_url(url.to_string());
+        return;
+    }
     let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
     if let Err(err) = std::process::Command::new(opener).arg(url).spawn() {
         log::warn!("Can't open {url}: {err}");

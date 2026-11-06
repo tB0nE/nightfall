@@ -58,12 +58,21 @@ impl Instance {
         if text != existing {
             std::fs::write(&path, text).map_err(fail)?;
         }
+        // Runtime-only control. Never inherit a previous process's multiplier.
+        std::fs::write(self.appdata().join("cursor-scale"), "1\n").map_err(fail)?;
+        match std::fs::remove_file(self.appdata().join("cursor-scale.supported")) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(fail(e)),
+        }
         Ok(())
     }
 
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
         command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir).envs(self.env.iter().cloned());
+        command.env("METEOR_CURSOR_SCALE_FILE", self.appdata().join("cursor-scale"));
+        command.env("METEOR_DEFAULT_PRIMARY_OUTPUT", "1");
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

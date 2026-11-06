@@ -7,6 +7,10 @@
 //! it compute depth maps on the host GPU and send them alongside the video.
 
 mod config;
+#[cfg(target_os = "linux")]
+mod host_cursor;
+#[cfg(target_os = "linux")]
+mod legacy_host_cursor;
 mod crypto;
 mod depth;
 mod depth_server;
@@ -95,7 +99,7 @@ async fn main() {
     #[cfg(windows)]
     if args.get(1).is_some_and(|arg|arg=="--host-pair-pin") {
         if args.len()!=2 {eprintln!("Usage: --host-pair-pin (PIN on standard input)");std::process::exit(1);}
-        match host::pairing::command() {
+        match host::pin::command() {
             Ok(())=>println!("PIN sent. Finish pairing in Nightfall."),
             Err(error)=>{eprintln!("{error}");std::process::exit(1);},
         }
@@ -215,6 +219,7 @@ async fn main() {
              \x20 --jitter-ms <ms>        move each replayed frame up to <ms> early or late\n\
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
+             \x20 --download-host         download/verify the Linux managed host without switching\n\
              \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
              \x20                         and the VDA graphs, then exit"
         );
@@ -226,6 +231,16 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    #[cfg(target_os = "linux")]
+    if flag("--download-host") {
+        let Some(release)=host::RELEASE.as_ref() else {
+            eprintln!("This build does not yet offer a published Meteor-Vibepollo host");std::process::exit(2);
+        };
+        match host::Install::run(&download::Download::default(),release) {
+            Ok(path)=>{println!("Installed Meteor-Vibepollo at {}. Host selection and running services were not changed.",path.display());return;},
+            Err(error)=>{eprintln!("Host download failed: {error}");std::process::exit(1);},
+        }
+    }
     if let Some(variant)=value("--download-vda-vulkan") {
         let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
             eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
@@ -383,6 +398,11 @@ async fn main() {
     // Register before exposing tray Quit. The coordinator remains alive while
     // async XR cleanup runs; only then use the existing GPU-safe hard exit.
     let shutdown = SHUTDOWN.get_or_init(shutdown::Shutdown::new);
+    #[cfg(target_os = "linux")]
+    let cursor = host_cursor::Control::new(config.host_cursor_scale,
+        host_view.supervisor.as_ref().map(|host| host.instance.appdata().join("cursor-scale")));
+    #[cfg(target_os = "linux")]
+    let cursor_task = tokio::spawn(host_cursor::watch(cursor.clone(), stats.clone(), shutdown.subscribe()));
     let dev_xr_address = value("--xr-service-dev");
     let mut xr_discovery = None;
     let mut xr_trust = None;
@@ -469,6 +489,10 @@ async fn main() {
         }
         None
     };
+    #[cfg(target_os = "linux")]
+    if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
+        host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone()));
+    }
     let features = discovery::Features {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
@@ -478,6 +502,8 @@ async fn main() {
         #[cfg(not(any(target_os = "linux", windows)))]
         host: None,
         xr_port: xr_discovery,
+        #[cfg(target_os = "linux")]
+        pairing: host_view.pairing.clone(),
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -502,7 +528,20 @@ async fn main() {
     xr_windows::initialize(xr_discovery.is_some(),xr_startup_error,xr_trust);
 
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: Arc::new(host_view) }).await {
+    let host_view=Arc::new(host_view);
+    #[cfg(target_os = "linux")]
+    if !no_tray { host::setup::offer(host_view.clone(), &config); }
+    #[cfg(target_os = "linux")]
+    if !no_tray && host_view.state.choice == host::Choice::Bundled && host::input::check() != host::input::Status::Ready {
+        let input=host_view.input.clone();
+        tokio::spawn(async move {
+            if let Err(error)=desktop::input_setup_popup(input).await {
+                log::info!("Input setup notification unavailable ({error}); setup remains in the tray");
+            }
+        });
+    }
+    #[cfg(target_os = "linux")]
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view, cursor }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
@@ -525,6 +564,8 @@ async fn main() {
         _ = wait_for_exit_signal() => shutdown.request(),
         _ = shutdown.requested() => {},
     }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
     if let Some(task) = xr_service {
         match task.await {
             Ok(Ok(())) => {},

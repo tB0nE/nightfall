@@ -696,6 +696,7 @@ func build_pin_screen(parent: Node):
 	screen.add_child(top_spacer)
 
 	var heading = Label.new()
+	heading.name = "PINHeading"
 	heading.text = "Enter PIN on Host"
 	heading.add_theme_font_size_override("font_size", 40)
 	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -734,7 +735,11 @@ func build_pin_screen(parent: Node):
 	bottom_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(bottom_margin)
 
-	back_btn.pressed.connect(func(): show_welcome_screen("server"))
+	back_btn.pressed.connect(func():
+		pairing_finished()
+		var manager = main.stream_backend.get_computer_manager()
+		if manager and manager.has_method("cancel_pair"): manager.cancel_pair()
+		show_welcome_screen("server"))
 
 const WELCOME_FRAME := Vector2i(1920, 1080)
 
@@ -924,21 +929,8 @@ func browse_mdns():
 			btn.add_theme_stylebox_override("pressed", press_style)
 			btn.pressed.connect(func():
 				main._log("[mDNS] Selected host: address='" + address + "' friendly='" + friendly + "'")
-				var _cm4 = main.stream_backend.get_config_manager() if main.stream_backend else null
-				for h in (_cm4.get_hosts() if _cm4 else []):
-					if main.host_matches_address(h, ip):
-						# Already-saved machine: use its saved identity (per-host
-						# settings key off it) whichever path it was found on;
-						# the backend picks USB or network per request.
-						var saved_ip: String = h.get("localaddress", ip)
-						main.get_node("%IPInput").text = saved_ip
-						save_last_ip(saved_ip, h.get("server_unique_id", ""))
-						main.state_manager.load_host_state(saved_ip)
-						main.current_host_id = h.id
-						main.settings_controller.detect_polaris_host(saved_ip, main.current_host_id)
-						show_welcome_screen("welcome")
-						return
-				# Unknown address: pairing first checks the server's identity,
+				# An address can now belong to a different host/profile. Pairing
+				# first checks identity and verifies the saved certificate over TLS,
 				# and if this machine is already paired it just records the new
 				# address on the existing entry instead of pairing again.
 				main.get_node("%IPInput").text = address
@@ -1039,6 +1031,17 @@ func show_pin_when_needed(pin: String) -> void:
 	await main.get_tree().create_timer(PIN_DELAY_SEC).timeout
 	if ticket == _pin_pending:
 		show_welcome_screen("pin")
+		var heading = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/PINScreen/PINHeading")
+		if heading: heading.text = "Enter PIN on Host"
+		var address: Array = main.parse_ip_port(main.get_node("%IPInput").text)
+		var identity: String = main.stream_backend.get_last_paired_unique_id()
+		var offered := await MeteorHostPairing.request(main, address[0], address[1], pin, identity, func(): return ticket == _pin_pending)
+		if offered and ticket == _pin_pending:
+			if heading: heading.text = "Approve pairing in Meteor on your PC"
+			main._log("[PAIR] Meteor is waiting for desktop approval")
+			await main.get_tree().create_timer(60.0).timeout
+			if ticket == _pin_pending and is_instance_valid(heading):
+				heading.text = "Approval expired — enter PIN on Host or retry"
 
 ## Called when pairing finishes, either way: a PIN still waiting stays hidden.
 func pairing_finished() -> void:

@@ -95,6 +95,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		_b().set_local_capture_mode(false)
 
+	# Timing-only XR restarts must use the latest manifest-corrected size,
+	# not the request cached before the previous monitor selection.
+	main.host_resolution = main.compute_requested_resolution()
 	var w = main.host_resolution.x
 	var h = main.host_resolution.y
 	if forced_resolution.x > 0 and forced_resolution.y > 0:
@@ -135,7 +138,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 			bitrate = clampi(bitrate * 4, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS * 4)
 		main._log("[STREAM] Auto bitrate: %dx%d@%d -> %.0fMbps" % [
 			bitrate_ref.x, bitrate_ref.y, effective_stream_fps(), float(bitrate) / 1000.0])
-	resize_stream_viewport(w, h)
+	# Prepare decoder buffers without reshaping the welcome/previous screen to
+	# a cached composite size. The launch manifest or decoded video owns geometry.
+	resize_stream_viewport(w, h, local_capture_mode)
 	var options = {}
 	if local_capture_mode:
 		# Negotiated at the REAL resolution now, not a 320x240 dummy
@@ -343,6 +348,12 @@ func relaunch_for_reconnect():
 var _app_id_refreshed := false
 
 func _on_v2_launch_response(response: Dictionary):
+	if main.session_lifecycle.phase not in [SessionLifecycle.Phase.CONNECTING,
+			SessionLifecycle.Phase.RESTARTING, SessionLifecycle.Phase.RECONNECTING]:
+		main._log("[STREAM] Ignoring launch response after connection was cancelled or completed")
+		if response.get("status", "") == "success" and not main.is_streaming:
+			_b().cancel_host_stream(_current_host_id)
+		return
 	if response.get("status", "") != "success":
 		var msg = response.get("message", "unknown")
 		main._log("[STREAM] Launch failed: %s" % msg)
@@ -361,6 +372,18 @@ func _on_v2_launch_response(response: Dictionary):
 			_app_id_refreshed = true
 			_retry_with_fresh_app_id()
 			return
+		# An endpoint may now serve a fresh Meteor host with a different
+		# identity, or the host may have reset its authorized clients. Preserve
+		# saved entries and let pairing resolve the server's current identity.
+		var auth_message := str(msg).to_lower()
+		if auth_message.contains("certificate") and auth_message.contains("not authorized"):
+			main.restore_after_failed_connect("Pairing required for this host")
+			for h in _b().get_hosts():
+				if h.get("id") == _current_host_id:
+					var address := WelcomeScreen.pair_address(h.get("localaddress", ""), int(h.get("http_port", main.DEFAULT_PAIR_PORT)))
+					main._log("[PAIR] Host rejected the client certificate; starting pairing without clearing saved hosts")
+					main.welcome_screen.start_pair(address)
+					return
 		# A timeout may leave the original launch running upstream. A missing
 		# URL is also a host response, not a proxy connection failure. Neither
 		# is safe to retry immediately on the direct port.
@@ -611,7 +634,7 @@ func _auto_bitrate(w: int, h: int) -> int:
 	var kbps := int(round(resolution_mbps * fps_factor)) * 1000
 	return clampi(kbps, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS)
 
-func resize_stream_viewport(w: int, h: int):
+func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 	var stream_size = Vector2i(w, h)
 	# A SubViewport assigned to an OpenXRCompositionLayer owns a compositor
 	# swapchain. Resizing it while the OpenXR session is running can race an
@@ -696,7 +719,7 @@ func resize_stream_viewport(w: int, h: int):
 			main._log("[LAYOUT] Stream aspect changed (%.3f -> %.3f), resetting display layout to single()" % [old_aspect, new_aspect])
 			main.settings_controller.apply_screen_layout(ScreenLayout.single(new_frame))
 			main._ui_status_label.text = "Display layout reset: stream resolution changed"
-	if not layout_changed:
+	if not layout_changed and update_geometry:
 		main.screen_manager.resize_screen_to_aspect(w, h)
 	for s in main.screens:
 		if s.material_override is ShaderMaterial:
