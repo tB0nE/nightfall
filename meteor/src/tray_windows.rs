@@ -44,6 +44,7 @@ const CMD_XR_APPROVE:usize=27;
 const CMD_XR_REJECT:usize=28;
 const CMD_XR_ENABLE:usize=29;
 const CMD_XR_LIBRARY:usize=30;
+const CMD_HOST_PAIR:usize=31;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -113,6 +114,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         AppendMenuW(submenu, MF_STRING | if host.state.choice == Choice::External { MF_CHECKED } else { 0 }, CMD_HOST_EXTERNAL, wide("Use my own host").as_ptr());
                         AppendMenuW(submenu, MF_STRING | if host.binary.is_none() { MF_GRAYED } else if host.state.choice == Choice::Bundled { MF_CHECKED } else { 0 }, CMD_HOST_BUNDLED, wide("Use Meteor-Vibepollo").as_ptr());
                         if let Some(supervisor) = &host.supervisor {
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_PAIR, wide("Pair headset...").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_TOGGLE, wide(if supervisor.wanted() { "Stop host" } else { "Start host" }).as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_WEB, wide("Open host web page").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_LOGIN, wide("Open host login (host.toml)").as_ptr());
@@ -377,6 +379,18 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 CMD_HOST_WEB => {
                     if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
                         open_url(&format!("https://localhost:{}", supervisor.instance.base + 1));
+                    }
+                }
+                CMD_HOST_PAIR => {
+                    if let Ok(exe)=std::env::current_exe() {
+                        use std::os::windows::process::CommandExt;
+                        let script=exe.parent().unwrap().join("Pair-Headset.ps1");
+                        if let Err(error)=std::process::Command::new("powershell.exe")
+                            .args(["-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"])
+                            .arg(script).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+                            log::warn!("Cannot open headset pairing dialog: {error}");
+                        }
                     }
                 }
                 CMD_HOST_LOGIN => {

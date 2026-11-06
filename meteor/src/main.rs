@@ -93,6 +93,15 @@ async fn main() {
     #[cfg(windows)]
     if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
     #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--host-pair-pin") {
+        if args.len()!=2 {eprintln!("Usage: --host-pair-pin (PIN on standard input)");std::process::exit(1);}
+        match host::pairing::command() {
+            Ok(())=>println!("PIN sent. Finish pairing in Nightfall."),
+            Err(error)=>{eprintln!("{error}");std::process::exit(1);},
+        }
+        return;
+    }
+    #[cfg(windows)]
     if args.get(1).is_some_and(|arg|arg.starts_with("--xr-windows-")) {
         match xr_windows::command(&args[1..]) {
             Ok(message)=>println!("{message}"),

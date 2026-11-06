@@ -6,6 +6,7 @@
 //! installed) stay the default and work as before. The bundled one lives in
 //! Meteor's own folders, never in `~/.config/vibepollo`, so it can't touch
 //! a Vibepollo the user runs themselves.
+
 //!
 //! Its base port is 47989 when that's free. When another host or a second
 //! Meteor holds it, the next free base in BASES is used, and kept in
@@ -14,6 +15,8 @@
 mod detect;
 mod install;
 mod instance;
+#[cfg(windows)]
+pub mod pairing;
 #[cfg(unix)]
 mod supervisor;
 #[cfg(windows)]

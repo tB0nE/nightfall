@@ -57,12 +57,34 @@ the installed Meteor was restored afterward. The packaged executable's PE
 subsystem is Windows GUI. Physical capture defaults were inspected in the
 generated configuration. No headset or real registration was modified.
 
-The next pairing UX change is a direct Windows PIN-entry dialog backed by
-the managed host's authenticated local pairing API. Current Windows menus
-still open the host web page and expose its generated-login file as a manual
-step. This installer does not yet remove that friction or the separate PCVR
-approval step. Do not reset the user's working profile just to inspect these
-remaining changes.
+## Direct Windows PIN dialog
+
+The subsequent installer includes **Game streaming host → Pair headset…** in
+Meteor's tray and **Pair a Nightfall headset** in Start. Start pairing in
+Nightfall, then enter its four ASCII digits in the Windows dialog. The helper
+sends the PIN to Meteor over stdin; credentials stay inside Meteor and its
+authenticated, fixed-loopback host request. No PIN or password is passed in
+process arguments. Requests are bounded, follow no redirects, and use only the
+saved managed-host port. The private loopback agent accepts the bundled host's
+self-signed TLS certificate; it is not used for remote requests.
+
+The dialog reports **PIN sent**, not pairing complete: Nightfall must still
+finish the cryptographic handshake. Rejection keeps the dialog open for retry.
+External hosts retain their own pairing flow. Existing advanced web/login menu
+entries remain available; normal bundled-host pairing no longer needs them.
+Separate PCVR identity approval is unchanged.
+
+163 Windows Rust tests passed, including exact PIN validation, authenticated
+submission, and host rejection. The actual packaged dialog was driven using
+Windows UI automation/native controls against a fake CLI: the PIN arrived over
+stdin, status was displayed, and the dialog closed normally. Fresh relocated
+package setup and host/XR startup also passed. No real pairing was attempted.
+
+Updated installer SHA-256:
+`f58959e6b73a7f32c03182c42ead24b9d022f07bb1e80635f36111dc7b8a1dcc`.
+This supersedes the pre-dialog candidate above. Real clean-install/headset PIN
+acceptance is still pending. Do not reset the user's working profile merely
+to inspect the dialog.
 
 The release installer now stages the tested custom Vibepollo host, Monado,
 xrizer, OpenXR loader, SteamVR direct-capture service/driver, tracking/encoder

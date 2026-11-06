@@ -56,6 +56,7 @@ Source: "{#Stage}\vcomp*.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Setup-Meteor.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Meteor-Cli.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\Pair-Headset.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\SteamVR-Driver.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\doc\nightfall-meteor\runtime\*"; DestDir: "{app}\share\doc\nightfall-meteor\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -66,6 +67,7 @@ Source: "{#Stage}\share\doc\nightfall-meteor\THIRD_PARTY_NOTICES.txt"; DestDir: 
 
 [Icons]
 Name: "{group}\Nightfall Meteor"; Filename: "{app}\nightfall-meteor.exe"; WorkingDir: "{app}"
+Name: "{group}\Pair a Nightfall headset"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\Pair-Headset.ps1"""; WorkingDir: "{app}"
 Name: "{group}\Set up Nightfall Meteor"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Setup-Meteor.ps1"" -EnableHost -EnablePCVR"; WorkingDir: "{app}"
 Name: "{group}\Uninstall Nightfall Meteor"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Nightfall Meteor"; Filename: "{app}\nightfall-meteor.exe"; WorkingDir: "{app}"; Tasks: desktopicon

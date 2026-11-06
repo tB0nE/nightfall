@@ -745,6 +745,7 @@ name = "nightfall-meteor"
 version = "0.1.1"
 dependencies = [
  "audiopus_sys",
+ "base64",
  "cc",
  "env_logger",
  "flate2",
