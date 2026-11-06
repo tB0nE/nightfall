@@ -39,6 +39,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "builtinhost"; Description: "Use Meteor's built-in desktop streaming host"
 Name: "pcvr"; Description: "Set up PCVR for installed games"
+Name: "vda"; Description: "Download VDA depth model on first launch (requires NVIDIA GPU, ~500 MB downloaded in background)"; Flags: unchecked
 
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -80,7 +81,7 @@ Filename: "{app}\nightfall-meteor.exe"; Description: "Launch Nightfall Meteor"; 
 [Code]
 function HasSetupTasks: Boolean;
 begin
-  Result := WizardIsTaskSelected('builtinhost') or WizardIsTaskSelected('pcvr');
+  Result := WizardIsTaskSelected('builtinhost') or WizardIsTaskSelected('pcvr') or WizardIsTaskSelected('vda');
 end;
 
 function SetupFlags(Param: String): String;
@@ -88,6 +89,7 @@ begin
   Result := '';
   if WizardIsTaskSelected('builtinhost') then Result := Result + ' -EnableHost';
   if WizardIsTaskSelected('pcvr') then Result := Result + ' -EnablePCVR';
+  if WizardIsTaskSelected('vda') then Result := Result + ' -EnableVDA';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -515,6 +515,14 @@ async fn main() {
         if !no_tray {
             tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
         }
+        #[cfg(windows)]
+        if let Some(d) = &depth {
+            let flag = config::config_dir().join("pending-vda-download");
+            if std::fs::remove_file(&flag).is_ok() {
+                log::info!("Starting VDA download requested during installation");
+                d.download_vda();
+            }
+        }
         let _ = (status, stats, depth, mic);
         if no_tray {
             log::info!("No tray icon requested; press Ctrl+C to stop");

@@ -7,16 +7,27 @@ use std::sync::atomic::Ordering;
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE};
+use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
     CreateIcon, DestroyIcon, GetMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
     WS_OVERLAPPED,
 };
 
 const TRAY_MESSAGE: u32 = WM_APP + 1;
+const TRAY_BALLOON: u32 = WM_APP + 3;
+static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PENDING_BALLOON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn queue_balloon(message: String) {
+    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
+    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
+    }
+}
 const CMD_OPEN_LOG: usize = 1;
 const CMD_OPEN_SETTINGS: usize = 2;
 const CMD_QUIT: usize = 3;
@@ -67,6 +78,11 @@ fn wide(value: &str) -> Vec<u16> {
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
+        TRAY_BALLOON => {
+            let msg = PENDING_BALLOON.lock().ok().and_then(|mut g| g.take());
+            if let Some(msg) = msg { unsafe { show_balloon(hwnd, "Nightfall Meteor", &msg) }; }
+            0
+        }
         TRAY_MESSAGE if lparam as u32 == WM_RBUTTONUP => {
             let menu = unsafe { CreatePopupMenu() };
             if menu.is_null() {
@@ -414,6 +430,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     }
 }
 
+unsafe fn show_balloon(hwnd: HWND, title: &str, message: &str) {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_INFO,
+        ..std::mem::zeroed()
+    };
+    let title_w = wide(title);
+    let tlen = title_w.len().min(data.szInfoTitle.len());
+    data.szInfoTitle[..tlen].copy_from_slice(&title_w[..tlen]);
+    let info_w = wide(message);
+    let ilen = info_w.len().min(data.szInfo.len());
+    data.szInfo[..ilen].copy_from_slice(&info_w[..ilen]);
+    data.dwInfoFlags = NIIF_INFO;
+    Shell_NotifyIconW(NIM_MODIFY, &mut data);
+}
+
 fn open_path(path: std::path::PathBuf) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }
@@ -498,6 +532,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             log::warn!("Windows tray icon creation failed");
             return;
         }
+        TRAY_HWND.store(hwnd as usize, Ordering::Relaxed);
         log::info!("Windows tray icon started");
         crate::desktop_windows::request_visible_tray_icon();
         let mut message = MSG::default();
@@ -505,6 +540,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        TRAY_HWND.store(0, Ordering::Relaxed);
         Shell_NotifyIconW(NIM_DELETE, &mut icon);
         if !icon.hIcon.is_null() {
             DestroyIcon(icon.hIcon);
