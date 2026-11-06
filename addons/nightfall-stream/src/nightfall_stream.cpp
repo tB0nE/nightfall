@@ -558,7 +558,9 @@ void NightfallStream::_on_stream_started() {
 
 void NightfallStream::_on_stream_terminated(int error_code, const String &error_message) {
     if (shutting_down_) return;
-    if (state_ == STATE_STOPPING) return;
+    // A stop interrupts a connection in progress, and its error arrives after the
+    // stop has finished. That was asked for, so it isn't a failure to retry.
+    if (state_ == STATE_STOPPING || state_ == STATE_IDLE) return;
 
     state_ = STATE_DISCONNECTED;
     emit_signal("state_changed", (int)state_);

@@ -1286,7 +1286,7 @@ void StreamConnection::_decode_thread_func() {
         queue_cv_.wait_for(lock, std::chrono::milliseconds(10000), [this] {
             // Early video may already be queued while Moonlight starts audio
             // and input. Do not exit the decode thread during that window.
-            return is_streaming_.load();
+            return is_streaming_.load() || stop_requested_.load();
         });
         if (!is_streaming_.load()) return;
     }
@@ -1976,6 +1976,7 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
     active_instance_ = this;
     AudioRenderer::active_instance_ = audio_renderer_.ptr();
 
+    stop_requested_.store(false);
     connection_thread_ = std::thread(&StreamConnection::_connection_thread_func, this);
     decode_thread_ = std::thread(&StreamConnection::_decode_thread_func, this);
 }
@@ -1984,7 +1985,11 @@ void StreamConnection::stop() {
     if (!is_streaming_.load() && !connection_thread_.joinable()) return;
 
     accepting_decode_units_.store(false);
-    is_streaming_.store(false);
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        stop_requested_.store(true);
+        is_streaming_.store(false);
+    }
     decoder_ready_.store(false);
     queue_cv_.notify_all();
 
