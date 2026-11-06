@@ -307,8 +307,24 @@ OpenVR/xrizer/Monado probe explicitly verified empty hidden and visible meshes
 for both eyes, delivered encoded frames, and cleaned up its owned processes.
 No headset was used by these checks. The release APK passed v2 signature
 verification (SHA-256 93f0227979d71d3e6c6d14308b0fcf4f0799fd0d1c25c9d6ac6d5a6fb90f2475).
-The installed application and headset have not yet been upgraded to this candidate.
+At build validation time, the installed application and headset had not yet been
+upgraded to this candidate.
 Release artifacts were copied to `G:\Temp\nightfall-windows-build`:
 `Nightfall-Meteor-0.1.1-Setup-x64.exe` (SHA-256
 610b52dedf7d130f772e82caf162e0e1a2b357105b58dd0fae8ff6a35242235a)
 and `Nightfall-Android-arm64-v8a.apk`.
+
+### User installation acceptance
+
+The previous uninstall removed its registration, shortcuts and SteamVR driver
+registration, but left executables, DLLs and host data in the installation
+folder. No Meteor processes were running when inspected. The residual folder
+was moved to `%LOCALAPPDATA%\Nightfall Meteor\uninstall-backups\20261106-081228`
+so the new installation could proceed. Existing user settings were preserved;
+this was not a test with a completely empty user profile. The reason these
+files survived uninstall is not yet established.
+
+The user then reported successfully going from starting the installer to being
+in a VR game in about two minutes and accepted the installation flow. This
+confirms the installation-to-game path; it does not separately confirm the
+Moss bottom-strip fix or the missing-SteamVR installation flow.
