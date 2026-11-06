@@ -1035,7 +1035,8 @@ func show_pin_when_needed(pin: String) -> void:
 		if heading: heading.text = "Enter PIN on Host"
 		var address: Array = main.parse_ip_port(main.get_node("%IPInput").text)
 		var identity: String = main.stream_backend.get_last_paired_unique_id()
-		var offered := await MeteorHostPairing.request(main, address[0], address[1], pin, identity, func(): return ticket == _pin_pending)
+		var xr_identity: String = get_xr_control().public_identity()
+		var offered := await MeteorHostPairing.request(main, address[0], address[1], pin, identity, xr_identity, func(): return ticket == _pin_pending)
 		if offered and ticket == _pin_pending:
 			if heading: heading.text = "Approve pairing in Meteor on your PC"
 			main._log("[PAIR] Meteor is waiting for desktop approval")

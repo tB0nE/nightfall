@@ -49,6 +49,10 @@ ksni = { version = "0.3.6", features = ["tokio"] }
 # Desktop notifications; the same zbus the tray uses.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 futures-lite = "2.6"
+# The Setup window (src/setup_window.rs). OpenGL, Wayland and X11 are opened at
+# run time, so the build needs no system libraries for them. It uses the
+# system's font, so no font ships in the AppImage.
+eframe = { version = "=0.33.3", default-features = false, features = ["glow", "wayland", "x11"] }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.25.0"

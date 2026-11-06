@@ -51,7 +51,7 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None, vaapi=No
         raise ValueError('XR helpers must come from an intact validated build cache')
     paths = modules(root) | {root / name for name in BINARIES} | {
         root / 'tools/meteor_xr_runtime.py', root / 'tools/meteor_xr_install.py', root / 'tools/meteor_xr.py',
-        root / 'tools/meteor_vr_library.py', root / 'LICENSE',
+        root / 'tools/meteor_vr_library.py', root / 'tools/meteor_steam_options.py', root / 'LICENSE',
     }
     for source in paths:
         if not source.is_file():

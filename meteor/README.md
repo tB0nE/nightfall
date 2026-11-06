@@ -42,12 +42,31 @@ The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA/AMD
 encoding and tracking bridges and an independently built xrizer OpenVR compatibility
 runtime. WiVRN and SteamVR installations are not required.
 
-Run the AppImage and select **Enable PCVR — install & restart Meteor** near the
-top of its tray menu. This installs the verified runtime into your user-data
-folder, enables XR and restarts Meteor. Existing settings/comments are retained,
-with a backup before the setting is changed; headset approvals are preserved.
-The menu shows **PCVR ready** when the service is running, or an error and Retry
-action if setup/startup fails. Desktop streams briefly disconnect during restart.
+**Setup** opens by itself the first time the AppImage runs, and stays at the top
+of the tray menu. **Install All** does everything this PC can use, or each row
+can be done on its own:
+
+- **PCVR:** installs the verified runtime from the AppImage (27 MB, no download)
+  into your user-data folder and enables XR. Existing settings/comments are
+  retained, with a backup before the setting is changed. A newer AppImage updates
+  the runtime when Meteor starts.
+- **Built-in host:** downloads and uses Meteor-Vibepollo. Install All leaves it
+  out while another host is running; one that's only installed doesn't count.
+- **Steam launch options:** adds Meteor's wrapper to every VR game Steam lists.
+  Steam overwrites its config when it exits, so this closes and reopens Steam, and
+  refuses while a game runs. Your own options stay, the first edit leaves
+  `localconfig.vdf.before-meteor` beside the config, and **Remove** takes the
+  wrapper back out. Non-Steam shortcuts aren't changed.
+- **VDA depth:** NVIDIA only. Downloads TensorRT, under NVIDIA's licence, which
+  the window links to, and makes VDA the depth model.
+
+Meteor restarts when the window closes if it needs to, which briefly disconnects
+desktop streams. On the built-in host, approving the headset's PIN on the desktop
+also trusts it for PCVR, so there's no second approval. With your own host, Meteor
+doesn't see the PIN, so PCVR asks once.
+
+A game session's video is streamed, not kept. Meteor keeps the logs of the last
+four sessions and removes older ones.
 
 For command-line setup, this performs the same install/enable steps and exits:
 

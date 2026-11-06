@@ -56,30 +56,9 @@ impl ksni::Tray for MeteorTray {
         let encoder_index=XR_ENCODERS.iter().position(|(id,_)|*id==encoder).unwrap_or(0);
         vec![
             StandardItem {
-                label: "Custom Steam Launch Options required: Copy".into(),
-                icon_name: "edit-copy".into(),
-                enabled: crate::xr_library::steam_launch_options().is_ok(),
-                activate: Box::new(|_| { tokio::spawn(async {
-                    match crate::xr_library::steam_launch_options() {
-                        Ok(options) => match crate::desktop::copy_text(&options).await {
-                            Ok(()) => crate::desktop::notify("Steam launch options copied",
-                                "In Steam, right-click your VR game → Properties → General → Launch Options. Paste the copied line. Use the same line for each VR game.").await,
-                            Err(error) => { log::warn!("Cannot copy Steam launch options: {error}");
-                                crate::desktop::notify("Could not copy Steam launch options", &error.to_string()).await; }
-                        },
-                        Err(error) => log::warn!("Cannot create Steam launch options: {error}"),
-                    }
-                }); }),
-                ..Default::default()
-            }.into(),
-            StandardItem {
-                label: if setup.ready { "PCVR ready (Linux / NVIDIA or AMD)" }
-                    else if setup.busy { "Setting up PCVR…" }
-                    else if setup.error.is_some() { "Retry PCVR setup — install & restart Meteor" }
-                    else { "Enable PCVR — install & restart Meteor" }.into(),
-                icon_name: if setup.ready { "emblem-default" } else { "applications-games" }.into(),
-                enabled: !setup.ready && !setup.busy,
-                activate: Box::new(|_| crate::xr_setup::request_enable()),
+                label: "Setup…".into(),
+                icon_name: "preferences-system".into(),
+                activate: Box::new(|_| crate::setup_window::open()),
                 ..Default::default()
             }.into(),
             SubMenu {
@@ -100,7 +79,7 @@ impl ksni::Tray for MeteorTray {
                 }.into()],..Default::default()
             }.into(),
             info(setup.error.as_deref().map(|error| format!("PCVR: {} (see Open log)", error.chars().take(100).collect::<String>()))
-                .unwrap_or_else(|| "PCVR requires Linux / NVIDIA or AMD; Steam launch options are per game".into())),
+                .unwrap_or_else(|| if setup.ready { "PCVR ready (Linux / NVIDIA or AMD)".into() } else { "PCVR is off; turn it on in Setup".into() })),
             MenuItem::Separator,
             info(format!("{} {}", self.name(), env!("CARGO_PKG_VERSION"))),
             MenuItem::Separator,

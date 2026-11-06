@@ -1,6 +1,9 @@
 //! Local approval of authenticated headset identities. Discovery never grants access.
 use std::{collections::BTreeSet, io, path::PathBuf, sync::Mutex, time::{Duration, Instant}};
 
+/// The trust file, in Meteor's config folder.
+pub const FILE: &str = "xr-trusted-headsets.json";
+
 struct Pending { key: [u8; 32], expires: Instant, notified: bool }
 struct State { approved: BTreeSet<[u8; 32]>, pending: Option<Pending> }
 pub struct Trust { path: PathBuf, state: Mutex<State> }
@@ -46,11 +49,21 @@ impl Trust {
         pending.notified = true;
         Some((pending.key, code(&pending.key)))
     }
+    /// The user approved this headset's PIN on the desktop, so it needs no
+    /// second approval for PCVR. No effect if it's already trusted.
+    pub fn trust_paired(&self, key: [u8; 32]) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.approved.contains(&key) { return Ok(()); }
+        self.commit(&mut state, key)
+    }
     pub fn approve(&self, key: [u8; 32]) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
         if !state.pending.as_ref().is_some_and(|p| p.key == key && p.expires > Instant::now()) {
             return Err(io::Error::other("Headset approval expired or changed"));
         }
+        self.commit(&mut state, key)
+    }
+    fn commit(&self, state: &mut State, key: [u8; 32]) -> io::Result<()> {
         if state.approved.len() >= 8 { return Err(io::Error::other("Eight headsets are already authorized")); }
         let mut updated = state.approved.clone(); updated.insert(key);
         let keys: Vec<String> = updated.iter().map(|key|key.iter().map(|b|format!("{b:02x}")).collect()).collect();
@@ -79,6 +92,18 @@ impl Trust {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn a_pin_approved_headset_is_trusted_for_pcvr_without_a_second_prompt() {
+        let root=std::env::temp_dir().join(format!("meteor-trust-paired-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        let path=root.join("trust.json"); let trust=Trust::load(path.clone()).unwrap();
+        assert!(!trust.allows(&[3;32]));
+        trust.trust_paired([3;32]).unwrap();
+        assert!(trust.allows(&[3;32]) && trust.request([3;32]).is_none() && trust.pending().is_none());
+        trust.trust_paired([3;32]).unwrap();
+        assert!(Trust::load(path.clone()).unwrap().allows(&[3;32]));
+        assert!(!Trust::load(path).unwrap().allows(&[4;32]));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test] fn approval_is_local_bounded_persistent_and_key_specific() {
         let root=std::env::temp_dir().join(format!("meteor-trust-{}-{}",std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

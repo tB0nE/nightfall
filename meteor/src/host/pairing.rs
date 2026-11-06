@@ -1,5 +1,7 @@
 //! Encrypted PIN handoff. A network request never authorizes a client itself:
 //! only a local notification/tray approval submits the PIN to our managed host.
+//! The request also carries the headset's PCVR identity, so that one approval
+//! covers both: the stream and PCVR don't each ask.
 use std::{collections::VecDeque, net::IpAddr, sync::{Arc, Mutex}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use serde::Deserialize;
 use super::{State, Supervisor};
@@ -9,11 +11,11 @@ pub const AAD: &[u8] = b"nightfall-host-pair-v1";
 const TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
-pub struct Pending { pub id: String, pub pin: String, pub peer: IpAddr, expires: Instant }
+pub struct Pending { pub id: String, pub pin: String, pub peer: IpAddr, xr_identity: Option<[u8;32]>, expires: Instant }
 #[derive(Default)]
 struct Requests { pending: Option<Pending>, seen: VecDeque<String>, last: Option<Instant> }
 impl Requests {
-    fn offer(&mut self, id: String, pin: String, peer: IpAddr, now: Instant) -> Result<(),String> {
+    fn offer(&mut self, id: String, pin: String, xr_identity: Option<[u8;32]>, peer: IpAddr, now: Instant) -> Result<(),String> {
         if self.seen.contains(&id) { return Err("Pairing request was already received".into()); }
         if self.pending.as_ref().is_some_and(|p|p.expires>now) { return Err("Another pairing is awaiting approval".into()); }
         if self.last.is_some_and(|last|now.saturating_duration_since(last)<Duration::from_secs(5)) {
@@ -21,7 +23,7 @@ impl Requests {
         }
         self.last=Some(now);self.seen.push_back(id.clone());
         while self.seen.len()>64 {self.seen.pop_front();}
-        self.pending=Some(Pending {id,pin,peer,expires:now+TTL});
+        self.pending=Some(Pending {id,pin,peer,xr_identity,expires:now+TTL});
         Ok(())
     }
     fn take_approved(&mut self, id: &str, now: Instant) -> Option<Pending> {
@@ -32,17 +34,19 @@ impl Requests {
 pub struct Pairing {
     key: Arc<crate::crypto::MeteorKey>, host: Arc<Supervisor>, credentials: State,
     requests: Mutex<Requests>,
+    /// Meteor's PCVR trust, when PCVR is on. Otherwise the same file is updated.
+    xr_trust: Option<Arc<crate::xr_trust::Trust>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope { public_key: String, payload: String }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request { pin: String, created: u64 }
+struct Request { pin: String, created: u64, #[serde(default)] xr_identity: Option<String> }
 
 impl Pairing {
-    pub fn new(key: Arc<crate::crypto::MeteorKey>, host: Arc<Supervisor>, credentials: State) -> Arc<Self> {
-        Arc::new(Self { key, host, credentials, requests: Mutex::new(Requests::default()) })
+    pub fn new(key: Arc<crate::crypto::MeteorKey>, host: Arc<Supervisor>, credentials: State, xr_trust: Option<Arc<crate::xr_trust::Trust>>) -> Arc<Self> {
+        Arc::new(Self { key, host, credentials, requests: Mutex::new(Requests::default()), xr_trust })
     }
     pub fn pending(&self) -> Option<Pending> {
         self.requests.lock().unwrap().pending.as_ref().filter(|p|p.expires > Instant::now()).cloned()
@@ -52,7 +56,9 @@ impl Pairing {
         let (id,request)=decrypt_request(&self.key,body)?;
         {
             let mut state = self.requests.lock().unwrap();
-            state.offer(id.clone(),request.pin,peer,Instant::now())?;
+            let identity=request.xr_identity.as_deref().map(crate::xr_control::public_key).transpose()
+                .map_err(|_|"Invalid PCVR identity")?;
+            state.offer(id.clone(),request.pin,identity,peer,Instant::now())?;
         }
         log::info!("Managed host pairing from {peer} awaits desktop approval");
         let pairing = self.clone();
@@ -75,13 +81,24 @@ impl Pairing {
         };
         let pairing = self.clone();
         tokio::spawn(async move {
-            let result = tokio::task::spawn_blocking(move ||pairing.submit(&pending.pin)).await;
+            let identity = pending.xr_identity;
+            let worker = pairing.clone();
+            let result = tokio::task::spawn_blocking(move ||worker.submit(&pending.pin)).await;
+            if let (Ok(Ok(())),Some(identity))=(&result,identity) {
+                if let Err(error)=pairing.trust_for_pcvr(identity) {log::warn!("Cannot trust the headset for PCVR: {error}");}
+            }
             match result {
                 Ok(Ok(())) => crate::desktop::notify("Pairing approved", "Nightfall will finish pairing and connect automatically.").await,
                 Ok(Err(error)) => crate::desktop::notify("Pairing did not finish", &error).await,
                 Err(_) => crate::desktop::notify("Pairing did not finish", "Try pairing again, or enter the PIN through the host web interface.").await,
             }
         });
+    }
+    fn trust_for_pcvr(&self, identity: [u8;32]) -> std::io::Result<()> {
+        match &self.xr_trust {
+            Some(trust) => trust.trust_paired(identity),
+            None => crate::xr_trust::Trust::load(crate::config::config_dir().join(crate::xr_trust::FILE))?.trust_paired(identity),
+        }
     }
     fn submit(&self, pin: &str) -> Result<(), String> {
         if self.host.pid().is_none() || !self.host.wanted() { return Err("Managed host stopped. Try pairing again.".into()); }
@@ -140,10 +157,10 @@ fn basic_auth(user: &str, password: &str) -> String {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn pin_encoding_clock_and_credentials_are_bounded() {
-        assert!(validate_request(&Request {pin:"1234".into(),created:0}).is_err());
+        assert!(validate_request(&Request {pin:"1234".into(),created:0,xr_identity:None}).is_err());
         let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        assert!(validate_request(&Request {pin:"1234".into(),created:now}).is_ok());
-        assert!(validate_request(&Request {pin:"12\n4".into(),created:now}).is_err());
+        assert!(validate_request(&Request {pin:"1234".into(),created:now,xr_identity:None}).is_ok());
+        assert!(validate_request(&Request {pin:"12\n4".into(),created:now,xr_identity:None}).is_err());
         assert!(decode_hex("é",32).is_err());assert!(decode_hex("0",32).is_err());
         assert!(decode_hex(&"aa".repeat(33),32).is_err());
         assert_eq!(basic_auth("nightfall","secret"),"Basic bmlnaHRmYWxsOnNlY3JldA==");
@@ -164,7 +181,14 @@ fn basic_auth(user: &str, password: &str) -> String {
             serde_json::json!({"public_key":hex(&public),"payload":hex(&payload)})
         };
         let valid=packet(INFO,AAD).to_string();
-        assert_eq!(decrypt_request(&meteor,valid.as_bytes()).unwrap().1.pin,"1234");
+        let request=decrypt_request(&meteor,valid.as_bytes()).unwrap().1;
+        assert_eq!(request.pin,"1234");
+        assert_eq!(request.xr_identity,None,"an older client sends no PCVR identity");
+        let key=crate::crypto::derive(shared.as_bytes(),&public,&meteor.public,INFO);
+        let mut payload=serde_json::json!({"pin":"1234","created":now,"xr_identity":"ab".repeat(32)}).to_string().into_bytes();
+        key.seal_in_place_append_tag(crate::crypto::nonce(0),ring::aead::Aad::from(AAD),&mut payload).unwrap();
+        let with_identity=serde_json::json!({"public_key":hex(&public),"payload":hex(&payload)}).to_string();
+        assert_eq!(decrypt_request(&meteor,with_identity.as_bytes()).unwrap().1.xr_identity,Some("ab".repeat(32)));
         assert!(decrypt_request(&meteor,packet(b"other-channel",AAD).to_string().as_bytes()).is_err());
         assert!(decrypt_request(&meteor,packet(INFO,b"other-header").to_string().as_bytes()).is_err());
         let mut invalid=packet(INFO,AAD); invalid["public_key"]=serde_json::json!("ab");
@@ -174,15 +198,15 @@ fn basic_auth(user: &str, password: &str) -> String {
     }
     #[test] fn requests_do_not_approve_themselves_and_replay_or_expired_approvals_fail() {
         let now=Instant::now();let peer="127.0.0.1".parse().unwrap();let mut requests=Requests::default();
-        requests.offer("first".into(),"1234".into(),peer,now).unwrap();
+        requests.offer("first".into(),"1234".into(),None,peer,now).unwrap();
         assert!(requests.pending.is_some());
         assert!(requests.take_approved("wrong",now).is_none());
-        assert!(requests.offer("second".into(),"5678".into(),peer,now).is_err());
+        assert!(requests.offer("second".into(),"5678".into(),None,peer,now).is_err());
         assert!(requests.take_approved("first",now+TTL).is_none());
-        assert!(requests.offer("first".into(),"1234".into(),peer,now+TTL).is_err());
-        requests.offer("second".into(),"5678".into(),peer,now+TTL).unwrap();
+        assert!(requests.offer("first".into(),"1234".into(),None,peer,now+TTL).is_err());
+        requests.offer("second".into(),"5678".into(),None,peer,now+TTL).unwrap();
         assert!(requests.take_approved("second",now+TTL).is_some());
         assert!(requests.take_approved("second",now+TTL).is_none());
-        assert!(requests.offer("third".into(),"9012".into(),peer,now+TTL).is_err());
+        assert!(requests.offer("third".into(),"9012".into(),None,peer,now+TTL).is_err());
     }
 }

@@ -4,11 +4,12 @@ use std::{io,path::{Path, PathBuf},sync::OnceLock};
 use std::process::Stdio;
 static RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
 pub fn set_runtime_root(root: PathBuf) { let _ = RUNTIME_ROOT.set(root); }
+#[cfg(any(windows, test))]
 pub fn steam_launch_options() -> io::Result<String> {
     let root = RUNTIME_ROOT.get().ok_or_else(|| io::Error::other("Install and enable Meteor XR first"))?;
     Ok(launch_options_for(root))
 }
-#[cfg(not(windows))]
+#[cfg(all(not(windows), test))]
 pub(crate) fn launch_options_for(root: &Path) -> String {
     let wrapper = root.join("tools/meteor_xr.py").to_string_lossy().replace('\'', "'\"'\"'");
     format!("/usr/bin/python3 '{wrapper}' steam-run --app-id auto --wait 120 -- %command%")

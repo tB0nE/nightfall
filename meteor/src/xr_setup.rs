@@ -1,4 +1,4 @@
-//! Explicit, per-user PCVR installation; never changes global VR selection.
+//! Per-user PCVR installation, from the Setup window; never changes global VR selection.
 use std::{io, path::{Path, PathBuf}, sync::{Mutex, OnceLock}, time::Duration};
 
 #[derive(Clone, Default)]
@@ -22,14 +22,16 @@ pub fn bundle() -> io::Result<PathBuf> {
     Ok(root)
 }
 
-fn enabled_config(text: &str) -> io::Result<String> {
+fn enabled_config(text: &str) -> io::Result<String> { config_with_enabled(text, true) }
+
+fn config_with_enabled(text: &str, enabled: bool) -> io::Result<String> {
     // Validate the complete existing configuration first, rather than silently
     // replacing a malformed file with defaults. Preserve unknown keys/comments.
     let _: crate::config::Config = toml::from_str(text).map_err(io::Error::other)?;
     let mut document: toml_edit::DocumentMut = text.parse().map_err(io::Error::other)?;
     let decor = document.get("xr").and_then(|xr| xr.get("enabled"))
         .and_then(toml_edit::Item::as_value).map(|value| value.decor().clone());
-    document["xr"]["enabled"] = toml_edit::value(true);
+    document["xr"]["enabled"] = toml_edit::value(enabled);
     if let Some(decor) = decor { *document["xr"]["enabled"].as_value_mut().unwrap().decor_mut() = decor; }
     Ok(document.to_string())
 }
@@ -68,6 +70,11 @@ pub async fn enable_from(source: &Path, config_path: &Path) -> io::Result<()> {
     let settings: crate::config::Config = toml::from_str(&original).map_err(io::Error::other)?;
     let destination = settings.xr.runtime_root();
     if !destination.is_absolute() { return Err(io::Error::other("The PCVR runtime_root setting must be an absolute path.")); }
+    install(source, &destination).await?;
+    save_enabled(config_path, &original, &updated)
+}
+
+async fn install(source: &Path, destination: &Path) -> io::Result<()> {
     let output = tokio::time::timeout(Duration::from_secs(30),
         tokio::process::Command::new("/usr/bin/python3")
             .arg(source.join("tools/meteor_xr_install.py")).arg(source)
@@ -78,7 +85,34 @@ pub async fn enable_from(source: &Path, config_path: &Path) -> io::Result<()> {
         return Err(io::Error::other(format!("PCVR installation failed: {}",
             String::from_utf8_lossy(&output.stderr).chars().take(1400).collect::<String>())));
     }
-    save_enabled(config_path, &original, &updated)
+    Ok(())
+}
+
+/// Whether an installed runtime differs from the package. The manifest lists
+/// every file's hash, so the same manifest means the same runtime.
+fn outdated(package: &Path, installed: &Path) -> bool {
+    let manifest = |root: &Path| std::fs::read(root.join("xr-runtime/manifest.json")).ok();
+    matches!((manifest(package), manifest(installed)), (Some(new), Some(old)) if new != old)
+}
+
+/// Brings an installed runtime in line with the one in this AppImage, so an
+/// upgrade gets its fixes. Runs before the XR service starts. A failure keeps
+/// the old runtime working; a runtime the user chose in the settings is theirs.
+pub async fn update_installed(settings: &crate::config::XrConfig) {
+    if !settings.enabled || settings.runtime_root.is_some() { return; }
+    let Ok(package) = bundle() else { return };
+    let installed = settings.runtime_root();
+    if !outdated(&package, &installed) { return; }
+    match install(&package, &installed).await {
+        Ok(()) => log::info!("Updated the PCVR runtime from this AppImage"),
+        Err(error) => log::warn!("Keeping the installed PCVR runtime: {error}"),
+    }
+}
+
+/// Turns PCVR off in the settings. The installed files stay, for turning it back on.
+pub fn disable(config_path: &Path) -> io::Result<()> {
+    let original = read_config(config_path)?;
+    save_enabled(config_path, &original, &config_with_enabled(&original, false)?)
 }
 
 pub fn restart_command() -> io::Result<std::process::Command> {
@@ -107,34 +141,6 @@ pub fn select_encoder(backend: &str) -> io::Result<()> {
     save_enabled(&path,&original,&encoder_config(&original,backend)?)
 }
 
-pub fn request_enable() {
-    {
-        let mut state = STATE.get_or_init(Default::default).lock().unwrap();
-        if state.busy || state.ready { return; }
-        state.busy = true;
-        state.error = None;
-    }
-    tokio::spawn(async {
-        crate::desktop::notify("Setting up PCVR", "Installing the bundled runtime. Meteor will restart briefly; desktop streams will disconnect. Linux PCVR supports NVIDIA NVENC or AMD H.264/HEVC encoding.").await;
-        let result = async {
-            restart_command()?;
-            enable_from(&bundle()?, &crate::config::config_path()).await
-        }.await;
-        match result {
-            Ok(()) => {
-                crate::desktop::notify("PCVR enabled", "Meteor is restarting. Reconnect Nightfall, approve the headset when prompted, and copy Steam Launch Options from the top of Meteor's menu.").await;
-                crate::restart();
-            }
-            Err(error) => {
-                let message = error.to_string();
-                log::error!("PCVR setup failed: {message}");
-                { let mut state = STATE.get().unwrap().lock().unwrap(); state.busy = false; state.error = Some(message.clone()); }
-                crate::desktop::notify("PCVR setup failed — retry from Meteor's menu", &message).await;
-            }
-        }
-    });
-}
-
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn encoder_selection_preserves_settings_and_removes_stale_device_override() {
@@ -144,6 +150,21 @@ pub fn request_enable() {
         assert!(auto.contains("# User settings"));assert!(auto.contains("enabled=true"));
         let parsed:crate::config::Config=toml::from_str(&auto).unwrap();assert_eq!(parsed.xr.encoder_backend,"auto");
         assert!(encoder_config(input,"cpu").is_err());
+    }
+    #[test] fn only_a_different_installed_runtime_is_outdated() {
+        let root=std::env::temp_dir().join(format!("nf-outdated-{}",std::process::id()));
+        let write=|name:&str,text:&str|{
+            let path=root.join(name).join("xr-runtime");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("manifest.json"),text).unwrap();
+        };
+        write("package","new"); write("same","new"); write("old","old");
+        std::fs::create_dir_all(root.join("none")).unwrap();
+        assert!(outdated(&root.join("package"),&root.join("old")));
+        assert!(!outdated(&root.join("package"),&root.join("same")));
+        assert!(!outdated(&root.join("package"),&root.join("none")),"nothing installed: Setup installs it");
+        assert!(!outdated(&root.join("none"),&root.join("old")),"nothing to update from");
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test] fn config_edit_preserves_comments_custom_runtime_and_other_settings() {
         let text="# My settings\nsunshine_host = '10.0.0.13'\n[xr]\nenabled = false # keep this\nruntime_root = '/custom/xr'\nvideo_port = 48001\n";

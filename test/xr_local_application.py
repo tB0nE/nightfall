@@ -238,7 +238,8 @@ def validate_capture(output, service_log):
             raise RuntimeError("Invalid external application frame accounting")
         offset += record["bytes"]
         previous_id, previous_time = record["frame_id"], record["display_time_ns"]
-    if offset != (output / "monado-stereo.h264").stat().st_size:
+    video = output / "monado-stereo.h264"
+    if not video.is_symlink() and offset != video.stat().st_size:  # A symlink: the video was discarded.
         raise RuntimeError("Unaccounted external application bitstream bytes")
     retained = service_log.count("METEOR_IMAGE_LEASE retain=1 ")
     if (not retained or retained != service_log.count("METEOR_IMAGE_LEASE retain=0 ")

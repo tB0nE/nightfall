@@ -17,6 +17,8 @@ mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
 #[cfg(target_os = "linux")]
+mod setup_window;
+#[cfg(target_os = "linux")]
 mod xr_setup;
 #[cfg(windows)]
 mod desktop_windows;
@@ -94,6 +96,10 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|arg| arg == "--setup") {
+        std::process::exit(setup_window::run());
+    }
     #[cfg(windows)]
     if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
     #[cfg(windows)]
@@ -199,6 +205,7 @@ async fn main() {
         println!(
             "nightfall-meteor [options]\n\
              \x20 --install-xr-runtime [bundle] install bundled XR files into user data and exit\n\
+             \x20 --setup                 open the Setup window: host, PCVR, launch options, VDA\n\
              \x20 --enable-xr            install and enable bundled Linux PCVR, then exit\n\
              \x20 --no-tray               run without a tray icon\n\
              \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
@@ -404,6 +411,8 @@ async fn main() {
     #[cfg(target_os = "linux")]
     let cursor_task = tokio::spawn(host_cursor::watch(cursor.clone(), stats.clone(), shutdown.subscribe()));
     let dev_xr_address = value("--xr-service-dev");
+    #[cfg(target_os = "linux")]
+    if dev_xr_address.is_none() { xr_setup::update_installed(&config.xr).await; }
     let mut xr_discovery = None;
     let mut xr_trust = None;
     let mut xr_startup_error = None;
@@ -417,7 +426,7 @@ async fn main() {
             }
             let allowed = client.as_deref().map(xr_control::public_key).transpose()?.unwrap_or([0;32]);
             let pairing = if dev_xr_address.is_none() {
-                Some(Arc::new(xr_trust::Trust::load(config::config_dir().join("xr-trusted-headsets.json"))?))
+                Some(Arc::new(xr_trust::Trust::load(config::config_dir().join(xr_trust::FILE))?))
             } else { None };
             let key = key.clone().ok_or_else(|| std::io::Error::other("XR requires Meteor's host key"))?;
             let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
@@ -491,7 +500,7 @@ async fn main() {
     };
     #[cfg(target_os = "linux")]
     if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
-        host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone()));
+        host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone(), xr_trust.clone()));
     }
     let features = discovery::Features {
         key: key.as_ref().map(|k| k.public_hex()),
@@ -530,7 +539,7 @@ async fn main() {
     #[cfg(target_os = "linux")]
     let host_view=Arc::new(host_view);
     #[cfg(target_os = "linux")]
-    if !no_tray { host::setup::offer(host_view.clone(), &config); }
+    if !no_tray { host::setup::offer(&config); }
     #[cfg(target_os = "linux")]
     if !no_tray && host_view.state.choice == host::Choice::Bundled && host::input::check() != host::input::Status::Ready {
         let input=host_view.input.clone();

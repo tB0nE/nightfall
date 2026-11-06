@@ -82,7 +82,7 @@ impl View {
             });
             #[cfg(unix)]
             if self.pairing.is_some() {
-                info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION});
+                info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION, "xr_identity":true});
             }
             info
         })
