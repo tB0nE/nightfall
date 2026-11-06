@@ -149,6 +149,9 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     for name in ("capture-failed", "capture-complete", "monado-stereo.h264", "monado-stereo.json", "monado-stereo.jsonl", "decoded.rgb",
                  "server-eye-left.ppm", "server-eye-right.ppm"):
         (out / name).unlink(missing_ok=True)
+    if os.environ.get("METEOR_XR_DISCARD_VIDEO") == "1":
+        # The encoder writes through this; the stream itself isn't affected.
+        (out / "monado-stereo.h264").symlink_to(os.devnull)
     manifest = out / "runtime.json"
     manifest.write_text(json.dumps({"file_format_version": "1.0.0", "runtime": {
         "name": "Meteor diagnostic Monado", "library_path": str(library)}}))

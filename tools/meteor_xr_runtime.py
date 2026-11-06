@@ -33,7 +33,7 @@ def validate(root):
         '.build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/openxr/libopenxr_monado.so',
         'test/run_monado_nvenc_spike.py',
         'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
-        'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'LICENSE',
+        'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'tools/meteor_steam_options.py', 'LICENSE',
     ]
     if 'vaapi' in backends:
         required += ['xr-runtime/libmeteor-vaapi-probe.so','test/xr_encoder_backend.py',

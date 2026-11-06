@@ -83,9 +83,29 @@ fn lan_session_directory(cache: &Path) -> io::Result<PathBuf> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_nanos();
+    prune_lan_sessions(&sessions, KEPT_LAN_SESSIONS - 1);
     let directory = sessions.join(format!("{stamp}-{}", std::process::id()));
     fs::DirBuilder::new().mode(0o700).create(&directory)?;
     Ok(directory)
+}
+
+/// Sessions kept for their logs, counting the new one.
+const KEPT_LAN_SESSIONS: usize = 4;
+
+/// Removes all but the newest `keep` sessions. Their names start with the time.
+fn prune_lan_sessions(sessions: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(sessions) else { return };
+    let mut found: Vec<(u128, PathBuf)> = entries.flatten().filter_map(|entry| {
+        let stamp = entry.file_name().to_str()?.split('-').next()?.parse().ok()?;
+        entry.path().is_dir().then(|| (stamp, entry.path()))
+    }).collect();
+    found.sort();
+    let excess = found.len().saturating_sub(keep);
+    for (_, path) in found.into_iter().take(excess) {
+        if let Err(error) = fs::remove_dir_all(&path) {
+            log::warn!("Can't remove old XR session {}: {error}", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +218,8 @@ pub(crate) async fn runtime_adapter_with_status(
         .env("NIGHTFALL_XR_CODEC", &codec)
         .env("NIGHTFALL_XR_PROBE_FRAMES", if long_run { (hz*300).to_string() } else if hz >= 60 { (hz*20).to_string() } else { "200".into() })
         .env("NIGHTFALL_XR_PROBE_OUTPUT", &output)
+        // A game session is streamed, not kept: the video would use about 27 GB an hour.
+        .env("METEOR_XR_DISCARD_VIDEO", "1")
         .env("NIGHTFALL_XR_DEVICE_PORT", video.to_string())
         .env("NIGHTFALL_XR_TRACKING_PORT", tracking.to_string())
         .env(
@@ -494,6 +516,17 @@ mod tests {
         let (_send,receive)=tokio::sync::watch::channel(false);
         assert!(runtime_adapter(PathBuf::from("/unused"),1,2,20,1024,true,receive).await.is_err());
     }
+    #[test]
+    fn old_lan_sessions_are_removed_and_the_newest_kept() {
+        let root = std::env::temp_dir().join(format!("meteor-lan-prune-{}", std::process::id()));
+        for name in ["100-1", "300-1", "200-1", "400-2"] { fs::create_dir_all(root.join(name)).unwrap(); }
+        fs::create_dir_all(root.join("not-a-session")).unwrap();
+        super::prune_lan_sessions(&root, 2);
+        assert!(!root.join("100-1").exists() && !root.join("200-1").exists());
+        assert!(root.join("300-1").exists() && root.join("400-2").exists() && root.join("not-a-session").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn lan_retries_keep_separate_private_artifacts() {
         let cache = std::env::temp_dir().join(format!("meteor-lan-logs-{}", std::process::id()));

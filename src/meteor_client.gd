@@ -169,6 +169,13 @@ static func check_key(remembered: String, offered: String) -> KeyCheck:
 		return KeyCheck.NEW
 	return KeyCheck.SAME if remembered == offered else KeyCheck.CHANGED
 
+## Which host a remembered key belongs to: the id the host gave when paired,
+## which PIN pairing remembers it under too. A saved host's "uuid" won't do: it
+## is this client's own id, the same for every host.
+static func key_id(host: Dictionary, address: String) -> String:
+	var server := String(host.get("server_unique_id", ""))
+	return server if not server.is_empty() else address
+
 static func remembered_key(host_id: String) -> String:
 	var keys := ConfigFile.new()
 	keys.load(KEYS_FILE)

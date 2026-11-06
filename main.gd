@@ -1134,6 +1134,13 @@ func disconnect_stream():
 	if current_host_id >= 0:
 		stream_backend.cancel_host_stream(current_host_id)
 	stream_backend.stop_play_stream()
+	# A stream that was still connecting reports nothing when stopped, so nothing
+	# else would clean up. Deferred: anything it does report runs first.
+	_finish_disconnect.call_deferred()
+
+func _finish_disconnect() -> void:
+	if session_lifecycle.phase == SessionLifecycle.Phase.DISCONNECTING:
+		_full_disconnect_cleanup("Disconnected")
 
 func start_connect_timeout():
 	if pcvr_test.is_exclusive(): return

@@ -13,9 +13,12 @@ static func supported(info: Dictionary) -> bool:
 		and pairing.get("encryption", "") == MeteorClient.ENCRYPTION \
 		and not MeteorClient.meteor_key(info).is_empty()
 
+static func carries_xr_identity(info: Dictionary) -> bool:
+	return supported(info) and info.host.pairing.get("xr_identity", false) == true
+
 ## The ordinary host PIN exchange remains in charge of pairing. Meteor only
 ## receives the encrypted PIN and offers local desktop approval.
-static func request(owner: Node, address: String, http_port: int, pin: String, identity: String, still_pending: Callable) -> bool:
+static func request(owner: Node, address: String, http_port: int, pin: String, identity: String, xr_identity: String, still_pending: Callable) -> bool:
 	if not ClassDB.class_exists("MeteorChannelCipher") or not ClassDB.class_exists("HttpRequester"):
 		return false
 	var info := await MeteorClient.probe(owner, address, http_port - MeteorClient.HTTPS_BELOW_BASE)
@@ -27,7 +30,12 @@ static func request(owner: Node, address: String, http_port: int, pin: String, i
 	MeteorClient.remember_key(key_id, key)
 	var cipher = ClassDB.instantiate("MeteorChannelCipher")
 	if not String(cipher.init(key, CHANNEL)).is_empty(): return false
-	var plain := JSON.stringify({"pin": pin, "created": int(Time.get_unix_time_from_system())}).to_utf8_buffer()
+	var request := {"pin": pin, "created": int(Time.get_unix_time_from_system())}
+	# One approval on the desktop then covers PCVR too. An older Meteor refuses
+	# fields it doesn't know, so only send this to one that asks for it.
+	if carries_xr_identity(info) and not xr_identity.is_empty():
+		request["xr_identity"] = xr_identity
+	var plain := JSON.stringify(request).to_utf8_buffer()
 	var encrypted: PackedByteArray = cipher.seal(0, CHANNEL.to_utf8_buffer(), plain)
 	if encrypted.is_empty(): return false
 	var payload := JSON.stringify({"public_key": cipher.get_public_key().hex_encode(), "payload": encrypted.hex_encode()}).to_utf8_buffer()

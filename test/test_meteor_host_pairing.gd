@@ -19,5 +19,10 @@ func _init() -> void:
 	var changed := info.duplicate(true)
 	changed.host.pairing.path = "http://other-host/api/pin"
 	assert(not MeteorHostPairing.supported(changed))
+	assert(not MeteorHostPairing.carries_xr_identity(info), "an older Meteor refuses the extra field")
+	var asks := info.duplicate(true)
+	asks.host.pairing.xr_identity = true
+	assert(MeteorHostPairing.carries_xr_identity(asks))
+	assert(not MeteorHostPairing.carries_xr_identity({}))
 	print("All Meteor host pairing discovery tests passed")
 	quit()

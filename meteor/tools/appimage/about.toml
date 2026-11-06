@@ -1,5 +1,7 @@
 # Licences cargo-about accepts for the AppImage's notices; all are
 # compatible with Meteor's GPL-3.0.
+# The AppImage only: a crate another platform needs isn't part of it.
+targets = ["x86_64-unknown-linux-gnu"]
 accepted = [
     "GPL-3.0-only",
     "MIT",
