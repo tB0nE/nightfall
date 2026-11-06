@@ -3,7 +3,10 @@ extends RefCounted
 ## DEV handover over a prepared standby receiver. Never replaces PCVRSession's
 ## clean-welcome test policy or owns a second OpenXR session/frame loop.
 enum State { IDLE, WAITING, DRAINING, ACTIVE, STOPPING }
-const STARTUP_TIMEOUT := 20.0
+# From the launch to the game's first video. VRChat spends about 40 s in
+# launch.exe and EasyAntiCheat before it opens a real session, and the desktop
+# stays usable meanwhile. Matches the 120 s the Steam launch wrapper waits.
+const STARTUP_TIMEOUT := 120.0
 var main
 var state := State.IDLE
 var generation := 0

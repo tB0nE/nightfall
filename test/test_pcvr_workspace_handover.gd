@@ -277,7 +277,10 @@ func _run() -> void:
 	owner.pcvr_test.standby_active = true
 	control.runtime_status.phase = "session_ended"
 	assert(handover.arm(control))
-	handover.process(20.1)
+	# A slow game (VRChat's launcher and anti-cheat take about 40 s) keeps waiting.
+	handover.process(60.0)
+	assert(handover.state == Handover.State.WAITING)
+	handover.process(60.1)
 	assert(handover.state == Handover.State.STOPPING and handover.error == "XR handover startup timed out")
 	assert(not handover.blocks_workspace() and owner.visible)
 	owner.pcvr_test.standby_active = false
