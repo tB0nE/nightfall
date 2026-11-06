@@ -45,6 +45,7 @@ const CMD_XR_REJECT:usize=28;
 const CMD_XR_ENABLE:usize=29;
 const CMD_XR_LIBRARY:usize=30;
 const CMD_HOST_PAIR:usize=31;
+const CMD_TASKBAR_SETTINGS:usize=32;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -273,6 +274,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 }
                 let autostart = wide("Start with my computer");
                 AppendMenuW(menu, MF_STRING | if crate::desktop_windows::autostart_enabled() { MF_CHECKED } else { 0 }, CMD_AUTOSTART, autostart.as_ptr());
+                AppendMenuW(menu, MF_STRING, CMD_TASKBAR_SETTINGS, wide("Taskbar icon settings...").as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_LOG, log.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_SETTINGS, settings.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_MODELS, models.as_ptr());
@@ -393,6 +395,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         }
                     }
                 }
+                CMD_TASKBAR_SETTINGS => open_url("ms-settings:taskbar"),
                 CMD_HOST_LOGIN => {
                     let _ = std::process::Command::new("notepad.exe").arg(crate::host::state_path()).spawn();
                 }
@@ -496,6 +499,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             return;
         }
         log::info!("Windows tray icon started");
+        crate::desktop_windows::request_visible_tray_icon();
         let mut message = MSG::default();
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);

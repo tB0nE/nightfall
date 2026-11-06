@@ -41,7 +41,7 @@ public static class PackageDllCheck {
     & (Join-Path $install 'Setup-Meteor.ps1') -EnableHost -EnablePCVR -Quiet -PreviewSteamVRRegistration | Out-Null
     if($LASTEXITCODE){throw 'Packaged setup failed'}
     $setup=Get-Content (Join-Path $env:LOCALAPPDATA 'Nightfall Meteor\setup-summary.json') -Raw | ConvertFrom-Json
-    if(-not $setup.ok -or -not $setup.host_enabled -or -not $setup.pcvr_enabled -or $setup.games.Count -ne 2){throw 'Expected host and both installed VR games to be configured'}
+    if(-not $setup.ok -or -not $setup.host_enabled -or -not $setup.pcvr_enabled -or -not $setup.steamvr_ready){throw 'Expected bundled host and general SteamVR connection to be configured'}
     $catalog=Join-Path $env:LOCALAPPDATA 'Nightfall Meteor\xr\windows'
     $options=[IO.File]::ReadAllText((Join-Path $catalog 'steam-launch-options.txt'))
     if(-not $options.Contains('--xr-steam-run') -or -not $options.Contains($exe)){throw 'Packaged GUI CLI did not return complete Steam options'}
@@ -49,7 +49,9 @@ public static class PackageDllCheck {
     $rejected=$false
     try {Invoke-MeteorCli -Executable $exe -Options @('--xr-steam-options') | Out-Null}catch{$rejected=$true}
     if(-not $rejected){throw 'CLI helper lost a failing command exit status'}
-    foreach($profile in Get-ChildItem (Join-Path $catalog 'profiles') -Recurse -Filter 'xr-windows.json') {
+    $profileFiles=@()
+    if(Test-Path (Join-Path $catalog 'profiles')){$profileFiles=@(Get-ChildItem (Join-Path $catalog 'profiles') -Recurse -Filter 'xr-windows.json')}
+    foreach($profile in $profileFiles) {
         $config=Get-Content $profile.FullName -Raw | ConvertFrom-Json
         foreach($name in 'service','manifest','encoder','tracking') {
             if(-not $config.$name.StartsWith($install,[StringComparison]::OrdinalIgnoreCase)){throw "Profile $name escapes the installed runtime"}

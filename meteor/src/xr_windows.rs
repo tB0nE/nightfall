@@ -33,10 +33,10 @@ fn valid_id(id:&str)->bool { !id.is_empty() && id.len()<=10 && id.bytes().all(|b
 pub fn games(root:&Path)->io::Result<Vec<Game>> {
     let path=root.join("windows-games.json");
     if !path.exists(){return Ok(Vec::new());}
-    if std::fs::metadata(&path)?.len()>128*1024 {return Err(io::Error::other("Windows XR catalog exceeds 128 KiB"));}
+    if std::fs::metadata(&path)?.len()>2*1024*1024 {return Err(io::Error::other("Windows XR catalog exceeds 2 MiB"));}
     let games:Vec<Game>=serde_json::from_slice(&std::fs::read(path)?)?;
     let mut seen=std::collections::HashSet::new();
-    if games.len()>100 || games.iter().any(|g|!valid_id(&g.app_id) || !seen.insert(&g.app_id) ||
+    if games.len()>1000 || games.iter().any(|g|!valid_id(&g.app_id) || !seen.insert(&g.app_id) ||
         g.name.is_empty() || g.name.chars().count()>96 || g.name.chars().any(char::is_control) ||
         [g.monado.as_ref(),g.steamvr.as_ref()].into_iter().flatten().any(|p|!p.is_absolute())) {
         return Err(io::Error::other("Invalid or duplicate Windows XR game registration"));
@@ -98,8 +98,11 @@ pub(crate) fn claimed_launch(root:&Path,generation:&str)->io::Result<Claimed> {
 pub(crate) fn queue_steamvr(root:&Path)->io::Result<()> {
     let mut slot=LAUNCH.lock().unwrap();
     if ACTIVE.load(std::sync::atomic::Ordering::Acquire) || slot.as_ref().is_some_and(|p|p.expires>Instant::now()) {return Ok(());}
-    let profile=games(root)?.into_iter().find_map(|game|game.steamvr)
-        .ok_or_else(||io::Error::other("Register a SteamVR profile before using the installed driver"))?;
+    let shared=root.join("steamvr-runtime");
+    let profile=if shared.join("xr-windows.json").is_file() {shared} else {
+        games(root)?.into_iter().find_map(|game|game.steamvr)
+            .ok_or_else(||io::Error::other("Run Meteor PCVR setup before using the installed driver"))?
+    };
     let mut files=crate::xr_session::load(&profile)?;
     if files.steamvr_driver.is_none() || files.steamvr_capture!="direct" {
         return Err(io::Error::other("Automatic SteamVR connection requires direct capture"));
@@ -231,14 +234,18 @@ pub fn command(args:&[String])->io::Result<String> {
             // Reimport/update must retain the user's saved backend choice.
             if !game.profile(game.backend).is_ok(){game.backend=backend;}
             game.files()?;
-            if catalog.len()>100{return Err(io::Error::other("At most 100 games can be registered"));}
+            if catalog.len()>1000{return Err(io::Error::other("At most 1000 games can be registered"));}
             if !root.join("xr-windows.json").exists(){write(&root.join("xr-windows.json"),&serde_json::to_vec_pretty(&files)?)?;}
             write(&root.join("windows-games.json"),&serde_json::to_vec_pretty(&catalog)?)?;
             Ok("Game registered. Choose its backend in Meteor's PCVR menu.".into())
         },
         "--xr-windows-enable"=>{
             crate::xr_session::load(root)?;
-            let catalog=games(root)?;if catalog.is_empty(){return Err(io::Error::other("Register a VR game first"));}
+            let catalog=games(root)?;
+            if catalog.is_empty() {
+                let files=crate::xr_session::load(&root.join("steamvr-runtime"))?;
+                if files.steamvr_driver.is_none(){return Err(io::Error::other("Set up a SteamVR runtime or register a VR game first"));}
+            }
             for game in &catalog {game.files()?;}
             let path=crate::config::config_path();let original=std::fs::read_to_string(&path).or_else(|e|if e.kind()==io::ErrorKind::NotFound {Ok(String::new())}else{Err(e)})?;
             let _:crate::config::Config=toml::from_str(&original).map_err(io::Error::other)?;
@@ -287,6 +294,22 @@ pub fn command(args:&[String])->io::Result<String> {
         assert!(pending(&root).is_none());
         queue_steamvr(&root).unwrap();assert_ne!(pending(&root).unwrap().generation,cancelled.generation);
         cancel_steamvr(&root);assert!(pending(&root).is_none());
+        // No title-specific registration is needed for an ordinary Steam launch.
+        std::fs::remove_file(root.join("windows-games.json")).unwrap();
+        let shared=root.join("steamvr-runtime");std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("xr-windows.json"),serde_json::to_vec(&value).unwrap()).unwrap();
+        queue_steamvr(&root).unwrap();assert_eq!(pending(&root).unwrap().app_id,"250820");
+        cancel_steamvr(&root);
+        // Generic game profiles accept only this app's VR URL and Steam client.
+        let steam=root.join("steam.exe");std::fs::write(&steam,b"fixture").unwrap();
+        let mut generic=value.clone();generic["application"]=json!(steam);
+        generic["steam_app_id"]=json!("987654");generic["steamvr_launch_via_steam"]=json!(true);
+        generic["arguments"]=json!(["steam://launch/987654/VR"]);
+        std::fs::write(shared.join("xr-windows.json"),serde_json::to_vec(&generic).unwrap()).unwrap();
+        assert!(crate::xr_session::load(&shared).unwrap().steamvr_launch_via_steam);
+        generic["arguments"]=json!(["steam://launch/1/VR"]);
+        std::fs::write(shared.join("xr-windows.json"),serde_json::to_vec(&generic).unwrap()).unwrap();
+        assert!(crate::xr_session::load(&shared).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn default_backend_is_monado(){assert_eq!(Backend::default(),Backend::Monado);}

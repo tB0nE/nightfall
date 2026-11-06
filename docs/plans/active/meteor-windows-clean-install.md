@@ -81,15 +81,49 @@ stdin, status was displayed, and the dialog closed normally. Fresh relocated
 package setup and host/XR startup also passed. No real pairing was attempted.
 
 Updated installer SHA-256:
-`d310fa094322e1f70200f0a454469d842b970a0c790159e81b9c98e466f5c161`.
+`ada0b89f492fa3695f844c48f57ed86b2a78c300df8e8b2c17b1f6705a59caa1`.
 This supersedes the pre-dialog candidate above. Real clean-install/headset PIN
 acceptance is still pending. Do not reset the user's working profile merely
 to inspect the dialog.
 
-The installer task is labelled **Set up PCVR for installed games**. Moss and
-VRChat are the currently seeded automatic profiles, not the supported-game
-boundary. Broader automatic profile discovery remains outstanding; avoid
-describing undetected games as unsupported.
+## General PCVR setup and tray visibility
+
+Setup now provisions a shared SteamVR connection independently of individual
+game profiles. SteamVR being installed is enough; Moss and VRChat are not
+prerequisites. Installed VR titles are discovered from Steam's
+`config/steamapps.vrmanifest`, matched to app manifests across Steam libraries,
+and registered with their app IDs. Duplicate, uninstalled, non-Steam, and
+non-VR entries are excluded. Run Steam to refresh its VR manifest, then rerun
+setup after adding games. The existing Moss Monado/xrizer optimization remains
+available and backend choices survive reimport.
+
+General SteamVR profiles launch through the local Steam client using a
+constructed `steam://launch/<registered-id>/VR` URL, rather than guessing a
+game executable or accepting a command from a remote client. The short-lived
+Steam URL launcher exiting does not end the XR lease: scene-application exit
+does. Steam and its games remain user-owned processes. Ordinary Steam launches
+can activate the shared connection even with an empty Meteor game catalog.
+
+On first tray startup, Windows 11's per-icon visibility preference is
+initialized only if absent and only for this executable. Explicit user hide
+or show choices are retained, as are other applications' settings. This is
+best-effort because Windows owns notification-area visibility; the new
+**Taskbar icon settings…** tray item opens the supported Windows settings UI.
+Isolated package checks skip real tray-preference writes.
+
+164 Windows tests passed, including missing-profile activation, Steam URL
+validation, and visibility initialization/preservation in an isolated registry
+fixture. Setup tests passed with SteamVR and no games, and with an arbitrary
+VR title in a second library; stale/duplicate/non-VR records were filtered.
+The existing two-cycle SteamVR capture, slow-reply, and game-exit regressions
+passed. Physical acceptance of the generalized Steam-launched profiles remains
+pending.
+
+Immediate streaming after successful headset pairing is intentional in
+`StreamManager.on_pair_completed()`. Startup auto-connect is separate and
+requires the client's Quick Start preference (default off). Meteor discovery
+alone does not launch a desktop stream. The Windows reset preserved Quest
+data, including any existing pairing and Quick Start preference.
 
 The release installer now stages the tested custom Vibepollo host, Monado,
 xrizer, OpenXR loader, SteamVR direct-capture service/driver, tracking/encoder

@@ -3,7 +3,7 @@ $ErrorActionPreference='Stop'
 $target=Join-Path (Split-Path $PSScriptRoot) 'meteor\target'
 $package=Get-Content (Join-Path $target 'windows-packaged-setup-summary.json') -Raw | ConvertFrom-Json
 if(-not $package.ok){throw 'Run packaged setup smoke check first'}
-$saved=@{APPDATA=$env:APPDATA;LOCALAPPDATA=$env:LOCALAPPDATA;PATH=$env:PATH}
+$saved=@{APPDATA=$env:APPDATA;LOCALAPPDATA=$env:LOCALAPPDATA;PATH=$env:PATH;NIGHTFALL_TEST_SKIP_TRAY_PROMOTION=$env:NIGHTFALL_TEST_SKIP_TRAY_PROMOTION}
 $process=$null;$summary=@{ok=$false;headset=$false;check='windows-packaged-host'}
 function FreeTestBase {
     foreach($candidate in @(53989,51989,55989,57989,59989)) {
@@ -28,6 +28,7 @@ function FreeTestBase {
     throw 'No isolated port block is available for the packaged host check'
 }
 try {
+    $env:NIGHTFALL_TEST_SKIP_TRAY_PROMOTION='1'
     $env:APPDATA=Join-Path $package.root 'Roaming';$env:LOCALAPPDATA=Join-Path $package.root 'Local'
     $env:PATH="$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem"
     $config=Join-Path $env:APPDATA 'Nightfall Meteor'

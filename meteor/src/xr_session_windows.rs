@@ -11,6 +11,7 @@ pub(crate) struct Files {
     pub tracking:PathBuf,
     pub application:PathBuf,
     #[serde(skip)] pub external_steamvr:bool,
+    #[serde(default)] pub steamvr_launch_via_steam:bool,
     #[serde(default)] pub working_directory:Option<PathBuf>,
     #[serde(default)] pub openvr_runtime:Option<PathBuf>,
     #[serde(default)] pub openvr_loader:Option<PathBuf>,
@@ -32,6 +33,14 @@ pub(crate) fn load(root:&Path)->io::Result<Files> {
     if let Some(runtime)=&files.openvr_runtime {
         if !runtime.is_absolute() || !runtime.join("bin/vrclient_x64.dll").is_file() {
             return Err(io::Error::other("Missing absolute Windows xrizer runtime directory"));
+        }
+    }
+    if files.steamvr_launch_via_steam {
+        let id=files.steam_app_id.as_deref().unwrap_or("");
+        if files.steamvr_driver.is_none() || files.steam_launch || files.openvr_loader.is_some()
+            || files.application.file_name().and_then(|s|s.to_str()).is_none_or(|s|!s.eq_ignore_ascii_case("steam.exe"))
+            || files.arguments!=[format!("steam://launch/{id}/VR")] {
+            return Err(io::Error::other("Steam VR launch requires the installed Steam client and its registered game's VR URL"));
         }
     }
     if let Some(driver)=&files.steamvr_driver {
@@ -191,6 +200,7 @@ pub(crate) async fn runtime_adapter_with_status(
         if files.steamvr_driver.is_some() && !steamvr_ready.is_file() {return Err(io::Error::other("SteamVR trial driver did not become ready"));}
         if let Some(p)=&progress {p.lock().unwrap().phase=RuntimePhase::ReadyForApplication;}
         let mut steam_socket=completion;
+        let mut steam_launcher=None;
         if !files.external_steamvr {
         let mut app=if files.steam_launch {
             let pending=crate::xr_steam_windows::Pending::create(&root)?;
@@ -238,7 +248,11 @@ pub(crate) async fn runtime_adapter_with_status(
             }))?)?;
             app.env("VR_OVERRIDE",runtime).env("VR_PATHREG_OVERRIDE",registry);
         }
-        session.launch(&mut app)?;
+        if files.steamvr_launch_via_steam {
+            // Steam and its game belong to the user, not the runtime job.
+            // The short-lived URL launcher exiting is not the game exiting.
+            steam_launcher=Some(app.spawn()?);
+        } else {session.launch(&mut app)?;}
         event(&format!("application_started pid={:?} path={}",session.process_ids().1,files.application.display()))?;
         } else {event("attached_to_external_steamvr_without_launching_application")?;}
         let mut saw_frame=false;let mut saw_end=false;
@@ -248,7 +262,11 @@ pub(crate) async fn runtime_adapter_with_status(
                 if files.steamvr_driver.is_some(){std::fs::write(marker.with_extension("stop"),b"")?;}
                 return Err(io::Error::other("Steam launch wrapper disconnected"));
             }
-            let scene_ended=files.external_steamvr && marker.with_extension("game-ended").is_file();
+            if let Some(child)=&mut steam_launcher && let Some(status)=child.try_wait()? {
+                if !status.success(){return Err(io::Error::other("Steam rejected the VR game launch"));}
+                steam_launcher=None;
+            }
+            let scene_ended=(files.external_steamvr || files.steamvr_launch_via_steam) && marker.with_extension("game-ended").is_file();
             if cancelled() || scene_ended {
                 if scene_ended {event("external_scene_application_exited")?;}
                 event(&format!("cancel_requested child_state={:?}",session.poll_session(files.external_steamvr)))?;
@@ -271,7 +289,7 @@ pub(crate) async fn runtime_adapter_with_status(
                 if p.active_sessions==0 {p.event_sequence+=1;}
                 p.phase=RuntimePhase::SessionActive; p.active_sessions=1;
             }
-            let status=match session.poll_session(files.external_steamvr) {Ok(status)=>status,Err(error)=>{event(&format!("runtime_poll_failed error={error}"))?;return Err(error);}};
+            let status=match session.poll_session(files.external_steamvr || files.steamvr_launch_via_steam) {Ok(status)=>status,Err(error)=>{event(&format!("runtime_poll_failed error={error}"))?;return Err(error);}};
             if let Some(status)=status {
                 event(&format!("application_exited status={status}"))?;
                 if files.steamvr_driver.is_some() {std::fs::write(marker.with_extension("stop"),b"")?;}

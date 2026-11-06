@@ -22,12 +22,14 @@ depth ports. The installer creates Start menu and uninstall entries for the
 current Windows user. It does not change firewall rules; automated firewall
 setup is still planned.
 
-Setup offers the built-in host and PCVR. Automatic game-profile discovery
-currently covers Moss (Monado/xrizer) and VRChat (SteamVR); these are not the
-limit of PCVR game support. This Windows encoder currently requires NVIDIA/NVENC;
-install SteamVR through Steam for VRChat. PCVR setup registers Meteor's bundled
+Setup offers the built-in host and PCVR. It discovers installed VR games from
+Steam's VR application manifest across your Steam libraries. SteamVR handles
+general VR games; Moss also has a Monado/xrizer profile. This Windows encoder
+currently requires NVIDIA/NVENC. Install SteamVR through Steam. PCVR setup registers Meteor's bundled
 SteamVR driver automatically. SteamVR and games are not redistributed.
 After installing a game, quit Meteor and use Set up Nightfall Meteor in Start.
+Run Steam first so it can refresh its VR application list. PCVR setup can
+enable the SteamVR connection even before any game profiles are discovered.
 To pair, select this PC in Nightfall, then choose Game streaming host > Pair
 headset... in Meteor's tray (or Pair a Nightfall headset from Start). Enter
 the four-digit headset PIN; no host web login is needed. Finish pairing in
@@ -35,7 +37,8 @@ Nightfall, then compare and approve the PCVR
 headset code in Meteor's tray. VR Apps launches need no Steam launch options.
 For direct Moss launches from Steam, use the line in the PCVR profiles folder's
 steam-launch-options.txt as Moss's Steam launch options. VRChat uses the
-registered SteamVR driver and needs no Meteor launch options. Existing Steam
+registered SteamVR driver and needs no Meteor launch options, as do other
+SteamVR games. Existing Steam
 settings are not automatically overwritten by the installer.
 Setup diagnostics: AppData\Local\Nightfall Meteor\setup-summary.json.
 The built-in multi-monitor backend currently supports SDR displays on one GPU.
