@@ -258,7 +258,7 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			continue
 		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
 		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
-		if not info.is_empty() and not _trust_meteor(info, String(host.get("uuid", address))):
+		if not info.is_empty() and not _trust_meteor(info, MeteorClient.key_id(host, address)):
 			return {}
 		if not info.is_empty():
 			# Zoned for USB Link, so the depth and microphone sockets reach it.

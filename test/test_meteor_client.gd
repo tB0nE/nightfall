@@ -83,6 +83,11 @@ func _test_check_key() -> void:
 	_check(MeteorClient.check_key("", KEY) == MeteorClient.KeyCheck.NEW, "the first key is new")
 	_check(MeteorClient.check_key(KEY, KEY) == MeteorClient.KeyCheck.SAME, "the same key")
 	_check(MeteorClient.check_key(KEY, KEY.replace("13be", "13bf")) == MeteorClient.KeyCheck.CHANGED, "a different key")
+	var first := {"uuid": "CLIENT", "server_unique_id": "HOST-A"}
+	var second := {"uuid": "CLIENT", "server_unique_id": "HOST-B"}
+	_check(MeteorClient.key_id(first, "10.0.0.2") != MeteorClient.key_id(second, "10.0.0.2"), "each host has its own remembered key")
+	_check(MeteorClient.key_id(first, "10.0.0.2") == "HOST-A", "the key is remembered under the id pairing uses")
+	_check(MeteorClient.key_id({"uuid": "CLIENT"}, "10.0.0.2") == "10.0.0.2", "a host saved without an id goes by its address")
 	_check(MeteorClient.meteor_key({"key": KEY.to_upper()}) == KEY, "keys compare in lower case")
 	_check(MeteorClient.meteor_key({"key": KEY.replace("1", "g")}).is_empty(), "non-hex keys are refused")
 
