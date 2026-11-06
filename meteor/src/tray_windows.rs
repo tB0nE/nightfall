@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY};
+use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
     CreateIcon, DestroyIcon, GetMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
@@ -20,9 +20,19 @@ const TRAY_MESSAGE: u32 = WM_APP + 1;
 const TRAY_BALLOON: u32 = WM_APP + 3;
 static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static PENDING_BALLOON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static PENDING_BALLOON_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub fn queue_balloon(message: String) {
     if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
+    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
+    }
+}
+
+pub fn queue_pairing_balloon(url: String) {
+    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some("Incoming Pairing Request — click to approve".into()); }
+    if let Ok(mut guard) = PENDING_BALLOON_URL.lock() { *guard = Some(url); }
     let hwnd = TRAY_HWND.load(Ordering::Relaxed);
     if hwnd != 0 {
         unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
@@ -301,6 +311,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, point.x, point.y, 0, hwnd, null_mut());
                 DestroyMenu(menu);
             }
+            0
+        }
+        TRAY_MESSAGE if lparam as u32 == NIN_BALLOONUSERCLICK => {
+            let url = PENDING_BALLOON_URL.lock().ok().and_then(|mut g| g.take());
+            if let Some(url) = url { open_url(&url); }
             0
         }
         TRAY_MESSAGE if lparam as u32 == WM_LBUTTONDBLCLK => {

@@ -17,6 +17,8 @@ mod install;
 mod instance;
 #[cfg(windows)]
 pub mod pairing;
+#[cfg(windows)]
+pub mod pairing_watch;
 #[cfg(unix)]
 mod supervisor;
 #[cfg(windows)]

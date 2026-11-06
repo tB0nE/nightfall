@@ -62,6 +62,8 @@ impl View {
         if let Some(instance) = self.instance.take() {
             let supervisor = Supervisor::start(instance);
             let _ = RUNNING.set(supervisor.clone());
+            #[cfg(windows)]
+            super::pairing_watch::start(&supervisor);
             self.supervisor = Some(supervisor);
         }
     }
