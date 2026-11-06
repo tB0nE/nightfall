@@ -81,10 +81,15 @@ stdin, status was displayed, and the dialog closed normally. Fresh relocated
 package setup and host/XR startup also passed. No real pairing was attempted.
 
 Updated installer SHA-256:
-`f58959e6b73a7f32c03182c42ead24b9d022f07bb1e80635f36111dc7b8a1dcc`.
+`d310fa094322e1f70200f0a454469d842b970a0c790159e81b9c98e466f5c161`.
 This supersedes the pre-dialog candidate above. Real clean-install/headset PIN
 acceptance is still pending. Do not reset the user's working profile merely
 to inspect the dialog.
+
+The installer task is labelled **Set up PCVR for installed games**. Moss and
+VRChat are the currently seeded automatic profiles, not the supported-game
+boundary. Broader automatic profile discovery remains outstanding; avoid
+describing undetected games as unsupported.
 
 The release installer now stages the tested custom Vibepollo host, Monado,
 xrizer, OpenXR loader, SteamVR direct-capture service/driver, tracking/encoder

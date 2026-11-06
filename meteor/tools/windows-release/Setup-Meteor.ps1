@@ -88,7 +88,7 @@ try {
             $options=Invoke-MeteorCli -Executable $exe -Options @('--xr-steam-options','--root',$Root)
             [IO.File]::WriteAllText((Join-Path $Root 'steam-launch-options.txt'),$options,[Text.UTF8Encoding]::new($false))
             $summary.pcvr_enabled=$true
-        } else {$summary.warnings+='No supported VR games found. Install Moss or VRChat, then run Set up PCVR again.'}
+        } else {$summary.warnings+='No game profiles were added automatically. Automatic profile discovery currently covers Moss and VRChat; this does not mean other PCVR games are unsupported.'}
     }
     $summary.ok=$true
 } catch {

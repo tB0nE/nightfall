@@ -22,8 +22,9 @@ depth ports. The installer creates Start menu and uninstall entries for the
 current Windows user. It does not change firewall rules; automated firewall
 setup is still planned.
 
-Setup offers the built-in host and PCVR. Supported installed Steam games are
-currently Moss (Monado/xrizer) and VRChat (SteamVR). PCVR requires NVIDIA/NVENC;
+Setup offers the built-in host and PCVR. Automatic game-profile discovery
+currently covers Moss (Monado/xrizer) and VRChat (SteamVR); these are not the
+limit of PCVR game support. This Windows encoder currently requires NVIDIA/NVENC;
 install SteamVR through Steam for VRChat. PCVR setup registers Meteor's bundled
 SteamVR driver automatically. SteamVR and games are not redistributed.
 After installing a game, quit Meteor and use Set up Nightfall Meteor in Start.

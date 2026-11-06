@@ -38,7 +38,7 @@ WizardStyle=modern
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "builtinhost"; Description: "Use Meteor's built-in desktop streaming host"
-Name: "pcvr"; Description: "Set up PCVR for installed Moss and VRChat games (NVIDIA)"
+Name: "pcvr"; Description: "Set up PCVR for installed games"
 
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion
