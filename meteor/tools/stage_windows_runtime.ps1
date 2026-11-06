@@ -54,6 +54,7 @@ foreach($dir in @($crt[0].FullName,$omp[0].FullName)) {
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\Setup-Meteor.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\Meteor-Cli.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\Pair-Headset.ps1') $Stage
+CopyRequired (Join-Path $PSScriptRoot 'windows-release\Install-SteamVR.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\SteamVR-Driver.ps1') $Stage
 foreach($component in @(
     @{name='Monado';source="$target\windows-monado-src\LICENSE"},

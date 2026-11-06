@@ -12,6 +12,7 @@ pub(crate) struct Files {
     pub application:PathBuf,
     #[serde(skip)] pub external_steamvr:bool,
     #[serde(default)] pub steamvr_launch_via_steam:bool,
+    #[serde(default)] pub library_only:bool,
     #[serde(default)] pub working_directory:Option<PathBuf>,
     #[serde(default)] pub openvr_runtime:Option<PathBuf>,
     #[serde(default)] pub openvr_loader:Option<PathBuf>,
@@ -86,6 +87,7 @@ pub(crate) async fn runtime_adapter_with_status(
         Some(generation)=>{let launch=crate::xr_windows::claimed_launch(&root,generation)?;(launch.files,launch.completion)},
         None=>(load(&root)?,None),
     };
+    if files.library_only {return Err(io::Error::other("Choose a configured VR game before starting XR"));}
     let progress=progress.cloned();
     tokio::task::spawn_blocking(move || {
         let _active=active;
@@ -318,6 +320,21 @@ pub(crate) async fn runtime_adapter_with_status(
 mod tests {
     use super::*;
     use std::io::Write;
+    #[tokio::test]
+    async fn library_only_descriptor_never_launches_an_application() {
+        let root=std::env::temp_dir().join(format!("meteor-library-only-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        let exe=std::env::current_exe().unwrap();
+        std::fs::write(root.join("xr-windows.json"),serde_json::to_vec(&serde_json::json!({
+            "service":exe,"manifest":exe,"encoder":exe,"tracking":exe,"application":exe,"library_only":true
+        })).unwrap()).unwrap();
+        assert!(load(&root).unwrap().library_only);
+        let (_stop,cancel)=tokio::sync::watch::channel(false);
+        let result=runtime_adapter_with_status(root.clone(),123,124,72,512,512,false,32,"h264".into(),false,None,cancel,None,None).await;
+        assert!(result.unwrap_err().to_string().contains("Choose a configured VR game"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "launches the explicitly configured Windows application with synthetic tracking"]
     async fn configured_application_delivers_frames_before_bounded_stop() {

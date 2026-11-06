@@ -280,3 +280,35 @@ All 54 GDScript scripts pass, including the new first-approval menu regression.
 Release APK rebuilt and signature verified, with no GDScript export errors.
 The replacement APK deployment is recorded in the local package/check summaries;
 physical PCVR-menu and first-approval acceptance remain pending.
+
+## SteamVR installation and Moss bottom strip (2026-11-06)
+
+Missing SteamVR is now a per-game requirement. Discovered SteamVR games remain
+visible in VR Apps; choosing one offers Install SteamVR and Cancel. Cancel
+sends no installation request. Install opens Steam's official installation
+page on the PC and a continuation dialog. After installation, close SteamVR,
+choose Continue, then refresh VR Apps. The continuation refreshes PCVR metadata
+without stopping Meteor. Monado games remain usable without SteamVR. A
+library-only root descriptor cannot be launched as an XR application.
+
+The reported Moss strip stays at the bottom of both eyes. Its recorded
+session had matching 2064x2208 eye capture rectangles and a 4128x2208 encoded
+stereo image; no crop override was found in Moss's configuration. Windows
+uses Monado's simulated HMD adapter, which inherited a generic visibility mask.
+The remote-headset adapter now returns an empty visibility mask instead of
+claiming that simulated lens geometry matches the Quest. Resolution, viewport,
+and field of view remain unchanged. This is a targeted hypothesis, not a
+confirmed physical fix. Compare Moss's bottom edge in both eyes on the headset.
+
+Validation: 166 Windows release Rust tests passed; Windows integration passed
+geometry, bootstrap, native pipe, registration preview and release app.
+The GDScript suite and missing-SteamVR setup fixture passed. The local release
+OpenVR/xrizer/Monado probe explicitly verified empty hidden and visible meshes
+for both eyes, delivered encoded frames, and cleaned up its owned processes.
+No headset was used by these checks. The release APK passed v2 signature
+verification (SHA-256 93f0227979d71d3e6c6d14308b0fcf4f0799fd0d1c25c9d6ac6d5a6fb90f2475).
+The installed application and headset have not yet been upgraded to this candidate.
+Release artifacts were copied to `G:\Temp\nightfall-windows-build`:
+`Nightfall-Meteor-0.1.1-Setup-x64.exe` (SHA-256
+610b52dedf7d130f772e82caf162e0e1a2b357105b58dd0fae8ff6a35242235a)
+and `Nightfall-Android-arm64-v8a.apk`.

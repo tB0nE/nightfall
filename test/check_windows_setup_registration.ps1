@@ -54,6 +54,12 @@ $record | ConvertTo-Json
     $hostOnly=& $setup -EnableHost -Root (Join-Path $root 'profiles') -Quiet | ConvertFrom-Json
     if(-not $hostOnly.ok -or $hostOnly.PSObject.Properties.Name -contains 'steamvr_driver'){throw 'Host-only setup unexpectedly configured SteamVR'}
     if((Get-Item "$app\registration-call.json").LastWriteTimeUtc -ne $before){throw 'Host-only setup invoked registration'}
+    Rename-Item "$steam\steamapps\appmanifest_250820.acf" 'appmanifest_250820.uninstalled'
+    $missingRoot=Join-Path $root 'without-steamvr'
+    $missing=& $setup -EnablePCVR -SteamRoot $steam -Root $missingRoot -Quiet | ConvertFrom-Json
+    if(-not $missing.ok -or -not $missing.pcvr_enabled -or $missing.steamvr_ready -or $missing.games.Count -ne 1 -or $missing.warnings.Count){throw 'Missing SteamVR must remain a per-game requirement, not block setup'}
+    $descriptor=Get-Content (Join-Path $missingRoot 'xr-windows.json') -Raw | ConvertFrom-Json
+    if(-not $descriptor.library_only){throw 'App library must remain available before SteamVR is installed'}
     $summary.ok=$true
 } catch {$summary.error=$_.Exception.Message} finally {
     $env:APPDATA=$saved.APPDATA;$env:LOCALAPPDATA=$saved.LOCALAPPDATA

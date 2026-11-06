@@ -14,6 +14,7 @@ pub struct Game {
     pub app_id:String,pub name:String,
     #[serde(default)] pub backend:Backend,
     pub monado:Option<PathBuf>,pub steamvr:Option<PathBuf>,
+    #[serde(default)] pub requires_steamvr:bool,
 }
 impl Game {
     fn profile(&self,backend:Backend)->io::Result<&Path> {
@@ -21,8 +22,9 @@ impl Game {
             .ok_or_else(||io::Error::other("This game has no registered profile for that backend"))
     }
     fn files(&self)->io::Result<Files> {
+        if self.backend==Backend::Steamvr && self.requires_steamvr {return Err(io::Error::other("This game requires SteamVR to be installed"));}
         let files=crate::xr_session::load(self.profile(self.backend)?)?;
-        if files.steam_launch || files.steam_app_id.as_deref()!=Some(self.app_id.as_str()) ||
+        if files.library_only || files.steam_launch || files.steam_app_id.as_deref()!=Some(self.app_id.as_str()) ||
             files.steamvr_driver.is_some()!=(self.backend==Backend::Steamvr) {
             return Err(io::Error::other("Game profile backend/application ID does not match its registration"));
         }
@@ -172,17 +174,29 @@ pub(crate) fn cancel_steam(root:&Path) {
 }
 pub fn library(root:&Path,action:&str,key:&str,offset:u32)->Value {
     let run=||->io::Result<Value> {
-        if offset>1000 || !matches!(action,"list"|"art"|"launch") {return Err(io::Error::other("Invalid library request"));}
+        if offset>1000 || !matches!(action,"list"|"art"|"launch"|"install_steamvr") {return Err(io::Error::other("Invalid library request"));}
         let catalog=games(root)?;
         if action=="list" {
             let apps:Vec<Value>=catalog.iter().skip(offset as usize).take(4).map(|g| {
-                let result=g.files();json!({"key":format!("steam:{}",g.app_id),"name":g.name,"source":"Steam","vr":true,"ready":result.is_ok(),"backend":g.backend,"error":result.err().map(|e|e.to_string())})
+                let result=g.files();json!({"key":format!("steam:{}",g.app_id),"name":g.name,"source":"Steam","vr":true,"ready":result.is_ok(),"backend":g.backend,"requires_steamvr":g.backend==Backend::Steamvr && g.requires_steamvr,"error":result.err().map(|e|e.to_string())})
             }).collect();
             return Ok(json!({"action":"list","apps":apps,"offset":offset,"total":catalog.len()}));
         }
         if !crate::xr_library::valid_key(key) {return Err(io::Error::other("Invalid game key"));}
         let game=catalog.iter().find(|g|format!("steam:{}",g.app_id)==key).ok_or_else(||io::Error::other("Choose a host-registered VR game"))?;
         if action=="art" {return Ok(json!({"action":"art","key":key,"image":""}));}
+        if game.backend==Backend::Steamvr && game.requires_steamvr {
+            if action=="install_steamvr" {
+                use std::os::windows::process::CommandExt;
+                let script=std::env::current_exe()?.parent().unwrap().join("Install-SteamVR.ps1");
+                if !script.is_file(){return Err(io::Error::other("Update Meteor to open SteamVR setup"));}
+                std::process::Command::new("powershell.exe").args(["-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"])
+                    .arg(script).arg("-Root").arg(root).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW).spawn()?;
+                return Ok(json!({"action":action,"message":"SteamVR installation opened on your PC. Finish setup there, then refresh VR Apps."}));
+            }
+            return Ok(json!({"action":action,"error":"This game requires SteamVR. Install it through Steam, then try again.","error_code":"steamvr_required","key":key}));
+        }
+        if action=="install_steamvr" {return Err(io::Error::other("This game does not require SteamVR setup"));}
         queue(&mut LAUNCH.lock().unwrap(),root.canonicalize()?,game.app_id.clone(),game.files()?)?;
         Ok(json!({"action":"launch","key":key,"message":format!("Starting {}",game.name)}))
     };
@@ -219,6 +233,16 @@ pub fn command(args:&[String])->io::Result<String> {
             crate::host::save_state(&state).map_err(io::Error::other)?;
             Ok("Built-in host enabled. Restart Meteor to use it.".into())
         },
+        "--xr-windows-require-steamvr"=>{
+            let id=option("--app-id")?;let name=option("--name")?;
+            if !valid_id(id) || name.is_empty() || name.chars().count()>96 || name.chars().any(char::is_control){return Err(io::Error::other("Invalid game metadata"));}
+            let mut catalog=games(root)?;
+            if let Some(game)=catalog.iter_mut().find(|g|g.app_id==id) {game.requires_steamvr=true;}
+            else {catalog.push(Game {app_id:id.into(),name:name.into(),backend:Backend::Steamvr,monado:None,steamvr:None,requires_steamvr:true});}
+            if catalog.len()>1000{return Err(io::Error::other("At most 1000 games can be registered"));}
+            std::fs::create_dir_all(root)?;write(&root.join("windows-games.json"),&serde_json::to_vec_pretty(&catalog)?)?;
+            Ok("Game will request SteamVR installation when launched.".into())
+        },
         "--xr-windows-register"=>{
             let profile=Path::new(option("--profile")?).canonicalize()?;
             let files=crate::xr_session::load(&profile)?;
@@ -227,10 +251,11 @@ pub fn command(args:&[String])->io::Result<String> {
             if files.steam_launch {return Err(io::Error::other("Catalog profiles launch configured applications directly; steam_launch must be false"));}
             std::fs::create_dir_all(root)?;
             let mut catalog=games(root)?;
-            let index=catalog.iter().position(|g|g.app_id==id).unwrap_or_else(||{catalog.push(Game {app_id:id.clone(),name:String::new(),backend,monado:None,steamvr:None});catalog.len()-1});
+            let index=catalog.iter().position(|g|g.app_id==id).unwrap_or_else(||{catalog.push(Game {app_id:id.clone(),name:String::new(),backend,monado:None,steamvr:None,requires_steamvr:false});catalog.len()-1});
             let game=&mut catalog[index];game.name=option("--name")?.into();
             if game.name.is_empty() || game.name.chars().count()>96 || game.name.chars().any(char::is_control){return Err(io::Error::other("Invalid game name"));}
             match backend {Backend::Monado=>game.monado=Some(profile),Backend::Steamvr=>game.steamvr=Some(profile)}
+            if backend==Backend::Steamvr {game.requires_steamvr=false;}
             // Reimport/update must retain the user's saved backend choice.
             if !game.profile(game.backend).is_ok(){game.backend=backend;}
             game.files()?;
@@ -246,7 +271,7 @@ pub fn command(args:&[String])->io::Result<String> {
                 let files=crate::xr_session::load(&root.join("steamvr-runtime"))?;
                 if files.steamvr_driver.is_none(){return Err(io::Error::other("Set up a SteamVR runtime or register a VR game first"));}
             }
-            for game in &catalog {game.files()?;}
+            for game in &catalog {if game.backend!=Backend::Steamvr || !game.requires_steamvr {game.files()?;}}
             let path=crate::config::config_path();let original=std::fs::read_to_string(&path).or_else(|e|if e.kind()==io::ErrorKind::NotFound {Ok(String::new())}else{Err(e)})?;
             let _:crate::config::Config=toml::from_str(&original).map_err(io::Error::other)?;
             let mut document:toml_edit::DocumentMut=original.parse().map_err(io::Error::other)?;
@@ -313,6 +338,15 @@ pub fn command(args:&[String])->io::Result<String> {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn default_backend_is_monado(){assert_eq!(Backend::default(),Backend::Monado);}
+    #[test]fn missing_steamvr_is_a_per_game_requirement_not_a_launch(){
+        let root=std::env::temp_dir().join(format!("meteor-missing-steamvr-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        command(&["--xr-windows-require-steamvr".into(),"--root".into(),root.to_string_lossy().into_owned(),"--app-id".into(),"438100".into(),"--name".into(),"VRChat".into()]).unwrap();
+        let listed=library(&root,"list","",0);assert_eq!(listed["apps"][0]["requires_steamvr"],true);assert_eq!(listed["apps"][0]["ready"],false);
+        let launched=library(&root,"launch","steam:438100",0);assert_eq!(launched["error_code"],"steamvr_required");
+        assert!(pending(&root).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn setup_reimport_retains_selected_backend(){
         let root=std::env::temp_dir().join(format!("meteor-reimport-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();

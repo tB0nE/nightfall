@@ -57,6 +57,7 @@ Source: "{#Stage}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Setup-Meteor.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Meteor-Cli.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Pair-Headset.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\Install-SteamVR.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\SteamVR-Driver.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\doc\nightfall-meteor\runtime\*"; DestDir: "{app}\share\doc\nightfall-meteor\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs

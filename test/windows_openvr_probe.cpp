@@ -56,6 +56,16 @@ int wmain(int argc, wchar_t **argv) {
         }
         initialized = true;
         auto system = static_cast<vr::IVRSystem *>(get_interface(vr::IVRSystem_Version, &error));
+        if(system && std::getenv("METEOR_EXPECT_FULL_VIEW_RENDER")) {
+            for(int eye=0;eye<2;++eye) {
+                const auto hidden=system->GetHiddenAreaMesh(static_cast<vr::EVREye>(eye),vr::k_eHiddenAreaMesh_Standard);
+                const auto visible=system->GetHiddenAreaMesh(static_cast<vr::EVREye>(eye),vr::k_eHiddenAreaMesh_Inverse);
+                if(hidden.unTriangleCount || visible.unTriangleCount)
+                    throw std::runtime_error("Remote headset must not inherit a simulated visibility mask");
+            }
+            std::puts("PASS: remote headset renders full eye rectangles without a simulated lens mask");
+            std::fflush(stdout);
+        }
         if (!system || error) throw std::runtime_error("OpenVR system unavailable");
         auto compositor = static_cast<vr::IVRCompositor *>(get_interface(vr::IVRCompositor_Version, &error));
         if (!compositor || error) throw std::runtime_error("OpenVR compositor unavailable");

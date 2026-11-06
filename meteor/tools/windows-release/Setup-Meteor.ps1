@@ -1,5 +1,5 @@
 param([switch]$EnableHost,[switch]$EnablePCVR,[string]$SteamRoot='',
-    [string]$Root='',[switch]$Quiet,[switch]$PreviewSteamVRRegistration)
+    [string]$Root='',[switch]$Quiet,[switch]$PreviewSteamVRRegistration,[switch]$RefreshPCVRMetadata)
 # Installed setup entry point. All runtime inputs must live beside Meteor.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'Meteor-Cli.ps1')
@@ -19,7 +19,8 @@ function InvokeMeteor([string[]]$Options) {
 }
 try {
     if(-not (Test-Path -LiteralPath $exe)){throw 'Meteor executable missing beside setup'}
-    if(Get-Process nightfall-meteor -ErrorAction SilentlyContinue){throw 'Quit Meteor from its tray before running setup again'}
+    if((Get-Process nightfall-meteor -ErrorAction SilentlyContinue) -and -not $RefreshPCVRMetadata){throw 'Quit Meteor from its tray before running setup again'}
+    if($RefreshPCVRMetadata -and $EnableHost){throw 'Live metadata refresh cannot change the desktop host'}
     if($EnableHost) {
         InvokeMeteor -Options @('--xr-windows-host','--root',$Root)
         $summary.host_enabled=$true
@@ -60,11 +61,20 @@ try {
                 steamvr_driver=(Join-Path $runtime 'steamvr');steamvr_capture='direct'
             }
             WriteJson (Join-Path $Root 'steamvr-runtime\xr-windows.json') $shared
-            if(-not (Test-Path (Join-Path $Root 'xr-windows.json'))){WriteJson (Join-Path $Root 'xr-windows.json') $shared}
+            $rootConfig=Join-Path $Root 'xr-windows.json'
+            $previous=if(Test-Path $rootConfig){Get-Content $rootConfig -Raw | ConvertFrom-Json}else{$null}
+            if(-not $previous -or $previous.library_only){WriteJson $rootConfig $shared}
             $registration=& (Join-Path $PSScriptRoot 'SteamVR-Driver.ps1') -Action Register -AppRoot $PSScriptRoot -SteamVRRoot $steamvr -Preview:$PreviewSteamVRRegistration
             $summary.steamvr_driver=$registration | ConvertFrom-Json
             if(-not $summary.steamvr_driver.registered -and -not $PreviewSteamVRRegistration){throw 'Meteor SteamVR driver registration did not complete'}
             $summary.steamvr_ready=$true
+        } else {
+            # Keep the authenticated app library available before SteamVR is
+            # installed. This descriptor is never executable as an XR app.
+            $library=@{service=(Join-Path $bin 'monado-service.exe');manifest=(Join-Path $runtime 'openxr_monado.json');encoder=(Join-Path $bin 'meteor-windows-nvenc.dll');tracking=(Join-Path $bin 'meteor-windows-tracking.dll');application=(Join-Path $SteamRoot 'steam.exe');library_only=$true;library_dirs=@($bin)}
+            $rootConfig=Join-Path $Root 'xr-windows.json'
+            $previous=if(Test-Path $rootConfig){Get-Content $rootConfig -Raw | ConvertFrom-Json}else{$null}
+            if(-not $previous -or $previous.steamvr_driver){WriteJson $rootConfig $library}
         }
         # Retain a known native-runtime optimization, not a supported-game list.
         foreach($game in @(@{id='846470';name='Moss'})) {
@@ -88,7 +98,7 @@ try {
             InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$game.name)
             $summary.games+=$game
         }
-        if($steamvr) {
+        if(Test-Path (Join-Path $SteamRoot 'steam.exe')) {
             $vrManifest=Join-Path $SteamRoot 'config\steamapps.vrmanifest'
             if(Test-Path -LiteralPath $vrManifest) {
                 if((Get-Item $vrManifest).Length -gt 8MB){throw 'Steam VR manifest exceeds 8 MiB'}
@@ -105,6 +115,11 @@ try {
                     if(-not $name){$name=Split-Path $installed -Leaf}
                     if($name.Length -gt 96){$name=$name.Substring(0,96)}
                     if($name -match '[\x00-\x1f]'){continue}
+                    if(-not $steamvr) {
+                        InvokeMeteor -Options @('--xr-windows-require-steamvr','--root',$Root,'--app-id',$id,'--name',$name)
+                        if(-not @($summary.games | Where-Object {$_.id -eq $id}).Count){$summary.games+=@{id=$id;name=$name}}
+                        continue
+                    }
                     $profile=Join-Path $Root ('profiles\'+$id+'\steamvr')
                     $config=$shared.Clone();$config.steam_app_id=$id
                     $config.application=Join-Path $SteamRoot 'steam.exe'
@@ -120,7 +135,7 @@ try {
             $options=Invoke-MeteorCli -Executable $exe -Options @('--xr-steam-options','--root',$Root)
             [IO.File]::WriteAllText((Join-Path $Root 'steam-launch-options.txt'),$options,[Text.UTF8Encoding]::new($false))
             $summary.pcvr_enabled=$true
-        } else {$summary.warnings+='Install SteamVR through Steam, then run Set up Nightfall Meteor again.'}
+        } else {$summary.warnings+='No installed VR apps were discovered. Start Steam to refresh its app list, then run Meteor setup again.'}
     }
     $summary.ok=$true
 } catch {
