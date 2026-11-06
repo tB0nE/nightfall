@@ -18,6 +18,10 @@ const MAX_FRAME: usize = 4096;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+pub(crate) fn valid_eye_size(size: u32) -> bool {
+    (256..=4096).contains(&size) && size % 16 == 0
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -145,7 +149,7 @@ impl Negotiation {
                 if self.session.is_some() {
                     return Ok(self.reply(Some("busy")));
                 }
-                if !crate::xr_session::valid_eye_size(height) || !crate::xr_session::valid_eye_size(width) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
+                if !valid_eye_size(height) || !valid_eye_size(width) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
                     return Ok(self.reply(Some("unsupported_profile")));
                 }
                 let mut id = [0u8; 16];
@@ -368,10 +372,20 @@ async fn connection_supervised(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))?;
     };
+    log::info!("Paired headset authenticated for XR control");
+    let mut watch_logged=false;
+    let mut delivered_launch=None;
+    #[cfg(windows)]
+    let mut startup_claim=crate::xr_windows::StartupClaim::new(runtime_root.as_deref());
     let mut negotiation = Negotiation::default();
     let mut encoder_monitor=crate::xr_encoder::Monitor::default();
     negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;
-    negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root|root.join("tools/meteor_vr_library.py").is_file());
+    negotiation.library_available=enable_relay && runtime_root.as_ref().is_some_and(|root| {
+        #[cfg(windows)]
+        {crate::xr_windows::games(root).is_ok_and(|games|!games.is_empty())}
+        #[cfg(not(windows))]
+        {root.join("tools/meteor_vr_library.py").is_file()}
+    });
     let mut relay: Option<crate::xr_relay::Relay> = None;
     tokio::time::timeout(
         IO_TIMEOUT,
@@ -414,18 +428,28 @@ async fn connection_supervised(
             } else {Some("runtime_not_active".to_string())};
             negotiation.reply(reason.as_deref())
         } else if matches!(&request,Request::PendingLaunch {}) && negotiation.session.is_none() {
+            if !watch_logged {log::info!("Headset is watching for XR launches");watch_logged=true;}
             let mut reply=negotiation.reply(None);
             if let Some(root)=runtime_root.as_ref().filter(|_|enable_relay) {
                 reply.pending_launch=crate::xr_launch_intent::pending(root);
             }
+            if let Some(notice)=&reply.pending_launch {
+                if delivered_launch.as_deref()!=Some(notice.generation.as_str()) {
+                    log::info!("XR launch notice delivered to headset for Steam app {}",notice.app_id);
+                    delivered_launch=Some(notice.generation.clone());
+                }
+            }
             reply
         } else if let Request::ClaimLaunch {generation}=&request {
             if negotiation.session.is_none() && runtime_root.as_ref().filter(|_|enable_relay).is_some_and(|root|crate::xr_launch_intent::claim(root,generation)) {
+                log::info!("Headset claimed XR launch notice");
+                #[cfg(windows)]
+                startup_claim.set(generation);
                 negotiation.launch_intent=Some(generation.clone());
                 negotiation.reply(None)
             } else {negotiation.reply(Some("launch_intent_unavailable"))}
         } else if enable_relay
-            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !crate::xr_session::valid_eye_size(*height) || !crate::xr_session::valid_eye_size(*width) || !matches!(hz,20|60|72))
+            && matches!(&request,Request::Offer{width,height,hz}|Request::OfferLong{width,height,hz} if !valid_eye_size(*height) || !valid_eye_size(*width) || !matches!(hz,20|60|72))
         {
             negotiation.reply(Some("unsupported_relay_profile"))
         } else {
@@ -452,7 +476,7 @@ async fn connection_supervised(
                 )
                 .await?,
             );
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             if let Some(root) = runtime_root.clone() {
                 relay.as_mut().unwrap().start_runtime_supervised(root, session.hz, session.eye_size, session.eye_height, session.long_run, session.bitrate_mbps, session.codec.clone(), session.foveated_encoding, session.launch_intent.clone(), _runtime_tasks.as_ref());
             }
@@ -554,6 +578,14 @@ pub(crate) async fn serve(
     result.and(drained)
 }
 
+#[cfg(windows)]
+pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
+    let Some(root)=root else {return Ok(None);};
+    let root=root.canonicalize()?;
+    crate::xr_session::load(&root)?;
+    Ok(Some(root))
+}
+#[cfg(not(windows))]
 pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Result<Option<std::path::PathBuf>> {
     let Some(root) = root else { return Ok(None); };
     if !cfg!(target_os = "linux") {
@@ -584,12 +616,18 @@ pub(crate) fn validate_runtime_root(root: Option<std::path::PathBuf>) -> io::Res
 }
 
 pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if args.len() != 3 && !((args.len() == 4 || args.len() == 5) && args[3] == "--relay") {
+    if args.len() != 3 && !((args.len() == 4 || args.len() == 5 || args.len()==8) && args[3] == "--relay") {
         return Err("usage: --xr-control-dev <bind-address:port> <server-key-file> <allowed-client-public-hex> [--relay [checkout]]".into());
     }
     let address: SocketAddr = args[0].parse()?;
     let enable_relay = args.len() >= 4;
     let runtime_root = validate_runtime_root(args.get(4).map(std::path::PathBuf::from))?;
+    let relay_ports=if args.len()==8 {
+        if args[5]!="--ports" {return Err("expected --ports <video> <tracking>".into());}
+        let video:u16=args[6].parse()?; let tracking:u16=args[7].parse()?;
+        if video==0 || tracking==0 || video==tracking || [video,tracking].contains(&address.port()) {return Err("XR data ports must be nonzero and distinct".into());}
+        Some((video,tracking))
+    } else {None};
     let key = Arc::new(MeteorKey::load_or_create(Path::new(&args[1]))?);
     let allowed = public_key(&args[2])?;
     let listener = TcpListener::bind(address).await?;
@@ -610,7 +648,7 @@ pub async fn command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         );
     }
     let (stop, cancel) = watch::channel(false);
-    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root, pairing: None, relay_ports: None }, cancel);
+    let service = serve(listener, ServiceConfig { key, allowed, enable_relay, runtime_root, pairing: None, relay_ports }, cancel);
     tokio::pin!(service);
     tokio::select! {
         result=&mut service=>result?,

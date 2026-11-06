@@ -1,6 +1,6 @@
 class_name PCVRTestController
 extends RefCounted
-## DEV projection tests only; never owns a second OpenXR session/frame loop.
+## Meteor PCVR and optional DEV diagnostics; shares the existing OpenXR frame loop.
 const Session = preload("res://src/pcvr_session.gd")
 const TIMEOUT_SECONDS := 45.0
 const LONG_TIMEOUT_SECONDS := 300.0
@@ -38,12 +38,14 @@ func entry_visible() -> bool:
 
 func setup() -> void:
 	# Must run synchronously before _ready's first await / XR session startup.
-	if not entry_visible() or not ClassDB.class_exists("NightfallXrProjectionTest"):
+	# The Meteor provider is needed in release builds before OpenXR starts.
+	# entry_visible() gates diagnostic UI only, not production PCVR support.
+	if not ClassDB.class_exists("NightfallXrProjectionTest"):
 		return
 	backend = ClassDB.instantiate("NightfallXrProjectionTest")
 	available = backend != null and backend.register_provider()
 	status = "Ready" if available else "Provider registration failed"
-	main._log("[PCVR-TEST] DEV entry enabled; provider registered=%s remote_clock=%s" % [available, backend.stream_available() if backend else false])
+	main._log("[PCVR] Provider registered=%s diagnostic_entry=%s" % [available, entry_visible()])
 
 func is_exclusive() -> bool:
 	return session.is_exclusive()

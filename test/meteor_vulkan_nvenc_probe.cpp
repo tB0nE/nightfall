@@ -1,10 +1,32 @@
 // Standalone Linux interop diagnostic. No runtime registration or networking.
 // SDK declarations come from the source-pinned nv-codec-headers in WiVRn;
 // no WiVRn encoder implementation is used here.
+#ifdef _WIN32
+#define NOMINMAX
+#define VK_USE_PLATFORM_WIN32_KHR
+#include <windows.h>
+#endif
 #include <vulkan/vulkan.h>
 #include "dynlink_cuda.h"
 #include "nvEncodeAPI.h"
+#ifdef _WIN32
+static void *dlopen(const char *name, int) {
+    return (void *)LoadLibraryA(name);
+}
+static void *dlsym(void *library, const char *name) {
+    return (void *)GetProcAddress((HMODULE)library, name);
+}
+static void dlclose(void *library) { FreeLibrary((HMODULE)library); }
+#define RTLD_NOW 0
+#define METEOR_CUDA_LIBRARY "nvcuda.dll"
+#define METEOR_NVENC_LIBRARY "nvEncodeAPI64.dll"
+#define METEOR_EXTERNAL_MEMORY_HANDLE VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT
+#else
 #include <dlfcn.h>
+#define METEOR_CUDA_LIBRARY "libcuda.so.1"
+#define METEOR_NVENC_LIBRARY "libnvidia-encode.so.1"
+#define METEOR_EXTERNAL_MEMORY_HANDLE VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -42,7 +64,7 @@ static void bridge_loop() {
 int main(int argc, char **argv) {
     REQUIRE(argc == 2, "Usage: meteor-vulkan-nvenc-probe output.h264");
 #endif
-    void *cuda = dlopen("libcuda.so.1", RTLD_NOW);
+    void *cuda = dlopen(METEOR_CUDA_LIBRARY, RTLD_NOW);
     REQUIRE(cuda, "CUDA driver library unavailable");
 #define LOAD(name, type, symbol) auto name = reinterpret_cast<type *>(dlsym(cuda, symbol)); REQUIRE(name, "Missing CUDA symbol " symbol)
     LOAD(cuInit, tcuInit, "cuInit");
@@ -92,13 +114,23 @@ int main(int argc, char **argv) {
     REQUIRE(family < families, "No graphics queue");
     float priority = 1;
     VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO}; qi.queueFamilyIndex = family; qi.queueCount = 1; qi.pQueuePriorities = &priority;
-    const char *extensions[] = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME};
+    const char *extensions[] = {
+#ifdef _WIN32
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME
+#else
+        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
+#endif
+    };
     VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount = 1; di.pQueueCreateInfos = &qi;
     di.enabledExtensionCount = 1; di.ppEnabledExtensionNames = extensions;
     VkDevice device; VK(vkCreateDevice(gpu, &di, nullptr, &device));
     VkQueue queue; vkGetDeviceQueue(device, family, 0, &queue);
 #endif
+#ifdef _WIN32
+    auto get_fd = reinterpret_cast<PFN_vkGetMemoryWin32HandleKHR>(vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandleKHR"));
+#else
     auto get_fd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(vkGetDeviceProcAddr(device, "vkGetMemoryFdKHR"));
+#endif
     REQUIRE(get_fd, "External memory FD export unavailable");
 #ifdef METEOR_MONADO_BRIDGE
     const uint32_t eye_size=input->eye_size ? input->eye_size : 256;
@@ -133,9 +165,9 @@ int main(int argc, char **argv) {
             if ((bits & (1u << i)) && (memory_props.memoryTypes[i].propertyFlags & flags) == flags) return i;
         std::fprintf(stderr, "No suitable Vulkan memory type\n"); std::exit(1);
     };
-    VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO}; external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO}; external.handleTypes = METEOR_EXTERNAL_MEMORY_HANDLE;
     VkPhysicalDeviceExternalImageFormatInfo external_format{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
-    external_format.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    external_format.handleType = METEOR_EXTERNAL_MEMORY_HANDLE;
     VkPhysicalDeviceImageFormatInfo2 format_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2};
     format_info.pNext = &external_format; format_info.format = packed_format;
     format_info.type = VK_IMAGE_TYPE_2D; format_info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -153,16 +185,28 @@ int main(int argc, char **argv) {
     VkMemoryRequirements req; vkGetImageMemoryRequirements(device, image, &req);
     VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO}; dedicated.image = image;
     VkExportMemoryAllocateInfo export_info{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO}; export_info.pNext = &dedicated;
-    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    export_info.handleTypes = METEOR_EXTERNAL_MEMORY_HANDLE;
     VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; mai.pNext = &export_info; mai.allocationSize = req.size;
     mai.memoryTypeIndex = memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory image_memory; VK(vkAllocateMemory(device, &mai, nullptr, &image_memory));
     VK(vkBindImageMemory(device, image, image_memory, 0));
+#ifdef _WIN32
+    VkMemoryGetWin32HandleInfoKHR handle_info{VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR};
+    handle_info.memory = image_memory; handle_info.handleType = METEOR_EXTERNAL_MEMORY_HANDLE;
+    HANDLE handle; VK(get_fd(device, &handle_info, &handle));
+    CUDA_EXTERNAL_MEMORY_HANDLE_DESC desc{}; desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32;
+    desc.handle.win32.handle = handle; desc.size = req.size; desc.flags = 1;
+    CUexternalMemory cuda_memory;
+    const auto imported = cuImportExternalMemory(&cuda_memory, &desc);
+    CloseHandle(handle); // CUDA does not take ownership of opaque Win32 handles.
+    CU(imported);
+#else
     VkMemoryGetFdInfoKHR fd_info{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR}; fd_info.memory = image_memory; fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     int fd; VK(get_fd(device, &fd_info, &fd));
     CUDA_EXTERNAL_MEMORY_HANDLE_DESC desc{}; desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
     desc.handle.fd = fd; desc.size = req.size; desc.flags = 1; // CUDA_EXTERNAL_MEMORY_DEDICATED
     CUexternalMemory cuda_memory; CU(cuImportExternalMemory(&cuda_memory, &desc)); // CUDA now owns FD.
+#endif
     CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC array_desc{};
     array_desc.arrayDesc.Width = width; array_desc.arrayDesc.Height = height;
     array_desc.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8; array_desc.arrayDesc.NumChannels = 4;
@@ -275,9 +319,9 @@ int main(int argc, char **argv) {
 
 #ifdef METEOR_MONADO_BRIDGE
     if (first_frame) {
-    nv = dlopen("libnvidia-encode.so.1", RTLD_NOW);
+    nv = dlopen(METEOR_NVENC_LIBRARY, RTLD_NOW);
 #else
-    void *nv = dlopen("libnvidia-encode.so.1", RTLD_NOW);
+    void *nv = dlopen(METEOR_NVENC_LIBRARY, RTLD_NOW);
 #endif
     REQUIRE(nv, "NVENC driver unavailable");
     auto create = reinterpret_cast<NVENCSTATUS (NVENCAPI *)(NV_ENCODE_API_FUNCTION_LIST *)>(dlsym(nv, "NvEncodeAPICreateInstance"));

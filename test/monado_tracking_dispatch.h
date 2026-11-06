@@ -1,5 +1,15 @@
 #pragma once
+#ifdef _WIN32
+#include <windows.h>
+static void *meteor_tracking_open(const char *path) { return (void *)LoadLibraryA(path); }
+static void *meteor_tracking_symbol(void *module,const char *name) { return (void *)GetProcAddress((HMODULE)module,name); }
+static void meteor_tracking_close(void *module) { FreeLibrary((HMODULE)module); }
+#else
 #include <dlfcn.h>
+static void *meteor_tracking_open(const char *path) { return dlopen(path,RTLD_NOW|RTLD_LOCAL); }
+static void *meteor_tracking_symbol(void *module,const char *name) { return dlsym(module,name); }
+static void meteor_tracking_close(void *module) { dlclose(module); }
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +25,7 @@ struct meteor_tracking_bridge {
 };
 static void meteor_tracking_release(struct meteor_tracking_bridge *b) {
     if (b->client && b->stop) b->stop(b->client);
-    if (b->module) dlclose(b->module);
+    if (b->module) meteor_tracking_close(b->module);
     memset(b, 0, sizeof(*b));
 }
 static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b,struct xrt_device *xdev) {
@@ -37,19 +47,19 @@ static bool meteor_tracking_initialize(struct meteor_tracking_bridge *b,struct x
     if (!library) return true; // Original simulated device remains diagnostic default.
     const char *port = getenv("METEOR_TRACKING_PORT");
     if (!port) return false;
-    b->module = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    b->module = meteor_tracking_open(library);
     if (!b->module) return false;
     void *(*start)(const char *) = NULL;
-    void *symbol = dlsym(b->module, "meteor_tracking_start_v1");
+    void *symbol = meteor_tracking_symbol(b->module, "meteor_tracking_start_v1");
     memcpy(&start, &symbol, sizeof(start));
-    symbol = dlsym(b->module, "meteor_tracking_pose_v1"); memcpy(&b->pose, &symbol, sizeof(b->pose));
-    symbol = dlsym(b->module, "meteor_tracking_stop_v1"); memcpy(&b->stop, &symbol, sizeof(b->stop));
+    symbol = meteor_tracking_symbol(b->module, "meteor_tracking_pose_v1"); memcpy(&b->pose, &symbol, sizeof(b->pose));
+    symbol = meteor_tracking_symbol(b->module, "meteor_tracking_stop_v1"); memcpy(&b->stop, &symbol, sizeof(b->stop));
     if (!start || !b->pose || !b->stop || !(b->client = start(port))) {
         meteor_tracking_release(b); return false;
     }
     if(getenv("METEOR_XR_HEADSET_OPTICS")) {
         int (*optics)(void *,float *)=NULL;
-        symbol=dlsym(b->module,"meteor_tracking_optics_v1"); memcpy(&optics,&symbol,sizeof(optics));
+        symbol=meteor_tracking_symbol(b->module,"meteor_tracking_optics_v1"); memcpy(&optics,&symbol,sizeof(optics));
         if(!optics || !optics(b->client,b->eyes)) { meteor_tracking_release(b); return false; }
         b->has_optics=true;
     }

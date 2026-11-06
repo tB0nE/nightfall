@@ -2,12 +2,16 @@ class_name MeteorClient
 extends RefCounted
 
 ## Nightfall Meteor (meteor/) is an optional companion app on the Sunshine PC.
-## Before each launch the client asks it, on DISCOVERY_PORT, which ports to
+## Before each launch the client asks it, on discovery_port(), which ports to
 ## use. When it answers, the launch, RTSP, and stream traffic go through
 ## Meteor's ports instead of Sunshine's; Meteor forwards them to Sunshine.
 
-## Keep in sync with DEFAULT_DISCOVERY_PORT in meteor/src/config.rs.
-const DISCOVERY_PORT := 47900
+## Meteor's discovery port sits this far below the host's base (HTTP) port:
+## 47900 for the default 47989, 49900 for a second host on 49989. Keep in
+## sync with DISCOVERY_BELOW_BASE in meteor/src/config.rs.
+const DISCOVERY_BELOW_BASE := 89
+## The host's HTTP port is 5 above its HTTPS port.
+const HTTPS_BELOW_BASE := 5
 const PROTOCOL_VERSION := 1
 const PROBE_TIMEOUT_SEC := 0.8
 ## Read by NightfallComputerManager::establish_stream() in place of the host's
@@ -20,16 +24,17 @@ const HTTPS_PORT_OPTION := "meteor_https_port"
 static func probe(owner: Node, ip: String, sunshine_https_port: int) -> Dictionary:
 	if ip.is_empty():
 		return {}
+	var port := discovery_port(sunshine_https_port)
 	if is_link_local(ip):
 		# Godot's HTTP client can't reach a zoned link-local address (USB
 		# Link); nightfall-stream's can.
-		var url := "http://[%s]:%d/meteor" % [zone_address(ip).replace("%", "%25"), DISCOVERY_PORT]
+		var url := "http://[%s]:%d/meteor" % [zone_address(ip).replace("%", "%25"), port]
 		return parse_info(await _native_get(owner, url), sunshine_https_port)
 	var request := HTTPRequest.new()
 	request.timeout = PROBE_TIMEOUT_SEC
 	owner.add_child(request)
 	var host := "[%s]" % ip if ":" in ip else ip
-	var err := request.request("http://%s:%d/meteor" % [host, DISCOVERY_PORT])
+	var err := request.request("http://%s:%d/meteor" % [host, port])
 	if err != OK:
 		request.queue_free()
 		return {}
@@ -38,6 +43,10 @@ static func probe(owner: Node, ip: String, sunshine_https_port: int) -> Dictiona
 	if result[0] != HTTPRequest.RESULT_SUCCESS or result[1] != 200:
 		return {}
 	return parse_info(PackedByteArray(result[3]).get_string_from_utf8(), sunshine_https_port)
+
+## Where the Meteor in front of a host with this HTTPS port answers.
+static func discovery_port(sunshine_https_port: int) -> int:
+	return sunshine_https_port + HTTPS_BELOW_BASE - DISCOVERY_BELOW_BASE
 
 static func is_link_local(ip: String) -> bool:
 	return ip.to_lower().begins_with("fe80:")

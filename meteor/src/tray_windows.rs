@@ -33,6 +33,22 @@ const CMD_VDA_LICENCE: usize = 13;
 const CMD_AUTOSTART: usize = 14;
 const CMD_EDGE_ALIGNMENT: usize = 17;
 const CMD_CONTOUR_CLEANUP: usize = 18;
+const CMD_HOST_BUNDLED: usize = 20;
+const CMD_HOST_EXTERNAL: usize = 21;
+const CMD_HOST_TOGGLE: usize = 22;
+const CMD_HOST_FOLDER: usize = 23;
+const CMD_HOST_WEB: usize = 24;
+const CMD_HOST_LOGIN: usize = 25;
+const CMD_XR_FOLDER:usize=26;
+const CMD_XR_APPROVE:usize=27;
+const CMD_XR_REJECT:usize=28;
+const CMD_XR_ENABLE:usize=29;
+const CMD_XR_LIBRARY:usize=30;
+const CMD_HOST_PAIR:usize=31;
+const CMD_TASKBAR_SETTINGS:usize=32;
+const CMD_XR_GAME_BASE:usize=2000;
+static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
+static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
 const CMD_RATE_BASE: usize = 100;
 const CMD_CHOICE_BASE:usize=1000;
 static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex::new(Vec::new());
@@ -43,6 +59,7 @@ static MIC: OnceLock<Option<Arc<crate::mic::Mic>>> = OnceLock::new();
 static DEPTH: OnceLock<Option<Arc<crate::depth::Depth>>> = OnceLock::new();
 static STATUS: OnceLock<Arc<crate::status::Status>> = OnceLock::new();
 static STATS: OnceLock<Arc<crate::proxy::Stats>> = OnceLock::new();
+static HOST: OnceLock<Arc<crate::host::view::View>> = OnceLock::new();
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -77,6 +94,38 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         if status.sunshine_up.load(Ordering::Relaxed) { "running" } else { "not answering" }));
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, sunshine.as_ptr());
                     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                }
+                if let Some(host) = HOST.get() {
+                    use crate::host::{Choice, Phase};
+                    let submenu = CreatePopupMenu();
+                    if !submenu.is_null() {
+                        let label = match (&host.supervisor, host.state.choice) {
+                            (Some(supervisor), _) => match supervisor.phase() {
+                                Phase::Running => format!("Meteor-Vibepollo running on {}", supervisor.instance.base),
+                                Phase::WaitingForPort => format!("Waiting for host port {}", supervisor.instance.base),
+                                Phase::Restarting { failures } => format!("Host restarting ({failures})"),
+                                Phase::Stopped => "Meteor-Vibepollo stopped".into(),
+                                Phase::Failed(error) => format!("Host failed: {error}"),
+                            },
+                            (None, Choice::Bundled) => format!("Host unavailable: {}", host.error.as_deref().unwrap_or("unknown error")),
+                            (None, Choice::External) => "Using an external host".into(),
+                        };
+                        AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide(&label).as_ptr());
+                        AppendMenuW(submenu, MF_SEPARATOR, 0, std::ptr::null());
+                        AppendMenuW(submenu, MF_STRING | if host.state.choice == Choice::External { MF_CHECKED } else { 0 }, CMD_HOST_EXTERNAL, wide("Use my own host").as_ptr());
+                        AppendMenuW(submenu, MF_STRING | if host.binary.is_none() { MF_GRAYED } else if host.state.choice == Choice::Bundled { MF_CHECKED } else { 0 }, CMD_HOST_BUNDLED, wide("Use Meteor-Vibepollo").as_ptr());
+                        if let Some(supervisor) = &host.supervisor {
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_PAIR, wide("Pair headset...").as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_TOGGLE, wide(if supervisor.wanted() { "Stop host" } else { "Start host" }).as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_WEB, wide("Open host web page").as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_LOGIN, wide("Open host login (host.toml)").as_ptr());
+                            AppendMenuW(submenu, MF_STRING, CMD_HOST_FOLDER, wide("Open host folder").as_ptr());
+                        } else if host.binary.is_none() {
+                            AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide("Set host_binary in meteor.toml to a Windows host build").as_ptr());
+                        }
+                        AppendMenuW(menu, MF_POPUP, submenu as usize, wide("Game streaming host").as_ptr());
+                        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                    }
                 }
                 if let Some(depth) = DEPTH.get().and_then(Option::as_ref) {
                     let available = depth.available();
@@ -192,8 +241,40 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     let install = wide("Microphone: install VB-CABLE");
                     AppendMenuW(menu, MF_STRING, CMD_INSTALL_CABLE, install.as_ptr());
                 }
+                let xr_menu=CreatePopupMenu();
+                if !xr_menu.is_null() {
+                    let state=crate::xr_windows::state();
+                    let label=wide(if state.ready {"PCVR ready"}else if state.error.is_some(){"PCVR unavailable — check log"}else{"PCVR not configured"});
+                    AppendMenuW(xr_menu,MF_STRING|MF_GRAYED,0,label.as_ptr());
+                    let label=wide("Open PCVR profiles folder");AppendMenuW(xr_menu,MF_STRING,CMD_XR_FOLDER,label.as_ptr());
+                    if !state.ready {
+                        let label=wide("Enable PCVR (restarts Meteor)");
+                        let available=crate::xr_windows::games(&crate::xr_windows::root()).is_ok_and(|g|!g.is_empty());
+                        AppendMenuW(xr_menu,MF_STRING|if available {0}else{MF_GRAYED},CMD_XR_ENABLE,label.as_ptr());
+                    }
+                    let label=wide("Open VR Apps in Nightfall");AppendMenuW(xr_menu,MF_STRING|if state.ready {0}else{MF_GRAYED},CMD_XR_LIBRARY,label.as_ptr());
+                    let pending=state.trust.as_ref().and_then(|t|t.pending());
+                    *XR_PENDING.lock().unwrap()=pending.as_ref().map(|(key,_)|*key);
+                    if let Some((_,code))=pending {
+                        let label=wide(&format!("Approve headset {code} (compare headset code)"));AppendMenuW(xr_menu,MF_STRING,CMD_XR_APPROVE,label.as_ptr());
+                        let label=wide("Reject headset");AppendMenuW(xr_menu,MF_STRING,CMD_XR_REJECT,label.as_ptr());
+                    }
+                    let games=crate::xr_windows::games(&crate::xr_windows::root()).unwrap_or_default();
+                    *XR_GAMES.lock().unwrap()=games.iter().map(|g|g.app_id.clone()).collect();
+                    for (i,game) in games.iter().enumerate() {
+                        let submenu=CreatePopupMenu();if submenu.is_null(){continue;}
+                        for (j,backend) in [crate::xr_windows::Backend::Monado,crate::xr_windows::Backend::Steamvr].into_iter().enumerate() {
+                            let available=if j==0 {game.monado.is_some()}else{game.steamvr.is_some()};
+                            let label=wide(if j==0 {"Monado / xrizer"}else{"SteamVR"});
+                            AppendMenuW(submenu,MF_STRING|if game.backend==backend {MF_CHECKED}else{0}|if available {0}else{MF_GRAYED},CMD_XR_GAME_BASE+i*2+j,label.as_ptr());
+                        }
+                        let label=wide(&game.name);AppendMenuW(xr_menu,MF_POPUP,submenu as usize,label.as_ptr());
+                    }
+                    let label=wide("PCVR");AppendMenuW(menu,MF_POPUP,xr_menu as usize,label.as_ptr());
+                }
                 let autostart = wide("Start with my computer");
                 AppendMenuW(menu, MF_STRING | if crate::desktop_windows::autostart_enabled() { MF_CHECKED } else { 0 }, CMD_AUTOSTART, autostart.as_ptr());
+                AppendMenuW(menu, MF_STRING, CMD_TASKBAR_SETTINGS, wide("Taskbar icon settings...").as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_LOG, log.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_SETTINGS, settings.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_OPEN_MODELS, models.as_ptr());
@@ -232,7 +313,32 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     return 0;
                 }
             }
+            if (CMD_XR_GAME_BASE..CMD_XR_GAME_BASE+200).contains(&command) {
+                let index=(command-CMD_XR_GAME_BASE)/2;
+                let id=XR_GAMES.lock().unwrap().get(index).cloned();
+                if let Some(id)=id {
+                    let backend=if (command-CMD_XR_GAME_BASE)%2==0 {crate::xr_windows::Backend::Monado}else{crate::xr_windows::Backend::Steamvr};
+                    if let Err(error)=crate::xr_windows::select(&crate::xr_windows::root(),&id,backend){log::warn!("PCVR backend: {error}");}
+                }
+                return 0;
+            }
             match command {
+                CMD_XR_FOLDER=>{let root=crate::xr_windows::root();let _=std::fs::create_dir_all(&root);open_path(root);},
+                CMD_XR_ENABLE=>{
+                    let root=crate::xr_windows::root();
+                    match crate::xr_windows::command(&["--xr-windows-enable".into(),"--root".into(),root.to_string_lossy().into_owned()]) {
+                        Ok(_)=>crate::restart(),Err(error)=>log::warn!("PCVR setup: {error}"),
+                    }
+                },
+                CMD_XR_LIBRARY=>{if let Err(error)=crate::xr_library::request_open(){log::warn!("PCVR library: {error}");}},
+                CMD_XR_APPROVE|CMD_XR_REJECT=>{
+                    if let Some(key)=*XR_PENDING.lock().unwrap() {
+                        if let Some(trust)=&crate::xr_windows::state().trust {
+                            if command==CMD_XR_APPROVE {if let Err(error)=trust.approve(key){log::warn!("XR approval: {error}");}}
+                            else {trust.reject(key);}
+                        }
+                    }
+                },
                 CMD_OPEN_LOG => open_path(crate::logfile::path()),
                 CMD_OPEN_SETTINGS => crate::open_config_file(),
                 CMD_OPEN_MODELS => open_path(crate::config::default_models_dir()),
@@ -255,6 +361,43 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         Ok(()) => log::info!("Autostart {}", if on { "on" } else { "off" }),
                         Err(err) => log::warn!("Can't change autostart: {err}"),
                     }
+                }
+                CMD_HOST_BUNDLED => {
+                    if let Some(host) = HOST.get() { host.switch(crate::host::Choice::Bundled); }
+                }
+                CMD_HOST_EXTERNAL => {
+                    if let Some(host) = HOST.get() { host.switch(crate::host::Choice::External); }
+                }
+                CMD_HOST_TOGGLE => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        supervisor.set_wanted(!supervisor.wanted());
+                    }
+                }
+                CMD_HOST_FOLDER => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        open_path(supervisor.instance.appdata());
+                    }
+                }
+                CMD_HOST_WEB => {
+                    if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
+                        open_url(&format!("https://localhost:{}", supervisor.instance.base + 1));
+                    }
+                }
+                CMD_HOST_PAIR => {
+                    if let Ok(exe)=std::env::current_exe() {
+                        use std::os::windows::process::CommandExt;
+                        let script=exe.parent().unwrap().join("Pair-Headset.ps1");
+                        if let Err(error)=std::process::Command::new("powershell.exe")
+                            .args(["-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File"])
+                            .arg(script).creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+                            log::warn!("Cannot open headset pairing dialog: {error}");
+                        }
+                    }
+                }
+                CMD_TASKBAR_SETTINGS => open_url("ms-settings:taskbar"),
+                CMD_HOST_LOGIN => {
+                    let _ = std::process::Command::new("notepad.exe").arg(crate::host::state_path()).spawn();
                 }
                 CMD_SOUND => { let _ = std::process::Command::new("control.exe").arg("mmsys.cpl").spawn(); }
                 CMD_INSTALL_CABLE => { let _ = std::process::Command::new("explorer.exe").arg("https://vb-audio.com/Cable/index.htm").spawn(); }
@@ -299,11 +442,12 @@ fn meteor_icon() -> windows_sys::Win32::UI::WindowsAndMessaging::HICON {
 }
 
 /// Starts the notification-area icon on a dedicated Win32 message thread.
-pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, mic: Option<Arc<crate::mic::Mic>>, depth: Option<Arc<crate::depth::Depth>>) {
+pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, mic: Option<Arc<crate::mic::Mic>>, depth: Option<Arc<crate::depth::Depth>>, host: Arc<crate::host::view::View>) {
     let _ = STATUS.set(status);
     let _ = STATS.set(stats);
     let _ = MIC.set(mic);
     let _ = DEPTH.set(depth);
+    let _ = HOST.set(host);
     std::thread::spawn(|| unsafe {
         let instance: HINSTANCE = GetModuleHandleW(std::ptr::null());
         let class_name = wide("NightfallMeteorTray");
@@ -355,6 +499,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             return;
         }
         log::info!("Windows tray icon started");
+        crate::desktop_windows::request_visible_tray_icon();
         let mut message = MSG::default();
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);

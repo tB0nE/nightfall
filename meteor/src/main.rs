@@ -1,3 +1,4 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! Nightfall Meteor: a companion app for the Sunshine host PC.
 //!
 //! The Nightfall client probes Meteor's discovery port before streaming,
@@ -20,6 +21,10 @@ mod download;
 mod firewall;
 mod gpu_post;
 mod gpu_refinement;
+#[cfg(any(target_os = "linux", windows))]
+mod host;
+#[cfg(any(target_os = "linux", windows))]
+use host::view as host_view;
 mod icon;
 mod logfile;
 mod mic;
@@ -60,7 +65,18 @@ mod xr_events;
 mod xr_relay;
 #[cfg(target_os = "linux")]
 mod xr_session;
+#[cfg(windows)]
+#[path = "xr_session_windows.rs"]
+mod xr_session;
 mod xr_wire;
+#[cfg(windows)]
+mod xr_runtime_windows;
+#[cfg(windows)]
+mod xr_steam_windows;
+#[cfg(windows)]
+mod xr_steamvr_windows;
+#[cfg(windows)]
+mod xr_windows;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -74,6 +90,40 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    #[cfg(windows)]
+    if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--host-pair-pin") {
+        if args.len()!=2 {eprintln!("Usage: --host-pair-pin (PIN on standard input)");std::process::exit(1);}
+        match host::pairing::command() {
+            Ok(())=>println!("PIN sent. Finish pairing in Nightfall."),
+            Err(error)=>{eprintln!("{error}");std::process::exit(1);},
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg.starts_with("--xr-windows-")) {
+        match xr_windows::command(&args[1..]) {
+            Ok(message)=>println!("{message}"),
+            Err(error)=>{eprintln!("Windows XR setup: {error}");std::process::exit(1);},
+        }
+        return;
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--xr-steam-options") {
+        if args.len()!=4 || args[2]!="--root" {
+            eprintln!("Usage: --xr-steam-options --root <XR config directory>");std::process::exit(1);
+        }
+        println!("{}",xr_library::launch_options_for(std::path::Path::new(&args[3])));
+        return;
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg|arg=="--xr-steam-run") {
+        match xr_steam_windows::wrapper(&args[2..]) {
+            Ok(code)=>std::process::exit(code),
+            Err(error)=>{eprintln!("Meteor Steam launch: {error}");std::process::exit(1);},
+        }
+    }
     if args.get(1).is_some_and(|arg| arg == "--xr-control-dev") {
         let result = xr_control::command(&args[2..]).await;
         if let Err(error) = result {
@@ -195,12 +245,20 @@ async fn main() {
     // doubles as a single-instance lock. It's taken before the models start
     // loading, so a second launch exits straight away.
     let replay_file = value("--replay");
+    #[cfg(any(target_os = "linux", windows))]
+    let mut host_view = host_view::View::default();
     let startup = if replay_file.is_some() {
         None
     } else {
+        #[cfg(any(target_os = "linux", windows))]
+        let bundled_base = host_view.prepare(&config);
+        #[cfg(not(any(target_os = "linux", windows)))]
+        let bundled_base: Option<u16> = None;
         let sunshine_base = config
             .sunshine_port
+            .or(bundled_base)
             .unwrap_or_else(|| config::detect_sunshine_port(&config.sunshine_host));
+        let side = config.side_ports(sunshine_base);
         let map = match PortMap::new(sunshine_base, config.port_offset) {
             Ok(map) => map,
             Err(err) => {
@@ -215,22 +273,38 @@ async fn main() {
             sunshine_base,
             config::config_path().display()
         );
-        let discovery = match discovery::bind(config.discovery_port).await {
+        // After a restart from the tray, the old process may still hold it
+        // for a moment.
+        let mut discovery = discovery::bind(side.discovery).await;
+        if std::env::var_os(RESTART_ENV).is_some() {
+            for _ in 0..50 {
+                if discovery.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                discovery = discovery::bind(side.discovery).await;
+            }
+        }
+        let discovery = match discovery {
             Ok(listener) => listener,
             Err(err) => {
-                log::error!("Can't listen on discovery port {} ({err}); is Meteor already running?", config.discovery_port);
+                log::error!("Can't listen on discovery port {} ({err}); is Meteor already running?", side.discovery);
                 #[cfg(target_os = "linux")]
                 desktop::notify(
                     "Nightfall Meteor is already running",
-                    &format!("Look for it in the tray. (Port {} is in use.)", config.discovery_port),
+                    &format!("Look for it in the tray. (Port {} is in use.)", side.discovery),
                 )
                 .await;
                 exit_now(1);
             }
         };
-        log::info!("discovery TCP :{} (GET /meteor)", config.discovery_port);
+        log::info!("discovery TCP :{} (GET /meteor)", side.discovery);
         log::info!("Log: {}", logfile::path().display());
-        Some((map, discovery))
+        // Only now: the discovery port is the single-instance lock, so a
+        // second launch never starts a second host.
+        #[cfg(any(target_os = "linux", windows))]
+        host_view.start();
+        Some((map, discovery, side))
     };
     let depth = (!flag("--no-depth")).then(|| {
         let models_dir = config.models_dir.clone().unwrap_or_else(config::default_models_dir);
@@ -242,7 +316,7 @@ async fn main() {
         depth.gpu_post.store(!flag("--cpu-post"), std::sync::atomic::Ordering::Relaxed);
         depth
     });
-    let Some((map, discovery)) = startup else {
+    let Some((map, discovery, side)) = startup else {
         let file = replay_file.unwrap_or_default();
         let fps = value("--fps").and_then(|n| n.parse().ok()).unwrap_or(60);
         let jitter_ms = value("--jitter-ms").and_then(|n| n.parse().ok()).unwrap_or(0.0);
@@ -261,7 +335,8 @@ async fn main() {
         // Lets a local test client read the replayed maps.
         match crypto::MeteorKey::load_or_create(&config::data_dir().join("meteor.key")) {
             Ok(key) => {
-                depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), Arc::new(key), Arc::new(|_| false));
+                let side = config.side_ports(config::DEFAULT_SUNSHINE_PORT);
+                depth_server::start(side.depth, depth.clone(), Arc::new(key), Arc::new(|_| false));
             }
             Err(err) => log::warn!("No key, so no depth port: {err}"),
         }
@@ -293,7 +368,7 @@ async fn main() {
     let mic = match &key {
         Some(key) if !flag("--no-mic") => {
             let streaming = stats.clone();
-            Mic::start(mic::DEFAULT_MIC_PORT, key.clone(), Arc::new(move |ip| streaming.is_streaming(ip))).await
+            Mic::start(side.mic, key.clone(), Arc::new(move |ip| streaming.is_streaming(ip))).await
         }
         _ => None,
     };
@@ -302,7 +377,7 @@ async fn main() {
     }
     let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
-        depth_server::start(depth_server::DEFAULT_DEPTH_PORT, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
+        depth_server::start(side.depth, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
             .map(|port| (port, depth))
     });
     // Register before exposing tray Quit. The coordinator remains alive while
@@ -328,9 +403,17 @@ async fn main() {
             let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
                 .or_else(|| dev_xr_address.is_none().then(|| config.xr.runtime_root()));
             let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
+            #[cfg(windows)]
+            let steam_broker=if let Some(root)=runtime_root.as_ref().filter(|root|root.join("windows-games.json").is_file()) {
+                Some(xr_steam_windows::start_broker(root)?)
+            }else{None};
+            #[cfg(windows)]
+            let steamvr_broker=if steam_broker.is_some() {Some(xr_steamvr_windows::start(runtime_root.as_deref())?)}else{None};
+            #[cfg(not(windows))]
             if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
                 return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
             }
+            #[cfg(not(windows))]
             if dev_xr_address.is_none() {
                 let root = runtime_root.as_ref().unwrap();
                 let check = tokio::time::timeout(std::time::Duration::from_secs(10),
@@ -347,7 +430,7 @@ async fn main() {
             let port = listener.local_addr()?.port();
             let relay_ports = if dev_xr_address.is_none() {
                 let pair = (config.xr.video_port, config.xr.tracking_port);
-                let occupied = firewall::ports(&map, config.discovery_port);
+                let occupied = firewall::ports(&map, side, true);
                 if pair.0 == 0 || pair.1 == 0 || pair.0 == pair.1 || pair.0 == port || pair.1 == port ||
                     occupied.iter().any(|&(other, proto)| proto == ports::Proto::Tcp && [pair.0, pair.1, port].contains(&other)) {
                     return Err(std::io::Error::other("XR control/video/tracking ports must be distinct and must not overlap desktop services"));
@@ -360,9 +443,17 @@ async fn main() {
             #[cfg(target_os = "linux")]
             if let Some(trust) = pairing.clone() { desktop::watch_xr_approval(trust); }
             let advertised = if dev_xr_address.is_none() { Some(port) } else { None };
-            Ok::<_, std::io::Error>((tokio::spawn(xr_control::serve(listener, xr_control::ServiceConfig {
+            let service_config=xr_control::ServiceConfig {
                 key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
-            }, shutdown.subscribe())), advertised))
+            };
+            let cancel=shutdown.subscribe();
+            Ok::<_, std::io::Error>((tokio::spawn(async move {
+                #[cfg(windows)]
+                let _steam_broker=steam_broker;
+                #[cfg(windows)]
+                let _steamvr_broker=steamvr_broker;
+                xr_control::serve(listener,service_config,cancel).await
+            }), advertised))
         }.await;
         match start {
             Ok((task, port)) => { xr_discovery = port; Some(task) },
@@ -382,6 +473,10 @@ async fn main() {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
         depth: depth_port,
+        #[cfg(any(target_os = "linux", windows))]
+        host: host_view.discovery_info(),
+        #[cfg(not(any(target_os = "linux", windows)))]
+        host: None,
         xr_port: xr_discovery,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
@@ -389,7 +484,11 @@ async fn main() {
     let status = Arc::new(Status {
         map,
         sunshine_host: config.sunshine_host.clone(),
-        discovery_port: config.discovery_port,
+        side,
+        #[cfg(any(target_os = "linux", windows))]
+        host_ports: host_view.supervisor.is_some(),
+        #[cfg(not(any(target_os = "linux", windows)))]
+        host_ports: false,
         xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
         sunshine_up: AtomicBool::new(false),
         firewall: std::sync::Mutex::new(firewall::Status::Checking),
@@ -399,9 +498,11 @@ async fn main() {
 
     #[cfg(target_os = "linux")]
     xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
+    #[cfg(windows)]
+    xr_windows::initialize(xr_discovery.is_some(),xr_startup_error,xr_trust);
 
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust }).await {
+    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: Arc::new(host_view) }).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
@@ -412,7 +513,7 @@ async fn main() {
     {
         #[cfg(windows)]
         if !no_tray {
-            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone());
+            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
         }
         let _ = (status, stats, depth, mic);
         if no_tray {
@@ -436,10 +537,14 @@ async fn main() {
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
 static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 static RESTART: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_os = "linux")]
+/// Set on the process `restart` starts, so it waits for the old one's
+/// discovery port.
+const RESTART_ENV: &str = "METEOR_RESTARTED";
+
+#[cfg(any(target_os = "linux", windows))]
 pub fn restart() {
     RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
     quit();
@@ -459,6 +564,20 @@ fn finish_quit() -> ! {
     log::info!("Shutting down");
     if let Some(mic) = MIC.get() {
         mic.shutdown();
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    if let Some(host) = host_view::RUNNING.get() {
+        host.shutdown();
+    }
+    #[cfg(windows)]
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        match std::env::current_exe().and_then(|exe| {
+            let mut command = std::process::Command::new(exe);
+            command.args(std::env::args_os().skip(1)).env(RESTART_ENV, "1").spawn()
+        }) {
+            Ok(child) => log::info!("Restarted Meteor as process {}", child.id()),
+            Err(error) => log::error!("Cannot restart Meteor: {error}"),
+        }
     }
     #[cfg(target_os = "linux")]
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
@@ -531,7 +650,9 @@ pub fn open_config_file() {
              # sunshine_port = {}\n\n\
              # Meteor listens on each Sunshine port plus this offset.\n\
              # port_offset = {}\n\n\
-             # The port Nightfall probes to find Meteor. The client expects {}.\n\
+             # The port Nightfall probes to find Meteor; depth and the microphone use\n\
+             # the next two. The client expects the host's base port minus {} ({} for\n\
+             # the default base), so set this only when the client is told too.\n\
              # discovery_port = {}\n\n\
              # ONNX Runtime with the CUDA provider, for host depth.\n\
              # onnxruntime_lib = \"/path/to/libonnxruntime.so\"\n\n\
@@ -542,9 +663,16 @@ pub fn open_config_file() {
              # Folder of depth models (.ncnn.param or .onnx) for the tray's Model menu.\n\
              # models_dir = \"{}\"\n\n\
              # Run the depth model with TensorRT fp16 (built once, then cached).\n\
-             # tensorrt = true\n",
+             # tensorrt = true\n\n\
+             # A Vibepollo build to run when the tray's host choice is Vibepollo for\n\
+             # Nightfall, instead of the downloaded one (development).\n\
+             # host_binary = \"/path/to/vibepollo\"\n\n\
+             # Extra environment for that host (a table, so keep it last).\n\
+             # [host_env]\n\
+             # LD_LIBRARY_PATH = \"/path/to/libs\"\n",
             config::DEFAULT_SUNSHINE_PORT,
             config::DEFAULT_PORT_OFFSET,
+            config::DISCOVERY_BELOW_BASE,
             config::DEFAULT_DISCOVERY_PORT,
             config::DEFAULT_DISCOVERY_PORT,
             config::default_models_dir().display(),

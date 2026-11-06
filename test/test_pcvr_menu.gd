@@ -29,6 +29,9 @@ class Backend extends RefCounted:
 
 class ControlState extends RefCounted:
 	var state := "idle"
+	var message := ""
+	var discovered := false
+	func discovered_service_available() -> bool: return discovered
 
 class MenuHarness extends UIController:
 	func switch_tab(tab: int): _current_tab = tab
@@ -122,6 +125,18 @@ func _initialize() -> void:
 	resolution.free()
 	owner.pcvr_handover.state = Handover.State.IDLE
 	control.state = "failed"
+	ui.refresh_pcvr_menu()
+	assert(not link.visible and ui._current_tab == 0)
+	# A fresh release must expose setup before its first headset approval.
+	control.discovered = true
+	control.message = "Approve XR headset 1234ABCD in Meteor on the PC; compare this code"
+	ui.refresh_pcvr_menu()
+	assert(link.visible)
+	ui.toggle_pcvr_page()
+	ui.refresh_pcvr_menu()
+	assert(status.text.contains("1234ABCD") and info.text.contains("PCVR setup"))
+	control.discovered = false
+	control.message = ""
 	ui.refresh_pcvr_menu()
 	assert(not link.visible and ui._current_tab == 0)
 	control.state = "watching"

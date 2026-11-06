@@ -1,11 +1,9 @@
-//! Experimental diagnostic XR framing. Not enabled by Meteor discovery/server.
-//! No authentication/encryption: the probe binds loopback only. See protocol doc.
+//! XR frame validation shared by the authenticated relay and loopback probes.
+//! Framing itself provides no authentication; remote sessions use xr_relay.
 use std::io::{self, Read};
 
 pub const HEADER_LEN: usize = 152;
 pub const MAX_PAYLOAD: usize = 8 * 1024 * 1024;
-// Bounded above a five-minute/60Hz DEV session (18,000 frames).
-pub const MAX_FRAMES: u64 = 32768;
 
 #[derive(Debug)]
 pub struct Header {
@@ -150,7 +148,7 @@ impl Reader {
             self.ended = true;
             return Ok(None);
         }
-        if self.sequence >= MAX_FRAMES
+        if self.sequence == u64::MAX
             || self.codec_rate.is_some_and(|value| value != (header.codec,header.fps))
             || self.quest_local.is_some_and(|mode| mode != (header.flags & 2 != 0))
             || header.frame_id <= self.frame_id
@@ -159,7 +157,7 @@ impl Reader {
                 .dimensions
                 .is_some_and(|size| size != (header.width, header.height))
         {
-            return Err(invalid("XR order/dimensions/frame limit"));
+            return Err(invalid("XR order/dimensions/sequence exhausted"));
         }
         let mut payload = vec![0; header.payload_len];
         input.read_exact(&mut payload)?;
@@ -242,20 +240,20 @@ mod tests {
         assert!(reader.read(&mut Cursor::new(&b)).is_err());
     }
     #[test]
-    fn sustained_session_still_has_a_hard_frame_limit() {
+    fn sustained_session_crosses_former_frame_limit() {
         let mut reader = Reader::default();
-        for index in 0..MAX_FRAMES {
+        for index in 0..=32769u64 {
             let mut frame = packet();
             frame[16..24].copy_from_slice(&index.to_le_bytes());
             frame[24..32].copy_from_slice(&(index + 1).to_le_bytes());
             frame[32..40].copy_from_slice(&(index + 1).to_le_bytes());
             reader.read(&mut Cursor::new(frame)).unwrap();
         }
-        let mut frame = packet();
-        frame[16..24].copy_from_slice(&MAX_FRAMES.to_le_bytes());
-        frame[24..32].copy_from_slice(&(MAX_FRAMES + 1).to_le_bytes());
-        frame[32..40].copy_from_slice(&(MAX_FRAMES + 1).to_le_bytes());
-        assert!(reader.read(&mut Cursor::new(frame)).is_err());
+        let mut end = packet();
+        end[16..24].copy_from_slice(&32770u64.to_le_bytes());
+        end[24..48].fill(0); end[49] = 0; end[50] = 1; end[64..HEADER_LEN].fill(0);
+        end.truncate(HEADER_LEN);
+        assert!(reader.read(&mut Cursor::new(end)).unwrap().is_none());
     }
     #[test]
     fn tracked_scene_origin_mode() {

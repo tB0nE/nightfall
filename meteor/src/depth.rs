@@ -1376,17 +1376,29 @@ impl DepthFeed {
     }
     fn initialize(&mut self,codec:Codec,size:(usize,usize),settings:&video_decoder::Settings)->bool {
         let gpu_name=ncnn::resolved_gpu_name(self.depth.depth_gpu().as_deref()).unwrap_or_default();
-        let prefer_amd=self.depth.model().as_deref()!=Some(vda::ID) && gpu_name.to_lowercase().contains("amd");
-        for backend in settings.candidates(prefer_amd) {
+        let gpu_lower=gpu_name.to_lowercase();
+        let prefer_portable=self.depth.model().as_deref()!=Some(vda::ID) &&
+            if cfg!(windows) { !gpu_name.is_empty() && !gpu_lower.contains("nvidia") }
+            else { gpu_lower.contains("amd") || gpu_lower.contains("radeon") || gpu_lower.contains("intel") };
+        for backend in settings.candidates(prefer_portable) {
             if self.rejected.contains(&backend) {continue;}
             let auto_device=video_decoder::vaapi_devices().into_iter().find(|(_,label)|label.starts_with("AMD"));
-            let device=settings.vaapi_device.as_deref().or_else(||auto_device.as_ref().map(|(path,_)|path.as_str()));
+            let device=if backend==DecodeBackend::D3d11 {
+                if gpu_lower.contains("amd") || gpu_lower.contains("radeon") {Some("vendor:0x1002")}
+                else if gpu_lower.contains("intel") {Some("vendor:0x8086")}
+                else if gpu_lower.contains("nvidia") {Some("vendor:0x10de")}
+                else {None}
+            } else {
+                settings.vaapi_device.as_deref().or_else(||auto_device.as_ref().map(|(path,_)|path.as_str()))
+            };
             let gpu_frames=self.depth.gpu_frames.load(Ordering::Relaxed) && !settings.cpu_processing;
             match VideoDecoder::new(codec,backend,device,size,gpu_frames) {
                 Ok(mut decoder)=> {
                     let portable_gpu=gpu_frames && !self.depth.cpu_inference() && !gpu_name.is_empty() && matches!(decoder,VideoDecoder::Ffmpeg(_));
                     if portable_gpu && let VideoDecoder::Ffmpeg(decoder)=&mut decoder {decoder.set_processing_gpu(gpu_name.clone());}
-                    let device_label=if backend==DecodeBackend::Vaapi {device.unwrap_or("driver default")} else {""};
+                    let device_label=if backend==DecodeBackend::Vaapi {device.unwrap_or("driver default")}
+                        else if backend==DecodeBackend::D3d11 {if device.is_some() {gpu_name.as_str()} else {"driver default"}}
+                        else {""};
                     let description=format!("{} {device_label}; processing {}",backend.label(),if backend==DecodeBackend::Nvdec && gpu_frames {"CUDA/Auto"} else if portable_gpu {"Vulkan"} else {"CPU"});
                     self.depth.set_decoder_status(description.clone());
                     log::info!("Host depth decoding {codec:?}: {description}, {}x{}",size.0,size.1);

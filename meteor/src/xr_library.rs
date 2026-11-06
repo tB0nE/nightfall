@@ -1,17 +1,28 @@
 //! Bounded catalog requests on the existing authenticated control connection.
-use std::{io,path::{Path, PathBuf},process::Stdio, sync::OnceLock};
+use std::{io,path::{Path, PathBuf},sync::OnceLock};
+#[cfg(not(windows))]
+use std::process::Stdio;
 static RUNTIME_ROOT: OnceLock<PathBuf> = OnceLock::new();
 pub fn set_runtime_root(root: PathBuf) { let _ = RUNTIME_ROOT.set(root); }
 pub fn steam_launch_options() -> io::Result<String> {
     let root = RUNTIME_ROOT.get().ok_or_else(|| io::Error::other("Install and enable Meteor XR first"))?;
     Ok(launch_options_for(root))
 }
-fn launch_options_for(root: &Path) -> String {
+#[cfg(not(windows))]
+pub(crate) fn launch_options_for(root: &Path) -> String {
     let wrapper = root.join("tools/meteor_xr.py").to_string_lossy().replace('\'', "'\"'\"'");
     format!("/usr/bin/python3 '{wrapper}' steam-run --app-id auto --wait 120 -- %command%")
 }
-use serde_json::{Value,json};
+#[cfg(windows)]
+pub(crate) fn launch_options_for(root: &Path) -> String {
+    let executable=std::env::current_exe().unwrap_or_else(|_|"nightfall-meteor.exe".into());
+    format!("\"{}\" --xr-steam-run --root \"{}\" -- %command%",executable.display(),root.display())
+}
+use serde_json::Value;
+#[cfg(not(windows))]
+use serde_json::json;
 
+#[cfg(not(windows))]
 pub async fn request(root:&Path,action:&str,key:&str,offset:u32)->Value {
     if !matches!(action,"list"|"art"|"launch") || offset>1000 ||
         (action!="list" && !valid_key(key)) {return json!({"action":action,"error":"Invalid library request"})}
@@ -25,6 +36,10 @@ pub async fn request(root:&Path,action:&str,key:&str,offset:u32)->Value {
         _=>json!({"action":action,"error":"Host library request failed or timed out"}),
     }
 }
+#[cfg(windows)]
+pub async fn request(root:&Path,action:&str,key:&str,offset:u32)->Value {
+    crate::xr_windows::library(root,action,key,offset)
+}
 pub fn valid_key(key:&str)->bool {
     key.split_once(':').is_some_and(|(source,id)|source=="steam" && id.len()<=10 && id.bytes().all(|x|x.is_ascii_digit()) && id.parse::<u32>().is_ok_and(|x|x>0))
 }
@@ -35,6 +50,7 @@ pub fn request_open()->io::Result<()> {
 }
 pub fn take_open(root:&Path)->bool {std::fs::remove_file(root.join(".build-cache/meteor-xr/open-library")).is_ok()}
 #[cfg(test)] mod tests {
+    #[cfg(unix)]
     #[test] fn universal_steam_options_quote_the_installed_wrapper() {
         let options=super::launch_options_for(std::path::Path::new("/home/Ty's Apps/xr"));
         assert_eq!(options,"/usr/bin/python3 '/home/Ty'\"'\"'s Apps/xr/tools/meteor_xr.py' steam-run --app-id auto --wait 120 -- %command%");

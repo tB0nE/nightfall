@@ -1,5 +1,10 @@
 # Building Nightfall
 
+For the native Windows Meteor XR development backends, see the
+[Release build and testing workflow](docs/guides/meteor-windows-xr.md).
+The [compatibility checkpoint](docs/plans/active/meteor-windows-vrchat-compat.md)
+lists tested games and the work remaining before installer inclusion.
+
 ## Prerequisites
 
 - **Godot 4.7 stable** (editor + custom export templates)
@@ -118,13 +123,20 @@ toolchain once from the project root:
 tools/build_support/bootstrap_native_xr.sh
 ```
 
-The bootstrap clones immutable Godot and godot-cpp commits, applies all four
+The bootstrap clones immutable Godot and godot-cpp commits, applies all five
 patches in order, builds a patched editor, generates matching OpenXR-aware C++
 bindings, and builds both Android runtime variants. The output persists in the
 ignored `.build-cache/native-xr/` directory instead of `/tmp`, so a reboot or
 temporary-file cleanup does not break the next APK build. Use
 `--sources-only` to validate the pinned revisions and patch set without doing
 the long compilation.
+
+To refresh just an existing Android release runtime, use
+`bootstrap_native_xr.sh --android-release-only`. APK export requires a matching
+`.build-stamp` beside the runtime, recording every required engine patch and
+the binary hash. Updating sources or the source patch stamp alone does not
+certify an older cached binary. Rebuild through bootstrap if export reports a
+stale runtime; do not copy or fabricate a build stamp.
 
 The inputs are recorded in
 `tools/build_support/native_xr_versions.sh`. The current pins are Godot

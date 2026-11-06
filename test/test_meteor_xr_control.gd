@@ -45,6 +45,16 @@ func _init() -> void:
 	assert(not client.request_library("invalid"))
 	client.state = "prepared"
 	client.session = "a".repeat(32)
+	assert(not client.retains_lease_during_timing_transition())
+	client._handover_on_ready = true
+	client._owns_timing = true
+	assert(client.retains_lease_during_timing_transition())
+	client.state = "watching"
+	assert(not client.retains_lease_during_timing_transition())
+	client.state = "prepared"
+	client._owns_timing = false
+	assert(not client.retains_lease_during_timing_transition())
+	client._handover_on_ready = false
 	assert(client.queue_foveation(true) and client._pending_foveation == 1)
 	assert(client.queue_foveation(false) and client._pending_foveation == 0)
 	assert(not client.queue_bitrate(161))

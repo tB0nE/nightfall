@@ -14,8 +14,9 @@ class FakeComp extends RefCounted:
 
 class FakeSources extends RefCounted:
 	var offer_stream := true
-	func can_open_browser(): return true
-	func can_add_browser_screen(): return true
+	var browser_ready := true
+	func can_open_browser(): return browser_ready
+	func can_add_browser_screen(): return browser_ready
 	func can_offer_stream_screen(): return offer_stream
 	func can_add_stream_screen(): return offer_stream
 	func can_make_primary(_screen): return false
@@ -109,6 +110,21 @@ func _init():
 	source_actions.clear()
 	for item in strip._items: source_actions.append(String(item.action))
 	assert(not source_actions.has("stream:new") and source_actions.has("screen:primary"))
+	# Eligibility can change after a restart without any tab/screen-count change.
+	owner.browser_prototype.active = false
+	owner.is_streaming = true
+	strip.popup = ""
+	owner.screen_sources.browser_ready = false
+	strip.update(owner.primary_screen, surface, margin, true)
+	var browser_index := -1
+	for i in strip._items.size():
+		if strip._items[i].action == &"browser": browser_index = i
+	assert(browser_index >= 0 and not strip._items[browser_index].enabled)
+	owner.screen_sources.browser_ready = true
+	strip.update(owner.primary_screen, surface, margin, true)
+	assert(strip._items[browser_index].enabled, "Browser must enable without adding another screen")
+	owner.browser_prototype.active = true
+	owner.is_streaming = false
 	strip.invoke(&"tab:new")
 	assert(owner.browser_prototype.actions[-1] == ["new", 0], "Add tab must create on the current browser")
 	strip.update(owner.primary_screen, surface, margin, false)

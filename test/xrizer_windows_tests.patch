@@ -1,0 +1,36 @@
+diff --git a/src/graphics_backends.rs b/src/graphics_backends.rs
+--- a/src/graphics_backends.rs
++++ b/src/graphics_backends.rs
+@@ -16,9 +16,9 @@ pub use vulkan::VulkanData;
+ 
+ /// The backend used for the session that exists before the application submits its first
+ /// texture, when we don't yet know anything about its graphics setup.
+-#[cfg(unix)]
++#[cfg(any(unix, test))]
+ pub type TemporaryBackend = VulkanData;
+-#[cfg(windows)]
++#[cfg(all(windows, not(test)))]
+ pub type TemporaryBackend = D3D11Data;
+ 
+ /// Errors from validating or copying application textures.
+diff --git a/src/openxr_data.rs b/src/openxr_data.rs
+--- a/src/openxr_data.rs
++++ b/src/openxr_data.rs
+@@ -751,7 +751,7 @@ impl SessionData {
+     }
+ }
+ 
+-#[cfg(unix)]
++#[cfg(any(unix, test))]
+ fn new_temporary_backend(
+     instance: &xr::Instance,
+     system_id: xr::SystemId,
+@@ -759,7 +759,7 @@ fn new_temporary_backend(
+     Ok(TemporaryBackend::new_temporary(instance, system_id))
+ }
+ 
+-#[cfg(windows)]
++#[cfg(all(windows, not(test)))]
+ fn new_temporary_backend(
+     instance: &xr::Instance,
+     system_id: xr::SystemId,

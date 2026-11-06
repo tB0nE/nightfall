@@ -5,12 +5,11 @@ fn main() {
     build_vda_vulkan();
     println!("cargo:rerun-if-changed=native/video_decoder.cpp");
     println!("cargo:rerun-if-changed=third_party/ffmpeg");
-    cc::Build::new()
-        .cpp(true)
-        .std("c++17")
-        .file("native/video_decoder.cpp")
-        .include("third_party/ffmpeg/include")
-        .compile("meteor_video_decoder");
+    let mut decoder = cc::Build::new();
+    decoder.cpp(true).std("c++17").file("native/video_decoder.cpp")
+        .include("third_party/ffmpeg/include");
+    if decoder.get_compiler().is_like_msvc() { decoder.flag("/EHsc"); }
+    decoder.compile("meteor_video_decoder");
     println!("cargo:rerun-if-changed=native/tensorrt.cpp");
     println!("cargo:rerun-if-changed=third_party/tensorrt");
     let mut build = cc::Build::new();
@@ -66,7 +65,11 @@ fn build_vda_vulkan() {
         );
         return;
     }
-    let sdk = sdk.canonicalize().expect("ncnn SDK");
+    // Windows canonicalize() adds a \\?\ verbatim prefix that cl.exe does not
+    // accept in /I and /LIBPATH. An absolute ordinary path works for both.
+    let sdk = if sdk.is_absolute() { sdk } else {
+        std::env::current_dir().expect("Meteor build directory").join(sdk)
+    };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let output = out_dir.join(if os == "windows" {
         "meteor_vda_vulkan.dll"
@@ -84,7 +87,7 @@ fn build_vda_vulkan() {
     let mut command: Command = compiler.to_command();
     if compiler.is_like_msvc() {
         command
-            .args(["/nologo", "/O2", "/std:c++17", "/EHsc", "/LD", "/MD"])
+            .args(["/nologo", "/O2", "/std:c++17", "/EHsc", "/LD", "/MD", "/DNOMINMAX"])
             .arg(format!("/I{}", sdk.join("include/ncnn").display()))
             .arg(format!("/Fo{}", out_dir.join("vda_vulkan.obj").display()))
             .arg("native/vda_vulkan.cpp")

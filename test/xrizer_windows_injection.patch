@@ -1,0 +1,50 @@
+diff --git a/src/clientcore.rs b/src/clientcore.rs
+index 1590702..7e576fe 100644
+--- a/src/clientcore.rs
++++ b/src/clientcore.rs
+@@ -304,9 +304,9 @@ impl<T: InterfaceImpl> Injected<T> {
+             .get()
+             .or_else(|| {
+                 let item: Arc<ErasedInterface> = self.store.lock().unwrap().get::<T>()?;
+-                self.item
+-                    .set(Arc::downgrade(&item))
+-                    .unwrap_or_else(|_| unreachable!());
++                // Another caller may have populated the cache after our first
++                // read. Its value is authoritative; losing this race is normal.
++                let _ = self.item.set(Arc::downgrade(&item));
+                 Some(self.item.get().unwrap())
+             })
+             .and_then(|i| Some(i.upgrade()?.downcast().unwrap()))
+@@ -422,6 +422,32 @@ mod tests {
+         assert_eq!(Arc::as_ptr(&injected), Arc::as_ptr(&interface1),);
+     }
+ 
++    #[test]
++    fn concurrent_injected_reads_share_the_same_interface() {
++        let core = ClientCore::new(c"IVRClientCore_003").unwrap();
++        core.try_interface(c"one", |_| Interface1);
++        let expected = core.get_interface::<Interface1>().unwrap();
++        for _ in 0..64 {
++            let injected = Arc::new(Injected::<Interface1> {
++                item: OnceLock::new(),
++                store: core.interface_store.clone(),
++                _marker: Default::default(),
++            });
++            let barrier = Arc::new(std::sync::Barrier::new(16));
++            std::thread::scope(|scope| {
++                for _ in 0..16 {
++                    let injected = injected.clone();
++                    let barrier = barrier.clone();
++                    let expected = expected.clone();
++                    scope.spawn(move || {
++                        barrier.wait();
++                        assert!(Arc::ptr_eq(&injected.get().unwrap(), &expected));
++                    });
++                }
++            });
++        }
++    }
++
+     #[test]
+     fn inject_force() {
+         let core = ClientCore::new(c"IVRClientCore_003").unwrap();

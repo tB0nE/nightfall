@@ -14,17 +14,15 @@ PATCH_STAMP="$CACHE_ROOT/godot-patches.sha256"
 API_STAMP="$CACHE_ROOT/godot-cpp-api.version"
 JOBS="${NIGHTFALL_BUILD_JOBS:-$(nproc)}"
 SOURCES_ONLY=0
-ENGINE_PATCHES=(
-  "$PROJECT_ROOT/patches/godot-4.7-ahb.patch"
-  "$PROJECT_ROOT/patches/godot-4.7-projectionless.patch"
-  "$PROJECT_ROOT/patches/godot-4.7-projectionless-lifecycle.patch"
-  "$PROJECT_ROOT/patches/godot-4.7-compositor-filter.patch"
-  "$PROJECT_ROOT/patches/godot-4.7-gles3-render-target-override.patch"
-)
+ANDROID_RELEASE_ONLY=0
+ENGINE_PATCHES=()
+for patch_name in "${NIGHTFALL_ENGINE_PATCH_NAMES[@]}"; do
+  ENGINE_PATCHES+=("$PROJECT_ROOT/patches/$patch_name")
+done
 
 usage() {
   cat <<EOF
-Usage: $0 [--sources-only]
+Usage: $0 [--sources-only | --android-release-only]
 
 Recreates Nightfall's patched native-XR toolchain from pinned upstream commits.
 By default it builds the patched editor, OpenXR-aware godot-cpp bindings, and
@@ -33,6 +31,7 @@ both Android runtime libraries. Artifacts are cached under:
 
 Options:
   --sources-only  Clone and patch the pinned sources without compiling them
+  --android-release-only  Rebuild only the patched Android release runtime
   --help          Show this help
 
 Environment overrides:
@@ -44,6 +43,7 @@ EOF
 for arg in "$@"; do
   case "$arg" in
     --sources-only) SOURCES_ONLY=1 ;;
+    --android-release-only) ANDROID_RELEASE_ONLY=1 ;;
     --help|-h) usage; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -120,8 +120,16 @@ done
 if [[ -f "$PATCH_STAMP" ]] && [[ "$(<"$PATCH_STAMP")" == "$EXPECTED_PATCH_STAMP" ]]; then
   echo "Pinned Godot patch set is already applied."
 else
-  for patch_file in "${ENGINE_PATCHES[@]}"; do
-    apply_engine_patch "$patch_file"
+  # Later patches can overlap earlier ones, preventing reverse-checking each
+  # old patch independently. A recorded exact prefix can be extended safely.
+  applied_count=0
+  if [[ -f "$PATCH_STAMP" && "$EXPECTED_PATCH_STAMP" == "$(<"$PATCH_STAMP")"$'\n'* ]]; then
+    applied_count="$(tail -n +2 "$PATCH_STAMP" | wc -l)"
+  fi
+  for index in "${!ENGINE_PATCHES[@]}"; do
+    if (( index >= applied_count )); then
+      apply_engine_patch "${ENGINE_PATCHES[$index]}"
+    fi
   done
   printf '%s\n' "$EXPECTED_PATCH_STAMP" > "$PATCH_STAMP"
 fi
@@ -136,6 +144,22 @@ if [[ "$SOURCES_ONLY" -eq 1 ]]; then
 fi
 
 require_command scons
+if [[ "$ANDROID_RELEASE_ONLY" -eq 1 ]]; then
+  export ANDROID_HOME="${ANDROID_HOME:-/home/linuxbrew/.linuxbrew/share/android-commandlinetools}"
+  export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-$ANDROID_HOME/ndk/$NIGHTFALL_ANDROID_NDK_VERSION}"
+  if [[ ! -f "$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" ]]; then
+    echo "Missing Android NDK $NIGHTFALL_ANDROID_NDK_VERSION" >&2
+    exit 1
+  fi
+  scons -C "$GODOT_SOURCE" platform=android target=template_release arch=arm64 -j"$JOBS"
+  runtime="$GODOT_SOURCE/platform/android/java/lib/libs/release/arm64-v8a/libgodot_android.so"
+  [[ -f "$runtime" ]] || runtime="$GODOT_SOURCE/bin/libgodot.android.template_release.arm64.so"
+  [[ -f "$runtime" ]] || { echo "Release runtime was not produced" >&2; exit 1; }
+  mkdir -p "$RUNTIME_DIR"
+  cp "$runtime" "$RUNTIME_DIR/android_release_arm64.so"
+  nightfall_runtime_build_stamp "$PROJECT_ROOT" "$RUNTIME_DIR/android_release_arm64.so" > "$RUNTIME_DIR/android_release_arm64.so.build-stamp"
+  exit 0
+fi
 require_command cmake
 require_command ninja
 
@@ -214,6 +238,7 @@ if [[ ! -f "$DEBUG_RUNTIME" ]]; then
   exit 1
 fi
 cp "$DEBUG_RUNTIME" "$RUNTIME_DIR/android_debug_arm64.so"
+nightfall_runtime_build_stamp "$PROJECT_ROOT" "$RUNTIME_DIR/android_debug_arm64.so" > "$RUNTIME_DIR/android_debug_arm64.so.build-stamp"
 
 echo "Building patched Android release runtime..."
 scons -C "$GODOT_SOURCE" platform=android target=template_release arch=arm64 -j"$JOBS"
@@ -226,6 +251,7 @@ if [[ ! -f "$RELEASE_RUNTIME" ]]; then
   exit 1
 fi
 cp "$RELEASE_RUNTIME" "$RUNTIME_DIR/android_release_arm64.so"
+nightfall_runtime_build_stamp "$PROJECT_ROOT" "$RUNTIME_DIR/android_release_arm64.so" > "$RUNTIME_DIR/android_release_arm64.so.build-stamp"
 
 echo "Native-XR toolchain ready:"
 echo "  Godot source: $GODOT_SOURCE"

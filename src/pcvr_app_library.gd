@@ -11,6 +11,11 @@ var _icons: Dictionary = {}
 var _textures: Dictionary = {}
 var _cards: Array = []
 var _launch_pending := false
+var _runtime_prompt: PanelContainer
+var _runtime_label: Label
+var _runtime_key := ""
+var _footer: HBoxContainer
+var _runtime_install: Button
 
 func setup(ui) -> void:
 	controller = ui
@@ -36,6 +41,7 @@ func setup(ui) -> void:
 	_grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(_grid)
 	var footer := HBoxContainer.new()
+	_footer = footer
 	footer.add_theme_constant_override("separation", 12)
 	add_child(footer)
 	var previous: Button = ui.make_action_btn("Previous")
@@ -55,6 +61,44 @@ func setup(ui) -> void:
 	_status.custom_minimum_size.y = 46
 	_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_status)
+	_runtime_prompt = PanelContainer.new()
+	_runtime_prompt.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var prompt_column := VBoxContainer.new()
+	prompt_column.add_theme_constant_override("separation", 24)
+	_runtime_prompt.add_child(prompt_column)
+	_runtime_label = Label.new()
+	_runtime_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_runtime_label.add_theme_font_size_override("font_size", 26)
+	_runtime_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	prompt_column.add_child(_runtime_label)
+	var actions := HBoxContainer.new()
+	prompt_column.add_child(actions)
+	_runtime_install = ui.make_action_btn("Install SteamVR")
+	actions.add_child(_runtime_install)
+	_runtime_install.pressed.connect(func():
+		var key := _runtime_key
+		_close_runtime_prompt()
+		_status.text = "Opening SteamVR installation on your PC…"
+		if control == null or not control.request_library("install_steamvr", key):
+			_status.text = "Connect to Meteor to open SteamVR installation.")
+	var cancel: Button = ui.make_action_btn("Cancel")
+	cancel.pressed.connect(_close_runtime_prompt)
+	actions.add_child(cancel)
+	add_child(_runtime_prompt)
+	_runtime_prompt.hide()
+
+func _show_runtime_prompt(key: String, game_name: String) -> void:
+	_runtime_key = key
+	_runtime_label.text = "%s requires SteamVR. Install it through Steam, then try again." % game_name
+	_grid.hide()
+	_footer.hide()
+	_runtime_prompt.show()
+
+func _close_runtime_prompt() -> void:
+	_runtime_key = ""
+	_runtime_prompt.hide()
+	_grid.show()
+	_footer.show()
 
 func open_library() -> void:
 	var active = controller.main.welcome_screen.get_xr_control()
@@ -65,6 +109,7 @@ func open_library() -> void:
 	refresh_apps()
 
 func refresh_apps() -> void:
+	_close_runtime_prompt()
 	_launch_pending = false
 	_status.text = "Loading installed VR apps…"
 	if control == null or not control.request_library("list", "", offset):
@@ -76,6 +121,8 @@ func _reply(value: Dictionary) -> void:
 		_launch_pending = false
 		for button in _grid.get_children(): button.disabled = false
 		_status.text = str(value.error)
+		if value.get("error_code", "") == "steamvr_required":
+			_show_runtime_prompt(str(value.get("key", "")), "This game")
 		return
 	match str(value.get("action", "")):
 		"list":
@@ -99,6 +146,7 @@ func _reply(value: Dictionary) -> void:
 				_textures[key] = texture
 				_apply_icon(key, texture)
 		"launch": _status.text = str(value.get("message", "Starting app…"))
+		"install_steamvr": _status.text = str(value.get("message", "Finish SteamVR setup on your PC, then refresh apps."))
 
 func _apply_icon(key: String, texture: Texture2D) -> void:
 	if not _icons.has(key) or not is_instance_valid(_icons[key]): return
@@ -152,7 +200,7 @@ func _add_card(card: Dictionary) -> void:
 	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(name_label)
 	var source := Label.new()
-	source.text = str(card.source) + (" · Needs setup" if not card.ready else "")
+	source.text = str(card.source) + (" · Requires SteamVR" if card.get("requires_steamvr", false) else (" · Needs setup" if not card.ready else ""))
 	source.add_theme_font_size_override("font_size", 16)
 	source.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	source.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -164,7 +212,8 @@ func _add_card(card: Dictionary) -> void:
 	button.pressed.connect(func():
 		if _launch_pending: return
 		if control.state == "prepared": _status.text = "Exit the current XR game before launching another app."
-		elif not card.ready: _status.text = "Add Meteor launch options in this game’s Steam properties first."
+		elif card.get("requires_steamvr", false): _show_runtime_prompt(key, str(card.name))
+		elif not card.ready: _status.text = str(card.get("error", "Check this game’s Meteor profile or Steam launch options."))
 		else:
 			_launch_pending = true
 			for tile in _grid.get_children(): tile.disabled = true

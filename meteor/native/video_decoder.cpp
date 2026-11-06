@@ -61,10 +61,11 @@ struct Api {
     FUNCTION(av_hwdevice_ctx_create); FUNCTION(av_hwframe_transfer_data);
     FUNCTION(av_buffer_ref); FUNCTION(av_buffer_unref); FUNCTION(av_strerror);
     FUNCTION(av_pix_fmt_desc_get);
+    FUNCTION(av_dict_set); FUNCTION(av_dict_free);
     FUNCTION(sws_getContext); FUNCTION(sws_scale); FUNCTION(sws_freeContext);
 #undef FUNCTION
     ~Api() { close_library(scale); close_library(codec); close_library(util); }
-    std::string failure(const char *what, int code) {
+    std::string failure(const std::string &what, int code) {
         char text[AV_ERROR_MAX_STRING_SIZE]{};
         av_strerror_fn(code, text, sizeof(text));
         return std::string(what) + ": " + text;
@@ -129,18 +130,20 @@ extern "C" void *meteor_video_api(const char *directory, char *error, size_t siz
         LOAD(util, av_hwdevice_ctx_create); LOAD(util, av_hwframe_transfer_data);
         LOAD(util, av_buffer_ref); LOAD(util, av_buffer_unref); LOAD(util, av_strerror);
         LOAD(util, av_pix_fmt_desc_get);
+        LOAD(util, av_dict_set); LOAD(util, av_dict_free);
         LOAD(scale, sws_getContext); LOAD(scale, sws_scale); LOAD(scale, sws_freeContext);
 #undef LOAD
         return api.release();
     } catch (const std::exception &e) { error_text(error, size, e.what()); return nullptr; }
 }
 
-extern "C" void *meteor_video_create(void *runtime, int codec_id, bool vaapi, const char *device, char *error, size_t size) {
+// hardware: 0 = software, 1 = VAAPI, 2 = D3D11VA.
+extern "C" void *meteor_video_create(void *runtime, int codec_id, int hardware_mode, const char *device, char *error, size_t size) {
     try {
         auto *api = static_cast<Api *>(runtime);
         auto self = std::make_unique<Decoder>(api);
         AVCodecID id = codec_id == 0 ? AV_CODEC_ID_H264 : codec_id == 1 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_AV1;
-        const AVCodec *codec = id == AV_CODEC_ID_AV1 ? api->avcodec_find_decoder_by_name_fn(vaapi ? "av1" : "libdav1d") : nullptr;
+        const AVCodec *codec = id == AV_CODEC_ID_AV1 ? api->avcodec_find_decoder_by_name_fn(hardware_mode ? "av1" : "libdav1d") : nullptr;
         if (!codec) codec = api->avcodec_find_decoder_fn(id);
         if (!codec) throw std::runtime_error("FFmpeg decoder not available for this codec");
         self->context = api->avcodec_alloc_context3_fn(codec);
@@ -150,13 +153,23 @@ extern "C" void *meteor_video_create(void *runtime, int codec_id, bool vaapi, co
         self->context->thread_type = FF_THREAD_SLICE; // No frame-thread lookahead.
         self->context->max_pixels = 8192LL * 8192LL;
         self->context->opaque = self.get(); self->context->get_format = Decoder::format;
-        if (vaapi) {
+        if (hardware_mode) {
+            AVHWDeviceType type = hardware_mode == 1 ? AV_HWDEVICE_TYPE_VAAPI : AV_HWDEVICE_TYPE_D3D11VA;
+            const char *label = hardware_mode == 1 ? "VAAPI" : "D3D11VA";
             for (int i = 0; const auto *config = api->avcodec_get_hw_config_fn(codec, i); ++i)
-                if (config->device_type == AV_HWDEVICE_TYPE_VAAPI && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+                if (config->device_type == type && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
                     self->hardware_format = config->pix_fmt;
-            if (self->hardware_format == AV_PIX_FMT_NONE) throw std::runtime_error("Codec has no VAAPI decode path");
-            int rc = api->av_hwdevice_ctx_create_fn(&self->hardware, AV_HWDEVICE_TYPE_VAAPI, device && *device ? device : nullptr, nullptr, 0);
-            if (rc < 0) throw std::runtime_error(api->failure("VAAPI device", rc));
+            if (self->hardware_format == AV_PIX_FMT_NONE) throw std::runtime_error(std::string("Codec has no ") + label + " decode path");
+            AVDictionary *options = nullptr;
+            const char *device_name = device && *device ? device : nullptr;
+            if (hardware_mode == 2 && device_name && std::strncmp(device_name, "vendor:", 7) == 0) {
+                int rc = api->av_dict_set_fn(&options, "vendor_id", device_name + 7, 0);
+                if (rc < 0) throw std::runtime_error(api->failure("D3D11VA vendor", rc));
+                device_name = nullptr;
+            }
+            int rc = api->av_hwdevice_ctx_create_fn(&self->hardware, type, device_name, options, 0);
+            api->av_dict_free_fn(&options);
+            if (rc < 0) throw std::runtime_error(api->failure(std::string(label) + " device", rc));
             self->context->hw_device_ctx = api->av_buffer_ref_fn(self->hardware);
         }
         int rc = api->avcodec_open2_fn(self->context, codec, nullptr);
@@ -194,9 +207,9 @@ extern "C" int meteor_video_receive(void *handle, bool pixels, MeteorVideoFrame 
         AVFrame *frame = self->frame;
         if (!pixels) { *out={nullptr,0,frame->pts,0,0,0,0}; return 1; }
         if (self->hardware_format != AV_PIX_FMT_NONE) {
-            if (frame->format != self->hardware_format) throw std::runtime_error("VAAPI decoder returned a software surface");
+            if (frame->format != self->hardware_format) throw std::runtime_error("Hardware decoder returned a software surface");
             rc = api->av_hwframe_transfer_data_fn(self->download, frame, 0);
-            if (rc < 0) throw std::runtime_error(api->failure("VAAPI surface download", rc));
+            if (rc < 0) throw std::runtime_error(api->failure("Hardware surface download", rc));
             self->download->crop_left=frame->crop_left; self->download->crop_right=frame->crop_right;
             self->download->crop_top=frame->crop_top; self->download->crop_bottom=frame->crop_bottom;
             frame = self->download;

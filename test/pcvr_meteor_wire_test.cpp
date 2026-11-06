@@ -14,14 +14,20 @@ int main() {
     MeteorXrWire sustained;
     MeteorXrFrame frame;
     auto sequence_header=h;
-    for (uint64_t i=0;i<32768;++i) {
+    for (uint64_t i=0;i<32770;++i) {
         meteor_xr_put(sequence_header.data()+16,i,8);
         meteor_xr_put(sequence_header.data()+24,i+1,8);
         meteor_xr_put(sequence_header.data()+32,i+1,8);
         assert(sustained.header(sequence_header,frame) && sustained.accept(frame,payload));
     }
-    meteor_xr_put(sequence_header.data()+16,32768,8);
+    // Duplicate frames remain invalid after crossing the old diagnostic cap.
     assert(!sustained.header(sequence_header,frame));
+    auto sustained_end=h;
+    meteor_xr_put(sustained_end.data()+16,32770,8);
+    for(int i=24;i<48;++i)sustained_end[i]=0;
+    sustained_end[49]=0;sustained_end[50]=1;
+    for(int i=64;i<152;++i)sustained_end[i]=0;
+    assert(sustained.header(sustained_end,frame) && sustained.accept(frame,{}));
     MeteorXrWire wire;
     auto rectangular=h;
     meteor_xr_put(rectangular.data()+44,4128,2); meteor_xr_put(rectangular.data()+46,2208,2);

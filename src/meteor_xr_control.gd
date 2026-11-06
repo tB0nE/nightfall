@@ -80,6 +80,16 @@ func current_config() -> ConfigFile:
 	var config := ConfigFile.new()
 	return config if config.load(config_path()) == OK else null
 
+func discovered_service_available() -> bool:
+	# Discovery is already pinned by StreamManager. This enables setup UI;
+	# authentication/host approval still gates library access and streaming.
+	return _discovered_config != null
+
+func retains_lease_during_timing_transition() -> bool:
+	# Switching the desktop/display rate can briefly pause Android before the
+	# native standby receiver starts. Preserve only this accepted, timed phase.
+	return state == "prepared" and not session.is_empty() and _handover_on_ready and _owns_timing
+
 func _status(value: String, text: String) -> void:
 	state = value
 	message = text
@@ -181,8 +191,8 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 		await owner.get_tree().process_frame
 
 func request_library(action: String, key: String = "", offset: int = 0) -> bool:
-	if not library_available or state not in ["watching", "prepared"] or action not in ["list", "art", "launch"]: return false
-	if action in ["list", "launch"]: _library_queue.clear()
+	if not library_available or state not in ["watching", "prepared"] or action not in ["list", "art", "launch", "install_steamvr"]: return false
+	if action in ["list", "launch", "install_steamvr"]: _library_queue.clear()
 	if _library_queue.size() >= 12: return false
 	_library_queue.append({"type":"library", "action":action, "key":key, "offset":offset})
 	return true

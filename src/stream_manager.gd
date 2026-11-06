@@ -34,6 +34,10 @@ func _is_local_host(ip: String) -> bool:
 # retry has happened, so we never retry more than once even if the manifest still doesn't
 # match afterwards (e.g. a host that free-scales regardless of requested resolution).
 var _resolution_retry_done: bool = false
+var requested_resolution := Vector2i.ZERO
+
+static func capture_resolution_retry_needed(requested: Vector2i, corrected: Vector2i, retried: bool) -> bool:
+	return not retried and requested.x > 0 and requested.y > 0 and corrected.x > 0 and corrected.y > 0 and requested != corrected
 var _current_host_id: int = -1
 var _current_app_id: int = -1
 
@@ -99,6 +103,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		main._log("[STREAM] Reconnecting with corrected resolution %dx%d (was %dx%d)" % [w, h, main.host_resolution.x, main.host_resolution.y])
 	elif main.settings.host.double_h:
 		w *= 2
+	requested_resolution = Vector2i(w, h)
 
 	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, effective_stream_fps(), str(local_capture_mode)])
 	if main.settings.host.bitrate_idx >= 0:
@@ -356,9 +361,13 @@ func _on_v2_launch_response(response: Dictionary):
 			_app_id_refreshed = true
 			_retry_with_fresh_app_id()
 			return
-		# Meteor is experimental: never let it cost a working connection (or
-		# trigger the stale-pairing re-pair below). Retry once without it.
-		if not _meteor.is_empty():
+		# A timeout may leave the original launch running upstream. A missing
+		# URL is also a host response, not a proxy connection failure. Neither
+		# is safe to retry immediately on the direct port.
+		var upstream_pending := str(msg).contains("Another stream operation") \
+			or str(msg).to_lower().contains("timeout") \
+			or str(msg).contains("Session URL not found")
+		if not _meteor.is_empty() and not upstream_pending:
 			main._log("[METEOR] Launch through Meteor failed; retrying straight to Sunshine")
 			_meteor = {}
 			_meteor_bypass = true
@@ -376,29 +385,11 @@ func _on_v2_launch_response(response: Dictionary):
 		# welcome UI is 1920x1080 while its composition cursor still maps against
 		# the attempted stream resolution.
 		main.restore_after_failed_connect("Launch failed: " + str(msg))
-		if msg.find("Session URL not found") != -1:
-			main._log("[PAIR] Launch failed due to stale pairing, re-pairing...")
-			var ip = ""
-			var http_port: int = main.DEFAULT_PAIR_PORT
-			for h in _b().get_hosts():
-				if h.get("id") == main.current_host_id:
-					ip = h.get("localaddress", "")
-					http_port = int(h.get("http_port", main.DEFAULT_PAIR_PORT))
-					break
-			if not ip.is_empty():
-				_b().get_config_manager().remove_host(main.current_host_id)
-				main._ui_status_label.text = "Re-pairing with " + ip + "..."
-				# Re-pair on the HTTP port the host was paired on (records
-				# from before it was saved derive it from https_port).
-				var pin = _b().start_pair(ip, http_port)
-				if str(pin) != "" and str(pin) != "0":
-					main.welcome_screen.show_pin_when_needed(str(pin))
-					return
-			main._ui_status_label.text = "Pairing needed. Please re-select server."
-			main.welcome_screen.show_welcome_screen("server")
-		else:
-			main._ui_status_label.text = "Launch failed: " + str(msg)
-			main.welcome_screen.show_notice("Launch failed: " + str(msg))
+		# A missing session URL can mean capture/startup failed after TLS
+		# authentication succeeded. It is not evidence of an invalid pairing.
+		# Keep the saved host and let explicit pairing handle authentication.
+		main._ui_status_label.text = "Launch failed: " + str(msg)
+		main.welcome_screen.show_notice("Launch failed: " + str(msg))
 		return
 
 	_app_id_refreshed = false
@@ -529,6 +520,14 @@ func _on_v2_launch_response(response: Dictionary):
 				enabled_in_manifest[0].is_primary = true
 		var layout_err = host_layout.validate(host_layout.frame_size)
 		if layout_err == "":
+			# A launch manifest is authoritative even if the earlier discovery
+			# request failed before pairing or returned no layout. Capability
+			# gates control both monitor selection and capture-aspect resolution.
+			main.settings.host.is_polaris_host = true
+			main.settings.host.native_resolution = host_layout.frame_size
+			main.ui_controller.update_monitor_tab()
+			main.settings_controller.refresh_resolution_btn_label()
+			main.state_manager.save_host_state()
 			main._log("[LAYOUT] Host manifest received: %d monitor(s), frame=%dx%d, desktop_bounds=%s" % [host_layout.monitors.size(), host_layout.frame_size.x, host_layout.frame_size.y, str(host_layout.desktop_bounds)])
 			for m in host_layout.enabled_monitors():
 				main._log("[LAYOUT]   monitor %s frame_rect=%s desktop_rect=%s primary=%s" % [String(m.id), str(m.frame_rect), str(m.desktop_rect), str(m.is_primary)])
@@ -869,17 +868,19 @@ func browse_mdns() -> Array:
 		while t.is_alive():
 			await main.get_tree().create_timer(0.1).timeout
 		t.wait_to_finish()
-	_mdns_result = _merge_mdns_hosts(usb_hosts, lan_hosts)
+	_mdns_result = merge_mdns_hosts(usb_hosts, lan_hosts)
 	main._log("[mDNS] Found %d hosts" % _mdns_result.size())
 	return _mdns_result
 
-# One entry per machine: a PC reachable both ways advertises the same SRV
-# target on each network, and the cable is the path worth taking.
-func _merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
+# One entry per host: a PC reachable both ways advertises the same SRV
+# target and port on each network, and the cable is the path worth taking.
+# The port keeps two hosts on one PC apart (Meteor's bundled host next to
+# Sunshine, say).
+static func merge_mdns_hosts(usb_hosts: Array, lan_hosts: Array) -> Array:
 	var merged: Array = []
 	var seen := {}
 	for host in usb_hosts + lan_hosts:
-		var key = str(host.get("hostname", host.get("ip", ""))).to_lower()
+		var key = "%s:%d" % [str(host.get("hostname", host.get("ip", ""))).to_lower(), int(host.get("port", 47989))]
 		if seen.has(key):
 			continue
 		seen[key] = true

@@ -1,11 +1,24 @@
-// Linux-only diagnostic bridge: live USB poses -> isolated Monado virtual HMD.
+// Loopback tracking bridge for the isolated Monado virtual device.
 #include "pcvr_meteor_tracking.h"
 #include "pcvr_meteor_haptics.h"
+#ifdef _WIN32
+#define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using socket_type = SOCKET;
+using pollfd = WSAPOLLFD;
+static constexpr socket_type invalid_socket = INVALID_SOCKET;
+static int poll(pollfd *items, unsigned long count, int timeout) { return WSAPoll(items,count,timeout); }
+static void close(socket_type socket) { closesocket(socket); }
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <unistd.h>
+using socket_type = int;
+static constexpr socket_type invalid_socket = -1;
+#endif
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -30,23 +43,40 @@ struct Client {
     uint64_t mapped_ns=0;
     std::array<MeteorHaptic,2> haptics{};
     std::array<bool,2> haptic_pending{};
-    int fd=-1;
+    socket_type fd=invalid_socket;
+#ifdef _WIN32
+    bool winsock_started=false;
+#endif
     void disconnected() {
         failed.store(true);
         std::fprintf(stderr,"METEOR_TRACKING_DISCONNECTED reason=transport_or_protocol\n");
         std::fflush(stderr);
     }
-    ~Client() { stop.store(true); if(worker.joinable()) worker.join(); if(fd>=0) close(fd); }
+    ~Client() {
+        stop.store(true); if(worker.joinable()) worker.join(); if(fd!=invalid_socket) close(fd);
+#ifdef _WIN32
+        if(winsock_started) WSACleanup();
+#endif
+    }
     bool io(void *data,size_t length,bool writing,uint64_t deadline) {
         auto *p=static_cast<uint8_t *>(data);
         while(length && !stop.load() && now_ns()<deadline) {
             pollfd item{fd,short(writing ? POLLOUT : POLLIN),0};
             int n=poll(&item,1,10);
+#ifdef _WIN32
+            if(n<0 && WSAGetLastError()==WSAEINTR) continue;
+#else
             if(n<0 && errno==EINTR) continue;
+#endif
             if(n<0) return false;
             if(!n) continue;
+#ifdef _WIN32
+            auto count=writing ? send(fd,reinterpret_cast<const char *>(p),int(length),0) : recv(fd,reinterpret_cast<char *>(p),int(length),0);
+            if(count<0 && (WSAGetLastError()==WSAEINTR || WSAGetLastError()==WSAEWOULDBLOCK)) continue;
+#else
             auto count=writing ? send(fd,p,length,MSG_NOSIGNAL) : recv(fd,p,length,0);
             if(count<0 && (errno==EINTR || errno==EAGAIN)) continue;
+#endif
             if(count<=0) return false;
             p+=count; length-=size_t(count);
         }
@@ -122,7 +152,11 @@ struct Client {
         if(stop.load()) {
             auto h=request("NFXQ");
             // Best-effort close; destructor closes socket even if peer is gone.
+#ifdef _WIN32
+            send(fd,reinterpret_cast<const char *>(h.data()),int(h.size()),0);
+#else
             send(fd,h.data(),h.size(),MSG_NOSIGNAL | MSG_DONTWAIT);
+#endif
         } else disconnected();
     }
 };
@@ -135,16 +169,32 @@ extern "C" void *meteor_tracking_start_v1(const char *port_text) {
     char *end=nullptr; long port=std::strtol(port_text,&end,10);
     if(!*port_text || *end || port<1 || port>65535) return nullptr;
     auto *c=new Client;
+#ifdef _WIN32
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2,2),&data)) { delete c; return nullptr; }
+    c->winsock_started=true;
+    c->fd=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    u_long nonblocking=1;
+    if(c->fd==invalid_socket || ioctlsocket(c->fd,FIONBIO,&nonblocking)) {delete c; return nullptr;}
+#else
     c->fd=socket(AF_INET,SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC,0);
     if(c->fd<0) { delete c; return nullptr; }
+#endif
     sockaddr_in address{}; address.sin_family=AF_INET;
     address.sin_port=htons(uint16_t(port)); address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     if(connect(c->fd,reinterpret_cast<sockaddr *>(&address),sizeof(address))) {
-        pollfd item{c->fd,POLLOUT,0}; int error=0; socklen_t size=sizeof(error);
+        pollfd item{c->fd,POLLOUT,0}; int error=0;
+#ifdef _WIN32
+        int size=sizeof(error);
+        if(WSAGetLastError()!=WSAEWOULDBLOCK || poll(&item,1,2000)<=0 ||
+            getsockopt(c->fd,SOL_SOCKET,SO_ERROR,reinterpret_cast<char *>(&error),&size) || error) {delete c; return nullptr;}
+#else
+        socklen_t size=sizeof(error);
         if(errno!=EINPROGRESS || poll(&item,1,2000)<=0 ||
             getsockopt(c->fd,SOL_SOCKET,SO_ERROR,&error,&size) || error) { delete c; return nullptr; }
+#endif
     }
-    int one=1; setsockopt(c->fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof(one));
+    int one=1; setsockopt(c->fd,IPPROTO_TCP,TCP_NODELAY,reinterpret_cast<const char *>(&one),sizeof(one));
     c->worker=std::thread(&Client::run,c);
     uint64_t deadline=now_ns()+2500000000;
     while(!c->ready.load() && !c->failed.load() && now_ns()<deadline)
@@ -172,6 +222,14 @@ extern "C" int meteor_tracking_pose_v1(void *context,int64_t at_ns,float pose[7]
 extern "C" void meteor_tracking_stop_v1(void *context) {
     { std::lock_guard<std::mutex> lock(active_mutex); if(active_client==context) active_client=nullptr; }
     delete static_cast<Client *>(context);
+}
+// End the wire lane before the managed Windows runtime process is terminated.
+// Keep the device-owned context alive until its ordinary destructor runs.
+extern "C" void meteor_tracking_quiesce_v1() {
+    std::lock_guard<std::mutex> lock(active_mutex);
+    if (!active_client) return;
+    active_client->stop.store(true);
+    if (active_client->worker.joinable()) active_client->worker.join();
 }
 extern "C" int meteor_tracking_haptic_v1(unsigned hand,float amplitude,int64_t duration_ns) {
     if(hand>1 || !std::isfinite(amplitude) || amplitude<0 || amplitude>1 || duration_ns< -1) return 0;
