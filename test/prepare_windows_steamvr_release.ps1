@@ -14,7 +14,9 @@ try {
         $registration=Get-Content -LiteralPath $paths -Raw | ConvertFrom-Json
         $summary.registered_drivers=@($registration.external_drivers)
     }
-    $installer=Join-Path $repo 'meteor\target\windows-release\Nightfall-Meteor-0.1.1-Setup-x64.exe'
+    $version=([regex]::Match((Get-Content (Join-Path $repo 'meteor\Cargo.toml') -Raw),'(?m)^version = "([^"]+)"')).Groups[1].Value
+    if(-not $version){throw 'Cannot determine Meteor release version'}
+    $installer=Join-Path $repo "meteor\target\windows-release\Nightfall-Meteor-$version-Setup-x64.exe"
     if(Test-Path -LiteralPath $installer) {
         $backup=Join-Path $out ('previous-installer-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'.exe')
         Copy-Item -LiteralPath $installer -Destination $backup

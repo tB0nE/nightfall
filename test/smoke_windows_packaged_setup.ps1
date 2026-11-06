@@ -2,7 +2,11 @@ param([string]$Stage='')
 # Relocated release + fresh AppData, restricted PATH, no headset and no games.
 $ErrorActionPreference='Stop'
 $target=Join-Path (Split-Path $PSScriptRoot) 'meteor\target'
-if(-not $Stage){$Stage=Join-Path $target 'windows-release\Nightfall-Meteor-0.1.1-windows-x64'}
+if(-not $Stage){
+    $version=([regex]::Match((Get-Content (Join-Path $target '..\Cargo.toml') -Raw),'(?m)^version = "([^"]+)"')).Groups[1].Value
+    if(-not $version){throw 'Cannot determine Meteor package version'}
+    $Stage=Join-Path $target "windows-release\Nightfall-Meteor-$version-windows-x64"
+}
 $root=Join-Path $env:TEMP ('Nightfall-packaged-check-'+[guid]::NewGuid().ToString('N'))
 $install=Join-Path $root 'Programs\Nightfall Meteor'
 $saved=@{APPDATA=$env:APPDATA;LOCALAPPDATA=$env:LOCALAPPDATA;PATH=$env:PATH}
