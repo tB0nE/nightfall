@@ -21,6 +21,8 @@ const TRAY_BALLOON: u32 = WM_APP + 3;
 static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static PENDING_BALLOON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static PENDING_BALLOON_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static PENDING_PAIRING_PIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static PENDING_PAIRING_AUTH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub fn queue_balloon(message: String) {
     if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
@@ -30,9 +32,16 @@ pub fn queue_balloon(message: String) {
     }
 }
 
-pub fn queue_pairing_balloon(url: String) {
-    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some("Incoming Pairing Request — click to approve".into()); }
-    if let Ok(mut guard) = PENDING_BALLOON_URL.lock() { *guard = Some(url); }
+pub fn queue_pairing_balloon(pin: String, approve_url: String, authorization: String) {
+    let message = if pin.is_empty() {
+        "Incoming Pairing Request — click to approve".to_string()
+    } else {
+        format!("Pairing request — PIN: {pin}  Click to approve")
+    };
+    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
+    if let Ok(mut guard) = PENDING_BALLOON_URL.lock() { *guard = Some(approve_url); }
+    if let Ok(mut guard) = PENDING_PAIRING_PIN.lock() { *guard = Some(pin); }
+    if let Ok(mut guard) = PENDING_PAIRING_AUTH.lock() { *guard = Some(authorization); }
     let hwnd = TRAY_HWND.load(Ordering::Relaxed);
     if hwnd != 0 {
         unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
@@ -315,7 +324,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         }
         TRAY_MESSAGE if lparam as u32 == NIN_BALLOONUSERCLICK => {
             let url = PENDING_BALLOON_URL.lock().ok().and_then(|mut g| g.take());
-            if let Some(url) = url { open_url(&url); }
+            let pin = PENDING_PAIRING_PIN.lock().ok().and_then(|mut g| g.take());
+            let auth = PENDING_PAIRING_AUTH.lock().ok().and_then(|mut g| g.take());
+            if let (Some(url), Some(pin), Some(auth)) = (url, pin, auth) {
+                if !pin.is_empty() {
+                    approve_pairing(&url, &pin, &auth);
+                } else {
+                    open_url(&url);
+                }
+            }
             0
         }
         TRAY_MESSAGE if lparam as u32 == WM_LBUTTONDBLCLK => {
@@ -469,6 +486,24 @@ fn open_path(path: std::path::PathBuf) {
 
 fn open_url(url: &str) {
     let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
+}
+
+fn approve_pairing(url: &str, pin: &str, authorization: &str) {
+    let body = format!(r#"{{"pin":"{pin}"}}"#);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(ureq::tls::TlsConfig::builder().disable_verification(true).build())
+        .max_redirects(0)
+        .timeout_global(Some(std::time::Duration::from_secs(8)))
+        .build()
+        .into();
+    match agent.post(url)
+        .header("Authorization", &format!("Basic {authorization}"))
+        .header("Content-Type", "application/json")
+        .send(body.as_bytes())
+    {
+        Ok(_) => log::info!("Pairing approved via balloon click"),
+        Err(e) => log::warn!("Failed to approve pairing: {e}"),
+    }
 }
 
 /// Makes a Windows monochrome icon from the same Nightfall mark used by the

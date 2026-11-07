@@ -1023,6 +1023,7 @@ func start_pair(ip: String):
 	if str(pin) == "" or str(pin) == "0":
 		main._log("[PAIR] FAILED - no pin returned")
 		return
+	_report_pair_pin(host_ip, host_port, str(pin))
 	show_pin_when_needed(str(pin))
 
 # Pairing first checks whether the server already knows this client (a known
@@ -1043,6 +1044,20 @@ func show_pin_when_needed(pin: String) -> void:
 ## Called when pairing finishes, either way: a PIN still waiting stays hidden.
 func pairing_finished() -> void:
 	_pin_pending += 1
+
+## Report the client-generated pairing PIN to the host so Meteor can show it
+## in a native balloon notification for one-click approval.
+func _report_pair_pin(ip: String, http_port: int, pin: String) -> void:
+	if not ClassDB.class_exists("HttpRequester"):
+		return
+	var requester = ClassDB.instantiate("HttpRequester")
+	var body := JSON.stringify({"pin": pin})
+	requester.request(
+		"http://%s:%d/pair_pin_report" % [ip, http_port],
+		"POST", body.to_utf8_buffer(),
+		{"Content-Type": "application/json"}, {},
+		func(_code, _body, _headers, _error): pass,
+		3000)
 
 func cycle_app():
 	if main._available_apps.is_empty():
