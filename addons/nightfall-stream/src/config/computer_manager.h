@@ -59,9 +59,11 @@ private:
     Node *parent_node_ = nullptr;
 
     uint64_t pair_start_time = 0;
+    uint64_t pair_generation = 0;
 
     void _reset_pairing();
     void _step_pair();
+    void _step_pair_if_current(uint64_t generation);
     void _schedule_retry(int step);
 
     PackedByteArray _generate_random_bytes(int size);
@@ -87,7 +89,7 @@ private:
     static String _host_address(const Dictionary &host);
     static String _bracket_host(const String &addr);
 
-    void _on_pair_request_completed(int code, PackedByteArray body, Dictionary headers, String error, int step);
+    void _on_pair_request_completed(int code, PackedByteArray body, Dictionary headers, String error, int step, uint64_t generation);
     void _on_server_info_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback, String ip);
     void _on_app_list_completed(int code, PackedByteArray body, Dictionary headers, String error, int host_id, Callable callback);
     void _on_app_cover_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);

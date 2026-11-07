@@ -15,15 +15,18 @@
 mod detect;
 mod install;
 mod instance;
-#[cfg(windows)]
+#[cfg(unix)]
+pub mod input;
 pub mod pairing;
 #[cfg(windows)]
-pub mod pairing_watch;
+pub mod pin;
 #[cfg(unix)]
 mod supervisor;
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
+#[cfg(unix)]
+pub mod setup;
 pub mod view;
 
 use std::io::Write;

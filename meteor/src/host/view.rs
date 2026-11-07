@@ -23,7 +23,12 @@ pub struct View {
     pub supervisor: Option<Arc<Supervisor>>,
     /// The host download, shown in the tray.
     pub download: Arc<Download>,
+    #[cfg(unix)]
+    pub input: Arc<super::input::Access>,
+    #[cfg(unix)]
+    pub pairing: Option<Arc<super::pairing::Pairing>>,
     instance: Option<Instance>,
+    installing: std::sync::atomic::AtomicBool,
 }
 
 impl View {
@@ -72,11 +77,16 @@ impl View {
     /// host.
     pub fn discovery_info(&self) -> Option<serde_json::Value> {
         self.supervisor.as_ref().map(|_| {
-            json!({
+            let mut info = json!({
                 "kind": "meteor-vibepollo",
                 "managed": true,
                 "version": RELEASE.as_ref().map_or("development", |r| r.version),
-            })
+            });
+            #[cfg(unix)]
+            if self.pairing.is_some() {
+                info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION, "xr_identity":true});
+            }
+            info
         })
     }
 
@@ -86,6 +96,7 @@ impl View {
         state.choice = choice;
         if let Err(err) = super::save_state(&state) {
             log::error!("Can't save the host choice: {err}");
+            return;
         }
         crate::restart();
     }
@@ -93,13 +104,22 @@ impl View {
     /// Downloads the release on a thread, then switches to it.
     pub fn download_and_switch(self: &Arc<Self>) {
         let Some(release) = RELEASE.as_ref() else { return };
+        if self.installing.compare_exchange(false,true,std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire).is_err() {return;}
         let view = self.clone();
+        let runtime=tokio::runtime::Handle::current();
         std::thread::spawn(move || match Install::run(&view.download, release) {
             Ok(binary) => {
+                view.installing.store(false,std::sync::atomic::Ordering::Release);
                 log::info!("Installed {}", binary.display());
                 view.switch(Choice::Bundled);
             }
-            Err(err) => log::error!("Host download failed: {err}"),
+            Err(err) => {
+                view.installing.store(false,std::sync::atomic::Ordering::Release);
+                log::error!("Host download failed: {err}");
+                runtime.spawn(async move {crate::desktop::notify("Host setup did not finish",
+                    &format!("{err}. You can retry from Meteor's tray menu.")).await;});
+            },
         });
     }
 }

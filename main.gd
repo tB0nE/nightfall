@@ -981,7 +981,12 @@ func _hit_point_to_uv(hit_point: Vector3) -> Vector2:
 ## have no PC cursor to point with, so they keep theirs.
 func hides_screen_cursor(screen: VRScreen) -> bool:
 	return settings.cursor_mode == AppSettings.CURSOR_MODE_HIDDEN and screen != null \
-		and not screen_sources.is_browser_screen(screen)
+		and is_streaming and not screen_sources.is_browser_screen(screen)
+
+func screen_cursor_mode(screen: VRScreen) -> int:
+	if settings.cursor_mode == AppSettings.CURSOR_MODE_HIDDEN and not hides_screen_cursor(screen):
+		return 0 # Welcome, browsers and menus always retain a circle pointer.
+	return settings.cursor_mode
 
 func _update_cursor_layer():
 	if not comp.in_use and not pcvr_handover.menu_only:
@@ -1028,7 +1033,7 @@ func _update_cursor_layer():
 				screens,
 				hit_point,
 				settings.bezel_enabled,
-				settings.cursor_mode,
+				screen_cursor_mode(hovered_screen),
 				stereo if hovered_screen == primary_screen else 0,
 				-1 if screen_sources.is_browser_screen(hovered_screen) else settings.host.ai_3d_cursor_position,
 				depth_estimator._pass_parallax if depth_estimator else 0.0,
@@ -1057,7 +1062,7 @@ func _update_cursor_layer():
 				xr_camera.global_position,
 				hovered_screen.global_position if hovered_screen else hit_point,
 				on_screen,
-				settings.cursor_mode,
+				screen_cursor_mode(hovered_screen),
 				native_ai_cursor_offset)
 	else:
 		_reset_steady_filter()
@@ -1129,15 +1134,22 @@ func disconnect_stream():
 	if current_host_id >= 0:
 		stream_backend.cancel_host_stream(current_host_id)
 	stream_backend.stop_play_stream()
+	# A stream that was still connecting reports nothing when stopped, so nothing
+	# else would clean up. Deferred: anything it does report runs first.
+	_finish_disconnect.call_deferred()
+
+func _finish_disconnect() -> void:
+	if session_lifecycle.phase == SessionLifecycle.Phase.DISCONNECTING:
+		_full_disconnect_cleanup("Disconnected")
 
 func start_connect_timeout():
 	if pcvr_test.is_exclusive(): return
-	session_lifecycle.arm_connect_timeout()
-	get_tree().create_timer(10.0).timeout.connect(_on_connect_timeout)
+	var generation := session_lifecycle.arm_connect_timeout()
+	get_tree().create_timer(10.0).timeout.connect(func(): _on_connect_timeout(generation))
 
-func _on_connect_timeout():
+func _on_connect_timeout(generation: int):
 	if pcvr_test.is_exclusive(): return
-	if not session_lifecycle.connect_timeout_pending:
+	if not session_lifecycle.is_connect_timeout_current(generation):
 		return
 	_log("[CONNECT] Connection timed out")
 	stream_backend.stop_play_stream()
@@ -1181,6 +1193,9 @@ func _on_stream_started():
 	# Do not request it again here: a display transition racing newly-created
 	# GLES resources crashes the Quest GL thread.
 	var was_restarting := session_lifecycle.stream_started()
+	# Complete any bounded handshake correction before exposing video or
+	# replacing the welcome screen. Buffer allocation is not display geometry.
+	if await _restart_for_layout_correction(): return
 	telemetry.reset_session()
 	_last_activity_time = Time.get_ticks_msec() / 1000.0
 	ui_controller.set_status("Connecting...")
@@ -1247,6 +1262,10 @@ func _on_stream_started():
 	# doesn't also get an idle controller 0.
 	input_handler.reset_gamepads()
 
+
+	state_manager.save_host_state()
+
+func _restart_for_layout_correction() -> bool:
 	# The host's real desktop can be a very different shape than settings.host.native_resolution
 	# assumed (first-ever connection to a host, or its desktop layout changed since
 	# last time) - requesting the wrong aspect makes the host letterbox/squeeze its
@@ -1296,8 +1315,9 @@ func _on_stream_started():
 			await get_tree().process_frame
 			stream_backend.stop_play_stream()
 			await get_tree().create_timer(0.5).timeout
+			if not session_lifecycle.is_restarting(): return true
 			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
-			return
+			return true
 
 	# Polaris-only: this whole comparison is "does the manifest-reported real
 	# desktop size match what settings.host.native_resolution assumed" - meaningless (and,
@@ -1309,6 +1329,7 @@ func _on_stream_started():
 	# stream_connection.cpp's deferred-free GPU resource queue).
 	if settings.host.is_polaris_host and layout and layout.source == &"host_manifest" and layout.frame_size != Vector2i.ZERO:
 		settings.host.native_resolution = layout.frame_size
+		host_resolution = compute_requested_resolution()
 		settings_controller.refresh_resolution_btn_label()
 		var corrected_resolution := compute_requested_resolution()
 		if settings.host.double_h: corrected_resolution.x *= 2
@@ -1342,9 +1363,10 @@ func _on_stream_started():
 			await get_tree().process_frame
 			stream_backend.stop_play_stream()
 			await get_tree().create_timer(0.5).timeout
+			if not session_lifecycle.is_restarting(): return true
 			stream_manager.start_stream(retry_host_id, retry_app_id, retry_resolution)
-			return
-	state_manager.save_host_state()
+			return true
+	return false
 
 func _switch_to_comp_layer():
 	comp.switch_to_comp_layer()
@@ -1827,9 +1849,10 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 			for existing in screens:
 				if existing == primary_screen:
 					continue
-				if existing.global_position.x < primary_screen.global_position.x - eps:
+				var offset_x := ScreenManager.horizontal_offset(existing.global_transform, primary_screen.global_transform)
+				if offset_x < -eps:
 					has_left = true
-				elif existing.global_position.x > primary_screen.global_position.x + eps:
+				elif offset_x > eps:
 					has_right = true
 			slot = "above" if (has_left and has_right) else ("left" if has_right else "right")
 		if slot == "above":
@@ -1849,8 +1872,8 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 			for existing in screens:
 				if existing == primary_screen:
 					continue
-				var existing_key = existing.monitor.desktop_rect.position.x if (have_hint and existing.monitor) else existing.global_position.x
-				var cmp_key = edge_key if have_hint else edge_screen.global_position.x
+				var existing_key = existing.monitor.desktop_rect.position.x if (have_hint and existing.monitor) else ScreenManager.horizontal_offset(existing.global_transform, primary_screen.global_transform)
+				var cmp_key = edge_key
 				if dir > 0 and existing_key > cmp_key:
 					edge_screen = existing
 					edge_key = existing_key
@@ -2251,6 +2274,10 @@ func _init_textures_and_ui():
 				welcome_screen.update_welcome_info()
 
 	stream_manager.bind_texture()
+	# Saved host layouts can replace primary after the boot-time binding.
+	# Bind the welcome image to the final screen, not its retired predecessor.
+	if comp.available:
+		comp.connect_welcome_texture()
 	if screen_mesh.material_override is ShaderMaterial:
 		screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 	comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
@@ -2259,6 +2286,9 @@ func _init_textures_and_ui():
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	ui_controller.update_ui()
 	ui_controller.update_stereo_shader()
+	# Layout restoration preserves panel world transforms and saves offsets.
+	# At boot those are uninitialized; first opening must use the left anchor.
+	_ui_has_saved_offset = false
 	session_lifecycle.show_server_selection()
 
 func _try_auto_connect():

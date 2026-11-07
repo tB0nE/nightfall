@@ -125,6 +125,13 @@ private:
     void _try_h264_hw_upgrade();
 
     std::atomic<bool> is_streaming_{false};
+    // Wakes the decode thread's wait for the connection, which is_streaming_
+    // alone can't: it's false both before the connection starts and after a stop.
+    std::atomic<bool> stop_requested_{false};
+    // Moonlight starts video delivery before connectionStarted(). Keep the
+    // startup IDR/configuration instead of acknowledging and discarding it.
+    std::atomic<bool> accepting_decode_units_{false};
+    unsigned int session_submit_count_ = 0;
     std::atomic<bool> decoder_ready_{false};
 
     uint8_t *h264_extradata_ = nullptr;

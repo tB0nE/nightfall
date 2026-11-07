@@ -56,6 +56,13 @@ def export_package(source, destination):
     validate(destination)
 
 
+def remove_old_versions(versions, keep):
+    """Each upgrade adds a whole runtime. Keeps the current one and the one it replaced."""
+    for path in versions.iterdir():
+        if path not in keep and len(path.name) == 64 and path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors=True)
+
+
 def install(source, destination):
     source = source.resolve(strict=True)
     destination = destination.resolve()
@@ -97,6 +104,7 @@ def install(source, destination):
                 json.dump({'argv': ['/usr/bin/false'], 'cwd': '/', 'launch': 'steam',
                            'steam_app_id': '*', 'steam_runtime': True}, file, indent=2)
             config.chmod(0o600)
+        replaced = (destination / 'xr-runtime').resolve().parent
         previous = {}
         try:
             for path, target in links.items():
@@ -113,6 +121,7 @@ def install(source, destination):
                 if target is not None:
                     path.symlink_to(target, target_is_directory=True)
             raise
+        remove_old_versions(versions, {release, replaced})
     return destination
 
 

@@ -17,6 +17,7 @@ signal phase_changed(previous: int, current: int)
 var phase: Phase = Phase.BOOT
 var media_active: bool = false
 var connect_timeout_pending: bool = false
+var _connect_timeout_generation: int = 0
 
 func phase_name() -> String:
 	return Phase.keys()[phase].to_lower()
@@ -46,9 +47,14 @@ func begin_connect() -> void:
 	if phase != Phase.RESTARTING and phase != Phase.RECONNECTING:
 		_set_phase(Phase.CONNECTING)
 
-func arm_connect_timeout() -> void:
+func arm_connect_timeout() -> int:
+	_connect_timeout_generation += 1
 	connect_timeout_pending = true
 	begin_connect()
+	return _connect_timeout_generation
+
+func is_connect_timeout_current(generation: int) -> bool:
+	return connect_timeout_pending and generation == _connect_timeout_generation
 
 func cancel_connect_timeout() -> void:
 	connect_timeout_pending = false

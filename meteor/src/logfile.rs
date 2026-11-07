@@ -23,6 +23,8 @@ pub fn path() -> PathBuf {
 /// process; the engine-build child only appends.
 pub fn init(rotate: bool) {
     let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    // The tray's D-Bus calls, one per menu refresh, aren't worth a log line.
+    builder.filter_module("tracing::span", log::LevelFilter::Off).filter_module("zbus", log::LevelFilter::Warn);
     if let Some(tee) = Tee::open(path(), rotate) {
         builder.target(env_logger::Target::Pipe(Box::new(tee)));
     }

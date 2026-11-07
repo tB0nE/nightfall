@@ -25,7 +25,7 @@ class RuntimePackageTests(unittest.TestCase):
             target.write_bytes(b'fixture binary')
         for name in ('test/run_monado_nvenc_spike.py', 'test/xr_local_application.py',
                      'test/xr_launch_intent.py', 'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
-                     'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'LICENSE'):
+                     'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'tools/meteor_steam_options.py', 'LICENSE'):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('')
@@ -197,6 +197,14 @@ class RuntimeInstallTests(RuntimePackageTests):
             self.assertEqual(config.read_text(), '{"local": "keep"}')
             self.assertEqual((cache / 'session.log').read_text(), 'keep logs')
             prepare(destination, Path(tmp) / 'session')
+            current = (destination / 'tools').resolve().parent
+            (root / 'tools/meteor_xr.py').write_text('# upgraded again\n')
+            third = Path(tmp) / 'package3'
+            staging.stage(root, third, helpers)
+            install(third, destination)
+            kept = {path.name for path in (destination / 'versions').iterdir()}
+            self.assertEqual(kept, {current.name, (destination / 'tools').resolve().parent.name})
+            self.assertFalse(old.exists())  # Older ones don't pile up.
 
     def test_install_refuses_active_session_and_unmanaged_directory(self):
         import fcntl

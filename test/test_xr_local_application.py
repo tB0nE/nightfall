@@ -183,6 +183,14 @@ class LocalApplicationTests(unittest.TestCase):
             (root / "monado-stereo.h264").write_bytes(b"abc")
             log = "METEOR_IMAGE_LEASE retain=1 x\nMETEOR_IMAGE_LEASE retain=0 x\nMETEOR_ENCODER_DRAIN frames=1 x\nMETEOR_ENCODER_RELEASED\n"
             self.assertEqual(validate_capture(root, log), 1)
+            # A game session discards its video through a link to /dev/null.
+            video = root / "monado-stereo.h264"
+            kept = video.read_bytes()
+            video.unlink()
+            video.symlink_to("/dev/null")
+            self.assertEqual(validate_capture(root, log), 1)
+            video.unlink()
+            video.write_bytes(kept)
             with self.assertRaises(RuntimeError): validate_capture(root, "")
             (root / "monado-stereo.h264").write_bytes(b"abcd")
             with self.assertRaises(RuntimeError): validate_capture(root, log)

@@ -631,7 +631,7 @@ func handle_pointer_interaction():
 		var hit_point = main._get_steady_hit(raw_hit) if on_screen else raw_hit
 		var col_normal = active_raycast.get_collision_normal()
 		var dot_offset = col_normal * 0.025 if col_normal != Vector3() else (main.xr_camera.global_position - hit_point).normalized() * 0.025
-		if main.settings.cursor_mode == 0 or not on_screen or hide_on_screen:
+		if main.screen_cursor_mode(t_hover.screen if on_screen else null) == 0 or not on_screen or hide_on_screen:
 			if main.contact_dot:
 				main.contact_dot.global_position = hit_point + dot_offset
 				main.contact_dot.visible = not hide_on_screen

@@ -180,6 +180,7 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     if(!meteor_eye_formats_compatible(input.eye_formats[0],input.eye_formats[1])) return false;
     if(first_source) fprintf(stderr,"METEOR_STEREO_SOURCE shared_image=%d\n",input.eyes[0]==input.eyes[1]);
     struct meteor_owned_packet packet = {0};
+    uint32_t packet_length = 0;
     const char *direct_port = getenv("METEOR_XR_DIRECT_PORT");
     if (direct_port) { input.encoded_callback = meteor_encoded_copy; input.callback_context = &packet; }
     input.output_path = meteor_probe_path("monado-stereo.h264");
@@ -190,16 +191,20 @@ meteor_encode_layer_now(struct null_compositor *c, const struct comp_layer *laye
     // Delivery uses owned bytes after NVENC unlock and outside the Vulkan queue lock.
     if (direct_port) {
         bool async=getenv("METEOR_XR_ASYNC_DELIVERY") != NULL;
-        uint32_t packet_length=packet.length;
+        packet_length=packet.length;
         bool delivered = async ? meteor_async_enqueue(&input,&packet,direct_port) : meteor_direct_send(&input, &packet, direct_port);
         free(packet.bytes);
         if (!delivered) { fprintf(stderr, "METEOR_DIRECT_FAILED frame\n"); return false; }
         fprintf(stderr, "%s frame=%llu bytes=%u\n",async ? "METEOR_ASYNC_QUEUED" : "METEOR_DIRECT_OK", (unsigned long long)input.frame_id, packet_length);
     }
     struct stat output_stat;
-    if (stat(input.output_path, &output_stat) != 0 || (uint64_t)output_stat.st_size <= meteor_encoded_bytes) return false;
+    if (stat(input.output_path, &output_stat) != 0) return false;
     uint64_t offset = meteor_encoded_bytes;
-    uint64_t bytes = (uint64_t)output_stat.st_size - offset;
+    // A live session discards the recording (/dev/null), whose size never grows.
+    // Only a regular file can show how much the encoder wrote.
+    const bool recording = S_ISREG(output_stat.st_mode);
+    if (recording ? (uint64_t)output_stat.st_size <= offset : packet_length == 0) return false;
+    uint64_t bytes = recording ? (uint64_t)output_stat.st_size - offset : packet_length;
     meteor_encoded_bytes += bytes;
     bool continuous = getenv("METEOR_CONTINUOUS_FRAMES") != NULL;
     FILE *meta = fopen(meteor_probe_path(continuous ? "monado-stereo.jsonl" : "monado-stereo.json"), continuous ? "a" : "w");
