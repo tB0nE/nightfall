@@ -23,7 +23,6 @@ pub struct Features {
     pub depth: Option<(u16, Arc<Depth>)>,
     /// The bundled host, when Meteor runs it (host/view.rs).
     pub host: Option<serde_json::Value>,
-    #[cfg(target_os = "linux")]
     pub pairing: Option<Arc<crate::host::pairing::Pairing>>,
 }
 
@@ -126,7 +125,6 @@ async fn respond(mut stream: TcpStream, body: &str, _features: &Features) -> io:
     let headers = std::str::from_utf8(&request[..header_end]).map_err(|_|io::Error::other("Invalid HTTP headers"))?;
     let method = headers.split_whitespace().next().unwrap_or("").to_string();
     let path = headers.split_whitespace().nth(1).unwrap_or("").to_string();
-    #[cfg(target_os = "linux")]
     if path == "/meteor/pair" && method == "POST" {
         let length = pairing_body_length(headers)?;
         let pairing = _features.pairing.as_ref();
@@ -159,7 +157,6 @@ async fn respond(mut stream: TcpStream, body: &str, _features: &Features) -> io:
     Ok(path)
 }
 
-#[cfg(target_os = "linux")]
 fn pairing_body_length(headers: &str) -> io::Result<usize> {
     let mut size=None; let mut json=false;
     for line in headers.lines().skip(1) {
@@ -177,7 +174,6 @@ fn pairing_body_length(headers: &str) -> io::Result<usize> {
     match size { Some(n) if json && n>0 && n<=4096 => Ok(n), _=>Err(io::Error::other("Pairing requires a bounded JSON body")) }
 }
 
-#[cfg(target_os = "linux")]
 async fn write_json(stream: &mut TcpStream, status: u16, body: &str) -> io::Result<()> {
     let response=format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
     stream.write_all(response.as_bytes()).await?;
@@ -196,7 +192,6 @@ mod tests {
         assert_eq!(info(&map, &features)["xr"]["port"], 47910);
         assert_eq!(info(&map, &features)["xr"]["authorization"], "allowlist");
     }
-    #[cfg(target_os = "linux")]
     #[test] fn pairing_http_rejects_browser_chunked_and_unbounded_requests() {
         let valid="POST /meteor/pair HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n";
         assert_eq!(pairing_body_length(valid).unwrap(),12);

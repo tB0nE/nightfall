@@ -16,6 +16,9 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(windows)]
+#[path = "desktop_win_shim.rs"]
+mod desktop;
 #[cfg(target_os = "linux")]
 mod setup_window;
 #[cfg(target_os = "linux")]
@@ -498,7 +501,6 @@ async fn main() {
         }
         None
     };
-    #[cfg(target_os = "linux")]
     if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
         host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone(), xr_trust.clone()));
     }
@@ -511,7 +513,6 @@ async fn main() {
         #[cfg(not(any(target_os = "linux", windows)))]
         host: None,
         xr_port: xr_discovery,
-        #[cfg(target_os = "linux")]
         pairing: host_view.pairing.clone(),
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
@@ -565,7 +566,7 @@ async fn main() {
         }
         #[cfg(windows)]
         if let Some(d) = &depth {
-            let flag = config::config_dir().join("pending-vda-download");
+            let flag = config::data_dir().join("pending-vda-download");
             if std::fs::remove_file(&flag).is_ok() {
                 log::info!("Starting VDA download requested during installation");
                 d.download_vda();

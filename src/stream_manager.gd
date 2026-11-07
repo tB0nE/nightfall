@@ -772,7 +772,6 @@ func on_pair_pressed():
 			main._log("[PAIR] FAILED - no pin returned")
 			main.welcome_screen.show_welcome_screen("server")
 			return
-		main.welcome_screen._report_pair_pin(ip, pair_port, str(pin))
 		main.welcome_screen.show_pin_when_needed(str(pin))
 
 # USB Link is IPv6 link-local only. Sunshine and Vibepollo listen on IPv4

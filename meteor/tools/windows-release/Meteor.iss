@@ -39,7 +39,7 @@ WizardStyle=modern
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "builtinhost"; Description: "Use Meteor's built-in desktop streaming host"
 Name: "pcvr"; Description: "Set up PCVR for installed games"
-Name: "vda"; Description: "Download VDA depth model on first launch (requires NVIDIA GPU, ~500 MB downloaded in background)"; Flags: unchecked
+Name: "vda"; Description: "Download VDA depth model on first launch (requires NVIDIA GPU, ~500 MB downloaded in background)"
 
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion

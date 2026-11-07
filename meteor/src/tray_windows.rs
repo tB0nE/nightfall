@@ -20,9 +20,6 @@ const TRAY_MESSAGE: u32 = WM_APP + 1;
 const TRAY_BALLOON: u32 = WM_APP + 3;
 static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static PENDING_BALLOON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-static PENDING_BALLOON_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-static PENDING_PAIRING_PIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-static PENDING_PAIRING_AUTH: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 pub fn queue_balloon(message: String) {
     if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
@@ -32,20 +29,8 @@ pub fn queue_balloon(message: String) {
     }
 }
 
-pub fn queue_pairing_balloon(pin: String, approve_url: String, authorization: String) {
-    let message = if pin.is_empty() {
-        "Incoming Pairing Request — click to approve".to_string()
-    } else {
-        format!("Pairing request — PIN: {pin}  Click to approve")
-    };
-    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
-    if let Ok(mut guard) = PENDING_BALLOON_URL.lock() { *guard = Some(approve_url); }
-    if let Ok(mut guard) = PENDING_PAIRING_PIN.lock() { *guard = Some(pin); }
-    if let Ok(mut guard) = PENDING_PAIRING_AUTH.lock() { *guard = Some(authorization); }
-    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
-    if hwnd != 0 {
-        unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
-    }
+pub fn queue_pairing_balloon(pin: &str) {
+    queue_balloon(format!("Pair Nightfall headset — PIN: {pin}  Click to approve or right-click for options"));
 }
 const CMD_OPEN_LOG: usize = 1;
 const CMD_OPEN_SETTINGS: usize = 2;
@@ -76,6 +61,8 @@ const CMD_XR_ENABLE:usize=29;
 const CMD_XR_LIBRARY:usize=30;
 const CMD_HOST_PAIR:usize=31;
 const CMD_TASKBAR_SETTINGS:usize=32;
+const CMD_PAIR_APPROVE:usize=33;
+const CMD_PAIR_REJECT:usize=34;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -85,6 +72,7 @@ static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex
 const CMD_SOFTEN_BASE: usize = 300;
 const CMD_DECODE_BASE: usize = 500;
 const CMD_CPU_PROCESSING: usize = 19;
+static TOKIO_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 static MIC: OnceLock<Option<Arc<crate::mic::Mic>>> = OnceLock::new();
 static DEPTH: OnceLock<Option<Arc<crate::depth::Depth>>> = OnceLock::new();
 static STATUS: OnceLock<Arc<crate::status::Status>> = OnceLock::new();
@@ -307,6 +295,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     }
                     let label=wide("PCVR");AppendMenuW(menu,MF_POPUP,xr_menu as usize,label.as_ptr());
                 }
+                if let Some(pending) = HOST.get().and_then(|v| v.pairing.as_ref()).and_then(|p| p.pending()) {
+                    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&format!("Pair Nightfall headset — PIN: {}", pending.pin)).as_ptr());
+                    AppendMenuW(menu, MF_STRING, CMD_PAIR_APPROVE, wide("Approve pairing").as_ptr());
+                    AppendMenuW(menu, MF_STRING, CMD_PAIR_REJECT, wide("Reject pairing").as_ptr());
+                    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                }
                 let autostart = wide("Start with my computer");
                 AppendMenuW(menu, MF_STRING | if crate::desktop_windows::autostart_enabled() { MF_CHECKED } else { 0 }, CMD_AUTOSTART, autostart.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_TASKBAR_SETTINGS, wide("Taskbar icon settings...").as_ptr());
@@ -323,14 +317,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             0
         }
         TRAY_MESSAGE if lparam as u32 == NIN_BALLOONUSERCLICK => {
-            let url = PENDING_BALLOON_URL.lock().ok().and_then(|mut g| g.take());
-            let pin = PENDING_PAIRING_PIN.lock().ok().and_then(|mut g| g.take());
-            let auth = PENDING_PAIRING_AUTH.lock().ok().and_then(|mut g| g.take());
-            if let (Some(url), Some(pin), Some(auth)) = (url, pin, auth) {
-                if !pin.is_empty() {
-                    approve_pairing(&url, &pin, &auth);
-                } else {
-                    open_url(&url);
+            // Balloon click on a pairing notification: approve via Tokio runtime.
+            // `Pairing::approve` calls `tokio::spawn` internally, which requires a
+            // Tokio context — the Win32 message thread has none, so we hand off.
+            if let (Some(pairing), Some(handle)) = (
+                HOST.get().and_then(|v| v.pairing.as_ref()),
+                TOKIO_HANDLE.get(),
+            ) {
+                if let Some(pending) = pairing.pending() {
+                    let pairing = pairing.clone();
+                    let id = pending.id.clone();
+                    handle.spawn(async move { pairing.approve(&id); });
                 }
             }
             0
@@ -371,6 +368,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 return 0;
             }
             match command {
+                CMD_PAIR_APPROVE|CMD_PAIR_REJECT => {
+                    if let Some(pairing) = HOST.get().and_then(|v| v.pairing.as_ref()) {
+                        if let Some(pending) = pairing.pending() {
+                            if command == CMD_PAIR_APPROVE {
+                                if let Some(handle) = TOKIO_HANDLE.get() {
+                                    let pairing = pairing.clone();
+                                    let id = pending.id.clone();
+                                    handle.spawn(async move { pairing.approve(&id); });
+                                }
+                            } else {
+                                pairing.reject(&pending.id);
+                            }
+                        }
+                    }
+                },
                 CMD_XR_FOLDER=>{let root=crate::xr_windows::root();let _=std::fs::create_dir_all(&root);open_path(root);},
                 CMD_XR_ENABLE=>{
                     let root=crate::xr_windows::root();
@@ -488,23 +500,6 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
 }
 
-fn approve_pairing(url: &str, pin: &str, authorization: &str) {
-    let body = format!(r#"{{"pin":"{pin}"}}"#);
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(ureq::tls::TlsConfig::builder().disable_verification(true).build())
-        .max_redirects(0)
-        .timeout_global(Some(std::time::Duration::from_secs(8)))
-        .build()
-        .into();
-    match agent.post(url)
-        .header("Authorization", &format!("Basic {authorization}"))
-        .header("Content-Type", "application/json")
-        .send(body.as_bytes())
-    {
-        Ok(_) => log::info!("Pairing approved via balloon click"),
-        Err(e) => log::warn!("Failed to approve pairing: {e}"),
-    }
-}
 
 /// Makes a Windows monochrome icon from the same Nightfall mark used by the
 /// Linux tray renderer.
@@ -532,6 +527,10 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
     let _ = MIC.set(mic);
     let _ = DEPTH.set(depth);
     let _ = HOST.set(host);
+    // Capture the Tokio handle so the Win32 message thread can spawn tasks.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let _ = TOKIO_HANDLE.set(handle);
+    }
     std::thread::spawn(|| unsafe {
         let instance: HINSTANCE = GetModuleHandleW(std::ptr::null());
         let class_name = wide("NightfallMeteorTray");

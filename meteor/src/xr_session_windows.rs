@@ -283,6 +283,9 @@ pub(crate) async fn runtime_adapter_with_status(
                     }
                 }
                 if let Some(socket)=&mut steam_socket {let _=crate::xr_steam_windows::finish(socket,130);}
+                if scene_ended && files.steamvr_driver.is_some() {
+                    crate::xr_runtime_windows::close_steamvr_on_exit();
+                }
                 return Ok(());
             }
             if marker.is_file() && !saw_frame {event("first_encoded_frame")?;saw_frame=true;}
@@ -307,6 +310,9 @@ pub(crate) async fn runtime_adapter_with_status(
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     if !drained.is_file() {return Err(io::Error::other("Windows XR encoder did not acknowledge session END"));}
+                }
+                if status.success() && files.steamvr_driver.is_some() {
+                    crate::xr_runtime_windows::close_steamvr_on_exit();
                 }
                 return if status.success() {Ok(())} else {Err(io::Error::other(format!("Windows XR application exited: {status}")))};
             }

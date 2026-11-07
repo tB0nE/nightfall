@@ -25,7 +25,6 @@ pub struct View {
     pub download: Arc<Download>,
     #[cfg(unix)]
     pub input: Arc<super::input::Access>,
-    #[cfg(unix)]
     pub pairing: Option<Arc<super::pairing::Pairing>>,
     instance: Option<Instance>,
     installing: std::sync::atomic::AtomicBool,
@@ -67,8 +66,6 @@ impl View {
         if let Some(instance) = self.instance.take() {
             let supervisor = Supervisor::start(instance);
             let _ = RUNNING.set(supervisor.clone());
-            #[cfg(windows)]
-            super::pairing_watch::start(&supervisor);
             self.supervisor = Some(supervisor);
         }
     }
@@ -82,7 +79,6 @@ impl View {
                 "managed": true,
                 "version": RELEASE.as_ref().map_or("development", |r| r.version),
             });
-            #[cfg(unix)]
             if self.pairing.is_some() {
                 info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION, "xr_identity":true});
             }

@@ -53,6 +53,10 @@ impl Instance {
             // which needs driver access a normal desktop process may lack.
             // An explicit user choice remains untouched by render_config.
             initial.push(("virtual_display_mode", "disabled".into()));
+            // Preserve the user's desktop resolution. The default "automatic"
+            // resizes the display to match the stream, which breaks 1440p+
+            // desktops when connecting from a 1080p headset.
+            initial.push(("dd_resolution_option", "disabled".into()));
         }
         let text = render_config(&existing, &[("port", self.base.to_string())], &initial);
         if text != existing {

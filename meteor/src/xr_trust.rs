@@ -66,7 +66,7 @@ impl Trust {
     fn commit(&self, state: &mut State, key: [u8; 32]) -> io::Result<()> {
         if state.approved.len() >= 8 { return Err(io::Error::other("Eight headsets are already authorized")); }
         let mut updated = state.approved.clone(); updated.insert(key);
-        Self::persist(&self.path, &mut state, updated)
+        Self::persist(&self.path, state, updated)
     }
     /// Approves a key that has proved possession via cryptographic handshake,
     /// without requiring a prior manual request. No-ops if already approved.

@@ -63,11 +63,15 @@ fn fetch(download: &Download, release: &Release) -> Result<(), String> {
     std::fs::create_dir_all(&root).map_err(|e| fail(&root, e))?;
     let lock_path=root.join(format!("{}.install.lock",release.version));
     let lock=std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_path).map_err(|e|fail(&lock_path,e))?;
-    use std::os::fd::AsRawFd;
     // The descriptor owns the lock, including on cancellation or process exit.
-    if unsafe {libc::flock(lock.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)} != 0 {
-        return Err("This host version is already being installed by another Meteor process".into());
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        if unsafe {libc::flock(lock.as_raw_fd(),libc::LOCK_EX|libc::LOCK_NB)} != 0 {
+            return Err("This host version is already being installed by another Meteor process".into());
+        }
     }
+    let _ = lock;
     let target=root.join(release.version);
     if target.exists() {
         return verify_install(&target,release).map_err(|error|format!("Existing host installation needs repair: {error}"));
@@ -101,7 +105,6 @@ fn fetch(download: &Download, release: &Release) -> Result<(), String> {
 }
 
 fn verify_install(root:&Path,release:&Release)->Result<(),String> {
-    use std::os::unix::fs::PermissionsExt;
     let manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(root.join("manifest.json")).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
     if manifest["version"].as_str()!=Some(release.version) || manifest["binary"].as_str()!=Some(release.binary) {
         return Err("Host package version or executable does not match the requested release".into());
@@ -116,8 +119,12 @@ fn verify_install(root:&Path,release:&Release)->Result<(),String> {
         if file.is_symlink() || !file.canonicalize().map_err(|e|e.to_string())?.starts_with(&canonical) {return Err("Invalid host package file location".into());}
         if sha256_file(&file)?!=digest.as_str().ok_or("Invalid host package checksum")? {return Err(format!("Host package file failed verification: {name}"));}
     }
-    for name in [release.binary,"bin/vibepollo"] {
-        if std::fs::metadata(root.join(name)).map_err(|e|e.to_string())?.permissions().mode()&0o111==0 {return Err("Host executable is not executable".into());}
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for name in [release.binary,"bin/vibepollo"] {
+            if std::fs::metadata(root.join(name)).map_err(|e|e.to_string())?.permissions().mode()&0o111==0 {return Err("Host executable is not executable".into());}
+        }
     }
     Ok(())
 }
@@ -156,6 +163,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn verifies_extracted_files_before_activating_a_host() {
         use std::os::unix::fs::PermissionsExt;

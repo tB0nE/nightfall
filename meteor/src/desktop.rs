@@ -243,18 +243,18 @@ pub async fn input_setup_popup(input: std::sync::Arc<crate::host::input::Access>
     Ok(())
 }
 
-pub async fn host_pairing_popup(pairing: std::sync::Arc<crate::host::pairing::Pairing>, request: String) -> zbus::Result<()> {
+pub async fn host_pairing_popup(pairing: std::sync::Arc<crate::host::pairing::Pairing>, request: String) -> Result<(), String> {
     use futures_lite::StreamExt;
     let Some(pending) = pairing.pending().filter(|p|p.id==request) else { return Ok(()) };
-    let connection = zbus::Connection::session().await?;
+    let connection = zbus::Connection::session().await.map_err(|e|e.to_string())?;
     let proxy = zbus::Proxy::new(&connection, "org.freedesktop.Notifications",
-        "/org/freedesktop/Notifications", "org.freedesktop.Notifications").await?;
-    let mut actions = proxy.receive_signal("ActionInvoked").await?;
+        "/org/freedesktop/Notifications", "org.freedesktop.Notifications").await.map_err(|e|e.to_string())?;
+    let mut actions = proxy.receive_signal("ActionInvoked").await.map_err(|e|e.to_string())?;
     let hints: std::collections::HashMap<&str, zbus::zvariant::Value> =
         [("resident", zbus::zvariant::Value::Bool(true))].into();
     let body = format!("Nightfall headset at {} requests desktop streaming. PIN: {}. Compare with the PIN in your headset, then approve only if they match. Approval is also available in Meteor's tray.",pending.peer,pending.pin);
     let id: u32 = proxy.call("Notify", &("Nightfall Meteor",0u32,"",
-        "Pair Nightfall headset?",body,vec!["approve","Approve","reject","Reject"],hints,60_000i32)).await?;
+        "Pair Nightfall headset?",body,vec!["approve","Approve","reject","Reject"],hints,60_000i32)).await.map_err(|e|e.to_string())?;
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
