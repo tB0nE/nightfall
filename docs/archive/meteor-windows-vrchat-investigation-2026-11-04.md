@@ -6,7 +6,7 @@ checks are superseded by the [current compatibility status](../plans/active/mete
 # Windows VRChat compatibility research
 
 Date: 2026-11-04. Optional backend prototype in development; not packaged.
-Related: [Windows status](meteor-windows.md), [host architecture](meteor-host.md).
+Related: [Windows status](../plans/active/meteor-windows.md), [host architecture](../plans/active/meteor-host.md).
 
 Latest user decision: defer direct xrizer/EAC acceptance and make the Windows
 SteamVR route work properly. Direct-mode capture now replaces mirror sampling
@@ -212,7 +212,7 @@ frames, Monado, and synthetic tracking. This confirms runtime functionality
 outside the protected game; it does not prove why EAC distrusts that binary.
 
 Prepared, not submitted:
-[minimal upstream/support report](meteor-windows-vrchat-support-draft.md).
+[minimal upstream/support report](../plans/active/meteor-windows-vrchat-support-draft.md).
 New helper `test/probe_windows_vrchat_runtime.ps1` records complete System
 popup events, alongside UI observations and relevant game-log excerpts.
 
