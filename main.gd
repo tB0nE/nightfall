@@ -1293,11 +1293,14 @@ func _restart_for_layout_correction() -> bool:
 	# left alone; relaunch the app to get the primary-only starting point again.
 	if layout and not _did_initial_monitor_trim and layout.source == &"host_manifest":
 		_did_initial_monitor_trim = true
-		var enabled_at_connect = layout.enabled_monitors()
+		# Only extra physical screens are trimmed. A virtual screen is there because the
+		# user asked for it (the host keeps it for the session), not a host default.
+		var enabled_at_connect = layout.enabled_monitors().filter(
+			func(m): return not m.hint.get("virtual", false))
 		if enabled_at_connect.size() > 1:
 			var primary_m = layout.get_primary()
 			for m in layout.monitors:
-				if not m.is_primary:
+				if not m.is_primary and not m.hint.get("virtual", false):
 					m.enabled = false
 			settings_controller.apply_screen_layout(layout)
 			if primary_m:
