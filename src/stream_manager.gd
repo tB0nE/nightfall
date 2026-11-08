@@ -280,7 +280,7 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			continue
 		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
 		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
-		if not info.is_empty() and not _trust_meteor(info, MeteorClient.key_id(host, address)):
+		if not info.is_empty() and not _trust_meteor(info, MeteorClient.key_id(host, address), address):
 			return {}
 		if not info.is_empty():
 			# Zoned for USB Link, so the depth and microphone sockets reach it.
@@ -336,7 +336,7 @@ func _app_name(app_id: int) -> String:
 # Remembers the first key a host's Meteor sends, and refuses a Meteor whose
 # key has changed since (MeteorClient.check_key()): the stream then goes
 # straight to Sunshine.
-func _trust_meteor(info: Dictionary, host_id: String) -> bool:
+func _trust_meteor(info: Dictionary, host_id: String, alias_id: String = "") -> bool:
 	var key := MeteorClient.meteor_key(info)
 	if key.is_empty():
 		return true # An older Meteor: it offers no encrypted side channels.
@@ -345,12 +345,25 @@ func _trust_meteor(info: Dictionary, host_id: String) -> bool:
 		MeteorClient.KeyCheck.NEW:
 			MeteorClient.remember_key(host_id, key)
 			main._log("[METEOR] Remembered this host's Meteor key %s..." % key.substr(0, 16))
+			_refresh_key_alias(alias_id, host_id, key)
+		MeteorClient.KeyCheck.SAME:
+			_refresh_key_alias(alias_id, host_id, key)
 		MeteorClient.KeyCheck.CHANGED:
 			main._log("[METEOR] Meteor's key changed (was %s..., now %s...); not using it. Settings > Forget Meteor Keys trusts the new one" % [
 				remembered.substr(0, 16), key.substr(0, 16)])
 			main.ui_controller.show_temporary_status("Meteor's key changed; not using it", 4.0)
 			return false
 	return true
+
+# A host is known by its stable id once it has one and by its address before that, so a key
+# can be remembered under either. Once the stable id has vouched for a key, the address entry is
+# set to it too; otherwise a stale address entry from an earlier install rejects the Meteor
+# the next time the host is reached before its stable id is known.
+func _refresh_key_alias(alias_id: String, host_id: String, key: String) -> void:
+	if alias_id.is_empty() or alias_id == host_id:
+		return
+	if MeteorClient.remembered_key(alias_id) != key:
+		MeteorClient.remember_key(alias_id, key)
 
 # Address the current stream was launched against (USB Link or network).
 var stream_host_address: String = ""

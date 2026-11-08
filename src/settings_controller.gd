@@ -2463,10 +2463,16 @@ func apply_staged_monitor_config():
 		# deliberately left to that same mismatch-retry (see its comment in
 		# main.gd) - an arbitrary multi-monitor composite's exact frame_size
 		# depends on host-side gap-filling this client can't predict.
-		if new_real_ids.size() == 1:
+		# With virtual screens in the stream the frame holds more than this monitor, so only a
+		# lone physical monitor makes the size knowable here.
+		if new_real_ids.size() == 1 and main._staged_virtual_count == 0:
 			for m in main.layout.monitors:
 				if m.id == new_real_ids[0]:
-					main.settings.host.native_resolution = m.frame_rect.size
+					# A monitor that was switched off has an empty frame_rect (that once asked the
+					# host for a 320x180 stream); its desktop_rect still holds its real size.
+					var lone_size: Vector2i = m.frame_rect.size if m.frame_rect.size.x > 0 and m.frame_rect.size.y > 0 else m.desktop_rect.size
+					if lone_size.x > 0 and lone_size.y > 0:
+						main.settings.host.native_resolution = lone_size
 					break
 		main._pending_monitor_apply = true
 		if not restart_via_meteor:
