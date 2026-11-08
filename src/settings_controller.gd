@@ -2254,6 +2254,7 @@ func _build_staged_layout() -> ScreenLayout:
 	new_layout.source = main.layout.source
 	new_layout.frame_size = main.layout.frame_size
 	new_layout.desktop_bounds = main.layout.desktop_bounds
+	new_layout.any_selection = main.layout.any_selection
 
 	for m in real_monitors:
 		var nm := ScreenLayout.MonitorSpec.new()
@@ -2488,6 +2489,7 @@ func apply_staged_monitor_config():
 			without_placeholders.source = target.source
 			without_placeholders.frame_size = target.frame_size
 			without_placeholders.desktop_bounds = target.desktop_bounds
+			without_placeholders.any_selection = target.any_selection
 			for m in target.monitors:
 				if not m.hint.get("virtual", false):
 					without_placeholders.monitors.append(m)
@@ -2543,6 +2545,7 @@ func finish_pending_monitor_apply():
 		with_virtual.source = main.layout.source
 		with_virtual.frame_size = main.layout.frame_size
 		with_virtual.desktop_bounds = main.layout.desktop_bounds
+		with_virtual.any_selection = main.layout.any_selection
 		with_virtual.monitors = main.layout.monitors.duplicate()
 		_append_virtual_placeholders(with_virtual, main._staged_virtual_count)
 		apply_screen_layout(with_virtual)

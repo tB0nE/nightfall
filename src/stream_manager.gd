@@ -95,6 +95,11 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		_b().set_local_capture_mode(false)
 
+	# Meteor's host plans the session's screens before launch. Ask which frame
+	# these screens give and request exactly that size, so the stream never
+	# starts squeezed into the previous layout's shape.
+	if forced_resolution == Vector2i.ZERO and main.settings.host.is_polaris_host and not local_capture_mode:
+		await _adopt_launch_plan(host_id)
 	# Timing-only XR restarts must use the latest manifest-corrected size,
 	# not the request cached before the previous monitor selection.
 	main.host_resolution = main.compute_requested_resolution()
@@ -171,20 +176,11 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["surroundAudioInfo"] = 0xCA0203
 	if hdr_requested():
 		options["hdr_mode"] = 1
-	var capture_outputs = _compute_capture_outputs()
-	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
-		capture_outputs, str(main.layout.source) if main.layout else "null",
+	var screens := _screen_launch_options()
+	main._log("[STREAM] screens requested: %s (layout.source=%s, enabled=%s)" % [
+		str(screens), str(main.layout.source) if main.layout else "null",
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
-	var virtual_only: bool = main.settings.host.virtual_only and main.settings.host.virtual_display_installed and main.settings.host.virtual_display_count > 0
-	if virtual_only:
-		# The host captures the virtual displays alone, so no physical monitor is named.
-		options["virtual_only"] = 1
-	elif not capture_outputs.is_empty():
-		options["capture_outputs"] = capture_outputs
-	# The host creates this many virtual monitors for the session (it only knows
-	# "one" from the per-client setting). Meteor reports whether it can.
-	if main.settings.host.virtual_display_installed and main.settings.host.virtual_display_count > 0:
-		options["virtual_displays"] = main.settings.host.virtual_display_count
+	options.merge(screens)
 	_meteor = {}
 	if not local_capture_mode and not _meteor_bypass:
 		_meteor = await _probe_meteor(host_id)
@@ -217,6 +213,45 @@ func hdr_requested() -> bool:
 # monitor has a non-empty but FAKE label ("Display", not a real RandR name) -
 # sending that as outputs= matches no real host output, and the host reports
 # back zero enabled monitors and falls back to combined/undivided capture.
+## The launch options that pick the session's screens: the physical monitors by
+## name (or none, virtual_only), and how many virtual displays the host creates.
+func _screen_launch_options() -> Dictionary:
+	var screens := {}
+	var virtual_count: int = main.settings.host.virtual_display_count if main.settings.host.virtual_display_installed else 0
+	var capture_outputs = _compute_capture_outputs()
+	if main.settings.host.virtual_only and virtual_count > 0:
+		# The host captures the virtual displays alone, so no physical monitor is named.
+		screens["virtual_only"] = 1
+	elif not capture_outputs.is_empty():
+		screens["capture_outputs"] = capture_outputs
+	if virtual_count > 0:
+		screens["virtual_displays"] = virtual_count
+	return screens
+
+## Asks the host which frame the requested screens make and caches it as the
+## size to request. Leaves the cached size alone when the host doesn't answer.
+func _adopt_launch_plan(host_id: int) -> void:
+	var screens := _screen_launch_options()
+	var query := PackedStringArray()
+	if screens.has("virtual_only"):
+		query.append("virtual_only=1")
+	else:
+		query.append("outputs=" + String(screens.get("capture_outputs", "")).uri_encode())
+	query.append("virtual_displays=%d" % int(screens.get("virtual_displays", 0)))
+	var reply := {"done": false, "plan": {}}
+	_b().fetch_display_manifest(host_id, func(plan: Dictionary):
+		reply.plan = plan
+		reply.done = true, "&".join(query))
+	var deadline := Time.get_ticks_msec() + 3000
+	while not reply.done and Time.get_ticks_msec() < deadline:
+		await main.get_tree().process_frame
+	var frame = reply.plan.get("frame_size", []) if reply.plan is Dictionary else []
+	if frame is Array and frame.size() == 2 and int(frame[0]) > 0 and int(frame[1]) > 0:
+		main.settings.host.native_resolution = Vector2i(int(frame[0]), int(frame[1]))
+		main._log("[STREAM] Host plans a %dx%d frame for %s" % [int(frame[0]), int(frame[1]), "&".join(query)])
+	else:
+		main._log("[STREAM] No screen plan from the host; requesting the last known size")
+
 func _compute_capture_outputs() -> String:
 	if not main.layout or main.layout.source != &"host_manifest":
 		return ""

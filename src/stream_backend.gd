@@ -132,10 +132,10 @@ func set_cursor_visible(host_id: int, visible: bool, callback: Callable):
 	if cm:
 		cm.set_cursor_visible(host_id, visible, callback)
 
-func fetch_display_manifest(host_id: int, callback: Callable):
+func fetch_display_manifest(host_id: int, callback: Callable, query: String = ""):
 	var cm = get_computer_manager()
 	if cm:
-		cm.fetch_display_manifest(host_id, callback)
+		cm.fetch_display_manifest(host_id, callback, query)
 	else:
 		callback.call({})
 
