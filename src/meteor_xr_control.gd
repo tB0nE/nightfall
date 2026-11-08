@@ -611,7 +611,7 @@ func _start_relay(ports: Dictionary, token: int) -> void:
 		_fail("Native relay startup failed")
 		return
 	if _handover_on_ready and not owner.pcvr_handover.arm(self):
-		_fail("XR handover requires a single desktop/welcome screen and updated native provider")
+		_fail("XR handover needs the updated native provider and no browser workspace")
 		return
 	if _handover_on_ready: _owns_timing = false # Handover now owns drain-before-restore.
 	_watch_relay(token)

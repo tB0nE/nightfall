@@ -63,6 +63,24 @@ func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 		if mat:
 			mat.set_shader_parameter("uv_region", uv_region)
 
+## Puts this screen back on its own region of the stream frame, after a
+## welcome or browser surface showed something else on it.
+func restore_monitor_region() -> void:
+	if monitor == null or main == null or main.layout == null:
+		return
+	var frame: Vector2i = main.layout.frame_size
+	if frame.x <= 0 or frame.y <= 0 or monitor.frame_rect.size.x <= 0:
+		return
+	uv_region = Vector4(
+		float(monitor.frame_rect.position.x) / float(frame.x),
+		float(monitor.frame_rect.position.y) / float(frame.y),
+		float(monitor.frame_rect.size.x) / float(frame.x),
+		float(monitor.frame_rect.size.y) / float(frame.y),
+	)
+	for mat in [material_override, comp_shader_mat, comp_shader_mat_left, comp_shader_mat_right]:
+		if mat is ShaderMaterial:
+			mat.set_shader_parameter("uv_region", uv_region)
+
 var comp_cylinder: Node3D = null
 var comp_cylinder_left: Node3D = null
 var comp_cylinder_right: Node3D = null

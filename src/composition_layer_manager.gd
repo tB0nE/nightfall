@@ -1194,6 +1194,9 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: in
 	for s in main.screens:
 		if _independent_browser(s):
 			continue
+		var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources else null
+		if provider == null or (not provider.active and not provider.closing):
+			s.restore_monitor_region()
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue

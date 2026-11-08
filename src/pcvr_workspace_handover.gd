@@ -109,11 +109,12 @@ func set_desktop_visible(value: bool) -> void:
 func arm(control) -> bool:
 	if state != State.IDLE or not main.pcvr_test.standby_active: return false
 	if not main.pcvr_test.backend.has_method("activate_meteor_projection"): return false
-	# Initial coexistence scope: one welcome/desktop screen, no browser workspace.
-	if main.screens.size() != 1 or main.browser_content_active(): return false
+	# Any number of desktop/virtual screens; a browser workspace is not covered yet.
+	if main.browser_content_active(): return false
 	generation += 1
 	state = State.WAITING
 	error = ""
+	_armed_screen_count = main.screens.size()
 	_control = control
 	_lease = control.session
 	_elapsed = 0.0
@@ -168,7 +169,7 @@ func process(delta: float) -> void:
 		elif runtime.get("phase", "") == "session_active" and native.get("state", "") == "running" and bool(native.get("meteor_frame_ready", false)):
 			if main.get("settings_controller") != null and not main.settings_controller.pcvr_desktop_timing_ready():
 				return # Finish desktop rate restart before presenting the XR world.
-			if main.screens.size() != 1 or main.browser_content_active():
+			if main.screens.size() != _armed_screen_count or main.browser_content_active():
 				request_stop("Workspace changed during XR startup")
 				return
 			state = State.DRAINING
@@ -219,6 +220,7 @@ func _enforce_hidden() -> void:
 	# Hide the parent, not every child: stream termination and other legitimate
 	# lifecycle callbacks can still update child visibility/content while hidden.
 	main.visible = desktop_visible or menu_only
+	_set_screen_rendering(desktop_visible or menu_only)
 	# The desktop connection remains alive while its video is hidden. Until XR
 	# has its own audio transport, retain that host's captured game/system audio.
 	# Never resume a previously paused player or replay stale audio after disconnect.
@@ -230,6 +232,24 @@ func _enforce_hidden() -> void:
 		interface.set_submit_projection_layer(false)
 		interface.environment_blend_mode = XRInterface.XR_ENV_BLEND_MODE_OPAQUE
 	main.get_viewport().transparent_bg = false
+
+# Several screens are drawn by the legacy compositor, whose viewports keep
+# rendering while the scene is hidden. Stop them while the game is in front
+# and let the normal presentation path rebuild them when the desktop returns.
+var _screens_paused := false
+var _armed_screen_count := 0
+
+func _set_screen_rendering(on: bool) -> void:
+	if on == not _screens_paused: return
+	if on:
+		_screens_paused = false
+		if main.get("settings_controller") != null: main.settings_controller.apply_stereo()
+		return
+	if main.screens.size() < 2: return
+	_screens_paused = true
+	for scr in main.screens:
+		for viewport in [scr.comp_viewport, scr.comp_viewport_left, scr.comp_viewport_right]:
+			if viewport: viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 func _queue_layer_drain(token: int) -> void:
 	# Keep all desktop swapchains alive while the compositor retires their use.
@@ -266,6 +286,7 @@ func _restore_workspace() -> void:
 		interface.environment_blend_mode = saved.blend
 	main.get_viewport().transparent_bg = saved.transparent
 	main.visible = saved.visible
+	_set_screen_rendering(true)
 	main.audio_player.stream_paused = saved.audio_paused
 	main.meteor_microphone.set_paused(saved.mic_paused or main.pcvr_test.application_paused)
 	if main.has_method("reset_primary_shortcuts"): main.reset_primary_shortcuts()

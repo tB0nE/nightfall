@@ -16,6 +16,14 @@ var _browser_uploaders: Dictionary = {}
 var switching_primary := false
 
 func stream_screen() -> VRScreen:
+	# The primary carries the stream (and the welcome surface between streams)
+	# whenever no browser owns it. Picking the first screen in creation order
+	# instead made a secondary stream screen the "welcome" surface during each
+	# restart, and that reset its region to the whole multi-screen frame.
+	if main.primary_screen and main.screens.has(main.primary_screen):
+		var primary_provider := browser_for_screen(main.primary_screen)
+		if primary_provider == null or (not primary_provider.active and not primary_provider.closing):
+			return main.primary_screen
 	for screen in main.screens:
 		var provider := browser_for_screen(screen)
 		if provider == null or (not provider.active and not provider.closing):
