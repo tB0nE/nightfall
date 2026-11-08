@@ -2479,7 +2479,10 @@ func apply_staged_monitor_config():
 		if not restart_via_meteor:
 			_schedule_stream_restart()
 
-	if not (real_changed and main.is_streaming):
+	# A change that restarts through Meteor leaves the screens alone until the
+	# new session's manifest arrives. Removing virtual screens now would leave a
+	# lone primary on the old multi-screen frame until then.
+	if not (real_changed and main.is_streaming) and not restart_via_meteor:
 		if vdd_available and main._staged_virtual_count > 0:
 			# Don't render placeholder — real virtual monitor arrives after stream restart.
 			# Strip synthetic virtual entries before applying so the user doesn't see a

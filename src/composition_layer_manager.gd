@@ -372,6 +372,10 @@ func ensure_stereo_layers(s: VRScreen) -> void:
 
 	s.comp_cylinder_left.set_layer_viewport(s.comp_viewport_left)
 	s.comp_cylinder_right.set_layer_viewport(s.comp_viewport_right)
+	# A screen promoted to primary already has its place in the frame; the new
+	# eye layers must show that region, not the whole multi-screen frame.
+	s.comp_shader_mat_left.set_shader_parameter("uv_region", s.uv_region)
+	s.comp_shader_mat_right.set_shader_parameter("uv_region", s.uv_region)
 	main._log("[COMP] Per-screen stereo comp layers created (%s)" % s.monitor_id)
 
 func _make_bezel_rect() -> ColorRect:
@@ -1258,11 +1262,13 @@ func switch_to_comp_layer():
 		return
 	in_use = true
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	var s = main.primary_screen
-	if s.comp_cylinder_left: s.comp_cylinder_left.visible = false
-	if s.comp_cylinder_right: s.comp_cylinder_right.visible = false
-	if s.comp_viewport_left: s.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	if s.comp_viewport_right: s.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	for scr in main.screens:
+		# Every screen, not just the current primary: an earlier primary keeps
+		# its eye layers.
+		if scr.comp_cylinder_left: scr.comp_cylinder_left.visible = false
+		if scr.comp_cylinder_right: scr.comp_cylinder_right.visible = false
+		if scr.comp_viewport_left: scr.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if scr.comp_viewport_right: scr.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	for scr in main.screens:
 		if _independent_browser(scr):
 			refresh_browser_screen(scr)
@@ -1322,6 +1328,12 @@ func switch_to_stereo_comp_layer():
 			scr.comp_layer = scr.comp_cylinder
 			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
 			scr.comp_layer.visible = true
+		# Only the primary draws in 3D. A screen that was primary before keeps
+		# its eye layers, which would otherwise stay drawn over its flat one.
+		if scr.comp_cylinder_left: scr.comp_cylinder_left.visible = false
+		if scr.comp_cylinder_right: scr.comp_cylinder_right.visible = false
+		if scr.comp_viewport_left: scr.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if scr.comp_viewport_right: scr.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		scr.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	make_screen_transparent()
 	for scr in main.screens:
