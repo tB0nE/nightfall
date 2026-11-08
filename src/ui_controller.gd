@@ -726,7 +726,7 @@ func _cycle_monitors_btn():
 	var real_total = maxi(1, mini(main.settings_controller._real_monitor_count(), main.settings_controller.monitor_screen_capacity()))
 	var n = main._staged_physical_count + 1
 	if n > real_total:
-		n = 1
+		n = main.settings_controller.min_physical_count()
 	main.settings_controller.stage_monitor_count(n)
 	update_monitor_tab()
 

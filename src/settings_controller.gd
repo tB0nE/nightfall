@@ -2189,20 +2189,35 @@ func sync_staged_from_current_layout():
 			virtual_enabled += 1
 		else:
 			real_enabled += 1
-	main._staged_physical_count = maxi(real_enabled, 1)
+	# No physical monitor in the stream is a real state when virtual ones are.
+	main._staged_physical_count = maxi(real_enabled, 1 if virtual_enabled == 0 else 0)
 	main._staged_virtual_count = virtual_enabled
+	# Left alone while the layout is empty, e.g. between a relaunch and its manifest.
+	if real_enabled > 0:
+		main.settings.host.virtual_only = false
+	elif virtual_enabled > 0:
+		main.settings.host.virtual_only = true
 	# What the host reports is what exists, whatever this app run last applied.
 	_last_applied_virtual_count = virtual_enabled
 	main._staged_preset_id = &""
 
+# Fewest physical monitors the stream may have: none when the host can make virtual ones
+# (the stream then runs on virtual screens alone), else one.
+func min_physical_count() -> int:
+	return 0 if main.settings.host.virtual_display_installed and main.settings.host.virtual_display_max_count > 0 else 1
+
 func stage_monitor_count(n: int):
-	main._staged_physical_count = clampi(n, 1, maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
-	main._staged_virtual_count = clampi(main._staged_virtual_count, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
+	main._staged_physical_count = clampi(n, min_physical_count(), maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
+	# At least one screen has to remain.
+	if main._staged_physical_count == 0 and main._staged_virtual_count == 0:
+		main._staged_virtual_count = 1
+	main._staged_virtual_count = clampi(main._staged_virtual_count, 1 if main._staged_physical_count == 0 else 0, maxi(1, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 	main._log("[LAYOUT] stage_monitor_count(%d): real_monitor_count=%d -> staged_physical=%d" % [n, _real_monitor_count(), main._staged_physical_count])
 
 func stage_virtual_count(n: int):
-	main._staged_virtual_count = clampi(n, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
+	var low := 1 if main._staged_physical_count == 0 else 0
+	main._staged_virtual_count = clampi(n, low, maxi(low, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 
 func select_monitor_preset(id: StringName):
@@ -2230,7 +2245,8 @@ func _build_staged_layout() -> ScreenLayout:
 	if real_monitors.is_empty():
 		return null
 	real_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
-	var phys_count = clampi(main._staged_physical_count, 1, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
+	var phys_floor := 0 if main._staged_virtual_count > 0 and min_physical_count() == 0 else 1
+	var phys_count = clampi(main._staged_physical_count, phys_floor, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
 	var picked: Array = real_monitors.slice(0, phys_count)
 
 	var new_layout := ScreenLayout.new()
@@ -2418,6 +2434,7 @@ func apply_staged_monitor_config():
 	main._log("[LAYOUT] apply_staged_monitor_config: staged=%d+%dvirtual old_real=%s new_real=%s real_changed=%s streaming=%s" % [main._staged_physical_count, main._staged_virtual_count, str(old_real_ids), str(new_real_ids), str(real_changed), str(main.is_streaming)])
 
 	var virtual_changed = main._staged_virtual_count != _last_applied_virtual_count
+	main.settings.host.virtual_only = main._staged_physical_count == 0 and main._staged_virtual_count > 0
 	var vdd_available = main.settings.host.virtual_display_installed and main.stream_manager != null
 	# A virtual-display change restarts the stream itself (see the Meteor reply below): the host
 	# session has to end before a new virtual display can appear, and a plain restart resumes it.
@@ -2476,6 +2493,7 @@ func apply_staged_monitor_config():
 		var vcount = main._staged_virtual_count
 		_last_applied_virtual_count = vcount
 		main.settings.host.virtual_display_count = vcount
+		main.settings.host.virtual_only = main._staged_physical_count == 0 and vcount > 0
 		var need_restart = main.is_streaming
 		main.stream_manager.post_meteor_virtual(vcount, func(ok: bool, reply: Dictionary) -> void:
 			if not ok:

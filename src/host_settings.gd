@@ -58,3 +58,5 @@ var virtual_display_max_count: int = 0
 ## Virtual monitors the user asked this host for; sent with every launch so the
 ## host creates that many (the host only keeps the setting for the session).
 var virtual_display_count: int = 0
+## Capture only the virtual monitors; the physical ones stay on the desk and out of the stream.
+var virtual_only: bool = false

@@ -695,6 +695,7 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
             url += "&outputs=" + outputs.uri_encode();
         }
     }
+    if (options.has("virtual_only") && (int64_t)options["virtual_only"] == 1) url += "&virtual_only=1";
     if (options.has("virtual_displays")) {
         int64_t virtual_displays = options["virtual_displays"];
         if (virtual_displays > 0) url += "&virtual_displays=" + String::num_int64(virtual_displays);

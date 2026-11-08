@@ -175,7 +175,11 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
 		capture_outputs, str(main.layout.source) if main.layout else "null",
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
-	if not capture_outputs.is_empty():
+	var virtual_only: bool = main.settings.host.virtual_only and main.settings.host.virtual_display_installed and main.settings.host.virtual_display_count > 0
+	if virtual_only:
+		# The host captures the virtual displays alone, so no physical monitor is named.
+		options["virtual_only"] = 1
+	elif not capture_outputs.is_empty():
 		options["capture_outputs"] = capture_outputs
 	# The host creates this many virtual monitors for the session (it only knows
 	# "one" from the per-client setting). Meteor reports whether it can.
