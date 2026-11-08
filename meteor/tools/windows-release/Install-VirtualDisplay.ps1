@@ -70,8 +70,13 @@ if ($Uninstall) {
         # longer points there, so the leftover copy can go.
         Remove-Item -LiteralPath (Join-Path $PSScriptRoot 'runtime\host\tools\virtualdisplay_broker.exe') -Force -ErrorAction SilentlyContinue
         Write-Host "Starting $brokerSvc service..."
-        Start-Service -Name $brokerSvc -ErrorAction SilentlyContinue
-        Write-Host "$brokerSvc service running."
+        try {
+            Start-Service -Name $brokerSvc -ErrorAction Stop
+            Write-Host "$brokerSvc service running."
+        } catch {
+            # The driver may not be installed yet; the check after the driver script starts it again.
+            Write-Warning "$brokerSvc did not start yet: $($_.Exception.Message)"
+        }
     } else {
         Write-Warning "Broker executable not found at: $brokerSource (virtual display API may not work)"
     }
@@ -164,6 +169,19 @@ if ($Uninstall) {
         }
         if (Test-Path -LiteralPath $pnputil) {
             & $pnputil /scan-devices 2>&1 | Out-Null
+        }
+    }
+
+    # The driver script recycles the broker while it revives the device and can leave it
+    # stopped; the host needs it running. Say so if it will not start, rather than leave a
+    # service that is quietly down.
+    $svc = Get-Service -Name $brokerSvc -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -ne 'Running') {
+        try {
+            Start-Service -Name $brokerSvc -ErrorAction Stop
+            Write-Host "$brokerSvc service running."
+        } catch {
+            Write-Warning "$brokerSvc did not start: $($_.Exception.Message)"
         }
     }
 

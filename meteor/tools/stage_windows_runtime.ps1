@@ -46,6 +46,12 @@ $vddSrc="$target\windows-vibepollo-src\src_assets\windows\drivers\sunshine"
 foreach($f in 'SunshineVirtualDisplayDriver.cat','SunshineVirtualDisplayDriver.cer','SunshineVirtualDisplayDriver.dll','SunshineVirtualDisplayDriver.inf','nefconc.exe','virtualdisplay_probe.exe','install.ps1') {
     CopyRequired "$vddSrc\$f" $vddDir
 }
+# The driver catalog signs the INF byte for byte, and was made over a file with CRLF line
+# endings; git keeps it with LF, and Windows then refuses the package ("INF file hash is not
+# present in catalog file", 0xE000024B). Write it back as CRLF.
+$infFile=Join-Path $vddDir 'SunshineVirtualDisplayDriver.inf'
+[IO.File]::WriteAllText($infFile,([IO.File]::ReadAllText($infFile) -replace "`r?`n","`r`n"),[Text.UTF8Encoding]::new($false))
+if(([IO.File]::ReadAllText($infFile) -split "`r`n").Count -lt 10 -or [IO.File]::ReadAllText($infFile) -match "(?<!`r)`n"){ throw "The staged driver INF does not have CRLF line endings" }
 # Shipped beside the driver, not under tools\: the elevated installer copies it
 # to Program Files and runs the service from there. Running it from the
 # user-writable install folder would let any user-level program replace code
