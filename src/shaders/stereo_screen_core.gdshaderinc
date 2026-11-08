@@ -1,5 +1,8 @@
 uniform sampler2D main_texture : source_color, filter_linear, repeat_disable;
 uniform sampler2D depth_texture : hint_default_white, filter_linear_mipmap;
+// True when depth_texture holds its rows bottom first (see
+// yuv_display_core.gdshaderinc); these reads flip to match.
+uniform bool depth_bottom_first = false;
 // Same-resolution downscaled color frame the depth model itself saw
 // (depth_estimator.gd's depth_viewport) - used as the edge guide for
 // stereo_mode 5's joint bilateral depth upsample.
@@ -154,6 +157,14 @@ vec3 heatmap(float t) {
 	}
 }
 
+ivec2 depth_row(ivec2 q, ivec2 size) {
+	return depth_bottom_first ? ivec2(q.x, size.y - 1 - q.y) : q;
+}
+
+vec2 depth_coord(vec2 uv) {
+	return depth_bottom_first ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
 // Joint bilateral tap: weight each low-res depth neighbour by how closely
 // its guide color matches the real color at `uv`, so the depth edge snaps
 // to the color edge instead of straddling it. Shared by the mode 5/6/10/11
@@ -174,7 +185,7 @@ float bilateral_depth(vec2 uv, out float dlo, out float dhi) {
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
 			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(int(n) - 1));
-			float s = texelFetch(depth_texture, q, 0).r;
+			float s = texelFetch(depth_texture, depth_row(q, low_sz), 0).r;
 			vec3 gcol = texelFetch(depth_guide_texture, q, 0).rgb;
 			vec2 off = vec2(q) - lp;
 			float ws = exp(-dot(off, off) / (2.0 * 1.5 * 1.5));
@@ -247,7 +258,7 @@ void fragment() {
 
 		vec2 depth_uv = uv - vec2(half_parallax, 0.0);
 		depth_uv = clamp(depth_uv, vec2(0.0), vec2(1.0));
-		float depth = texture(depth_texture, depth_uv).r;
+		float depth = texture(depth_texture, depth_coord(depth_uv)).r;
 
 		float depth_diff = clamp(depth - convergence, -convergence, 1.0 - convergence);
 
@@ -268,8 +279,8 @@ void fragment() {
 		}
 
 		float edge_width = 3.0 * depth_texel.x;
-		float depth_left = texture(depth_texture, vec2(edge_width, 0.5)).r;
-		float depth_right = texture(depth_texture, vec2(1.0 - edge_width, 0.5)).r;
+		float depth_left = texture(depth_texture, depth_coord(vec2(edge_width, 0.5))).r;
+		float depth_right = texture(depth_texture, depth_coord(vec2(1.0 - edge_width, 0.5))).r;
 		float max_edge_shift = max(abs(depth_left - convergence), abs(depth_right - convergence));
 		float max_shift_possible = parallax * max_edge_shift;
 		float vignette_bias = (convergence - 0.5) * 0.3;
@@ -339,12 +350,12 @@ void fragment() {
 		float best_off = eye_sign * -parallax * (depth_here - convergence);
 		float best_depth = -1.0;
 		ivec2 prev_q = clamp(base + ivec2(-reach, 0), ivec2(0), ivec2(int(n) - 1));
-		float prev_depth = texelFetch(depth_texture, prev_q, 0).r;
+		float prev_depth = texelFetch(depth_texture, depth_row(prev_q, low_sz), 0).r;
 		float prev_t = float(-reach) * texel;
 		float prev_err = prev_t + eye_sign * parallax * (prev_depth - convergence);
 		for (int t = -reach + 1; t <= reach; t++) {
 			ivec2 q = clamp(base + ivec2(t, 0), ivec2(0), ivec2(int(n) - 1));
-			float cur_depth = texelFetch(depth_texture, q, 0).r;
+			float cur_depth = texelFetch(depth_texture, depth_row(q, low_sz), 0).r;
 			float cur_t = float(t) * texel;
 			float cur_err = cur_t + eye_sign * parallax * (cur_depth - convergence);
 			if (prev_err * cur_err <= 0.0 && abs(cur_err - prev_err) > 1e-6) {
@@ -370,27 +381,14 @@ void fragment() {
 		// that path reads a precomputed upsampled_depth_texture while this
 		// one recomputes bilateral_depth() inline, since this shader has no
 		// equivalent precomputed pass to read from.
-		// DEBUG DISPLAY ONLY (2026-09-04): depth_texture's data is currently
-		// vertically flipped relative to the screen (root cause still being
-		// tracked down - the real warp above is affected too, just far less
-		// visibly since it only uses depth to compute a horizontal shift,
-		// never displays the value directly). Flipping the UV fed into
-		// bilateral_depth() here - and ONLY here, not at the real warp's own
-		// call sites above - undoes that for this heatmap so it's usable for
-		// visual comparison again. hi_color's internal hi-res hi_color/gcol
-		// bilateral weighting is correspondingly a little off (this function
-		// isn't normally called with a pre-flipped uv), but this call only
-		// ever consumes the returned depth value, not hi_color itself, so
-		// that doesn't affect what's displayed here.
 		float dlo, dhi;
-		float d = bilateral_depth(vec2(uv.x, 1.0 - uv.y), dlo, dhi);
+		float d = bilateral_depth(uv, dlo, dhi);
 		ALBEDO = heatmap(d);
 	}
 	else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
 		// actual 256x256 output), no bilateral upsample applied.
-		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
-		float d = texture(depth_texture, vec2(uv.x, 1.0 - uv.y)).r;
+		float d = texture(depth_texture, depth_coord(uv)).r;
 		ALBEDO = heatmap(d);
 	}
 	else if (stereo_mode == 9) {

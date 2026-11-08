@@ -11,6 +11,10 @@ uniform float blur_scale = 1.0;
 uniform int stereo_mode = 0;
 uniform int eye_index = 0;
 uniform sampler2D depth_texture : hint_default_white, filter_linear, repeat_disable;
+// True when depth_texture holds its rows bottom first: the GLES convention
+// the native renderer samples, which Meteor and native-capture maps are
+// uploaded in. These shaders address it top first, so they flip to match.
+uniform bool depth_bottom_first = false;
 // stereo_mode 5's pre-computed textures (depth_estimator.gd owns the passes
 // that produce these, once per frame, shared by both eyes - see
 // depth_upsample.gdshader / depth_offset.gdshader for how).
@@ -120,6 +124,14 @@ vec3 yuv_to_rgb(vec2 uv) {
 	return rgb;
 }
 
+ivec2 depth_row(ivec2 q, ivec2 size) {
+	return depth_bottom_first ? ivec2(q.x, size.y - 1 - q.y) : q;
+}
+
+vec2 depth_coord(vec2 uv) {
+	return depth_bottom_first ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
 vec2 to_frame_uv(vec2 t) {
 	return uv_region.xy + clamp(t, tile_inset, vec2(1.0) - tile_inset) * uv_region.zw;
 }
@@ -214,9 +226,11 @@ void fragment() {
 		float parallax = 0.042;
 		float half_parallax = parallax * 0.5;
 
-		vec2 depth_uv = uv - vec2(half_parallax, 0.0);
+		// The depth map covers this screen alone, so it is addressed in
+		// tile_uv, not in the (possibly multi-screen) frame's uv.
+		vec2 depth_uv = tile_uv - vec2(half_parallax, 0.0);
 		depth_uv = clamp(depth_uv, vec2(0.0), vec2(1.0));
-		float depth = texture(depth_texture, depth_uv).r;
+		float depth = texture(depth_texture, depth_coord(depth_uv)).r;
 
 		float depth_diff = clamp(depth - convergence, -convergence, 1.0 - convergence);
 		float dist_from_convergence = abs(depth - convergence);
@@ -235,8 +249,8 @@ void fragment() {
 		}
 
 		float edge_width = 3.0 * depth_texel.x;
-		float depth_left = texture(depth_texture, vec2(edge_width, 0.5)).r;
-		float depth_right = texture(depth_texture, vec2(1.0 - edge_width, 0.5)).r;
+		float depth_left = texture(depth_texture, depth_coord(vec2(edge_width, 0.5))).r;
+		float depth_right = texture(depth_texture, depth_coord(vec2(1.0 - edge_width, 0.5))).r;
 		float max_edge_shift = max(abs(depth_left - convergence), abs(depth_right - convergence));
 		float max_shift_possible = parallax * max_edge_shift;
 		float vignette_bias = (convergence - 0.5) * 0.3;
@@ -312,14 +326,9 @@ void fragment() {
 	// modes 1-6 still need to fall through to the normal color-sampling
 	// block below, which this must skip instead.
 	if (stereo_mode == 7) {
-		// DEBUG DISPLAY ONLY (2026-09-04): depth_texture (and therefore the
-		// upsampled_depth_texture pass derived from it) is currently
-		// vertically flipped relative to the screen - root cause still
-		// being tracked down. Flipped here so the heatmap is usable for
-		// visual comparison again; the real warp's own upsampled_depth_texture
-		// reads above (the disparity search feeding mode 5/6) are untouched,
-		// so this doesn't change what's actually displayed in normal 3D mode.
-		float d = texture(upsampled_depth_texture, vec2(tile_uv.x, 1.0 - tile_uv.y)).r;
+		// The upsample pass reads depth_texture in its stored row order
+		// (depth_bottom_first), so the upsampled map is upright here.
+		float d = texture(upsampled_depth_texture, tile_uv).r;
 		COLOR = vec4(heatmap(d), 1.0);
 	} else if (stereo_mode == 8) {
 		// MiDaS-DMap-Raw: the RAW pre-upsample depth_texture (the model's
@@ -331,8 +340,7 @@ void fragment() {
 		// upsampled_depth_texture (both cover UV 0..1 = the full cropped
 		// frame 1:1), just coarser since it's the raw 256x256 grid instead
 		// of the quarter-native-res upsample.
-		// DEBUG DISPLAY ONLY - see mode 7's comment above for why this flips.
-		float d = texture(depth_texture, vec2(tile_uv.x, 1.0 - tile_uv.y)).r;
+		float d = texture(depth_texture, depth_coord(tile_uv)).r;
 		COLOR = vec4(heatmap(d), 1.0);
 	} else if (stereo_mode == 9) {
 		// MiDaS-DMap-Input: the literal color image fed to the model, no

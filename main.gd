@@ -3035,6 +3035,11 @@ func set_primary_screen(s: VRScreen) -> void:
 		world_transforms[p] = p.global_transform
 	if not screen_registry.set_primary(s):
 		return
+	# Only the primary draws in 3D, and secondary screens are created without
+	# stereo layers. A screen promoted later (a virtual monitor taking over when
+	# the physical one is switched off) needs them, or it stays blank in 3D.
+	if comp:
+		comp.ensure_stereo_layers(s)
 	for screen in screens:
 		screen.update_shortcut_positions()
 		screen_shortcuts.refresh_visuals(screen)
