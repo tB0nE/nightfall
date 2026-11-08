@@ -177,6 +177,10 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
 	if not capture_outputs.is_empty():
 		options["capture_outputs"] = capture_outputs
+	# The host creates this many virtual monitors for the session (it only knows
+	# "one" from the per-client setting). Meteor reports whether it can.
+	if main.settings.host.virtual_display_installed and main.settings.host.virtual_display_count > 0:
+		options["virtual_displays"] = main.settings.host.virtual_display_count
 	_meteor = {}
 	if not local_capture_mode and not _meteor_bypass:
 		_meteor = await _probe_meteor(host_id)
@@ -250,6 +254,20 @@ func meteor_mic_info() -> Dictionary:
 func meteor_address() -> String:
 	return _meteor_address
 
+# The HTTPS port Meteor's proxy listens on for this host (what launch/resume use), or 0.
+func meteor_https_port() -> int:
+	return int(_meteor.get("ports", {}).get("https", 0))
+
+func post_meteor_virtual(count: int, callback: Callable) -> void:
+	if _meteor.is_empty() or _meteor_address.is_empty():
+		callback.call(false, {})
+		return
+	var sunshine_https := int(_meteor.get("sunshine", {}).get("https", 0))
+	if sunshine_https <= 0:
+		callback.call(false, {})
+		return
+	await MeteorClient.post_virtual(main, _meteor_address, sunshine_https, count, callback)
+
 func _probe_meteor(host_id: int) -> Dictionary:
 	main.welcome_screen.get_xr_control().set_discovered_host("", {})
 	var cm = _b().get_computer_manager()
@@ -274,6 +292,11 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			var mic := MeteorClient.mic_info(info)
 			if not mic.is_empty():
 				main._log("[METEOR] Microphone offered on port %d" % int(mic["port"]))
+			var vd := MeteorClient.virtual_display_info(info)
+			main.settings.host.virtual_display_installed = not vd.is_empty()
+			main.settings.host.virtual_display_max_count = int(vd.get("max_count", 0)) if not vd.is_empty() else 0
+			if not vd.is_empty():
+				main._log("[METEOR] Virtual display driver installed (max %d)" % main.settings.host.virtual_display_max_count)
 		return info
 	return {}
 

@@ -134,6 +134,7 @@ public:
     void fetch_display_manifest(int host_id, Callable callback);
     void stop_stream(int host_id, Callable callback);
     void cancel_host_stream(int host_id, String ip, int port);
+    void stop_stream_at(String ip, int port, Callable callback);
     void set_cursor_visible(int host_id, bool visible, Callable callback);
 };
 

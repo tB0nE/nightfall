@@ -176,6 +176,7 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "ai_3d_edge_alignment", host.ai_3d_edge_alignment)
 	config.set_value(section, "ai_3d_contour_cleanup", host.ai_3d_contour_cleanup)
 	config.set_value(section, "ai_3d_meteor_declined", host.ai_3d_meteor_declined)
+	config.set_value(section, "virtual_display_count", host.virtual_display_count)
 	config.set_value(section, "bitrate_idx", host.bitrate_idx)
 	config.set_value(section, "double_h", host.double_h)
 
@@ -232,6 +233,7 @@ static func read_host(
 			host.ai_3d_edge_alignment = bool(config.get_value(section, "ai_3d_edge_alignment", true))
 			host.ai_3d_contour_cleanup = bool(config.get_value(section, "ai_3d_contour_cleanup", true))
 			host.ai_3d_meteor_declined = bool(config.get_value(section, "ai_3d_meteor_declined", false))
+			host.virtual_display_count = int(config.get_value(section, "virtual_display_count", 0))
 			if config.has_section_key(section, "ai_3d_speed_v2"):
 				host.ai_3d_speed = clampi(config.get_value(section, "ai_3d_speed", 1), 0, 3)
 			else:

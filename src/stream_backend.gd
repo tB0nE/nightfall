@@ -97,6 +97,20 @@ func stop_play_stream():
 	if _v2:
 		_v2.stop_stream()
 
+## Ends the host's session (its /cancel) at the address and port the launch
+## used, and calls back with the reply ("" on failure).
+func stop_host_session(host_id: int, port: int, callback: Callable):
+	var cm = get_computer_manager()
+	if not cm:
+		callback.call("")
+		return
+	for h in get_hosts():
+		if h.has("id") and h.id == host_id:
+			var target_port := port if port > 0 else int(h.get("https_port", 47984))
+			cm.stop_stream_at(cm.get_host_address(h), target_port, callback)
+			return
+	callback.call("")
+
 func cancel_host_stream(host_id: int):
 	var cm = get_computer_manager()
 	if not cm:
