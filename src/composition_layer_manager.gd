@@ -1048,6 +1048,11 @@ func _update_cylinder_params_for(s: VRScreen):
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y
+	# The pointer hits the screen's own curved mesh. A screen moved since that
+	# mesh was built (e.g. a new primary taking the old one's place) would show
+	# its picture on this cylinder while the laser hits the old curve.
+	if s.curvature > 0 and absf(s.built_radius - radius) > radius * 0.01:
+		s.apply_curvature()
 	s._comp_cyl_radius = radius
 	s._comp_cyl_central_angle = central_angle
 	s._comp_cyl_center = s.global_position - screen_forward * radius
