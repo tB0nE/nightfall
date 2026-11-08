@@ -30,13 +30,29 @@ $driver=Join-Path $runtime 'xr\steamvr\bin\win64'
 New-Item -ItemType Directory -Force $driver | Out-Null
 CopyRequired "$target\windows-steamvr-build\meteor\bin\win64\driver_meteor.dll" $driver
 CopyRequired "$target\windows-steamvr-build\meteor\driver.vrdrivermanifest" (Split-Path (Split-Path $driver))
-CopyRequired "$target\windows-vibepollo-src\build-meteor-windows\sunshine.exe" $hostDir
-CopyRequired "$target\windows-vibepollo-src\build-meteor-windows\assets" $hostDir
+# Prefer the clean Ninja build tree; build-meteor-windows predates it and is no longer configured.
+$vpBuild="$target\windows-vibepollo-src\build-multi"
+if(-not (Test-Path "$vpBuild\sunshine.exe")){ $vpBuild="$target\windows-vibepollo-src\build-meteor-windows" }
+CopyRequired "$vpBuild\sunshine.exe" $hostDir
+CopyRequired "$vpBuild\assets" $hostDir
 $hostTools=Join-Path $hostDir 'tools'
 New-Item -ItemType Directory -Force $hostTools | Out-Null
 foreach($helper in 'sunshine_display_helper.exe','sunshine_wgc_capture.exe') {
-    CopyRequired "$target\windows-vibepollo-src\build-meteor-windows\tools\$helper" $hostTools
+    CopyRequired "$vpBuild\tools\$helper" $hostTools
 }
+$vddDir=Join-Path $hostDir 'drivers\sunshine'
+New-Item -ItemType Directory -Force $vddDir | Out-Null
+$vddSrc="$target\windows-vibepollo-src\src_assets\windows\drivers\sunshine"
+foreach($f in 'SunshineVirtualDisplayDriver.cat','SunshineVirtualDisplayDriver.cer','SunshineVirtualDisplayDriver.dll','SunshineVirtualDisplayDriver.inf','nefconc.exe','virtualdisplay_probe.exe','install.ps1') {
+    CopyRequired "$vddSrc\$f" $vddDir
+}
+# Shipped beside the driver, not under tools\: the elevated installer copies it
+# to Program Files and runs the service from there. Running it from the
+# user-writable install folder would let any user-level program replace code
+# that runs as LocalSystem, and the running service locks the file on upgrade.
+$brokerBuilt="$vpBuild\third-party\libvirtualdisplay\src\driver\virtualdisplay_broker.exe"
+if(-not (Test-Path $brokerBuilt)){ $brokerBuilt="$vpBuild\tools\virtualdisplay_broker.exe" }
+CopyRequired $brokerBuilt $vddDir
 $manifest=@{file_format_version='1.0.0';runtime=@{name='Monado';library_path='.\bin\openxr_monado.dll'}}
 [IO.File]::WriteAllText((Join-Path $runtime 'xr\openxr_monado.json'),($manifest | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 # App-local Microsoft redistributable DLLs: no dependency on the build tools' PATH.
@@ -56,6 +72,7 @@ CopyRequired (Join-Path $PSScriptRoot 'windows-release\Meteor-Cli.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\Pair-Headset.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\Install-SteamVR.ps1') $Stage
 CopyRequired (Join-Path $PSScriptRoot 'windows-release\SteamVR-Driver.ps1') $Stage
+CopyRequired (Join-Path $PSScriptRoot 'windows-release\Install-VirtualDisplay.ps1') $Stage
 foreach($component in @(
     @{name='Monado';source="$target\windows-monado-src\LICENSE"},
     @{name='xrizer';source="$target\windows-xrizer-d3d11-src\LICENSE"},

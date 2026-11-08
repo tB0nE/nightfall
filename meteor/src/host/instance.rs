@@ -32,6 +32,11 @@ impl Instance {
         self.dir.join("vibepollo")
     }
 
+    /// Written by the host while it captures several monitors; read by Meteor's depth.
+    pub fn capture_region_path(&self) -> PathBuf {
+        self.appdata().join("capture-region")
+    }
+
     pub fn conf_path(&self) -> PathBuf {
         self.appdata().join("sunshine.conf")
     }
@@ -62,6 +67,12 @@ impl Instance {
         if text != existing {
             std::fs::write(&path, text).map_err(fail)?;
         }
+        // Describes a capture that ended with the previous process.
+        match std::fs::remove_file(self.capture_region_path()) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(fail(e)),
+        }
         // Runtime-only control. Never inherit a previous process's multiplier.
         std::fs::write(self.appdata().join("cursor-scale"), "1\n").map_err(fail)?;
         match std::fs::remove_file(self.appdata().join("cursor-scale.supported")) {
@@ -76,6 +87,9 @@ impl Instance {
         let mut command = Command::new(&self.binary);
         command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir).envs(self.env.iter().cloned());
         command.env("METEOR_CURSOR_SCALE_FILE", self.appdata().join("cursor-scale"));
+        // The host writes the primary monitor's rectangle in its capture frame here, so depth can
+        // cover that monitor alone when several are tiled into one frame.
+        command.env("METEOR_CAPTURE_REGION_FILE", self.capture_region_path());
         command.env("METEOR_DEFAULT_PRIMARY_OUTPUT", "1");
         #[cfg(windows)]
         {
@@ -104,9 +118,40 @@ impl Instance {
     }
 }
 
+/// Sets the virtual display count in sunshine.conf (0 = disabled, 1–4 = enabled).
+/// Sets `virtual_display_mode = per_client` and `dd_virtual_display_permanent_count
+/// = count` when count > 0. A permanent slot must exist for Vibepollo's
+/// `resolve_virtual_device_id` (`allow_any_fallback=false`).
+/// `virtual_display_layout = extended_isolated` keeps physical monitors active.
+/// When count = 0, sets mode to `disabled` and clears the permanent count.
+#[cfg(not(windows))]
+pub fn set_virtual_display_mode(_conf_path: &std::path::Path, _appdata: &std::path::Path, _count: u8) -> Result<(), String> {
+    Ok(()) // virtual display is Windows-only
+}
+
+#[cfg(windows)]
+pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path::Path, count: u8) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", conf_path.display());
+    std::fs::create_dir_all(appdata).map_err(fail)?;
+    let existing = std::fs::read_to_string(conf_path).unwrap_or_default();
+    let mode = if count > 0 { "per_client" } else { "disabled" };
+    let mut always: Vec<(&str, String)> = vec![
+        ("virtual_display_mode", mode.into()),
+        ("dd_virtual_display_permanent_count", count.min(1).to_string()),
+    ];
+    if count > 0 {
+        always.push(("virtual_display_layout", "extended_isolated".into()));
+    }
+    let text = render_config(&existing, &always, &[]);
+    if text != existing {
+        std::fs::write(conf_path, text).map_err(fail)?;
+    }
+    Ok(())
+}
+
 /// `existing` with `always` keys set to their values, and `initial` keys
 /// added when missing. A header explains who wrote it.
-fn render_config(existing: &str, always: &[(&str, String)], initial: &[(&str, String)]) -> String {
+pub(crate) fn render_config(existing: &str, always: &[(&str, String)], initial: &[(&str, String)]) -> String {
     let key_of = |line: &str| line.split_once('=').map(|(k, _)| k.trim().to_string());
     let mut lines: Vec<String> = Vec::new();
     if existing.trim().is_empty() {
@@ -179,5 +224,33 @@ mod tests {
             .contains("virtual_display_mode = disabled\n"));
         let explicit="virtual_display_mode = per_client\n";
         assert_eq!(render_config(explicit, &[], &defaults),explicit);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn set_virtual_display_mode_writes_and_toggles() {
+        let dir = std::env::temp_dir().join(format!("meteor_vdd_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conf = dir.join("sunshine.conf");
+        // Enable (count=1): writes per_client + count=1 + extended_isolated.
+        set_virtual_display_mode(&conf, &dir, 1).unwrap();
+        let text = std::fs::read_to_string(&conf).unwrap();
+        assert!(text.contains("virtual_display_mode = per_client\n"), "{text}");
+        assert!(text.contains("dd_virtual_display_permanent_count = 1\n"), "{text}");
+        assert!(text.contains("virtual_display_layout = extended_isolated\n"), "{text}");
+        // Enable (count=2): the permanent count stays 1; extra displays are per session.
+        set_virtual_display_mode(&conf, &dir, 2).unwrap();
+        let text_c2 = std::fs::read_to_string(&conf).unwrap();
+        assert!(text_c2.contains("dd_virtual_display_permanent_count = 1\n"), "{text_c2}");
+        // Disable (count=0): overwrites mode and count, leaves layout alone.
+        set_virtual_display_mode(&conf, &dir, 0).unwrap();
+        let text2 = std::fs::read_to_string(&conf).unwrap();
+        assert!(text2.contains("virtual_display_mode = disabled\n"), "{text2}");
+        assert!(text2.contains("dd_virtual_display_permanent_count = 0\n"), "{text2}");
+        // Idempotent: no write when nothing changes.
+        let mtime = std::fs::metadata(&conf).unwrap().modified().unwrap();
+        set_virtual_display_mode(&conf, &dir, 0).unwrap();
+        assert_eq!(std::fs::metadata(&conf).unwrap().modified().unwrap(), mtime);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

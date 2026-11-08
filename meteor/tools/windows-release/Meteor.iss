@@ -40,6 +40,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 Name: "builtinhost"; Description: "Use Meteor's built-in desktop streaming host"
 Name: "pcvr"; Description: "Set up PCVR for installed games"
 Name: "vda"; Description: "Download VDA depth model on first launch (requires NVIDIA GPU, ~500 MB downloaded in background)"
+Name: "virtualmonitors"; Description: "Install virtual display driver for virtual monitors in VR (requires admin, ~1 MB)"
 
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -60,6 +61,7 @@ Source: "{#Stage}\Meteor-Cli.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Pair-Headset.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Install-SteamVR.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\SteamVR-Driver.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\Install-VirtualDisplay.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\doc\nightfall-meteor\runtime\*"; DestDir: "{app}\share\doc\nightfall-meteor\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\nightfall-meteor\models\*"; DestDir: "{app}\share\nightfall-meteor\models"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -92,6 +94,22 @@ begin
   if WizardIsTaskSelected('vda') then Result := Result + ' -EnableVDA';
 end;
 
+procedure InstallVirtualDisplayDriver;
+var
+  ResultCode: Integer;
+begin
+  if not WizardIsTaskSelected('virtualmonitors') then Exit;
+  ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Install-VirtualDisplay.ps1') + '"',
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    InstallVirtualDisplayDriver;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   RunKey, Command, InstalledCommand: String;
@@ -103,6 +121,10 @@ begin
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\SteamVR-Driver.ps1') + '" -Action Unregister',
       '', SW_HIDE, ewWaitUntilTerminated, DriverResult);
+  if FileExists(ExpandConstant('{app}\Install-VirtualDisplay.ps1')) then
+    ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Install-VirtualDisplay.ps1') + '" -Uninstall',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, DriverResult);
   RunKey := 'Software\Microsoft\Windows\CurrentVersion\Run';
   InstalledCommand := '"' + ExpandConstant('{app}\nightfall-meteor.exe') + '"';
   if RegQueryStringValue(HKCU, RunKey, 'Nightfall Meteor', Command) and

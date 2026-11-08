@@ -63,6 +63,7 @@ const CMD_HOST_PAIR:usize=31;
 const CMD_TASKBAR_SETTINGS:usize=32;
 const CMD_PAIR_APPROVE:usize=33;
 const CMD_PAIR_REJECT:usize=34;
+const CMD_INSTALL_VDD:usize=35;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -143,6 +144,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_WEB, wide("Open host web page").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_LOGIN, wide("Open host login (host.toml)").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_FOLDER, wide("Open host folder").as_ptr());
+                            let vdd_script = std::env::current_exe().ok()
+                                .and_then(|e| e.parent().map(|p| p.join("Install-VirtualDisplay.ps1")));
+                            if vdd_script.as_ref().is_some_and(|p| p.is_file()) {
+                                AppendMenuW(submenu, MF_STRING, CMD_INSTALL_VDD, wide("Install virtual display driver").as_ptr());
+                            }
                         } else if host.binary.is_none() {
                             AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide("Set host_binary in meteor.toml to a Windows host build").as_ptr());
                         }
@@ -441,6 +447,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 CMD_HOST_WEB => {
                     if let Some(supervisor) = HOST.get().and_then(|host| host.supervisor.as_ref()) {
                         open_url(&format!("https://localhost:{}", supervisor.instance.base + 1));
+                    }
+                }
+                CMD_INSTALL_VDD => {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let script = exe.parent().unwrap().join("Install-VirtualDisplay.ps1");
+                        if script.is_file() {
+                            // PowerShell Start-Process with -Verb RunAs triggers the UAC prompt.
+                            use std::os::windows::process::CommandExt;
+                            let _ = std::process::Command::new("powershell.exe")
+                                .args(["-NoProfile", "-Command",
+                                    &format!("Start-Process powershell.exe -Verb RunAs -ArgumentList \"-NoProfile -ExecutionPolicy Bypass -File '{}'\"", script.display())])
+                                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
+                        }
                     }
                 }
                 CMD_HOST_PAIR => {
