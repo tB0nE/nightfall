@@ -53,6 +53,11 @@ foreach($f in 'SunshineVirtualDisplayDriver.cat','SunshineVirtualDisplayDriver.c
 $brokerBuilt="$vpBuild\third-party\libvirtualdisplay\src\driver\virtualdisplay_broker.exe"
 if(-not (Test-Path $brokerBuilt)){ $brokerBuilt="$vpBuild\tools\virtualdisplay_broker.exe" }
 CopyRequired $brokerBuilt $vddDir
+# The driver script validates its whole package, the HDR Vulkan layer included, and does
+# nothing without it; run by the installer in best-effort mode that is a silent exit 0.
+CopyRequired "$vddSrc\vulkan-layer" $vddDir
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $vddDir 'install.ps1') -ValidateOnly -AllowUnsignedCatalogForValidation
+if($LASTEXITCODE -ne 0){ throw "The virtual display driver package is incomplete or invalid (install.ps1 -ValidateOnly exit $LASTEXITCODE)" }
 $manifest=@{file_format_version='1.0.0';runtime=@{name='Monado';library_path='.\bin\openxr_monado.dll'}}
 [IO.File]::WriteAllText((Join-Path $runtime 'xr\openxr_monado.json'),($manifest | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
 # App-local Microsoft redistributable DLLs: no dependency on the build tools' PATH.
