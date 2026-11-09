@@ -277,6 +277,10 @@ async fn main() {
     let startup = if replay_file.is_some() {
         None
     } else {
+        // Before choosing ports: a second Meteor would find this one's stack busy, pick the
+        // next base and so a discovery port of its own, which then can't serve as the lock.
+        #[cfg(target_os = "macos")]
+        take_instance_lock().await;
         let bundled_base = host_view.prepare(&config);
         let sunshine_base = config
             .sunshine_port
@@ -649,6 +653,41 @@ fn sunshine_vdd_installed() -> bool {
                 .is_some_and(|n| n > 0)
         })
     })
+}
+
+/// Held for Meteor's whole life (a restart's exec closes it: O_CLOEXEC).
+#[cfg(target_os = "macos")]
+static INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
+
+/// Exits if another Meteor of this user runs. A restarted Meteor waits up to ten seconds for
+/// the old one to let go, as it does for the discovery port.
+#[cfg(target_os = "macos")]
+async fn take_instance_lock() {
+    use std::os::fd::AsRawFd;
+    let path = config::config_dir().join("meteor.lock");
+    let file = std::fs::create_dir_all(config::config_dir())
+        .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
+    let file = match file {
+        Ok(file) => file,
+        Err(error) => {
+            log::warn!("Can't open {} ({error}); not checking for another Meteor", path.display());
+            return;
+        }
+    };
+    let tries = if std::env::var_os(RESTART_ENV).is_some() { 50 } else { 1 };
+    for attempt in 0..tries {
+        // SAFETY: flock on a descriptor this function owns.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            let _ = INSTANCE_LOCK.set(file);
+            return;
+        }
+        if attempt + 1 < tries {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+    log::error!("Nightfall Meteor is already running ({} is locked)", path.display());
+    desktop::notify("Nightfall Meteor is already running", "Look for it in the menu bar.").await;
+    exit_now(1);
 }
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
