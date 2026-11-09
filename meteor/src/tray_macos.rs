@@ -105,10 +105,10 @@ impl Tray {
         out.push(Entry::Separator);
         match &self.mic {
             Some(mic) => {
-                out.push(Entry::Label(format!("Microphone: {}", mic.status())));
+                out.push(Entry::Label(format!("Microphone: {} (BlackHole)", mic.status())));
                 out.push(check("Mute microphone", Action::MuteMic, mic.muted.load(Ordering::Relaxed)));
             }
-            None => out.push(Entry::Label("Microphone: needs BlackHole (not set up yet)".into())),
+            None => out.push(Entry::Label("Microphone: install BlackHole 2ch, then restart Meteor".into())),
         }
         out.push(Entry::Separator);
         out.push(check("Start at login", Action::Autostart, crate::desktop::autostart_enabled()));

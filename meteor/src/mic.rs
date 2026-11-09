@@ -174,6 +174,8 @@ impl Mic {
         log::info!("Microphone: UDP :{port} -> PipeWire source \"{}\" ({}), encrypted", names().description, names().source);
         #[cfg(windows)]
         log::info!("Microphone: UDP :{port} -> VB-CABLE Input (record from CABLE Output), encrypted");
+        #[cfg(target_os = "macos")]
+        log::info!("Microphone: UDP :{port} -> BlackHole (choose it as the input in apps), encrypted");
         let mic = Arc::new(Mic {
             port,
             key,
@@ -459,6 +461,12 @@ struct VirtualMic {
     feed: std::sync::mpsc::SyncSender<Vec<u8>>,
     #[cfg(windows)]
     queued: Arc<std::sync::atomic::AtomicUsize>,
+    /// 48 kHz mono samples the CoreAudio callback plays into BlackHole.
+    #[cfg(target_os = "macos")]
+    queue: Arc<Mutex<std::collections::VecDeque<i16>>>,
+    /// Dropped with the device, which ends the thread that owns the stream.
+    #[cfg(target_os = "macos")]
+    _stop: std::sync::mpsc::Sender<()>,
 }
 
 #[cfg(target_os = "linux")]
@@ -737,7 +745,102 @@ fn windows_audio(
     let _ = client.stop_stream();
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// At most this much audio waits for CoreAudio; the jitter buffer upstream does the real buffering.
+#[cfg(target_os = "macos")]
+const MAC_QUEUE_SAMPLES: usize = FRAME_SAMPLES * MAX_FRAMES;
+
+#[cfg(target_os = "macos")]
+impl VirtualMic {
+    fn create() -> Result<VirtualMic, String> {
+        let queue = Arc::new(Mutex::new(std::collections::VecDeque::with_capacity(MAC_QUEUE_SAMPLES)));
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let feed = queue.clone();
+        // cpal's stream can't move between threads, so one thread owns it until the device drops.
+        std::thread::Builder::new()
+            .name("mic-coreaudio".into())
+            .spawn(move || match mac_audio(feed) {
+                Ok(stream) => {
+                    let _ = ready_tx.send(Ok(()));
+                    let _ = stopped.recv();
+                    drop(stream);
+                }
+                Err(err) => {
+                    let _ = ready_tx.send(Err(err));
+                }
+            })
+            .map_err(|e| format!("can't start the CoreAudio thread: {e}"))?;
+        ready_rx.recv().map_err(|_| "CoreAudio thread exited during startup".to_string())??;
+        Ok(VirtualMic { queue, _stop: stop })
+    }
+
+    fn write(&mut self, pcm: &[u8]) -> std::io::Result<bool> {
+        let Ok(mut queue) = self.queue.lock() else {
+            return Err(std::io::Error::other("CoreAudio queue poisoned"));
+        };
+        if queue.len() + pcm.len() / 2 > MAC_QUEUE_SAMPLES {
+            return Ok(false);
+        }
+        queue.extend(pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        Ok(true)
+    }
+
+    fn fill(&self) -> Option<usize> {
+        self.queue.lock().ok().map(|q| q.len() * 2)
+    }
+}
+
+/// Opens BlackHole's output at 48 kHz and plays the queue into every channel; silence when empty.
+#[cfg(target_os = "macos")]
+fn mac_audio(queue: Arc<Mutex<std::collections::VecDeque<i16>>>) -> Result<cpal::Stream, String> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    let host = cpal::default_host();
+    // devices(), not output_devices(): that one opens an audio unit on every device to see if it
+    // can play, and a device whose driver doesn't answer (seen with a Continuity microphone or a
+    // conferencing app's virtual device) blocks it forever. Names are cheap to read.
+    // METEOR_MIC_DEVICE names another loopback device (part of its name, any case).
+    let wanted = std::env::var("METEOR_MIC_DEVICE").map(|n| n.to_ascii_lowercase()).unwrap_or_else(|_| "blackhole".into());
+    let device = host
+        .devices()
+        .map_err(|e| e.to_string())?
+        .find(|d| d.name().is_ok_and(|n| n.to_ascii_lowercase().contains(&wanted)))
+        .ok_or("BlackHole not found. Install BlackHole 2ch, then restart Meteor; choose BlackHole as the microphone in your app")?;
+    let name = device.name().unwrap_or_default();
+    let channels = device
+        .supported_output_configs()
+        .map_err(|e| e.to_string())?
+        .filter(|c| c.min_sample_rate().0 <= 48_000 && c.max_sample_rate().0 >= 48_000)
+        .map(|c| c.channels())
+        .min()
+        .ok_or_else(|| format!("{name} can't play 48 kHz audio"))?;
+    let config = cpal::StreamConfig {
+        channels,
+        sample_rate: cpal::SampleRate(48_000),
+        buffer_size: cpal::BufferSize::Default,
+    };
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |out: &mut [f32], _| {
+                let Ok(mut queue) = queue.lock() else {
+                    out.fill(0.0);
+                    return;
+                };
+                for frame in out.chunks_mut(channels as usize) {
+                    let sample = queue.pop_front().map_or(0.0, |s| s as f32 / 32768.0);
+                    frame.fill(sample);
+                }
+            },
+            |err| log::warn!("BlackHole audio stream: {err}"),
+            None,
+        )
+        .map_err(|e| format!("can't open {name}: {e}"))?;
+    stream.play().map_err(|e| format!("can't start {name}: {e}"))?;
+    log::info!("Microphone output: {name} ({channels} channels at 48 kHz)");
+    Ok(stream)
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 impl VirtualMic {
     fn create() -> Result<VirtualMic, String> {
         Err("needs a virtual audio driver on this platform (not supported yet)".into())

@@ -95,14 +95,31 @@ Start at login (a LaunchAgent in `~/Library/LaunchAgents`), log/settings/models
 and Quit. AppKit takes the main thread; shutdown waits on a Tokio worker.
 Checked: the item appears, SIGTERM shuts down cleanly. Not yet clicked through.
 
+### Fixes from the first headset sessions
+
+- A virtual display NSScreen didn't list made `+[AVVideo displayNames]` throw: every stream
+  with one aborted the host (black screens, failed reconnect).
+- Screen Recording and Accessibility: Meteor asks for both at startup, and the menu shows
+  what's missing. Local builds are signed with a stable self-signed certificate
+  (`build_macos_app.sh`, own keychain), so grants survive rebuilds.
+- One Meteor per user (`meteor.lock`): a second launch used to pick the next base port.
+- Multi-screen headset depth used the whole frame: a client bug (`stream_backend.gd` didn't
+  forward `set_native_depth_capture_crop`), fixed in the client, needs a new APK.
+
+### Microphone
+
+Meteor plays the headset's microphone into BlackHole through CoreAudio (`cpal`), as Windows
+uses VB-CABLE; apps choose BlackHole as their input. `METEOR_MIC_DEVICE` names another
+loopback device. Devices are matched by name before any is opened: probing every device
+(cpal's `output_devices()`) hung on an unresponsive one.
+
 ## To do
 
 1. **Headset checks.** A desktop stream through Meteor.app, two screens and a
    virtual one, input on each, depth crop. Single-display capture still uses
    `AVCaptureScreenInput`; consider ScreenCaptureKit there too.
-2. **A `.dmg`**, and signing/notarisation for distribution.
-3. **Microphone.** Play into a virtual input (BlackHole), as Windows uses VB-CABLE.
-4. **Host audio.** Check whether Vibepollo's `av_audio.mm` system-audio capture
-   (`NSAudioCaptureUsageDescription`) needs no loopback driver.
+2. **A `.dmg`**, and Developer ID signing/notarisation for distribution.
+3. **Microphone:** check with BlackHole installed (code done, see below).
+4. **Host audio:** the host uses the macOS system audio tap (14.2+, no driver); confirm it is heard.
 5. **Firewall.** `socketfilterfw` check for the application firewall.
 6. **Host depth.** ncnn's Vulkan backend through MoltenVK, VideoToolbox decode.
