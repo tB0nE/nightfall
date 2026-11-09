@@ -305,6 +305,16 @@ func supports_native_depth_capture() -> bool:
 	var uploader = _v2.get_texture_uploader()
 	return uploader != null and uploader.has_method("supports_native_depth_capture") and uploader.supports_native_depth_capture()
 
+## The part of the frame on-device depth sees ((x, y, w, h) in [0, 1]; empty for all of it).
+## With several screens in one frame, the native XR renderer passes the primary's part here.
+## Without this forwarder its has_method() check failed and depth saw every screen at once.
+func set_native_depth_capture_crop(crop: PackedFloat32Array):
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("set_native_depth_capture_crop"):
+		uploader.set_native_depth_capture_crop(crop)
+
 func request_native_depth_capture(width: int, height: int):
 	if not _v2 or not _v2.has_method("get_texture_uploader"):
 		return
