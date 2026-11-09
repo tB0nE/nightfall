@@ -124,10 +124,6 @@ impl Instance {
 /// `resolve_virtual_device_id` (`allow_any_fallback=false`).
 /// `virtual_display_layout = extended_isolated` keeps physical monitors active.
 /// When count = 0, sets mode to `disabled` and clears the permanent count.
-#[cfg(not(windows))]
-pub fn set_virtual_display_mode(_conf_path: &std::path::Path, _appdata: &std::path::Path, _count: u8) -> Result<(), String> {
-    Ok(()) // virtual display is Windows-only
-}
 
 #[cfg(windows)]
 pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path::Path, count: u8) -> Result<(), String> {
