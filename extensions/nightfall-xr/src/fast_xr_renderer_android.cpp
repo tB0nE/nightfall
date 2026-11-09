@@ -2506,8 +2506,10 @@ bool NightfallXrRenderer::create_secondary_swapchain(SecondaryScreen &p_screen) 
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
 	info.format = swapchain_format;
 	info.sampleCount = 1;
-	info.width = p_screen.pixel_width;
-	info.height = p_screen.pixel_height;
+	// A fixed 8-pixel border on each side, as the primary reserves for its bezel; with the bezel
+	// off the video covers it.
+	info.width = p_screen.pixel_width + 16;
+	info.height = p_screen.pixel_height + 16;
 	info.faceCount = 1;
 	info.arraySize = 1;
 	info.mipCount = 1;
@@ -2620,7 +2622,15 @@ void NightfallXrRenderer::render_secondary_screens(uint32_t p_oes_texture_id, co
 		crop_tex_matrix(p_tex_matrix, screen.crop, matrix);
 		glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, matrix);
 		glUniform1f(uniforms.frame_width, (float)screen.pixel_width);
-		glViewport(0, 0, screen.pixel_width, screen.pixel_height);
+		const int out_w = screen.pixel_width + 16, out_h = screen.pixel_height + 16;
+		if (pending_bezel_enabled) {
+			glViewport(0, 0, out_w, out_h);
+			glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+			glClear(GL_COLOR_BUFFER_BIT);
+			glViewport(8, 8, screen.pixel_width, screen.pixel_height);
+		} else {
+			glViewport(0, 0, out_w, out_h);
+		}
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 		XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 		pfn_xrReleaseSwapchainImage(screen.swapchain, &release_info);
@@ -2646,7 +2656,12 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 	XrSwapchainSubImage sub_image{};
 	sub_image.swapchain = p_screen.swapchain;
 	sub_image.imageRect.offset = { 0, 0 };
-	sub_image.imageRect.extent = { p_screen.pixel_width, p_screen.pixel_height };
+	sub_image.imageRect.extent = { p_screen.pixel_width + 16, p_screen.pixel_height + 16 };
+	// The bezel adds pixels outside the video; grow the layer by the same ratio, as the primary does.
+	const float grow_x = pending_bezel_enabled ? (float)(p_screen.pixel_width + 16) / (float)p_screen.pixel_width : 1.0f;
+	const float grow_y = pending_bezel_enabled ? (float)(p_screen.pixel_height + 16) / (float)p_screen.pixel_height : 1.0f;
+	const float layer_w = p_screen.width * grow_x;
+	const float layer_h = p_screen.height * grow_y;
 	sub_image.imageArrayIndex = 0;
 
 	const void *layer_next = nullptr;
@@ -2668,8 +2683,8 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 		cylinder->space = p_space;
 		cylinder->pose = pose;
 		cylinder->radius = p_screen.radius;
-		cylinder->centralAngle = p_screen.central_angle;
-		cylinder->aspectRatio = p_screen.width / p_screen.height;
+		cylinder->centralAngle = p_screen.central_angle * grow_x;
+		cylinder->aspectRatio = layer_w / layer_h;
 		return (uint64_t)(void *)cylinder;
 	}
 	XrCompositionLayerQuad *quad = &p_screen.quad;
@@ -2680,8 +2695,8 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 	quad->subImage = sub_image;
 	quad->space = p_space;
 	quad->pose = pose;
-	quad->size.width = p_screen.width;
-	quad->size.height = p_screen.height;
+	quad->size.width = layer_w;
+	quad->size.height = layer_h;
 	return (uint64_t)(void *)quad;
 }
 
