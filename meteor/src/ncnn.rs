@@ -87,7 +87,7 @@ fn runtime() -> Result<&'static Runtime, String> {
     }
 }
 
-const LIB_NAME: &str = if cfg!(windows) { "ncnn.dll" } else { "libncnn.so.1" };
+const LIB_NAME: &str = if cfg!(windows) { "ncnn.dll" } else if cfg!(target_os = "macos") { "libncnn.1.dylib" } else { "libncnn.so.1" };
 
 fn candidates(configured: Option<&Path>) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = configured.map(Path::to_path_buf).into_iter().collect();

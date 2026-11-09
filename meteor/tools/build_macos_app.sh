@@ -35,10 +35,35 @@ cp "$HOST_BINARY" "$APP/Contents/Resources/host/bin/meteor-vibepollo"
 cp -R "$STAGE/Frameworks" "$APP/Contents/Resources/host/Frameworks"
 cp -R "$STAGE/Resources/assets" "$APP/Contents/Resources/host/Resources/assets"
 
+# Host depth: ncnn + MoltenVK (tools/build_ncnn_macos.sh) and the FFmpeg 8 decoder runtime
+# (tools/build_ffmpeg_runtime_macos.sh) in Contents/lib, which Meteor searches as ../lib.
+# Without them Meteor still runs, as a plain proxy.
+mkdir -p "$APP/Contents/lib"
+for runtime in "$METEOR/target/ncnn/lib" "$METEOR/target/ffmpeg/lib"; do
+  if compgen -G "$runtime/*.dylib" >/dev/null; then
+    cp -a "$runtime"/*.dylib "$APP/Contents/lib/"
+  else
+    echo "warning: no $runtime; Meteor.app will have no host depth" >&2
+  fi
+done
+# Vulkan frame preparation/post-processing, built by build.rs against target/ncnn.
+VULKAN_PROCESSING="$(ls -t "$METEOR"/target/release/build/nightfall-meteor-*/out/libmeteor_vda_vulkan.dylib 2>/dev/null | head -1)"
+if [[ -n "$VULKAN_PROCESSING" ]]; then
+  cp "$VULKAN_PROCESSING" "$APP/Contents/lib/"
+else
+  echo "warning: no libmeteor_vda_vulkan.dylib; depth processing will use the CPU" >&2
+fi
+for notice in "$METEOR/target/ncnn/ncnn-LICENSE.txt" "$METEOR/target/ffmpeg/FFmpeg-COPYING.LGPLv2.1"; do
+  [[ -f "$notice" ]] && cp "$notice" "$APP/Contents/lib/"
+done
+
 # Models shipped beside the binary (../share/nightfall-meteor/models from MacOS/).
-if [[ -n "${METEOR_MODELS_DIR:-}" ]]; then
+MODELS="${METEOR_MODELS_DIR:-$METEOR/target/models-macos}"
+if compgen -G "$MODELS/*.ncnn.param" >/dev/null; then
   mkdir -p "$APP/Contents/share/nightfall-meteor/models"
-  cp "$METEOR_MODELS_DIR"/*.ncnn.* "$APP/Contents/share/nightfall-meteor/models/" 2>/dev/null || true
+  cp "$MODELS"/*.ncnn.* "$APP/Contents/share/nightfall-meteor/models/"
+else
+  echo "warning: no EdgePad models in $MODELS; host depth needs them in the models folder" >&2
 fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -123,7 +148,7 @@ CONF
   SIGN+=(--sign "$HASH")
 fi
 # Inside out: libraries, the host, then the app.
-find "$APP/Contents/Resources/host/Frameworks" -name '*.dylib' -exec "${SIGN[@]}" {} \;
+find "$APP/Contents/Resources/host/Frameworks" "$APP/Contents/lib" -type f -name '*.dylib' -exec "${SIGN[@]}" {} \;
 "${SIGN[@]}" "$APP/Contents/Resources/host/bin/meteor-vibepollo"
 "${SIGN[@]}" "$APP"
 codesign --verify --deep --strict "$APP"

@@ -47,7 +47,7 @@ fn build_vda_vulkan() {
         }
     }
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if os != "linux" && os != "windows" {
+    if os != "linux" && os != "windows" && os != "macos" {
         return;
     }
     let sdk = std::env::var_os("METEOR_VDA_NCNN_SDK")
@@ -71,17 +71,17 @@ fn build_vda_vulkan() {
         std::env::current_dir().expect("Meteor build directory").join(sdk)
     };
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let output = out_dir.join(if os == "windows" {
-        "meteor_vda_vulkan.dll"
-    } else {
-        "libmeteor_vda_vulkan.so"
+    let output = out_dir.join(match os.as_str() {
+        "windows" => "meteor_vda_vulkan.dll",
+        "macos" => "libmeteor_vda_vulkan.dylib",
+        _ => "libmeteor_vda_vulkan.so",
     });
     // Build into a fresh inode: truncating a loaded .so can crash a running
     // development instance during a rebuild.
-    let compiled = out_dir.join(if os == "windows" {
-        "meteor_vda_vulkan.pending.dll"
-    } else {
-        "libmeteor_vda_vulkan.pending.so"
+    let compiled = out_dir.join(match os.as_str() {
+        "windows" => "meteor_vda_vulkan.pending.dll",
+        "macos" => "libmeteor_vda_vulkan.pending.dylib",
+        _ => "libmeteor_vda_vulkan.pending.so",
     });
     let compiler = cc::Build::new().cpp(true).get_compiler();
     let mut command: Command = compiler.to_command();
@@ -114,6 +114,13 @@ fn build_vda_vulkan() {
         if os == "linux" {
             command
                 .arg("-Wl,-rpath,$ORIGIN")
+                .arg(format!("-Wl,-rpath,{}", sdk.join("lib").display()));
+        }
+        if os == "macos" {
+            // libncnn.1.dylib sits beside it in Meteor.app's Contents/lib.
+            command
+                .args(["-mmacosx-version-min=14.2", "-install_name", "@rpath/libmeteor_vda_vulkan.dylib"])
+                .arg("-Wl,-rpath,@loader_path")
                 .arg(format!("-Wl,-rpath,{}", sdk.join("lib").display()));
         }
         command.arg("-o").arg(&compiled);
