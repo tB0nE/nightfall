@@ -11,7 +11,8 @@
 # Frameworks (its load paths are @executable_path/../Frameworks) and its web UI
 # in Resources/assets (found from its working directory, bin/). Meteor.app is the
 # responsible process for the host, so Screen Recording, Accessibility and Local
-# Network are granted to Meteor once. Signed ad hoc unless MACOS_SIGN_IDENTITY is set.
+# Network are granted to Meteor once. Signed with MACOS_SIGN_IDENTITY, else a stable local
+# self-signed certificate, so those grants survive rebuilds.
 set -euo pipefail
 
 VIBEPOLLO="${1:?usage: $0 <Vibepollo checkout>}"
@@ -70,10 +71,60 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-IDENTITY="${MACOS_SIGN_IDENTITY:--}"
+# macOS grants Screen Recording and Accessibility to an app's signing identity. An ad hoc
+# signature's identity is its hash, so every rebuild would lose them. Without
+# MACOS_SIGN_IDENTITY, sign with a self-signed local certificate kept in its own keychain
+# file (not the login keychain). Delete DEV_SIGNING to remove it.
+SIGN=(codesign --force)
+if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
+  SIGN+=(--sign "$MACOS_SIGN_IDENTITY" --options runtime --timestamp)
+else
+  DEV_SIGNING="$HOME/Library/Application Support/Nightfall Meteor Dev Signing"
+  KEYCHAIN="$DEV_SIGNING/signing.keychain-db"
+  NAME="Nightfall Meteor Local Signing"
+  if [[ ! -f "$KEYCHAIN" ]]; then
+    mkdir -p "$DEV_SIGNING"; chmod 700 "$DEV_SIGNING"
+    /usr/bin/openssl rand -hex 24 > "$DEV_SIGNING/keychain-password"; chmod 600 "$DEV_SIGNING/keychain-password"
+    WORK="$(mktemp -d)"
+    cat > "$WORK/cert.conf" <<CONF
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = ext
+[dn]
+CN = $NAME
+[ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+CONF
+    /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$WORK/cert.conf" \
+      -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
+    /usr/bin/openssl pkcs12 -export -inkey "$WORK/key.pem" -in "$WORK/cert.pem" -out "$WORK/id.p12" -passout pass:local
+    security create-keychain -p "$(cat "$DEV_SIGNING/keychain-password")" "$KEYCHAIN"
+    security set-keychain-settings "$KEYCHAIN"   # no auto-lock
+    security import "$WORK/id.p12" -k "$KEYCHAIN" -P local -T /usr/bin/codesign >/dev/null
+    security set-key-partition-list -S apple-tool:,apple: -s -k "$(cat "$DEV_SIGNING/keychain-password")" "$KEYCHAIN" >/dev/null
+    rm -rf "$WORK"
+    echo "Made the local signing certificate in $DEV_SIGNING"
+  fi
+  security unlock-keychain -p "$(cat "$DEV_SIGNING/keychain-password")" "$KEYCHAIN"
+  HASH="$(security find-certificate -c "$NAME" -Z "$KEYCHAIN" | awk '/SHA-1 hash:/{print $3}')"
+  # codesign ignores an untrusted (self-signed) identity unless its keychain is in the user's
+  # search list. Add it for signing only, and always put the user's list back.
+  ORIGINAL_KEYCHAINS=()
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"; line="${line%\"}"; line="${line#\"}"
+    [[ -n "$line" ]] && ORIGINAL_KEYCHAINS+=("$line")
+  done < <(security list-keychains -d user)
+  restore_keychains() { security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}"; }
+  trap restore_keychains EXIT
+  security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN"
+  SIGN+=(--sign "$HASH")
+fi
 # Inside out: libraries, the host, then the app.
-find "$APP/Contents/Resources/host/Frameworks" -name '*.dylib' -exec codesign --force --sign "$IDENTITY" {} \;
-codesign --force --sign "$IDENTITY" "$APP/Contents/Resources/host/bin/meteor-vibepollo"
-codesign --force --sign "$IDENTITY" "$APP"
+find "$APP/Contents/Resources/host/Frameworks" -name '*.dylib' -exec "${SIGN[@]}" {} \;
+"${SIGN[@]}" "$APP/Contents/Resources/host/bin/meteor-vibepollo"
+"${SIGN[@]}" "$APP"
 codesign --verify --deep --strict "$APP"
 echo "Built $APP"
