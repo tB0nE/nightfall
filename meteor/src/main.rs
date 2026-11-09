@@ -514,7 +514,10 @@ async fn main() {
         vdd_installed: sunshine_vdd_installed(),
         #[cfg(target_os = "linux")]
         vdd_installed: host_view.supervisor.is_some() && host::virtual_monitors_supported(&config),
-        #[cfg(not(any(windows, target_os = "linux")))]
+        // The managed host makes virtual displays itself (CGVirtualDisplay): nothing to install.
+        #[cfg(target_os = "macos")]
+        vdd_installed: host_view.supervisor.is_some(),
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         vdd_installed: false,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));

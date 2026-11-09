@@ -85,7 +85,12 @@ impl Instance {
 
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
-        command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir).envs(self.env.iter().cloned());
+        command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir);
+        // The host streams the session's planned screens in one frame and makes its virtual
+        // displays. Before host_env, which can turn it off.
+        #[cfg(target_os = "macos")]
+        command.env("METEOR_MACOS_MULTIMONITOR", "1");
+        command.envs(self.env.iter().cloned());
         command.env("METEOR_CURSOR_SCALE_FILE", self.appdata().join("cursor-scale"));
         // The host writes the primary monitor's rectangle in its capture frame here, so depth can
         // cover that monitor alone when several are tiled into one frame.
