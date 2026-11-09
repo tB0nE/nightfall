@@ -63,25 +63,38 @@ Checked with an isolated `HOME`: Meteor starts the host, discovery advertises
 the managed host and its pairing endpoint, `serverinfo` answers through Meteor's
 proxy, and the host stops with Meteor. 161 Meteor tests pass on macOS.
 
+### Multiple monitors and virtual displays (host)
+
+`feat/macos`, same design as Windows `display_multi.h`, on with
+`METEOR_MACOS_MULTIMONITOR=1` (Meteor sets it): one plan per launch, each
+display captured with ScreenCaptureKit at its tile's size in NV12, composited
+into one IOSurface buffer for VideoToolbox. Input maps tiles back to displays in
+points (Retina-aware). Virtual displays come from `CGVirtualDisplay`, extend the
+desktop to the right without disturbing mirroring (`kCGConfigureForAppOnly`,
+restored by macOS when the host exits) and are released after the revert delay.
+`AVCaptureScreenInput` gets no frames from virtual displays, hence ScreenCaptureKit.
+
+Checked without a headset: `--meteor-display-layout` plans, and
+`--meteor-capture-probe 1 out.nv12` makes a virtual display and writes a 3840x1080
+composite of the real desktop beside the virtual one. Not yet checked: a real
+stream, input on a second screen, the depth crop.
+
+### Meteor.app
+
+`meteor/tools/build_macos_app.sh <Vibepollo checkout>` builds
+`meteor/target/macos/Nightfall Meteor.app` (84 MB): Meteor, the host in
+`Contents/Resources/host` with its dylibs and web UI, an Info.plist with the
+Local Network, Bonjour and Screen Recording keys, signed ad hoc. Checked: a new
+install finds and runs the bundled host, `serverinfo` and its web UI answer.
+
 ## To do
 
-1. **Multiple monitors (host).** Same design as Windows `display_multi.h`:
-   `attached_outputs()` from `CGGetActiveDisplayList`, `make_plan`/`place`,
-   one capture stream per display composited into the plan's fixed NV12 frame
-   for VideoToolbox, `frame_tiles` for input, the capture-region file for depth,
-   and the `/api/display-manifest` plan. Retina: frames are in pixels, CGEvent
-   input in points, so input mapping needs each display's scale.
-   Replace the deprecated `AVCaptureScreenInput` with ScreenCaptureKit.
-2. **Virtual monitors.** `CGVirtualDisplay` (private CoreGraphics API, as
-   DeskPad/BetterDisplay use) in-process: no driver install. Meteor's
-   `/meteor/virtual` and `vdd_installed` then apply on macOS.
+1. **Headset checks.** A desktop stream through Meteor.app, two screens and a
+   virtual one, input on each, depth crop. Single-display capture still uses
+   `AVCaptureScreenInput`; consider ScreenCaptureKit there too.
 3. **Menu-bar item.** `NSStatusItem` whose menu is rebuilt in `menuNeedsUpdate:`
    (as Windows rebuilds on open), with the Windows tray's entries.
-4. **Meteor.app.** Host inside `Contents/Resources/host`, its dylibs bundled.
-   Info.plist needs `NSLocalNetworkUsageDescription` and `NSBonjourServices`:
-   without Local Network permission Bonjour fails (-65570) and UDP video to the
-   headset is blocked. Screen Recording and Accessibility are granted to
-   Meteor.app, the responsible process for the host. Start at login (LaunchAgent).
+4. **Start at login** (LaunchAgent), and a `.dmg`.
 5. **Microphone.** Play into a virtual input (BlackHole), as Windows uses VB-CABLE.
 6. **Host audio.** Check whether Vibepollo's `av_audio.mm` system-audio capture
    (`NSAudioCaptureUsageDescription`) needs no loopback driver.
