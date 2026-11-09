@@ -154,7 +154,9 @@ pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result
     // On Windows a tray switch starts the replacement before this process has
     // released its proxy listeners. Reuse the saved base while that predecessor
     // exits; the discovery bind below still rejects a persistent conflict.
-    #[cfg(windows)]
+    // macOS likewise: the old host may still be letting go of its ports when the restarted
+    // Meteor looks, and meteor.lock already guarantees no other Meteor holds this base.
+    #[cfg(any(windows, target_os = "macos"))]
     if std::env::var_os("METEOR_RESTARTED").is_some() {
         if let Some(base) = state.base {
             return Ok(base);

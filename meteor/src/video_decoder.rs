@@ -441,7 +441,7 @@ mod tests {
     use super::*;
     #[test]
     fn explicit_decoder_never_silently_falls_back() {
-        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::D3d11, Backend::Software] {
+        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::D3d11, Backend::VideoToolbox, Backend::Software] {
             assert_eq!(
                 Settings {
                     backend,
@@ -450,6 +450,13 @@ mod tests {
                 .candidates(false),
                 vec![backend]
             );
+        }
+        // A Mac has no NVIDIA: Auto is always VideoToolbox, then software.
+        if cfg!(target_os = "macos") {
+            for prefer_portable in [false, true] {
+                assert_eq!(Settings::default().candidates(prefer_portable), vec![Backend::VideoToolbox, Backend::Software]);
+            }
+            return;
         }
         assert_eq!(
             Settings::default().candidates(true),
