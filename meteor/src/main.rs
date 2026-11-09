@@ -562,6 +562,12 @@ async fn main() {
         )
         .await;
     }
+    // The host captures and injects input on Meteor.app's behalf: ask for both up front,
+    // rather than letting the first stream fail with an encoder error in the headset.
+    #[cfg(target_os = "macos")]
+    if host_view.supervisor.is_some() {
+        desktop::permissions::request_missing();
+    }
     #[cfg(target_os = "macos")]
     let menu_bar = (!no_tray).then(|| tray_macos::Tray {
         status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(),

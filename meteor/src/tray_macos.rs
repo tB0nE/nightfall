@@ -51,6 +51,8 @@ enum Action {
     EdgeAlignment,
     ContourCleanup,
     Softening(usize),
+    OpenPane(&'static str),
+    Restart,
 }
 
 /// One line of the menu.
@@ -78,6 +80,7 @@ thread_local! {
 impl Tray {
     fn entries(&self) -> Vec<Entry> {
         let mut out = vec![Entry::Label(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION")))];
+        out.extend(permission_entries());
         let udp = self.stats.udp_flows.load(Ordering::Relaxed);
         let tcp = self.stats.tcp_connections.load(Ordering::Relaxed);
         out.push(Entry::Label(if udp > 0 {
@@ -151,6 +154,27 @@ impl Tray {
         }
         out
     }
+}
+
+/// Missing privacy permissions, first in the menu: without them streams fail.
+fn permission_entries() -> Vec<Entry> {
+    use crate::desktop::permissions;
+    let mut out = Vec::new();
+    if !permissions::screen_recording() {
+        out.push(Entry::Separator);
+        out.push(Entry::Label("⚠️ Screen Recording is off: streams can't start".into()));
+        out.push(item("Allow Screen Recording…", Action::OpenPane(permissions::SCREEN_RECORDING_PANE)));
+    }
+    if !permissions::accessibility() {
+        out.push(Entry::Separator);
+        out.push(Entry::Label("⚠️ Accessibility is off: no mouse or keyboard".into()));
+        out.push(item("Allow Accessibility…", Action::OpenPane(permissions::ACCESSIBILITY_PANE)));
+    }
+    if !out.is_empty() {
+        // macOS reports a new Screen Recording grant only to a relaunched process.
+        out.push(item("Restart Meteor after allowing", Action::Restart));
+    }
+    out
 }
 
 fn depth_entries(depth: &crate::depth::Depth) -> Vec<Entry> {
@@ -272,6 +296,8 @@ fn activate(tray: &Tray, action: Action) {
             }
         }),
         Action::Softening(level) => depth.into_iter().for_each(|d| d.set_edge_softening(level)),
+        Action::OpenPane(url) => open(url),
+        Action::Restart => crate::restart(),
     }
 }
 

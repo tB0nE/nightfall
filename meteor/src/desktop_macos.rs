@@ -59,6 +59,55 @@ pub fn open_web_url(url: String) {
     }
 }
 
+/// The privacy permissions the managed host needs. macOS grants them to the app the user
+/// launched (Meteor.app), which is the responsible process for the host it starts.
+pub mod permissions {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+        fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
+    }
+
+    /// Screen Recording: without it every capture fails and the headset reports that the
+    /// video encoder couldn't start. macOS only reports a new grant after a relaunch.
+    pub fn screen_recording() -> bool {
+        // SAFETY: no arguments; a read-only query.
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// Accessibility: needed for mouse and keyboard input from the headset.
+    pub fn accessibility() -> bool {
+        // SAFETY: no arguments; a read-only query.
+        unsafe { AXIsProcessTrusted() }
+    }
+
+    /// Asks for whatever is missing. macOS shows each prompt once per app identity and
+    /// lists the app in System Settings, where the user turns it on.
+    pub fn request_missing() {
+        if !screen_recording() {
+            log::warn!("Screen Recording isn't allowed for Nightfall Meteor; streams will fail until it is");
+            // SAFETY: no arguments.
+            unsafe { CGRequestScreenCaptureAccess() };
+        }
+        if !accessibility() {
+            log::warn!("Accessibility isn't allowed for Nightfall Meteor; the headset's mouse and keyboard won't work");
+            use objc2_foundation::{NSDictionary, NSNumber, NSString};
+            // kAXTrustedCheckOptionPrompt's value; NSDictionary is toll-free bridged to CFDictionary.
+            let options = NSDictionary::from_slices(&[&*NSString::from_str("AXTrustedCheckOptionPrompt")], &[&*NSNumber::new_bool(true)]);
+            // SAFETY: a valid CFDictionary for the call's duration.
+            unsafe { AXIsProcessTrustedWithOptions(objc2::rc::Retained::as_ptr(&options).cast()) };
+        }
+    }
+
+    pub const SCREEN_RECORDING_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+    pub const ACCESSIBILITY_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+}
+
 const AGENT_LABEL: &str = "io.github.tb0ne.nightfall.meteor";
 
 /// `~/Library/LaunchAgents/<label>.plist`, which starts Meteor at login.
