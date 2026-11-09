@@ -59,6 +59,56 @@ pub fn open_web_url(url: String) {
     }
 }
 
+const AGENT_LABEL: &str = "io.github.tb0ne.nightfall.meteor";
+
+/// `~/Library/LaunchAgents/<label>.plist`, which starts Meteor at login.
+fn agent_path() -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join("Library/LaunchAgents")
+        .join(format!("{AGENT_LABEL}.plist"))
+}
+
+pub fn autostart_enabled() -> bool {
+    agent_path().is_file()
+}
+
+/// Escapes text for a plist string.
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Turns Start at login on or off. The agent starts this executable (inside
+/// Meteor.app when installed) in the user's GUI session; nothing runs as root.
+pub fn set_autostart(on: bool) -> Result<(), String> {
+    let path = agent_path();
+    if !on {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("{}: {error}", path.display())),
+        };
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("can't find Meteor's executable: {e}"))?;
+    let plist = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n<dict>\n\
+         \t<key>Label</key><string>{AGENT_LABEL}</string>\n\
+         \t<key>ProgramArguments</key><array><string>{}</string></array>\n\
+         \t<key>RunAtLoad</key><true/>\n\
+         \t<key>LimitLoadToSessionType</key><string>Aqua</string>\n\
+         \t<key>ProcessType</key><string>Interactive</string>\n\
+         </dict>\n</plist>\n",
+        xml_escape(&exe.to_string_lossy())
+    );
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, plist).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The answer to a pairing dialog.
 #[derive(Debug, PartialEq)]
 enum Answer {
@@ -130,6 +180,11 @@ pub async fn host_pairing_popup(pairing: Arc<crate::host::pairing::Pairing>, req
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escapes_plist_text() {
+        assert_eq!(xml_escape("/Apps/A&B <x>.app"), "/Apps/A&amp;B &lt;x&gt;.app");
+    }
 
     #[test]
     fn reads_dialog_answers() {

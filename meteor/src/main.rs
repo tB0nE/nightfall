@@ -55,6 +55,8 @@ mod tensorrt;
 mod tray;
 #[cfg(windows)]
 mod tray_windows;
+#[cfg(target_os = "macos")]
+mod tray_macos;
 mod vda;
 mod vda_vulkan;
 mod vda_assets;
@@ -560,6 +562,11 @@ async fn main() {
         )
         .await;
     }
+    #[cfg(target_os = "macos")]
+    let menu_bar = (!no_tray).then(|| tray_macos::Tray {
+        status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(),
+        host: Arc::new(host_view), runtime: tokio::runtime::Handle::current(),
+    });
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(windows)]
@@ -580,20 +587,31 @@ async fn main() {
         }
     }
 
-    tokio::select! {
-        _ = wait_for_exit_signal() => shutdown.request(),
-        _ = shutdown.requested() => {},
-    }
-    #[cfg(target_os = "linux")]
-    if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
-    if let Some(task) = xr_service {
-        match task.await {
-            Ok(Ok(())) => {},
-            Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
-            Err(error) => log::error!("XR service task failed: {error}"),
+    let finish = async move {
+        tokio::select! {
+            _ = wait_for_exit_signal() => shutdown.request(),
+            _ = shutdown.requested() => {},
         }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
+        if let Some(task) = xr_service {
+            match task.await {
+                Ok(Ok(())) => {},
+                Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
+                Err(error) => log::error!("XR service task failed: {error}"),
+            }
+        }
+        finish_quit();
+    };
+    // AppKit's menu bar must own the main thread, which tokio::main's main future runs on:
+    // shutdown waits on a worker thread instead, and ends the process from there.
+    #[cfg(target_os = "macos")]
+    if let Some(tray) = menu_bar {
+        tokio::spawn(finish);
+        tokio::task::block_in_place(move || tray_macos::run(tray));
+        return;
     }
-    finish_quit();
+    finish.await;
 }
 
 /// Checks whether the SunshineVDD virtual display driver is installed by

@@ -87,16 +87,22 @@ stream, input on a second screen, the depth crop.
 Local Network, Bonjour and Screen Recording keys, signed ad hoc. Checked: a new
 install finds and runs the bundled host, `serverinfo` and its web UI answer.
 
+### Menu bar
+
+`tray_macos.rs`: an `NSStatusItem` (objc2) whose menu is rebuilt when it opens:
+status, pairing Approve/Reject, the host submenu, depth controls, microphone,
+Start at login (a LaunchAgent in `~/Library/LaunchAgents`), log/settings/models
+and Quit. AppKit takes the main thread; shutdown waits on a Tokio worker.
+Checked: the item appears, SIGTERM shuts down cleanly. Not yet clicked through.
+
 ## To do
 
 1. **Headset checks.** A desktop stream through Meteor.app, two screens and a
    virtual one, input on each, depth crop. Single-display capture still uses
    `AVCaptureScreenInput`; consider ScreenCaptureKit there too.
-3. **Menu-bar item.** `NSStatusItem` whose menu is rebuilt in `menuNeedsUpdate:`
-   (as Windows rebuilds on open), with the Windows tray's entries.
-4. **Start at login** (LaunchAgent), and a `.dmg`.
-5. **Microphone.** Play into a virtual input (BlackHole), as Windows uses VB-CABLE.
-6. **Host audio.** Check whether Vibepollo's `av_audio.mm` system-audio capture
+2. **A `.dmg`**, and signing/notarisation for distribution.
+3. **Microphone.** Play into a virtual input (BlackHole), as Windows uses VB-CABLE.
+4. **Host audio.** Check whether Vibepollo's `av_audio.mm` system-audio capture
    (`NSAudioCaptureUsageDescription`) needs no loopback driver.
-7. **Firewall.** `socketfilterfw` check for the application firewall.
-8. **Host depth.** ncnn's Vulkan backend through MoltenVK, VideoToolbox decode.
+5. **Firewall.** `socketfilterfw` check for the application firewall.
+6. **Host depth.** ncnn's Vulkan backend through MoltenVK, VideoToolbox decode.
