@@ -121,14 +121,15 @@ pub fn port_free((port, proto): (u16, Proto)) -> bool {
     }
 }
 
-/// Whether the managed host can make virtual monitors here: KDE Plasma on
-/// Wayland, with a host build that has them (a development `host_binary`, or a
-/// pinned release that does).
+/// Whether the managed host can make virtual monitors here: KDE Plasma or GNOME
+/// on Wayland, with a host build that has them (a development `host_binary`,
+/// or a pinned release that does).
 #[cfg(target_os = "linux")]
 pub fn virtual_monitors_supported(config: &crate::config::Config) -> bool {
     let wayland = std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") || std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let kde = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').any(|d| d.eq_ignore_ascii_case("KDE"));
-    wayland && kde && (config.host_binary.is_some() || install::RELEASE_HAS_VIRTUAL_MONITORS)
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let supported = desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE") || d.eq_ignore_ascii_case("GNOME"));
+    wayland && supported && (config.host_binary.is_some() || install::RELEASE_HAS_VIRTUAL_MONITORS)
 }
 
 /// The host to run: `host_binary` from meteor.toml, else the installed
