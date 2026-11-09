@@ -557,6 +557,28 @@ static const float VERTEX_DATA[] = {
 	1.0f, 1.0f, 1.0f, 1.0f
 };
 
+// Every shader samples the decoder as texture(u_texture, (u_texmatrix * uv).xy) with uv in
+// [0, 1]. Folding a crop into that matrix makes a screen sample only its part of the frame,
+// with no shader change. crop is (x, y, w, h) with a top-left origin; the coordinates before the
+// matrix have v = 0 at the bottom of the frame, so y flips.
+static void crop_tex_matrix(const float *p_matrix, const float *p_crop, float *r_out) {
+	const float c[16] = {
+		p_crop[2], 0.0f, 0.0f, 0.0f,
+		0.0f, p_crop[3], 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		p_crop[0], 1.0f - p_crop[1] - p_crop[3], 0.0f, 1.0f,
+	};
+	for (int col = 0; col < 4; col++) {
+		for (int row = 0; row < 4; row++) {
+			float sum = 0.0f;
+			for (int k = 0; k < 4; k++) {
+				sum += p_matrix[k * 4 + row] * c[col * 4 + k];
+			}
+			r_out[col * 4 + row] = sum;
+		}
+	}
+}
+
 #define OVERLAY_WIDTH 768
 #define OVERLAY_HEIGHT 512
 static const char *OVERLAY_FRAGMENT_SRC =
@@ -1183,6 +1205,11 @@ void NightfallXrRenderer::stop_stream() {
 	layer_frame_counter = 0;
 	eye_last_queried_frame[0] = 0;
 	eye_last_queried_frame[1] = 0;
+	{
+		// Built again from the last description once a stream renders.
+		std::lock_guard<std::mutex> lock(secondary_mutex);
+		pending_secondaries_changed = true;
+	}
 	// Meta's GLES runtime imports swapchain images into whichever EGL context
 	// is current when xrEnumerateSwapchainImages() runs. It requires that same
 	// context to be current when xrDestroySwapchain() releases those imports.
@@ -1217,6 +1244,10 @@ void NightfallXrRenderer::stop_stream() {
 			pfn_xrDestroySwapchain(swapchain);
 			swapchain = XR_NULL_HANDLE;
 		}
+		for (SecondaryScreen &screen : secondaries) {
+			destroy_secondary_swapchain(screen);
+		}
+		destroy_retiring_secondaries(true);
 
 		// xr_instance/xr_session/xr_space are Godot's, never destroyed here.
 		if (egl_context != EGL_NO_CONTEXT && egl_pbuffer != EGL_NO_SURFACE) {
@@ -2095,9 +2126,17 @@ void NightfallXrRenderer::maybe_render_pending_frame() {
 		glDeleteSync(reinterpret_cast<GLsync>(fence));
 	}
 	superseded_oes_fences.clear();
+	float crop[4];
+	{
+		std::lock_guard<std::mutex> lock(secondary_mutex);
+		memcpy(crop, primary_crop, sizeof(crop));
+	}
+	float primary_matrix[16];
+	crop_tex_matrix(pending_tex_matrix, crop, primary_matrix);
 	render_video_frame(pending_oes_texture_id, pending_depth_texture_id, pending_depth_guide_texture_id,
-			pending_tex_matrix, pending_separation, pending_convergence, occluding,
+			primary_matrix, pending_separation, pending_convergence, occluding,
 			pending_depth_process_stage);
+	render_secondary_screens(pending_oes_texture_id, pending_tex_matrix);
 	const auto t_egl_out_start = std::chrono::steady_clock::now();
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("maybe_render_pending_frame: restoring Godot's EGL context/surface failed: %d", eglGetError());
@@ -2175,9 +2214,15 @@ int32_t NightfallXrRenderer::_get_composition_layer_count() {
 		}
 		perform_pending_resize_rebuild();
 	}
+	apply_pending_secondaries();
 	maybe_render_pending_frame();
 	++layer_frame_counter;
 	int32_t count = ever_rendered ? 2 : 0;
+	if (ever_rendered) {
+		for (const SecondaryScreen &screen : secondaries) {
+			count += screen.rendered ? 1 : 0;
+		}
+	}
 	#ifdef NIGHTFALL_DEBUG
 	static int calls = 0;
 	++calls;
@@ -2283,6 +2328,15 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		return (uint64_t)(void *)quad;
 	}
 
+	int remaining = p_index - 2;
+	for (SecondaryScreen &screen : secondaries) {
+		if (!screen.rendered) {
+			continue;
+		}
+		if (remaining-- == 0) {
+			return secondary_layer(screen, space);
+		}
+	}
 	return 0;
 }
 
@@ -2291,8 +2345,346 @@ int32_t NightfallXrRenderer::_get_composition_layer_order(int32_t p_index) {
 	// though we run projectionless -- see openxr_api.cpp:2720's warning);
 	// a layer returning 0 risks being overwritten by it. Matches main.gd's
 	// old OpenXRCompositionLayerQuad convention (sort_order 1 for video).
-	return pending_sort_order + p_index;
+	if (p_index < 2) {
+		return pending_sort_order + p_index;
+	}
+	int remaining = p_index - 2;
+	for (const SecondaryScreen &screen : secondaries) {
+		if (screen.rendered && remaining-- == 0) {
+			return screen.sort_order;
+		}
+	}
+	return pending_sort_order;
 }
+
+void NightfallXrRenderer::set_primary_crop(PackedFloat32Array p_crop) {
+	std::lock_guard<std::mutex> lock(secondary_mutex);
+	if (p_crop.size() == 4 && p_crop[2] > 0.0f && p_crop[3] > 0.0f) {
+		for (int i = 0; i < 4; i++) {
+			primary_crop[i] = p_crop[i];
+		}
+	} else {
+		primary_crop[0] = primary_crop[1] = 0.0f;
+		primary_crop[2] = primary_crop[3] = 1.0f;
+	}
+}
+
+void NightfallXrRenderer::set_secondary_screens(Array p_screens) {
+	std::vector<SecondaryScreen> screens;
+	for (int i = 0; i < p_screens.size(); i++) {
+		Dictionary d = p_screens[i];
+		SecondaryScreen screen;
+		screen.transform = d.get("transform", Transform3D());
+		screen.width = std::max(0.01f, (float)d.get("width", 1.0f));
+		screen.height = std::max(0.01f, (float)d.get("height", 1.0f));
+		screen.curvature = d.get("curvature", 0);
+		screen.radius = std::max(0.01f, (float)d.get("radius", 1.0f));
+		screen.central_angle = std::max(0.001f, (float)d.get("central_angle", 0.5f));
+		screen.sort_order = d.get("sort_order", 1);
+		Vector2i pixels = d.get("pixels", Vector2i());
+		PackedFloat32Array crop = d.get("crop", PackedFloat32Array());
+		if (pixels.x <= 0 || pixels.y <= 0 || pixels.x > 8192 || pixels.y > 8192 || crop.size() != 4) {
+			continue;
+		}
+		screen.pixel_width = pixels.x;
+		screen.pixel_height = pixels.y;
+		for (int k = 0; k < 4; k++) {
+			screen.crop[k] = crop[k];
+		}
+		screens.push_back(screen);
+	}
+	std::lock_guard<std::mutex> lock(secondary_mutex);
+	pending_secondaries = std::move(screens);
+	pending_secondaries_changed = true;
+}
+
+int NightfallXrRenderer::get_secondary_screen_count() const {
+	int count = 0;
+	for (const SecondaryScreen &screen : secondaries) {
+		count += screen.rendered ? 1 : 0;
+	}
+	return count;
+}
+
+// Runs on the render thread from _get_composition_layer_count(). Geometry and crops apply at
+// once; swapchains are only made or retired when the screens or their pixel sizes change, under
+// our own EGL context (see the SecondaryScreen comment in the header).
+bool NightfallXrRenderer::apply_pending_secondaries() {
+	if (retiring_frames_remaining > 0) {
+		--retiring_frames_remaining;
+	}
+	bool have_update = false;
+	std::vector<SecondaryScreen> wanted;
+	{
+		std::lock_guard<std::mutex> lock(secondary_mutex);
+		if (pending_secondaries_changed && swapchain != XR_NULL_HANDLE) {
+			wanted = pending_secondaries;
+			pending_secondaries_changed = false;
+			have_update = true;
+		}
+	}
+	bool structural = false;
+	if (have_update) {
+		structural = wanted.size() != secondaries.size();
+		for (size_t i = 0; !structural && i < wanted.size(); i++) {
+			structural = secondaries[i].swapchain == XR_NULL_HANDLE ||
+					secondaries[i].pixel_width != wanted[i].pixel_width ||
+					secondaries[i].pixel_height != wanted[i].pixel_height;
+		}
+		if (!structural) {
+			for (size_t i = 0; i < wanted.size(); i++) {
+				SecondaryScreen &screen = secondaries[i];
+				memcpy(screen.crop, wanted[i].crop, sizeof(screen.crop));
+				screen.transform = wanted[i].transform;
+				screen.width = wanted[i].width;
+				screen.height = wanted[i].height;
+				screen.curvature = wanted[i].curvature;
+				screen.radius = wanted[i].radius;
+				screen.central_angle = wanted[i].central_angle;
+				screen.sort_order = wanted[i].sort_order;
+			}
+		}
+	}
+	const bool retire_now = !retiring_secondaries.empty() && retiring_frames_remaining == 0;
+	if (!structural && !retire_now) {
+		return have_update;
+	}
+	EGLContext restore_context = eglGetCurrentContext();
+	EGLSurface restore_draw = eglGetCurrentSurface(EGL_DRAW);
+	EGLSurface restore_read = eglGetCurrentSurface(EGL_READ);
+	if (restore_context == EGL_NO_CONTEXT || egl_context == EGL_NO_CONTEXT ||
+			!eglMakeCurrent(egl_display, egl_pbuffer, egl_pbuffer, egl_context)) {
+		if (structural) {
+			std::lock_guard<std::mutex> lock(secondary_mutex);
+			pending_secondaries_changed = true;
+		}
+		return false;
+	}
+	if (structural) {
+		// Keep a screen's swapchain when the screen in its place has the same size; the rest
+		// stop being submitted now and are destroyed a few frames later.
+		std::vector<SecondaryScreen> next = wanted;
+		for (size_t i = 0; i < next.size(); i++) {
+			if (i < secondaries.size() && secondaries[i].swapchain != XR_NULL_HANDLE &&
+					secondaries[i].pixel_width == next[i].pixel_width &&
+					secondaries[i].pixel_height == next[i].pixel_height) {
+				next[i].swapchain = secondaries[i].swapchain;
+				next[i].images = secondaries[i].images;
+				next[i].image_count = secondaries[i].image_count;
+				next[i].rendered = secondaries[i].rendered;
+				secondaries[i].swapchain = XR_NULL_HANDLE;
+				secondaries[i].images = nullptr;
+				secondaries[i].image_count = 0;
+			} else if (!create_secondary_swapchain(next[i])) {
+				XR_LOGE("nightfall-xr secondary screen %d (%dx%d): swapchain creation failed",
+						(int)i, next[i].pixel_width, next[i].pixel_height);
+			}
+		}
+		for (SecondaryScreen &old : secondaries) {
+			if (old.swapchain != XR_NULL_HANDLE) {
+				old.rendered = false;
+				retiring_secondaries.push_back(old);
+				old.swapchain = XR_NULL_HANDLE;
+				old.images = nullptr;
+				old.image_count = 0;
+			}
+		}
+		if (!retiring_secondaries.empty()) {
+			retiring_frames_remaining = RESIZE_DRAIN_FRAME_COUNT;
+		}
+		secondaries = std::move(next);
+		XR_LOG("nightfall-xr %d secondary screen(s)", (int)secondaries.size());
+	} else {
+		destroy_retiring_secondaries(false);
+	}
+	eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context);
+	return true;
+}
+
+bool NightfallXrRenderer::create_secondary_swapchain(SecondaryScreen &p_screen) {
+	XrSwapchainCreateInfo info = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+	info.format = swapchain_format;
+	info.sampleCount = 1;
+	info.width = p_screen.pixel_width;
+	info.height = p_screen.pixel_height;
+	info.faceCount = 1;
+	info.arraySize = 1;
+	info.mipCount = 1;
+	if (!check_xr(pfn_xrCreateSwapchain(xr_session, &info, &p_screen.swapchain), "xrCreateSwapchain (secondary)")) {
+		p_screen.swapchain = XR_NULL_HANDLE;
+		return false;
+	}
+	pfn_xrEnumerateSwapchainImages(p_screen.swapchain, 0, &p_screen.image_count, nullptr);
+	p_screen.images = (XrSwapchainImageOpenGLESKHR *)calloc(p_screen.image_count, sizeof(XrSwapchainImageOpenGLESKHR));
+	for (uint32_t i = 0; i < p_screen.image_count; i++) {
+		p_screen.images[i].type = XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR;
+	}
+	if (!check_xr(pfn_xrEnumerateSwapchainImages(p_screen.swapchain, p_screen.image_count, &p_screen.image_count,
+						  (XrSwapchainImageBaseHeader *)p_screen.images),
+				"enumerate secondary swapchain images")) {
+		destroy_secondary_swapchain(p_screen);
+		return false;
+	}
+	p_screen.rendered = false;
+	return true;
+}
+
+void NightfallXrRenderer::destroy_secondary_swapchain(SecondaryScreen &p_screen) {
+	if (p_screen.swapchain != XR_NULL_HANDLE) {
+		pfn_xrDestroySwapchain(p_screen.swapchain);
+		p_screen.swapchain = XR_NULL_HANDLE;
+	}
+	if (p_screen.images != nullptr) {
+		::free(p_screen.images);
+		p_screen.images = nullptr;
+	}
+	p_screen.image_count = 0;
+	p_screen.rendered = false;
+}
+
+// Our EGL context must be current.
+void NightfallXrRenderer::destroy_retiring_secondaries(bool p_all) {
+	(void)p_all;
+	for (SecondaryScreen &screen : retiring_secondaries) {
+		destroy_secondary_swapchain(screen);
+	}
+	retiring_secondaries.clear();
+	retiring_frames_remaining = 0;
+}
+
+// One mono draw per screen, straight from the decoder's texture with that screen's crop. Uses
+// the primary's program family (plain, Picture or HDR) with depth and stereo off, so grading and
+// tonemapping match the primary. Our EGL context is current and the OES fence already waited on.
+void NightfallXrRenderer::render_secondary_screens(uint32_t p_oes_texture_id, const float *p_tex_matrix) {
+	if (secondaries.empty() || p_oes_texture_id == 0) {
+		return;
+	}
+	const bool use_hdr = pending_color_transfer_type == 1 || pending_color_transfer_type == 2;
+	const bool use_picture = std::fabs(pending_brightness) > 0.0001f ||
+			std::fabs(pending_contrast - 1.0f) > 0.0001f ||
+			std::fabs(pending_gamma - 1.0f) > 0.0001f;
+	const GLuint program = use_hdr ? hdr_warp_program : (use_picture ? picture_warp_program : warp_program);
+	WarpUniforms &uniforms = use_hdr ? hdr_warp_uniforms : (use_picture ? picture_warp_uniforms : warp_uniforms);
+	if (program == 0) {
+		return;
+	}
+	glUseProgram(program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_EXTERNAL_OES, p_oes_texture_id);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	if (use_hdr) {
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(GL_TEXTURE_2D, hdr_lut_texture);
+		glUniform1i(uniforms.color_transfer, pending_color_transfer_type);
+	}
+	if (use_hdr || use_picture) {
+		glUniform1f(uniforms.brightness, pending_brightness);
+		glUniform1f(uniforms.contrast, pending_contrast);
+		glUniform1f(uniforms.gamma, pending_gamma);
+	}
+	glUniform1f(uniforms.debug_solid, debug_solid_color ? 1.0f : 0.0f);
+	glUniform1f(uniforms.occlusion, 0.0f);
+	glUniform1f(uniforms.convergence, 0.5f);
+	glUniform1f(uniforms.disp_texels, 0.0f);
+	glUniform1f(uniforms.low_res_width, 1.0f);
+	glUniform1i(uniforms.stereo_mode, 0);
+	glUniform1i(uniforms.depth_process_stage, 0);
+	glUniform1f(uniforms.disparity, 0.0f);
+	glUniform1f(uniforms.eye_index, 0.0f);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+	glEnableVertexAttribArray(1);
+	glBindFramebuffer(GL_FRAMEBUFFER, warp_fbo);
+	if (srgb_write_control) {
+		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
+	}
+	for (SecondaryScreen &screen : secondaries) {
+		if (screen.swapchain == XR_NULL_HANDLE) {
+			continue;
+		}
+		uint32_t image_index = 0;
+		XrSwapchainImageAcquireInfo acquire_info = { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+		if (!check_xr(pfn_xrAcquireSwapchainImage(screen.swapchain, &acquire_info, &image_index), "acquire secondary image")) {
+			continue;
+		}
+		XrSwapchainImageWaitInfo wait_info = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+		wait_info.timeout = XR_INFINITE_DURATION;
+		pfn_xrWaitSwapchainImage(screen.swapchain, &wait_info);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screen.images[image_index].image, 0);
+		float matrix[16];
+		crop_tex_matrix(p_tex_matrix, screen.crop, matrix);
+		glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, matrix);
+		glUniform1f(uniforms.frame_width, (float)screen.pixel_width);
+		glViewport(0, 0, screen.pixel_width, screen.pixel_height);
+		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+		XrSwapchainImageReleaseInfo release_info = { XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+		pfn_xrReleaseSwapchainImage(screen.swapchain, &release_info);
+		screen.rendered = true;
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace p_space) {
+	Transform3D xf = p_screen.transform;
+	XRServer *xr_server = XRServer::get_singleton();
+	if (xr_server != nullptr) {
+		xf = xr_server->get_reference_frame().inverse() * xf;
+	}
+	Quaternion q(xf.basis.orthonormalized());
+	if (q.length_squared() < 0.000001f) {
+		q = Quaternion();
+	}
+	XrPosef pose{};
+	pose.orientation = { (float)q.x, (float)q.y, (float)q.z, (float)q.w };
+	pose.position = { (float)xf.origin.x, (float)xf.origin.y, (float)xf.origin.z };
+
+	XrSwapchainSubImage sub_image{};
+	sub_image.swapchain = p_screen.swapchain;
+	sub_image.imageRect.offset = { 0, 0 };
+	sub_image.imageRect.extent = { p_screen.pixel_width, p_screen.pixel_height };
+	sub_image.imageArrayIndex = 0;
+
+	const void *layer_next = nullptr;
+	if (compositor_sharpening_supported && pending_compositor_sharpening > 0) {
+		memset(&p_screen.settings, 0, sizeof(p_screen.settings));
+		p_screen.settings.type = XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB;
+		p_screen.settings.layerFlags = pending_compositor_sharpening == 2
+				? XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB
+				: XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
+		layer_next = &p_screen.settings;
+	}
+	if (p_screen.curvature > 0 && cylinder_supported) {
+		XrCompositionLayerCylinderKHR *cylinder = &p_screen.cylinder;
+		memset(cylinder, 0, sizeof(*cylinder));
+		cylinder->type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
+		cylinder->next = layer_next;
+		cylinder->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+		cylinder->subImage = sub_image;
+		cylinder->space = p_space;
+		cylinder->pose = pose;
+		cylinder->radius = p_screen.radius;
+		cylinder->centralAngle = p_screen.central_angle;
+		cylinder->aspectRatio = p_screen.width / p_screen.height;
+		return (uint64_t)(void *)cylinder;
+	}
+	XrCompositionLayerQuad *quad = &p_screen.quad;
+	memset(quad, 0, sizeof(*quad));
+	quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+	quad->next = layer_next;
+	quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	quad->subImage = sub_image;
+	quad->space = p_space;
+	quad->pose = pose;
+	quad->size.width = p_screen.width;
+	quad->size.height = p_screen.height;
+	return (uint64_t)(void *)quad;
+}
+
 
 void NightfallXrRenderer::upload_overlay(PackedByteArray p_pixels, int p_width, int p_height) {
 	if (overlay_texture == 0 || p_width != OVERLAY_WIDTH || p_height != OVERLAY_HEIGHT) {

@@ -60,6 +60,9 @@ public:
 #endif
     bool supports_native_depth_capture();
     void request_native_depth_capture(int width, int height);
+    // The part of the frame on-device depth sees: (x, y, w, h) in [0, 1], top-left origin; empty
+    // for the whole frame. With several screens in one frame, depth covers the primary alone.
+    void set_native_depth_capture_crop(PackedFloat32Array crop);
     PackedByteArray consume_native_depth_capture();
     void update_colorspace(int colorspace, int color_range, int color_transfer = 0);
     // Protocol-level transfer metadata for native Android decoder paths which
@@ -264,6 +267,8 @@ private:
     unsigned int gles_depth_fbo_ = 0;
     unsigned int gles_depth_pbos_[GLES_DEPTH_PBO_COUNT]{};
     void *gles_depth_fences_[GLES_DEPTH_PBO_COUNT]{};
+    std::mutex gles_depth_crop_mutex_;
+    float gles_depth_crop_[4] = {0.0f, 0.0f, 1.0f, 1.0f};
     int gles_depth_capture_width_ = 0;
     int gles_depth_capture_height_ = 0;
     int gles_depth_next_pbo_ = 0;
