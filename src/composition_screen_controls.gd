@@ -42,8 +42,10 @@ func setup(scene_root: Node, xr_origin: Node3D, shortcuts: ScreenShortcutBar,
 	if menu:
 		menu.attach(screen, screen.comp_corner_viewport)
 
+## A screen's controls layer is submitted only while it is pointed at (pointed_screen) or its
+## controls are revealed: the headset composites at most 16 layers a frame.
 func update(screens: Array, active: bool, grab_bars_enabled: bool,
-		corners_enabled: bool, revealed_screen: VRScreen) -> void:
+		corners_enabled: bool, revealed_screen: VRScreen, pointed_screen: VRScreen = null) -> void:
 	for screen in screens:
 		var provider = _scene_root.screen_sources.browser_for_screen(screen) if _scene_root else null
 		# stop() owns the three-frame retirement window. Never submit its
@@ -53,9 +55,10 @@ func update(screens: Array, active: bool, grab_bars_enabled: bool,
 			continue
 		if _scene_root and _scene_root.comp:
 			_scene_root.comp.refresh_browser_screen(screen)
+		var pointed: bool = screen == revealed_screen or screen == pointed_screen
 		_update_corners(
 			screen,
-			active and (corners_enabled or grab_bars_enabled),
+			active and pointed and (corners_enabled or grab_bars_enabled),
 			screen == revealed_screen and corners_enabled,
 			grab_bars_enabled)
 
