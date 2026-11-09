@@ -305,7 +305,9 @@ func update_stereo_shader():
 	update_3d_btn_state()
 
 func update_3d_btn_state():
-	var disabled = main.settings.host.sbs_mode > 0 or main.screens.size() > 1
+	# With several screens AI-3D still runs, on the primary only (see
+	# SettingsController.toggle_ai_3d_enabled()), so it stays adjustable.
+	var disabled = main.settings.host.sbs_mode > 0
 	for enable_btn in [main._ui_3d_speed_btn, main._ui_3d_enable_btn]:
 		if enable_btn:
 			enable_btn.disabled = disabled

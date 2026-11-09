@@ -392,6 +392,8 @@ func toggle_ai_3d_enabled():
 	_save_setting(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_3d_btn_state()
+	if main.settings.host.ai_3d_speed != 0 and main.screens.size() > 1:
+		main._ui_status_label.text = "AI 3D applies to the primary screen only"
 	_schedule_ai_3d_commit()
 
 # AI 3D tab's "3D Mode" control (2026-08-28) - cycles Auto/Fast/Standard
@@ -2074,6 +2076,25 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# x-position first so insertion order matches physical left-to-right order.
 	var ordered_monitors := new_layout.enabled_monitors()
 	ordered_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
+	# Free the slots of screens this layout drops before adding any, so a layout with as many
+	# screens as MAX_SCREENS allows fits (e.g. one physical + three virtual to four virtual).
+	for s in main.screens.duplicate():
+		if s != main.primary_screen and not wanted_ids.has(s.monitor_id) and not main.screen_sources.is_browser_screen(s):
+			main.remove_screen(s.monitor_id)
+	# The outgoing primary can only go once another screen is primary. When the new primary
+	# already has a screen, hand over now so the old one's slot is free for the screens added below.
+	if old_primary_being_replaced and not main.screen_sources.is_browser_screen(old_primary_being_replaced):
+		var primary_spec = new_layout.get_primary()
+		for s in main.screens:
+			if primary_spec and s != old_primary_being_replaced and s.monitor_id == primary_spec.id:
+				s.global_transform = old_primary_being_replaced.global_transform
+				main.set_primary_screen(s)
+				if main.get("screen_tab_strip") != null and s.comp_corner_viewport:
+					main.screen_tab_strip.attach(s, s.comp_corner_viewport)
+				apply_stereo()
+				main.remove_screen(old_primary_being_replaced.monitor_id)
+				old_primary_being_replaced = null
+				break
 	for m in ordered_monitors:
 		var existing: VRScreen = null
 		for s in main.screens:
@@ -2204,14 +2225,18 @@ func sync_staged_from_current_layout():
 # Fewest physical monitors the stream may have: none when the host can make virtual ones
 # (the stream then runs on virtual screens alone), else one.
 func min_physical_count() -> int:
-	return 0 if main.settings.host.virtual_display_installed and main.settings.host.virtual_display_max_count > 0 else 1
+	var settings = main.get("settings")
+	if settings == null:
+		return 1
+	return 0 if settings.host.virtual_display_installed and settings.host.virtual_display_max_count > 0 else 1
 
 func stage_monitor_count(n: int):
 	main._staged_physical_count = clampi(n, min_physical_count(), maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
 	# At least one screen has to remain.
 	if main._staged_physical_count == 0 and main._staged_virtual_count == 0:
 		main._staged_virtual_count = 1
-	main._staged_virtual_count = clampi(main._staged_virtual_count, 1 if main._staged_physical_count == 0 else 0, maxi(1, monitor_screen_capacity() - main._staged_physical_count))
+	var low := 1 if main._staged_physical_count == 0 else 0
+	main._staged_virtual_count = clampi(main._staged_virtual_count, low, maxi(low, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 	main._log("[LAYOUT] stage_monitor_count(%d): real_monitor_count=%d -> staged_physical=%d" % [n, _real_monitor_count(), main._staged_physical_count])
 
@@ -2502,6 +2527,7 @@ func apply_staged_monitor_config():
 		_apply_preset_positions_to_screens()
 	if virtual_changed and vdd_available:
 		var vcount = main._staged_virtual_count
+		var previous_count = _last_applied_virtual_count
 		_last_applied_virtual_count = vcount
 		main.settings.host.virtual_display_count = vcount
 		main.settings.host.virtual_only = main._staged_physical_count == 0 and vcount > 0
@@ -2509,6 +2535,9 @@ func apply_staged_monitor_config():
 		main.stream_manager.post_meteor_virtual(vcount, func(ok: bool, reply: Dictionary) -> void:
 			if not ok:
 				main._log("[METEOR] POST /meteor/virtual failed")
+				# Not applied: the same Apply has to try again rather than look like no change.
+				if _last_applied_virtual_count == vcount:
+					_last_applied_virtual_count = previous_count
 				# The restart held back above still has to happen for the monitors that changed.
 				if real_changed and need_restart:
 					_schedule_stream_restart()

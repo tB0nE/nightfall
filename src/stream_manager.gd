@@ -95,6 +95,18 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		_b().set_local_capture_mode(false)
 
+	# Ask Meteor first: what it offers (virtual monitors among it) decides which
+	# screens this launch requests, and the plan and launch options below read that.
+	_meteor = {}
+	if not local_capture_mode and not _meteor_bypass:
+		_meteor = await _probe_meteor(host_id)
+		# Meteor answered this host before: one slow reply (the app busy resizing for a
+		# large frame) shouldn't send the session past it.
+		if _meteor.is_empty() and main.settings.host.virtual_display_installed:
+			main._log("[METEOR] No answer from Meteor; asking once more")
+			_meteor = await _probe_meteor(host_id)
+	_meteor_bypass = false
+
 	# Meteor's host plans the session's screens before launch. Ask which frame
 	# these screens give and request exactly that size, so the stream never
 	# starts squeezed into the previous layout's shape.
@@ -181,10 +193,6 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 		str(screens), str(main.layout.source) if main.layout else "null",
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
 	options.merge(screens)
-	_meteor = {}
-	if not local_capture_mode and not _meteor_bypass:
-		_meteor = await _probe_meteor(host_id)
-	_meteor_bypass = false
 	if not _meteor.is_empty():
 		options[MeteorClient.HTTPS_PORT_OPTION] = int(_meteor["ports"]["https"])
 	main._ui_status_label.text = "Launching stream..."
@@ -298,6 +306,12 @@ func meteor_https_port() -> int:
 	return int(_meteor.get("ports", {}).get("https", 0))
 
 func post_meteor_virtual(count: int, callback: Callable) -> void:
+	# A launch whose Meteor probe timed out (e.g. while the app resized for a large frame)
+	# streams straight to the host; ask Meteor again before giving up on it.
+	if (_meteor.is_empty() or _meteor_address.is_empty()) and _current_host_id >= 0:
+		var info := await _probe_meteor(_current_host_id)
+		if not info.is_empty():
+			_meteor = info
 	if _meteor.is_empty() or _meteor_address.is_empty():
 		callback.call(false, {})
 		return
