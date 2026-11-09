@@ -15,7 +15,7 @@
 mod detect;
 mod install;
 pub(crate) mod instance;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod input;
 pub mod pairing;
 #[cfg(windows)]
@@ -25,7 +25,7 @@ mod supervisor;
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod setup;
 pub mod view;
 
@@ -137,7 +137,11 @@ pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
     config.host_binary.clone().or_else(|| RELEASE.as_ref().and_then(Install::binary)).or_else(|| {
         #[cfg(windows)]
         { let path=std::env::current_exe().ok()?.parent()?.join("runtime/host/sunshine.exe");path.is_file().then_some(path) }
-        #[cfg(not(windows))]
+        // Meteor.app/Contents/MacOS/nightfall-meteor ships the host in
+        // Contents/Resources/host.
+        #[cfg(target_os = "macos")]
+        { let path=std::env::current_exe().ok()?.parent()?.parent()?.join("Resources/host/bin/meteor-vibepollo");path.is_file().then_some(path) }
+        #[cfg(target_os = "linux")]
         { None }
     })
 }

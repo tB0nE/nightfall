@@ -150,6 +150,9 @@ pub fn cache_dir() -> PathBuf {
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default().join("Nightfall Meteor");
     }
+    if cfg!(target_os = "macos") {
+        return home().join("Library/Caches/Nightfall Meteor");
+    }
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
@@ -162,6 +165,11 @@ pub fn data_dir() -> PathBuf {
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_default().join("Nightfall Meteor");
     }
+    // A folder of its own inside the config folder: both hold a `host`
+    // folder (the host's live config there, its releases here).
+    if cfg!(target_os = "macos") {
+        return config_dir().join("Data");
+    }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
@@ -173,10 +181,17 @@ pub fn default_models_dir() -> PathBuf {
     data_dir().join("models")
 }
 
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
 pub fn config_dir() -> PathBuf {
     if cfg!(windows) {
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
         return appdata.join("Nightfall Meteor");
+    }
+    if cfg!(target_os = "macos") {
+        return home().join("Library/Application Support/Nightfall Meteor");
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -236,7 +251,10 @@ fn sunshine_config_candidates() -> Vec<PathBuf> {
             paths.push(PathBuf::from(format!(r"C:\Program Files\{dir}\config\sunshine.conf")));
         }
     } else {
-        let config = config_dir().parent().map(PathBuf::from).unwrap_or_default();
+        // Sunshine and its forks use the XDG folder on macOS too.
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".config"));
         for dir in ["vibepollo", "vibeshine", "apollo", "sunshine"] {
             paths.push(config.join(dir).join("sunshine.conf"));
         }

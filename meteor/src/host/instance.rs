@@ -182,7 +182,17 @@ pub(crate) fn render_config(existing: &str, always: &[(&str, String)], initial: 
 pub fn host_name() -> String {
     #[cfg(windows)]
     let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
-    #[cfg(not(windows))]
+    // The name in System Settings > General > About, as the headset should show it.
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Mac".into());
+    #[cfg(target_os = "linux")]
     let name = std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_string())

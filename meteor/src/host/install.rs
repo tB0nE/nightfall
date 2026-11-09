@@ -24,9 +24,11 @@ pub struct Release {
 
 /// Portable host preview, built from the matching source companion. Windows
 /// has no download: its installer ships the host (see `binary` in mod.rs).
-#[cfg(windows)]
+/// Nor has macOS: Meteor.app carries it, so Screen Recording and
+/// Accessibility are granted to Meteor once, for both.
+#[cfg(not(target_os = "linux"))]
 pub const RELEASE: Option<Release> = None;
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub const RELEASE: Option<Release> = Some(Release {
     version: "0.1.0-preview.3",
     url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-host-v0.1.0-preview.3/Meteor-Vibepollo-0.1.0-preview.3-linux-x86_64.tar.zst",
@@ -37,7 +39,7 @@ pub const RELEASE: Option<Release> = Some(Release {
 
 /// Whether the pinned Linux host makes KDE virtual monitors (Meteor-Vibepollo
 /// 0.1.0-preview.4 and later). Turn on with the pin that brings them.
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 pub const RELEASE_HAS_VIRTUAL_MONITORS: bool = false;
 
 pub struct Install;
