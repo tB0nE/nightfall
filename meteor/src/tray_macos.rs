@@ -51,8 +51,7 @@ enum Action {
     EdgeAlignment,
     ContourCleanup,
     Softening(usize),
-    OpenPane(&'static str),
-    Restart,
+    Setup,
 }
 
 /// One line of the menu.
@@ -108,9 +107,13 @@ impl Tray {
                 out.push(Entry::Label(format!("Microphone: {} (BlackHole)", mic.status())));
                 out.push(check("Mute microphone", Action::MuteMic, mic.muted.load(Ordering::Relaxed)));
             }
-            None => out.push(Entry::Label("Microphone: install BlackHole 2ch, then restart Meteor".into())),
+            None => {
+                out.push(Entry::Label("Microphone: needs BlackHole".into()));
+                out.push(item("Install in Setup…", Action::Setup));
+            }
         }
         out.push(Entry::Separator);
+        out.push(item("Setup…", Action::Setup));
         out.push(check("Start at login", Action::Autostart, crate::desktop::autostart_enabled()));
         out.push(item("Open log", Action::OpenLog));
         out.push(item("Open settings", Action::OpenSettings));
@@ -156,25 +159,24 @@ impl Tray {
     }
 }
 
-/// Missing privacy permissions, first in the menu: without them streams fail.
+/// What's missing for streaming, first in the menu, pointing to Setup.
 fn permission_entries() -> Vec<Entry> {
     use crate::desktop::permissions;
-    let mut out = Vec::new();
+    let mut missing = Vec::new();
     if !permissions::screen_recording() {
-        out.push(Entry::Separator);
-        out.push(Entry::Label("⚠️ Screen Recording is off: streams can't start".into()));
-        out.push(item("Allow Screen Recording…", Action::OpenPane(permissions::SCREEN_RECORDING_PANE)));
+        missing.push("Screen Recording");
     }
     if !permissions::accessibility() {
-        out.push(Entry::Separator);
-        out.push(Entry::Label("⚠️ Accessibility is off: no mouse or keyboard".into()));
-        out.push(item("Allow Accessibility…", Action::OpenPane(permissions::ACCESSIBILITY_PANE)));
+        missing.push("Accessibility");
     }
-    if !out.is_empty() {
-        // macOS reports a new Screen Recording grant only to a relaunched process.
-        out.push(item("Restart Meteor after allowing", Action::Restart));
+    if missing.is_empty() {
+        return Vec::new();
     }
-    out
+    vec![
+        Entry::Separator,
+        Entry::Label(format!("⚠️ Needs {}", missing.join(" and "))),
+        item("Open Setup…", Action::Setup),
+    ]
 }
 
 fn depth_entries(depth: &crate::depth::Depth) -> Vec<Entry> {
@@ -296,8 +298,11 @@ fn activate(tray: &Tray, action: Action) {
             }
         }),
         Action::Softening(level) => depth.into_iter().for_each(|d| d.set_edge_softening(level)),
-        Action::OpenPane(url) => open(url),
-        Action::Restart => crate::restart(),
+        // The window is a child process started from the Tokio runtime.
+        Action::Setup => {
+            let _guard = tray.runtime.enter();
+            crate::setup_window::open();
+        }
     }
 }
 

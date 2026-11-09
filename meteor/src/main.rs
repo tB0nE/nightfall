@@ -57,6 +57,9 @@ mod tray;
 mod tray_windows;
 #[cfg(target_os = "macos")]
 mod tray_macos;
+#[cfg(target_os = "macos")]
+#[path = "setup_window_macos.rs"]
+mod setup_window;
 mod vda;
 mod vda_vulkan;
 mod vda_assets;
@@ -102,9 +105,13 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run());
+    }
+    #[cfg(target_os = "macos")]
+    if args.get(1).is_some_and(|arg| arg == "--setup-check") {
+        std::process::exit(setup_window::check_command());
     }
     #[cfg(windows)]
     if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
@@ -570,7 +577,10 @@ async fn main() {
     // rather than letting the first stream fail with an encoder error in the headset.
     #[cfg(target_os = "macos")]
     if host_view.supervisor.is_some() {
-        desktop::permissions::request_missing();
+        desktop::permissions::log_missing();
+        if !no_tray {
+            setup_window::offer();
+        }
     }
     #[cfg(target_os = "macos")]
     let menu_bar = (!no_tray).then(|| tray_macos::Tray {

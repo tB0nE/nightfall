@@ -86,16 +86,27 @@ pub mod permissions {
         unsafe { AXIsProcessTrusted() }
     }
 
-    /// Asks for whatever is missing. macOS shows each prompt once per app identity and
-    /// lists the app in System Settings, where the user turns it on.
-    pub fn request_missing() {
+    /// Logs what's missing; the Setup window asks for it.
+    pub fn log_missing() {
         if !screen_recording() {
             log::warn!("Screen Recording isn't allowed for Nightfall Meteor; streams will fail until it is");
-            // SAFETY: no arguments.
-            unsafe { CGRequestScreenCaptureAccess() };
         }
         if !accessibility() {
             log::warn!("Accessibility isn't allowed for Nightfall Meteor; the headset's mouse and keyboard won't work");
+        }
+    }
+
+    /// macOS shows each prompt once per app identity and lists the app in System Settings,
+    /// where the user turns it on.
+    pub fn request_screen_recording() {
+        if !screen_recording() {
+            // SAFETY: no arguments.
+            unsafe { CGRequestScreenCaptureAccess() };
+        }
+    }
+
+    pub fn request_accessibility() {
+        if !accessibility() {
             use objc2_foundation::{NSDictionary, NSNumber, NSString};
             // kAXTrustedCheckOptionPrompt's value; NSDictionary is toll-free bridged to CFDictionary.
             let options = NSDictionary::from_slices(&[&*NSString::from_str("AXTrustedCheckOptionPrompt")], &[&*NSNumber::new_bool(true)]);

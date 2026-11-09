@@ -442,7 +442,7 @@ impl Download {
     }
 }
 
-fn verified_file(path: &Path, expected: &str, bytes: u64) -> bool {
+pub(crate) fn verified_file(path: &Path, expected: &str, bytes: u64) -> bool {
     let Ok(mut file)=std::fs::File::open(path) else { return false; };
     if file.metadata().map(|metadata|metadata.len()).ok()!=Some(bytes) { return false; }
     let mut hash=Sha256::new();

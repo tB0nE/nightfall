@@ -61,6 +61,8 @@ objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 # The microphone (src/mic.rs) plays into BlackHole through CoreAudio.
 cpal = "0.16"
+# The Setup window (src/setup_window_macos.rs), the same egui as Linux's, with its own fonts.
+eframe = { version = "=0.33.3", default-features = false, features = ["glow", "default_fonts"] }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.25.0"

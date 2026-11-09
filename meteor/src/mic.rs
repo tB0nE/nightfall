@@ -790,21 +790,30 @@ impl VirtualMic {
     }
 }
 
-/// Opens BlackHole's output at 48 kHz and plays the queue into every channel; silence when empty.
+/// The loopback device the microphone plays into (BlackHole, or METEOR_MIC_DEVICE), by name only:
+/// opening devices to probe them can hang on an unresponsive driver.
 #[cfg(target_os = "macos")]
-fn mac_audio(queue: Arc<Mutex<std::collections::VecDeque<i16>>>) -> Result<cpal::Stream, String> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    let host = cpal::default_host();
-    // devices(), not output_devices(): that one opens an audio unit on every device to see if it
-    // can play, and a device whose driver doesn't answer (seen with a Continuity microphone or a
-    // conferencing app's virtual device) blocks it forever. Names are cheap to read.
-    // METEOR_MIC_DEVICE names another loopback device (part of its name, any case).
+fn find_loopback_device() -> Result<cpal::Device, String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
     let wanted = std::env::var("METEOR_MIC_DEVICE").map(|n| n.to_ascii_lowercase()).unwrap_or_else(|_| "blackhole".into());
-    let device = host
+    cpal::default_host()
         .devices()
         .map_err(|e| e.to_string())?
         .find(|d| d.name().is_ok_and(|n| n.to_ascii_lowercase().contains(&wanted)))
-        .ok_or("BlackHole not found. Install BlackHole 2ch, then restart Meteor; choose BlackHole as the microphone in your app")?;
+        .ok_or_else(|| "BlackHole not found. Install BlackHole 2ch, then restart Meteor; choose BlackHole as the microphone in your app".into())
+}
+
+/// Whether the microphone's loopback device is installed (the Setup window's check).
+#[cfg(target_os = "macos")]
+pub fn loopback_installed() -> bool {
+    find_loopback_device().is_ok()
+}
+
+/// Opens BlackHole's output at 48 kHz and plays the queue into every channel; silence when empty.
+#[cfg(target_os = "macos")]
+fn mac_audio(queue: Arc<Mutex<std::collections::VecDeque<i16>>>) -> Result<cpal::Stream, String> {
+    use cpal::traits::{DeviceTrait, StreamTrait};
+    let device = find_loopback_device()?;
     let name = device.name().unwrap_or_default();
     let channels = device
         .supported_output_configs()

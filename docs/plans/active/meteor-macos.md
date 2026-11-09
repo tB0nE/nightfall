@@ -113,13 +113,29 @@ uses VB-CABLE; apps choose BlackHole as their input. `METEOR_MIC_DEVICE` names a
 loopback device. Devices are matched by name before any is opened: probing every device
 (cpal's `output_devices()`) hung on an unresponsive one.
 
+### Setup window
+
+`nightfall-meteor --setup` (`setup_window_macos.rs`, egui as on Linux), opened by itself on the
+first run or while a permission is missing, and from the menu (Setup…). Rows: Screen
+Recording, Accessibility (asks, then opens the Settings pane), Microphone (downloads the
+pinned, notarized BlackHole 2ch 0.7.1 package, checks hash and Existential Audio's signature,
+installs with one password prompt and restarts coreaudiod), Start at login, and host depth
+(status). Install All runs what's missing, Settings last. A fresh `--setup-check` process reads
+permissions every 2 s (a running process doesn't see new grants); Meteor restarts on close
+when a grant or the microphone changed.
+
+### Host depth
+
+VideoToolbox decoding (FFmpeg 8 runtime), EdgePad on ncnn/MoltenVK, Vulkan preparation and
+post-processing; all bundled. 1080p60 replay on an M1: 46 ms frame-to-map, ~32 maps/s.
+
 ## To do
 
 1. **Headset checks.** A desktop stream through Meteor.app, two screens and a
    virtual one, input on each, depth crop. Single-display capture still uses
    `AVCaptureScreenInput`; consider ScreenCaptureKit there too.
 2. **A `.dmg`**, and Developer ID signing/notarisation for distribution.
-3. **Microphone:** check with BlackHole installed (code done, see below).
+3. **Microphone:** check with BlackHole installed from Setup.
 4. **Host audio:** the host uses the macOS system audio tap (14.2+, no driver); confirm it is heard.
 5. **Firewall.** `socketfilterfw` check for the application firewall.
-6. **Host depth.** ncnn's Vulkan backend through MoltenVK, VideoToolbox decode.
+6. **Host depth:** live check with the headset, 7680-wide multi-screen streams.
