@@ -30,17 +30,17 @@ pub struct Release {
 pub const RELEASE: Option<Release> = None;
 #[cfg(target_os = "linux")]
 pub const RELEASE: Option<Release> = Some(Release {
-    version: "0.1.0-preview.3",
-    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-host-v0.1.0-preview.3/Meteor-Vibepollo-0.1.0-preview.3-linux-x86_64.tar.zst",
-    size: 29_470_938,
-    sha256: "1d8f3f5302f77cd12244610b19702c319760e818637ad27f0061b4ddd42031d0",
+    version: "0.1.0-preview.4",
+    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-vibepollo-v0.1.0-preview.4/Meteor-Vibepollo-0.1.0-preview.4-linux-x86_64.tar.zst",
+    size: 29_582_219,
+    sha256: "184ba1f59b117006a64b292fc3baae2f9ce45122a160014f94f82b3502cb9aed",
     binary: "bin/meteor-vibepollo",
 });
 
-/// Whether the pinned Linux host makes KDE virtual monitors (Meteor-Vibepollo
+/// Whether the pinned Linux host makes virtual monitors (KDE and GNOME) (Meteor-Vibepollo
 /// 0.1.0-preview.4 and later). Turn on with the pin that brings them.
 #[cfg(target_os = "linux")]
-pub const RELEASE_HAS_VIRTUAL_MONITORS: bool = false;
+pub const RELEASE_HAS_VIRTUAL_MONITORS: bool = true;
 
 pub struct Install;
 

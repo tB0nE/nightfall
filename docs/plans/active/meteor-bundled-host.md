@@ -121,7 +121,9 @@ Meteor and Vibepollo:
   library RUNPATHs. Driver, display and audio libraries remain OS-provided.
 - Host preview: `meteor-host-v0.1.0-preview.1`, with binary and matching source
   archives. Meteor pins the binary archive's version, size and SHA-256 and
-  validates the installed file manifest before use.
+  validates the installed file manifest before use. From 0.1.0-preview.4 the
+  tag is `meteor-vibepollo-v…` (the current pin), so it isn't confused with
+  Meteor itself; preview.1–3 keep their old tags for released Meteor builds.
 - Implemented first-run desktop setup notification when no local host is
   detected. Setup remains available in the tray, with web username and password
   copy access. Downloading alone never switches hosts; the setup action does.
