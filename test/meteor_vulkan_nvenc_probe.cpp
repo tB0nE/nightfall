@@ -27,6 +27,7 @@ static void dlclose(void *library) { FreeLibrary((HMODULE)library); }
 #define METEOR_NVENC_LIBRARY "libnvidia-encode.so.1"
 #define METEOR_EXTERNAL_MEMORY_HANDLE VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT
 #endif
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,12 +54,50 @@ static void dlclose(void *library) { FreeLibrary((HMODULE)library); }
 #define NV(call) do { auto result = (call); if (result != NV_ENC_SUCCESS) { std::fprintf(stderr, "%s: NVENC %d\n", #call, result); std::exit(1); } } while (0)
 #ifdef METEOR_MONADO_BRIDGE
 #include "meteor_stereo_compositor.h"
+#if defined(_WIN32) && defined(METEOR_AMF)
+#include "meteor_amf_bridge.h"
+#endif
 #endif
 
 #ifdef METEOR_MONADO_BRIDGE
+// Whether CUDA (so NVENC) drives this Vulkan GPU, checked without failing: an AMD GPU uses AMF.
+static bool meteor_cuda_drives(VkPhysicalDevice gpu) {
+    void *cuda = dlopen(METEOR_CUDA_LIBRARY, RTLD_NOW);
+    if (!cuda) return false;
+    auto init = reinterpret_cast<tcuInit *>(dlsym(cuda, "cuInit"));
+    auto count_devices = reinterpret_cast<tcuDeviceGetCount *>(dlsym(cuda, "cuDeviceGetCount"));
+    auto device_uuid = reinterpret_cast<tcuDeviceGetUuid *>(dlsym(cuda, "cuDeviceGetUuid"));
+    bool found = false;
+    int count = 0;
+    if (init && count_devices && device_uuid && init(0) == CUDA_SUCCESS && count_devices(&count) == CUDA_SUCCESS) {
+        VkPhysicalDeviceIDProperties id{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; props.pNext = &id;
+        vkGetPhysicalDeviceProperties2(gpu, &props);
+        for (int i = 0; i < count && !found; ++i) {
+            CUuuid uuid;
+            found = device_uuid(&uuid, i) == CUDA_SUCCESS && !std::memcmp(uuid.bytes, id.deviceUUID, VK_UUID_SIZE);
+        }
+    }
+    dlclose(cuda);
+    return found;
+}
+
+static void nvenc_bridge_loop(meteor_stereo_encode_v1 request);
 static void bridge_loop() {
     meteor_stereo_encode_v1 request;
     if (!bridge_next(request)) return;
+#if defined(_WIN32) && defined(METEOR_AMF)
+    if (!meteor_cuda_drives(request.gpu)) {
+        std::fprintf(stderr, "METEOR_ENCODER_BACKEND amf (no CUDA device drives this GPU)\n");
+        amf_bridge_loop(request);
+        return;
+    }
+#endif
+    std::fprintf(stderr, "METEOR_ENCODER_BACKEND nvenc\n");
+    nvenc_bridge_loop(request);
+}
+
+static void nvenc_bridge_loop(meteor_stereo_encode_v1 request) {
     const meteor_stereo_encode_v1 *input = &request;
 #else
 int main(int argc, char **argv) {
@@ -511,6 +550,40 @@ extern "C" void meteor_encode_stereo_v1(const meteor_stereo_encode_v1 *input) {
     channel.wake.notify_all();
     channel.wake.wait(lock, [] { return channel.completed; });
     channel.busy = false;
+}
+// What this encoder can do, as JSON for Meteor: the backend, its codecs, and for AMF the
+// largest frame (both eyes side by side) it takes. Returns the length written, or 0.
+extern "C" uint32_t meteor_encoder_capabilities_v1(char *json, uint32_t size) {
+    char text[256];
+    int length = 0;
+    void *cuda = dlopen(METEOR_CUDA_LIBRARY, RTLD_NOW);
+    int cuda_count = 0;
+    if (cuda) {
+        auto init = reinterpret_cast<tcuInit *>(dlsym(cuda, "cuInit"));
+        auto count_devices = reinterpret_cast<tcuDeviceGetCount *>(dlsym(cuda, "cuDeviceGetCount"));
+        if (!init || !count_devices || init(0) != CUDA_SUCCESS || count_devices(&cuda_count) != CUDA_SUCCESS) cuda_count = 0;
+        dlclose(cuda);
+    }
+    if (cuda_count > 0) {
+        length = std::snprintf(text, sizeof(text), "{\"backend\":\"nvenc\",\"codecs\":[\"h264\",\"h265\"]}");
+    }
+#if defined(_WIN32) && defined(METEOR_AMF)
+    else {
+        uint32_t w264 = 0, h264 = 0, w265 = 0, h265 = 0;
+        meteor_amf_max_frame(false, w264, h264);
+        meteor_amf_max_frame(true, w265, h265);
+        if (w264 || w265) {
+            // One limit for both codecs: the session's codec is chosen later, by the headset.
+            const uint32_t w = w264 && w265 ? std::min(w264, w265) : (w264 ? w264 : w265);
+            const uint32_t h = h264 && h265 ? std::min(h264, h265) : (h264 ? h264 : h265);
+            length = std::snprintf(text, sizeof(text), "{\"backend\":\"amf\",\"codecs\":[%s%s%s],\"max_frame\":[%u,%u]}",
+                w264 ? "\"h264\"" : "", w264 && w265 ? "," : "", w265 ? "\"h265\"" : "", w, h);
+        }
+    }
+#endif
+    if (length <= 0 || uint32_t(length) >= size || !json) return 0;
+    std::memcpy(json, text, size_t(length) + 1);
+    return uint32_t(length);
 }
 extern "C" void meteor_encode_finish_v1() {
     {

@@ -24,8 +24,9 @@ setup is still planned.
 
 Setup offers the built-in host and PCVR. It discovers installed VR games from
 Steam's VR application manifest across your Steam libraries. SteamVR handles
-general VR games; Moss also has a Monado/xrizer profile. This Windows encoder
-currently requires NVIDIA/NVENC. Install SteamVR through Steam. PCVR setup registers Meteor's bundled
+general VR games; Moss also has a Monado/xrizer profile. It encodes with NVENC on
+NVIDIA GPUs and AMF on AMD GPUs; older AMD encoders stop at 4096 pixels per
+side, so the headset sends smaller eyes to fit. Install SteamVR through Steam. PCVR setup registers Meteor's bundled
 SteamVR driver automatically. SteamVR and games are not redistributed.
 After installing a game, quit Meteor and use Set up Nightfall Meteor in Start.
 Run Steam first so it can refresh its VR application list. PCVR setup can
