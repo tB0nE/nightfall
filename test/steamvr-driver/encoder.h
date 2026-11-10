@@ -3,7 +3,10 @@
 #include <nvEncodeAPI.h>
 #include <vector>
 #include "../meteor_encoder_bitrate.h"
-// D3D11 eye SRVs -> one negotiated-size stereo GPU surface -> NVENC.
+#ifdef METEOR_AMF
+#include "../meteor_amf_encoder.h"
+#endif
+// D3D11 eye SRVs -> one negotiated-size stereo GPU surface -> NVENC, or AMF on an AMD GPU.
 // CPU readback is used only by the separate diagnostic screenshot routine.
 class MirrorEncoder {
     HMODULE module=nullptr;
@@ -19,6 +22,32 @@ class MirrorEncoder {
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11BlendState> alpha_blend;
     unsigned width=0,height=0;
+#ifdef METEOR_AMF
+    std::unique_ptr<MeteorAmfEncoder> amf;
+    bool amf_first=true;
+    static bool on_amd(ID3D11Device *device) {
+        ComPtr<IDXGIDevice> dxgi;ComPtr<IDXGIAdapter> adapter;DXGI_ADAPTER_DESC desc{};
+        return SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgi))) && SUCCEEDED(dxgi->GetAdapter(&adapter)) &&
+            SUCCEEDED(adapter->GetDesc(&desc)) && desc.VendorId==0x1002;
+    }
+    void initialize_amf(ID3D11Device *device,unsigned w,unsigned h,unsigned fps) {
+        const char *codec=std::getenv("METEOR_XR_CODEC");
+        if(codec && std::strcmp(codec,"h264") && std::strcmp(codec,"h265"))throw std::runtime_error("Unsupported SteamVR encoder codec");
+        const bool hevc=codec && !std::strcmp(codec,"h265");
+        uint32_t max_width=0,max_height=0;meteor_amf_max_frame(hevc,max_width,max_height);
+        std::printf("STEAMVR_AMF_LIMITS codec=%s max_width=%u max_height=%u requested=%ux%u\n",hevc?"h265":"h264",max_width,max_height,w*2,h);std::fflush(stdout);
+        if(max_width && max_height && (w*2>max_width || h>max_height))
+            throw std::runtime_error(hevc?"Requested stereo resolution exceeds this GPU's HEVC encoder limits":"Requested stereo resolution exceeds this GPU's H.264 encoder limits");
+        uint32_t bitrate=0;if(!meteor_encoder_bitrate(std::getenv("METEOR_XR_BITRATE_MBPS"),32000000,&bitrate))throw std::runtime_error("Invalid encoder bitrate");
+        amf=std::make_unique<MeteorAmfEncoder>();
+        amf->attach(device,packed.Get(),w*2,h,amf::AMF_SURFACE_BGRA);
+        // The pack shader writes sRGB-encoded values, as for NVENC (VUI sRGB).
+        if(!amf->start(hevc,fps,bitrate,true)) {
+            std::fprintf(stderr,"STEAMVR_AMF %s\n",amf->error.c_str());throw std::runtime_error("AMF encoder unavailable: "+amf->error);
+        }
+        std::printf("STEAMVR_ENCODER per_eye=%ux%u fps=%u bitrate=%u graphics=D3D11 codec=%s backend=amf\n",w,h,fps,bitrate,hevc?"h265":"h264");std::fflush(stdout);
+    }
+#endif
     static void nv(NVENCSTATUS status) {if(status!=NV_ENC_SUCCESS) {std::fprintf(stderr,"STEAMVR_NVENC status=%d\n",status);throw std::runtime_error("NVENC operation failed");}}
 public:
     struct Layer {
@@ -28,7 +57,7 @@ public:
     void initialize(ID3D11Device *device,unsigned w,unsigned h,unsigned fps) {
         width=w;height=h;
         D3D11_TEXTURE2D_DESC desc{};desc.Width=w*2;desc.Height=h;desc.MipLevels=desc.ArraySize=desc.SampleDesc.Count=1;
-        desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_RENDER_TARGET;
+        desc.Format=DXGI_FORMAT_B8G8R8A8_UNORM;desc.Usage=D3D11_USAGE_DEFAULT;desc.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
         check(device->CreateTexture2D(&desc,nullptr,&packed));check(device->CreateRenderTargetView(packed.Get(),nullptr,&target));
         const char *shader=R"(
 Texture2D eye:register(t0);SamplerState linearClamp:register(s0);cbuffer Colour:register(b0){float4 flags,bounds;};
@@ -53,6 +82,9 @@ if(flags.x>0)c=lerp(12.92*c,1.055*pow(max(c,0),1.0/2.4)-.055,step(.0031308,c));r
         rt.SrcBlend=D3D11_BLEND_SRC_ALPHA;rt.DestBlend=D3D11_BLEND_INV_SRC_ALPHA;rt.BlendOp=D3D11_BLEND_OP_ADD;
         rt.SrcBlendAlpha=D3D11_BLEND_ONE;rt.DestBlendAlpha=D3D11_BLEND_INV_SRC_ALPHA;rt.BlendOpAlpha=D3D11_BLEND_OP_ADD;
         rt.RenderTargetWriteMask=D3D11_COLOR_WRITE_ENABLE_ALL;check(device->CreateBlendState(&blend,&alpha_blend));
+#ifdef METEOR_AMF
+        if(on_amd(device)) {initialize_amf(device,w,h,fps);return;}
+#endif
         module=LoadLibraryW(L"nvEncodeAPI64.dll");if(!module)throw std::runtime_error("NVIDIA encoder driver missing");
         auto create=reinterpret_cast<NVENCSTATUS (NVENCAPI *)(NV_ENCODE_API_FUNCTION_LIST *)>(GetProcAddress(module,"NvEncodeAPICreateInstance"));
         if(!create)throw std::runtime_error("NVENC entry point missing");api.version=NV_ENCODE_API_FUNCTION_LIST_VER;nv(create(&api));
@@ -111,6 +143,14 @@ if(flags.x>0)c=lerp(12.92*c,1.055*pow(max(c,0),1.0/2.4)-.055,step(.0031308,c));r
             context->PSSetShaderResources(0,1,&view);context->Draw(3,0);
         }
         ID3D11ShaderResourceView *none=nullptr;context->PSSetShaderResources(0,1,&none);context->OMSetRenderTargets(0,nullptr,nullptr);context->Flush();
+#ifdef METEOR_AMF
+        if(amf) {
+            std::vector<uint8_t> packet;
+            if(!amf->encode(amf_first,frame,[&](const uint8_t *data,uint32_t size) {packet.assign(data,data+size);return true;}))
+                throw std::runtime_error("AMF encode failed: "+amf->error);
+            amf_first=false;return packet;
+        }
+#endif
         NV_ENC_MAP_INPUT_RESOURCE map{};map.version=NV_ENC_MAP_INPUT_RESOURCE_VER;map.registeredResource=resource;nv(api.nvEncMapInputResource(session,&map));
         NV_ENC_PIC_PARAMS pic{};pic.version=NV_ENC_PIC_PARAMS_VER;pic.inputBuffer=map.mappedResource;pic.bufferFmt=map.mappedBufferFmt;
         pic.inputWidth=width*2;pic.inputHeight=height;pic.outputBitstream=output;pic.pictureStruct=NV_ENC_PIC_STRUCT_FRAME;pic.inputTimeStamp=frame;
@@ -123,6 +163,9 @@ if(flags.x>0)c=lerp(12.92*c,1.055*pow(max(c,0),1.0/2.4)-.055,step(.0031308,c));r
         api.nvEncUnlockBitstream(session,output);api.nvEncUnmapInputResource(session,map.mappedResource);return packet;
     }
     ~MirrorEncoder() {
+#ifdef METEOR_AMF
+        if(amf)amf->destroy();
+#endif
         if(session) {
             if(output)api.nvEncDestroyBitstreamBuffer(session,output);
             if(resource)api.nvEncUnregisterResource(session,resource);

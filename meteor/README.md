@@ -71,13 +71,13 @@ four sessions and removes older ones.
 For command-line setup, this performs the same install/enable steps and exits:
 
 ```sh
-./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --enable-xr
+./Nightfall-Meteor-0.9.0-x86_64.AppImage --enable-xr
 ```
 
 The install-only command remains available:
 
 ```sh
-./Nightfall-Meteor-0.1.1-XR-DEV-x86_64.AppImage --install-xr-runtime
+./Nightfall-Meteor-0.9.0-x86_64.AppImage --install-xr-runtime
 ```
 
 This copies files only; it does not change global OpenXR selection, Steam launch
@@ -265,8 +265,9 @@ METEOR_XR_BUNDLE="$PWD/.build-cache/meteor-xr/portable-package/bundle" \
 bash meteor/tools/build_appimage.sh
 ```
 
-XR builds use the distinct `Nightfall-Meteor-<version>-XR-DEV-x86_64.AppImage`
-filename and remain release-optimized. The build validates runtime integrity and
+XR builds are named `Nightfall-Meteor-<version>-x86_64.AppImage` like any release
+(set `METEOR_APPIMAGE_SUFFIX`, e.g. `-test`, to mark a test build) and remain
+release-optimized. The build validates runtime integrity and
 ELF compatibility before packaging it. XR notices remain inside the verified
 bundle under `usr/share/nightfall-meteor/xr-bundle`.
 

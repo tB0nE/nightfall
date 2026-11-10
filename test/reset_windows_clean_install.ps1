@@ -10,15 +10,18 @@ $paths=@(
     @{name='development-host-config';path=(Join-Path $repo 'meteor\target\windows-vibepollo-src\build-meteor-windows\config')}
 )
 $allRules=@(Get-NetFirewallRule)
-$rules=@($allRules | Where-Object {$_.DisplayName -match '^nightfall[-_]meteor' -or $_.Name -eq 'NightfallMeteorXRWirelessTrial'})
+# Setup's own rules (group 'Nightfall Meteor'), and the ones Windows made from its
+# "Allow access" prompt for Meteor or for a host that Meteor or its checks ran.
+$rules=@($allRules | Where-Object {$_.DisplayName -match '^nightfall[-_]meteor' -or $_.Name -eq 'NightfallMeteorXRWirelessTrial' -or $_.Group -eq 'Nightfall Meteor'})
+$hostRoots=@($repo,(Join-Path $env:TEMP 'Nightfall-packaged-check-'),(Join-Path $env:LOCALAPPDATA 'Programs\Nightfall Meteor'))
 foreach($rule in $allRules | Where-Object {$_.DisplayName -eq 'sunshine.exe'}) {
     $application=$rule | Get-NetFirewallApplicationFilter
-    if($application.Program.StartsWith($repo,[StringComparison]::OrdinalIgnoreCase) -or $application.Program.StartsWith((Join-Path $env:TEMP 'Nightfall-packaged-check-'),[StringComparison]::OrdinalIgnoreCase)){$rules+=$rule}
+    if($hostRoots | Where-Object {$application.Program.StartsWith($_,[StringComparison]::OrdinalIgnoreCase)}){$rules+=$rule}
 }
-$summary=[ordered]@{applied=$false;backup=$backup;folders=@($paths | Where-Object {Test-Path -LiteralPath $_.path});firewall_rules=@($rules | Select-Object Name,DisplayName,Enabled);preserved=@('GPU and audio drivers','Steam and games','VB-CABLE','Quest app and pairing data');issues=@();moved=@()}
+$summary=[ordered]@{applied=$false;backup=$backup;folders=@($paths | Where-Object {Test-Path -LiteralPath $_.path});firewall_rules=@($rules | Select-Object Name,DisplayName,Enabled,Action);preserved=@('GPU and audio drivers','Steam and games','VB-CABLE','Quest app and pairing data');issues=@();moved=@()}
 if(-not $Apply){$summary | ConvertTo-Json -Depth 5;return}
 $principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
-if($rules.Count -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run this reset as administrator to disable the old Meteor firewall exceptions; nothing was changed'}
+if($rules.Count -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run this reset as administrator to remove the old Meteor firewall rules; nothing was changed'}
 if(Get-Process VRChat,Moss-Win64-Shipping,vrserver,vrcompositor -ErrorAction SilentlyContinue){throw 'Exit the active VR game/runtime before resetting Meteor'}
 New-Item -ItemType Directory -Path $backup | Out-Null
 $report=Join-Path $backup 'reset-summary.json'
@@ -32,8 +35,10 @@ if(Get-Process nightfall-meteor,sunshine,monado-service -ErrorAction SilentlyCon
 # Remove only the exact launch options generated for this repository/catalog.
 & (Join-Path $PSScriptRoot 'configure_windows_steam_catalog.ps1') -RemoveMeteorOptions -Apply -NoRestart
 if($LASTEXITCODE){throw 'Steam launch options could not be reset'}
-$rules | Select-Object Name,DisplayName,Enabled | Export-Clixml (Join-Path $backup 'firewall-rules.xml')
-foreach($rule in $rules | Where-Object {$_.Enabled -eq 'True'}){Disable-NetFirewallRule -Name $rule.Name | Out-Null}
+# Removed, not disabled: Windows never asks again about a program that any rule
+# names, even a disabled one, so a disabled rule left a reinstall blocked.
+$rules | ForEach-Object {[pscustomobject]@{Name=$_.Name;DisplayName=$_.DisplayName;Enabled=$_.Enabled;Action=$_.Action;Profile="$($_.Profile)";Program=($_ | Get-NetFirewallApplicationFilter).Program}} | Export-Clixml (Join-Path $backup 'firewall-rules.xml')
+foreach($rule in $rules){Remove-NetFirewallRule -Name $rule.Name}
 $openvr=Join-Path $env:LOCALAPPDATA 'openvr\openvrpaths.vrpath'
 if(Test-Path -LiteralPath $openvr) {
     $text=[IO.File]::ReadAllText($openvr);$value=$text | ConvertFrom-Json

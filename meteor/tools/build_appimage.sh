@@ -49,7 +49,8 @@ if [[ -n "${METEOR_XR_BUNDLE:-}" ]]; then
     METEOR_XR_BUNDLE="$(cd "$METEOR_XR_BUNDLE" && pwd)"
     /usr/bin/python3 "$METEOR_XR_BUNDLE/tools/meteor_xr_runtime.py" --check
     /usr/bin/python3 "$REPO/tools/audit_meteor_xr_runtime.py" "$METEOR_XR_BUNDLE" --max-glibc 2.35 >/dev/null
-    XR_SUFFIX="-XR-DEV"
+    # PCVR ships in releases from 0.9.0; METEOR_APPIMAGE_SUFFIX marks a test build if wanted.
+    XR_SUFFIX="${METEOR_APPIMAGE_SUFFIX:-}"
 fi
 
 for f in "$MODELS/$EDGEPAD.ncnn.param" "$MODELS/$EDGEPAD.ncnn.bin" "$MODELS/$EDGEPAD_SMALL.ncnn.param" "$MODELS/$EDGEPAD_SMALL.ncnn.bin"; do

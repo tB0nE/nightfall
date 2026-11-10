@@ -11,7 +11,7 @@
 //! and the video packets, which are copied to the video tap after they have
 //! been forwarded.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -39,23 +39,29 @@ pub struct Stats {
     pub bytes_to_client: AtomicU64,
     pub bytes_to_sunshine: AtomicU64,
     pub tap: Arc<TapStats>,
-    /// Addresses with an open video flow: the clients streaming right now.
-    pub video_clients: std::sync::Mutex<HashSet<IpAddr>>,
+    /// Addresses with an open video flow, and how many: the clients streaming right now. A
+    /// restarted stream opens its new flow before the old one idles out, so a set would forget
+    /// a client that is still streaming when the old flow closes.
+    pub video_clients: std::sync::Mutex<HashMap<IpAddr, usize>>,
     /// Actual video delivery, independent of UDP flows retained for reconnects.
     pub last_video_ms: AtomicU64,
 }
 
 impl Stats {
     pub fn is_streaming(&self, ip: IpAddr) -> bool {
-        self.video_clients.lock().is_ok_and(|c| c.contains(&ip.to_canonical()))
+        self.video_clients.lock().is_ok_and(|c| c.contains_key(&ip.to_canonical()))
     }
 
     fn set_streaming(&self, ip: IpAddr, streaming: bool) {
         if let Ok(mut clients) = self.video_clients.lock() {
+            let ip = ip.to_canonical();
             if streaming {
-                clients.insert(ip.to_canonical());
-            } else {
-                clients.remove(&ip.to_canonical());
+                *clients.entry(ip).or_insert(0) += 1;
+            } else if let Some(open) = clients.get_mut(&ip) {
+                *open -= 1;
+                if *open == 0 {
+                    clients.remove(&ip);
+                }
             }
         }
     }
@@ -503,6 +509,20 @@ fn rewrite_server_ports(line: &str, map: &PortMap) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_restarted_stream_keeps_its_client_streaming() {
+        let stats = Stats::default();
+        let ip: IpAddr = "10.0.0.9".parse().unwrap();
+        stats.set_streaming(ip, true); // the old flow
+        stats.set_streaming(ip, true); // the restarted stream's flow
+        stats.set_streaming(ip, false); // the old flow idles out
+        assert!(stats.is_streaming(ip), "the new flow is still open");
+        stats.set_streaming(ip, false);
+        assert!(!stats.is_streaming(ip));
+        stats.set_streaming(ip, false); // a stray close never underflows
+        assert!(!stats.is_streaming(ip));
+    }
 
     #[test]
     fn rewrites_transport_ports() {
