@@ -62,6 +62,7 @@ Source: "{#Stage}\Pair-Headset.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Install-SteamVR.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\SteamVR-Driver.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\Install-VirtualDisplay.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\Firewall-Meteor.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\doc\nightfall-meteor\runtime\*"; DestDir: "{app}\share\doc\nightfall-meteor\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#Stage}\share\nightfall-meteor\models\*"; DestDir: "{app}\share\nightfall-meteor\models"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -94,25 +95,45 @@ begin
   if WizardIsTaskSelected('vda') then Result := Result + ' -EnableVDA';
 end;
 
-procedure InstallVirtualDisplayDriver;
+// One statement for an elevated PowerShell -Command: runs a script in {app},
+// and a failure in it doesn't stop the scripts after it.
+function AppScript(Name, Args: String): String;
+var
+  Path: String;
+begin
+  Path := ExpandConstant('{app}\' + Name);
+  StringChangeEx(Path, '''', '''''', True);
+  Result := 'try { & ''' + Path + '''' + Args + ' } catch { Write-Warning $_ }; ';
+end;
+
+procedure RunElevated(Commands: String);
 var
   ResultCode: Integer;
 begin
-  if not WizardIsTaskSelected('virtualmonitors') then Exit;
+  if Commands = '' then Exit;
   ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Install-VirtualDisplay.ps1') + '"',
+    '-NoProfile -ExecutionPolicy Bypass -Command "' + Commands + '"',
     ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// Everything that needs administrator rights, in one elevated PowerShell so
+// Setup asks once. The firewall rules always: Windows' own "Allow access"
+// prompt is easy to miss, never returns once a rule names the program, and
+// without the rules the Quest can't find Meteor.
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Commands: String;
 begin
-  if CurStep = ssPostInstall then
-    InstallVirtualDisplayDriver;
+  if CurStep <> ssPostInstall then Exit;
+  Commands := AppScript('Firewall-Meteor.ps1', '');
+  if WizardIsTaskSelected('virtualmonitors') then
+    Commands := Commands + AppScript('Install-VirtualDisplay.ps1', '');
+  RunElevated(Commands);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  RunKey, Command, InstalledCommand: String;
+  RunKey, Command, InstalledCommand, Commands: String;
   DriverResult: Integer;
 begin
   if CurUninstallStep <> usUninstall then Exit;
@@ -121,10 +142,12 @@ begin
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\SteamVR-Driver.ps1') + '" -Action Unregister',
       '', SW_HIDE, ewWaitUntilTerminated, DriverResult);
+  Commands := '';
+  if FileExists(ExpandConstant('{app}\Firewall-Meteor.ps1')) then
+    Commands := AppScript('Firewall-Meteor.ps1', ' -Remove');
   if FileExists(ExpandConstant('{app}\Install-VirtualDisplay.ps1')) then
-    ShellExec('runas', ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      '-NoProfile -ExecutionPolicy Bypass -File "' + ExpandConstant('{app}\Install-VirtualDisplay.ps1') + '" -Uninstall',
-      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, DriverResult);
+    Commands := Commands + AppScript('Install-VirtualDisplay.ps1', ' -Uninstall');
+  RunElevated(Commands);
   RunKey := 'Software\Microsoft\Windows\CurrentVersion\Run';
   InstalledCommand := '"' + ExpandConstant('{app}\nightfall-meteor.exe') + '"';
   if RegQueryStringValue(HKCU, RunKey, 'Nightfall Meteor', Command) and

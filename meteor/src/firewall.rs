@@ -6,6 +6,9 @@
 //! default route uses). ufw's rules need root to read, so an active ufw is
 //! reported as unknown. Opening the ports runs one `pkexec` command, only
 //! when the user chooses "Allow" in the tray.
+//!
+//! On Windows, Firewall-Meteor.ps1 beside the executable does both: Setup
+//! runs it elevated to add the rules, and `-Check` reads them without rights.
 
 use std::process::Command;
 
@@ -47,6 +50,9 @@ pub enum Status {
     Blocked { zone: String, ports: Vec<(u16, Proto)> },
     /// ufw is active; its rules can't be read without root.
     Ufw,
+    /// Windows Firewall has no rule letting the Quest in, or blocks it.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Windows { reason: String },
 }
 
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
@@ -56,6 +62,17 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 
 /// Queries the firewall. Takes a few hundred milliseconds.
 pub fn check(ports: &[(u16, Proto)]) -> Status {
+    #[cfg(windows)]
+    {
+        let _ = ports;
+        windows::check()
+    }
+    #[cfg(not(windows))]
+    check_unix(ports)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn check_unix(ports: &[(u16, Proto)]) -> Status {
     if run("firewall-cmd", &["--state"]).as_deref() == Some("running") {
         let zone = zone();
         if run("firewall-cmd", &["--permanent", &format!("--zone={zone}"), "--get-target"]).as_deref() == Some("ACCEPT") {
@@ -115,6 +132,10 @@ fn covers(service_port: &str, (port, proto): (u16, Proto)) -> bool {
 /// Opens the ports, asking for the password through pkexec. Blocks until
 /// the user answers.
 pub fn allow(status: &Status, ports: &[(u16, Proto)]) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Status::Windows { .. } = status {
+        return windows::allow();
+    }
     let script = match status {
         Status::Blocked { zone, ports } => {
             let adds: Vec<String> = ports.iter().map(|&p| format!("--add-port={}", spec(p))).collect();
@@ -129,6 +150,65 @@ pub fn allow(status: &Status, ports: &[(u16, Proto)]) -> Result<(), String> {
     log::info!("Opening the firewall: {script}");
     let status = Command::new("pkexec").args(["sh", "-c", &script]).status().map_err(|e| format!("pkexec: {e}"))?;
     if status.success() { Ok(()) } else { Err(format!("the firewall change didn't happen ({status})")) }
+}
+
+/// Firewall-Meteor.ps1 -Check prints "open" or "blocked: <reason>".
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_windows_check(line: &str) -> Status {
+    match line.strip_prefix("blocked:") {
+        Some(reason) => Status::Windows { reason: reason.trim().to_string() },
+        None => Status::Open,
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    use super::Status;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    fn script() -> Option<PathBuf> {
+        let path = std::env::current_exe().ok()?.parent()?.join("Firewall-Meteor.ps1");
+        path.is_file().then_some(path)
+    }
+
+    fn powershell() -> Command {
+        let mut command = Command::new("powershell.exe");
+        command.creation_flags(CREATE_NO_WINDOW).stdin(Stdio::null());
+        command
+    }
+
+    /// A development build has no script beside it; it can't tell, so says open.
+    pub fn check() -> Status {
+        let Some(script) = script() else { return Status::Open };
+        let output = powershell()
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .arg("-Check")
+            .stderr(Stdio::null())
+            .output();
+        let Ok(output) = output else { return Status::Open };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let line = text.lines().map(str::trim).find(|l| *l == "open" || l.starts_with("blocked:"));
+        super::parse_windows_check(line.unwrap_or("open"))
+    }
+
+    /// Adds the rules through UAC. Blocks until the user answers.
+    pub fn allow() -> Result<(), String> {
+        let script = script().ok_or("Firewall-Meteor.ps1 is missing beside Meteor; reinstall Meteor")?;
+        let quoted = script.display().to_string().replace('\'', "''");
+        let command = format!(
+            "$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+             -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"{quoted}\"'; exit $p.ExitCode"
+        );
+        log::info!("Adding Meteor's Windows Firewall rules (asks for administrator rights)");
+        let status = powershell().args(["-NoProfile", "-Command", &command]).status().map_err(|e| format!("powershell: {e}"))?;
+        if status.success() { Ok(()) } else { Err(format!("the firewall rules weren't added ({status})")) }
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +237,15 @@ mod tests {
         let configured = ports_with_xr(&map, side, false, Some((47910, 47911, 47912)));
         for port in [47910, 47911, 47912] { assert!(configured.contains(&(port, Proto::Tcp))); }
         assert_eq!(configured.len(), ports(&map, side, false).len() + 3);
+    }
+
+    #[test]
+    fn reads_the_windows_check() {
+        assert_eq!(parse_windows_check("open"), Status::Open);
+        assert_eq!(
+            parse_windows_check("blocked: no rule allows Nightfall Meteor on Public networks"),
+            Status::Windows { reason: "no rule allows Nightfall Meteor on Public networks".into() }
+        );
     }
 
     #[test]

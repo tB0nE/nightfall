@@ -328,3 +328,38 @@ The user then reported successfully going from starting the installer to being
 in a VR game in about two minutes and accepted the installation flow. This
 confirms the installation-to-game path; it does not separately confirm the
 Moss bottom-strip fix or the missing-SteamVR installation flow.
+
+## 0.9.0 merged build: firewall blocked Meteor (2026-11-10)
+
+After the reset and a clean install of the merged 0.9.0 build, the headset
+streamed but never found Meteor: no pairing pop-up, no host depth, PCVR or
+virtual screens. From the headset, the host's port 47989 answered and
+Meteor's discovery port 47900 didn't.
+
+Nothing created Windows Firewall rules for Meteor; Windows made them from its
+"Allow access" prompt the first time each program listened. The reset had
+disabled the old prompt-made rules, which name the same install path, and
+Windows doesn't ask again about a program that any rule names, so Meteor
+stayed blocked. Meteor's firewall check only read firewalld and ufw, and on
+Windows always logged "the Quest's ports are open".
+
+Fix:
+
+- `Firewall-Meteor.ps1` adds an inbound allow rule (group `Nightfall
+  Meteor`, every profile, since home networks are often classed Public) for
+  `nightfall-meteor.exe` and the host's `sunshine.exe`. It removes block
+  rules from a cancelled prompt and disabled rules for those exact paths.
+  `-Remove` takes the group off; `-Check` reports without rights, using the
+  profile of the networks with a default route (so Tailscale isn't counted).
+- Setup runs it in its one elevated step, together with the optional virtual
+  display driver; uninstall removes the rules in the same way. This makes
+  Setup always ask once for administrator rights.
+- Meteor runs `-Check` at start. When the Quest is blocked it logs a warning
+  and the tray shows "Windows Firewall is blocking the Quest" with an item
+  that adds the rules through UAC.
+- `reset_windows_clean_install.ps1` removes the old rules rather than
+  disabling them, including Setup's group and the installed host's rules.
+
+Still open from the same run: the uninstaller leaves Meteor's Steam launch
+options (Moss pointed at a removed `nightfall-meteor.exe`) and the host's
+`runtime\host\config` (its pairings and credentials).

@@ -64,6 +64,7 @@ const CMD_TASKBAR_SETTINGS:usize=32;
 const CMD_PAIR_APPROVE:usize=33;
 const CMD_PAIR_REJECT:usize=34;
 const CMD_INSTALL_VDD:usize=35;
+const CMD_ALLOW_FIREWALL:usize=36;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -117,6 +118,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     let sunshine = wide(&format!("Sunshine {}:{} - {}", status.sunshine_host, status.map.sunshine_base,
                         if status.sunshine_up.load(Ordering::Relaxed) { "running" } else { "not answering" }));
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, sunshine.as_ptr());
+                    // Blocked silently, the Quest just doesn't find Meteor; say so here.
+                    if let crate::firewall::Status::Windows { .. } = status.firewall() {
+                        AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide("Windows Firewall is blocking the Quest").as_ptr());
+                        AppendMenuW(menu, MF_STRING, CMD_ALLOW_FIREWALL, wide("Allow the Quest through the firewall...").as_ptr());
+                    }
                     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
                 }
                 if let Some(host) = HOST.get() {
@@ -405,6 +411,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         }
                     }
                 },
+                CMD_ALLOW_FIREWALL => {
+                    if let Some(status) = STATUS.get() {
+                        status.allow_firewall();
+                    }
+                }
                 CMD_OPEN_LOG => open_path(crate::logfile::path()),
                 CMD_OPEN_SETTINGS => crate::open_config_file(),
                 CMD_OPEN_MODELS => open_path(crate::config::default_models_dir()),
