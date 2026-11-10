@@ -101,9 +101,23 @@ PLIST
 # MACOS_SIGN_IDENTITY, sign with a self-signed local certificate kept in its own keychain
 # file (not the login keychain). Delete DEV_SIGNING to remove it.
 SIGN=(codesign --force)
+ENTITLEMENTS="$METEOR/tools/macos/Meteor.entitlements"
+# Developer ID distribution requires the hardened runtime; MACOS_HARDENED=1 tries it with the
+# local certificate, to catch what it breaks before a real identity is involved.
+HARDENED=()
 if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
-  SIGN+=(--sign "$MACOS_SIGN_IDENTITY" --options runtime --timestamp)
-else
+  SIGN+=(--sign "$MACOS_SIGN_IDENTITY" --timestamp)
+  HARDENED=(--options runtime --entitlements "$ENTITLEMENTS")
+elif [[ "${MACOS_HARDENED:-}" == 1 ]]; then
+  # Library validation only accepts libraries from the app's own Apple team, and a self-signed
+  # certificate has no team ID, so this local test turns that one check off. A Developer ID
+  # signs every file with one team ID, and keeps it on.
+  LOCAL_ENTITLEMENTS="$(mktemp -t meteor-entitlements).plist"
+  cp "$ENTITLEMENTS" "$LOCAL_ENTITLEMENTS"
+  /usr/libexec/PlistBuddy -c "Add :com.apple.security.cs.disable-library-validation bool true" "$LOCAL_ENTITLEMENTS"
+  HARDENED=(--options runtime --entitlements "$LOCAL_ENTITLEMENTS")
+fi
+if [[ -z "${MACOS_SIGN_IDENTITY:-}" ]]; then
   DEV_SIGNING="$HOME/Library/Application Support/Nightfall Meteor Dev Signing"
   KEYCHAIN="$DEV_SIGNING/signing.keychain-db"
   NAME="Nightfall Meteor Local Signing"
@@ -149,7 +163,7 @@ CONF
 fi
 # Inside out: libraries, the host, then the app.
 find "$APP/Contents/Resources/host/Frameworks" "$APP/Contents/lib" -type f -name '*.dylib' -exec "${SIGN[@]}" {} \;
-"${SIGN[@]}" "$APP/Contents/Resources/host/bin/meteor-vibepollo"
-"${SIGN[@]}" "$APP"
+"${SIGN[@]}" ${HARDENED[@]+"${HARDENED[@]}"} "$APP/Contents/Resources/host/bin/meteor-vibepollo"
+"${SIGN[@]}" ${HARDENED[@]+"${HARDENED[@]}"} "$APP"
 codesign --verify --deep --strict "$APP"
 echo "Built $APP"

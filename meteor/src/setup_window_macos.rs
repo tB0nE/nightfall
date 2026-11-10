@@ -70,21 +70,25 @@ pub fn offer() {
 
 /// `--setup-check`: prints this moment's permissions for the window (a fresh process sees them).
 pub fn check_command() -> i32 {
-    println!("screen={} accessibility={}", permissions::screen_recording() as u8, permissions::accessibility() as u8);
+    let audio = match permissions::system_audio() { Some(true) => "1", Some(false) => "0", None => "?" };
+    println!("screen={} accessibility={} audio={audio}", permissions::screen_recording() as u8, permissions::accessibility() as u8);
     0
 }
 
-fn fresh_permissions() -> Option<(bool, bool)> {
+/// Screen Recording, Accessibility and system audio (None: not asked yet or unknown).
+fn fresh_permissions() -> Option<(bool, bool, Option<bool>)> {
     let output = Command::new(std::env::current_exe().ok()?).arg("--setup-check").stdin(Stdio::null()).output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let flag = |name: &str| text.split_whitespace().find_map(|word| word.strip_prefix(name)).map(|v| v == "1");
-    Some((flag("screen=")?, flag("accessibility=")?))
+    let value = |name: &str| text.split_whitespace().find_map(|word| word.strip_prefix(name)).map(str::to_owned);
+    let audio = match value("audio=").as_deref() { Some("1") => Some(true), Some("0") => Some(false), _ => None };
+    Some((value("screen=")? == "1", value("accessibility=")? == "1", audio))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Row {
     Screen,
     Accessibility,
+    SystemAudio,
     Microphone,
     Login,
     /// Status only: host depth ships with Meteor.app.
@@ -96,6 +100,8 @@ struct Status {
     loaded: bool,
     screen: bool,
     accessibility: bool,
+    /// None until macOS has asked (the host's first stream does).
+    system_audio: Option<bool>,
     microphone: bool,
     login: bool,
     /// ncnn and a depth model are in Meteor.app.
@@ -132,11 +138,13 @@ struct Shared {
 
 impl Shared {
     fn refresh(&self) {
-        let (screen, accessibility) = fresh_permissions().unwrap_or((permissions::screen_recording(), permissions::accessibility()));
+        let (screen, accessibility, system_audio) =
+            fresh_permissions().unwrap_or((permissions::screen_recording(), permissions::accessibility(), permissions::system_audio()));
         let next = Status {
             loaded: true,
             screen,
             accessibility,
+            system_audio,
             microphone: crate::mic::loopback_installed(),
             login: crate::desktop::autostart_enabled(),
             depth_included: depth_included(),
@@ -191,6 +199,12 @@ impl Shared {
             Row::Login => {
                 self.begin(row, "Turning on");
                 self.finish(row, crate::desktop::set_autostart(true));
+            }
+            // macOS asks when the host first captures; afterwards it's a switch in Settings.
+            Row::SystemAudio => {
+                self.begin(row, "Opening System Settings");
+                open_url(permissions::SYSTEM_AUDIO_PANE);
+                self.finish(row, Ok(()));
             }
             Row::Depth => {}
         }
@@ -354,6 +368,16 @@ impl eframe::App for Window {
                     self.spawn(|shared| shared.run(Row::Accessibility));
                 }
             });
+            let audio = match status.system_audio {
+                Some(true) => "Allowed",
+                Some(false) => "Not allowed",
+                None => "Asked on your first stream",
+            };
+            self.row(ui, Row::SystemAudio, "System audio", "The Mac's sound in your headset", audio, busy, |ui| {
+                if status.system_audio == Some(false) && ui.button("Allow…").clicked() {
+                    self.spawn(|shared| shared.run(Row::SystemAudio));
+                }
+            });
             let mic = if status.microphone { "Installed" } else { "Not installed" };
             self.row(ui, Row::Microphone, "Microphone (BlackHole 2ch)", "Your headset's microphone, as \"BlackHole 2ch\" in apps", mic, busy, |ui| {
                 if !status.microphone && ui.button("Install").clicked() {
@@ -430,7 +454,7 @@ mod tests {
     fn install_all_does_downloads_before_settings_and_skips_what_is_done() {
         let fresh = Status { loaded: true, ..Default::default() };
         assert_eq!(install_all_rows(&fresh), vec![Row::Microphone, Row::Login, Row::Screen, Row::Accessibility]);
-        let done = Status { loaded: true, screen: true, accessibility: true, microphone: true, login: true, depth_included: true };
+        let done = Status { loaded: true, screen: true, accessibility: true, system_audio: Some(true), microphone: true, login: true, depth_included: true };
         assert!(install_all_rows(&done).is_empty());
     }
 }

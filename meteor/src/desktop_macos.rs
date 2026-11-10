@@ -115,6 +115,29 @@ pub mod permissions {
         }
     }
 
+    /// System audio recording, which the host's audio tap needs to stream the Mac's sound.
+    /// macOS has no public check: this asks TCC privately (TCCAccessPreflight, looked up at run
+    /// time as audio capture tools do). None when it can't be told or macOS hasn't asked yet;
+    /// the host's first stream asks.
+    pub fn system_audio() -> Option<bool> {
+        type Preflight = unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void) -> std::ffi::c_int;
+        static TCC: std::sync::OnceLock<Option<libloading::Library>> = std::sync::OnceLock::new();
+        let library = TCC
+            // SAFETY: a system framework; loading it runs only its own initializers.
+            .get_or_init(|| unsafe { libloading::Library::new("/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC") }.ok())
+            .as_ref()?;
+        // SAFETY: TCCAccessPreflight(CFStringRef service, CFDictionaryRef options) -> int.
+        let preflight: libloading::Symbol<Preflight> = unsafe { library.get(b"TCCAccessPreflight\0") }.ok()?;
+        let service = objc2_foundation::NSString::from_str("kTCCServiceAudioCapture");
+        // SAFETY: NSString is toll-free bridged to CFString and outlives the call.
+        match unsafe { preflight(objc2::rc::Retained::as_ptr(&service).cast(), std::ptr::null()) } {
+            0 => Some(true),
+            1 => Some(false),
+            _ => None,
+        }
+    }
+
+    pub const SYSTEM_AUDIO_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
     pub const SCREEN_RECORDING_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
     pub const ACCESSIBILITY_PANE: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 }

@@ -129,13 +129,21 @@ when a grant or the microphone changed.
 VideoToolbox decoding (FFmpeg 8 runtime), EdgePad on ncnn/MoltenVK, Vulkan preparation and
 post-processing; all bundled. 1080p60 replay on an M1: 46 ms frame-to-map, ~32 maps/s.
 
+### Packaging
+
+`build_macos_dmg.sh` makes a drag-to-Applications image (90 MB). With `MACOS_SIGN_IDENTITY`
+(Developer ID) the app is signed with the hardened runtime and `Meteor.entitlements` (audio
+input), and `MACOS_NOTARY_PROFILE` notarises and staples the image. Checked locally with
+`MACOS_HARDENED=1`: depth, decoding, the host, the microphone and the permissions all work
+hardened. A self-signed certificate has no Team ID, so that local test turns library
+validation off; a Developer ID keeps it on (every file has the one team).
+
 ## To do
 
-1. **Headset checks.** A desktop stream through Meteor.app, two screens and a
-   virtual one, input on each, depth crop. Single-display capture still uses
+1. **Headset checks.** Hardened build on a live stream; input on each screen. Single-display capture still uses
    `AVCaptureScreenInput`; consider ScreenCaptureKit there too.
-2. **A `.dmg`**, and Developer ID signing/notarisation for distribution.
+2. **Distribution:** sign and notarise with a Developer ID (needs an Apple Developer account).
 3. **Microphone:** check with BlackHole installed from Setup.
-4. **Host audio:** the host uses the macOS system audio tap (14.2+, no driver); confirm it is heard.
-5. **Firewall.** `socketfilterfw` check for the application firewall.
+4. **Host audio:** granted on the first stream (Setup shows it); confirm it is heard.
+5. **Firewall:** the application firewall was off here; check a Mac with it on.
 6. **Host depth:** live check with the headset, 7680-wide multi-screen streams.
