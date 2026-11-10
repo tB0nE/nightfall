@@ -106,6 +106,30 @@ begin
   Result := 'try { & ''' + Path + '''' + Args + ' } catch { Write-Warning $_ }; ';
 end;
 
+// Quits every program running from {app}: Meteor, its host and helpers. The
+// host holds the virtual display open, and Windows then refuses to remove or
+// restart the driver's device until the PC restarts.
+procedure StopMeteor;
+var
+  App: String;
+  ResultCode: Integer;
+begin
+  App := ExpandConstant('{app}');
+  if not DirExists(App) then Exit;
+  StringChangeEx(App, '''', '''''', True);
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -Command "$app = ''' + App + '\''; ' +
+    '$p = @(Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith($app, [StringComparison]::OrdinalIgnoreCase) }); ' +
+    'if ($p.Count) { $p | Stop-Process -Force; $p | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopMeteor;
+  Result := '';
+end;
+
 procedure RunElevated(Commands: String);
 var
   ResultCode: Integer;
@@ -137,6 +161,7 @@ var
   DriverResult: Integer;
 begin
   if CurUninstallStep <> usUninstall then Exit;
+  StopMeteor;
   if FileExists(ExpandConstant('{app}\SteamVR-Driver.ps1')) and
      FileExists(ExpandConstant('{localappdata}\Nightfall Meteor\steamvr-driver-registration.json')) then
     Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
