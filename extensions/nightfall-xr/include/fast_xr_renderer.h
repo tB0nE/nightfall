@@ -99,6 +99,17 @@ public:
 	void set_depth_sync(bool p_enabled, int p_delay_frames);
 	void set_depth_refinement(bool p_alignment, bool p_cleanup);
 
+	// Several screens share one decoded frame. The primary (stereo, AI depth) draws only its
+	// part: p_crop is (x, y, w, h) in [0, 1] of the frame, top-left origin. An empty array
+	// means the whole frame.
+	void set_primary_crop(PackedFloat32Array p_crop);
+	// The other screens, each a mono layer drawn from its own part of the frame. Each entry:
+	// transform (Transform3D, the layer's pose; a cylinder's centre for curvature > 0),
+	// width/height (metres), curvature (int), radius, central_angle, sort_order (int),
+	// pixels (Vector2i, the swapchain size) and crop (PackedFloat32Array x, y, w, h as above).
+	void set_secondary_screens(Array p_screens);
+	int get_secondary_screen_count() const;
+
 	// Called every GDScript _process() tick with the latest frame's
 	// parameters; actual GL rendering happens later, in _on_pre_render().
 	// oes_texture_id: the decoder's external OES texture (GL_TEXTURE_EXTERNAL_OES).
@@ -513,6 +524,42 @@ private:
 			const float *p_tex_matrix);
 	void poll_ambient_sample();
 	bool issue_ambient_sample();
+
+	// Secondary screens (see set_secondary_screens()). The script thread replaces
+	// pending_secondaries under secondary_mutex; the render thread applies it in
+	// apply_pending_secondaries(), with our EGL context current, since Meta's runtime ties a
+	// swapchain's images to the context that enumerated them.
+	struct SecondaryScreen {
+		XrSwapchain swapchain = XR_NULL_HANDLE;
+		uint32_t image_count = 0;
+		XrSwapchainImageOpenGLESKHR *images = nullptr;
+		int pixel_width = 0, pixel_height = 0;
+		float crop[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+		Transform3D transform;
+		float width = 1.0f, height = 1.0f;
+		int curvature = 0;
+		float radius = 1.0f, central_angle = 0.5f;
+		int sort_order = 1;
+		bool rendered = false;
+		XrCompositionLayerQuad quad{};
+		XrCompositionLayerCylinderKHR cylinder{};
+		XrCompositionLayerSettingsFB settings{};
+	};
+	std::mutex secondary_mutex;
+	std::vector<SecondaryScreen> pending_secondaries;
+	bool pending_secondaries_changed = false;
+	std::vector<SecondaryScreen> secondaries;
+	// Swapchains no longer submitted, destroyed once the compositor has had
+	// RESIZE_DRAIN_FRAME_COUNT frames without them.
+	std::vector<SecondaryScreen> retiring_secondaries;
+	int retiring_frames_remaining = 0;
+	float primary_crop[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+	bool apply_pending_secondaries();
+	bool create_secondary_swapchain(SecondaryScreen &p_screen);
+	void destroy_secondary_swapchain(SecondaryScreen &p_screen);
+	void destroy_retiring_secondaries(bool p_all);
+	void render_secondary_screens(uint32_t p_oes_texture_id, const float *p_tex_matrix);
+	uint64_t secondary_layer(SecondaryScreen &p_screen, XrSpace p_space);
 #endif
 };
 

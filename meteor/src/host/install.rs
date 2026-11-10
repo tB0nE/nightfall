@@ -35,6 +35,11 @@ pub const RELEASE: Option<Release> = Some(Release {
     binary: "bin/meteor-vibepollo",
 });
 
+/// Whether the pinned Linux host makes KDE virtual monitors (Meteor-Vibepollo
+/// 0.1.0-preview.4 and later). Turn on with the pin that brings them.
+#[cfg(not(windows))]
+pub const RELEASE_HAS_VIRTUAL_MONITORS: bool = false;
+
 pub struct Install;
 
 impl Install {

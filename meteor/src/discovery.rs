@@ -217,6 +217,28 @@ async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
     let Some(supervisor) = crate::host::view::RUNNING.get() else {
         return (503, json!({"error": "No bundled host running"}));
     };
+    // Linux: the launch carries the count (virtual_displays=N) and the host makes that many
+    // KDE virtual monitors for the session itself, so the host's config and its clients'
+    // permissions stay as they are.
+    #[cfg(not(windows))]
+    let reply = {
+        let _ = supervisor;
+        log::info!("Virtual monitors: {count} from the next launch");
+        (202, json!({
+            "status": if enabled { "enabled" } else { "disabled" },
+            "count": count,
+            "deferred": false,
+            "host_restarting": false,
+        }))
+    };
+    #[cfg(windows)]
+    let reply = apply_virtual_on_windows(supervisor, count, enabled).await;
+    reply
+}
+
+/// Windows: the host's virtual display driver follows its config and each client's settings.
+#[cfg(windows)]
+async fn apply_virtual_on_windows(supervisor: &std::sync::Arc<crate::host::Supervisor>, count: u8, enabled: bool) -> (u16, serde_json::Value) {
     let conf_path = supervisor.instance.conf_path();
     let appdata = supervisor.instance.appdata();
     if let Err(err) = crate::host::instance::set_virtual_display_mode(&conf_path, &appdata, count) {
@@ -274,6 +296,7 @@ async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
     }))
 }
 
+#[cfg(windows)]
 /// Applies the virtual display keys through Vibepollo's `PATCH /api/config`,
 /// which merges them into the existing config instead of replacing the file.
 /// Returns `Ok(true)` when Vibepollo deferred the change to session end.
@@ -308,6 +331,7 @@ fn patch_virtual_display_config(base: u16, user: &str, password: &str, count: u8
     Ok(parsed.get("deferred").and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
+#[cfg(windows)]
 /// A ureq agent for the managed host: self-signed certificate, fixed loopback
 /// only, no proxies and no redirects.
 fn vibepollo_agent() -> ureq::Agent {
@@ -320,6 +344,7 @@ fn vibepollo_agent() -> ureq::Agent {
         .into()
 }
 
+#[cfg(windows)]
 /// Calls Vibepollo's `/api/clients/update` for every paired client to set
 /// `always_use_virtual_display`. Runs in a blocking thread (ureq is sync).
 /// Returns `Ok(())` when at least one client was updated.
@@ -375,6 +400,7 @@ fn update_all_clients_virtual(base: u16, user: &str, password: &str, enabled: bo
     }
 }
 
+#[cfg(windows)]
 fn vibepollo_basic_auth(user: &str, password: &str) -> String {
     const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let raw = format!("{user}:{password}");

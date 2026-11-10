@@ -519,7 +519,9 @@ async fn main() {
         pairing: host_view.pairing.clone(),
         #[cfg(windows)]
         vdd_installed: sunshine_vdd_installed(),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        vdd_installed: host_view.supervisor.is_some() && host::virtual_monitors_supported(&config),
+        #[cfg(not(any(windows, target_os = "linux")))]
         vdd_installed: false,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));

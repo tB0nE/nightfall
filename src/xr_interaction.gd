@@ -1014,6 +1014,9 @@ func _reveal_contextual_screen_controls() -> void:
 	var target := PointerTarget.resolve(raycast.get_collider())
 	if target.role in [&"grab_bar", &"corner", &"screen_shortcut", &"screen_tab"]:
 		main.screen_shortcuts.reveal_controls(target.screen)
+	elif target.role == &"screen":
+		# Shows the screen's grab bar while pointing at it, without its corner handles.
+		main.screen_shortcuts.point_at(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast

@@ -2,8 +2,9 @@ class_name NativeXrRendererManager
 extends RefCounted
 
 # Production bridge for the Android/GLES composition-layer renderer. The
-# legacy Godot viewport path remains live as a fallback, for multi-monitor,
-# and for raw/input depth diagnostics. DMap-Final and DMap-Warp stay native so
+# legacy Godot viewport path remains live as a fallback (independent browser
+# screens, PyroWave, raw/input depth diagnostics). Further stream screens are
+# drawn natively too, each from its own part of the decoded frame. DMap-Final and DMap-Warp stay native so
 # they inspect the exact production textures rather than legacy approximations.
 
 var main: Node3D
@@ -63,6 +64,29 @@ func _native_compositor_sharpening() -> int:
 		return 2
 	return 0
 
+## Whether this build of the renderer draws stream screens beside the primary.
+func draws_secondary_screens() -> bool:
+	return renderer != null and renderer.has_method("set_secondary_screens")
+
+## The part of the decoded frame a screen shows: "pixels" (its size in the decoded frame) and
+## "crop" ((x, y, w, h) in [0, 1], top-left origin, half a texel clear of the neighbouring
+## screen; empty when it fills the frame). {} when it can't be told.
+func screen_part(screen: VRScreen) -> Dictionary:
+	var media: Vector2i = main.primary_media_size()
+	var frame: Vector2i = main.layout.frame_size if main.layout else Vector2i.ZERO
+	if screen == null or screen.monitor == null or media.x <= 0 or media.y <= 0 or frame.x <= 0 or frame.y <= 0:
+		return {"pixels": media, "crop": PackedFloat32Array()} if screen != null and media.x > 0 else {}
+	var rect: Rect2i = screen.monitor.frame_rect
+	if rect.size.x <= 0 or rect.size.y <= 0 or rect == Rect2i(Vector2i.ZERO, frame):
+		return {"pixels": media, "crop": PackedFloat32Array()}
+	var pixels := Vector2i(maxi(1, roundi(rect.size.x * float(media.x) / frame.x)), maxi(1, roundi(rect.size.y * float(media.y) / frame.y)))
+	var hx := 0.5 / media.x
+	var hy := 0.5 / media.y
+	var crop := PackedFloat32Array([
+		float(rect.position.x) / frame.x + hx, float(rect.position.y) / frame.y + hy,
+		float(rect.size.x) / frame.x - 2.0 * hx, float(rect.size.y) / frame.y - 2.0 * hy])
+	return {"pixels": pixels, "crop": crop}
+
 func can_render_current_config() -> bool:
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive():
 		return false
@@ -73,6 +97,9 @@ func can_render_current_config() -> bool:
 		if screen != main.primary_screen and main.screen_sources.browser_for_screen(screen) == null:
 			if main.screen_sources.has_method("stream_screen") and main.screen_sources.stream_screen() == screen and not main.is_streaming:
 				continue # A secondary welcome surface has its own mono layer.
+			# Further stream screens are mono layers drawn from their own part of the frame.
+			if draws_secondary_screens() and main.is_streaming and screen.monitor != null:
+				continue
 			return false
 	# PyroWave decodes to plain CPU YUV420p planes uploaded through the
 	# legacy ShaderMaterial/RenderingDevice texture path (see
@@ -151,8 +178,18 @@ func refresh() -> void:
 		_last_eligible = false
 		return
 	var size: Vector2i = main.primary_media_size()
+	var primary_part := screen_part(main.primary_screen) if draws_secondary_screens() else {}
+	if not primary_part.is_empty():
+		size = primary_part.pixels
 	if size.x <= 0 or size.y <= 0:
 		return
+	if draws_secondary_screens():
+		var primary_crop: PackedFloat32Array = primary_part.get("crop", PackedFloat32Array())
+		renderer.set_primary_crop(primary_crop)
+		# On-device depth then sees the primary alone, matching what the primary draws.
+		var source = main.primary_capture_source()
+		if source and source.has_method("set_native_depth_capture_crop"):
+			source.set_native_depth_capture_crop(primary_crop)
 	var mode := _mode()
 	var mode_changed := mode != _last_mode
 	if not stream_started or size != _last_size:
@@ -196,10 +233,8 @@ func refresh() -> void:
 			request_stats_overlay_update()
 		main._log("[NATIVE-XR] Native renderer active; legacy full-resolution passes disabled")
 
-func _sync_geometry() -> void:
-	if not active or not main.primary_screen:
-		return
-	var screen: VRScreen = main.primary_screen
+## A screen's layer placement: a cylinder is posed at its centre, a quad at the screen.
+func _layer_geometry(screen: VRScreen) -> Dictionary:
 	var transform: Transform3D = screen.global_transform
 	var radius: float = screen.get_cylinder_radius() if screen.curvature > 0 else 1.0
 	var central_angle: float = screen.mesh_size.x / radius if screen.curvature > 0 else 0.01
@@ -207,21 +242,62 @@ func _sync_geometry() -> void:
 		var screen_forward: Vector3 = -screen.global_transform.basis.z
 		transform.origin = screen.global_position - screen_forward * radius
 	var view_dist := maxf((screen.global_position - main.xr_camera.global_position).length(), 0.5)
-	var sort_order := clampi(int((10.0 - view_dist) * 10.0), 1, 100)
-	renderer.set_geometry(transform, screen.mesh_size.x, screen.mesh_size.y,
-			screen.curvature, radius, central_angle, sort_order, main.settings.bezel_enabled)
+	return {
+		"transform": transform, "width": screen.mesh_size.x, "height": screen.mesh_size.y,
+		"curvature": screen.curvature, "radius": radius, "central_angle": central_angle,
+		"sort_order": clampi(int((10.0 - view_dist) * 10.0), 1, 100),
+	}
+
+func _sync_geometry() -> void:
+	if not active or not main.primary_screen:
+		return
+	var g := _layer_geometry(main.primary_screen)
+	renderer.set_geometry(g.transform, g.width, g.height, g.curvature, g.radius, g.central_angle,
+			g.sort_order, main.settings.bezel_enabled)
 	renderer.set_compositor_sharpening(_native_compositor_sharpening())
+	if draws_secondary_screens():
+		_sync_secondary_screens()
+
+var _secondary_signature := ""
+
+## The other stream screens, each drawn natively from its part of the frame.
+func _sync_secondary_screens() -> void:
+	var screens := []
+	var signature := ""
+	for screen in main.screens:
+		if screen == main.primary_screen or main.screen_sources.browser_for_screen(screen) != null or screen.monitor == null:
+			continue
+		var part := screen_part(screen)
+		if part.is_empty() or (part.crop as PackedFloat32Array).is_empty():
+			continue
+		var entry := _layer_geometry(screen)
+		entry["pixels"] = part.pixels
+		entry["crop"] = part.crop
+		screens.append(entry)
+		signature += "%s:%s;" % [screen.monitor_id, str(part.pixels)]
+	renderer.set_secondary_screens(screens)
+	if signature != _secondary_signature:
+		_secondary_signature = signature
+		if legacy_disabled:
+			_disable_legacy_video()
+		# A new screen shows once a frame is drawn into it; don't wait for the desktop to change.
+		_force_redraw = true
+		main._log("[NATIVE-XR] Drawing %d further screen(s) natively" % screens.size())
 
 func _disable_legacy_video() -> void:
-	var screen = main.primary_screen
-	if not screen:
+	if not main.primary_screen:
 		return
-	for layer in [screen.comp_cylinder, screen.comp_cylinder_left, screen.comp_cylinder_right]:
-		if layer:
-			layer.visible = false
-	for viewport in [screen.comp_viewport, screen.comp_viewport_left, screen.comp_viewport_right]:
-		if viewport:
-			viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	for screen in main.screens:
+		# The primary always; other stream screens when this renderer draws them too. Browser
+		# screens keep their own layers.
+		if screen != main.primary_screen and (not draws_secondary_screens() or main.screen_sources.browser_for_screen(screen) != null):
+			continue
+		for layer in [screen.comp_cylinder, screen.comp_cylinder_left, screen.comp_cylinder_right]:
+			if layer:
+				layer.visible = false
+		for viewport in [screen.comp_viewport, screen.comp_viewport_left, screen.comp_viewport_right]:
+			if viewport:
+				viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 
 func process_frame(new_frame: bool) -> void:
@@ -362,8 +438,15 @@ func deactivate(restore_legacy: bool) -> void:
 	active = false
 	legacy_disabled = false
 	_stats_upload_delay = -1
+	_secondary_signature = ""
 	if main.comp:
 		main.comp.clear_native_ambient_sample()
+	if renderer and draws_secondary_screens():
+		renderer.set_secondary_screens([])
+		renderer.set_primary_crop(PackedFloat32Array())
+		var source = main.primary_capture_source() if main.has_method("primary_capture_source") else null
+		if source and source.has_method("set_native_depth_capture_crop"):
+			source.set_native_depth_capture_crop(PackedFloat32Array())
 	if stream_started and renderer:
 		renderer.stop_stream()
 	stream_started = false

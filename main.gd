@@ -1115,14 +1115,15 @@ func set_comp_grab_bar_color(viewport: SubViewport, color: Color):
 	CompositionLayerManager.set_grab_bar_color(viewport, color)
 
 func _update_grab_bar_layers():
-	# One shared atlas per screen holds grab bar, shortcuts, corners and tabs.
-	# No additional controls layer is submitted as hover changes.
+	# One shared atlas per screen holds grab bar, shortcuts, corners and tabs. Only the
+	# screen being pointed at submits it (see ScreenShortcutBar.pointed_screen).
 	composition_screen_controls.update(
 		screens,
 		comp.in_use,
 		DEBUG_COMP_GRAB_BAR,
 		DEBUG_COMP_CORNERS,
-		screen_shortcuts.revealed_screen if screen_shortcuts else null)
+		screen_shortcuts.revealed_screen if screen_shortcuts else null,
+		screen_shortcuts.pointed_screen if screen_shortcuts else null)
 
 func exit_app():
 	if browser_prototype:
