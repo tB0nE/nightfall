@@ -43,6 +43,14 @@ func _init() -> void:
 	settings.resolution_percent = 150
 	assert(settings.effective_eye_dimensions(512, Vector2i(4000,3200)) == Vector2i(4096,3280))
 	settings.resolution_percent = 100
+	# A host encoder that stops at 4096 per side (AMD Polaris): both eyes must fit side by side.
+	assert(settings.effective_eye_dimensions(512, Vector2i(2064,2208), Vector2i(4096,4096)) == Vector2i(2048,2176))
+	assert(settings.effective_eye_dimensions(512, Vector2i(1832,1920), Vector2i(4096,4096)) == Vector2i(1840,1920))
+	assert(settings.effective_eye_dimensions(512, Vector2i(2064,2208), Vector2i(8192,4096)) == Vector2i(2064,2208))
+	settings.resolution_percent = 120
+	var fitted := settings.effective_eye_dimensions(512, Vector2i(2064,2208), Vector2i(4096,4096))
+	assert(fitted.x * 2 <= 4096 and fitted.y <= 4096 and fitted.x % 16 == 0 and fitted.y % 16 == 0)
+	settings.resolution_percent = 100
 	for size in [256, 1920, 2208, 2656, 3312, 4096]: assert(Video.valid_eye_size(size))
 	for size in [0, 255, 2209, 4112]: assert(not Video.valid_eye_size(size))
 	settings.cycle_bitrate()

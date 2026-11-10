@@ -85,14 +85,26 @@ static func reference_eye_dimensions(backend, stream_backend = null) -> Vector2i
 		if panel != Vector2i.ZERO: return panel
 	return recommended_eye_dimensions(backend)
 
-func effective_eye_dimensions(profile_size: int, recommended: Vector2i) -> Vector2i:
+func effective_eye_dimensions(profile_size: int, recommended: Vector2i, max_frame := Vector2i.ZERO) -> Vector2i:
+	var dimensions: Vector2i
 	if resolution_percent > 0 and recommended.x > 0 and recommended.y > 0:
 		# One common scale preserves the reference ratio even at the size cap.
 		var scale := minf(resolution_percent / 100.0, 4096.0 / maxi(recommended.x, recommended.y))
-		return Vector2i(clampi(int(ceil(recommended.x * scale / 16.0)) * 16, 256, 4096),
+		dimensions = Vector2i(clampi(int(ceil(recommended.x * scale / 16.0)) * 16, 256, 4096),
 			clampi(int(ceil(recommended.y * scale / 16.0)) * 16, 256, 4096))
-	var legacy := effective_eye_size(profile_size)
-	return Vector2i(legacy, legacy)
+	else:
+		var legacy := effective_eye_size(profile_size)
+		dimensions = Vector2i(legacy, legacy)
+	return fit_encoder_frame(dimensions, max_frame)
+
+## Shrinks eyes (keeping their ratio, multiples of 16) until both, side by side, fit the host
+## encoder's largest frame. Older GPUs stop at 4096 per side; ZERO means no known limit.
+static func fit_encoder_frame(eyes: Vector2i, max_frame: Vector2i) -> Vector2i:
+	if max_frame.x <= 0 or max_frame.y <= 0 or (eyes.x * 2 <= max_frame.x and eyes.y <= max_frame.y):
+		return eyes
+	var scale := minf(max_frame.x / (2.0 * eyes.x), float(max_frame.y) / eyes.y)
+	return Vector2i(clampi(int(floor(eyes.x * scale / 16.0)) * 16, 256, 4096),
+		clampi(int(floor(eyes.y * scale / 16.0)) * 16, 256, 4096))
 
 func effective_eye_size(profile_size: int, recommended_size: int = 0) -> int:
 	if resolution_percent > 0 and recommended_size > 0:

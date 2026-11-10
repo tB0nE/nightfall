@@ -44,6 +44,55 @@ def amd_codecs(bridge, node):
     return [codec for bit,codec in [(1,'h264'),(2,'h265')] if mask&bit]
 
 
+VA_PROFILES={'h264':6,'h265':17}  # VAProfileH264Main, VAProfileHEVCMain
+VA_ENCODE_ENTRYPOINTS=(6,8)  # VAEntrypointEncSlice, VAEntrypointEncSliceLP
+VA_ATTRIB_MAX_PICTURE_WIDTH,VA_ATTRIB_MAX_PICTURE_HEIGHT=18,19
+VA_ATTRIB_NOT_SUPPORTED=0x80000000
+
+
+def vaapi_max_frame(node, codecs):
+    """The largest frame (width, height) every listed codec encodes on node, or None if unknown.
+
+    Both eyes go side by side into one frame, so on GPUs that stop at 4096 (AMD Polaris) the
+    headset has to offer smaller eyes. Only reads the driver's limits; never encodes."""
+    try:
+        va=ctypes.CDLL('libva.so.2');va_drm=ctypes.CDLL('libva-drm.so.2')
+    except OSError:
+        return None
+    class Attrib(ctypes.Structure):
+        _fields_=[('type',ctypes.c_int),('value',ctypes.c_uint32)]
+    va_drm.vaGetDisplayDRM.argtypes=[ctypes.c_int];va_drm.vaGetDisplayDRM.restype=ctypes.c_void_p
+    va.vaInitialize.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_int),ctypes.POINTER(ctypes.c_int)]
+    va.vaTerminate.argtypes=[ctypes.c_void_p]
+    va.vaGetConfigAttributes.argtypes=[ctypes.c_void_p,ctypes.c_int,ctypes.c_int,ctypes.POINTER(Attrib),ctypes.c_int]
+    try:
+        fd=os.open(node,os.O_RDWR)
+    except OSError:
+        return None
+    try:
+        display=va_drm.vaGetDisplayDRM(fd)
+        major,minor=ctypes.c_int(),ctypes.c_int()
+        if not display or va.vaInitialize(display,ctypes.byref(major),ctypes.byref(minor))!=0:
+            return None
+        try:
+            limit=None
+            for codec in codecs:
+                best=None
+                for entrypoint in VA_ENCODE_ENTRYPOINTS:
+                    attrs=(Attrib*2)(Attrib(VA_ATTRIB_MAX_PICTURE_WIDTH,0),Attrib(VA_ATTRIB_MAX_PICTURE_HEIGHT,0))
+                    if va.vaGetConfigAttributes(display,VA_PROFILES[codec],entrypoint,attrs,2)!=0: continue
+                    if VA_ATTRIB_NOT_SUPPORTED in (attrs[0].value,attrs[1].value) or not attrs[0].value or not attrs[1].value: continue
+                    size=(int(attrs[0].value),int(attrs[1].value))
+                    best=size if best is None else (max(best[0],size[0]),max(best[1],size[1]))
+                if best is None: return None
+                limit=best if limit is None else (min(limit[0],best[0]),min(limit[1],best[1]))
+            return limit
+        finally:
+            va.vaTerminate(display)
+    finally:
+        os.close(fd)
+
+
 def select(root, output, environment=None, devices=None):
     env=os.environ if environment is None else environment
     devices=render_devices() if devices is None else devices
@@ -57,6 +106,7 @@ def select(root, output, environment=None, devices=None):
     package=root/'xr-runtime' if installed else root/'.build-cache/meteor-xr/amd-vaapi'
     values={}
     codecs=['h264','h265']
+    max_frame=None
     if backend=='vaapi':
         if installed:
             manifest=json.loads((package/'manifest.json').read_text())
@@ -72,6 +122,7 @@ def select(root, output, environment=None, devices=None):
         bridge=package/'libmeteor-vaapi-probe.so'
         codecs=amd_codecs(bridge,node) if bridge.is_file() else []
         if not codecs: raise RuntimeError(f'{node} does not provide hardware H.264/HEVC encoding and VA video processing')
+        max_frame=vaapi_max_frame(node,codecs)
         if env.get('NIGHTFALL_XR_CAPABILITIES_ONLY')!='1':
             if env.get('NIGHTFALL_XR_CODEC','h264') not in codecs: raise RuntimeError('Selected AMD GPU does not support the requested XR codec')
             if env.get('NIGHTFALL_XR_FOVEATED_ENCODING','0')!='0': raise RuntimeError('AMD XR requires Foveated Encoding Off')
@@ -85,6 +136,7 @@ def select(root, output, environment=None, devices=None):
     icd=driver_manifest(backend)
     report={'backend':backend,'requested':requested,'render_device':node,'vulkan_driver':str(icd),
             'codec':env.get('NIGHTFALL_XR_CODEC','h264'),'live_bitrate':backend=='nvenc','foveated_encoding':backend=='nvenc','codecs':codecs}
+    if max_frame: report['max_frame']=list(max_frame)
     (output/'encoder-selection.json').write_text(json.dumps(report,indent=2)+'\n')
     print('XR_ENCODER '+json.dumps(report),flush=True)
     return backend,bridge,icd,values

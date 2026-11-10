@@ -8,8 +8,18 @@ pub struct Capabilities {
     pub foveated_encoding:bool,
     pub live_bitrate:bool,
     pub codecs:Vec<String>,
+    /// The largest frame (width, height) the encoder takes. Both eyes share one frame side by
+    /// side, so the headset offers eyes that fit; None when unknown (no limit is applied).
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub max_frame:Option<[u32;2]>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub error:Option<String>,
+}
+impl Capabilities {
+    /// Whether a stereo frame of two eyes this size fits the encoder.
+    pub fn fits_eyes(&self,width:u32,height:u32)->bool {
+        self.max_frame.is_none_or(|[w,h]|width.saturating_mul(2)<=w && height<=h)
+    }
 }
 #[derive(Default)]
 pub struct Monitor {key:String,value:Option<Capabilities>}
@@ -18,7 +28,7 @@ impl Monitor {
     pub async fn refresh(&mut self,root:Option<&Path>) -> Option<Capabilities> {
         let root=root?;
         Some(match crate::xr_session::load(root) {
-            Ok(_)=>Capabilities {backend:"nvenc".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],error:None},
+            Ok(_)=>Capabilities {backend:"nvenc".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],max_frame:None,error:None},
             Err(error)=>unavailable(&error.to_string()),
         })
     }
@@ -46,4 +56,4 @@ impl Monitor {
         self.value.clone()
     }
 }
-fn unavailable(error:&str)->Capabilities {Capabilities{backend:"unavailable".into(),foveated_encoding:false,live_bitrate:false,codecs:vec![],error:Some(error.into())}}
+fn unavailable(error:&str)->Capabilities {Capabilities{backend:"unavailable".into(),foveated_encoding:false,live_bitrate:false,codecs:vec![],max_frame:None,error:Some(error.into())}}

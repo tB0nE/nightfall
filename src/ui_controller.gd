@@ -889,7 +889,8 @@ func refresh_pcvr_menu() -> void:
 			_pcvr_info.text = "PCVR setup • Connect and approve this headset in Meteor on your PC."
 		if _pcvr_resolution_btn:
 			var recommended := PCVRVideoSettings.reference_eye_dimensions(backend, main.get("stream_backend"))
-			var size := _pcvr_video.effective_eye_dimensions(512, recommended)
+			var max_frame: Vector2i = xr_control.encoder_max_frame() if xr_control.has_method("encoder_max_frame") else Vector2i.ZERO
+			var size := _pcvr_video.effective_eye_dimensions(512, recommended, max_frame)
 			var label := "%d%%" % _pcvr_video.resolution_percent if _pcvr_video.resolution_percent > 0 else "Custom"
 			var running := Vector2i(int(status.get("projection_eye_size", 0)), int(status.get("projection_eye_height", status.get("projection_eye_size", 0))))
 			if active and running.x > 0 and running.y > 0 and size != running:

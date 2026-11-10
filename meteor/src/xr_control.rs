@@ -152,6 +152,10 @@ impl Negotiation {
                 if !valid_eye_size(height) || !valid_eye_size(width) || !matches!(hz, 20 | 60 | 72) || (long_run && !matches!(hz,60 | 72)) {
                     return Ok(self.reply(Some("unsupported_profile")));
                 }
+                // Older GPUs stop at 4096 per side; a larger frame would fail inside the runtime.
+                if self.encoder.as_ref().is_some_and(|caps|!caps.fits_eyes(width,height)) {
+                    return Ok(self.reply(Some("frame_too_large")));
+                }
                 let mut id = [0u8; 16];
                 SystemRandom::new()
                     .fill(&mut id)
@@ -931,11 +935,27 @@ mod tests {
     #[test]
     fn unsupported_encoder_masks_foveation_without_rejecting_stream() {
         let mut state=Negotiation::default();
-        state.encoder=Some(crate::xr_encoder::Capabilities{backend:"vaapi".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],error:None});
+        state.encoder=Some(crate::xr_encoder::Capabilities{backend:"vaapi".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h264".into(),"h265".into()],max_frame:None,error:None});
         let reply=state.apply(Request::ConfigureVideo{bitrate_mbps:32,codec:Some("h264".into()),foveated_encoding:true}).unwrap();
         assert!(reply.reason.is_none());assert!(!reply.encoder.unwrap().foveated_encoding);
         state.apply(Request::Offer{width:512,height:512,hz:20}).unwrap();
         assert!(!state.session.unwrap().foveated_encoding);
+    }
+
+    #[test]
+    fn offers_must_fit_the_encoders_largest_frame() {
+        let caps=|max_frame|crate::xr_encoder::Capabilities{backend:"vaapi".into(),foveated_encoding:false,live_bitrate:false,codecs:vec!["h265".into()],max_frame,error:None};
+        // AMD Polaris: 4096 per side, so two 2064-wide eyes (4128) don't fit.
+        let mut state=Negotiation::default();
+        state.encoder=Some(caps(Some([4096,4096])));
+        let reply=state.apply(Request::OfferLong{width:2064,height:2208,hz:72}).unwrap();
+        assert_eq!(reply.reason.as_deref(),Some("frame_too_large"));
+        assert!(state.session.is_none());
+        assert_eq!(state.apply(Request::OfferLong{width:2048,height:2192,hz:72}).unwrap().state,"awaiting_acceptance");
+        // No known limit: unchanged.
+        let mut open=Negotiation::default();
+        open.encoder=Some(caps(None));
+        assert_eq!(open.apply(Request::OfferLong{width:2064,height:2208,hz:72}).unwrap().state,"awaiting_acceptance");
     }
 
     #[test]
