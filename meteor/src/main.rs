@@ -16,6 +16,9 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(windows)]
+#[path = "desktop_win_shim.rs"]
+mod desktop;
 #[cfg(target_os = "linux")]
 mod setup_window;
 #[cfg(target_os = "linux")]
@@ -397,6 +400,9 @@ async fn main() {
     if let Some(mic) = &mic {
         let _ = MIC.set(mic.clone());
     }
+    if let (Some(depth), Some(host)) = (&depth, host_view.supervisor.as_ref()) {
+        depth.set_capture_region_file(host.instance.capture_region_path());
+    }
     let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
         depth_server::start(side.depth, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
@@ -498,7 +504,6 @@ async fn main() {
         }
         None
     };
-    #[cfg(target_os = "linux")]
     if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
         host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone(), xr_trust.clone()));
     }
@@ -511,8 +516,11 @@ async fn main() {
         #[cfg(not(any(target_os = "linux", windows)))]
         host: None,
         xr_port: xr_discovery,
-        #[cfg(target_os = "linux")]
         pairing: host_view.pairing.clone(),
+        #[cfg(windows)]
+        vdd_installed: sunshine_vdd_installed(),
+        #[cfg(not(windows))]
+        vdd_installed: false,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -563,6 +571,14 @@ async fn main() {
         if !no_tray {
             tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
         }
+        #[cfg(windows)]
+        if let Some(d) = &depth {
+            let flag = config::data_dir().join("pending-vda-download");
+            if std::fs::remove_file(&flag).is_ok() {
+                log::info!("Starting VDA download requested during installation");
+                d.download_vda();
+            }
+        }
         let _ = (status, stats, depth, mic);
         if no_tray {
             log::info!("No tray icon requested; press Ctrl+C to stop");
@@ -583,6 +599,37 @@ async fn main() {
         }
     }
     finish_quit();
+}
+
+/// Checks whether the SunshineVDD virtual display driver is installed by
+/// running the probe executable bundled with Meteor-Vibepollo. Result is
+/// cached for the lifetime of this Meteor process.
+#[cfg(windows)]
+fn sunshine_vdd_installed() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let probe = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("runtime/host/drivers/sunshine/virtualdisplay_probe.exe")));
+        probe.is_some_and(|p| {
+            if !p.is_file() { return false; }
+            // --check requires admin (ERROR_ACCESS_DENIED without it). Use
+            // --diagnose instead: it enumerates control interfaces without
+            // opening them, so it works without elevation.
+            let out = std::process::Command::new(&p).arg("--diagnose").output();
+            let Ok(out) = out else { return false; };
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            // Line is "control_interface_count=1 enumerate_error=0 ..."
+            // so take only the first whitespace-delimited token after '='.
+            stdout.lines()
+                .find(|l| l.starts_with("control_interface_count="))
+                .and_then(|l| l.split('=').nth(1))
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| n > 0)
+        })
+    })
 }
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
@@ -619,6 +666,11 @@ fn finish_quit() -> ! {
     if let Some(host) = host_view::RUNNING.get() {
         host.shutdown();
     }
+    // Vibepollo's display helper breaks out of the job object intentionally so
+    // it can restore display topology after the host exits. Kill it here so it
+    // doesn't linger after Meteor itself shuts down.
+    #[cfg(windows)]
+    kill_processes_by_name("sunshine_display_helper.exe");
     #[cfg(windows)]
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
         match std::env::current_exe().and_then(|exe| {
@@ -664,6 +716,37 @@ pub fn exit_now(code: i32) -> ! {
         }
         std::process::exit(code)
     }
+}
+
+#[cfg(windows)]
+fn kill_processes_by_name(name: &str) {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    let name_lower = name.to_ascii_lowercase();
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return;
+    }
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while ok {
+        let exe = String::from_utf16_lossy(entry.szExeFile.iter().take_while(|&&c| c != 0).copied().collect::<Vec<_>>().as_slice());
+        if exe.to_ascii_lowercase() == name_lower {
+            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, entry.th32ProcessID) };
+            if !handle.is_null() {
+                unsafe { TerminateProcess(handle, 1) };
+                unsafe { CloseHandle(handle) };
+                log::info!("Killed lingering {name} (pid {})", entry.th32ProcessID);
+            }
+        }
+        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
 }
 
 async fn wait_for_exit_signal() {

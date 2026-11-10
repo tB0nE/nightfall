@@ -695,6 +695,11 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
             url += "&outputs=" + outputs.uri_encode();
         }
     }
+    if (options.has("virtual_only") && (int64_t)options["virtual_only"] == 1) url += "&virtual_only=1";
+    if (options.has("virtual_displays")) {
+        int64_t virtual_displays = options["virtual_displays"];
+        if (virtual_displays > 0) url += "&virtual_displays=" + String::num_int64(virtual_displays);
+    }
     if (options.has("sops")) url += "&sops=" + String::num_int64(options["sops"]);
     if (options.has("surround_audio_info")) url += "&surroundAudioInfo=" + String::num_int64(options["surround_audio_info"]);
     if (options.has("surround_params")) url += "&surroundParams=" + String(options["surround_params"]);
@@ -895,6 +900,19 @@ void NightfallComputerManager::_on_simple_request_completed(int code, PackedByte
         callback.call(code == 200 ? body.get_string_from_utf8() : "");
 }
 
+// Ends the host's session at an explicit address, e.g. the port Meteor's proxy
+// listens on (the one launch/resume use), and reports the reply body ("" on failure).
+void NightfallComputerManager::stop_stream_at(String ip, int port, Callable callback) {
+    if (ip.is_empty()) {
+        if (callback.is_valid()) callback.call(String());
+        return;
+    }
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    NF_LOG("NightfallPair", "stop_stream_at: sending /cancel to %s:%d", ip.utf8().get_data(), port);
+    http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
+            callable_mp(this, &NightfallComputerManager::_on_simple_request_completed).bind(Variant(callback)));
+}
+
 void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int port) {
     if (ip.is_empty()) return;
     String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/cancel?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
@@ -908,7 +926,11 @@ void NightfallComputerManager::cancel_host_stream(int host_id, String ip, int po
 // _fetch_display_manifest() polls post-launch; only Polaris X11 hosts running the
 // multi-monitor extension (in development, not stock Polaris) populate it - a
 // missing/malformed response just means the caller keeps its own fallback resolution.
-void NightfallComputerManager::fetch_display_manifest(int host_id, Callable callback) {
+// query (optional, already URL-encoded) carries launch options such as
+// "outputs=...&virtual_displays=2": Meteor's host then answers with the screen
+// plan a launch with those options would get, so the launch can ask for exactly
+// that frame size.
+void NightfallComputerManager::fetch_display_manifest(int host_id, Callable callback, String query) {
     if (!config_manager.is_valid()) {
         callback.call(Dictionary());
         return;
@@ -931,6 +953,9 @@ void NightfallComputerManager::fetch_display_manifest(int host_id, Callable call
     }
 
     String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/polaris/v1/display/manifest?uniqueid=" + unique_id + "&uuid=" + _get_uuid();
+    if (!query.is_empty()) {
+        url += "&" + query;
+    }
     NF_LOG("NightfallPrelaunch", "dispatching GET %s", url.utf8().get_data());
     http_requester->request(url, "GET", PackedByteArray(), Dictionary(), _get_ssl_options(),
             callable_mp(this, &NightfallComputerManager::_on_prelaunch_manifest_completed).bind(Variant(callback)));
@@ -1247,7 +1272,8 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_app_cover", "host_id", "app_id", "callback"), &NightfallComputerManager::get_app_cover);
     ClassDB::bind_method(D_METHOD("establish_stream", "host_id", "app_id", "options", "callback"), &NightfallComputerManager::establish_stream);
     ClassDB::bind_method(D_METHOD("stop_stream", "host_id", "callback"), &NightfallComputerManager::stop_stream);
+    ClassDB::bind_method(D_METHOD("stop_stream_at", "ip", "port", "callback"), &NightfallComputerManager::stop_stream_at);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
-    ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback"), &NightfallComputerManager::fetch_display_manifest);
+    ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback", "query"), &NightfallComputerManager::fetch_display_manifest, DEFVAL(String()));
 }

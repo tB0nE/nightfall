@@ -69,6 +69,54 @@ fn shutdown_owned_steamvr(job:HANDLE) {
     }
     for handle in processes {unsafe {CloseHandle(handle);}}
 }
+
+/// Closes SteamVR gracefully after a PCVR session ends. Steam launches
+/// VRChat with CREATE_BREAKAWAY_FROM_JOB so vrmonitor is never in our job;
+/// this sends WM_CLOSE directly after the game exits.
+pub(crate) fn close_steamvr_on_exit() {
+    use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE,System::{
+        Diagnostics::ToolHelp::{CreateToolhelp32Snapshot,TH32CS_SNAPPROCESS,PROCESSENTRY32W,Process32FirstW,Process32NextW},
+        Threading::{OpenProcess,PROCESS_QUERY_LIMITED_INFORMATION,PROCESS_SYNCHRONIZE,WaitForSingleObject},
+    },UI::WindowsAndMessaging::{EnumWindows,GetWindowThreadProcessId,PostMessageW,WM_CLOSE}};
+    struct Windows {monitors:Vec<u32>,requested:bool}
+    unsafe extern "system" fn close_monitor(window:windows_sys::Win32::Foundation::HWND,param:isize)->i32 {
+        let w=unsafe {&mut *(param as *mut Windows)};let mut pid=0;
+        unsafe {GetWindowThreadProcessId(window,&mut pid);}
+        if w.monitors.contains(&pid) && unsafe {PostMessageW(window,WM_CLOSE,0,0)}!=0 {w.requested=true;}
+        1
+    }
+    let snapshot=unsafe {CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0)};
+    if snapshot==INVALID_HANDLE_VALUE {return;}
+    let mut monitors:Vec<u32>=Vec::new();let mut processes=Vec::new();
+    let mut entry:PROCESSENTRY32W=unsafe {std::mem::zeroed()};entry.dwSize=std::mem::size_of_val(&entry) as u32;
+    let mut next=unsafe {Process32FirstW(snapshot,&mut entry)};
+    while next!=0 {
+        let end=entry.szExeFile.iter().position(|&c|c==0).unwrap_or(entry.szExeFile.len());
+        let name=String::from_utf16_lossy(&entry.szExeFile[..end]).to_ascii_lowercase();
+        if matches!(name.as_str(),"vrmonitor.exe"|"vrserver.exe"|"vrcompositor.exe") {
+            let handle=unsafe {OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|PROCESS_SYNCHRONIZE,0,entry.th32ProcessID)};
+            if !handle.is_null() {
+                if name=="vrmonitor.exe" {monitors.push(entry.th32ProcessID);}
+                processes.push(handle);
+            }
+        }
+        next=unsafe {Process32NextW(snapshot,&mut entry)};
+    }
+    unsafe {CloseHandle(snapshot);}
+    if monitors.is_empty() {return;}
+    let mut windows=Windows {monitors,requested:false};
+    unsafe {EnumWindows(Some(close_monitor),(&mut windows as *mut Windows) as isize);}
+    if windows.requested {
+        log::info!("SteamVR close requested after PCVR session ended");
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(4);
+        while processes.iter().any(|&p|unsafe {WaitForSingleObject(p,0)}!=0) && std::time::Instant::now()<deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if processes.iter().all(|&p|unsafe {WaitForSingleObject(p,0)}==0) {log::info!("SteamVR closed normally after PCVR session");}
+        else {log::warn!("SteamVR did not close within four seconds after PCVR session");}
+    }
+    for handle in processes {unsafe {CloseHandle(handle);}}
+}
 fn spawn_owned(command:&mut Command,job:HANDLE)->io::Result<Child> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::{Foundation::INVALID_HANDLE_VALUE,System::{

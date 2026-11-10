@@ -131,9 +131,10 @@ public:
     void get_app_cover(int host_id, int app_id, Callable callback);
 
     void establish_stream(int host_id, int app_id, Dictionary options, Callable callback);
-    void fetch_display_manifest(int host_id, Callable callback);
+    void fetch_display_manifest(int host_id, Callable callback, String query = String());
     void stop_stream(int host_id, Callable callback);
     void cancel_host_stream(int host_id, String ip, int port);
+    void stop_stream_at(String ip, int port, Callable callback);
     void set_cursor_visible(int host_id, bool visible, Callable callback);
 };
 

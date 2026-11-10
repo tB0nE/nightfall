@@ -343,15 +343,25 @@ async fn connection_supervised(
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handshake timeout"))??;
     let (mut receive, mut send, client, server_nonce, client_nonce) = authenticated;
-    if client != allowed && !pairing.as_ref().is_some_and(|trust|trust.allows(&client)) {
-        if let Some(trust) = pairing.as_ref() {
-            let code = trust.request(client);
-            let mut reply = Negotiation::default().reply(Some("approval_pending"));
-            reply.state = "pairing_required".into();
-            if let Some(code) = code { reply.reason = Some(format!("approve_on_host:{code}")); }
-            return respond(&mut stream, &mut send, &reply).await;
+    if client != allowed {
+        match pairing.as_ref() {
+            None => return Err(io::Error::new(io::ErrorKind::PermissionDenied, "device not paired")),
+            Some(trust) if !trust.allows(&client) => {
+                // Authentication proves key possession; auto-approve rather than requiring a
+                // separate manual tray confirmation step.
+                match trust.auto_approve(client) {
+                    Ok(()) => {
+                        log::info!("XR: auto-approved headset {}", crate::xr_trust::code(&client));
+                        #[cfg(windows)]
+                        crate::tray_windows::queue_balloon(format!(
+                            "New headset connected to PCVR ({})", crate::xr_trust::code(&client)
+                        ));
+                    }
+                    Err(error) => log::warn!("XR: auto-approve failed: {error}"),
+                }
+            }
+            _ => {}
         }
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "device not paired"));
     }
     // Reserve exclusive session ownership only after proof of the paired key.
     let Ok(_owner) = session_slot.try_acquire_owned() else {
@@ -1058,7 +1068,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pairing_requires_key_proof_and_local_approval_before_control_access() {
+    async fn pairing_requires_key_proof_and_auto_approves_authenticated_headsets() {
         let directory=std::env::temp_dir().join(format!("meteor-pairing-{}-{}",std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         let trust=Arc::new(crate::xr_trust::Trust::load(directory.join("trust.json")).unwrap());
@@ -1070,25 +1080,23 @@ mod tests {
         let (stop,cancel)=watch::channel(false);
         let task=tokio::spawn(serve(listener,config,cancel));
         let seed=[45;32]; let client_key=MeteorKey::from_seed(seed).public;
-        // Merely sending a public identity must not create an approval request.
+        // Sending a public identity without proving possession must not auto-approve.
         let mut unproved=TcpStream::connect(address).await.unwrap();
         let mut hello=[0;72]; unproved.read_exact(&mut hello).await.unwrap();
         unproved.write_all(&client_key).await.unwrap(); unproved.write_all(&[3;32]).await.unwrap();
         drop(unproved);
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(trust.pending().is_none());
+        assert!(!trust.allows(&client_key));
+        // First authenticated connection is auto-approved and immediately gets access.
         let mut first=TcpStream::connect(address).await.unwrap();
         let (_,mut rx)=client_handshake(&mut first,pin,seed).await;
-        let pending=reply(&mut first,&mut rx).await;
-        assert_eq!(pending.state,"pairing_required");
-        assert_eq!(pending.reason,Some(format!("approve_on_host:{}",crate::xr_trust::code(&client_key))));
-        assert!(pending.session.is_none() && pending.relay.is_none());
-        assert!(!trust.allows(&client_key)); drop(first);
-        trust.approve(client_key).unwrap();
-        let mut approved=TcpStream::connect(address).await.unwrap();
-        let (_,mut rx)=client_handshake(&mut approved,pin,seed).await;
-        assert_eq!(reply(&mut approved,&mut rx).await.state,"idle");
-        drop(approved); stop.send_replace(true);
+        assert_eq!(reply(&mut first,&mut rx).await.state,"idle");
+        assert!(trust.allows(&client_key)); drop(first);
+        // Subsequent connections skip the trust check entirely.
+        let mut second=TcpStream::connect(address).await.unwrap();
+        let (_,mut rx)=client_handshake(&mut second,pin,seed).await;
+        assert_eq!(reply(&mut second,&mut rx).await.state,"idle");
+        drop(second); stop.send_replace(true);
         task.await.unwrap().unwrap(); std::fs::remove_dir_all(directory).unwrap();
     }
 

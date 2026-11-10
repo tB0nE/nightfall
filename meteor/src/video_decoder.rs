@@ -394,6 +394,13 @@ impl Decoder {
             _ => Err("Decoder Auto must be resolved before creation".into()),
         }
     }
+    /// Decode only part of each frame (fractions: left, top, right, bottom). Only NVDEC
+    /// supports this; the FFmpeg backends keep decoding the whole frame.
+    pub fn set_crop(&mut self, crop: Option<[f32; 4]>) {
+        if let Self::Nvdec(d) = self {
+            d.set_crop(crop);
+        }
+    }
     pub fn set_target(&mut self, size: (usize, usize)) {
         match self {
             Self::Nvdec(d) => d.set_target(size.0, size.1),

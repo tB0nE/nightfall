@@ -284,6 +284,9 @@ struct State {
     surface: (usize, usize),
     /// The model's input size.
     target: (usize, usize),
+    /// The part of the frame to decode as fractions of its width and height
+    /// (left, top, right, bottom); None decodes the whole display area.
+    crop: Option<[f32; 4]>,
     bit_depth_minus8: u8,
     transfer: u8,
     full_range: bool,
@@ -437,6 +440,7 @@ impl NvDecoder {
             coded: (0, 0),
             surface: (0, 0),
             target,
+            crop: None,
             bit_depth_minus8: 0,
             transfer: 1,
             full_range: false,
@@ -471,6 +475,14 @@ impl NvDecoder {
         // and lives as long as the parser.
         check("cuvidCreateVideoParser", unsafe { (api.create_parser)(&mut parser, &mut params) })?;
         Ok(NvDecoder { api, ctx, parser, state })
+    }
+
+    /// Decode only part of each frame, given as fractions of its width and
+    /// height (left, top, right, bottom). Takes effect when the stream's next
+    /// sequence header recreates the decoder, so set it before the first
+    /// keyframe.
+    pub fn set_crop(&mut self, crop: Option<[f32; 4]>) {
+        self.state.crop = crop;
     }
 
     /// Change only the reduced model input size. The decoded video surfaces
@@ -541,6 +553,19 @@ impl Drop for NvDecoder {
     }
 }
 
+/// The display area narrowed to `crop` (fractions: left, top, right, bottom). Edges
+/// land on even pixels because NV12 chroma is subsampled, and the result is never
+/// empty or outside the original area.
+fn crop_area(area: [i32; 4], crop: [f32; 4]) -> [i32; 4] {
+    let (width, height) = ((area[2] - area[0]) as f32, (area[3] - area[1]) as f32);
+    let edge = |origin: i32, extent: f32, fraction: f32| origin + (((extent * fraction.clamp(0.0, 1.0)).round() as i32) & !1);
+    let left = edge(area[0], width, crop[0]).min(area[2] - 2);
+    let top = edge(area[1], height, crop[1]).min(area[3] - 2);
+    let right = edge(area[0], width, crop[2]).clamp(left + 2, area[2]);
+    let bottom = edge(area[1], height, crop[3]).clamp(top + 2, area[3]);
+    [left, top, right, bottom]
+}
+
 /// New stream format: (re)create the decoder. Returns the number of decode
 /// surfaces for the parser, or 0 on failure.
 unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) -> c_int {
@@ -561,7 +586,10 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
         state.decoder = ptr::null_mut();
     }
     // Decode at full size (no NVDEC scaling); copy_frame reduces it.
-    let area = format.display_area;
+    let area = match state.crop {
+        Some(crop) => crop_area(format.display_area, crop),
+        None => format.display_area,
+    };
     let tw = ((area[2] - area[0]).max(2) as usize) & !1;
     let th = ((area[3] - area[1]).max(2) as usize) & !1;
     let mut info = DecodeCreateInfo {
@@ -1055,6 +1083,16 @@ pub fn nv12_box_to_rgb(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crop_area_narrows_to_even_edges_inside_the_area() {
+        assert_eq!(super::crop_area([0, 0, 6144, 3456], [0.0, 0.0, 0.5, 0.5]), [0, 0, 3072, 1728]);
+        assert_eq!(super::crop_area([0, 0, 6144, 3456], [0.5, 0.5, 1.0, 1.0]), [3072, 1728, 6144, 3456]);
+        // Odd results are pulled to even edges and stay non-empty.
+        let [l, t, r, b] = super::crop_area([0, 0, 1001, 1001], [0.3333, 0.3333, 0.6667, 0.6667]);
+        assert!(l % 2 == 0 && t % 2 == 0 && r > l && b > t && r <= 1001 && b <= 1001);
+        assert_eq!(super::crop_area([0, 0, 100, 100], [0.999, 0.999, 1.0, 1.0])[2..], [100, 100]);
+    }
+
     use super::*;
 
     #[test]

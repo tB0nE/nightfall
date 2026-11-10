@@ -192,6 +192,40 @@ static func forget_keys() -> void:
 
 ## Meteor's host depth offer ({port, width, height, model, key, ...}), or {}
 ## when it isn't offering depth in a format and encryption this client reads.
+## Virtual display capability reported by Meteor ({driver_installed, max_count}),
+## or {} when the bundled host doesn't support virtual displays.
+static func virtual_display_info(info: Dictionary) -> Dictionary:
+	var vd = info.get("virtual_display", {})
+	if not vd is Dictionary or not vd.get("driver_installed", false):
+		return {}
+	return {"driver_installed": true, "max_count": int(vd.get("max_count", 1))}
+
+## Sends POST /meteor/virtual to request virtual display creation or removal.
+## count must be 0 (disable) or 1 (enable). Calls back with true on success.
+static func post_virtual(owner: Node, host: String, sunshine_https_port: int, count: int, callback: Callable) -> void:
+	var port := discovery_port(sunshine_https_port)
+	var url := "http://%s:%d/meteor/virtual" % [host, port]
+	var body := JSON.stringify({"count": count})
+	var request := HTTPRequest.new()
+	owner.add_child(request)
+	var err := request.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, body)
+	if err != OK:
+		request.queue_free()
+		callback.call(false, {})
+		return
+	var result: Array = await request.request_completed
+	request.queue_free()
+	var ok: bool = result[0] == HTTPRequest.RESULT_SUCCESS and result[1] in [200, 202]
+	# Meteor reports whether it applied the change through Vibepollo's config
+	# reload or fell back to restarting the host, which decide how long the
+	# client must wait before the new manifest is available.
+	var reply := {}
+	if ok and result.size() > 3:
+		var parsed = JSON.parse_string((result[3] as PackedByteArray).get_string_from_utf8())
+		if parsed is Dictionary:
+			reply = parsed
+	callback.call(ok, reply)
+
 static func depth_info(info: Dictionary) -> Dictionary:
 	var depth = info.get("depth", {})
 	if not depth is Dictionary or depth.is_empty():

@@ -284,6 +284,8 @@ pub struct Depth {
     state: Mutex<SavedState>,
     status: Mutex<String>,
     decoder_status: Mutex<String>,
+    /// Where the host publishes the primary monitor's rectangle in its capture frame.
+    capture_region_file: Mutex<Option<PathBuf>>,
     /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
     /// The size the decoder reduces frames to for that model.
@@ -373,6 +375,7 @@ impl Depth {
             state: Mutex::new(state),
             status: Mutex::new("starting".into()),
             decoder_status: Mutex::new("Waiting for video".into()),
+            capture_region_file: Mutex::new(None),
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
@@ -550,6 +553,21 @@ impl Depth {
 
     fn input_size(&self) -> Option<(usize, usize)> {
         self.input_size.lock().ok().and_then(|s| *s)
+    }
+
+    /// The host writes the primary monitor's rectangle in its capture frame here; depth
+    /// then covers that monitor alone instead of every monitor tiled into the frame.
+    pub fn set_capture_region_file(&self, path: PathBuf) {
+        if let Ok(mut file) = self.capture_region_file.lock() {
+            *file = Some(path);
+        }
+    }
+
+    /// The primary monitor's part of the frame, as fractions (left, top, right, bottom),
+    /// or None when the host captures a single monitor (or says nothing).
+    fn capture_region(&self) -> Option<[f32; 4]> {
+        let path = self.capture_region_file.lock().ok()?.clone()?;
+        parse_capture_region(&std::fs::read_to_string(path).ok()?)
     }
 
     /// Model files by name, with the folder each is in: the bundled ones,
@@ -1400,6 +1418,9 @@ impl DepthFeed {
                         else if backend==DecodeBackend::D3d11 {if device.is_some() {gpu_name.as_str()} else {"driver default"}}
                         else {""};
                     let description=format!("{} {device_label}; processing {}",backend.label(),if backend==DecodeBackend::Nvdec && gpu_frames {"CUDA/Auto"} else if portable_gpu {"Vulkan"} else {"CPU"});
+                    let region=self.depth.capture_region();
+                    decoder.set_crop(region);
+                    if let Some([l,t,r,b])=region {log::info!("Host depth covers the primary monitor only ({:.0}%,{:.0}% to {:.0}%,{:.0}% of the frame)",l*100.0,t*100.0,r*100.0,b*100.0);}
                     self.depth.set_decoder_status(description.clone());
                     log::info!("Host depth decoding {codec:?}: {description}, {}x{}",size.0,size.1);
                     self.tags.clear();self.last_output=None;self.pace=RatePace::default();
@@ -1617,5 +1638,44 @@ mod tests {
         assert_eq!(stem(vda::ID), vda::ID);
         let models = ["vda_s_518x294".to_string(), "zipdepth_wide_512x288.ncnn.param".to_string()];
         assert_eq!(preferred_model(&models).as_deref(), Some("zipdepth_wide_512x288.ncnn.param"));
+    }
+}
+
+
+/// Reads the host's `capture-region` file: `frame_w frame_h x y w h`, the primary
+/// monitor's rectangle in the capture frame. Returns it as fractions of the frame
+/// (left, top, right, bottom), or None for the whole frame or anything malformed.
+fn parse_capture_region(text: &str) -> Option<[f32; 4]> {
+    let numbers: Vec<i64> = text.split_whitespace().map(|n| n.parse().ok()).collect::<Option<_>>()?;
+    let [frame_w, frame_h, x, y, w, h] = numbers[..] else { return None };
+    if frame_w <= 0 || frame_h <= 0 || w <= 0 || h <= 0 || x < 0 || y < 0 || x + w > frame_w || y + h > frame_h {
+        return None;
+    }
+    if (x, y, w, h) == (0, 0, frame_w, frame_h) {
+        return None;
+    }
+    let (fw, fh) = (frame_w as f32, frame_h as f32);
+    Some([x as f32 / fw, y as f32 / fh, (x + w) as f32 / fw, (y + h) as f32 / fh])
+}
+
+#[cfg(test)]
+mod capture_region_tests {
+    use super::parse_capture_region;
+
+    #[test]
+    fn reads_the_primary_tile_as_fractions() {
+        assert_eq!(parse_capture_region("5120 2880 0 0 2560 1440\n"), Some([0.0, 0.0, 0.5, 0.5]));
+        assert_eq!(parse_capture_region("5120 2880 2560 1440 2560 1440"), Some([0.5, 0.5, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn whole_frame_or_bad_input_means_no_crop() {
+        assert_eq!(parse_capture_region("2560 1440 0 0 2560 1440"), None);
+        assert_eq!(parse_capture_region(""), None);
+        assert_eq!(parse_capture_region("5120 2880 0 0 2560"), None);
+        assert_eq!(parse_capture_region("5120 2880 4000 0 2560 1440"), None);
+        assert_eq!(parse_capture_region("5120 2880 -1 0 2560 1440"), None);
+        assert_eq!(parse_capture_region("5120 2880 0 0 0 1440"), None);
+        assert_eq!(parse_capture_region("a b c d e f"), None);
     }
 }

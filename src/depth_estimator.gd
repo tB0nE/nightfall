@@ -6,6 +6,11 @@ var depth_viewport: SubViewport
 var depth_target: ColorRect
 var depth_target_mat: ShaderMaterial
 var depth_texture: ImageTexture
+## Whether depth_texture's rows are stored bottom first. Meteor maps and
+## native-capture inference are uploaded that way for the native renderer;
+## the CPU-readback path is not. The legacy shaders read this to sample the
+## map the right way up (depth_bottom_first uniform).
+var depth_bottom_first := false
 var depth_revision: int = 0
 var depth_source_age_ms: float = 0.0
 var enabled: bool = false
@@ -266,6 +271,16 @@ func _setup_warp_passes():
 # dimensions in stream_manager.gd's resize_stream_viewport()) regardless of
 # host type - the same fix pattern as screen_manager.gd's
 # resize_screen_to_aspect() (GitHub issue #17).
+## The part of the guide's source texture that shows the primary screen. The
+## decoder textures and the stream viewport hold the whole (possibly
+## multi-screen) frame; the primary's composition viewport already shows that
+## screen alone, so cropping it again would guide depth with the wrong colours.
+func _guide_region() -> Vector4:
+	if not _direct_stream_source_bound and main.comp and main.comp.in_use \
+			and main.primary_screen and main.primary_screen.comp_viewport:
+		return Vector4(0.0, 0.0, 1.0, 1.0)
+	return main.primary_screen.uv_region if main.primary_screen else Vector4(0.0, 0.0, 1.0, 1.0)
+
 func _resize_warp_passes():
 	# upsample_mat decodes YUV directly (see depth_upsample.gdshader) and
 	# needs the same uv_region the primary screen's own materials use, so
@@ -275,7 +290,7 @@ func _resize_warp_passes():
 	# stream's own resolution (e.g. a monitor-selection change).
 	if main.primary_screen:
 		if depth_target_mat:
-			depth_target_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
+			depth_target_mat.set_shader_parameter("uv_region", _guide_region())
 		if upsample_mat:
 			upsample_mat.set_shader_parameter("uv_region", main.primary_screen.uv_region)
 
@@ -363,6 +378,7 @@ func bind_stream_texture():
 		source_tex = main.stream_viewport.get_texture()
 	depth_target_mat.set_shader_parameter("main_texture", source_tex)
 	depth_target_mat.set_shader_parameter("yuv_mode", 0)
+	depth_target_mat.set_shader_parameter("uv_region", _guide_region())
 	_update_mono_capture_requirement()
 	if was_direct:
 		main._log("[DEPTH] Decoder textures unavailable; mono capture fallback enabled")
@@ -378,6 +394,7 @@ func bind_decoder_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt: int, cr: int
 	depth_target_mat.set_shader_parameter("color_matrix_type", cmt)
 	depth_target_mat.set_shader_parameter("color_range", cr)
 	_direct_stream_source_bound = true
+	depth_target_mat.set_shader_parameter("uv_region", _guide_region())
 	_update_mono_capture_requirement()
 	if not was_direct:
 		main._log("[DEPTH] Direct decoder source bound; redundant mono capture disabled")
@@ -477,7 +494,17 @@ func _push_warp_newton_steps(steps: int):
 	if main.comp_shader_mat_right:
 		main.comp_shader_mat_right.set_shader_parameter("warp_newton_steps", steps)
 
+## Tells every legacy material that reads depth_texture how its rows are stored.
+func _push_depth_orientation() -> void:
+	var mats: Array = [upsample_mat, main.comp_shader_mat_left, main.comp_shader_mat_right]
+	if main.primary_screen and main.primary_screen.material_override is ShaderMaterial:
+		mats.append(main.primary_screen.material_override)
+	for mat in mats:
+		if mat is ShaderMaterial:
+			mat.set_shader_parameter("depth_bottom_first", depth_bottom_first)
+
 func process(delta: float):
+	_push_depth_orientation()
 	# GPU boost fires whenever depth inference is ACTUALLY running on GPU
 	# (main.stream_backend.get_effective_depth_backend() == 2), not just
 	# when the legacy "MiDaS-256-GPU" model entry (index 6) is picked
@@ -584,6 +611,7 @@ func process(delta: float):
 			# at upload, just as we do for upright Meteor maps below.
 			if _native_depth_capture_active:
 				depth_image.flip_y()
+			depth_bottom_first = _native_depth_capture_active
 			depth_texture.update(depth_image)
 			depth_revision += 1
 			_perf_updates += 1
@@ -722,7 +750,8 @@ func _apply_meteor_map(entry: Dictionary) -> void:
 	var image := Image.create_from_data(model_width, model_height, false, Image.FORMAT_L8, entry["map"])
 	# Meteor and corrected native inference both return upright, top-row-first
 	# maps. Match the native GLES texture convention at the upload boundary.
-	if _native_capture_supported():
+	depth_bottom_first = _native_capture_supported()
+	if depth_bottom_first:
 		image.flip_y()
 	depth_texture.update(image)
 	depth_source_age_ms = 0.0

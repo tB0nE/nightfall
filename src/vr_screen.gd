@@ -63,6 +63,24 @@ func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 		if mat:
 			mat.set_shader_parameter("uv_region", uv_region)
 
+## Puts this screen back on its own region of the stream frame, after a
+## welcome or browser surface showed something else on it.
+func restore_monitor_region() -> void:
+	if monitor == null or main == null or main.layout == null:
+		return
+	var frame: Vector2i = main.layout.frame_size
+	if frame.x <= 0 or frame.y <= 0 or monitor.frame_rect.size.x <= 0:
+		return
+	uv_region = Vector4(
+		float(monitor.frame_rect.position.x) / float(frame.x),
+		float(monitor.frame_rect.position.y) / float(frame.y),
+		float(monitor.frame_rect.size.x) / float(frame.x),
+		float(monitor.frame_rect.size.y) / float(frame.y),
+	)
+	for mat in [material_override, comp_shader_mat, comp_shader_mat_left, comp_shader_mat_right]:
+		if mat is ShaderMaterial:
+			mat.set_shader_parameter("uv_region", uv_region)
+
 var comp_cylinder: Node3D = null
 var comp_cylinder_left: Node3D = null
 var comp_cylinder_right: Node3D = null
@@ -156,9 +174,8 @@ func setup(p_main: Node3D, p_monitor_id: StringName = &"m0") -> void:
 func get_cylinder_radius() -> float:
 	if main.comp and main.comp.in_use:
 		var cam_to_screen = global_position - main.xr_camera.global_position
-		var view_dist = cam_to_screen.length()
-		if view_dist < 0.5:
-			view_dist = 3.0
+		# Same clamp as the composition cylinder it has to match.
+		var view_dist = maxf(cam_to_screen.length(), 0.5)
 		if curvature == 1:
 			return view_dist * 3.0
 		elif curvature == 2:
@@ -370,6 +387,12 @@ func update_bezel_size():
 		bezel_mesh.mesh = arr_mesh
 		bezel_mesh.position = Vector3.ZERO
 
+## The radius the curved mesh and its collision shape were last built with.
+## The composition layer re-fits its cylinder whenever the screen moves; the
+## pointer hits this mesh, so it must be rebuilt to match (see
+## CompositionLayerManager._update_cylinder_params_for()).
+var built_radius := 0.0
+
 func apply_curvature():
 	var ms = mesh_size
 	if curvature == 0:
@@ -382,6 +405,7 @@ func apply_curvature():
 	var subdivide = 32
 	var v_subdivide = 16
 	var radius = get_cylinder_radius()
+	built_radius = radius
 	var angle = ms.x / radius
 	var verts = PackedVector3Array()
 	var uvs = PackedVector2Array()

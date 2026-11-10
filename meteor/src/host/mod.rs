@@ -14,10 +14,9 @@
 
 mod detect;
 mod install;
-mod instance;
+pub(crate) mod instance;
 #[cfg(unix)]
 pub mod input;
-#[cfg(unix)]
 pub mod pairing;
 #[cfg(windows)]
 pub mod pin;

@@ -1293,11 +1293,14 @@ func _restart_for_layout_correction() -> bool:
 	# left alone; relaunch the app to get the primary-only starting point again.
 	if layout and not _did_initial_monitor_trim and layout.source == &"host_manifest":
 		_did_initial_monitor_trim = true
-		var enabled_at_connect = layout.enabled_monitors()
+		# Only extra physical screens are trimmed. A virtual screen is there because the
+		# user asked for it (the host keeps it for the session), not a host default.
+		var enabled_at_connect = layout.enabled_monitors().filter(
+			func(m): return not m.hint.get("virtual", false))
 		if enabled_at_connect.size() > 1:
 			var primary_m = layout.get_primary()
 			for m in layout.monitors:
-				if not m.is_primary:
+				if not m.is_primary and not m.hint.get("virtual", false):
 					m.enabled = false
 			settings_controller.apply_screen_layout(layout)
 			if primary_m:
@@ -1984,6 +1987,13 @@ func remove_screen(monitor_id: StringName) -> void:
 			# whatever still reads screen_mesh.* after this).
 			if s != screen_mesh:
 				s.queue_free()
+			else:
+				# Kept alive, but it must stop being a target: its collision
+				# stays in the scene at its old place, so the laser could hit
+				# it in front of the screen now standing there and send clicks
+				# through its stale monitor mapping. It is never re-added.
+				s.visible = false
+				s.set_deferred("process_mode", Node.PROCESS_MODE_DISABLED)
 			_log("[SCREEN] Removed screen %s (total=%d)" % [String(monitor_id), screens.size()])
 			if comp.available and is_streaming:
 				comp.invalidate_yuv_cache()
@@ -3032,6 +3042,11 @@ func set_primary_screen(s: VRScreen) -> void:
 		world_transforms[p] = p.global_transform
 	if not screen_registry.set_primary(s):
 		return
+	# Only the primary draws in 3D, and secondary screens are created without
+	# stereo layers. A screen promoted later (a virtual monitor taking over when
+	# the physical one is switched off) needs them, or it stays blank in 3D.
+	if comp:
+		comp.ensure_stereo_layers(s)
 	for screen in screens:
 		screen.update_shortcut_positions()
 		screen_shortcuts.refresh_visuals(screen)
@@ -3133,11 +3148,14 @@ func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	var cam_fwd = -xr_camera.global_transform.basis.z
 	cam_fwd.y = 0.0
 	cam_fwd = cam_fwd.normalized()
-	screen_mesh.global_position = cam_pos + cam_fwd * 2.16
-	screen_mesh.rotation = Vector3.ZERO
+	# The primary, not screen_mesh: the original node is retired when its
+	# monitor is switched off, and a new screen takes the primary's place.
+	var main_screen: VRScreen = primary_screen if primary_screen else screen_mesh
+	main_screen.global_position = cam_pos + cam_fwd * 2.16
+	main_screen.rotation = Vector3.ZERO
 	if use_cam_yaw:
-		screen_mesh.rotation.y = atan2(-cam_fwd.x, -cam_fwd.z)
-	screen_mesh.apply_curvature()
+		main_screen.rotation.y = atan2(-cam_fwd.x, -cam_fwd.z)
+	main_screen.apply_curvature()
 	# get_cylinder_radius() is camera-position-derived, so any screen curved before
 	# this point (e.g. _init_post_xr()'s early best-effort pass, which isn't gated on
 	# _startup_reposition confirming a real tracking pose yet) may have baked in a
@@ -3147,11 +3165,11 @@ func _reposition_screen_and_ui(use_cam_yaw: bool = true):
 	# above (it's the one placed relative to the camera); secondary screens are placed
 	# relative to it and must keep their own position/rotation untouched here.
 	for s in screens:
-		if s != screen_mesh:
+		if s != main_screen:
 			s.apply_curvature()
 	if comp_cylinder or comp_cylinder_left:
 		_update_cylinder_params()
-	_log("[POS] Screen at %s, Cam at %s" % [str(screen_mesh.global_position), str(cam_pos)])
+	_log("[POS] Screen at %s, Cam at %s" % [str(main_screen.global_position), str(cam_pos)])
 	_debug_log_cyl("reposition")
 
 func _reset_positions():

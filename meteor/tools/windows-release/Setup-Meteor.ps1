@@ -1,4 +1,4 @@
-param([switch]$EnableHost,[switch]$EnablePCVR,[string]$SteamRoot='',
+param([switch]$EnableHost,[switch]$EnablePCVR,[switch]$EnableVDA,[string]$SteamRoot='',
     [string]$Root='',[switch]$Quiet,[switch]$PreviewSteamVRRegistration,[switch]$RefreshPCVRMetadata)
 # Installed setup entry point. All runtime inputs must live beside Meteor.
 $ErrorActionPreference='Stop'
@@ -136,6 +136,10 @@ try {
             [IO.File]::WriteAllText((Join-Path $Root 'steam-launch-options.txt'),$options,[Text.UTF8Encoding]::new($false))
             $summary.pcvr_enabled=$true
         } else {$summary.warnings+='No installed VR apps were discovered. Start Steam to refresh its app list, then run Meteor setup again.'}
+    }
+    if($EnableVDA) {
+        [IO.File]::WriteAllText((Join-Path $data 'pending-vda-download'),'',([Text.UTF8Encoding]::new($false)))
+        $summary.vda_requested=$true
     }
     $summary.ok=$true
 } catch {

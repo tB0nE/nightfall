@@ -103,6 +103,17 @@ pub fn attach_parent_console_if_needed() {
     }
 }
 
+/// Windows equivalent of the Linux `desktop::host_pairing_popup()`.
+/// Shows a balloon notification with the PIN; approve/reject live in the tray
+/// right-click menu and balloon click.
+pub async fn host_pairing_popup(pairing: std::sync::Arc<crate::host::pairing::Pairing>, request: String) {
+    if let Some(pending) = pairing.pending() {
+        if pending.id == request {
+            crate::tray_windows::queue_pairing_balloon(&pending.pin);
+        }
+    }
+}
+
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }

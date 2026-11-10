@@ -95,6 +95,11 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	else:
 		_b().set_local_capture_mode(false)
 
+	# Meteor's host plans the session's screens before launch. Ask which frame
+	# these screens give and request exactly that size, so the stream never
+	# starts squeezed into the previous layout's shape.
+	if forced_resolution == Vector2i.ZERO and main.settings.host.is_polaris_host and not local_capture_mode:
+		await _adopt_launch_plan(host_id)
 	# Timing-only XR restarts must use the latest manifest-corrected size,
 	# not the request cached before the previous monitor selection.
 	main.host_resolution = main.compute_requested_resolution()
@@ -171,12 +176,11 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["surroundAudioInfo"] = 0xCA0203
 	if hdr_requested():
 		options["hdr_mode"] = 1
-	var capture_outputs = _compute_capture_outputs()
-	main._log("[STREAM] capture_outputs computed: '%s' (layout.source=%s, enabled=%s)" % [
-		capture_outputs, str(main.layout.source) if main.layout else "null",
+	var screens := _screen_launch_options()
+	main._log("[STREAM] screens requested: %s (layout.source=%s, enabled=%s)" % [
+		str(screens), str(main.layout.source) if main.layout else "null",
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
-	if not capture_outputs.is_empty():
-		options["capture_outputs"] = capture_outputs
+	options.merge(screens)
 	_meteor = {}
 	if not local_capture_mode and not _meteor_bypass:
 		_meteor = await _probe_meteor(host_id)
@@ -209,6 +213,45 @@ func hdr_requested() -> bool:
 # monitor has a non-empty but FAKE label ("Display", not a real RandR name) -
 # sending that as outputs= matches no real host output, and the host reports
 # back zero enabled monitors and falls back to combined/undivided capture.
+## The launch options that pick the session's screens: the physical monitors by
+## name (or none, virtual_only), and how many virtual displays the host creates.
+func _screen_launch_options() -> Dictionary:
+	var screens := {}
+	var virtual_count: int = main.settings.host.virtual_display_count if main.settings.host.virtual_display_installed else 0
+	var capture_outputs = _compute_capture_outputs()
+	if main.settings.host.virtual_only and virtual_count > 0:
+		# The host captures the virtual displays alone, so no physical monitor is named.
+		screens["virtual_only"] = 1
+	elif not capture_outputs.is_empty():
+		screens["capture_outputs"] = capture_outputs
+	if virtual_count > 0:
+		screens["virtual_displays"] = virtual_count
+	return screens
+
+## Asks the host which frame the requested screens make and caches it as the
+## size to request. Leaves the cached size alone when the host doesn't answer.
+func _adopt_launch_plan(host_id: int) -> void:
+	var screens := _screen_launch_options()
+	var query := PackedStringArray()
+	if screens.has("virtual_only"):
+		query.append("virtual_only=1")
+	else:
+		query.append("outputs=" + String(screens.get("capture_outputs", "")).uri_encode())
+	query.append("virtual_displays=%d" % int(screens.get("virtual_displays", 0)))
+	var reply := {"done": false, "plan": {}}
+	_b().fetch_display_manifest(host_id, func(plan: Dictionary):
+		reply.plan = plan
+		reply.done = true, "&".join(query))
+	var deadline := Time.get_ticks_msec() + 3000
+	while not reply.done and Time.get_ticks_msec() < deadline:
+		await main.get_tree().process_frame
+	var frame = reply.plan.get("frame_size", []) if reply.plan is Dictionary else []
+	if frame is Array and frame.size() == 2 and int(frame[0]) > 0 and int(frame[1]) > 0:
+		main.settings.host.native_resolution = Vector2i(int(frame[0]), int(frame[1]))
+		main._log("[STREAM] Host plans a %dx%d frame for %s" % [int(frame[0]), int(frame[1]), "&".join(query)])
+	else:
+		main._log("[STREAM] No screen plan from the host; requesting the last known size")
+
 func _compute_capture_outputs() -> String:
 	if not main.layout or main.layout.source != &"host_manifest":
 		return ""
@@ -250,6 +293,20 @@ func meteor_mic_info() -> Dictionary:
 func meteor_address() -> String:
 	return _meteor_address
 
+# The HTTPS port Meteor's proxy listens on for this host (what launch/resume use), or 0.
+func meteor_https_port() -> int:
+	return int(_meteor.get("ports", {}).get("https", 0))
+
+func post_meteor_virtual(count: int, callback: Callable) -> void:
+	if _meteor.is_empty() or _meteor_address.is_empty():
+		callback.call(false, {})
+		return
+	var sunshine_https := int(_meteor.get("sunshine", {}).get("https", 0))
+	if sunshine_https <= 0:
+		callback.call(false, {})
+		return
+	await MeteorClient.post_virtual(main, _meteor_address, sunshine_https, count, callback)
+
 func _probe_meteor(host_id: int) -> Dictionary:
 	main.welcome_screen.get_xr_control().set_discovered_host("", {})
 	var cm = _b().get_computer_manager()
@@ -258,7 +315,7 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			continue
 		var address: String = cm.get_host_address(host) if cm else host.get("localaddress", "")
 		var info := await MeteorClient.probe(main, address, int(host.get("https_port", 47984)))
-		if not info.is_empty() and not _trust_meteor(info, MeteorClient.key_id(host, address)):
+		if not info.is_empty() and not _trust_meteor(info, MeteorClient.key_id(host, address), address):
 			return {}
 		if not info.is_empty():
 			# Zoned for USB Link, so the depth and microphone sockets reach it.
@@ -274,6 +331,11 @@ func _probe_meteor(host_id: int) -> Dictionary:
 			var mic := MeteorClient.mic_info(info)
 			if not mic.is_empty():
 				main._log("[METEOR] Microphone offered on port %d" % int(mic["port"]))
+			var vd := MeteorClient.virtual_display_info(info)
+			main.settings.host.virtual_display_installed = not vd.is_empty()
+			main.settings.host.virtual_display_max_count = int(vd.get("max_count", 0)) if not vd.is_empty() else 0
+			if not vd.is_empty():
+				main._log("[METEOR] Virtual display driver installed (max %d)" % main.settings.host.virtual_display_max_count)
 		return info
 	return {}
 
@@ -309,7 +371,7 @@ func _app_name(app_id: int) -> String:
 # Remembers the first key a host's Meteor sends, and refuses a Meteor whose
 # key has changed since (MeteorClient.check_key()): the stream then goes
 # straight to Sunshine.
-func _trust_meteor(info: Dictionary, host_id: String) -> bool:
+func _trust_meteor(info: Dictionary, host_id: String, alias_id: String = "") -> bool:
 	var key := MeteorClient.meteor_key(info)
 	if key.is_empty():
 		return true # An older Meteor: it offers no encrypted side channels.
@@ -318,12 +380,25 @@ func _trust_meteor(info: Dictionary, host_id: String) -> bool:
 		MeteorClient.KeyCheck.NEW:
 			MeteorClient.remember_key(host_id, key)
 			main._log("[METEOR] Remembered this host's Meteor key %s..." % key.substr(0, 16))
+			_refresh_key_alias(alias_id, host_id, key)
+		MeteorClient.KeyCheck.SAME:
+			_refresh_key_alias(alias_id, host_id, key)
 		MeteorClient.KeyCheck.CHANGED:
 			main._log("[METEOR] Meteor's key changed (was %s..., now %s...); not using it. Settings > Forget Meteor Keys trusts the new one" % [
 				remembered.substr(0, 16), key.substr(0, 16)])
 			main.ui_controller.show_temporary_status("Meteor's key changed; not using it", 4.0)
 			return false
 	return true
+
+# A host is known by its stable id once it has one and by its address before that, so a key
+# can be remembered under either. Once the stable id has vouched for a key, the address entry is
+# set to it too; otherwise a stale address entry from an earlier install rejects the Meteor
+# the next time the host is reached before its stable id is known.
+func _refresh_key_alias(alias_id: String, host_id: String, key: String) -> void:
+	if alias_id.is_empty() or alias_id == host_id:
+		return
+	if MeteorClient.remembered_key(alias_id) != key:
+		MeteorClient.remember_key(alias_id, key)
 
 # Address the current stream was launched against (USB Link or network).
 var stream_host_address: String = ""
