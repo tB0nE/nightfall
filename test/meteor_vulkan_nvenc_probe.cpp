@@ -61,7 +61,8 @@ static void dlclose(void *library) { FreeLibrary((HMODULE)library); }
 
 #ifdef METEOR_MONADO_BRIDGE
 // Whether CUDA (so NVENC) drives this Vulkan GPU, checked without failing: an AMD GPU uses AMF.
-static bool meteor_cuda_drives(VkPhysicalDevice gpu) {
+// Only the Windows AMF build calls it; Linux encodes AMD through VA-API instead.
+[[maybe_unused]] static bool meteor_cuda_drives(VkPhysicalDevice gpu) {
     void *cuda = dlopen(METEOR_CUDA_LIBRARY, RTLD_NOW);
     if (!cuda) return false;
     auto init = reinterpret_cast<tcuInit *>(dlsym(cuda, "cuInit"));
