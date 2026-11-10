@@ -85,7 +85,12 @@ impl Instance {
 
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
-        command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir).envs(self.env.iter().cloned());
+        command.arg(self.conf_path()).env("CONFIGURATION_DIRECTORY", &self.dir);
+        // The host streams the session's planned screens in one frame and makes its virtual
+        // displays. Before host_env, which can turn it off.
+        #[cfg(target_os = "macos")]
+        command.env("METEOR_MACOS_MULTIMONITOR", "1");
+        command.envs(self.env.iter().cloned());
         command.env("METEOR_CURSOR_SCALE_FILE", self.appdata().join("cursor-scale"));
         // The host writes the primary monitor's rectangle in its capture frame here, so depth can
         // cover that monitor alone when several are tiled into one frame.
@@ -182,7 +187,17 @@ pub(crate) fn render_config(existing: &str, always: &[(&str, String)], initial: 
 pub fn host_name() -> String {
     #[cfg(windows)]
     let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
-    #[cfg(not(windows))]
+    // The name in System Settings > General > About, as the headset should show it.
+    #[cfg(target_os = "macos")]
+    let name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Mac".into());
+    #[cfg(target_os = "linux")]
     let name = std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|s| s.trim().to_string())

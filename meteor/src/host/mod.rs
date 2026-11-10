@@ -15,7 +15,7 @@
 mod detect;
 mod install;
 pub(crate) mod instance;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod input;
 pub mod pairing;
 #[cfg(windows)]
@@ -25,7 +25,7 @@ mod supervisor;
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod setup;
 pub mod view;
 
@@ -138,7 +138,11 @@ pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
     config.host_binary.clone().or_else(|| RELEASE.as_ref().and_then(Install::binary)).or_else(|| {
         #[cfg(windows)]
         { let path=std::env::current_exe().ok()?.parent()?.join("runtime/host/sunshine.exe");path.is_file().then_some(path) }
-        #[cfg(not(windows))]
+        // Meteor.app/Contents/MacOS/nightfall-meteor ships the host in
+        // Contents/Resources/host.
+        #[cfg(target_os = "macos")]
+        { let path=std::env::current_exe().ok()?.parent()?.parent()?.join("Resources/host/bin/meteor-vibepollo");path.is_file().then_some(path) }
+        #[cfg(target_os = "linux")]
         { None }
     })
 }
@@ -151,7 +155,9 @@ pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result
     // On Windows a tray switch starts the replacement before this process has
     // released its proxy listeners. Reuse the saved base while that predecessor
     // exits; the discovery bind below still rejects a persistent conflict.
-    #[cfg(windows)]
+    // macOS likewise: the old host may still be letting go of its ports when the restarted
+    // Meteor looks, and meteor.lock already guarantees no other Meteor holds this base.
+    #[cfg(any(windows, target_os = "macos"))]
     if std::env::var_os("METEOR_RESTARTED").is_some() {
         if let Some(base) = state.base {
             return Ok(base);

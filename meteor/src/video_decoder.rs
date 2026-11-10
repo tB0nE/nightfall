@@ -20,12 +20,16 @@ pub enum Backend {
     Nvdec,
     Vaapi,
     D3d11,
+    /// macOS hardware decoding, through FFmpeg.
+    VideoToolbox,
     Software,
 }
 impl Backend {
     #[cfg(windows)]
     pub const ALL: [Self; 4] = [Self::Auto, Self::Nvdec, Self::D3d11, Self::Software];
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    pub const ALL: [Self; 3] = [Self::Auto, Self::VideoToolbox, Self::Software];
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub const ALL: [Self; 4] = [Self::Auto, Self::Nvdec, Self::Vaapi, Self::Software];
     pub fn label(self) -> &'static str {
         match self {
@@ -33,6 +37,7 @@ impl Backend {
             Self::Nvdec => "NVDEC (NVIDIA)",
             Self::Vaapi => "VAAPI (Linux)",
             Self::D3d11 => "D3D11VA (Windows)",
+            Self::VideoToolbox => "VideoToolbox (macOS)",
             Self::Software => "Software (CPU)",
         }
     }
@@ -46,6 +51,10 @@ pub struct Settings {
 }
 impl Settings {
     pub fn candidates(&self, prefer_amd: bool) -> Vec<Backend> {
+        // No NVIDIA on a Mac: Auto is VideoToolbox, then software.
+        if cfg!(target_os = "macos") && self.backend == Backend::Auto {
+            return vec![Backend::VideoToolbox, Backend::Software];
+        }
         let portable = if cfg!(windows) { Backend::D3d11 } else { Backend::Vaapi };
         match self.backend {
             Backend::Auto if prefer_amd => vec![portable, Backend::Software],
@@ -155,7 +164,8 @@ fn runtime() -> Result<&'static Runtime, String> {
             }
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(parent) = exe.parent() {
-                    dirs.extend([parent.join("../lib"), parent.to_path_buf()]);
+                    // ../ffmpeg/lib: target/{debug,release} in development (build_ffmpeg_runtime_macos.sh).
+                    dirs.extend([parent.join("../lib"), parent.to_path_buf(), parent.join("../ffmpeg/lib")]);
                 }
             }
             dirs.push(PathBuf::new());
@@ -198,7 +208,7 @@ impl Ffmpeg {
         device: Option<&str>,
         target: (usize, usize),
     ) -> Result<Self, String> {
-        if !matches!(backend, Backend::Vaapi | Backend::D3d11 | Backend::Software) {
+        if !matches!(backend, Backend::Vaapi | Backend::D3d11 | Backend::VideoToolbox | Backend::Software) {
             return Err("Invalid FFmpeg backend".into());
         }
         #[cfg(not(target_os = "linux"))]
@@ -208,6 +218,10 @@ impl Ffmpeg {
         #[cfg(not(windows))]
         if backend == Backend::D3d11 {
             return Err("D3D11VA decoding requires Windows".into());
+        }
+        #[cfg(not(target_os = "macos"))]
+        if backend == Backend::VideoToolbox {
+            return Err("VideoToolbox decoding requires macOS".into());
         }
         let codec = match codec {
             Codec::H264 => 0,
@@ -221,7 +235,7 @@ impl Ffmpeg {
             meteor_video_create(
                 runtime()?.0,
                 codec,
-                match backend { Backend::Vaapi => 1, Backend::D3d11 => 2, _ => 0 },
+                match backend { Backend::Vaapi => 1, Backend::D3d11 => 2, Backend::VideoToolbox => 3, _ => 0 },
                 name.as_ptr(),
                 error.as_mut_ptr(),
                 error.len(),
@@ -388,7 +402,7 @@ impl Decoder {
     ) -> Result<Self, String> {
         match backend {
             Backend::Nvdec => NvDecoder::new(codec, size.0, size.1, gpu_frames).map(Self::Nvdec),
-            Backend::Vaapi | Backend::D3d11 | Backend::Software => {
+            Backend::Vaapi | Backend::D3d11 | Backend::VideoToolbox | Backend::Software => {
                 Ffmpeg::new(codec, backend, device, size).map(Self::Ffmpeg)
             }
             _ => Err("Decoder Auto must be resolved before creation".into()),
@@ -427,7 +441,7 @@ mod tests {
     use super::*;
     #[test]
     fn explicit_decoder_never_silently_falls_back() {
-        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::D3d11, Backend::Software] {
+        for backend in [Backend::Nvdec, Backend::Vaapi, Backend::D3d11, Backend::VideoToolbox, Backend::Software] {
             assert_eq!(
                 Settings {
                     backend,
@@ -436,6 +450,13 @@ mod tests {
                 .candidates(false),
                 vec![backend]
             );
+        }
+        // A Mac has no NVIDIA: Auto is always VideoToolbox, then software.
+        if cfg!(target_os = "macos") {
+            for prefer_portable in [false, true] {
+                assert_eq!(Settings::default().candidates(prefer_portable), vec![Backend::VideoToolbox, Backend::Software]);
+            }
+            return;
         }
         assert_eq!(
             Settings::default().candidates(true),

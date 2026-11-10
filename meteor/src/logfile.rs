@@ -12,6 +12,10 @@ pub fn path() -> PathBuf {
     if cfg!(windows) {
         return crate::config::cache_dir().join("meteor.log");
     }
+    if cfg!(target_os = "macos") {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        return home.join("Library/Logs/Nightfall Meteor/meteor.log");
+    }
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))

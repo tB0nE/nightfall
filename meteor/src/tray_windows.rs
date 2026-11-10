@@ -102,7 +102,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let quit = wide("Quit");
             unsafe {
                 if let (Some(status), Some(stats)) = (STATUS.get(), STATS.get()) {
-                    let title = wide(&format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION")));
+                    let title = wide(&format!("Nightfall Meteor {}", env!("METEOR_VERSION")));
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
                     let udp = stats.udp_flows.load(Ordering::Relaxed);
                     let tcp = stats.tcp_connections.load(Ordering::Relaxed);

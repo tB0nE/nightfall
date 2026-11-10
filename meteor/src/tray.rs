@@ -81,7 +81,7 @@ impl ksni::Tray for MeteorTray {
             info(setup.error.as_deref().map(|error| format!("PCVR: {} (see Open log)", error.chars().take(100).collect::<String>()))
                 .unwrap_or_else(|| if setup.ready { "PCVR ready (Linux / NVIDIA or AMD)".into() } else { "PCVR is off; turn it on in Setup".into() })),
             MenuItem::Separator,
-            info(format!("{} {}", self.name(), env!("CARGO_PKG_VERSION"))),
+            info(format!("{} {}", self.name(), env!("METEOR_VERSION"))),
             MenuItem::Separator,
             info(self.summary()),
             info(format!(

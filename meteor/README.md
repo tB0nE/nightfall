@@ -30,7 +30,7 @@ cargo run --release -- --no-tray
 `--help` lists the debug options (`--dump-video`, `--save-depth`, `--replay`,
 `--no-depth`, `--no-mic`). Set `RUST_LOG=debug` for per-connection logging. On
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
-area. macOS runs without a tray icon for now.
+area. On macOS it's a menu-bar item (see [macOS](#macos) below).
 
 ### Managed Linux XR (development preview)
 
@@ -327,6 +327,42 @@ minutes. The Windows download is currently pinned for the sm86 GPU resource;
 other NVIDIA GPUs still need their signed DLL hashes added. `--download-vda`
 offers the same download from a console. Meteor also finds pre-supplied VDA
 files in `share/nightfall-meteor/models/` and `tensorrt/` beside the exe.
+
+## macOS
+
+Apple Silicon, macOS 14.2 or later. `Nightfall Meteor.app` runs Meteor and its own
+Meteor-Vibepollo host, from the menu bar. It streams any set of displays together, makes up
+to four virtual displays per session (no driver), computes host depth on the Mac's GPU
+(EdgePad on ncnn/MoltenVK, VideoToolbox decoding) and plays the headset's microphone into
+BlackHole 2ch. PCVR isn't available on macOS.
+
+The **Setup** window opens on the first run and from the menu: Screen Recording and
+Accessibility (macOS makes you switch these on in System Settings; the window updates when
+you do), system audio (asked on the first stream), BlackHole for the microphone (downloaded
+pinned, installed with one password prompt), Start at login, and host depth status, with
+**Install All**.
+
+Settings live in `~/Library/Application Support/Nightfall Meteor`, the log in
+`~/Library/Logs/Nightfall Meteor/meteor.log`.
+
+### Building the app
+
+With a built and installed Vibepollo checkout (`feat/macos`; steps in
+`docs/plans/active/meteor-macos.md`):
+
+```sh
+brew install molten-vk
+meteor/tools/build_ncnn_macos.sh              # target/ncnn: ncnn shared + MoltenVK
+meteor/tools/build_ffmpeg_runtime_macos.sh    # target/ffmpeg: FFmpeg 8 with VideoToolbox
+meteor/tools/build_macos_app.sh ../Vibepollo  # target/macos/Nightfall Meteor.app
+meteor/tools/build_macos_dmg.sh               # target/macos/Nightfall-Meteor-<version>-macos-arm64.dmg
+```
+
+The EdgePad models come from `target/models-macos` (or `METEOR_MODELS_DIR`). Local builds are
+signed with a self-signed certificate in its own keychain, so macOS keeps their permissions
+across rebuilds. For distribution, set `MACOS_SIGN_IDENTITY` to a Developer ID (hardened
+runtime) and `MACOS_NOTARY_PROFILE` for the image; `MACOS_HARDENED=1` tries the hardened
+runtime with the local certificate.
 
 ## How the client finds it
 
