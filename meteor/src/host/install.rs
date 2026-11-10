@@ -30,10 +30,10 @@ pub struct Release {
 pub const RELEASE: Option<Release> = None;
 #[cfg(target_os = "linux")]
 pub const RELEASE: Option<Release> = Some(Release {
-    version: "0.1.0-preview.4",
-    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-vibepollo-v0.1.0-preview.4/Meteor-Vibepollo-0.1.0-preview.4-linux-x86_64.tar.zst",
-    size: 29_582_219,
-    sha256: "184ba1f59b117006a64b292fc3baae2f9ce45122a160014f94f82b3502cb9aed",
+    version: "0.1.0-preview.5",
+    url: "https://github.com/tB0nE/Vibepollo/releases/download/meteor-vibepollo-v0.1.0-preview.5/Meteor-Vibepollo-0.1.0-preview.5-linux-x86_64.tar.zst",
+    size: 29_581_069,
+    sha256: "1a92f7c527a3409a42b3d7b5da4fa872b910078c92cef17da5203d6c6b54988c",
     binary: "bin/meteor-vibepollo",
 });
 
