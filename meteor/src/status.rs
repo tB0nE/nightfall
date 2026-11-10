@@ -38,6 +38,9 @@ impl Status {
                     log::warn!("The firewall (zone {zone}) blocks {} of the ports the Quest needs", ports.len())
                 }
                 crate::firewall::Status::Ufw => log::info!("ufw is active; Meteor can't read its rules"),
+                crate::firewall::Status::Windows { reason } => {
+                    log::warn!("Windows Firewall will stop the Quest finding Meteor: {reason}")
+                }
                 crate::firewall::Status::Open => log::info!("Firewall: the Quest's ports are open"),
                 crate::firewall::Status::Checking => {}
             }

@@ -678,6 +678,7 @@ impl MeteorTray {
                 info("ufw is on; Meteor can't check that the Quest gets through".into()),
                 allow("Open Meteor's ports in ufw"),
             ],
+            Status::Windows { .. } => vec![],
         }
     }
 
