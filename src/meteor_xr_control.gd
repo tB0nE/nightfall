@@ -212,6 +212,13 @@ func apply_encoder_capabilities(reply: Dictionary) -> void:
 	if not foveation_available(): _pending_foveation = -1
 	changed.emit()
 
+## The largest frame the host's XR encoder takes (both eyes side by side), or ZERO if unknown.
+func encoder_max_frame() -> Vector2i:
+	var value: Variant = encoder_capabilities.get("max_frame")
+	if not value is Array or value.size() != 2: return Vector2i.ZERO
+	if not (value[0] is int or value[0] is float) or not (value[1] is int or value[1] is float): return Vector2i.ZERO
+	return Vector2i(int(value[0]), int(value[1]))
+
 func foveation_available() -> bool:
 	return encoder_capabilities.is_empty() or bool(encoder_capabilities.get("foveated_encoding", false))
 
@@ -505,7 +512,7 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	if video_settings.resolution_percent > 0 and (recommended.x <= 0 or recommended.y <= 0):
 		_fail("Headset OpenXR resolution is not ready")
 		return
-	var dimensions := video_settings.effective_eye_dimensions(eye_size, recommended)
+	var dimensions := video_settings.effective_eye_dimensions(eye_size, recommended, encoder_max_frame())
 	eye_size = dimensions.x
 	var eye_height := dimensions.y
 	if quest3: hz = PCVRVideoSettings.QUEST3_STREAM_FPS
