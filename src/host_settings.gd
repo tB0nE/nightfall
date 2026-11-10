@@ -50,3 +50,13 @@ var ai_3d_contour_cleanup: bool = true
 ## The user picked an on-device model while this host's Nightfall Meteor
 ## offered depth; stays until they pick Meteor again.
 var ai_3d_meteor_declined: bool = false
+## True when Meteor's bundled host has the SunshineVDD virtual display driver
+## installed. Gates the Virtual button in the Monitors tab.
+var virtual_display_installed: bool = false
+## Maximum number of virtual monitors Meteor supports (0 when unavailable).
+var virtual_display_max_count: int = 0
+## Virtual monitors the user asked this host for; sent with every launch so the
+## host creates that many (the host only keeps the setting for the session).
+var virtual_display_count: int = 0
+## Capture only the virtual monitors; the physical ones stay on the desk and out of the stream.
+var virtual_only: bool = false

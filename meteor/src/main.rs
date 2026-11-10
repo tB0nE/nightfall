@@ -16,6 +16,12 @@ mod depth;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(windows)]
+#[path = "desktop_win_shim.rs"]
+mod desktop;
+#[cfg(target_os = "macos")]
+#[path = "desktop_macos.rs"]
+mod desktop;
 #[cfg(target_os = "linux")]
 mod setup_window;
 #[cfg(target_os = "linux")]
@@ -27,9 +33,7 @@ mod download;
 mod firewall;
 mod gpu_post;
 mod gpu_refinement;
-#[cfg(any(target_os = "linux", windows))]
 mod host;
-#[cfg(any(target_os = "linux", windows))]
 use host::view as host_view;
 mod icon;
 mod logfile;
@@ -51,6 +55,11 @@ mod tensorrt;
 mod tray;
 #[cfg(windows)]
 mod tray_windows;
+#[cfg(target_os = "macos")]
+mod tray_macos;
+#[cfg(target_os = "macos")]
+#[path = "setup_window_macos.rs"]
+mod setup_window;
 mod vda;
 mod vda_vulkan;
 mod vda_assets;
@@ -96,9 +105,13 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run());
+    }
+    #[cfg(target_os = "macos")]
+    if args.get(1).is_some_and(|arg| arg == "--setup-check") {
+        std::process::exit(setup_window::check_command());
     }
     #[cfg(windows)]
     if args.len()>1 {desktop_windows::attach_parent_console_if_needed();}
@@ -267,15 +280,15 @@ async fn main() {
     // doubles as a single-instance lock. It's taken before the models start
     // loading, so a second launch exits straight away.
     let replay_file = value("--replay");
-    #[cfg(any(target_os = "linux", windows))]
     let mut host_view = host_view::View::default();
     let startup = if replay_file.is_some() {
         None
     } else {
-        #[cfg(any(target_os = "linux", windows))]
+        // Before choosing ports: a second Meteor would find this one's stack busy, pick the
+        // next base and so a discovery port of its own, which then can't serve as the lock.
+        #[cfg(target_os = "macos")]
+        take_instance_lock().await;
         let bundled_base = host_view.prepare(&config);
-        #[cfg(not(any(target_os = "linux", windows)))]
-        let bundled_base: Option<u16> = None;
         let sunshine_base = config
             .sunshine_port
             .or(bundled_base)
@@ -290,7 +303,7 @@ async fn main() {
         };
         log::info!(
             "Nightfall Meteor {} proxying Sunshine at {}:{} (settings: {})",
-            env!("CARGO_PKG_VERSION"),
+            env!("METEOR_VERSION"),
             config.sunshine_host,
             sunshine_base,
             config::config_path().display()
@@ -324,7 +337,6 @@ async fn main() {
         log::info!("Log: {}", logfile::path().display());
         // Only now: the discovery port is the single-instance lock, so a
         // second launch never starts a second host.
-        #[cfg(any(target_os = "linux", windows))]
         host_view.start();
         Some((map, discovery, side))
     };
@@ -396,6 +408,9 @@ async fn main() {
     };
     if let Some(mic) = &mic {
         let _ = MIC.set(mic.clone());
+    }
+    if let (Some(depth), Some(host)) = (&depth, host_view.supervisor.as_ref()) {
+        depth.set_capture_region_file(host.instance.capture_region_path());
     }
     let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
@@ -498,7 +513,6 @@ async fn main() {
         }
         None
     };
-    #[cfg(target_os = "linux")]
     if let (Some(key), Some(supervisor)) = (&key, &host_view.supervisor) {
         host_view.pairing = Some(host::pairing::Pairing::new(key.clone(), supervisor.clone(), host_view.state.clone(), xr_trust.clone()));
     }
@@ -506,13 +520,18 @@ async fn main() {
         key: key.as_ref().map(|k| k.public_hex()),
         mic_port: mic.as_ref().map(|m| m.port),
         depth: depth_port,
-        #[cfg(any(target_os = "linux", windows))]
         host: host_view.discovery_info(),
-        #[cfg(not(any(target_os = "linux", windows)))]
-        host: None,
         xr_port: xr_discovery,
-        #[cfg(target_os = "linux")]
         pairing: host_view.pairing.clone(),
+        #[cfg(windows)]
+        vdd_installed: sunshine_vdd_installed(),
+        #[cfg(target_os = "linux")]
+        vdd_installed: host_view.supervisor.is_some() && host::virtual_monitors_supported(&config),
+        // The managed host makes virtual displays itself (CGVirtualDisplay): nothing to install.
+        #[cfg(target_os = "macos")]
+        vdd_installed: host_view.supervisor.is_some(),
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        vdd_installed: false,
     };
     tokio::spawn(discovery::serve(discovery, map.clone(), features));
 
@@ -520,10 +539,7 @@ async fn main() {
         map,
         sunshine_host: config.sunshine_host.clone(),
         side,
-        #[cfg(any(target_os = "linux", windows))]
         host_ports: host_view.supervisor.is_some(),
-        #[cfg(not(any(target_os = "linux", windows)))]
-        host_ports: false,
         xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
         sunshine_up: AtomicBool::new(false),
         firewall: std::sync::Mutex::new(firewall::Status::Checking),
@@ -557,11 +573,33 @@ async fn main() {
         )
         .await;
     }
+    // The host captures and injects input on Meteor.app's behalf: ask for both up front,
+    // rather than letting the first stream fail with an encoder error in the headset.
+    #[cfg(target_os = "macos")]
+    if host_view.supervisor.is_some() {
+        desktop::permissions::log_missing();
+        if !no_tray {
+            setup_window::offer();
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let menu_bar = (!no_tray).then(|| tray_macos::Tray {
+        status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(),
+        host: Arc::new(host_view), runtime: tokio::runtime::Handle::current(),
+    });
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(windows)]
         if !no_tray {
             tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
+        }
+        #[cfg(windows)]
+        if let Some(d) = &depth {
+            let flag = config::data_dir().join("pending-vda-download");
+            if std::fs::remove_file(&flag).is_ok() {
+                log::info!("Starting VDA download requested during installation");
+                d.download_vda();
+            }
         }
         let _ = (status, stats, depth, mic);
         if no_tray {
@@ -569,32 +607,107 @@ async fn main() {
         }
     }
 
-    tokio::select! {
-        _ = wait_for_exit_signal() => shutdown.request(),
-        _ = shutdown.requested() => {},
+    let finish = async move {
+        tokio::select! {
+            _ = wait_for_exit_signal() => shutdown.request(),
+            _ = shutdown.requested() => {},
+        }
+        #[cfg(target_os = "linux")]
+        if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
+        if let Some(task) = xr_service {
+            match task.await {
+                Ok(Ok(())) => {},
+                Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
+                Err(error) => log::error!("XR service task failed: {error}"),
+            }
+        }
+        finish_quit();
+    };
+    // AppKit's menu bar must own the main thread, which tokio::main's main future runs on:
+    // shutdown waits on a worker thread instead, and ends the process from there.
+    #[cfg(target_os = "macos")]
+    if let Some(tray) = menu_bar {
+        tokio::spawn(finish);
+        tokio::task::block_in_place(move || tray_macos::run(tray));
+        return;
     }
-    #[cfg(target_os = "linux")]
-    if let Err(error) = cursor_task.await { log::warn!("Host cursor cleanup: {error}"); }
-    if let Some(task) = xr_service {
-        match task.await {
-            Ok(Ok(())) => {},
-            Ok(Err(error)) => log::error!("XR service shutdown: {error}"),
-            Err(error) => log::error!("XR service task failed: {error}"),
+    finish.await;
+}
+
+/// Checks whether the SunshineVDD virtual display driver is installed by
+/// running the probe executable bundled with Meteor-Vibepollo. Result is
+/// cached for the lifetime of this Meteor process.
+#[cfg(windows)]
+fn sunshine_vdd_installed() -> bool {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let probe = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("runtime/host/drivers/sunshine/virtualdisplay_probe.exe")));
+        probe.is_some_and(|p| {
+            if !p.is_file() { return false; }
+            // --check requires admin (ERROR_ACCESS_DENIED without it). Use
+            // --diagnose instead: it enumerates control interfaces without
+            // opening them, so it works without elevation.
+            let out = std::process::Command::new(&p).arg("--diagnose").output();
+            let Ok(out) = out else { return false; };
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            // Line is "control_interface_count=1 enumerate_error=0 ..."
+            // so take only the first whitespace-delimited token after '='.
+            stdout.lines()
+                .find(|l| l.starts_with("control_interface_count="))
+                .and_then(|l| l.split('=').nth(1))
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| n > 0)
+        })
+    })
+}
+
+/// Held for Meteor's whole life (a restart's exec closes it: O_CLOEXEC).
+#[cfg(target_os = "macos")]
+static INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
+
+/// Exits if another Meteor of this user runs. A restarted Meteor waits up to ten seconds for
+/// the old one to let go, as it does for the discovery port.
+#[cfg(target_os = "macos")]
+async fn take_instance_lock() {
+    use std::os::fd::AsRawFd;
+    let path = config::config_dir().join("meteor.lock");
+    let file = std::fs::create_dir_all(config::config_dir())
+        .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
+    let file = match file {
+        Ok(file) => file,
+        Err(error) => {
+            log::warn!("Can't open {} ({error}); not checking for another Meteor", path.display());
+            return;
+        }
+    };
+    let tries = if std::env::var_os(RESTART_ENV).is_some() { 50 } else { 1 };
+    for attempt in 0..tries {
+        // SAFETY: flock on a descriptor this function owns.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            let _ = INSTANCE_LOCK.set(file);
+            return;
+        }
+        if attempt + 1 < tries {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
     }
-    finish_quit();
+    log::error!("Nightfall Meteor is already running ({} is locked)", path.display());
+    desktop::notify("Nightfall Meteor is already running", "Look for it in the menu bar.").await;
+    exit_now(1);
 }
 
 static MIC: OnceLock<Arc<Mic>> = OnceLock::new();
 static SHUTDOWN: OnceLock<shutdown::Shutdown> = OnceLock::new();
-#[cfg(any(target_os = "linux", windows))]
 static RESTART: AtomicBool = AtomicBool::new(false);
 
 /// Set on the process `restart` starts, so it waits for the old one's
 /// discovery port.
 const RESTART_ENV: &str = "METEOR_RESTARTED";
 
-#[cfg(any(target_os = "linux", windows))]
 pub fn restart() {
     RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
     quit();
@@ -615,10 +728,14 @@ fn finish_quit() -> ! {
     if let Some(mic) = MIC.get() {
         mic.shutdown();
     }
-    #[cfg(any(target_os = "linux", windows))]
     if let Some(host) = host_view::RUNNING.get() {
         host.shutdown();
     }
+    // Vibepollo's display helper breaks out of the job object intentionally so
+    // it can restore display topology after the host exits. Kill it here so it
+    // doesn't linger after Meteor itself shuts down.
+    #[cfg(windows)]
+    kill_processes_by_name("sunshine_display_helper.exe");
     #[cfg(windows)]
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
         match std::env::current_exe().and_then(|exe| {
@@ -628,6 +745,16 @@ fn finish_quit() -> ! {
             Ok(child) => log::info!("Restarted Meteor as process {}", child.id()),
             Err(error) => log::error!("Cannot restart Meteor: {error}"),
         }
+    }
+    #[cfg(target_os = "macos")]
+    if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
+        use std::os::unix::process::CommandExt;
+        match std::env::current_exe() {
+            Ok(exe) => log::error!("Cannot restart Meteor: {}", std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1)).env(RESTART_ENV, "1").exec()),
+            Err(error) => log::error!("Cannot restart Meteor: {error}"),
+        }
+        exit_now(1);
     }
     #[cfg(target_os = "linux")]
     if RESTART.load(std::sync::atomic::Ordering::Relaxed) {
@@ -664,6 +791,37 @@ pub fn exit_now(code: i32) -> ! {
         }
         std::process::exit(code)
     }
+}
+
+#[cfg(windows)]
+fn kill_processes_by_name(name: &str) {
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    let name_lower = name.to_ascii_lowercase();
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return;
+    }
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while ok {
+        let exe = String::from_utf16_lossy(entry.szExeFile.iter().take_while(|&&c| c != 0).copied().collect::<Vec<_>>().as_slice());
+        if exe.to_ascii_lowercase() == name_lower {
+            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, entry.th32ProcessID) };
+            if !handle.is_null() {
+                unsafe { TerminateProcess(handle, 1) };
+                unsafe { CloseHandle(handle) };
+                log::info!("Killed lingering {name} (pid {})", entry.th32ProcessID);
+            }
+        }
+        ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    unsafe { CloseHandle(snapshot) };
 }
 
 async fn wait_for_exit_signal() {
@@ -732,7 +890,7 @@ pub fn open_config_file() {
             return;
         }
     }
-    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     if let Err(err) = std::process::Command::new(opener).arg(&path).spawn() {
         log::warn!("Can't open {}: {err}", path.display());
     }

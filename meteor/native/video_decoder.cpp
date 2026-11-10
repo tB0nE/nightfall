@@ -111,6 +111,10 @@ extern "C" void *meteor_video_api(const char *directory, char *error, size_t siz
         api->util = open_library(path("avutil-60.dll"));
         api->codec = open_library(path("avcodec-62.dll"));
         api->scale = open_library(path("swscale-9.dll"));
+#elif defined(__APPLE__)
+        api->util = open_library(path("libavutil.60.dylib"));
+        api->codec = open_library(path("libavcodec.62.dylib"));
+        api->scale = open_library(path("libswscale.9.dylib"));
 #else
         api->util = open_library(path("libavutil.so.60"));
         api->codec = open_library(path("libavcodec.so.62"));
@@ -137,7 +141,7 @@ extern "C" void *meteor_video_api(const char *directory, char *error, size_t siz
     } catch (const std::exception &e) { error_text(error, size, e.what()); return nullptr; }
 }
 
-// hardware: 0 = software, 1 = VAAPI, 2 = D3D11VA.
+// hardware: 0 = software, 1 = VAAPI, 2 = D3D11VA, 3 = VideoToolbox (macOS).
 extern "C" void *meteor_video_create(void *runtime, int codec_id, int hardware_mode, const char *device, char *error, size_t size) {
     try {
         auto *api = static_cast<Api *>(runtime);
@@ -154,8 +158,10 @@ extern "C" void *meteor_video_create(void *runtime, int codec_id, int hardware_m
         self->context->max_pixels = 8192LL * 8192LL;
         self->context->opaque = self.get(); self->context->get_format = Decoder::format;
         if (hardware_mode) {
-            AVHWDeviceType type = hardware_mode == 1 ? AV_HWDEVICE_TYPE_VAAPI : AV_HWDEVICE_TYPE_D3D11VA;
-            const char *label = hardware_mode == 1 ? "VAAPI" : "D3D11VA";
+            AVHWDeviceType type = hardware_mode == 1 ? AV_HWDEVICE_TYPE_VAAPI
+                                : hardware_mode == 3 ? AV_HWDEVICE_TYPE_VIDEOTOOLBOX
+                                                     : AV_HWDEVICE_TYPE_D3D11VA;
+            const char *label = hardware_mode == 1 ? "VAAPI" : hardware_mode == 3 ? "VideoToolbox" : "D3D11VA";
             for (int i = 0; const auto *config = api->avcodec_get_hw_config_fn(codec, i); ++i)
                 if (config->device_type == type && (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
                     self->hardware_format = config->pix_fmt;

@@ -198,11 +198,27 @@ func begin_pointer_frame(delta: float = 0.0) -> void:
 		_reveal_time_remaining = maxf(_reveal_time_remaining - maxf(delta, 0.0), 0.0)
 		if _reveal_time_remaining <= 0.0:
 			revealed_screen = null
+	if pointed_screen:
+		_point_time_remaining = maxf(_point_time_remaining - maxf(delta, 0.0), 0.0)
+		if _point_time_remaining <= 0.0:
+			pointed_screen = null
+
+## The screen being pointed at (it or its controls). Only that screen submits its controls
+## layer: the headset composites at most 16 layers a frame, and four screens each with an
+## always-on controls layer went over it, so screens flashed out as they all came into view.
+var pointed_screen: VRScreen = null
+var _point_time_remaining := 0.0
+
+func point_at(screen: VRScreen) -> void:
+	if screen:
+		pointed_screen = screen
+		_point_time_remaining = HIDE_DELAY_SECONDS
 
 func reveal_controls(screen: VRScreen) -> void:
 	if screen:
 		revealed_screen = screen
 		_reveal_time_remaining = HIDE_DELAY_SECONDS
+		point_at(screen)
 
 func controls_are_revealed(screen: VRScreen) -> bool:
 	return screen != null and screen == revealed_screen

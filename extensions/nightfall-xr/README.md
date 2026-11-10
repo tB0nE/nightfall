@@ -52,8 +52,25 @@ library to package.
 variant automatically before exporting the APK. Packaging fails if the
 matching patched Godot runtime is unavailable, preventing accidental stock
 engine builds. The app retains the original Godot renderer as a runtime
-fallback for Linux, multiple monitors, diagnostic depth modes, optional
-picture filters, and `--nf-legacy-video`.
+fallback for Linux, independent browser screens, diagnostic depth modes,
+optional picture filters, and `--nf-legacy-video`.
+
+## Several screens
+
+When a stream carries several monitors in one frame (Meteor's multi-monitor and
+virtual-monitor layouts), the primary keeps the stereo/AI-depth pass but draws
+only its own part of the frame (`set_primary_crop()`). Every other screen is a
+mono quad or cylinder layer with its own swapchain at that screen's pixel size,
+filled by one draw per decoded frame from the same OES texture
+(`set_secondary_screens()`), using the primary's plain, Picture or HDR program
+with depth and stereo off. The crop is folded into the texture matrix, so no
+shader samples outside its screen. On-device depth captures the primary's part
+alone (`TextureUploader.set_native_depth_capture_crop()`); Meteor's host depth
+already covers only the primary.
+
+A secondary swapchain is kept while its screen keeps its pixel size. Otherwise
+it stops being submitted and is destroyed `RESIZE_DRAIN_FRAME_COUNT` frames
+later, under the renderer's own EGL context.
 # On-headset depth refinement
 
 Android's Advanced/Settings → AI 3D section exposes **Edge Alignment** and

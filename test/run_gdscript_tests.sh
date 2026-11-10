@@ -63,6 +63,7 @@ tests=(
 	"test/test_screen_layout.gd"
 	"test/test_monitor_presets.gd"
 	"test/test_video_presentation.gd"
+	"test/test_native_xr_screens.gd"
 	"test/test_meteor_client.gd"
 	"test/test_meteor_host_pairing.gd"
 	"test/test_controller_layout.gd"

@@ -305,7 +305,9 @@ func update_stereo_shader():
 	update_3d_btn_state()
 
 func update_3d_btn_state():
-	var disabled = main.settings.host.sbs_mode > 0 or main.screens.size() > 1
+	# With several screens AI-3D still runs, on the primary only (see
+	# SettingsController.toggle_ai_3d_enabled()), so it stays adjustable.
+	var disabled = main.settings.host.sbs_mode > 0
 	for enable_btn in [main._ui_3d_speed_btn, main._ui_3d_enable_btn]:
 		if enable_btn:
 			enable_btn.disabled = disabled
@@ -711,8 +713,9 @@ func update_monitor_tab():
 	# for a change that can never actually take effect). Revisit once/if
 	# non-Polaris multi-monitor selection is supported.
 	var polaris = main.settings.host.is_polaris_host
+	var vdd = main.settings.host.virtual_display_installed
 	main._ui_monitors_btn.disabled = not polaris
-	main._ui_virtual_monitors_btn.disabled = not polaris
+	main._ui_virtual_monitors_btn.disabled = not polaris or not vdd
 	main._ui_apply_preset_btn.disabled = not polaris
 	main._ui_save_preset_btn.disabled = not polaris
 	main._ui_grid_mode_btn.disabled = not polaris
@@ -725,12 +728,14 @@ func _cycle_monitors_btn():
 	var real_total = maxi(1, mini(main.settings_controller._real_monitor_count(), main.settings_controller.monitor_screen_capacity()))
 	var n = main._staged_physical_count + 1
 	if n > real_total:
-		n = 1
+		n = main.settings_controller.min_physical_count()
 	main.settings_controller.stage_monitor_count(n)
 	update_monitor_tab()
 
 func _cycle_virtual_btn():
-	var max_virtual = maxi(0, main.settings_controller.monitor_screen_capacity() - main._staged_physical_count)
+	# The client allows up to 4 in total, but never more than the host reports it can make.
+	var host_max: int = main.settings.host.virtual_display_max_count
+	var max_virtual = maxi(0, mini(host_max, main.settings_controller.monitor_screen_capacity() - main._staged_physical_count))
 	var n = main._staged_virtual_count + 1
 	if n > max_virtual:
 		n = 0

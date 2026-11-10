@@ -1236,7 +1236,24 @@ void TextureUploader::_render_thread_issue_depth_capture(const float *matrix, in
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gles_oes_texture_);
     glUniform1i(gles_depth_video_uniform_, 0);
-    glUniformMatrix4fv(gles_depth_matrix_uniform_, 1, GL_FALSE, matrix);
+    // Fold the crop into the sampling matrix (uv -> crop -> matrix). Before the matrix v = 0 is
+    // the bottom of the frame, so the top-left-origin y flips.
+    float crop[4];
+    {
+        std::lock_guard<std::mutex> lock(gles_depth_crop_mutex_);
+        memcpy(crop, gles_depth_crop_, sizeof(crop));
+    }
+    const float c[16] = {crop[2], 0.0f, 0.0f, 0.0f, 0.0f, crop[3], 0.0f, 0.0f,
+                         0.0f, 0.0f, 1.0f, 0.0f, crop[0], 1.0f - crop[1] - crop[3], 0.0f, 1.0f};
+    float cropped[16];
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            float sum = 0.0f;
+            for (int k = 0; k < 4; ++k) sum += matrix[k * 4 + row] * c[col * 4 + k];
+            cropped[col * 4 + row] = sum;
+        }
+    }
+    glUniformMatrix4fv(gles_depth_matrix_uniform_, 1, GL_FALSE, cropped);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
     glBindBuffer(GL_PIXEL_PACK_BUFFER, gles_depth_pbos_[slot]);
@@ -2010,6 +2027,16 @@ bool TextureUploader::supports_native_depth_capture() {
 #endif
 }
 
+void TextureUploader::set_native_depth_capture_crop(PackedFloat32Array crop) {
+    std::lock_guard<std::mutex> lock(gles_depth_crop_mutex_);
+    if (crop.size() == 4 && crop[2] > 0.0f && crop[3] > 0.0f) {
+        for (int i = 0; i < 4; ++i) gles_depth_crop_[i] = crop[i];
+    } else {
+        gles_depth_crop_[0] = gles_depth_crop_[1] = 0.0f;
+        gles_depth_crop_[2] = gles_depth_crop_[3] = 1.0f;
+    }
+}
+
 void TextureUploader::request_native_depth_capture(int width, int height) {
 #ifdef __ANDROID__
     if (width <= 0 || width > 1024 || height <= 0 || height > 1024) return;
@@ -2051,6 +2078,7 @@ void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("consume_new_frame"), &TextureUploader::consume_new_frame);
     ClassDB::bind_method(D_METHOD("supports_native_depth_capture"), &TextureUploader::supports_native_depth_capture);
     ClassDB::bind_method(D_METHOD("request_native_depth_capture", "width", "height"), &TextureUploader::request_native_depth_capture);
+    ClassDB::bind_method(D_METHOD("set_native_depth_capture_crop", "crop"), &TextureUploader::set_native_depth_capture_crop);
     ClassDB::bind_method(D_METHOD("consume_native_depth_capture"), &TextureUploader::consume_native_depth_capture);
 #ifdef __ANDROID__
     ClassDB::bind_method(D_METHOD("get_oes_texture_id"), &TextureUploader::get_oes_texture_id);

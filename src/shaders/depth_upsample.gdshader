@@ -30,6 +30,10 @@ uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
 uniform vec2 tile_inset = vec2(0.002);
 
 uniform sampler2D depth_texture : hint_default_white, filter_linear;
+// True when depth_texture holds its rows bottom first: the GLES convention
+// the native renderer samples, which Meteor and native-capture maps are
+// uploaded in. These shaders address it top first, so they flip to match.
+uniform bool depth_bottom_first = false;
 // Low-res (same resolution as depth_texture) downscaled color frame the
 // depth model itself saw - the neighbour-comparison guide. Kept separate
 // from the full-res "here" comparison so the 5x5 neighbour taps stay cheap
@@ -99,6 +103,14 @@ vec3 yuv_to_rgb(vec2 uv) {
 	return rgb;
 }
 
+ivec2 depth_row(ivec2 q, ivec2 size) {
+	return depth_bottom_first ? ivec2(q.x, size.y - 1 - q.y) : q;
+}
+
+vec2 depth_coord(vec2 uv) {
+	return depth_bottom_first ? vec2(uv.x, 1.0 - uv.y) : uv;
+}
+
 vec2 to_frame_uv(vec2 t) {
 	return uv_region.xy + clamp(t, tile_inset, vec2(1.0) - tile_inset) * uv_region.zw;
 }
@@ -125,7 +137,7 @@ void fragment() {
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
 			ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), low_sz - ivec2(1));
-			float s = texelFetch(depth_texture, q, 0).r;
+			float s = texelFetch(depth_texture, depth_row(q, low_sz), 0).r;
 			// Most models have equal input/output dimensions. Direct-half keeps
 			// ZipDepth's 384x384 colour input but exposes its native 192x192
 			// depth, so map each low-depth texel to the corresponding guide texel.

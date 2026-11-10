@@ -6,6 +6,10 @@
 //! signal follows the thread that spawned the child, which is why the
 //! supervisor runs on its own thread for Meteor's whole life.
 //!
+//! macOS has no PR_SET_PDEATHSIG. There the child's pid is kept in
+//! `meteor-host.pid`, and a host left running by a Meteor that crashed is
+//! stopped before the next one starts (only if that pid is still the host).
+//!
 //! A crash is retried after 1, 5 and 30 seconds; a host that then still
 //! won't stay up is left stopped, with the reason in the tray. While
 //! another program holds the base port, the supervisor waits for it.
@@ -169,7 +173,10 @@ impl Supervisor {
             .stdout(log.try_clone().map_err(|e| e.to_string())?)
             .stderr(log)
             .process_group(0);
+        #[cfg(target_os = "macos")]
+        stop_stale(&self.instance.appdata().join(PID_FILE), &self.instance.binary);
         // SAFETY: prctl is async-signal-safe and touches only the child.
+        #[cfg(target_os = "linux")]
         unsafe {
             command.pre_exec(|| {
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
@@ -180,6 +187,8 @@ impl Supervisor {
         }
         let mut child: Child = command.spawn().map_err(|e| format!("can't start {}: {e}", self.instance.binary.display()))?;
         self.pid.store(child.id(), Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
+        let _ = std::fs::write(self.instance.appdata().join(PID_FILE), format!("{}\n", child.id()));
         self.set(Phase::Running);
         log::info!("Bundled host started (pid {}, base port {})", child.id(), self.instance.base);
         let status = loop {
@@ -192,7 +201,46 @@ impl Supervisor {
             std::thread::sleep(POLL);
         };
         self.pid.store(0, Ordering::Relaxed);
+        #[cfg(target_os = "macos")]
+        let _ = std::fs::remove_file(self.instance.appdata().join(PID_FILE));
         Ok(status)
+    }
+}
+
+#[cfg(target_os = "macos")]
+const PID_FILE: &str = "meteor-host.pid";
+
+/// The executable a running process was started from.
+#[cfg(target_os = "macos")]
+fn process_path(pid: libc::pid_t) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath writes at most `buf.len()` bytes into `buf`.
+    let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    (len > 0).then(|| std::ffi::OsStr::from_bytes(&buf[..len as usize]).into())
+}
+
+/// Stops a host that a crashed Meteor left running, so it can't hold the
+/// ports. Only when the recorded pid is still that host's executable: a
+/// reused pid belongs to something else and is left alone.
+#[cfg(target_os = "macos")]
+fn stop_stale(pid_file: &std::path::Path, binary: &std::path::Path) {
+    let Some(pid) = std::fs::read_to_string(pid_file).ok().and_then(|t| t.trim().parse::<libc::pid_t>().ok()) else { return };
+    let _ = std::fs::remove_file(pid_file);
+    let same = |a: &std::path::Path| a.canonicalize().ok() == binary.canonicalize().ok();
+    if pid <= 1 || !process_path(pid).is_some_and(|path| same(&path)) {
+        return;
+    }
+    log::warn!("Stopping the bundled host (pid {pid}) left running by an earlier Meteor");
+    // SAFETY: kill(2) on the process group of the host Meteor started.
+    unsafe { libc::kill(-pid, libc::SIGTERM) };
+    let end = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < end && process_path(pid).is_some_and(|path| same(&path)) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if process_path(pid).is_some_and(|path| same(&path)) {
+        // SAFETY: as above.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
 }
 
@@ -240,7 +288,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("meteor-host-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("vibepollo")).unwrap();
         // A "host" that exits at once, on a port nothing else uses.
-        let instance = Instance { binary: "/bin/false".into(), base: free_port(), dir: dir.clone(), env: Vec::new() };
+        let instance = Instance { binary: if cfg!(target_os = "macos") { "/usr/bin/false" } else { "/bin/false" }.into(), base: free_port(), dir: dir.clone(), env: Vec::new() };
         let supervisor = Supervisor::start(instance);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && !matches!(supervisor.phase(), Phase::Restarting { failures: 2 }) {

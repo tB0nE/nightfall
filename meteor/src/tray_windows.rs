@@ -7,16 +7,31 @@ use std::sync::atomic::Ordering;
 
 use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE};
+use windows_sys::Win32::UI::Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NIN_BALLOONUSERCLICK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
     CreateIcon, DestroyIcon, GetMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, PostMessageW, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
     WS_OVERLAPPED,
 };
 
 const TRAY_MESSAGE: u32 = WM_APP + 1;
+const TRAY_BALLOON: u32 = WM_APP + 3;
+static TRAY_HWND: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PENDING_BALLOON: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn queue_balloon(message: String) {
+    if let Ok(mut guard) = PENDING_BALLOON.lock() { *guard = Some(message); }
+    let hwnd = TRAY_HWND.load(Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe { PostMessageW(hwnd as *mut std::ffi::c_void, TRAY_BALLOON, 0, 0) };
+    }
+}
+
+pub fn queue_pairing_balloon(pin: &str) {
+    queue_balloon(format!("Pair Nightfall headset — PIN: {pin}  Click to approve or right-click for options"));
+}
 const CMD_OPEN_LOG: usize = 1;
 const CMD_OPEN_SETTINGS: usize = 2;
 const CMD_QUIT: usize = 3;
@@ -46,6 +61,9 @@ const CMD_XR_ENABLE:usize=29;
 const CMD_XR_LIBRARY:usize=30;
 const CMD_HOST_PAIR:usize=31;
 const CMD_TASKBAR_SETTINGS:usize=32;
+const CMD_PAIR_APPROVE:usize=33;
+const CMD_PAIR_REJECT:usize=34;
+const CMD_INSTALL_VDD:usize=35;
 const CMD_XR_GAME_BASE:usize=2000;
 static XR_GAMES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
 static XR_PENDING:std::sync::Mutex<Option<[u8;32]>>=std::sync::Mutex::new(None);
@@ -55,6 +73,7 @@ static CHOICES:std::sync::Mutex<Vec<crate::depth::DepthChoice>>=std::sync::Mutex
 const CMD_SOFTEN_BASE: usize = 300;
 const CMD_DECODE_BASE: usize = 500;
 const CMD_CPU_PROCESSING: usize = 19;
+static TOKIO_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
 static MIC: OnceLock<Option<Arc<crate::mic::Mic>>> = OnceLock::new();
 static DEPTH: OnceLock<Option<Arc<crate::depth::Depth>>> = OnceLock::new();
 static STATUS: OnceLock<Arc<crate::status::Status>> = OnceLock::new();
@@ -67,6 +86,11 @@ fn wide(value: &str) -> Vec<u16> {
 
 unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match message {
+        TRAY_BALLOON => {
+            let msg = PENDING_BALLOON.lock().ok().and_then(|mut g| g.take());
+            if let Some(msg) = msg { unsafe { show_balloon(hwnd, "Nightfall Meteor", &msg) }; }
+            0
+        }
         TRAY_MESSAGE if lparam as u32 == WM_RBUTTONUP => {
             let menu = unsafe { CreatePopupMenu() };
             if menu.is_null() {
@@ -78,7 +102,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let quit = wide("Quit");
             unsafe {
                 if let (Some(status), Some(stats)) = (STATUS.get(), STATS.get()) {
-                    let title = wide(&format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION")));
+                    let title = wide(&format!("Nightfall Meteor {}", env!("METEOR_VERSION")));
                     AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, title.as_ptr());
                     let udp = stats.udp_flows.load(Ordering::Relaxed);
                     let tcp = stats.tcp_connections.load(Ordering::Relaxed);
@@ -120,6 +144,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_WEB, wide("Open host web page").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_LOGIN, wide("Open host login (host.toml)").as_ptr());
                             AppendMenuW(submenu, MF_STRING, CMD_HOST_FOLDER, wide("Open host folder").as_ptr());
+                            let vdd_script = std::env::current_exe().ok()
+                                .and_then(|e| e.parent().map(|p| p.join("Install-VirtualDisplay.ps1")));
+                            if vdd_script.as_ref().is_some_and(|p| p.is_file()) {
+                                AppendMenuW(submenu, MF_STRING, CMD_INSTALL_VDD, wide("Install virtual display driver").as_ptr());
+                            }
                         } else if host.binary.is_none() {
                             AppendMenuW(submenu, MF_STRING | MF_GRAYED, 0, wide("Set host_binary in meteor.toml to a Windows host build").as_ptr());
                         }
@@ -272,6 +301,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                     }
                     let label=wide("PCVR");AppendMenuW(menu,MF_POPUP,xr_menu as usize,label.as_ptr());
                 }
+                if let Some(pending) = HOST.get().and_then(|v| v.pairing.as_ref()).and_then(|p| p.pending()) {
+                    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, wide(&format!("Pair Nightfall headset — PIN: {}", pending.pin)).as_ptr());
+                    AppendMenuW(menu, MF_STRING, CMD_PAIR_APPROVE, wide("Approve pairing").as_ptr());
+                    AppendMenuW(menu, MF_STRING, CMD_PAIR_REJECT, wide("Reject pairing").as_ptr());
+                    AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                }
                 let autostart = wide("Start with my computer");
                 AppendMenuW(menu, MF_STRING | if crate::desktop_windows::autostart_enabled() { MF_CHECKED } else { 0 }, CMD_AUTOSTART, autostart.as_ptr());
                 AppendMenuW(menu, MF_STRING, CMD_TASKBAR_SETTINGS, wide("Taskbar icon settings...").as_ptr());
@@ -284,6 +319,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 SetForegroundWindow(hwnd);
                 TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, point.x, point.y, 0, hwnd, null_mut());
                 DestroyMenu(menu);
+            }
+            0
+        }
+        TRAY_MESSAGE if lparam as u32 == NIN_BALLOONUSERCLICK => {
+            // Balloon click on a pairing notification: approve via Tokio runtime.
+            // `Pairing::approve` calls `tokio::spawn` internally, which requires a
+            // Tokio context — the Win32 message thread has none, so we hand off.
+            if let (Some(pairing), Some(handle)) = (
+                HOST.get().and_then(|v| v.pairing.as_ref()),
+                TOKIO_HANDLE.get(),
+            ) {
+                if let Some(pending) = pairing.pending() {
+                    let pairing = pairing.clone();
+                    let id = pending.id.clone();
+                    handle.spawn(async move { pairing.approve(&id); });
+                }
             }
             0
         }
@@ -323,6 +374,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                 return 0;
             }
             match command {
+                CMD_PAIR_APPROVE|CMD_PAIR_REJECT => {
+                    if let Some(pairing) = HOST.get().and_then(|v| v.pairing.as_ref()) {
+                        if let Some(pending) = pairing.pending() {
+                            if command == CMD_PAIR_APPROVE {
+                                if let Some(handle) = TOKIO_HANDLE.get() {
+                                    let pairing = pairing.clone();
+                                    let id = pending.id.clone();
+                                    handle.spawn(async move { pairing.approve(&id); });
+                                }
+                            } else {
+                                pairing.reject(&pending.id);
+                            }
+                        }
+                    }
+                },
                 CMD_XR_FOLDER=>{let root=crate::xr_windows::root();let _=std::fs::create_dir_all(&root);open_path(root);},
                 CMD_XR_ENABLE=>{
                     let root=crate::xr_windows::root();
@@ -383,6 +449,23 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
                         open_url(&format!("https://localhost:{}", supervisor.instance.base + 1));
                     }
                 }
+                CMD_INSTALL_VDD => {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let script = exe.parent().unwrap().join("Install-VirtualDisplay.ps1");
+                        if script.is_file() {
+                            // PowerShell Start-Process with -Verb RunAs triggers the UAC prompt.
+                            use std::os::windows::process::CommandExt;
+                            let _ = std::process::Command::new("powershell.exe")
+                                .args(["-NoProfile", "-Command",
+                                    &format!("Start-Process powershell.exe -Verb RunAs -ArgumentList \"-NoProfile -ExecutionPolicy Bypass -File '{}'\"", script.display())])
+                                .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
+                        }
+                    }
+                }
                 CMD_HOST_PAIR => {
                     if let Ok(exe)=std::env::current_exe() {
                         use std::os::windows::process::CommandExt;
@@ -414,6 +497,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
     }
 }
 
+unsafe fn show_balloon(hwnd: HWND, title: &str, message: &str) {
+    let mut data = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_INFO,
+        ..std::mem::zeroed()
+    };
+    let title_w = wide(title);
+    let tlen = title_w.len().min(data.szInfoTitle.len());
+    data.szInfoTitle[..tlen].copy_from_slice(&title_w[..tlen]);
+    let info_w = wide(message);
+    let ilen = info_w.len().min(data.szInfo.len());
+    data.szInfo[..ilen].copy_from_slice(&info_w[..ilen]);
+    data.dwInfoFlags = NIIF_INFO;
+    Shell_NotifyIconW(NIM_MODIFY, &mut data);
+}
+
 fn open_path(path: std::path::PathBuf) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }
@@ -421,6 +522,7 @@ fn open_path(path: std::path::PathBuf) {
 fn open_url(url: &str) {
     let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
 }
+
 
 /// Makes a Windows monochrome icon from the same Nightfall mark used by the
 /// Linux tray renderer.
@@ -448,6 +550,10 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
     let _ = MIC.set(mic);
     let _ = DEPTH.set(depth);
     let _ = HOST.set(host);
+    // Capture the Tokio handle so the Win32 message thread can spawn tasks.
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let _ = TOKIO_HANDLE.set(handle);
+    }
     std::thread::spawn(|| unsafe {
         let instance: HINSTANCE = GetModuleHandleW(std::ptr::null());
         let class_name = wide("NightfallMeteorTray");
@@ -498,6 +604,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             log::warn!("Windows tray icon creation failed");
             return;
         }
+        TRAY_HWND.store(hwnd as usize, Ordering::Relaxed);
         log::info!("Windows tray icon started");
         crate::desktop_windows::request_visible_tray_icon();
         let mut message = MSG::default();
@@ -505,6 +612,7 @@ pub fn run(status: Arc<crate::status::Status>, stats: Arc<crate::proxy::Stats>, 
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+        TRAY_HWND.store(0, Ordering::Relaxed);
         Shell_NotifyIconW(NIM_DELETE, &mut icon);
         if !icon.hIcon.is_null() {
             DestroyIcon(icon.hIcon);

@@ -23,9 +23,8 @@ pub struct View {
     pub supervisor: Option<Arc<Supervisor>>,
     /// The host download, shown in the tray.
     pub download: Arc<Download>,
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     pub input: Arc<super::input::Access>,
-    #[cfg(unix)]
     pub pairing: Option<Arc<super::pairing::Pairing>>,
     instance: Option<Instance>,
     installing: std::sync::atomic::AtomicBool,
@@ -37,8 +36,16 @@ impl View {
     /// start, so the tray can say why without Meteor taking another
     /// stack's ports.
     pub fn prepare(&mut self, config: &crate::config::Config) -> Option<u16> {
+        // Meteor.app ships the host, so a new Mac install uses it; a saved
+        // choice (host.toml) is kept.
+        #[cfg(target_os = "macos")]
+        let first_run = !super::state_path().exists();
         self.state = super::load_state();
         self.binary = super::binary(config);
+        #[cfg(target_os = "macos")]
+        if first_run && self.binary.is_some() {
+            self.state.choice = Choice::Bundled;
+        }
         if self.state.choice != Choice::Bundled {
             return None;
         }
@@ -80,7 +87,6 @@ impl View {
                 "managed": true,
                 "version": RELEASE.as_ref().map_or("development", |r| r.version),
             });
-            #[cfg(unix)]
             if self.pairing.is_some() {
                 info["pairing"] = json!({"path":"/meteor/pair", "protocol":1, "encryption":crate::crypto::ENCRYPTION, "xr_identity":true});
             }

@@ -97,6 +97,20 @@ func stop_play_stream():
 	if _v2:
 		_v2.stop_stream()
 
+## Ends the host's session (its /cancel) at the address and port the launch
+## used, and calls back with the reply ("" on failure).
+func stop_host_session(host_id: int, port: int, callback: Callable):
+	var cm = get_computer_manager()
+	if not cm:
+		callback.call("")
+		return
+	for h in get_hosts():
+		if h.has("id") and h.id == host_id:
+			var target_port := port if port > 0 else int(h.get("https_port", 47984))
+			cm.stop_stream_at(cm.get_host_address(h), target_port, callback)
+			return
+	callback.call("")
+
 func cancel_host_stream(host_id: int):
 	var cm = get_computer_manager()
 	if not cm:
@@ -118,10 +132,10 @@ func set_cursor_visible(host_id: int, visible: bool, callback: Callable):
 	if cm:
 		cm.set_cursor_visible(host_id, visible, callback)
 
-func fetch_display_manifest(host_id: int, callback: Callable):
+func fetch_display_manifest(host_id: int, callback: Callable, query: String = ""):
 	var cm = get_computer_manager()
 	if cm:
-		cm.fetch_display_manifest(host_id, callback)
+		cm.fetch_display_manifest(host_id, callback, query)
 	else:
 		callback.call({})
 
@@ -290,6 +304,16 @@ func supports_native_depth_capture() -> bool:
 		return false
 	var uploader = _v2.get_texture_uploader()
 	return uploader != null and uploader.has_method("supports_native_depth_capture") and uploader.supports_native_depth_capture()
+
+## The part of the frame on-device depth sees ((x, y, w, h) in [0, 1]; empty for all of it).
+## With several screens in one frame, the native XR renderer passes the primary's part here.
+## Without this forwarder its has_method() check failed and depth saw every screen at once.
+func set_native_depth_capture_crop(crop: PackedFloat32Array):
+	if not _v2 or not _v2.has_method("get_texture_uploader"):
+		return
+	var uploader = _v2.get_texture_uploader()
+	if uploader != null and uploader.has_method("set_native_depth_capture_crop"):
+		uploader.set_native_depth_capture_crop(crop)
 
 func request_native_depth_capture(width: int, height: int):
 	if not _v2 or not _v2.has_method("get_texture_uploader"):

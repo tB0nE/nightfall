@@ -50,6 +50,9 @@ var source: StringName = &"client_split"
 var frame_size: Vector2i = Vector2i.ZERO
 var desktop_bounds: Rect2i = Rect2i()
 var monitors: Array[MonitorSpec] = []
+## The host packs screens by size, so any set of monitors can be streamed
+## together and no gap between selected monitors has to be filled.
+var any_selection: bool = false
 
 func to_dict() -> Dictionary:
 	var mons := []
@@ -61,6 +64,7 @@ func to_dict() -> Dictionary:
 		"frame_size": [frame_size.x, frame_size.y],
 		"desktop_bounds": [desktop_bounds.position.x, desktop_bounds.position.y, desktop_bounds.size.x, desktop_bounds.size.y],
 		"monitors": mons,
+		"any_selection": any_selection,
 	}
 
 static func from_dict(d: Dictionary) -> ScreenLayout:
@@ -71,6 +75,7 @@ static func from_dict(d: Dictionary) -> ScreenLayout:
 	l.frame_size = Vector2i(fs[0], fs[1])
 	var db: Array = d.get("desktop_bounds", [0, 0, fs[0], fs[1]])
 	l.desktop_bounds = Rect2i(db[0], db[1], db[2], db[3])
+	l.any_selection = bool(d.get("any_selection", false))
 	l.monitors = []
 	for md in d.get("monitors", []):
 		l.monitors.append(MonitorSpec.from_dict(md))
@@ -154,7 +159,7 @@ func enabled_monitors() -> Array[MonitorSpec]:
 # Uses desktop_rect (real position in the host's full desktop), not frame_rect
 # (meaningless/zeroed for currently-disabled monitors).
 func fill_gaps(enabled_ids: Array) -> Array:
-	if enabled_ids.is_empty():
+	if enabled_ids.is_empty() or any_selection:
 		return enabled_ids
 	var min_x = INF
 	var max_x = -INF
@@ -198,6 +203,7 @@ func rescale_to(new_frame: Vector2i) -> ScreenLayout:
 	l.version = version
 	l.source = source
 	l.frame_size = new_frame
+	l.any_selection = any_selection
 	var sx := float(new_frame.x) / float(frame_size.x) if frame_size.x > 0 else 1.0
 	var sy := float(new_frame.y) / float(frame_size.y) if frame_size.y > 0 else 1.0
 	l.desktop_bounds = Rect2i(

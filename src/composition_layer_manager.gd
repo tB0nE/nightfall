@@ -372,6 +372,10 @@ func ensure_stereo_layers(s: VRScreen) -> void:
 
 	s.comp_cylinder_left.set_layer_viewport(s.comp_viewport_left)
 	s.comp_cylinder_right.set_layer_viewport(s.comp_viewport_right)
+	# A screen promoted to primary already has its place in the frame; the new
+	# eye layers must show that region, not the whole multi-screen frame.
+	s.comp_shader_mat_left.set_shader_parameter("uv_region", s.uv_region)
+	s.comp_shader_mat_right.set_shader_parameter("uv_region", s.uv_region)
 	main._log("[COMP] Per-screen stereo comp layers created (%s)" % s.monitor_id)
 
 func _make_bezel_rect() -> ColorRect:
@@ -1044,6 +1048,11 @@ func _update_cylinder_params_for(s: VRScreen):
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y
+	# The pointer hits the screen's own curved mesh. A screen moved since that
+	# mesh was built (e.g. a new primary taking the old one's place) would show
+	# its picture on this cylinder while the laser hits the old curve.
+	if s.curvature > 0 and absf(s.built_radius - radius) > radius * 0.01:
+		s.apply_curvature()
 	s._comp_cyl_radius = radius
 	s._comp_cyl_central_angle = central_angle
 	s._comp_cyl_center = s.global_position - screen_forward * radius
@@ -1190,6 +1199,9 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: in
 	for s in main.screens:
 		if _independent_browser(s):
 			continue
+		var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources else null
+		if provider == null or (not provider.active and not provider.closing):
+			s.restore_monitor_region()
 		for mat in get_shader_mats(s):
 			if not mat:
 				continue
@@ -1258,11 +1270,13 @@ func switch_to_comp_layer():
 		return
 	in_use = true
 	main.stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	var s = main.primary_screen
-	if s.comp_cylinder_left: s.comp_cylinder_left.visible = false
-	if s.comp_cylinder_right: s.comp_cylinder_right.visible = false
-	if s.comp_viewport_left: s.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
-	if s.comp_viewport_right: s.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	for scr in main.screens:
+		# Every screen, not just the current primary: an earlier primary keeps
+		# its eye layers.
+		if scr.comp_cylinder_left: scr.comp_cylinder_left.visible = false
+		if scr.comp_cylinder_right: scr.comp_cylinder_right.visible = false
+		if scr.comp_viewport_left: scr.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if scr.comp_viewport_right: scr.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	for scr in main.screens:
 		if _independent_browser(scr):
 			refresh_browser_screen(scr)
@@ -1322,6 +1336,12 @@ func switch_to_stereo_comp_layer():
 			scr.comp_layer = scr.comp_cylinder
 			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
 			scr.comp_layer.visible = true
+		# Only the primary draws in 3D. A screen that was primary before keeps
+		# its eye layers, which would otherwise stay drawn over its flat one.
+		if scr.comp_cylinder_left: scr.comp_cylinder_left.visible = false
+		if scr.comp_cylinder_right: scr.comp_cylinder_right.visible = false
+		if scr.comp_viewport_left: scr.comp_viewport_left.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		if scr.comp_viewport_right: scr.comp_viewport_right.render_target_update_mode = SubViewport.UPDATE_DISABLED
 		scr.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	make_screen_transparent()
 	for scr in main.screens:

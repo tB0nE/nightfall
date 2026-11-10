@@ -344,9 +344,7 @@ func _stream_host_point(active_raycast: RayCast3D) -> Variant:
 	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 	var uv = target.screen.hit_point_to_uv(hit_pos)
 	var uv_x = uv.x
-	if main.settings_controller.get_stereo_mode() >= 3:
-		var shift = _compute_parallax_shift(uv_x)
-		uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
+	uv_x = _stereo_click_uv_x(target.screen, uv_x)
 	return main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
 
 var _mouse_following := false
@@ -499,9 +497,7 @@ func handle_pointer_interaction():
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 			var uv = t0.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
-			if main.settings_controller.get_stereo_mode() >= 3:
-				var shift = _compute_parallax_shift(uv_x)
-				uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
+			uv_x = _stereo_click_uv_x(t0.screen, uv_x)
 			_pinch_start_pos = Vector2(main.layout.uv_to_host_point(t0.screen.monitor, Vector2(uv_x, uv.y)))
 			_pinch_start_screen = t0.screen
 			_click_pending_release = true
@@ -525,9 +521,7 @@ func handle_pointer_interaction():
 				var uv = t1.screen.hit_point_to_uv(hit_pos)
 				var uv_x = uv.x
 				var uv_y = uv.y
-				if main.settings_controller.get_stereo_mode() >= 3:
-					var shift = _compute_parallax_shift(uv_x)
-					uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
+				uv_x = _stereo_click_uv_x(t1.screen, uv_x)
 				var host_pt = main.layout.uv_to_host_point(t1.screen.monitor, Vector2(uv_x, uv_y))
 				var ref = main.layout.host_ref()
 				main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
@@ -832,9 +826,7 @@ func handle_pointer_interaction():
 			var uv = t.screen.hit_point_to_uv(hit_pos)
 			var uv_x = uv.x
 			var uv_y = uv.y
-			if main.settings_controller.get_stereo_mode() >= 3:
-				var shift = _compute_parallax_shift(uv_x)
-				uv_x = clampf(uv_x + shift + 0.0075, 0.0, 1.0)
+			uv_x = _stereo_click_uv_x(t.screen, uv_x)
 			var host_pt = main.layout.uv_to_host_point(t.screen.monitor, Vector2(uv_x, uv_y))
 			var ref = main.layout.host_ref()
 
@@ -1022,6 +1014,9 @@ func _reveal_contextual_screen_controls() -> void:
 	var target := PointerTarget.resolve(raycast.get_collider())
 	if target.role in [&"grab_bar", &"corner", &"screen_shortcut", &"screen_tab"]:
 		main.screen_shortcuts.reveal_controls(target.screen)
+	elif target.role == &"screen":
+		# Shows the screen's grab bar while pointing at it, without its corner handles.
+		main.screen_shortcuts.point_at(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast
@@ -1364,6 +1359,14 @@ func _set_corner_color(handle: MeshInstance3D, color: Color, alpha: float = 1.0)
 	if screen is VRScreen and handle.has_meta(&"nf_corner_idx"):
 		var idx: int = handle.get_meta(&"nf_corner_idx")
 		main.composition_screen_controls.set_corner_alpha(screen, idx, alpha)
+
+# AI-3D draws only the primary screen in depth, so only clicks there are
+# shifted to meet the image. Secondary screens are flat: shifting them put
+# every click to the right of the pointer, untouched by the cursor setting.
+func _stereo_click_uv_x(screen: VRScreen, uv_x: float) -> float:
+	if screen != main.primary_screen or main.settings_controller.get_stereo_mode() < 3:
+		return uv_x
+	return clampf(uv_x + _compute_parallax_shift(uv_x) + 0.0075, 0.0, 1.0)
 
 func _compute_parallax_shift(uv_x: float) -> float:
 	if not main.depth_estimator or not main.depth_estimator.depth_texture:

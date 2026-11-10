@@ -8,6 +8,7 @@ var _pcvr_previous_render_cap := 0
 var main: Node3D
 var _restart_pending: bool = false
 var _restart_seq: int = 0
+var _last_applied_virtual_count: int = 0
 var _ai_3d_commit_seq: int = 0
 var _last_effective_backend: int = -1
 var _last_backend_status: String = ""
@@ -391,6 +392,8 @@ func toggle_ai_3d_enabled():
 	_save_setting(main._ui_3d_speed_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_option_btn(main._ui_3d_enable_btn, "On" if main.settings.host.ai_3d_speed != 0 else "Off")
 	main.ui_controller.update_3d_btn_state()
+	if main.settings.host.ai_3d_speed != 0 and main.screens.size() > 1:
+		main._ui_status_label.text = "AI 3D applies to the primary screen only"
 	_schedule_ai_3d_commit()
 
 # AI 3D tab's "3D Mode" control (2026-08-28) - cycles Auto/Fast/Standard
@@ -1984,7 +1987,7 @@ func cycle_double_h():
 	main.state_manager.save_state()
 	_schedule_stream_restart()
 
-func _schedule_stream_restart(debounce_seconds: float = 0.8):
+func _schedule_stream_restart(debounce_seconds: float = 0.8, reconnect_delay: float = 0.0, end_host_session: bool = false):
 	if not main.is_streaming or main.current_host_id < 0:
 		return
 	_restart_pending = true
@@ -2019,7 +2022,20 @@ func _schedule_stream_restart(debounce_seconds: float = 0.8):
 	await main.get_tree().process_frame
 	await main.get_tree().process_frame
 	main.stream_backend.stop_play_stream()
-	await main.get_tree().create_timer(0.5).timeout
+	# Without this the host keeps the old session and the reconnect resumes it.
+	# Vibepollo only creates or removes a virtual display when a session starts,
+	# so a resumed session never shows the change.
+	if end_host_session:
+		var ended := {"done": false}
+		main.stream_backend.stop_host_session(main.current_host_id, main.stream_manager.meteor_https_port(), func(reply) -> void:
+			ended["done"] = true
+			ended["reply"] = str(reply).left(60))
+		var waited := 0.0
+		while not ended["done"] and waited < 5.0:
+			await main.get_tree().create_timer(0.1).timeout
+			waited += 0.1
+		main._log("[RESTART] Host session %s after %.1fs (%s)" % ["answered" if ended["done"] else "did not answer", waited, str(ended.get("reply", ""))])
+	await main.get_tree().create_timer(0.5 + reconnect_delay).timeout
 	# start_stream() is the single owner of refresh application at a connection
 	# boundary. It awaits the Quest surface transition before resizing Godot
 	# viewports or creating decoder/native-renderer resources.
@@ -2060,6 +2076,25 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# x-position first so insertion order matches physical left-to-right order.
 	var ordered_monitors := new_layout.enabled_monitors()
 	ordered_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
+	# Free the slots of screens this layout drops before adding any, so a layout with as many
+	# screens as MAX_SCREENS allows fits (e.g. one physical + three virtual to four virtual).
+	for s in main.screens.duplicate():
+		if s != main.primary_screen and not wanted_ids.has(s.monitor_id) and not main.screen_sources.is_browser_screen(s):
+			main.remove_screen(s.monitor_id)
+	# The outgoing primary can only go once another screen is primary. When the new primary
+	# already has a screen, hand over now so the old one's slot is free for the screens added below.
+	if old_primary_being_replaced and not main.screen_sources.is_browser_screen(old_primary_being_replaced):
+		var primary_spec = new_layout.get_primary()
+		for s in main.screens:
+			if primary_spec and s != old_primary_being_replaced and s.monitor_id == primary_spec.id:
+				s.global_transform = old_primary_being_replaced.global_transform
+				main.set_primary_screen(s)
+				if main.get("screen_tab_strip") != null and s.comp_corner_viewport:
+					main.screen_tab_strip.attach(s, s.comp_corner_viewport)
+				apply_stereo()
+				main.remove_screen(old_primary_being_replaced.monitor_id)
+				old_primary_being_replaced = null
+				break
 	for m in ordered_monitors:
 		var existing: VRScreen = null
 		for s in main.screens:
@@ -2175,18 +2210,39 @@ func sync_staged_from_current_layout():
 			virtual_enabled += 1
 		else:
 			real_enabled += 1
-	main._staged_physical_count = maxi(real_enabled, 1)
+	# No physical monitor in the stream is a real state when virtual ones are.
+	main._staged_physical_count = maxi(real_enabled, 1 if virtual_enabled == 0 else 0)
 	main._staged_virtual_count = virtual_enabled
+	# Left alone while the layout is empty, e.g. between a relaunch and its manifest.
+	if real_enabled > 0:
+		main.settings.host.virtual_only = false
+	elif virtual_enabled > 0:
+		main.settings.host.virtual_only = true
+	# What the host reports is what exists, whatever this app run last applied.
+	_last_applied_virtual_count = virtual_enabled
 	main._staged_preset_id = &""
 
+# Fewest physical monitors the stream may have: none when the host can make virtual ones
+# (the stream then runs on virtual screens alone), else one.
+func min_physical_count() -> int:
+	var settings = main.get("settings")
+	if settings == null:
+		return 1
+	return 0 if settings.host.virtual_display_installed and settings.host.virtual_display_max_count > 0 else 1
+
 func stage_monitor_count(n: int):
-	main._staged_physical_count = clampi(n, 1, maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
-	main._staged_virtual_count = clampi(main._staged_virtual_count, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
+	main._staged_physical_count = clampi(n, min_physical_count(), maxi(1, mini(_real_monitor_count(), monitor_screen_capacity())))
+	# At least one screen has to remain.
+	if main._staged_physical_count == 0 and main._staged_virtual_count == 0:
+		main._staged_virtual_count = 1
+	var low := 1 if main._staged_physical_count == 0 else 0
+	main._staged_virtual_count = clampi(main._staged_virtual_count, low, maxi(low, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 	main._log("[LAYOUT] stage_monitor_count(%d): real_monitor_count=%d -> staged_physical=%d" % [n, _real_monitor_count(), main._staged_physical_count])
 
 func stage_virtual_count(n: int):
-	main._staged_virtual_count = clampi(n, 0, maxi(0, monitor_screen_capacity() - main._staged_physical_count))
+	var low := 1 if main._staged_physical_count == 0 else 0
+	main._staged_virtual_count = clampi(n, low, maxi(low, monitor_screen_capacity() - main._staged_physical_count))
 	_clear_staged_preset_if_mismatched()
 
 func select_monitor_preset(id: StringName):
@@ -2214,7 +2270,8 @@ func _build_staged_layout() -> ScreenLayout:
 	if real_monitors.is_empty():
 		return null
 	real_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
-	var phys_count = clampi(main._staged_physical_count, 1, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
+	var phys_floor := 0 if main._staged_virtual_count > 0 and min_physical_count() == 0 else 1
+	var phys_count = clampi(main._staged_physical_count, phys_floor, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
 	var picked: Array = real_monitors.slice(0, phys_count)
 
 	var new_layout := ScreenLayout.new()
@@ -2222,6 +2279,7 @@ func _build_staged_layout() -> ScreenLayout:
 	new_layout.source = main.layout.source
 	new_layout.frame_size = main.layout.frame_size
 	new_layout.desktop_bounds = main.layout.desktop_bounds
+	new_layout.any_selection = main.layout.any_selection
 
 	for m in real_monitors:
 		var nm := ScreenLayout.MonitorSpec.new()
@@ -2401,6 +2459,13 @@ func apply_staged_monitor_config():
 	var real_changed = old_real_ids != new_real_ids
 	main._log("[LAYOUT] apply_staged_monitor_config: staged=%d+%dvirtual old_real=%s new_real=%s real_changed=%s streaming=%s" % [main._staged_physical_count, main._staged_virtual_count, str(old_real_ids), str(new_real_ids), str(real_changed), str(main.is_streaming)])
 
+	var virtual_changed = main._staged_virtual_count != _last_applied_virtual_count
+	main.settings.host.virtual_only = main._staged_physical_count == 0 and main._staged_virtual_count > 0
+	var vdd_available = main.settings.host.virtual_display_installed and main.stream_manager != null
+	# A virtual-display change restarts the stream itself (see the Meteor reply below): the host
+	# session has to end before a new virtual display can appear, and a plain restart resumes it.
+	var restart_via_meteor = virtual_changed and vdd_available and main.is_streaming
+
 	if real_changed and main.is_streaming:
 		var new_primary = target.get_primary()
 		var new_primary_id = new_primary.id if new_primary else &""
@@ -2424,24 +2489,76 @@ func apply_staged_monitor_config():
 		# deliberately left to that same mismatch-retry (see its comment in
 		# main.gd) - an arbitrary multi-monitor composite's exact frame_size
 		# depends on host-side gap-filling this client can't predict.
-		if new_real_ids.size() == 1:
+		# With virtual screens in the stream the frame holds more than this monitor, so only a
+		# lone physical monitor makes the size knowable here.
+		if new_real_ids.size() == 1 and main._staged_virtual_count == 0:
 			for m in main.layout.monitors:
 				if m.id == new_real_ids[0]:
-					main.settings.host.native_resolution = m.frame_rect.size
+					# A monitor that was switched off has an empty frame_rect (that once asked the
+					# host for a 320x180 stream); its desktop_rect still holds its real size.
+					var lone_size: Vector2i = m.frame_rect.size if m.frame_rect.size.x > 0 and m.frame_rect.size.y > 0 else m.desktop_rect.size
+					if lone_size.x > 0 and lone_size.y > 0:
+						main.settings.host.native_resolution = lone_size
 					break
 		main._pending_monitor_apply = true
-		_schedule_stream_restart()
-	else:
-		apply_screen_layout(target)
+		if not restart_via_meteor:
+			_schedule_stream_restart()
+
+	# A change that restarts through Meteor leaves the screens alone until the
+	# new session's manifest arrives. Removing virtual screens now would leave a
+	# lone primary on the old multi-screen frame until then.
+	if not (real_changed and main.is_streaming) and not restart_via_meteor:
+		if vdd_available and main._staged_virtual_count > 0:
+			# Don't render placeholder — real virtual monitor arrives after stream restart.
+			# Strip synthetic virtual entries before applying so the user doesn't see a
+			# duplicate-frame screen in the interim.
+			var without_placeholders := ScreenLayout.new()
+			without_placeholders.version = target.version
+			without_placeholders.source = target.source
+			without_placeholders.frame_size = target.frame_size
+			without_placeholders.desktop_bounds = target.desktop_bounds
+			without_placeholders.any_selection = target.any_selection
+			for m in target.monitors:
+				if not m.hint.get("virtual", false):
+					without_placeholders.monitors.append(m)
+			apply_screen_layout(without_placeholders)
+		else:
+			apply_screen_layout(target)
 		_apply_preset_positions_to_screens()
+	if virtual_changed and vdd_available:
+		var vcount = main._staged_virtual_count
+		var previous_count = _last_applied_virtual_count
+		_last_applied_virtual_count = vcount
+		main.settings.host.virtual_display_count = vcount
+		main.settings.host.virtual_only = main._staged_physical_count == 0 and vcount > 0
+		var need_restart = main.is_streaming
+		main.stream_manager.post_meteor_virtual(vcount, func(ok: bool, reply: Dictionary) -> void:
+			if not ok:
+				main._log("[METEOR] POST /meteor/virtual failed")
+				# Not applied: the same Apply has to try again rather than look like no change.
+				if _last_applied_virtual_count == vcount:
+					_last_applied_virtual_count = previous_count
+				# The restart held back above still has to happen for the monitors that changed.
+				if real_changed and need_restart:
+					_schedule_stream_restart()
+			elif need_restart:
+				# The host session has to end for Vibepollo to apply the change on the
+				# next launch; the delay covers its teardown (or a full host restart
+				# when Meteor fell back to that).
+				var restarting: bool = reply.get("host_restarting", false)
+				var delay := 15.0 if restarting else 4.0
+				main._log("[METEOR] Virtual display applied (host_restarting=%s), relaunching in %.1fs" % [str(restarting), delay])
+				main._pending_monitor_apply = true
+				_schedule_stream_restart(0.8, delay, true)
+		)
 
 	main.host_resolution = main.compute_requested_resolution()
 	main.state_manager.save_host_state()
 	if main._ui_status_label:
-		if real_changed and main.is_streaming:
+		if (real_changed or (virtual_changed and vdd_available)) and main.is_streaming:
 			main.ui_controller.set_status("Applying - restarting stream for new monitor selection...")
-		elif main._staged_virtual_count > 0:
-			main.ui_controller.set_status("%d virtual monitor(s) - placeholder only, not yet requested from server" % main._staged_virtual_count)
+		elif main._staged_virtual_count > 0 and vdd_available:
+			main.ui_controller.set_status("Virtual monitor(s) will appear on next stream connect")
 		else:
 			main.ui_controller.set_status("Monitor layout applied")
 
@@ -2452,15 +2569,20 @@ func apply_staged_monitor_config():
 # apply_screen_layout() would otherwise have just dropped them) and applies
 # the staged preset's grid/free positions now that every screen actually exists.
 func finish_pending_monitor_apply():
-	if main._staged_virtual_count > 0:
+	if main._staged_virtual_count > 0 and not main.settings.host.virtual_display_installed:
+		# VDD not available: Vibepollo won't create a real virtual monitor, so
+		# add a placeholder so the layout doesn't look empty.
 		var with_virtual := ScreenLayout.new()
 		with_virtual.version = main.layout.version
 		with_virtual.source = main.layout.source
 		with_virtual.frame_size = main.layout.frame_size
 		with_virtual.desktop_bounds = main.layout.desktop_bounds
+		with_virtual.any_selection = main.layout.any_selection
 		with_virtual.monitors = main.layout.monitors.duplicate()
 		_append_virtual_placeholders(with_virtual, main._staged_virtual_count)
 		apply_screen_layout(with_virtual)
+	# When VDD is available, Vibepollo creates a real virtual display that
+	# appears in the manifest as an ordinary monitor — no placeholder needed.
 	_apply_preset_positions_to_screens()
 
 func save_current_as_preset():

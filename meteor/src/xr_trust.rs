@@ -66,10 +66,22 @@ impl Trust {
     fn commit(&self, state: &mut State, key: [u8; 32]) -> io::Result<()> {
         if state.approved.len() >= 8 { return Err(io::Error::other("Eight headsets are already authorized")); }
         let mut updated = state.approved.clone(); updated.insert(key);
+        Self::persist(&self.path, state, updated)
+    }
+    /// Approves a key that has proved possession via cryptographic handshake,
+    /// without requiring a prior manual request. No-ops if already approved.
+    pub fn auto_approve(&self, key: [u8; 32]) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.approved.contains(&key) { return Ok(()); }
+        if state.approved.len() >= 8 { return Err(io::Error::other("Eight headsets are already authorized")); }
+        let mut updated = state.approved.clone(); updated.insert(key);
+        Self::persist(&self.path, &mut state, updated)
+    }
+    fn persist(path: &std::path::PathBuf, state: &mut State, updated: BTreeSet<[u8; 32]>) -> io::Result<()> {
         let keys: Vec<String> = updated.iter().map(|key|key.iter().map(|b|format!("{b:02x}")).collect()).collect();
-        let parent = self.path.parent().ok_or_else(||io::Error::other("Invalid XR trust path"))?;
+        let parent = path.parent().ok_or_else(||io::Error::other("Invalid XR trust path"))?;
         std::fs::create_dir_all(parent)?;
-        let temporary = self.path.with_extension(format!("{}.tmp", std::process::id()));
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
         let mut created = false;
         let result = (|| {
             use std::io::Write;
@@ -77,10 +89,9 @@ impl Trust {
             #[cfg(unix)] { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
             let mut file = options.open(&temporary)?; created = true;
             file.write_all(&serde_json::to_vec_pretty(&keys)?)?; file.sync_all()?;
-            std::fs::rename(&temporary, &self.path)
+            std::fs::rename(&temporary, path)
         })();
         if result.is_err() && created { let _ = std::fs::remove_file(&temporary); }
-        // Do not remove a pre-existing file that this invocation did not create.
         if result.is_ok() { state.approved = updated; state.pending = None; }
         result
     }

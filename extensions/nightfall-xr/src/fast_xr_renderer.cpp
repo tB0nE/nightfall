@@ -33,6 +33,9 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("consume_ambient_sample"), &NightfallXrRenderer::consume_ambient_sample);
 	ClassDB::bind_method(D_METHOD("get_warp_gpu_ms"), &NightfallXrRenderer::get_warp_gpu_ms);
 	ClassDB::bind_method(D_METHOD("set_debug_solid_color", "enabled"), &NightfallXrRenderer::set_debug_solid_color);
+	ClassDB::bind_method(D_METHOD("set_primary_crop", "crop"), &NightfallXrRenderer::set_primary_crop);
+	ClassDB::bind_method(D_METHOD("set_secondary_screens", "screens"), &NightfallXrRenderer::set_secondary_screens);
+	ClassDB::bind_method(D_METHOD("get_secondary_screen_count"), &NightfallXrRenderer::get_secondary_screen_count);
 }
 
 // Trivial pass-throughs -- see include/fast_xr_renderer.h for why these
@@ -227,4 +230,7 @@ void NightfallXrRenderer::request_ambient_sample() {}
 PackedByteArray NightfallXrRenderer::consume_ambient_sample() { return PackedByteArray(); }
 float NightfallXrRenderer::get_warp_gpu_ms() { return 0.0f; }
 void NightfallXrRenderer::set_debug_solid_color(bool) {}
+void NightfallXrRenderer::set_primary_crop(PackedFloat32Array) {}
+void NightfallXrRenderer::set_secondary_screens(Array) {}
+int NightfallXrRenderer::get_secondary_screen_count() const { return 0; }
 #endif

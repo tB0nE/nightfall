@@ -119,6 +119,8 @@ fn api() -> Result<Arc<Api>, String> {
     API.get_or_init(|| {
         let name = if cfg!(windows) {
             "meteor_vda_vulkan.dll"
+        } else if cfg!(target_os = "macos") {
+            "libmeteor_vda_vulkan.dylib"
         } else {
             "libmeteor_vda_vulkan.so"
         };

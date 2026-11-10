@@ -14,10 +14,9 @@
 
 mod detect;
 mod install;
-mod instance;
-#[cfg(unix)]
+pub(crate) mod instance;
+#[cfg(target_os = "linux")]
 pub mod input;
-#[cfg(unix)]
 pub mod pairing;
 #[cfg(windows)]
 pub mod pin;
@@ -26,7 +25,7 @@ mod supervisor;
 #[cfg(windows)]
 #[path = "supervisor_windows.rs"]
 mod supervisor;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub mod setup;
 pub mod view;
 
@@ -122,13 +121,28 @@ pub fn port_free((port, proto): (u16, Proto)) -> bool {
     }
 }
 
+/// Whether the managed host can make virtual monitors here: KDE Plasma or GNOME
+/// on Wayland, with a host build that has them (a development `host_binary`,
+/// or a pinned release that does).
+#[cfg(target_os = "linux")]
+pub fn virtual_monitors_supported(config: &crate::config::Config) -> bool {
+    let wayland = std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t == "wayland") || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+    let supported = desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE") || d.eq_ignore_ascii_case("GNOME"));
+    wayland && supported && (config.host_binary.is_some() || install::RELEASE_HAS_VIRTUAL_MONITORS)
+}
+
 /// The host to run: `host_binary` from meteor.toml, else the installed
 /// release.
 pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
     config.host_binary.clone().or_else(|| RELEASE.as_ref().and_then(Install::binary)).or_else(|| {
         #[cfg(windows)]
         { let path=std::env::current_exe().ok()?.parent()?.join("runtime/host/sunshine.exe");path.is_file().then_some(path) }
-        #[cfg(not(windows))]
+        // Meteor.app/Contents/MacOS/nightfall-meteor ships the host in
+        // Contents/Resources/host.
+        #[cfg(target_os = "macos")]
+        { let path=std::env::current_exe().ok()?.parent()?.parent()?.join("Resources/host/bin/meteor-vibepollo");path.is_file().then_some(path) }
+        #[cfg(target_os = "linux")]
         { None }
     })
 }
@@ -141,7 +155,9 @@ pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result
     // On Windows a tray switch starts the replacement before this process has
     // released its proxy listeners. Reuse the saved base while that predecessor
     // exits; the discovery bind below still rejects a persistent conflict.
-    #[cfg(windows)]
+    // macOS likewise: the old host may still be letting go of its ports when the restarted
+    // Meteor looks, and meteor.lock already guarantees no other Meteor holds this base.
+    #[cfg(any(windows, target_os = "macos"))]
     if std::env::var_os("METEOR_RESTARTED").is_some() {
         if let Some(base) = state.base {
             return Ok(base);
