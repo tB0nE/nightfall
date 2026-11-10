@@ -283,9 +283,12 @@ func _guide_region() -> Vector4:
 
 ## The native capture samples the whole decoded frame. With several screens
 ## that frame holds all of them, so crop it to the primary's part (whichever
-## renderer draws it); an empty crop means the whole frame.
+## renderer draws it); an empty crop means the whole frame. The native renderer
+## sets its own crop while it draws, so this covers the Godot renderer only.
 func _set_native_capture_crop(capture_source) -> void:
 	if not capture_source.has_method("set_native_depth_capture_crop"):
+		return
+	if _native_renderer_active:
 		return
 	var crop := PackedFloat32Array()
 	var uv: Vector4 = main.primary_screen.uv_region if main.primary_screen else Vector4(0.0, 0.0, 1.0, 1.0)
