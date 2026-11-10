@@ -2,7 +2,7 @@
 // NVENC loop in meteor_vulkan_nvenc_probe.cpp: one synchronous encode per bridge request, the
 // same log lines, and a REQUIRE failure ends the process.
 #pragma once
-#include "meteor_amf_encoder.h"
+#include "meteor_amf_vulkan.h"
 
 static void amf_bridge_loop(meteor_stereo_encode_v1 request) {
     const meteor_stereo_encode_v1 *input=&request;
@@ -43,8 +43,10 @@ static void amf_bridge_loop(meteor_stereo_encode_v1 request) {
     VkDeviceMemory image_memory; VK(vkAllocateMemory(device,&mai,nullptr,&image_memory));
     VK(vkBindImageMemory(device,image,image_memory,0));
 
+    MeteorAmfVulkanShare share;
+    if(!share.open(gpu,device,width,height)) { std::fprintf(stderr,"AMF: %s\n",share.error.c_str()); REQUIRE(false,"AMF shared texture unavailable"); }
     MeteorAmfEncoder amf;
-    if(!amf.open(gpu,device,width,height)) { std::fprintf(stderr,"AMF: %s\n",amf.error.c_str()); REQUIRE(false,"AMF shared texture unavailable"); }
+    amf.attach(share.d3d.Get(),share.texture.Get(),width,height,amf::AMF_SURFACE_RGBA);
     const char *codec_text=getenv("METEOR_XR_CODEC");
     REQUIRE(!codec_text || !strcmp(codec_text,"h264") || !strcmp(codec_text,"h265"),"Unsupported XR codec");
     const bool hevc=codec_text && !strcmp(codec_text,"h265");
@@ -118,12 +120,12 @@ static void amf_bridge_loop(meteor_stereo_encode_v1 request) {
         VkImageMemoryBarrier shared{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         shared.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED; shared.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         shared.srcQueueFamilyIndex=VK_QUEUE_FAMILY_EXTERNAL; shared.dstQueueFamilyIndex=family;
-        shared.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; shared.image=amf.image; shared.subresourceRange=range;
+        shared.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; shared.image=share.image; shared.subresourceRange=range;
         const VkImageMemoryBarrier before_copy[2]={barrier,shared};
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT|VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,
             0,0,nullptr,0,nullptr,2,before_copy);
         VkImageCopy copy{}; copy.srcSubresource=copy.dstSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; copy.extent={width,height,1};
-        vkCmdCopyImage(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,amf.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
+        vkCmdCopyImage(cmd,image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,share.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&copy);
         shared.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; shared.newLayout=VK_IMAGE_LAYOUT_GENERAL;
         shared.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; shared.dstAccessMask=0;
         shared.srcQueueFamilyIndex=family; shared.dstQueueFamilyIndex=VK_QUEUE_FAMILY_EXTERNAL;
@@ -158,6 +160,7 @@ static void amf_bridge_loop(meteor_stereo_encode_v1 request) {
     std::fflush(stdout);
     output.close();  // every frame already waited for its own queue work
     amf.destroy();
+    share.destroy();
     if(quad_initialized) quads.destroy();
     vkDestroyCommandPool(device,pool,nullptr);
     vkDestroyImage(device,image,nullptr); vkFreeMemory(device,image_memory,nullptr);

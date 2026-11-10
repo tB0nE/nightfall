@@ -3,7 +3,7 @@
 //   meteor-amf-encode-test <h264|h265> <width> <height> <frames> <out.bitstream>
 // Prints the encoder's largest frame and one line per packet; exits 0 on success.
 #define VK_USE_PLATFORM_WIN32_KHR
-#include "meteor_amf_encoder.h"
+#include "meteor_amf_vulkan.h"
 #include <fstream>
 #include <vector>
 
@@ -40,8 +40,10 @@ int main(int argc,char **argv) {
     VkDevice device; CHECK(vkCreateDevice(gpu,&di,nullptr,&device)==VK_SUCCESS,"vkCreateDevice");
     VkQueue queue; vkGetDeviceQueue(device,family,0,&queue);
 
+    MeteorAmfVulkanShare share;
+    if(!share.open(gpu,device,width,height)) { std::fprintf(stderr,"FAIL: %s\n",share.error.c_str()); return 1; }
     MeteorAmfEncoder amf;
-    if(!amf.open(gpu,device,width,height)) { std::fprintf(stderr,"FAIL: %s\n",amf.error.c_str()); return 1; }
+    amf.attach(share.d3d.Get(),share.texture.Get(),width,height,amf::AMF_SURFACE_RGBA);
     std::puts("import=ok");
     if(!amf.start(hevc,72,20000000,false)) { std::fprintf(stderr,"FAIL: %s\n",amf.error.c_str()); return 1; }
     std::puts("encoder=ok");
@@ -58,13 +60,13 @@ int main(int argc,char **argv) {
         VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         barrier.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED; barrier.newLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.srcQueueFamilyIndex=VK_QUEUE_FAMILY_EXTERNAL; barrier.dstQueueFamilyIndex=family;
-        barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; barrier.image=amf.image;
+        barrier.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; barrier.image=share.image;
         barrier.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,0,nullptr,0,nullptr,1,&barrier);
         // Solid red: the decoded frame shows whether colour survives the RGBA -> NV12 trip.
         VkClearColorValue red{{1,0,0,1}};
         VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
-        vkCmdClearColorImage(cmd,amf.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&red,1,&range);
+        vkCmdClearColorImage(cmd,share.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,&red,1,&range);
         barrier.oldLayout=VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; barrier.newLayout=VK_IMAGE_LAYOUT_GENERAL;
         barrier.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask=0;
         barrier.srcQueueFamilyIndex=family; barrier.dstQueueFamilyIndex=VK_QUEUE_FAMILY_EXTERNAL;
@@ -84,6 +86,7 @@ int main(int argc,char **argv) {
     out.close();
     vkDeviceWaitIdle(device);
     amf.destroy();
+    share.destroy();
     vkDestroyCommandPool(device,pool,nullptr); vkDestroyDevice(device,nullptr); vkDestroyInstance(instance,nullptr);
     std::puts("PASS");
     return 0;
