@@ -281,6 +281,18 @@ func _guide_region() -> Vector4:
 		return Vector4(0.0, 0.0, 1.0, 1.0)
 	return main.primary_screen.uv_region if main.primary_screen else Vector4(0.0, 0.0, 1.0, 1.0)
 
+## The native capture samples the whole decoded frame. With several screens
+## that frame holds all of them, so crop it to the primary's part (whichever
+## renderer draws it); an empty crop means the whole frame.
+func _set_native_capture_crop(capture_source) -> void:
+	if not capture_source.has_method("set_native_depth_capture_crop"):
+		return
+	var crop := PackedFloat32Array()
+	var uv: Vector4 = main.primary_screen.uv_region if main.primary_screen else Vector4(0.0, 0.0, 1.0, 1.0)
+	if uv.z > 0.0 and uv.w > 0.0 and uv != Vector4(0.0, 0.0, 1.0, 1.0):
+		crop = PackedFloat32Array([uv.x, uv.y, uv.z, uv.w])
+	capture_source.set_native_depth_capture_crop(crop)
+
 func _resize_warp_passes():
 	# upsample_mat decodes YUV directly (see depth_upsample.gdshader) and
 	# needs the same uv_region the primary screen's own materials use, so
@@ -577,6 +589,7 @@ func process(delta: float):
 		if submit_timer >= active_submit_interval:
 			submit_timer -= active_submit_interval
 			if native_capture_available:
+				_set_native_capture_crop(capture_source)
 				capture_source.request_native_depth_capture(model_input_width, model_input_height)
 			else:
 				var capture_start = Time.get_ticks_usec()
