@@ -88,7 +88,7 @@ visible while you work.
 
 ### Roadmap
 
-- Meteor PCVR on AMD and Intel GPUs on Windows
+- Meteor PCVR on Intel GPUs
 - Nightfall Meteor: wider GPU and desktop testing, and a signed Windows installer
 - Environments: a cinema room and your own rooms, without affecting performance
 - Improve hand tracking
@@ -103,7 +103,7 @@ Nightfall runs on the Quest; Nightfall Meteor is the optional companion on the P
 | AI depth on the PC | ✓ | ✓ | ✓ (EdgePad) |
 | Microphone passthrough | ✓ | ✓ | ✓ |
 | Virtual monitors | ✓ (KDE Plasma and GNOME on Wayland) | ✓ | ✓ |
-| PCVR | ✓ (NVIDIA; AMD experimental) | ✓ (NVIDIA) | ✗ |
+| PCVR | ✓ (NVIDIA, AMD) | ✓ (NVIDIA, AMD) | ✗ |
 
 AI depth uses EdgePad models on NVIDIA, AMD, Intel and Apple GPUs. The temporal
 Video Depth Anything model runs on NVIDIA (TensorRT or Vulkan) and on supported

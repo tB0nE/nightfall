@@ -38,7 +38,7 @@ Release dependencies, licenses, source companion and reproducible build inputs
 are documented in [RELEASE.md](RELEASE.md), also accessible from the tray's
 **Release information & licenses** item.
 
-The XR-enabled preview AppImage includes a managed Monado runtime, NVIDIA/AMD
+The AppImage includes a managed Monado runtime, NVIDIA/AMD
 encoding and tracking bridges and an independently built xrizer OpenVR compatibility
 runtime. WiVRN and SteamVR installations are not required.
 
@@ -83,11 +83,11 @@ The install-only command remains available:
 This copies files only; it does not change global OpenXR selection, Steam launch
 options, headset authorization or running services. Python 3, compatible host
 Vulkan/udev/C++ libraries and matching graphics drivers remain required for XR.
-NVIDIA uses CUDA/NVENC. Experimental AMD XR uses host libva/DRM/Mesa with a
-hardware H.264/HEVC encoder and VA video processing. Meteor includes the FFmpeg
-encoder runtime, so a system FFmpeg installation is not required for gameplay.
-The RX480 has passed packaged synthetic/transport tests; modern AMD cards and
-real-game headset sessions still need validation.
+NVIDIA uses CUDA/NVENC. AMD uses host libva/DRM/Mesa with a hardware H.264/HEVC
+encoder and VA video processing. Meteor includes the FFmpeg encoder runtime, so a
+system FFmpeg installation is not required for gameplay. VRChat has been played
+on an RX 480 (Polaris); its encoder stops at 4096 per side, so the headset offers
+eyes that fit (2048x2176 instead of 2064x2208). Newer AMD cards need wider testing.
 
 **PCVR encoder** in the tray selects Auto, NVIDIA/NVENC or AMD/VA-API for the next
 XR session without restarting Meteor. Auto prefers NVIDIA on mixed systems;
