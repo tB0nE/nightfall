@@ -82,7 +82,8 @@ fn parse_reported(json:&str)->Option<Capabilities> {
 #[cfg(windows)]
 mod windows_dll {
     use std::{os::windows::ffi::OsStrExt,path::Path};
-    use windows_sys::Win32::System::LibraryLoader::{FreeLibrary,GetProcAddress,LoadLibraryExW,LOAD_WITH_ALTERED_SEARCH_PATH};
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress,LoadLibraryExW,LOAD_WITH_ALTERED_SEARCH_PATH};
 
     type CapabilitiesFn=unsafe extern "C" fn(*mut u8,u32)->u32;
 
