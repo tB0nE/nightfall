@@ -41,7 +41,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
     }
     let mut info = json!({
         "service": "nightfall-meteor",
-        "version": env!("CARGO_PKG_VERSION"),
+        "version": env!("METEOR_VERSION"),
         "protocol": PROTOCOL_VERSION,
         "mode": "proxy",
         "sunshine": sunshine,

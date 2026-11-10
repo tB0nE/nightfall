@@ -487,7 +487,7 @@ pub fn agent() -> ureq::Agent {
         // A stalled read gives up; a slow but moving one doesn't.
         .timeout_recv_body(None)
         .timeout_global(None)
-        .user_agent(concat!("nightfall-meteor/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("nightfall-meteor/", env!("METEOR_VERSION")))
         .build()
         .into()
 }

@@ -303,7 +303,7 @@ async fn main() {
         };
         log::info!(
             "Nightfall Meteor {} proxying Sunshine at {}:{} (settings: {})",
-            env!("CARGO_PKG_VERSION"),
+            env!("METEOR_VERSION"),
             config.sunshine_host,
             sunshine_base,
             config::config_path().display()

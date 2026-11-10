@@ -2,6 +2,14 @@
 //! headers. Needs only a C++ compiler: TensorRT itself is opened at run time.
 
 fn main() {
+    // The version Meteor reports: METEOR_RELEASE_VERSION for a release build made from a branch
+    // whose Cargo.toml is ahead or behind (the macOS release), else the package version.
+    println!("cargo:rerun-if-env-changed=METEOR_RELEASE_VERSION");
+    let version = std::env::var("METEOR_RELEASE_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
+    println!("cargo:rustc-env=METEOR_VERSION={version}");
     build_vda_vulkan();
     println!("cargo:rerun-if-changed=native/video_decoder.cpp");
     println!("cargo:rerun-if-changed=third_party/ffmpeg");

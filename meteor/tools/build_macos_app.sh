@@ -21,7 +21,10 @@ STAGE="$VIBEPOLLO/build/stage/Vibepollo.app/Contents"
 [[ -x "$STAGE/MacOS/Vibepollo" || -x "$STAGE/MacOS/Vibepollo-2.0.0" ]] || {
   echo "No staged Vibepollo in $STAGE: build it and run cmake --install build --prefix \$PWD/build/stage" >&2; exit 1; }
 
-VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$METEOR/Cargo.toml" | head -1)"
+# METEOR_RELEASE_VERSION names a release (e.g. 0.9.0) without changing Cargo.toml; Meteor,
+# Info.plist and the disk image all carry it.
+VERSION="${METEOR_RELEASE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$METEOR/Cargo.toml" | head -1)}"
+export METEOR_RELEASE_VERSION="$VERSION"
 APP="$METEOR/target/macos/Nightfall Meteor.app"
 
 cargo build --manifest-path "$METEOR/Cargo.toml" --release --locked --no-default-features

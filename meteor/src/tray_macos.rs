@@ -78,7 +78,7 @@ thread_local! {
 
 impl Tray {
     fn entries(&self) -> Vec<Entry> {
-        let mut out = vec![Entry::Label(format!("Nightfall Meteor {}", env!("CARGO_PKG_VERSION")))];
+        let mut out = vec![Entry::Label(format!("Nightfall Meteor {}", env!("METEOR_VERSION")))];
         out.extend(permission_entries());
         let udp = self.stats.udp_flows.load(Ordering::Relaxed);
         let tcp = self.stats.tcp_connections.load(Ordering::Relaxed);
