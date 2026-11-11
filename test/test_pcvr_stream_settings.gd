@@ -100,6 +100,12 @@ func _test_quest3_defaults() -> void:
 	var settings := Video.new(true)
 	assert(settings.eye_size == 2048 and settings.bitrate_mbps == 80)
 	assert(Video.QUEST3_STREAM_FPS == 72)
+	# Automatic XR sends no rate: Quest 2 and 3S used to fall back to 20 Hz, which long
+	# sessions refuse ("Unsupported developer XR rate or eye size", issue #72).
+	assert(Video.offer_rate(0, false) == 72)
+	assert(Video.offer_rate(0, true) == 72)
+	assert(Video.offer_rate(20, false) == 20)
+	assert(Video.offer_rate(20, true) == 72)
 	var path := "user://pcvr-quest3-defaults-unit-test.cfg"
 	settings.load_from(path)
 	assert(settings.eye_size == 2048 and settings.bitrate_mbps == 80)
