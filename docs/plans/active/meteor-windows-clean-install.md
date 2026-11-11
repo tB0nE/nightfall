@@ -302,6 +302,13 @@ claiming that simulated lens geometry matches the Quest. Resolution, viewport,
 and field of view remain unchanged. This is a targeted hypothesis, not a
 confirmed physical fix. Compare Moss's bottom edge in both eyes on the headset.
 
+Linux showed the same strip in Moss (Bazzite GNOME, Quest, November 2026): its
+simulated HMD used `u_device_get_visibility_mask`, the generic FOV-based mask.
+`test/monado_capture_hook.patch` now applies the same empty mask when the
+headset supplies its optics. With it, the strip was gone in both eyes on the
+headset. The cost is that games also render and encode the pixels the generic
+mask used to hide.
+
 Validation: 166 Windows release Rust tests passed; Windows integration passed
 geometry, bootstrap, native pipe, registration preview and release app.
 The GDScript suite and missing-SteamVR setup fixture passed. The local release
