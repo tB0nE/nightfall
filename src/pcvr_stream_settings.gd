@@ -9,6 +9,8 @@ const BITRATES := [0, 16, 32, 48, 64, 80, 100, 120, 160]
 const QUEST3_EYE_SIZE := 2048 # Square per-eye view, not the physical panel dimensions.
 const QUEST3_BITRATE_MBPS := 80 # Conservative H.264 baseline; not a network benchmark.
 const QUEST3_STREAM_FPS := 72
+## Every supported headset (Quest 2, 3S and 3) runs PCVR at 72 Hz, and long sessions require 60 or 72.
+const STREAM_FPS := 72
 var _default_eye_size := 0
 var _default_bitrate_mbps := 0
 var eye_size := 0 # Unset: retain the developer host profile's resolution.
@@ -72,6 +74,14 @@ static func recommended_eye_size(backend) -> int:
 static func recommended_eye_dimensions(backend) -> Vector2i:
 	if backend == null or not backend.has_method("get_pcvr_recommended_eye_size"): return Vector2i.ZERO
 	return backend.get_pcvr_recommended_eye_size()
+
+## The PCVR rate to offer. Automatic XR (a discovered Meteor) sets no rate, so every headset
+## gets STREAM_FPS; only a developer config's explicit rate overrides it, except on Quest 3,
+## which always streams at 72 Hz.
+static func offer_rate(configured_hz: int, quest3: bool) -> int:
+	if quest3 or configured_hz <= 0:
+		return STREAM_FPS
+	return configured_hz
 
 static func panel_eye_dimensions(device: String) -> Vector2i:
 	match device.strip_edges().to_lower():

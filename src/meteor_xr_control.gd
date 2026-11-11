@@ -504,7 +504,7 @@ func _watch_launch_intent(config: ConfigFile, token: int) -> void:
 func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	_busy = true
 	var quest3: bool = owner.get("device_is_quest3") == true
-	var hz := int(config.get_value("host", "hz", PCVRVideoSettings.QUEST3_STREAM_FPS if quest3 else 20))
+	var hz := PCVRVideoSettings.offer_rate(int(config.get_value("host", "hz", 0)), quest3)
 	var eye_size := int(config.get_value("host", "eye_size", 512))
 	var video_settings := PCVRVideoSettings.new(quest3)
 	video_settings.load_from()
@@ -515,7 +515,6 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	var dimensions := video_settings.effective_eye_dimensions(eye_size, recommended, encoder_max_frame())
 	eye_size = dimensions.x
 	var eye_height := dimensions.y
-	if quest3: hz = PCVRVideoSettings.QUEST3_STREAM_FPS
 	_long_run = bool(config.get_value("host", "long_run", false))
 	_handover_on_ready = bool(config.get_value("host", "handover_on_ready", false))
 	_standby_only = bool(config.get_value("host", "standby_only", false)) or _handover_on_ready
