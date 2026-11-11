@@ -68,12 +68,12 @@ index 0e3a314d..30980395 100644
 +                                uint32_t view_index,
 +                                struct xrt_visibility_mask **out_mask)
 +{
-+	(void)xdev;
-+	(void)view_index;
-+	// The remote headset supplies its FOV, not its lens visibility mesh.
-+	// A simulated HMD's generic corner mask is not valid for that headset.
-+	// Return no mask so the game renders the complete submitted eye rectangle.
-+	u_visibility_mask_get_noop(type, out_mask);
++	// Monado's default mask maps y onto (-up, -down), upside down from OpenXR's +y up.
++	// The Quest sees further down than up, so the mask sat too high and hid a strip
++	// along the bottom (Moss). The octagon is symmetric: a mirrored FOV places it right.
++	struct xrt_fov fov = xdev->hmd->distortion.fov[view_index];
++	const float up = fov.angle_up; fov.angle_up = -fov.angle_down; fov.angle_down = -up;
++	u_visibility_mask_get_default(type, &fov, out_mask);
 +	return *out_mask != NULL ? XRT_SUCCESS : XRT_ERROR_ALLOCATION;
 +}
 +

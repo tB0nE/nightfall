@@ -91,10 +91,12 @@ to inspect the dialog.
 Setup now provisions a shared SteamVR connection independently of individual
 game profiles. SteamVR being installed is enough; Moss and VRChat are not
 prerequisites. Installed VR titles are discovered from Steam's
-`config/steamapps.vrmanifest`, matched to app manifests across Steam libraries,
-and registered with their app IDs. Duplicate, uninstalled, non-Steam, and
-non-VR entries are excluded. Run Steam to refresh its VR manifest, then rerun
-setup after adding games. The existing Moss Monado/xrizer optimization remains
+`config/steamapps.vrmanifest` and from the VR flags (`openvrsupport`,
+`openxrsupport`, `onlyvrsupport`) in Steam's `appcache/appinfo.vdf`, matched to
+app manifests across Steam libraries, and registered with their app IDs.
+Duplicate, uninstalled, non-Steam, and non-VR entries are excluded. On Linux the
+VR manifest may not exist at all, even after running SteamVR, so `appinfo.vdf`
+is what a clean install relies on. Rerun setup after adding games. The existing Moss Monado/xrizer optimization remains
 available and backend choices survive reimport.
 
 General SteamVR profiles launch through the local Steam client using a
@@ -299,6 +301,13 @@ The remote-headset adapter now returns an empty visibility mask instead of
 claiming that simulated lens geometry matches the Quest. Resolution, viewport,
 and field of view remain unchanged. This is a targeted hypothesis, not a
 confirmed physical fix. Compare Moss's bottom edge in both eyes on the headset.
+
+Linux showed the same strip in Moss (Bazzite GNOME, Quest, November 2026): its
+simulated HMD used `u_device_get_visibility_mask`, the generic FOV-based mask.
+`test/monado_capture_hook.patch` now applies the same empty mask when the
+headset supplies its optics. With it, the strip was gone in both eyes on the
+headset. The cost is that games also render and encode the pixels the generic
+mask used to hide.
 
 Validation: 166 Windows release Rust tests passed; Windows integration passed
 geometry, bootstrap, native pipe, registration preview and release app.

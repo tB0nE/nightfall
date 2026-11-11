@@ -28,6 +28,57 @@ def vdf(text):
         return result
     return block()
 
+APPINFO_VR=('openvrsupport','openxrsupport','onlyvrsupport')
+
+def appinfo_vr(path,wanted):
+    """App ids among `wanted` that Steam's appinfo.vdf marks as VR (appinfo/common).
+
+    A clean Linux install has no steamapps.vrmanifest: Steam didn't write it with
+    SteamVR installed and run (Bazzite, November 2026), and Meteor's runtime doesn't
+    need SteamVR at all. appinfo.vdf is Steam's own app metadata and is always there.
+    Only the wanted entries are decoded; the rest are skipped by their size.
+    """
+    found=set()
+    with open(path,'rb') as f:
+        magic,_=struct.unpack('<II',f.read(8))
+        if magic not in (0x07564428,0x07564429):raise ValueError('Unsupported appinfo.vdf version')
+        strings=None
+        if magic==0x07564429:
+            offset,=struct.unpack('<q',f.read(8));start=f.tell();f.seek(offset)
+            count,=struct.unpack('<I',f.read(4));strings=f.read().split(b'\0')[:count];f.seek(start)
+        while True:
+            head=f.read(8)
+            if len(head)<8:break
+            app_id,size=struct.unpack('<II',head)
+            if app_id==0:break
+            if str(app_id) not in wanted:f.seek(size,1);continue
+            # infostate, last updated, PICS token, SHA-1, change number, binary SHA-1.
+            data=f.read(size)[60:];position=0
+            def key():
+                nonlocal position
+                if strings is not None:
+                    index,=struct.unpack_from('<I',data,position);position+=4
+                    return strings[index].decode('utf8','replace').lower()
+                end=data.index(0,position);value=data[position:end].decode('utf8','replace').lower();position=end+1
+                return value
+            def block(path,depth=0):
+                nonlocal position
+                if depth>32:raise ValueError('VDF nesting limit')
+                while position<len(data):
+                    kind=data[position];position+=1
+                    if kind in (8,11):return
+                    name=key()
+                    if kind==0:block(path+(name,),depth+1);continue
+                    if kind==1:
+                        end=data.index(0,position);value=data[position:end];position=end+1
+                        flagged=value.strip() not in (b'',b'0')
+                    elif kind in (2,3,4,6):flagged=data[position:position+4]!=bytes(4);position+=4
+                    elif kind in (7,10):flagged=data[position:position+8]!=bytes(8);position+=8
+                    else:raise ValueError('Unsupported appinfo field type')
+                    if path==('appinfo','common') and name in APPINFO_VR and flagged:found.add(str(app_id))
+            block(())
+    return found
+
 def steam_roots():
     home=Path.home()
     paths=[home/'.local/share/Steam',home/'.steam/steam',home/'.var/app/com.valvesoftware.Steam/.local/share/Steam']
@@ -86,20 +137,26 @@ def discover():
                     options=entry.get('LaunchOptions','') if isinstance(entry,dict) else ''
                     if wrapper_ready(options,app_id):ready.add(app_id)
             except (OSError,ValueError,AttributeError):pass
+        installed=[]
         for library in dict.fromkeys(libraries):
             for manifest in (library/'steamapps').glob('appmanifest_*.acf'):
-                try:
-                    app=vdf(read(manifest)).get('AppState',{}); app_id=app.get('appid','')
-                    if app_id not in vr or not (library/'steamapps/common'/app.get('installdir','')).is_dir():continue
-                    if not int(app.get('StateFlags','0'))&4:continue
-                    art=[]
-                    for pattern in (f'{app_id}/*library_600x900*',f'{app_id}/*library*',f'{app_id}_library_600x900*',f'{app_id}_header*'):
-                        art.extend((steam/'appcache/librarycache').glob(pattern))
-                    image=vr[app_id].get('image_path','')
-                    if image and Path(image).is_file():art.append(Path(image))
-                    key='steam:'+app_id
-                    result[key]={'key':key,'source':'Steam','name':str(app.get('name','Steam '+app_id)).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':app_id in ready,'_art':[str(p) for p in art if p.is_file()]}
+                try:installed.append((library,vdf(read(manifest)).get('AppState',{})))
                 except (OSError,ValueError,AttributeError):continue
+        try:flagged=appinfo_vr(steam/'appcache/appinfo.vdf',{str(app.get('appid','')) for _,app in installed})
+        except (OSError,ValueError,IndexError,struct.error):flagged=set()
+        for library,app in installed:
+            try:
+                app_id=app.get('appid','')
+                if (app_id not in vr and app_id not in flagged) or not (library/'steamapps/common'/app.get('installdir','')).is_dir():continue
+                if not int(app.get('StateFlags','0'))&4:continue
+                art=[]
+                for pattern in (f'{app_id}/*library_600x900*',f'{app_id}/*library*',f'{app_id}_library_600x900*',f'{app_id}_header*'):
+                    art.extend((steam/'appcache/librarycache').glob(pattern))
+                image=vr.get(app_id,{}).get('image_path','')
+                if image and Path(image).is_file():art.append(Path(image))
+                key='steam:'+app_id
+                result[key]={'key':key,'source':'Steam','name':str(app.get('name','Steam '+app_id)).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':app_id in ready,'_art':[str(p) for p in art if p.is_file()]}
+            except (OSError,ValueError,AttributeError):continue
         for shortcuts in (steam/'userdata').glob('*/config/shortcuts.vdf'):
             try:
                 records,_=shortcut_records(shortcuts)
