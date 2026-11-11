@@ -2095,6 +2095,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 				main.remove_screen(old_primary_being_replaced.monitor_id)
 				old_primary_being_replaced = null
 				break
+	var created: Array = []
 	for m in ordered_monitors:
 		var existing: VRScreen = null
 		for s in main.screens:
@@ -2114,6 +2115,8 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x, m.is_primary)
 		if s == null:
 			continue
+		if existing == null and not m.is_primary:
+			created.append(s)
 		s.apply_monitor(m, new_layout.frame_size)
 		if m.is_primary:
 			new_primary = s
@@ -2154,6 +2157,14 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# resize_screen_to_aspect() now calls update_cylinder_params() itself
 	# (2026-08-20) - no need to pair it here anymore.
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
+	# Screens made again (after the welcome screen, a reconnect or a count change) go back to
+	# where they were last time on this host; anything new keeps add_screen()'s placement.
+	if main.get("state_manager") != null:
+		for s in created:
+			if is_instance_valid(s) and s in main.screens:
+				main.state_manager.restore_placement(s)
+		if main.comp:
+			main.comp.update_cylinder_params()
 	if main.comp and main.comp.in_use and main.is_streaming:
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()

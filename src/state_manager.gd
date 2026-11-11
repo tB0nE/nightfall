@@ -2,6 +2,9 @@ class_name StateManager
 extends RefCounted
 
 var main: Node3D
+## Each screen's last placement on this host, by monitor id, kept while a screen is gone (the
+## welcome screen shows only one, and a reconnect makes the others again).
+var remembered_placements := {}
 
 func _init(owner: Node3D):
 	main = owner
@@ -23,9 +26,10 @@ func save_host_state():
 	var host: HostSettings = main.settings.host
 	SettingsPersistence.write_host(save, ip, host)
 	save.set_value(ip, "screen_layout", JSON.stringify(main.layout.to_dict()))
-	var placements := []
+	# Screens that exist now update their entry; the others keep theirs, so a moment with
+	# fewer screens (the welcome screen) doesn't forget where the rest go.
 	for s in main.screens:
-		placements.append({
+		remembered_placements[String(s.monitor_id)] = {
 			"id": String(s.monitor_id),
 			"pos": [s.position.x, s.position.y, s.position.z],
 			"rot": [s.rotation.x, s.rotation.y, s.rotation.z],
@@ -33,8 +37,8 @@ func save_host_state():
 			"curvature": s.curvature,
 			"grid_mode": s.grid_mode,
 			"grid_pos": [s.grid_pos.x, s.grid_pos.y],
-		})
-	save.set_value(ip, "screen_placements", JSON.stringify(placements))
+		}
+	save.set_value(ip, "screen_placements", JSON.stringify(remembered_placements.values()))
 	save.save("user://host_state.cfg")
 
 func load_host_state(ip: String):
@@ -99,9 +103,13 @@ func load_host_state(ip: String):
 	main.settings_controller.apply_screen_layout(loaded_layout)
 
 	var placements_json = save.get_value(ip, "screen_placements", "")
+	remembered_placements.clear()
 	if not placements_json.is_empty():
 		var placements = JSON.parse_string(placements_json)
 		if placements is Array:
+			for entry in placements:
+				if entry is Dictionary and not String(entry.get("id", "")).is_empty():
+					remembered_placements[String(entry["id"])] = entry
 			for entry in placements:
 				var mid = StringName(entry.get("id", ""))
 				for s in main.screens:
@@ -234,3 +242,37 @@ func load_state():
 	sync_ui_to_settings()
 	main.settings_controller.apply_depth_gpu_priority(false)
 	main.settings_controller.apply_usb_link()
+
+## Puts a screen the host layout just created back where it was last time on this host:
+## its grid cell (if no other screen holds it) or its free position. False when there's
+## nothing remembered or its cell is taken, so the caller's default placement applies.
+func restore_placement(s: VRScreen) -> bool:
+	var entry = remembered_placements.get(String(s.monitor_id))
+	var primary: VRScreen = main.primary_screen
+	if not entry is Dictionary or primary == null or s == primary:
+		return false
+	var size = entry.get("size", [s.mesh_size.x, s.mesh_size.y])
+	if entry.get("grid_mode", true):
+		var gp = entry.get("grid_pos", [-1, -1])
+		var cell := Vector2i(int(gp[0]), int(gp[1]))
+		if cell.x < 0 or cell.y < 0 or not MonitorGrid.cell_in_bounds(cell.x, cell.y):
+			return false
+		if primary.grid_pos == Vector2i(-1, -1):
+			primary.grid_pos = Vector2i(3, 1)
+		for other in main.screens:
+			if other != s and other.grid_mode and other.grid_pos == cell:
+				return false
+		s.mesh_size = Vector2(size[0], size[1])
+		s.grid_mode = true
+		s.grid_pos = cell
+		s.global_transform = main.grid_cell_transform(cell.x, cell.y, primary.grid_pos.x, primary.grid_pos.y)
+	else:
+		var pos = entry.get("pos", [s.position.x, s.position.y, s.position.z])
+		var rot = entry.get("rot", [s.rotation.x, s.rotation.y, s.rotation.z])
+		s.mesh_size = Vector2(size[0], size[1])
+		s.grid_mode = false
+		s.position = Vector3(pos[0], pos[1], pos[2])
+		s.rotation = Vector3(rot[0], rot[1], rot[2])
+	s.curvature = entry.get("curvature", s.curvature)
+	s.apply_curvature()
+	return true
