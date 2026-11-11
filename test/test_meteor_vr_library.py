@@ -54,4 +54,50 @@ class LibraryTests(unittest.TestCase):
     def test_unconfigured_game_is_not_launched(self):
         with patch.object(LIB,'discover',return_value=[{'key':'steam:1','vr':True,'ready':False}]):
             with self.assertRaisesRegex(ValueError,'launch options'):LIB.action('launch','steam:1')
+    @staticmethod
+    def appinfo(path,apps,v29=True):
+        """Writes a minimal appinfo.vdf: apps maps app id to its appinfo/common fields."""
+        table=[]
+        def key(name):
+            if not v29:return name.encode()+b'\0'
+            if name not in table:table.append(name)
+            return struct.pack('<I',table.index(name))
+        def field(name,value):
+            if isinstance(value,dict):return b'\0'+key(name)+b''.join(field(k,v) for k,v in value.items())+b'\x08'
+            if isinstance(value,int):return b'\x02'+key(name)+struct.pack('<i',value)
+            return b'\x01'+key(name)+value.encode()+b'\0'
+        body=b''
+        for app_id,common in apps.items():
+            data=bytes(60)+field('appinfo',{'appid':app_id,'common':common})+b'\x08'
+            body+=struct.pack('<II',app_id,len(data))+data
+        body+=struct.pack('<I',0)
+        if v29:
+            header_size=16
+            strings=struct.pack('<I',len(table))+b''.join(t.encode()+b'\0' for t in table)
+            path.write_bytes(struct.pack('<IIq',0x07564429,1,header_size+len(body))+body+strings)
+        else:
+            path.write_bytes(struct.pack('<II',0x07564428,1)+body)
+    def test_appinfo_finds_vr_games_without_steamvr_manifest(self):
+        for v29 in (True,False):
+            with self.subTest(v29=v29),tempfile.TemporaryDirectory() as temporary:
+                steam=Path(temporary);(steam/'appcache').mkdir()
+                games={123:('VR Game',{'name':'VR Game','openvrsupport':'1'}),
+                       456:('Flat Game',{'name':'Flat Game','type':'Game'}),
+                       789:('OpenXR Only',{'name':'OpenXR Only','openxrsupport':1,'onlyvrsupport':1}),
+                       321:('Disabled VR',{'name':'Disabled VR','openvrsupport':'0'})}
+                for app,(name,_) in games.items():
+                    (steam/f'steamapps/common/{name}').mkdir(parents=True)
+                    (steam/f'steamapps/appmanifest_{app}.acf').write_text(f'"AppState" {{"appid" "{app}" "name" "{name}" "installdir" "{name}" "StateFlags" "4"}}')
+                self.appinfo(steam/'appcache/appinfo.vdf',{555:{'openvrsupport':'1'},**{a:c for a,(_,c) in games.items()}},v29)
+                with patch.object(LIB,'steam_roots',return_value=[steam]):
+                    names=[a['name'] for a in LIB.action('list')['apps']]
+                self.assertEqual(names,['OpenXR Only','VR Game'])
+    def test_unreadable_appinfo_keeps_manifest_discovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            steam=Path(temporary);(steam/'config').mkdir();(steam/'appcache').mkdir();(steam/'steamapps/common/Test Game').mkdir(parents=True)
+            (steam/'config/steamapps.vrmanifest').write_text(json.dumps({'applications':[{'app_key':'steam.app.123'}]}))
+            (steam/'steamapps/appmanifest_123.acf').write_text('"AppState" {"appid" "123" "name" "Test Game" "installdir" "Test Game" "StateFlags" "4"}')
+            (steam/'appcache/appinfo.vdf').write_bytes(b'garbage!')
+            with patch.object(LIB,'steam_roots',return_value=[steam]):
+                self.assertEqual(LIB.action('list')['total'],1)
 if __name__=='__main__':unittest.main()

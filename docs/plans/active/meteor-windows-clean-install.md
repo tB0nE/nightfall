@@ -91,10 +91,12 @@ to inspect the dialog.
 Setup now provisions a shared SteamVR connection independently of individual
 game profiles. SteamVR being installed is enough; Moss and VRChat are not
 prerequisites. Installed VR titles are discovered from Steam's
-`config/steamapps.vrmanifest`, matched to app manifests across Steam libraries,
-and registered with their app IDs. Duplicate, uninstalled, non-Steam, and
-non-VR entries are excluded. Run Steam to refresh its VR manifest, then rerun
-setup after adding games. The existing Moss Monado/xrizer optimization remains
+`config/steamapps.vrmanifest` and from the VR flags (`openvrsupport`,
+`openxrsupport`, `onlyvrsupport`) in Steam's `appcache/appinfo.vdf`, matched to
+app manifests across Steam libraries, and registered with their app IDs.
+Duplicate, uninstalled, non-Steam, and non-VR entries are excluded. On Linux the
+VR manifest may not exist at all, even after running SteamVR, so `appinfo.vdf`
+is what a clean install relies on. Rerun setup after adding games. The existing Moss Monado/xrizer optimization remains
 available and backend choices survive reimport.
 
 General SteamVR profiles launch through the local Steam client using a
