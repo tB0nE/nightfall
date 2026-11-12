@@ -2640,3 +2640,17 @@ func toggle_grid_mode():
 	main.state_manager.save_state()
 	if main._ui_grid_mode_btn:
 		main.ui_controller.update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
+
+func cycle_screen_crop() -> void:
+	main.screen_image_options.cycle_crop()
+
+func cycle_screen_key() -> void:
+	main.screen_image_options.cycle_key()
+
+func cycle_screen_key_tolerance() -> void:
+	main.screen_image_options.cycle_key_tolerance()
+
+func toggle_host_background() -> void:
+	main.settings.screen_host_background = not main.settings.screen_host_background
+	main.ui_controller.update_option_btn(main._ui_host_background_btn, "On" if main.settings.screen_host_background else "Off")
+	main.state_manager.save_state()

@@ -7,6 +7,8 @@ signal runtime_changed
 signal library_reply(value: Dictionary)
 signal library_open_requested
 var _library_queue: Array[Dictionary] = []
+var _background_sent := ""
+var background_message := ""
 var library_available := false
 var _discovered_config: ConfigFile
 const MAX_FRAME := 4096
@@ -70,7 +72,7 @@ func set_discovered_host(address: String, info: Dictionary) -> void:
 		cancel()
 	var config := ConfigFile.new()
 	var options := {"address": address, "port": offer["port"], "key": offer["key"],
-		"relay": true, "auto_xr": true, "handover_on_ready": true, "long_run": true}
+		"relay": true, "auto_xr": true, "handover_on_ready": true, "long_run": true, "host_background": bool(info.get("host_background", {}).get("supported", false))}
 	for option in options:
 		config.set_value("host", option, options[option])
 	_discovered_config = config
@@ -166,7 +168,10 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 			if updating_foveation:
 				command = {"type":"set_foveation", "session":session, "enabled":_pending_foveation == 1}
 				_pending_foveation = -1
-			if not updating and not updating_foveation and not _library_queue.is_empty(): command = _library_queue.pop_front()
+			if not updating and not updating_foveation:
+				var background := _background_command()
+				if not background.is_empty(): command = background
+				elif not _library_queue.is_empty(): command = _library_queue.pop_front()
 			var reply := await _request(command, token)
 			_handle_library_reply(reply)
 			if token != _generation: return
@@ -199,7 +204,12 @@ func request_library(action: String, key: String = "", offset: int = 0) -> bool:
 
 func _handle_library_reply(reply: Dictionary) -> void:
 	library_available = bool(reply.get("library_available", false))
-	if reply.get("library") is Dictionary: library_reply.emit(reply.library)
+	if reply.get("library") is Dictionary:
+		if reply.library.get("action") == "host_background":
+			background_message = "Host background applied" if reply.library.get("error") == null else "Host background: " + str(reply.library.error)
+			owner._log("[BACKGROUND] " + background_message)
+			owner.ui_controller.show_temporary_status(background_message, 3.0)
+		else: library_reply.emit(reply.library)
 	if reply.get("open_library", false): library_open_requested.emit()
 
 func apply_encoder_capabilities(reply: Dictionary) -> void:
@@ -327,9 +337,9 @@ func public_identity() -> String:
 	if identity.size() != 32: return ""
 	return ClassDB.instantiate("MeteorChannelCipher").identity_public(identity).hex_encode()
 
-func _read(peer: StreamPeerTCP, count: int, token: int) -> PackedByteArray:
+func _read(peer: StreamPeerTCP, count: int, token: int, timeout_ms: int = 5000) -> PackedByteArray:
 	var out := PackedByteArray()
-	var deadline := Time.get_ticks_msec() + 5000
+	var deadline := Time.get_ticks_msec() + timeout_ms
 	while out.size() < count and token == _generation:
 		peer.poll()
 		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED or Time.get_ticks_msec() >= deadline: return PackedByteArray()
@@ -366,7 +376,7 @@ func _request(request: Dictionary, token: int) -> Dictionary:
 	_tx += 1
 	header.append_array(body)
 	if not await _write(peer, header, token): return {}
-	var length := await _read(peer, 4, token)
+	var length := await _read(peer, 4, token, 20000 if request.get("type") == "host_background" else 5000)
 	if length.size() != 4: return {}
 	var size := length.decode_u32(0)
 	if size < 16 or size > MAX_FRAME or _rx == 0x7fffffffffffffff: return {}
@@ -435,6 +445,7 @@ func connect_offer(watch_only: bool = false) -> void:
 	if not await _write(peer, response, token):
 		if token == _generation: _fail("Handshake send failed")
 		return
+	_background_sent = "off"
 	var authenticated := await _request({"type": "authenticate"}, token)
 	_handle_library_reply(authenticated)
 	if token != _generation: return
@@ -472,9 +483,20 @@ static func valid_launch_notice(value: Variant) -> bool:
 	var app_id = value.get("app_id")
 	return generation is String and generation.length() == 32 and generation.is_valid_hex_number(false) and app_id is String and app_id.is_valid_int() and int(app_id) > 0 and int(app_id) < 4294967296
 
+func _background_command() -> Dictionary:
+	var config := current_config()
+	if config == null or not bool(config.get_value("host", "host_background", false)): return {}
+	var color := "off"
+	if owner.is_streaming and owner.settings.screen_host_background and owner.settings.screen_key_mode > 0:
+		color = ["off", "green", "blue", "magenta"][owner.settings.screen_key_mode]
+	if color == _background_sent: return {}
+	_background_sent = color
+	return {"type":"host_background", "color":color}
+
 func _watch_launch_intent(config: ConfigFile, token: int) -> void:
 	while token == _generation and state == "watching" and owner.is_streaming:
-		var command: Dictionary = _library_queue.pop_front() if not _library_queue.is_empty() else {"type":"pending_launch"}
+		var command := _background_command()
+		if command.is_empty(): command = _library_queue.pop_front() if not _library_queue.is_empty() else {"type":"pending_launch"}
 		var reply := await _request(command,token)
 		_handle_library_reply(reply)
 		if token != _generation: return

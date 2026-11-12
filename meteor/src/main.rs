@@ -7,6 +7,7 @@
 //! it compute depth maps on the host GPU and send them alongside the video.
 
 mod config;
+mod host_background;
 #[cfg(target_os = "linux")]
 mod host_cursor;
 #[cfg(target_os = "linux")]
@@ -425,6 +426,7 @@ async fn main() {
         host_view.supervisor.as_ref().map(|host| host.instance.appdata().join("cursor-scale")));
     #[cfg(target_os = "linux")]
     let cursor_task = tokio::spawn(host_cursor::watch(cursor.clone(), stats.clone(), shutdown.subscribe()));
+    host_background::recover().await;
     let dev_xr_address = value("--xr-service-dev");
     #[cfg(target_os = "linux")]
     if dev_xr_address.is_none() { xr_setup::update_installed(&config.xr).await; }
@@ -621,6 +623,7 @@ async fn main() {
                 Err(error) => log::error!("XR service task failed: {error}"),
             }
         }
+        host_background::recover().await;
         finish_quit();
     };
     // AppKit's menu bar must own the main thread, which tokio::main's main future runs on:

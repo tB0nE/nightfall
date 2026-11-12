@@ -4,12 +4,17 @@
 
 using namespace godot;
 
+std::mutex NightfallXrRenderer::reference_change_mutex;
+std::vector<Dictionary> NightfallXrRenderer::reference_changes;
+
 NightfallXrRenderer::NightfallXrRenderer() {}
 NightfallXrRenderer::~NightfallXrRenderer() {
 	shutdown();
 }
 
 void NightfallXrRenderer::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_screen_options", "crop", "key"), &NightfallXrRenderer::set_screen_options);
+	ClassDB::bind_method(D_METHOD("consume_reference_space_changes"), &NightfallXrRenderer::consume_reference_space_changes);
 	ClassDB::bind_method(D_METHOD("set_presentation_suspended", "suspended"), &NightfallXrRenderer::set_presentation_suspended);
 	ClassDB::bind_method(D_METHOD("register_provider"), &NightfallXrRenderer::register_provider);
 	ClassDB::bind_method(D_METHOD("start", "video_width", "video_height"), &NightfallXrRenderer::start);
@@ -180,6 +185,39 @@ void NightfallXrRenderer::_on_state_exiting() {
 	OpenXRExtensionWrapper::_on_state_exiting();
 }
 
+Array NightfallXrRenderer::consume_reference_space_changes() {
+	Array ready;
+#ifdef __ANDROID__
+	const int64_t now = get_openxr_api()->get_predicted_display_time();
+	std::lock_guard<std::mutex> lock(reference_change_mutex);
+	std::vector<Dictionary> remaining;
+	for (int i=0; i<reference_changes.size(); i++) {
+		Dictionary change=reference_changes[i];
+		if ((int64_t)change["time"] <= now) ready.append(change); else remaining.push_back(change);
+	}
+	reference_changes=remaining;
+#endif
+	return ready;
+}
+
+void NightfallXrRenderer::track_reference_space_event(const void *p_event) {
+#ifdef __ANDROID__
+	const XrEventDataBuffer *event = static_cast<const XrEventDataBuffer *>(p_event);
+	if (event && event->type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+		const auto *change = reinterpret_cast<const XrEventDataReferenceSpaceChangePending *>(event);
+		if (change->referenceSpaceType != XR_REFERENCE_SPACE_TYPE_STAGE && change->referenceSpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL && change->referenceSpaceType != XR_REFERENCE_SPACE_TYPE_LOCAL_FLOOR_EXT) return;
+		Dictionary data;
+		data["time"] = (int64_t)change->changeTime;
+		data["valid"] = bool(change->poseValid);
+		data["space"] = change->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : change->referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL ? "local" : "local_floor";
+		const auto &p = change->poseInPreviousSpace;
+		if (change->poseValid) data["previous_from_new"] = Transform3D(Basis(Quaternion(p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w)), Vector3(p.position.x,p.position.y,p.position.z));
+		std::lock_guard<std::mutex> lock(reference_change_mutex);
+		reference_changes.push_back(data);
+	}
+#endif
+}
+
 bool NightfallXrRenderer::_on_event_polled(const void *p_event) {
 	return OpenXRExtensionWrapper::_on_event_polled(p_event);
 }
@@ -231,6 +269,12 @@ PackedByteArray NightfallXrRenderer::consume_ambient_sample() { return PackedByt
 float NightfallXrRenderer::get_warp_gpu_ms() { return 0.0f; }
 void NightfallXrRenderer::set_debug_solid_color(bool) {}
 void NightfallXrRenderer::set_primary_crop(PackedFloat32Array) {}
+void NightfallXrRenderer::set_screen_options(PackedFloat32Array, Color) {}
 void NightfallXrRenderer::set_secondary_screens(Array) {}
 int NightfallXrRenderer::get_secondary_screen_count() const { return 0; }
 #endif
+
+void NightfallXrRenderer::clear_reference_space_changes() {
+	std::lock_guard<std::mutex> lock(reference_change_mutex);
+	reference_changes.clear();
+}

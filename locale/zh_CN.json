@@ -229,5 +229,13 @@
 	"High Refresh Rates": "高刷新率",
 	"Offer 200 and 207 Hz. They can glitch the headset.": "提供 200 和 207 Hz 选项，可能导致头显出现故障。",
 	"PT Fade": "PT 调暗",
-	"Darken your surroundings in passthrough so the screen stands out.": "在透视模式下调暗周围环境，让屏幕更醒目。"
+	"Darken your surroundings in passthrough so the screen stands out.": "在透视模式下调暗周围环境，让屏幕更醒目。",
+	"Colour Key": "Colour Key",
+	"Key Tolerance": "Key Tolerance",
+	"Crop black bars; keep the stream resolution unchanged.": "Crop black bars; keep the stream resolution unchanged.",
+	"Show your room through a solid background colour.": "Show your room through a solid background colour.",
+	"Remove similar colours and compression fringes.": "Remove similar colours and compression fringes.",
+	"Host Background": "Host Background",
+	"Set Host Background": "Set Host Background",
+	"Temporarily match the host wallpaper to Colour Key.": "Temporarily match the host wallpaper to Colour Key."
 }

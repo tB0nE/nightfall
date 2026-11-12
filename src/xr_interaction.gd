@@ -342,7 +342,7 @@ func _stream_host_point(active_raycast: RayCast3D) -> Variant:
 	if main.screen_sources.is_browser_screen(target.screen):
 		return null
 	var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-	var uv = target.screen.hit_point_to_uv(hit_pos)
+	var uv = target.screen.display_content_uv(target.screen.hit_point_to_uv(hit_pos))
 	var uv_x = uv.x
 	uv_x = _stereo_click_uv_x(target.screen, uv_x)
 	return main.layout.uv_to_host_point(target.screen.monitor, Vector2(uv_x, uv.y))
@@ -495,7 +495,7 @@ func handle_pointer_interaction():
 		var t0 = PointerTarget.resolve(col) if col else {"role": &""}
 		if t0.role == &"screen" and main.is_streaming and not main.screen_sources.is_browser_screen(t0.screen):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = t0.screen.hit_point_to_uv(hit_pos)
+			var uv = t0.screen.display_content_uv(t0.screen.hit_point_to_uv(hit_pos))
 			var uv_x = uv.x
 			uv_x = _stereo_click_uv_x(t0.screen, uv_x)
 			_pinch_start_pos = Vector2(main.layout.uv_to_host_point(t0.screen.monitor, Vector2(uv_x, uv.y)))
@@ -518,7 +518,7 @@ func handle_pointer_interaction():
 			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
 			if t1.role == &"screen" and not main.screen_sources.is_browser_screen(t1.screen):
 				var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-				var uv = t1.screen.hit_point_to_uv(hit_pos)
+				var uv = t1.screen.display_content_uv(t1.screen.hit_point_to_uv(hit_pos))
 				var uv_x = uv.x
 				var uv_y = uv.y
 				uv_x = _stereo_click_uv_x(t1.screen, uv_x)
@@ -776,7 +776,7 @@ func handle_pointer_interaction():
 
 		elif t.role == &"screen" and (not main.is_streaming or main.screen_sources.is_browser_screen(t.screen)):
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = t.screen.hit_point_to_uv(hit_pos)
+			var uv = t.screen.display_content_uv(t.screen.hit_point_to_uv(hit_pos))
 			var browser = main.screen_sources.browser_for_screen(t.screen)
 			if browser and browser.active:
 				if is_now_clicking and not main.was_clicking:
@@ -823,7 +823,7 @@ func handle_pointer_interaction():
 			if main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode():
 				return
 			var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
-			var uv = t.screen.hit_point_to_uv(hit_pos)
+			var uv = t.screen.display_content_uv(t.screen.hit_point_to_uv(hit_pos))
 			var uv_x = uv.x
 			var uv_y = uv.y
 			uv_x = _stereo_click_uv_x(t.screen, uv_x)

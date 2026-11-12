@@ -26,6 +26,7 @@ namespace godot {
 class NightfallXrProjectionTest : public NightfallXrRenderer {
 	GDCLASS(NightfallXrProjectionTest, NightfallXrRenderer)
 public:
+	bool _on_event_polled(const void *p_event) override;
 	bool start_test();
 	bool start_stream();
 	bool start_meteor_test();

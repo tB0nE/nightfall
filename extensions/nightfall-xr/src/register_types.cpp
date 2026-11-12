@@ -36,6 +36,7 @@ void uninitialize_nightfall_xr_module(ModuleInitializationLevel p_level) {
 	}
 #ifdef __ANDROID__
 	// Godot owns the registered extension wrapper through OpenXR shutdown.
+	NightfallXrRenderer::clear_reference_space_changes();
 	pcvr_clock_request = nullptr;
 #endif
 }

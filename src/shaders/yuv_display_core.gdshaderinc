@@ -45,6 +45,11 @@ uniform int warp_newton_steps = 2;
 uniform float convergence = 0.5;
 uniform float balance_shift = 0.5;
 
+uniform vec4 screen_crop = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec4 screen_key = vec4(0.0);
+#include "res://src/shaders/chroma_key.gdshaderinc"
+
+
 uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
 uniform vec2 tile_inset = vec2(0.002);
 
@@ -211,7 +216,7 @@ vec3 filtered_stream(vec2 uv) {
 }
 
 void fragment() {
-	vec2 tile_uv = UV;
+	vec2 tile_uv = screen_crop.xy + UV * screen_crop.zw;
 
 	if (stereo_mode == 1) {
 		tile_uv = (eye_index == 1) ? vec2(tile_uv.x * 0.5, tile_uv.y) : vec2(tile_uv.x * 0.5 + 0.5, tile_uv.y);
@@ -358,4 +363,8 @@ void fragment() {
 		COLOR = texture(main_texture, clamp_to_region(uv));
 		COLOR.rgb = apply_picture(COLOR.rgb);
 	}
+	if (screen_key.a > 0.0 && stereo_mode != 7 && stereo_mode != 8 && stereo_mode != 9 && stereo_mode != 12) {
+		COLOR = nightfall_chroma_key(COLOR, apply_picture(screen_key.rgb), screen_key.a);
+	}
+
 }

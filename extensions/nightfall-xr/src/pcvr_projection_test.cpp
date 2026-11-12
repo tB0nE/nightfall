@@ -1,4 +1,5 @@
 #include "pcvr_projection_test.h"
+#include "fast_xr_renderer.h"
 #include "pcvr_view_validation.h"
 #include <godot_cpp/core/class_db.hpp>
 #include <algorithm>
@@ -1046,4 +1047,10 @@ uint64_t NightfallXrProjectionTest::_get_composition_layer(int32_t p_index) {
 }
 
 int32_t NightfallXrProjectionTest::_get_composition_layer_order(int32_t p_index) { return -100; }
+}
+
+bool godot::NightfallXrProjectionTest::_on_event_polled(const void *p_event) {
+	// The clock wrapper is registered at CORE, before the OpenXR instance.
+	NightfallXrRenderer::track_reference_space_event(p_event);
+	return false; // Godot must still update its tracking space normally.
 }
