@@ -16,7 +16,10 @@ STEAM_ENVIRONMENT = frozenset((
     "STEAM_COMPAT_MOUNTS", "STEAM_COMPAT_TOOL_PATHS", "STEAM_COMPAT_SHADER_PATH",
     "STEAM_COMPAT_TRANSCODED_MEDIA_PATH", "STEAM_RUNTIME", "STEAM_RUNTIME_LIBRARY_PATH",
     "STEAM_LD_LIBRARY_PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "PATH", "PROTON_LOG",
-    "PROTON_USE_WINED3D", "PROTON_NO_ESYNC", "PROTON_NO_FSYNC", "WINEDEBUG"))
+    "PROTON_USE_WINED3D", "PROTON_NO_ESYNC", "PROTON_NO_FSYNC", "WINEDEBUG",
+    # Steam launch-option DLL overrides load BepInEx/mod input (e.g. SubmersedVR).
+    # Preserve only this explicit compatibility knob, not arbitrary runtime overrides.
+    "WINEDLLOVERRIDES"))
 
 
 def validate_command(argv, cwd):

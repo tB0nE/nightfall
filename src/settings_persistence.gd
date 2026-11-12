@@ -52,7 +52,7 @@ static func read_app(
 		settings: AppSettings,
 		passthrough_supported: bool,
 		sharpen_choices: Array) -> Dictionary:
-	settings.screen_crop_mode = clampi(int(config.get_value("screen", "crop_mode", 0)), 0, 5)
+	settings.screen_crop_mode = clampi(int(config.get_value("screen", "crop_mode", 0)), 0, ScreenImageOptions.CROP_LABELS.size() - 1)
 	settings.screen_host_background = bool(config.get_value("screen", "host_background", false))
 	settings.screen_key_mode = clampi(int(config.get_value("screen", "key_mode", 0)), 0, 3)
 	settings.screen_key_tolerance = clampi(int(config.get_value("screen", "key_tolerance", 1)), 0, 2)

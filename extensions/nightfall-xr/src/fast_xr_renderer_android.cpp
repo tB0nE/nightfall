@@ -1161,6 +1161,31 @@ bool NightfallXrRenderer::init_gl() {
 				nullptr, GL_STREAM_READ);
 	}
 	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	glGenTextures(1, &crop_sample_texture);
+	glBindTexture(GL_TEXTURE_2D, crop_sample_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, CROP_SAMPLE_WIDTH,
+			CROP_SAMPLE_HEIGHT, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glGenFramebuffers(1, &crop_sample_fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, crop_sample_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+			crop_sample_texture, 0);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		XR_LOGE("Failed to create native ambient sample framebuffer");
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		return false;
+	}
+	glGenBuffers(CROP_SAMPLE_PBO_COUNT, crop_sample_pbos);
+	for (int i = 0; i < CROP_SAMPLE_PBO_COUNT; i++) {
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, crop_sample_pbos[i]);
+		glBufferData(GL_PIXEL_PACK_BUFFER,
+				CROP_SAMPLE_WIDTH * CROP_SAMPLE_HEIGHT * 4,
+				nullptr, GL_STREAM_READ);
+	}
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	const char *gl_exts = (const char *)glGetString(GL_EXTENSIONS);
@@ -1212,6 +1237,12 @@ void NightfallXrRenderer::stop_stream() {
 		std::lock_guard<std::mutex> lock(ambient_sample_result_mutex);
 		ambient_sample_result.clear();
 		ambient_sample_result_ready = false;
+	}
+	crop_sample_requested.store(false, std::memory_order_release);
+	{
+		std::lock_guard<std::mutex> lock(crop_sample_result_mutex);
+		crop_sample_result.clear();
+		crop_sample_result_ready = false;
 	}
 	pending_color_transfer_type = 0;
 	rendered_color_transfer_type = -1;
@@ -1282,6 +1313,12 @@ void NightfallXrRenderer::stop_stream() {
 					ambient_sample_fences[i] = nullptr;
 				}
 			}
+			for (int i = 0; i < CROP_SAMPLE_PBO_COUNT; i++) {
+				if (crop_sample_fences[i] != nullptr) {
+					glDeleteSync(crop_sample_fences[i]);
+					crop_sample_fences[i] = nullptr;
+				}
+			}
 			if (pending_oes_fence != 0) {
 				glDeleteSync(reinterpret_cast<GLsync>(pending_oes_fence));
 				pending_oes_fence = 0;
@@ -1291,6 +1328,9 @@ void NightfallXrRenderer::stop_stream() {
 			}
 			superseded_oes_fences.clear();
 			if (warp_fbo) glDeleteFramebuffers(1, &warp_fbo);
+			if (crop_sample_fbo) glDeleteFramebuffers(1, &crop_sample_fbo);
+			if (crop_sample_texture) glDeleteTextures(1, &crop_sample_texture);
+			if (crop_sample_pbos[0] || crop_sample_pbos[1]) glDeleteBuffers(CROP_SAMPLE_PBO_COUNT, crop_sample_pbos);
 			if (ambient_sample_fbo) glDeleteFramebuffers(1, &ambient_sample_fbo);
 			if (upsample_fbo) glDeleteFramebuffers(1, &upsample_fbo);
 			if (offset_fbo) glDeleteFramebuffers(1, &offset_fbo);
@@ -1346,6 +1386,9 @@ void NightfallXrRenderer::stop_stream() {
 		warp_fbo = ambient_sample_fbo = upsample_fbo = offset_fbo = depth_sync_fbo = 0;
 		ambient_sample_pbos[0] = ambient_sample_pbos[1] = 0;
 		ambient_sample_next_pbo = 0;
+		crop_sample_next_pbo = 0;
+		crop_sample_pbos[0] = crop_sample_pbos[1] = 0;
+		crop_sample_fbo = crop_sample_texture = 0;
 		ambient_sample_texture = upsample_texture = offset_texture = hdr_lut_texture = overlay_texture = 0;
 		std::memset(depth_sync_textures, 0, sizeof(depth_sync_textures));
 		warp_program = picture_warp_program = hdr_warp_program = 0;
@@ -1401,6 +1444,26 @@ PackedByteArray NightfallXrRenderer::consume_ambient_sample() {
 		memcpy(result.ptrw(), ambient_sample_result.data(), ambient_sample_result.size());
 	}
 	ambient_sample_result_ready = false;
+	return result;
+}
+
+void NightfallXrRenderer::request_crop_sample() {
+	if (swapchain != XR_NULL_HANDLE) {
+		crop_sample_requested.store(true, std::memory_order_release);
+	}
+}
+
+PackedByteArray NightfallXrRenderer::consume_crop_sample() {
+	PackedByteArray result;
+	std::lock_guard<std::mutex> lock(crop_sample_result_mutex);
+	if (!crop_sample_result_ready) {
+		return result;
+	}
+	result.resize(static_cast<int64_t>(crop_sample_result.size()));
+	if (!crop_sample_result.empty()) {
+		memcpy(result.ptrw(), crop_sample_result.data(), crop_sample_result.size());
+	}
+	crop_sample_result_ready = false;
 	return result;
 }
 
@@ -1769,6 +1832,38 @@ void NightfallXrRenderer::poll_ambient_sample() {
 	}
 }
 
+void NightfallXrRenderer::poll_crop_sample() {
+	const size_t byte_count = CROP_SAMPLE_WIDTH * CROP_SAMPLE_HEIGHT * 4;
+	for (int i = 0; i < CROP_SAMPLE_PBO_COUNT; i++) {
+		if (crop_sample_fences[i] == nullptr) {
+			continue;
+		}
+		GLenum status = glClientWaitSync(crop_sample_fences[i], 0, 0);
+		if (status == GL_WAIT_FAILED) {
+			XR_LOGE("Native ambient readback fence wait failed: 0x%x", glGetError());
+			glDeleteSync(crop_sample_fences[i]);
+			crop_sample_fences[i] = nullptr;
+			continue;
+		}
+		if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+			continue;
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, crop_sample_pbos[i]);
+		void *mapped = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, byte_count, GL_MAP_READ_BIT);
+		if (mapped != nullptr) {
+			std::vector<uint8_t> sample(byte_count);
+			memcpy(sample.data(), mapped, byte_count);
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+			std::lock_guard<std::mutex> lock(crop_sample_result_mutex);
+			crop_sample_result = std::move(sample);
+			crop_sample_result_ready = true;
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+		glDeleteSync(crop_sample_fences[i]);
+		crop_sample_fences[i] = nullptr;
+	}
+}
+
 bool NightfallXrRenderer::issue_ambient_sample() {
 	int slot = -1;
 	for (int offset = 0; offset < AMBIENT_SAMPLE_PBO_COUNT; offset++) {
@@ -1802,6 +1897,51 @@ bool NightfallXrRenderer::issue_ambient_sample() {
 	return ambient_sample_fences[slot] != nullptr;
 }
 
+bool NightfallXrRenderer::issue_crop_sample(uint32_t texture, const float *matrix, bool is_2d) {
+	int slot = -1;
+	for (int offset = 0; offset < CROP_SAMPLE_PBO_COUNT; offset++) {
+		int candidate = (crop_sample_next_pbo + offset) % CROP_SAMPLE_PBO_COUNT;
+		if (crop_sample_fences[candidate] == nullptr) {
+			slot = candidate;
+			break;
+		}
+	}
+	if (slot < 0) {
+		return false;
+	}
+
+	// Sample uncropped colour, before warp, picture controls, bezel and keying.
+	glBindFramebuffer(GL_FRAMEBUFFER, crop_sample_fbo);
+	glViewport(0, 0, CROP_SAMPLE_WIDTH, CROP_SAMPLE_HEIGHT);
+	WarpUniforms &u = is_2d ? delayed_warp_uniforms : warp_uniforms;
+	glUseProgram(is_2d ? delayed_warp_program : warp_program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(is_2d ? GL_TEXTURE_2D : GL_TEXTURE_EXTERNAL_OES, texture);
+	glUniformMatrix4fv(u.texmatrix, 1, GL_FALSE, matrix);
+	glUniform4f(u.screen_crop, 0, 0, 1, 1);
+	glUniform4f(u.screen_key, 0, 0, 0, 0);
+	glUniform1i(u.stereo_mode, pending_stereo_mode == 1 || pending_stereo_mode == 2 ? pending_stereo_mode : 0);
+	glUniform1f(u.eye_index, 0);
+	glUniform1f(u.disparity, 0);
+	glUniform1i(u.depth_process_stage, 0);
+	glUniform1f(u.occlusion, 0);
+	glUniform1f(u.debug_solid, 0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA + 2);
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glBindFramebuffer(GL_FRAMEBUFFER, crop_sample_fbo);
+	glReadBuffer(GL_COLOR_ATTACHMENT0);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, crop_sample_pbos[slot]);
+	glReadPixels(0, 0, CROP_SAMPLE_WIDTH, CROP_SAMPLE_HEIGHT,
+			GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	crop_sample_fences[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	crop_sample_next_pbo = (slot + 1) % CROP_SAMPLE_PBO_COUNT;
+	return crop_sample_fences[slot] != nullptr;
+}
+
 void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t p_depth_texture_id,
 		uint32_t p_depth_guide_texture_id, const float *p_tex_matrix, float p_separation,
 		float p_convergence, bool p_occluding, int p_depth_process_stage) {
@@ -1825,6 +1965,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		pending_oes_fence = 0;
 	}
 	poll_ambient_sample();
+	poll_crop_sample();
 	const auto t_fence_ambient_done = std::chrono::steady_clock::now();
 	static const float identity_matrix[16] = {
 		1.0f, 0.0f, 0.0f, 0.0f,
@@ -1925,6 +2066,11 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glDisable(GL_FRAMEBUFFER_SRGB_EXT);
 	}
 
+	if (crop_sample_requested.exchange(false, std::memory_order_acq_rel)) {
+		if (!issue_crop_sample(source_texture_id, source_matrix, source_is_2d))
+			crop_sample_requested.store(true, std::memory_order_release);
+		glBindFramebuffer(GL_FRAMEBUFFER, warp_fbo);
+	}
 	bool use_hdr = pending_color_transfer_type == 1 || pending_color_transfer_type == 2;
 	bool use_picture = std::fabs(pending_brightness) > 0.0001f ||
 			std::fabs(pending_contrast - 1.0f) > 0.0001f ||

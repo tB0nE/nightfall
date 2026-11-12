@@ -197,7 +197,7 @@ func _watch_lease(token: int, expected: String, milliseconds: int) -> void:
 
 func request_library(action: String, key: String = "", offset: int = 0) -> bool:
 	if not library_available or state not in ["watching", "prepared"] or action not in ["list", "art", "launch", "install_steamvr"]: return false
-	if action in ["list", "launch", "install_steamvr"]: _library_queue.clear()
+	if action in ["launch", "install_steamvr"] or (action == "list" and offset == 0): _library_queue.clear()
 	if _library_queue.size() >= 12: return false
 	_library_queue.append({"type":"library", "action":action, "key":key, "offset":offset})
 	return true

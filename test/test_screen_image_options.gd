@@ -58,6 +58,59 @@ func _init():
 	assert(options.crop_for(screen).is_equal_approx(Vector4(0.125, 0, 0.75, 1)))
 	owner.layout.source = &"host_manifest"
 	assert(options.crop_for(screen) == Vector4(0, 0, 1, 1))
+	# Manual crop must never affect a secondary screen.
+	var secondary := VRScreen.new()
+	owner.settings.screen_crop_mode = 2
+	assert(options.crop_for(secondary) == Vector4(0, 0, 1, 1))
+	secondary.free()
+	# Bright content with persistent, symmetric 21:9 bars.
+	var image := Image.create(128, 72, false, Image.FORMAT_RGBA8)
+	image.fill(Color.BLACK)
+	image.fill_rect(Rect2i(0, 9, 128, 54), Color(0.7, 0.5, 0.3))
+	var detector := AutoScreenCrop.new()
+	assert(AutoScreenCrop.detect(image, Vector2i(1920,1080)) == 1)
+	for i in 4: assert(not detector.observe(image, Vector2i(1920,1080)))
+	assert(detector.observe(image, Vector2i(1920,1080)))
+	assert(detector.region.is_equal_approx(Vector4(0, 9.0 / 72.0, 1, 54.0 / 72.0)))
+	var confirmed := detector.region
+	var dark := Image.create(128, 72, false, Image.FORMAT_RGBA8)
+	dark.fill(Color.BLACK)
+	for i in 8: assert(not detector.observe(dark, Vector2i(1920,1080)))
+	assert(detector.region == confirmed)
+	# A subtitle in a bar requests the full picture, preserving that content.
+	image.fill_rect(Rect2i(35, 66, 55, 2), Color.WHITE)
+	assert(AutoScreenCrop.detect(image, Vector2i(1920,1080)) == 0)
+	# Sustained full-frame content clears a previous crop.
+	image.fill(Color(0.4, 0.5, 0.6))
+	for i in 4: assert(not detector.observe(image, Vector2i(1920,1080)))
+	assert(detector.observe(image, Vector2i(1920,1080)))
+	assert(detector.region == AutoScreenCrop.IDENTITY)
+	# A measured 4:3 border is removed exactly, without a sample-pixel margin.
+	detector.reset()
+	image.fill(Color.BLACK)
+	image.fill_rect(Rect2i(16, 0, 96, 72), Color.WHITE)
+	for i in 5: detector.observe(image, Vector2i(1920,1080))
+	assert(detector.region.is_equal_approx(Vector4(0.125, 0, 0.75, 1)))
+	# Nearby real-world ratios must use measured edges, not the nominal 21:9.
+	detector.reset()
+	image.fill(Color.BLACK)
+	image.fill_rect(Rect2i(0, 8, 128, 56), Color.WHITE)
+	for i in 5: detector.observe(image, Vector2i(1920,1080))
+	assert(detector.region.is_equal_approx(Vector4(0, 8.0 / 72.0, 1, 56.0 / 72.0)))
+	# Changing boundaries within the same preset restarts confirmation.
+	image.fill(Color.BLACK)
+	image.fill_rect(Rect2i(0, 9, 128, 54), Color.WHITE)
+	var previous := detector.region
+	for i in 4:
+		detector.observe(image, Vector2i(1920,1080))
+		assert(detector.region == previous)
+	assert(detector.observe(image, Vector2i(1920,1080)))
+	assert(detector.region.is_equal_approx(Vector4(0, 9.0 / 72.0, 1, 54.0 / 72.0)))
+	# Auto survives persistence without changing existing numeric presets.
+	settings.screen_crop_mode = ScreenImageOptions.AUTO_MODE
+	SettingsPersistence.write_app(config, settings)
+	SettingsPersistence.read_app(config, loaded, true, [0])
+	assert(loaded.screen_crop_mode == ScreenImageOptions.AUTO_MODE)
 	screen.free()
 	owner.free()
 	print("All screen_image_options tests passed")

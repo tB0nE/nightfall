@@ -1,4 +1,5 @@
 {
+	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
 	"Open Browser": "Open Browser",
@@ -237,5 +238,14 @@
 	"Remove similar colours and compression fringes.": "Remove similar colours and compression fringes.",
 	"Host Background": "Host Background",
 	"Set Host Background": "Set Host Background",
-	"Temporarily match the host wallpaper to Colour Key.": "Temporarily match the host wallpaper to Colour Key."
+	"Temporarily match the host wallpaper to Colour Key.": "Temporarily match the host wallpaper to Colour Key.",
+	"Browsers": "Browsers",
+	"Layout": "Layout",
+	"Select": "Select",
+	"VR Apps": "VR Apps",
+	"Browse installed Steam VR apps.": "Browse installed Steam VR apps.",
+	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
+	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
+	"Configure XR stream quality.": "Configure XR stream quality.",
+	"Refresh the installed VR app list.": "Refresh the installed VR app list."
 }

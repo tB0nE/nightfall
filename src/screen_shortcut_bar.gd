@@ -52,11 +52,19 @@ const ICON_GAP_RATIO := 0.014
 const HIT_SIZE_RATIO := 0.044
 const COMP_VIEWPORT_SIZE := Vector2i(981, 98)
 const HIDE_DELAY_SECONDS := 0.5
+const GRAB_REVEAL_SECONDS := 0.1
+const BUTTON_REVEAL_SECONDS := 0.2
+const BROWSER_REVEAL_SECONDS := 0.1
 
 var main: Node3D
 var hovered_action: StringName = &""
 var revealed_screen: VRScreen = null
 var _reveal_time_remaining := 0.0
+var browser_screen: VRScreen = null
+var _browser_time_remaining := 0.0
+var _hover_clock := 0.0
+var _hover_frame := 0
+var _hover_candidates := {}
 
 func _init(owner: Node3D):
 	main = owner
@@ -193,6 +201,11 @@ func _make_live_dot() -> MeshInstance3D:
 	return dot
 
 func begin_pointer_frame(delta: float = 0.0) -> void:
+	_hover_clock += maxf(delta, 0.0)
+	_hover_frame += 1
+	if browser_screen:
+		_browser_time_remaining = maxf(_browser_time_remaining - maxf(delta, 0.0), 0.0)
+		if _browser_time_remaining <= 0.0: browser_screen = null
 	hovered_action = &""
 	if revealed_screen:
 		_reveal_time_remaining = maxf(_reveal_time_remaining - maxf(delta, 0.0), 0.0)
@@ -219,6 +232,38 @@ func reveal_controls(screen: VRScreen) -> void:
 		revealed_screen = screen
 		_reveal_time_remaining = HIDE_DELAY_SECONDS
 		point_at(screen)
+
+# Each surface has its own dwell candidate and hide timer. Requests in the
+# same pointer frame do not accrue time twice; leaving a region cancels dwell.
+func _hover_ready(channel: StringName, screen: VRScreen, delay: float) -> bool:
+	if screen == null: return false
+	var previous: Dictionary = _hover_candidates.get(channel, {})
+	if int(previous.get("id", 0)) != screen.get_instance_id() or int(previous.get("frame", -2)) < _hover_frame - 1:
+		previous = {"id":screen.get_instance_id(), "since":_hover_clock}
+	previous["frame"] = _hover_frame
+	_hover_candidates[channel] = previous
+	return _hover_clock - float(previous.since) + 0.000001 >= delay
+
+func hover_grab(screen: VRScreen) -> void:
+	if screen != null and (screen == pointed_screen or _hover_ready(&"grab", screen, GRAB_REVEAL_SECONDS)):
+		point_at(screen)
+
+func hover_controls(screen: VRScreen) -> void:
+	hover_grab(screen)
+	if screen != null and (controls_are_revealed(screen) or _hover_ready(&"buttons", screen, BUTTON_REVEAL_SECONDS)):
+		reveal_controls(screen)
+
+func reveal_browser(screen: VRScreen) -> void:
+	if screen == null: return
+	browser_screen = screen
+	_browser_time_remaining = HIDE_DELAY_SECONDS
+
+func hover_browser(screen: VRScreen) -> void:
+	if screen != null and (screen == browser_screen or _hover_ready(&"browser", screen, BROWSER_REVEAL_SECONDS)):
+		reveal_browser(screen)
+
+func browser_is_revealed(screen: VRScreen) -> bool:
+	return screen != null and screen == browser_screen
 
 func controls_are_revealed(screen: VRScreen) -> bool:
 	return screen != null and screen == revealed_screen

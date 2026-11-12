@@ -236,6 +236,12 @@ func _test_standby(owner: Owner) -> void:
 	controller.backend.state = "idle"
 	controller.process_standby(.1)
 	assert(not controller.standby_active)
+	assert(controller.start_meteor_standby())
+	controller.backend.state = "failed"
+	controller.process_standby(.1)
+	assert(owner.logs.any(func(line): return line.contains("Stop reason=native failure") and line.contains("error=test failure") and line.contains("frames=12")), "Preserve the native cause before stop drains and resets it")
+	controller.backend.state = "idle"
+	controller.process_standby(.1)
 
 func _test_remote_timeout(owner: Owner) -> void:
 	var controller := Harness.new(owner)

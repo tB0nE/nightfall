@@ -52,9 +52,10 @@ class SteamLauncherTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): request_local_launch(root)
             with self.assertRaises(ValueError): request_steam_launch(root,"123",[sys.executable],directory,{})
             request_steam_launch(root,"438100",[sys.executable,"literal; $(not-shell)"],directory,
-                                 {"SteamAppId":"438100","STEAM_COMPAT_DATA_PATH":"/steam/prefix","SSH_AUTH_SOCK":"secret","XR_RUNTIME_JSON":"bad"})
+                                 {"SteamAppId":"438100","STEAM_COMPAT_DATA_PATH":"/steam/prefix","WINEDLLOVERRIDES":"winhttp=n,b","SSH_AUTH_SOCK":"secret","XR_RUNTIME_JSON":"bad"})
             value=future.result(timeout=3)
             self.assertEqual(value["argv"][1],"literal; $(not-shell)")
+            self.assertEqual(value["environment"]["WINEDLLOVERRIDES"],"winhttp=n,b")
             self.assertNotIn("SSH_AUTH_SOCK",value["environment"])
             self.assertNotIn("XR_RUNTIME_JSON",value["environment"])
             invalid=dict(value,environment={"XR_RUNTIME_JSON":"bad"})
