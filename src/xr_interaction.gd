@@ -479,6 +479,10 @@ func handle_pointer_interaction():
 			main.was_clicking = false
 		return
 	if on_primary_shortcut:
+		# Hidden shortcut hitboxes only request a reveal, never activate a button.
+		if not main.screen_shortcuts.controls_are_revealed(shortcut_target.screen):
+			main.was_clicking = is_now_clicking
+			return
 		pointer_on_ui = true
 		main.screen_shortcuts.set_hover(shortcut_target.action)
 		if is_now_clicking and not main.was_clicking:
@@ -543,7 +547,8 @@ func handle_pointer_interaction():
 			main.right_click_cooldown = 0.5
 
 	for s in main.screens:
-		s.grab_bar.visible = true
+		s.grab_bar.visible = main.screen_shortcuts == null or s == main.screen_shortcuts.pointed_screen \
+			or s == main.screen_shortcuts.revealed_screen
 		var controls_revealed: bool = main.screen_shortcuts != null \
 			and main.screen_shortcuts.controls_are_revealed(s)
 		for ch in s.corner_handles:
@@ -1001,7 +1006,7 @@ func _reveal_contextual_screen_controls() -> void:
 		return
 	var browser = main.screen_sources.focused_browser()
 	if browser and browser.active and browser.navigation.get("editing", false):
-		main.screen_shortcuts.reveal_controls(browser.screen)
+		main.screen_shortcuts.reveal_browser(browser.screen)
 	if main.grabbed_corner_idx >= 0 and main.grabbed_corner_screen:
 		main.screen_shortcuts.reveal_controls(main.grabbed_corner_screen)
 		return
@@ -1012,11 +1017,13 @@ func _reveal_contextual_screen_controls() -> void:
 	if not raycast or not raycast.is_colliding():
 		return
 	var target := PointerTarget.resolve(raycast.get_collider())
-	if target.role in [&"grab_bar", &"corner", &"screen_shortcut", &"screen_tab"]:
-		main.screen_shortcuts.reveal_controls(target.screen)
+	if target.role == &"screen_tab":
+		main.screen_shortcuts.hover_browser(target.screen)
+	elif target.role in [&"grab_bar", &"corner", &"screen_shortcut"]:
+		main.screen_shortcuts.hover_controls(target.screen)
 	elif target.role == &"screen":
 		# Shows the screen's grab bar while pointing at it, without its corner handles.
-		main.screen_shortcuts.point_at(target.screen)
+		main.screen_shortcuts.hover_grab(target.screen)
 
 func _is_hand_on_screen(hand: String) -> bool:
 	var rc = main.hand_raycast if hand == "right" else main.left_hand_raycast

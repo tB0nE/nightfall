@@ -1130,7 +1130,8 @@ func _update_grab_bar_layers():
 		DEBUG_COMP_GRAB_BAR,
 		DEBUG_COMP_CORNERS,
 		screen_shortcuts.revealed_screen if screen_shortcuts else null,
-		screen_shortcuts.pointed_screen if screen_shortcuts else null)
+		screen_shortcuts.pointed_screen if screen_shortcuts else null,
+		screen_shortcuts.browser_screen if screen_shortcuts else null)
 
 func exit_app():
 	if browser_prototype:

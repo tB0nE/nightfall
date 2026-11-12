@@ -17,6 +17,7 @@ const PANEL_RECT := Rect2(-0.5, -0.13, 1.0, 0.118)
 var main: Node3D
 var browser: RefCounted
 var hovered: StringName = &""
+var _revealed := false
 var popup := ""
 var _signature := ""
 var _items: Array = []
@@ -98,6 +99,7 @@ func attach(screen: VRScreen, viewport: SubViewport) -> void:
 		_background = null
 		_dropdown_background = null
 		popup = ""
+		_revealed = false
 		hovered = &""
 	_screen = screen
 	_viewport = viewport
@@ -110,6 +112,7 @@ func begin_pointer_frame() -> void: hovered = &""
 func set_hover(action: StringName) -> void: hovered = action
 
 func invoke(action: StringName) -> void:
+	if not _revealed: return
 	for item in _items:
 		if item.action == action and not item.enabled: return
 	if action == &"hover": return
@@ -205,7 +208,7 @@ func _add(action: StringName, title: String, rect: Rect2, selected := false, ena
 	panel.add_theme_stylebox_override("pressed", style)
 	_viewport.add_child(panel)
 	var area := Area3D.new()
-	area.collision_layer = 2 if enabled else 0
+	area.collision_layer = 2 if action == &"hover" else 0
 	area.collision_mask = 0
 	area.monitoring = false
 	area.set_meta(&"nf_role", &"screen_tab")
@@ -301,12 +304,25 @@ func _rebuild() -> void:
 	for item in _reuse.values(): _discard(item)
 	_reuse.clear()
 
+func hide_controls() -> void:
+	if not _revealed and popup == "": return
+	_revealed = false
+	popup = ""
+	if _background: _background.hide()
+	if _dropdown_background: _dropdown_background.hide()
+	for item in _items:
+		item.panel.hide()
+		item.fallback.hide()
+		item.area.collision_layer = 2 if item.action == &"hover" else 0
+
 func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bool) -> void:
 	if screen != _screen or not is_instance_valid(_viewport):
 		return
+	_revealed = revealed
 	# Welcome already has Open Browser. Remove both artwork and hit targets
 	# here, without hiding the corner resize controls sharing this layer.
 	if not browser.active and not main.is_streaming:
+		_revealed = false
 		popup = ""
 		hovered = &""
 		_background.visible = false
@@ -357,7 +373,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		# Keep the backdrop behind actionable targets. Disabled menu rows
 		# absorb input too, rather than clicking the web page underneath.
 		item.area.position.z = -0.006 if item.action == &"hover" else (0.003 if is_close else 0.0)
-		item.area.collision_layer = 2 if not is_close or show_close else 0
+		item.area.collision_layer = 2 if item.action == &"hover" or (revealed and (not is_close or show_close)) else 0
 		var painted := rect
 		item.panel.position = Vector2((painted.position.x * screen.mesh_size.x + surface_size.x * 0.5) * scale_px,
 			(painted.position.y * screen.mesh_size.x + margin) * scale_px)

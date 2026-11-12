@@ -45,7 +45,7 @@ func setup(scene_root: Node, xr_origin: Node3D, shortcuts: ScreenShortcutBar,
 ## A screen's controls layer is submitted only while it is pointed at (pointed_screen) or its
 ## controls are revealed: the headset composites at most 16 layers a frame.
 func update(screens: Array, active: bool, grab_bars_enabled: bool,
-		corners_enabled: bool, revealed_screen: VRScreen, pointed_screen: VRScreen = null) -> void:
+		corners_enabled: bool, revealed_screen: VRScreen, pointed_screen: VRScreen = null, browser_screen: VRScreen = null) -> void:
 	for screen in screens:
 		var provider = _scene_root.screen_sources.browser_for_screen(screen) if _scene_root else null
 		# stop() owns the three-frame retirement window. Never submit its
@@ -58,9 +58,10 @@ func update(screens: Array, active: bool, grab_bars_enabled: bool,
 		var pointed: bool = screen == revealed_screen or screen == pointed_screen
 		_update_corners(
 			screen,
-			active and pointed and (corners_enabled or grab_bars_enabled),
+			active and ((pointed and (corners_enabled or grab_bars_enabled)) or screen == browser_screen),
 			screen == revealed_screen and corners_enabled,
-			grab_bars_enabled)
+			grab_bars_enabled and pointed,
+			screen == browser_screen)
 
 func set_grab_bar_color(screen: VRScreen, color: Color) -> void:
 	if not screen or not screen.comp_grab_bar_viewport:
@@ -91,15 +92,19 @@ static func grab_strip_rect(mesh_size: Vector2, grab_y: float, surface_size: Vec
 		margin + mesh_size.y * 0.5 - grab_y - strip_size.y * 0.5) * scale_px,
 		strip_size * scale_px)
 
-func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab_visible := false) -> void:
+func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab_visible := false, browser_visible := false) -> void:
 	var layer := screen.comp_corner_layer
 	if not layer or not screen.comp_corner_viewport:
 		return
-	if not active:
+	var menu = _scene_root.screen_sources.menu_for_screen(screen) if _scene_root else null
+	# Seed hidden top-hover geometry without needing to reveal the bottom bar.
+	# This is a one-time layout, not an extra submitted composition layer.
+	var seed_menu: bool = menu != null and menu._items.is_empty() and (menu.browser.active or _scene_root.get("is_streaming") == true)
+	if not active and not seed_menu:
+		if menu: menu.hide_controls()
 		_set_layer_active(layer, false)
 		return
 	var corner_size := screen.mesh_size.x * CORNER_SIZE_RATIO
-	var menu = _scene_root.screen_sources.menu_for_screen(screen) if _scene_root else null
 	var grab_margin := -screen.grab_bar.position.y - screen.mesh_size.y * 0.5 \
 		+ screen.mesh_size.x * ScreenShortcutBar.STRIP_HEIGHT_RATIO * 0.5
 	var margin := maxf(corner_size, grab_margin)
@@ -134,8 +139,8 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 			vertical_inset if i < 2 else viewport_height - pixel_size - vertical_inset)
 		rect.visible = artwork_visible
 	if menu:
-		menu.update(screen, surface_size, margin, artwork_visible)
-	_set_layer_active(layer, true)
+		menu.update(screen, surface_size, margin, browser_visible)
+	_set_layer_active(layer, active)
 
 func _make_viewport(viewport_name: String, viewport_size: Vector2i) -> SubViewport:
 	var viewport := SubViewport.new()

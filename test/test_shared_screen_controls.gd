@@ -1,7 +1,22 @@
 extends SceneTree
 
+class MenuBrowser extends RefCounted:
+	var active := true
+
+class Menu extends RefCounted:
+	var browser := MenuBrowser.new()
+	var _items: Array = []
+	var laid_out := false
+	func update(_screen, _size, _margin, revealed):
+		laid_out = true
+		assert(not revealed)
+		_items = [1]
+	func hide_controls(): pass
+
 class Sources extends RefCounted:
-	func menu_for_screen(_screen): return null
+	var menu_screen: VRScreen
+	var menu: RefCounted
+	func menu_for_screen(screen): return menu if screen == menu_screen else null
 	func browser_for_screen(_screen): return null
 
 class Owner extends Node3D:
@@ -65,6 +80,16 @@ func _run():
 	assert(screens[1].comp_corner_rects[0].visible)
 	assert(screens[1].comp_corner_layer.visible)
 	assert(not screens[0].comp_corner_layer.visible)
+	controls.update(screens, true, true, true, null, null, screens[2])
+	assert(screens[2].comp_corner_layer.visible)
+	assert(not screens[2].comp_corner_viewport.get_node("ShortcutStrip").visible, "Top-only visibility must not show the bottom bar")
+	assert(not screens[2].comp_corner_rects[0].visible)
+	assert(origin.get_child_count() == 4, "Independent top/bottom visibility must retain one layer per screen")
+	var menu := Menu.new()
+	owner.screen_sources.menu_screen = screens[0]
+	owner.screen_sources.menu = menu
+	controls.update(screens, true, true, true, null, null)
+	assert(menu.laid_out and not screens[0].comp_corner_layer.visible, "Top hover geometry must be ready before either menu is revealed")
 	controls.update(screens, false, true, true, null)
 	for screen in screens:
 		assert(not screen.comp_corner_layer.visible)

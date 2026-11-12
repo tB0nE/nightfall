@@ -99,6 +99,13 @@ func _init():
 		"Hover must not expand across neighbouring tab titles")
 	strip.invoke(&"close:2")
 	assert(owner.browser_prototype.actions[-1] == ["close", 2], "Close must target the hovered tab, not the selected one")
+	strip.hide_controls()
+	var before_hidden_click := owner.browser_prototype.actions.size()
+	strip.invoke(&"close:2")
+	assert(owner.browser_prototype.actions.size() == before_hidden_click, "Hidden top controls cannot be activated during the reveal delay")
+	for item in strip._items:
+		assert(item.area.collision_layer == (2 if item.action == &"hover" else 0))
+	strip.update(owner.primary_screen, surface, margin, true)
 	strip.invoke(&"browser")
 	assert(strip.popup == "sources", "Add Browser should offer tab versus screen")
 	strip.update(owner.primary_screen, surface, margin, true)
