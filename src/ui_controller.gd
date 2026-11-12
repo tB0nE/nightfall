@@ -23,6 +23,12 @@ var _pcvr_link: Button
 var _pcvr_refresh_elapsed := 0.0
 var _vr_library: VBoxContainer
 var _vr_library_open := false
+var _pcvr_tabs: HBoxContainer
+var _pcvr_stream_tab: Button
+var _pcvr_apps_tab: Button
+var _browser_count_btn: Button
+var _layout_btn: Button
+var _layout_popup: PanelContainer
 var _pcvr_page: VBoxContainer
 var _pcvr_info: Label
 var _pcvr_resolution_btn: Button
@@ -649,6 +655,7 @@ func update_monitor_tab():
 		return
 	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
 	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
+	update_option_btn(_browser_count_btn, "%d" % main.settings_controller.browser_screen_count())
 	update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
@@ -662,6 +669,7 @@ func update_monitor_tab():
 	# non-Polaris multi-monitor selection is supported.
 	var polaris = main.settings.host.is_polaris_host
 	var vdd = main.settings.host.virtual_display_installed
+	if _layout_btn: _layout_btn.disabled = not polaris
 	main._ui_monitors_btn.disabled = not polaris
 	main._ui_virtual_monitors_btn.disabled = not polaris or not vdd
 	main._ui_apply_preset_btn.disabled = not polaris
@@ -755,6 +763,7 @@ func _build_preset_card(preset: Dictionary, is_selected: bool) -> Button:
 
 	var id = preset.get("id", "")
 	card.button_down.connect(func():
+		if _layout_popup: _layout_popup.hide()
 		main.settings_controller.select_monitor_preset(StringName(id))
 		_refresh_preset_row()
 	)
@@ -969,15 +978,31 @@ func open_vr_apps() -> void:
 	_vr_library_open = true
 	_pcvr_page.visible = false
 	_vr_library.visible = true
+	_update_pcvr_tabs()
 	_vr_library.open_library()
+	refresh_ui_buttons()
+
+func _update_pcvr_tabs() -> void:
+	for button in [_pcvr_stream_tab, _pcvr_apps_tab]:
+		if not button: continue
+		var selected: bool = _vr_library_open if button == _pcvr_apps_tab else not _vr_library_open
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(1, 1, 1, 0.12 if selected else 0.04)
+		style.set_corner_radius_all(16)
+		style.set_content_margin_all(12)
+		button.add_theme_stylebox_override("normal", style)
+		button.add_theme_color_override("font_color", Color(1, 1, 1, 1.0 if selected else 0.5))
 
 func close_vr_apps() -> void:
 	_vr_library_open = false
 	if _vr_library: _vr_library.visible = false
 	_pcvr_page.visible = _current_tab == PCVR_PAGE
+	_update_pcvr_tabs()
+	refresh_ui_buttons()
 
 func switch_tab(tab: int):
 	clear_tooltip()
+	if _layout_popup: _layout_popup.hide()
 	_current_tab = tab
 	_tab_display.visible = (tab == 0)
 	_tab_stream.visible = (tab == 1)
@@ -989,9 +1014,13 @@ func switch_tab(tab: int):
 	if tab != PCVR_PAGE: _vr_library_open = false
 	if _vr_library: _vr_library.visible = tab == PCVR_PAGE and _vr_library_open
 	if _pcvr_page: _pcvr_page.visible = (tab == PCVR_PAGE and not _vr_library_open)
-	if _settings_gear_btn: _settings_gear_btn.visible = tab != PCVR_PAGE
-	if main._ui_exit_btn: main._ui_exit_btn.visible = tab != PCVR_PAGE
-	if main._ui_disconnect_btn: main._ui_disconnect_btn.visible = main.is_streaming and tab != PCVR_PAGE
+	if _pcvr_tabs: _pcvr_tabs.visible = tab == PCVR_PAGE
+	_update_pcvr_tabs()
+	if _settings_gear_btn: _settings_gear_btn.visible = true
+	if main._ui_exit_btn: main._ui_exit_btn.visible = true
+	if main._ui_disconnect_btn:
+		main._ui_disconnect_btn.visible = main.is_streaming or tab == PCVR_PAGE
+		main._ui_disconnect_btn.disabled = not main.is_streaming
 	var tab_active_style = StyleBoxFlat.new()
 	tab_active_style.bg_color = Color(1, 1, 1, 0.12)
 	tab_active_style.set_corner_radius_all(16)
@@ -1436,6 +1465,7 @@ func build_ui():
 	# Host-specific capability checks still apply to PC monitor creation.
 	var legacy_monitors := VBoxContainer.new()
 	legacy_monitors.name = "LegacyMonitorControls"
+	legacy_monitors.add_theme_constant_override("separation", 0)
 	legacy_monitors.visible = true
 	legacy_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.add_child(legacy_monitors)
@@ -1449,31 +1479,23 @@ func build_ui():
 	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	legacy_monitors.add_child(mon_row1)
 
-	main._ui_monitors_btn = make_compact_option_btn("Monitors", "1")
+	main._ui_monitors_btn = make_option_btn("Monitors", "1")
 	_set_button_tooltip(main._ui_monitors_btn, "Choose how many physical host monitors are displayed.")
 	mon_row1.add_child(main._ui_monitors_btn)
-	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
+	main._ui_virtual_monitors_btn = make_option_btn("Virtual", "0")
 	_set_button_tooltip(main._ui_virtual_monitors_btn, "Choose how many virtual monitors are created.")
 	mon_row1.add_child(main._ui_virtual_monitors_btn)
+	_browser_count_btn = make_option_btn("Browsers", "0")
+	_browser_count_btn.name = "BrowserScreenCount"
+	_browser_count_btn.disabled = true
+	_browser_count_btn.modulate.a = 0.3
+	_set_button_tooltip(_browser_count_btn, "Browser screens count towards the layout. Manage them above each screen.")
+	mon_row1.add_child(_browser_count_btn)
 
 	var mon_gap1 = Control.new()
-	mon_gap1.custom_minimum_size = Vector2(0, 10)
+	mon_gap1.custom_minimum_size = Vector2(0, 20)
 	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	legacy_monitors.add_child(mon_gap1)
-
-	_preset_row = HBoxContainer.new()
-	_preset_row.name = "PresetRow"
-	_preset_row.add_theme_constant_override("separation", 10)
-	_preset_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	_preset_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	_preset_row.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	legacy_monitors.add_child(_preset_row)
-
-	var mon_gap2 = Control.new()
-	mon_gap2.custom_minimum_size = Vector2(0, 10)
-	mon_gap2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	legacy_monitors.add_child(mon_gap2)
 
 	var mon_actions_row1 = HBoxContainer.new()
 	mon_actions_row1.name = "MonActionsRow1"
@@ -1484,6 +1506,11 @@ func build_ui():
 	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	legacy_monitors.add_child(mon_actions_row1)
 
+	_layout_btn = make_option_btn("Layout", "Select")
+	_layout_btn.name = "ScreenLayoutPicker"
+	_layout_btn.pressed.connect(func(): _layout_popup.visible = not _layout_popup.visible; refresh_ui_buttons())
+	_set_button_tooltip(_layout_btn, "Choose a layout for all monitor and browser screens.")
+	mon_actions_row1.add_child(_layout_btn)
 	main._ui_apply_preset_btn = make_action_btn("Apply")
 	_set_button_tooltip(main._ui_apply_preset_btn, "Apply the selected monitor layout.")
 	mon_actions_row1.add_child(main._ui_apply_preset_btn)
@@ -1493,9 +1520,27 @@ func build_ui():
 	main._ui_remove_preset_btn = make_action_btn("Remove")
 	_set_button_tooltip(main._ui_remove_preset_btn, "Delete the selected custom preset.")
 	mon_actions_row1.add_child(main._ui_remove_preset_btn)
-	main._ui_grid_mode_btn = make_compact_option_btn("Grid Mode", "On")
+	main._ui_grid_mode_btn = make_option_btn("Grid Mode", "On")
 	_set_button_tooltip(main._ui_grid_mode_btn, "Arrange screens using the monitor grid.")
-	mon_actions_row1.add_child(main._ui_grid_mode_btn)
+	mon_row1.add_child(main._ui_grid_mode_btn)
+	for button in [main._ui_apply_preset_btn, main._ui_save_preset_btn, main._ui_remove_preset_btn]:
+		button.custom_minimum_size = Vector2(250, 132)
+		button.add_theme_font_size_override("font_size", 26)
+		button.add_theme_stylebox_override("normal", main._btn_style)
+		button.add_theme_stylebox_override("hover", main._btn_hover)
+	_layout_popup = PanelContainer.new()
+	_layout_popup.name = "ScreenLayoutPopup"
+	_layout_popup.position = Vector2(24, 340)
+	_layout_popup.custom_minimum_size = Vector2(1000, 88)
+	_layout_popup.add_theme_stylebox_override("panel", panel_bg)
+	_layout_popup.hide()
+	overlay.add_child(_layout_popup)
+	_preset_row = HBoxContainer.new()
+	_preset_row.name = "PresetRow"
+	_preset_row.add_theme_constant_override("separation", 10)
+	_preset_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_preset_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_layout_popup.add_child(_preset_row)
 
 	_tab_settings = _build_menu_tab(vbox, MenuSchema.get_tab(&"settings"))
 	_build_pcvr_advanced(_settings_scroll.get_child(0))
@@ -1515,28 +1560,46 @@ func build_ui():
 	_tab_settings.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_tab_settings.offset_top = 60.0
 	_tab_settings.offset_bottom = -SETTINGS_BOTTOM_MARGIN_PX
+	_pcvr_tabs = HBoxContainer.new()
+	_pcvr_tabs.name = "PCVRTabs"
+	_pcvr_tabs.position = Vector2(24, 80)
+	_pcvr_tabs.size = Vector2(main._ui_viewport_size.x - 48, 68)
+	_pcvr_tabs.alignment = BoxContainer.ALIGNMENT_CENTER
+	_pcvr_tabs.add_theme_constant_override("separation", 8)
+	_pcvr_tabs.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_tabs.hide()
+	overlay.add_child(_pcvr_tabs)
+	for title in ["Stream", "VR Apps"]:
+		var button := make_action_btn(title)
+		button.custom_minimum_size = Vector2(160, 44)
+		button.add_theme_font_size_override("font_size", 22)
+		_set_button_tooltip(button, "Configure XR stream quality." if title == "Stream" else "Browse installed Steam VR apps.")
+		_pcvr_tabs.add_child(button)
+		if title == "Stream":
+			_pcvr_stream_tab = button
+			button.pressed.connect(close_vr_apps)
+		else:
+			_pcvr_apps_tab = button
+			button.pressed.connect(open_vr_apps)
 	_pcvr_page = VBoxContainer.new()
 	_pcvr_page.name = "PCVRSettings"
 	_pcvr_page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_pcvr_page.offset_top = 76
+	_pcvr_page.offset_top = 148
 	_pcvr_page.offset_left = 24
 	_pcvr_page.offset_right = -24
-	_pcvr_page.offset_bottom = -24
+	_pcvr_page.offset_bottom = -16
 	_pcvr_page.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pcvr_page.add_theme_constant_override("separation", 4)
 	_pcvr_page.visible = false
 	overlay.add_child(_pcvr_page)
 	_pcvr_info = Label.new()
-	_pcvr_info.add_theme_font_size_override("font_size", 22)
+	_pcvr_info.add_theme_font_size_override("font_size", 18)
 	_pcvr_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_pcvr_info.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_pcvr_page.add_child(_pcvr_info)
-	var library_button := make_action_btn("VR Apps")
-	library_button.pressed.connect(open_vr_apps)
-	_set_button_tooltip(library_button, "Browse installed Steam VR apps.")
-	_pcvr_page.add_child(library_button)
+	_pcvr_info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_vr_library = preload("res://src/pcvr_app_library.gd").new()
 	_vr_library.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_vr_library.offset_top = 76
+	_vr_library.offset_top = 148
 	_vr_library.offset_left = 24; _vr_library.offset_right = -24; _vr_library.offset_bottom = -24
 	_vr_library.visible = false
 	_vr_library.setup(self)
@@ -1544,7 +1607,8 @@ func build_ui():
 	_pcvr_video = PCVRVideoSettings.new(main.get("device_is_quest3") == true)
 	_pcvr_video.load_from()
 	var video_row := HBoxContainer.new()
-	video_row.add_theme_constant_override("separation", 16)
+	video_row.add_theme_constant_override("separation", 12)
+	video_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_pcvr_page.add_child(video_row)
 	_pcvr_resolution_btn = make_option_btn("Resolution", "Host profile")
 	_pcvr_resolution_btn.pressed.connect(func(): _cycle_pcvr_video(true))
@@ -1555,7 +1619,8 @@ func build_ui():
 	_set_button_tooltip(_pcvr_bitrate_btn, "PCVR video target bitrate. Updates live during XR; status confirms when applied. Auto uses the current session resolution's default.")
 	video_row.add_child(_pcvr_bitrate_btn)
 	var post_row := HBoxContainer.new()
-	post_row.add_theme_constant_override("separation", 16)
+	post_row.add_theme_constant_override("separation", 12)
+	post_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_pcvr_page.add_child(post_row)
 	_pcvr_sharpen_btn = make_option_btn("Sharpen", "Off")
 	_set_button_tooltip(_pcvr_sharpen_btn, "Live OpenXR compositor sharpening, as used by WiVRn. Not an AI upscaler; may add halos. Requires runtime support.")
@@ -1572,14 +1637,18 @@ func build_ui():
 	_pcvr_exit_btn = make_action_btn("Exit PCVR")
 	_set_button_tooltip(_pcvr_exit_btn, "Stop the XR session and restore your desktop or welcome screen.")
 	_pcvr_exit_btn.pressed.connect(func(): main.pcvr_handover.request_stop("PCVR menu exit"))
-	_pcvr_page.add_child(_pcvr_exit_btn)
+	_pcvr_exit_btn.custom_minimum_size = Vector2(250, 132)
+	_pcvr_exit_btn.add_theme_font_size_override("font_size", 26)
+	_pcvr_exit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	video_row.add_child(_pcvr_exit_btn)
+	_pcvr_page.add_child(_pcvr_info)
 	var pcvr_space := Control.new()
 	pcvr_space.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	pcvr_space.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pcvr_page.add_child(pcvr_space)
 	_pcvr_status = Label.new()
 	_pcvr_status.name = "PCVRStatusBar"
-	_pcvr_status.add_theme_font_size_override("font_size", 20)
+	_pcvr_status.add_theme_font_size_override("font_size", 18)
 	_pcvr_status.add_theme_color_override("font_color", Color(1,1,1,0.6))
 	_pcvr_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_pcvr_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1587,6 +1656,7 @@ func build_ui():
 	_pcvr_page.add_child(_pcvr_status)
 	# Keep the real toolbar last among the panel's children so its drawing and
 	# hit testing stay above the scroll page.
+	overlay.move_child(_pcvr_tabs, overlay.get_child_count() - 1)
 	overlay.move_child(top_row, overlay.get_child_count() - 1)
 
 	main._ui_status_label = Label.new()
@@ -1881,17 +1951,19 @@ func _make_section_title(text: String) -> Label:
 
 # A button on a scrolling page acts on release rather than press, so a press
 # that turns into a drag can scroll the page without changing the setting.
-func _make_scroll_friendly(button: Button) -> void:
+func _make_scroll_friendly(button: Button, scroll: ScrollContainer = null) -> void:
+	if scroll == null: scroll = _settings_scroll
 	button.action_mode = BaseButton.ACTION_MODE_BUTTON_RELEASE
-	button.gui_input.connect(_on_scroll_drag_input)
+	button.gui_input.connect(_on_scroll_drag_input.bind(scroll))
 	# The pointer hover pass draws hover by rectangle; this keeps buttons
 	# scrolled out of view from lighting up or showing tooltips.
-	button.set_meta(&"nightfall_clip", _settings_scroll)
+	button.set_meta(&"nightfall_clip", scroll)
 
 # gui_input runs before the button's own handling, so on release the drag flag
 # is still set when _on_scroll_friendly_pressed() checks it.
-func _on_scroll_drag_input(event: InputEvent) -> void:
-	if not _settings_scroll:
+func _on_scroll_drag_input(event: InputEvent, scroll: ScrollContainer = null) -> void:
+	if scroll == null: scroll = _settings_scroll
+	if not scroll:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -1913,11 +1985,11 @@ func _on_scroll_drag_input(event: InputEvent) -> void:
 			# previous one stopped instead of jumping to an old absolute baseline.
 			var movement := _scroll_drag_pending_travel if _scroll_drag_pending_travel != 0.0 else step
 			_scroll_drag_pending_travel = 0.0
-			var bar := _settings_scroll.get_v_scroll_bar()
+			var bar := scroll.get_v_scroll_bar()
 			var maximum := maxi(int(ceil(bar.max_value - bar.page)), 0)
-			_settings_scroll.scroll_vertical = clampi(
-				_settings_scroll.scroll_vertical - int(movement), 0, maximum)
-			_settings_scroll.accept_event()
+			scroll.scroll_vertical = clampi(
+				scroll.scroll_vertical - int(movement), 0, maximum)
+			scroll.accept_event()
 
 func _on_scroll_friendly_pressed(callable: Callable) -> void:
 	if _scroll_dragged:
@@ -2148,4 +2220,5 @@ func is_temporary_status_active() -> bool:
 
 func set_disconnect_visible(vis: bool):
 	if main._ui_disconnect_btn:
-		main._ui_disconnect_btn.visible = vis
+		main._ui_disconnect_btn.visible = vis or _current_tab == PCVR_PAGE
+		main._ui_disconnect_btn.disabled = not vis

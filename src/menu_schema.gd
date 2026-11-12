@@ -54,7 +54,7 @@ static func get_tabs() -> Array:
 					_option(&"_ui_res_btn", "Resolution", "100%", "Choose the resolution requested from the host.", TARGET_SETTINGS, &"cycle_resolution"),
 					_option(&"_ui_fps_btn", "FPS", "60", "Choose the stream frame rate and matching headset refresh rate.", TARGET_SETTINGS, &"cycle_fps"),
 					_option(&"_ui_bitrate_btn", "Bitrate", "Auto", "Control stream bandwidth and image quality.", TARGET_SETTINGS, &"cycle_bitrate"),
-					_option(&"_ui_host_cursor_btn", "Host Cursor", "Off", "Show or hide the host operating system cursor when supported.", TARGET_SETTINGS, &"toggle_host_cursor"),
+					_option(&"_ui_crop_btn", "Crop", "Off", "Auto-detect black bars on the primary screen.", TARGET_SETTINGS, &"cycle_screen_crop"),
 				],
 			},
 			{
@@ -102,13 +102,16 @@ static func get_tabs() -> Array:
 					_option(&"_ui_brightness_btn", "Brightness", "+0%", "Adjust the overall image brightness.", TARGET_SETTINGS, &"cycle_brightness"),
 					_option(&"_ui_contrast_btn", "Contrast", "100%", "Adjust the difference between light and dark areas.", TARGET_SETTINGS, &"cycle_contrast"),
 					_option(&"_ui_gamma_btn", "Gamma", "100%", "Adjust midtone brightness without equally changing highlights.", TARGET_SETTINGS, &"cycle_gamma"),
+					_option(&"_ui_bezel_btn", "Bezel", "On", "Show or hide the frame around the screen.", TARGET_SCREEN, &"toggle_bezel"),
 				],
 			},
 			{
 				"node_name": &"PictureRow2",
 				"options": [
 					_option(&"_ui_sharpen_btn", "Sharpen", "Off", "Apply native runtime sharpening to the streamed image.", TARGET_SETTINGS, &"cycle_sharpen_mode"),
-					_option(&"_ui_bezel_btn", "Bezel", "On", "Show or hide the frame around the screen.", TARGET_SCREEN, &"toggle_bezel"),
+					_option(&"_ui_key_btn", "Colour Key", "Off", "Show your room through a solid background colour.", TARGET_SETTINGS, &"cycle_screen_key"),
+					_option(&"_ui_key_tolerance_btn", "Key Tolerance", "Medium", "Remove similar colours and compression fringes.", TARGET_SETTINGS, &"cycle_screen_key_tolerance"),
+					_option(&"_ui_host_background_btn", "Set Host Background", "Off", "Temporarily match the host wallpaper to Colour Key.", TARGET_SETTINGS, &"toggle_host_background"),
 				],
 			},
 		],
@@ -160,17 +163,8 @@ static func get_tabs() -> Array:
 				"node_name": &"SettingsDisplayRow",
 				"title": "Display",
 				"options": [
-					_option(&"_ui_crop_btn", "Crop", "Off", "Auto-detect black bars on the primary screen.", TARGET_SETTINGS, &"cycle_screen_crop"),
-					_option(&"_ui_key_btn", "Colour Key", "Off", "Show your room through a solid background colour.", TARGET_SETTINGS, &"cycle_screen_key"),
-					_option(&"_ui_key_tolerance_btn", "Key Tolerance", "Medium", "Remove similar colours and compression fringes.", TARGET_SETTINGS, &"cycle_screen_key_tolerance"),
 					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
-				],
-			},
-			{
-				"node_name": &"SettingsHostBackgroundRow",
-				"title": "Host Background",
-				"options": [
-					_option(&"_ui_host_background_btn", "Set Host Background", "Off", "Temporarily match the host wallpaper to Colour Key.", TARGET_SETTINGS, &"toggle_host_background"),
+					_option(&"_ui_host_cursor_btn", "Host Cursor", "Off", "Show or hide the host operating system cursor when supported.", TARGET_SETTINGS, &"toggle_host_cursor"),
 				],
 			},
 			{

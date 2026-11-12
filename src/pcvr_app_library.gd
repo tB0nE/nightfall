@@ -6,7 +6,6 @@ var offset := 0
 var total := 0
 var _status: Label
 var _grid: GridContainer
-var _page: Label
 var _icons: Dictionary = {}
 var _textures: Dictionary = {}
 var _cards: Array = []
@@ -14,7 +13,7 @@ var _launch_pending := false
 var _runtime_prompt: PanelContainer
 var _runtime_label: Label
 var _runtime_key := ""
-var _footer: HBoxContainer
+var _scroll: ScrollContainer
 var _runtime_install: Button
 
 func setup(ui) -> void:
@@ -23,9 +22,6 @@ func setup(ui) -> void:
 	var header := HBoxContainer.new()
 	header.add_theme_constant_override("separation", 12)
 	add_child(header)
-	var back: Button = ui.make_action_btn("Back")
-	back.pressed.connect(ui.close_vr_apps)
-	header.add_child(back)
 	var title := Label.new()
 	title.text = "VR Apps"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -33,28 +29,30 @@ func setup(ui) -> void:
 	title.add_theme_font_size_override("font_size", 30)
 	header.add_child(title)
 	var refresh: Button = ui.make_action_btn("Refresh")
+	controller._set_button_tooltip(refresh, "Refresh the installed VR app list.")
 	refresh.pressed.connect(refresh_apps)
 	header.add_child(refresh)
+	_scroll = ScrollContainer.new()
+	_scroll.name = "VRAppsScroll"
+	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_scroll.scroll_vertical_custom_step = 24.0
+	_scroll.scroll_deadzone = 1000000
+	_scroll.follow_focus = false
+	_scroll.clip_contents = false
+	controller._style_scroll_bar(_scroll.get_v_scroll_bar())
+	_scroll.get_v_scroll_bar().value_changed.connect(func(_v): _cull.call_deferred())
+	_scroll.get_v_scroll_bar().changed.connect(func(): _cull.call_deferred())
+	add_child(_scroll)
 	_grid = GridContainer.new()
+	_grid.name = "VRAppsGrid"
 	_grid.columns = 4
 	_grid.add_theme_constant_override("h_separation", 12)
-	_grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_child(_grid)
-	var footer := HBoxContainer.new()
-	_footer = footer
-	footer.add_theme_constant_override("separation", 12)
-	add_child(footer)
-	var previous: Button = ui.make_action_btn("Previous")
-	previous.pressed.connect(func(): offset = maxi(0, offset - 4); refresh_apps())
-	footer.add_child(previous)
-	_page = Label.new()
-	_page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_page.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.add_child(_page)
-	var next: Button = ui.make_action_btn("Next")
-	next.pressed.connect(func():
-		if offset + 4 < total: offset += 4; refresh_apps())
-	footer.add_child(next)
+	_grid.add_theme_constant_override("v_separation", 12)
+	_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_grid.mouse_filter = Control.MOUSE_FILTER_STOP
+	_grid.gui_input.connect(controller._on_scroll_drag_input.bind(_scroll))
+	_scroll.add_child(_grid)
 	_status = Label.new()
 	_status.add_theme_font_size_override("font_size", 20)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -91,14 +89,14 @@ func _show_runtime_prompt(key: String, game_name: String) -> void:
 	_runtime_key = key
 	_runtime_label.text = "%s requires SteamVR. Install it through Steam, then try again." % game_name
 	_grid.hide()
-	_footer.hide()
+	_scroll.hide()
 	_runtime_prompt.show()
 
 func _close_runtime_prompt() -> void:
 	_runtime_key = ""
 	_runtime_prompt.hide()
 	_grid.show()
-	_footer.show()
+	_scroll.show()
 
 func open_library() -> void:
 	var active = controller.main.welcome_screen.get_xr_control()
@@ -108,7 +106,16 @@ func open_library() -> void:
 		control.library_reply.connect(_reply)
 	refresh_apps()
 
+func _cull() -> void:
+	if _scroll and is_visible_in_tree(): controller._cull_outside(_grid, _scroll.get_global_rect())
+
 func refresh_apps() -> void:
+	offset = 0
+	total = 0
+	_cards.clear()
+	_icons.clear()
+	for node in _grid.get_children(): _grid.remove_child(node); node.queue_free()
+	_scroll.scroll_vertical = 0
 	_close_runtime_prompt()
 	_launch_pending = false
 	_status.text = "Loading installed VR apps…"
@@ -127,14 +134,17 @@ func _reply(value: Dictionary) -> void:
 	match str(value.get("action", "")):
 		"list":
 			if int(value.get("offset", -1)) != offset: return
-			_cards = value.get("apps", [])
+			var page: Array = value.get("apps", [])
+			_cards.append_array(page)
 			offset = int(value.get("offset", 0))
 			total = int(value.get("total", 0))
-			for node in _grid.get_children(): _grid.remove_child(node); node.queue_free()
-			_icons.clear()
-			for card in _cards:
+			for card in page:
 				if card is Dictionary and card.has_all(["key", "name", "source", "vr", "ready"]): _add_card(card)
-			_page.text = "%d–%d of %d" % [mini(offset + 1, total), mini(offset + 4, total), total]
+			offset += page.size()
+			if not page.is_empty() and offset < mini(total, 1000):
+				control.request_library("list", "", offset)
+			controller.refresh_ui_buttons()
+			_cull.call_deferred()
 			_status.text = "Choose an app to launch." if total > 0 else "No installed Steam VR apps found."
 		"art":
 			var key := str(value.get("key", ""))
@@ -169,6 +179,7 @@ func _add_card(card: Dictionary) -> void:
 	button.custom_minimum_size = Vector2(176, 210)
 	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_grid.add_child(button)
+	controller._make_scroll_friendly(button, _scroll)
 	var column := VBoxContainer.new()
 	column.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	column.offset_left = 8; column.offset_right = -8; column.offset_top = 8; column.offset_bottom = -8
@@ -209,7 +220,7 @@ func _add_card(card: Dictionary) -> void:
 	_icons[key] = icon
 	if _textures.has(key): _apply_icon(key, _textures[key])
 	else: control.request_library("art", key)
-	button.pressed.connect(func():
+	var activate := func():
 		if _launch_pending: return
 		if control.state == "prepared": _status.text = "Exit the current XR game before launching another app."
 		elif card.get("requires_steamvr", false): _show_runtime_prompt(key, str(card.name))
@@ -218,4 +229,5 @@ func _add_card(card: Dictionary) -> void:
 			_launch_pending = true
 			for tile in _grid.get_children(): tile.disabled = true
 			_status.text = "Starting " + str(card.name) + "…"
-			control.request_library("launch", key))
+			control.request_library("launch", key)
+	button.pressed.connect(controller._on_scroll_friendly_pressed.bind(activate))
