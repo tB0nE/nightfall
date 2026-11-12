@@ -121,3 +121,9 @@ Validation:
   This checks layout geometry, not headset appearance/comfort.
 - Updated release-optimized DEV APK installed in place on the Quest 3 and launched
   (PID 10251). All allocated ELF sections in the APK match the new native build.
+
+### Automatic crop follow-up
+
+Manual crop is now primary-only. Auto detection, sampling architecture, limits
+and acceptance checks are documented in
+[automatic-primary-screen-crop.md](automatic-primary-screen-crop.md).

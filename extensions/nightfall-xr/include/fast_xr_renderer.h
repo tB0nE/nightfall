@@ -151,6 +151,8 @@ public:
 	// Requests a tiny asynchronous sample of the final native left-eye image
 	// for the ambient-light layer. consume_ambient_sample() returns an empty
 	// array until a requested GPU readback has completed.
+	void request_crop_sample();
+	PackedByteArray consume_crop_sample();
 	void request_ambient_sample();
 	PackedByteArray consume_ambient_sample();
 
@@ -341,6 +343,18 @@ private:
 	std::mutex ambient_sample_result_mutex;
 	std::vector<uint8_t> ambient_sample_result;
 	bool ambient_sample_result_ready = false;
+	static constexpr int CROP_SAMPLE_WIDTH = 128;
+	static constexpr int CROP_SAMPLE_HEIGHT = 72;
+	static constexpr int CROP_SAMPLE_PBO_COUNT = 2;
+	GLuint crop_sample_texture = 0;
+	GLuint crop_sample_fbo = 0;
+	GLuint crop_sample_pbos[CROP_SAMPLE_PBO_COUNT]{};
+	GLsync crop_sample_fences[CROP_SAMPLE_PBO_COUNT]{};
+	int crop_sample_next_pbo = 0;
+	std::atomic<bool> crop_sample_requested{ false };
+	std::mutex crop_sample_result_mutex;
+	std::vector<uint8_t> crop_sample_result;
+	bool crop_sample_result_ready = false;
 
 	GLuint upsample_program = 0;
 	GLuint delayed_upsample_program = 0;
@@ -532,6 +546,8 @@ private:
 	bool ensure_depth_sync_ring();
 	uint32_t capture_depth_sync_frame(uint32_t p_oes_texture_id,
 			const float *p_tex_matrix);
+	void poll_crop_sample();
+	bool issue_crop_sample(uint32_t texture, const float *matrix, bool is_2d);
 	void poll_ambient_sample();
 	bool issue_ambient_sample();
 

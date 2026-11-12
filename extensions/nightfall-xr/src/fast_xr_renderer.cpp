@@ -34,6 +34,8 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_depth_refinement", "alignment", "cleanup"), &NightfallXrRenderer::set_depth_refinement);
 	ClassDB::bind_method(D_METHOD("upload_overlay", "pixels", "width", "height"), &NightfallXrRenderer::upload_overlay);
 	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &NightfallXrRenderer::set_overlay_visible);
+	ClassDB::bind_method(D_METHOD("request_crop_sample"), &NightfallXrRenderer::request_crop_sample);
+	ClassDB::bind_method(D_METHOD("consume_crop_sample"), &NightfallXrRenderer::consume_crop_sample);
 	ClassDB::bind_method(D_METHOD("request_ambient_sample"), &NightfallXrRenderer::request_ambient_sample);
 	ClassDB::bind_method(D_METHOD("consume_ambient_sample"), &NightfallXrRenderer::consume_ambient_sample);
 	ClassDB::bind_method(D_METHOD("get_warp_gpu_ms"), &NightfallXrRenderer::get_warp_gpu_ms);
@@ -264,6 +266,8 @@ void NightfallXrRenderer::set_depth_refinement(bool, bool) {}
 void NightfallXrRenderer::submit_frame(bool, uint32_t, uint32_t, uint32_t, PackedFloat32Array, float, float, bool, float, bool, bool, uint64_t, int, uint64_t, int, float, float, float, float, int) {}
 void NightfallXrRenderer::upload_overlay(PackedByteArray, int, int) {}
 void NightfallXrRenderer::set_overlay_visible(bool) {}
+void NightfallXrRenderer::request_crop_sample() {}
+PackedByteArray NightfallXrRenderer::consume_crop_sample() { return PackedByteArray(); }
 void NightfallXrRenderer::request_ambient_sample() {}
 PackedByteArray NightfallXrRenderer::consume_ambient_sample() { return PackedByteArray(); }
 float NightfallXrRenderer::get_warp_gpu_ms() { return 0.0f; }
