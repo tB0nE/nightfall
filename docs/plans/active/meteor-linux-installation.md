@@ -1,5 +1,9 @@
 # Meteor Linux installation and XR distribution
 
+> Current-status note (2026-11-12): this document retains dated implementation
+> checkpoints. The [current work queue](current-work.md) supersedes old
+> branch placement, release deadlines and unchecked acceptance statements.
+
 Branch: `feat/meteor-xr-streaming`. Started 26 October 2026.
 
 ## Intended installation

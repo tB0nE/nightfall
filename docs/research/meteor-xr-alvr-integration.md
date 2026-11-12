@@ -1,6 +1,6 @@
 # Meteor XR: pinned ALVR integration audit
 
-> Retired 2026-10-18. Current direction: [managed Monado runtime](../plans/active/meteor-xr-monado-spike.md).
+> Retired 2026-10-18. Current direction: [managed Monado runtime](../archive/plans/meteor-xr-monado-spike.md).
 > Our host driver was unregistered and both compositor files restored; see
 > [the new integration report](meteor-xr-monado-integration.md). This audit is historical.
 

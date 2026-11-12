@@ -4,15 +4,13 @@
 >
 > Original baseline: `main` after the v0.7.8 native-XR integration (`10a7426`)
 >
-> Current continuation: `refactor/linux-restoration-and-cleanup`, branched from
-> v0.7.10 `main` (`718122a`).
+> Current baseline: `main` after PR #81 (`5db3111`, 2026-11-12).
 >
-> Current checkpoint: Linux build restoration, Vulkan depth inference,
-> EdgePad Android quality tiers, profiling tools, and their documentation are
-> implemented and runtime-tested on this branch. Linux local capture remains
-> available as an explicit experiment, but normal Sunshine encode/decode is
-> the production default until the local path has a zero-copy presentation
-> implementation.
+> The old `refactor/linux-restoration-and-cleanup` work was merged and Linux
+> releases restored. Vulkan inference and EdgePad models are implemented, not
+> pending restoration work. Follow the [current work queue](current-work.md)
+> for platform acceptance and deferred experiments. Documentation/branch
+> housekeeping is being refreshed separately from behavioural refactors.
 
 ## Objective
 
@@ -109,8 +107,7 @@ behavioral refactors should be separate commits or pull requests.
 ### 7. Restore and validate Linux releases
 
 > Status: Build, packaging, CPU/Vulkan model smoke tests, AppImage export, and
-> WiVRN PCVR runtime validation are complete on
-> `refactor/linux-restoration-and-cleanup`. Linux depth timing is exposed in
+> WiVRN PCVR runtime validation are complete and merged. Linux depth timing is exposed in
 > the status bar, and the experimental same-machine capture path is opt-in via
 > `NIGHTFALL_ENABLE_LOCAL_CAPTURE=1` after its CPU conversion/upload cost was
 > found to limit a 2560x1440/120fps test near 80fps.

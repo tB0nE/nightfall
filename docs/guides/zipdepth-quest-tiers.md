@@ -247,7 +247,7 @@ bundle them:
 The exporter and comparison tools remain in `tools/export_zipdepth_gpu_safe.py`,
 `tools/convert_zipdepth.py`, and `tools/model_tester/`. Detailed profiling
 history is retained in
-`docs/plans/active/zipdepth-standard-direct-profiling.md`.
+`docs/archive/plans/zipdepth-standard-direct-profiling.md`.
 
 ## Next measurements
 

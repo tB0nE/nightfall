@@ -1,5 +1,9 @@
 # Nightfall Meteor: Windows
 
+> Current-status note (2026-11-12): this document retains dated implementation
+> checkpoints. The [current work queue](current-work.md) supersedes old
+> branch placement, release deadlines and unchecked acceptance statements.
+
 Current checkpoint (2026-11-04): bundled-host multi-monitor streaming, Moss
 through xrizer/Monado, and VRChat through the Meteor SteamVR driver have been
 physically tested on Quest. Audio is audible after increasing desktop volume;
@@ -35,9 +39,9 @@ Quest validation remains; working Monado/xrizer remains available.
 >
 > Date: 2026-10-05
 >
-> Related: [meteor-host-depth.md](meteor-host-depth.md) (host depth),
-> [meteor-appimage.md](meteor-appimage.md) (the Linux release this
-> mirrors), [meteor-microphone.md](meteor-microphone.md) (microphone).
+> Related: [meteor-host-depth.md](../../archive/plans/meteor-host-depth.md) (host depth),
+> [meteor-appimage.md](../../archive/plans/meteor-appimage.md) (the Linux release this
+> mirrors), [meteor-microphone.md](../../archive/plans/meteor-microphone.md) (microphone).
 >
 > Scope: Windows 10/11 x64 hosts with NVIDIA or AMD GPUs, running Sunshine,
 > Apollo, Vibepollo or Vibeshine. NVIDIA keeps NVDEC; AMD uses D3D11VA and
@@ -1002,7 +1006,7 @@ The Quest app needs no changes; it can't tell which OS Meteor runs on.
 ## The runtimes, as built on Linux
 
 The Windows release should match the Linux one
-([meteor-appimage.md](meteor-appimage.md)):
+([meteor-appimage.md](../../archive/plans/meteor-appimage.md)):
 
 | | What | Linux | Windows |
 | --- | --- | --- | --- |
@@ -1203,7 +1207,7 @@ doesn't bundle it without a distribution agreement with VB-Audio.
 
 ### Phase 4: tray, packaging and startup
 
-Mirror the Linux first-run work ([meteor-appimage.md](meteor-appimage.md),
+Mirror the Linux first-run work ([meteor-appimage.md](../../archive/plans/meteor-appimage.md),
 Phase 4):
 
 - **Tray:** replace `ksni` on Windows with a Win32 tray (the `tray-icon`
@@ -1252,7 +1256,7 @@ VDA) and the microphone, without touching a terminal.
 ## Decisions
 
 1. **GPU runtime distribution** (decided 2026-10-05, built on Linux
-   2026-10-07; see [meteor-appimage.md](meteor-appimage.md)):
+   2026-10-07; see [meteor-appimage.md](../../archive/plans/meteor-appimage.md)):
    - EdgePad runs on ncnn (Vulkan), shipped with Meteor; the release is
      about 30 MB and needs only the GPU driver.
    - VDA is downloaded from the tray on request: TensorRT's files straight

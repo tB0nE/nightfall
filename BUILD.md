@@ -357,11 +357,14 @@ bash tools/build_support/probe_monado_runtime.sh --build
 .build-cache/model-tester-venv/bin/python test/smoke_xr_layer_compatibility.py .
 ```
 
-See [the layer contract and test coverage](docs/plans/active/meteor-xr-layer-compatibility.md).
+See [the layer contract and test coverage](docs/archive/plans/meteor-xr-layer-compatibility.md).
 
-The current XR direction is a Meteor-managed Monado runtime, with WiVRn as a
-streaming reference. Linux is the immediate spike; Windows remains a required
-feasibility gate. See the [new plan](docs/plans/active/meteor-xr-monado-spike.md).
+Linux PCVR uses Meteor's managed Monado/xrizer runtime; Windows has its own
+packaged SteamVR integration. The commands below are development probes, not
+end-user installation steps. See the [current work queue](docs/plans/active/current-work.md)
+and [Windows workflow](docs/guides/meteor-windows-xr.md). The
+[original Monado spike](docs/archive/plans/meteor-xr-monado-spike.md) is retained
+as implementation history.
 
 ```bash
 bash tools/build_support/probe_monado_runtime.sh --build
@@ -590,7 +593,7 @@ bash tools/build_support/probe_alvr_client.sh --build
 checks its C++ ABI and exported symbols, and records artifact hashes. It does
 not install/register a SteamVR driver, change the active XR runtime, start
 SteamVR, add PCVR discovery, or bundle the library into the APK. See the
-[XR plan](docs/plans/active/meteor-xr-streaming-spike.md) and
+[XR plan](docs/archive/plans/meteor-xr-streaming-spike.md) and
 [integration audit](docs/research/meteor-xr-alvr-integration.md) before attempting
 the rendering bridge.
 

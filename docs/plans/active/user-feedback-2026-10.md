@@ -1,8 +1,12 @@
 # User feedback, October 2026
 
+> Current-status note (2026-11-12): this document retains dated implementation
+> checkpoints. The [current work queue](current-work.md) supersedes old
+> branch placement, release deadlines and unchecked acceptance statements.
+
 > Status: Active (2026-10-23). Feedback after v0.8.1 and the v0.8.2 browser
 > preview: GitHub issues, Reddit and chat. Branch placement follows
-> [v0.9-integration.md](v0.9-integration.md).
+> [v0.9-integration.md](../../archive/plans/v0.9-integration.md).
 
 ## Summary
 

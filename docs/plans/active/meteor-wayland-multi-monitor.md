@@ -1,5 +1,9 @@
 # Reuse Polaris's Wayland multi-monitor work
 
+> Current-status note (2026-11-12): this document retains dated implementation
+> checkpoints. The [current work queue](current-work.md) supersedes old
+> branch placement, release deadlines and unchecked acceptance statements.
+
 Status: initial KDE region-capture implementation built, 2026-10-28.
 Geometry tests and isolated KWin capture initialization pass. Real two-monitor
 Nightfall streaming is not yet accepted or deployed.
