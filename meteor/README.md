@@ -986,3 +986,22 @@ This is not a packaged LAN XR feature. See
 The separate opt-in `--xr-control-dev` command exercises authenticated network
 negotiation only. It cannot launch applications or stream LAN video. See the
 [control prototype contract](../docs/research/meteor-xr-control-protocol.md).
+
+### Temporary colour-key host wallpaper
+
+Nightfall's **Settings → Host Background → Set Host Background** is optional
+and off by default. With a desktop stream running and Colour Key enabled,
+Meteor temporarily sets a matching solid wallpaper. Turning either option off,
+disconnecting, or exiting Meteor restores the original. Manual wallpaper
+changes take precedence. After a crash, recovery runs when Meteor next starts.
+
+This uses the authenticated managed-control connection, not an open HTTP
+wallpaper endpoint. Both client and Meteor need this feature. It does not change
+application backgrounds, desktop icons, panels or shadows.
+
+KDE Plasma supports X11 and Wayland (verified locally); GNOME has a GSettings
+adapter. Linux requires system Python 3 and either `gdbus` (KDE) or `gsettings`
+(GNOME). Windows 11 uses its built-in wallpaper API through PowerShell; macOS
+uses AppKit for the currently visible Space on each screen. The GNOME, Windows
+and macOS adapters still require real-host acceptance tests. See
+[implementation and test notes](../docs/plans/active/host-colour-key-background.md).

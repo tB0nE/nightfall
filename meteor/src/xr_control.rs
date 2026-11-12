@@ -30,6 +30,7 @@ fn invalid(message: &str) -> io::Error {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Authenticate {},
+    HostBackground { color: String },
     Library {action:String, #[serde(default)] key:String, #[serde(default)] offset:u32},
     Offer { width: u32, height: u32, hz: u32 },
     OfferLong { width: u32, height: u32, hz: u32 },
@@ -129,6 +130,7 @@ impl Negotiation {
         }
         let long_run = matches!(&request, Request::OfferLong { .. });
         match request {
+            Request::HostBackground {..} => return Ok(self.reply(Some("background_unavailable"))),
             Request::Library {..} => return Ok(self.reply(Some("library_unavailable"))),
             Request::Authenticate {} => return Ok(self.reply(Some("already_authenticated"))),
             Request::Status {} => {}
@@ -400,6 +402,7 @@ async fn connection_supervised(
         #[cfg(not(windows))]
         {root.join("tools/meteor_vr_library.py").is_file()}
     });
+    let mut background = crate::host_background::Lease::new();
     let mut relay: Option<crate::xr_relay::Relay> = None;
     tokio::time::timeout(
         IO_TIMEOUT,
@@ -420,7 +423,12 @@ async fn connection_supervised(
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control idle timeout"))??;
         if negotiation.session.is_none() {negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;}
-        let mut reply = if let Request::Library {action,key,offset}=&request {
+        let mut reply = if let Request::HostBackground {color} = &request {
+            let mut reply = negotiation.reply(None);
+            let result = background.set(color).await;
+            reply.library = Some(serde_json::json!({"action":"host_background", "error":result.err(), "color":color}));
+            reply
+        } else if let Request::Library {action,key,offset}=&request {
             let mut reply=negotiation.reply(None);
             reply.library=Some(if action=="launch" && negotiation.session.is_some() {
                 serde_json::json!({"action":"launch","error":"Exit the current XR session before launching another app"})

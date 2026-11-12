@@ -2,6 +2,8 @@
 
 #include "fast_xr_renderer.h"
 #include "depth_refinement_shaders.h"
+#include "chroma_key_shader.h"
+#include <string>
 
 #include <chrono>
 #include <cmath>
@@ -55,6 +57,7 @@ static const char *FRAGMENT_SRC =
 		"#define NIGHTFALL_SAMPLER sampler2D\n"
 		"#endif\n"
 		"precision highp float;\n"
+		"// NIGHTFALL_CHROMA_KEY_INCLUDE\n"
 		"in vec2 v_plain;\n"
 		"uniform NIGHTFALL_SAMPLER u_texture;\n"
 		"uniform sampler2D u_depth;\n"
@@ -68,6 +71,8 @@ static const char *FRAGMENT_SRC =
 		"uniform float u_lowResWidth;\n"
 		"uniform float u_frameWidth;\n"
 		"uniform float u_debugSolid;\n"
+		"uniform vec4 u_screenCrop;\n"
+		"uniform vec4 u_screenKey;\n"
 		"uniform int u_stereoMode;\n"
 		"uniform int u_depthProcessStage;\n"
 		"#ifdef NIGHTFALL_PICTURE\n"
@@ -81,13 +86,14 @@ static const char *FRAGMENT_SRC =
 		"#endif\n"
 		"out vec4 fragColor;\n"
 		"void main() {\n"
+		"    vec2 displayUV = u_screenCrop.xy + v_plain * u_screenCrop.zw;\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
 		// DMap-Final shows the exact temporally-smoothed, normalized and
 		// production-upsampled depth texture consumed by the following warp.
 		// Keep it grayscale so it matches the offline temporal-depth evaluator
 		// and exposes subtle frame-to-frame changes without heatmap banding.
 		"    if (u_stereoMode == 7) {\n"
-		"        float finalDepth = texture(u_depth, v_plain).r;\n"
+		"        float finalDepth = texture(u_depth, displayUV).r;\n"
 		"        fragColor = vec4(vec3(finalDepth), 1.0);\n"
 		"        return;\n"
 		"    }\n"
@@ -96,27 +102,27 @@ static const char *FRAGMENT_SRC =
 		// opposite horizontal directions. Contrast is amplified 4x so the
 		// nearest-versus-linear sampling boundary is visible in-headset.
 		"    if (u_stereoMode == 12) {\n"
-		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        vec2 enc = texture(u_offsets, displayUV).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
 		"        if (u_eyeIndex >= 0.5) off = -off;\n"
 		"        float vis = clamp(0.5 + off * 4.0, 0.0, 1.0);\n"
 		"        fragColor = vec4(vec3(vis), 1.0);\n"
 		"        return;\n"
 		"    }\n"
-		"    float d = texture(u_depth, v_plain).r;\n"
-		"    vec2 tc = v_plain;\n"
+		"    float d = texture(u_depth, displayUV).r;\n"
+		"    vec2 tc = displayUV;\n"
 		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
 		"        int reach = int(ceil(abs(u_dispTexels)\n"
 		"                        * max(u_convergence, 1.0 - u_convergence))) + 2;\n"
-		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        vec2 enc = texture(u_offsets, displayUV).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
-		"        tc.x = v_plain.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
+		"        tc.x = displayUV.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
 		"        float h = 1.0 / u_frameWidth;\n"
 		"        for (int i = 0; i < 2 && u_depthProcessStage >= 5; i++) {\n"
-		"            float d0 = texture(u_depth, vec2(tc.x, v_plain.y)).a;\n"
-		"            float dm = texture(u_depth, vec2(tc.x - h, v_plain.y)).a;\n"
-		"            float dp = texture(u_depth, vec2(tc.x + h, v_plain.y)).a;\n"
-		"            float e = (tc.x - v_plain.x) + u_disparity * (d0 - u_convergence);\n"
+		"            float d0 = texture(u_depth, vec2(tc.x, displayUV.y)).a;\n"
+		"            float dm = texture(u_depth, vec2(tc.x - h, displayUV.y)).a;\n"
+		"            float dp = texture(u_depth, vec2(tc.x + h, displayUV.y)).a;\n"
+		"            float e = (tc.x - displayUV.x) + u_disparity * (d0 - u_convergence);\n"
 		"            float slope = 1.0 + u_disparity * (dp - dm) / (2.0 * h);\n"
 		"            if (abs(slope) < 0.25) {\n"
 		"                slope = 0.25;\n"
@@ -155,6 +161,13 @@ static const char *FRAGMENT_SRC =
 		"#else\n"
 		"    fragColor = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy);\n"
 		"#endif\n"
+		"    if (u_screenKey.a > 0.0) {\n"
+		"        vec3 key = u_screenKey.rgb;\n"
+		"#ifdef NIGHTFALL_PICTURE\n"
+		"        key = applyPicture(key);\n"
+		"#endif\n"
+		"        fragColor = nightfall_chroma_key(fragColor, key, u_screenKey.a);\n"
+		"    }\n"
 		"}\n";
 
 // Deliberately separate from FRAGMENT_SRC. A runtime HDR branch in the SDR
@@ -170,6 +183,7 @@ static const char *HDR_FRAGMENT_SRC =
 		"#define NIGHTFALL_SAMPLER sampler2D\n"
 		"#endif\n"
 		"precision highp float;\n"
+		"// NIGHTFALL_CHROMA_KEY_INCLUDE\n"
 		"precision highp int;\n"
 		"in vec2 v_plain;\n"
 		"uniform NIGHTFALL_SAMPLER u_texture;\n"
@@ -185,6 +199,8 @@ static const char *HDR_FRAGMENT_SRC =
 		"uniform float u_lowResWidth;\n"
 		"uniform float u_frameWidth;\n"
 		"uniform float u_debugSolid;\n"
+		"uniform vec4 u_screenCrop;\n"
+		"uniform vec4 u_screenKey;\n"
 		"uniform int u_stereoMode;\n"
 		"uniform int u_depthProcessStage;\n"
 		"uniform int u_colorTransfer;\n"
@@ -231,34 +247,35 @@ static const char *HDR_FRAGMENT_SRC =
 		"    return pow(max(c, vec3(0.0)), vec3(1.0 / u_gamma));\n"
 		"}\n"
 		"void main() {\n"
+		"    vec2 displayUV = u_screenCrop.xy + v_plain * u_screenCrop.zw;\n"
 		"    if (u_debugSolid > 0.5) { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }\n"
 		"    if (u_stereoMode == 7) {\n"
-		"        float finalDepth = texture(u_depth, v_plain).r;\n"
+		"        float finalDepth = texture(u_depth, displayUV).r;\n"
 		"        fragColor = vec4(vec3(finalDepth), 1.0);\n"
 		"        return;\n"
 		"    }\n"
 		"    if (u_stereoMode == 12) {\n"
-		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        vec2 enc = texture(u_offsets, displayUV).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
 		"        if (u_eyeIndex >= 0.5) off = -off;\n"
 		"        float vis = clamp(0.5 + off * 4.0, 0.0, 1.0);\n"
 		"        fragColor = vec4(vec3(vis), 1.0);\n"
 		"        return;\n"
 		"    }\n"
-		"    float d = texture(u_depth, v_plain).r;\n"
-		"    vec2 tc = v_plain;\n"
+		"    float d = texture(u_depth, displayUV).r;\n"
+		"    vec2 tc = displayUV;\n"
 		"    if (u_depthProcessStage >= 4 && u_occlusion > 0.5) {\n"
 		"        int reach = int(ceil(abs(u_dispTexels)\n"
 		"                        * max(u_convergence, 1.0 - u_convergence))) + 2;\n"
-		"        vec2 enc = texture(u_offsets, v_plain).rg;\n"
+		"        vec2 enc = texture(u_offsets, displayUV).rg;\n"
 		"        float off = (u_eyeIndex < 0.5 ? enc.r : enc.g) - 0.5;\n"
-		"        tc.x = v_plain.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
+		"        tc.x = displayUV.x + off * 2.0 * float(reach) / u_lowResWidth;\n"
 		"        float h = 1.0 / u_frameWidth;\n"
 		"        for (int i = 0; i < 2 && u_depthProcessStage >= 5; i++) {\n"
-		"            float d0 = texture(u_depth, vec2(tc.x, v_plain.y)).a;\n"
-		"            float dm = texture(u_depth, vec2(tc.x - h, v_plain.y)).a;\n"
-		"            float dp = texture(u_depth, vec2(tc.x + h, v_plain.y)).a;\n"
-		"            float e = (tc.x - v_plain.x) + u_disparity * (d0 - u_convergence);\n"
+		"            float d0 = texture(u_depth, vec2(tc.x, displayUV.y)).a;\n"
+		"            float dm = texture(u_depth, vec2(tc.x - h, displayUV.y)).a;\n"
+		"            float dp = texture(u_depth, vec2(tc.x + h, displayUV.y)).a;\n"
+		"            float e = (tc.x - displayUV.x) + u_disparity * (d0 - u_convergence);\n"
 		"            float slope = 1.0 + u_disparity * (dp - dm) / (2.0 * h);\n"
 		"            if (abs(slope) < 0.25) slope = 0.25;\n"
 		"            tc.x -= clamp(e / slope, -4.0 * h, 4.0 * h);\n"
@@ -275,6 +292,7 @@ static const char *HDR_FRAGMENT_SRC =
 		"    }\n"
 		"    vec3 encoded = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy).rgb;\n"
 		"    fragColor = vec4(applyPicture(hdrToSdr(encoded)), 1.0);\n"
+		"    if (u_screenKey.a > 0.0) fragColor = nightfall_chroma_key(fragColor, applyPicture(u_screenKey.rgb), u_screenKey.a);\n"
 		"}\n";
 
 static float pq_decode_lut(float e) {
@@ -614,6 +632,11 @@ static bool check_xr(XrResult p_res, const char *p_what) {
 }
 
 static GLuint compile_shader(GLenum p_type, const char *p_src, const char *p_defines = nullptr) {
+	std::string expanded(p_src);
+	const std::string marker = "// NIGHTFALL_CHROMA_KEY_INCLUDE";
+	const auto position = expanded.find(marker);
+	if (position != std::string::npos) expanded.replace(position, marker.size(), NIGHTFALL_CHROMA_KEY_SHADER);
+	p_src = expanded.c_str();
 	GLuint shader = glCreateShader(p_type);
 	if (p_defines != nullptr) {
 		// GLSL requires #version to be the first directive. Insert optional
@@ -949,6 +972,8 @@ bool NightfallXrRenderer::init_gl() {
 		uniforms.low_res_width = glGetUniformLocation(program, "u_lowResWidth");
 		uniforms.frame_width = glGetUniformLocation(program, "u_frameWidth");
 		uniforms.debug_solid = glGetUniformLocation(program, "u_debugSolid");
+		uniforms.screen_crop = glGetUniformLocation(program, "u_screenCrop");
+		uniforms.screen_key = glGetUniformLocation(program, "u_screenKey");
 		uniforms.stereo_mode = glGetUniformLocation(program, "u_stereoMode");
 		uniforms.depth_process_stage = glGetUniformLocation(program, "u_depthProcessStage");
 		glUseProgram(program);
@@ -1956,6 +1981,8 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	glUniform1f(uniforms.low_res_width, (float)upsample_width);
 	glUniform1f(uniforms.frame_width, (float)video_width);
 	glUniform1i(uniforms.stereo_mode, pending_stereo_mode);
+	glUniform4fv(uniforms.screen_crop, 1, display_crop);
+	glUniform4f(uniforms.screen_key, display_key.r, display_key.g, display_key.b, display_key.a);
 	glUniform1i(uniforms.depth_process_stage, p_depth_process_stage);
 
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, VERTEX_DATA);
@@ -2298,7 +2325,8 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 			memset(cylinder, 0, sizeof(*cylinder));
 			cylinder->type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
 			cylinder->next = layer_next;
-			cylinder->eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
+			cylinder->layerFlags = display_key.a > 0.0 ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT : 0;
+		cylinder->eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
 			cylinder->subImage = sub_image;
 			cylinder->space = space;
 			cylinder->pose = pose;
@@ -2319,6 +2347,7 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		memset(quad, 0, sizeof(*quad));
 		quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 		quad->next = layer_next;
+		quad->layerFlags = display_key.a > 0.0 ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT : 0;
 		quad->eyeVisibility = eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT;
 		quad->subImage = sub_image;
 		quad->space = space;
@@ -2383,6 +2412,7 @@ void NightfallXrRenderer::set_secondary_screens(Array p_screens) {
 		screen.sort_order = d.get("sort_order", 1);
 		Vector2i pixels = d.get("pixels", Vector2i());
 		PackedFloat32Array crop = d.get("crop", PackedFloat32Array());
+		PackedFloat32Array shown = d.get("display_crop", PackedFloat32Array());
 		if (pixels.x <= 0 || pixels.y <= 0 || pixels.x > 8192 || pixels.y > 8192 || crop.size() != 4) {
 			continue;
 		}
@@ -2390,6 +2420,7 @@ void NightfallXrRenderer::set_secondary_screens(Array p_screens) {
 		screen.pixel_height = pixels.y;
 		for (int k = 0; k < 4; k++) {
 			screen.crop[k] = crop[k];
+			if (shown.size()==4) screen.display_crop[k]=shown[k];
 		}
 		screens.push_back(screen);
 	}
@@ -2435,6 +2466,7 @@ bool NightfallXrRenderer::apply_pending_secondaries() {
 			for (size_t i = 0; i < wanted.size(); i++) {
 				SecondaryScreen &screen = secondaries[i];
 				memcpy(screen.crop, wanted[i].crop, sizeof(screen.crop));
+				memcpy(screen.display_crop, wanted[i].display_crop, sizeof(screen.display_crop));
 				screen.transform = wanted[i].transform;
 				screen.width = wanted[i].width;
 				screen.height = wanted[i].height;
@@ -2620,6 +2652,8 @@ void NightfallXrRenderer::render_secondary_screens(uint32_t p_oes_texture_id, co
 		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screen.images[image_index].image, 0);
 		float matrix[16];
 		crop_tex_matrix(p_tex_matrix, screen.crop, matrix);
+		glUniform4fv(uniforms.screen_crop, 1, screen.display_crop);
+		glUniform4f(uniforms.screen_key, display_key.r, display_key.g, display_key.b, display_key.a);
 		glUniformMatrix4fv(uniforms.texmatrix, 1, GL_FALSE, matrix);
 		glUniform1f(uniforms.frame_width, (float)screen.pixel_width);
 		const int out_w = screen.pixel_width + 16, out_h = screen.pixel_height + 16;
@@ -2678,6 +2712,7 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 		memset(cylinder, 0, sizeof(*cylinder));
 		cylinder->type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
 		cylinder->next = layer_next;
+		cylinder->layerFlags = display_key.a > 0.0 ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT : 0;
 		cylinder->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 		cylinder->subImage = sub_image;
 		cylinder->space = p_space;
@@ -2691,7 +2726,8 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 	memset(quad, 0, sizeof(*quad));
 	quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
 	quad->next = layer_next;
-	quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	quad->layerFlags = display_key.a > 0.0 ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT : 0;
+		quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
 	quad->subImage = sub_image;
 	quad->space = p_space;
 	quad->pose = pose;
@@ -2744,6 +2780,12 @@ float NightfallXrRenderer::get_warp_gpu_ms() {
 	// the reference, not required for the double-wide-swapchain fps win);
 	// main.gd's existing stats overlay already measures app fps.
 	return 0.0f;
+}
+
+void NightfallXrRenderer::set_screen_options(PackedFloat32Array p_crop, Color p_key) {
+
+	if (p_crop.size()==4 && p_crop[2]>0 && p_crop[3]>0) for (int i=0;i<4;i++) display_crop[i]=p_crop[i];
+	display_key=p_key;
 }
 
 #endif // __ANDROID__

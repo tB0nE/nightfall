@@ -48,6 +48,8 @@ namespace godot {
 // examples use is a different, unrelated list and NOT what feeds end_frame().
 class NightfallXrRenderer : public OpenXRExtensionWrapperExtension {
 	GDCLASS(NightfallXrRenderer, OpenXRExtensionWrapperExtension)
+	static std::mutex reference_change_mutex;
+	static std::vector<Dictionary> reference_changes;
 
 public:
 	NightfallXrRenderer();
@@ -103,6 +105,10 @@ public:
 	// part: p_crop is (x, y, w, h) in [0, 1] of the frame, top-left origin. An empty array
 	// means the whole frame.
 	void set_primary_crop(PackedFloat32Array p_crop);
+	void set_screen_options(PackedFloat32Array p_crop, Color p_key);
+	Array consume_reference_space_changes();
+	static void track_reference_space_event(const void *p_event);
+	static void clear_reference_space_changes();
 	// The other screens, each a mono layer drawn from its own part of the frame. Each entry:
 	// transform (Transform3D, the layer's pose; a cylinder's centre for curvature > 0),
 	// width/height (metres), curvature (int), radius, central_angle, sort_order (int),
@@ -301,6 +307,8 @@ private:
 		GLint low_res_width = -1;
 		GLint frame_width = -1;
 		GLint debug_solid = -1;
+		GLint screen_crop = -1;
+		GLint screen_key = -1;
 		GLint stereo_mode = -1;
 		GLint depth_process_stage = -1;
 		GLint color_transfer = -1;
@@ -318,6 +326,8 @@ private:
 	GLuint hdr_lut_texture = 0;
 	GLuint warp_fbo = 0;
 	bool debug_solid_color = false;
+	float display_crop[4] = {0, 0, 1, 1};
+	Color display_key = Color(0, 0, 0, 0);
 
 	static constexpr int AMBIENT_SAMPLE_WIDTH = 32;
 	static constexpr int AMBIENT_SAMPLE_HEIGHT = 32;
@@ -535,6 +545,7 @@ private:
 		XrSwapchainImageOpenGLESKHR *images = nullptr;
 		int pixel_width = 0, pixel_height = 0;
 		float crop[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+		float display_crop[4] = {0, 0, 1, 1};
 		Transform3D transform;
 		float width = 1.0f, height = 1.0f;
 		int curvature = 0;

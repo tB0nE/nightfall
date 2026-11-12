@@ -1,6 +1,13 @@
 extends Node3D
 
 var settings: AppSettings = AppSettings.new()
+var screen_image_options: ScreenImageOptions
+var workspace_stability: WorkspaceStability
+var _ui_crop_btn: Button
+var _ui_host_background_btn: Button
+var _ui_key_btn: Button
+var _ui_key_tolerance_btn: Button
+
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()
 var pcvr_test = preload("res://src/pcvr_test_controller.gd").new(self)
 var pcvr_handover = preload("res://src/pcvr_workspace_handover.gd").new(self)
@@ -1555,6 +1562,8 @@ func _on_session_phase_changed(previous: int, current: int) -> void:
 		ui_controller.update_screen_sources()
 
 func _init_modules():
+	screen_image_options = ScreenImageOptions.new(self)
+	workspace_stability = WorkspaceStability.new(self)
 	stream_manager = StreamManager.new(self)
 	xr_interaction = XRInteraction.new(self)
 	input_handler = InputHandler.new(self)
@@ -2373,6 +2382,8 @@ func primary_media_size() -> Vector2i:
 	return Vector2i(stream_backend.get_video_width(), stream_backend.get_video_height())
 
 func _process(delta):
+	if workspace_stability: workspace_stability.process()
+	if screen_image_options and screen_sources: screen_image_options.process()
 	if _startup_ready and is_xr_active: _process_startup_hand_fallback(delta)
 	if _startup_ready and controller_mapper: controller_mapper.update_available_hands(delta)
 	if welcome_screen: welcome_screen.process_auto_xr(delta)

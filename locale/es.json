@@ -229,5 +229,13 @@
 	"High Refresh Rates": "Tasas de refresco altas",
 	"Offer 200 and 207 Hz. They can glitch the headset.": "Ofrece 200 y 207 Hz. Pueden causar fallos en el visor.",
 	"PT Fade": "Atenuar PT",
-	"Darken your surroundings in passthrough so the screen stands out.": "Oscurece tu entorno en passthrough para que la pantalla destaque."
+	"Darken your surroundings in passthrough so the screen stands out.": "Oscurece tu entorno en passthrough para que la pantalla destaque.",
+	"Colour Key": "Colour Key",
+	"Key Tolerance": "Key Tolerance",
+	"Crop black bars; keep the stream resolution unchanged.": "Crop black bars; keep the stream resolution unchanged.",
+	"Show your room through a solid background colour.": "Show your room through a solid background colour.",
+	"Remove similar colours and compression fringes.": "Remove similar colours and compression fringes.",
+	"Host Background": "Host Background",
+	"Set Host Background": "Set Host Background",
+	"Temporarily match the host wallpaper to Colour Key.": "Temporarily match the host wallpaper to Colour Key."
 }

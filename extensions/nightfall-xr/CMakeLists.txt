@@ -104,6 +104,13 @@ endif()
 
 add_library(${LIBNAME} SHARED)
 
+# Keep the Android/GLES and Godot chroma-key implementations identical.
+set(NIGHTFALL_CHROMA_KEY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../../src/shaders/chroma_key.gdshaderinc")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${NIGHTFALL_CHROMA_KEY_FILE}")
+file(READ "${NIGHTFALL_CHROMA_KEY_FILE}" NIGHTFALL_CHROMA_KEY_SOURCE)
+configure_file(include/chroma_key_shader.h.in "${CMAKE_CURRENT_BINARY_DIR}/chroma_key_shader.h" @ONLY)
+target_include_directories(${LIBNAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
 option(NIGHTFALL_PCVR_ALVR "Enable the pinned developer PCVR decoder bridge" OFF)
 set(NIGHTFALL_ALVR_ARTIFACTS "" CACHE PATH "Verified ALVR probe artifacts")
 if(ANDROID AND NIGHTFALL_PCVR_ALVR)

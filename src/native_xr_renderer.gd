@@ -186,6 +186,9 @@ func refresh() -> void:
 	if draws_secondary_screens():
 		var primary_crop: PackedFloat32Array = primary_part.get("crop", PackedFloat32Array())
 		renderer.set_primary_crop(primary_crop)
+		if renderer.has_method("set_screen_options"):
+			var shown: Vector4 = main.primary_screen.display_crop
+			renderer.set_screen_options(PackedFloat32Array([shown.x, shown.y, shown.z, shown.w]), main.screen_image_options.key_color())
 		# On-device depth then sees the primary alone, matching what the primary draws.
 		var source = main.primary_capture_source()
 		if source and source.has_method("set_native_depth_capture_crop"):
@@ -273,6 +276,8 @@ func _sync_secondary_screens() -> void:
 		var entry := _layer_geometry(screen)
 		entry["pixels"] = part.pixels
 		entry["crop"] = part.crop
+		var shown: Vector4 = screen.display_crop
+		entry["display_crop"] = PackedFloat32Array([shown.x, shown.y, shown.z, shown.w])
 		screens.append(entry)
 		signature += "%s:%s;" % [screen.monitor_id, str(part.pixels)]
 	renderer.set_secondary_screens(screens)

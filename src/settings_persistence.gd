@@ -10,6 +10,10 @@ const PICTURE_SCALE_VALUES: Array = [50, 75, 100, 125, 150]
 const AUDIO_BOOST_VALUES: Array = [0, 3, 6, 9, 12, 15, 18, 21, 24]
 
 static func write_app(config: ConfigFile, settings: AppSettings) -> void:
+	config.set_value("screen", "crop_mode", settings.screen_crop_mode)
+	config.set_value("screen", "key_mode", settings.screen_key_mode)
+	config.set_value("screen", "host_background", settings.screen_host_background)
+	config.set_value("screen", "key_tolerance", settings.screen_key_tolerance)
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
 	config.set_value("browser", "resolution", settings.browser_resolution)
 	config.set_value("screen", "bezel", settings.bezel_enabled)
@@ -48,6 +52,10 @@ static func read_app(
 		settings: AppSettings,
 		passthrough_supported: bool,
 		sharpen_choices: Array) -> Dictionary:
+	settings.screen_crop_mode = clampi(int(config.get_value("screen", "crop_mode", 0)), 0, 5)
+	settings.screen_host_background = bool(config.get_value("screen", "host_background", false))
+	settings.screen_key_mode = clampi(int(config.get_value("screen", "key_mode", 0)), 0, 3)
+	settings.screen_key_tolerance = clampi(int(config.get_value("screen", "key_tolerance", 1)), 0, 2)
 	settings.bezel_enabled = config.get_value(
 		"screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
 	var browser_resolution = config.get_value("browser", "resolution", AppSettings.DEFAULT_BROWSER_RESOLUTION)

@@ -21,6 +21,13 @@ uniform int color_matrix_type = 1;
 uniform int color_range = 0;
 uniform float blur_scale = 1.0;
 
+uniform vec4 screen_crop = vec4(0.0, 0.0, 1.0, 1.0);
+uniform vec4 screen_key = vec4(0.0);
+#ifdef NIGHTFALL_CHROMA_KEY
+#include "res://src/shaders/chroma_key.gdshaderinc"
+#endif
+
+
 uniform vec4 uv_region = vec4(0.0, 0.0, 1.0, 1.0);
 uniform vec2 tile_inset = vec2(0.002);
 
@@ -234,7 +241,7 @@ vec3 filtered_stream(vec2 uv) {
 }
 
 void fragment() {
-	vec2 tile_uv = UV;
+	vec2 tile_uv = screen_crop.xy + UV * screen_crop.zw;
 
 	if (stereo_mode == 1) {
 		tile_uv = (int(VIEW_INDEX) == 0)
@@ -396,4 +403,13 @@ void fragment() {
 		// heatmap, no processing at all.
 		ALBEDO = texture(depth_guide_texture, uv).rgb;
 	}
+#ifdef NIGHTFALL_CHROMA_KEY
+	ALPHA = 1.0;
+	if (stereo_mode != 7 && stereo_mode != 8 && stereo_mode != 9 && stereo_mode != 12) {
+		vec4 keyed = nightfall_chroma_key(vec4(ALBEDO, 1.0), apply_picture(screen_key.rgb), screen_key.a);
+		ALBEDO = keyed.rgb;
+		ALPHA = keyed.a;
+	}
+#endif
+
 }

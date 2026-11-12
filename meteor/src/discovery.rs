@@ -44,6 +44,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         "version": env!("METEOR_VERSION"),
         "protocol": PROTOCOL_VERSION,
         "mode": "proxy",
+        "host_background": {"supported": cfg!(any(target_os = "linux", windows, target_os = "macos")), "protocol": 1},
         "sunshine": sunshine,
         "ports": ports,
     });

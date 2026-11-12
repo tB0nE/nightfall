@@ -8,11 +8,6 @@ var _tab_display: Control
 var _tab_stream: Control
 var _tab_control: Control
 var _tab_monitors: Control
-var _screen_source_status: Label
-var _open_browser_btn: Button
-var _close_browser_btn: Button
-var _browser_resolution_btn: Button
-var _browser_screens_btn: Button
 var _tab_ai3d: Control
 var _tab_picture: Control
 var _tab_settings: Control
@@ -643,64 +638,17 @@ func update_ambient_btn_state():
 		main._ui_ambient_color_btn.disabled = color_disabled
 		main._ui_ambient_color_btn.modulate.a = 0.3 if color_disabled else 1.0
 
-func _build_screen_sources(parent: VBoxContainer) -> void:
-	_screen_source_status = Label.new()
-	_screen_source_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_screen_source_status.add_theme_font_size_override("font_size", 28)
-	_screen_source_status.custom_minimum_size.y = 50
-	_screen_source_status.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 12)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	parent.add_child(row)
-	row.add_child(_screen_source_status)
-	_open_browser_btn = make_action_btn("Open Browser")
-	_set_button_tooltip(_open_browser_btn, "Open a browser on the primary screen without a PC.")
-	_open_browser_btn.button_down.connect(func():
-		main.screen_sources.choose_source(ScreenContentTab.BROWSER)
-		update_screen_sources())
-	row.add_child(_open_browser_btn)
-	_close_browser_btn = make_action_btn("Close Browser")
-	_set_button_tooltip(_close_browser_btn, "Close the browser tab and return to the welcome screen.")
-	_close_browser_btn.button_down.connect(func():
-		main.screen_sources.choose_source(ScreenContentTab.STREAM)
-		update_screen_sources())
-	row.add_child(_close_browser_btn)
-	_browser_resolution_btn = make_option_btn("Browser Res", "1080p")
-	_set_button_tooltip(_browser_resolution_btn, "Browser rendering resolution: 1080p for performance, 1440p for sharper detail. Close the browser before changing this setting; it applies when reopened. Video services choose their own streaming resolution.")
-	_browser_resolution_btn.button_down.connect(func():
-		if main.browser_prototype.active or main.browser_prototype.closing:
-			return
-		main.settings.browser_resolution = (main.settings.browser_resolution + 1) % 2
-		main.state_manager.save_state()
-		update_screen_sources())
-	row.add_child(_browser_resolution_btn)
-	update_screen_sources()
-
 func update_screen_sources() -> void:
 	# Browsers use the same layout/preset slots as captured monitors.
 	if main.screen_sources != null:
 		main.settings_controller._clear_staged_preset_if_mismatched()
 		update_monitor_tab()
-	if _open_browser_btn == null or main.screen_sources == null:
-		return
-	var browser_active: bool = main.browser_prototype != null and main.browser_prototype.active
-	_open_browser_btn.disabled = browser_active or not main.screen_sources.can_open_browser()
-	_close_browser_btn.disabled = not browser_active
-	if _browser_resolution_btn:
-		update_option_btn(_browser_resolution_btn, "1440p" if main.settings.browser_resolution == 1 else "1080p")
-		_browser_resolution_btn.disabled = browser_active or main.browser_prototype.closing
-	var source := "Browser" if browser_active else ("PC Stream" if main.is_streaming else "Welcome")
-	_screen_source_status.text = Localization.t("Screen 1: %s") % Localization.t(source)
 
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
 	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
 	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
-	if _browser_screens_btn:
-		update_option_btn(_browser_screens_btn, "%d" % main.settings_controller.browser_screen_count())
 	update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
@@ -1484,7 +1432,6 @@ func build_ui():
 	_tab_monitors.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_tab_monitors.visible = false
 	vbox.add_child(_tab_monitors)
-	_build_screen_sources(_tab_monitors)
 	# Screens extends the existing monitor UI; keep its layout controls visible.
 	# Host-specific capability checks still apply to PC monitor creation.
 	var legacy_monitors := VBoxContainer.new()
@@ -1508,10 +1455,6 @@ func build_ui():
 	main._ui_virtual_monitors_btn = make_compact_option_btn("Virtual", "0")
 	_set_button_tooltip(main._ui_virtual_monitors_btn, "Choose how many virtual monitors are created.")
 	mon_row1.add_child(main._ui_virtual_monitors_btn)
-	_browser_screens_btn = make_compact_option_btn("Browsers", "0")
-	_browser_screens_btn.disabled = true
-	_set_button_tooltip(_browser_screens_btn, "Open browser screens. Add or close browser screens using their screen menus.")
-	mon_row1.add_child(_browser_screens_btn)
 
 	var mon_gap1 = Control.new()
 	mon_gap1.custom_minimum_size = Vector2(0, 10)

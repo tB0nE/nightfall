@@ -9,6 +9,11 @@ var curvature: int = 2
 var bezel_mesh: MeshInstance3D = null
 var corner_handles: Array = []
 
+var display_crop := Vector4(0, 0, 1, 1)
+
+func display_content_uv(uv: Vector2) -> Vector2:
+	return ScreenImageOptions.content_uv(uv, display_crop)
+
 var uv_region: Vector4 = Vector4(0.0, 0.0, 1.0, 1.0)
 var monitor: ScreenLayout.MonitorSpec = null
 var content_tabs: ScreenContentTabs = ScreenContentTabs.new()
@@ -470,12 +475,12 @@ func set_collision_curved(verts: PackedVector3Array, indices: PackedInt32Array):
 
 func resize_to_aspect(w: int, h: int):
 	var aspect = float(w) / float(h)
-	var new_w = mesh_size.x
+	var new_w = mesh_size.x / maxf(display_crop.z, 0.001)
 	var new_h = new_w / aspect
 	if new_h < 0.4:
 		new_h = 0.4
 		new_w = new_h * aspect
-	mesh_size = Vector2(new_w, new_h)
+	mesh_size = Vector2(new_w * display_crop.z, new_h * display_crop.w)
 	if curvature == 0:
 		mesh.size = mesh_size
 		set_collision_flat()

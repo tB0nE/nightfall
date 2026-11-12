@@ -1,0 +1,5 @@
+#pragma once
+// Generated from the same shader include that Godot uses.
+static constexpr const char *NIGHTFALL_CHROMA_KEY_SHADER = R"NIGHTFALL_CHROMA(
+@NIGHTFALL_CHROMA_KEY_SOURCE@
+)NIGHTFALL_CHROMA";

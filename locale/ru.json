@@ -229,5 +229,13 @@
 	"High Refresh Rates": "Высокая частота обновления",
 	"Offer 200 and 207 Hz. They can glitch the headset.": "Предлагает 200 и 207 Гц. Они могут вызывать сбои шлема.",
 	"PT Fade": "Затемнение PT",
-	"Darken your surroundings in passthrough so the screen stands out.": "Затемняет окружение в passthrough, чтобы экран выделялся."
+	"Darken your surroundings in passthrough so the screen stands out.": "Затемняет окружение в passthrough, чтобы экран выделялся.",
+	"Colour Key": "Colour Key",
+	"Key Tolerance": "Key Tolerance",
+	"Crop black bars; keep the stream resolution unchanged.": "Crop black bars; keep the stream resolution unchanged.",
+	"Show your room through a solid background colour.": "Show your room through a solid background colour.",
+	"Remove similar colours and compression fringes.": "Remove similar colours and compression fringes.",
+	"Host Background": "Host Background",
+	"Set Host Background": "Set Host Background",
+	"Temporarily match the host wallpaper to Colour Key.": "Temporarily match the host wallpaper to Colour Key."
 }
