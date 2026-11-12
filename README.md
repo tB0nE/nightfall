@@ -14,7 +14,7 @@ through Nightfall Meteor.
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge&color=4c5265&labelColor=1a1a2e)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/tB0nE/nightfall?style=for-the-badge&color=4ade80&labelColor=1a1a2e&label=latest)](https://github.com/tB0nE/nightfall/releases/latest)
 
-[Features](#features) · [What runs where](#what-runs-where) · [Getting started](#getting-started) · [Controls](#controls) · [Building](#building) · [Donate](#donate) · [License](#license)
+[Features](#features) · [What runs where](#what-runs-where) · [Getting started](#getting-started) · [Game compatibility](docs/guides/game-compatibility.md) · [Controls](#controls) · [Building](#building) · [Donate](#donate) · [License](#license)
 
 </div>
 
@@ -131,10 +131,13 @@ lower resolution ceiling and less performance headroom, particularly when AI
 3. In Nightfall, select your PC (it is found automatically) and press **Connect**
 4. On the first connection, compare the PIN shown in the headset with the one
    in Meteor's pop-up on the PC, and approve it
-5. The stream starts automatically. Open the **Monitors** tab to add your other
+5. The stream starts automatically. Open the **Screens** tab to add your other
    monitors or virtual ones, and **VR Apps** to launch PC VR games
 
 Use the same version of Nightfall and Meteor; releases share version numbers.
+
+For PCVR test results, game-specific launch settings and motion-controller mod
+requirements, see the [game compatibility guide](docs/guides/game-compatibility.md).
 
 ### PC: with another GameStream host
 

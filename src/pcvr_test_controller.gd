@@ -107,7 +107,9 @@ func process_standby(delta: float) -> void:
 		main._log("[PCVR-STANDBY] Native resources drained; desktop unchanged")
 		return
 	if not _standby_stopping and native_state == "failed":
-		main._log("[PCVR-STANDBY] Stop reason=native failure elapsed=%.1fs" % _standby_elapsed)
+		main._log("[PCVR-STANDBY] Stop reason=native failure elapsed=%.1fs error=%s receiver=%s frames=%s counts=%s" % [
+			_standby_elapsed, str(snapshot.get("error", "")), str(snapshot.get("meteor_status", "")),
+			str(snapshot.get("frames", 0)), JSON.stringify(snapshot.get("meteor_device_counts", {}))])
 		request_stop()
 	if not _standby_ready_logged and bool(snapshot.get("meteor_frame_ready", false)):
 		_standby_ready_logged = true

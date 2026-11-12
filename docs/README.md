@@ -56,6 +56,7 @@ Windows XR: [Release development workflow](guides/meteor-windows-xr.md) and
 
 ## Technical guides
 
+- [PCVR game compatibility and game-specific setup](guides/game-compatibility.md)
 - [Testing without a person in the headset](guides/agent-testing.md)
 - [ZipDepth on Quest GPU](guides/zipdepth-quest-gpu.md)
 - [ZipDepth Quest quality tiers and retained experiments](guides/zipdepth-quest-tiers.md)
