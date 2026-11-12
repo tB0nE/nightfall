@@ -1,5 +1,12 @@
 # Nightfall Meteor
 
+For current release/acceptance work, start with the
+[current work queue](../docs/plans/active/current-work.md). Linux managed-host
+versioning, downloads, cursor control and release verification are described in
+[managed-host releases](../docs/guides/meteor-host-releases.md). Dated checkpoints
+below retain their original measurements and limitations.
+
+
 A companion app for the PC running Sunshine (or Apollo, Vibepollo, Polaris).
 It sits in the system tray. When the Nightfall client connects to that PC, it
 first asks Meteor which ports to use, and if Meteor answers, the stream goes
@@ -194,7 +201,7 @@ Tray Quit and termination signals request service shutdown; Meteor awaits XR's
 bounded runtime cleanup, removes its microphone, then uses its existing immediate
 exit to avoid unsafe GPU-library destructors. The desktop-overlay and real-game
 session-detection work is tracked in
-[the integration plan](../docs/plans/active/meteor-xr-desktop-integration.md).
+[the integration plan](../docs/archive/plans/meteor-xr-desktop-integration.md).
 
 Process-level coexistence regression (temporary configuration, test-only keys,
 mock Sunshine HTTP upstream; no headset/GPU or running-service replacement):
@@ -1004,4 +1011,4 @@ adapter. Linux requires system Python 3 and either `gdbus` (KDE) or `gsettings`
 (GNOME). Windows 11 uses its built-in wallpaper API through PowerShell; macOS
 uses AppKit for the currently visible Space on each screen. The GNOME, Windows
 and macOS adapters still require real-host acceptance tests. See
-[implementation and test notes](../docs/plans/active/host-colour-key-background.md).
+[implementation and test notes](../docs/archive/plans/host-colour-key-background.md).

@@ -284,7 +284,7 @@ Persistent ignored evidence: `.build-cache/meteor-xr/monado-nvenc-spike/`
 Runs overwrite their own artifacts, so preserve a run elsewhere before another
 test if needed. Host is Linux/NVIDIA RTX 3090; device is Quest 3.
 
-Details: [active plan](../plans/active/meteor-xr-monado-spike.md),
+Details: [active plan](../archive/plans/meteor-xr-monado-spike.md),
 [transport](meteor-xr-transport-probe.md),
 [decoder/ownership](meteor-xr-headset-decoder-spike.md),
 [tracking/origins](meteor-xr-tracking-spike.md).

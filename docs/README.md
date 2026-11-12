@@ -18,34 +18,17 @@ the build/deployment entry point.
 - [`archive/`](archive/) preserves implemented, superseded, or historical plans,
   investigations, and reviews. Archived documents are context, not instructions.
 
-## Active plans
+## Start here
 
-Windows XR: [Release development workflow](guides/meteor-windows-xr.md) and
-[tested compatibility checkpoint](plans/active/meteor-windows-vrchat-compat.md).
+- [Current work queue](plans/active/current-work.md): implemented baseline,
+  remaining acceptance, deferred experiments and the next user reports.
+- [Active plan index](plans/active/README.md): scoped follow-ups and proposals.
+- [Archived implementation records](archive/plans/README.md): completed,
+  superseded and historical plans, preserving measurements and decisions.
 
-- [Nightfall Meteor: host-side depth maps](plans/active/meteor-host-depth.md)
-- [Nightfall Meteor: microphone passthrough](plans/active/meteor-microphone.md)
-  (supersedes [the in-protocol microphone plan](plans/active/microphone-passthrough.md))
-- [Nightfall Meteor: Linux AppImage](plans/active/meteor-appimage.md)
-- [Nightfall Meteor: Windows port](plans/active/meteor-windows.md)
-- [Nightfall Meteor: AMD and Intel GPUs](plans/active/meteor-amd-intel.md)
-- [Nightfall Meteor as a host](plans/active/meteor-host.md): the direction for multiple monitors and XR
-- [Research spike: streaming PC VR to Nightfall](plans/active/meteor-xr-streaming-spike.md)
-- [USB Link streaming](plans/active/usb-link-streaming.md)
-- [PyroWave codec](plans/active/pyrowave-codec.md) and its
-  [zero-copy GPU decoder](plans/active/pyrowave-zero-copy-gpu.md) (both done)
-- [Repository cleanup](plans/active/repository-cleanup.md)
-- [Physical keyboard overlay](plans/active/physical-keyboard-overlay.md)
-- [Equirectangular SBS video](plans/active/equirect-sbs-vr-video.md)
-- [LiteRT ML Drift migration](plans/active/litert-ml-drift-migration.md)
-- [Preserve vanilla ZipDepth sharpness on Quest](plans/active/zipdepth-standard-head-quest.md)
-- [ZipDepth sharp mobile head experiment](plans/active/zipdepth-sharp-mobile-head.md)
-- [Sunshine raw-frame passthrough](plans/active/sunshine-raw-frame-passthrough.md)
-- [WiVRn Nightfall overlay experiment](plans/active/wivrn-nightfall-overlay-experiment.md)
-- [Nightfall Gateway experiment](plans/active/nightfall-gateway-experiment.md)
-- [Feature pipeline](plans/active/feature-pipeline.md)
-- [Future-feature research](plans/active/future-features.md)
-- [Testing without a person in the headset](plans/active/agent-testing.md)
+Old dated status sections are evidence, not an instruction to redo implemented
+features. Check the current queue before treating an unchecked historical item
+as outstanding.
 
 ## Architecture notes
 
@@ -55,6 +38,9 @@ Windows XR: [Release development workflow](guides/meteor-windows-xr.md) and
 - [Multi-monitor encode budget and layout](architecture/multi-monitor-encode-budget-and-layout.md)
 
 ## Technical guides
+
+- [Screen crop, colour key and placement](guides/screen-display-options.md)
+- [Meteor managed-host releases](guides/meteor-host-releases.md)
 
 - [PCVR game compatibility and game-specific setup](guides/game-compatibility.md)
 - [Testing without a person in the headset](guides/agent-testing.md)

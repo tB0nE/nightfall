@@ -1,5 +1,9 @@
 # Unified screens and content tabs
 
+> Current-status note (2026-11-12): this document retains dated implementation
+> checkpoints. The [current work queue](current-work.md) supersedes old
+> branch placement, release deadlines and unchecked acceptance statements.
+
 ## Agreed product scope
 
 ### Independent browser screens — 2026-10-17
@@ -213,7 +217,7 @@ Physical VRScreen -> ScreenContentTabs -> ScreenContentTab -> ContentProvider
 
 The browser/GPU/AI proof of concept is working. Per the 2026-10-15 product
 decision, prioritize a useful single standalone browser using the
-[Standalone Nightfall browser plan](standalone-browser.md) before concurrent
+[Standalone Nightfall browser plan](../../archive/plans/standalone-browser.md) before concurrent
 streaming, real tab switching or additional physical screens. Historical
 checkpoints below describe earlier implementation stages, not current limits.
 

@@ -2,7 +2,7 @@
 
 Historical handoff supplied at the start of this investigation. For subsequent
 fixes, testing and the current release checkpoint, see the
-[managed-host integration plan](../plans/active/meteor-bundled-host.md).
+[managed-host integration plan](../archive/plans/meteor-bundled-host.md).
 
 Written by the agent working on `feat/meteor-bundled-host`, for the agent
 that built XR streaming and the AMD encoder work in this checkout.

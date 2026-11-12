@@ -14,7 +14,7 @@ through Nightfall Meteor.
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge&color=4c5265&labelColor=1a1a2e)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/tB0nE/nightfall?style=for-the-badge&color=4ade80&labelColor=1a1a2e&label=latest)](https://github.com/tB0nE/nightfall/releases/latest)
 
-[Features](#features) · [What runs where](#what-runs-where) · [Getting started](#getting-started) · [Game compatibility](docs/guides/game-compatibility.md) · [Controls](#controls) · [Building](#building) · [Donate](#donate) · [License](#license)
+[Features](#features) · [What runs where](#what-runs-where) · [Getting started](#getting-started) · [Game compatibility](docs/guides/game-compatibility.md) · [Controls](#controls) · [Documentation](docs/README.md) · [Building](#building) · [Donate](#donate) · [License](#license)
 
 </div>
 

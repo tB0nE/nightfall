@@ -136,9 +136,9 @@ Read `BUILD.md` before any headset build, then:
 - `docs/plans/active/meteor-linux-installation.md`: chronological Linux packaging
   and current outstanding work; its final AMD section supersedes older lists.
 - `docs/plans/active/meteor-amd-xr-encoding.md`: latest AMD state and test incidents.
-- `docs/plans/active/meteor-xr-desktop-integration.md`,
+- `docs/archive/plans/meteor-xr-desktop-integration.md`,
   `meteor-pcvr-productization.md`, `meteor-xr-automatic-launch.md`.
-- `docs/plans/active/meteor-xr-layer-expansion.md` and
+- `docs/archive/plans/meteor-xr-layer-expansion.md` and
   `meteor-xr-layer-compatibility.md`: layer work and limits.
 - `meteor/README.md`, `meteor/RELEASE.md`: current Linux product/build experience,
   redistribution requirements and source-companion instructions.

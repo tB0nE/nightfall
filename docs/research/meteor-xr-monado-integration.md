@@ -1,7 +1,7 @@
 # Meteor XR: Monado runtime integration spike
 
 2026-10-18, `feat/meteor-xr-streaming`.
-Plan: [managed runtime spike](../plans/active/meteor-xr-monado-spike.md).
+Plan: [managed runtime spike](../archive/plans/meteor-xr-monado-spike.md).
 
 **Current status:** user-confirmed tracked USB scene, 120 hardware-encoded/decoded
 frames and clean teardown. See the [session checkpoint](meteor-xr-session-checkpoint.md)

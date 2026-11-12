@@ -6,7 +6,7 @@ checks are superseded by the [current compatibility status](../plans/active/mete
 # Windows VRChat compatibility research
 
 Date: 2026-11-04. Optional backend prototype in development; not packaged.
-Related: [Windows status](../plans/active/meteor-windows.md), [host architecture](../plans/active/meteor-host.md).
+Related: [Windows status](../plans/active/meteor-windows.md), [host architecture](plans/meteor-host.md).
 
 Latest user decision: defer direct xrizer/EAC acceptance and make the Windows
 SteamVR route work properly. Direct-mode capture now replaces mirror sampling
