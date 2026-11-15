@@ -32,6 +32,7 @@ the old Linux-restoration branch is no longer the continuation branch.
 | Linux installation | A genuinely fresh physical machine/account still needs installation-to-game acceptance without development caches. Container relocation and dependency checks are not that test. |
 | Windows | Continue clean-install/firewall acceptance, AMD/HDR multi-monitor checks, and uninstall cleanup of Steam launch options/residual host configuration. Preserve pairings unless explicitly doing a reset test. |
 | macOS | Live hardened-package audio, input, microphone/BlackHole, multi-screen/depth and firewall checks; Developer ID signing/notarisation for distribution. |
+| Automatic XR discovery | [Linux activation plan](automatic-xr-runtime-discovery.md): opt-in authenticated activation, namespaced installed discovery and recoverable registration implemented; relocated software-Vulkan tests pass. One-time native Steam setup and sandbox visibility checks now pass; real headset/game acceptance, Flatpak and Windows remain. |
 | PCVR stability | New logs preserve native failure details. Earlier intermittent exits were not conclusively diagnosed; investigate fresh reproductions rather than treating old hypotheses as fixes. |
 
 Host release and update procedure: [managed host releases](../../guides/meteor-host-releases.md).
@@ -46,7 +47,9 @@ Game-specific setup: [compatibility guide](../../guides/game-compatibility.md).
 - [#72: Quest 2 PCVR](https://github.com/tB0nE/nightfall/issues/72): the tester
   confirmed SteamVR works with the refresh-rate fix. Follow up on network
   stuttering and monitors disappearing after layout changes; clarification is
-  pending. Do not describe initial headset detection as still unfixed.
+  pending. The [virtual-monitor transition work](virtual-monitor-transition-speed.md)
+  addresses fixed waits and client-side layout deletion; live acceptance remains.
+  Do not describe initial headset detection as still unfixed.
 
 The current maintenance pass does not implement new issue fixes.
 

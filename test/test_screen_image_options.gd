@@ -111,6 +111,22 @@ func _init():
 	SettingsPersistence.write_app(config, settings)
 	SettingsPersistence.read_app(config, loaded, true, [0])
 	assert(loaded.screen_crop_mode == ScreenImageOptions.AUTO_MODE)
+	# The same physical surface must restore each tab's crop independently.
+	var desktop := ScreenContentTab.for_monitor(&"m0")
+	desktop.crop_mode = 1
+	var browser := ScreenContentTab.new()
+	browser.id = &"browser:page:1"
+	browser.kind = ScreenContentTab.BROWSER
+	browser.locator = {"url":"about:blank"}
+	browser.crop_mode = 2
+	screen.content_tabs.add(desktop)
+	screen.content_tabs.add(browser)
+	assert(options.selected_crop_mode == 2)
+	assert(options.crop_for(screen) == ScreenImageOptions.crop_region(options.source_size(screen), 2))
+	screen.content_tabs.select(desktop.id)
+	assert(options.selected_crop_mode == 1)
+	assert(options.crop_for(screen) == ScreenImageOptions.crop_region(options.source_size(screen), 1))
+	assert(owner.settings.screen_crop_mode == 2, "Per-tab crop must not overwrite app defaults")
 	screen.free()
 	owner.free()
 	print("All screen_image_options tests passed")

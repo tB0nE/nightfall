@@ -6,6 +6,14 @@ ROOT=Path(__file__).absolute().parents[1]
 CACHE=ROOT/'.build-cache/meteor-xr'
 MAX_FILE=32*1024*1024
 
+def automatic_ready():
+    try:
+        from meteor_steam_environment import automatic_launch_ready
+        return automatic_launch_ready(ROOT)
+    except (ImportError,OSError,ValueError):
+        return False
+
+
 def read(path,maximum=MAX_FILE):
     path=Path(path)
     if path.stat().st_size>maximum:raise ValueError('Metadata too large')
@@ -116,6 +124,7 @@ def wrapper_ready(options,app_id):
 
 def discover():
     result={}
+    automatic=automatic_ready()
     for steam in steam_roots():
         vr={}
         try:
@@ -155,7 +164,7 @@ def discover():
                 image=vr.get(app_id,{}).get('image_path','')
                 if image and Path(image).is_file():art.append(Path(image))
                 key='steam:'+app_id
-                result[key]={'key':key,'source':'Steam','name':str(app.get('name','Steam '+app_id)).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':app_id in ready,'_art':[str(p) for p in art if p.is_file()]}
+                result[key]={'key':key,'source':'Steam','name':str(app.get('name','Steam '+app_id)).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':app_id in ready or automatic,'_art':[str(p) for p in art if p.is_file()]}
             except (OSError,ValueError,AttributeError):continue
         for shortcuts in (steam/'userdata').glob('*/config/shortcuts.vdf'):
             try:
@@ -171,7 +180,7 @@ def discover():
                     art=list((shortcuts.parent/'grid').glob(app_id+'*'))
                     image=vr.get(app_id,{}).get('image_path','')
                     if image and Path(image).is_file():art.append(Path(image))
-                    result[key]={'key':key,'source':'Steam','name':str(entry.get('appname','Steam shortcut')).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':wrapper_ready(entry.get('launchoptions',''),app_id),'_art':[str(p) for p in art if p.is_file()],'_shortcut':True}
+                    result[key]={'key':key,'source':'Steam','name':str(entry.get('appname','Steam shortcut')).encode('utf8','replace')[:96].decode('utf8','ignore'),'vr':True,'ready':wrapper_ready(entry.get('launchoptions',''),app_id) or automatic,'_art':[str(p) for p in art if p.is_file()],'_shortcut':True}
             except (OSError,ValueError,AttributeError,struct.error):continue
     return sorted(result.values(),key=lambda a:(a['name'].casefold(),a['key']))[:1000]
 
@@ -205,8 +214,14 @@ def action(command,key='',offset=0):
         steam=shutil.which('steam') or '/usr/bin/steam'
         # Non-Steam shortcuts use a 64-bit game ID, not the store app launch API.
         args=[steam,'steam://rungameid/'+str((int(app_id)<<32)|0x02000000)] if app.get('_shortcut') else [steam,'-applaunch',app_id]
+        launch_env=dict(os.environ)
+        if automatic_ready():
+            from meteor_steam_environment import environment
+            runtime=launch_env.get('XDG_RUNTIME_DIR')
+            if not runtime:raise ValueError('Automatic XR requires XDG_RUNTIME_DIR')
+            launch_env=environment(ROOT,runtime,launch_env)
         with (CACHE/'library-launch.log').open('ab') as log:
-            subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+            subprocess.Popen(args,env=launch_env,stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
         return {'action':'launch','key':key,'message':'Starting '+app['name']}
     raise ValueError('Unknown library action')
 

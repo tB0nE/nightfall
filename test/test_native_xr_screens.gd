@@ -4,12 +4,41 @@ class FakeMain:
 	extends Node3D
 	var layout: ScreenLayout = null
 	var media := Vector2i.ZERO
+	var screen_sources: RefCounted
 
 	func primary_media_size() -> Vector2i:
 		return media
 
+class Transition extends RefCounted:
+	var switching_tab := true
+	var switching_primary := false
+class RendererPolicy extends NativeXrRendererManager:
+	var probes := 0
+	var restore_legacy := true
+	func _eligible() -> bool:
+		probes += 1
+		return false
+	func deactivate(restore: bool) -> void:
+		restore_legacy = restore
+		active = false
+
 func _init():
 	_test_screen_part()
+	var owner := FakeMain.new()
+	var transition := Transition.new()
+	owner.screen_sources = transition
+	var policy := RendererPolicy.new(owner)
+	policy.active = true
+	policy.refresh()
+	assert(not policy.active and not policy.restore_legacy and policy.probes == 0)
+	transition.switching_tab = false
+	transition.switching_primary = true
+	policy.refresh()
+	assert(policy.probes == 0, "A source drain must never recreate native/legacy swapchains")
+	transition.switching_primary = false
+	policy.refresh()
+	assert(policy.probes == 1, "Ordinary eligibility resumes after the switch")
+	owner.free()
 	print("All native_xr_screens tests passed")
 	quit()
 
@@ -60,6 +89,15 @@ func _test_screen_part() -> void:
 	part = native.screen_part(welcome)
 	assert((part.crop as PackedFloat32Array).is_empty())
 	assert(native.screen_part(null).is_empty())
+	# Reusing this screen for a browser must not reuse its packed-monitor crop.
+	var browser_tab := ScreenContentTab.new()
+	browser_tab.id = &"browser:page:1"
+	browser_tab.kind = ScreenContentTab.BROWSER
+	browser_tab.locator = {"url":"about:blank"}
+	corner.content_tabs.add(browser_tab)
+	main.media = Vector2i(1920,1080)
+	part = native.screen_part(corner)
+	assert(part.pixels == main.media and (part.crop as PackedFloat32Array).is_empty())
 	for screen in [whole, corner, welcome]:
 		screen.free()
 	main.free()

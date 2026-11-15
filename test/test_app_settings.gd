@@ -138,7 +138,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(loaded.tracking_mode == 1)
 	assert(not loaded.auto_reconnect_enabled)
 	assert(loaded.quick_start_enabled)
-	assert(loaded.audio_boost_db == 24)
+	assert(loaded.audio_boost_db == 15)
 	assert(loaded.microphone_enabled)
 	assert(loaded.hdr_enabled)
 	assert(loaded.idle_timeout_min == 60)
@@ -158,11 +158,11 @@ func _test_legacy_app_migrations() -> void:
 	assert(not settings.passthrough_enabled)
 	assert(settings.background_mode == 2)
 	assert(settings.pointer_steady == 1)
-	assert(settings.brightness_pct == 0)
+	assert(settings.brightness_pct == 13)
 	assert(settings.contrast_pct == 100)
 	assert(settings.gamma_pct == 100)
 	assert(settings.sharpen_mode == 0)
-	assert(settings.audio_boost_db == 0)
+	assert(settings.audio_boost_db == 7)
 
 	# Old saves stored 0 Stream / 1 AI 3D under "gpu_priority"; AI 3D is now 2.
 	var legacy_ai_3d := ConfigFile.new()

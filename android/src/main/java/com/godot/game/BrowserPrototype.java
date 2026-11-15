@@ -79,10 +79,13 @@ public final class BrowserPrototype {
     public static boolean consumeFrame(int browserId) { return session(browserId).consumeFrame(); }
     public static void close() { close(0); }
     public static void close(int browserId) { session(browserId).close(); }
+    public static void contentVisible(int browserId, boolean visible) { session(browserId).contentVisible(visible); }
+    public static void resize(int browserId, int width, int height) { session(browserId).resize(width, height); }
     public static void tabAction(String action, int id) { tabAction(0, action, id); }
     public static void tabAction(int browserId, String action, int id) { session(browserId).tabAction(action, id); }
     public static void navigationAction(String action) { navigationAction(0, action); }
     public static void navigationAction(int browserId, String action) { session(browserId).navigationAction(action); }
+    public static void scroll(int id, float x, float y, float amount) { session(id).scroll(x, y, amount); }
     public static void pointer(float x, float y, int action) { pointer(0, x, y, action); }
     public static void pointer(int browserId, float x, float y, int action) { session(browserId).pointer(x, y, action); }
     public static void key(int code, boolean pressed, int modifiers) { key(0, code, pressed, modifiers); }
@@ -147,6 +150,7 @@ public final class BrowserPrototype {
     // 0 closed, 1 opening, 2 rendering, -1 failed. Read from Godot's thread.
     private volatile int state;
     private VirtualDisplay display;
+    private int renderWidth, renderHeight;
     private Presentation presentation;
     private Surface surface;
     private SurfaceTexture texture;
@@ -189,6 +193,17 @@ public final class BrowserPrototype {
     private boolean questBridgeReady;
     private final BrowserPageTabs pageTabs = new BrowserPageTabs();
     private final java.util.Map<Integer, android.os.Bundle> pageHistory = new java.util.HashMap<>();
+    private static final long PAGE_RETENTION_MS = 10 * 60 * 1000L;
+    private final java.util.Map<Integer, WebView> retainedPages = new java.util.HashMap<>();
+    private final java.util.Map<Integer, Long> retainedDeadlines = new java.util.HashMap<>();
+    private long visibilityGeneration;
+    private boolean contentShown = true;
+    private void releaseRetainedPage(int id) {
+        retainedDeadlines.remove(id);
+        WebView cached = retainedPages.remove(id);
+        if (cached != null) { cached.stopLoading(); cached.destroy(); }
+    }
+
     private Activity ownerActivity;
     private volatile String pageSnapshot = "{\"selected\":0,\"pages\":[]}";
     private BrowserPhysicalGamepad physicalPad;
@@ -217,6 +232,8 @@ public final class BrowserPrototype {
             if (focusedId < 0) focusOnUi(browserId);
             surface = target;
             texture = source;
+            renderWidth = width;
+            renderHeight = height;
             try {
                 if (activity == null || activity.isFinishing()) throw new IllegalStateException("No activity");
                 browserPreferences = activity.getApplicationContext().getSharedPreferences("nightfall_browser", Context.MODE_PRIVATE);
@@ -335,12 +352,13 @@ public final class BrowserPrototype {
                     .put("editing", editingAddress)
                     .put("loading", loading);
             pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected)
-                    .put("pages", entries).put("navigation", navigation).toString();
+                    .put("pages", entries).put("navigation", navigation)
+                    .put("width", renderWidth).put("height", renderHeight).toString();
         } catch (org.json.JSONException failure) { DiagnosticLog.info("BrowserPrototype", "Tab metadata unavailable"); }
     }
 
-    // Only one WebView is alive. Suspended tabs keep back/forward state in RAM,
-    // not live video, audio or game contexts. Returning to a tab may reload it.
+    // Only the selected WebView is attached. Recently used pages stay paused
+    // for ten minutes; saved navigation state survives their later eviction.
     private void retirePage(boolean save) {
         releaseFocusInput();
         hideCustomView(); hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
@@ -356,13 +374,35 @@ public final class BrowserPrototype {
         }
         navigationGeneration++;
         pageNotice = null;
-        web.stopLoading();
+        if (!save) web.stopLoading();
         if (web.getParent() instanceof ViewGroup) ((ViewGroup) web.getParent()).removeView(web);
         WebView outgoing = web;
         web = null; // Invalidate callbacks before destroy can report a renderer loss.
-        outgoing.destroy();
+        if (!save) { outgoing.stopLoading(); outgoing.destroy(); return; }
+        outgoing.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
+        outgoing.onPause();
+        int retainedId = pageTabs.selected;
+        releaseRetainedPage(retainedId);
+        retainedPages.put(retainedId, outgoing);
+        long deadline = android.os.SystemClock.uptimeMillis() + PAGE_RETENTION_MS;
+        retainedDeadlines.put(retainedId, deadline);
+        UI.postDelayed(() -> {
+            if (retainedPages.get(retainedId) == outgoing && retainedDeadlines.getOrDefault(retainedId, 0L) == deadline) releaseRetainedPage(retainedId);
+        }, PAGE_RETENTION_MS);
     }
     private void resumePage(int token) {
+        retainedDeadlines.remove(pageTabs.selected);
+        WebView cached = retainedPages.remove(pageTabs.selected);
+        if (cached != null) {
+            web = cached;
+            web.setVisibility(contentShown ? View.VISIBLE : View.INVISIBLE);
+            content.addView(web, new FrameLayout.LayoutParams(-1, -1));
+            if (contentShown) web.onResume();
+            loading = false;
+            updateNavigation(); publishPages();
+            web.requestLayout(); web.invalidate();
+            return;
+        }
         boolean inputEnabled = gamepadInputEnabled;
         createPageWebView(ownerActivity, token);
         gamepadInputEnabled = inputEnabled;
@@ -380,6 +420,63 @@ public final class BrowserPrototype {
         }
         publishPages();
     }
+    // Keep the live page as well as its surface when a monitor owns this
+    // screen. Destroy/recreate here can leave the retained VirtualDisplay
+    // without a new frame on resume; page-tab changes still own retirement.
+    public void contentVisible(boolean visible) {
+        final int token = generation.get();
+        UI.post(() -> {
+            if (token != generation.get() || state != 2 || ownerActivity == null || dataClearing) return;
+            contentShown = visible;
+            final long visibility = ++visibilityGeneration;
+            if (!visible) {
+                releaseFocusInput(); hideCustomView();
+                if (web != null) {
+                    web.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(m){m.pause()})", null);
+                    web.onPause();
+                    web.setVisibility(View.INVISIBLE);
+                }
+                frame.set(false);
+                WebView hidden = web;
+                UI.postDelayed(() -> {
+                    if (token == generation.get() && !contentShown && visibilityGeneration == visibility && web == hidden && hidden != null) {
+                        int id = pageTabs.selected;
+                        retirePage(true);
+                        releaseRetainedPage(id);
+                    }
+                }, PAGE_RETENTION_MS);
+            } else if (web != null) {
+                web.setVisibility(View.VISIBLE);
+                web.onResume();
+                web.requestLayout(); web.invalidate();
+                if (root != null) { root.requestLayout(); root.invalidate(); }
+                publishPages();
+            } else if (!pageTabs.pages.isEmpty()) {
+                try { resumePage(token); }
+                catch (RuntimeException failure) {
+                    state = -1;
+                    DiagnosticLog.info("BrowserPrototype", "Tab resume failed: " + failure.getClass().getSimpleName());
+                }
+            }
+        });
+    }
+    public void resize(int width, int height) {
+        if (!((width == 1920 && height == 1080) || (width == 2560 && height == 1440))) return;
+        final int token = generation.get();
+        UI.post(() -> {
+            if (token != generation.get() || state != 2 || display == null || texture == null) return;
+            try {
+                texture.setDefaultBufferSize(width, height);
+                display.resize(width, height, 160);
+                renderWidth = width; renderHeight = height;
+                if (root != null) { root.requestLayout(); root.invalidate(); }
+                publishPages();
+            } catch (RuntimeException failure) {
+                state = -1;
+                DiagnosticLog.info("BrowserPrototype", "Surface resize failed: " + failure.getClass().getSimpleName());
+            }
+        });
+    }
     public void tabAction(String action, int id) {
         focus(browserId);
         int token = generation.get();
@@ -396,6 +493,7 @@ public final class BrowserPrototype {
                 else if ("close".equals(action)) {
                     boolean current = pageTabs.selected == id;
                     if (current) retirePage(false);
+                    releaseRetainedPage(id);
                     pageHistory.remove(id); pageTabs.remove(id);
                     if (pageTabs.pages.isEmpty()) close();
                     else if (current) resumePage(token);
@@ -1045,6 +1143,7 @@ public final class BrowserPrototype {
         hideBookmarks(false);
         dataClearing = true;
         pendingClear = kind;
+        for (Integer id : new java.util.ArrayList<>(retainedPages.keySet())) releaseRetainedPage(id);
         int token = generation.get();
         web.stopLoading();
         blocker.page(null);
@@ -1170,12 +1269,15 @@ public final class BrowserPrototype {
     }
 
     private void dispose() {
+        renderWidth = renderHeight = 0;
         releaseFocusInput();
         if (focusedId == browserId) {
             focusedId = -1;
             for (Session other : sessions.values()) if (other != this && other.state == 2) { focusedId = other.browserId; break; }
         }
+        for (Integer id : new java.util.ArrayList<>(retainedPages.keySet())) releaseRetainedPage(id);
         pageHistory.clear();
+        contentShown = true;
         pageTabs.clear();
         ownerActivity = null;
         publishPages();
@@ -1235,6 +1337,25 @@ public final class BrowserPrototype {
         if (navigationBar != null) navigationBar.setVisibility(View.GONE);
         if (callback != null) callback.onCustomViewHidden();
         if (previous != null) DiagnosticLog.info("BrowserPrototype", "Video fullscreen exited");
+    }
+
+    public void scroll(float x, float y, float amount) {
+        final int token = generation.get();
+        UI.post(() -> {
+            if (token != generation.get() || root == null || state != 2 || dataClearing) return;
+            MotionEvent.PointerProperties property = new MotionEvent.PointerProperties();
+            property.id = 0;
+            property.toolType = MotionEvent.TOOL_TYPE_MOUSE;
+            MotionEvent.PointerCoords coords = new MotionEvent.PointerCoords();
+            coords.x = x; coords.y = y;
+            coords.setAxisValue(MotionEvent.AXIS_VSCROLL, amount);
+            long now = SystemClock.uptimeMillis();
+            MotionEvent event = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1,
+                new MotionEvent.PointerProperties[]{property}, new MotionEvent.PointerCoords[]{coords},
+                0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_MOUSE, 0);
+            root.dispatchGenericMotionEvent(event);
+            event.recycle();
+        });
     }
 
     public void pointer(float x, float y, int action) {

@@ -39,6 +39,11 @@ var _screen_shortcut_press_active: bool = false
 var _browser_press_owner: RefCounted
 var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
+var _drag_scroll := ControllerDragScroll.new()
+var _drag_scroll_screen: VRScreen
+var _drag_scroll_browser: RefCounted
+var _drag_scroll_uv := Vector2.ZERO
+var _drag_scroll_token: Array = []
 var _pointer_suspended := false
 var _pointer_rearm_required := false
 
@@ -91,6 +96,13 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
+	var ui = main.get("ui_controller")
+	if ui != null and ui.has_method("close_settings_popup"):
+		ui.close_settings_popup()
+	_drag_scroll.cancel()
+	_drag_scroll_screen = null
+	_drag_scroll_browser = null
+	_drag_scroll_token.clear()
 	_pointer_rearm_required = true
 	if main.screen_sources:
 		main.screen_sources.cancel_browser_pointers_except()
@@ -375,6 +387,9 @@ func _send_double_click_chord(active_raycast: RayCast3D) -> bool:
 	return true
 
 func handle_pointer_interaction():
+	if main.screen_sources != null and main.screen_sources.get("switching_tab") == true:
+		pointer_on_ui = false
+		return
 	_update_active_hand()
 	_update_on_screen_tracking()
 	_process_auto_primary(main.get_process_delta_time())
@@ -394,6 +409,10 @@ func handle_pointer_interaction():
 
 	var raw_clicking = _is_now_clicking()
 	var is_gripping = _is_now_gripping()
+	var scrolling := _process_grip_scroll(active_raycast, raw_clicking, is_gripping)
+	if scrolling:
+		raw_clicking = false
+		is_gripping = false
 	var input_state := "%s %s click=%s grip=%s" % ["hands" if main._is_using_hands else "controllers", _active_hand, raw_clicking, is_gripping]
 	if input_state != _last_hand_input_state:
 		_last_hand_input_state = input_state
@@ -419,7 +438,7 @@ func handle_pointer_interaction():
 	var pad_blocking = main.controller_mapper and main.controller_mapper.is_active() and main.controller_mapper.is_gamepad_mode()
 	var tp_blocking = main.virtual_keyboard and main.virtual_keyboard.trackpad_active
 	_follow_pointer_with_mouse(active_raycast, pad_blocking or tp_blocking \
-		or main.grabbed_node != null or main.grabbed_corner_idx >= 0)
+		or main.grabbed_node != null or main.grabbed_corner_idx >= 0 or scrolling)
 	var chord_enabled = main.settings.double_click_mode == 1 and not main._is_using_hands \
 		and main.is_streaming and not pad_blocking and not tp_blocking
 	if chord_enabled and not _double_click_chord_active and raw_clicking and is_gripping \
@@ -673,7 +692,7 @@ func handle_pointer_interaction():
 		if t.role == &"grab_bar" and parent != main.grabbed_bar:
 			_set_grab_bar_color(parent, _bar_base_color(parent.get_parent()), 0.15)
 
-		is_now_clicking = _is_now_clicking()
+		is_now_clicking = false if scrolling else _is_now_clicking()
 
 		var hit_ui = false
 		if main.ui_visible and main.ui_panel_3d and main.ui_panel_3d.visible:
@@ -945,7 +964,7 @@ func process_pointer_frame(delta: float):
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
 	if not _pointer_input_ready(_active_pointer_tracked(), _pointer_controls_held()):
-		if main.was_clicking or main.was_right_clicking or main.grabbed_node or _other_hand_clicking:
+		if _drag_scroll.active or main.was_clicking or main.was_right_clicking or main.grabbed_node or _other_hand_clicking:
 			cancel_transient_interactions("pointer tracking unavailable or awaiting release")
 		pointer_on_ui = false
 		_primary_ui_pixel = Vector2(-1, -1)
@@ -1188,6 +1207,8 @@ func _apply_ui_hover_states():
 		)
 
 func _point_in_ui_rect(p: Vector2, btn: Button) -> bool:
+	if main.ui_controller.settings_popup_open() and not main.ui_controller._settings_popup.is_ancestor_of(btn):
+		return false
 	if p.x < 0 or p.y < 0:
 		return false
 	# Buttons on the scrolling Settings page only count where they are
@@ -1416,7 +1437,57 @@ func _compute_parallax_shift(uv_x: float) -> float:
 
 var _scroll_cooldown: float = 0.0
 
+func _process_grip_scroll(ray: RayCast3D, trigger: bool, grip: bool) -> bool:
+	if not grip and not _drag_scroll.consuming:
+		_drag_scroll.step(false, 0.0, null, false, Time.get_ticks_msec())
+		return false
+	var permitted: bool = main.settings.grip_scroll_enabled and not main._is_using_hands \
+		and not main.ui_visible and not _pointer_suspended and _active_pointer_tracked() \
+		and main.grabbed_node == null and main.grabbed_corner_idx < 0 \
+		and not main.was_clicking and not main.was_right_clicking and not _click_pending_release
+	if main.controller_mapper and main.controller_mapper.is_active(): permitted = false
+	if main.virtual_keyboard and main.virtual_keyboard.trackpad_active: permitted = false
+	if main.pcvr_handover and main.pcvr_handover.blocks_workspace(): permitted = false
+	if not ray: permitted = false
+	if not _drag_scroll.active and (not ray or not ray.is_colliding() or trigger): permitted = false
+	if not _drag_scroll.active and permitted and not trigger and ray.is_colliding():
+		var target := PointerTarget.resolve(ray.get_collider())
+		if target.role == &"screen":
+			_drag_scroll_screen = target.screen
+			_drag_scroll_browser = main.screen_sources.browser_for_screen(target.screen)
+			_drag_scroll_uv = target.screen.display_content_uv(target.screen.hit_point_to_uv(ray.get_collision_point()))
+			_drag_scroll_token = [target.screen, target.screen.content_tabs.selected_id, main.current_host_id, _active_hand, _drag_scroll_browser]
+			if _drag_scroll.is_new_press(grip) and _drag_scroll_browser == null and main.is_streaming: _position_stream_pointer(ray)
+		else: permitted = false
+	if not is_instance_valid(_drag_scroll_screen): permitted = false
+	var token: Array = []
+	var coordinate := NAN
+	if permitted:
+		var screen := _drag_scroll_screen
+		token = [screen, screen.content_tabs.selected_id, main.current_host_id, _active_hand, main.screen_sources.browser_for_screen(screen)]
+		if _drag_scroll.active and token != _drag_scroll_token: permitted = false
+		if _drag_scroll_browser != null:
+			if not _drag_scroll_browser.active: permitted = false
+		elif not main.is_streaming: permitted = false
+		# A stable plane allows dragging beyond the captured screen's edges.
+		var plane := Plane(screen.global_basis.z.normalized(), screen.global_position)
+		var hit: Variant = plane.intersects_ray(ray.global_position, -ray.global_basis.z.normalized())
+		if hit != null: coordinate = screen.to_local(hit).y / maxf(screen.mesh_size.y, 0.01)
+	var suppress_trigger_release: bool = trigger and _drag_scroll.consuming
+	if suppress_trigger_release and not grip:
+		_pointer_rearm_required = true
+	var amount := _drag_scroll.step(grip, coordinate, token if not token.is_empty() else null, permitted and (not trigger or _drag_scroll.active), Time.get_ticks_msec())
+	if amount != 0:
+		if _drag_scroll_browser != null: _drag_scroll_browser.scroll_high_res(amount, _drag_scroll_uv)
+		else: main.stream_backend.send_high_res_scroll_event(amount)
+	if not _drag_scroll.consuming:
+		_drag_scroll_screen = null
+		_drag_scroll_browser = null
+		_drag_scroll_token.clear()
+	return _drag_scroll.consuming or suppress_trigger_release
+
 func handle_scroll():
+	if _drag_scroll.consuming: return
 	var browser = main.screen_sources.focused_browser()
 	var ray := get_active_raycast()
 	if ray and ray.is_colliding():
@@ -1454,6 +1525,8 @@ static func scroll_clicks(stick_y: float) -> int:
 	return 1 if stick_y > 0 else -1
 
 func _is_ui_grab_bar(pixel_pos: Vector2) -> bool:
+	if main.ui_controller.settings_popup_open():
+		return false
 	var bar = main.ui_viewport.find_child("CompGrabBar", true, false)
 	# Hidden on the Advanced Settings page, where its old rect is page content.
 	if not bar or not bar is Control or not bar.is_visible_in_tree():

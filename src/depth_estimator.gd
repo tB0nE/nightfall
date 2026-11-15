@@ -518,7 +518,28 @@ func _push_depth_orientation() -> void:
 		if mat is ShaderMaterial:
 			mat.set_shader_parameter("depth_bottom_first", depth_bottom_first)
 
+var _source_transition_java: Object
+
+func begin_source_transition() -> void:
+	set_enabled(false)
+	if OS.get_name() != "Android": return
+	_source_transition_java = main.settings_controller._android_depth_class()
+	if _source_transition_java: _source_transition_java.beginDepthSourceTransition()
+
+func wait_for_source_transition() -> bool:
+	if _source_transition_java == null: return true
+	var deadline := Time.get_ticks_msec() + 8000
+	while not _source_transition_java.isDepthSourceTransitionIdle():
+		if Time.get_ticks_msec() >= deadline: return false
+		await main.get_tree().process_frame
+	return true
+
+func end_source_transition() -> void:
+	if _source_transition_java: _source_transition_java.endDepthSourceTransition()
+	_source_transition_java = null
+
 func process(delta: float):
+	if main.get("screen_sources") is ScreenSources and (main.screen_sources.switching_tab or main.screen_sources.switching_primary or main.screen_sources.monitor_change_pending()): return
 	_push_depth_orientation()
 	# GPU boost fires whenever depth inference is ACTUALLY running on GPU
 	# (main.stream_backend.get_effective_depth_backend() == 2), not just
@@ -692,6 +713,8 @@ func process(delta: float):
 
 # Runs every frame: connects to Meteor's depth port while Meteor depth is
 # selected and AI 3D is on during a stream, and applies each new map.
+var _meteor_request_at := 0
+
 func _update_meteor() -> void:
 	var wanted: bool = enabled and main.is_streaming and depth_texture != null \
 		and main.settings_controller.meteor_depth_selected()
@@ -704,12 +727,28 @@ func _update_meteor() -> void:
 			main._log("[METEOR] Host depth stopped")
 		_set_meteor_in_use(false)
 		return
-	if not meteor.is_active():
-		var info: Dictionary = main.stream_manager.meteor_depth_info()
-		meteor.start(main.stream_manager.meteor_address(), int(info["port"]), String(info["key"]))
+	var info: Dictionary = main.stream_manager.meteor_depth_info()
+	var region := PackedFloat32Array()
+	if info.get("region_hello", false) and main.primary_screen != null and main.layout != null:
+		var monitor = main.primary_screen.monitor
+		var frame: Vector2i = main.layout.frame_size
+		if monitor != null and frame.x > 0 and frame.y > 0:
+			var rect: Rect2i = monitor.frame_rect
+			region = PackedFloat32Array([float(rect.position.x)/frame.x, float(rect.position.y)/frame.y, float(rect.end.x)/frame.x, float(rect.end.y)/frame.y])
+	if not meteor.is_active() or region != meteor.region:
+		# Never warp a newly selected monitor using the old monitor's map.
+		_meteor_shown_frame = -1
+		_meteor_last_presented = 0
+		var neutral := Image.create(depth_texture.get_width(), depth_texture.get_height(), false, Image.FORMAT_L8)
+		neutral.fill(Color(0.5,0.5,0.5))
+		depth_texture.update(neutral)
+		depth_revision += 1
+		_meteor_request_at = Time.get_ticks_msec()
+		meteor.start(main.stream_manager.meteor_address(), int(info["port"]), String(info["key"]), region)
 		main._log("[METEOR] Connecting to host depth on %s:%d" % [meteor.host, meteor.port])
 	_match_meteor_map()
-	_set_meteor_in_use(meteor.is_delivering())
+	var starting: bool = meteor.is_active() and Time.get_ticks_msec() - _meteor_request_at < int(MeteorDepthReceiver.FIRST_MAP_GRACE_SEC * 1000)
+	_set_meteor_in_use(meteor.is_delivering() or starting)
 
 # Shows the map made from the frame on screen. With Depth Sync, the renderer
 # shows the frame _meteor_sync_delay frames behind the newest decoded one, so

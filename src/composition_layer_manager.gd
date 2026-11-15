@@ -181,8 +181,9 @@ func get_shader_mats(s: VRScreen = null) -> Array:
 	return [s.comp_shader_mat, s.comp_shader_mat_left, s.comp_shader_mat_right]
 
 func _independent_browser(s: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources != null else null
 	return s != main.primary_screen and main.screen_sources != null \
-		and (main.screen_sources.browser_for_screen(s) != null or _independent_welcome(s))
+		and ((provider != null and (provider.active or provider.closing or main.screen_sources.monitor_tab(s) == null)) or _independent_welcome(s))
 
 func _independent_welcome(s: VRScreen) -> bool:
 	return not main.is_streaming and main.screen_sources.has_method("stream_screen") \
@@ -763,7 +764,7 @@ func _ambient_static_color() -> Color:
 func _ambient_intensity() -> float:
 	# Static remains Medium; screen-reactive Slow/Live need the stronger High
 	# preset so their changing colours remain clearly visible around the panel.
-	return 0.35 if main.settings.ambient_mode >= 2 else 0.20
+	return (0.35 if main.settings.ambient_mode >= 2 else 0.20) * main.settings.ambient_gain
 
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
@@ -1107,6 +1108,10 @@ func restore_kb_material():
 	if main.virtual_keyboard:
 		main.virtual_keyboard.mesh_instance.visible = main.virtual_keyboard.visible
 
+func _browser_owns_surface(screen: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(screen) if main.screen_sources else null
+	return provider != null and (provider.active or provider.closing)
+
 func bind_yuv_textures():
 	var mat = main.stream_backend.get_shader_material()
 	if not mat:
@@ -1114,7 +1119,7 @@ func bind_yuv_textures():
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
@@ -1163,7 +1168,7 @@ func bind_yuv_textures():
 		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("tex_y", tex_y)
@@ -1181,7 +1186,7 @@ func bind_yuv_textures():
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
@@ -1197,9 +1202,10 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: in
 	# whether it's ever used).
 	_apply_video_shader_state(ctt)
 	for s in main.screens:
-		if _independent_browser(s):
+		if _independent_browser(s) or _browser_owns_surface(s):
 			continue
 		var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources else null
+		if provider != null and (provider.active or provider.closing): continue
 		if provider == null or (not provider.active and not provider.closing):
 			s.restore_monitor_region()
 		for mat in get_shader_mats(s):
@@ -1243,7 +1249,7 @@ func bind_fallback_texture(stream_tex):
 	# session's shader state. GLES HDR fallback needs its own explicit plumbing.
 	_apply_video_shader_state(0)
 	for s in main.screens:
-		if _independent_browser(s):
+		if _independent_browser(s) or _browser_owns_surface(s):
 			continue
 		for mat in get_shader_mats(s):
 			if not mat:

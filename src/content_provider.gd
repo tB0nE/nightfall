@@ -14,6 +14,10 @@ var generation: int = 0
 static func activity_for(tab: ScreenContentTab, visible: bool) -> Activity:
 	if visible:
 		return Activity.VISIBLE
+	# A hidden monitor must not retain a video decoder just because a stale
+	# browser audio preference was copied onto its tab.
+	if tab.kind == ScreenContentTab.STREAM:
+		return Activity.SUSPENDED
 	if tab.keep_audio_playing and not tab.muted:
 		return Activity.BACKGROUND_AUDIO
 	return Activity.SUSPENDED

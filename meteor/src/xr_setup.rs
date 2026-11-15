@@ -36,6 +36,19 @@ fn config_with_enabled(text: &str, enabled: bool) -> io::Result<String> {
     Ok(document.to_string())
 }
 
+fn automatic_config(text: &str, enabled: bool) -> io::Result<String> {
+    let _: crate::config::Config=toml::from_str(text).map_err(io::Error::other)?;
+    let mut document:toml_edit::DocumentMut=text.parse().map_err(io::Error::other)?;
+    document["xr"]["automatic_launch"]=toml_edit::value(enabled);
+    Ok(document.to_string())
+}
+
+pub fn set_automatic(enabled: bool) -> io::Result<()> {
+    let path=crate::config::config_path();
+    let original=read_config(&path)?;
+    save_enabled(&path,&original,&automatic_config(&original,enabled)?)
+}
+
 fn read_config(path: &Path) -> io::Result<String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
@@ -143,6 +156,17 @@ pub fn select_encoder(backend: &str) -> io::Result<()> {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn automatic_discovery_config_is_explicit_and_preserves_game_setup() {
+        let input="# Settings\n[xr]\nenabled=true\nruntime_root='/custom/xr'\n";
+        let output=automatic_config(input,true).unwrap();
+        let config:crate::config::Config=toml::from_str(&output).unwrap();
+        assert!(config.xr.enabled && config.xr.automatic_launch);
+        assert_eq!(config.xr.runtime_root.unwrap(),PathBuf::from("/custom/xr"));
+        assert!(output.contains("# Settings"));
+        let disabled:crate::config::Config=toml::from_str(&automatic_config(&output,false).unwrap()).unwrap();
+        assert!(!disabled.xr.automatic_launch);
+        assert!(!crate::config::XrConfig::default().automatic_launch);
+    }
     #[test] fn encoder_selection_preserves_settings_and_removes_stale_device_override() {
         let input="# User settings\n[xr]\nenabled=true\nrender_device='/dev/dri/renderD128'\n";
         let amd=encoder_config(input,"vaapi").unwrap();assert!(amd.contains("render_device"));

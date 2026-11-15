@@ -49,12 +49,17 @@ func apply_monitor(m: ScreenLayout.MonitorSpec, frame_size: Vector2i):
 	# Mirror existing monitor content without changing rendering or host input.
 	# Real source selection will be wired after the browser GPU feasibility gate.
 	var tab := ScreenContentTab.for_monitor(m.id)
+	tab.title = ScreenSources.monitor_tab_title(m)
+	var existing := content_tabs.find_tab(tab.id)
+	if existing != null: existing.title = tab.title
 	if content_tabs.tabs.is_empty():
 		content_tabs.add(tab)
 	elif content_tabs.tabs.size() == 1 and content_tabs.selected().kind == ScreenContentTab.STREAM:
 		# Existing layout changes reuse a physical screen for another monitor.
-		content_tabs.tabs[0] = tab
-		content_tabs.selected_id = tab.id
+		# A refresh of the same monitor must retain its tab's presentation state.
+		if content_tabs.selected_id != tab.id:
+			content_tabs.tabs[0] = tab
+			content_tabs.selected_id = tab.id
 	uv_region = Vector4(
 		float(m.frame_rect.position.x) / float(frame_size.x),
 		float(m.frame_rect.position.y) / float(frame_size.y),

@@ -227,6 +227,7 @@ impl Default for SavedState {
 
 /// One finished depth map.
 pub struct DepthMap {
+    pub selection: u64,
     pub stream: u64,
     /// The streaming client whose video this came from.
     pub client: Option<IpAddr>,
@@ -286,6 +287,8 @@ pub struct Depth {
     decoder_status: Mutex<String>,
     /// Where the host publishes the primary monitor's rectangle in its capture frame.
     capture_region_file: Mutex<Option<PathBuf>>,
+    client_regions: Mutex<BTreeMap<IpAddr, (u64, [f32; 4])>>,
+    region_sequence: AtomicU64,
     /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
     /// The size the decoder reduces frames to for that model.
@@ -376,6 +379,8 @@ impl Depth {
             status: Mutex::new("starting".into()),
             decoder_status: Mutex::new("Waiting for video".into()),
             capture_region_file: Mutex::new(None),
+            client_regions: Mutex::new(BTreeMap::new()),
+            region_sequence: AtomicU64::new(1),
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
@@ -565,6 +570,20 @@ impl Depth {
 
     /// The primary monitor's part of the frame, as fractions (left, top, right, bottom),
     /// or None when the host captures a single monitor (or says nothing).
+    pub fn select_client_region(&self, ip: IpAddr, region: [f32;4]) -> u64 {
+        let seq = self.region_sequence.fetch_add(1, Ordering::Relaxed);
+        self.client_regions.lock().unwrap_or_else(|e|e.into_inner()).insert(ip.to_canonical(), (seq,region));
+        seq
+    }
+    pub fn clear_client_region(&self, ip: IpAddr, seq: u64) {
+        let mut regions=self.client_regions.lock().unwrap_or_else(|e|e.into_inner());
+        if regions.get(&ip.to_canonical()).is_some_and(|(current,_)|*current==seq) {regions.remove(&ip.to_canonical());}
+    }
+    fn client_region(&self, ip: Option<IpAddr>) -> (Option<[f32;4]>, u64) {
+        if let Some(ip)=ip && let Ok(regions)=self.client_regions.lock()
+            && let Some((sequence,region))=regions.get(&ip.to_canonical()) {return (Some(*region),*sequence);}
+        (self.capture_region(),0)
+    }
     fn capture_region(&self) -> Option<[f32; 4]> {
         let path = self.capture_region_file.lock().ok()?.clone()?;
         parse_capture_region(&std::fs::read_to_string(path).ok()?)
@@ -1194,6 +1213,7 @@ impl Depth {
             let maps = self.stats.maps.fetch_add(1, Ordering::Relaxed) + 1;
             let map = Arc::new(DepthMap {
                 stream: frame.tag.stream,
+                selection: frame.tag.selection,
                 client: frame.tag.client,
                 seq: maps,
                 epoch: frame.tag.epoch,
@@ -1351,6 +1371,7 @@ fn save_snapshot(dir: &Path, map: &DepthMap, rgb: &[u8], (fw, fh): (usize, usize
 /// What the engine needs to know about the frame a decoded image came from.
 #[derive(Clone, Copy)]
 pub struct FrameTag {
+    pub selection: u64,
     /// Unique per decoder, so the engine can tell streams apart.
     pub stream: u64,
     pub client: Option<IpAddr>,
@@ -1386,11 +1407,13 @@ pub struct DepthFeed {
     tags: BTreeMap<u32,FrameTag>,
     last_output: Option<Instant>,
     pace: RatePace,
+    region: Option<[f32;4]>,
+    selection: u64,
 }
 impl DepthFeed {
     pub fn new(depth:Arc<Depth>,client:Option<IpAddr>)->Self {
         Self {depth,client:client.map(|ip|ip.to_canonical()),decoder:None,epoch:None,
-            settings:None,inference_affinity:None,rejected:Vec::new(),tags:BTreeMap::new(),last_output:None,pace:RatePace::default()}
+            settings:None,inference_affinity:None,rejected:Vec::new(),tags:BTreeMap::new(),last_output:None,pace:RatePace::default(),region:None,selection:0}
     }
     fn initialize(&mut self,codec:Codec,size:(usize,usize),settings:&video_decoder::Settings)->bool {
         let gpu_name=ncnn::resolved_gpu_name(self.depth.depth_gpu().as_deref()).unwrap_or_default();
@@ -1418,9 +1441,10 @@ impl DepthFeed {
                         else if backend==DecodeBackend::D3d11 {if device.is_some() {gpu_name.as_str()} else {"driver default"}}
                         else {""};
                     let description=format!("{} {device_label}; processing {}",backend.label(),if backend==DecodeBackend::Nvdec && gpu_frames {"CUDA/Auto"} else if portable_gpu {"Vulkan"} else {"CPU"});
-                    let region=self.depth.capture_region();
+                    let (region,_)=self.depth.client_region(self.client);
                     decoder.set_crop(region);
-                    if let Some([l,t,r,b])=region {log::info!("Host depth covers the primary monitor only ({:.0}%,{:.0}% to {:.0}%,{:.0}% of the frame)",l*100.0,t*100.0,r*100.0,b*100.0);}
+                    self.region=region;
+                    if let Some([l,t,r,b])=region {log::info!("Host depth covers the selected monitor ({:.0}%,{:.0}% to {:.0}%,{:.0}% of the frame)",l*100.0,t*100.0,r*100.0,b*100.0);}
                     self.depth.set_decoder_status(description.clone());
                     log::info!("Host depth decoding {codec:?}: {description}, {}x{}",size.0,size.1);
                     self.tags.clear();self.last_output=None;self.pace=RatePace::default();
@@ -1444,6 +1468,17 @@ impl DepthFeed {
             self.epoch=Some(frame.epoch);self.settings=Some(requested.clone());
             self.inference_affinity=affinity;
         }
+        let (region,selection)=self.depth.client_region(self.client);
+        if region!=self.region || selection!=self.selection {
+            if let Some((decoder,stream,_,_))=&mut self.decoder {
+                decoder.set_crop(region);
+                *stream=NEXT_STREAM.fetch_add(1,Ordering::Relaxed);
+            }
+            self.region=region;
+            self.selection=selection;
+            log::info!("Depth source selection {selection}: resetting temporal history for region {region:?}");
+            self.tags.clear(); self.pace=RatePace::default(); self.last_output=None;
+        }
         let settings=self.settings.clone().unwrap_or(requested);
         let Some(size)=self.depth.input_size() else {return;};
         if let Some((decoder,_,target,_))=&mut self.decoder && *target!=size {decoder.set_target(size);*target=size;}
@@ -1456,7 +1491,7 @@ impl DepthFeed {
             }
             let Some((decoder,stream,target,backend))=&mut self.decoder else {return;};
             let queued=Instant::now();
-            self.tags.insert(frame.index,FrameTag {stream:*stream,client:self.client,epoch:frame.epoch,index:frame.index,after_loss:frame.after_loss,queued});
+            self.tags.insert(frame.index,FrameTag {selection:self.selection,stream:*stream,client:self.client,epoch:frame.epoch,index:frame.index,after_loss:frame.after_loss,queued});
             while self.tags.len()>128 {self.tags.pop_first();}
             let rate=self.depth.rate();
             let rate_limited=rate>0 && matches!(decoder,VideoDecoder::Ffmpeg(_));

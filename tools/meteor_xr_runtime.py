@@ -20,6 +20,8 @@ def validate(root):
         raise ValueError('Invalid installed XR manifest')
     if manifest.get('version') != 1 or manifest.get('backend') not in ('nvidia','linux-gpu'):
         raise ValueError('Unsupported installed XR runtime manifest')
+    from xr_runtime_paths import socket_name
+    ipc_socket = socket_name(root)  # Reject an unsupported client/service socket ABI.
     backends=manifest.get('backends',['nvenc'])
     if backends not in (['nvenc'],['nvenc','vaapi']): raise ValueError('Invalid XR encoder backend list')
     # Hashes detect incomplete/corrupt packaging; they are not a signing scheme.
@@ -35,6 +37,8 @@ def validate(root):
         'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
         'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'tools/meteor_steam_options.py', 'LICENSE',
     ]
+    if ipc_socket != 'monado_comp_ipc':
+        required += ['tools/meteor_xr_register.py','test/xr_runtime_registration.py','test/xr_runtime_paths.py','tools/meteor_steam_environment.py']
     if 'vaapi' in backends:
         required += ['xr-runtime/libmeteor-vaapi-probe.so','test/xr_encoder_backend.py',
                      'xr-runtime/encoder-lib/libavcodec.so.62','xr-runtime/encoder-lib/libavutil.so.60']
@@ -85,7 +89,7 @@ def main():
             select(ROOT,directory,env)
             print((directory/'encoder-selection.json').read_text().replace('\n',''))
         return
-    if not os.environ.get('NIGHTFALL_XR_APPLICATION_SPEC'):
+    if not os.environ.get('NIGHTFALL_XR_APPLICATION_SPEC') and os.environ.get('NIGHTFALL_XR_EXTERNAL_RUNTIME') != '1':
         raise ValueError('Installed XR runtime requires a host-local application specification')
     output = Path(os.environ['NIGHTFALL_XR_PROBE_OUTPUT'])
     prepare(ROOT, output)

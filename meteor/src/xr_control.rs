@@ -138,7 +138,7 @@ impl Negotiation {
             Request::PendingLaunch {} | Request::ClaimLaunch {..} => return Ok(self.reply(Some("launch_watch_unavailable"))),
             Request::ConfigureVideo { bitrate_mbps, codec, foveated_encoding } => {
                 if self.session.is_some() { return Ok(self.reply(Some("busy"))); }
-                if bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps) {
+                if bitrate_mbps != 0 && !(8..=1000).contains(&bitrate_mbps) {
                     return Ok(self.reply(Some("unsupported_bitrate")));
                 }
                 let codec = codec.unwrap_or_else(|| "h264".into());
@@ -389,10 +389,18 @@ async fn connection_supervised(
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "write timeout"))?;
     };
     log::info!("Paired headset authenticated for XR control");
+    #[cfg(target_os = "linux")]
+    let _runtime_registration = if let Some(root)=runtime_root.as_ref().filter(|_|enable_relay) {
+        let root=root.clone();
+        tokio::task::spawn_blocking(move ||crate::xr_activation::register_authenticated(&root))
+            .await.map_err(io::Error::other)??
+    } else {None};
     let mut watch_logged=false;
     let mut delivered_launch=None;
     #[cfg(windows)]
     let mut startup_claim=crate::xr_windows::StartupClaim::new(runtime_root.as_deref());
+    #[cfg(target_os = "linux")]
+    let mut startup_claim=crate::xr_activation::StartupClaim::new(runtime_root.as_deref());
     let mut negotiation = Negotiation::default();
     let mut encoder_monitor=crate::xr_encoder::Monitor::default();
     negotiation.encoder=encoder_monitor.refresh(runtime_root.as_deref()).await;
@@ -465,7 +473,7 @@ async fn connection_supervised(
         } else if let Request::ClaimLaunch {generation}=&request {
             if negotiation.session.is_none() && runtime_root.as_ref().filter(|_|enable_relay).is_some_and(|root|crate::xr_launch_intent::claim(root,generation)) {
                 log::info!("Headset claimed XR launch notice");
-                #[cfg(windows)]
+                #[cfg(any(windows,target_os = "linux"))]
                 startup_claim.set(generation);
                 negotiation.launch_intent=Some(generation.clone());
                 negotiation.reply(None)
@@ -915,7 +923,7 @@ mod tests {
     #[test]
     fn video_bitrate_is_bounded_and_frozen_for_session() {
         let mut state = Negotiation::default();
-        assert_eq!(state.apply(Request::ConfigureVideo {bitrate_mbps: 161, codec: None, foveated_encoding:false}).unwrap().reason.as_deref(), Some("unsupported_bitrate"));
+        assert_eq!(state.apply(Request::ConfigureVideo {bitrate_mbps: 1001, codec: None, foveated_encoding:false}).unwrap().reason.as_deref(), Some("unsupported_bitrate"));
         assert_eq!(state.bitrate_mbps, 0);
         assert!(state.apply(Request::ConfigureVideo {bitrate_mbps: 80, codec: Some("h265".into()), foveated_encoding:false}).unwrap().reason.is_none());
         state.apply(Request::OfferLong {width:1024,height:1024,hz:60}).unwrap();

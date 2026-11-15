@@ -64,7 +64,7 @@ pub fn run() -> i32 {
             .with_icon(egui::IconData { rgba, width: 128, height: 128 }),
         ..Default::default()
     };
-    let window = Window { shared: shared.clone(), runtime, frames: 0 };
+    let window = Window { shared: shared.clone(), runtime, frames: 0, steam_method: None };
     let Some(font) = system_font() else {
         eprintln!("Can't open the Setup window: no system font found");
         return 1;
@@ -118,6 +118,24 @@ enum Row {
     Vda,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum SteamMethod {
+    #[default]
+    LaunchOptions,
+    Automatic,
+}
+impl SteamMethod {
+    fn selected(automatic: bool) -> Self {
+        if automatic {Self::Automatic} else {Self::LaunchOptions}
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::LaunchOptions => "Steam launch options (Default)",
+            Self::Automatic => "Automatic XR (Experimental)",
+        }
+    }
+}
+
 /// What each row reads from disk.
 #[derive(Clone, Default, Debug)]
 struct Status {
@@ -147,6 +165,11 @@ struct SteamStatus {
     total: u32,
     ready: u32,
     error: Option<String>,
+    game_running: bool,
+    automatic_available: bool,
+    automatic_selected: bool,
+    automatic_configured: bool,
+    steam_restart_required: bool,
 }
 
 #[derive(Default)]
@@ -166,11 +189,26 @@ impl Shared {
         let root = config.xr.runtime_root();
         let state = host::load_state();
         let models = config.models_dir.clone().unwrap_or_else(crate::config::default_models_dir);
-        let steam = if with_steam {
+        let mut steam = if with_steam {
             steam_tool(&root).map(|tool| steam_command(&tool, "status"))
         } else {
             self.status.lock().unwrap().steam.clone()
         };
+        if let Some(steam)=steam.as_mut() {
+            steam.automatic_selected=config.xr.automatic_launch;
+            let tool=root.join("tools/meteor_steam_environment.py");
+            steam.automatic_available=tool.is_file() && std::fs::read(root.join("xr-runtime/manifest.json")).ok()
+                .and_then(|bytes|serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some_and(|value|value["ipc_socket"]=="nightfall-meteor/monado_comp_ipc");
+            if steam.automatic_available {
+                if let Ok(output)=Command::new("/usr/bin/python3").arg(tool).arg("status").stdin(Stdio::null()).output() {
+                    if let Ok(value)=serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        steam.automatic_configured=config.xr.automatic_launch && value["configured"]==true;
+                        steam.steam_restart_required=value["steam_restart_required"]==true;
+                    }
+                }
+            }
+        }
         let status = Status {
             loaded: true,
             pcvr_in_build: crate::xr_setup::bundle().is_ok(),
@@ -241,16 +279,33 @@ impl Shared {
     }
 
     fn steam_options(&self, action: &'static str) {
-        self.begin(Row::Steam, "Closing Steam and updating its games");
-        let root = crate::config::load().xr.runtime_root();
-        let result = match steam_tool(&root) {
-            Some(tool) => {
-                let reply = steam_command(&tool, action);
-                reply.error.map_or(Ok(()), Err)
+        let config=crate::config::load();
+        let root=config.xr.runtime_root();
+        let automatic=matches!(action,"automatic_install"|"automatic_remove");
+        self.begin(Row::Steam,if automatic {"Updating experimental XR setup"} else {"Closing Steam and updating its games"});
+        let result=(|| -> Result<(),String> {
+            if automatic {
+                apply_automatic_setup(&root,action=="automatic_install")?;
+                self.restart.store(true,Ordering::Relaxed);
+                return Ok(());
             }
-            None => Err("Install PCVR first".to_string()),
-        };
-        self.finish(Row::Steam, result);
+            // Choosing the default method restores automatic launcher changes
+            // before updating the per-game wrappers. Apply is explicit; merely
+            // browsing the selector never changes runtime or Steam settings.
+            if action=="launch_options" && config.xr.automatic_launch {
+                let tool=steam_tool(&root).ok_or_else(||"Install PCVR first".to_string())?;
+                let current=steam_command(&tool,"status");
+                if let Some(error)=current.error {return Err(error);}
+                if current.game_running {return Err("Close the running game before changing the XR launch method".into());}
+                apply_automatic_setup(&root,false)?;
+                self.restart.store(true,Ordering::Relaxed);
+                if current.total==0 {return Ok(());}
+            }
+            let tool=steam_tool(&root).ok_or_else(||"Install PCVR first".to_string())?;
+            let reply=steam_command(&tool,if action=="launch_options" {"add"} else {action});
+            reply.error.map_or(Ok(()),Err)
+        })();
+        self.finish(Row::Steam,result);
     }
 
     fn install_vda(&self) {
@@ -274,7 +329,7 @@ impl Shared {
             match row {
                 Row::Pcvr => self.install_pcvr(runtime),
                 Row::Host => self.use_host(Choice::Bundled),
-                Row::Steam => self.steam_options("add"),
+                Row::Steam => self.steam_options("launch_options"),
                 Row::Vda => self.install_vda(),
             }
         }
@@ -291,7 +346,7 @@ fn install_all_rows(status: &Status) -> Vec<Row> {
     if status.host_available && !status.host_chosen && !status.other_host {
         rows.push(Row::Host);
     }
-    let steam_done = status.steam.as_ref().is_some_and(|s| s.error.is_none() && s.total > 0 && s.ready == s.total);
+    let steam_done = status.steam.as_ref().is_some_and(|s| s.error.is_none() && (s.automatic_configured || (s.total > 0 && s.ready == s.total)));
     if status.pcvr_in_build && !steam_done {
         rows.push(Row::Steam);
     }
@@ -299,6 +354,17 @@ fn install_all_rows(status: &Status) -> Vec<Row> {
         rows.push(Row::Vda);
     }
     rows
+}
+
+fn apply_automatic_setup(root: &std::path::Path, install: bool) -> Result<(),String> {
+    let output=Command::new("/usr/bin/python3").arg(root.join("tools/meteor_steam_environment.py"))
+        .arg(if install {"install"}else{"remove"}).arg("--root").arg(root)
+        .stdin(Stdio::null()).output().map_err(|error|error.to_string())?;
+    if !output.status.success() {
+        let value=serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap_or_default();
+        return Err(value["error"].as_str().unwrap_or("Steam launcher could not be changed; externally edited entries and backups were preserved").to_string());
+    }
+    crate::xr_setup::set_automatic(install).map_err(|error|error.to_string())
 }
 
 fn steam_tool(root: &std::path::Path) -> Option<PathBuf> {
@@ -352,6 +418,7 @@ struct Window {
     shared: Arc<Shared>,
     runtime: tokio::runtime::Handle,
     frames: u32,
+    steam_method: Option<SteamMethod>,
 }
 
 impl Window {
@@ -514,14 +581,43 @@ impl eframe::App for Window {
                     Some(steam) => format!("{} of {} games", steam.ready, steam.total),
                 };
                 let steam = status.steam.clone().unwrap_or_default();
-                self.row(ui, Row::Steam, "Steam launch options", "So VR games start through Meteor", &steam_state, busy, |ui| {
-                    if steam.ready > 0 && ui.button("Remove").clicked() {
-                        self.spawn(|shared, _| shared.steam_options("remove"));
+                let method=self.steam_method.get_or_insert_with(||SteamMethod::selected(steam.automatic_selected));
+                ui.add_enabled_ui(!busy,|ui| { ui.horizontal(|ui| {
+                    ui.label("Steam XR method:");
+                    egui::ComboBox::from_id_salt("steam_xr_method").selected_text(method.label()).show_ui(ui,|ui| {
+                        ui.selectable_value(method,SteamMethod::LaunchOptions,SteamMethod::LaunchOptions.label());
+                        ui.add_enabled_ui(steam.automatic_available,|ui| {
+                            ui.selectable_value(method,SteamMethod::Automatic,SteamMethod::Automatic.label());
+                        }).response.on_hover_text("Experimental automatic launch requires the updated PCVR runtime and native Steam.");
+                    });
+                }); });
+                let method=*method;
+                match method {
+                    SteamMethod::LaunchOptions => {
+                        self.row(ui,Row::Steam,"Steam launch options","Default method: update launch options for your VR games",&steam_state,busy,|ui| {
+                            if ui.add_enabled(status.steam.is_some() && (steam.total>0 || steam.automatic_selected),egui::Button::new("Update launch options")).clicked() {
+                                self.spawn(|shared,_|shared.steam_options("launch_options"));
+                            }
+                            if !steam.automatic_selected && steam.ready>0 && ui.button("Remove").clicked() {
+                                self.spawn(|shared,_|shared.steam_options("remove"));
+                            }
+                        });
+                        ui.small("Closes and reopens Steam. Switching back restores the experimental launcher changes; game-specific options are kept.");
                     }
-                    if ui.add_enabled(status.steam.is_some() && steam.total > 0 && steam.ready < steam.total, egui::Button::new("Add")).clicked() {
-                        self.spawn(|shared, _| shared.steam_options("add"));
+                    SteamMethod::Automatic => {
+                        let state=if steam.automatic_configured {
+                            if steam.steam_restart_required {"Restart Steam to apply"} else {"Enabled"}
+                        } else {"Not enabled"};
+                        self.row(ui,Row::Steam,"Automatic XR (Experimental)","Set up Steam once instead of adding Meteor options to each game",state,busy,|ui| {
+                            if !steam.automatic_configured && ui.add_enabled(steam.automatic_available,egui::Button::new("Enable experimental method")).clicked() {
+                                self.spawn(|shared,_|shared.steam_options("automatic_install"));
+                            }
+                        });
+                        ui.small("Restarts Meteor when you close Setup. Restart Steam afterward. Native Steam only; existing game options stay.");
+                        ui.small("For testing, remove Meteor's wrapper from one game's launch options. Keep its other flags and mods.");
                     }
-                });
+                }
+
             }
 
             if let Some(vda) = &status.vda {
@@ -561,6 +657,23 @@ mod tests {
     }
 
     #[test]
+    fn steam_method_defaults_to_original_and_preserves_explicit_experimental_selection() {
+        assert_eq!(SteamMethod::default(),SteamMethod::LaunchOptions);
+        assert_eq!(SteamMethod::selected(false),SteamMethod::LaunchOptions);
+        assert_eq!(SteamMethod::selected(true),SteamMethod::Automatic);
+        assert!(SteamMethod::LaunchOptions.label().contains("Default"));
+        assert!(SteamMethod::Automatic.label().contains("Experimental"));
+    }
+
+    #[test]
+    fn automatic_steam_setup_does_not_add_per_game_wrappers_again() {
+        let mut status=fresh();
+        status.pcvr_ready=true;
+        status.steam=Some(SteamStatus {automatic_configured:true,..Default::default()});
+        assert!(!install_all_rows(&status).contains(&Row::Steam));
+    }
+
+    #[test]
     fn install_all_covers_a_fresh_pc_with_pcvr_before_steam() {
         assert_eq!(install_all_rows(&fresh()), [Row::Pcvr, Row::Host, Row::Steam, Row::Vda]);
     }
@@ -576,12 +689,12 @@ mod tests {
         let status = Status {
             pcvr_ready: true,
             host_chosen: true,
-            steam: Some(SteamStatus { total: 3, ready: 3, error: None }),
+            steam: Some(SteamStatus { total: 3, ready: 3, error: None, ..Default::default() }),
             vda: None,
             ..fresh()
         };
         assert!(install_all_rows(&status).is_empty());
-        let status = Status { steam: Some(SteamStatus { total: 3, ready: 1, error: None }), ..status };
+        let status = Status { steam: Some(SteamStatus { total: 3, ready: 1, error: None, ..Default::default() }), ..status };
         assert_eq!(install_all_rows(&status), [Row::Steam]);
     }
 

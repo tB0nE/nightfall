@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 from pathlib import Path
 import sys
 import tempfile
@@ -9,6 +10,22 @@ from xr_runtime_lifecycle import managed_runtime
 
 
 class RuntimeLifecycleTests(unittest.TestCase):
+    def test_inherited_listener_requires_actual_adoption_acknowledgement(self):
+        with tempfile.TemporaryDirectory(prefix="nf-runtime-adopt-") as temporary:
+            root = Path(temporary)
+            endpoint = root / "ipc"
+            with socket.socket(socket.AF_UNIX) as listener:
+                listener.bind(str(endpoint))
+                listener.listen()
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    with managed_runtime([sys.executable,"-c","import time; time.sleep(30)"],
+                            env=dict(os.environ), ready_path=endpoint,
+                            log_path=root/"log",state_path=root/"state.json",
+                            inherited_fd=listener.fileno(),startup_timeout=0.02):
+                        self.fail("A pre-existing socket is not an adoption acknowledgement")
+                self.assertEqual(json.loads((root/"state.json").read_text())["state"],"stopped")
+                self.assertTrue(endpoint.exists())
+
     def test_ready_without_launching_application_and_reaped_on_scope_exit(self):
         with tempfile.TemporaryDirectory(prefix="nf-runtime-") as directory:
             root = Path(directory)

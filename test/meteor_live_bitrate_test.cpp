@@ -19,9 +19,10 @@ int main() {
     std::ifstream ack(prefix+"ack"); ack>>sequence>>mbps>>bps>>status;
     assert(sequence==2 && mbps==160 && bps==40000000 && status==12);
     request("3 0\n"); assert(current==32000000 && calls==3);
-    request("4 161\n"); request("4 40 junk\n");
+    request("4 1001\n"); request("4 40 junk\n");
     assert(control.sequence==3 && calls==3);
     request("4 32\n"); assert(control.sequence==4 && calls==3);
+    request("5 1000\n"); assert(current==1000000000 && calls==4);
     unlink((prefix+"request").c_str()); unlink((prefix+"ack").c_str());
     assert(rmdir(root)==0);
 }

@@ -24,8 +24,8 @@ class RuntimePackageTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b'fixture binary')
         for name in ('test/run_monado_nvenc_spike.py', 'test/xr_local_application.py',
-                     'test/xr_launch_intent.py', 'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
-                     'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'tools/meteor_steam_options.py', 'LICENSE'):
+                     'test/xr_launch_intent.py', 'tools/meteor_xr_register.py', 'tools/meteor_xr_runtime.py', 'tools/meteor_xr_install.py',
+                     'tools/meteor_xr.py', 'tools/meteor_vr_library.py', 'tools/meteor_steam_options.py', 'tools/meteor_steam_environment.py', 'LICENSE'):
             path = root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('')
@@ -46,6 +46,22 @@ class RuntimePackageTests(unittest.TestCase):
             hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         (helpers / 'validated.json').write_text(json.dumps({'key': 'fixture', 'artifacts': hashes}))
         return helpers
+
+    def test_namespaced_bundle_carries_registration_helpers_and_socket_abi(self):
+        from meteor_xr_runtime import validate
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)/'source';root.mkdir();helpers=self.fixture(root)
+            (root/'test/run_monado_nvenc_spike.py').write_text('from xr_runtime_paths import socket_path\n')
+            (root/'tools/meteor_xr_register.py').write_text('from xr_runtime_registration import RegistrationGroup\n')
+            for name in ('xr_runtime_paths.py','xr_runtime_registration.py'):
+                (root/'test'/name).write_text('')
+            stamp=root/'.build-cache/meteor-xr/monado-linux-spike/ipc-socket-name'
+            stamp.write_text('nightfall-meteor/monado_comp_ipc\n')
+            destination=Path(temporary)/'installed'
+            staging.stage(root,destination,helpers)
+            self.assertEqual(validate(destination)['ipc_socket'],'nightfall-meteor/monado_comp_ipc')
+            self.assertTrue((destination/'test/xr_runtime_registration.py').is_file())
+            self.assertTrue((destination/'test/xr_runtime_paths.py').is_file())
 
     def test_relocated_package_has_no_checkout_or_build_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,6 +125,21 @@ class RuntimePackageTests(unittest.TestCase):
             self.assertFalse((root / 'another').exists())
 
 class RuntimeInstallTests(RuntimePackageTests):
+    def test_active_registration_blocks_runtime_upgrade(self):
+        import fcntl
+        from meteor_xr_install import install
+        with tempfile.TemporaryDirectory() as temporary:
+            source=Path(temporary)/'source';source.mkdir();helpers=self.fixture(source)
+            package=Path(temporary)/'package'
+            staging.stage(source,package,helpers)
+            destination=Path(temporary)/'installed'
+            install(package,destination)
+            lock_path=destination/'.build-cache/meteor-xr/runtime-registration.lock'
+            with lock_path.open('a') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaisesRegex(RuntimeError,'Disconnect automatic XR'):
+                    install(package,destination)
+
     def test_bundled_xrizer_fresh_install_migration_and_custom_override(self):
         from meteor_xr_install import install
         from xr_local_application import application_environment

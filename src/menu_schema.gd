@@ -6,6 +6,34 @@ const TARGET_SETTINGS := &"settings"
 const TARGET_SCREEN := &"screen"
 const TARGET_CONTROLLER := &"controller"
 
+const CHOICE_ACTIONS := {
+	&"on_sbs_toggled": &"sbs",
+	&"toggle_hand_tracking": &"tracking",
+	&"on_ai_3d_cursor_position_toggled": &"cursor_position",
+	&"on_language_pressed": &"language",
+	&"cycle_background": &"background",
+	&"cycle_cursor_mode": &"cursor",
+	&"cycle_steady": &"steady",
+	&"cycle_double_click_mode": &"double_click",
+	&"cycle_ambient_mode": &"ambient",
+	&"cycle_ambient_color": &"ambient_colour",
+	&"cycle_brightness": &"brightness",
+	&"cycle_contrast": &"contrast",
+	&"cycle_gamma": &"gamma",
+	&"cycle_sharpen_mode": &"sharpen",
+	&"cycle_audio_boost": &"volume",
+	&"cycle_audio_output": &"audio_output",
+	&"cycle_idle_timeout": &"idle",
+	&"cycle_passthrough_fade": &"pt_fade",
+	&"cycle_curvature": &"curve",
+	&"cycle_type": &"device_mode",
+	&"cycle_btn_toggle": &"alternate",
+	&"cycle_primary_hand": &"primary",
+	&"cycle_screen_crop": &"crop",
+	&"cycle_screen_key": &"key",
+	&"cycle_screen_key_tolerance": &"key_tolerance",
+}
+
 static func get_tab_buttons() -> Array:
 	return [
 		_tab_button(&"_tab_btn_display", "Display", 0, "Configure the screen and its surrounding environment."),
@@ -51,7 +79,7 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"StreamRow1",
 				"options": [
-					_option(&"_ui_res_btn", "Resolution", "100%", "Choose the resolution requested from the host.", TARGET_SETTINGS, &"cycle_resolution"),
+					_option(&"_ui_res_btn", "Default Res", "100%", "Choose the resolution requested from the host.", TARGET_SETTINGS, &"cycle_resolution"),
 					_option(&"_ui_fps_btn", "FPS", "60", "Choose the stream frame rate and matching headset refresh rate.", TARGET_SETTINGS, &"cycle_fps"),
 					_option(&"_ui_bitrate_btn", "Bitrate", "Auto", "Control stream bandwidth and image quality.", TARGET_SETTINGS, &"cycle_bitrate"),
 					_option(&"_ui_crop_btn", "Crop", "Off", "Auto-detect black bars on the primary screen.", TARGET_SETTINGS, &"cycle_screen_crop"),
@@ -60,7 +88,7 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"StreamRow2",
 				"options": [
-					_option(&"_ui_codec_btn", "Codec", "HEVC", "Video codec. PyroWave suits fast 2D streaming; avoid it with AI 3D.", TARGET_SETTINGS, &"cycle_codec"),
+					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec. H.264 and H.264+ limit the combined monitor stream to 4032 pixels per side. HEVC or AV1 can accommodate larger monitor setups where supported. H.264+ increases bitrate, not resolution.", TARGET_SETTINGS, &"cycle_codec"),
 					_option(&"_ui_hdr_btn", "HDR", "Off", "Request HDR when the host display uses it; tone-mapped for the headset.", TARGET_SETTINGS, &"toggle_hdr", OS.get_name() == "Android"),
 					_option(&"_ui_audio_boost_btn", "Volume", "Normal", "Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.", TARGET_SETTINGS, &"cycle_audio_boost"),
 					_option(&"_ui_usb_link_btn", "USB Link", "Off", "Stream over a USB-C cable instead of Wi-Fi, once the host is reachable over it.", TARGET_SETTINGS, &"toggle_usb_link", OS.get_name() == "Android"),
@@ -150,12 +178,14 @@ static func get_tabs() -> Array:
 				"title": "General",
 				"options": [
 					_option(&"_ui_language_btn", "Language", "English", "Choose the language used by Nightfall's menus.", TARGET_UI, &"on_language_pressed"),
+					_option(&"_ui_extended_bitrate_btn", "Extended Bitrate", "Off", "Double desktop and PCVR bitrate limits. Needs fast network and decoding.", TARGET_SETTINGS, &"toggle_extended_bitrate_limits"),
 				],
 			},
 			{
 				"node_name": &"SettingsInputRow",
 				"title": "Input",
 				"options": [
+					_option(&"_ui_grip_scroll_btn", "Grip Scroll", "Off", "Grip-drag to scroll, replacing right-click. Mapping must be off.", TARGET_SETTINGS, &"toggle_grip_scroll"),
 					_option(&"_ui_double_click_btn", "Double Click", "Standard", "Choose how double-click input is triggered.", TARGET_SETTINGS, &"cycle_double_click_mode"),
 				],
 			},
@@ -163,6 +193,7 @@ static func get_tabs() -> Array:
 				"node_name": &"SettingsDisplayRow",
 				"title": "Display",
 				"options": [
+					_option(&"_ui_ambient_gain_btn", "Ambient Intensity", "100%", "Adjust ambient lighting strength.", TARGET_UI, &"open_ambient_gain_popup"),
 					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
 					_option(&"_ui_host_cursor_btn", "Host Cursor", "Off", "Show or hide the host operating system cursor when supported.", TARGET_SETTINGS, &"toggle_host_cursor"),
 				],
@@ -213,6 +244,7 @@ static func _option(
 		"tooltip": tooltip,
 		"target": target,
 		"action": action,
+		"choice": CHOICE_ACTIONS.get(action, &""),
 		"visible": visible,
 		"disabled": disabled,
 	}

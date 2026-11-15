@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Повышенный битрейт",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Двойной битрейт рабочего стола и PCVR. Нужны быстрая сеть и декодер.",
+	"Default Res": "Разрешение по умолчанию",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Выберите видеокодек. H.264+ допускает больший битрейт.",
+	"XR codec; independent of desktop. Applies next session.": "Кодек XR не зависит от рабочего стола. Со следующего сеанса.",
+	"Grip Scroll": "Прокрутка хватом",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Удерживайте хват и двигайте. Вместо правого клика; привязки выключены.",
+	"Ambient Intensity": "Интенсивность подсветки",
+	"Adjust ambient lighting strength.": "Настройте интенсивность подсветки.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

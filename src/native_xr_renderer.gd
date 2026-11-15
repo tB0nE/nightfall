@@ -73,6 +73,11 @@ func draws_secondary_screens() -> bool:
 ## screen; empty when it fills the frame). {} when it can't be told.
 func screen_part(screen: VRScreen) -> Dictionary:
 	var media: Vector2i = main.primary_media_size()
+	# Retained monitor metadata describes the packed desktop, never the
+	# independent browser texture currently selected on the same surface.
+	var selected: ScreenContentTab = screen.content_tabs.selected() if screen != null else null
+	if selected != null and selected.kind == ScreenContentTab.BROWSER:
+		return {"pixels": media, "crop": PackedFloat32Array()}
 	var frame: Vector2i = main.layout.frame_size if main.layout else Vector2i.ZERO
 	if screen == null or screen.monitor == null or media.x <= 0 or media.y <= 0 or frame.x <= 0 or frame.y <= 0:
 		return {"pixels": media, "crop": PackedFloat32Array()} if screen != null and media.x > 0 else {}
@@ -95,6 +100,9 @@ func can_render_current_config() -> bool:
 	# Independent browser outputs do not share the primary decoder or eyes.
 	for screen in main.screens:
 		if screen != main.primary_screen and main.screen_sources.browser_for_screen(screen) == null:
+			# One native renderer samples one producer. A browser primary and
+			# visible desktop secondary need the independent legacy surfaces.
+			if main.has_method("browser_content_active") and main.browser_content_active(): return false
 			if main.screen_sources.has_method("stream_screen") and main.screen_sources.stream_screen() == screen and not main.is_streaming:
 				continue # A secondary welcome surface has its own mono layer.
 			# Further stream screens are mono layers drawn from their own part of the frame.
@@ -128,6 +136,14 @@ func can_render_current_config() -> bool:
 	return true
 
 func _eligible() -> bool:
+	if main.get("primary_screen") != null and main.primary_screen.monitor != null \
+		and main.primary_screen.monitor_id != main.primary_screen.monitor.id \
+		and main.has_method("browser_content_active") and not main.browser_content_active():
+		return false # New monitor tab awaits its actual captured manifest.
+	# A resumed browser may need a frame before its RGBA handle is ready.
+	# Never reactivate the desktop renderer into that browser-owned surface.
+	if main.has_method("browser_content_active") and main.browser_prototype.active and not main.browser_content_active():
+		return false
 	if not main.primary_media_active() or not can_render_current_config():
 		return false
 	# _schedule_stream_restart() deactivates this renderer, then awaits a
@@ -159,6 +175,14 @@ func _eligible() -> bool:
 	return true
 
 func refresh() -> void:
+	var sources = main.get("screen_sources")
+	if sources != null and (sources.get("switching_tab") == true or sources.get("switching_primary") == true):
+		# Source changes drain native consumers across several frames. The old
+		# browser texture can remain valid during that interval; it must not
+		# cause refresh() to recreate the swapchain while we are retiring it.
+		if active: deactivate(false)
+		_last_eligible = false
+		return
 	if presentation_suspended: return
 	# A resolution/refresh-rate change defers its actual swapchain rebuild by
 	# a few frames (see start()'s C++ comment) rather than tearing it down

@@ -5,7 +5,9 @@
 //! The client first sends `NFDK` and its X25519 public key (36 bytes), made
 //! for this connection; both sides derive an AES-256-GCM key from it and
 //! Meteor's key with DEPTH_KDF_INFO (see crypto.rs). After that the client
-//! sends nothing.
+//! sends nothing. When `depth.region_hello` is advertised, `NFDC` replaces
+//! `NFDK` and the public key is followed by four little-endian float32 source
+//! bounds (left, top, right, bottom). The encrypted map format is unchanged.
 //!
 //! Each message is a 32-byte little-endian header followed by the map,
 //! compressed with zstd, then encrypted with a 16-byte tag. The header is
@@ -82,13 +84,21 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
     let mut hello = [0u8; 4 + KEY_BYTES];
     stream.read_exact(&mut hello)?;
     let theirs: [u8; KEY_BYTES] = hello[4..].try_into().expect("the hello holds one key");
-    let session = match (&hello[..4] == HELLO_MAGIC).then(|| key.session_key(&theirs, DEPTH_KDF_INFO)).flatten() {
+    let session = match (&hello[..4] == HELLO_MAGIC || &hello[..4] == b"NFDC").then(|| key.session_key(&theirs, DEPTH_KDF_INFO)).flatten() {
         Some(session) => session,
         None => {
             log::info!("Depth connection from {peer} refused: no valid key");
             return Ok(());
         }
     };
+    let selected_at=Instant::now();
+    let region = if &hello[..4] == b"NFDC" {
+        let mut bytes=[0u8;16]; stream.read_exact(&mut bytes)?;
+        let r: [f32;4]=std::array::from_fn(|i|f32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap()));
+        if !valid_region(r) {return Err(io::Error::new(io::ErrorKind::InvalidData,"invalid depth region"));}
+        Some(depth.select_client_region(ip,r))
+    } else {None};
+    let _region_guard=RegionGuard{depth,ip,sequence:region};
     stream.set_read_timeout(None)?;
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -119,7 +129,7 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
         };
         last_seq = map.seq;
         // Only this client's own video (or anyone's, for a local test client).
-        if !(ip.is_loopback() || map.client == Some(ip)) {
+        if region.is_some_and(|selection|map.selection!=selection) || map.frame_queued < selected_at || !(ip.is_loopback() || map.client == Some(ip)) {
             continue;
         }
         let encode_start = Instant::now();
@@ -202,6 +212,7 @@ mod tests {
     fn map(data: Vec<u8>) -> DepthMap {
         let now = Instant::now();
         DepthMap {
+            selection: 0,
             stream: 1,
             client: None,
             seq: 1,
@@ -268,4 +279,14 @@ mod tests {
         let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
         eprintln!("depth message 0: {hex}");
     }
+}
+
+fn valid_region(r:[f32;4])->bool {
+ r.iter().all(|v|v.is_finite()) && r[0]>=0.0 && r[1]>=0.0 && r[2]<=1.0 && r[3]<=1.0 && r[0]<r[2] && r[1]<r[3]
+}
+struct RegionGuard<'a>{depth:&'a Depth,ip:IpAddr,sequence:Option<u64>}
+impl Drop for RegionGuard<'_>{fn drop(&mut self){if let Some(s)=self.sequence{self.depth.clear_client_region(self.ip,s);}}}
+#[cfg(test)] mod region_tests {
+ use super::valid_region;
+ #[test] fn validates_normalized_region(){assert!(valid_region([0.5,0.0,1.0,1.0]));assert!(!valid_region([f32::NAN,0.0,1.0,1.0]));assert!(!valid_region([0.5,0.0,0.5,1.0]));assert!(!valid_region([0.0,0.0,2.0,1.0]));}
 }

@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Uitgebreide bitrate",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Verdubbel desktop- en PCVR-limieten. Vereist snel netwerk en decodering.",
+	"Default Res": "Standaardresolutie",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Kies de videocodec. H.264+ staat hogere bitrates toe.",
+	"XR codec; independent of desktop. Applies next session.": "XR-codec, los van het bureaublad. Geldt vanaf de volgende sessie.",
+	"Grip Scroll": "Scrollen met grip",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Houd grip vast en beweeg. Vervangt rechtsklik; knoptoewijzing moet uitstaan.",
+	"Ambient Intensity": "Omgevingslichtsterkte",
+	"Adjust ambient lighting strength.": "Pas de sterkte van het omgevingslicht aan.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

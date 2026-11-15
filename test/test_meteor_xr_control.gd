@@ -57,7 +57,8 @@ func _init() -> void:
 	client._handover_on_ready = false
 	assert(client.queue_foveation(true) and client._pending_foveation == 1)
 	assert(client.queue_foveation(false) and client._pending_foveation == 0)
-	assert(not client.queue_bitrate(161))
+	assert(not client.queue_bitrate(1001))
+	assert(client.queue_bitrate(1000))
 	assert(client.queue_bitrate(32))
 	assert(client.queue_bitrate(80) and client._pending_bitrate == 80)
 	client._update_bitrate_status({"state":"applied", "applied_bps":80000000})

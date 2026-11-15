@@ -97,6 +97,9 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 	if not layer or not screen.comp_corner_viewport:
 		return
 	var menu = _scene_root.screen_sources.menu_for_screen(screen) if _scene_root else null
+	if menu != null and menu.get("popup") == "packing_confirmation":
+		active = true
+		browser_visible = true
 	# Seed hidden top-hover geometry without needing to reveal the bottom bar.
 	# This is a one-time layout, not an extra submitted composition layer.
 	var seed_menu: bool = menu != null and menu._items.is_empty() and (menu.browser.active or _scene_root.get("is_streaming") == true)

@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "扩展码率",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "将桌面和PCVR的码率上限翻倍。需要高速网络和解码能力。",
+	"Default Res": "默认分辨率",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "选择视频编解码器。H.264+允许更高的码率。",
+	"XR codec; independent of desktop. Applies next session.": "XR编解码器独立于桌面，下次会话生效。",
+	"Grip Scroll": "握柄滚动",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "按住握柄并移动以滚动，替代右键。须关闭控制器映射。",
+	"Ambient Intensity": "环境光强度",
+	"Adjust ambient lighting strength.": "调整环境光强度。",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

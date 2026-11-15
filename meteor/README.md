@@ -39,6 +39,17 @@ cargo run --release -- --no-tray
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
 area. On macOS it's a menu-bar item (see [macOS](#macos) below).
 
+### Automatic Linux XR launch (opt-in development preview)
+
+New development builds offer a **Steam XR method** choice in Setup.
+**Steam launch options (Default)** retains the existing method and remains the
+fresh-install/Install All default. **Automatic XR (Experimental)** is an explicit
+opt-in after installing the namespaced runtime; it configures native Steam once
+instead of editing each game. Restart Steam from its desktop shortcut afterward. Existing launch
+options and the per-game wrapper fallback remain available. Flatpak Steam and
+real headset/game acceptance are separate work. See the
+[setup and test guide](../docs/guides/automatic-xr-launch.md).
+
 ### Managed Linux XR (development preview)
 
 Release dependencies, licenses, source companion and reproducible build inputs

@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Uitgebreide bitsnelheid",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Verdubbel lessenaar- en PCVR-limiete. Vereis vinnige netwerk en dekodering.",
+	"Default Res": "Verstekres.",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Kies die videokodek. H.264+ laat ’n hoër bistempo toe.",
+	"XR codec; independent of desktop. Applies next session.": "XR-kodek, apart van die lessenaar. Geld vanaf die volgende sessie.",
+	"Grip Scroll": "Greeprol",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Hou greep en beweeg om te rol. Vervang regsklik; kartering moet af wees.",
+	"Ambient Intensity": "Omgewingsligsterkte",
+	"Adjust ambient lighting strength.": "Pas die sterkte van omgewingslig aan.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Geniş bit hızı",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Masaüstü ve PCVR sınırlarını ikiye katlar. Hızlı ağ ve kod çözme gerekir.",
+	"Default Res": "Varsayılan çözünürlük",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Video kodeğini seçin. H.264+ daha yüksek bit hızına izin verir.",
+	"XR codec; independent of desktop. Applies next session.": "XR kodeği masaüstünden bağımsızdır. Sonraki oturumda uygulanır.",
+	"Grip Scroll": "Kavramayla kaydır",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Kavramayı tutup hareket ettir. Sağ tık yerine geçer; eşleme kapalı olmalı.",
+	"Ambient Intensity": "Ortam ışığı yoğunluğu",
+	"Adjust ambient lighting strength.": "Ortam ışığının gücünü ayarlayın.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

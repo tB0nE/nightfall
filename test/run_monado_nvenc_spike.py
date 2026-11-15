@@ -18,6 +18,7 @@ from xr_frame_accounting import match_submitted_frames
 from xr_application_lifecycle import run_application
 from xr_runtime_lifecycle import managed_runtime
 from xr_audio_environment import host_audio_environment
+from xr_runtime_paths import socket_path
 
 
 def run(root: Path, out: Path):
@@ -42,8 +43,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if codec not in ("h264", "h265"):
         raise ValueError("XR codec must be h264 or h265")
     bitrate_mbps = int(os.environ.get("NIGHTFALL_XR_BITRATE_MBPS", "0"))
-    if bitrate_mbps != 0 and not 8 <= bitrate_mbps <= 160:
-        raise ValueError("XR bitrate must be Auto (0) or 8..160 Mbps")
+    if bitrate_mbps != 0 and not 8 <= bitrate_mbps <= 1000:
+        raise ValueError("XR bitrate must be Auto (0) or 8..1000 Mbps")
     if not all(256 <= size <= 4096 and size % 16 == 0 for size in (eye_size, eye_height)) or target_hz not in (20,60,72):
         raise ValueError("Diagnostic profiles: eye size 256..4096, multiple of 16; target rate 20/60/72")
     tracked_scene = os.environ.get("METEOR_XR_TRACKED_SCENE") == "1"
@@ -54,7 +55,10 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     hello_xr = os.environ.get("NIGHTFALL_XR_HELLO_XR") == "1"
     godot_engine=os.environ.get("NIGHTFALL_XR_GODOT_ENGINE")=="1"
     upstream_demo=os.environ.get("NIGHTFALL_XR_UPSTREAM_DEMO")=="1"
+    activated = os.environ.get("NIGHTFALL_XR_EXTERNAL_RUNTIME") == "1"
     external_spec = os.environ.get("NIGHTFALL_XR_APPLICATION_SPEC")
+    if activated and external_spec:
+        raise ValueError("Socket-activated runtimes cannot launch an owned application")
     external_command = external_cwd = None
     if external_spec:
         if not (godot_engine and upstream_demo):
@@ -125,7 +129,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if godot_engine:
         app=Path(os.environ.get("NIGHTFALL_GODOT_EDITOR","/var/home/tyrone/Applications/Godot_v4.7-stable_linux.x86_64"))
         project=root / "test/fixtures/meteor_xr_godot"
-        if upstream_demo and not external_spec:
+        if upstream_demo and not external_spec and not activated:
             from prepare_xr_upstream_demo import prepare
             project=prepare(root)
             import_start=time.monotonic()
@@ -140,7 +144,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     if external_spec:
         command = external_command
         app = Path(command[0])
-    for executable in (service, library, app):
+    for executable in ((service, library) if activated else (service, library, app)):
         if not executable.is_file():
             raise RuntimeError("Run probe_monado_runtime.sh --build first")
     from xr_encoder_backend import select
@@ -179,7 +183,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
     env.pop("METEOR_XR_ENGINE_FIXTURE",None)
     env.pop("METEOR_XR_MONITOR_LEGACY",None)
     if os.environ.get("NIGHTFALL_XR_MONITOR_LEGACY") == "1": env["METEOR_XR_MONITOR_LEGACY"]="1"
-    engine_token=secrets.token_hex(16) if godot_engine and not external_spec else None
+    engine_token=secrets.token_hex(16) if godot_engine and not external_spec and not activated else None
     env.pop("METEOR_ENGINE_RUN_ID",None)
     env.pop("METEOR_XR_RUNTIME_GENERATION",None)
     runtime_generation = os.environ.get("NIGHTFALL_XR_RUNTIME_GENERATION")
@@ -194,7 +198,7 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         env["METEOR_XR_LAUNCH_INTENT"]=launch_intent
     if engine_token: env["METEOR_ENGINE_RUN_ID"]=engine_token
     (out / "engine-request-exit").unlink(missing_ok=True)
-    if godot_engine and not external_spec: env["METEOR_XR_ENGINE_FIXTURE"]="1"
+    if godot_engine and not external_spec and not activated: env["METEOR_XR_ENGINE_FIXTURE"]="1"
     env.pop("METEOR_XR_PADDED_SUBRECT",None)
     env.pop("METEOR_XR_SOURCE_FORMAT",None)
     source_format=os.environ.get("NIGHTFALL_XR_SOURCE_FORMAT","rgba8")
@@ -267,12 +271,17 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
         if not device_port.isdecimal() or not 1 <= int(device_port) <= 65535 or os.environ.get("NIGHTFALL_XR_TRANSPORT_RECEIVER"):
             raise ValueError("Device port must be a valid ADB-forwarded port, with no local receiver configured")
         env["METEOR_XR_DIRECT_PORT"] = device_port
+    if activated:
+        from xr_external_runtime import run_activated_runtime
+        run_activated_runtime(service, env, runtime, out, transport)
+        return
+    runtime_socket = socket_path(root,runtime,prepare=True)
     application_env = env
     if external_spec:
         from xr_local_application import application_environment
         application_env = application_environment(external_spec, env)
     with managed_runtime([str(service)], env=env,
-                         ready_path=runtime / "monado_comp_ipc",
+                         ready_path=runtime_socket,
                          log_path=out / "service.log", state_path=out / "runtime-state.json",
                          cancel_path=out / "client-disconnected") as child:
         # Application launch is fixture-owned, not part of service readiness.
@@ -288,6 +297,8 @@ def run_isolated(root: Path, out: Path, runtime: Path, transport):
                 # Only validated Steam-specific keys are forwarded. Runtime/IPC
                 # and compatibility selection remain owned by this supervisor.
                 application_env = application_environment(external_spec,dict(env,**request["environment"]))
+                from xr_local_application import steam_runtime_command
+                command = steam_runtime_command(command, application_env)
                 def owner_alive():
                     try:
                         os.kill(request["owner_pid"],0)

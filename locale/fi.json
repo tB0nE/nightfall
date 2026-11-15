@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Laajennettu bittinopeus",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Kaksinkertaiset työpöytä- ja PCVR-rajat. Vaatii nopean verkon ja purun.",
+	"Default Res": "Oletustarkkuus",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Valitse videokoodekki. H.264+ sallii suuremman bittinopeuden.",
+	"XR codec; independent of desktop. Applies next session.": "XR-koodekki on erillinen työpöydästä. Käytössä seuraavassa istunnossa.",
+	"Grip Scroll": "Vieritys otteella",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Pidä otetta ja liikuta. Korvaa oikean napsautuksen; painikemääritys pois.",
+	"Ambient Intensity": "Ympäristövalon voimakkuus",
+	"Adjust ambient lighting strength.": "Säädä ympäristövalon voimakkuutta.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

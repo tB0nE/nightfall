@@ -81,6 +81,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
             "port": port,
             "formats": [crate::depth_server::FORMAT_L8],
             "compression": "zstd",
+            "region_hello": true,
             "encryption": crate::crypto::ENCRYPTION,
             "width": width,
             "height": height,
@@ -133,6 +134,13 @@ async fn respond(mut stream: TcpStream, body: &str, _features: &Features) -> io:
     let headers = std::str::from_utf8(&request[..header_end]).map_err(|_|io::Error::other("Invalid HTTP headers"))?;
     let method = headers.split_whitespace().next().unwrap_or("").to_string();
     let path = headers.split_whitespace().nth(1).unwrap_or("").to_string();
+    if path == "/meteor/host-status" && method == "GET" {
+        // A liveness hint only. The client still needs the paired /cancel ACK
+        // before launching; a newly spawned process may not be listening yet.
+        let pid = crate::host::view::RUNNING.get().and_then(|host| host.pid());
+        write_json(&mut stream, 200, &host_status(pid).to_string()).await?;
+        return Ok(path);
+    }
     if path == "/meteor/virtual" && method == "POST" {
         let length = virtual_body_length(headers)?;
         while request.len() < header_end + length {
@@ -198,8 +206,27 @@ fn virtual_body_length(headers: &str) -> io::Result<usize> {
     }
 }
 
+fn host_status(pid: Option<u32>) -> serde_json::Value {
+    json!({"running": pid.is_some(), "instance": pid.map(|p| format!("{}:{p}", std::process::id())).unwrap_or_default()})
+}
+
+#[cfg(test)]
+mod host_status_tests {
+    #[test]
+    fn replacement_instance_changes_and_stopped_is_not_ready() {
+        let first = super::host_status(Some(101));
+        assert_eq!(first["running"], true);
+        assert_ne!(first["instance"], super::host_status(Some(102))["instance"]);
+        assert_eq!(first, super::host_status(Some(101)));
+        assert_eq!(super::host_status(None), serde_json::json!({"running":false,"instance":""}));
+    }
+}
+
 /// Virtual monitors the bundled host can create for one session. The client asks
 /// for its count with `virtual_displays=N` on every launch.
+#[cfg(target_os = "linux")]
+const MAX_VIRTUAL: u8 = 64;
+#[cfg(not(target_os = "linux"))]
 const MAX_VIRTUAL: u8 = 4;
 
 async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
@@ -282,11 +309,20 @@ async fn apply_virtual_on_windows(supervisor: &std::sync::Arc<crate::host::Super
         Err(err) => log::warn!("Virtual display task panicked: {err}; restarting host"),
     }
 
-    // Fallback only: the config file already holds the new count, so a restart
-    // is guaranteed to pick it up even when the HTTP path is unavailable.
+    // Wait for the old process to exit instead of sleeping an arbitrary 2s.
+    // Report its instance so clients cannot mistake the old listener for ready.
+    let previous_pid = supervisor.pid();
+    let previous_instance = host_status(previous_pid)["instance"].clone();
     tokio::spawn(async move {
         supervisor.set_wanted(false);
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while supervisor.pid().is_some() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        if supervisor.pid().is_some() {
+            log::error!("Virtual display host restart: old process did not exit; leaving it stopped");
+            return;
+        }
         supervisor.set_wanted(true);
     });
     (202, json!({
@@ -294,6 +330,8 @@ async fn apply_virtual_on_windows(supervisor: &std::sync::Arc<crate::host::Super
         "count": count,
         "deferred": false,
         "host_restarting": true,
+        "restart_status": 1,
+        "previous_instance": previous_instance,
     }))
 }
 
@@ -461,6 +499,25 @@ mod tests {
         }
         assert!(pairing_body_length(&valid.replace("12","99999")).is_err());
     }
+    #[tokio::test]
+    async fn host_status_is_a_read_only_liveness_hint_without_supervisor() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let serving = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            respond(stream, "{}", &Features::default()).await.unwrap()
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(b"GET /meteor/host-status HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).await.unwrap();
+        let reply = String::from_utf8(reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200"));
+        let body = reply.split("\r\n\r\n").nth(1).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(body).unwrap(), host_status(None));
+        assert_eq!(serving.await.unwrap(), "/meteor/host-status");
+    }
+
     #[test] fn virtual_discovery_absent_without_vdd() {
         let map = PortMap::new(47989, 1000).unwrap();
         let features = Features::default();
@@ -472,7 +529,7 @@ mod tests {
         features.vdd_installed = true;
         let body = info(&map, &features);
         assert_eq!(body["virtual_display"]["driver_installed"], true);
-        assert_eq!(body["virtual_display"]["max_count"], 4);
+        assert_eq!(body["virtual_display"]["max_count"], MAX_VIRTUAL);
     }
     #[test] fn virtual_http_rejects_missing_or_oversized_body() {
         let valid = "POST /meteor/virtual HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n";
@@ -490,7 +547,8 @@ mod tests {
         assert_eq!(status, 503);
         let (status, _) = handle_virtual(b"{\"count\":4}").await;
         assert_eq!(status, 503);
-        let (status, _) = handle_virtual(b"{\"count\":5}").await;
+        let invalid = format!("{{\"count\":{}}}", u16::from(MAX_VIRTUAL) + 1);
+        let (status, _) = handle_virtual(invalid.as_bytes()).await;
         assert_eq!(status, 400);
         let (status, _) = handle_virtual(b"{}").await;
         assert_eq!(status, 400);

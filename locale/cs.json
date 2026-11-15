@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Vyšší datový tok",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Dvojnásobné limity plochy a PCVR. Vyžaduje rychlou síť a dekódování.",
+	"Default Res": "Výchozí rozlišení",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Vyberte video kodek. H.264+ umožňuje vyšší datový tok.",
+	"XR codec; independent of desktop. Applies next session.": "XR kodek nezávislý na ploše. Platí od další relace.",
+	"Grip Scroll": "Posun úchopem",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Držte úchop a pohybujte ovladačem. Nahrazuje pravé kliknutí; mapování vypněte.",
+	"Ambient Intensity": "Intenzita osvětlení",
+	"Adjust ambient lighting strength.": "Upravte intenzitu okolního osvětlení.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

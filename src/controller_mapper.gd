@@ -176,7 +176,11 @@ func _deactivate():
 		main.ui_controller.update_ctrl_mode_btn()
 
 func cycle_type():
-	ctrl_type = (ctrl_type + 1) % 3
+	set_type((ctrl_type + 1) % 3)
+
+func set_type(value: int):
+	if value < 0 or value >= type_labels.size() or value == ctrl_type: return
+	ctrl_type = value
 	if active:
 		_deactivate_silent()
 		if is_gamepad_mode():
@@ -399,14 +403,22 @@ func get_close_to_head() -> bool:
 	return _close_to_head
 
 func cycle_btn_toggle():
-	btn_toggle = (btn_toggle + 1) % 3
+	set_btn_toggle((btn_toggle + 1) % 3)
+
+func set_btn_toggle(value: int):
+	if value < 0 or value >= btn_toggle_labels.size() or value == btn_toggle: return
+	btn_toggle = value
 	main.state_manager.save_state()
 	if main.ui_controller:
 		main.ui_controller.update_btn_toggle_btn()
 	_log("[CTRL] Button toggle: " + btn_toggle_labels[btn_toggle])
 
 func cycle_primary_hand():
-	primary_hand = (primary_hand + 1) % 3
+	set_primary_hand((primary_hand + 1) % 3)
+
+func set_primary_hand(value: int):
+	if value < 0 or value >= primary_labels.size() or value == primary_hand: return
+	primary_hand = value
 	main.state_manager.save_state()
 	if main.ui_controller:
 		main.ui_controller.update_primary_btn()

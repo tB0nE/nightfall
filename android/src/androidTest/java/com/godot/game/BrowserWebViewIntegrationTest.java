@@ -62,6 +62,49 @@ public class BrowserWebViewIntegrationTest {
         if (activity != null) activity.finish();
         if (texture != null) texture.release();
     }
+    private String javascript(String expression) throws Exception {
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<String> result = new java.util.concurrent.atomic.AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            try {
+                ((WebView) field("web")).evaluateJavascript(expression, value -> { result.set(value); done.countDown(); });
+            } catch (Exception failure) { throw new AssertionError(failure); }
+        });
+        assertTrue("WebView JavaScript timed out", done.await(3, java.util.concurrent.TimeUnit.SECONDS));
+        return result.get();
+    }
+
+    @Test public void fractionalWheelScrollReachesWebPage() throws Exception {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        instrumentation.runOnMainSync(() -> {
+            try {
+                ((WebView) field("web")).loadDataWithBaseURL("https://nightfall.invalid/scroll-test",
+                    "<html><head><meta name='viewport' content='width=device-width'></head>"
+                    + "<body style='margin:0;height:4000px'><div id='ready'>Scroll test</div>"
+                    + "<script>window.wheels=[];addEventListener('wheel',e=>wheels.push(e.deltaY));</script></body></html>",
+                    "text/html", "UTF-8", null);
+            } catch (Exception failure) { throw new AssertionError(failure); }
+        });
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (!"true".equals(javascript("!!document.getElementById('ready')"))
+                && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertEquals("true", javascript("!!document.getElementById('ready')"));
+        // Isolate event routing from Chromium's optional compositor scrolling.
+        BrowserPrototype.scroll(0, 320f, 180f, -0.5f);
+        instrumentation.waitForIdleSync();
+        deadline = android.os.SystemClock.uptimeMillis() + 3000;
+        while ("0".equals(javascript("wheels.length"))
+                && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertNotEquals("Wheel event must reach the page", "0", javascript("wheels.length"));
+        assertEquals("true", javascript("wheels[0] > 0"));
+        BrowserPrototype.scroll(0, 320f, 180f, 0.5f);
+        instrumentation.waitForIdleSync();
+        deadline = android.os.SystemClock.uptimeMillis() + 3000;
+        while ("1".equals(javascript("wheels.length"))
+                && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(50);
+        assertEquals("true", javascript("wheels.length >= 2 && wheels[wheels.length-1] < 0"));
+    }
+
     @Test public void permissionsAreDenied() throws Exception {
         boolean[] denied = {false};
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
@@ -171,6 +214,56 @@ public class BrowserWebViewIntegrationTest {
         assertEquals("http://10.0.0.13:32400/web",
             BrowserNavigation.destination("http://10.0.0.13:32400/web"));
     }
+    @Test public void liveResizeKeepsWebViewAndTabs() throws Exception {
+        Object original = field("web");
+        BrowserPageTabs pages = (BrowserPageTabs) field("pageTabs");
+        int selected = pages.selected;
+        for (int[] size : new int[][] {{2560,1440},{1920,1080},{2560,1440}}) {
+            BrowserPrototype.resize(0, size[0], size[1]);
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            assertSame("Resize must retain the live page", original, field("web"));
+            assertEquals(selected, pages.selected);
+            org.json.JSONObject metadata = new org.json.JSONObject(BrowserPrototype.tabs());
+            assertEquals(size[0], metadata.getInt("width"));
+            assertEquals(size[1], metadata.getInt("height"));
+            android.hardware.display.VirtualDisplay display = (android.hardware.display.VirtualDisplay) field("display");
+            android.graphics.Point actual = new android.graphics.Point();
+            display.getDisplay().getRealSize(actual);
+            assertEquals(size[0], actual.x);
+            assertEquals(size[1], actual.y);
+        }
+        BrowserPrototype.resize(0, 8192,8192);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertEquals(2560, new org.json.JSONObject(BrowserPrototype.tabs()).getInt("width"));
+        BrowserPrototype.close();
+        BrowserPrototype.resize(0,1920,1080);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull(field("web"));
+    }
+    @Test public void monitorTabSuspendsBrowserWithoutClosingTabs() throws Exception {
+        BrowserPrototype.tabAction("new", 0);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        BrowserPageTabs pages = (BrowserPageTabs) field("pageTabs");
+        int selected = pages.selected;
+        Object outgoing = field("web");
+        BrowserPrototype.contentVisible(0, false);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertSame("Monitor switches retain the page rather than reconstructing it", outgoing, field("web"));
+        assertEquals(android.view.View.INVISIBLE, ((android.view.View) outgoing).getVisibility());
+        assertEquals(2, pages.pages.size());
+        assertEquals(selected, pages.selected);
+        BrowserPrototype.contentVisible(0, true);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNotNull(field("web"));
+        assertSame(outgoing, field("web"));
+        assertEquals(android.view.View.VISIBLE, ((android.view.View) outgoing).getVisibility());
+        assertEquals(selected, pages.selected);
+        assertEquals(2, pages.pages.size());
+        BrowserPrototype.close();
+        BrowserPrototype.contentVisible(0, true);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        assertNull("A late resume must never reopen a closed session", field("web"));
+    }
     @Test public void newSelectCloseKeepsOneLivePage() throws Exception {
         BrowserPageTabs pages = (BrowserPageTabs) field("pageTabs");
         int first = pages.selected;
@@ -183,11 +276,13 @@ public class BrowserWebViewIntegrationTest {
         BrowserPrototype.tabAction("select", first);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertEquals(first, pages.selected);
+        assertSame("Recently used tabs must resume their existing document", original, field("web"));
         assertEquals(2, pages.pages.size());
         BrowserPrototype.tabAction("close", second);
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         assertEquals(1, pages.pages.size());
         assertEquals(first, pages.selected);
+        assertTrue(((java.util.Map<?, ?>)field("retainedPages")).isEmpty());
     }
     @Test public void staleCleanupCannotRestoreClosedBrowser() throws Exception {
         int old = ((java.util.concurrent.atomic.AtomicInteger) field("generation")).get();

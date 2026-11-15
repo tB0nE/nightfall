@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Utvidet bitrate",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Dobler grensene for skrivebord og PCVR. Krever raskt nett og dekoding.",
+	"Default Res": "Standardoppløsning",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Velg videokodek. H.264+ tillater høyere bitrate.",
+	"XR codec; independent of desktop. Applies next session.": "XR-kodek uavhengig av skrivebordet. Gjelder neste økt.",
+	"Grip Scroll": "Rull med grep",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Hold grepet og beveg for å rulle. Erstatter høyreklikk; tilordning må være av.",
+	"Ambient Intensity": "Lysstyrke for omgivelsene",
+	"Adjust ambient lighting strength.": "Juster styrken på omgivelseslyset.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

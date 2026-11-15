@@ -138,7 +138,7 @@ pub(crate) async fn runtime_adapter_with_status(
     bitrate_directory: Option<&crate::xr_bitrate::RuntimeDirectory>,
 ) -> io::Result<()> {
     if !matches!(hz, 20 | 60 | 72) || !crate::xr_control::valid_eye_size(eye_size) || !crate::xr_control::valid_eye_size(eye_height) || (long_run && !matches!(hz,60 | 72))
-        || (bitrate_mbps != 0 && !(8..=160).contains(&bitrate_mbps)) || !matches!(codec.as_str(),"h264" | "h265") {
+        || (bitrate_mbps != 0 && !(8..=1000).contains(&bitrate_mbps)) || !matches!(codec.as_str(),"h264" | "h265") {
         return Err(io::Error::other("unsupported managed XR profile"));
     }
     let cache = root.join(".build-cache/meteor-xr");
@@ -155,6 +155,10 @@ pub(crate) async fn runtime_adapter_with_status(
             Err(error) if Instant::now() >= deadline => return Err(error),
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
+    };
+    let activation = match launch_intent.as_deref() {
+        Some(generation) => crate::xr_activation::take(&root,generation)?,
+        None => None,
     };
     let output = lan_session_directory(&cache)?;
     if let Some(directory)=bitrate_directory { *directory.lock().unwrap()=Some(output.clone()); }
@@ -203,7 +207,7 @@ pub(crate) async fn runtime_adapter_with_status(
     // Explicit host-local DEV override only. Never take an executable or args
     // from the headset/control protocol. Missing means the validated demo.
     if let Some(generation)=launch_intent.as_ref() {command.env("NIGHTFALL_XR_LAUNCH_INTENT",generation);}
-    if application.exists() {
+    if application.exists() && activation.is_none() {
         let application=session_application(&root,&application,&output,launch_intent.as_deref())?;
         command.env("NIGHTFALL_XR_APPLICATION_SPEC", application);
     }
@@ -230,8 +234,18 @@ pub(crate) async fn runtime_adapter_with_status(
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .process_group(0);
+    if let Some(activation) = activation.as_ref() {
+        let fd = activation.listener.as_raw_fd();
+        command.env("NIGHTFALL_XR_EXTERNAL_RUNTIME", "1").env("METEOR_XR_LISTEN_FD", fd.to_string());
+        // Only the claimed listener crosses exec. Its duplicate is owned by
+        // this session guard; the broker keeps the original endpoint alive.
+        unsafe { command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {return Err(io::Error::last_os_error());}
+            Ok(())
+        }); }
+    }
     let mut child = OwnedProcess(command.spawn()?);
-    let deadline = runtime_duration(application.exists(),long_run).map(|duration|Instant::now()+duration);
+    let deadline = runtime_duration(application.exists() || activation.is_some(),long_run).map(|duration|Instant::now()+duration);
     loop {
         if let Some(progress) = progress {
             let mut status = events.runtime_status();

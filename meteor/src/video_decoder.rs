@@ -188,6 +188,7 @@ fn runtime() -> Result<&'static Runtime, String> {
 }
 
 pub struct Ffmpeg {
+    crop: Option<[f32;4]>,
     handle: *mut c_void,
     target: (usize, usize),
     filter: Option<crate::nvdec::Nv12Footprint>,
@@ -245,6 +246,7 @@ impl Ffmpeg {
             return Err(message(&error));
         }
         Ok(Self {
+            crop: None,
             handle,
             target,
             filter: None,
@@ -283,7 +285,7 @@ impl Ffmpeg {
             if !want_pixels {
                 continue;
             }
-            let (w, h) = (raw.width as usize, raw.height as usize);
+            let (mut w, mut h) = (raw.width as usize, raw.height as usize);
             if w < 2
                 || h < 2
                 || w > 8192
@@ -295,6 +297,8 @@ impl Ffmpeg {
             }
             // Buffer is owned by the shim and valid until the next receive call.
             let source = unsafe { std::slice::from_raw_parts(raw.data, raw.length) };
+            let cropped=self.crop.filter(|r|*r!=[0.0,0.0,1.0,1.0]).map(|r|crop_nv12(source,(w,h),r));
+            let source=if let Some((ref data,size))=cropped {w=size.0;h=size.1;data.as_slice()} else {source};
             if let Some(gpu) = self.processing_gpu.clone() {
                 if self
                     .vulkan
@@ -408,12 +412,10 @@ impl Decoder {
             _ => Err("Decoder Auto must be resolved before creation".into()),
         }
     }
-    /// Decode only part of each frame (fractions: left, top, right, bottom). Only NVDEC
-    /// supports this; the FFmpeg backends keep decoding the whole frame.
+    /// Select normalized source bounds. NVDEC crops its output surface;
+    /// FFmpeg crops downloaded NV12 before GPU/CPU model preparation.
     pub fn set_crop(&mut self, crop: Option<[f32; 4]>) {
-        if let Self::Nvdec(d) = self {
-            d.set_crop(crop);
-        }
+        match self {Self::Nvdec(d)=>d.set_crop(crop),Self::Ffmpeg(d)=>{d.crop=crop;d.filter=None;}}
     }
     pub fn set_target(&mut self, size: (usize, usize)) {
         match self {
@@ -581,4 +583,19 @@ mod tests {
             "Compatibility decoder unexpectedly loaded CUDA"
         );
     }
+}
+
+fn crop_nv12(src:&[u8],size:(usize,usize),r:[f32;4])->(Vec<u8>,(usize,usize)) {
+ let (sw,sh)=size;
+ let x=((r[0]*sw as f32).round() as usize).min(sw-2)&!1;
+ let y=((r[1]*sh as f32).round() as usize).min(sh-2)&!1;
+ let right=(((r[2]*sw as f32).round() as usize).min(sw)&!1).max(x+2);
+ let bottom=(((r[3]*sh as f32).round() as usize).min(sh)&!1).max(y+2);
+ let (w,h)=(right-x,bottom-y);let mut out=Vec::with_capacity(w*h*3/2);
+ for row in y..bottom {out.extend_from_slice(&src[row*sw+x..row*sw+right]);}
+ for row in y/2..bottom/2 {let start=sw*sh+row*sw;out.extend_from_slice(&src[start+x..start+right]);}
+ (out,(w,h))
+}
+#[cfg(test)] mod crop_tests {
+ #[test] fn nv12_right_half(){let data:Vec<u8>=(0..48).collect();let (got,size)=super::crop_nv12(&data,(8,4),[0.5,0.0,1.0,1.0]);assert_eq!(size,(4,4));assert_eq!(&got[..4],&[4,5,6,7]);assert_eq!(&got[16..20],&[36,37,38,39]);assert_eq!(got.len(),24);}
 }

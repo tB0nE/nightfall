@@ -250,7 +250,7 @@ func queue_foveation(enabled: bool) -> bool:
 	return true
 
 func queue_bitrate(mbps: int) -> bool:
-	if state != "prepared" or session.is_empty() or mbps not in PCVRVideoSettings.BITRATES: return false
+	if state != "prepared" or session.is_empty() or (mbps != 0 and (mbps < 8 or mbps > 1000)): return false
 	_pending_bitrate = mbps # Coalesce rapid cycling; only the control loop owns cipher I/O.
 	bitrate_message = "Bitrate update queued"
 	return true
@@ -543,7 +543,12 @@ func _offer_authenticated(config: ConfigFile, token: int) -> void:
 	if hz not in [20, 60, 72] or not PCVRVideoSettings.valid_eye_size(eye_size) or not PCVRVideoSettings.valid_eye_size(eye_height) or (_long_run and hz not in [60, 72]):
 		_fail("Unsupported developer XR rate or eye size")
 		return
-	var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": preferred_codec(quest3), "foveated_encoding":effective_foveation(video_settings.foveated_encoding)}, token)
+	var selected_codec := preferred_codec(quest3) if video_settings.codec_choice == -1 else VideoEncodingOptions.wire_name(video_settings.effective_codec_choice())
+	var supported_codecs: Variant = encoder_capabilities.get("codecs", ["h264", "h265"])
+	if selected_codec not in ["h264", "h265"] or (supported_codecs is Array and not supported_codecs.is_empty() and selected_codec not in supported_codecs):
+		_fail("Selected XR codec is unavailable on this host")
+		return
+	var configured := await _request({"type": "configure_video", "bitrate_mbps": video_settings.bitrate_mbps, "codec": selected_codec, "foveated_encoding":effective_foveation(video_settings.foveated_encoding)}, token)
 	if token != _generation: return
 	if configured.get("state", "") != "idle" or configured.get("reason") != null:
 		_fail("Host rejected PCVR video configuration; update Meteor")

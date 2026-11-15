@@ -11,6 +11,9 @@ const QUEST3_BITRATE_MBPS := 80 # Conservative H.264 baseline; not a network ben
 const QUEST3_STREAM_FPS := 72
 ## Every supported headset (Quest 2, 3S and 3) runs PCVR at 72 Hz, and long sessions require 60 or 72.
 const STREAM_FPS := 72
+var codec_choice := -1 # Unset preserves the existing device/host codec default.
+var codec_bitrates: Dictionary = {}
+var _default_codec := VideoEncodingOptions.H264
 var _default_eye_size := 0
 var _default_bitrate_mbps := 0
 var eye_size := 0 # Unset: retain the developer host profile's resolution.
@@ -22,12 +25,15 @@ var sampling := 0
 var foveated_encoding := false
 
 func _init(quest3: bool = false) -> void:
+	_default_codec = VideoEncodingOptions.HEVC if quest3 else VideoEncodingOptions.H264
 	_default_eye_size = QUEST3_EYE_SIZE if quest3 else 0
 	_default_bitrate_mbps = QUEST3_BITRATE_MBPS if quest3 else 0
 	eye_size = _default_eye_size
 	bitrate_mbps = _default_bitrate_mbps
 
 func load_from(path: String = PATH) -> void:
+	codec_choice = -1
+	codec_bitrates = {}
 	eye_size = _default_eye_size
 	resolution_percent = 100
 	extended_resolution_range = false
@@ -39,20 +45,30 @@ func load_from(path: String = PATH) -> void:
 	if config.load(path) != OK: return
 	extended_resolution_range = bool(config.get_value("video", "extended_resolution_range", false))
 	foveated_encoding = bool(config.get_value("video", "foveated_encoding", false))
+	var saved_codec := int(config.get_value("video", "codec_choice", -1))
+	codec_choice = saved_codec if saved_codec in VideoEncodingOptions.CHOICES else -1
+	var saved_profiles = config.get_value("video", "codec_bitrates", {})
+	if saved_profiles is Dictionary:
+		for choice in VideoEncodingOptions.CHOICES:
+			var value = saved_profiles.get(str(choice))
+			if value is int and value >= 0: codec_bitrates[str(choice)] = VideoEncodingOptions.clamp_bitrate(value, choice, 8)
 	var size := int(config.get_value("video", "eye_size", _default_eye_size))
 	var bitrate := int(config.get_value("video", "bitrate_mbps", _default_bitrate_mbps))
 	eye_size = size if size == 0 or size in EYE_SIZES else _default_eye_size
 	if config.has_section_key("video", "resolution_percent"):
 		var percent := int(config.get_value("video", "resolution_percent", 100))
-		resolution_percent = percent if percent in RESOLUTION_PERCENTAGES or percent in EXTENDED_RESOLUTION_PERCENTAGES or percent == 0 else 100
+		resolution_percent = percent if (percent >= 50 and percent <= 150) or percent == 0 else 100
 	elif config.has_section_key("video", "eye_size") and (size == 0 or size in EYE_SIZES):
 		resolution_percent = 0 # Preserve the user's existing explicit resolution.
-	bitrate_mbps = bitrate if bitrate in BITRATES else _default_bitrate_mbps
+	if codec_choice == -1 and _default_codec == VideoEncodingOptions.H264 and bitrate > VideoEncodingOptions.maximum_bitrate(VideoEncodingOptions.H264): codec_choice = VideoEncodingOptions.H264_PLUS
+	bitrate_mbps = VideoEncodingOptions.clamp_bitrate(bitrate if bitrate >= 0 else _default_bitrate_mbps, effective_codec_choice(), 8)
 	sharpen = clampi(int(config.get_value("video", "sharpen", 0)), 0, 2)
 	sampling = clampi(int(config.get_value("video", "sampling", 0)), 0, 2)
 
 func save_to(path: String = PATH) -> Error:
 	var config := ConfigFile.new()
+	config.set_value("video", "codec_choice", codec_choice)
+	config.set_value("video", "codec_bitrates", codec_bitrates)
 	config.set_value("video", "eye_size", eye_size)
 	config.set_value("video", "resolution_percent", resolution_percent)
 	config.set_value("video", "extended_resolution_range", extended_resolution_range)
@@ -137,3 +153,17 @@ func cycle_resolution(_profile_size: int = 1024) -> void:
 
 func cycle_bitrate() -> void:
 	bitrate_mbps = BITRATES[(BITRATES.find(bitrate_mbps) + 1) % BITRATES.size()]
+
+func effective_codec_choice() -> int:
+	return codec_choice if codec_choice in VideoEncodingOptions.CHOICES else _default_codec
+
+func select_codec(choice: int) -> bool:
+	if choice not in VideoEncodingOptions.CHOICES or choice == effective_codec_choice(): return false
+	codec_bitrates[str(effective_codec_choice())] = bitrate_mbps
+	codec_choice = choice
+	bitrate_mbps = VideoEncodingOptions.clamp_bitrate(int(codec_bitrates.get(str(choice), bitrate_mbps)), choice, 8)
+	return true
+
+func set_bitrate(value: int) -> void:
+	bitrate_mbps = VideoEncodingOptions.clamp_bitrate(value, effective_codec_choice(), 8)
+	codec_bitrates[str(effective_codec_choice())] = bitrate_mbps

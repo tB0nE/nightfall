@@ -700,6 +700,11 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
         int64_t virtual_displays = options["virtual_displays"];
         if (virtual_displays > 0) url += "&virtual_displays=" + String::num_int64(virtual_displays);
     }
+    if (options.has("virtual_modes")) url += "&virtual_modes=" + String(options["virtual_modes"]).uri_encode();
+    if (options.has("nf_physical_modes")) url += "&nf_physical_modes=" + String(options["nf_physical_modes"]).uri_encode();
+    for (const char *key : {"nf_budget", "nf_max_axis", "nf_max_pixels", "nf_physical_w", "nf_physical_h", "nf_physical_scale", "nf_require_fit"}) {
+        if (options.has(key)) url += "&" + String(key) + "=" + String::num_int64(options[key]);
+    }
     if (options.has("sops")) url += "&sops=" + String::num_int64(options["sops"]);
     if (options.has("surround_audio_info")) url += "&surroundAudioInfo=" + String::num_int64(options["surround_audio_info"]);
     if (options.has("surround_params")) url += "&surroundParams=" + String(options["surround_params"]);

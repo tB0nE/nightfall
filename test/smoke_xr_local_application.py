@@ -16,7 +16,7 @@ import time
 import secrets
 
 
-def run(root, steam_wrapper=False, installed_runtime=None, encoder=None):
+def run(root, steam_wrapper=False, installed_runtime=None, encoder=None, steam_sandbox=None):
     """Returns the diagnostics folder. encoder: nvenc, vaapi or auto (default:
     the runtime's own default)."""
     cache = root / ".build-cache/meteor-xr"
@@ -64,6 +64,14 @@ def run(root, steam_wrapper=False, installed_runtime=None, encoder=None):
             if encoder:
                 env["NIGHTFALL_XR_ENCODER_BACKEND"] = encoder
             if steam_wrapper:
+                if steam_sandbox:
+                    entry = Path(steam_sandbox) / "_v2-entry-point"
+                    if not entry.is_file(): raise ValueError("Steam Linux Runtime entry point is missing")
+                    # pressure-vessel supplies EOF on stdin; hello_xr treats
+                    # that as a quit key. Hold a bounded writer inside the
+                    # sandbox so this tests rendering rather than immediate exit.
+                    spec["argv"] = [str(entry), "--verb=run", "--", "/bin/sh", "-c",
+                                    'sleep 20 | "$@"', "xr-sandbox-sample", *spec["argv"]]
                 spec.update(launch="steam",steam_app_id="438100")
                 selection=out/"steam-application.json"
                 selection.write_text(json.dumps(spec))
@@ -145,7 +153,9 @@ if __name__ == "__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkout",type=Path)
     parser.add_argument("--steam-wrapper",action="store_true")
+    parser.add_argument("--steam-sandbox",type=Path,help="Run the sample inside this Steam Linux Runtime (requires --steam-wrapper)")
     parser.add_argument("--installed-runtime",type=Path,help="Use installed supervisor and prebuilt bridges")
     parser.add_argument("--encoder",choices=["auto","nvenc","vaapi"],help="XR encoder backend")
     args=parser.parse_args()
-    run(args.checkout.resolve(),args.steam_wrapper,args.installed_runtime.resolve() if args.installed_runtime else None,args.encoder)
+    if args.steam_sandbox and not args.steam_wrapper: parser.error("--steam-sandbox requires --steam-wrapper")
+    run(args.checkout.resolve(),args.steam_wrapper,args.installed_runtime.resolve() if args.installed_runtime else None,args.encoder,args.steam_sandbox)

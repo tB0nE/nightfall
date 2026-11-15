@@ -132,6 +132,12 @@ struct DecodeCreateInfo {
 }
 
 #[repr(C)]
+struct ReconfigureInfo {
+ width:u32,height:u32,target_width:u32,target_height:u32,surfaces:u32,
+ reserved1:[u32;12],display_area:[i16;4],target_rect:[i16;4],reserved2:[u32;11],
+}
+
+#[repr(C)]
 struct ProcParams {
     progressive_frame: c_int,
     second_field: c_int,
@@ -210,6 +216,7 @@ pub(crate) struct Api {
     create_parser: unsafe extern "C" fn(*mut *mut c_void, *mut ParserParams) -> CuResult,
     parse_data: unsafe extern "C" fn(*mut c_void, *mut SourceDataPacket) -> CuResult,
     destroy_parser: unsafe extern "C" fn(*mut c_void) -> CuResult,
+    reconfigure_decoder: unsafe extern "C" fn(*mut c_void, *mut ReconfigureInfo) -> CuResult,
     create_decoder: unsafe extern "C" fn(*mut *mut c_void, *mut DecodeCreateInfo) -> CuResult,
     destroy_decoder: unsafe extern "C" fn(*mut c_void) -> CuResult,
     decode_picture: unsafe extern "C" fn(*mut c_void, *mut c_void) -> CuResult,
@@ -260,6 +267,7 @@ fn load_api() -> Result<Api, String> {
         parse_data: sym!(cuvid, b"cuvidParseVideoData"),
         destroy_parser: sym!(cuvid, b"cuvidDestroyVideoParser"),
         create_decoder: sym!(cuvid, b"cuvidCreateDecoder"),
+        reconfigure_decoder: sym!(cuvid, b"cuvidReconfigureDecoder"),
         destroy_decoder: sym!(cuvid, b"cuvidDestroyDecoder"),
         decode_picture: sym!(cuvid, b"cuvidDecodePicture"),
         map_frame: sym!(cuvid, b"cuvidMapVideoFrame64"),
@@ -287,6 +295,8 @@ struct State {
     /// The part of the frame to decode as fractions of its width and height
     /// (left, top, right, bottom); None decodes the whole display area.
     crop: Option<[f32; 4]>,
+    display_area: [i32;4],
+    decode_surfaces: u32,
     bit_depth_minus8: u8,
     transfer: u8,
     full_range: bool,
@@ -441,6 +451,8 @@ impl NvDecoder {
             surface: (0, 0),
             target,
             crop: None,
+            display_area: [0;4],
+            decode_surfaces: 0,
             bit_depth_minus8: 0,
             transfer: 1,
             full_range: false,
@@ -477,11 +489,25 @@ impl NvDecoder {
         Ok(NvDecoder { api, ctx, parser, state })
     }
 
-    /// Decode only part of each frame, given as fractions of its width and
-    /// height (left, top, right, bottom). Takes effect when the stream's next
-    /// sequence header recreates the decoder, so set it before the first
-    /// keyframe.
+    /// Select a normalized source rectangle. An existing decoder is
+    /// reconfigured between packets without restarting the video stream.
     pub fn set_crop(&mut self, crop: Option<[f32; 4]>) {
+        if self.state.crop == crop {return;}
+        if !self.state.decoder.is_null() {
+            let area=crop.map(|r|crop_area(self.state.display_area,r)).unwrap_or(self.state.display_area);
+            let size=(((area[2]-area[0]).max(2) as usize)&!1,((area[3]-area[1]).max(2) as usize)&!1);
+            let mut info=ReconfigureInfo{width:self.state.coded.0 as u32,height:self.state.coded.1 as u32,
+                target_width:size.0 as u32,target_height:size.1 as u32,surfaces:self.state.decode_surfaces,
+                reserved1:[0;12],display_area:area.map(|v|v as i16),target_rect:[0;4],reserved2:[0;11]};
+            // Serialized with decode; copy_frame unmaps every output before returning.
+            let result=unsafe {
+                (self.api.cu_ctx_push)(self.ctx);
+                let rc=(self.api.reconfigure_decoder)(self.state.decoder,&mut info);
+                let mut popped=ptr::null_mut();(self.api.cu_ctx_pop)(&mut popped);rc
+            };
+            if result!=0 {self.state.error=Some(format!("NVDEC crop reconfiguration failed: {result}"));return;}
+            self.state.surface=size;
+        }
         self.state.crop = crop;
     }
 
@@ -626,6 +652,8 @@ unsafe extern "C" fn on_sequence(user: *mut c_void, format: *mut VideoFormat) ->
         return 0;
     }
     state.coded = coded;
+    state.display_area = format.display_area;
+    state.decode_surfaces = surfaces;
     state.surface = (tw, th);
     state.bit_depth_minus8 = format.bit_depth_luma_minus8;
     log::info!(
@@ -1264,4 +1292,8 @@ mod tests {
         }
         assert_eq!(found, 3, "the clip needs three decoded frames");
     }
+}
+
+#[cfg(test)] mod reconfigure_layout_tests {
+ #[test] fn abi(){assert_eq!(std::mem::size_of::<super::ReconfigureInfo>(),128);assert_eq!(std::mem::offset_of!(super::ReconfigureInfo,display_area),68);}
 }

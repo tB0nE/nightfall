@@ -550,6 +550,8 @@ var _ui_sharpen_btn: Button
 var _ui_brightness_btn: Button
 var _ui_contrast_btn: Button
 var _ui_gamma_btn: Button
+var _ui_grip_scroll_btn: Button
+var _ui_extended_bitrate_btn: Button
 var _ui_ambient_btn: Button
 var _ui_ambient_color_btn: Button
 var _ui_ctrl_mode_btn: Button
@@ -694,11 +696,34 @@ func compute_resolution_options() -> Array:
 func compute_requested_resolution(apply_midas_cap: bool = true) -> Vector2i:
 	var w: int
 	var h: int
-	if settings.host.is_polaris_host:
+	var tab: ScreenContentTab = primary_screen.content_tabs.selected() if primary_screen != null else null
+	var tab_resolution := tab.resolution if tab != null and tab.kind == ScreenContentTab.STREAM else Vector2i.ZERO
+	# A virtual monitor's profile sizes its host output, not the entire packed
+	# video frame. The host's launch-plan reply supplies that frame's dimensions.
+	if primary_screen != null and primary_screen.monitor != null and primary_screen.monitor.hint.get("virtual", false) and layout != null and layout.virtual_modes_supported:
+		tab_resolution = Vector2i.ZERO
+	if layout != null and layout.packing_profiled and settings.host.is_polaris_host:
+		w = settings.host.native_resolution.x
+		h = settings.host.native_resolution.y
+	elif tab_resolution != Vector2i.ZERO:
+		var requested := tab_resolution
+		if settings.host.is_polaris_host:
+			var primary_size := settings.host.native_resolution
+			if layout and layout.source == &"host_manifest" and not layout.enabled_monitors().is_empty():
+				primary_size = layout.enabled_monitors()[0].frame_rect.size
+			requested = DefaultStreamResolution.packed_frame(requested, settings.host.native_resolution, primary_size)
+		w = requested.x
+		h = requested.y
+	elif settings.host.is_polaris_host and not settings.host.default_resolution_selected:
 		w = int(settings.host.native_resolution.x * settings.host.resolution_scale_pct / 100.0)
 		h = int(settings.host.native_resolution.y * settings.host.resolution_scale_pct / 100.0)
 	else:
 		var res: Vector2i = resolutions[settings.host.resolution_idx]
+		if settings.host.is_polaris_host:
+			var primary_size := settings.host.native_resolution
+			if layout and layout.source == &"host_manifest" and not layout.enabled_monitors().is_empty():
+				primary_size = layout.enabled_monitors()[0].frame_rect.size
+			res = DefaultStreamResolution.packed_frame(res, settings.host.native_resolution, primary_size)
 		w = res.x
 		h = res.y
 	# H.264 hardware decoders on this class of mobile SoC commonly cap out at 4096px
@@ -1194,6 +1219,7 @@ func _bind_comp_fallback_texture(stream_tex):
 	comp.bind_fallback_texture(stream_tex)
 
 func _on_stream_started():
+	stream_manager.record_monitor_transition_stage("stream_started")
 	if pcvr_test.is_exclusive():
 		pcvr_test.request_stop()
 		return
@@ -1419,6 +1445,7 @@ func _on_stream_terminated(msg: String, err_code: int = 0):
 
 func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcome"):
 	if pcvr_test.is_exclusive(): return
+	var preserve_browser: bool = screen_sources != null and screen_sources.has_method("preserves_browser_on_stream_close") and screen_sources.preserves_browser_on_stream_close()
 	if depth_estimator:
 		depth_estimator.set_enabled(false)
 	session_lifecycle.finish_cleanup()
@@ -1429,7 +1456,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	ui_controller.set_status(status_msg)
 	ui_controller.set_disconnect_visible(false)
 	_log("[STREAM] Full disconnect: %s" % status_msg)
-	welcome_screen.show_welcome_screen(welcome_name)
+	if not preserve_browser: welcome_screen.show_welcome_screen(welcome_name)
 	stream_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	_clear_comp_yuv_textures()
 	# _clear_comp_yuv_textures() shows the ". . ." loading indicator (meant
@@ -1437,14 +1464,15 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	# goes straight to the welcome screen instead of a fresh stream - hide it
 	# again so it doesn't blink away on top of the welcome screen content.
 	comp.hide_loading_dots()
-	comp_shader_mat.set_shader_parameter("main_texture", get_welcome_content_texture())
-	comp_shader_mat.set_shader_parameter("yuv_mode", 0)
-	if comp_shader_mat_left:
-		comp_shader_mat_left.set_shader_parameter("main_texture", get_welcome_content_texture())
-		comp_shader_mat_left.set_shader_parameter("yuv_mode", 0)
-	if comp_shader_mat_right:
-		comp_shader_mat_right.set_shader_parameter("main_texture", get_welcome_content_texture())
-		comp_shader_mat_right.set_shader_parameter("yuv_mode", 0)
+	if not preserve_browser:
+		comp_shader_mat.set_shader_parameter("main_texture", get_welcome_content_texture())
+		comp_shader_mat.set_shader_parameter("yuv_mode", 0)
+		if comp_shader_mat_left:
+			comp_shader_mat_left.set_shader_parameter("main_texture", get_welcome_content_texture())
+			comp_shader_mat_left.set_shader_parameter("yuv_mode", 0)
+		if comp_shader_mat_right:
+			comp_shader_mat_right.set_shader_parameter("main_texture", get_welcome_content_texture())
+			comp_shader_mat_right.set_shader_parameter("yuv_mode", 0)
 	if not comp.in_use and screen_mesh.material_override is ShaderMaterial:
 		screen_mesh.material_override.set_shader_parameter("yuv_mode", 0)
 		screen_mesh.material_override.set_shader_parameter("tex_y", null)
@@ -1452,10 +1480,10 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 		screen_mesh.material_override.set_shader_parameter("tex_v", null)
 	stream_manager.teardown_v2_yuv_rect()
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	if comp.available:
+	if comp.available and not preserve_browser:
 		_switch_to_comp_layer()
 		comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	else:
+	elif not preserve_browser:
 		if not comp.in_use:
 			screen_mesh.material_override.set_shader_parameter("main_texture", get_welcome_content_texture())
 		_switch_to_mesh_rendering()
@@ -1468,7 +1496,7 @@ func _full_disconnect_cleanup(status_msg: String, welcome_name: String = "welcom
 	welcome_screen.reset_connect_button()
 	settings_controller.apply_passthrough(settings.passthrough_enabled)
 	welcome_screen.update_welcome_info()
-	stream_manager.resize_stream_viewport(1920, 1080)
+	if not preserve_browser: stream_manager.resize_stream_viewport(1920, 1080)
 
 func _clear_comp_yuv_textures():
 	comp.clear_yuv_textures()
@@ -2806,6 +2834,8 @@ func _process_stats(delta):
 	var new_video_frame := stream_backend != null and stream_backend.consume_new_frame()
 	if video_presentation:
 		video_presentation.process_frame(new_video_frame)
+	if new_video_frame and stream_manager.monitor_first_frame_pending:
+		stream_manager.record_monitor_transition_stage("first_frame_submitted")
 	var frame_sample := telemetry.record_frame(delta, new_video_frame)
 	if not frame_sample.is_empty():
 		settings_controller.on_performance_sample(frame_sample)
@@ -2985,6 +3015,8 @@ func _input(event):
 		_last_activity_time = Time.get_ticks_msec() / 1000.0
 
 func _toggle_ui():
+	if ui_visible and ui_controller:
+		ui_controller.close_settings_popup()
 	if pcvr_handover.menu_only and ui_visible:
 		pcvr_handover.close_pcvr_menu()
 		return

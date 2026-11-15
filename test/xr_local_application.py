@@ -78,6 +78,18 @@ def application_environment(path, inherited):
     steam_runtime = spec.get("steam_runtime",False) or spec.get("launch")=="steam"
     if steam_runtime:
         env["PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES"] = "1"
+        # pressure-vessel rewrites XDG_RUNTIME_DIR to /run/user/$UID. The
+        # owned compositor listens in a private directory instead; expose it
+        # narrowly, then restore its selection inside the container below.
+        for variable, key in (("XDG_RUNTIME_DIR", "PRESSURE_VESSEL_FILESYSTEMS_RW"),
+                              ("XR_RUNTIME_JSON", "PRESSURE_VESSEL_FILESYSTEMS_RO")):
+            value = env.get(variable)
+            if value:
+                if not Path(value).is_absolute() or any(c in value for c in ":\\\n\r\0"):
+                    raise ValueError("Invalid private XR runtime path")
+                entries = [entry for entry in env.get(key, "").split(":") if entry]
+                if value not in entries: entries.append(value)
+                env[key] = ":".join(entries)
     if "openvr_compat" not in spec:
         return env
     directory = validate_openvr_compat(spec["openvr_compat"])
@@ -108,6 +120,29 @@ def application_environment(path, inherited):
             env['PRESSURE_VESSEL_FILESYSTEMS_RO'] = ':'.join(filter(None, [
                 env.get('PRESSURE_VESSEL_FILESYSTEMS_RO', ''), private_registry]))
     return env
+
+
+def steam_runtime_command(command, env):
+    """Restore private XR IPC selection after Steam's container setup.
+
+    Do not shell-parse or modify the game's arguments. Only Steam Linux
+    Runtime's explicit entry point owns this delimiter; native applications
+    already inherit the correct environment and remain unchanged.
+    """
+    command = list(command)
+    for index, argument in enumerate(command):
+        entry = Path(argument)
+        if entry.name != "_v2-entry-point" or not entry.parent.name.startswith("SteamLinuxRuntime"):
+            continue
+        try: delimiter = command.index("--", index + 1)
+        except ValueError: raise ValueError("Steam runtime command has no application delimiter")
+        if delimiter == len(command) - 1:
+            raise ValueError("Steam runtime command has no application")
+        assignments = [key + "=" + env[key] for key in ("XDG_RUNTIME_DIR", "XR_RUNTIME_JSON") if env.get(key)]
+        if assignments:
+            command[delimiter + 1:delimiter + 1] = ["/usr/bin/env", *assignments]
+        break
+    return command
 
 
 def armed_ticket(output):

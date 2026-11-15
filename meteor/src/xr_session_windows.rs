@@ -79,7 +79,7 @@ pub(crate) async fn runtime_adapter_with_status(
 ) -> io::Result<()> {
     if foveated || !matches!(codec.as_str(),"h264"|"h265") || !matches!(hz,20|60|72) ||
         !crate::xr_control::valid_eye_size(eye_size) || !crate::xr_control::valid_eye_size(eye_height) ||
-        (bitrate_mbps!=0 && !(8..=160).contains(&bitrate_mbps)) {
+        (bitrate_mbps!=0 && !(8..=1000).contains(&bitrate_mbps)) {
         return Err(io::Error::other("Unsupported Windows DEV XR profile"));
     }
     let active=crate::xr_windows::ActiveSession::acquire()?;

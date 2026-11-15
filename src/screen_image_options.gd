@@ -40,14 +40,22 @@ var _key_shader := preload("res://src/shaders/stereo_screen_key.gdshader")
 var _picture_key_shader := preload("res://src/shaders/stereo_screen_picture_key.gdshader")
 var _plain_shader := preload("res://src/shaders/stereo_screen.gdshader")
 var _picture_shader := preload("res://src/shaders/stereo_screen_picture.gdshader")
+var selected_crop_mode: int:
+	get: return crop_mode_for(main.primary_screen)
+var _last_crop_label := -1
 
 func _init(owner: Node3D):
 	main = owner
 
 func crop_for(screen: VRScreen) -> Vector4:
 	if screen != main.primary_screen: return Vector4(0, 0, 1, 1)
-	if main.settings.screen_crop_mode == AUTO_MODE: return _auto.region
-	return crop_region(source_size(screen), main.settings.screen_crop_mode)
+	var mode := crop_mode_for(screen)
+	if mode == AUTO_MODE: return _auto.region
+	return crop_region(source_size(screen), mode)
+
+func crop_mode_for(screen: VRScreen) -> int:
+	var tab: ScreenContentTab = screen.content_tabs.selected() if screen != null else null
+	return tab.effective_crop(main.settings.screen_crop_mode) if tab != null else main.settings.screen_crop_mode
 
 func source_size(screen: VRScreen) -> Vector2i:
 	var size := Vector2i.ZERO
@@ -73,6 +81,9 @@ func key_color() -> Color:
 
 func process() -> void:
 	_process_auto()
+	if selected_crop_mode != _last_crop_label:
+		_last_crop_label = selected_crop_mode
+		main.ui_controller.update_option_btn(main._ui_crop_btn, CROP_LABELS[selected_crop_mode])
 	for screen in main.screens:
 		var crop := crop_for(screen)
 		var media: bool = main.is_streaming or main.screen_sources.is_browser_screen(screen)
@@ -112,14 +123,24 @@ func redraw_native() -> void:
 		main.native_xr_renderer._force_redraw = true
 
 func cycle_crop() -> void:
-	main.settings.screen_crop_mode = (main.settings.screen_crop_mode + 1) % CROP_LABELS.size()
-	main.ui_controller.update_option_btn(main._ui_crop_btn, CROP_LABELS[main.settings.screen_crop_mode])
+	set_crop((selected_crop_mode + 1) % CROP_LABELS.size())
+
+func set_crop(value: int):
+	if value < 0 or value >= CROP_LABELS.size() or value == selected_crop_mode: return
+	var tab: ScreenContentTab = main.primary_screen.content_tabs.selected() if main.primary_screen != null else null
+	if tab != null: tab.crop_mode = value
+	else: main.settings.screen_crop_mode = value
+	main.ui_controller.update_option_btn(main._ui_crop_btn, CROP_LABELS[value])
 	process()
 	redraw_native()
 	main.state_manager.save_state()
 
 func cycle_key() -> void:
-	main.settings.screen_key_mode = (main.settings.screen_key_mode + 1) % KEY_LABELS.size()
+	set_key((main.settings.screen_key_mode + 1) % KEY_LABELS.size())
+
+func set_key(value: int):
+	if value < 0 or value >= KEY_LABELS.size() or value == main.settings.screen_key_mode: return
+	main.settings.screen_key_mode = value
 	if main.settings.screen_key_mode > 0 and main.passthrough_supported:
 		main.settings.passthrough_enabled = true
 		main.settings_controller.apply_passthrough(true)
@@ -130,17 +151,21 @@ func cycle_key() -> void:
 	main.state_manager.save_state()
 
 func cycle_key_tolerance() -> void:
-	main.settings.screen_key_tolerance = (main.settings.screen_key_tolerance + 1) % TOLERANCES.size()
+	set_key_tolerance((main.settings.screen_key_tolerance + 1) % TOLERANCES.size())
+
+func set_key_tolerance(value: int):
+	if value < 0 or value >= TOLERANCE_LABELS.size() or value == main.settings.screen_key_tolerance: return
+	main.settings.screen_key_tolerance = value
 	main.ui_controller.update_option_btn(main._ui_key_tolerance_btn, TOLERANCE_LABELS[main.settings.screen_key_tolerance])
 	process()
 	redraw_native()
 	main.state_manager.save_state()
 
 func _process_auto() -> void:
-	var enabled: bool = main.settings.screen_crop_mode == AUTO_MODE and main.primary_media_active()
+	var enabled: bool = selected_crop_mode == AUTO_MODE and main.primary_media_active()
 	var native = main.native_xr_renderer
 	var renderer = native.renderer if native and native.active else null
-	var signature: Array = [main.primary_screen, main.primary_capture_source(), source_size(main.primary_screen), main.settings.host.sbs_mode] if enabled else []
+	var signature: Array = [main.primary_screen, main.primary_screen.content_tabs.selected_id, main.primary_capture_source(), source_size(main.primary_screen), main.settings.host.sbs_mode] if enabled else []
 	if signature != _auto_source:
 		_auto_source = signature
 		_auto.reset()
@@ -206,7 +231,7 @@ func _process_fallback_sample() -> void:
 
 func _consume_fallback_sample(signature: Array) -> void:
 	_sample_requested = false
-	if signature != _auto_source or main.settings.screen_crop_mode != AUTO_MODE: return
+	if signature != _auto_source or selected_crop_mode != AUTO_MODE: return
 	if not is_instance_valid(_sample_viewport): return
 	var image := _sample_viewport.get_texture().get_image()
 	if _auto.observe(image, source_size(main.primary_screen)): redraw_native()

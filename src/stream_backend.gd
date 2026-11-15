@@ -173,6 +173,10 @@ func send_keyboard_event(keycode: int, action: int, modifiers: int):
 	if _v2:
 		_v2.get_input_bridge().send_keyboard_event(keycode, action, modifiers)
 
+func send_high_res_scroll_event(amount: int):
+	if _v2:
+		_v2.get_input_bridge().send_high_res_scroll(clampi(amount, -32768, 32767))
+
 func send_scroll_event(clicks: int):
 	if _v2:
 		_v2.get_input_bridge().send_scroll(clicks)

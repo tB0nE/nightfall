@@ -74,6 +74,8 @@ public:
     Ref<ShaderMaterial> get_shader_material() const { return shader_material; }
     bool consume_new_frame();
     void start_browser_prototype(int width = 1920, int height = 1080);
+    bool resize_browser_prototype(int width, int height);
+    Vector2i get_browser_surface_size();
     void set_browser_id(int id);
     int get_browser_id() const { return browser_id_; }
     void close_browser_prototype();
@@ -177,6 +179,7 @@ private:
 #ifdef __ANDROID__
     void _render_thread_create_android_gles_surface();
     void _render_thread_open_browser();
+    void _render_thread_resize_browser(int width, int height);
     std::atomic<bool> browser_requested_{false};
     std::atomic<bool> browser_open_dispatched_{false};
     int browser_probe_frames_ = 0; // Render-thread-only, three startup checks.
