@@ -52,12 +52,19 @@ if [ ! -f "$LINUX_VENDOR_SO" ] || [ ! -f "$LINUX_VENDOR_DESCRIPTOR" ]; then
   echo "Expected $LINUX_VENDOR_SO and $LINUX_VENDOR_DESCRIPTOR" >&2
   exit 1
 fi
+PRESENT_DEPTH_MODELS=()
 for model in "${LINUX_DEPTH_MODELS[@]}"; do
   if [ ! -f "$model" ]; then
+    if [ "${NIGHTFALL_ALLOW_MISSING_MODELS:-0}" = "1" ]; then
+      echo "Warning: Linux depth model not found at $model (skipped: NIGHTFALL_ALLOW_MISSING_MODELS=1)" >&2
+      continue
+    fi
     echo "Error: Linux depth model not found at $model" >&2
     echo "See models/README.md for the required model manifest." >&2
+    echo "Set NIGHTFALL_ALLOW_MISSING_MODELS=1 to build without on-device AI depth." >&2
     exit 1
   fi
+  PRESENT_DEPTH_MODELS+=("$model")
 done
 
 echo "Building Linux .so in Ubuntu 22.04 Docker container (glibc 2.35 compat)..."
@@ -122,7 +129,9 @@ echo "Assembled Linux binary ($SIZE)"
 # from the same single source directory instead of Android's assets folder
 # doing double duty as the canonical location for a non-Android platform.
 mkdir -p "$SCRIPT_DIR/depth_models"
-cp "${LINUX_DEPTH_MODELS[@]}" "$SCRIPT_DIR/depth_models/"
+if [ ${#PRESENT_DEPTH_MODELS[@]} -gt 0 ]; then
+  cp "${PRESENT_DEPTH_MODELS[@]}" "$SCRIPT_DIR/depth_models/"
+fi
 
 rm -f "$SCRIPT_DIR/openxr_action_map.tres"
 

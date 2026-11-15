@@ -44,6 +44,7 @@ as outstanding.
 
 - [Automatic Linux XR launch (development preview)](guides/automatic-xr-launch.md)
 - [PCVR game compatibility and game-specific setup](guides/game-compatibility.md)
+- [Steam Frame (Linux arm64), experimental](guides/steam-frame.md)
 - [Testing without a person in the headset](guides/agent-testing.md)
 - [ZipDepth on Quest GPU](guides/zipdepth-quest-gpu.md)
 - [ZipDepth Quest quality tiers and retained experiments](guides/zipdepth-quest-tiers.md)

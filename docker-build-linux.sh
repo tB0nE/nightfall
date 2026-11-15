@@ -2,7 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# NIGHTFALL_LINUX_ARCH=x86_64 (default) or arm64 (SteamOS aarch64, e.g. the
+# Steam Frame; run this script on an arm64 host - no cross-compiling).
+LINUX_ARCH="${NIGHTFALL_LINUX_ARCH:-x86_64}"
+case "$LINUX_ARCH" in
+  x86_64) TRIPLET="x64-linux"; FORCE_SYS="" ;;
+  arm64)  TRIPLET="arm64-linux"; FORCE_SYS="1" ;;
+  *) echo "Unsupported NIGHTFALL_LINUX_ARCH=$LINUX_ARCH" >&2; exit 1 ;;
+esac
 IMAGE_NAME="nightfall-linux-builder"
+[ "$LINUX_ARCH" = "x86_64" ] || IMAGE_NAME="nightfall-linux-builder-$LINUX_ARCH"
 SOURCE_DIR="$SCRIPT_DIR/addons/nightfall-stream"
 OUTPUT_DIR="$SCRIPT_DIR/addons/nightfall-stream/bin/linux"
 # Native AI-3D depth on Linux (2026-08-20) vendors TFLite via CMake
@@ -25,11 +34,16 @@ OUTPUT_DIR="$SCRIPT_DIR/addons/nightfall-stream/bin/linux"
 # the host - `rm -rf` needs sudo, or clean it via a throwaway container, e.g.
 # `docker run --rm -v "$PWD/.linux-build-cache:/c" alpine rm -rf /c/*`.
 BUILD_CACHE_DIR="$SCRIPT_DIR/.linux-build-cache"
+[ "$LINUX_ARCH" = "x86_64" ] || BUILD_CACHE_DIR="$SCRIPT_DIR/.linux-build-cache-$LINUX_ARCH"
 mkdir -p "$BUILD_CACHE_DIR"
 
-docker build -t "$IMAGE_NAME" -f "$SCRIPT_DIR/Dockerfile.linux-build" "$SCRIPT_DIR"
+docker build -t "$IMAGE_NAME" --build-arg VCPKG_TRIPLET="$TRIPLET" \
+    --build-arg VCPKG_FORCE_SYSTEM_BINARIES_BOOTSTRAP="$FORCE_SYS" \
+    -f "$SCRIPT_DIR/Dockerfile.linux-build" "$SCRIPT_DIR"
 
-docker run --rm \
+RUN_ENV=(-e LINUX_ARCH="$LINUX_ARCH")
+[ -n "$FORCE_SYS" ] && RUN_ENV+=(-e VCPKG_FORCE_SYSTEM_BINARIES=1)
+docker run --rm "${RUN_ENV[@]}" \
     -v "$SOURCE_DIR:/build/source:ro" \
     -v "$OUTPUT_DIR:/build/output" \
     -v "$BUILD_CACHE_DIR:/build/work/build/linux-release" \
@@ -44,10 +58,16 @@ mkdir -p /build/work
 (cd /build/source && tar --exclude="./build" -cf - .) | (cd /build/work && tar -xf -)
 cd /build/work
 
-cmake --preset linux -DCMAKE_BUILD_TYPE=Release -DNIGHTFALL_BUILD_MIDAS_TEST=OFF -B build/linux-release
+cmake --preset linux -DCMAKE_BUILD_TYPE=Release -DNIGHTFALL_BUILD_MIDAS_TEST=OFF -B build/linux-release || {
+  # vcpkg keeps its port logs in the container, which --rm deletes: show them.
+  for f in /opt/vcpkg/buildtrees/*/config-*-out.log /opt/vcpkg/buildtrees/*/config-*CMakeCache.txt.log /opt/vcpkg/buildtrees/*/*-err.log; do
+    [ -f "$f" ] && { echo "===== $f"; tail -40 "$f"; }
+  done
+  exit 1
+}
 cmake --build build/linux-release
 
-cp build/linux-release/bin/linux/libnightfall-stream.linux.template_release.x86_64.so /build/output/
-chown "$(stat -c "%u:%g" /build/source)" /build/output /build/output/libnightfall-stream.linux.template_release.x86_64.so
-echo "Built: $(ls -lh /build/output/libnightfall-stream.linux.template_release.x86_64.so)"
+cp build/linux-release/bin/linux/libnightfall-stream.linux.template_release.${LINUX_ARCH}.so /build/output/
+chown "$(stat -c "%u:%g" /build/source)" /build/output /build/output/libnightfall-stream.linux.template_release.${LINUX_ARCH}.so
+echo "Built: $(ls -lh /build/output/libnightfall-stream.linux.template_release.${LINUX_ARCH}.so)"
 '

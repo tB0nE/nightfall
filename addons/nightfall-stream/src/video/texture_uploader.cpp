@@ -2056,6 +2056,7 @@ bool TextureUploader::supports_native_depth_capture() {
 }
 
 void TextureUploader::set_native_depth_capture_crop(PackedFloat32Array crop) {
+#ifdef __ANDROID__
     std::lock_guard<std::mutex> lock(gles_depth_crop_mutex_);
     if (crop.size() == 4 && crop[2] > 0.0f && crop[3] > 0.0f) {
         for (int i = 0; i < 4; ++i) gles_depth_crop_[i] = crop[i];
@@ -2063,6 +2064,9 @@ void TextureUploader::set_native_depth_capture_crop(PackedFloat32Array crop) {
         gles_depth_crop_[0] = gles_depth_crop_[1] = 0.0f;
         gles_depth_crop_[2] = gles_depth_crop_[3] = 1.0f;
     }
+#else
+    (void)crop;
+#endif
 }
 
 void TextureUploader::request_native_depth_capture(int width, int height) {

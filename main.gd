@@ -2641,6 +2641,18 @@ func _apply_hand_rest(side: String, resting: bool):
 		xr_interaction._active_hand = side
 	_log("[HAND] %s controller %s" % [side, "resting (disabled)" if resting else "picked up (re-enabled)"])
 
+var _steamvr_runtime := -1
+
+func _xr_runtime_is_steamvr() -> bool:
+	if _steamvr_runtime < 0:
+		var interface = XRServer.find_interface("OpenXR")
+		if interface == null or not interface.is_initialized():
+			return false
+		var info: Dictionary = interface.get_system_info()
+		_steamvr_runtime = 1 if str(info.get("XRRuntimeName", "")).to_lower().contains("steamvr") else 0
+		_log("[XR] Runtime %s (SteamVR controller ownership: %s)" % [str(info.get("XRRuntimeName", "?")), _steamvr_runtime == 1])
+	return _steamvr_runtime == 1
+
 func _process_hand_tracking(_delta):
 	var hands_active = get_is_hand_tracking() and get_hand_tracking_has_data()
 	# Aim trackers exist throughout the session, including controller use.
@@ -2649,6 +2661,17 @@ func _process_hand_tracking(_delta):
 		if controller and (controller.get_float("trigger") > 0.1 or controller.get_float("grip") > 0.1
 				or controller.is_button_pressed("ax_button") or controller.is_button_pressed("by_button")):
 			hands_active = false
+	# SteamVR (Steam Frame) keeps reporting XR_EXT_hand_tracking joints while
+	# the controllers are held: the skeleton is derived from the controller.
+	# On Quest hand data stops when a controller is picked up, so that case
+	# never arose. On SteamVR a tracked controller owns the pointers. Limited
+	# to SteamVR so Quest multimodal (hands with controllers set down but still
+	# tracked) is unchanged; XR_EXT_hand_tracking_data_source would be the
+	# general fix.
+	if _xr_runtime_is_steamvr():
+		for controller in [right_hand, left_hand]:
+			if controller and controller.get_has_tracking_data():
+				hands_active = false
 	if hands_active != _is_using_hands:
 		xr_interaction.cancel_transient_interactions("hand/controller ownership changed")
 		_log("[HAND] ownership=%s runtime_aim=%s tracking_mode=%d" % ["hands" if hands_active else "controllers", xr_interaction.hand_aim_available(), settings.tracking_mode])

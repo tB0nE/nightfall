@@ -314,6 +314,17 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             String plaincert = _extract_xml_value(xml, "plaincert");
             if (plaincert.is_empty()) {
                 String status_msg = _extract_xml_value(xml, "status_message");
+                if (status_msg.is_empty()) {
+                    // Sunshine/Apollo put the reason in an attribute:
+                    // <root status_code="400" status_message="...">
+                    int a = xml.find("status_message=\"");
+                    if (a != -1) {
+                        a += 16;
+                        int b = xml.find("\"", a);
+                        if (b > a) status_msg = xml.substr(a, b - a).xml_unescape();
+                    }
+                }
+                NF_LOG("NightfallPair", "getservercert without plaincert: %s", xml.left(300).utf8().get_data());
                 pair_state = PAIR_ERROR;
                 if (parent_node_) { parent_node_->call("_on_pair_completed", false, status_msg.is_empty() ? "No server certificate received." : status_msg); }
                 return;
@@ -496,6 +507,7 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
         }
 
         String xml = body.get_string_from_utf8();
+        Array fresh_ids;
         int pos = 0;
         while (true) {
             int start = xml.find("<App>", pos);
@@ -508,6 +520,7 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
             app_data["name"] = _extract_xml_value(app_xml, "AppTitle");
             int app_id = _extract_xml_value(app_xml, "ID").to_int();
             app_data["id"] = app_id;
+            fresh_ids.append(app_id);
 
             if (!existing_ids.has(app_id)) {
                 config_manager->add_app(host_id, app_data);
@@ -515,6 +528,21 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
             }
 
             pos = end + 6;
+        }
+
+        // Drop apps the host no longer lists. Renaming or re-saving an app in
+        // Sunshine's web UI gives it a new ID; the old entry used to stay cached
+        // and launching it failed with "Failed to start the specified
+        // application" (404). An empty/unparsable reply keeps the cache.
+        if (!fresh_ids.is_empty()) {
+            for (int i = existing_apps.size() - 1; i >= 0; i--) {
+                Dictionary app = existing_apps[i];
+                if (!fresh_ids.has(app.get("id", 0))) {
+                    NF_LOG("NightfallApps", "Removing stale app '%s' (id=%d)",
+                            String(app.get("name", "")).utf8().get_data(), (int)app.get("id", 0));
+                    config_manager->remove_app(host_id, (int)app.get("index", i + 1));
+                }
+            }
         }
     }
     if (callback.is_valid())

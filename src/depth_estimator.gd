@@ -581,7 +581,10 @@ func process(delta: float):
 			upsample_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 			offset_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
-	if not _meteor_in_use and main.stream_backend.has_method("submit_depth_frame"):
+	# A failed on-device backend (e.g. "Vulkan model failed to load" on a build
+	# without its models) stays failed for the session: capturing frames for it
+	# cost ~6 ms of GPU time each, ~20 times a second, for no depth at all.
+	if not _meteor_in_use and not backend_failed and main.stream_backend.has_method("submit_depth_frame"):
 		var native_capture_available: bool = (
 			_platform == "Android"
 			and capture_source.has_method("supports_native_depth_capture")

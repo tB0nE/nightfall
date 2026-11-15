@@ -159,6 +159,14 @@ Vector<String> FfmpegDecoder::get_candidate_decoders(int codec_family) {
         candidates.push_back(base_codec_name + "_mediacodec");
     }
 #else
+#if defined(__linux__)
+    // V4L2 mem2mem hardware decoders (Linux ARM headsets such as the Steam
+    // Frame's Qualcomm Iris). They open only when a matching /dev/video* M2M
+    // device exists, so desktops fall through to the entries below.
+    if (codec_family == CODEC_FAMILY_H264) candidates.push_back("h264_v4l2m2m");
+    else if (codec_family == CODEC_FAMILY_H265) candidates.push_back("hevc_v4l2m2m");
+    else if (codec_family == CODEC_FAMILY_AV1) candidates.push_back("av1_v4l2m2m");
+#endif
     if (codec_family == CODEC_FAMILY_H264) {
         candidates.push_back("h264_mediacodec");
         candidates.push_back("h264");
@@ -207,8 +215,24 @@ int FfmpegDecoder::_try_open_decoder(const String &codec_name, int width, int he
     ctx->coded_height = height;
 
     bool is_mediacodec = codec_name.find("_mediacodec") != -1;
+    // V4L2 M2M is a stateful hardware wrapper like MediaCodec: it picks its
+    // own output format (NV12) and rejects the software-decoder tuning below.
+    bool is_v4l2m2m = codec_name.find("_v4l2m2m") != -1;
+    if (is_v4l2m2m && hw_type != AV_HWDEVICE_TYPE_NONE) {
+        avcodec_free_context(&ctx);
+        return -1;
+    }
+    if (is_v4l2m2m) {
+        // Packet PTS are moonlight-common-c enqueue times in microseconds.
+        // The V4L2 wrapper converts PTS to the driver's timeval and back using
+        // pkt_timebase; unset, the round trip changes the value, so the frame
+        // number of the picture on screen (frame-accurate depth maps) was
+        // never found.
+        ctx->pkt_timebase = AVRational{1, 1000000};
+        ctx->time_base = AVRational{1, 1000000};
+    }
 
-    if (!is_mediacodec) {
+    if (!is_mediacodec && !is_v4l2m2m) {
         ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
         ctx->delay = 0;
         ctx->flags |= AV_CODEC_FLAG_OUTPUT_CORRUPT;
@@ -219,7 +243,7 @@ int FfmpegDecoder::_try_open_decoder(const String &codec_name, int width, int he
 
     bool enforce_sw_pix_fmt = hw_type == AV_HWDEVICE_TYPE_NONE &&
             codec_name.find("av1") == -1 && codec_name.find("dav1d") == -1 &&
-            !is_mediacodec;
+            !is_mediacodec && !is_v4l2m2m;
     if (enforce_sw_pix_fmt) {
         ctx->pix_fmt = AV_PIX_FMT_YUV420P;
     }
@@ -377,6 +401,8 @@ int FfmpegDecoder::setup(int video_format, int width, int height, bool disable_h
                     opened_hw = String(av_hwdevice_get_type_name(hw_devices[j]));
                 else if (candidates[i].find("_mediacodec") != -1)
                     opened_hw = "MediaCodec (Buffer)";
+                else if (candidates[i].find("_v4l2m2m") != -1)
+                    opened_hw = "V4L2 M2M";
                 opened = true;
                 break;
             }
@@ -391,7 +417,10 @@ int FfmpegDecoder::setup(int video_format, int width, int height, bool disable_h
 
     video_width = width;
     video_height = height;
-    is_hw_decode_active = (opened_name.find("_mediacodec") != -1) || (hw_device_ctx != nullptr);
+    is_hw_decode_active = (opened_name.find("_mediacodec") != -1) ||
+            (opened_name.find("_v4l2m2m") != -1) || (hw_device_ctx != nullptr);
+    NF_LOG("FfmpegDecoder", "Opened %s (%s) %dx%d", opened_name.utf8().get_data(),
+            opened_hw.utf8().get_data(), width, height);
 
     return 0;
 }

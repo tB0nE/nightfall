@@ -746,6 +746,11 @@ const WELCOME_FRAME := Vector2i(1920, 1080)
 func show_welcome_screen(name: String):
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	main._welcome_screen = name
+	# A notice belongs to the screen it was raised on. Callers navigate first
+	# and call show_notice() afterwards, so clearing here keeps a fresh error
+	# visible but stops an old one (e.g. "Pairing failed") from following the
+	# user back to the main menu. Previously only a stream start cleared it.
+	clear_notice()
 	# A failed connection can navigate here while the ray is still over the
 	# previous screen. Clear the world-space cursor filter before changing the
 	# welcome viewport/layout, otherwise the rendered pointer can retain the old
