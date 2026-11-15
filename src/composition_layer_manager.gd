@@ -909,14 +909,16 @@ func _update_ambient_geometry():
 	_ambient_layer.global_rotation = s.global_rotation
 
 func setup_background_equirect():
+	# Only the environment background needs equirect layers. The UI, cursor,
+	# ray and marker layers below must be created either way: SteamVR (Steam
+	# Frame) has no XR_KHR_composition_layer_equirect2, and returning early
+	# here left the pointer drawn in the projection layer, behind every panel.
 	if not equirect_available:
 		main._log("[COMP] OpenXRCompositionLayerEquirect not available - environment backgrounds won't show in projectionless mode")
-		return
-
-	if not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
+	elif not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
 		main._log("[COMP] OpenXRCompositionLayerEquirect not natively supported on this runtime - environment backgrounds won't show in projectionless mode")
-		return
-	main._log("[COMP] Environment-background equirect composition layer created")
+	else:
+		main._log("[COMP] Environment-background equirect composition layer created")
 
 	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport,
 		main._ui_mesh_size + Vector2(0, main.UI_TOOLTIP_STRIP_METERS))
