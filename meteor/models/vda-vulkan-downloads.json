@@ -87,6 +87,49 @@
           "sha256": "3ea8239c07443ecadcebd7aa4f9d4d8625d5a27297cd7b5dc4d6af0806904952"
         }
       ]
+    },
+    "vda_migraphx_518x294": {
+      "width": 518,
+      "height": 294,
+      "checkpoint_sha256": "13379300b739e659f076a59d52e9801bd8d38c541a7e71f73bbca4dcfb013609",
+      "files": [
+        {
+          "name": "manifest.json",
+          "asset": "vda_migraphx_518x294-manifest.json",
+          "bytes": 509,
+          "sha256": "ca4e6d899a912303b07e81ff3bc3338c2efe634c5b1e7c3032f4b564e21d88ba"
+        },
+        {
+          "name": "LICENSE",
+          "asset": "vda_migraphx_518x294-LICENSE",
+          "bytes": 11356,
+          "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+        },
+        {
+          "name": "step.onnx",
+          "asset": "vda_migraphx_518x294-step.onnx",
+          "bytes": 10352046,
+          "sha256": "7afe3b0a6a847ebfc51ae7c2a375586cf6e3d8e3a1ebd6704b8c9029e876764a"
+        },
+        {
+          "name": "step.onnx.data",
+          "asset": "vda_migraphx_518x294-step.onnx.data",
+          "bytes": 114991104,
+          "sha256": "f5e5dcae9b8b4bbdb74efaca0694ee237b178e60f54c673671dac37ffb58a2a5"
+        },
+        {
+          "name": "cold.onnx",
+          "asset": "vda_migraphx_518x294-cold.onnx",
+          "bytes": 273041,
+          "sha256": "0416c52d8249e40b6864c260e2b09acfc47481b2950c68a680ac75d415294dbb"
+        },
+        {
+          "name": "cold.onnx.data",
+          "asset": "vda_migraphx_518x294-cold.onnx.data",
+          "bytes": 111830528,
+          "sha256": "c74daa188354f62153b6599a4fb89875564ac65b62e1623377437bea7d3f9011"
+        }
+      ]
     }
   }
 }

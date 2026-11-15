@@ -1,5 +1,10 @@
 //! Persistent ncnn Vulkan VDA, with the same 31-sample projected history as TensorRT.
 //! Model assets are checksum-verified; the optional native runtime is loaded lazily.
+//!
+//! `vda_migraphx_518x294` is the same VDA-S model on AMD GPUs through MIGraphX
+//! (ROCm), from libmeteor_vda_migraphx: the same C ABI, so this module drives
+//! both. It exists only where ROCm with MIGraphX is installed; see
+//! native/vda_migraphx.cpp.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -10,8 +15,21 @@ use std::{
 };
 pub const FULL: &str = "vda_vulkan_518x294";
 pub const FAST: &str = "vda_vulkan_392x224";
+pub const MIGRAPHX: &str = "vda_migraphx_518x294";
 pub fn is_model(id: &str) -> bool {
-    matches!(id, FULL | FAST)
+    matches!(id, FULL | FAST | MIGRAPHX)
+}
+/// Runs on its own HIP queue rather than Meteor's Vulkan device.
+pub fn is_migraphx(id: &str) -> bool {
+    id == MIGRAPHX
+}
+/// The files each model's directory holds, besides LICENSE.
+fn model_files(id: &str) -> &'static [&'static str] {
+    if is_migraphx(id) {
+        &["step.onnx", "step.onnx.data", "cold.onnx", "cold.onnx.data"]
+    } else {
+        &["cold.ncnn.param", "cold.ncnn.bin", "step.ncnn.param", "step.ncnn.bin"]
+    }
 }
 pub fn size(id: &str) -> (usize, usize) {
     if id == FAST { (392, 224) } else { (518, 294) }
@@ -28,15 +46,8 @@ struct Manifest {
 }
 pub fn present(root: &Path, id: &str) -> bool {
     is_model(id)
-        && [
-            "manifest.json",
-            "cold.ncnn.param",
-            "cold.ncnn.bin",
-            "step.ncnn.param",
-            "step.ncnn.bin",
-        ]
-        .iter()
-        .all(|f| directory(root, id).join(f).is_file())
+        && directory(root, id).join("manifest.json").is_file()
+        && model_files(id).iter().all(|f| directory(root, id).join(f).is_file())
 }
 pub(crate) fn verify(root: &Path, id: &str) -> Result<(), String> {
     use std::io::Read;
@@ -46,14 +57,9 @@ pub(crate) fn verify(root: &Path, id: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     if manifest.schema != 1 || (manifest.width, manifest.height) != size(id) {
-        return Err("VDA Vulkan manifest dimensions/version mismatch".into());
+        return Err("VDA manifest dimensions/version mismatch".into());
     }
-    for name in [
-        "cold.ncnn.param",
-        "cold.ncnn.bin",
-        "step.ncnn.param",
-        "step.ncnn.bin",
-    ] {
+    for &name in model_files(id) {
         let expected = manifest
             .files
             .get(name)
@@ -75,30 +81,44 @@ pub(crate) fn verify(root: &Path, id: &str) -> Result<(), String> {
             .collect::<String>()
             != *expected
         {
-            return Err(format!("VDA Vulkan checksum mismatch: {name}"));
+            return Err(format!("VDA checksum mismatch: {name}"));
         }
     }
     Ok(())
 }
 type Create =
     unsafe extern "C" fn(*const c_char, c_int, c_int, c_int, *mut c_char, usize) -> *mut c_void;
+type CreateNamed = unsafe extern "C" fn(
+    *const c_char,
+    *const c_char,
+    c_int,
+    c_int,
+    *mut c_char,
+    usize,
+) -> *mut c_void;
 type Infer =
     unsafe extern "C" fn(*mut c_void, *const f32, *mut f32, c_int, *mut c_char, usize) -> c_int;
+type InferResident =
+    unsafe extern "C" fn(*mut c_void, *mut *mut c_void, c_int, f32, *mut c_char, usize) -> c_int;
 type Destroy = unsafe extern "C" fn(*mut c_void);
+/// Vulkan's resident output: depth that stays on Meteor's Vulkan device.
+struct Resident {
+    infer: InferResident,
+    destroy: crate::vulkan_processing::ResidentDestroy,
+    download: crate::vulkan_processing::ResidentDownload,
+}
+/// The MIGraphX runtime's extras: it picks its HIP device by GPU name.
+struct Named {
+    create: CreateNamed,
+    supported: unsafe extern "C" fn(*const c_char) -> c_int,
+    needs_compile: unsafe extern "C" fn(*const c_char, *const c_char) -> c_int,
+}
 struct Api {
     _library: libloading::Library,
     create: Create,
     infer: Infer,
-    infer_resident: unsafe extern "C" fn(
-        *mut c_void,
-        *mut *mut c_void,
-        c_int,
-        f32,
-        *mut c_char,
-        usize,
-    ) -> c_int,
-    depth_destroy: crate::vulkan_processing::ResidentDestroy,
-    depth_download: crate::vulkan_processing::ResidentDownload,
+    resident: Option<Resident>,
+    named: Option<Named>,
     prepare: unsafe extern "C" fn(
         *mut c_void,
         *const c_void,
@@ -114,100 +134,143 @@ struct Api {
     destroy: Destroy,
     supported: unsafe extern "C" fn(c_int) -> c_int,
 }
-fn api() -> Result<Arc<Api>, String> {
+fn library_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.dll")
+    } else if cfg!(target_os = "macos") {
+        format!("lib{stem}.dylib")
+    } else {
+        format!("lib{stem}.so")
+    }
+}
+/// Loads one VDA runtime: beside the executable, in ../lib, at its build path,
+/// then from the library search path.
+fn load_api(stem: &str, built: Option<&str>, migraphx: bool) -> Result<Arc<Api>, String> {
+    let name = library_name(stem);
+    let mut paths = Vec::new();
+    if let Some(exe) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_owned))
+    {
+        paths.extend([exe.join(&name), exe.join("../lib").join(&name)]);
+    }
+    if let Some(path) = built {
+        paths.push(PathBuf::from(path));
+    }
+    paths.push(PathBuf::from(&name));
+    let mut errors = Vec::new();
+    for path in paths {
+        // SAFETY: this is our versioned C ABI, not ncnn's or ROCm's C++ ABI.
+        unsafe {
+            let library = match libloading::Library::new(&path) {
+                Ok(l) => l,
+                Err(e) => {
+                    errors.push(e.to_string());
+                    continue;
+                }
+            };
+            let version = *library
+                .get::<unsafe extern "C" fn() -> u32>(b"meteor_vda_abi\0")
+                .map_err(|e| e.to_string())?;
+            if version() != 1 {
+                return Err(format!("Incompatible {stem} runtime ABI"));
+            }
+            let resident = if migraphx {
+                None
+            } else {
+                Some(Resident {
+                    infer: *library.get(b"meteor_vda_infer_resident\0").map_err(|e| e.to_string())?,
+                    destroy: *library.get(b"meteor_processing_depth_destroy\0").map_err(|e| e.to_string())?,
+                    download: *library.get(b"meteor_processing_depth_download\0").map_err(|e| e.to_string())?,
+                })
+            };
+            let named = if migraphx {
+                Some(Named {
+                    create: *library.get(b"meteor_vda_create_named\0").map_err(|e| e.to_string())?,
+                    supported: *library.get(b"meteor_vda_supported_named\0").map_err(|e| e.to_string())?,
+                    needs_compile: *library.get(b"meteor_vda_needs_compile\0").map_err(|e| e.to_string())?,
+                })
+            } else {
+                None
+            };
+            let create = *library.get(b"meteor_vda_create\0").map_err(|e| e.to_string())?;
+            let infer = *library.get(b"meteor_vda_infer\0").map_err(|e| e.to_string())?;
+            let prepare = *library.get(b"meteor_vda_prepare\0").map_err(|e| e.to_string())?;
+            let infer_prepared = *library.get(b"meteor_vda_infer_prepared\0").map_err(|e| e.to_string())?;
+            let destroy = *library.get(b"meteor_vda_destroy\0").map_err(|e| e.to_string())?;
+            let supported = *library.get(b"meteor_vda_supported\0").map_err(|e| e.to_string())?;
+            return Ok(Arc::new(Api {
+                _library: library,
+                create,
+                infer,
+                resident,
+                named,
+                prepare,
+                infer_prepared,
+                destroy,
+                supported,
+            }));
+        }
+    }
+    Err(format!("{stem} runtime unavailable: {}", errors.join("; ")))
+}
+fn vulkan_api() -> Result<Arc<Api>, String> {
+    static API: OnceLock<Result<Arc<Api>, String>> = OnceLock::new();
+    API.get_or_init(|| load_api("meteor_vda_vulkan", option_env!("METEOR_VDA_VULKAN_LIBRARY"), false))
+        .clone()
+}
+fn migraphx_api() -> Result<Arc<Api>, String> {
     static API: OnceLock<Result<Arc<Api>, String>> = OnceLock::new();
     API.get_or_init(|| {
-        let name = if cfg!(windows) {
-            "meteor_vda_vulkan.dll"
-        } else if cfg!(target_os = "macos") {
-            "libmeteor_vda_vulkan.dylib"
-        } else {
-            "libmeteor_vda_vulkan.so"
-        };
-        let mut paths = Vec::new();
-        if let Some(exe) = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(Path::to_owned))
-        {
-            paths.extend([exe.join(name), exe.join("../lib").join(name)]);
+        if !cfg!(target_os = "linux") {
+            return Err("MIGraphX VDA is Linux only".into());
         }
-        if let Some(path) = option_env!("METEOR_VDA_VULKAN_LIBRARY") {
-            paths.push(PathBuf::from(path));
-        }
-        paths.push(PathBuf::from(name));
-        let mut errors = Vec::new();
-        for path in paths {
-            // SAFETY: this is our versioned C ABI, not ncnn's C++ ABI.
-            unsafe {
-                let library = match libloading::Library::new(&path) {
-                    Ok(l) => l,
-                    Err(e) => {
-                        errors.push(e.to_string());
-                        continue;
-                    }
-                };
-                let version = *library
-                    .get::<unsafe extern "C" fn() -> u32>(b"meteor_vda_abi\0")
-                    .map_err(|e| e.to_string())?;
-                if version() != 1 {
-                    return Err("Incompatible VDA Vulkan runtime ABI".into());
-                }
-                let create = *library
-                    .get(b"meteor_vda_create\0")
-                    .map_err(|e| e.to_string())?;
-                let infer = *library
-                    .get(b"meteor_vda_infer\0")
-                    .map_err(|e| e.to_string())?;
-                let infer_resident = *library
-                    .get(b"meteor_vda_infer_resident\0")
-                    .map_err(|e| e.to_string())?;
-                let depth_destroy = *library
-                    .get(b"meteor_processing_depth_destroy\0")
-                    .map_err(|e| e.to_string())?;
-                let depth_download = *library
-                    .get(b"meteor_processing_depth_download\0")
-                    .map_err(|e| e.to_string())?;
-                let prepare = *library
-                    .get(b"meteor_vda_prepare\0")
-                    .map_err(|e| e.to_string())?;
-                let infer_prepared = *library
-                    .get(b"meteor_vda_infer_prepared\0")
-                    .map_err(|e| e.to_string())?;
-                let destroy = *library
-                    .get(b"meteor_vda_destroy\0")
-                    .map_err(|e| e.to_string())?;
-                let supported = *library
-                    .get(b"meteor_vda_supported\0")
-                    .map_err(|e| e.to_string())?;
-                return Ok(Arc::new(Api {
-                    _library: library,
-                    create,
-                    infer,
-                    infer_resident,
-                    depth_destroy,
-                    depth_download,
-                    prepare,
-                    infer_prepared,
-                    destroy,
-                    supported,
-                }));
-            }
-        }
-        Err(format!(
-            "VDA Vulkan runtime unavailable: {}",
-            errors.join("; ")
-        ))
+        load_api("meteor_vda_migraphx", option_env!("METEOR_VDA_MIGRAPHX_LIBRARY"), true)
     })
     .clone()
 }
+fn api(id: &str) -> Result<Arc<Api>, String> {
+    if is_migraphx(id) { migraphx_api() } else { vulkan_api() }
+}
+/// The Vulkan VDA runtime is present.
 pub fn available() -> bool {
-    api().is_ok()
+    vulkan_api().is_ok()
+}
+/// The runtime for `id` is present (for MIGraphX: also ROCm's libraries,
+/// which it reports through meteor_vda_supported_named).
+pub fn available_for(id: &str) -> bool {
+    api(id).is_ok()
 }
 pub fn gpu_supported(gpu: Option<&str>) -> bool {
-    match (api(), crate::ncnn::gpu_index(gpu)) {
+    match (vulkan_api(), crate::ncnn::gpu_index(gpu)) {
         (Ok(api), Ok(index)) => unsafe { (api.supported)(index) != 0 },
         _ => false,
     }
+}
+/// Whether model `id` can run on the GPU Meteor names `gpu`.
+pub fn gpu_supported_for(id: &str, gpu: Option<&str>) -> bool {
+    if !is_migraphx(id) {
+        return gpu_supported(gpu);
+    }
+    let (Ok(api), Some(gpu)) = (migraphx_api(), gpu) else { return false };
+    let (Some(named), Ok(name)) = (api.named.as_ref(), CString::new(gpu)) else { return false };
+    unsafe { (named.supported)(name.as_ptr()) != 0 }
+}
+/// MIGraphX compiles a model for the GPU on first use (minutes); true while
+/// that hasn't happened yet for this GPU and runtime.
+pub fn needs_compile(root: &Path, id: &str, gpu: Option<&str>) -> bool {
+    if !is_migraphx(id) {
+        return false;
+    }
+    let (Ok(api), Some(gpu)) = (migraphx_api(), gpu) else { return false };
+    let Some(named) = api.named.as_ref() else { return false };
+    let (Ok(path), Ok(name)) = (
+        CString::new(directory(root, id).to_string_lossy().as_bytes()),
+        CString::new(gpu),
+    ) else {
+        return false;
+    };
+    unsafe { (named.needs_compile)(path.as_ptr(), name.as_ptr()) != 0 }
 }
 pub struct Model {
     api: Arc<Api>,
@@ -233,9 +296,8 @@ impl Drop for Model {
 impl Model {
     pub fn load(root: &Path, id: &str, gpu: Option<&str>) -> Result<Self, String> {
         verify(root, id)?;
-        let api = api()?;
+        let api = api(id)?;
         let gpu_name = crate::ncnn::resolved_gpu_name(gpu)?;
-        let index = crate::ncnn::gpu_index(Some(&gpu_name))?;
         let (width, height) = size(id);
         let path = CString::new(
             directory(root, id)
@@ -244,15 +306,30 @@ impl Model {
         )
         .map_err(|e| e.to_string())?;
         let mut error = [0 as c_char; 1024];
-        let handle = unsafe {
-            (api.create)(
-                path.as_ptr(),
-                index,
-                width as c_int,
-                height as c_int,
-                error.as_mut_ptr(),
-                error.len(),
-            )
+        let handle = if let Some(named) = api.named.as_ref() {
+            let name = CString::new(gpu_name.as_str()).map_err(|e| e.to_string())?;
+            unsafe {
+                (named.create)(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    width as c_int,
+                    height as c_int,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            }
+        } else {
+            let index = crate::ncnn::gpu_index(Some(&gpu_name))?;
+            unsafe {
+                (api.create)(
+                    path.as_ptr(),
+                    index,
+                    width as c_int,
+                    height as c_int,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            }
         };
         if handle.is_null() {
             return Err(unsafe { CStr::from_ptr(error.as_ptr()) }
@@ -273,6 +350,10 @@ impl Model {
             reset: true,
         })
     }
+    /// Runs through MIGraphX (its depth comes back to the host).
+    pub fn migraphx(&self) -> bool {
+        self.api.named.is_some()
+    }
     pub fn reset(&mut self) {
         self.reset = true;
         self.last = None;
@@ -287,6 +368,8 @@ impl Model {
         timestamp: Instant,
         sigma: f32,
     ) -> Result<Option<crate::vulkan_processing::ResidentDepth>, String> {
+        // MIGraphX has no Vulkan-resident output: the caller uploads its host depth.
+        let Some(resident) = self.api.resident.as_ref() else { return Ok(None) };
         if self.cpu_processing || self.preparation_failed {
             return Ok(None);
         }
@@ -337,7 +420,7 @@ impl Model {
         });
         let mut handle = std::ptr::null_mut();
         let code = unsafe {
-            (self.api.infer_resident)(
+            (resident.infer)(
                 self.handle,
                 &mut handle,
                 (self.reset || cut || gap) as c_int,
@@ -359,8 +442,8 @@ impl Model {
             crate::vulkan_processing::ResidentDepth::from_native(
                 handle,
                 self.api.clone(),
-                self.api.depth_destroy,
-                self.api.depth_download,
+                resident.destroy,
+                resident.download,
                 (self.width, self.height),
                 self.gpu_name.clone(),
             )
@@ -580,6 +663,23 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migraphx_model_has_its_own_files() {
+        assert!(is_model(MIGRAPHX) && is_migraphx(MIGRAPHX) && !is_migraphx(FULL));
+        assert_eq!(size(MIGRAPHX), (518, 294));
+        let root = std::env::temp_dir().join(format!("meteor-vda-migraphx-{}", std::process::id()));
+        let dir = directory(&root, MIGRAPHX);
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["manifest.json", "cold.ncnn.param", "cold.ncnn.bin", "step.ncnn.param", "step.ncnn.bin"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        assert!(!present(&root, MIGRAPHX)); // Vulkan files don't make a MIGraphX model
+        for f in ["step.onnx", "step.onnx.data", "cold.onnx", "cold.onnx.data"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        assert!(present(&root, MIGRAPHX));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn resolution_ids_are_explicit() {
         assert_eq!(size(FULL), (518, 294));

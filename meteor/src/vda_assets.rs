@@ -1,4 +1,4 @@
-//! Pinned public Vulkan exports. Network data never chooses a path or checksum.
+//! Pinned public VDA exports (Vulkan and MIGraphX). Network data never chooses a path or checksum.
 use serde::Deserialize;
 use std::{collections::BTreeMap, path::Path, sync::OnceLock};
 
@@ -13,7 +13,7 @@ pub fn catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| serde_json::from_str(include_str!("../models/vda-vulkan-downloads.json")).expect("Invalid compiled VDA download catalog"))
 }
 pub fn model(id: &str) -> Result<&'static Model, String> {
-    let model=catalog().models.get(id).ok_or("Unknown Vulkan VDA model")?;
+    let model=catalog().models.get(id).ok_or("Unknown VDA download model")?;
     if catalog().schema != 1 || !crate::vda_vulkan::is_model(id) || (model.width,model.height)!=crate::vda_vulkan::size(id) {
         return Err("Invalid compiled VDA download metadata".into());
     }
@@ -24,10 +24,13 @@ pub fn installed(root: &Path, id: &str) -> bool { crate::vda_vulkan::present(roo
 
 #[cfg(test)] mod tests {
     #[test] fn pinned_assets_are_complete_and_cannot_escape_the_model_directory() {
-        for id in [crate::vda_vulkan::FULL,crate::vda_vulkan::FAST] {
+        let vulkan=["manifest.json","LICENSE","cold.ncnn.param","cold.ncnn.bin","step.ncnn.param","step.ncnn.bin"];
+        let migraphx=["manifest.json","LICENSE","step.onnx","step.onnx.data","cold.onnx","cold.onnx.data"];
+        for id in [crate::vda_vulkan::FULL,crate::vda_vulkan::FAST,crate::vda_vulkan::MIGRAPHX] {
             let model=super::model(id).unwrap();
-            assert_eq!(model.files.len(),6);
-            for name in ["manifest.json","LICENSE","cold.ncnn.param","cold.ncnn.bin","step.ncnn.param","step.ncnn.bin"] {
+            let expected=if crate::vda_vulkan::is_migraphx(id) {migraphx} else {vulkan};
+            assert_eq!(model.files.len(),expected.len());
+            for name in expected {
                 assert!(model.files.iter().any(|file|file.name==name));
             }
             for file in &model.files {
