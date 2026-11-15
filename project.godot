@@ -42,6 +42,7 @@ viewport/hdr_3d=false
 [xr]
 
 openxr/enabled=true
+openxr/default_action_map="res://src/openxr_action_map.tres"
 openxr/environment_blend_mode=2
 openxr/extensions/hand_tracking=true
 openxr/extensions/meta/hand_tracking_aim=true

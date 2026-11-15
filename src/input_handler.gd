@@ -32,6 +32,11 @@ var _BTN_MAP = {
 const ARRIVAL_BUTTON_FLAGS := 0x1000 | 0x2000 | 0x4000 | 0x8000 | 0x0001 | 0x0002 | 0x0004 \
 	| 0x0008 | 0x0100 | 0x0200 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0400
 const ARRIVAL_CAPABILITIES := 0x01 | 0x02
+# moonlight-common-c LI_CCAP_ACCEL / LI_CCAP_GYRO and LI_MOTION_TYPE_*.
+const CAP_ACCEL := 0x10
+const CAP_GYRO := 0x20
+const MOTION_TYPE_ACCEL := 0x01
+const MOTION_TYPE_GYRO := 0x02
 
 const JOY_BUTTON_NAMES := ["a", "b", "x", "y", "back", "guide", "start", "leftstick",
 	"rightstick", "leftshoulder", "rightshoulder", "dpup", "dpdown", "dpleft", "dpright",
@@ -157,7 +162,7 @@ func neutral_host_gamepads() -> void:
 # first if it is new this session. key: a Godot device ID, or
 # GamepadSlots.QUEST_PAD for the Quest-controller PAD mode.
 func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
-		lx: int, ly: int, rx: int, ry: int) -> void:
+		lx: int, ly: int, rx: int, ry: int, capabilities: int = ARRIVAL_CAPABILITIES) -> void:
 	if desktop_input_blocked(): return
 	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
 	if focused_browser != null and focused_browser.active:
@@ -172,11 +177,21 @@ func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		return
 	if is_new:
 		main.stream_backend.send_controller_arrival(slot, gamepads.active_mask(), ctype,
-			ARRIVAL_BUTTON_FLAGS, ARRIVAL_CAPABILITIES)
+			ARRIVAL_BUTTON_FLAGS, capabilities)
 		main._log("[PAD] %s -> host controller %d (type %d)" % [
 			"Quest controllers" if key == GamepadSlots.QUEST_PAD else "pad %d" % key, slot, ctype])
 	main.stream_backend.send_multi_controller_event(slot, gamepads.active_mask(), buttons,
 		clampi(lt, 0, 255), clampi(rt, 0, 255), lx, ly, rx, ry)
+
+## Gyro (deg/s) and accelerometer (m/s^2, gravity included) for a pad that
+## was announced with LI_CCAP_GYRO/LI_CCAP_ACCEL (SDL's axes: +X right,
+## +Y up, +Z towards the player).
+func send_pad_motion(key: int, gyro: Vector3, accel: Vector3) -> void:
+	if desktop_input_blocked() or not gamepads.has(key): return
+	var slot := gamepads.acquire(key)
+	if slot < 0: return
+	main.stream_backend.send_controller_motion(slot, MOTION_TYPE_GYRO, gyro.x, gyro.y, gyro.z)
+	main.stream_backend.send_controller_motion(slot, MOTION_TYPE_ACCEL, accel.x, accel.y, accel.z)
 
 # Releases everything a source holds without announcing it to the host if it
 # never sent anything this session.

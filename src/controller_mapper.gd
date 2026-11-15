@@ -36,6 +36,31 @@ var _was_both_sticks: bool = false
 var _close_to_head: bool = false
 var _close_dist: float = 0.25
 var _poll_timer: float = 0.0
+var _last_delta: float = 0.0
+# Motion (gyro/accelerometer) for the Steam Frame layout.
+var _motion_prev_velocity := Vector3.ZERO
+var _motion_accel := Vector3.ZERO
+var _motion_logged := false
+
+# Steam Frame controllers are a split gamepad (left: stick, D-pad, View,
+# bumper, trigger; right: stick, A/B/X/Y, Menu, bumper, trigger), so they map
+# 1:1 onto a pad instead of the Quest PAD-HAND/PAD-ABXY layouts.
+const FRAME_PROFILE := "frame_controller"
+const PAD_A := 0x1000
+const PAD_B := 0x2000
+const PAD_X := 0x4000
+const PAD_Y := 0x8000
+const PAD_UP := 0x0001
+const PAD_DOWN := 0x0002
+const PAD_LEFT := 0x0004
+const PAD_RIGHT := 0x0008
+const PAD_START := 0x0010
+const PAD_BACK := 0x0020
+const PAD_LS := 0x0040
+const PAD_RS := 0x0080
+const PAD_LB := 0x0100
+const PAD_RB := 0x0200
+const GRAVITY := 9.80665
 
 var _KBM_DEFAULT = {
 	"left_up": KEY_W,
@@ -98,6 +123,7 @@ func _process(_delta):
 		return
 
 	_poll_timer += _delta
+	_last_delta = _delta
 
 	if is_gamepad_mode():
 		_send_gamepad_mode(ctrl_type == CtrlType.PAD_ABXY)
@@ -116,10 +142,16 @@ func check_toggle():
 		return
 	var l_click = false
 	var r_click = false
-	if main.left_hand:
-		l_click = main.left_hand.is_button_pressed("primary_click")
-	if main.right_hand:
-		r_click = main.right_hand.is_button_pressed("primary_click")
+	if frame_controllers():
+		# Frame controllers: both grips (unmapped in the Frame layout), so both
+		# stick clicks stay free for L3+R3 in games.
+		l_click = main.left_hand != null and main.left_hand.get_float("grip") > 0.8
+		r_click = main.right_hand != null and main.right_hand.get_float("grip") > 0.8
+	else:
+		if main.left_hand:
+			l_click = main.left_hand.is_button_pressed("primary_click")
+		if main.right_hand:
+			r_click = main.right_hand.is_button_pressed("primary_click")
 	var both = l_click and r_click
 	if both and not _was_both_sticks:
 		main.screen_shortcuts.invoke(ScreenShortcutBar.ACTION_PAD)
@@ -146,6 +178,8 @@ func _activate():
 		_prev_ry = -1
 		_poll_timer = 1.0
 	_log("[CTRL] Activated: " + type_labels[ctrl_type])
+	if is_gamepad_mode() and main.is_xr_active:
+		main.composition_toast.show("Controller mode on. %s to turn it off." % toggle_hint(), main.xr_camera, 5.0)
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 		main.ui_controller.update_ctrl_type_btn()
@@ -172,6 +206,8 @@ func _deactivate():
 		main.input_handler.neutral_pad_state(GamepadSlots.QUEST_PAD)
 	active = false
 	_log("[CTRL] Deactivated")
+	if main.is_xr_active:
+		main.composition_toast.show("Controller mode off.", main.xr_camera, 2.0)
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 
@@ -226,6 +262,69 @@ func _log(msg: String):
 # Bit values below are moonlight-common-c's standard XInput-style button
 # flags (0x0001/2/4/8 = d-pad up/down/left/right, 0x1000/2000/4000/8000 =
 # A/B/X/Y).
+## True when SteamVR reports Steam Frame controllers (XR_VALVE_frame_controller_interaction).
+func frame_controllers() -> bool:
+	for name in [&"right_hand", &"left_hand"]:
+		var tracker = XRServer.get_tracker(name)
+		if tracker and String(tracker.profile).contains(FRAME_PROFILE):
+			return true
+	return false
+
+## How to switch controller mode off with the controllers in hand.
+func toggle_hint() -> String:
+	return "Squeeze both grips" if frame_controllers() else "Click both thumbsticks"
+
+func _pressed(hand: XRController3D, action: String) -> bool:
+	return hand != null and hand.is_button_pressed(action)
+
+func _frame_button_flags() -> int:
+	var l: XRController3D = main.left_hand
+	var r: XRController3D = main.right_hand
+	var flags := 0
+	if _pressed(r, "ax_button"): flags |= PAD_A
+	if _pressed(r, "by_button"): flags |= PAD_B
+	if _pressed(r, "x_button"): flags |= PAD_X
+	if _pressed(r, "y_button"): flags |= PAD_Y
+	if _pressed(l, "dpad_up"): flags |= PAD_UP
+	if _pressed(l, "dpad_down"): flags |= PAD_DOWN
+	if _pressed(l, "dpad_left"): flags |= PAD_LEFT
+	if _pressed(l, "dpad_right"): flags |= PAD_RIGHT
+	if _pressed(l, "bumper"): flags |= PAD_LB
+	if _pressed(r, "bumper"): flags |= PAD_RB
+	if _pressed(l, "select_button"): flags |= PAD_BACK
+	if _pressed(r, "menu_button"): flags |= PAD_START
+	if _pressed(l, "primary_click"): flags |= PAD_LS
+	if _pressed(r, "primary_click"): flags |= PAD_RS
+	return flags
+
+## Gyro and accelerometer from the primary controller's tracking, in the
+## controller's own frame. The aim pose has +X right, +Y up, +Z back: SDL's
+## gamepad axes. Through Sunshine's DualSense emulation the gyro's pitch
+## arrived inverted (aiming up read as down), so only the gyro's X is negated.
+## The accelerometer must not be flipped with it: games fuse the two, and an
+## accelerometer that disagrees with the gyro pulls the aim back after every
+## movement (seen in the TOTK recompilation: up, then slowly back down).
+func _send_frame_motion() -> void:
+	var hand: XRController3D = main.left_hand if effective_primary_hand() == PrimaryHand.LEFT else main.right_hand
+	if hand == null or _last_delta <= 0.0:
+		return
+	var pose: XRPose = hand.get_pose()
+	if pose == null or not pose.has_tracking_data:
+		return
+	var to_local: Basis = pose.transform.basis.orthonormalized().transposed()
+	var gyro: Vector3 = to_local * pose.angular_velocity
+	gyro = Vector3(-rad_to_deg(gyro.x), rad_to_deg(gyro.y), rad_to_deg(gyro.z))
+	# Linear acceleration from the velocity's change, smoothed (tracking
+	# velocities are noisy), plus the reaction to gravity an accelerometer reads.
+	var linear: Vector3 = (pose.linear_velocity - _motion_prev_velocity) / _last_delta
+	_motion_prev_velocity = pose.linear_velocity
+	_motion_accel = _motion_accel.lerp(linear, 0.3)
+	var accel: Vector3 = to_local * (_motion_accel + Vector3(0.0, GRAVITY, 0.0))
+	main.input_handler.send_pad_motion(GamepadSlots.QUEST_PAD, gyro, accel)
+	if not _motion_logged:
+		_motion_logged = true
+		_log("[MOTION] Sending controller gyro/accelerometer (first: gyro=%s deg/s accel=%s m/s^2)" % [str(gyro), str(accel)])
+
 func _send_gamepad_mode(abxy_layout: bool):
 	var head_pos = main.xr_camera.global_position
 	var left_pos = main.left_hand.global_position if main.left_hand else Vector3.ZERO
@@ -265,7 +364,10 @@ func _send_gamepad_mode(abxy_layout: bool):
 	var l_click = main.left_hand.is_button_pressed("primary_click") if main.left_hand else false
 	var r_click = main.right_hand.is_button_pressed("primary_click") if main.right_hand else false
 
-	if abxy_layout:
+	var frame := frame_controllers()
+	if frame:
+		button_flags = _frame_button_flags()
+	elif abxy_layout:
 		# left_a/left_b are physically X/Y; right_a/right_b are physically A/B
 		# (see the ax_button/by_button reads above - same "_a"/"_b" naming as
 		# PAD-HAND, just interpreted differently here).
@@ -297,12 +399,13 @@ func _send_gamepad_mode(abxy_layout: bool):
 			if right_a: button_flags |= 0x1000
 			if right_b: button_flags |= 0x2000
 
-	if lg_val > 0.5: button_flags |= 0x0100
-	if rg_val > 0.5: button_flags |= 0x0200
-	if left_menu: button_flags |= 0x0020
-	if right_menu: button_flags |= 0x0010
-	if l_click: button_flags |= 0x0040
-	if r_click: button_flags |= 0x0080
+	if not frame:
+		if lg_val > 0.5: button_flags |= 0x0100
+		if rg_val > 0.5: button_flags |= 0x0200
+		if left_menu: button_flags |= 0x0020
+		if right_menu: button_flags |= 0x0010
+		if l_click: button_flags |= 0x0040
+		if r_click: button_flags |= 0x0080
 
 	var lt = int(clampf(lt_val, 0.0, 1.0) * 255.0)
 	var rt = int(clampf(rt_val, 0.0, 1.0) * 255.0)
@@ -316,7 +419,13 @@ func _send_gamepad_mode(abxy_layout: bool):
 	var changed = button_flags != _prev_button_flags or lt != _prev_lt or rt != _prev_rt \
 		or lx != _prev_lx or ly != _prev_ly or rx != _prev_rx or ry != _prev_ry
 	if changed or _poll_timer >= 0.1:
-		main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_XBOX, button_flags, lt, rt, lx, ly, rx, ry)
+		if frame:
+			# A PlayStation-type pad with motion: Sunshine emulates a DualSense,
+			# whose gyro games such as the TOTK recomp read through SDL.
+			main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_PS, button_flags, lt, rt, lx, ly, rx, ry,
+				main.input_handler.ARRIVAL_CAPABILITIES | main.input_handler.CAP_ACCEL | main.input_handler.CAP_GYRO)
+		else:
+			main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_XBOX, button_flags, lt, rt, lx, ly, rx, ry)
 		_prev_button_flags = button_flags
 		_prev_lt = lt
 		_prev_rt = rt
@@ -325,6 +434,8 @@ func _send_gamepad_mode(abxy_layout: bool):
 		_prev_rx = rx
 		_prev_ry = ry
 		_poll_timer = 0.0
+	if frame:
+		_send_frame_motion()
 
 func _send_kbm_mode():
 	var lv = main.left_hand.get_vector2("primary") if main.left_hand else Vector2.ZERO
