@@ -70,11 +70,39 @@ pub struct Stats {
     /// restarted stream opens its new flow before the old one idles out, so a set would forget
     /// a client that is still streaming when the old flow closes.
     pub video_clients: std::sync::Mutex<HashMap<IpAddr, usize>>,
+    /// Multipath: the other addresses of a client, mapped to the address its
+    /// video flow (and so its depth maps) belongs to.
+    pub client_paths: std::sync::Mutex<HashMap<IpAddr, IpAddr>>,
     /// Actual video delivery, independent of UDP flows retained for reconnects.
     pub last_video_ms: AtomicU64,
 }
 
 impl Stats {
+    /// True when `a` and `b` are the same client, directly or as two paths of
+    /// one multipath client (so depth maps made from one path's video reach a
+    /// depth connection from the other).
+    pub fn same_client(&self, a: IpAddr, b: IpAddr) -> bool {
+        let (a, b) = (a.to_canonical(), b.to_canonical());
+        if a == b {
+            return true;
+        }
+        let Ok(paths) = self.client_paths.lock() else { return false };
+        let root = |ip: IpAddr| paths.get(&ip).copied().unwrap_or(ip);
+        root(a) == root(b)
+    }
+
+    fn link_path(&self, extra: IpAddr, owner: IpAddr) {
+        if let Ok(mut paths) = self.client_paths.lock() {
+            paths.insert(extra.to_canonical(), owner.to_canonical());
+        }
+    }
+
+    fn unlink_path(&self, extra: IpAddr) {
+        if let Ok(mut paths) = self.client_paths.lock() {
+            paths.remove(&extra.to_canonical());
+        }
+    }
+
     pub fn is_streaming(&self, ip: IpAddr) -> bool {
         self.video_clients.lock().is_ok_and(|c| c.contains_key(&ip.to_canonical()))
     }
@@ -226,6 +254,7 @@ impl Proxy {
                         let rejoined = extras.lock().unwrap().insert(client, std::time::Instant::now()).is_none();
                         if rejoined && ch.name == "video" {
                             self.stats.set_streaming(client.ip(), true);
+                            self.stats.link_path(client.ip(), owner.ip());
                         }
                         continue;
                     }
@@ -243,6 +272,7 @@ impl Proxy {
                                 // the microphone accept it from whichever address it uses.
                                 if ch.name == "video" {
                                     self.stats.set_streaming(client.ip(), true);
+                                    self.stats.link_path(client.ip(), owner.ip());
                                 }
                                 log::info!("{} multipath: {client} is another path of {owner}", ch.name);
                                 continue;
@@ -356,6 +386,7 @@ impl Proxy {
                                     log::info!("{} multipath: {addr} stopped pinging", ch.name);
                                     if ch.name == "video" {
                                         self.stats.set_streaming(addr.ip(), false);
+                                        self.stats.unlink_path(addr.ip());
                                     }
                                 }
                                 alive
@@ -384,6 +415,7 @@ impl Proxy {
             self.stats.set_streaming(client.ip(), false);
             for addr in extras.lock().unwrap().drain().map(|(addr, _)| addr) {
                 self.stats.set_streaming(addr.ip(), false);
+                self.stats.unlink_path(addr.ip());
             }
         }
         self.stats.udp_flows.fetch_sub(1, Ordering::Relaxed);

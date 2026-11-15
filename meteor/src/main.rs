@@ -371,7 +371,7 @@ async fn main() {
         match crypto::MeteorKey::load_or_create(&config::data_dir().join("meteor.key")) {
             Ok(key) => {
                 let side = config.side_ports(config::DEFAULT_SUNSHINE_PORT);
-                depth_server::start(side.depth, depth.clone(), Arc::new(key), Arc::new(|_| false));
+                depth_server::start(side.depth, depth.clone(), Arc::new(key), Arc::new(|_| false), Arc::new(|a, b| a == b));
             }
             Err(err) => log::warn!("No key, so no depth port: {err}"),
         }
@@ -415,7 +415,14 @@ async fn main() {
     }
     let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
-        depth_server::start(side.depth, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
+        let paths = stats.clone();
+        depth_server::start(
+            side.depth,
+            depth.clone(),
+            key,
+            Arc::new(move |ip| streaming.is_streaming(ip)),
+            Arc::new(move |a, b| paths.same_client(a, b)),
+        )
             .map(|port| (port, depth))
     });
     // Register before exposing tray Quit. The coordinator remains alive while

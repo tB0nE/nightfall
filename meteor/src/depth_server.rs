@@ -43,7 +43,15 @@ const ZSTD_LEVEL: i32 = 1;
 /// A client may connect just before its video flow opens.
 const STREAM_WAIT: Duration = Duration::from_secs(5);
 
-pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<u16> {
+/// `same_client(a, b)`: whether depth made from `a`'s video may go to a depth
+/// connection from `b` (true for a == b, and for two paths of a multipath client).
+pub fn start(
+    port: u16,
+    depth: Arc<Depth>,
+    key: Arc<MeteorKey>,
+    allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
+    same_client: Arc<dyn Fn(IpAddr, IpAddr) -> bool + Send + Sync>,
+) -> Option<u16> {
     let listener = match crate::net::tcp_listener_std(port).or_else(|_| TcpListener::bind(("0.0.0.0", port))) {
         Ok(listener) => listener,
         Err(err) => {
@@ -57,9 +65,10 @@ pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn
             let depth = depth.clone();
             let key = key.clone();
             let allowed = allowed.clone();
+            let same_client = same_client.clone();
             let _ = std::thread::Builder::new().name("depth-client".into()).spawn(move || {
                 let Ok(peer) = stream.peer_addr() else { return };
-                if let Err(err) = serve(stream, peer, &depth, &key, &*allowed) {
+                if let Err(err) = serve(stream, peer, &depth, &key, &*allowed, &*same_client) {
                     log::info!("Depth client {peer} disconnected ({err})");
                 }
             });
@@ -68,7 +77,14 @@ pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn
     spawned.ok().map(|_| port)
 }
 
-fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey, allowed: &dyn Fn(IpAddr) -> bool) -> io::Result<()> {
+fn serve(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    depth: &Depth,
+    key: &MeteorKey,
+    allowed: &dyn Fn(IpAddr) -> bool,
+    same_client: &dyn Fn(IpAddr, IpAddr) -> bool,
+) -> io::Result<()> {
     let ip = peer.ip().to_canonical();
     let waited = Instant::now();
     while !(ip.is_loopback() || allowed(ip)) {
@@ -118,8 +134,9 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
             continue;
         };
         last_seq = map.seq;
-        // Only this client's own video (or anyone's, for a local test client).
-        if !(ip.is_loopback() || map.client == Some(ip)) {
+        // Only this client's own video (any of its paths with multipath), or
+        // anyone's for a local test client.
+        if !(ip.is_loopback() || map.client.is_some_and(|c| same_client(c, ip))) {
             continue;
         }
         let encode_start = Instant::now();
