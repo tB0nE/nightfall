@@ -5,6 +5,7 @@ var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
 var _xr_control: RefCounted
+var app_picker: AppPicker
 var _auto_retry := 0.0
 var _auto_suppressed := false
 
@@ -42,6 +43,7 @@ func process_auto_xr(delta: float) -> void:
 	control.connect_offer(true)
 
 func _init(owner: Node3D):
+	app_picker = AppPicker.new(owner, self)
 	main = owner
 
 func xr_settings_available() -> bool:
@@ -97,6 +99,7 @@ func build_welcome_ui():
 	build_server_screen(screens)
 	build_ip_screen(screens)
 	build_pin_screen(screens)
+	app_picker.build(screens)
 	build_language_picker(root)
 	build_notice(root)
 	if OS.has_feature("android"):
@@ -273,12 +276,7 @@ func _update_language_toggle():
 ## runtime after a language change.
 func retranslate():
 	_update_language_toggle()
-	var app_btn = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/WelcomeScreen/WelcomeAppBtn")
-	if app_btn:
-		var app_name = "Desktop"
-		if not main._available_apps.is_empty():
-			app_name = main._available_apps[main._selected_app_idx].get("name", "Desktop")
-		app_btn.text = Localization.t("App: %s") % app_name
+	refresh_app_display()
 
 func build_welcome_screen(parent: Node):
 	var screen = VBoxContainer.new()
@@ -342,14 +340,51 @@ func build_welcome_screen(parent: Node):
 	btn_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(btn_spacer)
 
+	# The selected app's cover (refresh_app_display()) beside the buttons.
+	# Pressing the cover opens the app picker.
+	var main_row = HBoxContainer.new()
+	main_row.name = "WelcomeMain"
+	main_row.add_theme_constant_override("separation", 60)
+	main_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	main_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(main_row)
+
+	var cover_btn = Button.new()
+	cover_btn.name = "WelcomeAppCover"
+	cover_btn.custom_minimum_size = Vector2(300, 440)
+	cover_btn.flat = true
+	cover_btn.focus_mode = Control.FOCUS_NONE
+	main_row.add_child(cover_btn)
+	var cover_box = VBoxContainer.new()
+	cover_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cover_box.add_theme_constant_override("separation", 8)
+	cover_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cover_btn.add_child(cover_box)
 	var pc_icon = TextureRect.new()
+	pc_icon.name = "WelcomeAppCoverImage"
 	pc_icon.texture = load("res://src/assets/pc_icon.svg")
-	pc_icon.custom_minimum_size = Vector2(280, 280)
+	pc_icon.custom_minimum_size = Vector2(280, 373)
 	pc_icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	pc_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pc_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	pc_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(pc_icon)
+	cover_box.add_child(pc_icon)
+	var app_name_label = Label.new()
+	app_name_label.name = "WelcomeAppName"
+	app_name_label.add_theme_font_size_override("font_size", 24)
+	app_name_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
+	app_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	app_name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	app_name_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	app_name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cover_box.add_child(app_name_label)
+
+	var buttons = VBoxContainer.new()
+	buttons.name = "WelcomeButtons"
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 0)
+	buttons.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	main_row.add_child(buttons)
 
 	var connect_btn = Button.new()
 	connect_btn.name = "WelcomeConnect"
@@ -357,7 +392,7 @@ func build_welcome_screen(parent: Node):
 	connect_btn.add_theme_font_size_override("font_size", 32)
 	connect_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	connect_btn.text = "Connect"
-	screen.add_child(connect_btn)
+	buttons.add_child(connect_btn)
 
 	var wol_btn = Button.new()
 	wol_btn.name = "WelcomeWol"
@@ -367,28 +402,20 @@ func build_welcome_screen(parent: Node):
 	wol_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	wol_btn.text = "Wake PC"
 	wol_btn.visible = false
-	screen.add_child(wol_btn)
+	buttons.add_child(wol_btn)
 
 	var spacer1 = Control.new()
 	spacer1.name = "Spacer1"
 	spacer1.custom_minimum_size = Vector2(0, 10)
 	spacer1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer1)
+	buttons.add_child(spacer1)
 
-	var app_btn = Button.new()
-	app_btn.name = "WelcomeAppBtn"
-	app_btn.custom_minimum_size = Vector2(400, 60)
-	app_btn.add_theme_font_size_override("font_size", 24)
-	app_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	app_btn.text = Localization.t("App: %s") % "Desktop"
-	app_btn.visible = false
-	screen.add_child(app_btn)
 
 	var spacer2 = Control.new()
 	spacer2.name = "Spacer2"
 	spacer2.custom_minimum_size = Vector2(0, 10)
 	spacer2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer2)
+	buttons.add_child(spacer2)
 
 	var change_btn = Button.new()
 	change_btn.name = "WelcomeChangeServer"
@@ -398,12 +425,12 @@ func build_welcome_screen(parent: Node):
 	change_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	change_btn.text = "Select Server"
 	change_btn.visible = false
-	screen.add_child(change_btn)
+	buttons.add_child(change_btn)
 
 	var spacer3 = Control.new()
 	spacer3.custom_minimum_size = Vector2(0, 10)
 	spacer3.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer3)
+	buttons.add_child(spacer3)
 
 	var exit_btn = Button.new()
 	exit_btn.name = "WelcomeExit"
@@ -412,7 +439,7 @@ func build_welcome_screen(parent: Node):
 	exit_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.4))
 	exit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	exit_btn.text = "Exit"
-	screen.add_child(exit_btn)
+	buttons.add_child(exit_btn)
 
 	var bottom_pad = Control.new()
 	bottom_pad.custom_minimum_size = Vector2(0, 40)
@@ -449,7 +476,9 @@ func build_welcome_screen(parent: Node):
 		wol_btn.text = "Wake PC"
 	)
 	change_btn.pressed.connect(func(): show_welcome_screen("server"))
-	app_btn.button_down.connect(func(): cycle_app())
+	cover_btn.pressed.connect(func():
+		if not main._available_apps.is_empty():
+			show_welcome_screen("apps"))
 	exit_btn.pressed.connect(func(): main.get_tree().quit())
 
 func build_server_screen(parent: Node):
@@ -777,6 +806,9 @@ func show_welcome_screen(name: String):
 			populate_server_list()
 		"ip":
 			root.get_node_or_null("IPScreen").visible = true
+		"apps":
+			root.get_node_or_null("AppsScreen").visible = true
+			app_picker.open()
 		"pin":
 			var pin_screen = root.get_node_or_null("PINScreen")
 			if pin_screen:
@@ -795,14 +827,13 @@ func update_welcome_info():
 	var ws = screens.get_node_or_null("WelcomeScreen")
 	if not ws:
 		return
-	var host_label = ws.get_node_or_null("WelcomeHostName")
-	var ip_label = ws.get_node_or_null("WelcomeHostIP")
-	var connect_btn = ws.get_node_or_null("WelcomeConnect")
-	var app_btn = ws.get_node_or_null("WelcomeAppBtn")
-	var change_btn = ws.get_node_or_null("WelcomeChangeServer")
-	var wol_btn = ws.get_node_or_null("WelcomeWol")
-	var spacer1 = ws.get_node_or_null("Spacer1")
-	var spacer2 = ws.get_node_or_null("Spacer2")
+	var host_label = ws.find_child("WelcomeHostName", true, false)
+	var ip_label = ws.find_child("WelcomeHostIP", true, false)
+	var connect_btn = ws.find_child("WelcomeConnect", true, false)
+	var change_btn = ws.find_child("WelcomeChangeServer", true, false)
+	var wol_btn = ws.find_child("WelcomeWol", true, false)
+	var spacer1 = ws.find_child("Spacer1", true, false)
+	var spacer2 = ws.find_child("Spacer2", true, false)
 
 	var saved_ip_raw = main.get_node("%IPInput").text
 	var saved_ip = main.parse_ip_port(saved_ip_raw)[0]
@@ -830,7 +861,6 @@ func update_welcome_info():
 		else:
 			if host_label: host_label.text = saved_ip
 			if ip_label: ip_label.text = ""
-		if app_btn: app_btn.visible = true
 		if change_btn: change_btn.visible = true
 		if spacer1: spacer1.visible = true
 		if spacer2: spacer2.visible = true
@@ -839,7 +869,7 @@ func update_welcome_info():
 		if main.current_host_id >= 0:
 			query_app_list()
 		elif not main._available_apps.is_empty():
-			if app_btn: app_btn.text = Localization.t("App: %s") % main._available_apps[main._selected_app_idx].get("name", "Desktop")
+			refresh_app_display()
 	else:
 		if has_hosts:
 			if connect_btn: connect_btn.text = "Connect"
@@ -847,7 +877,6 @@ func update_welcome_info():
 			if connect_btn: connect_btn.text = "Pair"
 		if host_label: host_label.text = ""
 		if ip_label: ip_label.text = ""
-		if app_btn: app_btn.visible = false
 		if change_btn: change_btn.visible = true
 		if wol_btn: wol_btn.visible = false
 		if spacer1: spacer1.visible = false
@@ -863,7 +892,7 @@ func reset_connect_button():
 	var ws = screens.get_node_or_null("WelcomeScreen")
 	if not ws:
 		return
-	var connect_btn = ws.get_node_or_null("WelcomeConnect")
+	var connect_btn = ws.find_child("WelcomeConnect", true, false)
 	if connect_btn:
 		connect_btn.text = "Connect"
 		connect_btn.disabled = false
@@ -999,7 +1028,7 @@ func clear_saved_servers():
 	if screens:
 		var ws = screens.get_node_or_null("WelcomeScreen")
 		if ws:
-			var connect_btn = ws.get_node_or_null("WelcomeConnect")
+			var connect_btn = ws.find_child("WelcomeConnect", true, false)
 			if connect_btn:
 				connect_btn.text = "Connect"
 				connect_btn.disabled = false
@@ -1053,13 +1082,26 @@ func cycle_app():
 		return
 	main._selected_app_idx = (main._selected_app_idx + 1) % main._available_apps.size()
 	main._selected_app_id = main._available_apps[main._selected_app_idx].get("id", 881448767)
-	var app_name = main._available_apps[main._selected_app_idx].get("name", "Desktop")
+	app_picker.remember()
+	refresh_app_display()
+
+## The main page's app button text and cover for the selected app (the PC
+## icon until its cover has arrived, or when the host has none).
+func refresh_app_display() -> void:
 	var screens = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens")
-	if not screens:
+	if not screens or main._available_apps.is_empty():
 		return
-	var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
-	if app_btn:
-		app_btn.text = Localization.t("App: %s") % app_name
+	var idx: int = clampi(main._selected_app_idx, 0, main._available_apps.size() - 1)
+	var app: Dictionary = main._available_apps[idx]
+	var ws = screens.get_node_or_null("WelcomeScreen")
+	if not ws:
+		return
+	var name_label = ws.find_child("WelcomeAppName", true, false)
+	if name_label:
+		name_label.text = String(app.get("name", "Desktop"))
+	var cover = ws.find_child("WelcomeAppCoverImage", true, false)
+	if cover:
+		cover.texture = app_picker.cover_for(int(app.get("id", AppPicker.DEFAULT_APP_ID)))
 
 # The address to pair with, in the form main.parse_ip_port() reads: the bare
 # address on the default port, else "ip:port", or "[v6]:port" for IPv6.
@@ -1099,15 +1141,10 @@ func query_app_list():
 			main._available_apps = order_apps(_cm3.get_apps(main.current_host_id) if _cm3 else [])
 			if main._available_apps.is_empty():
 				main._available_apps = [{"name": "Desktop", "id": 881448767}]
-			main._selected_app_idx = 0
-			main._selected_app_id = main._available_apps[0].get("id", 881448767)
-			var app_name = main._available_apps[0].get("name", "Desktop")
-			var screens = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens")
-			if screens:
-				var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
-				if app_btn:
-					app_btn.text = Localization.t("App: %s") % app_name
-					app_btn.visible = true
+			# The app used last time on this host, if it still exists.
+			main._selected_app_idx = app_picker.remembered_index(main._available_apps)
+			main._selected_app_id = main._available_apps[main._selected_app_idx].get("id", 881448767)
+			refresh_app_display()
 	)
 
 func _get_host_mac(ip: String) -> String:
