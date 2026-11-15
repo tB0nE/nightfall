@@ -314,6 +314,17 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             String plaincert = _extract_xml_value(xml, "plaincert");
             if (plaincert.is_empty()) {
                 String status_msg = _extract_xml_value(xml, "status_message");
+                if (status_msg.is_empty()) {
+                    // Sunshine/Apollo put the reason in an attribute:
+                    // <root status_code="400" status_message="...">
+                    int a = xml.find("status_message=\"");
+                    if (a != -1) {
+                        a += 16;
+                        int b = xml.find("\"", a);
+                        if (b > a) status_msg = xml.substr(a, b - a).xml_unescape();
+                    }
+                }
+                NF_LOG("NightfallPair", "getservercert without plaincert: %s", xml.left(300).utf8().get_data());
                 pair_state = PAIR_ERROR;
                 if (parent_node_) { parent_node_->call("_on_pair_completed", false, status_msg.is_empty() ? "No server certificate received." : status_msg); }
                 return;
