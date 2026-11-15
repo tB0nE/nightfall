@@ -256,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "Kies app",
+	"Previous": "Vorige",
+	"Next": "Volgende"
 }
