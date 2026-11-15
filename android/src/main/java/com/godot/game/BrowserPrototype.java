@@ -60,7 +60,7 @@ public final class BrowserPrototype {
         focusedId = id;
     }
     public static void pause(boolean paused) { for (Session value : sessions.values()) value.pause(paused); }
-    public static void closeAll() { for (Session value : sessions.values()) value.close(); }
+    public static void closeAll() { transfers.clear(); for (Session value : sessions.values()) value.close(); }
     public static boolean physicalGamepadKey(android.view.KeyEvent event) {
         Session value = sessions.get(focusedId);
         return value != null && value.physicalGamepadKey(event);
@@ -81,6 +81,36 @@ public final class BrowserPrototype {
     public static void close(int browserId) { session(browserId).close(); }
     public static void contentVisible(int browserId, boolean visible) { session(browserId).contentVisible(visible); }
     public static void resize(int browserId, int width, int height) { session(browserId).resize(width, height); }
+    private static final AtomicInteger transferSequence = new AtomicInteger();
+    private static final java.util.concurrent.ConcurrentHashMap<Integer, String> transfers = new java.util.concurrent.ConcurrentHashMap<>();
+    public static int transferTab(int from, int to, int page, boolean replacePlaceholder) {
+        final int ticket = transferSequence.incrementAndGet();
+        final Session source = sessions.get(from), destination = sessions.get(to);
+        transfers.put(ticket, "{\"done\":false}");
+        final int sourceGeneration = source == null ? -1 : source.generation.get();
+        final int destinationGeneration = destination == null ? -1 : destination.generation.get();
+        UI.post(() -> {
+            if (!transfers.containsKey(ticket)) return;
+            int result = 0;
+            try {
+                if (source != null && destination != null && source != destination
+                        && sourceGeneration == source.generation.get() && destinationGeneration == destination.generation.get()
+                        && source.state == 2 && destination.state == 2 && !source.dataClearing && !destination.dataClearing)
+                    result = source.transferPageTo(destination, page, replacePlaceholder, ticket);
+            } catch (RuntimeException | LinkageError error) {
+                DiagnosticLog.error("BrowserPrototype", "Browser page transfer failed", error);
+            }
+            transfers.put(ticket, "{\"done\":true,\"page\":" + result + "}");
+        });
+
+        return ticket;
+    }
+    public static void cancelTransfer(int ticket) { transfers.remove(ticket); }
+    public static String transferResult(int ticket) {
+        String result = transfers.get(ticket);
+        if (result != null && result.contains("\"done\":true")) transfers.remove(ticket);
+        return result == null ? "{\"done\":true,\"page\":0}" : result;
+    }
     public static void tabAction(String action, int id) { tabAction(0, action, id); }
     public static void tabAction(int browserId, String action, int id) { session(browserId).tabAction(action, id); }
     public static void navigationAction(String action) { navigationAction(0, action); }
@@ -505,6 +535,55 @@ public final class BrowserPrototype {
                 close();
             }
         });
+    }
+
+    // A WebView's Presentation context belongs to its original display. Move
+    // navigation state, not the live View or its Session-bound callbacks.
+    private int transferPageTo(Session destination, int id, boolean replacePlaceholder, int ticket) {
+        int sourceToken = generation.get(), destinationToken = destination.generation.get();
+        BrowserPageTabs.Page page = pageTabs.find(id);
+        if (page == null || destination.content == null || customView != null || destination.customView != null) return 0;
+        if (!replacePlaceholder && destination.pageTabs.pages.size() >= BrowserPageTabs.LIMIT) return 0;
+        if (replacePlaceholder && destination.pageTabs.pages.size() != 1) return 0;
+        android.os.Bundle saved = pageHistory.get(id);
+        WebView view = pageTabs.selected == id ? web : retainedPages.get(id);
+        if (view != null) {
+            saved = new android.os.Bundle();
+            if (view.saveState(saved) == null) return 0;
+            saved.putString("nightfall_current_url", view.getUrl());
+        }
+        if (saved == null) return 0;
+        int oldSelection = destination.pageTabs.selected;
+        destination.retirePage(!replacePlaceholder);
+        int newId = replacePlaceholder ? oldSelection : destination.pageTabs.add();
+        if (newId == 0) { destination.resumePage(destination.generation.get()); return 0; }
+        destination.pageHistory.put(newId, new android.os.Bundle(saved));
+        destination.pageTabs.find(newId).title = page.title;
+        try {
+            destination.resumePage(destination.generation.get());
+        } catch (RuntimeException | LinkageError failure) {
+            destination.pageHistory.remove(newId);
+            if (!replacePlaceholder) destination.pageTabs.remove(newId);
+            destination.pageTabs.select(oldSelection);
+            destination.resumePage(destination.generation.get());
+            throw failure;
+        }
+
+        if (sourceToken != generation.get() || destinationToken != destination.generation.get() || !transfers.containsKey(ticket)) {
+            destination.retirePage(false);
+            destination.pageHistory.remove(newId);
+            if (!replacePlaceholder) destination.pageTabs.remove(newId);
+            destination.pageTabs.select(oldSelection);
+            if (destinationToken == destination.generation.get()) destination.resumePage(destinationToken);
+            destination.publishPages();
+            return 0;
+        }
+        boolean current = pageTabs.selected == id;
+        if (current) retirePage(false);
+        releaseRetainedPage(id);pageHistory.remove(id);pageTabs.remove(id);
+        if (current && !pageTabs.pages.isEmpty()) resumePage(generation.get());
+        publishPages();destination.publishPages();
+        return newId;
     }
 
     public void navigationAction(String action) {

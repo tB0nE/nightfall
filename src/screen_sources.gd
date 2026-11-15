@@ -70,9 +70,9 @@ func can_add_monitor_tab(screen: VRScreen, virtual: bool = false) -> bool:
 	if not browser_supported or screen == null or not main.screens.has(screen) or not main.is_streaming: return false
 	if switching_tab or switching_primary or monitor_change_pending() or main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING: return false
 	if not main.settings.host.is_polaris_host: return false
-	if virtual: return main.settings.host.virtual_display_installed
+	if virtual: return main.settings.host.virtual_display_installed and monitor_size_available(true, Vector2i(320,240) if main.layout.virtual_modes_supported else Vector2i.ZERO)
 	for monitor in main.layout.monitors:
-		if monitor.capturable and not monitor.hint.get("virtual", false) and monitor_tab_owner(monitor.id) == null: return true
+		if monitor.capturable and not monitor.hint.get("virtual", false) and monitor_tab_owner(monitor.id) == null: return monitor_size_available(false, Vector2i.ZERO, screen)
 	return false
 
 func add_monitor_tab(screen: VRScreen, virtual: bool = false, size: Vector2i = Vector2i.ZERO) -> bool:
@@ -387,8 +387,8 @@ func can_add_monitor_screen(virtual: bool = false) -> bool:
 		if monitor.hint.get("virtual", false): virtual_count += 1
 		else: physical += 1
 	if virtual:
-		return main.settings.host.virtual_display_installed and virtual_count < main.settings.host.virtual_display_max_count
-	return physical < controller._real_monitor_count()
+		return main.settings.host.virtual_display_installed and virtual_count < main.settings.host.virtual_display_max_count and monitor_size_available(true, Vector2i(320,240) if main.layout.virtual_modes_supported else Vector2i.ZERO)
+	return physical < controller._real_monitor_count() and monitor_size_available(false)
 
 func add_monitor_screen(virtual: bool = false, size: Vector2i = Vector2i.ZERO) -> bool:
 	if not can_add_monitor_screen(virtual): return false
@@ -420,7 +420,7 @@ func can_switch_content_tab(screen: VRScreen) -> bool:
 	if screen == null or switching_tab or switching_primary or monitor_change_pending(): return false
 	if screen != main.primary_screen:
 		var provider = browser_for_screen(screen)
-		return browser_supported and main.screens.has(screen) and main.is_streaming and main.session_lifecycle.phase == SessionLifecycle.Phase.STREAMING and not main.pcvr_test.is_exclusive() and not main.pcvr_handover.blocks_workspace() and (provider == null or not provider.closing)
+		return browser_supported and main.screens.has(screen) and main.session_lifecycle.phase in [SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION, SessionLifecycle.Phase.FAILED, SessionLifecycle.Phase.STREAMING] and not main.pcvr_test.is_exclusive() and not main.pcvr_handover.blocks_workspace() and (provider == null or not provider.closing)
 	if main.browser_prototype.closing: return false
 	if main.pcvr_test.is_exclusive() or main.pcvr_handover.blocks_workspace(): return false
 	if main.session_lifecycle.phase not in [SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION,
@@ -639,6 +639,11 @@ func _bind_monitor_geometry(screen: VRScreen) -> void:
 			if monitor.frame_rect.size.x > 0 and monitor.frame_rect.size.y > 0:
 				screen.resize_to_aspect(monitor.frame_rect.size.x, monitor.frame_rect.size.y)
 			break
+	# Source changes can leave RGB browser pixels in this same material, while
+	# a static desktop reuses its decoder texture IDs. Rebind immediately.
+	if main.is_streaming and main.comp:
+		main.comp.invalidate_yuv_cache()
+		main.comp.bind_yuv_textures()
 
 func secondary_browser_closed(screen: VRScreen) -> bool:
 	if monitor_tab(screen) == null: return false
@@ -697,6 +702,10 @@ func make_primary(screen: VRScreen, connecting: bool = false) -> bool:
 	var restoring_connection: bool = connecting and not switching_primary and screen != null \
 		and screen == stream_screen() and screen != main.primary_screen and not main.is_streaming
 	if not restoring_connection and not can_make_primary(screen): return false
+	return await _promote_primary(screen)
+
+func _promote_primary(screen: VRScreen) -> bool:
+	if not is_instance_valid(screen) or not main.screens.has(screen) or screen == main.primary_screen: return false
 	switching_primary = true
 	main.xr_interaction.cancel_transient_interactions("primary screen changed")
 	main.depth_estimator.set_enabled(false)
@@ -984,10 +993,7 @@ func sync_browser_pages(pages: Array, selected: int, screen: VRScreen = null) ->
 	screen.content_tabs.sync_browser_pages(pages, selected)
 	changed.emit()
 
-func _admit_monitor_addition(virtual: bool, size: Vector2i, id: StringName, screen: VRScreen) -> bool:
-	# Minimal test owners and third-party hosts do not implement this extension.
-	var manager = main.get("stream_manager")
-	if manager == null or not manager.has_method("admit_monitor_set"): return true
+func _monitor_addition_proposal(virtual: bool, size: Vector2i, id: StringName = &"") -> Dictionary:
 	var target := ScreenLayout.from_dict(main.layout.to_dict())
 	if not virtual:
 		for monitor in target.monitors:
@@ -1001,4 +1007,206 @@ func _admit_monitor_addition(virtual: bool, size: Vector2i, id: StringName, scre
 		while values.size() < count: values.append("0x0")
 		values[count-1] = "%dx%d" % [size.x,size.y]
 		modes = ",".join(values)
-	return await manager.admit_monitor_set(target, count, modes, screen)
+	return {"layout": target, "count": count, "modes": modes}
+
+func _admit_monitor_addition(virtual: bool, size: Vector2i, id: StringName, screen: VRScreen) -> bool:
+	var manager = main.get("stream_manager")
+	if manager == null or not manager.has_method("admit_monitor_set"): return true
+	var proposal := _monitor_addition_proposal(virtual, size, id)
+	return await manager.admit_monitor_set(proposal.layout, proposal.count, proposal.modes, screen)
+
+var _capacity_views := {}
+
+func monitor_size_available(virtual: bool, size := Vector2i.ZERO, screen: VRScreen = null) -> bool:
+	var manager = main.get("stream_manager")
+	if manager == null or not manager.has_method("monitor_proposal_available"): return true
+	var key := str([virtual,size,screen.get_instance_id() if screen != null else 0])
+	var now := Time.get_ticks_msec()
+	var revision: int = manager.capacity_revision
+	var cached: Dictionary = _capacity_views.get(key,{})
+	if not cached.is_empty() and cached.until > now and cached.revision == revision: return cached.value
+	var id: StringName = &""
+	if not virtual:
+		for monitor in main.layout.monitors:
+			if monitor.capturable and not monitor.hint.get("virtual", false) and (monitor_tab_owner(monitor.id) == null if screen != null else not monitor.enabled):
+				id = monitor.id
+				break
+	var proposal := _monitor_addition_proposal(virtual, size, id)
+	var available: bool = manager.monitor_proposal_available(proposal.layout, proposal.count, proposal.modes)
+	_capacity_views[key] = {"value":available,"until":now+200,"revision":revision}
+	return available
+
+var moving_tab := false
+var dragged_tab_id: StringName = &""
+var dragged_tab_source: VRScreen
+
+func can_move_content_tab(source: VRScreen, id: StringName, destination: VRScreen = null) -> bool:
+	if moving_tab or not can_switch_content_tab(source): return false
+	var tab := source.content_tabs.find_tab(id)
+	if tab == null or tab.kind not in [ScreenContentTab.STREAM, ScreenContentTab.BROWSER]: return false
+	if destination == null: return source.content_tabs.tabs.size() == 1 or main.screens.size() < MAX_BROWSER_SCREENS
+	if destination == source: return false
+	if not can_switch_content_tab(destination) or destination.content_tabs.tabs.size() >= 8: return false
+	if tab.kind == ScreenContentTab.STREAM and destination.content_tabs.find_tab(tab.id) != null: return false
+	var provider := browser_for_screen(destination)
+	return tab.kind != ScreenContentTab.BROWSER or provider == null or provider.pages.size() < 8
+
+func _drop_cell(point: Vector3, exclude: VRScreen = null) -> Vector2i:
+	var occupied: Array = []
+	for screen in main.screens:
+		if screen != exclude and screen.grid_mode: occupied.append(screen.grid_pos)
+	var anchor: Vector2i = main.primary_screen.grid_pos
+	if anchor == Vector2i(-1,-1): anchor = Vector2i(3,1)
+	return main.nearest_free_grid_cell(point, occupied, anchor.x, anchor.y)
+
+func _place_dropped_screen(screen: VRScreen, cell: Vector2i) -> void:
+	var anchor: Vector2i = main.primary_screen.grid_pos
+	if anchor == Vector2i(-1,-1): anchor = Vector2i(3,1)
+	screen.global_transform = main.grid_cell_transform(cell.x, cell.y, anchor.x, anchor.y)
+	screen.grid_mode = true
+	screen.grid_pos = cell
+
+func _activate_content(screen: VRScreen) -> void:
+	var tab := screen.content_tabs.selected()
+	if tab == null: return
+	if tab.kind == ScreenContentTab.STREAM:
+		await select_monitor_content_tab(screen,tab.id)
+	else:
+		await select_browser_tab(screen,int(String(tab.id).trim_prefix("browser:page:")))
+
+func _retire_transferred_screen(screen: VRScreen) -> void:
+	_browsers.erase(screen.get_instance_id())
+	_menus.erase(screen.get_instance_id())
+	main.remove_screen(screen.monitor_id, screen)
+
+func move_content_tab(source: VRScreen, id: StringName, destination: VRScreen, point: Vector3) -> bool:
+	if destination == source: return false
+	if not can_move_content_tab(source,id,destination): return false
+	var cell := Vector2i(-1,-1)
+	var created := destination == null
+	if created:
+		cell = _drop_cell(point,source if source.content_tabs.tabs.size() == 1 else null)
+		if cell == Vector2i(-1,-1): return false
+		if source.content_tabs.tabs.size() == 1:
+			_place_dropped_screen(source,cell)
+			main.state_manager.save_state()
+			return true
+	moving_tab = true
+	switching_tab = true
+	var tab := source.content_tabs.find_tab(id)
+	var source_provider := browser_for_screen(source)
+	# Retire shared consumers before moving ownership of an inferred surface.
+	main.depth_estimator.set_enabled(false)
+	main.video_presentation.deactivate_native(false)
+	main.xr_interaction.cancel_transient_interactions("tab move")
+	if main.depth_estimator.has_method("begin_source_transition"): main.depth_estimator.begin_source_transition()
+	await _wait_for_primary_drain()
+	if main.depth_estimator.has_method("wait_for_source_transition") and not await main.depth_estimator.wait_for_source_transition():
+		main.depth_estimator.end_source_transition()
+		switching_tab = false
+		moving_tab = false
+		main.settings_controller.apply_stereo()
+		return false
+	if main.depth_estimator.has_method("end_source_transition"): main.depth_estimator.end_source_transition()
+	if not is_instance_valid(source) or not main.screens.has(source) or source.content_tabs.find_tab(id) != tab:
+		switching_tab = false
+		moving_tab = false
+		main.settings_controller.apply_stereo()
+		return false
+	if created:
+		destination = main.add_screen(StringName("detached:%d" % Time.get_ticks_msec()))
+		if destination != null: _place_dropped_screen(destination,cell)
+	if not is_instance_valid(destination) or not main.screens.has(destination):
+		switching_tab = false
+		moving_tab = false
+		main.settings_controller.apply_stereo()
+		return false
+	var destination_provider := browser_for_screen(destination)
+	var fresh_browser := false
+	var new_id := id
+	if tab.kind == ScreenContentTab.BROWSER:
+		if destination_provider == null: destination_provider = menu_for_screen(destination).browser
+		fresh_browser = not destination_provider.active and not destination_provider.suspended
+		destination_provider.start()
+		var deadline := Time.get_ticks_msec() + 5000
+		while destination_provider.uploader != null and destination_provider.uploader.poll_browser_prototype() == 1 and Time.get_ticks_msec() < deadline:
+			await main.get_tree().process_frame
+		var bridge = source_provider._gamepad_bridge() if source_provider != null else null
+		var result := {}
+		if bridge != null and destination_provider.active and destination_provider.uploader.poll_browser_prototype() == 2:
+			var page := int(String(id).trim_prefix("browser:page:"))
+			var ticket: int = bridge.browserTransferTab(source_provider.browser_id,destination_provider.browser_id,page,fresh_browser)
+			deadline = Time.get_ticks_msec() + 15000
+			while true:
+				var value = JSON.parse_string(str(bridge.browserTransferResult(ticket)))
+				if value is Dictionary and value.get("done",false):
+					result = value
+					break
+				if Time.get_ticks_msec() >= deadline:
+					bridge.browserCancelTransfer(ticket)
+					break
+				await main.get_tree().process_frame
+		if int(result.get("page",0)) <= 0:
+			if fresh_browser:
+				destination_provider.retire_after_transfer()
+				for placeholder in destination.content_tabs.tabs.duplicate():
+					if placeholder.kind == ScreenContentTab.BROWSER: destination.content_tabs.remove(placeholder.id)
+			if created: _retire_transferred_screen(destination)
+			switching_tab = false
+			moving_tab = false
+			await _activate_content(source)
+			if not created: await _activate_content(destination)
+			main.settings_controller.apply_stereo()
+			main.ui_controller.set_status("Tab could not be moved; original page kept")
+			return false
+		new_id = StringName("browser:page:%d" % int(result.page))
+		if fresh_browser:
+			for placeholder in destination.content_tabs.tabs.duplicate():
+				if placeholder.kind == ScreenContentTab.BROWSER: destination.content_tabs.remove(placeholder.id)
+	if not is_instance_valid(source) or not is_instance_valid(destination) or not main.screens.has(source) or not main.screens.has(destination):
+		switching_tab = false
+		moving_tab = false
+		main.settings_controller.apply_stereo()
+		return false
+	# Both model mutations happen without yielding. Nothing closes the host or
+	# edits its selected outputs: a move changes surface ownership only.
+	source.content_tabs.remove(id)
+	tab.id = new_id
+	destination.content_tabs.add(tab)
+	if tab.kind == ScreenContentTab.BROWSER:
+		source_provider._pages_snapshot = ""
+		source_provider._pages_poll_at = 0
+		source_provider._poll_pages(true)
+		destination_provider._pages_snapshot = ""
+		destination_provider._pages_poll_at = 0
+		destination_provider._poll_pages(true)
+	if tab.kind == ScreenContentTab.STREAM:
+		if destination_provider != null and destination_provider.active: destination_provider.suspend_for_tab()
+		destination.monitor_id = StringName(tab.locator.monitor_id)
+		_bind_monitor_geometry(destination)
+	switching_tab = false
+	if source.content_tabs.tabs.is_empty():
+		if source == main.primary_screen: await _promote_primary(destination)
+		if source == main.primary_screen:
+			moving_tab = false
+			return false # Never delete the active primary surface.
+		# Detach compositor consumers first, then retire their Android producer.
+		# Closing the SurfaceTexture before layer detachment can reset the GPU.
+		_retire_transferred_screen(source)
+		await _wait_for_primary_drain()
+		if source_provider != null: source_provider.retire_after_transfer()
+	else:
+		var has_browser := false
+		for remaining in source.content_tabs.tabs:
+			if remaining.kind == ScreenContentTab.BROWSER: has_browser = true
+		await _activate_content(source)
+		if not has_browser and source_provider != null:
+			await _wait_for_primary_drain()
+			source_provider.retire_after_transfer()
+	await _activate_content(destination)
+	moving_tab = false
+	main.comp.invalidate_yuv_cache()
+	main.settings_controller.apply_stereo()
+	main.state_manager.save_state()
+	changed.emit()
+	return true

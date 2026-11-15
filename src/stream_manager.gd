@@ -1288,3 +1288,38 @@ func admit_monitor_set(layout: ScreenLayout, count: int, modes: String, screen: 
 		_packing_approval = str([main.current_host_id, StreamPackingBudget.query(options)])
 	_packing_busy = false
 	return accepted
+
+var _capacity_cache := {}
+var _capacity_snapshot := ""
+var capacity_revision := 0
+var _capacity_check_at := 0
+
+func monitor_proposal_available(layout: ScreenLayout, count: int, modes: String) -> bool:
+	if main.layout.packing_budget_version != 1: return true
+	var now := Time.get_ticks_msec()
+	if now >= _capacity_check_at:
+		_capacity_check_at = now + 200
+		var current := _packing_snapshot()
+		if current != _capacity_snapshot:
+			_capacity_cache.clear()
+			_capacity_snapshot = current
+	var snapshot := _capacity_snapshot
+	var options := _packing_request(layout, count, modes)
+	options.merge(packing_options())
+	var key := StreamPackingBudget.query(options)
+	if not _capacity_cache.has(key): _capacity_cache[key] = {"available":false,"refresh_at":0}
+	if int(_capacity_cache[key].refresh_at) <= now:
+		_capacity_cache[key].refresh_at = now + 5000
+		_update_monitor_capacity(key, options, snapshot)
+	return _capacity_cache[key].available
+
+func _update_monitor_capacity(key: String, options: Dictionary, snapshot: String) -> void:
+	var plan := await _packing_preview(options)
+	var available := StreamPackingBudget.full_size_fits(plan, options)
+	if not available and main.settings.codec_preference == 0 and main.settings_controller.is_codec_available(1):
+		var alternative := options.duplicate()
+		alternative.merge(packing_options(1), true)
+		available = StreamPackingBudget.full_size_fits(await _packing_preview(alternative), alternative)
+	if snapshot != _packing_snapshot() or snapshot != _capacity_snapshot: return
+	_capacity_cache[key] = {"available":available,"refresh_at":Time.get_ticks_msec()+5000}
+	capacity_revision += 1

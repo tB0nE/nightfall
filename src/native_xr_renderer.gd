@@ -92,6 +92,14 @@ func screen_part(screen: VRScreen) -> Dictionary:
 		float(rect.size.x) / frame.x - 2.0 * hx, float(rect.size.y) / frame.y - 2.0 * hy])
 	return {"pixels": pixels, "crop": crop}
 
+# A retained/idle browser provider is not a browser output. Once a monitor
+# tab owns this surface it must join the decoder's native secondary layers.
+func _browser_output(screen: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(screen)
+	if provider == null: return false
+	var tab := screen.content_tabs.selected()
+	return provider.active or provider.closing or screen.monitor == null or (tab != null and tab.kind == ScreenContentTab.BROWSER)
+
 func can_render_current_config() -> bool:
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive():
 		return false
@@ -99,7 +107,7 @@ func can_render_current_config() -> bool:
 		return false
 	# Independent browser outputs do not share the primary decoder or eyes.
 	for screen in main.screens:
-		if screen != main.primary_screen and main.screen_sources.browser_for_screen(screen) == null:
+		if screen != main.primary_screen and not _browser_output(screen):
 			# One native renderer samples one producer. A browser primary and
 			# visible desktop secondary need the independent legacy surfaces.
 			if main.has_method("browser_content_active") and main.browser_content_active(): return false
@@ -292,7 +300,7 @@ func _sync_secondary_screens() -> void:
 	var screens := []
 	var signature := ""
 	for screen in main.screens:
-		if screen == main.primary_screen or main.screen_sources.browser_for_screen(screen) != null or screen.monitor == null:
+		if screen == main.primary_screen or _browser_output(screen) or screen.monitor == null:
 			continue
 		var part := screen_part(screen)
 		if part.is_empty() or (part.crop as PackedFloat32Array).is_empty():
@@ -319,7 +327,7 @@ func _disable_legacy_video() -> void:
 	for screen in main.screens:
 		# The primary always; other stream screens when this renderer draws them too. Browser
 		# screens keep their own layers.
-		if screen != main.primary_screen and (not draws_secondary_screens() or main.screen_sources.browser_for_screen(screen) != null):
+		if screen != main.primary_screen and (not draws_secondary_screens() or _browser_output(screen)):
 			continue
 		for layer in [screen.comp_cylinder, screen.comp_cylinder_left, screen.comp_cylinder_right]:
 			if layer:

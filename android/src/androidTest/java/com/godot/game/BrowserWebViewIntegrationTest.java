@@ -340,4 +340,77 @@ public class BrowserWebViewIntegrationTest {
         assertEquals(true, field("saveHistory"));
         assertEquals("https://example.org/", ((BrowserBookmarks) field("bookmarks")).entries().get(0).url);
     }
+
+    private int waitForTransfer(int ticket) throws Exception {
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            org.json.JSONObject result = new org.json.JSONObject(BrowserPrototype.transferResult(ticket));
+            if (result.optBoolean("done")) return result.optInt("page");
+            Thread.sleep(25);
+        }
+        BrowserPrototype.cancelTransfer(ticket);
+        fail("Browser transfer timed out");
+        return 0;
+    }
+
+    @Test public void tabTransferUsesDestinationDisplayAndKeepsNavigation() throws Exception {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        SurfaceTexture second = new SurfaceTexture(false);
+        second.setDefaultBufferSize(640,360);
+        try {
+            BrowserPrototype.open(1, activity, new Surface(second), second,640,360);
+            instrumentation.waitForIdleSync();
+            long deadline = android.os.SystemClock.uptimeMillis() + 4000;
+            while (!"\"complete\"".equals(javascript("document.readyState")) && android.os.SystemClock.uptimeMillis() < deadline) Thread.sleep(30);
+            int page = ((BrowserPageTabs) field("pageTabs")).selected;
+            final WebView[] outgoing = new WebView[1];
+            final String[] url = new String[1];
+            instrumentation.runOnMainSync(() -> {
+                try { outgoing[0]=(WebView)field("web");url[0]=outgoing[0].getUrl(); }
+                catch (Exception error) { throw new AssertionError(error); }
+            });
+            int newPage = waitForTransfer(BrowserPrototype.transferTab(0,1,page,true));
+            assertTrue(newPage > 0);
+            instrumentation.waitForIdleSync();
+            instrumentation.runOnMainSync(() -> {
+                try {
+                    assertTrue(((BrowserPageTabs)field("pageTabs")).pages.isEmpty());
+                    assertNull(field("web"));
+                    WebView incoming=(WebView)field(1,"web");
+                    assertNotSame(outgoing[0],incoming);
+                    assertEquals(1,((BrowserPageTabs)field(1,"pageTabs")).pages.size());
+                    assertEquals(((android.hardware.display.VirtualDisplay)field(1,"display")).getDisplay().getDisplayId(), incoming.getContext().getDisplay().getDisplayId());
+                    assertEquals(url[0],incoming.getUrl());
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+        } finally { BrowserPrototype.close(1);instrumentation.waitForIdleSync();second.release(); }
+    }
+
+    @Test public void cancelledOrFullDestinationTransferKeepsSource() throws Exception {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        SurfaceTexture second = new SurfaceTexture(false);
+        second.setDefaultBufferSize(640,360);
+        try {
+            BrowserPrototype.open(1,activity,new Surface(second),second,640,360);
+            instrumentation.waitForIdleSync();
+            int page=((BrowserPageTabs)field("pageTabs")).selected;
+            int[] ticket=new int[1];
+            instrumentation.runOnMainSync(() -> {
+                ticket[0]=BrowserPrototype.transferTab(0,1,page,false);
+                BrowserPrototype.cancelTransfer(ticket[0]);
+            });
+            instrumentation.waitForIdleSync();
+            assertEquals(0,waitForTransfer(ticket[0]));
+            assertEquals(1,((BrowserPageTabs)field("pageTabs")).pages.size());
+            instrumentation.runOnMainSync(() -> {
+                try {
+                    BrowserPageTabs tabs=(BrowserPageTabs)field(1,"pageTabs");
+                    while(tabs.pages.size()<BrowserPageTabs.LIMIT) tabs.add();
+                } catch(Exception error) { throw new AssertionError(error); }
+            });
+            assertEquals(0,waitForTransfer(BrowserPrototype.transferTab(0,1,page,false)));
+            assertNotNull(field("web"));
+            assertEquals(1,((BrowserPageTabs)field("pageTabs")).pages.size());
+        } finally { BrowserPrototype.close(1);instrumentation.waitForIdleSync();second.release(); }
+    }
 }

@@ -380,7 +380,7 @@ func _rebuild() -> void:
 		for i in visible.size():
 			var page: Dictionary = visible[i]
 			var action := StringName(page.id) if page.id is String else StringName("page:%d" % int(page.id))
-			_add(action, str(page.get("title", "Browser")), rects[i], str(page.id) == str(selected))
+			_add(action, ("↗ " if main.screen_sources.get("dragged_tab_source") == _screen and draggable_tab(action) == main.screen_sources.get("dragged_tab_id") else "") + str(page.get("title", "Browser")), rects[i], str(page.id) == str(selected))
 	else:
 		_add(&"current", "PC monitor" if main.is_streaming else "Welcome", Rect2(TAB_LEFT, -0.116, 0.32 - TAB_LEFT, 0.038), true, false)
 	var can_close: bool = browser_active and browser.selected_page > 0
@@ -433,7 +433,7 @@ func _rebuild() -> void:
 		var supported: bool = main.layout.virtual_modes_supported
 		for i in VIRTUAL_PRESETS.size():
 			var size: Vector2i = VIRTUAL_PRESETS[i]
-			_add(StringName("virtual:preset:%d"%i), "Match host monitor" if size == Vector2i.ZERO else "%d × %d"%[size.x,size.y], Rect2(0.19,-0.014+i*0.036,0.29,0.033),false,supported or size == Vector2i.ZERO)
+			_add(StringName("virtual:preset:%d"%i), "Match host monitor" if size == Vector2i.ZERO else "%d × %d"%[size.x,size.y], Rect2(0.19,-0.014+i*0.036,0.29,0.033),false,(supported or size == Vector2i.ZERO) and (_virtual_kind == "edit" or (main.screen_sources.monitor_size_available(true,size) if main.screen_sources.has_method("monitor_size_available") else true)))
 		_add(&"virtual:custom","Custom resolution",Rect2(0.19,0.202,0.29,0.033),false,supported)
 	elif popup == "virtual_custom":
 		_add(&"virtual:field:0","W: %d"%_virtual_size.x,Rect2(0.19,-0.014,0.14,0.036),_virtual_field == 0)
@@ -441,7 +441,7 @@ func _rebuild() -> void:
 		var keys := ["7","8","9","4","5","6","1","2","3","clear","0","back"]
 		for i in keys.size():
 			_add(StringName("virtual:key:"+keys[i]),"⌫" if keys[i] == "back" else ("Clear" if keys[i] == "clear" else keys[i]),Rect2(0.19+(i%3)*0.098,0.028+(i/3)*0.036,0.094,0.033))
-		_add(&"virtual:create","Apply" if _virtual_kind == "edit" else "Create",Rect2(0.19,0.18,0.29,0.036),false,ScreenSources.valid_virtual_size(_virtual_size) and _virtual_size != Vector2i.ZERO)
+		_add(&"virtual:create","Apply" if _virtual_kind == "edit" else "Create",Rect2(0.19,0.18,0.29,0.036),false,ScreenSources.valid_virtual_size(_virtual_size) and _virtual_size != Vector2i.ZERO and (_virtual_kind == "edit" or (main.screen_sources.monitor_size_available(true,_virtual_size) if main.screen_sources.has_method("monitor_size_available") else true)))
 	elif popup == "tab_resolution":
 		var tab := _screen.content_tabs.selected()
 		var resolutions := _resolution_choices()
@@ -478,7 +478,7 @@ func hide_controls() -> void:
 func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bool) -> void:
 	if screen != _screen or not is_instance_valid(_viewport):
 		return
-	revealed = revealed or popup == "packing_confirmation"
+	revealed = revealed or popup == "packing_confirmation" or main.screen_sources.get("dragged_tab_source") == screen
 	_revealed = revealed
 	# Welcome already has Open Browser. Remove both artwork and hit targets
 	# here, without hiding the corner resize controls sharing this layer.
@@ -499,6 +499,8 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		_screen.content_tabs.to_dict(),
 		browser.active, browser.suspended, browser.navigation, browser.closing, main.is_streaming,
 		browser.get("render_size"), _screen.content_tabs.selected().resolution if _screen.content_tabs.selected() != null else Vector2i.ZERO,
+		main.get("stream_manager").get("capacity_revision") if main.get("stream_manager") != null else 0,
+		main.screen_sources.get("dragged_tab_id"), main.screen_sources.get("dragged_tab_source"),
 		main.screens.size(), main.primary_screen, popup, _virtual_kind, _virtual_size, _virtual_field, _virtual_digits,
 		main.screen_sources.can_open_browser(), main.screen_sources.can_add_browser_screen(),
 		main.screen_sources.can_offer_stream_screen(), main.screen_sources.can_add_stream_screen(),
@@ -574,3 +576,8 @@ func dismiss_packing_confirmation() -> void:
 		var callback := _packing_callback
 		_packing_callback = Callable()
 		callback.call(false)
+
+func draggable_tab(action: StringName) -> StringName:
+	var command := String(action)
+	var id := action if command.begins_with("monitor:") else StringName("browser:page:" + command.trim_prefix("page:"))
+	return id if (command.begins_with("monitor:") or command.begins_with("page:")) and _screen.content_tabs.find_tab(id) != null else &""

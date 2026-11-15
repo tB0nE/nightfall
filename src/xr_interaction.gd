@@ -39,6 +39,7 @@ var _screen_shortcut_press_active: bool = false
 var _browser_press_owner: RefCounted
 var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
+var _tab_drag = preload("res://src/tab_drag_state.gd").new()
 var _drag_scroll := ControllerDragScroll.new()
 var _drag_scroll_screen: VRScreen
 var _drag_scroll_browser: RefCounted
@@ -99,6 +100,10 @@ func cancel_transient_interactions(reason: String = "") -> void:
 	var ui = main.get("ui_controller")
 	if ui != null and ui.has_method("close_settings_popup"):
 		ui.close_settings_popup()
+	_tab_drag.cancel()
+	if main.screen_sources:
+		main.screen_sources.dragged_tab_source = null
+		main.screen_sources.dragged_tab_id = &""
 	_drag_scroll.cancel()
 	_drag_scroll_screen = null
 	_drag_scroll_browser = null
@@ -462,6 +467,35 @@ func handle_pointer_interaction():
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
 	if main.screen_sources:
 		main.screen_sources.cancel_browser_pointers_except(shortcut_target.screen if shortcut_target.role == &"screen" else null)
+	if _tab_drag.active:
+		pointer_on_ui = true
+		var origin: Vector3 = active_raycast.global_position
+		var direction: Vector3 = (active_raycast.to_global(active_raycast.target_position) - origin).normalized()
+		var point: Vector3 = active_raycast.get_collision_point() if active_raycast.is_colliding() else origin + direction * maxf(0.5,origin.distance_to(_tab_drag.origin))
+		var source: VRScreen = _tab_drag.source
+		var tab_id: StringName = _tab_drag.tab_id
+		var command: StringName = _tab_drag.action
+		var event: StringName = _tab_drag.step(raw_clicking,point,_active_hand)
+		main.was_clicking = raw_clicking
+		if _tab_drag.dragging:
+			main.screen_sources.dragged_tab_source = source
+			main.screen_sources.dragged_tab_id = tab_id
+		if event != &"":
+			main.screen_sources.dragged_tab_source = null
+			main.screen_sources.dragged_tab_id = &""
+			_screen_shortcut_press_active = false
+			main.was_clicking = false
+			_click_pending_release = false
+			_pinch_start_screen = null
+			if event == &"click" and is_instance_valid(source): main.screen_sources.menu_for_screen(source).invoke(command)
+			elif event == &"drop" and (not active_raycast.is_colliding() or shortcut_target.role in [&"", &"screen", &"screen_tab"]):
+				var destination: VRScreen = shortcut_target.screen if shortcut_target.role in [&"screen", &"screen_tab"] else null
+				main.screen_sources.move_content_tab(source,tab_id,destination,point)
+		return
+	if main.screen_sources.get("moving_tab") == true:
+		pointer_on_ui = true
+		main.was_clicking = raw_clicking
+		return
 	var on_primary_shortcut = shortcut_target.role == &"screen_shortcut" and shortcut_target.screen == main.primary_screen
 	var tab_menu = main.screen_sources.menu_for_screen(shortcut_target.screen) if shortcut_target.role == &"screen_tab" else null
 	var on_primary_tab = tab_menu != null
@@ -491,6 +525,11 @@ func handle_pointer_interaction():
 		pointer_on_ui = true
 		tab_menu.set_hover(shortcut_target.action)
 		if is_now_clicking and not main.was_clicking:
+			var tab_id: StringName = tab_menu.draggable_tab(shortcut_target.action)
+			if tab_id != &"" and not main.screen_sources.get("moving_tab"):
+				_tab_drag.begin(shortcut_target.screen,tab_id,shortcut_target.action,active_raycast.get_collision_point(),_active_hand)
+				main.was_clicking = true
+				return
 			_screen_shortcut_press_active = true
 			main.was_clicking = true
 			tab_menu.invoke(shortcut_target.action)

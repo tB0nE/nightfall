@@ -51,7 +51,8 @@ func tab_action(action: String, id: int = 0) -> void:
 		bridge.browserTabActionFor(browser_id, action, id)
 	_pages_poll_at = 0
 
-func _poll_pages() -> void:
+func _poll_pages(force: bool = false) -> void:
+	if not force and main.screen_sources.get("moving_tab") == true: return
 	var now := Time.get_ticks_msec()
 	if now < _pages_poll_at:
 		return
@@ -385,3 +386,20 @@ func key(code: int, action: int) -> void:
 		uploader.browser_key(android_code, pressed, _modifiers)
 		if pressed: _held_android_keys[android_code] = true
 		else: _held_android_keys.erase(android_code)
+
+# Transfer owns screen removal/monitor restoration. Do not invoke normal close
+# callbacks here: they would treat the move as a request to close the workspace.
+func retire_after_transfer() -> void:
+	cancel_pointer()
+	clear_gamepad()
+	release_keys()
+	if uploader: uploader.close_browser_prototype()
+	active = false
+	suspended = false
+	pages = []
+	selected_page = 0
+	texture = null
+	navigation = {}
+	_pages_snapshot = ""
+	generation += 1
+	set_activity(Activity.SUSPENDED)

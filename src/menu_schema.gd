@@ -88,7 +88,7 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"StreamRow2",
 				"options": [
-					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec. H.264 and H.264+ limit the combined monitor stream to 4032 pixels per side. HEVC or AV1 can accommodate larger monitor setups where supported. H.264+ increases bitrate, not resolution.", TARGET_SETTINGS, &"cycle_codec"),
+					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec. H.264+ enables a higher bitrate range.", TARGET_SETTINGS, &"cycle_codec"),
 					_option(&"_ui_hdr_btn", "HDR", "Off", "Request HDR when the host display uses it; tone-mapped for the headset.", TARGET_SETTINGS, &"toggle_hdr", OS.get_name() == "Android"),
 					_option(&"_ui_audio_boost_btn", "Volume", "Normal", "Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.", TARGET_SETTINGS, &"cycle_audio_boost"),
 					_option(&"_ui_usb_link_btn", "USB Link", "Off", "Stream over a USB-C cable instead of Wi-Fi, once the host is reachable over it.", TARGET_SETTINGS, &"toggle_usb_link", OS.get_name() == "Android"),

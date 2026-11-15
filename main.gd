@@ -1964,9 +1964,9 @@ func add_screen(monitor_id: StringName, real_x_hint: float = INF, with_stereo: b
 		_log("[COMP] Screen %s cylinder not natively supported, falling back to mesh rendering for this screen" % String(monitor_id))
 	return s
 
-func remove_screen(monitor_id: StringName) -> void:
+func remove_screen(monitor_id: StringName, target: VRScreen = null) -> void:
 	for i in range(screens.size()):
-		if screens[i].monitor_id == monitor_id:
+		if screens[i].monitor_id == monitor_id and (target == null or screens[i] == target):
 			var s = screens[i]
 			if s == primary_screen:
 				_log("[SCREEN] Refusing to remove the primary screen %s" % String(monitor_id))

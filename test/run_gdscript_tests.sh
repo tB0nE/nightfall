@@ -22,6 +22,8 @@ fi
 mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 
 tests=(
+	"test/test_secondary_monitor_surface.gd"
+	"test/test_tab_dragging.gd"
 	"test/test_monitor_packing_admission.gd"
 	"test/test_stream_packing_budget.gd"
 	"test/test_video_encoding_options.gd"

@@ -88,6 +88,19 @@ func run():
 	manager.change_host = true
 	manager.replies = [fits]
 	assert(not await manager.admit_monitor_set(owner.layout, 1, "", screen), "Discard stale host replies")
+	manager.change_host = false
+	manager._capacity_check_at = 0
+	owner.settings.codec_preference = 1
+	manager.replies = [misses]
+	assert(not manager.monitor_proposal_available(owner.layout,3,""), "HEVC no-fit choices must be disabled")
+	manager._capacity_check_at = 0
+	owner.settings.codec_preference = 0
+	manager.replies = [misses,fits]
+	assert(manager.monitor_proposal_available(owner.layout,3,""), "H.264 choices may offer a fitting HEVC alternative")
+	manager._capacity_check_at = 0
+	owner.settings.codec_preference = 1
+	manager.replies = [fits]
+	assert(manager.monitor_proposal_available(owner.layout,1,""), "Fitting resolutions remain enabled")
 	screen.free()
 	owner.free()
 	print("All monitor admission, cancellation and stale-reply tests passed")

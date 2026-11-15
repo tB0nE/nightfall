@@ -136,7 +136,21 @@ func _apply_video_shader_state(color_transfer_type: int):
 func refresh_picture_shader_state():
 	_apply_video_shader_state(_current_color_transfer_type)
 
+var _last_bind_targets: Array = []
+
+func _stream_binding_targets() -> Array:
+	var targets := []
+	for screen in main.screens:
+		if _independent_browser(screen) or _browser_owns_surface(screen): continue
+		var provider = main.screen_sources.browser_for_screen(screen) if main.screen_sources else null
+		var materials := []
+		for mat in get_shader_mats(screen): materials.append(mat.get_instance_id() if mat != null else 0)
+		targets.append([screen.get_instance_id(), screen.content_tabs.selected_id,
+			provider.get("generation") if provider != null else 0, materials])
+	return targets
+
 func invalidate_yuv_cache():
+	_last_bind_targets = []
 	_last_bind_rids = []
 	_last_bind_mode = [0, 1, 0, 0]
 
@@ -1165,7 +1179,8 @@ func bind_yuv_textures():
 			yuv_mode_val = 3
 		var rids = [_as_rid(tex_y), _as_rid(tex_u), _as_rid(tex_v)]
 		var mode_tuple = [yuv_mode_val, cmt, cr, ctt]
-		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
+		var targets := _stream_binding_targets()
+		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode and targets == _last_bind_targets)
 		if not in_use:
 			for s in main.screens:
 				if _independent_browser(s) or _browser_owns_surface(s):
@@ -1182,6 +1197,7 @@ func bind_yuv_textures():
 			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr, ctt)
 			_last_bind_rids = rids
 			_last_bind_mode = mode_tuple
+			_last_bind_targets = targets
 	else:
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
