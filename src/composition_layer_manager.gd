@@ -980,6 +980,9 @@ func connect_welcome_texture():
 			mat.set_shader_parameter("yuv_mode", 0)
 	main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
+## Padding (px per side) every composition viewport carries for the bezel.
+const BEZEL_PX := 8
+
 func _update_bezel_for(s: VRScreen):
 	var base_w = s.comp_base_size.x
 	var base_h = s.comp_base_size.y
@@ -1002,7 +1005,7 @@ func _update_bezel_for(s: VRScreen):
 	# The legacy OpenXR layer ignores viewport alpha, so a transparent margin
 	# still looks black. With the bezel off, fill the fixed padding with the
 	# image instead; only the ColorRect/inset changes, never the swapchain.
-	var px = 8
+	var px = BEZEL_PX
 	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
 	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
 	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
@@ -1029,6 +1032,7 @@ func _update_bezel_for(s: VRScreen):
 			t.vp.size = bezel_size
 		if t.cyl and t.cyl.visible:
 			t.cyl.set_aspect_ratio(bezel_x / bezel_y)
+			t.cyl.set_central_angle(s._comp_cyl_central_angle * (bezel_x / s.mesh_size.x) if s._comp_cyl_central_angle > 0.0 else t.cyl.get_central_angle())
 
 func update_bezel():
 	if not main.primary_screen or not main.primary_screen.comp_yuv_rect:
@@ -1050,6 +1054,19 @@ func _update_cylinder_params_for(s: VRScreen):
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y
+	# The layer shows the whole composition viewport, which always carries
+	# BEZEL_PX of padding on each side (see _update_bezel_for()). Size the
+	# layer for that padded image so the padding (the black bezel) sits around
+	# the picture: sized for the picture alone, the bezel was squeezed inside
+	# and drew a thin, aliased black line over the picture's edge. The pointer
+	# keeps the picture's own angle (_comp_cyl_central_angle) for hit tests.
+	var layer_angle = central_angle
+	var layer_aspect = aspect
+	if s.comp_base_size.x > 0 and s.comp_base_size.y > 0:
+		var pad_x = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.x)
+		var pad_y = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.y)
+		layer_angle = central_angle * pad_x
+		layer_aspect = (s.mesh_size.x * pad_x) / (s.mesh_size.y * pad_y)
 	# The pointer hits the screen's own curved mesh. A screen moved since that
 	# mesh was built (e.g. a new primary taking the old one's place) would show
 	# its picture on this cylinder while the laser hits the old curve.
@@ -1063,8 +1080,8 @@ func _update_cylinder_params_for(s: VRScreen):
 		if cyl:
 			cyl.set_sort_order(sort_order)
 			cyl.set_radius(radius)
-			cyl.set_central_angle(central_angle)
-			cyl.set_aspect_ratio(aspect)
+			cyl.set_central_angle(layer_angle)
+			cyl.set_aspect_ratio(layer_aspect)
 			cyl.global_position = s.global_position - screen_forward * radius
 			cyl.global_rotation = s.global_rotation
 	if s == main.primary_screen:
