@@ -30,6 +30,33 @@ use crate::video_dump::VideoDump;
 use crate::video_tap::{TapStats, VideoTap};
 
 const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
+/// Multipath: a client with several network paths to this PC (e.g. a Steam
+/// Frame on Wi-Fi plus its dedicated 6 GHz adapter) pings the video and audio
+/// ports from each. Pings carry the session's 16-byte payload (Sunshine's
+/// X-SS-Ping-Payload) plus a sequence number; addresses sending the same
+/// payload are paths of one client. Every packet from the host then goes to
+/// all of them, and the client keeps whichever copy arrives first (its RTP
+/// queues already drop duplicates).
+const MULTIPATH_PING_LEN: usize = 20;
+/// A path that hasn't pinged for this long stops receiving copies.
+const MULTIPATH_IDLE: Duration = Duration::from_secs(3);
+
+/// Other addresses of a flow's client (multipath) and when each last pinged.
+type Extras = Arc<std::sync::Mutex<HashMap<SocketAddr, std::time::Instant>>>;
+/// When the flow's own address last sent a session ping (ms, 0 = never). Once
+/// it has extra paths and stops pinging, copies only go to the paths alive.
+type OwnerPing = Arc<AtomicU64>;
+type Flows = Arc<Mutex<HashMap<SocketAddr, (Arc<UdpSocket>, Extras, OwnerPing)>>>;
+
+/// The session payload of a video/audio ping, or None for anything else.
+fn ping_payload(ch: Channel, packet: &[u8]) -> Option<[u8; 16]> {
+    if (ch.name != "video" && ch.name != "audio") || packet.len() != MULTIPATH_PING_LEN || packet[0] == 0 {
+        return None;
+    }
+    let mut payload = [0u8; 16];
+    payload.copy_from_slice(&packet[..16]);
+    Some(payload)
+}
 const MAX_RTSP_HEADER: usize = 64 * 1024;
 
 #[derive(Default)]
@@ -173,7 +200,11 @@ impl Proxy {
     /// One upstream socket per client address, so Sunshine sees each client
     /// as a distinct peer and its replies can be routed back.
     async fn run_udp(self, listener: Arc<UdpSocket>, ch: Channel) {
-        let flows: Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>> = Arc::default();
+        let flows: Flows = Arc::default();
+        // Multipath bookkeeping (video/audio only): which flow owns a ping
+        // payload, and which flow an extra path belongs to.
+        let mut owner_of_payload: HashMap<[u8; 16], SocketAddr> = HashMap::new();
+        let mut owner_of_extra: HashMap<SocketAddr, SocketAddr> = HashMap::new();
         let mut buf = vec![0u8; 65536];
         loop {
             let (len, client) = match listener.recv_from(&mut buf).await {
@@ -185,18 +216,67 @@ impl Proxy {
                     continue;
                 }
             };
+            let payload = ping_payload(ch, &buf[..len]);
+            {
+                // A known extra path of another flow: refresh it; the host
+                // only ever sees the owner, so this ping isn't forwarded.
+                let flows_guard = flows.lock().await;
+                if let Some(owner) = owner_of_extra.get(&client).copied() {
+                    if let Some((_, extras, _)) = flows_guard.get(&owner) {
+                        let rejoined = extras.lock().unwrap().insert(client, std::time::Instant::now()).is_none();
+                        if rejoined && ch.name == "video" {
+                            self.stats.set_streaming(client.ip(), true);
+                        }
+                        continue;
+                    }
+                    owner_of_extra.remove(&client);
+                }
+                // A new address pinging with a payload another flow already
+                // uses: the same client on another path.
+                if let Some(p) = payload {
+                    if !flows_guard.contains_key(&client) {
+                        if let Some(owner) = owner_of_payload.get(&p).copied() {
+                            if let Some((_, extras, _)) = flows_guard.get(&owner) {
+                                extras.lock().unwrap().insert(client, std::time::Instant::now());
+                                owner_of_extra.insert(client, owner);
+                                // Every path counts as the streaming client, so depth and
+                                // the microphone accept it from whichever address it uses.
+                                if ch.name == "video" {
+                                    self.stats.set_streaming(client.ip(), true);
+                                }
+                                log::info!("{} multipath: {client} is another path of {owner}", ch.name);
+                                continue;
+                            }
+                            owner_of_payload.remove(&p);
+                        }
+                    }
+                }
+            }
             let upstream = {
                 let mut flows_guard = flows.lock().await;
                 match flows_guard.get(&client) {
-                    Some(socket) => socket.clone(),
+                    Some((socket, _, owner_ping)) => {
+                        if payload.is_some() {
+                            owner_ping.store(now_ms(), Ordering::Relaxed);
+                        }
+                        socket.clone()
+                    }
                     None => match self.open_udp_flow(ch).await {
                         Ok(socket) => {
-                            flows_guard.insert(client, socket.clone());
+                            // Forget multipath entries of flows that have closed.
+                            owner_of_payload.retain(|_, owner| flows_guard.contains_key(owner));
+                            owner_of_extra.retain(|_, owner| flows_guard.contains_key(owner));
+                            let extras: Extras = Arc::default();
+                            let owner_ping: OwnerPing =
+                                Arc::new(AtomicU64::new(if payload.is_some() { now_ms() } else { 0 }));
+                            flows_guard.insert(client, (socket.clone(), extras.clone(), owner_ping.clone()));
                             tokio::spawn(self.clone().relay_udp_replies(
                                 socket.clone(),
                                 listener.clone(),
                                 client,
                                 flows.clone(),
+                                extras,
+                                owner_ping,
                                 ch,
                             ));
                             socket
@@ -208,6 +288,9 @@ impl Proxy {
                     },
                 }
             };
+            if let Some(p) = payload {
+                owner_of_payload.insert(p, client);
+            }
             if upstream.send(&buf[..len]).await.is_ok() {
                 self.stats.bytes_to_sunshine.fetch_add(len as u64, Ordering::Relaxed);
             }
@@ -230,7 +313,9 @@ impl Proxy {
         upstream: Arc<UdpSocket>,
         listener: Arc<UdpSocket>,
         client: SocketAddr,
-        flows: Arc<Mutex<HashMap<SocketAddr, Arc<UdpSocket>>>>,
+        flows: Flows,
+        extras: Extras,
+        owner_ping: OwnerPing,
         ch: Channel,
     ) {
         self.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
@@ -248,8 +333,38 @@ impl Proxy {
                     if ch.name == "video" && len > 0 {
                         self.stats.last_video_ms.store(crate::proxy::now_ms(), Ordering::Relaxed);
                     }
-                    if listener.send_to(&buf[..len], client).await.is_ok() {
+                    // The flow's own address, unless it stopped pinging while
+                    // another path of the same client is still alive.
+                    let owner_quiet = {
+                        let last = owner_ping.load(Ordering::Relaxed);
+                        last != 0
+                            && now_ms().saturating_sub(last) > MULTIPATH_IDLE.as_millis() as u64
+                            && !extras.lock().unwrap().is_empty()
+                    };
+                    if !owner_quiet && listener.send_to(&buf[..len], client).await.is_ok() {
                         self.stats.bytes_to_client.fetch_add(len as u64, Ordering::Relaxed);
+                    }
+                    // Multipath: the same packet to the client's other paths.
+                    let others: Vec<SocketAddr> = {
+                        let mut extras = extras.lock().unwrap();
+                        if extras.is_empty() {
+                            Vec::new()
+                        } else {
+                            extras.retain(|addr, last| {
+                                let alive = last.elapsed() < MULTIPATH_IDLE;
+                                if !alive {
+                                    log::info!("{} multipath: {addr} stopped pinging", ch.name);
+                                    if ch.name == "video" {
+                                        self.stats.set_streaming(addr.ip(), false);
+                                    }
+                                }
+                                alive
+                            });
+                            extras.keys().copied().collect()
+                        }
+                    };
+                    for other in others {
+                        let _ = listener.send_to(&buf[..len], other).await;
                     }
                     if let Some(tap) = &tap {
                         tap.push(&buf[..len]);
@@ -267,6 +382,9 @@ impl Proxy {
         flows.lock().await.remove(&client);
         if ch.name == "video" {
             self.stats.set_streaming(client.ip(), false);
+            for addr in extras.lock().unwrap().drain().map(|(addr, _)| addr) {
+                self.stats.set_streaming(addr.ip(), false);
+            }
         }
         self.stats.udp_flows.fetch_sub(1, Ordering::Relaxed);
         log::debug!("{} flow closed for {client}", ch.name);
@@ -590,6 +708,99 @@ mod tests {
         assert_eq!(stats.udp_flows.load(Ordering::Relaxed), 1);
         assert!(stats.last_video_ms.load(Ordering::Relaxed) > 0,
             "Actual video replies must wake the temporary host-cursor setting");
+    }
+
+    #[tokio::test]
+    async fn multipath_sends_every_packet_to_each_path_of_a_client() {
+        let map = PortMap::new(33989, 1000).unwrap();
+        let video = PortMap::channel("video");
+
+        // Sunshine stand-in: remembers who pinged it, then streams to that one peer.
+        let sunshine = Arc::new(UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap());
+        let peers = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        {
+            let (sunshine, peers) = (sunshine.clone(), peers.clone());
+            tokio::spawn(async move {
+                let mut buf = [0u8; 64];
+                loop {
+                    let (_, from) = sunshine.recv_from(&mut buf).await.unwrap();
+                    peers.lock().unwrap().insert(from);
+                }
+            });
+        }
+        let stats = Arc::new(Stats::default());
+        Proxy::new(map.clone(), "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
+
+        // One client, two paths: both ping with the same session payload.
+        let mut ping = [7u8; MULTIPATH_PING_LEN];
+        ping[16..].copy_from_slice(&1u32.to_be_bytes());
+        let path_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let path_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        path_a.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        path_b.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Sunshine saw a single peer (path B's ping wasn't forwarded) and streams to it.
+        let peer = {
+            let peers = peers.lock().unwrap();
+            assert_eq!(peers.len(), 1, "the host must see one peer");
+            *peers.iter().next().unwrap()
+        };
+        sunshine.send_to(b"FRAME", peer).await.unwrap();
+
+        let mut buf = [0u8; 64];
+        for path in [&path_a, &path_b] {
+            let (n, _) = tokio::time::timeout(Duration::from_secs(2), path.recv_from(&mut buf))
+                .await
+                .expect("every path gets the packet")
+                .unwrap();
+            assert_eq!(&buf[..n], b"FRAME");
+        }
+        assert_eq!(stats.udp_flows.load(Ordering::Relaxed), 1);
+        // Depth and the microphone accept the client from either path.
+        assert!(stats.is_streaming(path_a.local_addr().unwrap().ip()));
+        assert!(stats.is_streaming(path_b.local_addr().unwrap().ip()));
+    }
+
+    #[tokio::test]
+    async fn multipath_stops_sending_to_a_path_that_went_quiet() {
+        let map = PortMap::new(35989, 1000).unwrap();
+        let video = PortMap::channel("video");
+        let sunshine = Arc::new(UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap());
+        let peer = Arc::new(std::sync::Mutex::new(None));
+        {
+            let (sunshine, peer) = (sunshine.clone(), peer.clone());
+            tokio::spawn(async move {
+                let mut buf = [0u8; 64];
+                loop {
+                    let (_, from) = sunshine.recv_from(&mut buf).await.unwrap();
+                    peer.lock().unwrap().get_or_insert(from);
+                }
+            });
+        }
+        Proxy::new(map.clone(), "127.0.0.1".into(), Arc::new(Stats::default()), None, None)
+            .start().await.unwrap();
+
+        let ping = [9u8; MULTIPATH_PING_LEN];
+        let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        first.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Only the second path keeps pinging, past MULTIPATH_IDLE.
+        for _ in 0..8 {
+            second.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(450)).await;
+        }
+        let to = peer.lock().unwrap().unwrap();
+        sunshine.send_to(b"FRAME", to).await.unwrap();
+
+        let mut buf = [0u8; 64];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), second.recv_from(&mut buf))
+            .await.expect("the live path gets the packet").unwrap();
+        assert_eq!(&buf[..n], b"FRAME");
+        assert!(tokio::time::timeout(Duration::from_millis(300), first.recv_from(&mut buf)).await.is_err(),
+            "the quiet first path no longer gets copies");
     }
 
     #[tokio::test]
