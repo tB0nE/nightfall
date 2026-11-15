@@ -941,6 +941,7 @@ func setup_background_equirect():
 	main._log("[COMP] Left cursor composition layer created")
 
 	main.composition_controller_rays.setup(main, main.xr_origin)
+	main.composition_toast.setup(main, main.xr_origin)
 	main._log("[COMP] Controller ray composition layers created")
 
 	# Persistent controller position markers (2026-08-25) complement the ray

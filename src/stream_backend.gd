@@ -185,6 +185,10 @@ func send_controller_arrival(device: int, active_mask: int, ctype: int, button_f
 	if _v2:
 		_v2.get_input_bridge().send_controller_arrival(device, active_mask, ctype, button_flags, capabilities)
 
+func send_controller_motion(device: int, motion_type: int, x: float, y: float, z: float):
+	if _v2:
+		_v2.get_input_bridge().send_controller_motion(device, motion_type, x, y, z)
+
 func get_decoder_name() -> String:
 	if _v2:
 		return _v2.get_decoder_name()

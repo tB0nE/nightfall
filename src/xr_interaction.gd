@@ -506,9 +506,6 @@ func handle_pointer_interaction():
 			_pinch_start_screen = t0.screen
 			_click_pending_release = true
 
-	if main.is_xr_active and main.is_streaming and main.controller_mapper:
-		main.controller_mapper.check_toggle()
-
 	if main.is_xr_active and main.is_streaming:
 		var right_click_ready = is_gripping and not _double_click_chord_active
 		if chord_enabled:
@@ -944,7 +941,19 @@ func process_pointer_frame(delta: float):
 	if main.screen_shortcuts:
 		main.screen_shortcuts.begin_pointer_frame(delta)
 	_update_active_hand()
-	if not _pointer_input_ready(_active_pointer_tracked(), _pointer_controls_held()):
+	# The controller-mode toggle runs every frame, before the pointer: in
+	# controller mode handle_pointer_interaction() doesn't run, and the toggle
+	# used to live there, so it could switch the mode on but never off.
+	if main.is_xr_active and main.is_streaming and main.controller_mapper:
+		main.controller_mapper.check_toggle()
+	# Controller mode makes the controllers a gamepad: no pointing, hovering,
+	# clicking or grabbing while you move them around (which used to steal
+	# focus and zero the right trigger over UI), except in Nightfall's own
+	# menu or keyboard.
+	# Only while streaming: the welcome/connect screens always need the pointer,
+	# even if controller mode is still on from the last stream.
+	var pad_mode: bool = main.pad_hides_pointer()
+	if pad_mode or not _pointer_input_ready(_active_pointer_tracked(), _pointer_controls_held()):
 		if main.was_clicking or main.was_right_clicking or main.grabbed_node or _other_hand_clicking:
 			cancel_transient_interactions("pointer tracking unavailable or awaiting release")
 		pointer_on_ui = false

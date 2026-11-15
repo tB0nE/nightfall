@@ -331,6 +331,7 @@ var composition_panels: CompositionPanelLayers = CompositionPanelLayers.new()
 var composition_environment: CompositionEnvironmentLayer = CompositionEnvironmentLayer.new()
 var composition_pointers: CompositionPointerLayers = CompositionPointerLayers.new()
 var composition_controller_rays: CompositionControllerRays = CompositionControllerRays.new()
+var composition_toast: CompositionToast = CompositionToast.new()
 var composition_controller_markers: CompositionControllerMarkers = CompositionControllerMarkers.new()
 var composition_hand_indicators: CompositionHandIndicators = CompositionHandIndicators.new()
 var composition_screen_controls: CompositionScreenControls = CompositionScreenControls.new()
@@ -1000,9 +1001,19 @@ func _update_cursor_layer():
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
 		return
+	# Controller mode: no cursor anywhere, including the one drawn on panels
+	# such as a screen's grab bar where the (still tracked) controller points.
+	if pad_hides_pointer():
+		composition_pointers.hide_primary()
+		composition_pointers.hide_secondary()
+		composition_pointers.hide_all_embedded(screens)
+		if pointer_cursor: pointer_cursor.visible = false
+		return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
-	var pad_on_screen = controller_mapper and controller_mapper.is_active() and controller_mapper.is_gamepad_mode()
+	# Same rule as the pointer: only during a stream (the welcome screen is drawn
+	# on a screen too, and lost its cursor when controller mode was left on).
+	var pad_on_screen = pad_hides_pointer()
 	var tp_capturing = virtual_keyboard and virtual_keyboard.visible and virtual_keyboard.trackpad_active
 	var stereo = settings_controller.get_stereo_mode() if settings_controller else 0
 	var use_embedded_cursor = on_screen and not pad_on_screen and not tp_capturing
@@ -1101,16 +1112,32 @@ func _update_laser_layers():
 			right_ray = null
 		else:
 			left_ray = null
+	composition_toast.process()
+	var pad_hides_rays: bool = pad_hides_pointer()
+	if pad_hides_rays:
+		if contact_dot: contact_dot.visible = false
+		var r_laser = get_node_or_null("%Laser")
+		if r_laser: r_laser.visible = false
+		var l_laser = left_hand_raycast.get_node_or_null("Laser") if left_hand_raycast else null
+		if l_laser: l_laser.visible = false
 	composition_controller_rays.update(
 		DEBUG_COMP_LASER,
-		(comp.in_use or pcvr_handover.menu_only) and is_xr_active,
+		(comp.in_use or pcvr_handover.menu_only) and is_xr_active and not pad_hides_rays,
 		xr_camera.global_position,
 		right_ray,
 		left_ray)
 
+## Controller mode during a stream turns the controllers into a gamepad: no
+## rays, markers or contact dot, except while Nightfall's menu or keyboard
+## needs the pointer.
+func pad_hides_pointer() -> bool:
+	return is_streaming and controller_mapper != null and controller_mapper.is_active() \
+			and controller_mapper.is_gamepad_mode() and not ui_visible \
+			and not (virtual_keyboard and virtual_keyboard.visible)
+
 func _update_marker_layers(_delta: float):
 	composition_controller_markers.update(
-		DEBUG_COMP_MARKER and comp.in_use and is_xr_active,
+		DEBUG_COMP_MARKER and comp.in_use and is_xr_active and not pad_hides_pointer(),
 		xr_camera.global_transform.basis,
 		right_hand,
 		left_hand,
