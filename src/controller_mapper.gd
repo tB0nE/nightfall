@@ -294,10 +294,12 @@ func _frame_button_flags() -> int:
 	return flags
 
 ## Gyro and accelerometer from the primary controller's tracking, in the
-## controller's own frame, turned to the axes SDL/DualSense games expect.
-## The aim pose has +X right, +Y up, +Z back; tested on the Frame, pitch came
-## out inverted, so the frame is rotated 180 degrees about Y (X and Z negated
-## for both sensors, keeping gyro and accelerometer consistent for fusion).
+## controller's own frame. The aim pose has +X right, +Y up, +Z back: SDL's
+## gamepad axes. Through Sunshine's DualSense emulation the gyro's pitch
+## arrived inverted (aiming up read as down), so only the gyro's X is negated.
+## The accelerometer must not be flipped with it: games fuse the two, and an
+## accelerometer that disagrees with the gyro pulls the aim back after every
+## movement (seen in the TOTK recompilation: up, then slowly back down).
 func _send_frame_motion() -> void:
 	var hand: XRController3D = main.left_hand if effective_primary_hand() == PrimaryHand.LEFT else main.right_hand
 	if hand == null or _last_delta <= 0.0:
@@ -307,14 +309,13 @@ func _send_frame_motion() -> void:
 		return
 	var to_local: Basis = pose.transform.basis.orthonormalized().transposed()
 	var gyro: Vector3 = to_local * pose.angular_velocity
-	gyro = Vector3(-rad_to_deg(gyro.x), rad_to_deg(gyro.y), -rad_to_deg(gyro.z))
+	gyro = Vector3(-rad_to_deg(gyro.x), rad_to_deg(gyro.y), rad_to_deg(gyro.z))
 	# Linear acceleration from the velocity's change, smoothed (tracking
 	# velocities are noisy), plus the reaction to gravity an accelerometer reads.
 	var linear: Vector3 = (pose.linear_velocity - _motion_prev_velocity) / _last_delta
 	_motion_prev_velocity = pose.linear_velocity
 	_motion_accel = _motion_accel.lerp(linear, 0.3)
 	var accel: Vector3 = to_local * (_motion_accel + Vector3(0.0, GRAVITY, 0.0))
-	accel = Vector3(-accel.x, accel.y, -accel.z)
 	main.input_handler.send_pad_motion(GamepadSlots.QUEST_PAD, gyro, accel)
 	if not _motion_logged:
 		_motion_logged = true
