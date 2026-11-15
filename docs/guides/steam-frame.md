@@ -29,7 +29,25 @@ pairing, hardware HEVC/H.264 decoding, screens, menus, controllers.
    `addons/godotopenxrvendors/` (5.2.0 ships `linux/template_release/arm64`).
 5. Run it from SSH with the session environment, e.g.
    `DISPLAY=:1 XDG_RUNTIME_DIR=/run/user/1000 ./nightfall`, or add it to Steam as
-   a non-Steam game (mark it as a VR app). SteamVR makes it the scene app.
+   a non-Steam game through the launcher below. SteamVR makes it the scene app.
+
+## Adding Nightfall to Steam on the Frame
+
+Added to Steam directly (the binary as a non-Steam game), Nightfall starts, and
+a couple of seconds later Steam's **Now Playing** panel opens over it. Steam
+treats any window from a game's launch process tree as a flat game: it mirrors
+Nightfall's 2D desktop window as a `valve.steam.desktopgame.<appid>` overlay and
+opens the dashboard to show it (`ShowGame/ShowOverlay` in
+`~/.local/share/Steam/logs/vrwebhelper_systemui.txt`). Unsetting `SteamAppId`
+doesn't help (Steam goes by the process tree) and makes SteamVR treat the app
+as a new one, so its per-app settings (refresh rate, render size) are lost.
+
+`tools/steam_frame/launch-from-steam.sh` avoids both: put it next to the
+`nightfall` binary and add **the script** to Steam as the non-Steam game. It
+runs Nightfall as a systemd user unit outside Steam's launch tree, passes the
+Steam ids on (SteamVR keeps the `steam.app.<id>` settings), waits for Nightfall
+so Steam shows it running, and stops Nightfall if Steam stops the game. The log
+goes to `nightfall.log` next to the binary.
 
 `NIGHTFALL_ALLOW_MISSING_MODELS=1` lets `build.sh --linux` finish without the
 on-device depth models (they are not in the repository); AI 3D then needs Meteor.
