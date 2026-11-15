@@ -727,6 +727,13 @@ func _auto_bitrate(w: int, h: int) -> int:
 	var kbps := int(round(resolution_mbps * fps_factor)) * 1000
 	return clampi(kbps, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS)
 
+# Stream size the screen geometry was last shaped for (resize_screen_to_aspect).
+# start_stream() resizes buffers without touching geometry, so without this a
+# host that sends no manifest (plain Sunshine) and decodes exactly the requested
+# size never reshaped the screen: a 21:9 stream stayed squeezed into the 16:9
+# placeholder or a saved 16:9 placement.
+var _geometry_size := Vector2i.ZERO
+
 func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 	var stream_size = Vector2i(w, h)
 	# A SubViewport assigned to an OpenXRCompositionLayer owns a compositor
@@ -814,6 +821,7 @@ func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 			main._ui_status_label.text = "Display layout reset: stream resolution changed"
 	if not layout_changed and update_geometry:
 		main.screen_manager.resize_screen_to_aspect(w, h)
+		_geometry_size = stream_size
 	for s in main.screens:
 		if s.material_override is ShaderMaterial:
 			s.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(s))
@@ -1107,7 +1115,10 @@ func update_stats():
 		if vw == 0 or vh == 0:
 			return
 		var cur_size = current_stream_size
-		if cur_size.x != vw or cur_size.y != vh:
+		var decoded := Vector2i(vw, vh)
+		var needs_geometry: bool = _geometry_size != decoded \
+				and (main.layout == null or main.layout.source != &"host_manifest")
+		if cur_size != decoded or needs_geometry:
 			resize_stream_viewport(vw, vh)
 	var hw = _b().get_decode_mode()
 	var ip = main.get_node("%IPInput").text
