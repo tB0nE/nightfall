@@ -457,7 +457,11 @@ func _on_v2_launch_response(response: Dictionary):
 		# The host no longer knows this app ID: its app list changed (a
 		# restart can renumber apps), or the welcome screen fell back to its
 		# placeholder Desktop when the list came back empty.
-		if str(msg).contains("requested application") and not _app_id_refreshed:
+		# Older Sunshine says "Cannot find requested application"; current
+		# Sunshine (2026.x) answers an unknown ID with 404 "Failed to start the
+		# specified application".
+		if (str(msg).contains("requested application") or str(msg).contains("specified application")) \
+				and not _app_id_refreshed:
 			_app_id_refreshed = true
 			_retry_with_fresh_app_id()
 			return
