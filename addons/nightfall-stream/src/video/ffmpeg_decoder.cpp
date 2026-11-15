@@ -222,6 +222,15 @@ int FfmpegDecoder::_try_open_decoder(const String &codec_name, int width, int he
         avcodec_free_context(&ctx);
         return -1;
     }
+    if (is_v4l2m2m) {
+        // Packet PTS are moonlight-common-c enqueue times in microseconds.
+        // The V4L2 wrapper converts PTS to the driver's timeval and back using
+        // pkt_timebase; unset, the round trip changes the value, so the frame
+        // number of the picture on screen (frame-accurate depth maps) was
+        // never found.
+        ctx->pkt_timebase = AVRational{1, 1000000};
+        ctx->time_base = AVRational{1, 1000000};
+    }
 
     if (!is_mediacodec && !is_v4l2m2m) {
         ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
