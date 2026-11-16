@@ -36,6 +36,7 @@ use crate::video_decoder::{self,Backend as DecodeBackend,Decoder as VideoDecoder
 /// Where a model run left its output.
 enum Output {
     Host(Vec<f32>),
+    Fused(Vec<u8>,bool),
     Resident(crate::vulkan_processing::ResidentDepth),
     /// Device address of the model's output buffer.
     Device(u64),
@@ -83,6 +84,17 @@ impl Engine {
         }
     }
 
+    fn fusion_rgb(&mut self,rgb:&[u8],size:(usize,usize),time:Instant)->Result<Vec<f32>,String>{
+        let target=self.input_size();
+        match self {
+            Self::Vda(m)=>{m.edge_softening=0.;let report=m.infer_rgb(rgb,size)?;m.download_depth(report.depth)},
+            Self::VdaVulkan(m)=>m.infer_rgb(rgb,size,time,0.),
+            Self::Plain(m)=>{let input=crate::depth_fusion::rgb_crop(rgb,size,(0,0,size.0,size.1),target);m.infer(&input)},
+            Self::Ncnn(m)=>{let input=crate::depth_fusion::rgb_crop(rgb,size,(0,0,size.0,size.1),target);m.infer(&input)},
+        }
+    }
+    fn reset_fusion(&mut self){match self {Self::Vda(m)=>m.reset("fusion context changed"),Self::VdaVulkan(m)=>m.reset(),_=>{}}}
+
     /// The name in the models menu and state.toml.
     fn id(&self) -> String {
         match self {
@@ -98,7 +110,7 @@ impl Engine {
         match self {
             Engine::Plain(m) => (m.width, m.height),
             Engine::Ncnn(m) => (m.width, m.height),
-            Engine::Vda(_) => (vda::WIDTH, vda::HEIGHT),
+            Engine::Vda(m) => m.output_size(),
             Engine::VdaVulkan(m) => (m.width,m.height),
         }
     }
@@ -215,13 +227,14 @@ struct SavedState {
     model_smoothing: BTreeMap<String, bool>,
     /// VDA's edge softening, an index into vda::SOFTENING.
     edge_softening: usize,
+    fusion: crate::depth_fusion::Settings,
     edge_alignment: bool,
     contour_cleanup: bool,
 }
 
 impl Default for SavedState {
     fn default() -> Self {
-        SavedState { cpu_inference: false, edgepad_gpu: None, decode: video_decoder::Settings::default(), enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, edge_alignment: true, contour_cleanup: true }
+        SavedState { cpu_inference: false, edgepad_gpu: None, decode: video_decoder::Settings::default(), enabled: true, model: None, rate: 0, model_smoothing: BTreeMap::new(), edge_softening: vda::DEFAULT_SOFTENING, fusion: crate::depth_fusion::Settings::default(), edge_alignment: true, contour_cleanup: true }
     }
 }
 
@@ -284,6 +297,7 @@ pub struct Depth {
     state: Mutex<SavedState>,
     status: Mutex<String>,
     decoder_status: Mutex<String>,
+    fusion_status: Mutex<String>,
     /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
     /// The size the decoder reduces frames to for that model.
@@ -373,6 +387,7 @@ impl Depth {
             state: Mutex::new(state),
             status: Mutex::new("starting".into()),
             decoder_status: Mutex::new("Waiting for video".into()),
+            fusion_status: Mutex::new("Off".into()),
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
@@ -490,6 +505,37 @@ impl Depth {
         if let Ok(mut status)=self.decoder_status.lock() { *status=value; }
     }
 
+    pub fn fusion(&self)->crate::depth_fusion::Settings {self.state.lock().map(|s|s.fusion.clone()).unwrap_or_default()}
+    pub fn fusion_status(&self)->String {self.fusion_status.lock().map(|s|s.clone()).unwrap_or_default()}
+    fn set_fusion_status(&self,s:String){if let Ok(mut status)=self.fusion_status.lock(){*status=s;}}
+    pub fn set_fusion_enabled(&self,on:bool){
+        if on && !self.fusion().square_tiles && self.fusion().detail.is_none(){self.set_fusion_status("Choose a centre detail model first".into());return;}
+        self.update_state(|s|s.fusion.enabled=on);
+        self.set_fusion_status(if on {"Waiting for video; extra model loads on first frame"}else{"Off; detail resources released on next frame"}.into());
+    }
+    pub fn set_fusion_detail(&self,name:&str){
+        if !self.fusion_models().iter().any(|m|m==name){return;}
+        self.update_state(|s|s.fusion.detail=Some(name.into()));
+        self.set_fusion_status("Detail selection changed; loads on next frame".into());
+    }
+    pub fn set_fusion_square_tiles(&self,on:bool){
+        self.update_state(|s|s.fusion.square_tiles=on);
+        self.set_fusion_status("Layout changed; loads on next frame".into());
+    }
+    pub fn square_tiles_available(&self)->bool{
+        !self.cpu_inference() && self.depth_gpu_label().to_lowercase().contains("nvidia") &&
+        ["cold.onnx","step.onnx"].iter().all(|f|self.models_dir.join("vda-square-392x392").join(f).is_file())
+    }
+    pub fn set_fusion_blend(&self,blend:crate::depth_fusion::Blend){self.update_state(|s|s.fusion.blend=blend);}
+    /// Detail uses the background's selected backend/device, not a hidden GPU.
+    pub fn fusion_models(&self)->Vec<String>{
+        let mut result=Vec::new();
+        for group in self.choice_groups(){
+            let same_group=group.choices.iter().any(|c|self.choice_selected(c));
+            if same_group {for c in group.choices {if !result.contains(&c.model){result.push(c.model);}}}
+        }result
+    }
+
     /// Depth smoothing for the chosen model.
     pub fn smoothing(&self) -> bool {
         self.state.lock().is_ok_and(|s| {
@@ -549,6 +595,7 @@ impl Depth {
     }
 
     fn input_size(&self) -> Option<(usize, usize)> {
+        if self.fusion().enabled { return Some((1920,1080)); }
         self.input_size.lock().ok().and_then(|s| *s)
     }
 
@@ -776,6 +823,13 @@ impl Depth {
         let mut pace = RatePace::default();
         let mut rate_window = (Instant::now(), 0u32);
         let mut resized = Vec::new();
+        let mut fusion_detail:Option<Engine>=None;
+        let mut square_models:Option<(VdaModel,VdaModel)>=None;
+        let mut fusion_key:Option<(String,String,bool,Option<String>)>=None;
+        let mut fusion_previous=crate::depth_fusion::Settings::default();
+        let mut fusion_gpu:Option<crate::gpu_fusion::GpuFusion>=None;
+        let mut fusion_gpu_tried=false;
+
         let mut telemetry = vda::Telemetry::default();
         // VDA frames that failed in a row; after a few, go back to the
         // previous model.
@@ -939,13 +993,25 @@ impl Depth {
                 }
                 if let Engine::Vda(m) = engine {m.reset("new stream");}
                 if let Engine::VdaVulkan(m) = engine {m.reset();}
+                if let Some(detail)=&mut fusion_detail {detail.reset_fusion();}
+                if let Some((left,right))=&mut square_models{left.reset("new stream");right.reset("new stream");}
                 last_stream = Some(stream);
             }
             let depth_tau = if self.smoothing() { DEPTH_TAU_SECONDS } else { 0.0 };
             post.depth_tau = depth_tau;
             let (fw, fh) = frame.size;
             let input = engine.input_size();
-            let (width, height) = engine.output_size();
+            let fusion=self.fusion();
+            if fusion!=fusion_previous {
+                engine.reset_fusion();post.reset();if let Some(g)=&mut gpu_post{g.reset();}
+                if let Some(detail)=&mut fusion_detail{detail.reset_fusion();}
+                if let Some((left,right))=&mut square_models{left.reset("tile context changed");right.reset("tile context changed");}
+                fusion_previous=fusion.clone();
+            }
+            if !fusion.enabled || !fusion.square_tiles {square_models=None;}
+            if !fusion.enabled {fusion_detail=None;fusion_key=None;fusion_gpu=None;fusion_gpu_tried=false;}
+            let fusion_active=fusion.enabled;
+            let (width, height) = if fusion_active {crate::depth_fusion::SIZE}else{engine.output_size()};
             let same_size = (fw, fh) == input;
             let infer_start = Instant::now();
             let pixels = width * height;
@@ -958,7 +1024,7 @@ impl Depth {
                 Engine::Plain(m) => m.backend != Backend::Cpu && matches!(frame.pixels, Pixels::Gpu(_)),
                 Engine::Ncnn(_) | Engine::VdaVulkan(_) => false,
             };
-            let on_device = !self.decode_settings().cpu_processing && self.gpu_post.load(Ordering::Relaxed)
+            let on_device = !fusion_active && !self.decode_settings().cpu_processing && self.gpu_post.load(Ordering::Relaxed)
                 && device_output
                 && (gpu_post.is_some() || {
                     match GpuPost::new(pixels) {
@@ -973,7 +1039,7 @@ impl Depth {
             if on_device && gpu_post.as_ref().is_some_and(|g| g.pixels() != pixels) {
                 gpu_post = GpuPost::new(pixels).ok();
             }
-            let resident_gpu=if matches!(&frame.pixels,Pixels::Rgb(_)) && !self.decode_settings().cpu_processing && self.gpu_frames.load(Ordering::Relaxed) && self.gpu_post.load(Ordering::Relaxed) {
+            let resident_gpu=if !fusion_active && matches!(&frame.pixels,Pixels::Rgb(_)) && !self.decode_settings().cpu_processing && self.gpu_frames.load(Ordering::Relaxed) && self.gpu_post.load(Ordering::Relaxed) {
                 match engine {Engine::Ncnn(m) if !m.cpu=>m.gpu_name.clone(),Engine::VdaVulkan(m)=>Some(m.gpu_name.clone()),_=>None}
             }else{None};
             if let Some(gpu)=resident_gpu.as_ref() {
@@ -989,7 +1055,87 @@ impl Depth {
             let resident_enabled=resident_gpu.is_some() && vulkan_post.is_some() && !resident_disabled;
             let mut vda_report = None;
             let busy=InferenceBusy::new(&self.inference_busy);
-            let result = match engine {
+            let result = if fusion_active {
+                (|| -> Result<Output,String> {
+                    if fusion.square_tiles {
+                        if !self.square_tiles_available(){return Err("Square tiles require NVIDIA and local 392x392 exports".into());}
+                        fusion_detail=None;fusion_key=None;
+                        if square_models.is_none(){
+                            self.set_fusion_status("Building/loading two square VDA engines; first load can take minutes".into());
+                            let cache=crate::config::cache_dir().join("tensorrt");
+                            let left=VdaModel::load_square(&self.models_dir,&cache)?;
+                            let right=VdaModel::load_square(&self.models_dir,&cache)?;
+                            square_models=Some((left,right));
+                        }
+                        if fusion_gpu.is_none(){fusion_gpu=Some(crate::gpu_fusion::GpuFusion::new((width,height))?);}
+                        let (left,right)=square_models.as_mut().ok_or("Square models unavailable")?;
+                        left.edge_softening=0.;right.edge_softening=0.;
+                        let (sw,sh)=frame.size;
+                        if sw<sh || sw>=2*sh{return Err("Square tiles currently require a landscape frame narrower than 2:1".into());}
+                        let mut maps=Vec::with_capacity(2);
+                        for (model,x) in [(left,0),(right,sw-sh)] {
+                            let report=match &frame.pixels {
+                                Pixels::Gpu(t)=>{
+                                    let (crop,size)=fusion_gpu.as_ref().unwrap().crop_box(t.ptr,frame.size,(x,0,sh,sh))?;
+                                    model.infer_device(crop,size)?
+                                },
+                                Pixels::Rgb(rgb)=>{
+                                    let crop=crate::depth_fusion::rgb_crop(rgb,frame.size,(x,0,sh,sh),(392,392));
+                                    model.infer_rgb(&crop,(392,392))?
+                                }
+                            };
+                            maps.push(model.download_depth(report.depth)?);
+                        }
+                        let start=Instant::now();
+                        let data=crate::depth_fusion::stitch_square(&maps[0],&maps[1],(sw,sh),(width,height))?;
+                        self.set_fusion_status(format!("TensorRT; two 392x392 tiles; CPU stitch {:.1} ms; {}x{} source",start.elapsed().as_secs_f64()*1000.,sw,sh));
+                        if rate_window.0.elapsed()>=Duration::from_secs(1){log::info!("Depth fusion: {}",self.fusion_status());}
+                        return Ok(Output::Fused(data,false));
+                    }
+                    let name=fusion.detail.as_deref().ok_or("No detail model selected")?;
+                    let key=(engine.id(),name.to_string(),self.cpu_inference(),self.depth_gpu());
+                    if fusion_key.as_ref()!=Some(&key) {
+                        if !self.fusion_models().iter().any(|m|m==name){return Err("Detail model is incompatible with the selected background hardware".into());}
+                        self.set_fusion_status(format!("Loading detail {}",model_label(name)));
+                        fusion_detail=None;
+                        let backend=if self.cpu_inference(){Backend::Cpu}else if name==vda::ID {Backend::TensorRt}else{Backend::Cuda};
+                        let detail=Engine::load(&self.model_dir(name),name,backend,&crate::config::cache_dir().join("tensorrt"),self.depth_gpu().as_deref())?;
+                        fusion_detail=Some(detail);fusion_key=Some(key);
+                        fusion_gpu=None;fusion_gpu_tried=false;
+                    }
+                    // Resident native VDA/VDA path: no full RGB/depth readback,
+                    // CPU crop, host normalization or depth-map re-upload.
+                    let cuda_allowed=!self.cpu_inference() && (!is_ncnn(&engine.id())&&!vda_vulkan::is_model(&engine.id()) || self.depth_gpu_label().to_lowercase().contains("nvidia"));
+                    if cuda_allowed && !fusion_gpu_tried {fusion_gpu_tried=true;match crate::gpu_fusion::GpuFusion::new((width,height)){Ok(g)=>fusion_gpu=Some(g),Err(e)=>log::warn!("Fusion CUDA unavailable; CPU reference: {e}")}}
+                    let detail=fusion_detail.as_mut().ok_or("Detail unavailable")?;
+                    if let (Engine::Vda(background),Engine::Vda(fine),Pixels::Gpu(tensor),Some(g))=(&mut *engine,&mut *detail,&frame.pixels,fusion_gpu.as_ref()) {
+                        background.edge_softening=0.;fine.edge_softening=0.;
+                        let (crop,crop_size)=g.crop_planar(tensor.ptr,frame.size)?;
+                        let raw_background=background.infer_device(tensor.ptr,frame.size)?;
+                        let raw_detail=fine.infer_device(crop,crop_size)?;
+                        let blend_start=Instant::now();
+                        let refinement=self.edge_alignment().then_some((tensor.ptr,frame.size,self.contour_cleanup()));
+                        let data=g.process_device_refined(raw_background.depth,(vda::WIDTH,vda::HEIGHT),raw_detail.depth,(vda::WIDTH,vda::HEIGHT),fusion.blend,refinement)?;
+                        self.set_fusion_status(format!("CUDA; resident VDA + VDA; blend/prep {:.1} ms; {}x{} source",blend_start.elapsed().as_secs_f64()*1000.,fw,fh));
+                        if rate_window.0.elapsed()>=Duration::from_secs(1){log::info!("Depth fusion: {} ({})",self.fusion_status(),fusion.blend.label());}
+                        return Ok(Output::Fused(data,refinement.is_some()));
+                    }
+                    let rgb=match &frame.pixels {Pixels::Rgb(rgb)=>rgb.clone(),Pixels::Gpu(t)=>t.download_rgb()?};
+                    let (sw,sh)=frame.size;
+                    if sw<16||sh<16||rgb.len()!=sw*sh*3 {return Err("Invalid decoded fusion frame".into());}
+                    let background=engine.fusion_rgb(&rgb,frame.size,frame.decoded)?;
+                    let crop_size=(sw/2,sh/2);
+                    let crop=crate::depth_fusion::rgb_crop(&rgb,frame.size,(sw/4,sh/4,crop_size.0,crop_size.1),crop_size);
+                    let fine=detail.fusion_rgb(&crop,crop_size,frame.decoded)?;
+                    let blend_start=Instant::now();
+                    let prepared=crate::depth_fusion::prepare(&background,engine.output_size(),&fine,detail.output_size(),(width,height))?;
+                    let (blended,backend)=if let Some(g)=&fusion_gpu {(g.process(&prepared,fusion.blend)?,"CUDA")}else{(crate::depth_fusion::reference(&prepared,fusion.blend),"CPU reference")};
+                    let blend_ms=blend_start.elapsed().as_secs_f64()*1000.;
+                    self.set_fusion_status(format!("{backend}; {} + {}; blend/prep {:.1} ms; {}x{} source",model_label(&engine.id()),model_label(name),blend_ms,sw,sh));
+                    if rate_window.0.elapsed()>=Duration::from_secs(1){log::info!("Depth fusion: {} ({})",self.fusion_status(),fusion.blend.label());}
+                    Ok(Output::Fused(blended.into_iter().map(|v|(v.clamp(0.,1.)*255.).round()as u8).collect(),false))
+                })()
+            } else { match engine {
                 Engine::Plain(model) => match &frame.pixels {
                     Pixels::Gpu(tensor) if same_size && model.backend == Backend::Cpu => {
                         tensor.download_rgb().and_then(|rgb| model.infer(&rgb)).map(Output::Host)
@@ -1055,7 +1201,7 @@ impl Depth {
                         output
                     })
                 }
-            };
+            }};
             drop(busy);
             let output = match result {
                 Ok(output) => {
@@ -1063,7 +1209,17 @@ impl Depth {
                     output
                 }
                 Err(err) => {
+                    if fusion_active && fusion.square_tiles && err==crate::depth_fusion::TILE_DISAGREEMENT {
+                        self.set_fusion_status("Square tiles disagree; holding previous depth and retrying next frame".into());
+                        if rate_window.0.elapsed()>=Duration::from_secs(1){log::warn!("Square tile frame skipped: {err}");}
+                        continue;
+                    }
                     log::warn!("Depth inference failed: {err}");
+                    if fusion_active {
+                        self.update_state(|s|s.fusion.enabled=false);
+                        self.set_fusion_status(format!("Disabled after error: {err}; normal background resumes"));
+                        square_models=None;engine.reset_fusion();post.reset();continue;
+                    }
                     if matches!(engine, Engine::Vda(_) | Engine::VdaVulkan(_)) {
                         failures += 1;
                         if failures >= 3 {
@@ -1077,15 +1233,16 @@ impl Depth {
             let infer_end = Instant::now();
             let infer_time = infer_end - infer_start;
             let post_start = Instant::now();
-            let mut vulkan_processed=false;
+            let mut spatial_processed=false;
             let mut data = match (output, gpu_post.as_mut()) {
+                (Output::Fused(data,refined),_)=>{spatial_processed=refined;data},
                 (Output::Resident(raw),_) => {
                     let result=match (&mut vulkan_post,&frame.pixels) {
                         (Some(processor),Pixels::Rgb(rgb))=>processor.process_resident(&raw,rgb,frame.size,Instant::now(),depth_tau,self.edge_alignment(),self.contour_cleanup()),
                         _=>Err("Resident depth processor/guide unavailable".into()),
                     };
                     match result {
-                        Ok(data)=>{vulkan_processed=true;data},
+                        Ok(data)=>{spatial_processed=true;data},
                         Err(error)=>{
                             log::warn!("Resident postprocessing failed: {error}; using host reference until model/stream change");vulkan_post=None;resident_disabled=true;post.reset();
                             match raw.download(){Ok(raw)=>post.process(&raw,Instant::now()),Err(error)=>{log::warn!("Resident depth readback failed: {error}");continue;} }
@@ -1111,7 +1268,7 @@ impl Depth {
                         }
                         if let Some(processor)=vulkan_post.as_mut() {
                             match processor.process(&raw,rgb,frame.size,Instant::now(),depth_tau,self.edge_alignment(),self.contour_cleanup()) {
-                                Ok(data)=>{vulkan_processed=true;data},
+                                Ok(data)=>{spatial_processed=true;data},
                                 Err(error)=>{log::warn!("Vulkan postprocessing failed: {error}; using CPU reference");vulkan_post=None;post.reset();post.process(&raw,Instant::now())},
                             }
                         }else{post.process(&raw,Instant::now())}
@@ -1132,7 +1289,7 @@ impl Depth {
             // Optional spatial refinement, after smoothing and before
             // sending/snapshots. Never writes back into temporal history.
             // No colour download or additional work when disabled.
-            if self.edge_alignment() && !vulkan_processed {
+            if self.edge_alignment() && !spatial_processed {
                 let start = Instant::now();
                 let cleanup = self.contour_cleanup();
                 let mut processed = false;
@@ -1206,7 +1363,7 @@ impl Depth {
                 && (maps - 1).is_multiple_of(*every)
             {
                 let rgb = match &frame.pixels {
-                    Pixels::Rgb(rgb) if same_size => Ok((rgb.clone(), frame.size)),
+                    Pixels::Rgb(rgb) if same_size || fusion_active => Ok((rgb.clone(), frame.size)),
                     Pixels::Rgb(_) => Ok((resized.clone(), input)),
                     Pixels::Gpu(tensor) => tensor.download_rgb().map(|rgb| (rgb, (tensor.width, tensor.height))),
                 };

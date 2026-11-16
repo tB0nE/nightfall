@@ -542,6 +542,7 @@ impl MeteorTray {
             }
             .into(),
             model_menu.into(),
+            self.fusion_menu(depth),
             rate_menu.into(),
             SubMenu {
                 label:"Advanced depth pipeline".into(),
@@ -614,6 +615,40 @@ impl MeteorTray {
         .into_iter()
         .chain(download_progress(depth).map(info))
         .collect()
+    }
+
+    fn fusion_menu(&self,depth:&Arc<Depth>)->ksni::MenuItem<Self>{
+        use ksni::menu::*;
+        let fusion=depth.fusion();
+        let models=depth.fusion_models();
+        let background=depth.choice_groups().into_iter().map(|group|SubMenu {
+            label:group.label,submenu:group.choices.into_iter().map(|choice|CheckmarkItem {
+                label:crate::depth::model_label(&choice.model),checked:depth.choice_selected(&choice),
+                activate:Box::new(move |tray:&mut Self|if let Some(depth)=&tray.depth{depth.select_choice(&choice);}),..Default::default()
+            }.into()).collect(),..Default::default()
+        }.into()).collect();
+        let detail=models.into_iter().map(|name|CheckmarkItem {
+            label:crate::depth::model_label(&name),checked:fusion.detail.as_deref()==Some(name.as_str()),
+            activate:Box::new(move |tray:&mut Self|if let Some(depth)=&tray.depth{depth.set_fusion_detail(&name);}),..Default::default()
+        }.into()).collect();
+        SubMenu{label:format!("Depth fusion — experimental: {}",if fusion.enabled{"On"}else{"Off"}),submenu:vec![
+            CheckmarkItem{label:"Enable experimental depth fusion".into(),checked:fusion.enabled,
+                enabled:fusion.enabled||fusion.detail.is_some()||fusion.square_tiles,
+                activate:Box::new(|tray:&mut Self|if let Some(depth)=&tray.depth{depth.set_fusion_enabled(!depth.fusion().enabled);}),..Default::default()}.into(),
+            CheckmarkItem{label:"Two square VDA tiles — 392×392 each".into(),checked:fusion.square_tiles,
+                enabled:depth.square_tiles_available()||fusion.square_tiles,
+                activate:Box::new(|tray:&mut Self|if let Some(depth)=&tray.depth{depth.set_fusion_square_tiles(!depth.fusion().square_tiles);}),..Default::default()}.into(),
+            SubMenu{label:format!("Background: {}",depth.selection_label()),submenu:background,enabled:!fusion.square_tiles,..Default::default()}.into(),
+            SubMenu{label:format!("Centre detail: {}",fusion.detail.as_deref().map(crate::depth::model_label).unwrap_or("Choose a model".into())),submenu:detail,enabled:!fusion.square_tiles,..Default::default()}.into(),
+            SubMenu{label:format!("Blend: {}",fusion.blend.label()),enabled:!fusion.square_tiles,submenu:crate::depth_fusion::Blend::ALL.into_iter().map(|blend|CheckmarkItem {
+                label:blend.label().into(),checked:fusion.blend==blend,
+                activate:Box::new(move |tray:&mut Self|if let Some(depth)=&tray.depth{depth.set_fusion_blend(blend);}),..Default::default()
+            }.into()).collect(),..Default::default()}.into(),
+            StandardItem{label:if fusion.square_tiles {"Two overlapping square crops; affine + feather; output: 960×540"}else{"Centre: 50% width × 50% height; output: 960×540"}.into(),enabled:false,..Default::default()}.into(),
+            StandardItem{label:"Same source frame; separate temporal histories; extra inference + VRAM".into(),enabled:false,..Default::default()}.into(),
+            StandardItem{label:"CUDA blending on NVIDIA; CPU reference on other hardware".into(),enabled:false,..Default::default()}.into(),
+            StandardItem{label:depth.fusion_status(),enabled:false,..Default::default()}.into(),
+        ],..Default::default()}.into()
     }
 
     /// The VDA download's items at the end of the Model menu: an offer

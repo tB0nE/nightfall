@@ -68,6 +68,11 @@ const HISTORY: usize = 31;
 /// (tokens, channels) of the eight states; each history is [tokens, 31, channels].
 const STATES: [(usize, usize); 8] =
     [(777, 192), (777, 192), (209, 384), (209, 384), (777, 64), (777, 64), (3108, 64), (3108, 64)];
+/// Fixed graph contract; square exports have different temporal cache shapes.
+#[derive(Clone, Copy)]
+pub(super) struct Shape { pub width: usize, pub height: usize, pub states: [(usize, usize); 8] }
+const STANDARD: Shape = Shape { width: WIDTH, height: HEIGHT, states: STATES };
+const SQUARE: Shape = Shape { width: 392, height: 392, states: [(784,192),(784,192),(196,384),(196,384),(784,64),(784,64),(3136,64),(3136,64)] };
 /// History slots in the state pool: the history holds at most 42 distinct
 /// states, plus the one being written.
 const SLOTS: usize = 44;
@@ -222,6 +227,7 @@ struct Kernels {
 }
 
 pub struct VdaModel {
+    shape: Shape,
     step: Graph,
     cold: Graph,
     api: &'static Api,
@@ -263,17 +269,30 @@ impl VdaModel {
     /// first load builds both engines (several minutes), then they come
     /// from `cache_dir`.
     pub fn load(models_dir: &Path, backend: Backend, cache_dir: &Path) -> Result<VdaModel, String> {
+        Self::load_shape(models_dir, backend, cache_dir, false)
+    }
+    pub fn load_square(models_dir: &Path, cache_dir: &Path) -> Result<VdaModel, String> {
+        Self::load_shape(&models_dir.join("vda-square-392x392"), Backend::TensorRt, cache_dir, true)
+    }
+    pub fn output_size(&self) -> (usize, usize) { (self.shape.width, self.shape.height) }
+    fn load_shape(models_dir: &Path, backend: Backend, cache_dir: &Path, square: bool) -> Result<VdaModel, String> {
         let started = Instant::now();
-        let step_path = models_dir.join(STEP_FILE);
-        let cold_path = models_dir.join(COLD_FILE);
-        for (file, sha256, _) in FILES {
-            verify(&models_dir.join(file), sha256)?;
-        }
+        let shape = if square { SQUARE } else { STANDARD };
+        let step_path = models_dir.join(if square { "step.onnx" } else { STEP_FILE });
+        let cold_path = models_dir.join(if square { "cold.onnx" } else { COLD_FILE });
+        if !square { for (file, sha256, _) in FILES { verify(&models_dir.join(file), sha256)?; } }
+        // Experimental local exports are content-addressed just like release graphs.
+        let hash = |p: &Path| -> Result<String,String> {
+            use sha2::{Digest, Sha256};
+            Ok(Sha256::digest(std::fs::read(p).map_err(|e|e.to_string())?).iter().map(|b|format!("{b:02x}")).collect())
+        };
+        let cold_hash = if square { hash(&cold_path)? } else { COLD_SHA256.into() };
+        let step_hash = if square { hash(&step_path)? } else { STEP_SHA256.into() };
         let (api, ctx) = primary_context()?;
         let free_before = free_memory(api, ctx);
         let identity = crate::nvdec::gpu_identity(api, ctx);
-        let mut cold = open_graph(&cold_path, backend, false, COLD_OPT_LEVEL, cache_dir, COLD_SHA256, &identity, api, ctx)?;
-        let step = match open_graph(&step_path, backend, true, STEP_OPT_LEVEL, cache_dir, STEP_SHA256, &identity, api, ctx) {
+        let mut cold = open_graph(&cold_path, backend, false, COLD_OPT_LEVEL, cache_dir, &cold_hash, &identity, api, ctx, shape)?;
+        let step = match open_graph(&step_path, backend, true, STEP_OPT_LEVEL, cache_dir, &step_hash, &identity, api, ctx, shape) {
             Ok(step) => step,
             Err(err) => {
                 cold.release(api, ctx);
@@ -292,6 +311,7 @@ impl VdaModel {
             }
         };
         let mut model = VdaModel {
+            shape,
             step,
             cold,
             api,
@@ -309,22 +329,23 @@ impl VdaModel {
             last_frame: None,
             thumb: None,
             edge_softening: SOFTENING[DEFAULT_SOFTENING].1,
-            name: ID.to_string(),
+            name: if square { "vda_s_392x392".into() } else { ID.to_string() },
             description: precision,
             buffer_bytes: 0,
         };
         model.allocate()?;
         let cold_ms = model.warm_up()?;
+        let label = if square { "Video Depth Anything Small (392x392)" } else { LABEL };
         if let (Some(before), Some(after)) = (free_before, free_memory(api, ctx)) {
             let used = before.saturating_sub(after);
             log::info!(
-                "{LABEL}: {} MiB of GPU memory in use ({} MiB Meteor buffers, the rest engines and workspace)",
+                "{label}: {} MiB of GPU memory in use ({} MiB Meteor buffers, the rest engines and workspace)",
                 used >> 20,
                 model.buffer_bytes >> 20
             );
         }
         log::info!(
-            "Loaded {LABEL} ({}) in {:.1} s; warm cold start {cold_ms:.2} ms",
+            "Loaded {label} ({}) in {:.1} s; warm cold start {cold_ms:.2} ms",
             model.description,
             started.elapsed().as_secs_f64()
         );
@@ -377,9 +398,9 @@ impl VdaModel {
 
     /// Copies a depth map back (for CPU post-processing).
     pub fn download_depth(&self, depth: CuDevicePtr) -> Result<Vec<f32>, String> {
-        let mut out = vec![0f32; WIDTH * HEIGHT];
+        let mut out = vec![0f32; self.shape.width * self.shape.height];
         self.with_context_ref(|m| {
-            // SAFETY: the depth output holds WIDTH * HEIGHT floats.
+            // SAFETY: the depth output holds self.shape.width * self.shape.height floats.
             check("cuMemcpyDtoH", unsafe { (m.api.cu_memcpy_dtoh)(out.as_mut_ptr().cast(), depth, out.len() * 4) })
         })?;
         Ok(out)
@@ -461,7 +482,7 @@ impl VdaModel {
         let history = self.history.as_ref().expect("a history after the cold start");
         let selection = history.select();
         let slot = history.free_slot();
-        for (i, &(tokens, channels)) in STATES.iter().enumerate() {
+        for (i, &(tokens, channels)) in self.shape.states.iter().enumerate() {
             self.launch_pack(i, tokens, channels, selection)?;
         }
         sync(self.api)?;
@@ -484,11 +505,11 @@ impl VdaModel {
     /// Stores a graph's eight new states in `slot` and checks them and the
     /// depth for non-finite values.
     fn store_states(&self, outputs: &[CuDevicePtr], slot: usize) -> Result<(), String> {
-        for (i, &(tokens, channels)) in STATES.iter().enumerate() {
+        for (i, &(tokens, channels)) in self.shape.states.iter().enumerate() {
             let n = tokens * channels;
             self.launch_append(outputs[i + 1], n, self.pool[i] + (slot * n * 2) as u64)?;
         }
-        self.launch_check(outputs[0], WIDTH * HEIGHT)?;
+        self.launch_check(outputs[0], self.shape.width * self.shape.height)?;
         let (flag, _) = self.read_back(false)?;
         match flag {
             0 => Ok(()),
@@ -501,11 +522,14 @@ impl VdaModel {
     /// Cold start and three steps on a blank frame, so the first real frame
     /// doesn't pay for lazy initialisation. Returns the cold start's time.
     fn warm_up(&mut self) -> Result<f64, String> {
-        let blank = vec![0.5f32; 3 * WIDTH * HEIGHT];
+        let blank = vec![0.5f32; 3 * self.shape.width * self.shape.height];
         self.with_context(|m| {
             let mut cold_ms = 0.0;
             for i in 0..2 {
-                // SAFETY: image holds 3 * WIDTH * HEIGHT floats.
+                // Allocations may reuse another model's memory. Each inference
+                // owns a fresh non-finite flag, just as run() does for live frames.
+                m.launch_clear()?;
+                // SAFETY: image holds 3 * self.shape.width * self.shape.height floats.
                 check("cuMemcpyHtoD", unsafe {
                     (m.api.cu_memcpy_htod)(m.image, blank.as_ptr().cast(), blank.len() * 4)
                 })?;
@@ -513,6 +537,7 @@ impl VdaModel {
                 cold_ms = report.model.as_secs_f64() * 1000.0;
                 if i == 1 {
                     for _ in 0..3 {
+                        m.launch_clear()?;
                         m.step(Instant::now()).map_err(|e| format!("warm-up: {e}"))?;
                     }
                 }
@@ -524,9 +549,9 @@ impl VdaModel {
     }
 
     fn allocate(&mut self) -> Result<(), String> {
-        let mut sizes = vec![3 * WIDTH * HEIGHT * 4, THUMB_OFFSET + THUMB_VALUES * 4, WIDTH * HEIGHT * 4, WIDTH * HEIGHT * 4];
-        sizes.extend(STATES.iter().map(|(t, c)| t * HISTORY * c * 4));
-        sizes.extend(STATES.iter().map(|(t, c)| SLOTS * t * c * 2));
+        let mut sizes = vec![3 * self.shape.width * self.shape.height * 4, THUMB_OFFSET + THUMB_VALUES * 4, self.shape.width * self.shape.height * 4, self.shape.width * self.shape.height * 4];
+        sizes.extend(self.shape.states.iter().map(|(t, c)| t * HISTORY * c * 4));
+        sizes.extend(self.shape.states.iter().map(|(t, c)| SLOTS * t * c * 2));
         self.buffer_bytes = sizes.iter().sum();
         let mut ptrs = Vec::with_capacity(sizes.len());
         let result = self.with_context(|m| {
@@ -585,7 +610,7 @@ impl VdaModel {
     fn launch_resize(&self, frame: CuDevicePtr, sw: usize, sh: usize) -> Result<(), String> {
         let (mut src, mut out) = (frame, self.image);
         let (mut sw, mut sh) = (sw as c_int, sh as c_int);
-        let (mut w, mut h) = (WIDTH as c_int, HEIGHT as c_int);
+        let (mut w, mut h) = (self.shape.width as c_int, self.shape.height as c_int);
         let mut args: [*mut c_void; 6] = [
             (&mut src as *mut u64).cast(),
             (&mut sw as *mut c_int).cast(),
@@ -594,7 +619,7 @@ impl VdaModel {
             (&mut h as *mut c_int).cast(),
             (&mut out as *mut u64).cast(),
         ];
-        let grid = ((WIDTH as c_uint).div_ceil(16), (HEIGHT as c_uint).div_ceil(16));
+        let grid = ((self.shape.width as c_uint).div_ceil(16), (self.shape.height as c_uint).div_ceil(16));
         // SAFETY: the arguments match vda_resize_normalize; the frame holds
         // 3 * sw * sh floats.
         unsafe { launch(self.api, self.kernels.resize, grid, (16, 16), &mut args) }
@@ -602,7 +627,7 @@ impl VdaModel {
 
     fn launch_thumb(&self) -> Result<(), String> {
         let (mut image, mut thumb) = (self.image, self.readback + THUMB_OFFSET as u64);
-        let (mut w, mut h) = (WIDTH as c_int, HEIGHT as c_int);
+        let (mut w, mut h) = (self.shape.width as c_int, self.shape.height as c_int);
         let mut args: [*mut c_void; 4] = [
             (&mut image as *mut u64).cast(),
             (&mut w as *mut c_int).cast(),
@@ -655,7 +680,7 @@ impl VdaModel {
 
     fn launch_blur(&self, input: CuDevicePtr, output: CuDevicePtr, horizontal: bool) -> Result<(), String> {
         let (mut input, mut output) = (input, output);
-        let (mut w, mut h) = (WIDTH as c_int, HEIGHT as c_int);
+        let (mut w, mut h) = (self.shape.width as c_int, self.shape.height as c_int);
         let mut sigma = self.edge_softening;
         let mut horizontal = c_int::from(horizontal);
         let mut args: [*mut c_void; 6] = [
@@ -666,9 +691,9 @@ impl VdaModel {
             (&mut sigma as *mut f32).cast(),
             (&mut horizontal as *mut c_int).cast(),
         ];
-        let grid = ((WIDTH as c_uint).div_ceil(16), (HEIGHT as c_uint).div_ceil(16));
-        // SAFETY: the arguments match vda_blur; both buffers hold WIDTH *
-        // HEIGHT floats and differ.
+        let grid = ((self.shape.width as c_uint).div_ceil(16), (self.shape.height as c_uint).div_ceil(16));
+        // SAFETY: the arguments match vda_blur; both buffers hold self.shape.width *
+        // self.shape.height floats and differ.
         unsafe { launch(self.api, self.kernels.blur, grid, (16, 16), &mut args) }
     }
 
@@ -714,7 +739,7 @@ impl VdaModel {
     /// Runs on an already normalised model input; `first` cold-starts.
     pub(crate) fn infer_normalized(&mut self, image: &[f32], first: bool) -> Result<(Vec<f32>, StepReport), String> {
         let report = self.with_context(|m| {
-            // SAFETY: image holds 3 * WIDTH * HEIGHT floats.
+            // SAFETY: image holds 3 * self.shape.width * self.shape.height floats.
             check("cuMemcpyHtoD", unsafe { (m.api.cu_memcpy_htod)(m.image, image.as_ptr().cast(), image.len() * 4) })?;
             if first { m.cold_start(Instant::now()) } else { m.step(Instant::now()) }
         })?;
@@ -779,11 +804,12 @@ fn open_graph(
     gpu: &str,
     api: &'static Api,
     ctx: CuContext,
+    shape: Shape,
 ) -> Result<Graph, String> {
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
     if backend == Backend::TensorRt && std::env::var("METEOR_TENSORRT").as_deref() != Ok("ort") {
         match crate::tensorrt::init() {
-            Ok(version) => return open_native(path, fp16, opt_level, cache_dir, sha256, gpu, &version, api, ctx),
+            Ok(version) => return open_native(path, fp16, opt_level, cache_dir, sha256, gpu, &version, api, ctx, shape),
             Err(err) if cfg!(feature = "onnxruntime") => {
                 log::warn!("TensorRT without ONNX Runtime isn't available ({err}); using ONNX Runtime's")
             }
@@ -791,27 +817,27 @@ fn open_graph(
         }
     }
     #[cfg(feature = "onnxruntime")]
-    return ort_graph::open(path, backend, fp16, opt_level, cache_dir, sha256, gpu);
+    return ort_graph::open(path, backend, fp16, opt_level, cache_dir, sha256, gpu, shape);
     #[cfg(not(feature = "onnxruntime"))]
     Err(format!("{file}: {} isn't available in this build without ONNX Runtime", backend.label()))
 }
 
 /// The graph's inputs: the image, and on the step (`with_caches`) the
 /// eight packed histories.
-fn expected_inputs(with_caches: bool) -> Vec<(String, Vec<i64>)> {
-    let mut expected = vec![("image".to_string(), vec![1, 1, 3, HEIGHT as i64, WIDTH as i64])];
+fn expected_inputs_shape(with_caches: bool, shape: Shape) -> Vec<(String, Vec<i64>)> {
+    let mut expected = vec![("image".to_string(), vec![1, 1, 3, shape.height as i64, shape.width as i64])];
     if with_caches {
         expected.extend(
-            STATES.iter().enumerate().map(|(i, &(t, c))| (format!("cache_{i}"), vec![t as i64, HISTORY as i64, c as i64])),
+            shape.states.iter().enumerate().map(|(i, &(t, c))| (format!("cache_{i}"), vec![t as i64, HISTORY as i64, c as i64])),
         );
     }
     expected
 }
 
 /// The depth, then the eight new states.
-fn output_shapes() -> Vec<(String, Vec<usize>)> {
-    let mut shapes = vec![("depth".to_string(), vec![1usize, 1, HEIGHT, WIDTH])];
-    shapes.extend(STATES.iter().enumerate().map(|(i, &(t, c))| (format!("updated_cache_{i}"), vec![t, 1, c])));
+fn output_shapes_shape(shape: Shape) -> Vec<(String, Vec<usize>)> {
+    let mut shapes = vec![("depth".to_string(), vec![1usize, 1, shape.height, shape.width])];
+    shapes.extend(shape.states.iter().enumerate().map(|(i, &(t, c))| (format!("updated_cache_{i}"), vec![t, 1, c])));
     shapes
 }
 
@@ -836,6 +862,7 @@ fn open_native(
     version: &str,
     api: &'static Api,
     ctx: CuContext,
+    shape: Shape,
 ) -> Result<Graph, String> {
     use crate::tensorrt::{BuildOptions, Engine};
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
@@ -870,13 +897,13 @@ fn open_native(
         };
         log::info!("{file}: TensorRT {precision} engine {} (native, {})", graph.engine, dir.display());
 
-        for (name, shape) in expected_inputs(fp16) {
+        for (name, shape) in expected_inputs_shape(fp16, shape) {
             let found = engine.tensor(&name).filter(|t| t.input && t.dtype == 0).map(|t| t.shape.clone());
             if found.as_ref() != Some(&shape) {
                 return Err(format!("{file}: expected f32 input {name} {shape:?}, found {found:?}"));
             }
         }
-        for (name, shape) in output_shapes() {
+        for (name, shape) in output_shapes_shape(shape) {
             let expected: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
             let found = engine.tensor(&name).filter(|t| !t.input && t.dtype == 0).map(|t| t.shape.clone());
             if found.as_ref() != Some(&expected) {
@@ -1319,5 +1346,60 @@ mod tests {
         );
         assert_eq!(resets, 1, "only the first frame should cold-start");
         assert!(worst > 0.999, "worst-frame correlation {worst}");
+    }
+}
+
+#[cfg(test)]
+mod square_contract_tests {
+    use super::*;
+    #[test]
+    fn square_temporal_contract_matches_export() {
+        let inputs=expected_inputs_shape(true,SQUARE);
+        assert_eq!(inputs[0].1,vec![1,1,3,392,392]);
+        assert_eq!(inputs[3].1,vec![196,31,384]);
+        assert_eq!(inputs[7].1,vec![3136,31,64]);
+        assert_eq!(output_shapes_shape(SQUARE)[0].1,vec![1,1,392,392]);
+        assert_eq!(expected_inputs_shape(true,STANDARD)[1].1,vec![777,31,192]);
+    }
+}
+
+#[cfg(test)]
+mod square_gpu_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires local square graphs, NVIDIA and TensorRT; may build engines"]
+    fn square_streaming_smoke() {
+        let meteor=Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/nightfall-meteor");
+        // SAFETY: set before TensorRT builder lookup; explicit isolated test only.
+        unsafe { std::env::set_var("METEOR_BUILDER",meteor); }
+        crate::tensorrt::configure(None);
+        let mut model=VdaModel::load_square(&crate::config::default_models_dir(),&crate::config::cache_dir().join("tensorrt")).unwrap();
+        assert_eq!(model.output_size(),(392,392));
+        // Reproduce the old failure even though the actual depth output is finite.
+        model.with_context(|m| {
+            let stale_flag=3u32;
+            check("seed old-path flag",unsafe{(m.api.cu_memcpy_htod)(m.readback,(&stale_flag as *const u32).cast(),4)})?;
+            assert!(m.cold_start(Instant::now()).is_err());
+            Ok(())
+        }).unwrap();
+        assert!(model.download_depth(model.cold.outputs[0]).unwrap().iter().all(|v|v.is_finite()));
+        for _ in 0..3 {
+            model.with_context(|m| {
+                let stale_flag=3u32;
+                // SAFETY: readback begins with an allocated u32 error flag.
+                check("seed stale warm-up flag",unsafe{(m.api.cu_memcpy_htod)(m.readback,(&stale_flag as *const u32).cast(),4)})
+            }).unwrap();
+            model.warm_up().expect("warm-up must clear a reused error flag");
+        }
+
+        let rgb:Vec<u8>=(0..392*392*3).map(|i|((i/3%392+i/3/392)%256)as u8).collect();
+        for i in 0..4 {
+            let report=model.infer_rgb(&rgb,(392,392)).unwrap();
+            let map=model.download_depth(report.depth).unwrap();
+            assert_eq!(map.len(),392*392);assert!(map.iter().all(|v|v.is_finite()));
+            eprintln!("Square frame {i}: {:.2} ms; reset={:?}",report.model.as_secs_f64()*1000.,report.reset);
+        }
+        model.reset("test new stream");
+        assert!(model.infer_rgb(&rgb,(392,392)).unwrap().reset.is_some());
     }
 }

@@ -58,6 +58,7 @@ pub fn run(path: &Path, fps: u32, jitter_ms: f64, depth: Arc<Depth>) -> Result<(
     // decode, handoff to the engine, model (incl. output copy), post-processing
     let mut stages: [Vec<u32>; 4] = Default::default();
     let mut last_map = 0;
+    let mut steady_start:Option<(Instant,u64)>=None;
     for (i, unit) in units.iter().enumerate() {
         let frame = Frame {
             epoch: 0,
@@ -90,6 +91,12 @@ pub fn run(path: &Path, fps: u32, jitter_ms: f64, depth: Arc<Depth>) -> Result<(
             stages[3].push(us(map.infer_end, map.done));
         }
         last_map = maps;
+        if steady_start.is_none() && start.elapsed()>=Duration::from_secs(2){steady_start=Some((Instant::now(),maps));}
+    }
+    if let Some((since,maps))=steady_start {
+        let elapsed=since.elapsed().as_secs_f64();
+        let count=depth.stats.maps.load(Ordering::Relaxed).saturating_sub(maps);
+        log::info!("Replay steady-state: {count} maps over {elapsed:.3} s = {:.2} maps/s (first 2 s excluded; drain excluded)",count as f64/elapsed.max(1e-6));
     }
     std::thread::sleep(Duration::from_millis(300));
     let s = &depth.stats;

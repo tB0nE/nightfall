@@ -11,7 +11,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{IoBinding, Session};
 use ort::value::{Shape, Tensor, TensorRefMut};
 
-use super::{Graph, HEIGHT, HISTORY, Runner, STATES, WIDTH, engine_dir, expected_inputs, output_shapes};
+use super::{Graph, HISTORY, Runner, Shape as ModelShape, engine_dir, expected_inputs_shape, output_shapes_shape};
 use crate::nvdec::CuDevicePtr;
 use crate::onnx::Backend;
 
@@ -19,6 +19,7 @@ use crate::onnx::Backend;
 /// order is drop order: the binding holds the output tensors, which the
 /// allocator must outlive.
 pub struct OrtGraph {
+    shape: ModelShape,
     binding: IoBinding,
     session: Session,
     _allocator: Allocator,
@@ -35,12 +36,12 @@ impl OrtGraph {
         // SAFETY: the image and packed buffers are ours, sized for these
         // shapes, and outlive the run; they are unbound before returning.
         let bound = unsafe {
-            let image_shape = Shape::new([1, 1, 3, HEIGHT as i64, WIDTH as i64]);
+            let image_shape = Shape::new([1, 1, 3, self.shape.height as i64, self.shape.width as i64]);
             let image = TensorRefMut::<f32>::from_raw(cuda_memory().map_err(err)?, image_ptr as usize as *mut _, image_shape)
                 .map_err(err)?;
             binding.bind_input("image", &image).map_err(err)?;
             if let Some(packed) = packed {
-                for (i, &(tokens, channels)) in STATES.iter().enumerate() {
+                for (i, &(tokens, channels)) in self.shape.states.iter().enumerate() {
                     let shape = Shape::new([tokens as i64, HISTORY as i64, channels as i64]);
                     let cache = TensorRefMut::<f32>::from_raw(cuda_memory().map_err(err)?, packed[i] as usize as *mut _, shape)
                         .map_err(err)?;
@@ -61,7 +62,7 @@ fn cuda_memory() -> ort::Result<MemoryInfo<'static>> {
 }
 
 /// open_graph on ONNX Runtime.
-pub fn open(path: &Path, backend: Backend, fp16: bool, opt_level: u8, cache_dir: &Path, sha256: &str, gpu: &str) -> Result<Graph, String> {
+pub fn open(path: &Path, backend: Backend, fp16: bool, opt_level: u8, cache_dir: &Path, sha256: &str, gpu: &str, shape: ModelShape) -> Result<Graph, String> {
     let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("model");
     let fail = |err: ort::Error| format!("{file} ({}): {err}", backend.label());
     let (session, engine) = match backend {
@@ -93,7 +94,7 @@ pub fn open(path: &Path, backend: Backend, fp16: bool, opt_level: u8, cache_dir:
             (session, engine)
         }
     };
-    for (name, shape) in expected_inputs(fp16) {
+    for (name, shape) in expected_inputs_shape(fp16, shape) {
         let found = session
             .inputs()
             .iter()
@@ -108,12 +109,12 @@ pub fn open(path: &Path, backend: Backend, fp16: bool, opt_level: u8, cache_dir:
     let allocator = Allocator::new(&session, cuda_memory().map_err(err)?).map_err(err)?;
     let mut binding = session.create_binding().map_err(err)?;
     let mut outputs = Vec::with_capacity(9);
-    for (name, shape) in output_shapes() {
+    for (name, shape) in output_shapes_shape(shape) {
         let mut tensor = Tensor::<f32>::new(&allocator, shape).map_err(err)?;
         outputs.push(tensor.data_ptr_mut() as u64);
         binding.bind_output(name, tensor).map_err(err)?;
     }
-    Ok(Graph { runner: Runner::Ort(OrtGraph { binding, session, _allocator: allocator }), outputs, engine })
+    Ok(Graph { runner: Runner::Ort(OrtGraph { shape, binding, session, _allocator: allocator }), outputs, engine })
 }
 
 fn build_session<const N: usize>(path: &Path, providers: [ort::ep::ExecutionProviderDispatch; N]) -> ort::Result<Session> {

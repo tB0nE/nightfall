@@ -12,6 +12,8 @@ mod host_cursor;
 mod legacy_host_cursor;
 mod crypto;
 mod depth;
+mod depth_fusion;
+mod gpu_fusion;
 mod depth_server;
 #[cfg(target_os = "linux")]
 mod desktop;
