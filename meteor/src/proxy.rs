@@ -30,6 +30,11 @@ use crate::video_dump::VideoDump;
 use crate::video_tap::{TapStats, VideoTap};
 
 const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
+
+/// Whether a client last heard from at `last_ms` still holds its flow open at `now_ms`.
+fn client_still_there(last_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) < UDP_FLOW_IDLE.as_millis() as u64
+}
 /// Multipath: a client with several network paths to this PC (e.g. a Steam
 /// Frame on Wi-Fi plus its dedicated 6 GHz adapter) pings the video and audio
 /// ports from each. Pings carry the session's 16-byte payload (Sunshine's
@@ -332,9 +337,7 @@ impl Proxy {
                 let mut flows_guard = flows.lock().await;
                 match flows_guard.get(&client) {
                     Some((socket, _, owner_ping)) => {
-                        if payload.is_some() {
-                            owner_ping.store(now_ms(), Ordering::Relaxed);
-                        }
+                        owner_ping.store(now_ms(), Ordering::Relaxed);
                         socket.clone()
                     }
                     None => match self.open_udp_flow(ch).await {
@@ -343,8 +346,7 @@ impl Proxy {
                             owner_of_payload.retain(|_, owner| flows_guard.contains_key(owner));
                             owner_of_extra.retain(|_, owner| flows_guard.contains_key(owner));
                             let extras: Extras = Arc::default();
-                            let owner_ping: OwnerPing =
-                                Arc::new(AtomicU64::new(if payload.is_some() { now_ms() } else { 0 }));
+                            let owner_ping: OwnerPing = Arc::new(AtomicU64::new(now_ms()));
                             flows_guard.insert(client, (socket.clone(), extras.clone(), owner_ping.clone()));
                             tokio::spawn(self.clone().relay_udp_replies(
                                 socket.clone(),
@@ -453,6 +455,10 @@ impl Proxy {
                     log::debug!("{} flow for {client} failed: {err}", ch.name);
                     break;
                 }
+                // Quiet from the host, but the client still pings: keep the flow. The
+                // host sends no audio while the PC is silent and keeps sending to this
+                // socket's port afterwards, so closing it here muted the rest of the stream.
+                Err(_) if client_still_there(owner_ping.load(Ordering::Relaxed), now_ms()) => {}
                 Err(_) => break, // idle
             }
         }
@@ -705,6 +711,16 @@ fn rewrite_server_ports(line: &str, map: &PortMap) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A silent PC sends no audio; the client's pings keep the audio flow (and the port
+    /// the host sends to) alive until it really goes away.
+    #[test]
+    fn a_pinging_client_keeps_a_quiet_flow() {
+        let idle = UDP_FLOW_IDLE.as_millis() as u64;
+        assert!(client_still_there(1_000, 1_000 + idle - 1));
+        assert!(!client_still_there(1_000, 1_000 + idle));
+        assert!(client_still_there(5_000, 4_000), "clock skew between threads is not idleness");
+    }
 
     #[test]
     fn a_restarted_stream_keeps_its_client_streaming() {
