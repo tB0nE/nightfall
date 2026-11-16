@@ -97,7 +97,8 @@ def export_onnx(weight_path):
             x = x.permute(0, 3, 1, 2)
             x = (x - self.mean) / self.std
             d = self.core(x)
-            d = d.permute(0, 2, 3, 1)
+            # Current Depth-Anything-V2 returns [N, H, W]; older checkouts [N, 1, H, W].
+            d = d.unsqueeze(-1) if d.dim() == 3 else d.permute(0, 2, 3, 1)
             return d
 
     wrapper = Wrapper(model, mean, std)
@@ -215,6 +216,20 @@ def verify():
 
 
 def main():
+    import argparse
+    global MODEL_SIZE
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--size", type=int, default=MODEL_SIZE,
+                        help="square input size (the Linux ncnn model uses 252, a multiple of 14)")
+    parser.add_argument("--onnx-only", action="store_true",
+                        help="stop after the ONNX export (input for tools/convert_linux_depth_ncnn.py)")
+    args = parser.parse_args()
+    MODEL_SIZE = args.size
+    if args.onnx_only:
+        install_depth_anything()
+        export_onnx(download_model())
+        print(f"\nDone! ONNX at: {ONNX_PATH}")
+        return
     install_deps()
     install_depth_anything()
     weight_path = download_model()
