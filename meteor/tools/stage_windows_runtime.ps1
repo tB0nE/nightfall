@@ -62,6 +62,12 @@ CopyRequired $brokerBuilt $vddDir
 # The driver script validates its whole package, the HDR Vulkan layer included, and does
 # nothing without it; run by the installer in best-effort mode that is a silent exit 0.
 CopyRequired "$vddSrc\vulkan-layer" $vddDir
+# The 32-bit layer (for WOW64 games) isn't in the repository: Vibepollo's packaging builds it
+# from libvirtualdisplay with an x86 toolchain. Build it the same way into
+# target\windows-vulkan-layer-x86 (see docs/plans/active/meteor-windows.md).
+$layerX86="$vddSrc\vulkan-layer\VkLayer_sunshine_hdr_x86.dll"
+if(-not (Test-Path $layerX86)){ $layerX86="$target\windows-vulkan-layer-x86\Release\VkLayer_sunshine_hdr_x86.dll" }
+CopyRequired $layerX86 (Join-Path $vddDir 'vulkan-layer')
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $vddDir 'install.ps1') -ValidateOnly -AllowUnsignedCatalogForValidation
 if($LASTEXITCODE -ne 0){ throw "The virtual display driver package is incomplete or invalid (install.ps1 -ValidateOnly exit $LASTEXITCODE)" }
 $manifest=@{file_format_version='1.0.0';runtime=@{name='Monado';library_path='.\bin\openxr_monado.dll'}}
