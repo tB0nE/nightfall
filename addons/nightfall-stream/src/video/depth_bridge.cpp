@@ -1,7 +1,7 @@
 #include "depth_bridge.h"
 #include "nf_log.h"
 
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
 #include "midas_depth_engine.h"
 
 #include <cstdint>
@@ -66,7 +66,7 @@ using namespace godot;
 DepthBridge::DepthBridge() {}
 DepthBridge::~DepthBridge() {}
 
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
 void DepthBridge::ensure_midas_engine() {
     if (midas_engine_) return;
     midas_engine_ = std::make_unique<MidasDepthEngine>();
@@ -75,7 +75,7 @@ void DepthBridge::ensure_midas_engine() {
 #endif
 
 void DepthBridge::submit_depth_frame(const PackedByteArray &frame_data, int width, int height) {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     ensure_midas_engine();
     if (midas_engine_) {
         midas_engine_->submit_frame(frame_data.ptr(), (size_t)frame_data.size(), width, height);
@@ -103,7 +103,7 @@ void DepthBridge::submit_depth_frame(const PackedByteArray &frame_data, int widt
 
 PackedByteArray DepthBridge::get_depth_map() {
     PackedByteArray empty;
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     if (!midas_engine_) return empty;
     std::vector<uint8_t> depth = midas_engine_->get_latest_depth();
     if (depth.empty()) return empty;
@@ -153,7 +153,7 @@ void DepthBridge::configure_depth(int model_index, int requested_backend) {
     selected_model_index_ = model_index;
     requested_backend_ = requested_backend >= DEPTH_BACKEND_AUTO && requested_backend <= DEPTH_BACKEND_GPU
             ? requested_backend : DEPTH_BACKEND_AUTO;
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     ensure_midas_engine();
     if (midas_engine_) {
         effective_backend_ = midas_engine_->configure(model_index, requested_backend_);
@@ -257,7 +257,7 @@ void DepthBridge::set_depth_hz_cap(int hz) {
 }
 
 int DepthBridge::get_depth_backend_capabilities(int model_index) {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     ensure_midas_engine();
     return midas_engine_ ? midas_engine_->get_backend_capabilities(model_index) : DEPTH_BACKEND_CAP_CPU;
 #elif defined(__ANDROID__)
@@ -305,7 +305,7 @@ int DepthBridge::get_effective_depth_backend() {
 }
 
 String DepthBridge::get_depth_backend_status() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     if (midas_engine_) backend_status_ = String::utf8(midas_engine_->get_backend_status().c_str());
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -336,7 +336,7 @@ String DepthBridge::get_depth_backend_status() {
 }
 
 int DepthBridge::get_depth_model_size() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     if (!midas_engine_) return 256;
     return midas_engine_->get_model_size();
 #elif defined(__ANDROID__)
@@ -361,7 +361,7 @@ int DepthBridge::get_depth_model_size() {
 }
 
 int DepthBridge::get_depth_model_width() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return get_depth_model_size();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -382,7 +382,7 @@ int DepthBridge::get_depth_model_width() {
 }
 
 int DepthBridge::get_depth_model_height() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return get_depth_model_size();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -403,7 +403,7 @@ int DepthBridge::get_depth_model_height() {
 }
 
 int DepthBridge::get_depth_model_input_width() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return get_depth_model_width();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -424,7 +424,7 @@ int DepthBridge::get_depth_model_input_width() {
 }
 
 int DepthBridge::get_depth_model_input_height() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return get_depth_model_height();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -450,7 +450,7 @@ int DepthBridge::get_depth_model_input_height() {
 // needing adb/logcat, for the 1080p-vs-1440p+ GPU-depth-inference regression
 // investigation. Linux exposes the equivalent native worker measurements.
 float DepthBridge::get_depth_last_inference_ms() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return midas_engine_ ? midas_engine_->get_last_inference_ms() : 0.0f;
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -474,7 +474,7 @@ float DepthBridge::get_depth_last_inference_ms() {
 }
 
 float DepthBridge::get_depth_last_inference_hz() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return midas_engine_ ? midas_engine_->get_last_inference_hz() : 0.0f;
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -498,7 +498,7 @@ float DepthBridge::get_depth_last_inference_hz() {
 }
 
 float DepthBridge::get_depth_last_age_ms() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return midas_engine_ ? midas_engine_->get_last_age_ms() : 0.0f;
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
@@ -519,7 +519,7 @@ float DepthBridge::get_depth_last_age_ms() {
 }
 
 int DepthBridge::get_depth_last_skipped_frames() {
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     return midas_engine_ ? midas_engine_->get_last_skipped_frames() : 0;
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();

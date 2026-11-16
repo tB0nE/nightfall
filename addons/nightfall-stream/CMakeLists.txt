@@ -61,6 +61,8 @@ if(TARGET_PLATFORM STREQUAL "steamos" OR TARGET_PLATFORM STREQUAL "linux")
     find_package(X11 QUIET)
 endif()
 
+option(NIGHTFALL_LOCAL_DEPTH "Build Linux on-device depth inference" ON)
+
 # Native AI-3D depth estimation on Linux (2026-08-20) - Android's depth pipeline
 # calls TFLite via JNI into DepthEstimator.java; there's no JVM on desktop Linux,
 # so this needs a direct C++ TFLite dependency instead. No vcpkg tensorflow-lite
@@ -72,7 +74,7 @@ endif()
 # match the Android build's own org.tensorflow:tensorflow-lite Gradle dependency
 # (see build.sh) for op-version/behavior parity between platforms. Linux only
 # (not steamos) - matches this feature's initial scope.
-if(TARGET_PLATFORM STREQUAL "linux")
+if(TARGET_PLATFORM STREQUAL "linux" AND NIGHTFALL_LOCAL_DEPTH)
     include(FetchContent)
     FetchContent_Declare(
         tensorflow
@@ -147,6 +149,9 @@ else()
 endif()
 
 add_library(${LIBNAME} SHARED)
+if(TARGET_PLATFORM STREQUAL "linux" AND NIGHTFALL_LOCAL_DEPTH)
+    target_compile_definitions(${LIBNAME} PRIVATE NIGHTFALL_HAS_LOCAL_DEPTH)
+endif()
 
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "src/*.cpp" "src/*.h")
 if(ANDROID)
@@ -162,6 +167,11 @@ else()
     list(REMOVE_ITEM SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/src/video/pyrowave_decoder.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/video/pyrowave_gpu_pipeline.cpp")
+endif()
+if(NOT NIGHTFALL_LOCAL_DEPTH OR TARGET_PLATFORM STREQUAL "steamos")
+    list(REMOVE_ITEM SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_depth_engine.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/video/midas_test_main.cpp")
 endif()
 target_sources(${LIBNAME} PRIVATE ${SOURCE_FILES})
 
@@ -229,6 +239,8 @@ if(TARGET_PLATFORM STREQUAL "steamos" OR TARGET_PLATFORM STREQUAL "linux")
     endif()
     if(TARGET_PLATFORM STREQUAL "linux")
         set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-Bsymbolic")
+    endif()
+    if(TARGET_PLATFORM STREQUAL "linux" AND NIGHTFALL_LOCAL_DEPTH)
         target_link_libraries(${LIBNAME} PRIVATE tensorflow-lite ncnn)
         target_compile_definitions(${LIBNAME} PRIVATE NIGHTFALL_HAS_NCNN_VULKAN)
 
