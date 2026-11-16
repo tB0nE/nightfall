@@ -59,13 +59,11 @@ public class Wallpaper {
         $saved = Get-Content -Raw $journal | ConvertFrom-Json
         if ($env:METEOR_BG_COLOR -eq 'off' -and $env:METEOR_BG_OWNER -and $saved.owner -ne $env:METEOR_BG_OWNER) { return }
         $now = Snapshot
-        # Do not overwrite a manual wallpaper/colour change. Enable(false) keeps
-        # each monitor's wallpaper and slideshow configuration intact.
-        $unchanged = $now.color -eq $saved.afterColor
-        foreach ($property in $saved.before.paths.PSObject.Properties) {
-            if ($now.paths[$property.Name] -ne $property.Value) { $unchanged = $false }
-        }
-        if ($unchanged) {
+        # Do not overwrite a manual change. While the wallpaper is off Windows reports
+        # no wallpaper paths, so they can't tell; choosing a wallpaper turns it back
+        # on, and choosing a colour changes it. Enable(false) keeps each monitor's
+        # wallpaper and slideshow configuration intact.
+        if ($now.color -eq $saved.afterColor) {
             $desktop.SetColor([uint32]$saved.before.color)
             if (!$now.enabled) { $desktop.Enable([bool]$saved.before.enabled) }
         }
