@@ -246,19 +246,47 @@ impl Proxy {
             };
             let payload = ping_payload(ch, &buf[..len]);
             {
-                // A known extra path of another flow: refresh it; the host
-                // only ever sees the owner, so this ping isn't forwarded.
+                // Only a valid ping for the owner's current session may keep
+                // a secondary path alive. Other datagrams never refresh it.
                 let flows_guard = flows.lock().await;
                 if let Some(owner) = owner_of_extra.get(&client).copied() {
-                    if let Some((_, extras, _)) = flows_guard.get(&owner) {
-                        let rejoined = extras.lock().unwrap().insert(client, std::time::Instant::now()).is_none();
-                        if rejoined && ch.name == "video" {
-                            self.stats.set_streaming(client.ip(), true);
-                            self.stats.link_path(client.ip(), owner.ip());
+                    let Some(p) = payload else { continue };
+                    if owner_of_payload.get(&p) == Some(&owner) {
+                        if let Some((_, extras, _)) = flows_guard.get(&owner) {
+                            let rejoined = extras.lock().unwrap().insert(client, std::time::Instant::now()).is_none();
+                            if rejoined && ch.name == "video" {
+                                self.stats.set_streaming(client.ip(), true);
+                                self.stats.link_path(client.ip(), owner.ip());
+                            }
+                            continue;
                         }
-                        continue;
+                    }
+                    // Address/port reuse must not pin a new session to an old
+                    // upstream flow still waiting for its idle timeout.
+                    if let Some((_, extras, _)) = flows_guard.get(&owner) {
+                        if extras.lock().unwrap().remove(&client).is_some() && ch.name == "video" {
+                            self.stats.set_streaming(client.ip(), false);
+                            self.stats.unlink_path(client.ip());
+                        }
                     }
                     owner_of_extra.remove(&client);
+                }
+                if let Some(p) = payload {
+                    let changed = owner_of_payload.iter().any(|(previous, owner)| *owner == client && *previous != p);
+                    if changed {
+                        // A primary address can be reused too. Revoke its old
+                        // secondary paths before relaying any new-session data.
+                        owner_of_payload.retain(|_, owner| *owner != client);
+                        owner_of_extra.retain(|_, owner| *owner != client);
+                        if let Some((_, extras, _)) = flows_guard.get(&client) {
+                            for address in extras.lock().unwrap().drain().map(|(address, _)| address) {
+                                if ch.name == "video" {
+                                    self.stats.set_streaming(address.ip(), false);
+                                    self.stats.unlink_path(address.ip());
+                                }
+                            }
+                        }
+                    }
                 }
                 // A new address pinging with a payload another flow already
                 // uses: the same client on another path.
@@ -740,6 +768,104 @@ mod tests {
         assert_eq!(stats.udp_flows.load(Ordering::Relaxed), 1);
         assert!(stats.last_video_ms.load(Ordering::Relaxed) > 0,
             "Actual video replies must wake the temporary host-cursor setting");
+    }
+
+    // Exercise session changes with the same UDP address, while the old host
+    // flow is still live. Timeouts only assert absence after a host reply or
+    // a forwarded ping has synchronized the relevant proxy task.
+    async fn test_session_ping(socket: &UdpSocket, destination: SocketAddr, value: u8) {
+        socket.send_to(&[value; MULTIPATH_PING_LEN], destination).await.unwrap();
+    }
+
+    async fn test_host_ping(socket: &UdpSocket) -> (u8, SocketAddr) {
+        let mut bytes = [0; 64];
+        let (n, peer) = tokio::time::timeout(Duration::from_secs(2), socket.recv_from(&mut bytes))
+            .await.expect("new session ping must reach the host").unwrap();
+        assert_eq!(n, MULTIPATH_PING_LEN);
+        (bytes[0], peer)
+    }
+
+    #[tokio::test]
+    async fn multipath_secondary_can_reconnect_with_a_new_token() {
+        let map = PortMap::new(37989, 1000).unwrap();
+        let video = PortMap::channel("video");
+        let host = UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap();
+        let destination: SocketAddr = format!("127.0.0.1:{}", map.meteor(video)).parse().unwrap();
+        let stats = Arc::new(Stats::default());
+        Proxy::new(map, "127.0.0.1".into(), stats, None, None).start().await.unwrap();
+        let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let extra = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        test_session_ping(&owner, destination, 11).await;
+        let (_, old_peer) = test_host_ping(&host).await;
+        test_session_ping(&extra, destination, 11).await;
+        // A forwarded owner ping synchronizes processing of the extra's ping.
+        test_session_ping(&owner, destination, 11).await;
+        test_host_ping(&host).await;
+        test_session_ping(&extra, destination, 22).await;
+        let (token, new_peer) = test_host_ping(&host).await;
+        assert_eq!(token, 22);
+        assert_ne!(new_peer, old_peer);
+        host.send_to(b"OLD", old_peer).await.unwrap();
+        host.send_to(b"NEW", new_peer).await.unwrap();
+        let mut bytes = [0; 64];
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), extra.recv_from(&mut bytes)).await.unwrap().unwrap();
+        assert_eq!(&bytes[..n], b"NEW", "reconnected secondary must not receive old-session frames");
+    }
+
+    #[tokio::test]
+    async fn multipath_owner_token_change_revokes_old_secondary() {
+        let map = PortMap::new(39989, 1000).unwrap();
+        let video = PortMap::channel("video");
+        let host = UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap();
+        let destination: SocketAddr = format!("127.0.0.1:{}", map.meteor(video)).parse().unwrap();
+        let stats = Arc::new(Stats::default());
+        Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
+        let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        // Distinct loopback IPs let the test check depth/mic authorization too.
+        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        test_session_ping(&owner, destination, 31).await;
+        test_host_ping(&host).await;
+        test_session_ping(&extra, destination, 31).await;
+        test_session_ping(&owner, destination, 42).await;
+        let (_, peer) = test_host_ping(&host).await;
+        assert!(!stats.is_streaming(extra.local_addr().unwrap().ip()));
+        assert!(!stats.same_client(owner.local_addr().unwrap().ip(), extra.local_addr().unwrap().ip()));
+        host.send_to(b"NEW", peer).await.unwrap();
+        let mut bytes = [0; 64];
+        assert!(tokio::time::timeout(Duration::from_millis(150), extra.recv_from(&mut bytes)).await.is_err());
+        // An old token must create a separate flow, not reattach to the new session.
+        test_session_ping(&extra, destination, 31).await;
+        let (_, separate_peer) = test_host_ping(&host).await;
+        assert_ne!(peer, separate_peer);
+    }
+
+    #[tokio::test]
+    async fn multipath_non_ping_does_not_keep_secondary_alive() {
+        let map = PortMap::new(41989, 1000).unwrap();
+        let video = PortMap::channel("video");
+        let host = UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap();
+        let destination: SocketAddr = format!("127.0.0.1:{}", map.meteor(video)).parse().unwrap();
+        let stats = Arc::new(Stats::default());
+        Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
+        let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        test_session_ping(&owner, destination, 51).await;
+        test_host_ping(&host).await;
+        test_session_ping(&extra, destination, 51).await;
+        test_session_ping(&owner, destination, 51).await;
+        test_host_ping(&host).await;
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        extra.send_to(b"not a session ping", destination).await.unwrap();
+        test_session_ping(&owner, destination, 51).await;
+        test_host_ping(&host).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        test_session_ping(&owner, destination, 51).await;
+        let (_, peer) = test_host_ping(&host).await;
+        host.send_to(b"FRAME", peer).await.unwrap();
+        let mut bytes = [0; 64];
+        assert!(tokio::time::timeout(Duration::from_millis(200), extra.recv_from(&mut bytes)).await.is_err(),
+            "non-pings must not extend secondary-path lifetime");
+        assert!(!stats.is_streaming(extra.local_addr().unwrap().ip()));
     }
 
     #[tokio::test]

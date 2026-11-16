@@ -89,7 +89,7 @@ index 41e7dd8..5636525 100644
 +}
 +
 +int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool useSelect) {
-+    static int first = 0;
++    static _Thread_local int first = 0;
 +    struct pollfd pfd[2];
 +    int err, i;
 +
