@@ -172,6 +172,8 @@ var ai_3d_models: Array = [
 	# Exact square v0.7.11 export. It uses a fresh Java index because index 25
 	# now belongs to the current widescreen EdgePad-512 model.
 	{"label": "EdgePad-384 (Reference)", "java_index": 30, "gpu": true, "android": true, "linux": false},
+	# Linux: ncnn Vulkan slot 18 (zipdepth-base-256-vulkan), ~11 ms vs ~18 ms for ZipDepth-384 on a Steam Frame.
+	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
