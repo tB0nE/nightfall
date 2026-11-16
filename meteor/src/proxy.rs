@@ -71,8 +71,11 @@ pub struct Stats {
     /// a client that is still streaming when the old flow closes.
     pub video_clients: std::sync::Mutex<HashMap<IpAddr, usize>>,
     /// Multipath: the other addresses of a client, mapped to the address its
-    /// video flow (and so its depth maps) belongs to.
-    pub client_paths: std::sync::Mutex<HashMap<IpAddr, IpAddr>>,
+    /// video flow (and so its depth maps) belongs to, with how many video
+    /// flows currently use that link. Counted like `video_clients`: a
+    /// restarted stream links the same path again before the old flow idles
+    /// out, and the old flow's cleanup must not unlink it from the new one.
+    pub client_paths: std::sync::Mutex<HashMap<IpAddr, (IpAddr, usize)>>,
     /// Actual video delivery, independent of UDP flows retained for reconnects.
     pub last_video_ms: AtomicU64,
 }
@@ -87,19 +90,34 @@ impl Stats {
             return true;
         }
         let Ok(paths) = self.client_paths.lock() else { return false };
-        let root = |ip: IpAddr| paths.get(&ip).copied().unwrap_or(ip);
+        let root = |ip: IpAddr| paths.get(&ip).map_or(ip, |&(owner, _)| owner);
         root(a) == root(b)
     }
 
     fn link_path(&self, extra: IpAddr, owner: IpAddr) {
         if let Ok(mut paths) = self.client_paths.lock() {
-            paths.insert(extra.to_canonical(), owner.to_canonical());
+            let owner = owner.to_canonical();
+            let link = paths.entry(extra.to_canonical()).or_insert((owner, 0));
+            if link.0 != owner {
+                *link = (owner, 0);
+            }
+            link.1 += 1;
         }
     }
 
-    fn unlink_path(&self, extra: IpAddr) {
+    /// Drops one use of `extra`'s link to `owner`; the link goes when no
+    /// video flow of that owner uses it any more.
+    fn unlink_path(&self, extra: IpAddr, owner: IpAddr) {
         if let Ok(mut paths) = self.client_paths.lock() {
-            paths.remove(&extra.to_canonical());
+            let extra = extra.to_canonical();
+            if let Some(link) = paths.get_mut(&extra)
+                && link.0 == owner.to_canonical()
+            {
+                link.1 -= 1;
+                if link.1 == 0 {
+                    paths.remove(&extra);
+                }
+            }
         }
     }
 
@@ -266,7 +284,7 @@ impl Proxy {
                     if let Some((_, extras, _)) = flows_guard.get(&owner) {
                         if extras.lock().unwrap().remove(&client).is_some() && ch.name == "video" {
                             self.stats.set_streaming(client.ip(), false);
-                            self.stats.unlink_path(client.ip());
+                            self.stats.unlink_path(client.ip(), owner.ip());
                         }
                     }
                     owner_of_extra.remove(&client);
@@ -282,7 +300,7 @@ impl Proxy {
                             for address in extras.lock().unwrap().drain().map(|(address, _)| address) {
                                 if ch.name == "video" {
                                     self.stats.set_streaming(address.ip(), false);
-                                    self.stats.unlink_path(address.ip());
+                                    self.stats.unlink_path(address.ip(), client.ip());
                                 }
                             }
                         }
@@ -414,7 +432,7 @@ impl Proxy {
                                     log::info!("{} multipath: {addr} stopped pinging", ch.name);
                                     if ch.name == "video" {
                                         self.stats.set_streaming(addr.ip(), false);
-                                        self.stats.unlink_path(addr.ip());
+                                        self.stats.unlink_path(addr.ip(), client.ip());
                                     }
                                 }
                                 alive
@@ -443,7 +461,7 @@ impl Proxy {
             self.stats.set_streaming(client.ip(), false);
             for addr in extras.lock().unwrap().drain().map(|(addr, _)| addr) {
                 self.stats.set_streaming(addr.ip(), false);
-                self.stats.unlink_path(addr.ip());
+                self.stats.unlink_path(addr.ip(), client.ip());
             }
         }
         self.stats.udp_flows.fetch_sub(1, Ordering::Relaxed);
@@ -866,6 +884,25 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(200), extra.recv_from(&mut bytes)).await.is_err(),
             "non-pings must not extend secondary-path lifetime");
         assert!(!stats.is_streaming(extra.local_addr().unwrap().ip()));
+    }
+
+    /// A restarted stream links the same second path again before the old
+    /// video flow idles out. Closing the old flow must leave the new link,
+    /// or depth maps stop reaching a depth connection from that path.
+    #[test]
+    fn multipath_link_survives_the_previous_flow_closing() {
+        let stats = Stats::default();
+        let dongle: IpAddr = "198.51.100.1".parse().unwrap();
+        let wifi: IpAddr = "192.0.2.21".parse().unwrap();
+        let other: IpAddr = "192.0.2.50".parse().unwrap();
+        stats.link_path(wifi, dongle); // old session
+        stats.link_path(wifi, dongle); // new session
+        stats.unlink_path(wifi, dongle); // old session's flow closes
+        assert!(stats.same_client(dongle, wifi));
+        stats.unlink_path(wifi, other); // someone else's cleanup changes nothing
+        assert!(stats.same_client(dongle, wifi));
+        stats.unlink_path(wifi, dongle); // new session ends too
+        assert!(!stats.same_client(dongle, wifi));
     }
 
     #[tokio::test]
