@@ -531,3 +531,9 @@ func browse_mdns_usb(iface_name: String, timeout: float) -> Array:
 		if mdns_browser:
 			return mdns_browser.browse_on_interface(iface_name, timeout)
 	return []
+
+func request_clipboard(host_id: int, write: bool, text: String, callback: Callable) -> void:
+	var manager = get_computer_manager()
+	if manager != null and manager.has_method("request_clipboard"):
+		manager.request_clipboard(host_id, write, text, callback)
+	else: callback.call({"ok":false,"status":0})

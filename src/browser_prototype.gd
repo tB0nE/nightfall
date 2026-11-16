@@ -25,6 +25,7 @@ var selected_page := 0
 var _pages_poll_at := 0
 var _pages_snapshot := ""
 var navigation: Dictionary = {}
+var _edit_sequence := 0
 var _returning_primary := false
 # Browser-local choices must not overwrite a PC host's Meteor/model settings.
 var depth_model_override := SettingsController.ANDROID_MODEL_AUTO
@@ -72,6 +73,13 @@ func _poll_pages(force: bool = false) -> void:
 	selected_page = int(data.get("selected", 0))
 	navigation = data.get("navigation", {})
 	main.screen_sources.sync_browser_pages(pages, selected_page, screen)
+	var sequence := int(navigation.get("editSequence", 0))
+	if sequence != _edit_sequence:
+		_edit_sequence = sequence
+		var operation := str(navigation.get("editAction", ""))
+		if operation != "" and int(navigation.get("editPage", -1)) == selected_page and main.screen_sources.focused_browser() == self:
+			if operation == "select_all": _edit_raw(operation)
+			else: main.clipboard_sharing.perform(operation, _edit_raw.bind(operation))
 var _gamepad_java: Object
 var _gamepad_sent := false
 var _gamepad_input_enabled := true
@@ -142,6 +150,7 @@ func start() -> void:
 	render_size = desired_render_size()
 	uploader.start_browser_prototype(render_size.x, render_size.y)
 	main.screen_sources.browser_opened(self)
+	main.screen_sources.focus_browser(self)
 	main._log("[BROWSER] Opening GPU surface prototype")
 
 func stop(close_workspace: bool = false, restore_monitor: bool = false) -> void:
@@ -403,3 +412,18 @@ func retire_after_transfer() -> void:
 	_pages_snapshot = ""
 	generation += 1
 	set_activity(Activity.SUSPENDED)
+
+func context_menu(uv: Vector2) -> void:
+	if not active: return
+	main.screen_sources.focus_browser(self)
+	var pixel := uv.clamp(Vector2.ZERO, Vector2.ONE) * Vector2(render_size)
+	var bridge := _gamepad_bridge()
+	if bridge: bridge.browserNavigationActionFor(browser_id, "context:%f,%f" % [pixel.x, pixel.y])
+
+func _edit_raw(operation: String) -> void:
+	var bridge := _gamepad_bridge()
+	if active and bridge: bridge.browserNavigationActionFor(browser_id, "edit:" + operation)
+
+func physical_key(event: InputEventKey) -> void:
+	_modifiers = (1 if event.shift_pressed else 0) | (4096 if event.ctrl_pressed else 0) | (2 if event.alt_pressed else 0) | (65536 if event.meta_pressed else 0)
+	key(event.keycode, 3 if event.pressed else 4)

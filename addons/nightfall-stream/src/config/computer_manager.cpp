@@ -1010,6 +1010,36 @@ void NightfallComputerManager::_on_prelaunch_manifest_completed(int code, Packed
     callback.call(Dictionary());
 }
 
+void NightfallComputerManager::request_clipboard(int host_id, bool write, String text, Callable callback) {
+    String ip;
+    int port = 47984;
+    if (config_manager.is_valid()) {
+        Array hosts = config_manager->get_hosts();
+        for (int i = 0; i < hosts.size(); i++) {
+            Dictionary host = hosts[i];
+            if ((int64_t)host["id"] == host_id) { ip = _host_address(host); port = host.get("https_port", 47984); break; }
+        }
+    }
+    if (ip.is_empty() || !http_requester || text.to_utf8_buffer().size() > 65536) {
+        Dictionary result; result["ok"] = false; result["status"] = 0;
+        if (callback.is_valid()) callback.call(result);
+        return;
+    }
+    Dictionary headers; headers["Content-Type"] = "text/plain; charset=utf-8";
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/actions/clipboard?uniqueid=" + unique_id + "&uuid=" + _get_uuid() + "&type=text";
+    http_requester->request(url, write ? "POST" : "GET", write ? text.to_utf8_buffer() : PackedByteArray(), headers, _get_ssl_options(),
+        callable_mp(this, &NightfallComputerManager::_on_clipboard_completed).bind(Variant(callback)), 3000);
+}
+
+void NightfallComputerManager::_on_clipboard_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    if (!callback.is_valid()) return;
+    Dictionary result;
+    result["ok"] = code == 200 && body.size() <= 65536;
+    result["status"] = code;
+    if (code == 200 && body.size() <= 65536) result["text"] = body.get_string_from_utf8();
+    callback.call(result);
+}
+
 void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Callable callback) {
     if (!config_manager.is_valid()) return;
     Array hosts = config_manager->get_hosts();
@@ -1308,5 +1338,6 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("stop_stream_at", "ip", "port", "callback"), &NightfallComputerManager::stop_stream_at);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("request_clipboard", "host_id", "write", "text", "callback"), &NightfallComputerManager::request_clipboard);
     ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback", "query"), &NightfallComputerManager::fetch_display_manifest, DEFVAL(String()));
 }

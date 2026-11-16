@@ -1,6 +1,8 @@
 class_name XRInteraction
 extends RefCounted
 
+var _browser_right_click := false
+
 var main: Node3D
 var pointer_on_ui: bool = false
 var _tab_ray_exclusion: CollisionObject3D
@@ -116,7 +118,7 @@ func cancel_transient_interactions(reason: String = "") -> void:
 	if main.is_streaming and main.stream_backend:
 		if main.was_clicking and _pinch_start_screen != null:
 			main.stream_backend.send_mouse_button_event(8, 1)
-		if main.was_right_clicking:
+		if main.was_right_clicking and not _browser_right_click:
 			main.stream_backend.send_mouse_button_event(8, 3)
 	if _other_hand_clicking:
 		_end_secondary_press(_secondary_ui_pixel)
@@ -564,7 +566,7 @@ func handle_pointer_interaction():
 			_pinch_start_screen = t0.screen
 			_click_pending_release = true
 
-	if main.is_xr_active and main.is_streaming:
+	if main.is_xr_active:
 		var right_click_ready = is_gripping and not _double_click_chord_active
 		if chord_enabled:
 			# Give a newly pressed grip 80 ms to become a chord. Also avoid
@@ -575,7 +577,14 @@ func handle_pointer_interaction():
 		if not pad_blocking and not tp_blocking and right_click_ready and not main.was_right_clicking and main.right_click_cooldown <= 0.0:
 			var col = active_raycast.get_collider() if active_raycast.is_colliding() else null
 			var t1 = PointerTarget.resolve(col) if col else {"role": &""}
-			if t1.role == &"screen" and not main.screen_sources.is_browser_screen(t1.screen):
+			_browser_right_click = t1.role == &"screen" and main.screen_sources.is_browser_screen(t1.screen)
+			if _browser_right_click:
+				var browser = main.screen_sources.browser_for_screen(t1.screen)
+				if browser != null:
+					browser.context_menu(t1.screen.display_content_uv(t1.screen.hit_point_to_uv(active_raycast.get_collision_point())))
+			elif not main.is_streaming:
+				return
+			if t1.role == &"screen" and not _browser_right_click:
 				var hit_pos = main._get_steady_hit(active_raycast.get_collision_point())
 				var uv = t1.screen.display_content_uv(t1.screen.hit_point_to_uv(hit_pos))
 				var uv_x = uv.x
@@ -584,11 +593,12 @@ func handle_pointer_interaction():
 				var host_pt = main.layout.uv_to_host_point(t1.screen.monitor, Vector2(uv_x, uv_y))
 				var ref = main.layout.host_ref()
 				main.stream_backend.send_mouse_position_event(host_pt.x, host_pt.y, ref.x, ref.y)
-			main.stream_backend.send_mouse_button_event(7, 3)
+			if not _browser_right_click: main.stream_backend.send_mouse_button_event(7, 3)
 			main.was_right_clicking = true
 			main.right_click_cooldown = 0.5
 		elif not is_gripping and main.was_right_clicking:
-			main.stream_backend.send_mouse_button_event(8, 3)
+			if not _browser_right_click: main.stream_backend.send_mouse_button_event(8, 3)
+			_browser_right_click = false
 			main.was_right_clicking = false
 		elif chord_enabled and grip_released_edge and not chord_completed_this_frame \
 		and not _double_click_chord_active \
@@ -596,9 +606,15 @@ func handle_pointer_interaction():
 		and main.right_click_cooldown <= 0.0:
 			# Preserve very quick standalone grip taps that release during the
 			# detection window: emit a complete right-click on release.
-			_position_stream_pointer(active_raycast)
-			main.stream_backend.send_mouse_button_event(7, 3)
-			main.stream_backend.send_mouse_button_event(8, 3)
+			var quick_col = active_raycast.get_collider() if active_raycast.is_colliding() else null
+			var quick_target = PointerTarget.resolve(quick_col) if quick_col else {"role": &""}
+			if quick_target.role == &"screen" and main.screen_sources.is_browser_screen(quick_target.screen):
+				var browser = main.screen_sources.browser_for_screen(quick_target.screen)
+				if browser != null:
+					browser.context_menu(quick_target.screen.display_content_uv(quick_target.screen.hit_point_to_uv(active_raycast.get_collision_point())))
+			elif main.is_streaming and _position_stream_pointer(active_raycast):
+				main.stream_backend.send_mouse_button_event(7, 3)
+				main.stream_backend.send_mouse_button_event(8, 3)
 			main.right_click_cooldown = 0.5
 
 	for s in main.screens:

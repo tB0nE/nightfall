@@ -74,6 +74,33 @@ public class BrowserWebViewIntegrationTest {
         return result.get();
     }
 
+    @Test public void editMenuQueuesActionsInsideBrowserSurface() throws Exception {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        BrowserPrototype.navigationAction(0, "context:620,340");
+        instrumentation.waitForIdleSync();
+        instrumentation.runOnMainSync(() -> {
+            try {
+                android.widget.FrameLayout overlay = (android.widget.FrameLayout) field("editOverlay");
+                assertNotNull(overlay);
+                android.widget.LinearLayout menu = (android.widget.LinearLayout) overlay.getChildAt(0);
+                assertEquals(4, menu.getChildCount());
+                assertTrue(menu.getLeft() + menu.getWidth() <= 640);
+                assertTrue(menu.getTop() + menu.getHeight() <= 360);
+                assertFalse(menu.getChildAt(3).isFocusable());
+                menu.getChildAt(3).performClick();
+                assertNull(field("editOverlay"));
+            } catch (Exception failure) { throw new AssertionError(failure); }
+        });
+        org.json.JSONObject snapshot = new org.json.JSONObject(BrowserPrototype.tabs(0));
+        assertEquals("paste", snapshot.getJSONObject("navigation").getString("editAction"));
+        assertTrue(snapshot.getJSONObject("navigation").getInt("editSequence") > 0);
+        BrowserPrototype.navigationAction(0, "context:10,10");
+        instrumentation.waitForIdleSync();
+        BrowserPrototype.focus(-1);
+        instrumentation.waitForIdleSync();
+        assertNull(field("editOverlay"));
+    }
+
     @Test public void fractionalWheelScrollReachesWebPage() throws Exception {
         android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
         instrumentation.runOnMainSync(() -> {
@@ -412,5 +439,57 @@ public class BrowserWebViewIntegrationTest {
             assertNotNull(field("web"));
             assertEquals(1,((BrowserPageTabs)field("pageTabs")).pages.size());
         } finally { BrowserPrototype.close(1);instrumentation.waitForIdleSync();second.release(); }
+    }
+
+    @Test public void explicitClipboardSharesTextWithWebViewAndProtectsNewerCopy() throws Exception {
+        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
+        org.junit.Assume.assumeTrue("Requires the real app foreground; never change a clipboard we cannot read/restore",activity.hasWindowFocus());
+        android.content.ClipboardManager clipboard = activity.getSystemService(android.content.ClipboardManager.class);
+        android.content.ClipData original = clipboard.getPrimaryClip();
+        try {
+            instrumentation.runOnMainSync(() -> clipboard.setPrimaryClip(android.content.ClipData.newPlainText("test", "local test")));
+            org.json.JSONObject first = new org.json.JSONObject(BrowserClipboard.read(activity));
+            assertTrue(first.optBoolean("ok"));
+            assertTrue(first.optBoolean("local"));
+            assertTrue(BrowserClipboard.write(activity,"host test text",first.getLong("stamp")));
+            org.json.JSONObject remote = new org.json.JSONObject(BrowserClipboard.read(activity));
+            assertFalse(remote.getBoolean("local"));
+            instrumentation.runOnMainSync(() -> {
+                try {
+                    WebView view=(WebView)field("web");
+                    view.loadDataWithBaseURL("https://nightfall.invalid/clipboard-test", "<html><body><textarea id='clip'></textarea></body></html>","text/html","UTF-8",null);
+                    view.requestFocus();
+                } catch(Exception error) {throw new AssertionError(error);}
+            });
+            long deadline=android.os.SystemClock.uptimeMillis()+4000;
+            while(!"true".equals(javascript("!!document.getElementById('clip')")) && android.os.SystemClock.uptimeMillis()<deadline) Thread.sleep(30);
+            javascript("document.getElementById('clip').focus();true");
+            BrowserPrototype.key(0,android.view.KeyEvent.KEYCODE_V,true,android.view.KeyEvent.META_CTRL_ON);
+            BrowserPrototype.key(0,android.view.KeyEvent.KEYCODE_V,false,android.view.KeyEvent.META_CTRL_ON);
+            instrumentation.waitForIdleSync();
+            deadline=android.os.SystemClock.uptimeMillis()+3000;
+            while(!"\"host test text\"".equals(javascript("document.getElementById('clip').value")) && android.os.SystemClock.uptimeMillis()<deadline) Thread.sleep(30);
+            assertEquals("\"host test text\"",javascript("document.getElementById('clip').value"));
+            Thread.sleep(20);
+            javascript("var t=document.getElementById('clip');t.value='browser test text';t.focus();t.select();true");
+            BrowserPrototype.key(0,android.view.KeyEvent.KEYCODE_C,true,android.view.KeyEvent.META_CTRL_ON);
+            BrowserPrototype.key(0,android.view.KeyEvent.KEYCODE_C,false,android.view.KeyEvent.META_CTRL_ON);
+            instrumentation.waitForIdleSync();
+            deadline=android.os.SystemClock.uptimeMillis()+3000;
+            org.json.JSONObject local;
+            do {local=new org.json.JSONObject(BrowserClipboard.read(activity));if("browser test text".equals(local.optString("text")))break;Thread.sleep(30);} while(android.os.SystemClock.uptimeMillis()<deadline);
+            assertEquals("browser test text",local.optString("text"));
+            assertTrue(local.getBoolean("local"));
+            assertFalse(BrowserClipboard.write(activity,"late host test",remote.getLong("stamp")));
+            assertEquals("browser test text",new org.json.JSONObject(BrowserClipboard.read(activity)).getString("text"));
+        } finally {
+            instrumentation.runOnMainSync(() -> { if(original==null)clipboard.clearPrimaryClip();else clipboard.setPrimaryClip(original); });
+        }
+    }
+
+    @Test public void clipboardRejectsUnfocusedActivityWithoutAccessingSystemData() throws Exception {
+        org.junit.Assume.assumeFalse(activity.hasWindowFocus());
+        assertFalse(new org.json.JSONObject(BrowserClipboard.read(activity)).optBoolean("ok"));
+        assertFalse(BrowserClipboard.write(activity,"must not be written",0));
     }
 }

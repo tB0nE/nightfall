@@ -187,6 +187,10 @@ public final class BrowserPrototype {
     private WebView web;
     private LinearLayout root;
     private FrameLayout content;
+    private FrameLayout editOverlay;
+    private int editSequence;
+    private String editAction = "";
+    private int editPage;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private View navigationBar;
@@ -379,6 +383,7 @@ public final class BrowserPrototype {
                     .put("address", address == null ? "" : address.getText().toString())
                     .put("back", web != null && web.canGoBack())
                     .put("forward", web != null && web.canGoForward())
+                    .put("editSequence", editSequence).put("editAction", editAction).put("editPage", editPage)
                     .put("editing", editingAddress)
                     .put("loading", loading);
             pageSnapshot = new org.json.JSONObject().put("selected", pageTabs.selected)
@@ -591,6 +596,23 @@ public final class BrowserPrototype {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || web == null || state != 2 || paused || dataClearing) return;
+            if (action.startsWith("context:")) {
+                String[] coordinates = action.substring(8).split(",");
+                if (coordinates.length == 2) {
+                    try { showEditMenu(Float.parseFloat(coordinates[0]), Float.parseFloat(coordinates[1])); }
+                    catch (NumberFormatException ignored) { }
+                }
+                return;
+            }
+            if (action.startsWith("edit:")) {
+                int code = "edit:copy".equals(action) ? 31 : "edit:cut".equals(action) ? 52
+                        : "edit:paste".equals(action) ? 50 : "edit:select_all".equals(action) ? 29 : -1;
+                if (code >= 0) {
+                    key(code, true, android.view.KeyEvent.META_CTRL_ON);
+                    key(code, false, android.view.KeyEvent.META_CTRL_ON);
+                }
+                return;
+            }
             if ("address".equals(action)) {
                 hidePrivacyPanel(); hideBlockingPanel(); hideBookmarks(false);
                 editingAddress = true;
@@ -1437,12 +1459,46 @@ public final class BrowserPrototype {
         });
     }
 
+    private void hideEditMenu() {
+        if (editOverlay != null && content != null) content.removeView(editOverlay);
+        editOverlay = null;
+    }
+
+    // Draw inside the existing browser surface; never allocate an XR layer.
+    private void showEditMenu(float x, float y) {
+        hideEditMenu();
+        if (content == null) return;
+        editOverlay = new FrameLayout(content.getContext());
+        editOverlay.setOnClickListener(v -> hideEditMenu());
+        LinearLayout menu = new LinearLayout(content.getContext());
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setBackgroundColor(Color.rgb(30, 34, 44));
+        String[] labels = {"Select All", "Copy", "Cut", "Paste"};
+        String[] actions = {"select_all", "copy", "cut", "paste"};
+        for (int i = 0; i < labels.length; ++i) {
+            final String operation = actions[i];
+            Button button = new Button(content.getContext());
+            button.setText(labels[i]); button.setTextColor(Color.WHITE);
+            button.setFocusable(false); button.setFocusableInTouchMode(false);
+            button.setOnClickListener(v -> {
+                hideEditMenu(); editAction = operation; editPage = pageTabs.selected;
+                ++editSequence; publishPages();
+            });
+            menu.addView(button, new LinearLayout.LayoutParams(240, 72));
+        }
+        FrameLayout.LayoutParams position = new FrameLayout.LayoutParams(240, 288);
+        position.leftMargin = Math.max(0, Math.min((int)x, renderWidth - 240));
+        position.topMargin = Math.max(0, Math.min((int)y, renderHeight - 288));
+        editOverlay.addView(menu, position);
+        content.addView(editOverlay, new FrameLayout.LayoutParams(-1, -1));
+    }
+
     public void pointer(float x, float y, int action) {
         final int token = generation.get();
         UI.post(() -> {
             if (token != generation.get() || root == null || state != 2 || dataClearing) return;
             if (action == MotionEvent.ACTION_DOWN) focusOnUi(browserId);
-            if (action == MotionEvent.ACTION_DOWN && editingAddress) {
+            if (action == MotionEvent.ACTION_DOWN && editOverlay == null && editingAddress) {
                 editingAddress = false;
                 web.requestFocus();
                 updateNavigation();
@@ -1556,6 +1612,8 @@ public final class BrowserPrototype {
         return true;
     }
     private void releaseFocusInput() {
+        hideEditMenu();
+        editAction = "";
         releasePhysicalGamepad();
         questPad = null;
         if (pointerPressed && root != null) {

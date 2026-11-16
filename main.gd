@@ -25,6 +25,7 @@ var telemetry: PerformanceTelemetry = PerformanceTelemetry.new()
 @onready var config_mgr = ClassDB.instantiate("NightfallConfigManager") if ClassDB.class_exists("NightfallConfigManager") else null
 @onready var comp_mgr = ClassDB.instantiate("NightfallComputerManager") if ClassDB.class_exists("NightfallComputerManager") else null
 var mdns
+var clipboard_sharing = preload("res://src/clipboard_sharing.gd").new(self)
 var stream_backend: StreamBackend
 
 func _get_mdns():
@@ -3021,6 +3022,8 @@ func _process_idle_timeout():
 		# the welcome/composition state.
 
 func _notification(what):
+	if DevBridge.wanted() and what in [NOTIFICATION_APPLICATION_PAUSED, NOTIFICATION_APPLICATION_RESUMED, NOTIFICATION_APPLICATION_FOCUS_IN, NOTIFICATION_APPLICATION_FOCUS_OUT]:
+		_log("[PAD-SYSTEM] t=%d application_notification=%d" % [Time.get_ticks_msec(),what])
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		if welcome_screen: welcome_screen.cancel_xr_control()
 		if browser_prototype:
@@ -3028,6 +3031,7 @@ func _notification(what):
 		state_manager.save_state()
 		video_presentation.shutdown()
 	elif what == NOTIFICATION_APPLICATION_PAUSED:
+		if clipboard_sharing: clipboard_sharing.cancel()
 		# Keep Meteor's owned game/transport alive during headset handoffs.
 		var preparing_xr := welcome_screen != null and welcome_screen.retains_xr_lease_during_timing_transition()
 		if not pcvr_test.meteor_mode and not pcvr_test.standby_active and not preparing_xr:

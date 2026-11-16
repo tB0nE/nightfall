@@ -11,6 +11,7 @@ var main: Node3D
 var browser_supported: bool
 var _browsers: Dictionary = {}
 var _menus: Dictionary = {}
+var _focus_initialized := false
 var _focused_browser: RefCounted
 var _browser_uploaders: Dictionary = {}
 var switching_primary := false
@@ -794,9 +795,11 @@ func menu_for_screen(screen: VRScreen) -> ScreenTabStrip:
 	return _menus[screen.get_instance_id()]
 
 func focused_browser() -> RefCounted:
-	return _focused_browser if _focused_browser != null and _focused_browser.active else main.browser_prototype
+	if _focus_initialized: return _focused_browser if _focused_browser != null and _focused_browser.active else null
+	return main.browser_prototype
 
 func focus_browser(provider: RefCounted) -> void:
+	_focus_initialized = true
 	if provider == _focused_browser: return
 	if _focused_browser != null:
 		_focused_browser.cancel_pointer()

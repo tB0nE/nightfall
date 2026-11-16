@@ -65,6 +65,8 @@ public class GodotApp extends GodotActivity {
 	public static int pollBrowserFor(int id) { return BrowserPrototype.poll(id); }
 	public static boolean consumeBrowserFrameFor(int id) { return BrowserPrototype.consumeFrame(id); }
 	public static void closeBrowserFor(int id) { BrowserPrototype.close(id); }
+	public static String browserClipboardRead() { return BrowserClipboard.read(browserActivity.get()); }
+	public static boolean browserClipboardWrite(String text, long stamp) { return BrowserClipboard.write(browserActivity.get(), text, stamp); }
 	public static int browserTransferTab(int from, int to, int page, boolean replacePlaceholder) { return BrowserPrototype.transferTab(from, to, page, replacePlaceholder); }
 	public static void browserCancelTransfer(int ticket) { BrowserPrototype.cancelTransfer(ticket); }
 	public static String browserTransferResult(int ticket) { return BrowserPrototype.transferResult(ticket); }

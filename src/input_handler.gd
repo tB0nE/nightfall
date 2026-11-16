@@ -4,6 +4,8 @@ extends RefCounted
 var main: Node3D
 var _last_desktop_input_msec: int = -10000
 var _forwarded_keys: Dictionary = {}
+var _diagnostic_pad_system: Dictionary = {}
+var _clipboard_keys: Dictionary = {}
 var _forwarded_mouse_buttons: Dictionary = {}
 
 func hand_desktop_suspended() -> bool:
@@ -67,6 +69,24 @@ func handle_input(event: InputEvent):
 					var action = 7 if event.pressed else 8
 					send_stream_mouse_button(action, button_idx)
 				return
+
+	if event is InputEventKey:
+		if _clipboard_keys.has(event.keycode):
+			if not event.pressed: _clipboard_keys.erase(event.keycode)
+			return
+		if main.ui_visible and main.ui_viewport.gui_get_focus_owner():
+			main.ui_viewport.push_input(event)
+			return
+		var browser = main.screen_sources.focused_browser()
+		var operation: String = {KEY_C: "copy", KEY_X: "cut", KEY_V: "paste"}.get(event.keycode, "")
+		if event.pressed and not event.echo and event.ctrl_pressed and not event.alt_pressed and not event.meta_pressed and operation != "":
+			if (browser != null and browser.active) or main.is_streaming:
+				_clipboard_keys[event.keycode] = true
+				main.clipboard_sharing.perform(operation, _physical_edit.bind(browser, event.keycode))
+				return
+		if browser != null and browser.active:
+			browser.physical_key(event)
+			return
 
 	if main.mouse_captured_by_stream and main.is_streaming:
 		if event is InputEventKey and event.pressed \
@@ -165,6 +185,13 @@ func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		lx: int, ly: int, rx: int, ry: int, capabilities: int = ARRIVAL_CAPABILITIES) -> void:
 	if desktop_input_blocked(): return
 	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
+	if key == GamepadSlots.QUEST_PAD and DevBridge.wanted():
+		var system_buttons := buttons & (0x10 | 0x20)
+		if system_buttons != int(_diagnostic_pad_system.get(key, 0)):
+			_diagnostic_pad_system[key] = system_buttons
+			main._log("[PAD-SYSTEM] t=%d route=%s start=%s back=%s" % [Time.get_ticks_msec(),
+				"browser" if focused_browser != null and focused_browser.active else "host",
+				(system_buttons & 0x10) != 0, (system_buttons & 0x20) != 0])
 	if focused_browser != null and focused_browser.active:
 		# Physical pads use original Android events directly. Only XR's virtual
 		# pad needs the browser-specific state bridge; never announce it to a PC.
@@ -289,3 +316,13 @@ func _send_controller(device: int):
 
 func _float_to_short(val: float) -> int:
 	return int(clampf(val, -1.0, 1.0) * 32767.0)
+
+func _physical_edit(browser: RefCounted, code: int) -> void:
+	if browser != null and browser.active:
+		browser._edit_raw({KEY_C: "copy", KEY_X: "cut", KEY_V: "paste"}[code])
+	elif main.is_streaming:
+		var held := _forwarded_keys.has(KEY_CTRL)
+		if not held: send_stream_key(KEY_CTRL, 3)
+		send_stream_key(code, 3)
+		send_stream_key(code, 4)
+		if not held: send_stream_key(KEY_CTRL, 4)
