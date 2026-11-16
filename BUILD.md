@@ -301,8 +301,19 @@ python3 tools/convert_zipdepth.py --force
 
 # Linux Vulkan model library; install pnnx or pass --pnnx /path/to/pnnx.
 # Requires retained ZipDepth/Depth-Anything ONNX exports and MiDaS source/weights.
+python3 tools/convert_depth_anything_v2.py --size 252 --onnx-only
 python3 tools/convert_linux_depth_ncnn.py --pnnx /path/to/pnnx
 ```
+
+Linux conversion notes (tested with CPU PyTorch 2.15, Python 3.14): it needs
+`torch torchvision timm onnx onnxscript onnxsim opencv-python-headless pnnx`
+(`onnxscript` for current `torch.onnx.export`, OpenCV because Depth-Anything-V2
+imports it). The MiDaS hub entry loads its EfficientNet backbone from
+`rwightman/gen-efficientnet-pytorch`; add `rwightman_gen-efficientnet-pytorch` to
+`~/.cache/torch/hub/trusted_list` for an unattended run. EdgePad-512/-256 on Linux
+use the ncnn exports Nightfall Meteor ships (`zipdepth_wide_512x288`,
+`zipdepth_edgepad_256`), copied into `depth_models/` as
+`edgepad-512x288-vulkan.ncnn.*` and `edgepad-256-vulkan.ncnn.*`.
 
 This downloads the Depth Anything V2 Small weights from HuggingFace, exports to
 ONNX (196/252px input for the ViT-S patch-14 constraint), and converts to int8
