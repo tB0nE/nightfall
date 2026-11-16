@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "tensorflow/lite/interpreter.h"
@@ -226,6 +227,12 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
     bool ok_da_252 = load_model(model_da_252_, model_dir + "/depth-anything-v2-small-252.tflite", "Depth Anything V2-252", 252, 1, InputLayout::FloatNhWC);
 
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    // Run depth inference on a low-priority queue so the GPU schedules (and,
+    // where the kernel supports it, preempts) it behind the frames being drawn.
+    // On a standalone headset such as the Steam Frame, an 11-19 ms inference
+    // otherwise makes the stream's video frames miss their slot. Set
+    // NCNN_VULKAN_QUEUE_PRIORITY=medium to get the driver default back.
+    setenv("NCNN_VULKAN_QUEUE_PRIORITY", "low", 0);
     ncnn::create_gpu_instance();
     vulkan_available_ = ncnn::get_gpu_count() > 0;
     if (vulkan_available_) {

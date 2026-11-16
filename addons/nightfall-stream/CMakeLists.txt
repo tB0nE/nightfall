@@ -125,6 +125,12 @@ if(TARGET_PLATFORM STREQUAL "linux")
         # commit stops checking out once ncnn's master moves past it.
         GIT_SHALLOW FALSE
         GIT_SUBMODULES glslang
+        # Lets the depth model's compute queue run at a lower system priority
+        # than the app's rendering (NCNN_VULKAN_QUEUE_PRIORITY, see
+        # midas_depth_engine.cpp), so inference doesn't push frames late on
+        # GPUs shared with a VR compositor.
+        PATCH_COMMAND ${CMAKE_COMMAND} -DPATCH=${CMAKE_CURRENT_SOURCE_DIR}/patches/ncnn-queue-global-priority.patch
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apply_patch.cmake
     )
     FetchContent_MakeAvailable(ncnn)
 endif()
