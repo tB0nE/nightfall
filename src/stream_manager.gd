@@ -845,7 +845,7 @@ func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 		for s in main.screens:
 			if main.screen_sources.is_browser_screen(s): continue
 			s.comp_base_size = stream_size
-			var comp_size = stream_size
+			var comp_size = s.comp_render_size()
 			if main.settings.bezel_enabled and main.comp.in_use:
 				comp_size += Vector2i(16, 16)
 			if s.comp_viewport and s.comp_viewport.size != comp_size:

@@ -479,6 +479,23 @@ func set_ai_3d_type(value: int):
 	_schedule_ai_3d_commit()
 
 # AI 3D tab's "Hz Cap" control (2026-08-28).
+## Screen Res cycles Full -> Auto 1 ... Auto 6 -> Full (Auto N = strength N).
+func cycle_eye_resolution():
+	var steps: int = EyeResolution.STRENGTH_SHARPNESS.size()
+	if not main.settings.eye_resolution_auto:
+		main.settings.eye_resolution_auto = true
+		main.settings.eye_resolution_strength = 1
+	elif main.settings.eye_resolution_strength >= steps:
+		main.settings.eye_resolution_auto = false
+	else:
+		main.settings.eye_resolution_strength += 1
+	_save_setting(main._ui_eye_res_btn, get_eye_resolution_label())
+
+func get_eye_resolution_label() -> String:
+	if not main.settings.eye_resolution_auto:
+		return "Full"
+	return "%s %d" % [Localization.t("Auto"), main.settings.eye_resolution_strength]
+
 func cycle_ai_3d_hz_cap():
 	var idx = AI3D_HZ_CAP_VALUES.find(main.settings.host.ai_3d_hz_cap)
 	set_ai_3d_hz_cap(AI3D_HZ_CAP_VALUES[(maxi(idx, 0) + 1) % AI3D_HZ_CAP_VALUES.size()])

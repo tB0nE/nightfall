@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Uygulama seç",
 	"Previous": "Önceki",
-	"Next": "Sonraki"
+	"Next": "Sonraki",
+	"Screen Res": "Ekran çöz.",
+	"Match screen sharpness to the headset to save GPU time.": "Ekran netliğini başlığa uydurarak GPU zamanından tasarruf eder."
 }

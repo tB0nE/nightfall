@@ -64,6 +64,13 @@ var gamma_pct: int = DEFAULT_GAMMA_PCT
 var ambient_gain: float = 1.0
 var ambient_mode: int = DEFAULT_AMBIENT_MODE
 var ambient_color: int = DEFAULT_AMBIENT_COLOR
+## Screen Res (Settings > Display, Linux only): Auto renders each screen at the
+## sharpness the headset can show (EyeResolution); strength 1-6 sets how far it
+## may go below the stream's resolution. Auto 2 looked identical to Full on a
+## Steam Frame.
+const DEFAULT_EYE_RESOLUTION_STRENGTH := 2
+var eye_resolution_auto: bool = true
+var eye_resolution_strength: int = DEFAULT_EYE_RESOLUTION_STRENGTH
 var browser_resolution: int = DEFAULT_BROWSER_RESOLUTION
 ## Hidden draws no VR pointer on stream screens, for Mouse Follows Pointer,
 ## where the PC's own cursor already shows where you point.

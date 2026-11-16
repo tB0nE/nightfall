@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "选择应用",
 	"Previous": "上一页",
-	"Next": "下一页"
+	"Next": "下一页",
+	"Screen Res": "屏幕分辨率",
+	"Match screen sharpness to the headset to save GPU time.": "让屏幕清晰度匹配头显，以节省 GPU 时间。"
 }

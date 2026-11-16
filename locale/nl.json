@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "App kiezen",
 	"Previous": "Vorige",
-	"Next": "Volgende"
+	"Next": "Volgende",
+	"Screen Res": "Schermres.",
+	"Match screen sharpness to the headset to save GPU time.": "Stem de schermscherpte af op de headset om GPU-tijd te sparen."
 }

@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Elegir app",
 	"Previous": "Anterior",
-	"Next": "Siguiente"
+	"Next": "Siguiente",
+	"Screen Res": "Res. pantalla",
+	"Match screen sharpness to the headset to save GPU time.": "Ajusta la nitidez de la pantalla al visor para ahorrar GPU."
 }

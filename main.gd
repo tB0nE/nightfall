@@ -528,6 +528,7 @@ var _ui_3d_priority_btn: Button
 var _ui_3d_mode_btn: Button
 var _ui_3d_type_btn: Button
 var _ui_3d_hz_cap_btn: Button
+var _ui_eye_res_btn: Button
 var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
@@ -1561,6 +1562,8 @@ func _ready():
 	_init_stream_backend()
 	if DevBridge.wanted():
 		add_child(DevBridge.new(self))
+	if EyeResolution.wanted():
+		add_child(EyeResolution.new(self))
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():

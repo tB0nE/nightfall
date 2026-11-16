@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Kies app",
 	"Previous": "Vorige",
-	"Next": "Volgende"
+	"Next": "Volgende",
+	"Screen Res": "Skermres.",
+	"Match screen sharpness to the headset to save GPU time.": "Pas skermskerpte by die headset aan om GPU-tyd te spaar."
 }

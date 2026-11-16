@@ -26,6 +26,8 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "ambient_gain", settings.ambient_gain)
 	config.set_value("screen", "ambient_mode", settings.ambient_mode)
 	config.set_value("screen", "ambient_color", settings.ambient_color)
+	config.set_value("screen", "eye_resolution_auto", settings.eye_resolution_auto)
+	config.set_value("screen", "eye_resolution_strength", settings.eye_resolution_strength)
 	config.set_value("screen", "cursor_mode", settings.cursor_mode)
 	config.set_value("screen", "pointer_steady", settings.pointer_steady)
 	config.set_value("screen", "double_click_mode", settings.double_click_mode)
@@ -109,6 +111,9 @@ static func read_app(
 	settings.grip_scroll_enabled = grip_scroll if grip_scroll is bool else false
 	settings.ambient_mode = clampi(
 		config.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, 3)
+	settings.eye_resolution_auto = bool(config.get_value("screen", "eye_resolution_auto", true))
+	settings.eye_resolution_strength = clampi(int(config.get_value("screen", "eye_resolution_strength",
+		AppSettings.DEFAULT_EYE_RESOLUTION_STRENGTH)), 1, EyeResolution.STRENGTH_SHARPNESS.size())
 	settings.ambient_color = clampi(
 		config.get_value("screen", "ambient_color", AppSettings.DEFAULT_AMBIENT_COLOR), 0, 5)
 	settings.cursor_mode = config.get_value(

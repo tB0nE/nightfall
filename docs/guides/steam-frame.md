@@ -97,8 +97,10 @@ SteamVR compositor and runs on-device depth. What was measured on it (90 Hz,
   with the warp's Newton steps (2 vs 0: no measurable change) or the bezel fill.
   Godot already renders them straight into the layer swapchains on Vulkan, so a
   native Vulkan renderer like the Android GLES one would mostly save fixed
-  per-pass overhead (~1 map/s here). Fewer pixels (smaller/farther screens) or
-  frames (72 Hz) are the real levers: EdgePad-512 measured ~20 maps/s at 72 Hz
+  per-pass overhead (~1 map/s here). Fewer pixels or frames are the real
+  levers: Settings > Display > Screen Res (Auto renders each screen at the size
+  it covers in the headset; Auto 2 looked identical to Full, stronger steps
+  save more on small or distant screens but soften text), or 72 Hz: EdgePad-512 measured ~20 maps/s at 72 Hz
   with Forward+, before the Mobile renderer and projectionless.
 - **Model costs** on the Frame's GPU at normal priority: ZipDepth-256 ~11 ms,
   ZipDepth-384 ~16-19 ms per map. With the low priority they take longer in

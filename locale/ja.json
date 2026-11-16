@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "アプリを選択",
 	"Previous": "前へ",
-	"Next": "次へ"
+	"Next": "次へ",
+	"Screen Res": "画面解像度",
+	"Match screen sharpness to the headset to save GPU time.": "画面の鮮明さをヘッドセットに合わせ、GPUを節約します。"
 }

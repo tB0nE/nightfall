@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "앱 선택",
 	"Previous": "이전",
-	"Next": "다음"
+	"Next": "다음",
+	"Screen Res": "화면 해상도",
+	"Match screen sharpness to the headset to save GPU time.": "화면 선명도를 헤드셋에 맞춰 GPU 시간을 절약합니다."
 }
