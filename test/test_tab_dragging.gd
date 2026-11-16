@@ -18,6 +18,10 @@ class Stub extends RefCounted:
 	func apply_stereo(): calls += 1
 	func invalidate_yuv_cache(): pass
 	func save_state(): calls += 1
+class Comp extends Stub:
+	var in_use := true
+	var updates := 0
+	func update_cylinder_params(): updates += 1
 class Owner extends Node3D:
 	var screens: Array[VRScreen] = []
 	var primary_screen: VRScreen
@@ -29,11 +33,13 @@ class Owner extends Node3D:
 	var xr_interaction := Stub.new()
 	var settings_controller := Stub.new()
 	var state_manager := Stub.new()
-	var comp := Stub.new()
+	var comp := Comp.new()
 	var session_lifecycle := SessionLifecycle.new()
 	var is_streaming := true
 	var layout := ScreenLayout.single(Vector2i(2560,1440))
 	var settings := AppSettings.new()
+	func grid_cell_transform(gx, gy, _anchor_x, _anchor_y) -> Transform3D:
+		return Transform3D(Basis(), Vector3(gx, gy, -2))
 	func add_screen(id):
 		var screen := VRScreen.new()
 		screen.monitor_id = id
@@ -103,6 +109,13 @@ func run():
 	assert(detached.content_tabs.selected() == first and detached.grid_mode)
 	assert(await sources.move_content_tab(detached,first.id,null,Vector3(2,0,-2)))
 	assert(owner.screens.size() == 2 and sources.positions == 2, "Dragging a lone tab repositions its existing screen")
+	# A dropped screen's controls layer follows it: the cached layer geometry must be
+	# refreshed as it moves, not on its next grab.
+	var placer := ScreenSources.new(owner,"Android")
+	var updates := owner.comp.updates
+	placer._place_dropped_screen(detached,Vector2i(1,0))
+	assert(detached.transform.origin == Vector3(1,0,-2) and detached.grid_pos == Vector2i(1,0))
+	assert(owner.comp.updates == updates + 1, "Placing a dropped screen must refresh its layer geometry")
 	while owner.screens.size() < 4: owner.add_screen(&"unused")
 	assert(not sources.can_move_content_tab(target,target.content_tabs.selected_id), "A fifth visible screen is forbidden")
 	for screen in owner.screens: screen.free()
