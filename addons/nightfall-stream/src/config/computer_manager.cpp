@@ -314,6 +314,17 @@ void NightfallComputerManager::_on_pair_request_completed(int code, PackedByteAr
             String plaincert = _extract_xml_value(xml, "plaincert");
             if (plaincert.is_empty()) {
                 String status_msg = _extract_xml_value(xml, "status_message");
+                if (status_msg.is_empty()) {
+                    // Sunshine/Apollo put the reason in an attribute:
+                    // <root status_code="400" status_message="...">
+                    int a = xml.find("status_message=\"");
+                    if (a != -1) {
+                        a += 16;
+                        int b = xml.find("\"", a);
+                        if (b > a) status_msg = xml.substr(a, b - a).xml_unescape();
+                    }
+                }
+                NF_LOG("NightfallPair", "getservercert without plaincert: %s", xml.left(300).utf8().get_data());
                 pair_state = PAIR_ERROR;
                 if (parent_node_) { parent_node_->call("_on_pair_completed", false, status_msg.is_empty() ? "No server certificate received." : status_msg); }
                 return;
@@ -496,6 +507,7 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
         }
 
         String xml = body.get_string_from_utf8();
+        Array fresh_ids;
         int pos = 0;
         while (true) {
             int start = xml.find("<App>", pos);
@@ -508,6 +520,7 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
             app_data["name"] = _extract_xml_value(app_xml, "AppTitle");
             int app_id = _extract_xml_value(app_xml, "ID").to_int();
             app_data["id"] = app_id;
+            fresh_ids.append(app_id);
 
             if (!existing_ids.has(app_id)) {
                 config_manager->add_app(host_id, app_data);
@@ -515,6 +528,21 @@ void NightfallComputerManager::_on_app_list_completed(int code, PackedByteArray 
             }
 
             pos = end + 6;
+        }
+
+        // Drop apps the host no longer lists. Renaming or re-saving an app in
+        // Sunshine's web UI gives it a new ID; the old entry used to stay cached
+        // and launching it failed with "Failed to start the specified
+        // application" (404). An empty/unparsable reply keeps the cache.
+        if (!fresh_ids.is_empty()) {
+            for (int i = existing_apps.size() - 1; i >= 0; i--) {
+                Dictionary app = existing_apps[i];
+                if (!fresh_ids.has(app.get("id", 0))) {
+                    NF_LOG("NightfallApps", "Removing stale app '%s' (id=%d)",
+                            String(app.get("name", "")).utf8().get_data(), (int)app.get("id", 0));
+                    config_manager->remove_app(host_id, (int)app.get("index", i + 1));
+                }
+            }
         }
     }
     if (callback.is_valid())
@@ -699,6 +727,11 @@ void NightfallComputerManager::_perform_launch_request(Dictionary ctx, String co
     if (options.has("virtual_displays")) {
         int64_t virtual_displays = options["virtual_displays"];
         if (virtual_displays > 0) url += "&virtual_displays=" + String::num_int64(virtual_displays);
+    }
+    if (options.has("virtual_modes")) url += "&virtual_modes=" + String(options["virtual_modes"]).uri_encode();
+    if (options.has("nf_physical_modes")) url += "&nf_physical_modes=" + String(options["nf_physical_modes"]).uri_encode();
+    for (const char *key : {"nf_budget", "nf_max_axis", "nf_max_pixels", "nf_physical_w", "nf_physical_h", "nf_physical_scale", "nf_require_fit"}) {
+        if (options.has(key)) url += "&" + String(key) + "=" + String::num_int64(options[key]);
     }
     if (options.has("sops")) url += "&sops=" + String::num_int64(options["sops"]);
     if (options.has("surround_audio_info")) url += "&surroundAudioInfo=" + String::num_int64(options["surround_audio_info"]);
@@ -975,6 +1008,36 @@ void NightfallComputerManager::_on_prelaunch_manifest_completed(int code, Packed
         }
     }
     callback.call(Dictionary());
+}
+
+void NightfallComputerManager::request_clipboard(int host_id, bool write, String text, Callable callback) {
+    String ip;
+    int port = 47984;
+    if (config_manager.is_valid()) {
+        Array hosts = config_manager->get_hosts();
+        for (int i = 0; i < hosts.size(); i++) {
+            Dictionary host = hosts[i];
+            if ((int64_t)host["id"] == host_id) { ip = _host_address(host); port = host.get("https_port", 47984); break; }
+        }
+    }
+    if (ip.is_empty() || !http_requester || text.to_utf8_buffer().size() > 65536) {
+        Dictionary result; result["ok"] = false; result["status"] = 0;
+        if (callback.is_valid()) callback.call(result);
+        return;
+    }
+    Dictionary headers; headers["Content-Type"] = "text/plain; charset=utf-8";
+    String url = "https://" + _bracket_host(ip) + ":" + String::num_int64(port) + "/actions/clipboard?uniqueid=" + unique_id + "&uuid=" + _get_uuid() + "&type=text";
+    http_requester->request(url, write ? "POST" : "GET", write ? text.to_utf8_buffer() : PackedByteArray(), headers, _get_ssl_options(),
+        callable_mp(this, &NightfallComputerManager::_on_clipboard_completed).bind(Variant(callback)), 3000);
+}
+
+void NightfallComputerManager::_on_clipboard_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback) {
+    if (!callback.is_valid()) return;
+    Dictionary result;
+    result["ok"] = code == 200 && body.size() <= 65536;
+    result["status"] = code;
+    if (code == 200 && body.size() <= 65536) result["text"] = body.get_string_from_utf8();
+    callback.call(result);
 }
 
 void NightfallComputerManager::set_cursor_visible(int host_id, bool visible, Callable callback) {
@@ -1275,5 +1338,6 @@ void NightfallComputerManager::_bind_methods() {
     ClassDB::bind_method(D_METHOD("stop_stream_at", "ip", "port", "callback"), &NightfallComputerManager::stop_stream_at);
     ClassDB::bind_method(D_METHOD("cancel_host_stream", "host_id", "ip", "port"), &NightfallComputerManager::cancel_host_stream, DEFVAL(47984));
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "host_id", "visible", "callback"), &NightfallComputerManager::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("request_clipboard", "host_id", "write", "text", "callback"), &NightfallComputerManager::request_clipboard);
     ClassDB::bind_method(D_METHOD("fetch_display_manifest", "host_id", "callback", "query"), &NightfallComputerManager::fetch_display_manifest, DEFVAL(String()));
 }

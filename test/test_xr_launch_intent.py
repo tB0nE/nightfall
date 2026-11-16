@@ -14,6 +14,11 @@ from xr_local_application import wait_for_local_launch
 ROOT=Path(__file__).resolve().parents[1]
 
 class LaunchIntentTests(unittest.TestCase):
+    def isolated_environment(self, root):
+        # A fixture launcher must not redirect into the developer's installed runtime.
+        return dict(os.environ, XDG_CONFIG_HOME=str(root / "config"),
+                    XDG_DATA_HOME=str(root / "data"))
+
     def scaffold(self,root):
         cache=root/".build-cache/meteor-xr"
         cache.mkdir(parents=True)
@@ -52,7 +57,7 @@ class LaunchIntentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, ThreadPoolExecutor() as pool:
             root=Path(temporary); cache=self.scaffold(root)
             (cache/"application.json").write_text(json.dumps({"launch":"steam","steam_app_id":configured_app}))
-            wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id",app_id,"--wait","10","--",sys.executable,"-c","raise SystemExit(7)"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            wrapper=subprocess.Popen([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id",app_id,"--wait","10","--",sys.executable,"-c","raise SystemExit(7)"],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=self.isolated_environment(root))
             try:
                 path=cache/"auto-launch/intent.json"
                 deadline=time.monotonic()+3
@@ -80,7 +85,7 @@ class LaunchIntentTests(unittest.TestCase):
         self.assertFalse(desktop_mode(["game","--vr"]))
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); cache=self.scaffold(root)
-            result=subprocess.run([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--",sys.executable,"-c","print('desktop-mode')","--no-vr"],capture_output=True,text=True,timeout=3)
+            result=subprocess.run([sys.executable,str(root/"tools/meteor_xr.py"),"steam-run","--app-id","438100","--",sys.executable,"-c","print('desktop-mode')","--no-vr"],capture_output=True,text=True,timeout=3,env=self.isolated_environment(root))
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn("desktop-mode",result.stdout)
             self.assertFalse((cache/"auto-launch/intent.json").exists())

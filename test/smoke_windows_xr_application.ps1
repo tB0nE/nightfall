@@ -7,7 +7,7 @@ param([Parameter(Mandatory)][string]$Application,[string[]]$ApplicationArguments
     [ValidateRange(1,60)][int]$ObserveSeconds=10,
     [ValidateRange(256,4096)][int]$EyeWidth=1024,
     [ValidateRange(256,4096)][int]$EyeHeight=1024,
-    [ValidateRange(8,160)][int]$BitrateMbps=32,
+    [ValidateRange(8,500)][int]$BitrateMbps=32,
     [ValidateSet('h264','h265')][string]$Codec='h264')
 # Launch only the explicit application in Meteor's owned process tree. The
 # integration test observes 10s after three validated frames, then cancels;

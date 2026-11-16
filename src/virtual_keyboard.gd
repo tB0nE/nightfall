@@ -467,6 +467,9 @@ func _on_key_press(key_code: int):
 	if SHORTCUT_CHORDS.has(key_code):
 		_send_shortcut(key_code)
 		return
+	if _ctrl_on and key_code in [KEY_C,KEY_V,KEY_X]:
+		_send_shortcut({KEY_C:SHORTCUT_COPY,KEY_V:SHORTCUT_PASTE,KEY_X:SHORTCUT_CUT}[key_code])
+		return
 	if key_code == KEY_SHIFT:
 		_shift_on = not _shift_on
 		_apply_modifier_visuals()
@@ -498,6 +501,13 @@ func _on_key_press(key_code: int):
 	_held_keys[key_code] = true
 
 func _send_shortcut(shortcut_code: int) -> void:
+	var sharing = main.get("clipboard_sharing")
+	var operation: String = {SHORTCUT_COPY:"copy",SHORTCUT_CUT:"cut",SHORTCUT_PASTE:"paste"}.get(shortcut_code,"")
+	if sharing != null and not operation.is_empty():
+		sharing.perform(operation,_send_shortcut_raw.bind(shortcut_code))
+	else: _send_shortcut_raw(shortcut_code)
+
+func _send_shortcut_raw(shortcut_code: int) -> void:
 	var chord: Array = SHORTCUT_CHORDS.get(shortcut_code, [])
 	if chord.is_empty():
 		return

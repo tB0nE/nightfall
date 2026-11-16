@@ -36,6 +36,35 @@ var _was_both_sticks: bool = false
 var _close_to_head: bool = false
 var _close_dist: float = 0.25
 var _poll_timer: float = 0.0
+const MODE_ENABLED_HINT_SECONDS := -1.0 # Until a fresh button press.
+var _guide_waiting := false
+var _guide_armed := false
+var _guide_consuming := false
+var _last_delta: float = 0.0
+# Motion (gyro/accelerometer) for the Steam Frame layout.
+var _motion_prev_velocity := Vector3.ZERO
+var _motion_accel := Vector3.ZERO
+var _motion_logged := false
+
+# Steam Frame controllers are a split gamepad (left: stick, D-pad, View,
+# bumper, trigger; right: stick, A/B/X/Y, Menu, bumper, trigger), so they map
+# 1:1 onto a pad instead of the Quest PAD-HAND/PAD-ABXY layouts.
+const FRAME_PROFILE := "frame_controller"
+const PAD_A := 0x1000
+const PAD_B := 0x2000
+const PAD_X := 0x4000
+const PAD_Y := 0x8000
+const PAD_UP := 0x0001
+const PAD_DOWN := 0x0002
+const PAD_LEFT := 0x0004
+const PAD_RIGHT := 0x0008
+const PAD_START := 0x0010
+const PAD_BACK := 0x0020
+const PAD_LS := 0x0040
+const PAD_RS := 0x0080
+const PAD_LB := 0x0100
+const PAD_RB := 0x0200
+const GRAVITY := 9.80665
 
 var _KBM_DEFAULT = {
 	"left_up": KEY_W,
@@ -54,6 +83,34 @@ var _KBM_DEFAULT = {
 
 var _kbm_profile: Dictionary = {}
 var _kb_held: Dictionary = {}
+
+# DEV-only input/focus evidence. Signal callbacks can observe a system-button
+# edge even when Horizon takes focus before the next gamepad polling frame.
+func _ready() -> void:
+	if not DevBridge.wanted(): return
+	for side in ["left", "right"]:
+		var hand = main.get(side + "_hand")
+		if hand == null: continue
+		hand.button_pressed.connect(_diagnostic_button.bind(side, true))
+		hand.button_released.connect(_diagnostic_button.bind(side, false))
+	var xr = XRServer.find_interface("OpenXR")
+	if xr != null:
+		for signal_name in ["session_focussed", "session_visible", "session_synchronized", "session_stopping"]:
+			xr.connect(signal_name, _diagnostic_focus.bind(signal_name))
+	_log("[PAD-SYSTEM] diagnostics enabled; right system/menu -> Start, left menu -> Back")
+
+func _diagnostic_button(action: String, side: String, pressed: bool) -> void:
+	if action not in ["menu_button", "select_button", "primary_click", "ax_button"]: return
+	_log("[PAD-SYSTEM] t=%d action side=%s name=%s pressed=%s mapping_active=%s type=%d" % [
+		Time.get_ticks_msec(), side, action, pressed, active, ctrl_type])
+
+func _diagnostic_focus(event: String) -> void:
+	var right = main.get("right_hand")
+	_log("[PAD-SYSTEM] t=%d XR=%s active=%s right_menu=%s right_select=%s previous_start=%s" % [
+		Time.get_ticks_msec(), event, active,
+		right != null and right.is_button_pressed("menu_button"),
+		right != null and right.is_button_pressed("select_button"),
+		(_prev_button_flags & PAD_START) != 0])
 
 func _init(owner: Node3D):
 	main = owner
@@ -79,6 +136,7 @@ func read_settings(config: ConfigFile) -> void:
 	primary_hand = clampi(config.get_value("controller", "primary_hand", PrimaryHand.RIGHT), 0, 2)
 
 func _process(_delta):
+	if active and _process_gamepad_guide(): return
 	var handover = main.get("pcvr_handover")
 	if handover != null and handover.blocks_workspace():
 		release_for_focus_loss()
@@ -98,6 +156,7 @@ func _process(_delta):
 		return
 
 	_poll_timer += _delta
+	_last_delta = _delta
 
 	if is_gamepad_mode():
 		_send_gamepad_mode(ctrl_type == CtrlType.PAD_ABXY)
@@ -116,10 +175,16 @@ func check_toggle():
 		return
 	var l_click = false
 	var r_click = false
-	if main.left_hand:
-		l_click = main.left_hand.is_button_pressed("primary_click")
-	if main.right_hand:
-		r_click = main.right_hand.is_button_pressed("primary_click")
+	if frame_controllers():
+		# Frame controllers: both grips (unmapped in the Frame layout), so both
+		# stick clicks stay free for L3+R3 in games.
+		l_click = main.left_hand != null and main.left_hand.get_float("grip") > 0.8
+		r_click = main.right_hand != null and main.right_hand.get_float("grip") > 0.8
+	else:
+		if main.left_hand:
+			l_click = main.left_hand.is_button_pressed("primary_click")
+		if main.right_hand:
+			r_click = main.right_hand.is_button_pressed("primary_click")
 	var both = l_click and r_click
 	if both and not _was_both_sticks:
 		main.screen_shortcuts.invoke(ScreenShortcutBar.ACTION_PAD)
@@ -134,6 +199,29 @@ func check_toggle_ui():
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 
+func _guide_buttons_down() -> bool:
+	for hand in [main.left_hand, main.right_hand]:
+		if hand == null: continue
+		for action in ["ax_button", "by_button", "menu_button", "select_button", "primary_click", "secondary_click"]:
+			if hand.is_button_pressed(action): return true
+		if hand.get_float("trigger") > 0.5 or hand.get_float("grip") > 0.8: return true
+	return false
+
+func _process_gamepad_guide() -> bool:
+	return _advance_gamepad_guide(_guide_buttons_down()) if _guide_waiting or _guide_consuming else false
+
+func _advance_gamepad_guide(down: bool) -> bool:
+	if _guide_consuming:
+		_guide_consuming = down
+		return true
+	if not _guide_waiting: return false
+	if not down: _guide_armed = true
+	elif _guide_armed:
+		_guide_waiting = false
+		_guide_consuming = true
+		main.composition_toast.hide()
+	return true
+
 func _activate():
 	active = true
 	if is_gamepad_mode():
@@ -146,6 +234,11 @@ func _activate():
 		_prev_ry = -1
 		_poll_timer = 1.0
 	_log("[CTRL] Activated: " + type_labels[ctrl_type])
+	if is_gamepad_mode() and main.is_xr_active:
+		_guide_waiting = true
+		_guide_armed = false
+		_guide_consuming = false
+		main.composition_toast.show(gamepad_help_text(), main.xr_camera, MODE_ENABLED_HINT_SECONDS)
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 		main.ui_controller.update_ctrl_type_btn()
@@ -157,6 +250,8 @@ func release_for_focus_loss() -> void:
 	_prev_button_flags = -1 # Force current pad state to be sent after focus returns.
 
 func _deactivate():
+	_guide_waiting = false
+	_guide_consuming = false
 	for kc in _kb_held.keys():
 		main.stream_backend.send_keyboard_event(kc, 4, 0)
 	_kb_held.clear()
@@ -172,11 +267,17 @@ func _deactivate():
 		main.input_handler.neutral_pad_state(GamepadSlots.QUEST_PAD)
 	active = false
 	_log("[CTRL] Deactivated")
+	if main.is_xr_active:
+		main.composition_toast.show("Controller mode off.", main.xr_camera, 2.0)
 	if main.ui_controller:
 		main.ui_controller.update_ctrl_mode_btn()
 
 func cycle_type():
-	ctrl_type = (ctrl_type + 1) % 3
+	set_type((ctrl_type + 1) % 3)
+
+func set_type(value: int):
+	if value < 0 or value >= type_labels.size() or value == ctrl_type: return
+	ctrl_type = value
 	if active:
 		_deactivate_silent()
 		if is_gamepad_mode():
@@ -222,6 +323,99 @@ func _log(msg: String):
 # Bit values below are moonlight-common-c's standard XInput-style button
 # flags (0x0001/2/4/8 = d-pad up/down/left/right, 0x1000/2000/4000/8000 =
 # A/B/X/Y).
+## True when SteamVR reports Steam Frame controllers (XR_VALVE_frame_controller_interaction).
+func frame_controllers() -> bool:
+	for name in [&"right_hand", &"left_hand"]:
+		var tracker = XRServer.get_tracker(name)
+		if tracker and String(tracker.profile).contains(FRAME_PROFILE):
+			return true
+	return false
+
+## How to switch controller mode off with the controllers in hand.
+func toggle_hint() -> String:
+	return "Squeeze both grips" if frame_controllers() else "Click both thumbsticks"
+
+func _pressed(hand: XRController3D, action: String) -> bool:
+	return hand != null and hand.is_button_pressed(action)
+
+func _frame_button_flags() -> int:
+	var l: XRController3D = main.left_hand
+	var r: XRController3D = main.right_hand
+	var flags := 0
+	if _pressed(r, "ax_button"): flags |= PAD_A
+	if _pressed(r, "by_button"): flags |= PAD_B
+	if _pressed(r, "x_button"): flags |= PAD_X
+	if _pressed(r, "y_button"): flags |= PAD_Y
+	if _pressed(l, "dpad_up"): flags |= PAD_UP
+	if _pressed(l, "dpad_down"): flags |= PAD_DOWN
+	if _pressed(l, "dpad_left"): flags |= PAD_LEFT
+	if _pressed(l, "dpad_right"): flags |= PAD_RIGHT
+	if _pressed(l, "bumper"): flags |= PAD_LB
+	if _pressed(r, "bumper"): flags |= PAD_RB
+	if _pressed(l, "select_button"): flags |= PAD_BACK
+	if _pressed(r, "menu_button"): flags |= PAD_START
+	if _pressed(l, "primary_click"): flags |= PAD_LS
+	if _pressed(r, "primary_click"): flags |= PAD_RS
+	return flags
+
+## Gyro and accelerometer from the primary controller's tracking, in the
+## controller's own frame. The aim pose has +X right, +Y up, +Z back: SDL's
+## gamepad axes. Through Sunshine's DualSense emulation the gyro's pitch
+## arrived inverted (aiming up read as down), so only the gyro's X is negated.
+## The accelerometer must not be flipped with it: games fuse the two, and an
+## accelerometer that disagrees with the gyro pulls the aim back after every
+## movement (seen in the TOTK recompilation: up, then slowly back down).
+func _send_frame_motion() -> void:
+	var hand: XRController3D = main.left_hand if effective_primary_hand() == PrimaryHand.LEFT else main.right_hand
+	if hand == null or _last_delta <= 0.0:
+		return
+	var pose: XRPose = hand.get_pose()
+	if pose == null or not pose.has_tracking_data:
+		return
+	var to_local: Basis = pose.transform.basis.orthonormalized().transposed()
+	var gyro: Vector3 = to_local * pose.angular_velocity
+	gyro = Vector3(-rad_to_deg(gyro.x), rad_to_deg(gyro.y), rad_to_deg(gyro.z))
+	# Linear acceleration from the velocity's change, smoothed (tracking
+	# velocities are noisy), plus the reaction to gravity an accelerometer reads.
+	var linear: Vector3 = (pose.linear_velocity - _motion_prev_velocity) / _last_delta
+	_motion_prev_velocity = pose.linear_velocity
+	_motion_accel = _motion_accel.lerp(linear, 0.3)
+	var accel: Vector3 = to_local * (_motion_accel + Vector3(0.0, GRAVITY, 0.0))
+	main.input_handler.send_pad_motion(GamepadSlots.QUEST_PAD, gyro, accel)
+	if not _motion_logged:
+		_motion_logged = true
+		_log("[MOTION] Sending controller gyro/accelerometer (first: gyro=%s deg/s accel=%s m/s^2)" % [str(gyro), str(accel)])
+
+static func quest_menu_flags(alternate: bool, pressed: bool) -> int:
+	return (PAD_START if alternate else PAD_BACK) if pressed else 0
+
+func gamepad_help_text() -> String:
+	if frame_controllers():
+		return "\n".join([
+			"Controller mode on - Steam Frame",
+			"A/B/X/Y, D-pad and bumpers use their normal mapping.",
+			"Left View: Select (Back)  |  Right Menu: Start",
+			"Stick clicks: L3/R3  |  Triggers: LT/RT",
+			"Grips are reserved for toggling controller mode.",
+			"Squeeze both grips to turn controller mode off.",
+			"Press any button to continue."])
+	var gesture := "Alternate mapping is disabled in Control settings."
+	if btn_toggle == BtnToggle.TILT:
+		gesture = "Tilt each controller outward for alternate keys."
+	elif btn_toggle == BtnToggle.HEAD:
+		gesture = "Move each controller near your head for alternate keys."
+	var left := "Left X/Y: Left/Right  |  alternate: Down/Up"
+	var right := "Right A/B: A/B  |  alternate: X/Y"
+	if ctrl_type == CtrlType.PAD_ABXY:
+		left = "Left X/Y: X/Y  |  alternate: Down/Up"
+		right = "Right A/B: A/B  |  alternate: Right/Left"
+	if btn_toggle == BtnToggle.NONE:
+		left = "Left X/Y: X/Y" if ctrl_type == CtrlType.PAD_ABXY else "Left X/Y: Left/Right"
+		right = "Right A/B: A/B"
+	var menu := "Left Menu: Select (Back)  |  alternate: Start" if btn_toggle != BtnToggle.NONE else "Left Menu: Select (Back)"
+	return "\n".join(["Controller mode on - " + type_labels[ctrl_type], gesture, left, right, menu,
+		"Click both thumbsticks to turn controller mode off.", "Press any button to continue."])
+
 func _send_gamepad_mode(abxy_layout: bool):
 	var head_pos = main.xr_camera.global_position
 	var left_pos = main.left_hand.global_position if main.left_hand else Vector3.ZERO
@@ -261,7 +455,10 @@ func _send_gamepad_mode(abxy_layout: bool):
 	var l_click = main.left_hand.is_button_pressed("primary_click") if main.left_hand else false
 	var r_click = main.right_hand.is_button_pressed("primary_click") if main.right_hand else false
 
-	if abxy_layout:
+	var frame := frame_controllers()
+	if frame:
+		button_flags = _frame_button_flags()
+	elif abxy_layout:
 		# left_a/left_b are physically X/Y; right_a/right_b are physically A/B
 		# (see the ax_button/by_button reads above - same "_a"/"_b" naming as
 		# PAD-HAND, just interpreted differently here).
@@ -293,12 +490,13 @@ func _send_gamepad_mode(abxy_layout: bool):
 			if right_a: button_flags |= 0x1000
 			if right_b: button_flags |= 0x2000
 
-	if lg_val > 0.5: button_flags |= 0x0100
-	if rg_val > 0.5: button_flags |= 0x0200
-	if left_menu: button_flags |= 0x0020
-	if right_menu: button_flags |= 0x0010
-	if l_click: button_flags |= 0x0040
-	if r_click: button_flags |= 0x0080
+	if not frame:
+		if lg_val > 0.5: button_flags |= 0x0100
+		if rg_val > 0.5: button_flags |= 0x0200
+		if left_menu: button_flags |= quest_menu_flags(left_alt, true)
+		if right_menu: button_flags |= 0x0010
+		if l_click: button_flags |= 0x0040
+		if r_click: button_flags |= 0x0080
 
 	var lt = int(clampf(lt_val, 0.0, 1.0) * 255.0)
 	var rt = int(clampf(rt_val, 0.0, 1.0) * 255.0)
@@ -312,7 +510,13 @@ func _send_gamepad_mode(abxy_layout: bool):
 	var changed = button_flags != _prev_button_flags or lt != _prev_lt or rt != _prev_rt \
 		or lx != _prev_lx or ly != _prev_ly or rx != _prev_rx or ry != _prev_ry
 	if changed or _poll_timer >= 0.1:
-		main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_XBOX, button_flags, lt, rt, lx, ly, rx, ry)
+		if frame:
+			# A PlayStation-type pad with motion: Sunshine emulates a DualSense,
+			# whose gyro games such as the TOTK recomp read through SDL.
+			main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_PS, button_flags, lt, rt, lx, ly, rx, ry,
+				main.input_handler.ARRIVAL_CAPABILITIES | main.input_handler.CAP_ACCEL | main.input_handler.CAP_GYRO)
+		else:
+			main.input_handler.send_pad_state(GamepadSlots.QUEST_PAD, ControllerLayout.CTYPE_XBOX, button_flags, lt, rt, lx, ly, rx, ry)
 		_prev_button_flags = button_flags
 		_prev_lt = lt
 		_prev_rt = rt
@@ -321,6 +525,8 @@ func _send_gamepad_mode(abxy_layout: bool):
 		_prev_rx = rx
 		_prev_ry = ry
 		_poll_timer = 0.0
+	if frame:
+		_send_frame_motion()
 
 func _send_kbm_mode():
 	var lv = main.left_hand.get_vector2("primary") if main.left_hand else Vector2.ZERO
@@ -399,14 +605,22 @@ func get_close_to_head() -> bool:
 	return _close_to_head
 
 func cycle_btn_toggle():
-	btn_toggle = (btn_toggle + 1) % 3
+	set_btn_toggle((btn_toggle + 1) % 3)
+
+func set_btn_toggle(value: int):
+	if value < 0 or value >= btn_toggle_labels.size() or value == btn_toggle: return
+	btn_toggle = value
 	main.state_manager.save_state()
 	if main.ui_controller:
 		main.ui_controller.update_btn_toggle_btn()
 	_log("[CTRL] Button toggle: " + btn_toggle_labels[btn_toggle])
 
 func cycle_primary_hand():
-	primary_hand = (primary_hand + 1) % 3
+	set_primary_hand((primary_hand + 1) % 3)
+
+func set_primary_hand(value: int):
+	if value < 0 or value >= primary_labels.size() or value == primary_hand: return
+	primary_hand = value
 	main.state_manager.save_state()
 	if main.ui_controller:
 		main.ui_controller.update_primary_btn()

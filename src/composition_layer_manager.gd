@@ -10,6 +10,16 @@ var stats_viewport: SubViewport = null
 var stats_label: Label = null
 var stats_rects: Array = []
 var stats_visible: bool = false
+const SCREEN_OVERLAY_SIZE := Vector2i(1100, 960)
+const STATS_REGION := Rect2(0, 0, 768, 512)
+const MESSAGE_REGION := Rect2(0, 516, 1100, 440)
+const MESSAGE_PADDING := Vector2(4, 4)
+const MESSAGE_SCREEN_WIDTH := 0.55
+var screen_message_visible := false
+var _screen_message_revision := 0
+var _stats_background: Control
+var _screen_message_panel: PanelContainer
+var _screen_message_label: Label
 var _sdr_shader: Shader = null
 var _sdr_picture_shader: Shader = null
 var _hdr_shader: Shader = null
@@ -136,7 +146,21 @@ func _apply_video_shader_state(color_transfer_type: int):
 func refresh_picture_shader_state():
 	_apply_video_shader_state(_current_color_transfer_type)
 
+var _last_bind_targets: Array = []
+
+func _stream_binding_targets() -> Array:
+	var targets := []
+	for screen in main.screens:
+		if _independent_browser(screen) or _browser_owns_surface(screen): continue
+		var provider = main.screen_sources.browser_for_screen(screen) if main.screen_sources else null
+		var materials := []
+		for mat in get_shader_mats(screen): materials.append(mat.get_instance_id() if mat != null else 0)
+		targets.append([screen.get_instance_id(), screen.content_tabs.selected_id,
+			provider.get("generation") if provider != null else 0, materials])
+	return targets
+
 func invalidate_yuv_cache():
+	_last_bind_targets = []
 	_last_bind_rids = []
 	_last_bind_mode = [0, 1, 0, 0]
 
@@ -181,8 +205,9 @@ func get_shader_mats(s: VRScreen = null) -> Array:
 	return [s.comp_shader_mat, s.comp_shader_mat_left, s.comp_shader_mat_right]
 
 func _independent_browser(s: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources != null else null
 	return s != main.primary_screen and main.screen_sources != null \
-		and (main.screen_sources.browser_for_screen(s) != null or _independent_welcome(s))
+		and ((provider != null and (provider.active or provider.closing or main.screen_sources.monitor_tab(s) == null)) or _independent_welcome(s))
 
 func _independent_welcome(s: VRScreen) -> bool:
 	return not main.is_streaming and main.screen_sources.has_method("stream_screen") \
@@ -494,7 +519,7 @@ func setup():
 	setup_stats_overlay()
 
 func setup_stats_overlay():
-	# Match Moonlight Android XR's 768x512 diagnostic panel. Render it once and
+	# Keep the 768x512 diagnostic panel, with a notification strip below it. Render once and
 	# sample that texture inside each existing screen viewport, rather than
 	# allocating another OpenXR composition layer/swapchain. This pins the panel
 	# to the screen's top-left in mono and stereo modes and keeps projection off.
@@ -502,13 +527,15 @@ func setup_stats_overlay():
 	stats_viewport.name = "PerformanceStatsViewport"
 	stats_viewport.disable_3d = true
 	stats_viewport.transparent_bg = true
-	stats_viewport.size = Vector2i(768, 512)
+	stats_viewport.size = SCREEN_OVERLAY_SIZE
 	stats_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	main.add_child(stats_viewport)
 
 	var background = ColorRect.new()
 	background.name = "Background"
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.size = Vector2(768, 512)
+	background.visible = false
+	_stats_background = background
 	background.color = Color(0, 0, 0, 0.69)
 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stats_viewport.add_child(background)
@@ -526,6 +553,28 @@ func setup_stats_overlay():
 	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	background.add_child(stats_label)
 
+	_screen_message_panel = PanelContainer.new()
+	_screen_message_panel.name = "ScreenNotification"
+	_screen_message_panel.size = _message_panel_size()
+	_screen_message_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_screen_message_panel.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.06, 0.09, 0.92)
+	style.set_corner_radius_all(28)
+	style.border_color = Color(0.49, 0.45, 1.0, 0.9)
+	style.set_border_width_all(3)
+	style.set_content_margin_all(12)
+	_screen_message_panel.add_theme_stylebox_override("panel", style)
+	stats_viewport.add_child(_screen_message_panel)
+	_screen_message_label = Label.new()
+	_screen_message_label.add_theme_font_size_override("font_size", 40)
+	_screen_message_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
+	_screen_message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_screen_message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_screen_message_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_screen_message_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_screen_message_panel.add_child(_screen_message_label)
+
 	var screen = main.primary_screen
 	var targets = [
 		{"bezel": screen.comp_bezel_rect, "viewport": screen.comp_viewport},
@@ -535,52 +584,115 @@ func setup_stats_overlay():
 	for target in targets:
 		if not target.bezel or not target.viewport:
 			continue
-		var rect = TextureRect.new()
-		rect.name = "PerformanceStatsOverlay"
-		rect.texture = stats_viewport.get_texture()
-		rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		rect.stretch_mode = TextureRect.STRETCH_SCALE
-		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		rect.z_index = 100
-		rect.visible = false
-		target.bezel.add_child(rect)
-		stats_rects.append({"rect": rect, "viewport": target.viewport})
+		var rect = _make_overlay_rect("PerformanceStatsOverlay", STATS_REGION, target.bezel)
+		var message_rect = _make_overlay_rect("ScreenNotificationOverlay", MESSAGE_REGION, target.bezel)
+		stats_rects.append({"rect": rect, "message_rect": message_rect, "viewport": target.viewport})
 	_layout_stats_rects()
 	main._log("[COMP] In-screen performance statistics overlay created")
 
 func set_stats_visible(enabled: bool):
-	if not stats_viewport:
-		return
-	if stats_visible == enabled:
-		return
+	if not stats_viewport: return
 	stats_visible = enabled
-	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if enabled else SubViewport.UPDATE_DISABLED
+	_sync_screen_overlay()
+
+func set_screen_message(text: String) -> void:
+	if not stats_viewport: return
+	screen_message_visible = not text.is_empty()
+	_screen_message_label.text = text
+	_screen_message_revision += 1
+	_sync_screen_overlay()
+	if screen_message_visible:
+		_refresh_message_after_layout(_screen_message_revision)
+	elif main.video_presentation:
+		main.video_presentation.request_stats_overlay_update()
+
+func _refresh_message_after_layout(revision: int) -> void:
+	# Container layout/text shaping settle after the first draw. Capturing only
+	# that draw produced a styled background with no text on first use.
+	for frame in 2:
+		if not is_instance_valid(main) or not main.is_inside_tree(): return
+		await main.get_tree().process_frame
+	if not is_instance_valid(main) or revision != _screen_message_revision or not is_instance_valid(stats_viewport): return
+	# The first zero-width wrap can grow a PanelContainer's minimum height;
+	# it does not shrink itself again when the real text width is known.
+	_screen_message_panel.size = _message_panel_size()
+	_screen_message_panel.position = MESSAGE_REGION.position + (MESSAGE_REGION.size - _message_panel_size()) * 0.5
+	await main.get_tree().process_frame
+	if not is_instance_valid(main) or revision != _screen_message_revision or not is_instance_valid(stats_viewport): return
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	if main.video_presentation: main.video_presentation.request_stats_overlay_update()
+
+func _message_panel_size() -> Vector2:
+	var height := 432.0 if _screen_message_label != null and _screen_message_label.text.count("\n") > 1 else 176.0
+	return Vector2(MESSAGE_REGION.size.x - MESSAGE_PADDING.x * 2, height)
+
+func _sync_screen_overlay() -> void:
+	_screen_message_label.add_theme_font_size_override("font_size", 34 if _screen_message_label.text.count("\n") > 1 else 40)
+	var stats_enabled: bool = main.settings.performance_overlay_enabled and main.is_streaming
+	_stats_background.visible = stats_enabled
+	_screen_message_panel.visible = screen_message_visible
+	_screen_message_panel.position = MESSAGE_REGION.position + (MESSAGE_REGION.size - _message_panel_size()) * 0.5
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if stats_enabled or screen_message_visible else SubViewport.UPDATE_DISABLED
 	for target in stats_rects:
-		target.rect.visible = enabled
-	if enabled:
-		_layout_stats_rects()
+		if is_instance_valid(target.rect): target.rect.visible = stats_visible
+		if is_instance_valid(target.get("message_rect")): target.message_rect.visible = screen_message_visible
+	_layout_stats_rects()
 
 func update_stats_text(value: String):
 	if stats_label:
 		stats_label.text = value
-		if stats_visible:
+		if stats_visible or screen_message_visible or main.settings.performance_overlay_enabled:
 			stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func update_stats_transform():
 	_layout_stats_rects()
 
+func _make_overlay_rect(rect_name: String, region: Rect2, parent: Control) -> TextureRect:
+	var rect := TextureRect.new()
+	rect.name = rect_name
+	var atlas := AtlasTexture.new()
+	atlas.atlas = stats_viewport.get_texture()
+	atlas.region = region
+	atlas.filter_clip = true
+	rect.texture = atlas
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rect.z_index = 100
+	rect.visible = false
+	parent.add_child(rect)
+	return rect
+
+static func screen_message_bounds(size: Vector2) -> Rect2:
+	var width := size.x * MESSAGE_SCREEN_WIDTH
+	var height := width * MESSAGE_REGION.size.y / MESSAGE_REGION.size.x
+	return Rect2((size - Vector2(width, height)) * 0.5, Vector2(width, height))
+
 func _layout_stats_rects():
-	for target in stats_rects:
-		var rect: TextureRect = target.rect
-		var viewport: SubViewport = target.viewport
-		if not rect or not viewport:
-			continue
-		var margin = float(viewport.size.x) * 0.02
-		var overlay_width = float(viewport.size.x) * 0.30
-		var overlay_height = overlay_width * (512.0 / 768.0)
-		rect.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-		rect.position = Vector2(margin, margin)
-		rect.size = Vector2(overlay_width, overlay_height)
+	if not main.primary_screen: return
+	var screen = main.primary_screen
+	var bezels = [screen.comp_bezel_rect, screen.comp_bezel_rect_left, screen.comp_bezel_rect_right]
+	var viewports = [screen.comp_viewport, screen.comp_viewport_left, screen.comp_viewport_right]
+	for i in bezels.size():
+		if not is_instance_valid(bezels[i]) or not is_instance_valid(viewports[i]): continue
+		while stats_rects.size() <= i: stats_rects.append({"rect": null, "message_rect": null, "viewport": null})
+		var target: Dictionary = stats_rects[i]
+		for entry in [["rect", "PerformanceStatsOverlay", STATS_REGION], ["message_rect", "ScreenNotificationOverlay", MESSAGE_REGION]]:
+			if not is_instance_valid(target.get(entry[0])):
+				target[entry[0]] = _make_overlay_rect(entry[1], entry[2], bezels[i])
+			elif target[entry[0]].get_parent() != bezels[i]:
+				target[entry[0]].reparent(bezels[i], false)
+		target.viewport = viewports[i]
+		var size := Vector2(viewports[i].size)
+		var margin := size.x * 0.02
+		var width := size.x * 0.30
+		target.rect.position = Vector2(margin, margin)
+		target.rect.size = Vector2(width, width * STATS_REGION.size.y / STATS_REGION.size.x)
+		target.rect.visible = stats_visible
+		var bounds := screen_message_bounds(size)
+		target.message_rect.position = bounds.position
+		target.message_rect.size = bounds.size
+		target.message_rect.visible = screen_message_visible
 
 func _setup_ambient_layer() -> bool:
 	if _ambient_layer and _ambient_material:
@@ -763,7 +875,7 @@ func _ambient_static_color() -> Color:
 func _ambient_intensity() -> float:
 	# Static remains Medium; screen-reactive Slow/Live need the stronger High
 	# preset so their changing colours remain clearly visible around the panel.
-	return 0.35 if main.settings.ambient_mode >= 2 else 0.20
+	return (0.35 if main.settings.ambient_mode >= 2 else 0.20) * main.settings.ambient_gain
 
 func _refresh_ambient_source(force: bool = false):
 	if not _ambient_material or not main.primary_screen:
@@ -909,14 +1021,16 @@ func _update_ambient_geometry():
 	_ambient_layer.global_rotation = s.global_rotation
 
 func setup_background_equirect():
+	# Only the environment background needs equirect layers. The UI, cursor,
+	# ray and marker layers below must be created either way: SteamVR (Steam
+	# Frame) has no XR_KHR_composition_layer_equirect2, and returning early
+	# here left the pointer drawn in the projection layer, behind every panel.
 	if not equirect_available:
 		main._log("[COMP] OpenXRCompositionLayerEquirect not available - environment backgrounds won't show in projectionless mode")
-		return
-
-	if not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
+	elif not main.composition_environment.setup(main, main.xr_origin, main.BG_EQUIRECT_ANGLE_DEG, main.BG_CAPTURE_FOV_DEG):
 		main._log("[COMP] OpenXRCompositionLayerEquirect not natively supported on this runtime - environment backgrounds won't show in projectionless mode")
-		return
-	main._log("[COMP] Environment-background equirect composition layer created")
+	else:
+		main._log("[COMP] Environment-background equirect composition layer created")
 
 	main.composition_panels.setup_ui(main.xr_origin, main.ui_viewport,
 		main._ui_mesh_size + Vector2(0, main.UI_TOOLTIP_STRIP_METERS))
@@ -941,6 +1055,7 @@ func setup_background_equirect():
 	main._log("[COMP] Left cursor composition layer created")
 
 	main.composition_controller_rays.setup(main, main.xr_origin)
+	main.composition_toast.setup(main, main.xr_origin)
 	main._log("[COMP] Controller ray composition layers created")
 
 	# Persistent controller position markers (2026-08-25) complement the ray
@@ -978,6 +1093,9 @@ func connect_welcome_texture():
 			mat.set_shader_parameter("yuv_mode", 0)
 	main.primary_screen.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 
+## Padding (px per side) every composition viewport carries for the bezel.
+const BEZEL_PX := 8
+
 func _update_bezel_for(s: VRScreen):
 	var base_w = s.comp_base_size.x
 	var base_h = s.comp_base_size.y
@@ -1000,7 +1118,7 @@ func _update_bezel_for(s: VRScreen):
 	# The legacy OpenXR layer ignores viewport alpha, so a transparent margin
 	# still looks black. With the bezel off, fill the fixed padding with the
 	# image instead; only the ColorRect/inset changes, never the swapchain.
-	var px = 8
+	var px = BEZEL_PX
 	var bezel_x = s.mesh_size.x * (1.0 + float(px * 2) / float(base_w))
 	var bezel_y = s.mesh_size.y * (1.0 + float(px * 2) / float(base_h))
 	var bezel_size = Vector2i(base_w + px * 2, base_h + px * 2)
@@ -1027,6 +1145,7 @@ func _update_bezel_for(s: VRScreen):
 			t.vp.size = bezel_size
 		if t.cyl and t.cyl.visible:
 			t.cyl.set_aspect_ratio(bezel_x / bezel_y)
+			t.cyl.set_central_angle(s._comp_cyl_central_angle * (bezel_x / s.mesh_size.x) if s._comp_cyl_central_angle > 0.0 else t.cyl.get_central_angle())
 
 func update_bezel():
 	if not main.primary_screen or not main.primary_screen.comp_yuv_rect:
@@ -1048,6 +1167,19 @@ func _update_cylinder_params_for(s: VRScreen):
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y
+	# The layer shows the whole composition viewport, which always carries
+	# BEZEL_PX of padding on each side (see _update_bezel_for()). Size the
+	# layer for that padded image so the padding (the black bezel) sits around
+	# the picture: sized for the picture alone, the bezel was squeezed inside
+	# and drew a thin, aliased black line over the picture's edge. The pointer
+	# keeps the picture's own angle (_comp_cyl_central_angle) for hit tests.
+	var layer_angle = central_angle
+	var layer_aspect = aspect
+	if s.comp_base_size.x > 0 and s.comp_base_size.y > 0:
+		var pad_x = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.x)
+		var pad_y = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.y)
+		layer_angle = central_angle * pad_x
+		layer_aspect = (s.mesh_size.x * pad_x) / (s.mesh_size.y * pad_y)
 	# The pointer hits the screen's own curved mesh. A screen moved since that
 	# mesh was built (e.g. a new primary taking the old one's place) would show
 	# its picture on this cylinder while the laser hits the old curve.
@@ -1061,8 +1193,8 @@ func _update_cylinder_params_for(s: VRScreen):
 		if cyl:
 			cyl.set_sort_order(sort_order)
 			cyl.set_radius(radius)
-			cyl.set_central_angle(central_angle)
-			cyl.set_aspect_ratio(aspect)
+			cyl.set_central_angle(layer_angle)
+			cyl.set_aspect_ratio(layer_aspect)
 			cyl.global_position = s.global_position - screen_forward * radius
 			cyl.global_rotation = s.global_rotation
 	if s == main.primary_screen:
@@ -1107,6 +1239,10 @@ func restore_kb_material():
 	if main.virtual_keyboard:
 		main.virtual_keyboard.mesh_instance.visible = main.virtual_keyboard.visible
 
+func _browser_owns_surface(screen: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(screen) if main.screen_sources else null
+	return provider != null and (provider.active or provider.closing)
+
 func bind_yuv_textures():
 	var mat = main.stream_backend.get_shader_material()
 	if not mat:
@@ -1114,7 +1250,7 @@ func bind_yuv_textures():
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
@@ -1160,10 +1296,11 @@ func bind_yuv_textures():
 			yuv_mode_val = 3
 		var rids = [_as_rid(tex_y), _as_rid(tex_u), _as_rid(tex_v)]
 		var mode_tuple = [yuv_mode_val, cmt, cr, ctt]
-		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode)
+		var targets := _stream_binding_targets()
+		var unchanged = (rids == _last_bind_rids and mode_tuple == _last_bind_mode and targets == _last_bind_targets)
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("tex_y", tex_y)
@@ -1177,11 +1314,12 @@ func bind_yuv_textures():
 			bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode_val, cmt, cr, ctt)
 			_last_bind_rids = rids
 			_last_bind_mode = mode_tuple
+			_last_bind_targets = targets
 	else:
 		var stream_tex = main.stream_viewport.get_texture()
 		if not in_use:
 			for s in main.screens:
-				if _independent_browser(s):
+				if _independent_browser(s) or _browser_owns_surface(s):
 					continue
 				if s.material_override is ShaderMaterial:
 					s.material_override.set_shader_parameter("main_texture", stream_tex)
@@ -1197,9 +1335,10 @@ func bind_comp_yuv_textures(tex_y, tex_u, tex_v, yuv_mode: int, cmt, cr, ctt: in
 	# whether it's ever used).
 	_apply_video_shader_state(ctt)
 	for s in main.screens:
-		if _independent_browser(s):
+		if _independent_browser(s) or _browser_owns_surface(s):
 			continue
 		var provider = main.screen_sources.browser_for_screen(s) if main.screen_sources else null
+		if provider != null and (provider.active or provider.closing): continue
 		if provider == null or (not provider.active and not provider.closing):
 			s.restore_monitor_region()
 		for mat in get_shader_mats(s):
@@ -1243,7 +1382,7 @@ func bind_fallback_texture(stream_tex):
 	# session's shader state. GLES HDR fallback needs its own explicit plumbing.
 	_apply_video_shader_state(0)
 	for s in main.screens:
-		if _independent_browser(s):
+		if _independent_browser(s) or _browser_owns_surface(s):
 			continue
 		for mat in get_shader_mats(s):
 			if not mat:

@@ -65,9 +65,17 @@ public class GodotApp extends GodotActivity {
 	public static int pollBrowserFor(int id) { return BrowserPrototype.poll(id); }
 	public static boolean consumeBrowserFrameFor(int id) { return BrowserPrototype.consumeFrame(id); }
 	public static void closeBrowserFor(int id) { BrowserPrototype.close(id); }
+	public static String browserClipboardRead() { return BrowserClipboard.read(browserActivity.get()); }
+	public static boolean browserClipboardWrite(String text, long stamp) { return BrowserClipboard.write(browserActivity.get(), text, stamp); }
+	public static int browserTransferTab(int from, int to, int page, boolean replacePlaceholder) { return BrowserPrototype.transferTab(from, to, page, replacePlaceholder); }
+	public static void browserCancelTransfer(int ticket) { BrowserPrototype.cancelTransfer(ticket); }
+	public static String browserTransferResult(int ticket) { return BrowserPrototype.transferResult(ticket); }
 	public static String browserTabsFor(int id) { return BrowserPrototype.tabs(id); }
+	public static void browserContentVisibleFor(int id, boolean visible) { BrowserPrototype.contentVisible(id, visible); }
+	public static void resizeBrowserFor(int id, int width, int height) { BrowserPrototype.resize(id, width, height); }
 	public static void browserTabActionFor(int id, String action, int page) { BrowserPrototype.tabAction(id, action, page); }
 	public static void browserNavigationActionFor(int id, String action) { BrowserPrototype.navigationAction(id, action); }
+	public static void browserScrollFor(int id, float x, float y, float amount) { BrowserPrototype.scroll(id, x, y, amount); }
 	public static void browserPointerFor(int id, float x, float y, int action) { BrowserPrototype.pointer(id, x, y, action); }
 	public static void browserKeyFor(int id, int code, boolean pressed, int modifiers) { BrowserPrototype.key(id, code, pressed, modifiers); }
 	public static void browserGamepadFor(int id, int buttons, int lt, int rt, int lx, int ly, int rx, int ry) { BrowserPrototype.questGamepad(id, buttons, lt, rt, lx, ly, rx, ry); }
@@ -257,6 +265,15 @@ public class GodotApp extends GodotActivity {
 		if (depthEstimator != null && depthEstimator.isInitialized()) {
 			depthEstimator.configureDepth(modelIndex, requestedBackend);
 		}
+	}
+	public static void beginDepthSourceTransition() {
+		if (depthEstimator != null) depthEstimator.beginSourceTransition();
+	}
+	public static boolean isDepthSourceTransitionIdle() {
+		return depthEstimator == null || depthEstimator.isSourceTransitionIdle();
+	}
+	public static void endDepthSourceTransition() {
+		if (depthEstimator != null) depthEstimator.endSourceTransition();
 	}
 
 	public static void setDepthGpuApi(int api) {

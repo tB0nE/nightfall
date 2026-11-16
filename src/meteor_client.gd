@@ -201,12 +201,13 @@ static func virtual_display_info(info: Dictionary) -> Dictionary:
 	return {"driver_installed": true, "max_count": int(vd.get("max_count", 1))}
 
 ## Sends POST /meteor/virtual to request virtual display creation or removal.
-## count must be 0 (disable) or 1 (enable). Calls back with true on success.
+## count is 0 through the advertised maximum. Calls back with true on success.
 static func post_virtual(owner: Node, host: String, sunshine_https_port: int, count: int, callback: Callable) -> void:
 	var port := discovery_port(sunshine_https_port)
 	var url := "http://%s:%d/meteor/virtual" % [host, port]
 	var body := JSON.stringify({"count": count})
 	var request := HTTPRequest.new()
+	request.timeout = 6.0
 	owner.add_child(request)
 	var err := request.request(url, ["Content-Type: application/json"], HTTPClient.METHOD_POST, body)
 	if err != OK:
@@ -240,3 +241,19 @@ static func depth_info(info: Dictionary) -> Dictionary:
 	var offer: Dictionary = depth.duplicate()
 	offer["key"] = meteor_key(info)
 	return offer
+
+## Advisory process liveness. Paired host requests still establish actual readiness.
+static func host_status(owner: Node, host: String, sunshine_https_port: int) -> Dictionary:
+	var request := HTTPRequest.new()
+	request.timeout = 1.0
+	owner.add_child(request)
+	var url := "http://%s:%d/meteor/host-status" % [host, discovery_port(sunshine_https_port)]
+	if request.request(url) != OK:
+		request.queue_free()
+		return {}
+	var result: Array = await request.request_completed
+	request.queue_free()
+	if result[0] != HTTPRequest.RESULT_SUCCESS or result[1] != 200: return {}
+	var json := JSON.new()
+	if json.parse(PackedByteArray(result[3]).get_string_from_utf8()) != OK: return {}
+	return json.data if json.data is Dictionary else {}

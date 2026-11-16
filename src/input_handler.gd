@@ -4,6 +4,8 @@ extends RefCounted
 var main: Node3D
 var _last_desktop_input_msec: int = -10000
 var _forwarded_keys: Dictionary = {}
+var _diagnostic_pad_system: Dictionary = {}
+var _clipboard_keys: Dictionary = {}
 var _forwarded_mouse_buttons: Dictionary = {}
 
 func hand_desktop_suspended() -> bool:
@@ -32,6 +34,11 @@ var _BTN_MAP = {
 const ARRIVAL_BUTTON_FLAGS := 0x1000 | 0x2000 | 0x4000 | 0x8000 | 0x0001 | 0x0002 | 0x0004 \
 	| 0x0008 | 0x0100 | 0x0200 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0400
 const ARRIVAL_CAPABILITIES := 0x01 | 0x02
+# moonlight-common-c LI_CCAP_ACCEL / LI_CCAP_GYRO and LI_MOTION_TYPE_*.
+const CAP_ACCEL := 0x10
+const CAP_GYRO := 0x20
+const MOTION_TYPE_ACCEL := 0x01
+const MOTION_TYPE_GYRO := 0x02
 
 const JOY_BUTTON_NAMES := ["a", "b", "x", "y", "back", "guide", "start", "leftstick",
 	"rightstick", "leftshoulder", "rightshoulder", "dpup", "dpdown", "dpleft", "dpright",
@@ -62,6 +69,24 @@ func handle_input(event: InputEvent):
 					var action = 7 if event.pressed else 8
 					send_stream_mouse_button(action, button_idx)
 				return
+
+	if event is InputEventKey:
+		if _clipboard_keys.has(event.keycode):
+			if not event.pressed: _clipboard_keys.erase(event.keycode)
+			return
+		if main.ui_visible and main.ui_viewport.gui_get_focus_owner():
+			main.ui_viewport.push_input(event)
+			return
+		var browser = main.screen_sources.focused_browser()
+		var operation: String = {KEY_C: "copy", KEY_X: "cut", KEY_V: "paste"}.get(event.keycode, "")
+		if event.pressed and not event.echo and event.ctrl_pressed and not event.alt_pressed and not event.meta_pressed and operation != "":
+			if (browser != null and browser.active) or main.is_streaming:
+				_clipboard_keys[event.keycode] = true
+				main.clipboard_sharing.perform(operation, _physical_edit.bind(browser, event.keycode))
+				return
+		if browser != null and browser.active:
+			browser.physical_key(event)
+			return
 
 	if main.mouse_captured_by_stream and main.is_streaming:
 		if event is InputEventKey and event.pressed \
@@ -157,9 +182,16 @@ func neutral_host_gamepads() -> void:
 # first if it is new this session. key: a Godot device ID, or
 # GamepadSlots.QUEST_PAD for the Quest-controller PAD mode.
 func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
-		lx: int, ly: int, rx: int, ry: int) -> void:
+		lx: int, ly: int, rx: int, ry: int, capabilities: int = ARRIVAL_CAPABILITIES) -> void:
 	if desktop_input_blocked(): return
 	var focused_browser = main.screen_sources.focused_browser() if main.get("screen_sources") != null else main.browser_prototype
+	if key == GamepadSlots.QUEST_PAD and DevBridge.wanted():
+		var system_buttons := buttons & (0x10 | 0x20)
+		if system_buttons != int(_diagnostic_pad_system.get(key, 0)):
+			_diagnostic_pad_system[key] = system_buttons
+			main._log("[PAD-SYSTEM] t=%d route=%s start=%s back=%s" % [Time.get_ticks_msec(),
+				"browser" if focused_browser != null and focused_browser.active else "host",
+				(system_buttons & 0x10) != 0, (system_buttons & 0x20) != 0])
 	if focused_browser != null and focused_browser.active:
 		# Physical pads use original Android events directly. Only XR's virtual
 		# pad needs the browser-specific state bridge; never announce it to a PC.
@@ -172,11 +204,21 @@ func send_pad_state(key: int, ctype: int, buttons: int, lt: int, rt: int,
 		return
 	if is_new:
 		main.stream_backend.send_controller_arrival(slot, gamepads.active_mask(), ctype,
-			ARRIVAL_BUTTON_FLAGS, ARRIVAL_CAPABILITIES)
+			ARRIVAL_BUTTON_FLAGS, capabilities)
 		main._log("[PAD] %s -> host controller %d (type %d)" % [
 			"Quest controllers" if key == GamepadSlots.QUEST_PAD else "pad %d" % key, slot, ctype])
 	main.stream_backend.send_multi_controller_event(slot, gamepads.active_mask(), buttons,
 		clampi(lt, 0, 255), clampi(rt, 0, 255), lx, ly, rx, ry)
+
+## Gyro (deg/s) and accelerometer (m/s^2, gravity included) for a pad that
+## was announced with LI_CCAP_GYRO/LI_CCAP_ACCEL (SDL's axes: +X right,
+## +Y up, +Z towards the player).
+func send_pad_motion(key: int, gyro: Vector3, accel: Vector3) -> void:
+	if desktop_input_blocked() or not gamepads.has(key): return
+	var slot := gamepads.acquire(key)
+	if slot < 0: return
+	main.stream_backend.send_controller_motion(slot, MOTION_TYPE_GYRO, gyro.x, gyro.y, gyro.z)
+	main.stream_backend.send_controller_motion(slot, MOTION_TYPE_ACCEL, accel.x, accel.y, accel.z)
 
 # Releases everything a source holds without announcing it to the host if it
 # never sent anything this session.
@@ -274,3 +316,13 @@ func _send_controller(device: int):
 
 func _float_to_short(val: float) -> int:
 	return int(clampf(val, -1.0, 1.0) * 32767.0)
+
+func _physical_edit(browser: RefCounted, code: int) -> void:
+	if browser != null and browser.active:
+		browser._edit_raw({KEY_C: "copy", KEY_X: "cut", KEY_V: "paste"}[code])
+	elif main.is_streaming:
+		var held := _forwarded_keys.has(KEY_CTRL)
+		if not held: send_stream_key(KEY_CTRL, 3)
+		send_stream_key(code, 3)
+		send_stream_key(code, 4)
+		if not held: send_stream_key(KEY_CTRL, 4)

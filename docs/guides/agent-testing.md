@@ -204,3 +204,54 @@ has selected.
 - The headset reported 4 ms of network latency, 72 fps in the app, and
   Meteor depth at 72 Hz.
 
+
+## Isolated WebView wheel-input check
+
+`test/test_grip_scroll_routing.gd` exercises the actual XR pointer routing with
+real physics hits, without OpenXR or a person. It runs in the GDScript suite.
+For the Android end of that route, prepare a small test project:
+
+```bash
+/usr/bin/python3 test/prepare_browser_wheel_instrumentation.py --sdk /path/to/android-sdk
+cd .build-cache/browser-wheel-instrumentation
+JAVA_HOME=/path/to/jdk17 ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+adb install -r build/outputs/apk/debug/NightfallBrowserTests-debug.apk
+adb install -r build/outputs/apk/androidTest/debug/NightfallBrowserTests-debug-androidTest.apk
+timeout 45s adb shell am instrument -w -r \
+  -e class 'com.godot.game.BrowserWebViewIntegrationTest#fractionalWheelScrollReachesWebPage' \
+  app.nightfall.quest.instrumented.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+This is a correctness-only debug test, not a performance build of Nightfall.
+It contains browser Java code and an empty Activity, with no Godot runtime,
+models or release credentials. Its package is **app.nightfall.quest.instrumented**;
+the test rejects a target without that suffix. It loads only a local HTML page,
+checks fractional wheel events in both directions, and closes its browser.
+Never change these commands to target `app.nightfall.quest`, clear that app's
+data, or use the test APK for performance comparisons. On the development PC,
+use the SideQuest ADB binary if the shell's `adb` wrapper invokes distrobox.
+
+### Steam-container XR startup regression
+
+The native `verify.py pcvr` sample does not enter Steam's container. To check
+its real private-socket launch path without a game or headset, use:
+
+```sh
+/usr/bin/python3 test/smoke_xr_local_application.py "$PWD" \
+  --steam-wrapper \
+  --steam-sandbox "$HOME/.local/share/Steam/steamapps/common/SteamLinuxRuntime_4" \
+  --installed-runtime "$HOME/.local/share/nightfall-meteor/xr" --encoder nvenc
+```
+
+Choose an installed Steam Linux Runtime directory. The sample uses synthetic
+tracking and stops after at least 60 encoded frames. Its sandbox stdin writer
+is bounded to 20 seconds. This verifies the per-game wrapper path, not automatic
+headset handoff or any particular Proton game.
+
+Steam rewrites `XDG_RUNTIME_DIR` inside pressure-vessel. Owned XR launches must
+expose the private socket directory and restore `XDG_RUNTIME_DIR` plus
+`XR_RUNTIME_JSON` after the Steam runtime entry point, before Proton/the app.
+Otherwise xrizer looks in `/run/user/<uid>/nightfall-meteor/monado_comp_ipc`
+while the compositor listens under `/tmp/nf-xr-*`. A later missing-tracking
+validation error can be secondary to the game never connecting. Inspect the
+session's `application-live.log`, not only `runtime.log`.

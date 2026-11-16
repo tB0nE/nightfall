@@ -24,10 +24,25 @@ RUN apt-get update && apt-get install -y \
     gdb \
     && rm -rf /var/lib/apt/lists/*
 
+# aarch64 only: vcpkg can't download its own CMake there, and Ubuntu 22.04's
+# 3.22 is too old for godot-cpp (needs 3.25+ for block()). Kitware's build:
+ARG VCPKG_FORCE_SYSTEM_BINARIES_BOOTSTRAP=
+RUN if [ "$(uname -m)" = "aarch64" ]; then \
+      curl -fsSL -o /tmp/cmake.tgz https://github.com/Kitware/CMake/releases/download/v3.31.10/cmake-3.31.10-linux-aarch64.tar.gz \
+      && echo "a343c6294f770742904e6a6792e0956b5ff8212abfb63cac99237de2e210fa0f  /tmp/cmake.tgz" | sha256sum -c - \
+      && tar -xzf /tmp/cmake.tgz -C /opt && rm /tmp/cmake.tgz \
+      && ln -sf /opt/cmake-3.31.10-linux-aarch64/bin/* /usr/local/bin/; \
+    fi
 RUN git clone https://github.com/microsoft/vcpkg.git /opt/vcpkg \
+    && if [ -n "${VCPKG_FORCE_SYSTEM_BINARIES_BOOTSTRAP}" ]; then export VCPKG_FORCE_SYSTEM_BINARIES=1; fi \
     && /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 ENV VCPKG_ROOT=/opt/vcpkg
-ENV VCPKG_DEFAULT_TRIPLET=x64-linux
+# x64-linux by default; arm64-linux for SteamOS on aarch64 (Steam Frame).
+ARG VCPKG_TRIPLET=x64-linux
+ENV VCPKG_DEFAULT_TRIPLET=${VCPKG_TRIPLET}
+# On aarch64, docker-build-linux.sh also sets VCPKG_FORCE_SYSTEM_BINARIES=1 at
+# run time (vcpkg has no prebuilt tools there). Not set here: vcpkg treats
+# even an empty value as "set".
 
 WORKDIR /build

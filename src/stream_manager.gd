@@ -35,19 +35,46 @@ func _is_local_host(ip: String) -> bool:
 # match afterwards (e.g. a host that free-scales regardless of requested resolution).
 var _resolution_retry_done: bool = false
 var requested_resolution := Vector2i.ZERO
+var launch_pending := false
+var _launched_virtual_count := 0
 
 static func capture_resolution_retry_needed(requested: Vector2i, corrected: Vector2i, retried: bool) -> bool:
 	return not retried and requested.x > 0 and requested.y > 0 and corrected.x > 0 and corrected.y > 0 and requested != corrected
 var _current_host_id: int = -1
 var _current_app_id: int = -1
 
-func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO):
+var monitor_transition := {}
+var monitor_first_frame_pending := false
+
+func begin_monitor_transition(id: int) -> void:
+	monitor_transition = {"id": id, "started_ms": Time.get_ticks_msec(), "stages": {}}
+	monitor_first_frame_pending = false
+	record_monitor_transition_stage("apply")
+
+func record_monitor_transition_stage(stage: String) -> void:
+	if monitor_transition.is_empty() or monitor_transition.get("complete", false): return
+	var elapsed: int = Time.get_ticks_msec() - int(monitor_transition.started_ms)
+	monitor_transition.stages[stage] = elapsed
+	if stage == "stream_started" and monitor_transition.stages.has("launch_request"):
+		monitor_first_frame_pending = true
+	main._log("[MONITOR-TIMING] id=%s stage=%s elapsed_ms=%d" % [str(monitor_transition.id), stage, elapsed])
+	if stage == "first_frame_submitted":
+		monitor_first_frame_pending = false
+		monitor_transition.complete = true
+
+func host_restart_status() -> Dictionary:
+	if _meteor_address.is_empty(): return {}
+	return await MeteorClient.host_status(main, _meteor_address, int(_meteor.get("sunshine", {}).get("https", 0)))
+
+func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vector2i.ZERO, is_current: Callable = Callable()):
+	if is_current.is_valid() and not is_current.call(): return
 	# A browser may have become primary while welcome remained beside it.
 	# Bring the connection surface back to primary before touching the decoder.
 	var connection_screen: VRScreen = main.screen_sources.stream_screen()
 	if connection_screen != null and connection_screen != main.primary_screen:
 		if not await main.screen_sources.make_primary(connection_screen, true): return
-	if main.browser_prototype:
+		if is_current.is_valid() and not is_current.call(): return
+	if main.browser_prototype and main.browser_prototype.get("suspended") != true:
 		main.browser_prototype.stop(false)
 	main.screen_sources.focus_browser(null)
 	main.session_lifecycle.begin_connect()
@@ -66,6 +93,7 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	# function's own target_already_active check avoids re-requesting a rate
 	# that's already active, which is what protects that ordering here.
 	await main.settings_controller.apply_display_refresh_rate()
+	if is_current.is_valid() and not is_current.call(): return
 	# forced_resolution set means this call IS the one-shot correction retry itself -
 	# don't reset the guard there, or a host that never matches would loop forever.
 	if forced_resolution == Vector2i.ZERO:
@@ -100,21 +128,28 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	_meteor = {}
 	if not local_capture_mode and not _meteor_bypass:
 		_meteor = await _probe_meteor(host_id)
+		if is_current.is_valid() and not is_current.call(): return
 		# Meteor answered this host before: one slow reply (the app busy resizing for a
 		# large frame) shouldn't send the session past it.
 		if _meteor.is_empty() and main.settings.host.virtual_display_installed:
 			main._log("[METEOR] No answer from Meteor; asking once more")
 			_meteor = await _probe_meteor(host_id)
+			if is_current.is_valid() and not is_current.call(): return
 	_meteor_bypass = false
 
 	# Meteor's host plans the session's screens before launch. Ask which frame
 	# these screens give and request exactly that size, so the stream never
 	# starts squeezed into the previous layout's shape.
+	# Freeze the same selection for planning and launch; never plan one count
+	# and launch another if Apply is pressed during the network round trip.
+	_profiled_launch_size = Vector2i.ZERO
+	var screens := _screen_launch_options()
 	if forced_resolution == Vector2i.ZERO and main.settings.host.is_polaris_host and not local_capture_mode:
-		await _adopt_launch_plan(host_id)
+		await _adopt_launch_plan(host_id, screens, is_current)
+	if is_current.is_valid() and not is_current.call(): return
 	# Timing-only XR restarts must use the latest manifest-corrected size,
 	# not the request cached before the previous monitor selection.
-	main.host_resolution = main.compute_requested_resolution()
+	main.host_resolution = _profiled_launch_size if _profiled_launch_size != Vector2i.ZERO else main.compute_requested_resolution()
 	var w = main.host_resolution.x
 	var h = main.host_resolution.y
 	if forced_resolution.x > 0 and forced_resolution.y > 0:
@@ -126,7 +161,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	requested_resolution = Vector2i(w, h)
 
 	main._log("[STREAM] Starting stream host_id=%d app_id=%d res=%dx%d@%d local=%s" % [host_id, app_id, w, h, effective_stream_fps(), str(local_capture_mode)])
-	if main.settings.host.bitrate_idx >= 0:
+	if main.settings.host.bitrate_mbps > 0:
+		bitrate = main.settings.host.bitrate_mbps * 1000
+	elif main.settings.host.bitrate_idx >= 0:
 		bitrate = main.bitrates[main.settings.host.bitrate_idx] * 1000
 	else:
 		# Auto bitrate picks its tier from the UNCAPPED resolution, not w/h
@@ -188,7 +225,6 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["surroundAudioInfo"] = 0xCA0203
 	if hdr_requested():
 		options["hdr_mode"] = 1
-	var screens := _screen_launch_options()
 	main._log("[STREAM] screens requested: %s (layout.source=%s, enabled=%s)" % [
 		str(screens), str(main.layout.source) if main.layout else "null",
 		str(main.layout.enabled_monitors().map(func(m): return m.label)) if main.layout else "null"])
@@ -196,6 +232,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	if not _meteor.is_empty():
 		options[MeteorClient.HTTPS_PORT_OPTION] = int(_meteor["ports"]["https"])
 	main._ui_status_label.text = "Launching stream..."
+	record_monitor_transition_stage("launch_request")
+	_launched_virtual_count = int(screens.get("virtual_displays", 0))
+	launch_pending = true
 	_b().establish_stream(host_id, app_id, options, _on_v2_launch_response)
 	main._log("[STREAM] establish_stream called")
 
@@ -223,6 +262,25 @@ func hdr_requested() -> bool:
 # back zero enabled monitors and falls back to combined/undivided capture.
 ## The launch options that pick the session's screens: the physical monitors by
 ## name (or none, virtual_only), and how many virtual displays the host creates.
+var _profiled_launch_size := Vector2i.ZERO
+var _packing_busy := false
+var _packing_approval := ""
+
+func packing_options(codec: int = -1) -> Dictionary:
+	var target := Vector2i.ZERO
+	var host = main.settings.host
+	if host.default_resolution_selected: target = main.resolutions[host.resolution_idx]
+	var options := StreamPackingBudget.options(main.settings.codec_preference if codec < 0 else codec, main.device_is_quest2,
+		target, host.resolution_scale_pct)
+	var modes := PackedStringArray()
+	for screen in main.screens:
+		for tab in screen.content_tabs.tabs:
+			var id := str(tab.locator.get("monitor_id", ""))
+			if tab.kind == ScreenContentTab.STREAM and id.begins_with("m") and tab.resolution != Vector2i.ZERO:
+				modes.append("%s:%dx%d" % [id, tab.resolution.x, tab.resolution.y])
+	if not modes.is_empty(): options.nf_physical_modes = ",".join(modes)
+	return options
+
 func _screen_launch_options() -> Dictionary:
 	var screens := {}
 	var virtual_count: int = main.settings.host.virtual_display_count if main.settings.host.virtual_display_installed else 0
@@ -234,29 +292,34 @@ func _screen_launch_options() -> Dictionary:
 		screens["capture_outputs"] = capture_outputs
 	if virtual_count > 0:
 		screens["virtual_displays"] = virtual_count
+		var modes: String = main.screen_sources.virtual_modes_query(virtual_count)
+		if not modes.is_empty(): screens["virtual_modes"] = modes
+	if main.settings.host.is_polaris_host:
+		# Legacy hosts ignore the extension; upgraded hosts can profile the first launch too.
+		screens.merge(packing_options())
 	return screens
 
 ## Asks the host which frame the requested screens make and caches it as the
 ## size to request. Leaves the cached size alone when the host doesn't answer.
-func _adopt_launch_plan(host_id: int) -> void:
-	var screens := _screen_launch_options()
-	var query := PackedStringArray()
-	if screens.has("virtual_only"):
-		query.append("virtual_only=1")
-	else:
-		query.append("outputs=" + String(screens.get("capture_outputs", "")).uri_encode())
-	query.append("virtual_displays=%d" % int(screens.get("virtual_displays", 0)))
+func _adopt_launch_plan(host_id: int, screens: Dictionary, is_current: Callable = Callable()) -> void:
+	_profiled_launch_size = Vector2i.ZERO
+	var query := StreamPackingBudget.query(screens)
 	var reply := {"done": false, "plan": {}}
 	_b().fetch_display_manifest(host_id, func(plan: Dictionary):
 		reply.plan = plan
-		reply.done = true, "&".join(query))
+		reply.done = true, query)
 	var deadline := Time.get_ticks_msec() + 3000
 	while not reply.done and Time.get_ticks_msec() < deadline:
 		await main.get_tree().process_frame
-	var frame = reply.plan.get("frame_size", []) if reply.plan is Dictionary else []
-	if frame is Array and frame.size() == 2 and int(frame[0]) > 0 and int(frame[1]) > 0:
-		main.settings.host.native_resolution = Vector2i(int(frame[0]), int(frame[1]))
-		main._log("[STREAM] Host plans a %dx%d frame for %s" % [int(frame[0]), int(frame[1]), "&".join(query)])
+		if is_current.is_valid() and not is_current.call(): return
+	if is_current.is_valid() and not is_current.call(): return
+	var frame := StreamRestartPolicy.planned_size(reply.plan)
+	if frame != Vector2i.ZERO:
+		main.settings.host.native_resolution = frame
+		if reply.plan.get("packing_profiled", false): _profiled_launch_size = frame
+		if reply.plan.get("packing_fits", false): screens["nf_require_fit"] = 1
+		record_monitor_transition_stage("capture_plan")
+		main._log("[STREAM] Host plans a %dx%d frame for %s" % [frame.x, frame.y, query])
 	else:
 		main._log("[STREAM] No screen plan from the host; requesting the last known size")
 
@@ -437,6 +500,8 @@ func relaunch_for_reconnect():
 var _app_id_refreshed := false
 
 func _on_v2_launch_response(response: Dictionary):
+	launch_pending = false
+	record_monitor_transition_stage("launch_response")
 	if main.session_lifecycle.phase not in [SessionLifecycle.Phase.CONNECTING,
 			SessionLifecycle.Phase.RESTARTING, SessionLifecycle.Phase.RECONNECTING]:
 		main._log("[STREAM] Ignoring launch response after connection was cancelled or completed")
@@ -457,7 +522,11 @@ func _on_v2_launch_response(response: Dictionary):
 		# The host no longer knows this app ID: its app list changed (a
 		# restart can renumber apps), or the welcome screen fell back to its
 		# placeholder Desktop when the list came back empty.
-		if str(msg).contains("requested application") and not _app_id_refreshed:
+		# Older Sunshine says "Cannot find requested application"; current
+		# Sunshine (2026.x) answers an unknown ID with 404 "Failed to start the
+		# specified application".
+		if (str(msg).contains("requested application") or str(msg).contains("specified application")) \
+				and not _app_id_refreshed:
 			_app_id_refreshed = true
 			_retry_with_fresh_app_id()
 			return
@@ -505,6 +574,8 @@ func _on_v2_launch_response(response: Dictionary):
 		return
 
 	_app_id_refreshed = false
+	if main.settings_controller.has_method("note_virtual_count_launched"):
+		main.settings_controller.note_virtual_count_launched(_launched_virtual_count)
 	# Streaming works, but the host may drop mouse, keyboard or controller
 	# input. Say so on the menu's status line and on the welcome screen.
 	var input_missing := HostPermissions.missing(int(response.get("host_permission", -1)))
@@ -685,8 +756,8 @@ const AUTO_BITRATE_RESOLUTION_TABLE := [
 # Explicit entries for every selectable stream FPS. Preserve roughly the same
 # bits per frame above 60 FPS: Moonlight's generic sqrt rule produced only
 # 15 Mbps at 720p144 and visibly broke down in motion on Quest. The final
-# bitrate is capped at the highest value exposed by Nightfall's manual bitrate
-# control so high-resolution/high-rate combinations remain realistic for Wi-Fi.
+# Auto retains its established 120 Mbps ceiling independently of the extended
+# manual range. Raising a user's manual ceiling must not change Auto behavior.
 const AUTO_BITRATE_FPS_FACTORS := {
 	30: 1.000000,
 	60: 2.000000,
@@ -722,6 +793,13 @@ func _auto_bitrate(w: int, h: int) -> int:
 	# stable across tiny custom-resolution changes.
 	var kbps := int(round(resolution_mbps * fps_factor)) * 1000
 	return clampi(kbps, AUTO_BITRATE_MIN_KBPS, AUTO_BITRATE_MAX_KBPS)
+
+# Stream size the screen geometry was last shaped for (resize_screen_to_aspect).
+# start_stream() resizes buffers without touching geometry, so without this a
+# host that sends no manifest (plain Sunshine) and decodes exactly the requested
+# size never reshaped the screen: a 21:9 stream stayed squeezed into the 16:9
+# placeholder or a saved 16:9 placement.
+var _geometry_size := Vector2i.ZERO
 
 func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 	var stream_size = Vector2i(w, h)
@@ -810,6 +888,7 @@ func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 			main._ui_status_label.text = "Display layout reset: stream resolution changed"
 	if not layout_changed and update_geometry:
 		main.screen_manager.resize_screen_to_aspect(w, h)
+		_geometry_size = stream_size
 	for s in main.screens:
 		if s.material_override is ShaderMaterial:
 			s.material_override.set_shader_parameter("blur_scale", main.get_blur_scale(s))
@@ -1103,7 +1182,10 @@ func update_stats():
 		if vw == 0 or vh == 0:
 			return
 		var cur_size = current_stream_size
-		if cur_size.x != vw or cur_size.y != vh:
+		var decoded := Vector2i(vw, vh)
+		var needs_geometry: bool = _geometry_size != decoded \
+				and (main.layout == null or main.layout.source != &"host_manifest")
+		if cur_size != decoded or needs_geometry:
 			resize_stream_viewport(vw, vh)
 	var hw = _b().get_decode_mode()
 	var ip = main.get_node("%IPInput").text
@@ -1112,7 +1194,7 @@ func update_stats():
 	var network_latency_ms = _b().get_network_latency_ms()
 	var bitrate_mbps = bitrate / 1000.0
 	var refresh_hz = main.display_refresh_rate
-	var codec_name = main.codec_labels[main.settings.codec_preference] if main.settings.codec_preference < main.codec_labels.size() else "?"
+	var codec_name = "H.264+" if main.settings.codec_preference == 0 and main.settings.h264_high_bitrate else (main.codec_labels[main.settings.codec_preference] if main.settings.codec_preference < main.codec_labels.size() else "?")
 	var txt = ip_display + " \u2022 " + str(vw) + "x" + str(vh) + " " + str(effective_stream_fps()) + "fps " + str(int(bitrate_mbps)) + "Mbps " + codec_name + " " + hw
 	txt += " \u2022 Net:" + (str(network_latency_ms) + "ms" if network_latency_ms >= 0 else "?")
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
@@ -1150,3 +1232,109 @@ func _depth_status_text() -> String:
 			return " \u2022 H-AI3D:" + str(snapped(inf_ms, 0.1)) \
 				+ "ms/" + str(snapped(inf_hz, 0.1)) + "Hz"
 	return ""
+
+func _packing_snapshot() -> String:
+	var tabs := []
+	for screen in main.screens: tabs.append(screen.content_tabs.to_dict())
+	return str([main.current_host_id, main.is_streaming, main.layout.to_dict(), tabs,
+		main.settings.codec_preference, packing_options(), main.settings.host.virtual_display_count,
+		main._staged_physical_count, main._staged_virtual_count])
+
+func _packing_request(layout: ScreenLayout, count: int, modes: String) -> Dictionary:
+	var names := PackedStringArray()
+	for monitor in layout.enabled_monitors():
+		if not monitor.hint.get("virtual", false): names.append(monitor.label)
+	var options := {"capture_outputs": ",".join(names), "virtual_displays": count}
+	if names.is_empty() and count > 0: options.virtual_only = 1
+	if not modes.is_empty(): options.virtual_modes = modes
+	return options
+
+func _packing_preview(options: Dictionary) -> Dictionary:
+	var reply := {"done": false, "plan": {}}
+	_b().fetch_display_manifest(main.current_host_id, func(plan: Dictionary):
+		reply.plan = plan
+		reply.done = true, StreamPackingBudget.query(options))
+	var deadline := Time.get_ticks_msec() + 3000
+	while not reply.done and Time.get_ticks_msec() < deadline:
+		await main.get_tree().process_frame
+	return reply.plan
+
+# All additions preview before touching tabs, output counts, codec or displays.
+# A one-use request signature allows the staged controller to consume the same
+# approval after the source has added its local tab metadata.
+func admit_monitor_set(layout: ScreenLayout, count: int, modes: String, screen: VRScreen = null, consume := false) -> bool:
+	var options := _packing_request(layout, count, modes)
+	options.merge(packing_options())
+	var key := str([main.current_host_id, StreamPackingBudget.query(options)])
+	if consume and _packing_approval == key:
+		_packing_approval = ""
+		return true
+	_packing_approval = ""
+	# Hosts without the extension retain their established compatibility path.
+	if main.layout.packing_budget_version != 1: return true
+	if _packing_busy: return false
+	_packing_busy = true
+	var snapshot := _packing_snapshot()
+	var plan := await _packing_preview(options)
+	var accepted := false
+	if snapshot == _packing_snapshot() and StreamPackingBudget.full_size_fits(plan, options):
+		accepted = true
+	elif snapshot == _packing_snapshot() and main.settings.codec_preference == 0 and main.settings_controller.is_codec_available(1):
+		var alternative := options.duplicate()
+		alternative.merge(packing_options(1), true)
+		var hevc := await _packing_preview(alternative)
+		if snapshot == _packing_snapshot() and StreamPackingBudget.full_size_fits(hevc, alternative):
+			var menu: ScreenTabStrip = main.screen_sources.menu_for_screen(screen if screen != null else main.primary_screen)
+			var decision := {"done": false, "accept": false}
+			menu.confirm_hevc(func(value: bool):
+				decision.accept = value
+				decision.done = true)
+			var deadline := Time.get_ticks_msec() + 30000
+			while not decision.done and menu.popup == "packing_confirmation" and Time.get_ticks_msec() < deadline and snapshot == _packing_snapshot():
+				await main.get_tree().process_frame
+			menu.dismiss_packing_confirmation()
+			if decision.accept and snapshot == _packing_snapshot():
+				main.settings_controller.set_desktop_codec_choice(1, false)
+				options = alternative
+				accepted = true
+	if not accepted:
+		main.ui_controller.set_status("Monitor not added. Choose a lower resolution or a supported codec with more capacity.")
+	elif not consume:
+		_packing_approval = str([main.current_host_id, StreamPackingBudget.query(options)])
+	_packing_busy = false
+	return accepted
+
+var _capacity_cache := {}
+var _capacity_snapshot := ""
+var capacity_revision := 0
+var _capacity_check_at := 0
+
+func monitor_proposal_available(layout: ScreenLayout, count: int, modes: String) -> bool:
+	if main.layout.packing_budget_version != 1: return true
+	var now := Time.get_ticks_msec()
+	if now >= _capacity_check_at:
+		_capacity_check_at = now + 200
+		var current := _packing_snapshot()
+		if current != _capacity_snapshot:
+			_capacity_cache.clear()
+			_capacity_snapshot = current
+	var snapshot := _capacity_snapshot
+	var options := _packing_request(layout, count, modes)
+	options.merge(packing_options())
+	var key := StreamPackingBudget.query(options)
+	if not _capacity_cache.has(key): _capacity_cache[key] = {"available":false,"refresh_at":0}
+	if int(_capacity_cache[key].refresh_at) <= now:
+		_capacity_cache[key].refresh_at = now + 5000
+		_update_monitor_capacity(key, options, snapshot)
+	return _capacity_cache[key].available
+
+func _update_monitor_capacity(key: String, options: Dictionary, snapshot: String) -> void:
+	var plan := await _packing_preview(options)
+	var available := StreamPackingBudget.full_size_fits(plan, options)
+	if not available and main.settings.codec_preference == 0 and main.settings_controller.is_codec_available(1):
+		var alternative := options.duplicate()
+		alternative.merge(packing_options(1), true)
+		available = StreamPackingBudget.full_size_fits(await _packing_preview(alternative), alternative)
+	if snapshot != _packing_snapshot() or snapshot != _capacity_snapshot: return
+	_capacity_cache[key] = {"available":available,"refresh_at":Time.get_ticks_msec()+5000}
+	capacity_revision += 1

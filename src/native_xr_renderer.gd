@@ -73,6 +73,11 @@ func draws_secondary_screens() -> bool:
 ## screen; empty when it fills the frame). {} when it can't be told.
 func screen_part(screen: VRScreen) -> Dictionary:
 	var media: Vector2i = main.primary_media_size()
+	# Retained monitor metadata describes the packed desktop, never the
+	# independent browser texture currently selected on the same surface.
+	var selected: ScreenContentTab = screen.content_tabs.selected() if screen != null else null
+	if selected != null and selected.kind == ScreenContentTab.BROWSER:
+		return {"pixels": media, "crop": PackedFloat32Array()}
 	var frame: Vector2i = main.layout.frame_size if main.layout else Vector2i.ZERO
 	if screen == null or screen.monitor == null or media.x <= 0 or media.y <= 0 or frame.x <= 0 or frame.y <= 0:
 		return {"pixels": media, "crop": PackedFloat32Array()} if screen != null and media.x > 0 else {}
@@ -87,6 +92,14 @@ func screen_part(screen: VRScreen) -> Dictionary:
 		float(rect.size.x) / frame.x - 2.0 * hx, float(rect.size.y) / frame.y - 2.0 * hy])
 	return {"pixels": pixels, "crop": crop}
 
+# A retained/idle browser provider is not a browser output. Once a monitor
+# tab owns this surface it must join the decoder's native secondary layers.
+func _browser_output(screen: VRScreen) -> bool:
+	var provider = main.screen_sources.browser_for_screen(screen)
+	if provider == null: return false
+	var tab := screen.content_tabs.selected()
+	return provider.active or provider.closing or screen.monitor == null or (tab != null and tab.kind == ScreenContentTab.BROWSER)
+
 func can_render_current_config() -> bool:
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive():
 		return false
@@ -94,7 +107,10 @@ func can_render_current_config() -> bool:
 		return false
 	# Independent browser outputs do not share the primary decoder or eyes.
 	for screen in main.screens:
-		if screen != main.primary_screen and main.screen_sources.browser_for_screen(screen) == null:
+		if screen != main.primary_screen and not _browser_output(screen):
+			# One native renderer samples one producer. A browser primary and
+			# visible desktop secondary need the independent legacy surfaces.
+			if main.has_method("browser_content_active") and main.browser_content_active(): return false
 			if main.screen_sources.has_method("stream_screen") and main.screen_sources.stream_screen() == screen and not main.is_streaming:
 				continue # A secondary welcome surface has its own mono layer.
 			# Further stream screens are mono layers drawn from their own part of the frame.
@@ -128,6 +144,14 @@ func can_render_current_config() -> bool:
 	return true
 
 func _eligible() -> bool:
+	if main.get("primary_screen") != null and main.primary_screen.monitor != null \
+		and main.primary_screen.monitor_id != main.primary_screen.monitor.id \
+		and main.has_method("browser_content_active") and not main.browser_content_active():
+		return false # New monitor tab awaits its actual captured manifest.
+	# A resumed browser may need a frame before its RGBA handle is ready.
+	# Never reactivate the desktop renderer into that browser-owned surface.
+	if main.has_method("browser_content_active") and main.browser_prototype.active and not main.browser_content_active():
+		return false
 	if not main.primary_media_active() or not can_render_current_config():
 		return false
 	# _schedule_stream_restart() deactivates this renderer, then awaits a
@@ -159,6 +183,14 @@ func _eligible() -> bool:
 	return true
 
 func refresh() -> void:
+	var sources = main.get("screen_sources")
+	if sources != null and (sources.get("switching_tab") == true or sources.get("switching_primary") == true):
+		# Source changes drain native consumers across several frames. The old
+		# browser texture can remain valid during that interval; it must not
+		# cause refresh() to recreate the swapchain while we are retiring it.
+		if active: deactivate(false)
+		_last_eligible = false
+		return
 	if presentation_suspended: return
 	# A resolution/refresh-rate change defers its actual swapchain rebuild by
 	# a few frames (see start()'s C++ comment) rather than tearing it down
@@ -231,8 +263,8 @@ func refresh() -> void:
 			main.comp.clear_native_ambient_sample()
 		_disable_legacy_video()
 		legacy_disabled = true
-		renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
-		if main.settings.performance_overlay_enabled:
+		_set_screen_overlay_visible(_screen_overlay_enabled())
+		if _screen_overlay_enabled():
 			request_stats_overlay_update()
 		main._log("[NATIVE-XR] Native renderer active; legacy full-resolution passes disabled")
 
@@ -268,7 +300,7 @@ func _sync_secondary_screens() -> void:
 	var screens := []
 	var signature := ""
 	for screen in main.screens:
-		if screen == main.primary_screen or main.screen_sources.browser_for_screen(screen) != null or screen.monitor == null:
+		if screen == main.primary_screen or _browser_output(screen) or screen.monitor == null:
 			continue
 		var part := screen_part(screen)
 		if part.is_empty() or (part.crop as PackedFloat32Array).is_empty():
@@ -295,7 +327,7 @@ func _disable_legacy_video() -> void:
 	for screen in main.screens:
 		# The primary always; other stream screens when this renderer draws them too. Browser
 		# screens keep their own layers.
-		if screen != main.primary_screen and (not draws_secondary_screens() or main.screen_sources.browser_for_screen(screen) != null):
+		if screen != main.primary_screen and (not draws_secondary_screens() or _browser_output(screen)):
 			continue
 		for layer in [screen.comp_cylinder, screen.comp_cylinder_left, screen.comp_cylinder_right]:
 			if layer:
@@ -388,17 +420,27 @@ func _process_ambient_sample() -> void:
 	if pixels.size() == 32 * 32 * 4:
 		main.comp.update_native_ambient_sample(pixels, 32, 32)
 
+func _set_screen_overlay_visible(value: bool) -> void:
+	var height := 0
+	if main.comp != null and main.comp.screen_message_visible:
+		height = int(main.comp._message_panel_size().y + CompositionLayerManager.MESSAGE_PADDING.y * 2)
+	renderer.set_overlay_message_height(height)
+	renderer.set_overlay_visible(value)
+
+func _screen_overlay_enabled() -> bool:
+	return main.settings.performance_overlay_enabled or (main.comp != null and main.comp.screen_message_visible)
+
 func request_stats_overlay_update() -> void:
 	if active:
 		if renderer and stream_started:
-			renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
+			_set_screen_overlay_visible(_screen_overlay_enabled())
 		_stats_upload_delay = 1
 
 func set_stats_visible(value: bool) -> void:
 	if renderer and stream_started:
-		renderer.set_overlay_visible(value)
+		_set_screen_overlay_visible(value or (main.comp != null and main.comp.screen_message_visible))
 		_force_redraw = true
-	if value:
+	if _screen_overlay_enabled():
 		request_stats_overlay_update()
 
 func _process_stats_upload() -> void:
@@ -415,12 +457,12 @@ func _process_stats_upload() -> void:
 		return
 	if image.get_format() != Image.FORMAT_RGBA8:
 		image.convert(Image.FORMAT_RGBA8)
-	if image.get_size() != Vector2i(768, 512):
-		image.resize(768, 512)
+	if image.get_size() != CompositionLayerManager.SCREEN_OVERLAY_SIZE:
+		image.resize(CompositionLayerManager.SCREEN_OVERLAY_SIZE.x, CompositionLayerManager.SCREEN_OVERLAY_SIZE.y)
 	# Godot Images are top-left-origin while glTexSubImage2D feeds the native
 	# in-screen stats texture bottom-left-origin data.
 	image.flip_y()
-	renderer.upload_overlay(image.get_data(), 768, 512)
+	renderer.upload_overlay(image.get_data(), CompositionLayerManager.SCREEN_OVERLAY_SIZE.x, CompositionLayerManager.SCREEN_OVERLAY_SIZE.y)
 	# Unlike the former XR quad, these pixels now live in the video swapchain.
 	# A paused/static stream needs one draw to reveal the updated text.
 	_force_redraw = true

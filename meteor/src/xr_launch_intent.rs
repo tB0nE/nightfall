@@ -39,6 +39,8 @@ pub fn pending(root:&Path) -> Option<LaunchNotice> {
     #[cfg(windows)]
     return crate::xr_windows::pending(root);
     #[cfg(target_os="linux")]
+    if let Some(notice)=crate::xr_activation::pending(root) {return Some(notice)}
+    #[cfg(target_os="linux")]
     if let Ok(Some(value))=load(root) {
         if value.state=="pending" {return Some(LaunchNotice {generation:value.generation,app_id:value.app_id})}
     }
@@ -60,6 +62,7 @@ pub fn claim(root:&Path,generation:&str) -> bool {
     return crate::xr_windows::claim(root,generation);
     #[cfg(target_os="linux")]
     {
+        if crate::xr_activation::claim(root,generation) {return true;}
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let Ok(Some(mut value))=load(root) else {return false};

@@ -3,6 +3,8 @@ set -euo pipefail
 mkdir -p /out/run
 chmod 700 /out/run
 export XDG_RUNTIME_DIR=/out/run
+socket_name="$(cat /out/ipc-socket-name 2>/dev/null || echo monado_comp_ipc)"
+mkdir -p "$XDG_RUNTIME_DIR/$(dirname "$socket_name")"
 export XR_RUNTIME_JSON=/out/capture-build/openxr_monado-dev.json
 export SIMULATED_ENABLE=1 XRT_COMPOSITOR_NULL=1 XRT_NO_STDIN=1
 export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
@@ -16,7 +18,7 @@ trap 'kill "$service_pid" 2>/dev/null || true; wait "$service_pid" 2>/dev/null |
 ready=0
 for attempt in {1..100}; do
     kill -0 "$service_pid" || { tail -40 /out/service.log; exit 1; }
-    if [[ -S /out/run/monado_comp_ipc ]]; then ready=1; break; fi
+    if [[ -S /out/run/$socket_name ]]; then ready=1; break; fi
     sleep 0.1
 done
 [[ "$ready" == 1 ]] || { echo 'Service socket did not become ready' >&2; exit 1; }

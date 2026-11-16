@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Udvidet bitrate",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Fordobl grænser for skrivebord og PCVR. Kræver hurtigt net og afkodning.",
+	"Default Res": "Standardopløsning",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Vælg videocodec. H.264+ tillader højere bitrate.",
+	"XR codec; independent of desktop. Applies next session.": "XR-codec, uafhængig af skrivebordet. Gælder næste session.",
+	"Grip Scroll": "Rul med greb",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Hold grebet og bevæg for at rulle. Erstatter højreklik; slå mapping fra.",
+	"Ambient Intensity": "Lysintensitet",
+	"Adjust ambient lighting strength.": "Juster omgivelseslysets styrke.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "Vælg app",
+	"Previous": "Forrige",
+	"Next": "Næste"
 }

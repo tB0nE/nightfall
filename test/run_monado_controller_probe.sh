@@ -7,6 +7,8 @@ c++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Werror -Wno-missing-field-initializer
 controller_run=$(mktemp -d /out/controller-input-XXXXXX)
 chmod 700 "$controller_run"
 export XDG_RUNTIME_DIR="$controller_run"
+socket_name="$(cat /out/ipc-socket-name 2>/dev/null || echo monado_comp_ipc)"
+mkdir -p "$controller_run/$(dirname "$socket_name")"
 export XR_RUNTIME_JSON=/out/capture-build/openxr_monado-dev.json
 export SIMULATED_ENABLE=1 XRT_COMPOSITOR_NULL=1 XRT_NO_STDIN=1
 export SIMULATED_LEFT=touch SIMULATED_RIGHT=touch
@@ -23,7 +25,7 @@ controller_service=$!
 trap 'kill "$controller_service" 2>/dev/null || true; wait "$controller_service" 2>/dev/null || true' EXIT
 for attempt in {1..100}; do
     kill -0 "$controller_service"
-    [[ -S "$controller_run/monado_comp_ipc" ]] && break
+    [[ -S "$controller_run/$socket_name" ]] && break
     sleep 0.1
 done
 timeout 30s /out/controller-input-probe | tee "$controller_run/probe.log"

@@ -15,7 +15,13 @@ class FakeSettings extends RefCounted:
 class FakeSources extends RefCounted:
 	signal changed
 	var removed: VRScreen
+	var resume_retained := false
+	var resume_calls := 0
+	func restore_stream_after_browser_close(_screen):
+		resume_calls += 1
+		return resume_retained
 	func browser_closed(): changed.emit()
+	func secondary_browser_closed(_screen): return false
 	func remove_browser_screen(screen: VRScreen): removed = screen
 
 class FakeUploader extends RefCounted:
@@ -80,6 +86,17 @@ func _run():
 	assert(owner.screen_sources.removed == extra)
 	assert(owner.depth_estimator.enabled and not owner.video_presentation.stopped)
 	assert(owner.settings_controller.restores == 1)
+	owner.screen_sources.resume_retained = true
+	browser.active = true
+	browser.stop(false, true)
+	assert(owner.screen_sources.resume_calls == 0, "Resume must wait for the browser consumer drain")
+	for _frame in range(4): await process_frame
+	assert(owner.screen_sources.resume_calls == 1)
+	assert(owner.settings_controller.restores == 1, "A retained desktop must replace the welcome fallback")
+	browser.active = true
+	browser.stop()
+	for _frame in range(4): await process_frame
+	assert(owner.screen_sources.resume_calls == 1, "Explicit takeover must not resume an old host")
 	extra.free()
 	owner.screen_mesh.free()
 	owner.free()

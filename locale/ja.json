@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "ビットレート上限拡張",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "デスクトップとPCVRの上限を2倍にします。高速な通信とデコードが必要です。",
+	"Default Res": "既定の解像度",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "映像コーデックを選択。H.264+は高ビットレートに対応します。",
+	"XR codec; independent of desktop. Applies next session.": "XRコーデックはデスクトップと別です。次のセッションで適用します。",
+	"Grip Scroll": "グリップでスクロール",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "グリップでスクロール。右クリックを置き換えます。マッピングはオフに。",
+	"Ambient Intensity": "環境光の強さ",
+	"Adjust ambient lighting strength.": "環境光の強さを調整します。",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "アプリを選択",
+	"Previous": "前へ",
+	"Next": "次へ"
 }

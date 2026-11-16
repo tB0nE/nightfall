@@ -3,7 +3,7 @@
 Setup notes and test results for PC VR games streamed through Nightfall Meteor.
 This is separate from playing a flat game on a streamed desktop with AI 3D.
 
-Last updated: **2026-11-12**. Some results below come from development builds;
+Last updated: **2026-11-14**. Some results below come from development builds;
 an unreleased fix is identified explicitly rather than attributed to a public
 release.
 
@@ -35,6 +35,47 @@ every later release. “Not recorded” means there is no test result here.
 | Half-Life: Alyx | Previously tested in game with working XR streaming. Not rechecked in the latest session. | Not recorded. | Motion controllers. Use Meteor's Steam launch setup. |
 | Moss | Previously tested in game; recent attempts also encountered intermittent native XR failure. | An xrizer-backed test is recorded in the [Windows XR guide](meteor-windows-xr.md). | Controller poses and buttons are required; generic gamepad support is not equivalent to the tested XR input path. |
 | Subnautica | VR startup and rendering confirmed on 2026-11-12; user quit normally. A subsequent quick gameplay test confirmed Quest Touch controls after the launcher fix below. Earlier attempts also encountered native XR failure. | Not recorded. | Original VR mode uses a gamepad or keyboard/mouse. Motion controls require a mod such as SubmersedVR. |
+| Titanfall 2 + CircuitLord TF2VR | User confirmed working on Bazzite on 2026-11-14, using an EA App/Lutris install, Proton Experimental and Meteor's automatic XR runtime. Requires the development probe-session fix below. | Not recorded. | Installed mod 1.0.25 with Northstar 1.31.13 through tf2vr-linux. Detailed controls, long-session stability and performance were not recorded. |
+
+## Titanfall 2: CircuitLord TF2VR on Linux
+
+The tested installation used [tf2vr-linux](https://github.com/Monkellie/tf2vr-linux),
+an EA App copy on an ext4 game drive, and Proton Experimental
+`experimental-11.0-20261112-x86_64` (DXVK `v3.1.1-209-g1039f6820`). The user
+confirmed a successful VR launch after the fixes below. This is a development
+result, not a claim of support in a published Meteor release.
+
+- Start VR through the mod's `tf2vr` launcher. The regular EA/Steam game
+  launch continues to start the flat game. Use the same Proton for EA App
+  and the mod because they share a Wine prefix.
+- The tested local launcher preserves `XR_RUNTIME_JSON` and
+  `VR_PATHREG_OVERRIDE`, honors `VR_OVERRIDE` for Meteor's bundled xrizer,
+  and reads an explicit runtime selector before falling back to global
+  registration. Check upstream behavior before using an unmodified launcher.
+- The local Meteor wrapper requires an active Meteor OpenXR registration,
+  supplied while Nightfall is connected with Automatic XR enabled. It sets
+  `VR_OVERRIDE` to Meteor's bundled xrizer, clears Steam's inherited
+  `LD_PRELOAD`, and sets `PROTON_USE_XALIA=0`. These wrapper changes are local
+  integration steps, not files shipped by this repository.
+- A native non-Steam shortcut targeting that wrapper was added to Steam and
+  marked **Include in VR Library**. Do not force a compatibility tool on the
+  shell-script shortcut: the mod launcher starts Proton itself.
+
+### Meteor probe-session fix — development change
+
+Proton first opens and closes an xrizer detection session, then initializes
+OpenXR before starting the game. Meteor's automatic-session supervisor treated
+the destroyed probe as application completion and stopped the runtime. Proton's
+next connection was reset, leaving OpenXR setup incomplete; Titanfall exited
+with `0xC0000409` and reported `wineopenxr` negotiation error `-6`.
+
+The supervisor now requires capture output before accepting destroyed sessions
+as application completion. Probe-only startup remains bounded by the startup
+timeout, and cancellation still stops the runtime. A regression test covers a
+destroyed probe with no frames. The fix was applied to the installed development
+runtime with its checksum manifest updated; runtime registration validates those
+checksums, so editing an installed helper alone prevents registration. Release
+bundles must include the changed helper through the normal packaging process.
 
 ## Subnautica: motion controls with SubmersedVR
 

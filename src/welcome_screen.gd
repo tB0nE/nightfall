@@ -5,6 +5,8 @@ var main: Node3D
 var mdns_browsing: bool = false
 var wol_sender: WolSender = WolSender.new()
 var _xr_control: RefCounted
+var app_picker: AppPicker
+var server_picker: RefCounted
 var _auto_retry := 0.0
 var _auto_suppressed := false
 
@@ -42,6 +44,8 @@ func process_auto_xr(delta: float) -> void:
 	control.connect_offer(true)
 
 func _init(owner: Node3D):
+	app_picker = AppPicker.new(owner, self)
+	server_picker = preload("res://src/server_picker.gd").new(self)
 	main = owner
 
 func xr_settings_available() -> bool:
@@ -97,6 +101,7 @@ func build_welcome_ui():
 	build_server_screen(screens)
 	build_ip_screen(screens)
 	build_pin_screen(screens)
+	app_picker.build(screens)
 	build_language_picker(root)
 	build_notice(root)
 	if OS.has_feature("android"):
@@ -273,12 +278,7 @@ func _update_language_toggle():
 ## runtime after a language change.
 func retranslate():
 	_update_language_toggle()
-	var app_btn = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/WelcomeScreen/WelcomeAppBtn")
-	if app_btn:
-		var app_name = "Desktop"
-		if not main._available_apps.is_empty():
-			app_name = main._available_apps[main._selected_app_idx].get("name", "Desktop")
-		app_btn.text = Localization.t("App: %s") % app_name
+	refresh_app_display()
 
 func build_welcome_screen(parent: Node):
 	var screen = VBoxContainer.new()
@@ -342,14 +342,51 @@ func build_welcome_screen(parent: Node):
 	btn_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	screen.add_child(btn_spacer)
 
+	# The selected app's cover (refresh_app_display()) beside the buttons.
+	# Pressing the cover opens the app picker.
+	var main_row = HBoxContainer.new()
+	main_row.name = "WelcomeMain"
+	main_row.add_theme_constant_override("separation", 60)
+	main_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	main_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(main_row)
+
+	var cover_btn = Button.new()
+	cover_btn.name = "WelcomeAppCover"
+	cover_btn.custom_minimum_size = Vector2(300, 440)
+	cover_btn.flat = true
+	cover_btn.focus_mode = Control.FOCUS_NONE
+	main_row.add_child(cover_btn)
+	var cover_box = VBoxContainer.new()
+	cover_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	cover_box.add_theme_constant_override("separation", 8)
+	cover_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cover_btn.add_child(cover_box)
 	var pc_icon = TextureRect.new()
+	pc_icon.name = "WelcomeAppCoverImage"
 	pc_icon.texture = load("res://src/assets/pc_icon.svg")
-	pc_icon.custom_minimum_size = Vector2(280, 280)
+	pc_icon.custom_minimum_size = Vector2(280, 373)
 	pc_icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	pc_icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pc_icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	pc_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(pc_icon)
+	cover_box.add_child(pc_icon)
+	var app_name_label = Label.new()
+	app_name_label.name = "WelcomeAppName"
+	app_name_label.add_theme_font_size_override("font_size", 24)
+	app_name_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
+	app_name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	app_name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	app_name_label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	app_name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cover_box.add_child(app_name_label)
+
+	var buttons = VBoxContainer.new()
+	buttons.name = "WelcomeButtons"
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 0)
+	buttons.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	main_row.add_child(buttons)
 
 	var connect_btn = Button.new()
 	connect_btn.name = "WelcomeConnect"
@@ -357,7 +394,7 @@ func build_welcome_screen(parent: Node):
 	connect_btn.add_theme_font_size_override("font_size", 32)
 	connect_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	connect_btn.text = "Connect"
-	screen.add_child(connect_btn)
+	buttons.add_child(connect_btn)
 
 	var wol_btn = Button.new()
 	wol_btn.name = "WelcomeWol"
@@ -367,28 +404,20 @@ func build_welcome_screen(parent: Node):
 	wol_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	wol_btn.text = "Wake PC"
 	wol_btn.visible = false
-	screen.add_child(wol_btn)
+	buttons.add_child(wol_btn)
 
 	var spacer1 = Control.new()
 	spacer1.name = "Spacer1"
 	spacer1.custom_minimum_size = Vector2(0, 10)
 	spacer1.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer1)
+	buttons.add_child(spacer1)
 
-	var app_btn = Button.new()
-	app_btn.name = "WelcomeAppBtn"
-	app_btn.custom_minimum_size = Vector2(400, 60)
-	app_btn.add_theme_font_size_override("font_size", 24)
-	app_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	app_btn.text = Localization.t("App: %s") % "Desktop"
-	app_btn.visible = false
-	screen.add_child(app_btn)
 
 	var spacer2 = Control.new()
 	spacer2.name = "Spacer2"
 	spacer2.custom_minimum_size = Vector2(0, 10)
 	spacer2.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer2)
+	buttons.add_child(spacer2)
 
 	var change_btn = Button.new()
 	change_btn.name = "WelcomeChangeServer"
@@ -398,12 +427,12 @@ func build_welcome_screen(parent: Node):
 	change_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	change_btn.text = "Select Server"
 	change_btn.visible = false
-	screen.add_child(change_btn)
+	buttons.add_child(change_btn)
 
 	var spacer3 = Control.new()
 	spacer3.custom_minimum_size = Vector2(0, 10)
 	spacer3.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(spacer3)
+	buttons.add_child(spacer3)
 
 	var exit_btn = Button.new()
 	exit_btn.name = "WelcomeExit"
@@ -412,7 +441,7 @@ func build_welcome_screen(parent: Node):
 	exit_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.4))
 	exit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	exit_btn.text = "Exit"
-	screen.add_child(exit_btn)
+	buttons.add_child(exit_btn)
 
 	var bottom_pad = Control.new()
 	bottom_pad.custom_minimum_size = Vector2(0, 40)
@@ -449,101 +478,13 @@ func build_welcome_screen(parent: Node):
 		wol_btn.text = "Wake PC"
 	)
 	change_btn.pressed.connect(func(): show_welcome_screen("server"))
-	app_btn.button_down.connect(func(): cycle_app())
+	cover_btn.pressed.connect(func():
+		if not main._available_apps.is_empty():
+			show_welcome_screen("apps"))
 	exit_btn.pressed.connect(func(): main.get_tree().quit())
 
 func build_server_screen(parent: Node):
-	var screen = VBoxContainer.new()
-	screen.name = "ServerScreen"
-	screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	screen.add_theme_constant_override("separation", 0)
-	screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.visible = false
-	parent.add_child(screen)
-
-	var top_spacer = Control.new()
-	top_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	top_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(top_spacer)
-
-	var heading = Label.new()
-	heading.text = "Select Server"
-	heading.add_theme_font_size_override("font_size", 48)
-	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(heading)
-
-	var list_spacer = Control.new()
-	list_spacer.custom_minimum_size = Vector2(0, 40)
-	list_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(list_spacer)
-
-	var server_list = VBoxContainer.new()
-	server_list.name = "ServerList"
-	server_list.add_theme_constant_override("separation", 12)
-	server_list.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	server_list.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(server_list)
-
-	var discover_list = VBoxContainer.new()
-	discover_list.name = "DiscoverList"
-	discover_list.add_theme_constant_override("separation", 8)
-	discover_list.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	discover_list.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(discover_list)
-
-	var scan_btn = Button.new()
-	scan_btn.name = "ScanBtn"
-	scan_btn.custom_minimum_size = Vector2(400, 70)
-	scan_btn.add_theme_font_size_override("font_size", 28)
-	scan_btn.add_theme_color_override("font_color", Color(0.7, 0.85, 1.0, 1.0))
-	scan_btn.text = "Scan Network"
-	scan_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	screen.add_child(scan_btn)
-
-	var add_btn = Button.new()
-	add_btn.name = "AddServerBtn"
-	add_btn.custom_minimum_size = Vector2(400, 80)
-	add_btn.add_theme_font_size_override("font_size", 36)
-	add_btn.text = "+"
-	add_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	screen.add_child(add_btn)
-
-	var bottom_spacer = Control.new()
-	bottom_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	bottom_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(bottom_spacer)
-
-	var clear_btn = Button.new()
-	clear_btn.name = "ClearServersBtn"
-	clear_btn.custom_minimum_size = Vector2(400, 60)
-	clear_btn.add_theme_font_size_override("font_size", 24)
-	clear_btn.add_theme_color_override("font_color", Color(0.9, 0.5, 0.5, 1.0))
-	clear_btn.text = "Clear Saved Servers"
-	clear_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	screen.add_child(clear_btn)
-
-	var clear_spacer = Control.new()
-	clear_spacer.custom_minimum_size = Vector2(0, 16)
-	clear_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(clear_spacer)
-
-	var back_btn = Button.new()
-	back_btn.custom_minimum_size = Vector2(300, 60)
-	back_btn.add_theme_font_size_override("font_size", 28)
-	back_btn.text = "Back"
-	back_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	screen.add_child(back_btn)
-
-	var bottom_margin = Control.new()
-	bottom_margin.custom_minimum_size = Vector2(0, 40)
-	bottom_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	screen.add_child(bottom_margin)
-
-	add_btn.pressed.connect(func(): show_welcome_screen("ip"))
-	scan_btn.pressed.connect(func(): browse_mdns())
-	clear_btn.pressed.connect(func(): clear_saved_servers())
-	back_btn.pressed.connect(func(): show_welcome_screen("welcome"))
+	server_picker.build(parent)
 
 func build_ip_screen(parent: Node):
 	var screen = VBoxContainer.new()
@@ -746,6 +687,11 @@ const WELCOME_FRAME := Vector2i(1920, 1080)
 func show_welcome_screen(name: String):
 	if "pcvr_test" in main and main.pcvr_test.is_exclusive(): return
 	main._welcome_screen = name
+	# A notice belongs to the screen it was raised on. Callers navigate first
+	# and call show_notice() afterwards, so clearing here keeps a fresh error
+	# visible but stops an old one (e.g. "Pairing failed") from following the
+	# user back to the main menu. Previously only a stream start cleared it.
+	clear_notice()
 	# A failed connection can navigate here while the ray is still over the
 	# previous screen. Clear the world-space cursor filter before changing the
 	# welcome viewport/layout, otherwise the rendered pointer can retain the old
@@ -777,6 +723,9 @@ func show_welcome_screen(name: String):
 			populate_server_list()
 		"ip":
 			root.get_node_or_null("IPScreen").visible = true
+		"apps":
+			root.get_node_or_null("AppsScreen").visible = true
+			app_picker.open()
 		"pin":
 			var pin_screen = root.get_node_or_null("PINScreen")
 			if pin_screen:
@@ -795,14 +744,13 @@ func update_welcome_info():
 	var ws = screens.get_node_or_null("WelcomeScreen")
 	if not ws:
 		return
-	var host_label = ws.get_node_or_null("WelcomeHostName")
-	var ip_label = ws.get_node_or_null("WelcomeHostIP")
-	var connect_btn = ws.get_node_or_null("WelcomeConnect")
-	var app_btn = ws.get_node_or_null("WelcomeAppBtn")
-	var change_btn = ws.get_node_or_null("WelcomeChangeServer")
-	var wol_btn = ws.get_node_or_null("WelcomeWol")
-	var spacer1 = ws.get_node_or_null("Spacer1")
-	var spacer2 = ws.get_node_or_null("Spacer2")
+	var host_label = ws.find_child("WelcomeHostName", true, false)
+	var ip_label = ws.find_child("WelcomeHostIP", true, false)
+	var connect_btn = ws.find_child("WelcomeConnect", true, false)
+	var change_btn = ws.find_child("WelcomeChangeServer", true, false)
+	var wol_btn = ws.find_child("WelcomeWol", true, false)
+	var spacer1 = ws.find_child("Spacer1", true, false)
+	var spacer2 = ws.find_child("Spacer2", true, false)
 
 	var saved_ip_raw = main.get_node("%IPInput").text
 	var saved_ip = main.parse_ip_port(saved_ip_raw)[0]
@@ -830,7 +778,6 @@ func update_welcome_info():
 		else:
 			if host_label: host_label.text = saved_ip
 			if ip_label: ip_label.text = ""
-		if app_btn: app_btn.visible = true
 		if change_btn: change_btn.visible = true
 		if spacer1: spacer1.visible = true
 		if spacer2: spacer2.visible = true
@@ -839,7 +786,7 @@ func update_welcome_info():
 		if main.current_host_id >= 0:
 			query_app_list()
 		elif not main._available_apps.is_empty():
-			if app_btn: app_btn.text = Localization.t("App: %s") % main._available_apps[main._selected_app_idx].get("name", "Desktop")
+			refresh_app_display()
 	else:
 		if has_hosts:
 			if connect_btn: connect_btn.text = "Connect"
@@ -847,7 +794,6 @@ func update_welcome_info():
 			if connect_btn: connect_btn.text = "Pair"
 		if host_label: host_label.text = ""
 		if ip_label: ip_label.text = ""
-		if app_btn: app_btn.visible = false
 		if change_btn: change_btn.visible = true
 		if wol_btn: wol_btn.visible = false
 		if spacer1: spacer1.visible = false
@@ -863,7 +809,7 @@ func reset_connect_button():
 	var ws = screens.get_node_or_null("WelcomeScreen")
 	if not ws:
 		return
-	var connect_btn = ws.get_node_or_null("WelcomeConnect")
+	var connect_btn = ws.find_child("WelcomeConnect", true, false)
 	if connect_btn:
 		connect_btn.text = "Connect"
 		connect_btn.disabled = false
@@ -880,114 +826,34 @@ func save_last_ip(ip: String, server_unique_id: String = ""):
 	save.save("user://last_connection.cfg")
 
 func browse_mdns():
-	if mdns_browsing:
-		return
+	if mdns_browsing: return
 	mdns_browsing = true
-	var ss = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/ServerScreen")
-	if not ss:
-		mdns_browsing = false
-		return
-	var discover_list = ss.get_node_or_null("DiscoverList")
-	var scan_btn = ss.get_node_or_null("ScanBtn")
-	if discover_list:
-		for child in discover_list.get_children():
-			child.queue_free()
-	if scan_btn:
-		scan_btn.text = "Scanning..."
-		scan_btn.disabled = true
+	server_picker.set_scanning(true)
 	var hosts = await main.stream_manager.browse_mdns()
-	if discover_list:
-		for child in discover_list.get_children():
-			child.queue_free()
-	if hosts.size() > 0 and discover_list:
-		for host in hosts:
-			var ip = host.get("ip", "")
-			var friendly = host.get("friendly_name", host.get("hostname", ip))
-			# The host's HTTP port, as advertised: Sunshine on a custom port
-			# (50000, say) only answers pairing there.
-			var address := pair_address(ip, int(host.get("port", main.DEFAULT_PAIR_PORT)))
-			main._log("[mDNS] Discovered: ip='" + ip + "' friendly='" + friendly + "' port=" + str(host.get("port", "?")))
-			var btn = Button.new()
-			btn.custom_minimum_size = Vector2(400, 60)
-			btn.add_theme_font_size_override("font_size", 22)
-			btn.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0, 1.0))
-			btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-			btn.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
-			btn.text = friendly + "  " + ip
-			var btn_style = StyleBoxFlat.new()
-			btn_style.set_bg_color(Color(0.15, 0.18, 0.25, 0.9))
-			btn_style.set_border_width_all(1)
-			btn_style.set_border_color(Color(0.3, 0.4, 0.6, 0.8))
-			btn_style.set_corner_radius_all(8)
-			btn_style.set_content_margin_all(6)
-			btn.add_theme_stylebox_override("normal", btn_style)
-			var hover_style = btn_style.duplicate()
-			hover_style.set_bg_color(Color(0.2, 0.25, 0.35, 1.0))
-			btn.add_theme_stylebox_override("hover", hover_style)
-			var press_style = btn_style.duplicate()
-			press_style.set_bg_color(Color(0.3, 0.35, 0.5, 1.0))
-			btn.add_theme_stylebox_override("pressed", press_style)
-			btn.pressed.connect(func():
-				main._log("[mDNS] Selected host: address='" + address + "' friendly='" + friendly + "'")
-				# An address can now belong to a different host/profile. Pairing
-				# first checks identity and verifies the saved certificate over TLS,
-				# and if this machine is already paired it just records the new
-				# address on the existing entry instead of pairing again.
-				main.get_node("%IPInput").text = address
-				save_last_ip(address)
-				main.state_manager.load_host_state(address)
-				start_pair(address)
-			)
-			discover_list.add_child(btn)
-	if scan_btn:
-		scan_btn.text = "Scan Network"
-		scan_btn.disabled = false
+	server_picker.set_discovered(hosts)
+	server_picker.set_scanning(false)
 	mdns_browsing = false
 
 func populate_server_list():
-	var screens = main.welcome_viewport.get_node("WelcomeRoot/Screens")
-	var ss = screens.get_node("ServerScreen")
-	var server_list = ss.get_node("ServerList")
-	for child in server_list.get_children():
-		child.queue_free()
+	var cm = main.stream_backend.get_config_manager() if main.stream_backend else null
+	var hosts: Array = cm.get_hosts() if cm else []
+	server_picker.refresh(hosts, main.current_host_id, not main.stream_manager._usb_link_iface().is_empty())
 
-	var _cm2 = main.stream_backend.get_config_manager() if main.stream_backend else null
-	var hosts = _cm2.get_hosts() if _cm2 else []
-	var usb_link_up: bool = not main.stream_manager._usb_link_iface().is_empty()
-	for h in hosts:
-		var ip = h.get("localaddress", "")
-		var hname = h.get("hostname", "")
-		if hname == ip:
-			hname = ""
-		# Show the IP alongside the hostname (2026-08-26) - previously showed
-		# only one or the other, which made it hard to tell entries with the
-		# same/similar hostname apart, or to know what IP a "Pair" would
-		# actually target without selecting it first.
-		# hostname is currently always == ip (add_host() sets hostname to the
-		# pairing IP, not a real advertised name - computer_manager.cpp never
-		# reads <hostname> from serverinfo), so two hosts sharing an IP via
-		# NAT port-forwarding are otherwise indistinguishable in this list -
-		# append the https_port too (2026-08-27) so they read as, e.g.,
-		# "10.0.0.13:57984" vs "10.0.0.13:47984".
-		var https_port = h.get("https_port", 47984)
-		var display = "%s (%s:%d)" % [hname, ip, https_port] if not hname.is_empty() else "%s:%d" % [ip, https_port]
-		if not str(h.get("usb_address", "")).is_empty() and usb_link_up:
-			display += "  [USB]"
-		var btn = Button.new()
-		btn.custom_minimum_size = Vector2(400, 80)
-		btn.add_theme_font_size_override("font_size", 36)
-		btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		btn.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
-		btn.text = display
-		server_list.add_child(btn)
-		btn.pressed.connect(func():
-			main.get_node("%IPInput").text = ip
-			save_last_ip(ip, h.get("server_unique_id", ""))
-			main.state_manager.load_host_state(ip)
-			main.current_host_id = h.id
-			main.settings_controller.detect_polaris_host(ip, main.current_host_id)
-			show_welcome_screen("welcome")
-		)
+func select_saved_server(host: Dictionary) -> void:
+	var ip := str(host.get("localaddress",""))
+	main.get_node("%IPInput").text = ip
+	save_last_ip(ip,host.get("server_unique_id",""))
+	main.state_manager.load_host_state(ip)
+	main.current_host_id = host.id
+	main.settings_controller.detect_polaris_host(ip, main.current_host_id)
+	show_welcome_screen("welcome")
+
+func select_discovered_server(host: Dictionary) -> void:
+	var address := pair_address(str(host.get("ip","")),int(host.get("port",main.DEFAULT_PAIR_PORT)))
+	main.get_node("%IPInput").text = address
+	save_last_ip(address)
+	main.state_manager.load_host_state(address)
+	start_pair(address)
 
 func clear_saved_servers():
 	var _cm = main.stream_backend.get_config_manager() if main.stream_backend else null
@@ -999,7 +865,7 @@ func clear_saved_servers():
 	if screens:
 		var ws = screens.get_node_or_null("WelcomeScreen")
 		if ws:
-			var connect_btn = ws.get_node_or_null("WelcomeConnect")
+			var connect_btn = ws.find_child("WelcomeConnect", true, false)
 			if connect_btn:
 				connect_btn.text = "Connect"
 				connect_btn.disabled = false
@@ -1053,13 +919,26 @@ func cycle_app():
 		return
 	main._selected_app_idx = (main._selected_app_idx + 1) % main._available_apps.size()
 	main._selected_app_id = main._available_apps[main._selected_app_idx].get("id", 881448767)
-	var app_name = main._available_apps[main._selected_app_idx].get("name", "Desktop")
+	app_picker.remember()
+	refresh_app_display()
+
+## The main page's app button text and cover for the selected app (the PC
+## icon until its cover has arrived, or when the host has none).
+func refresh_app_display() -> void:
 	var screens = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens")
-	if not screens:
+	if not screens or main._available_apps.is_empty():
 		return
-	var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
-	if app_btn:
-		app_btn.text = Localization.t("App: %s") % app_name
+	var idx: int = clampi(main._selected_app_idx, 0, main._available_apps.size() - 1)
+	var app: Dictionary = main._available_apps[idx]
+	var ws = screens.get_node_or_null("WelcomeScreen")
+	if not ws:
+		return
+	var name_label = ws.find_child("WelcomeAppName", true, false)
+	if name_label:
+		name_label.text = String(app.get("name", "Desktop"))
+	var cover = ws.find_child("WelcomeAppCoverImage", true, false)
+	if cover:
+		cover.texture = app_picker.cover_for(int(app.get("id", AppPicker.DEFAULT_APP_ID)))
 
 # The address to pair with, in the form main.parse_ip_port() reads: the bare
 # address on the default port, else "ip:port", or "[v6]:port" for IPv6.
@@ -1099,15 +978,10 @@ func query_app_list():
 			main._available_apps = order_apps(_cm3.get_apps(main.current_host_id) if _cm3 else [])
 			if main._available_apps.is_empty():
 				main._available_apps = [{"name": "Desktop", "id": 881448767}]
-			main._selected_app_idx = 0
-			main._selected_app_id = main._available_apps[0].get("id", 881448767)
-			var app_name = main._available_apps[0].get("name", "Desktop")
-			var screens = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens")
-			if screens:
-				var app_btn = screens.get_node_or_null("WelcomeScreen/WelcomeAppBtn")
-				if app_btn:
-					app_btn.text = Localization.t("App: %s") % app_name
-					app_btn.visible = true
+			# The app used last time on this host, if it still exists.
+			main._selected_app_idx = app_picker.remembered_index(main._available_apps)
+			main._selected_app_id = main._available_apps[main._selected_app_idx].get("id", 881448767)
+			refresh_app_display()
 	)
 
 func _get_host_mac(ip: String) -> String:

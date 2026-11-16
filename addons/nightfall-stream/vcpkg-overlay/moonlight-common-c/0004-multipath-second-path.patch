@@ -1,0 +1,206 @@
+diff --git a/src/AudioStream.c b/src/AudioStream.c
+index 2fcc1f0..0910682 100644
+--- a/src/AudioStream.c
++++ b/src/AudioStream.c
+@@ -1,6 +1,9 @@
+ #include "Limelight-internal.h"
+ 
+ static SOCKET rtpSocket = INVALID_SOCKET;
++// Multipath: second path to the host (NF_MULTIPATH_REMOTE), or INVALID_SOCKET.
++static SOCKET rtpSocket2 = INVALID_SOCKET;
++static struct sockaddr_storage rtpRemote2;
+ 
+ static LINKED_BLOCKING_QUEUE packetQueue;
+ static RTP_AUDIO_QUEUE rtpAudioQueue;
+@@ -55,9 +58,17 @@ static void AudioPingThreadProc(void* context) {
+             AudioPingPayload.sequenceNumber = BE32(pingCount);
+ 
+             sendto(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
++            if (rtpSocket2 != INVALID_SOCKET) {
++                ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(AudioPortNumber);
++                sendto(rtpSocket2, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
++            }
+         }
+         else {
+             sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
++            if (rtpSocket2 != INVALID_SOCKET) {
++                ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(AudioPortNumber);
++                sendto(rtpSocket2, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
++            }
+         }
+ 
+         PltSleepMsInterruptible(&udpPingThread, 500);
+@@ -97,6 +108,7 @@ int notifyAudioPortNegotiationComplete(void) {
+     if (rtpSocket == INVALID_SOCKET) {
+         return LastSocketFail();
+     }
++    rtpSocket2 = bindSecondaryUdpSocket(AudioPortNumber, 0, SOCK_QOS_TYPE_AUDIO, &rtpRemote2);
+ 
+     // We may receive audio before our threads are started, but that's okay. We'll
+     // drop the first 1 second of audio packets to catch up with the backlog.
+@@ -133,6 +145,10 @@ void destroyAudioStream(void) {
+         closeSocket(rtpSocket);
+         rtpSocket = INVALID_SOCKET;
+     }
++    if (rtpSocket2 != INVALID_SOCKET) {
++        closeSocket(rtpSocket2);
++        rtpSocket2 = INVALID_SOCKET;
++    }
+ 
+     PltDestroyCryptoContext(audioDecryptionCtx);
+     freePacketList(LbqDestroyLinkedBlockingQueue(&packetQueue));
+@@ -267,7 +283,7 @@ static void AudioReceiveThreadProc(void* context) {
+             }
+         }
+ 
+-        packet->header.size = recvUdpSocket(rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect);
++        packet->header.size = recvUdpSocketMultipath(rtpSocket, rtpSocket2, &packet->data[0], MAX_PACKET_SIZE, useSelect);
+         if (packet->header.size < 0) {
+             Limelog("Audio Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
+             ListenerCallbacks.connectionTerminated(LastSocketFail());
+diff --git a/src/PlatformSockets.c b/src/PlatformSockets.c
+index 41e7dd8..5636525 100644
+--- a/src/PlatformSockets.c
++++ b/src/PlatformSockets.c
+@@ -287,6 +287,62 @@ static void setSocketQos(SOCKET s, int socketQosType) {
+ #endif
+ }
+ 
++SOCKET bindSecondaryUdpSocket(unsigned short port, int bufferSize, int socketQosType, struct sockaddr_storage* remoteOut) {
++    const char* env = getenv("NF_MULTIPATH_REMOTE");
++    struct sockaddr_in* sin = (struct sockaddr_in*)remoteOut;
++    SOCKET s;
++
++    if (env == NULL || env[0] == 0) {
++        return INVALID_SOCKET;
++    }
++    memset(remoteOut, 0, sizeof(*remoteOut));
++    sin->sin_family = AF_INET;
++    sin->sin_port = htons(port);
++    if (inet_pton(AF_INET, env, &sin->sin_addr) != 1) {
++        Limelog("Multipath: NF_MULTIPATH_REMOTE is not an IPv4 address: %s\n", env);
++        return INVALID_SOCKET;
++    }
++    s = bindUdpSocket(AF_INET, NULL, 0, bufferSize, socketQosType);
++    if (s != INVALID_SOCKET) {
++        Limelog("Multipath: second path to %s:%u\n", env, (unsigned)port);
++    }
++    return s;
++}
++
++int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool useSelect) {
++    static _Thread_local int first = 0;
++    struct pollfd pfd[2];
++    int err, i;
++
++    if (s2 == INVALID_SOCKET) {
++        return recvUdpSocket(s, buffer, size, useSelect);
++    }
++    pfd[0].fd = s;
++    pfd[0].events = POLLIN;
++    pfd[0].revents = 0;
++    pfd[1].fd = s2;
++    pfd[1].events = POLLIN;
++    pfd[1].revents = 0;
++    err = pollSockets(pfd, 2, UDP_RECV_POLL_TIMEOUT_MS);
++    if (err <= 0) {
++        return err;
++    }
++    // Alternate which path is read first so neither queue starves; the RTP
++    // queues drop whichever copy arrives second.
++    first ^= 1;
++    for (i = 0; i < 2; i++) {
++        struct pollfd* p = &pfd[(first + i) & 1];
++        if (p->revents & (POLLIN | POLLERR)) {
++            err = (int)recvfrom(p->fd, buffer, size, MSG_DONTWAIT, NULL, NULL);
++            if (err >= 0) {
++                return err;
++            }
++            // ICMP errors from an early ping, or nothing left: try the other path.
++        }
++    }
++    return 0;
++}
++
+ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCKADDR_LEN addrLen, int bufferSize, int socketQosType) {
+     SOCKET s;
+     LC_SOCKADDR bindAddr;
+diff --git a/src/PlatformSockets.h b/src/PlatformSockets.h
+index 02a5445..22c46cd 100644
+--- a/src/PlatformSockets.h
++++ b/src/PlatformSockets.h
+@@ -127,6 +127,12 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
+ int enableNoDelay(SOCKET s);
+ int setSocketNonBlocking(SOCKET s, bool enabled);
+ int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect);
++// Multipath (Nightfall): a second UDP path to the same host, e.g. a Steam Frame's
++// dedicated 6 GHz adapter next to Wi-Fi. NF_MULTIPATH_REMOTE names the host's IPv4
++// address on that path; returns INVALID_SOCKET when it isn't set.
++SOCKET bindSecondaryUdpSocket(unsigned short port, int bufferSize, int socketQosType, struct sockaddr_storage* remoteOut);
++// Like recvUdpSocket(), reading whichever of s and s2 has a packet (s2 may be INVALID_SOCKET).
++int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool useSelect);
+ void shutdownTcpSocket(SOCKET s);
+ int setNonFatalRecvTimeoutMs(SOCKET s, int timeoutMs);
+ void closeSocket(SOCKET s);
+diff --git a/src/VideoStream.c b/src/VideoStream.c
+index 402b056..774fd97 100644
+--- a/src/VideoStream.c
++++ b/src/VideoStream.c
+@@ -8,6 +8,9 @@
+ static RTP_VIDEO_QUEUE rtpQueue;
+ 
+ static SOCKET rtpSocket = INVALID_SOCKET;
++// Multipath: second path to the host (NF_MULTIPATH_REMOTE), or INVALID_SOCKET.
++static SOCKET rtpSocket2 = INVALID_SOCKET;
++static struct sockaddr_storage rtpRemote2;
+ static SOCKET firstFrameSocket = INVALID_SOCKET;
+ 
+ static PPLT_CRYPTO_CONTEXT decryptionCtx;
+@@ -72,9 +75,17 @@ static void VideoPingThreadProc(void* context) {
+             VideoPingPayload.sequenceNumber = BE32(pingCount);
+ 
+             sendto(rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
++            if (rtpSocket2 != INVALID_SOCKET) {
++                ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(VideoPortNumber);
++                sendto(rtpSocket2, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
++            }
+         }
+         else {
+             sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
++            if (rtpSocket2 != INVALID_SOCKET) {
++                ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(VideoPortNumber);
++                sendto(rtpSocket2, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
++            }
+         }
+ 
+         PltSleepMsInterruptible(&udpPingThread, 500);
+@@ -134,7 +145,7 @@ static void VideoReceiveThreadProc(void* context) {
+             }
+         }
+ 
+-        err = recvUdpSocket(rtpSocket,
++        err = recvUdpSocketMultipath(rtpSocket, rtpSocket2,
+                             encrypted ? encryptedBuffer : buffer,
+                             receiveSize,
+                             useSelect);
+@@ -309,6 +320,10 @@ void stopVideoStream(void) {
+         closeSocket(rtpSocket);
+         rtpSocket = INVALID_SOCKET;
+     }
++    if (rtpSocket2 != INVALID_SOCKET) {
++        closeSocket(rtpSocket2);
++        rtpSocket2 = INVALID_SOCKET;
++    }
+ 
+     VideoCallbacks.cleanup();
+ }
+@@ -335,6 +350,9 @@ int startVideoStream(void* rendererContext, int drFlags) {
+         VideoCallbacks.cleanup();
+         return LastSocketError();
+     }
++    rtpSocket2 = bindSecondaryUdpSocket(VideoPortNumber,
++                                        RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
++                                        SOCK_QOS_TYPE_VIDEO, &rtpRemote2);
+ 
+     VideoCallbacks.start();
+ 

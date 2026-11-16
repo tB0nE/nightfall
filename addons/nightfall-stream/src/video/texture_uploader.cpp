@@ -836,6 +836,34 @@ void TextureUploader::_render_thread_open_browser() {
     if (!browser_requested_.load()) close_browser_prototype();
 }
 
+void TextureUploader::_render_thread_resize_browser(int width, int height) {
+    if (!browser_requested_.load() || !gles_surface_ready_ || !gles_output_texture_ || plane_textures[0].is_null()) return;
+    JavaVM *vm = nullptr;
+    JNIEnv *env = get_gles_jni_env(vm);
+    jclass app = nightfall_get_godot_app_class();
+    jmethodID resize = env && app ? env->GetStaticMethodID(app, "resizeBrowserFor", "(III)V") : nullptr;
+    if (!resize) { if (env && env->ExceptionCheck()) env->ExceptionClear(); return; }
+    BrowserGlState browser_state(true);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gles_output_texture_);
+    // Retain the texture name/RID: consumers were drained by ScreenSources,
+    // and no old native handle can be deleted or rebound behind Godot's cache.
+    glGetError(); // Attribute the following error check to this allocation.
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    if (glGetError() != GL_NO_ERROR) { NF_LOGE("BrowserPrototype", "Browser output resize failed"); return; }
+    plane_textures[0]->set_size_override(Vector2i(width, height));
+    current_width = width;
+    current_height = height;
+    {
+        std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+        gles_surface_width_ = width;
+        gles_surface_height_ = height;
+    }
+    new_frame_available_.store(false);
+    env->CallStaticVoidMethod(app, resize, browser_id_, width, height);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); NF_LOGE("BrowserPrototype", "Java browser resize failed"); }
+}
+
 ANativeWindow *TextureUploader::create_android_gles_decoder_surface(int width, int height) {
     RenderingServer *rs = RenderingServer::get_singleton();
     if (!rs) return nullptr;
@@ -2028,6 +2056,7 @@ bool TextureUploader::supports_native_depth_capture() {
 }
 
 void TextureUploader::set_native_depth_capture_crop(PackedFloat32Array crop) {
+#ifdef __ANDROID__
     std::lock_guard<std::mutex> lock(gles_depth_crop_mutex_);
     if (crop.size() == 4 && crop[2] > 0.0f && crop[3] > 0.0f) {
         for (int i = 0; i < 4; ++i) gles_depth_crop_[i] = crop[i];
@@ -2035,6 +2064,9 @@ void TextureUploader::set_native_depth_capture_crop(PackedFloat32Array crop) {
         gles_depth_crop_[0] = gles_depth_crop_[1] = 0.0f;
         gles_depth_crop_[2] = gles_depth_crop_[3] = 1.0f;
     }
+#else
+    (void)crop;
+#endif
 }
 
 void TextureUploader::request_native_depth_capture(int width, int height) {
@@ -2063,6 +2095,8 @@ PackedByteArray TextureUploader::consume_native_depth_capture() {
 
 void TextureUploader::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start_browser_prototype", "width", "height"), &TextureUploader::start_browser_prototype, DEFVAL(1920), DEFVAL(1080));
+    ClassDB::bind_method(D_METHOD("resize_browser_prototype", "width", "height"), &TextureUploader::resize_browser_prototype);
+    ClassDB::bind_method(D_METHOD("get_browser_surface_size"), &TextureUploader::get_browser_surface_size);
     ClassDB::bind_method(D_METHOD("set_browser_id", "id"), &TextureUploader::set_browser_id);
     ClassDB::bind_method(D_METHOD("get_browser_id"), &TextureUploader::get_browser_id);
     ClassDB::bind_method(D_METHOD("close_browser_prototype"), &TextureUploader::close_browser_prototype);
@@ -2112,6 +2146,27 @@ void TextureUploader::start_browser_prototype(int width, int height) {
     }
     RenderingServer::get_singleton()->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_open_browser));
 #endif
+}
+
+bool TextureUploader::resize_browser_prototype(int width, int height) {
+#ifdef __ANDROID__
+    if (!browser_requested_.load() || !browser_open_dispatched_.load() ||
+        !((width == 1920 && height == 1080) || (width == 2560 && height == 1440))) return false;
+    RenderingServer *rs = RenderingServer::get_singleton();
+    if (!rs) return false;
+    rs->call_on_render_thread(callable_mp(this, &TextureUploader::_render_thread_resize_browser).bind(width, height));
+    return true;
+#else
+    return false;
+#endif
+}
+
+Vector2i TextureUploader::get_browser_surface_size() {
+#ifdef __ANDROID__
+    std::lock_guard<std::mutex> lock(gles_surface_mutex_);
+    if (browser_requested_.load() && gles_surface_ready_) return Vector2i(gles_surface_width_, gles_surface_height_);
+#endif
+    return Vector2i();
 }
 
 void TextureUploader::close_browser_prototype() {

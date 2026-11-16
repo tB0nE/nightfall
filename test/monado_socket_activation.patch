@@ -1,0 +1,32 @@
+--- a/src/xrt/ipc/server/ipc_server_mainloop_linux.c
++++ b/src/xrt/ipc/server/ipc_server_mainloop_linux.c
+@@ -26,6 +26,7 @@
+ 
+ #include "shared/ipc_shmem.h"
+ #include "server/ipc_server.h"
++#include "meteor_xr_listen_fd.h"
+ 
+ #include <stdlib.h>
+ #include <unistd.h>
+@@ -158,7 +159,20 @@
+ 	int ret;
+ 	ml->listen_socket = -1;
+ 
+-	ret = get_systemd_socket(ml, &fd);
++	const char *meteor_fd = getenv("METEOR_XR_LISTEN_FD");
++	if (meteor_fd != NULL) {
++		fd = meteor_xr_listen_fd(meteor_fd);
++		unsetenv("METEOR_XR_LISTEN_FD");
++		if (fd < 0) {
++			U_LOG_E("Invalid Meteor activation listener");
++			return -1;
++		}
++		fprintf(stderr, "METEOR_XR_LISTENER_ADOPTED\n");
++		ml->launched_by_socket = true;
++		ret = 0;
++	} else {
++		ret = get_systemd_socket(ml, &fd);
++	}
+ 	if (ret < 0) {
+ 		return ret;
+ 	}

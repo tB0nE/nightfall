@@ -75,6 +75,8 @@ mod xr_library;
 mod xr_bitrate;
 mod xr_foveation;
 mod xr_launch_intent;
+#[cfg(target_os = "linux")]
+mod xr_activation;
 mod xr_data;
 #[cfg(target_os = "linux")]
 mod xr_events;
@@ -225,6 +227,7 @@ async fn main() {
              \x20 --xr-service-dev <bind>  opt-in XR alongside proxy (explicit --xr-client-key required)\n\
              \x20 --xr-client-key <hex>    allowlisted headset public key for integrated DEV XR\n\
              \x20 --xr-runtime-root <dir>  optional fixed-demo checkout for integrated DEV XR\n\
+             \x20 --xr-auto-runtime       DEV Linux XR activation and temporary registration\n\
              \x20 --xr-dev <checkout> [--smoke]  isolated Linux/USB XR development session\n\
              \x20 --xr-control-dev <bind> <key-file> <client-public-key> [--relay [checkout]]  XR development endpoint\n\
              \x20 --no-depth              don't load the depth model (proxy only)\n\
@@ -241,7 +244,8 @@ async fn main() {
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
              \x20 --download-host         download/verify the Linux managed host without switching\n\
-             \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
+             \x20 --download-vda-vulkan <518|392|migraphx> download an optional VDA model\n\
+             \x20                         (migraphx: AMD GPUs with ROCm + MIGraphX)\n\
              \x20                         and the VDA graphs, then exit"
         );
         return;
@@ -263,8 +267,8 @@ async fn main() {
         }
     }
     if let Some(variant)=value("--download-vda-vulkan") {
-        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
-            eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
+        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,"migraphx"=>vda_vulkan::MIGRAPHX,_=>{
+            eprintln!("Choose 518, 392 or migraphx for --download-vda-vulkan");std::process::exit(2);
         }};
         let directory=config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let download=download::Download::default();
@@ -371,7 +375,7 @@ async fn main() {
         match crypto::MeteorKey::load_or_create(&config::data_dir().join("meteor.key")) {
             Ok(key) => {
                 let side = config.side_ports(config::DEFAULT_SUNSHINE_PORT);
-                depth_server::start(side.depth, depth.clone(), Arc::new(key), Arc::new(|_| false));
+                depth_server::start(side.depth, depth.clone(), Arc::new(key), Arc::new(|_| false), Arc::new(|a, b| a == b));
             }
             Err(err) => log::warn!("No key, so no depth port: {err}"),
         }
@@ -415,7 +419,14 @@ async fn main() {
     }
     let depth_port = depth.clone().zip(key.clone()).and_then(|(depth, key)| {
         let streaming = stats.clone();
-        depth_server::start(side.depth, depth.clone(), key, Arc::new(move |ip| streaming.is_streaming(ip)))
+        let paths = stats.clone();
+        depth_server::start(
+            side.depth,
+            depth.clone(),
+            key,
+            Arc::new(move |ip| streaming.is_streaming(ip)),
+            Arc::new(move |a, b| paths.same_client(a, b)),
+        )
             .map(|port| (port, depth))
     });
     // Register before exposing tray Quit. The coordinator remains alive while
@@ -489,6 +500,15 @@ async fn main() {
             #[cfg(target_os = "linux")]
             if let Some(trust) = pairing.clone() { desktop::watch_xr_approval(trust); }
             let advertised = if dev_xr_address.is_none() { Some(port) } else { None };
+            #[cfg(target_os = "linux")]
+            let automatic_runtime = if config.xr.automatic_launch || args.iter().any(|arg|arg == "--xr-auto-runtime") {
+                let root = runtime_root.as_ref().ok_or_else(||std::io::Error::other("Automatic XR requires a runtime root"))?;
+                let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(||std::io::Error::other("Automatic XR requires XDG_RUNTIME_DIR"))?;
+                let directory = std::path::PathBuf::from(runtime).join("nightfall-meteor");
+                let service = xr_activation::start(root, &directory)?;
+                log::info!("DEV automatic XR listener at {}; runtime selected only for authenticated headset connections",directory.display());
+                Some(service)
+            } else {None};
             let service_config=xr_control::ServiceConfig {
                 key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
             };
@@ -498,6 +518,8 @@ async fn main() {
                 let _steam_broker=steam_broker;
                 #[cfg(windows)]
                 let _steamvr_broker=steamvr_broker;
+                #[cfg(target_os = "linux")]
+                let _automatic_runtime = automatic_runtime;
                 xr_control::serve(listener,service_config,cancel).await
             }), advertised))
         }.await;

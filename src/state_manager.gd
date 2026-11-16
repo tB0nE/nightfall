@@ -42,6 +42,10 @@ func save_host_state():
 	save.save("user://host_state.cfg")
 
 func load_host_state(ip: String):
+	# The settings object is reused across hosts; dismiss callbacks captured for
+	# the previous host before replacing its values.
+	if main.get("ui_controller") != null and main.ui_controller.has_method("close_settings_popup"):
+		main.ui_controller.close_settings_popup()
 	if ip.is_empty():
 		return
 	var save = ConfigFile.new()
@@ -81,7 +85,11 @@ func load_host_state(ip: String):
 	main.host_resolution = main.compute_requested_resolution()
 	main.settings_controller.refresh_resolution_btn_label()
 	main.ui_controller.update_monitor_tab()
-	var bitrate_label = main.bitrate_labels[main.settings.host.bitrate_idx + 1] if main.settings.host.bitrate_idx >= 0 else "Auto"
+	main.ui_controller.update_option_btn(main._ui_grip_scroll_btn, "On" if main.settings.grip_scroll_enabled else "Off")
+	main.ui_controller.update_option_btn(main._ui_extended_bitrate_btn, "On" if main.settings.extended_bitrate_limits else "Off")
+	main.settings_controller.normalize_desktop_encoding()
+	main.ui_controller.update_codec_btn()
+	var bitrate_label = main.settings_controller.bitrate_label()
 	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label)
 	main.settings_controller.apply_stereo()
 	if main.depth_estimator:
@@ -147,6 +155,9 @@ func load_host_state(ip: String):
 			main.welcome_screen.show_welcome_screen(main._welcome_screen)
 
 func sync_ui_to_settings(apply_runtime: bool = true):
+	if main.ui_controller:
+		main.ui_controller.update_option_btn(main._ui_grip_scroll_btn, "On" if main.settings.grip_scroll_enabled else "Off")
+		main.ui_controller.update_option_btn(main._ui_extended_bitrate_btn, "On" if main.settings.extended_bitrate_limits else "Off")
 	# Opening the menu only needs fresh labels. Reapplying shaders, ambient
 	# sources, and bezel geometry while a native/legacy viewport is live can
 	# disturb the GLES render targets without any setting having changed.

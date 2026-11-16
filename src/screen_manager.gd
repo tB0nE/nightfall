@@ -102,7 +102,11 @@ func resize_screen_to_aspect(stream_w: int, stream_h: int):
 		main.comp.update_cylinder_params()
 
 func cycle_curvature():
-	main.curvature = (main.curvature + 1) % 3
+	set_curvature((main.curvature + 1) % 3)
+
+func set_curvature(value: int):
+	if value < 0 or value >= main.curvature_labels.size() or value == main.curvature: return
+	main.curvature = value
 	for s in main.screens:
 		s.curvature = main.curvature
 		s.apply_curvature()

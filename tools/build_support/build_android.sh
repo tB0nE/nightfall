@@ -205,6 +205,7 @@ cp android/src/main/java/com/godot/game/GamepadInfo.java android/build/src/main/
 cp android/src/main/java/com/godot/game/AudioOutput.java android/build/src/main/java/com/godot/game/AudioOutput.java
 cp android/src/main/java/com/godot/game/BrowserCapabilities.java android/build/src/main/java/com/godot/game/BrowserCapabilities.java
 cp android/src/main/java/com/godot/game/BrowserPrototype.java android/build/src/main/java/com/godot/game/BrowserPrototype.java
+cp android/src/main/java/com/godot/game/BrowserClipboard.java android/build/src/main/java/com/godot/game/BrowserClipboard.java
 cp android/src/main/java/com/godot/game/BrowserNavigation.java android/build/src/main/java/com/godot/game/BrowserNavigation.java
 cp android/src/main/java/com/godot/game/BrowserPageTabs.java android/build/src/main/java/com/godot/game/BrowserPageTabs.java
 cp android/src/main/java/com/godot/game/BrowserGamepadProbe.java android/build/src/main/java/com/godot/game/BrowserGamepadProbe.java

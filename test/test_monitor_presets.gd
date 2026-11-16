@@ -19,8 +19,40 @@ func _init():
 	_test_json_round_trip()
 	_test_custom_preset_file_round_trip()
 	_test_browser_layout_budget()
+	_test_add_keeps_existing_outputs()
 	print("All monitor_presets tests passed")
 	quit()
+
+func _test_add_keeps_existing_outputs():
+	var owner := LayoutOwner.new()
+	owner.layout = ScreenLayout.new()
+	owner.layout.frame_size = Vector2i(5760,1080)
+	owner.layout.desktop_bounds = Rect2i(0,0,5760,1080)
+	for i in 3:
+		var monitor := ScreenLayout.MonitorSpec.new()
+		monitor.id = StringName("m%d" % i)
+		monitor.frame_rect = Rect2i(i * 1920,0,1920,1080)
+		monitor.desktop_rect = monitor.frame_rect
+		monitor.enabled = i == 2
+		monitor.is_primary = i == 2
+		owner.layout.monitors.append(monitor)
+	var controller := SettingsController.new(owner)
+	var target := controller._build_staged_layout(true)
+	assert(target.enabled_monitors().size() == 2)
+	assert(target.get_primary().id == &"m2", "Adding an output must retain the current primary")
+	var enabled := []
+	for monitor in target.enabled_monitors(): enabled.append(monitor.id)
+	assert(enabled.has(&"m2") and enabled.has(&"m0"), "Add must retain the active rightmost output and pick one spare")
+	var legacy := controller._build_staged_layout()
+	assert(legacy.get_primary().id == &"m0", "Existing Screens count selection keeps its original ordering")
+	owner._staged_physical_count = 1
+	owner._staged_virtual_count = 1
+	target = controller._build_staged_layout(true)
+	assert(target.get_primary().id == &"m2", "Adding a virtual screen must not replace the physical source")
+	controller._monitor_selection_override = [&"m1"]
+	target = controller._build_staged_layout(true)
+	assert(target.enabled_monitors()[0].id == &"m1", "Close must preserve the requested surviving output, not choose the leftmost")
+	owner.free()
 
 func _test_browser_layout_budget():
 	var owner := LayoutOwner.new()

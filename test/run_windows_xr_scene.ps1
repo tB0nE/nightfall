@@ -1,5 +1,5 @@
 param([ValidateSet(0,512,1024,2048,2560)][int]$EyeSize=0, [ValidateRange(5,300)][int]$Seconds=30, [switch]$AsyncDelivery=$true,
-    [ValidateSet(-1,0,16,32,48,64,80,100,120,160)][int]$BitrateMbps=-1,
+    [ValidateSet(-1,0,16,32,48,64,80,100,120,160,200,300,400,500)][int]$BitrateMbps=-1,
     [string]$Application='', [string[]]$ApplicationArguments=@('-vr','-openxr','-dx11'), [uint32]$SteamAppId=0,
     [string]$OpenVrRuntime='',
     [string]$OpenVrLoader='',

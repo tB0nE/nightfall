@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "擴充位元率",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "將桌面和PCVR的位元率上限加倍。需要高速網路與解碼能力。",
+	"Default Res": "預設解析度",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "選擇影片編解碼器。H.264+允許更高的位元率。",
+	"XR codec; independent of desktop. Applies next session.": "XR編解碼器獨立於桌面，下次工作階段生效。",
+	"Grip Scroll": "握柄捲動",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "按住握柄並移動以捲動，取代右鍵。須關閉控制器映射。",
+	"Ambient Intensity": "環境光強度",
+	"Adjust ambient lighting strength.": "調整環境光強度。",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "選擇應用程式",
+	"Previous": "上一頁",
+	"Next": "下一頁"
 }

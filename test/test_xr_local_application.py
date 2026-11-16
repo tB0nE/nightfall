@@ -8,11 +8,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from xr_local_application import load_application, validate_capture, wait_for_local_launch, request_local_launch, find_armed_session, application_environment, validate_openvr_compat
+from xr_local_application import load_application, validate_capture, wait_for_local_launch, request_local_launch, find_armed_session, application_environment, validate_openvr_compat, steam_runtime_command
 from xr_application_lifecycle import run_application
 
 
 class LocalApplicationTests(unittest.TestCase):
+    def test_steam_runtime_restores_private_ipc_after_container_setup(self):
+        env = {"XDG_RUNTIME_DIR": "/tmp/nf-xr-private", "XR_RUNTIME_JSON": "/home/user/session/runtime.json"}
+        command = ["/steam/steam-launch-wrapper", "--", "/steam/SteamLinuxRuntime_4/_v2-entry-point",
+                   "--verb=waitforexitandrun", "--", "/proton/proton", "waitforexitandrun", "game.exe", "argument with spaces"]
+        patched = steam_runtime_command(command, env)
+        self.assertEqual(patched[:5], command[:5])
+        self.assertEqual(patched[5:8], ["/usr/bin/env", "XDG_RUNTIME_DIR=/tmp/nf-xr-private", "XR_RUNTIME_JSON=/home/user/session/runtime.json"])
+        self.assertEqual(patched[8:], command[5:])
+        self.assertEqual(steam_runtime_command(["/usr/bin/native-game", "--"], env), ["/usr/bin/native-game", "--"])
+        with self.assertRaises(ValueError):
+            steam_runtime_command(["/steam/SteamLinuxRuntime_sniper/_v2-entry-point"], env)
+
     def test_session_discovery_filters_expired_and_rejects_ambiguity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -43,7 +55,8 @@ class LocalApplicationTests(unittest.TestCase):
             env = application_environment(spec,inherited)
             self.assertEqual(env["VR_OVERRIDE"],str(root/"compat"))
             self.assertEqual(env["PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES"],"1")
-            self.assertEqual(env["PRESSURE_VESSEL_FILESYSTEMS_RO"],str(root/"compat"))
+            self.assertEqual(env["PRESSURE_VESSEL_FILESYSTEMS_RO"],"/private/runtime.json:" + str(root/"compat"))
+            self.assertEqual(env["PRESSURE_VESSEL_FILESYSTEMS_RW"],"/private/ipc")
             self.assertEqual(env["XR_RUNTIME_JSON"],inherited["XR_RUNTIME_JSON"])
             self.assertNotIn("VR_OVERRIDE",inherited)
             with patch("xr_local_application.validate_openvr_compat",return_value=Path("/usr/share/xrizer")):

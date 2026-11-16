@@ -53,6 +53,9 @@ var monitors: Array[MonitorSpec] = []
 ## The host packs screens by size, so any set of monitors can be streamed
 ## together and no gap between selected monitors has to be filled.
 var any_selection: bool = false
+var virtual_modes_supported := false
+var packing_profiled := false
+var packing_budget_version := 0
 
 func to_dict() -> Dictionary:
 	var mons := []
@@ -65,6 +68,9 @@ func to_dict() -> Dictionary:
 		"desktop_bounds": [desktop_bounds.position.x, desktop_bounds.position.y, desktop_bounds.size.x, desktop_bounds.size.y],
 		"monitors": mons,
 		"any_selection": any_selection,
+		"virtual_modes_supported": virtual_modes_supported,
+		"packing_profiled": packing_profiled,
+		"packing_budget_version": packing_budget_version,
 	}
 
 static func from_dict(d: Dictionary) -> ScreenLayout:
@@ -76,6 +82,9 @@ static func from_dict(d: Dictionary) -> ScreenLayout:
 	var db: Array = d.get("desktop_bounds", [0, 0, fs[0], fs[1]])
 	l.desktop_bounds = Rect2i(db[0], db[1], db[2], db[3])
 	l.any_selection = bool(d.get("any_selection", false))
+	l.virtual_modes_supported = bool(d.get("virtual_modes_supported", false))
+	l.packing_profiled = bool(d.get("packing_profiled", false))
+	l.packing_budget_version = int(d.get("packing_budget_version", 0))
 	l.monitors = []
 	for md in d.get("monitors", []):
 		l.monitors.append(MonitorSpec.from_dict(md))
@@ -204,6 +213,9 @@ func rescale_to(new_frame: Vector2i) -> ScreenLayout:
 	l.source = source
 	l.frame_size = new_frame
 	l.any_selection = any_selection
+	l.virtual_modes_supported = virtual_modes_supported
+	l.packing_profiled = packing_profiled
+	l.packing_budget_version = packing_budget_version
 	var sx := float(new_frame.x) / float(frame_size.x) if frame_size.x > 0 else 1.0
 	var sy := float(new_frame.y) / float(frame_size.y) if frame_size.y > 0 else 1.0
 	l.desktop_bounds = Rect2i(

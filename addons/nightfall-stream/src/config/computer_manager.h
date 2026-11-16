@@ -102,6 +102,7 @@ private:
     void _on_display_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback, String ip, int port);
     void _fetch_session_status(Dictionary response, Callable callback, String ip, int port);
     void _on_session_status_completed(int code, PackedByteArray body, Dictionary headers, String error, Dictionary response, Callable callback);
+    void _on_clipboard_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
     void _on_set_cursor_visible_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
     void _on_prelaunch_manifest_completed(int code, PackedByteArray body, Dictionary headers, String error, Callable callback);
 
@@ -136,6 +137,7 @@ public:
     void cancel_host_stream(int host_id, String ip, int port);
     void stop_stream_at(String ip, int port, Callable callback);
     void set_cursor_visible(int host_id, bool visible, Callable callback);
+    void request_clipboard(int host_id, bool write, String text, Callable callback);
 };
 
 } // namespace godot

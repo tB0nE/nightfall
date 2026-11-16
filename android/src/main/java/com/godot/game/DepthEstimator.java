@@ -478,6 +478,19 @@ public class DepthEstimator {
 
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
     private final AtomicBoolean isInferencing = new AtomicBoolean(false);
+
+    private volatile boolean sourceTransitionPaused;
+    private final AtomicBoolean sourceTransitionDrained = new AtomicBoolean(true);
+    public void beginSourceTransition() {
+        sourceTransitionPaused = true;
+        sourceTransitionDrained.set(false);
+        latestGpuFrame.set(null);
+        executor.execute(() -> sourceTransitionDrained.set(true));
+    }
+    public boolean isSourceTransitionIdle() {
+        return sourceTransitionDrained.get() && !isInferencing.get() && !gpuReconfigurePending;
+    }
+    public void endSourceTransition() { sourceTransitionPaused = false; }
     private final AtomicBoolean gpuWorkerScheduled = new AtomicBoolean(false);
     private final AtomicReference<PendingFrame> latestGpuFrame = new AtomicReference<>();
     private final AtomicReference<byte[]> latestDepthMap = new AtomicReference<>();
@@ -1181,7 +1194,7 @@ public class DepthEstimator {
     }
 
     public void submitFrame(byte[] rgbaPixels, int width, int height) {
-        if (!initialized || gpuReconfigurePending) return;
+        if (!initialized || gpuReconfigurePending || sourceTransitionPaused) return;
         if (rgbaPixels == null || rgbaPixels.length < width * height * 4) return;
         final int modelIdx = activeModelIndex;
         final GpuVariant gpuVariant = activeGpuVariant;
@@ -1311,7 +1324,7 @@ public class DepthEstimator {
         nextDispatchNs = startNs + GPU_INFERENCE_INTERVAL_NS;
         gpuWorkerScheduled.set(false);
 
-        if (!initialized || activeGpuVariant != variant) {
+        if (sourceTransitionPaused || !initialized || activeGpuVariant != variant) {
             latestGpuFrame.set(null);
             nextDispatchNs = 0;
             return;

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from xr_runtime_lifecycle import managed_runtime
+from xr_runtime_paths import socket_path
 
 
 def main():
@@ -40,7 +41,7 @@ def main():
                METEOR_XRIZER_LIBRARY=str(xrizer),
                METEOR_VRCHAT_MANIFEST="/run/media/system/GAMES/SteamLibrary/steamapps/common/VRChat/VRChat_Data/StreamingAssets/SteamVR/actions.json")
     with managed_runtime([str(build / "capture-build/src/xrt/targets/service/monado-service")],
-                         env=env,ready_path=runtime / "monado_comp_ipc",log_path=output / "service.log",
+                         env=env,ready_path=socket_path(root,runtime,prepare=True),log_path=output / "service.log",
                          state_path=output / "state.json"):
         for name in ("controller-input-probe","openvr-controller-input-probe"):
             with (output / f"{name}.log").open("w") as log:

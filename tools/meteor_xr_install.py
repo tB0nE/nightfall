@@ -76,7 +76,11 @@ def install(source, destination):
     versions = destination / 'versions'
     versions.mkdir(mode=0o700, exist_ok=True)
     release = versions / version
-    with (cache / 'managed-session.lock').open('a') as lock:
+    with (cache / 'runtime-registration.lock').open('a') as registration_lock, (cache / 'managed-session.lock').open('a') as lock:
+        try:
+            fcntl.flock(registration_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError('Disconnect automatic XR before installing its runtime') from error
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:

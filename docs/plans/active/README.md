@@ -8,10 +8,14 @@ here does not mean its entire original implementation is unfinished.
 
 | Plan | Current purpose |
 | --- | --- |
+| [Settings popups and drag scrolling](settings-popups-and-drag-scrolling.md) | Shared choice/slider UI and ambient gain implemented in stages; remaining selectors, high-bitrate validation and thumbstick-free scrolling pending. |
+| [Automatic XR discovery](automatic-xr-runtime-discovery.md) | Linux activation/registration and Windows registered-driver acceptance; implementation in progress. |
+| [Virtual-monitor transitions](virtual-monitor-transition-speed.md) | Readiness-based restart and layout-preservation changes; live headset/Windows acceptance pending. |
 | [Repository cleanup](repository-cleanup.md) | Dependency narrowing, renderer ownership and native subsystem splits. |
 | [Agent testing](agent-testing.md) | Extend the existing tools; scripted poses, display latency, install/download coverage. |
 | [Browser testing](browser-testing.md) | Remaining mixed-screen, lifecycle, input and media acceptance. |
-| [Unified screens and tabs](unified-content-tabs.md) | Implemented workspace history plus future screen organization; broader UI redesign deferred. |
+| [Unified screen management](unified-screen-content-management.md) | Active redesign: shared tab model, per-tab resolution/crop, retained source switching, and mixed screens. |
+| [Earlier unified screens work](unified-content-tabs.md) | Historical browser/mixed-screen implementation checkpoints. |
 | [Linux installation](meteor-linux-installation.md) | Fresh physical installation and sustained XR acceptance; old Windows-not-implemented entries are historical. |
 | [Linux screen packing](linux-screen-packing.md) | Cross-desktop packed-capture validation, especially GNOME and hardware combinations. |
 | [Wayland multi-monitor](meteor-wayland-multi-monitor.md) | Earlier region-capture evidence; newer packed capture supersedes its original scope. |

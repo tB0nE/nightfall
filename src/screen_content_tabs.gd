@@ -2,6 +2,7 @@ class_name ScreenContentTabs
 extends RefCounted
 
 signal selection_changed(previous: ScreenContentTab, current: ScreenContentTab)
+signal tabs_changed
 
 var tabs: Array[ScreenContentTab] = []
 var selected_id: StringName = &""
@@ -21,6 +22,7 @@ func add(tab: ScreenContentTab, select_new: bool = true) -> bool:
 	tabs.append(tab)
 	if select_new or selected() == null:
 		select(tab.id)
+	tabs_changed.emit()
 	return true
 
 func select(id: StringName) -> bool:
@@ -43,7 +45,33 @@ func remove(id: StringName) -> bool:
 	if was_selected:
 		selected_id = tabs[mini(index, tabs.size() - 1)].id if not tabs.is_empty() else &""
 		selection_changed.emit(tab, selected())
+	tabs_changed.emit()
 	return true
+
+## Browser metadata is a partial update to a mixed source list. Keep existing
+## tab objects (including their settings), and never steal a monitor selection.
+func sync_browser_pages(pages: Array, selected_page: int) -> void:
+	if pages.is_empty(): return # Opening/error snapshots are not a close event.
+	var previous := selected()
+	var keep := {}
+	for page in pages:
+		if not page is Dictionary or int(page.get("id", 0)) <= 0: continue
+		var id := StringName("browser:page:%d" % int(page.id))
+		keep[id] = true
+		var tab := find_tab(id)
+		if tab == null:
+			tab = ScreenContentTab.new()
+			tab.id = id
+			tab.kind = ScreenContentTab.BROWSER
+			tab.locator = {"url": "about:blank"}
+			add(tab, false)
+		tab.title = str(page.get("title", "Browser"))
+	if keep.is_empty(): return
+	for tab in tabs.duplicate():
+		if tab.kind == ScreenContentTab.BROWSER and not keep.has(tab.id): remove(tab.id)
+	if previous == null or previous.kind == ScreenContentTab.BROWSER:
+		select(StringName("browser:page:%d" % selected_page))
+	tabs_changed.emit()
 
 func to_dict() -> Dictionary:
 	var saved := []
@@ -73,5 +101,6 @@ func restore(data: Dictionary) -> bool:
 	var previous := selected()
 	tabs = restored
 	selected_id = restored_selection
+	tabs_changed.emit()
 	selection_changed.emit(previous, selected())
 	return true

@@ -22,6 +22,19 @@ class LibraryTests(unittest.TestCase):
                 self.assertTrue(app['ready']);self.assertNotIn('_shortcut',app)
                 LIB.action('launch',app['key'])
                 self.assertEqual(launch.call_args.args[0][1:],['steam://rungameid/'+str((2944203442<<32)|0x02000000)])
+    def test_automatic_catalog_launch_supplies_environment_when_steam_is_closed(self):
+        import os
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            app={'key':'steam:123','name':'Test VR','vr':True,'ready':True}
+            with patch.object(LIB,'ROOT',root),patch.object(LIB,'CACHE',root/'cache'), \
+                    patch.object(LIB,'discover',return_value=[app]),patch.object(LIB,'automatic_ready',return_value=True), \
+                    patch.dict(os.environ,{'XDG_RUNTIME_DIR':str(root/'runtime')}),patch.object(LIB.subprocess,'Popen') as launch:
+                LIB.action('launch','steam:123')
+                env=launch.call_args.kwargs['env']
+                self.assertEqual(env['PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES'],'1')
+                self.assertIn(str(root/'runtime/nightfall-meteor'),env['PRESSURE_VESSEL_FILESYSTEMS_RW'])
+
     def test_truncated_shortcuts_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'shortcuts.vdf';path.write_bytes(b'\0shortcuts\0\x01name\0unterminated')

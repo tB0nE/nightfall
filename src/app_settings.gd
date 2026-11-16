@@ -43,6 +43,12 @@ const DEFAULT_MICROPHONE_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
 
+var h264_high_bitrate := false
+var extended_bitrate_limits := false:
+	set(value):
+		extended_bitrate_limits = value
+		VideoEncodingOptions.extended_limits = value
+var grip_scroll_enabled := false
 var screen_crop_mode: int = 0
 var screen_host_background: bool = false
 var screen_key_mode: int = 0
@@ -55,6 +61,7 @@ var sharpen_mode: int = DEFAULT_SHARPEN_MODE
 var brightness_pct: int = DEFAULT_BRIGHTNESS_PCT
 var contrast_pct: int = DEFAULT_CONTRAST_PCT
 var gamma_pct: int = DEFAULT_GAMMA_PCT
+var ambient_gain: float = 1.0
 var ambient_mode: int = DEFAULT_AMBIENT_MODE
 var ambient_color: int = DEFAULT_AMBIENT_COLOR
 var browser_resolution: int = DEFAULT_BROWSER_RESOLUTION
@@ -105,10 +112,12 @@ func reset_display() -> void:
 	brightness_pct = DEFAULT_BRIGHTNESS_PCT
 	contrast_pct = DEFAULT_CONTRAST_PCT
 	gamma_pct = DEFAULT_GAMMA_PCT
+	ambient_gain = 1.0
 	ambient_mode = DEFAULT_AMBIENT_MODE
 	ambient_color = DEFAULT_AMBIENT_COLOR
 
 func reset_general() -> void:
+	grip_scroll_enabled = false
 	browser_resolution = DEFAULT_BROWSER_RESOLUTION
 	cursor_mode = DEFAULT_CURSOR_MODE
 	pointer_steady = DEFAULT_POINTER_STEADY
@@ -117,6 +126,8 @@ func reset_general() -> void:
 	high_refresh_rates = DEFAULT_HIGH_REFRESH_RATES
 	passthrough_fade_pct = DEFAULT_PASSTHROUGH_FADE_PCT
 	tracking_mode = DEFAULT_TRACKING_MODE
+	h264_high_bitrate = false
+	extended_bitrate_limits = false
 	codec_preference = DEFAULT_CODEC_PREFERENCE
 	grid_mode_enabled = DEFAULT_GRID_MODE_ENABLED
 	performance_overlay_enabled = DEFAULT_PERFORMANCE_OVERLAY_ENABLED

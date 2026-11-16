@@ -42,7 +42,9 @@ as outstanding.
 - [Screen crop, colour key and placement](guides/screen-display-options.md)
 - [Meteor managed-host releases](guides/meteor-host-releases.md)
 
+- [Automatic Linux XR launch (development preview)](guides/automatic-xr-launch.md)
 - [PCVR game compatibility and game-specific setup](guides/game-compatibility.md)
+- [Steam Frame (Linux arm64), experimental](guides/steam-frame.md)
 - [Testing without a person in the headset](guides/agent-testing.md)
 - [ZipDepth on Quest GPU](guides/zipdepth-quest-gpu.md)
 - [ZipDepth Quest quality tiers and retained experiments](guides/zipdepth-quest-tiers.md)

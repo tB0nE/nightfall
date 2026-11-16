@@ -19,7 +19,7 @@ pub(crate) struct Control {
 }
 impl Control {
     pub fn queue(&mut self, mbps: u32) -> io::Result<()> {
-        if mbps != 0 && !(8..=160).contains(&mbps) {return Err(io::Error::other("unsupported_bitrate"));}
+        if mbps != 0 && !(8..=1000).contains(&mbps) {return Err(io::Error::other("unsupported_bitrate"));}
         let directory=self.directory.lock().unwrap().clone().ok_or_else(||io::Error::other("runtime_not_ready"))?;
         let next=self.sequence.checked_add(1).ok_or_else(||io::Error::other("bitrate_counter_exhausted"))?;
         let temporary=directory.join("bitrate-request.tmp");
@@ -61,7 +61,7 @@ mod tests {
         let mut control=Control::default();
         assert!(control.queue(80).is_err());
         *control.directory.lock().unwrap()=Some(directory.clone());
-        assert!(control.queue(161).is_err());
+        assert!(control.queue(1001).is_err());
         control.queue(32).unwrap(); control.queue(80).unwrap();
         assert_eq!(fs::read_to_string(directory.join("bitrate-request")).unwrap(),"2 80\n");
         fs::write(directory.join("bitrate-ack"),"1 32 32000000 0\n").unwrap();

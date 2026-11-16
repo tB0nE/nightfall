@@ -173,6 +173,10 @@ func send_keyboard_event(keycode: int, action: int, modifiers: int):
 	if _v2:
 		_v2.get_input_bridge().send_keyboard_event(keycode, action, modifiers)
 
+func send_high_res_scroll_event(amount: int):
+	if _v2:
+		_v2.get_input_bridge().send_high_res_scroll(clampi(amount, -32768, 32767))
+
 func send_scroll_event(clicks: int):
 	if _v2:
 		_v2.get_input_bridge().send_scroll(clicks)
@@ -184,6 +188,10 @@ func send_multi_controller_event(device: int, active_mask: int, buttons: int, lt
 func send_controller_arrival(device: int, active_mask: int, ctype: int, button_flags: int, capabilities: int):
 	if _v2:
 		_v2.get_input_bridge().send_controller_arrival(device, active_mask, ctype, button_flags, capabilities)
+
+func send_controller_motion(device: int, motion_type: int, x: float, y: float, z: float):
+	if _v2:
+		_v2.get_input_bridge().send_controller_motion(device, motion_type, x, y, z)
 
 func get_decoder_name() -> String:
 	if _v2:
@@ -523,3 +531,9 @@ func browse_mdns_usb(iface_name: String, timeout: float) -> Array:
 		if mdns_browser:
 			return mdns_browser.browse_on_interface(iface_name, timeout)
 	return []
+
+func request_clipboard(host_id: int, write: bool, text: String, callback: Callable) -> void:
+	var manager = get_computer_manager()
+	if manager != null and manager.has_method("request_clipboard"):
+		manager.request_clipboard(host_id, write, text, callback)
+	else: callback.call({"ok":false,"status":0})

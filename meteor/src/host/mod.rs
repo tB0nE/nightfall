@@ -152,12 +152,13 @@ pub fn binary(config: &crate::config::Config) -> Option<PathBuf> {
 /// Meteor keeps that base (and the headset's pairing) even while the host
 /// itself can't start.
 pub fn reserve_base(config: &crate::config::Config, state: &mut State) -> Result<u16, String> {
-    // On Windows a tray switch starts the replacement before this process has
+    // A tray switch can start the replacement before the predecessor has
     // released its proxy listeners. Reuse the saved base while that predecessor
     // exits; the discovery bind below still rejects a persistent conflict.
-    // macOS likewise: the old host may still be letting go of its ports when the restarted
-    // Meteor looks, and meteor.lock already guarantees no other Meteor holds this base.
-    #[cfg(any(windows, target_os = "macos"))]
+    // This also applies on Linux: a wildcard UDP probe can collide with a
+    // connected IPv6 browser socket even when the actual IPv4 host services
+    // can start. The single-instance lock and actual listener binds remain
+    // authoritative; an intentional restart must retain its paired endpoint.
     if std::env::var_os("METEOR_RESTARTED").is_some() {
         if let Some(base) = state.base {
             return Ok(base);

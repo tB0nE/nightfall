@@ -5,7 +5,9 @@
 //! The client first sends `NFDK` and its X25519 public key (36 bytes), made
 //! for this connection; both sides derive an AES-256-GCM key from it and
 //! Meteor's key with DEPTH_KDF_INFO (see crypto.rs). After that the client
-//! sends nothing.
+//! sends nothing. When `depth.region_hello` is advertised, `NFDC` replaces
+//! `NFDK` and the public key is followed by four little-endian float32 source
+//! bounds (left, top, right, bottom). The encrypted map format is unchanged.
 //!
 //! Each message is a 32-byte little-endian header followed by the map,
 //! compressed with zstd, then encrypted with a 16-byte tag. The header is
@@ -43,7 +45,15 @@ const ZSTD_LEVEL: i32 = 1;
 /// A client may connect just before its video flow opens.
 const STREAM_WAIT: Duration = Duration::from_secs(5);
 
-pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>) -> Option<u16> {
+/// `same_client(a, b)`: whether depth made from `a`'s video may go to a depth
+/// connection from `b` (true for a == b, and for two paths of a multipath client).
+pub fn start(
+    port: u16,
+    depth: Arc<Depth>,
+    key: Arc<MeteorKey>,
+    allowed: Arc<dyn Fn(IpAddr) -> bool + Send + Sync>,
+    same_client: Arc<dyn Fn(IpAddr, IpAddr) -> bool + Send + Sync>,
+) -> Option<u16> {
     let listener = match crate::net::tcp_listener_std(port).or_else(|_| TcpListener::bind(("0.0.0.0", port))) {
         Ok(listener) => listener,
         Err(err) => {
@@ -57,9 +67,10 @@ pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn
             let depth = depth.clone();
             let key = key.clone();
             let allowed = allowed.clone();
+            let same_client = same_client.clone();
             let _ = std::thread::Builder::new().name("depth-client".into()).spawn(move || {
                 let Ok(peer) = stream.peer_addr() else { return };
-                if let Err(err) = serve(stream, peer, &depth, &key, &*allowed) {
+                if let Err(err) = serve(stream, peer, &depth, &key, &*allowed, &*same_client) {
                     log::info!("Depth client {peer} disconnected ({err})");
                 }
             });
@@ -68,7 +79,14 @@ pub fn start(port: u16, depth: Arc<Depth>, key: Arc<MeteorKey>, allowed: Arc<dyn
     spawned.ok().map(|_| port)
 }
 
-fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey, allowed: &dyn Fn(IpAddr) -> bool) -> io::Result<()> {
+fn serve(
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    depth: &Depth,
+    key: &MeteorKey,
+    allowed: &dyn Fn(IpAddr) -> bool,
+    same_client: &dyn Fn(IpAddr, IpAddr) -> bool,
+) -> io::Result<()> {
     let ip = peer.ip().to_canonical();
     let waited = Instant::now();
     while !(ip.is_loopback() || allowed(ip)) {
@@ -82,13 +100,21 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
     let mut hello = [0u8; 4 + KEY_BYTES];
     stream.read_exact(&mut hello)?;
     let theirs: [u8; KEY_BYTES] = hello[4..].try_into().expect("the hello holds one key");
-    let session = match (&hello[..4] == HELLO_MAGIC).then(|| key.session_key(&theirs, DEPTH_KDF_INFO)).flatten() {
+    let session = match (&hello[..4] == HELLO_MAGIC || &hello[..4] == b"NFDC").then(|| key.session_key(&theirs, DEPTH_KDF_INFO)).flatten() {
         Some(session) => session,
         None => {
             log::info!("Depth connection from {peer} refused: no valid key");
             return Ok(());
         }
     };
+    let selected_at=Instant::now();
+    let region = if &hello[..4] == b"NFDC" {
+        let mut bytes=[0u8;16]; stream.read_exact(&mut bytes)?;
+        let r: [f32;4]=std::array::from_fn(|i|f32::from_le_bytes(bytes[i*4..i*4+4].try_into().unwrap()));
+        if !valid_region(r) {return Err(io::Error::new(io::ErrorKind::InvalidData,"invalid depth region"));}
+        Some(depth.select_client_region(ip,r))
+    } else {None};
+    let _region_guard=RegionGuard{depth,ip,sequence:region};
     stream.set_read_timeout(None)?;
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -118,8 +144,10 @@ fn serve(mut stream: TcpStream, peer: SocketAddr, depth: &Depth, key: &MeteorKey
             continue;
         };
         last_seq = map.seq;
-        // Only this client's own video (or anyone's, for a local test client).
-        if !(ip.is_loopback() || map.client == Some(ip)) {
+        // Preserve tab/region freshness checks across all paths of this client.
+        if region.is_some_and(|selection| map.selection != selection)
+            || map.frame_queued < selected_at
+            || !(ip.is_loopback() || map.client.is_some_and(|c| same_client(c, ip))) {
             continue;
         }
         let encode_start = Instant::now();
@@ -202,6 +230,7 @@ mod tests {
     fn map(data: Vec<u8>) -> DepthMap {
         let now = Instant::now();
         DepthMap {
+            selection: 0,
             stream: 1,
             client: None,
             seq: 1,
@@ -268,4 +297,14 @@ mod tests {
         let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
         eprintln!("depth message 0: {hex}");
     }
+}
+
+fn valid_region(r:[f32;4])->bool {
+ r.iter().all(|v|v.is_finite()) && r[0]>=0.0 && r[1]>=0.0 && r[2]<=1.0 && r[3]<=1.0 && r[0]<r[2] && r[1]<r[3]
+}
+struct RegionGuard<'a>{depth:&'a Depth,ip:IpAddr,sequence:Option<u64>}
+impl Drop for RegionGuard<'_>{fn drop(&mut self){if let Some(s)=self.sequence{self.depth.clear_client_region(self.ip,s);}}}
+#[cfg(test)] mod region_tests {
+ use super::valid_region;
+ #[test] fn validates_normalized_region(){assert!(valid_region([0.5,0.0,1.0,1.0]));assert!(!valid_region([f32::NAN,0.0,1.0,1.0]));assert!(!valid_region([0.5,0.0,0.5,1.0]));assert!(!valid_region([0.0,0.0,2.0,1.0]));}
 }

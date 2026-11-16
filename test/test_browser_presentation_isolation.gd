@@ -19,6 +19,7 @@ class Sources extends RefCounted:
 	var texture = null
 	func is_browser_screen(screen): return screen == secondary
 	func browser_for_screen(screen): return self if screen == secondary else null
+	func monitor_tab(_screen): return null
 
 class Fixture extends RefCounted:
 	var is_streaming := false
@@ -74,6 +75,14 @@ func _initialize():
 	manager.bind_comp_yuv_textures(stream_texture, stream_texture, stream_texture, 3, 0, 0)
 	assert(secondary.comp_shader_mat.get_shader_parameter("main_texture") == browser_texture)
 	assert(secondary.comp_shader_mat.get_shader_parameter("yuv_mode") == 0)
+	fixture.screen_sources.secondary = primary
+	fixture.screen_sources.active = true
+	fixture.screen_sources.closing = false
+	primary.bind_independent_browser_texture(browser_texture)
+	manager.bind_comp_yuv_textures(stream_texture,stream_texture,stream_texture,3,0,0)
+	assert(primary.comp_shader_mat.get_shader_parameter("main_texture") == browser_texture)
+	assert(primary.comp_shader_mat.get_shader_parameter("yuv_mode") == 0, "Retained stream must not overwrite the primary browser")
+	fixture.screen_sources.secondary = secondary
 	var native_fixture = NativeFixture.new()
 	primary.curvature = 0
 	native_fixture.primary_screen = primary

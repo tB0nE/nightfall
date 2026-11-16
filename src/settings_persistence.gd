@@ -23,14 +23,18 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "brightness_pct", settings.brightness_pct)
 	config.set_value("screen", "contrast_pct", settings.contrast_pct)
 	config.set_value("screen", "gamma_pct", settings.gamma_pct)
+	config.set_value("screen", "ambient_gain", settings.ambient_gain)
 	config.set_value("screen", "ambient_mode", settings.ambient_mode)
 	config.set_value("screen", "ambient_color", settings.ambient_color)
 	config.set_value("screen", "cursor_mode", settings.cursor_mode)
 	config.set_value("screen", "pointer_steady", settings.pointer_steady)
 	config.set_value("screen", "double_click_mode", settings.double_click_mode)
+	config.set_value("controller", "grip_scroll", settings.grip_scroll_enabled)
 	config.set_value("controller", "mouse_follows_pointer", settings.mouse_follows_pointer)
 	config.set_value("screen", "high_refresh_rates", settings.high_refresh_rates)
 	config.set_value("screen", "passthrough_fade_pct", settings.passthrough_fade_pct)
+	config.set_value("screen", "h264_high_bitrate", settings.h264_high_bitrate)
+	config.set_value("screen", "extended_bitrate_limits", settings.extended_bitrate_limits)
 	config.set_value("screen", "codec_preference", settings.codec_preference)
 	config.set_value("screen", "grid_mode_enabled", settings.grid_mode_enabled)
 	config.set_value("diagnostics", "performance_overlay", settings.performance_overlay_enabled)
@@ -89,16 +93,20 @@ static func read_app(
 		settings.sharpen_mode = AppSettings.DEFAULT_SHARPEN_MODE
 	settings.brightness_pct = config.get_value(
 		"screen", "brightness_pct", AppSettings.DEFAULT_BRIGHTNESS_PCT)
-	if not BRIGHTNESS_VALUES.has(settings.brightness_pct):
+	if not settings.brightness_pct is int or settings.brightness_pct < -20 or settings.brightness_pct > 20:
 		settings.brightness_pct = AppSettings.DEFAULT_BRIGHTNESS_PCT
 	settings.contrast_pct = config.get_value(
 		"screen", "contrast_pct", AppSettings.DEFAULT_CONTRAST_PCT)
-	if not PICTURE_SCALE_VALUES.has(settings.contrast_pct):
+	if not settings.contrast_pct is int or settings.contrast_pct < 50 or settings.contrast_pct > 150:
 		settings.contrast_pct = AppSettings.DEFAULT_CONTRAST_PCT
 	settings.gamma_pct = config.get_value(
 		"screen", "gamma_pct", AppSettings.DEFAULT_GAMMA_PCT)
-	if not PICTURE_SCALE_VALUES.has(settings.gamma_pct):
+	if not settings.gamma_pct is int or settings.gamma_pct < 50 or settings.gamma_pct > 150:
 		settings.gamma_pct = AppSettings.DEFAULT_GAMMA_PCT
+	var gain = config.get_value("screen", "ambient_gain", 1.0)
+	settings.ambient_gain = clampf(float(gain), 0.0, 2.0) if (gain is float or gain is int) and is_finite(float(gain)) else 1.0
+	var grip_scroll = config.get_value("controller", "grip_scroll", false)
+	settings.grip_scroll_enabled = grip_scroll if grip_scroll is bool else false
 	settings.ambient_mode = clampi(
 		config.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, 3)
 	settings.ambient_color = clampi(
@@ -118,7 +126,9 @@ static func read_app(
 	settings.high_refresh_rates = bool(config.get_value(
 		"screen", "high_refresh_rates", AppSettings.DEFAULT_HIGH_REFRESH_RATES))
 	var fade := int(config.get_value("screen", "passthrough_fade_pct", AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT))
-	settings.passthrough_fade_pct = fade if PassthroughFade.FADE_VALUES.has(fade) else AppSettings.DEFAULT_PASSTHROUGH_FADE_PCT
+	settings.passthrough_fade_pct = clampi(fade, 0, 100)
+	settings.h264_high_bitrate = config.get_value("screen", "h264_high_bitrate", false) == true
+	settings.extended_bitrate_limits = config.get_value("screen", "extended_bitrate_limits", false) == true
 	settings.codec_preference = config.get_value(
 		"screen", "codec_preference", AppSettings.DEFAULT_CODEC_PREFERENCE)
 	settings.grid_mode_enabled = config.get_value(
@@ -142,8 +152,7 @@ static func read_app(
 		"stream", "quick_start", AppSettings.DEFAULT_QUICK_START_ENABLED)
 	settings.audio_boost_db = config.get_value(
 		"stream", "audio_boost_db", AppSettings.DEFAULT_AUDIO_BOOST_DB)
-	if not AUDIO_BOOST_VALUES.has(settings.audio_boost_db):
-		settings.audio_boost_db = AppSettings.DEFAULT_AUDIO_BOOST_DB
+	settings.audio_boost_db = clampi(int(settings.audio_boost_db), 0, 15)
 	settings.android_audio_output = clampi(int(config.get_value("stream", "android_audio_output", 0)), 0, 1)
 	settings.microphone_enabled = config.get_value(
 		"stream", "microphone", AppSettings.DEFAULT_MICROPHONE_ENABLED) == true
@@ -164,8 +173,10 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "resolution_scale_pct", host.resolution_scale_pct)
 	config.set_value(section, "native_resolution", [host.native_resolution.x, host.native_resolution.y])
 	config.set_value(section, "is_polaris_host", host.is_polaris_host)
+	config.set_value(section, "default_resolution_selected", host.default_resolution_selected)
 	config.set_value(section, "resolution_idx", host.resolution_idx)
 	config.set_value(section, "sbs_mode", host.sbs_mode)
+	config.set_value(section, "sbs_last_mode", host.sbs_last_mode)
 	config.set_value(section, "ai_3d_model", host.ai_3d_model)
 	config.set_value(section, "ai_3d_gpu_api", host.ai_3d_gpu_api)
 	config.set_value(section, "ai_3d_speed", host.ai_3d_speed)
@@ -186,6 +197,8 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "ai_3d_meteor_declined", host.ai_3d_meteor_declined)
 	config.set_value(section, "virtual_display_count", host.virtual_display_count)
 	config.set_value(section, "virtual_only", host.virtual_only)
+	config.set_value(section, "codec_bitrates", host.codec_bitrates)
+	config.set_value(section, "bitrate_mbps", host.bitrate_mbps)
 	config.set_value(section, "bitrate_idx", host.bitrate_idx)
 	config.set_value(section, "double_h", host.double_h)
 
@@ -206,8 +219,18 @@ static func read_host(
 	var native_arr = config.get_value(section, "native_resolution", [1920, 1080])
 	host.native_resolution = Vector2i(native_arr[0], native_arr[1])
 	host.is_polaris_host = config.get_value(section, "is_polaris_host", false)
+	host.default_resolution_selected = config.get_value(section, "default_resolution_selected", false) == true
 	host.resolution_idx = clampi(config.get_value(section, "resolution_idx", 1), 0, resolution_count - 1)
-	host.bitrate_idx = config.get_value(section, "bitrate_idx", -1)
+	host.bitrate_idx = clampi(int(config.get_value(section, "bitrate_idx", -1)), -1, 10)
+	host.codec_bitrates = {}
+	var profiles = config.get_value(section, "codec_bitrates", {})
+	if profiles is Dictionary:
+		for choice in VideoEncodingOptions.CHOICES:
+			var saved = profiles.get(str(choice))
+			if saved is int and saved >= 0:
+				host.codec_bitrates[str(choice)] = VideoEncodingOptions.clamp_bitrate(saved, choice)
+	var custom_bitrate = config.get_value(section, "bitrate_mbps", 0)
+	host.bitrate_mbps = clampi(custom_bitrate, HostSettings.MIN_MANUAL_BITRATE_MBPS, HostSettings.MAX_MANUAL_BITRATE_MBPS) if custom_bitrate is int and custom_bitrate > 0 else 0
 	host.double_h = config.get_value(section, "double_h", false)
 	host.ai_3d_gpu_api = clampi(int(config.get_value(section, "ai_3d_gpu_api", 0)), 0, 1)
 	if config.has_section_key(section, "sbs_mode"):
@@ -227,10 +250,10 @@ static func read_host(
 			if not [12, 15, 20, 30, 40, 60].has(host.ai_3d_hz_cap):
 				host.ai_3d_hz_cap = 20
 			host.ai_3d_separation_pct = config.get_value(section, "ai_3d_separation_pct", 75)
-			if not [50, 75, 100].has(host.ai_3d_separation_pct):
+			if host.ai_3d_separation_pct < 50 or host.ai_3d_separation_pct > 100:
 				host.ai_3d_separation_pct = 75
 			host.ai_3d_convergence_pct = config.get_value(section, "ai_3d_convergence_pct", 50)
-			if not [30, 40, 50, 60, 70].has(host.ai_3d_convergence_pct):
+			if host.ai_3d_convergence_pct < 30 or host.ai_3d_convergence_pct > 70:
 				host.ai_3d_convergence_pct = 50
 			if config.has_section_key(section, "ai_3d_cursor_position_v2"):
 				host.ai_3d_cursor_position = clampi(config.get_value(section, "ai_3d_cursor_position_v2", 0), -1, 1)
@@ -318,3 +341,5 @@ static func read_host(
 			host.sbs_mode = 0
 			host.ai_3d_model = 2 # MiDaS-192
 			host.ai_3d_speed = 1 # Auto
+
+	host.sbs_last_mode = clampi(int(config.get_value(section, "sbs_last_mode", maxi(host.sbs_mode, 1))), 1, 2)

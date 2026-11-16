@@ -6,8 +6,16 @@ var _pcvr_wait_for_desktop := false
 var _pcvr_previous_render_cap := 0
 
 var main: Node3D
+var _monitor_selection_override: Variant = null
 var _restart_pending: bool = false
 var _restart_seq: int = 0
+var _restart_worker_active := false
+var _restart_latest := {}
+var _monitor_apply_seq := 0
+var _virtual_apply_active := false
+var _virtual_apply_latest := {}
+var _monitor_relaunch_required := false
+var _monitor_restart_info := {}
 var _last_applied_virtual_count: int = 0
 var _ai_3d_commit_seq: int = 0
 var _last_effective_backend: int = -1
@@ -16,7 +24,6 @@ var _auto_depth_fallback: bool = false
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
 var _refresh_request_seq: int = 0
-var _last_sbs_mode: int = 1
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -348,15 +355,17 @@ func cycle_sbs_mode():
 	set_sbs_mode((main.settings.host.sbs_mode + 1) % sbs_labels.size())
 
 func toggle_sbs_mode():
-	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else _last_sbs_mode)
+	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else main.settings.host.sbs_last_mode)
+	if main.get("composition_toast") != null:
+		main.composition_toast.show("SBS: %s" % sbs_labels[main.settings.host.sbs_mode], main.xr_camera, 2.5)
 
 func set_sbs_mode(requested_mode: int):
 	var previous_mode: int = main.settings.host.sbs_mode
 	main.settings.host.sbs_mode = clampi(requested_mode, 0, sbs_labels.size() - 1)
-	if previous_mode > 0:
-		_last_sbs_mode = previous_mode
-	elif main.settings.host.sbs_mode > 0:
-		_last_sbs_mode = main.settings.host.sbs_mode
+	if main.settings.host.sbs_mode > 0:
+		main.settings.host.sbs_last_mode = main.settings.host.sbs_mode
+	elif previous_mode > 0:
+		main.settings.host.sbs_last_mode = previous_mode
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.settings.host.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()
@@ -402,6 +411,10 @@ func toggle_ai_3d_enabled():
 # whenever ai_3d_speed==0, but guarded here too since a disabled Button
 # still technically has this connected.
 func cycle_ai_3d_mode():
+	set_ai_3d_mode((main.settings.host.ai_3d_speed % 3) + 1)
+
+func set_ai_3d_mode(value: int):
+	if value < 1 or value > 3 or value == main.settings.host.ai_3d_speed: return
 	if not _ai_3d_supported() or ai3d_options_locked():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
@@ -412,7 +425,7 @@ func cycle_ai_3d_mode():
 	# cycle_resolution()/_schedule_stream_restart(): click through to find
 	# the setting you want, and it only commits once you stop, instead of
 	# reconfiguring/restarting on every single click along the way.
-	main.settings.host.ai_3d_speed = (main.settings.host.ai_3d_speed % 3) + 1 # 1->2->3->1 (Auto/Fast/Standard)
+	main.settings.host.ai_3d_speed = value
 	main.settings.host.ai_3d_last_mode = main.settings.host.ai_3d_speed
 	# Type can now change while Auto is active (2026-08-30, cycle_ai_3d_type())
 	# without touching Model (frozen/table-driven under Auto) - re-sync Model
@@ -442,11 +455,15 @@ func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
 # current selection doesn't belong to it (e.g. switching CPU->GPU while
 # DA-V2-252 was selected).
 func cycle_ai_3d_type():
+	set_ai_3d_type(AI3D_BACKEND_CPU if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else AI3D_BACKEND_GPU)
+
+func set_ai_3d_type(value: int):
+	if value not in [AI3D_BACKEND_CPU, AI3D_BACKEND_GPU] or value == main.settings.host.ai_3d_backend_pref: return
 	if not _ai_3d_supported() or ai3d_options_locked():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
-	main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_CPU if main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU else AI3D_BACKEND_GPU
+	main.settings.host.ai_3d_backend_pref = value
 	# Under Auto (2026-08-30), Model stays table-driven (AUTO_TABLE/
 	# get_auto_selection()) - main.settings.host.ai_3d_model itself is frozen/irrelevant,
 	# so there's nothing to snap here; only Fast/Standard need Model kept in
@@ -461,12 +478,16 @@ func cycle_ai_3d_type():
 
 # AI 3D tab's "Hz Cap" control (2026-08-28).
 func cycle_ai_3d_hz_cap():
+	var idx = AI3D_HZ_CAP_VALUES.find(main.settings.host.ai_3d_hz_cap)
+	set_ai_3d_hz_cap(AI3D_HZ_CAP_VALUES[(maxi(idx, 0) + 1) % AI3D_HZ_CAP_VALUES.size()])
+
+func set_ai_3d_hz_cap(value: int):
 	if not _ai_3d_supported():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or main.settings.host.ai_3d_speed == 1:
 		return
-	var idx = AI3D_HZ_CAP_VALUES.find(main.settings.host.ai_3d_hz_cap)
-	main.settings.host.ai_3d_hz_cap = AI3D_HZ_CAP_VALUES[(maxi(idx, 0) + 1) % AI3D_HZ_CAP_VALUES.size()]
+	if not AI3D_HZ_CAP_VALUES.has(value) or value == main.settings.host.ai_3d_hz_cap: return
+	main.settings.host.ai_3d_hz_cap = value
 	_save_setting(main._ui_3d_hz_cap_btn, "%dhz" % main.settings.host.ai_3d_hz_cap)
 	_schedule_ai_3d_commit()
 
@@ -477,12 +498,16 @@ func cycle_ai_3d_hz_cap():
 # Cap) - it's a general 3D-strength tune, not something the Auto table
 # decides.
 func cycle_ai_3d_separation():
+	var idx = AI3D_SEPARATION_VALUES.find(main.settings.host.ai_3d_separation_pct)
+	set_ai_3d_separation(AI3D_SEPARATION_VALUES[(maxi(idx, 0) + 1) % AI3D_SEPARATION_VALUES.size()])
+
+func set_ai_3d_separation(value: int):
 	if not _ai_3d_supported():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
-	var idx = AI3D_SEPARATION_VALUES.find(main.settings.host.ai_3d_separation_pct)
-	main.settings.host.ai_3d_separation_pct = AI3D_SEPARATION_VALUES[(maxi(idx, 0) + 1) % AI3D_SEPARATION_VALUES.size()]
+	if value < 50 or value > 100 or value == main.settings.host.ai_3d_separation_pct: return
+	main.settings.host.ai_3d_separation_pct = value
 	_save_setting(main._ui_3d_separation_btn, get_ai_3d_separation_label())
 	_schedule_ai_3d_commit()
 
@@ -496,12 +521,16 @@ func get_ai_3d_separation_label() -> String:
 # _push_ai3d_effect_uniforms(). Left live under Auto, same reasoning as
 # Separation above.
 func cycle_ai_3d_convergence():
+	var idx = AI3D_CONVERGENCE_VALUES.find(main.settings.host.ai_3d_convergence_pct)
+	set_ai_3d_convergence(AI3D_CONVERGENCE_VALUES[(maxi(idx, 0) + 1) % AI3D_CONVERGENCE_VALUES.size()])
+
+func set_ai_3d_convergence(value: int):
 	if not _ai_3d_supported():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
-	var idx = AI3D_CONVERGENCE_VALUES.find(main.settings.host.ai_3d_convergence_pct)
-	main.settings.host.ai_3d_convergence_pct = AI3D_CONVERGENCE_VALUES[(maxi(idx, 0) + 1) % AI3D_CONVERGENCE_VALUES.size()]
+	if value < 30 or value > 70 or value == main.settings.host.ai_3d_convergence_pct: return
+	main.settings.host.ai_3d_convergence_pct = value
 	_save_setting(main._ui_3d_convergence_btn, get_ai_3d_convergence_label())
 	_schedule_ai_3d_commit()
 
@@ -517,7 +546,12 @@ func cycle_ai_3d_cursor_position():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
-	main.settings.host.ai_3d_cursor_position = ((clampi(main.settings.host.ai_3d_cursor_position, -1, 1) + 1 + 1) % AI3D_CURSOR_POSITION_LABELS.size()) - 1
+	set_ai_3d_cursor_position(((clampi(main.settings.host.ai_3d_cursor_position, -1, 1) + 1 + 1) % AI3D_CURSOR_POSITION_LABELS.size()) - 1)
+
+func set_ai_3d_cursor_position(value: int):
+	if not _ai_3d_supported() or main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0: return
+	if value not in [-1, 0, 1] or value == main.settings.host.ai_3d_cursor_position: return
+	main.settings.host.ai_3d_cursor_position = value
 	_save_setting(main._ui_3d_cursor_position_btn, get_ai_3d_cursor_position_label())
 
 func get_ai_3d_cursor_position_label() -> String:
@@ -569,8 +603,12 @@ func cycle_ai_3d_process_debug():
 	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 \
 			or main.settings.host.ai_3d_speed == 0:
 		return
-	main.settings.host.ai_3d_process_debug = \
-		(main.settings.host.ai_3d_process_debug + 1) % ai_3d_process_debug_labels.size()
+	set_ai_3d_process_debug((main.settings.host.ai_3d_process_debug + 1) % ai_3d_process_debug_labels.size())
+
+func set_ai_3d_process_debug(value: int):
+	if OS.get_name() != "Android" or main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0: return
+	if value < 0 or value >= ai_3d_process_debug_labels.size() or value == main.settings.host.ai_3d_process_debug: return
+	main.settings.host.ai_3d_process_debug = value
 	_save_setting(main._ui_3d_process_debug_btn,
 		ai_3d_process_debug_labels[main.settings.host.ai_3d_process_debug])
 	if main.native_xr_renderer:
@@ -638,14 +676,27 @@ func cycle_ai_3d_model():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0 or (OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1):
 		return
+	var candidates = get_ai_3d_model_choices()
+	if candidates.is_empty(): return
+	var pos = 0 if meteor_depth_selected() else candidates.find(selected_depth_model_index())
+	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
+	set_ai_3d_model(next)
+
+func get_ai_3d_model_choices() -> Array:
 	var candidates = [ANDROID_MODEL_AUTO, ANDROID_MODEL_STANDARD, ANDROID_MODEL_LEGACY_EDGEPAD_256, ANDROID_MODEL_LEGACY_EDGEPAD_384] if OS.get_name() == "Android" else _ai_3d_model_indices_for_type(main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_GPU)
-	if candidates.is_empty():
-		return
 	var offered := meteor_depth_offered()
 	if offered:
 		candidates = [MODEL_METEOR] + candidates
-	var pos = 0 if meteor_depth_selected() else candidates.find(selected_depth_model_index())
-	var next = candidates[(maxi(pos, -1) + 1) % candidates.size()]
+	return candidates
+
+func set_ai_3d_model(value: int):
+	if not _ai_3d_supported() or main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0: return
+	if OS.get_name() != "Android" and main.settings.host.ai_3d_speed == 1: return
+	if not get_ai_3d_model_choices().has(value): return
+	var selected: int = MODEL_METEOR if meteor_depth_selected() else selected_depth_model_index()
+	if value == selected: return
+	var offered := meteor_depth_offered()
+	var next := value
 	if next == MODEL_METEOR:
 		main.settings.host.ai_3d_meteor_declined = false
 	elif primary_is_browser():
@@ -686,24 +737,20 @@ func get_ai_3d_gpu_api_label() -> String:
 # locked button shows (_android_cpu_model_index()), so AI 3D can run using no
 # GPU time at all; see get_depth_model_index()/_label().
 func cycle_ai_3d_gpu_api() -> void:
-	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0:
-		return
+	var value := 2 if get_depth_backend_index() == AI3D_BACKEND_CPU else get_ai_3d_gpu_api_effective()
+	set_ai_3d_gpu_api((value + 1) % 3)
+
+func set_ai_3d_gpu_api(value: int) -> void:
+	if OS.get_name() != "Android" or is_android_ai3d_auto() or main.settings.host.ai_3d_speed == 0 or main.settings.host.sbs_mode > 0: return
+	if value < 0 or value > 2: return
+	var current := 2 if get_depth_backend_index() == AI3D_BACKEND_CPU else get_ai_3d_gpu_api_effective()
+	if current == value: return
 	if primary_is_browser():
-		var browser = main.browser_prototype
-		if browser.depth_backend_override == AI3D_BACKEND_CPU:
-			browser.depth_backend_override = AI3D_BACKEND_GPU
-			browser.depth_gpu_api_override = 0
-		elif browser.depth_gpu_api_override == 0:
-			browser.depth_gpu_api_override = 1
-		else:
-			browser.depth_backend_override = AI3D_BACKEND_CPU
-	elif main.settings.host.ai_3d_backend_pref == AI3D_BACKEND_CPU:
-		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_GPU
-		main.settings.host.ai_3d_gpu_api = 0
-	elif main.settings.host.ai_3d_gpu_api == 0:
-		main.settings.host.ai_3d_gpu_api = 1
+		main.browser_prototype.depth_backend_override = AI3D_BACKEND_CPU if value == 2 else AI3D_BACKEND_GPU
+		if value != 2: main.browser_prototype.depth_gpu_api_override = value
 	else:
-		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_CPU
+		main.settings.host.ai_3d_backend_pref = AI3D_BACKEND_CPU if value == 2 else AI3D_BACKEND_GPU
+		if value != 2: main.settings.host.ai_3d_gpu_api = value
 	_save_setting(main._ui_3d_gpu_api_btn, get_ai_3d_gpu_api_label())
 	_schedule_ai_3d_commit()
 
@@ -712,10 +759,14 @@ func _android_depth_class() -> Object:
 	return wrapper.wrap("com.godot.game.GodotApp") if wrapper else null
 
 func cycle_ai_3d_gpu_priority():
+	set_ai_3d_gpu_priority((main.settings.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size())
+
+func set_ai_3d_gpu_priority(value: int):
+	if value < 0 or value >= ai_3d_gpu_priority_labels.size() or value == main.settings.ai_3d_gpu_priority: return
 	if not depth_gpu_priority_available():
 		return
 	var was_stream: bool = main.settings.ai_3d_gpu_priority == AI3D_GPU_PRIORITY_STREAM
-	main.settings.ai_3d_gpu_priority = (main.settings.ai_3d_gpu_priority + 1) % ai_3d_gpu_priority_labels.size()
+	main.settings.ai_3d_gpu_priority = value
 	_save_setting(main._ui_3d_priority_btn, ai_3d_gpu_priority_labels[main.settings.ai_3d_gpu_priority])
 	# Only crossing to or from Stream changes the OpenCL context priority, which
 	# reloads the inference delegate; Adaptive <-> AI 3D just changes pacing.
@@ -977,7 +1028,12 @@ func cycle_ai_3d_debug():
 		return
 	if main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0:
 		return
-	main.settings.host.ai_3d_debug = (main.settings.host.ai_3d_debug + 1) % ai_3d_debug_labels.size()
+	set_ai_3d_debug((main.settings.host.ai_3d_debug + 1) % ai_3d_debug_labels.size())
+
+func set_ai_3d_debug(value: int):
+	if not _ai_3d_supported() or main.settings.host.sbs_mode > 0 or main.settings.host.ai_3d_speed == 0: return
+	if value < 0 or value >= ai_3d_debug_labels.size() or value == main.settings.host.ai_3d_debug: return
+	main.settings.host.ai_3d_debug = value
 	if main.settings.host.ai_3d_debug != 0 and main.settings.host.ai_3d_depth_view:
 		main.settings.host.ai_3d_depth_view = false
 		_save_setting(main._ui_3d_depth_view_btn, "Off")
@@ -1218,7 +1274,11 @@ func apply_passthrough(enable: bool):
 		apply_background(main.settings.background_mode)
 
 func cycle_background():
-	main.settings.background_mode = (main.settings.background_mode + 1) % main.background_labels.size()
+	set_background((main.settings.background_mode + 1) % main.background_labels.size())
+
+func set_background(value: int):
+	if value < 0 or value >= main.background_labels.size() or value == main.settings.background_mode: return
+	main.settings.background_mode = value
 	apply_background(main.settings.background_mode)
 	_save_setting(main._ui_bg_btn, main.background_labels[main.settings.background_mode])
 
@@ -1245,16 +1305,28 @@ func _hide_all_backgrounds():
 			bg.emitting = false
 
 func cycle_cursor_mode():
-	main.settings.cursor_mode = (main.settings.cursor_mode + 1) % main.cursor_labels.size()
+	set_cursor_mode((main.settings.cursor_mode + 1) % main.cursor_labels.size())
+
+func set_cursor_mode(value: int):
+	if value < 0 or value >= main.cursor_labels.size() or value == main.settings.cursor_mode: return
+	main.settings.cursor_mode = value
 	_save_setting(main._ui_cursor_btn, main.cursor_labels[main.settings.cursor_mode])
 
 func cycle_steady():
-	main.settings.pointer_steady = (main.settings.pointer_steady + 1) % main.pointer_steady_labels.size()
+	set_steady((main.settings.pointer_steady + 1) % main.pointer_steady_labels.size())
+
+func set_steady(value: int):
+	if value < 0 or value >= main.pointer_steady_labels.size() or value == main.settings.pointer_steady: return
+	main.settings.pointer_steady = value
 	main._reset_steady_filter()
 	_save_setting(main._ui_steady_btn, main.pointer_steady_labels[main.settings.pointer_steady])
 
 func cycle_double_click_mode():
-	main.settings.double_click_mode = (main.settings.double_click_mode + 1) % main.double_click_mode_labels.size()
+	set_double_click_mode((main.settings.double_click_mode + 1) % main.double_click_mode_labels.size())
+
+func set_double_click_mode(value: int):
+	if value < 0 or value >= main.double_click_mode_labels.size() or value == main.settings.double_click_mode: return
+	main.settings.double_click_mode = value
 	_save_setting(main._ui_double_click_btn, main.double_click_mode_labels[main.settings.double_click_mode])
 
 func is_codec_available(idx: int) -> bool:
@@ -1287,15 +1359,68 @@ func _get_available_codecs() -> PackedInt32Array:
 			result.append(i)
 	return result
 
+func desktop_codec_choice() -> int:
+	return VideoEncodingOptions.H264_PLUS if main.settings.codec_preference == 0 and main.settings.h264_high_bitrate else main.settings.codec_preference
+
+func desktop_manual_bitrate() -> int:
+	if main.settings.host.bitrate_mbps > 0: return main.settings.host.bitrate_mbps
+	var idx: int = main.settings.host.bitrate_idx
+	return int(main.bitrates[idx]) if idx >= 0 and idx < main.bitrates.size() else 0
+
+func toggle_extended_bitrate_limits() -> void:
+	main.settings.extended_bitrate_limits = not main.settings.extended_bitrate_limits
+	var host = main.settings.host
+	for choice in VideoEncodingOptions.CHOICES:
+		var key := str(choice)
+		if host.codec_bitrates.has(key): host.codec_bitrates[key] = VideoEncodingOptions.clamp_bitrate(int(host.codec_bitrates[key]), choice)
+	var previous := desktop_manual_bitrate()
+	var bounded := VideoEncodingOptions.clamp_bitrate(previous, desktop_codec_choice())
+	if bounded != previous:
+		host.bitrate_mbps = bounded
+		host.bitrate_idx = -1
+		_schedule_stream_restart()
+	main.state_manager.save_state()
+	main.ui_controller.refresh_bitrate_limits()
+
+func normalize_desktop_encoding():
+	# The earlier unrestricted slider allowed >150 Mbps on ordinary H.264.
+	if main.settings.codec_preference == 0 and desktop_manual_bitrate() > VideoEncodingOptions.maximum_bitrate(VideoEncodingOptions.H264):
+		main.settings.h264_high_bitrate = true
+	var choice := desktop_codec_choice()
+	if main.settings.host.bitrate_mbps > 0:
+		main.settings.host.bitrate_mbps = VideoEncodingOptions.clamp_bitrate(main.settings.host.bitrate_mbps, choice)
+
+func set_desktop_codec_choice(choice: int, restart_stream: bool = true):
+	if not VideoEncodingOptions.CHOICES.has(choice): return
+	var wire := VideoEncodingOptions.wire_index(choice)
+	if not is_codec_available(wire): return
+	var old := desktop_codec_choice()
+	if old == choice: return
+	var previous_bitrate := desktop_manual_bitrate()
+	main.settings.host.codec_bitrates[str(old)] = previous_bitrate
+	var selected := int(main.settings.host.codec_bitrates.get(str(choice), previous_bitrate))
+	selected = VideoEncodingOptions.clamp_bitrate(selected, choice)
+	main.settings.host.bitrate_mbps = selected
+	main.settings.host.bitrate_idx = -1
+	main.settings.h264_high_bitrate = choice == VideoEncodingOptions.H264_PLUS
+	var wire_changed: bool = wire != main.settings.codec_preference
+	if wire_changed:
+		set_codec(wire) if restart_stream else _set_codec_without_restart(wire)
+	else:
+		main.state_manager.save_state()
+		if restart_stream and previous_bitrate != selected: _schedule_stream_restart()
+	main.ui_controller.update_codec_btn()
+	main.ui_controller.update_option_btn(main._ui_bitrate_btn, bitrate_label())
+
 func cycle_codec():
 	var available = _get_available_codecs()
-	if available.is_empty():
-		return
-	var cur_pos = available.find(main.settings.codec_preference)
-	if cur_pos >= 0:
-		main.settings.codec_preference = available[(cur_pos + 1) % available.size()]
-	else:
-		main.settings.codec_preference = available[0]
+	if available.is_empty(): return
+	var current := available.find(main.settings.codec_preference)
+	set_codec(available[(current + 1) % available.size()])
+
+func set_codec(value: int):
+	if not _get_available_codecs().has(value) or value == main.settings.codec_preference: return
+	main.settings.codec_preference = value
 	main.ui_controller.update_codec_btn()
 	# H.264's hardware-decoder dimension cap in compute_requested_resolution() is keyed
 	# off codec_preference - recompute host_resolution now that it just changed, or a
@@ -1321,7 +1446,11 @@ func fallback_codec():
 func cycle_sharpen_mode():
 	var choices := get_sharpen_choices()
 	var current_idx := choices.find(main.settings.sharpen_mode)
-	main.settings.sharpen_mode = choices[(maxi(current_idx, -1) + 1) % choices.size()]
+	set_sharpen_mode(choices[(maxi(current_idx, -1) + 1) % choices.size()])
+
+func set_sharpen_mode(value: int):
+	if not get_sharpen_choices().has(value) or value == main.settings.sharpen_mode: return
+	main.settings.sharpen_mode = value
 	_save_setting(main._ui_sharpen_btn, get_sharpen_label(main.settings.sharpen_mode))
 	apply_filter()
 
@@ -1342,33 +1471,58 @@ func get_sharpen_label(mode: int) -> String:
 
 func cycle_brightness():
 	var idx = PICTURE_BRIGHTNESS_VALUES.find(main.settings.brightness_pct)
-	main.settings.brightness_pct = PICTURE_BRIGHTNESS_VALUES[(maxi(idx, 0) + 1) % PICTURE_BRIGHTNESS_VALUES.size()]
+	set_brightness(PICTURE_BRIGHTNESS_VALUES[(maxi(idx, 0) + 1) % PICTURE_BRIGHTNESS_VALUES.size()])
+
+func set_brightness(value: int):
+	if value < -20 or value > 20 or value == main.settings.brightness_pct: return
+	main.settings.brightness_pct = value
 	_save_setting(main._ui_brightness_btn, "%+d%%" % main.settings.brightness_pct)
 	apply_filter()
 
 func cycle_contrast():
 	var idx = PICTURE_CONTRAST_VALUES.find(main.settings.contrast_pct)
-	main.settings.contrast_pct = PICTURE_CONTRAST_VALUES[(maxi(idx, 0) + 1) % PICTURE_CONTRAST_VALUES.size()]
+	set_contrast(PICTURE_CONTRAST_VALUES[(maxi(idx, 0) + 1) % PICTURE_CONTRAST_VALUES.size()])
+
+func set_contrast(value: int):
+	if value < 50 or value > 150 or value == main.settings.contrast_pct: return
+	main.settings.contrast_pct = value
 	_save_setting(main._ui_contrast_btn, "%d%%" % main.settings.contrast_pct)
 	apply_filter()
 
 func cycle_gamma():
 	var idx = PICTURE_GAMMA_VALUES.find(main.settings.gamma_pct)
-	main.settings.gamma_pct = PICTURE_GAMMA_VALUES[(maxi(idx, 0) + 1) % PICTURE_GAMMA_VALUES.size()]
+	set_gamma(PICTURE_GAMMA_VALUES[(maxi(idx, 0) + 1) % PICTURE_GAMMA_VALUES.size()])
+
+func set_gamma(value: int):
+	if value < 50 or value > 150 or value == main.settings.gamma_pct: return
+	main.settings.gamma_pct = value
 	_save_setting(main._ui_gamma_btn, "%d%%" % main.settings.gamma_pct)
 	apply_filter()
 
 func cycle_ambient_mode():
-	main.settings.ambient_mode = (main.settings.ambient_mode + 1) % main.ambient_mode_labels.size()
+	set_ambient_mode((main.settings.ambient_mode + 1) % main.ambient_mode_labels.size())
+
+func set_ambient_mode(value: int):
+	if value < 0 or value >= main.ambient_mode_labels.size() or value == main.settings.ambient_mode: return
+	main.settings.ambient_mode = value
 	_save_setting(main._ui_ambient_btn, main.ambient_mode_labels[main.settings.ambient_mode])
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
 
 func cycle_ambient_color():
-	main.settings.ambient_color = (main.settings.ambient_color + 1) % main.ambient_color_labels.size()
+	set_ambient_color((main.settings.ambient_color + 1) % main.ambient_color_labels.size())
+
+func set_ambient_color(value: int):
+	if main.settings.ambient_mode != 1: return
+	if value < 0 or value >= main.ambient_color_labels.size() or value == main.settings.ambient_color: return
+	main.settings.ambient_color = value
 	_save_setting(main._ui_ambient_color_btn, main.ambient_color_labels[main.settings.ambient_color])
 	main.comp.apply_ambient_settings()
 	main.ui_controller.update_ambient_btn_state()
+
+func toggle_grip_scroll():
+	main.settings.grip_scroll_enabled = not main.settings.grip_scroll_enabled
+	_save_setting(main._ui_grip_scroll_btn, "On" if main.settings.grip_scroll_enabled else "Off")
 
 func toggle_mouse_follows_pointer():
 	main.settings.mouse_follows_pointer = not main.settings.mouse_follows_pointer
@@ -1436,7 +1590,11 @@ func _set_microphone(enabled: bool) -> void:
 func cycle_audio_boost():
 	var values: Array = SettingsPersistence.AUDIO_BOOST_VALUES
 	var idx = values.find(main.settings.audio_boost_db)
-	main.settings.audio_boost_db = values[(maxi(idx, 0) + 1) % values.size()]
+	set_audio_boost(values[(maxi(idx, 0) + 1) % values.size()])
+
+func set_audio_boost(value: int):
+	if value < 0 or value > 15 or value == main.settings.audio_boost_db: return
+	main.settings.audio_boost_db = value
 	_save_setting(main._ui_audio_boost_btn, get_audio_boost_label())
 	apply_audio_boost()
 
@@ -1447,7 +1605,11 @@ func get_audio_output_label() -> String:
 	return "AudioTrack" if main.settings.android_audio_output == 1 else "Native"
 
 func cycle_audio_output():
-	main.settings.android_audio_output = 1 - main.settings.android_audio_output
+	set_audio_output(1 - main.settings.android_audio_output)
+
+func set_audio_output(value: int):
+	if OS.get_name() != "Android" or value not in [0, 1] or value == main.settings.android_audio_output: return
+	main.settings.android_audio_output = value
 	_save_setting(main._ui_audio_output_btn, get_audio_output_label())
 	apply_audio_boost()
 	if main.is_streaming:
@@ -1633,7 +1795,12 @@ func _maybe_return_to_usb_link():
 func cycle_idle_timeout():
 	var idx = idle_values.find(main.settings.idle_timeout_min)
 	idx = (idx + 1) % idle_values.size()
-	main.settings.idle_timeout_min = idle_values[idx]
+	set_idle_timeout(idle_values[idx])
+
+func set_idle_timeout(value: int):
+	var idx := idle_values.find(value)
+	if idx < 0 or value == main.settings.idle_timeout_min: return
+	main.settings.idle_timeout_min = value
 	_save_setting(main._ui_idle_btn, idle_labels[idx])
 
 func toggle_host_cursor():
@@ -1855,8 +2022,13 @@ func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	return best
 
 func cycle_fps():
+	set_stream_fps(next_fps_rate(main.settings.host.stream_fps, main.settings.high_refresh_rates))
+
+func set_stream_fps(value: int):
 	if pcvr_timing.active: return
-	main.settings.host.stream_fps = next_fps_rate(main.settings.host.stream_fps, main.settings.high_refresh_rates)
+	if not STREAM_FPS_RATES.has(value) or (value >= HIGH_REFRESH_MIN and not main.settings.high_refresh_rates): return
+	if value == main.settings.host.stream_fps: return
+	main.settings.host.stream_fps = value
 	_save_setting(main._ui_fps_btn, "%d" % main.settings.host.stream_fps)
 	if main.is_streaming:
 		_schedule_stream_restart()
@@ -1892,7 +2064,11 @@ func _schedule_display_refresh():
 		apply_display_refresh_rate()
 
 func cycle_passthrough_fade():
-	main.settings.passthrough_fade_pct = PassthroughFade.next_fade(main.settings.passthrough_fade_pct)
+	set_passthrough_fade(PassthroughFade.next_fade(main.settings.passthrough_fade_pct))
+
+func set_passthrough_fade(value: int):
+	if value < 0 or value > 100 or value == main.settings.passthrough_fade_pct: return
+	main.settings.passthrough_fade_pct = value
 	if main.settings.passthrough_enabled:
 		apply_passthrough(true)
 	_save_setting(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
@@ -1913,6 +2089,26 @@ func cycle_resolution():
 		main.settings.host.resolution_scale_pct = opts[(maxi(idx, 0) + 1) % opts.size()]
 	else:
 		main.settings.host.resolution_idx = (main.settings.host.resolution_idx + 1) % main.resolutions.size()
+	_commit_resolution_selection()
+
+func set_default_resolution(index: int):
+	if index < 0 or index >= main.resolutions.size(): return
+	if main.settings.host.default_resolution_selected and index == main.settings.host.resolution_idx: return
+	main.settings.host.resolution_idx = index
+	main.settings.host.default_resolution_selected = true
+	_commit_resolution_selection()
+
+func set_resolution(value: int, scaled: bool):
+	if scaled != main.settings.host.is_polaris_host: return
+	if scaled:
+		if not main.compute_resolution_options().has(value) or value == main.settings.host.resolution_scale_pct: return
+		main.settings.host.resolution_scale_pct = value
+	else:
+		if value < 0 or value >= main.resolutions.size() or value == main.settings.host.resolution_idx: return
+		main.settings.host.resolution_idx = value
+	_commit_resolution_selection()
+
+func _commit_resolution_selection():
 	main.host_resolution = main.compute_requested_resolution()
 	_save_setting(main._ui_res_btn, _resolution_btn_label())
 	_schedule_stream_restart()
@@ -1929,8 +2125,9 @@ func refresh_resolution_btn_label():
 		main.ui_controller.update_option_btn(main._ui_res_btn, _resolution_btn_label())
 
 func _resolution_btn_label() -> String:
-	if not main.settings.host.is_polaris_host:
-		return main.resolution_labels[main.settings.host.resolution_idx]
+	if main.settings.host.default_resolution_selected or not main.settings.host.is_polaris_host:
+		var selected: Vector2i = main.resolutions[main.settings.host.resolution_idx]
+		return "%dx%d" % [selected.x, selected.y]
 	var opts = main.compute_resolution_options()
 	# Show the actual resulting pixel dimensions, not just an abstract
 	# percentage - a bare "%" doesn't tell you what you're really getting once
@@ -1974,9 +2171,26 @@ func detect_polaris_host(ip: String, host_id: int):
 			main.state_manager.save_host_state()
 	)
 
+func bitrate_label() -> String:
+	if main.settings.host.bitrate_mbps > 0:
+		return "%d Mbps" % main.settings.host.bitrate_mbps
+	var idx: int = main.settings.host.bitrate_idx
+	return "%d Mbps" % main.bitrates[idx] if idx >= 0 and idx < main.bitrates.size() else "Auto"
+
+func set_bitrate_mbps(value: int):
+	var next_value := VideoEncodingOptions.clamp_bitrate(value, desktop_codec_choice())
+	if main.settings.host.bitrate_mbps == next_value and (next_value > 0 or main.settings.host.bitrate_idx == -1):
+		return
+	main.settings.host.bitrate_mbps = next_value
+	main.settings.host.codec_bitrates[str(desktop_codec_choice())] = next_value
+	main.settings.host.bitrate_idx = -1
+	_save_setting(main._ui_bitrate_btn, bitrate_label())
+	_schedule_stream_restart()
+
 func cycle_bitrate():
+	main.settings.host.bitrate_mbps = 0
 	main.settings.host.bitrate_idx += 1
-	if main.settings.host.bitrate_idx >= main.bitrate_labels.size():
+	if main.settings.host.bitrate_idx >= main.bitrates.size():
 		main.settings.host.bitrate_idx = -1
 	var label = main.bitrate_labels[main.settings.host.bitrate_idx + 1] if main.settings.host.bitrate_idx >= 0 else "Auto"
 	_save_setting(main._ui_bitrate_btn, label)
@@ -1987,20 +2201,43 @@ func cycle_double_h():
 	main.state_manager.save_state()
 	_schedule_stream_restart()
 
-func _schedule_stream_restart(debounce_seconds: float = 0.8, reconnect_delay: float = 0.0, end_host_session: bool = false):
-	if not main.is_streaming or main.current_host_id < 0:
-		return
+func _restart_context_valid(request: Dictionary) -> bool:
+	return is_instance_valid(main) and main.current_host_id == request.host_id and main.session_lifecycle.phase in [SessionLifecycle.Phase.STREAMING, SessionLifecycle.Phase.RESTARTING]
+
+func _restart_is_current(request: Dictionary) -> bool:
+	return request.seq == _restart_seq and _restart_context_valid(request)
+
+func _schedule_stream_restart(debounce_seconds: float = 0.8, reconnect_delay: float = 0.0, end_host_session: bool = false, restart_info: Dictionary = {}):
+	if main.current_host_id < 0 or (not main.is_streaming and not main.session_lifecycle.is_restarting()): return
 	_restart_pending = true
 	_restart_seq += 1
-	var my_seq = _restart_seq
-	# XR timing changes are already committed; only user-cycled settings
-	# need the debounce. GPU/decoder drain waits below remain unchanged.
-	await main.get_tree().create_timer(debounce_seconds).timeout
-	if _restart_seq != my_seq:
-		return
+	_restart_latest = {"seq": _restart_seq, "host_id": main.current_host_id, "app_id": main._selected_app_id,
+		"debounce": debounce_seconds, "delay": reconnect_delay, "end_host": end_host_session or _monitor_relaunch_required,
+		"info": (restart_info if not restart_info.is_empty() else _monitor_restart_info).duplicate()}
+	if _restart_worker_active: return
+	_restart_worker_active = true
+	while not _restart_latest.is_empty():
+		var request: Dictionary = _restart_latest
+		_restart_latest = {}
+		if request.debounce > 0:
+			await main.get_tree().create_timer(request.debounce).timeout
+		if not _restart_is_current(request): continue
+		await _perform_stream_restart(request)
+		# Never send a newer cancel/launch across an older launch's HTTP work.
+		while main.stream_manager.launch_pending and _restart_context_valid(request):
+			await main.get_tree().process_frame
+	_restart_worker_active = false
 	_restart_pending = false
-	main._log("[RESTART] Restarting stream")
+
+func _perform_stream_restart(request: Dictionary) -> void:
+	# A simultaneous FPS/codec request must not race a pending virtual-count
+	# POST. Its successful reply may replace this request with a fresh launch.
+	while _virtual_apply_active and _restart_is_current(request):
+		await main.get_tree().process_frame
+	if not _restart_is_current(request): return
+	main._log("[RESTART] Restarting stream request=%d" % request.seq)
 	main.session_lifecycle.request_restart()
+	main.stream_manager.record_monitor_transition_stage("client_drain")
 	# The native renderer owns an OpenXR swapchain and a shared EGL context.
 	# Stop it before changing the display rate or destroying decoder textures;
 	# otherwise the runtime can recreate its display surface while either
@@ -2021,31 +2258,82 @@ func _schedule_stream_restart(debounce_seconds: float = 0.8, reconnect_delay: fl
 	main._clear_comp_yuv_textures()
 	await main.get_tree().process_frame
 	await main.get_tree().process_frame
+	if not _restart_context_valid(request): return
 	main.stream_backend.stop_play_stream()
-	# Without this the host keeps the old session and the reconnect resumes it.
-	# Vibepollo only creates or removes a virtual display when a session starts,
-	# so a resumed session never shows the change.
-	if end_host_session:
-		var ended := {"done": false}
-		main.stream_backend.stop_host_session(main.current_host_id, main.stream_manager.meteor_https_port(), func(reply) -> void:
-			ended["done"] = true
-			ended["reply"] = str(reply).left(60))
-		var waited := 0.0
-		while not ended["done"] and waited < 5.0:
+	main.stream_manager.record_monitor_transition_stage("client_stopped")
+	if not _restart_is_current(request): return
+	if request.end_host:
+		if not await _wait_for_replacement_host(request): return
+		if not await _end_host_session_ready(request): return
+		if not _restart_is_current(request): return
+		_monitor_relaunch_required = false
+		_monitor_restart_info = {}
+	# Retain existing decoder/GPU settling in this pass; remove only the
+	# unrelated 4/15-second monitor sleeps and the explicit-Apply debounce.
+	await main.get_tree().create_timer(0.5 + float(request.delay)).timeout
+	if not _restart_is_current(request): return
+	main.stream_manager.record_monitor_transition_stage("reconnect_ready")
+	await main.stream_manager.start_stream(request.host_id, request.app_id, Vector2i.ZERO,
+		func() -> bool: return _restart_is_current(request))
+
+func _restart_failed(request: Dictionary, message: String) -> void:
+	if not _restart_is_current(request): return
+	main._log("[RESTART] %s" % message)
+	main.stream_manager.monitor_first_frame_pending = false
+	main.restore_after_failed_connect(message)
+
+func _wait_for_replacement_host(request: Dictionary) -> bool:
+	if not request.info.get("host_restarting", false): return true
+	if int(request.info.get("restart_status", 0)) != 1:
+		# Older Meteor cannot identify the replacement process. Keep its
+		# conservative fallback instead of racing the old listener.
+		var legacy_deadline := Time.get_ticks_msec() + 15000
+		while Time.get_ticks_msec() < legacy_deadline:
+			if not _restart_is_current(request): return false
 			await main.get_tree().create_timer(0.1).timeout
-			waited += 0.1
-		main._log("[RESTART] Host session %s after %.1fs (%s)" % ["answered" if ended["done"] else "did not answer", waited, str(ended.get("reply", ""))])
-	await main.get_tree().create_timer(0.5 + reconnect_delay).timeout
-	# start_stream() is the single owner of refresh application at a connection
-	# boundary. It awaits the Quest surface transition before resizing Godot
-	# viewports or creating decoder/native-renderer resources.
-	await main.stream_manager.start_stream(main.current_host_id, main._selected_app_id)
+		return true
+	var deadline := Time.get_ticks_msec() + 15000
+	while _restart_is_current(request) and Time.get_ticks_msec() < deadline:
+		var status: Dictionary = await main.stream_manager.host_restart_status()
+		if not _restart_is_current(request): return false
+		if StreamRestartPolicy.replacement_ready(status, str(request.info.get("previous_instance", ""))):
+			main.stream_manager.record_monitor_transition_stage("replacement_host")
+			return true
+		await main.get_tree().create_timer(0.1).timeout
+	_restart_failed(request, "Timed out waiting for the host to restart")
+	return false
+
+func _end_host_session_ready(request: Dictionary) -> bool:
+	var deadline := Time.get_ticks_msec() + 16000
+	while _restart_is_current(request) and Time.get_ticks_msec() < deadline:
+		var ended := {"done": false, "reply": ""}
+		main.stream_backend.stop_host_session(request.host_id, main.stream_manager.meteor_https_port(), func(reply) -> void:
+			ended.reply = str(reply)
+			ended.done = true)
+		# Drain this request even if superseded: an old /cancel must never
+		# still be in flight when a newer worker launches a replacement.
+		while not ended.done and Time.get_ticks_msec() < deadline:
+			await main.get_tree().process_frame
+		if not _restart_is_current(request): return false
+		if ended.done and StreamRestartPolicy.cancel_outcome(ended.reply) < 0:
+			_restart_failed(request, "Host refused to end the previous session")
+			return false
+		if ended.done and StreamRestartPolicy.cancel_acknowledged(ended.reply):
+			main.stream_manager.record_monitor_transition_stage("host_session_ended")
+			return true
+		await main.get_tree().create_timer(0.1).timeout
+	_restart_failed(request, "Host did not confirm that the previous session ended")
+	return false
 
 func toggle_hand_tracking():
 	var modes := [0, 3, 1]
 	var current: int = main.effective_tracking_mode()
+	set_tracking_mode(modes[(modes.find(current) + 1) % modes.size()])
+
+func set_tracking_mode(value: int):
+	if value not in [0, 3, 1]: return
 	main.startup_hand_fallback.explicit_choice()
-	main.settings.tracking_mode = modes[(modes.find(current) + 1) % modes.size()]
+	main.settings.tracking_mode = value
 	main.state_manager.save_state()
 	main.state_manager.sync_ui_to_settings()
 
@@ -2058,7 +2346,8 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		main._log("[LAYOUT] Refusing invalid layout: %s" % err)
 		return
 	var wanted_ids: Array = []
-	for m in new_layout.enabled_monitors():
+	var view_monitors: Array = main.screen_sources.visible_manifest_monitors(new_layout) if main.screen_sources.has_method("visible_manifest_monitors") else new_layout.enabled_monitors()
+	for m in view_monitors:
 		wanted_ids.append(m.id)
 	# The screen about to be replaced as primary (e.g. the welcome screen's
 	# placeholder on the very first real connect) - used below to hand its exact
@@ -2074,7 +2363,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# raw order scattered screens in VR space in an order that didn't match
 	# their real desktop_rect positions, looking "scrambled". Sort by real
 	# x-position first so insertion order matches physical left-to-right order.
-	var ordered_monitors := new_layout.enabled_monitors()
+	var ordered_monitors := view_monitors
 	ordered_monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
 	# Free the slots of screens this layout drops before adding any, so a layout with as many
 	# screens as MAX_SCREENS allows fits (e.g. one physical + three virtual to four virtual).
@@ -2089,6 +2378,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 			if primary_spec and s != old_primary_being_replaced and s.monitor_id == primary_spec.id:
 				s.global_transform = old_primary_being_replaced.global_transform
 				main.set_primary_screen(s)
+				if main.screen_sources.has_method("adopt_monitor_primary"): main.screen_sources.adopt_monitor_primary(s)
 				if main.get("screen_tab_strip") != null and s.comp_corner_viewport:
 					main.screen_tab_strip.attach(s, s.comp_corner_viewport)
 				apply_stereo()
@@ -2120,7 +2410,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		s.apply_monitor(m, new_layout.frame_size)
 		if m.is_primary:
 			new_primary = s
-	if old_primary_being_replaced and new_primary and new_primary != old_primary_being_replaced:
+	if old_primary_being_replaced and new_primary and new_primary != old_primary_being_replaced and not main.screen_sources.is_browser_screen(old_primary_being_replaced):
 		new_primary.global_transform = old_primary_being_replaced.global_transform
 	main.layout = new_layout
 	# Reassign primary BEFORE removing unwanted screens below - remove_screen()
@@ -2135,6 +2425,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# grab bars" was this, not a positioning bug in add_screen() itself.
 	if new_primary and new_primary != main.primary_screen:
 		main.set_primary_screen(new_primary)
+		if main.screen_sources.has_method("adopt_monitor_primary"): main.screen_sources.adopt_monitor_primary(new_primary)
 		# Host layout changes retire the old primary and its controls atlas.
 		# Carry the primary toolbar to the replacement before removing it.
 		if main.get("screen_tab_strip") != null and new_primary.comp_corner_viewport:
@@ -2197,7 +2488,8 @@ func browser_screen_count() -> int:
 	return count
 
 func monitor_screen_capacity() -> int:
-	return maxi(0, main.MAX_SCREENS - browser_screen_count())
+	var tabs: int = main.screen_sources.monitor_tab_count() if main.screen_sources.has_method("monitor_tab_count") else 0
+	return maxi(tabs, maxi(0, main.MAX_SCREENS - browser_screen_count()))
 
 func staged_total() -> int:
 	return main._staged_physical_count + main._staged_virtual_count + browser_screen_count()
@@ -2268,7 +2560,7 @@ func select_monitor_preset(id: StringName):
 # from the real outputs= request). Real monitors' frame_rect/desktop_rect are
 # carried over untouched; only enabled/is_primary and the synthetic virtual
 # entries are new.
-func _build_staged_layout() -> ScreenLayout:
+func _build_staged_layout(preserve_current: bool = false) -> ScreenLayout:
 	var real_monitors: Array = []
 	for m in main.layout.monitors:
 		# Excludes capturable=false (connected-but-disabled host outputs) too, not just
@@ -2284,6 +2576,16 @@ func _build_staged_layout() -> ScreenLayout:
 	var phys_floor := 0 if main._staged_virtual_count > 0 and min_physical_count() == 0 else 1
 	var phys_count = clampi(main._staged_physical_count, phys_floor, maxi(1, mini(real_monitors.size(), monitor_screen_capacity())))
 	var picked: Array = real_monitors.slice(0, phys_count)
+	if preserve_current:
+		picked = []
+		for monitor in real_monitors:
+			if monitor.enabled and picked.size() < phys_count: picked.append(monitor)
+		for monitor in real_monitors:
+			if not picked.has(monitor) and picked.size() < phys_count: picked.append(monitor)
+	if _monitor_selection_override != null:
+		picked = []
+		for monitor in real_monitors:
+			if monitor.id in _monitor_selection_override: picked.append(monitor)
 
 	var new_layout := ScreenLayout.new()
 	new_layout.version = main.layout.version
@@ -2291,6 +2593,9 @@ func _build_staged_layout() -> ScreenLayout:
 	new_layout.frame_size = main.layout.frame_size
 	new_layout.desktop_bounds = main.layout.desktop_bounds
 	new_layout.any_selection = main.layout.any_selection
+	new_layout.virtual_modes_supported = main.layout.virtual_modes_supported
+	new_layout.packing_budget_version = main.layout.packing_budget_version
+	new_layout.packing_profiled = main.layout.packing_profiled
 
 	for m in real_monitors:
 		var nm := ScreenLayout.MonitorSpec.new()
@@ -2309,7 +2614,14 @@ func _build_staged_layout() -> ScreenLayout:
 	var enabled := new_layout.enabled_monitors()
 	if enabled.is_empty():
 		return null
-	enabled[0].is_primary = true
+	var previous_primary = main.layout.get_primary() if preserve_current else null
+	var kept_primary := false
+	if previous_primary != null:
+		for monitor in enabled:
+			if monitor.id == previous_primary.id:
+				monitor.is_primary = true
+				kept_primary = true
+	if not kept_primary: enabled[0].is_primary = true
 	return new_layout
 
 # Client-side-only synthetic monitors (no real RandR output behind them - see
@@ -2454,11 +2766,28 @@ func reflow_grid_screens():
 # new set, and finish_pending_monitor_apply() (called from there) finishes the
 # job - adding virtual placeholders (never reported by any real manifest) and
 # positioning every screen per the staged preset.
-func apply_staged_monitor_config():
-	var target = _build_staged_layout()
+func apply_staged_monitor_config(preserve_current: bool = false):
+	var target = _build_staged_layout(preserve_current)
 	if target == null:
 		main._log("[LAYOUT] apply_staged_monitor_config: _build_staged_layout() returned null (no real monitors known yet)")
 		return
+	# Layout-only edits and removals do not need an admission round trip.
+	var adding: bool = main._staged_virtual_count > main.settings.host.virtual_display_count
+	for monitor in target.enabled_monitors():
+		if monitor.hint.get("virtual", false): continue
+		for previous in main.layout.monitors:
+			if previous.id == monitor.id and not previous.enabled: adding = true
+	if adding and main.is_streaming:
+		var modes: String = main.screen_sources.virtual_modes_query(main._staged_virtual_count)
+		if not await main.stream_manager.admit_monitor_set(target, main._staged_virtual_count, modes, main.primary_screen, true):
+			sync_staged_from_current_layout()
+			_monitor_selection_override = null
+			return
+	_monitor_selection_override = null
+	_monitor_apply_seq += 1
+	var apply_seq := _monitor_apply_seq
+	var transition_pending: bool = _restart_pending or main.session_lifecycle.is_restarting()
+	if _restart_pending: _restart_seq += 1
 	var old_real_ids: Array = []
 	for m in main.layout.enabled_monitors():
 		if not m.hint.get("virtual", false):
@@ -2470,12 +2799,15 @@ func apply_staged_monitor_config():
 	var real_changed = old_real_ids != new_real_ids
 	main._log("[LAYOUT] apply_staged_monitor_config: staged=%d+%dvirtual old_real=%s new_real=%s real_changed=%s streaming=%s" % [main._staged_physical_count, main._staged_virtual_count, str(old_real_ids), str(new_real_ids), str(real_changed), str(main.is_streaming)])
 
-	var virtual_changed = main._staged_virtual_count != _last_applied_virtual_count
+	var virtual_changed = main._staged_virtual_count != _last_applied_virtual_count or _virtual_apply_active
 	main.settings.host.virtual_only = main._staged_physical_count == 0 and main._staged_virtual_count > 0
 	var vdd_available = main.settings.host.virtual_display_installed and main.stream_manager != null
 	# A virtual-display change restarts the stream itself (see the Meteor reply below): the host
 	# session has to end before a new virtual display can appear, and a plain restart resumes it.
-	var restart_via_meteor = virtual_changed and vdd_available and main.is_streaming
+	var needs_stream: bool = main.is_streaming or main.session_lifecycle.is_restarting()
+	var restart_via_meteor = virtual_changed and vdd_available and needs_stream
+	if (real_changed or virtual_changed or transition_pending) and needs_stream:
+		main.stream_manager.begin_monitor_transition(apply_seq)
 
 	if real_changed and main.is_streaming:
 		var new_primary = target.get_primary()
@@ -2513,12 +2845,17 @@ func apply_staged_monitor_config():
 					break
 		main._pending_monitor_apply = true
 		if not restart_via_meteor:
-			_schedule_stream_restart()
+			_schedule_stream_restart(0.0, 0.0, _monitor_relaunch_required, _monitor_restart_info)
 
 	# A change that restarts through Meteor leaves the screens alone until the
 	# new session's manifest arrives. Removing virtual screens now would leave a
 	# lone primary on the old multi-screen frame until then.
-	if not (real_changed and main.is_streaming) and not restart_via_meteor:
+	if main.is_streaming and not real_changed and not virtual_changed:
+		# Layout/orientation is local geometry only. Rebuilding from the
+		# staged synthetic placeholders would delete real virtual screens,
+		# and no reconnect would bring a fresh manifest to put them back.
+		_apply_preset_positions_to_screens()
+	elif not (real_changed and main.is_streaming) and not restart_via_meteor:
 		if vdd_available and main._staged_virtual_count > 0:
 			# Don't render placeholder — real virtual monitor arrives after stream restart.
 			# Strip synthetic virtual entries before applying so the user doesn't see a
@@ -2538,30 +2875,12 @@ func apply_staged_monitor_config():
 		_apply_preset_positions_to_screens()
 	if virtual_changed and vdd_available:
 		var vcount = main._staged_virtual_count
-		var previous_count = _last_applied_virtual_count
-		_last_applied_virtual_count = vcount
 		main.settings.host.virtual_display_count = vcount
 		main.settings.host.virtual_only = main._staged_physical_count == 0 and vcount > 0
-		var need_restart = main.is_streaming
-		main.stream_manager.post_meteor_virtual(vcount, func(ok: bool, reply: Dictionary) -> void:
-			if not ok:
-				main._log("[METEOR] POST /meteor/virtual failed")
-				# Not applied: the same Apply has to try again rather than look like no change.
-				if _last_applied_virtual_count == vcount:
-					_last_applied_virtual_count = previous_count
-				# The restart held back above still has to happen for the monitors that changed.
-				if real_changed and need_restart:
-					_schedule_stream_restart()
-			elif need_restart:
-				# The host session has to end for Vibepollo to apply the change on the
-				# next launch; the delay covers its teardown (or a full host restart
-				# when Meteor fell back to that).
-				var restarting: bool = reply.get("host_restarting", false)
-				var delay := 15.0 if restarting else 4.0
-				main._log("[METEOR] Virtual display applied (host_restarting=%s), relaunching in %.1fs" % [str(restarting), delay])
-				main._pending_monitor_apply = true
-				_schedule_stream_restart(0.8, delay, true)
-		)
+		_queue_virtual_apply({"seq": apply_seq, "count": vcount, "host_id": main.current_host_id,
+			"restart": needs_stream, "real_changed": real_changed})
+	elif transition_pending and not real_changed and needs_stream:
+		_schedule_stream_restart(0.0, 0.0, _monitor_relaunch_required, _monitor_restart_info)
 
 	main.host_resolution = main.compute_requested_resolution()
 	main.state_manager.save_host_state()
@@ -2572,6 +2891,44 @@ func apply_staged_monitor_config():
 			main.ui_controller.set_status("Virtual monitor(s) will appear on next stream connect")
 		else:
 			main.ui_controller.set_status("Monitor layout applied")
+
+# A saved virtual count already applied by a successful launch must not look
+# like a new change on the first layout-only Apply after startup.
+func note_virtual_count_launched(count: int) -> void:
+	if not _virtual_apply_active and not _restart_pending:
+		_last_applied_virtual_count = count
+
+func _queue_virtual_apply(request: Dictionary) -> void:
+	_virtual_apply_latest = request
+	if _virtual_apply_active: return
+	_virtual_apply_active = true
+	while not _virtual_apply_latest.is_empty():
+		var current: Dictionary = _virtual_apply_latest
+		_virtual_apply_latest = {}
+		var response := {"done": false, "ok": false, "reply": {}}
+		main.stream_manager.post_meteor_virtual(current.count, func(ok: bool, reply: Dictionary) -> void:
+			response.ok = ok
+			response.reply = reply
+			response.done = true)
+		while not response.done: await main.get_tree().process_frame
+		if current.host_id != main.current_host_id: continue
+		if response.ok:
+			_last_applied_virtual_count = current.count
+			if current.restart:
+				_monitor_relaunch_required = true
+				_monitor_restart_info = response.reply
+		if current.seq != _monitor_apply_seq or not _virtual_apply_latest.is_empty(): continue
+		if not response.ok:
+			main._log("[METEOR] Virtual display configuration failed; keeping applied count %d" % _last_applied_virtual_count)
+			main.settings.host.virtual_display_count = _last_applied_virtual_count
+			main.state_manager.save_host_state()
+			if current.restart and (current.real_changed or main.session_lifecycle.is_restarting()):
+				_schedule_stream_restart(0.0, 0.0, _monitor_relaunch_required, _monitor_restart_info)
+		elif current.restart and (main.is_streaming or main.session_lifecycle.is_restarting()):
+			main.stream_manager.record_monitor_transition_stage("virtual_configured")
+			main._pending_monitor_apply = true
+			_schedule_stream_restart(0.0, 0.0, true, _monitor_restart_info)
+	_virtual_apply_active = false
 
 # Called once by stream_manager.gd's launch-response handler right after it
 # applies the fresh post-restart manifest (real frame_rect data now valid for
@@ -2653,4 +3010,10 @@ func cycle_screen_key_tolerance() -> void:
 func toggle_host_background() -> void:
 	main.settings.screen_host_background = not main.settings.screen_host_background
 	main.ui_controller.update_option_btn(main._ui_host_background_btn, "On" if main.settings.screen_host_background else "Off")
+	main.state_manager.save_state()
+
+func _set_codec_without_restart(value: int) -> void:
+	main.settings.codec_preference = value
+	main.host_resolution = main.compute_requested_resolution()
+	refresh_resolution_btn_label()
 	main.state_manager.save_state()

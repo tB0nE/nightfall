@@ -39,6 +39,17 @@ cargo run --release -- --no-tray
 Linux the tray uses StatusNotifierItem; on Windows it uses the notification
 area. On macOS it's a menu-bar item (see [macOS](#macos) below).
 
+### Automatic Linux XR launch (opt-in development preview)
+
+New development builds offer a **Steam XR method** choice in Setup.
+**Steam launch options (Default)** retains the existing method and remains the
+fresh-install/Install All default. **Automatic XR (Experimental)** is an explicit
+opt-in after installing the namespaced runtime; it configures native Steam once
+instead of editing each game. Restart Steam from its desktop shortcut afterward. Existing launch
+options and the per-game wrapper fallback remain available. Flatpak Steam and
+real headset/game acceptance are separate work. See the
+[setup and test guide](../docs/guides/automatic-xr-launch.md).
+
 ### Managed Linux XR (development preview)
 
 Release dependencies, licenses, source companion and reproducible build inputs
@@ -170,6 +181,39 @@ model and GPU remain selected. Each download includes the Apache 2.0 license.
 For headless installation, use `--download-vda-vulkan 518` or
 `--download-vda-vulkan 392`. NVIDIA's separate TensorRT VDA download remains
 available under its clearly labelled menu entry.
+
+### VDA on AMD through MIGraphX (Linux, optional)
+
+With ROCm and MIGraphX installed (Arch: `migraphx`; other distributions: AMD's
+ROCm packages), discrete AMD GPUs also get **VDA 518×294 (MIGraphX)** under
+**GPU / model**. It is the same VDA-S model and history as the Vulkan entry,
+run by MIGraphX with each step replayed as one HIP graph, and the next frame is
+prepared while the model runs. Measured with `--replay` of a 3440x1440 HEVC
+clip at 90 fps on an RX 7900 XT (Mesa 26.2, ROCm 7.2):
+
+| | Depth maps (of 864 frames) | Frame to map, median / p95 |
+|---|---|---|
+| VDA 518×294 (Vulkan) | 252 (~26/s) | 28.6 / 70-94 ms |
+| VDA 518×294 (MIGraphX) | 651-658 (~68/s) | 28.6 / 29-31 ms |
+
+The depth maps match the Vulkan model's (correlation ≥ 0.9999 on the same
+frames). The VDA step itself takes ~5 ms (prepare + infer of a 1280x720 frame).
+On a live 2560x1080 stream at 90 fps it kept up with every frame.
+
+- **Download:** **Download VDA 518×294 (MIGraphX)**, or `--download-vda-vulkan migraphx`.
+  The files are the release's VDA-S ONNX graphs with one constant cubic Resize
+  (the position-embedding grid) folded, which MIGraphX can't run;
+  `tools/fold_vda_for_migraphx.py` reproduces them byte for byte.
+- **First use:** the first time the model is selected, MIGraphX compiles it for
+  the GPU, which takes a few minutes (Meteor's status says so). The result is
+  cached in the model folder under `compiled/<gpu arch>-<runtime>/`, so later
+  loads take a couple of seconds. A MIGraphX update compiles once more.
+- **Which GPUs:** discrete AMD GPUs only, matched by name to the GPU in the menu.
+  An integrated Radeon (Ryzen 7000/9000 desktops have one) is never offered.
+- **Without ROCm:** the entry doesn't appear. Meteor never links against ROCm.
+  `libmeteor_vda_migraphx.so` loads `libamdhip64`, `libhiprtc` and
+  `libmigraphx_c` at run time, and builds wherever ROCm's headers are found
+  (`METEOR_ROCM_PATH`, default `/opt/rocm`).
 
 ### Integrated XR development service
 

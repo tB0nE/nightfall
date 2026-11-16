@@ -33,6 +33,7 @@ var host := ""
 var port := 0
 ## Meteor's public key (MeteorClient.meteor_key()).
 var key := ""
+var region := PackedFloat32Array()
 # Written by the worker; plain ints and bools, read without the lock.
 var maps_received := 0
 var bytes_received := 0
@@ -52,13 +53,14 @@ var _ring: Array[Dictionary] = []
 static func is_supported() -> bool:
 	return ClassDB.class_exists("MeteorChannelCipher")
 
-func start(address: String, depth_port: int, meteor_key: String) -> void:
-	if address == host and depth_port == port and meteor_key == key and _thread:
+func start(address: String, depth_port: int, meteor_key: String, selected_region := PackedFloat32Array()) -> void:
+	if address == host and depth_port == port and meteor_key == key and selected_region == region and _thread:
 		return
 	stop()
 	host = address
 	port = depth_port
 	key = meteor_key
+	region = selected_region.duplicate()
 	_running = true
 	_thread = Thread.new()
 	_thread.start(_run)
@@ -146,8 +148,10 @@ func _run() -> void:
 			peer.set_no_delay(true)
 			cipher = ClassDB.instantiate("MeteorChannelCipher")
 			var err: String = cipher.init(key, KDF_INFO)
-			var hello := HELLO_MAGIC.to_ascii_buffer()
+			var hello := ("NFDC" if region.size() == 4 else HELLO_MAGIC).to_ascii_buffer()
 			hello.append_array(cipher.get_public_key())
+			if region.size() == 4:
+				hello.append_array(region.to_byte_array())
 			if not err.is_empty() or peer.put_data(hello) != OK:
 				push_warning("Meteor depth: can't start the encrypted connection (%s)" % err)
 				peer.disconnect_from_host()

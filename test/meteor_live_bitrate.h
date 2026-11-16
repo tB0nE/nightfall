@@ -14,7 +14,7 @@ struct MeteorLiveBitrate {
         bool eof=fgetc(request)==EOF; fclose(request);
         unsigned long long next=0; unsigned mbps=0; char extra=0;
         if(!read || !eof || sscanf(line,"%llu %u %c",&next,&mbps,&extra)!=2 || !next || next<=sequence ||
-           (mbps && (mbps<8 || mbps>160))) return;
+           (mbps && (mbps<8 || mbps>1000))) return;
         sequence=next;
         uint32_t target=mbps ? mbps*1000000u : fallback;
         int result=target==current ? 0 : apply(target);

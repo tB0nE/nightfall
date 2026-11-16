@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Підвищений бітрейт",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Подвоює ліміти стільниці та PCVR. Потрібні швидка мережа й декодування.",
+	"Default Res": "Типова роздільність",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Виберіть відеокодек. H.264+ дозволяє вищий бітрейт.",
+	"XR codec; independent of desktop. Applies next session.": "Кодек XR незалежний від робочого столу. З наступного сеансу.",
+	"Grip Scroll": "Прокрутка хватом",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Утримуйте хват і рухайте. Замість правого кліку; прив’язки вимкнені.",
+	"Ambient Intensity": "Інтенсивність підсвічування",
+	"Adjust ambient lighting strength.": "Налаштуйте інтенсивність підсвічування.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "Вибрати застосунок",
+	"Previous": "Назад",
+	"Next": "Далі"
 }

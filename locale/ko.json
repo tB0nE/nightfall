@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "비트레이트 확장",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "데스크톱과 PCVR 한도를 두 배로 늘립니다. 빠른 네트워크와 디코딩이 필요합니다.",
+	"Default Res": "기본 해상도",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "영상 코덱을 선택합니다. H.264+는 더 높은 비트레이트를 지원합니다.",
+	"XR codec; independent of desktop. Applies next session.": "XR 코덱은 데스크톱과 별개이며 다음 세션에 적용됩니다.",
+	"Grip Scroll": "그립 스크롤",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "그립을 누르고 움직여 스크롤합니다. 우클릭을 대체하며 매핑은 꺼야 합니다.",
+	"Ambient Intensity": "주변 조명 강도",
+	"Adjust ambient lighting strength.": "주변 조명의 강도를 조절합니다.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "앱 선택",
+	"Previous": "이전",
+	"Next": "다음"
 }

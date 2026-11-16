@@ -9,8 +9,11 @@ patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_controller_hoo
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_session_events.patch
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_layer_policy.patch
 patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_vaapi_extensions.patch
+patch --batch --fuzz=0 -d /out/capture-source -p1 < /tests/monado_socket_activation.patch
+cp /tests/meteor_xr_listen_fd.h /out/capture-source/src/xrt/ipc/server/meteor_xr_listen_fd.h
 args=(-S /out/capture-source -B /out/capture-build -G Ninja -DCMAKE_BUILD_TYPE=Release
     -DXRT_FEATURE_SERVICE=ON -DXRT_FEATURE_SERVICE_SYSTEMD=OFF
+    -DXRT_IPC_MSG_SOCK_FILENAME=nightfall-meteor/monado_comp_ipc
     -DXRT_FEATURE_OPENXR=ON -DXRT_FEATURE_OPENVR=OFF
     -DXRT_FEATURE_OPENXR_LAYER_CUBE=OFF -DXRT_FEATURE_OPENXR_LAYER_CYLINDER=ON
     -DXRT_FEATURE_OPENXR_LAYER_EQUIRECT1=OFF -DXRT_FEATURE_OPENXR_LAYER_EQUIRECT2=ON
@@ -30,6 +33,7 @@ while read -r driver; do args+=("-D$driver=OFF"); done < <(
 args+=(-DXRT_BUILD_DRIVER_SIMULATED=ON)
 cmake "${args[@]}"
 cmake --build /out/capture-build --target monado-service openxr_monado -j 4
+printf "%s\n" nightfall-meteor/monado_comp_ipc > /out/ipc-socket-name
 # Release packaging needs the bridge's shader headers, not a diagnostic app.
 if [[ "${NIGHTFALL_XR_PACKAGE_ONLY:-0}" == 1 ]]; then
     for stage in vert frag; do

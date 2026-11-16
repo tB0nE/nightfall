@@ -10,11 +10,14 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import os
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'test'))
 from xr_preflight_cache import valid
+from xr_runtime_paths import socket_name
 
 BINARIES = (
     '.build-cache/meteor-xr/monado-linux-spike/capture-build/src/xrt/targets/service/monado-service',
@@ -25,7 +28,7 @@ BINARIES = (
 def modules(root):
     """Include local imports, including imports inside diagnostic branches."""
     pending = [root / 'test/run_monado_nvenc_spike.py', root / 'test/xr_local_application.py',
-               root / 'test/xr_launch_intent.py']
+               root / 'test/xr_launch_intent.py', root / 'tools/meteor_xr_register.py']
     found = set()
     while pending:
         path = pending.pop()
@@ -51,7 +54,8 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None, vaapi=No
         raise ValueError('XR helpers must come from an intact validated build cache')
     paths = modules(root) | {root / name for name in BINARIES} | {
         root / 'tools/meteor_xr_runtime.py', root / 'tools/meteor_xr_install.py', root / 'tools/meteor_xr.py',
-        root / 'tools/meteor_vr_library.py', root / 'tools/meteor_steam_options.py', root / 'LICENSE',
+        root / 'tools/meteor_xr_register.py',
+        root / 'tools/meteor_vr_library.py', root / 'tools/meteor_steam_options.py', root / 'tools/meteor_steam_environment.py', root / 'LICENSE',
     }
     for source in paths:
         if not source.is_file():
@@ -131,6 +135,13 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None, vaapi=No
         target.parent.mkdir(exist_ok=True)
         shutil.copy2(source, target)
         checksums[str(target.relative_to(destination))] = hashlib.sha256(target.read_bytes()).hexdigest()
+    # Ordinary games load the client without the launcher's LD_LIBRARY_PATH.
+    # Keep private cJSON discoverable after relocation, without bundling drivers.
+    client = destination / BINARIES[1]
+    if client.read_bytes()[:4] == b'\x7fELF' and (package/'lib/libcjson.so.1').is_file():
+        relative = os.path.relpath(package/'lib', client.parent)
+        subprocess.run(['patchelf','--set-rpath','$ORIGIN/'+relative,str(client)],check=True)
+        checksums[str(client.relative_to(destination))] = hashlib.sha256(client.read_bytes()).hexdigest()
     notice = package / 'THIRD_PARTY_NOTICES.txt'
     notice.write_text('Meteor managed XR runtime\n'
         'Nightfall supervisor and bridges: GNU GPL v3; see the root LICENSE.\n'
@@ -147,6 +158,7 @@ def stage(root, destination, helpers, system_libraries=(), xrizer=None, vaapi=No
     (package / 'manifest.json').write_text(json.dumps({
         'version': 1, 'backend': 'linux-gpu' if vaapi else 'nvidia',
         'backends': ['nvenc','vaapi'] if vaapi else ['nvenc'], 'helper_build': manifest['key'],
+        'ipc_socket': socket_name(root),
         'openvr_compat': 'xr-runtime/xrizer' if xrizer is not None else None,
         'sha256': checksums,
     }, indent=2) + '\n')

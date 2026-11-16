@@ -1,4 +1,13 @@
 {
+	"Extended Bitrate": "Erweiterte Bitrate",
+	"Double desktop and PCVR bitrate limits. Needs fast network and decoding.": "Doppelte Desktop-/PCVR-Bitrate. Benötigt schnelles Netz und Decoding.",
+	"Default Res": "Standardauflösung",
+	"Choose the video codec. H.264+ enables a higher bitrate range.": "Videocodec wählen. H.264+ erlaubt höhere Bitraten.",
+	"XR codec; independent of desktop. Applies next session.": "XR-Codec, unabhängig vom Desktop. Gilt ab nächster Sitzung.",
+	"Grip Scroll": "Scrollen per Griff",
+	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Griff halten und bewegen. Ersetzt Rechtsklick; Belegung muss aus sein.",
+	"Ambient Intensity": "Umgebungslichtstärke",
+	"Adjust ambient lighting strength.": "Stärke des Umgebungslichts anpassen.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
@@ -247,5 +256,8 @@
 	"Browser screens count towards the layout. Manage them above each screen.": "Browser screens count towards the layout. Manage them above each screen.",
 	"Choose a layout for all monitor and browser screens.": "Choose a layout for all monitor and browser screens.",
 	"Configure XR stream quality.": "Configure XR stream quality.",
-	"Refresh the installed VR app list.": "Refresh the installed VR app list."
+	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
+	"Choose App": "App wählen",
+	"Previous": "Vorherige",
+	"Next": "Nächste"
 }
