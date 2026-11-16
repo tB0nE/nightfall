@@ -263,8 +263,8 @@ func refresh() -> void:
 			main.comp.clear_native_ambient_sample()
 		_disable_legacy_video()
 		legacy_disabled = true
-		renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
-		if main.settings.performance_overlay_enabled:
+		_set_screen_overlay_visible(_screen_overlay_enabled())
+		if _screen_overlay_enabled():
 			request_stats_overlay_update()
 		main._log("[NATIVE-XR] Native renderer active; legacy full-resolution passes disabled")
 
@@ -420,17 +420,27 @@ func _process_ambient_sample() -> void:
 	if pixels.size() == 32 * 32 * 4:
 		main.comp.update_native_ambient_sample(pixels, 32, 32)
 
+func _set_screen_overlay_visible(value: bool) -> void:
+	var height := 0
+	if main.comp != null and main.comp.screen_message_visible:
+		height = int(main.comp._message_panel_size().y + CompositionLayerManager.MESSAGE_PADDING.y * 2)
+	renderer.set_overlay_message_height(height)
+	renderer.set_overlay_visible(value)
+
+func _screen_overlay_enabled() -> bool:
+	return main.settings.performance_overlay_enabled or (main.comp != null and main.comp.screen_message_visible)
+
 func request_stats_overlay_update() -> void:
 	if active:
 		if renderer and stream_started:
-			renderer.set_overlay_visible(main.settings.performance_overlay_enabled)
+			_set_screen_overlay_visible(_screen_overlay_enabled())
 		_stats_upload_delay = 1
 
 func set_stats_visible(value: bool) -> void:
 	if renderer and stream_started:
-		renderer.set_overlay_visible(value)
+		_set_screen_overlay_visible(value or (main.comp != null and main.comp.screen_message_visible))
 		_force_redraw = true
-	if value:
+	if _screen_overlay_enabled():
 		request_stats_overlay_update()
 
 func _process_stats_upload() -> void:
@@ -447,12 +457,12 @@ func _process_stats_upload() -> void:
 		return
 	if image.get_format() != Image.FORMAT_RGBA8:
 		image.convert(Image.FORMAT_RGBA8)
-	if image.get_size() != Vector2i(768, 512):
-		image.resize(768, 512)
+	if image.get_size() != CompositionLayerManager.SCREEN_OVERLAY_SIZE:
+		image.resize(CompositionLayerManager.SCREEN_OVERLAY_SIZE.x, CompositionLayerManager.SCREEN_OVERLAY_SIZE.y)
 	# Godot Images are top-left-origin while glTexSubImage2D feeds the native
 	# in-screen stats texture bottom-left-origin data.
 	image.flip_y()
-	renderer.upload_overlay(image.get_data(), 768, 512)
+	renderer.upload_overlay(image.get_data(), CompositionLayerManager.SCREEN_OVERLAY_SIZE.x, CompositionLayerManager.SCREEN_OVERLAY_SIZE.y)
 	# Unlike the former XR quad, these pixels now live in the video swapchain.
 	# A paused/static stream needs one draw to reveal the updated text.
 	_force_redraw = true

@@ -597,15 +597,16 @@ static void crop_tex_matrix(const float *p_matrix, const float *p_crop, float *r
 	}
 }
 
-#define OVERLAY_WIDTH 768
-#define OVERLAY_HEIGHT 512
+#define OVERLAY_WIDTH 1100
+#define OVERLAY_HEIGHT 960
 static const char *OVERLAY_FRAGMENT_SRC =
 		"#version 300 es\n"
 		"precision mediump float;\n"
 		"in vec2 v_plain;\n"
 		"uniform sampler2D u_texture;\n"
+		"uniform vec4 u_region;\n"
 		"out vec4 fragColor;\n"
-		"void main() { fragColor = texture(u_texture, v_plain); }\n";
+		"void main() { fragColor = texture(u_texture, u_region.xy + v_plain * u_region.zw); }\n";
 #define UPSAMPLE_DIVISOR 4
 // The GSR working grid as a fraction of the stream (see
 // choose_working_size()): 1920x1080 for a 2560x1440 stream.
@@ -2148,18 +2149,29 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	}
 	if (overlay_visible && overlay_has_content && overlay_texture != 0) {
-		const int overlay_w = std::max(1, (int)(output_width * 0.30f));
-		const int overlay_h = std::max(1, (int)(overlay_w * (float)OVERLAY_HEIGHT / OVERLAY_WIDTH));
-		const int margin = std::max(1, (int)(output_width * 0.02f));
 		glUseProgram(overlay_program);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, overlay_texture);
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		const GLint region = glGetUniformLocation(overlay_program, "u_region");
+		const int margin = std::max(1, (int)(output_width * 0.02f));
+		const int stats_w = std::max(1, (int)(output_width * 0.30f));
+		const int stats_h = std::max(1, (int)(stats_w * 512.0f / 768.0f));
+		const int message_w = std::max(1, (int)(output_width * 0.55f));
+		const int message_pixels = overlay_message_height.load(std::memory_order_relaxed);
+		const int message_h = std::max(1, (int)(message_w * (float)message_pixels / 1100.0f));
 		for (int eye = 0; eye < 2; eye++) {
-			glViewport(eye * output_width + margin,
-					output_height - margin - overlay_h, overlay_w, overlay_h);
+			// The shared atlas is flipped before upload. Keep stats top-left;
+			// draw its notification strip at the centre of the same eye image.
+			glUniform4f(region, 0.0f, 448.0f / OVERLAY_HEIGHT, 768.0f / OVERLAY_WIDTH, 512.0f / OVERLAY_HEIGHT);
+			glViewport(eye * output_width + margin, output_height - margin - stats_h, stats_w, stats_h);
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			if (message_pixels > 0) {
+				glUniform4f(region, 0.0f, (4.0f + (440.0f - message_pixels) * 0.5f) / OVERLAY_HEIGHT, 1.0f, (float)message_pixels / OVERLAY_HEIGHT);
+				glViewport(eye * output_width + (output_width - message_w) / 2, (output_height - message_h) / 2, message_w, message_h);
+				glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			}
 		}
 		glDisable(GL_BLEND);
 	}
@@ -2915,6 +2927,10 @@ void NightfallXrRenderer::upload_overlay(PackedByteArray p_pixels, int p_width, 
 	if (!eglMakeCurrent(egl_display, restore_draw, restore_read, restore_context)) {
 		XR_LOGE("upload_overlay: restoring Godot's EGL context/surface failed: %d", eglGetError());
 	}
+}
+
+void NightfallXrRenderer::set_overlay_message_height(int p_height) {
+	overlay_message_height.store(std::clamp(p_height, 0, 440), std::memory_order_relaxed);
 }
 
 void NightfallXrRenderer::set_overlay_visible(bool p_visible) {

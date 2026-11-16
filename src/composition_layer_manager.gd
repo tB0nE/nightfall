@@ -10,6 +10,16 @@ var stats_viewport: SubViewport = null
 var stats_label: Label = null
 var stats_rects: Array = []
 var stats_visible: bool = false
+const SCREEN_OVERLAY_SIZE := Vector2i(1100, 960)
+const STATS_REGION := Rect2(0, 0, 768, 512)
+const MESSAGE_REGION := Rect2(0, 516, 1100, 440)
+const MESSAGE_PADDING := Vector2(4, 4)
+const MESSAGE_SCREEN_WIDTH := 0.55
+var screen_message_visible := false
+var _screen_message_revision := 0
+var _stats_background: Control
+var _screen_message_panel: PanelContainer
+var _screen_message_label: Label
 var _sdr_shader: Shader = null
 var _sdr_picture_shader: Shader = null
 var _hdr_shader: Shader = null
@@ -509,7 +519,7 @@ func setup():
 	setup_stats_overlay()
 
 func setup_stats_overlay():
-	# Match Moonlight Android XR's 768x512 diagnostic panel. Render it once and
+	# Keep the 768x512 diagnostic panel, with a notification strip below it. Render once and
 	# sample that texture inside each existing screen viewport, rather than
 	# allocating another OpenXR composition layer/swapchain. This pins the panel
 	# to the screen's top-left in mono and stereo modes and keeps projection off.
@@ -517,13 +527,15 @@ func setup_stats_overlay():
 	stats_viewport.name = "PerformanceStatsViewport"
 	stats_viewport.disable_3d = true
 	stats_viewport.transparent_bg = true
-	stats_viewport.size = Vector2i(768, 512)
+	stats_viewport.size = SCREEN_OVERLAY_SIZE
 	stats_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED
 	main.add_child(stats_viewport)
 
 	var background = ColorRect.new()
 	background.name = "Background"
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.size = Vector2(768, 512)
+	background.visible = false
+	_stats_background = background
 	background.color = Color(0, 0, 0, 0.69)
 	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stats_viewport.add_child(background)
@@ -541,6 +553,28 @@ func setup_stats_overlay():
 	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	background.add_child(stats_label)
 
+	_screen_message_panel = PanelContainer.new()
+	_screen_message_panel.name = "ScreenNotification"
+	_screen_message_panel.size = _message_panel_size()
+	_screen_message_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_screen_message_panel.visible = false
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.06, 0.06, 0.09, 0.92)
+	style.set_corner_radius_all(28)
+	style.border_color = Color(0.49, 0.45, 1.0, 0.9)
+	style.set_border_width_all(3)
+	style.set_content_margin_all(12)
+	_screen_message_panel.add_theme_stylebox_override("panel", style)
+	stats_viewport.add_child(_screen_message_panel)
+	_screen_message_label = Label.new()
+	_screen_message_label.add_theme_font_size_override("font_size", 40)
+	_screen_message_label.add_theme_color_override("font_color", Color(0.95, 0.95, 1.0))
+	_screen_message_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_screen_message_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_screen_message_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_screen_message_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_screen_message_panel.add_child(_screen_message_label)
+
 	var screen = main.primary_screen
 	var targets = [
 		{"bezel": screen.comp_bezel_rect, "viewport": screen.comp_viewport},
@@ -550,52 +584,115 @@ func setup_stats_overlay():
 	for target in targets:
 		if not target.bezel or not target.viewport:
 			continue
-		var rect = TextureRect.new()
-		rect.name = "PerformanceStatsOverlay"
-		rect.texture = stats_viewport.get_texture()
-		rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		rect.stretch_mode = TextureRect.STRETCH_SCALE
-		rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		rect.z_index = 100
-		rect.visible = false
-		target.bezel.add_child(rect)
-		stats_rects.append({"rect": rect, "viewport": target.viewport})
+		var rect = _make_overlay_rect("PerformanceStatsOverlay", STATS_REGION, target.bezel)
+		var message_rect = _make_overlay_rect("ScreenNotificationOverlay", MESSAGE_REGION, target.bezel)
+		stats_rects.append({"rect": rect, "message_rect": message_rect, "viewport": target.viewport})
 	_layout_stats_rects()
 	main._log("[COMP] In-screen performance statistics overlay created")
 
 func set_stats_visible(enabled: bool):
-	if not stats_viewport:
-		return
-	if stats_visible == enabled:
-		return
+	if not stats_viewport: return
 	stats_visible = enabled
-	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if enabled else SubViewport.UPDATE_DISABLED
+	_sync_screen_overlay()
+
+func set_screen_message(text: String) -> void:
+	if not stats_viewport: return
+	screen_message_visible = not text.is_empty()
+	_screen_message_label.text = text
+	_screen_message_revision += 1
+	_sync_screen_overlay()
+	if screen_message_visible:
+		_refresh_message_after_layout(_screen_message_revision)
+	elif main.video_presentation:
+		main.video_presentation.request_stats_overlay_update()
+
+func _refresh_message_after_layout(revision: int) -> void:
+	# Container layout/text shaping settle after the first draw. Capturing only
+	# that draw produced a styled background with no text on first use.
+	for frame in 2:
+		if not is_instance_valid(main) or not main.is_inside_tree(): return
+		await main.get_tree().process_frame
+	if not is_instance_valid(main) or revision != _screen_message_revision or not is_instance_valid(stats_viewport): return
+	# The first zero-width wrap can grow a PanelContainer's minimum height;
+	# it does not shrink itself again when the real text width is known.
+	_screen_message_panel.size = _message_panel_size()
+	_screen_message_panel.position = MESSAGE_REGION.position + (MESSAGE_REGION.size - _message_panel_size()) * 0.5
+	await main.get_tree().process_frame
+	if not is_instance_valid(main) or revision != _screen_message_revision or not is_instance_valid(stats_viewport): return
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	if main.video_presentation: main.video_presentation.request_stats_overlay_update()
+
+func _message_panel_size() -> Vector2:
+	var height := 432.0 if _screen_message_label != null and _screen_message_label.text.count("\n") > 1 else 176.0
+	return Vector2(MESSAGE_REGION.size.x - MESSAGE_PADDING.x * 2, height)
+
+func _sync_screen_overlay() -> void:
+	_screen_message_label.add_theme_font_size_override("font_size", 34 if _screen_message_label.text.count("\n") > 1 else 40)
+	var stats_enabled: bool = main.settings.performance_overlay_enabled and main.is_streaming
+	_stats_background.visible = stats_enabled
+	_screen_message_panel.visible = screen_message_visible
+	_screen_message_panel.position = MESSAGE_REGION.position + (MESSAGE_REGION.size - _message_panel_size()) * 0.5
+	stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE if stats_enabled or screen_message_visible else SubViewport.UPDATE_DISABLED
 	for target in stats_rects:
-		target.rect.visible = enabled
-	if enabled:
-		_layout_stats_rects()
+		if is_instance_valid(target.rect): target.rect.visible = stats_visible
+		if is_instance_valid(target.get("message_rect")): target.message_rect.visible = screen_message_visible
+	_layout_stats_rects()
 
 func update_stats_text(value: String):
 	if stats_label:
 		stats_label.text = value
-		if stats_visible:
+		if stats_visible or screen_message_visible or main.settings.performance_overlay_enabled:
 			stats_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func update_stats_transform():
 	_layout_stats_rects()
 
+func _make_overlay_rect(rect_name: String, region: Rect2, parent: Control) -> TextureRect:
+	var rect := TextureRect.new()
+	rect.name = rect_name
+	var atlas := AtlasTexture.new()
+	atlas.atlas = stats_viewport.get_texture()
+	atlas.region = region
+	atlas.filter_clip = true
+	rect.texture = atlas
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rect.z_index = 100
+	rect.visible = false
+	parent.add_child(rect)
+	return rect
+
+static func screen_message_bounds(size: Vector2) -> Rect2:
+	var width := size.x * MESSAGE_SCREEN_WIDTH
+	var height := width * MESSAGE_REGION.size.y / MESSAGE_REGION.size.x
+	return Rect2((size - Vector2(width, height)) * 0.5, Vector2(width, height))
+
 func _layout_stats_rects():
-	for target in stats_rects:
-		var rect: TextureRect = target.rect
-		var viewport: SubViewport = target.viewport
-		if not rect or not viewport:
-			continue
-		var margin = float(viewport.size.x) * 0.02
-		var overlay_width = float(viewport.size.x) * 0.30
-		var overlay_height = overlay_width * (512.0 / 768.0)
-		rect.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-		rect.position = Vector2(margin, margin)
-		rect.size = Vector2(overlay_width, overlay_height)
+	if not main.primary_screen: return
+	var screen = main.primary_screen
+	var bezels = [screen.comp_bezel_rect, screen.comp_bezel_rect_left, screen.comp_bezel_rect_right]
+	var viewports = [screen.comp_viewport, screen.comp_viewport_left, screen.comp_viewport_right]
+	for i in bezels.size():
+		if not is_instance_valid(bezels[i]) or not is_instance_valid(viewports[i]): continue
+		while stats_rects.size() <= i: stats_rects.append({"rect": null, "message_rect": null, "viewport": null})
+		var target: Dictionary = stats_rects[i]
+		for entry in [["rect", "PerformanceStatsOverlay", STATS_REGION], ["message_rect", "ScreenNotificationOverlay", MESSAGE_REGION]]:
+			if not is_instance_valid(target.get(entry[0])):
+				target[entry[0]] = _make_overlay_rect(entry[1], entry[2], bezels[i])
+			elif target[entry[0]].get_parent() != bezels[i]:
+				target[entry[0]].reparent(bezels[i], false)
+		target.viewport = viewports[i]
+		var size := Vector2(viewports[i].size)
+		var margin := size.x * 0.02
+		var width := size.x * 0.30
+		target.rect.position = Vector2(margin, margin)
+		target.rect.size = Vector2(width, width * STATS_REGION.size.y / STATS_REGION.size.x)
+		target.rect.visible = stats_visible
+		var bounds := screen_message_bounds(size)
+		target.message_rect.position = bounds.position
+		target.message_rect.size = bounds.size
+		target.message_rect.visible = screen_message_visible
 
 func _setup_ambient_layer() -> bool:
 	if _ambient_layer and _ambient_material:

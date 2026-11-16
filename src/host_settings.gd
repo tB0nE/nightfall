@@ -21,6 +21,7 @@ var bitrate_idx: int = -1
 var double_h: bool = false
 ## 0=Off, 1=Stretch, 2=Crop.
 var sbs_mode: int = 0
+var sbs_last_mode: int = 1
 ## Index into SettingsController.ai_3d_models.
 var ai_3d_model: int = 0
 ## Android depth GPU API: 0=OpenCL, 1=OpenGL. Ignored while Model is Auto.

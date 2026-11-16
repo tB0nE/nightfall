@@ -148,6 +148,7 @@ public:
 
 	void upload_overlay(PackedByteArray p_pixels, int p_width, int p_height);
 	void set_overlay_visible(bool p_visible);
+	void set_overlay_message_height(int p_height);
 	// Requests a tiny asynchronous sample of the final native left-eye image
 	// for the ambient-light layer. consume_ambient_sample() returns an empty
 	// array until a requested GPU readback has completed.
@@ -287,6 +288,7 @@ private:
 	GLuint overlay_program = 0;
 	bool overlay_has_content = false;
 	bool overlay_visible = false;
+	std::atomic<int> overlay_message_height{0};
 
 	int video_width = 0;
 	int video_height = 0;

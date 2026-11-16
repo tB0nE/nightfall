@@ -24,7 +24,6 @@ var _auto_depth_fallback: bool = false
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
 var _refresh_request_seq: int = 0
-var _last_sbs_mode: int = 1
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -356,15 +355,17 @@ func cycle_sbs_mode():
 	set_sbs_mode((main.settings.host.sbs_mode + 1) % sbs_labels.size())
 
 func toggle_sbs_mode():
-	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else _last_sbs_mode)
+	set_sbs_mode(0 if main.settings.host.sbs_mode > 0 else main.settings.host.sbs_last_mode)
+	if main.get("composition_toast") != null:
+		main.composition_toast.show("SBS: %s" % sbs_labels[main.settings.host.sbs_mode], main.xr_camera, 2.5)
 
 func set_sbs_mode(requested_mode: int):
 	var previous_mode: int = main.settings.host.sbs_mode
 	main.settings.host.sbs_mode = clampi(requested_mode, 0, sbs_labels.size() - 1)
-	if previous_mode > 0:
-		_last_sbs_mode = previous_mode
-	elif main.settings.host.sbs_mode > 0:
-		_last_sbs_mode = main.settings.host.sbs_mode
+	if main.settings.host.sbs_mode > 0:
+		main.settings.host.sbs_last_mode = main.settings.host.sbs_mode
+	elif previous_mode > 0:
+		main.settings.host.sbs_last_mode = previous_mode
 	_save_setting(main._ui_sbs_btn, sbs_labels[main.settings.host.sbs_mode])
 	main.ui_controller.update_3d_btn_state()
 	apply_stereo()

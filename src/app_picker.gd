@@ -162,6 +162,10 @@ func select(index: int) -> void:
 ## The cached cover of `app_id` on the current host, or the PC icon while it
 ## loads (or when the host has none). Fetches it the first time.
 func cover_for(app_id: int) -> Texture2D:
+	# Desktop has local transparent artwork rather than the host's grey cover.
+	for app in main._available_apps:
+		if int(app.get("id", DEFAULT_APP_ID)) == app_id and String(app.get("name", "")).strip_edges().to_lower() == "desktop":
+			return load("res://src/assets/desktop_cover.svg")
 	var key := _cover_key(app_id)
 	if _covers.has(key):
 		return _covers[key]

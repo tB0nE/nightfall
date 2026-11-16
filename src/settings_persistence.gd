@@ -176,6 +176,7 @@ static func write_host(config: ConfigFile, section: String, host: HostSettings) 
 	config.set_value(section, "default_resolution_selected", host.default_resolution_selected)
 	config.set_value(section, "resolution_idx", host.resolution_idx)
 	config.set_value(section, "sbs_mode", host.sbs_mode)
+	config.set_value(section, "sbs_last_mode", host.sbs_last_mode)
 	config.set_value(section, "ai_3d_model", host.ai_3d_model)
 	config.set_value(section, "ai_3d_gpu_api", host.ai_3d_gpu_api)
 	config.set_value(section, "ai_3d_speed", host.ai_3d_speed)
@@ -340,3 +341,5 @@ static func read_host(
 			host.sbs_mode = 0
 			host.ai_3d_model = 2 # MiDaS-192
 			host.ai_3d_speed = 1 # Auto
+
+	host.sbs_last_mode = clampi(int(config.get_value(section, "sbs_last_mode", maxi(host.sbs_mode, 1))), 1, 2)
