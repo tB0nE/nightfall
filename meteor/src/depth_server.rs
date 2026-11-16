@@ -62,6 +62,7 @@ pub fn start(
         }
     };
     log::info!("depth TCP :{port}");
+    depth.set_region_same_client(same_client.clone());
     let spawned = std::thread::Builder::new().name("depth-server".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
             let depth = depth.clone();

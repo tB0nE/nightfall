@@ -290,6 +290,9 @@ pub struct Depth {
     capture_region_file: Mutex<Option<PathBuf>>,
     client_regions: Mutex<BTreeMap<IpAddr, (u64, [f32; 4])>>,
     region_sequence: AtomicU64,
+    /// Whether two addresses are paths of the same client (multipath), so a region
+    /// chosen on the depth connection's address applies to video from another path.
+    region_same_client: Mutex<Option<Arc<dyn Fn(IpAddr, IpAddr) -> bool + Send + Sync>>>,
     /// Name and output size of the model in use.
     active: Mutex<Option<(String, usize, usize)>>,
     /// The size the decoder reduces frames to for that model.
@@ -382,6 +385,7 @@ impl Depth {
             capture_region_file: Mutex::new(None),
             client_regions: Mutex::new(BTreeMap::new()),
             region_sequence: AtomicU64::new(1),
+            region_same_client: Mutex::new(None),
             active: Mutex::new(None),
             input_size: Mutex::new(None),
             pending_model: Mutex::new(None),
@@ -580,9 +584,20 @@ impl Depth {
         let mut regions=self.client_regions.lock().unwrap_or_else(|e|e.into_inner());
         if regions.get(&ip.to_canonical()).is_some_and(|(current,_)|*current==seq) {regions.remove(&ip.to_canonical());}
     }
+    pub fn set_region_same_client(&self, same_client: Arc<dyn Fn(IpAddr, IpAddr) -> bool + Send + Sync>) {
+        *self.region_same_client.lock().unwrap_or_else(|e|e.into_inner()) = Some(same_client);
+    }
     fn client_region(&self, ip: Option<IpAddr>) -> (Option<[f32;4]>, u64) {
-        if let Some(ip)=ip && let Ok(regions)=self.client_regions.lock()
-            && let Some((sequence,region))=regions.get(&ip.to_canonical()) {return (Some(*region),*sequence);}
+        if let Some(ip)=ip.map(|ip|ip.to_canonical()) && let Ok(regions)=self.client_regions.lock() {
+            if let Some((sequence,region))=regions.get(&ip) {return (Some(*region),*sequence);}
+            // Multipath: the region may have been chosen from another path of this client.
+            let same_client=self.region_same_client.lock().ok().and_then(|f|f.clone());
+            if let Some(same_client)=same_client
+                && let Some((_,(sequence,region)))=regions.iter()
+                    .filter(|(other,_)|same_client(**other,ip)).max_by_key(|(_,(sequence,_))|*sequence) {
+                return (Some(*region),*sequence);
+            }
+        }
         (self.capture_region(),0)
     }
     fn capture_region(&self) -> Option<[f32; 4]> {
