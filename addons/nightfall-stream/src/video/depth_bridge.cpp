@@ -362,7 +362,8 @@ int DepthBridge::get_depth_model_size() {
 
 int DepthBridge::get_depth_model_width() {
 #ifdef NIGHTFALL_PLATFORM_LINUX
-    return get_depth_model_size();
+    if (!midas_engine_) return 256;
+    return midas_engine_->get_model_width();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 256;
@@ -383,7 +384,8 @@ int DepthBridge::get_depth_model_width() {
 
 int DepthBridge::get_depth_model_height() {
 #ifdef NIGHTFALL_PLATFORM_LINUX
-    return get_depth_model_size();
+    if (!midas_engine_) return 256;
+    return midas_engine_->get_model_height();
 #elif defined(__ANDROID__)
     JNIEnv *env = get_jni_env();
     if (!env) return 256;

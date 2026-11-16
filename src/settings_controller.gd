@@ -159,8 +159,8 @@ var ai_3d_models: Array = [
 	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	# Retired slot: retain persisted indices; never selectable or bundled.
 	{"label": "EdgePad-320 (retired)", "java_index": 28, "gpu": true, "android": false, "linux": false},
