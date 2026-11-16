@@ -11,6 +11,7 @@ fn main() {
         .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
     println!("cargo:rustc-env=METEOR_VERSION={version}");
     build_vda_vulkan();
+    build_vda_migraphx();
     println!("cargo:rerun-if-changed=native/video_decoder.cpp");
     println!("cargo:rerun-if-changed=third_party/ffmpeg");
     let mut decoder = cc::Build::new();
@@ -142,3 +143,38 @@ fn build_vda_vulkan() {
         output.display()
     );
 }
+
+/// The optional MIGraphX VDA runtime (AMD, Linux). Built with a plain C++
+/// compiler against ROCm's headers only: every ROCm library is loaded at run
+/// time, so the result has no ROCm dependency and Meteor without ROCm simply
+/// doesn't offer the model. Set METEOR_ROCM_PATH if ROCm isn't in /opt/rocm.
+fn build_vda_migraphx() {
+    use std::{path::PathBuf, process::Command};
+    println!("cargo:rerun-if-env-changed=METEOR_ROCM_PATH");
+    println!("cargo:rerun-if-changed=native/vda_migraphx.cpp");
+    if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "linux" {
+        return;
+    }
+    let rocm = PathBuf::from(std::env::var_os("METEOR_ROCM_PATH").unwrap_or_else(|| "/opt/rocm".into()));
+    let include = rocm.join("include");
+    if !["hip/hip_runtime_api.h", "hip/hiprtc.h", "migraphx/migraphx.h"].iter().all(|h| include.join(h).is_file()) {
+        println!("cargo:warning=Optional MIGraphX VDA runtime not built: ROCm headers (HIP, hiprtc, MIGraphX) not found; set METEOR_ROCM_PATH");
+        return;
+    }
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let output = out_dir.join("libmeteor_vda_migraphx.so");
+    let compiled = out_dir.join("libmeteor_vda_migraphx.pending.so");
+    let compiler = cc::Build::new().cpp(true).get_compiler();
+    let status = compiler
+        .to_command()
+        .args(["-O2", "-std=c++17", "-shared", "-fPIC", "-fvisibility=hidden", "native/vda_migraphx.cpp"])
+        .arg(format!("-I{}", include.display()))
+        .args(["-ldl", "-o"])
+        .arg(&compiled)
+        .status()
+        .expect("Compile MIGraphX VDA runtime");
+    assert!(status.success(), "MIGraphX VDA runtime compilation failed");
+    std::fs::rename(&compiled, &output).expect("Install compiled MIGraphX VDA runtime");
+    println!("cargo:rustc-env=METEOR_VDA_MIGRAPHX_LIBRARY={}", output.display());
+}
+

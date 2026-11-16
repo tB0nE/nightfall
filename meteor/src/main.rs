@@ -244,7 +244,8 @@ async fn main() {
              \x20 --quit-after <seconds>  quit during --replay (tests shutdown)\n\
              \x20 --download-vda          download TensorRT (from NVIDIA, under NVIDIA's licence)\n\
              \x20 --download-host         download/verify the Linux managed host without switching\n\
-             \x20 --download-vda-vulkan <518|392> download the optional Vulkan VDA model\n\
+             \x20 --download-vda-vulkan <518|392|migraphx> download an optional VDA model\n\
+             \x20                         (migraphx: AMD GPUs with ROCm + MIGraphX)\n\
              \x20                         and the VDA graphs, then exit"
         );
         return;
@@ -266,8 +267,8 @@ async fn main() {
         }
     }
     if let Some(variant)=value("--download-vda-vulkan") {
-        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,_=>{
-            eprintln!("Choose 518 or 392 for --download-vda-vulkan");std::process::exit(2);
+        let id=match variant.as_str() { "518"=>vda_vulkan::FULL,"392"=>vda_vulkan::FAST,"migraphx"=>vda_vulkan::MIGRAPHX,_=>{
+            eprintln!("Choose 518, 392 or migraphx for --download-vda-vulkan");std::process::exit(2);
         }};
         let directory=config.models_dir.clone().unwrap_or_else(config::default_models_dir);
         let download=download::Download::default();

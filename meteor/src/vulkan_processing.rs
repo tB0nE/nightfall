@@ -292,6 +292,40 @@ impl Processor {
             )
         })
     }
+    /// Puts a host depth map (this processor's size, f32) on its Vulkan
+    /// device, so a runtime without Vulkan-resident output (MIGraphX VDA)
+    /// still gets the resident post-processing path.
+    pub(crate) fn upload_depth(&mut self, depth: &[f32]) -> Result<ResidentDepth, String> {
+        type Upload =
+            unsafe extern "C" fn(*mut c_void, *const f32, *mut *mut c_void, *mut c_char, usize) -> c_int;
+        if depth.len() != self.size.0 * self.size.1 {
+            return Err("Depth upload size mismatch".into());
+        }
+        // SAFETY: the processing library's reference upload ABI, as used by the tests.
+        let upload = unsafe {
+            *self
+                .api
+                ._library
+                .get::<Upload>(b"meteor_processing_depth_upload\0")
+                .map_err(|e| e.to_string())?
+        };
+        let mut handle = std::ptr::null_mut();
+        let mut error = [0 as c_char; 1024];
+        let code = unsafe { upload(self.handle, depth.as_ptr(), &mut handle, error.as_mut_ptr(), error.len()) };
+        if code != 0 || handle.is_null() {
+            return Err(unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy().into_owned());
+        }
+        Ok(unsafe {
+            ResidentDepth::from_native(
+                handle,
+                self.api.clone(),
+                self.api.depth_destroy,
+                self.api.depth_download,
+                self.size,
+                self.gpu.clone(),
+            )
+        })
+    }
     pub(crate) fn process_resident(
         &mut self,
         raw: &ResidentDepth,

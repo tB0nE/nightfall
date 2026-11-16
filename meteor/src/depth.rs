@@ -140,6 +140,7 @@ pub fn model_label(name: &str) -> String {
         vda::ID => "VDA 518×294 (TensorRT)".into(),
         vda_vulkan::FULL => "VDA 518×294 (Vulkan)".into(),
         vda_vulkan::FAST => "VDA Performance 392×224 (Vulkan)".into(),
+        vda_vulkan::MIGRAPHX => "VDA 518×294 (MIGraphX)".into(),
         "zipdepth_edgepad_384" => "EdgePad-384".into(),
         "zipdepth_wide_512x288" => "EdgePad-512".into(),
         "zipdepth_wide_672x384" => "EdgePad-672".into(),
@@ -154,9 +155,9 @@ pub struct DepthChoice {pub model:String,pub gpu:Option<String>,pub cpu:bool}
 #[derive(Clone,Debug)]
 pub struct DepthGroup {pub label:String,pub choices:Vec<DepthChoice>}
 
-fn build_choice_groups(models:&[String],gpu_names:Vec<String>,legacy_gpu:bool,supported:impl Fn(Option<&str>)->bool)->Vec<DepthGroup> {
+fn build_choice_groups(models:&[String],gpu_names:Vec<String>,legacy_gpu:bool,supported:impl Fn(&str,Option<&str>)->bool)->Vec<DepthGroup> {
         let portable:Vec<_>=models.iter().filter(|m|is_ncnn(m)||vda_vulkan::is_model(m)).cloned().collect();
-        let choices=|gpu:Option<String>|portable.iter().filter(|m| !vda_vulkan::is_model(m) || supported(gpu.as_deref())).map(|m|DepthChoice{model:m.clone(),gpu:gpu.clone(),cpu:false}).collect::<Vec<_>>();
+        let choices=|gpu:Option<String>|portable.iter().filter(|m| !vda_vulkan::is_model(m) || supported(m,gpu.as_deref())).map(|m|DepthChoice{model:m.clone(),gpu:gpu.clone(),cpu:false}).collect::<Vec<_>>();
         let mut groups=Vec::new();
         let mut legacy_added=false;
         for gpu in gpu_names {
@@ -451,7 +452,7 @@ impl Depth {
     pub fn choice_groups(&self)->Vec<DepthGroup> {
         let models=self.list_models();let names=self.depth_gpu_names();
         let legacy=names.iter().any(|n|n.to_lowercase().contains("nvidia")) || (names.is_empty() && models.iter().any(|m|!is_ncnn(m)&&!vda_vulkan::is_model(m)) && (crate::onnx::cuda_backend_present() || crate::tensorrt::installed()));
-        build_choice_groups(&models,names,legacy,vda_vulkan::gpu_supported)
+        build_choice_groups(&models,names,legacy,vda_vulkan::gpu_supported_for)
     }
     pub fn choice_selected(&self,choice:&DepthChoice)->bool {
         let Ok(mut state)=self.state.lock().map(|s|s.clone()) else {return false;};
@@ -654,10 +655,16 @@ impl Depth {
         if self.vda_dir().is_some() && (self.onnx_ok || crate::tensorrt::installed()) {
             models.push(vda::ID.to_string());
         }
+        let installed=|id:&str|vda_vulkan::present(&self.models_dir,id) || self.bundled_dir.as_ref().is_some_and(|d|vda_vulkan::present(d,id));
         if self.ncnn_ok && vda_vulkan::available() {
             for id in [vda_vulkan::FULL,vda_vulkan::FAST] {
-                if vda_vulkan::present(&self.models_dir,id) || self.bundled_dir.as_ref().is_some_and(|d|vda_vulkan::present(d,id)) {models.push(id.into());}
+                if installed(id) {models.push(id.into());}
             }
+        }
+        // MIGraphX (ROCm) runs VDA itself; it only needs its runtime. Which
+        // GPUs it's offered under is up to gpu_supported_for().
+        if vda_vulkan::available_for(vda_vulkan::MIGRAPHX) && installed(vda_vulkan::MIGRAPHX) {
+            models.push(vda_vulkan::MIGRAPHX.into());
         }
         models.sort();
         models
@@ -709,9 +716,10 @@ impl Depth {
     }
 
     pub fn vulkan_vda_offers(&self) -> Vec<(&'static str,u64)> {
-        if self.download.state()==crate::download::State::Running || !vda_vulkan::available() ||
-            !self.depth_gpu_names().iter().any(|gpu|vda_vulkan::gpu_supported(Some(gpu))) { return vec![]; }
-        [vda_vulkan::FULL,vda_vulkan::FAST].into_iter()
+        if self.download.state()==crate::download::State::Running { return vec![]; }
+        let gpus=self.depth_gpu_names();
+        [vda_vulkan::FULL,vda_vulkan::FAST,vda_vulkan::MIGRAPHX].into_iter()
+            .filter(|id|vda_vulkan::available_for(id) && gpus.iter().any(|gpu|vda_vulkan::gpu_supported_for(id,Some(gpu))))
             .filter(|id|!crate::vda_assets::installed(&self.models_dir,id) &&
                 !self.bundled_dir.as_ref().is_some_and(|directory|crate::vda_assets::installed(directory,id)))
             .filter_map(|id|crate::vda_assets::bytes(id).ok().map(|bytes|(id,bytes))).collect()
@@ -834,7 +842,12 @@ impl Depth {
                     if let Ok(mut active) = self.active.lock() { *active = None; }
                     if let Ok(mut latest) = self.latest.lock() { *latest = None; }
                 }
-                self.set_status(format!("loading {}", model_label(&name)));
+                if vda_vulkan::needs_compile(&self.model_dir(&name),&name,target_gpu.as_deref()) {
+                    log::info!("{}: first use on this GPU, compiling it with MIGraphX (a few minutes; cached afterwards)", model_label(&name));
+                    self.set_status(format!("preparing {} for this GPU (first use, a few minutes)", model_label(&name)));
+                } else {
+                    self.set_status(format!("loading {}", model_label(&name)));
+                }
                 let tx = loaded_tx.clone();
                 let tensorrt = self.tensorrt;
                 let pending = self.tensorrt_pending.clone();
@@ -1065,6 +1078,9 @@ impl Depth {
                     model.cpu_processing=self.decode_settings().cpu_processing || !self.gpu_frames.load(Ordering::Relaxed);
                     let sigma=vda::SOFTENING[self.edge_softening()].1;
                     match &frame.pixels {
+                        // MIGraphX returns host depth; upload it so post-processing stays on Vulkan.
+                        Pixels::Rgb(rgb) if resident_enabled && model.migraphx() => model.infer_rgb(rgb,frame.size,frame.decoded,sigma)
+                            .and_then(|depth|vulkan_post.as_mut().unwrap().upload_depth(&depth).map(Output::Resident)),
                         Pixels::Rgb(rgb) if resident_enabled => match model.infer_rgb_resident(rgb,frame.size,frame.decoded,sigma) {
                             Ok(Some(depth))=>Ok(Output::Resident(depth)),
                             Ok(None)=>model.infer_rgb(rgb,frame.size,frame.decoded,sigma).map(Output::Host),
@@ -1328,6 +1344,10 @@ impl<'a> InferenceBusy<'a> {
     fn new(flag:&'a AtomicBool)->Self {flag.store(true,Ordering::Release);Self(flag)}
 }
 impl Drop for InferenceBusy<'_> {fn drop(&mut self){self.0.store(false,Ordering::Release);}}
+/// Vulkan VDA shares Meteor's Vulkan device with frame preparation, so the
+/// next frame waits while it infers (overlapping only queues work and adds
+/// latency). MIGraphX infers on its own HIP queue, so preparation overlaps.
+fn serialises_preparation(model:&str)->bool {vda_vulkan::is_model(model) && !vda_vulkan::is_migraphx(model)}
 fn prepare_video_frame(rate_ready:bool,portable_gpu:bool,inference_busy:bool)->bool {
     rate_ready && !(portable_gpu&&inference_busy)
 }
@@ -1500,7 +1520,7 @@ impl DepthFeed {
             let interested=self.depth.subscribers.load(Ordering::Relaxed)>0 || self.depth.save.is_some();
             let rate_ready=interested && self.pace.ready(rate,queued);
             let portable_gpu=matches!(decoder,VideoDecoder::Ffmpeg(decoder) if decoder.gpu_preparation())
-                && self.depth.active_model().is_some_and(|(id,_,_)|vda_vulkan::is_model(&id));
+                && self.depth.active_model().is_some_and(|(id,_,_)|serialises_preparation(&id));
             let want_pixels=prepare_video_frame(rate_ready,portable_gpu,self.depth.inference_busy.load(Ordering::Acquire));
             if rate_ready && !want_pixels {self.depth.stats.skipped.fetch_add(1,Ordering::Relaxed);}
             match decoder.decode(&frame.data,frame.index,want_pixels) {
@@ -1538,6 +1558,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migraphx_vda_is_labelled_offered_per_gpu_and_overlaps_preparation() {
+        assert_eq!(model_label(vda_vulkan::MIGRAPHX),"VDA 518×294 (MIGraphX)");
+        let models=vec!["zipdepth_wide_512x288.ncnn.param".into(),vda_vulkan::FULL.into(),vda_vulkan::MIGRAPHX.into()];
+        // MIGraphX only on the discrete AMD GPU; Vulkan VDA on both.
+        let groups=build_choice_groups(&models,vec!["AMD Radeon RX 7900 XT (RADV NAVI31)".into(),"AMD Ryzen iGPU".into()],false,
+            |m,gpu|!vda_vulkan::is_migraphx(m) || gpu==Some("AMD Radeon RX 7900 XT (RADV NAVI31)"));
+        let has=|g:&DepthGroup,m:&str|g.choices.iter().any(|c|c.model==m);
+        assert!(has(&groups[0],vda_vulkan::MIGRAPHX) && has(&groups[0],vda_vulkan::FULL));
+        assert!(!has(&groups[1],vda_vulkan::MIGRAPHX) && has(&groups[1],vda_vulkan::FULL));
+        assert!(!groups.iter().find(|g|g.label=="CPU").unwrap().choices.iter().any(|c|vda_vulkan::is_model(&c.model)));
+        assert!(serialises_preparation(vda_vulkan::FULL) && serialises_preparation(vda_vulkan::FAST));
+        assert!(!serialises_preparation(vda_vulkan::MIGRAPHX) && !serialises_preparation("zipdepth_wide_512x288.ncnn.param"));
+    }
+    #[test]
     fn busy_gpu_skips_portable_preparation_without_stalling_other_backends() {
         assert!(!prepare_video_frame(true,true,true));
         assert!(prepare_video_frame(true,true,false));
@@ -1551,12 +1585,12 @@ mod tests {
     #[test]
     fn model_groups_filter_cpu_and_gpu_capabilities() {
         let models=vec!["zipdepth_edgepad_256.ncnn.param".into(),vda_vulkan::FULL.into(),vda_vulkan::FAST.into()];
-        let groups=build_choice_groups(&models,vec!["Supported GPU".into(),"Unsupported VDA GPU".into()],false,|gpu|gpu!=Some("Unsupported VDA GPU"));
+        let groups=build_choice_groups(&models,vec!["Supported GPU".into(),"Unsupported VDA GPU".into()],false,|_,gpu|gpu!=Some("Unsupported VDA GPU"));
         let supported=groups.iter().find(|g|g.label=="Supported GPU").unwrap();assert_eq!(supported.choices.len(),3);
         let unsupported=groups.iter().find(|g|g.label=="Unsupported VDA GPU").unwrap();assert_eq!(unsupported.choices.len(),1);
         let cpu=groups.iter().find(|g|g.label=="CPU").unwrap();assert_eq!(cpu.choices.len(),1);assert!(cpu.choices[0].cpu);
         assert_eq!(groups.len(),3);
-        let no_gpu=build_choice_groups(&models,vec![],false,|_|false);assert_eq!(no_gpu.len(),1);assert_eq!(no_gpu[0].label,"CPU");
+        let no_gpu=build_choice_groups(&models,vec![],false,|_,_|false);assert_eq!(no_gpu.len(),1);assert_eq!(no_gpu[0].label,"CPU");
     }
     #[test]
     fn one_choice_updates_and_persists_the_complete_configuration() {
@@ -1577,13 +1611,13 @@ mod tests {
     #[test]
     fn legacy_onnx_gpu_models_remain_available_without_offering_them_on_amd() {
         let models=vec!["custom_edgepad.onnx".into(),vda::ID.into()];
-        let groups=build_choice_groups(&models,vec!["AMD".into()],false,|_|false);
+        let groups=build_choice_groups(&models,vec!["AMD".into()],false,|_,_|false);
         assert_eq!(groups.len(),1);assert_eq!(groups[0].label,"CPU");
-        let groups=build_choice_groups(&models,vec!["NVIDIA".into()],true,|_|false);
+        let groups=build_choice_groups(&models,vec!["NVIDIA".into()],true,|_,_|false);
         let legacy=groups.iter().find(|g|g.label=="NVIDIA").unwrap();assert_eq!(legacy.choices.len(),2);
         assert!(legacy.choices.iter().all(|c|!c.cpu && c.gpu.is_none()));
         let models=vec!["zipdepth_edgepad_256.ncnn.param".into(),vda::ID.into(),vda_vulkan::FULL.into()];
-        let groups=build_choice_groups(&models,vec!["AMD RX480".into(),"NVIDIA RTX3090".into()],true,|_|true);
+        let groups=build_choice_groups(&models,vec!["AMD RX480".into(),"NVIDIA RTX3090".into()],true,|_,_|true);
         assert_eq!(groups.len(),3);
         let nvidia=groups.iter().find(|g|g.label=="NVIDIA RTX3090").unwrap();
         assert!(nvidia.choices.iter().any(|c|c.model==vda::ID));
