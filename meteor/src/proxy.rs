@@ -846,6 +846,20 @@ mod tests {
         assert_eq!(&bytes[..n], b"NEW", "reconnected secondary must not receive old-session frames");
     }
 
+    /// A client socket on 127.0.0.2, a second address on the same machine. Linux routes all of
+    /// 127.0.0.0/8 to loopback; macOS only has 127.0.0.1 unless an alias is added
+    /// (`sudo ifconfig lo0 alias 127.0.0.2`), so there the test is skipped.
+    async fn second_loopback() -> Option<UdpSocket> {
+        match UdpSocket::bind("127.0.0.2:0").await {
+            Ok(socket) => Some(socket),
+            Err(error) if cfg!(target_os = "macos") && error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                eprintln!("skipped: 127.0.0.2 isn't configured (sudo ifconfig lo0 alias 127.0.0.2)");
+                None
+            }
+            Err(error) => panic!("bind 127.0.0.2: {error}"),
+        }
+    }
+
     #[tokio::test]
     async fn multipath_owner_token_change_revokes_old_secondary() {
         let map = PortMap::new(39989, 1000).unwrap();
@@ -856,7 +870,7 @@ mod tests {
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         // Distinct loopback IPs let the test check depth/mic authorization too.
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 31).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 31).await;
@@ -882,7 +896,7 @@ mod tests {
         let stats = Arc::new(Stats::default());
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 51).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 51).await;
