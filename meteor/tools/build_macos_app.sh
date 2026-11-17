@@ -25,6 +25,8 @@ STAGE="$VIBEPOLLO/build/stage/Vibepollo.app/Contents"
 # Info.plist and the disk image all carry it.
 VERSION="${METEOR_RELEASE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$METEOR/Cargo.toml" | head -1)}"
 export METEOR_RELEASE_VERSION="$VERSION"
+# CFBundleVersion is numbers only: 0.9.2-preview.2 is build 0.9.2 (the full name is the short version).
+BUNDLE_VERSION="${VERSION%%-*}"
 APP="$METEOR/target/macos/Nightfall Meteor.app"
 
 cargo build --manifest-path "$METEOR/Cargo.toml" --release --locked --no-default-features
@@ -80,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>nightfall-meteor</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-  <key>CFBundleVersion</key><string>${VERSION}</string>
+  <key>CFBundleVersion</key><string>${BUNDLE_VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>14.2</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <!-- A menu-bar app: no Dock icon. -->
