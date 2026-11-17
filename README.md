@@ -4,7 +4,7 @@
 
 # Nightfall
 
-**An open-source VR streaming suite for Meta Quest.**
+**An open-source VR streaming suite for Meta Quest and Steam Frame.**
 
 Stream your PC desktop and games to screens you place anywhere in VR, in
 stereoscopic 3D, beside your real room with passthrough, and play PC VR games
