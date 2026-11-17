@@ -34,6 +34,7 @@ the old Linux-restoration branch is no longer the continuation branch.
 | macOS | Live hardened-package audio, input, microphone/BlackHole, multi-screen/depth and firewall checks; Developer ID signing/notarisation for distribution. |
 | Automatic XR discovery | [Linux activation plan](automatic-xr-runtime-discovery.md): opt-in authenticated activation, namespaced installed discovery and recoverable registration implemented; relocated software-Vulkan tests pass. One-time native Steam setup and sandbox visibility checks now pass; real headset/game acceptance, Flatpak and Windows remain. |
 | PCVR stability | New logs preserve native failure details. Earlier intermittent exits were not conclusively diagnosed; investigate fresh reproductions rather than treating old hypotheses as fixes. |
+| Vibepollo upstream | Paused 2026-11-17. Two small PR branches are ready for review; the multi-monitor protocol, X11 and macOS PRs and several open bugs are listed in [Vibepollo upstream contributions](vibepollo-upstream-contributions.md). |
 
 Host release and update procedure: [managed host releases](../../guides/meteor-host-releases.md).
 Screen controls: [crop, colour key and placement](../../guides/screen-display-options.md).
