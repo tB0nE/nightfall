@@ -31,38 +31,40 @@ public interface IDesktopWallpaper {
  void GetStatus(out uint state);
  void Enable([MarshalAs(UnmanagedType.Bool)] bool enable);
 }
-public static class Wallpaper {
- public static IDesktopWallpaper Open() {
-  return (IDesktopWallpaper)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("C2CF3110-460E-4FC1-B9D0-8A1C0C9CC4BD")));
+// PowerShell sees the COM object, not this interface, and can't call its methods
+// ("does not contain a method named GetBackgroundColor"): call them from C#.
+public class Wallpaper {
+ readonly IDesktopWallpaper d = (IDesktopWallpaper)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("C2CF3110-460E-4FC1-B9D0-8A1C0C9CC4BD")));
+ public uint GetColor() { uint c; d.GetBackgroundColor(out c); return c; }
+ public void SetColor(uint c) { d.SetBackgroundColor(c); }
+ public uint GetState() { uint s; d.GetStatus(out s); return s; }
+ public void Enable(bool on) { d.Enable(on); }
+ public string[] Monitors() {
+  uint n; d.GetMonitorDevicePathCount(out n);
+  var ids = new string[n];
+  for (uint i = 0; i < n; i++) { string id; d.GetMonitorDevicePathAt(i, out id); ids[i] = id; }
+  return ids;
  }
+ public string GetPath(string monitor) { string p; d.GetWallpaper(monitor, out p); return p; }
 }
 '@
-    $desktop = [Wallpaper]::Open()
+    $desktop = New-Object Wallpaper
     function Snapshot {
-        [uint32]$color = 0; [uint32]$state = 0; [uint32]$count = 0
-        $desktop.GetBackgroundColor([ref]$color); $desktop.GetStatus([ref]$state)
-        $desktop.GetMonitorDevicePathCount([ref]$count)
         $paths = @{}
-        for ([uint32]$i=0; $i -lt $count; $i++) {
-            [string]$id = ''; [string]$path = ''
-            $desktop.GetMonitorDevicePathAt($i, [ref]$id); $desktop.GetWallpaper($id, [ref]$path)
-            $paths[$id] = $path
-        }
-        return @{ color=$color; enabled=(($state -band 1) -ne 0); paths=$paths }
+        foreach ($id in $desktop.Monitors()) { $paths[$id] = $desktop.GetPath($id) }
+        return @{ color=$desktop.GetColor(); enabled=(($desktop.GetState() -band 1) -ne 0); paths=$paths }
     }
     function Restore {
         if (!(Test-Path $journal)) { return }
         $saved = Get-Content -Raw $journal | ConvertFrom-Json
         if ($env:METEOR_BG_COLOR -eq 'off' -and $env:METEOR_BG_OWNER -and $saved.owner -ne $env:METEOR_BG_OWNER) { return }
         $now = Snapshot
-        # Do not overwrite a manual wallpaper/colour change. Enable(false) keeps
-        # each monitor's wallpaper and slideshow configuration intact.
-        $unchanged = $now.color -eq $saved.afterColor
-        foreach ($property in $saved.before.paths.PSObject.Properties) {
-            if ($now.paths[$property.Name] -ne $property.Value) { $unchanged = $false }
-        }
-        if ($unchanged) {
-            $desktop.SetBackgroundColor([uint32]$saved.before.color)
+        # Do not overwrite a manual change. While the wallpaper is off Windows reports
+        # no wallpaper paths, so they can't tell; choosing a wallpaper turns it back
+        # on, and choosing a colour changes it. Enable(false) keeps each monitor's
+        # wallpaper and slideshow configuration intact.
+        if ($now.color -eq $saved.afterColor) {
+            $desktop.SetColor([uint32]$saved.before.color)
             if (!$now.enabled) { $desktop.Enable([bool]$saved.before.enabled) }
         }
         Remove-Item $journal
@@ -77,7 +79,7 @@ public static class Wallpaper {
     [IO.File]::WriteAllText($temp, ($saved | ConvertTo-Json -Depth 6))
     Move-Item -Force $temp $journal
     try {
-        $desktop.SetBackgroundColor([uint32]$saved.afterColor)
+        $desktop.SetColor([uint32]$saved.afterColor)
         $desktop.Enable($false)
     } catch { Restore; throw }
 } finally {

@@ -226,7 +226,13 @@ mod host_status_tests {
 /// for its count with `virtual_displays=N` on every launch.
 #[cfg(target_os = "linux")]
 const MAX_VIRTUAL: u8 = 64;
-#[cfg(not(target_os = "linux"))]
+/// The virtual display driver's session displays.
+#[cfg(windows)]
+const MAX_VIRTUAL: u8 = 8;
+/// The bundled host's CGVirtualDisplays (Vibepollo's platf::macos::max_virtual_outputs).
+#[cfg(target_os = "macos")]
+const MAX_VIRTUAL: u8 = 8;
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 const MAX_VIRTUAL: u8 = 4;
 
 async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
@@ -269,15 +275,36 @@ async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
 async fn apply_virtual_on_windows(supervisor: &std::sync::Arc<crate::host::Supervisor>, count: u8, enabled: bool) -> (u16, serde_json::Value) {
     let conf_path = supervisor.instance.conf_path();
     let appdata = supervisor.instance.appdata();
-    if let Err(err) = crate::host::instance::set_virtual_display_mode(&conf_path, &appdata, count) {
-        log::error!("Virtual display mode update failed: {err}");
-        return (500, json!({"error": err}));
-    }
+    let changed = match crate::host::instance::set_virtual_display_mode(&conf_path, &appdata, count) {
+        Ok(changed) => changed,
+        Err(err) => {
+            log::error!("Virtual display mode update failed: {err}");
+            return (500, json!({"error": err}));
+        }
+    };
     log::info!("Virtual display: {} (count={count})", if enabled { "enabled" } else { "disabled" });
 
     // Load credentials from host.toml before entering spawn_blocking.
     let base = supervisor.instance.base;
     let state = crate::host::load_state();
+    // The host config only says whether virtual displays are on; how many, and their sizes,
+    // come with each launch (virtual_displays=N, virtual_modes=). So going from 2 to 3 needs
+    // no config reload, as on Linux: the next launch makes them.
+    if !changed {
+        let _ = tokio::task::spawn_blocking(move || {
+            // Clients paired since virtual displays were turned on still need the flag.
+            if let Err(err) = update_all_clients_virtual(base, &state.user, &state.password, enabled) {
+                log::warn!("Per-client virtual display update failed: {err}");
+            }
+        }).await;
+        log::info!("Virtual monitors: {count} from the next launch");
+        return (202, json!({
+            "status": if enabled { "enabled" } else { "disabled" },
+            "count": count,
+            "deferred": false,
+            "host_restarting": false,
+        }));
+    }
     let supervisor = supervisor.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Best-effort: a host with no paired clients yet still needs the

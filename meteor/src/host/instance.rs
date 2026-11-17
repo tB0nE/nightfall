@@ -131,7 +131,8 @@ impl Instance {
 /// When count = 0, sets mode to `disabled` and clears the permanent count.
 
 #[cfg(windows)]
-pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path::Path, count: u8) -> Result<(), String> {
+/// Returns whether the file changed: only turning virtual displays on or off does.
+pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path::Path, count: u8) -> Result<bool, String> {
     let fail = |e: std::io::Error| format!("{}: {e}", conf_path.display());
     std::fs::create_dir_all(appdata).map_err(fail)?;
     let existing = std::fs::read_to_string(conf_path).unwrap_or_default();
@@ -144,10 +145,11 @@ pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path
         always.push(("virtual_display_layout", "extended_isolated".into()));
     }
     let text = render_config(&existing, &always, &[]);
-    if text != existing {
-        std::fs::write(conf_path, text).map_err(fail)?;
+    if text == existing {
+        return Ok(false);
     }
-    Ok(())
+    std::fs::write(conf_path, text).map_err(fail)?;
+    Ok(true)
 }
 
 /// `existing` with `always` keys set to their values, and `initial` keys
@@ -244,23 +246,24 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let conf = dir.join("sunshine.conf");
         // Enable (count=1): writes per_client + count=1 + extended_isolated.
-        set_virtual_display_mode(&conf, &dir, 1).unwrap();
+        assert!(set_virtual_display_mode(&conf, &dir, 1).unwrap());
         let text = std::fs::read_to_string(&conf).unwrap();
         assert!(text.contains("virtual_display_mode = per_client\n"), "{text}");
         assert!(text.contains("dd_virtual_display_permanent_count = 1\n"), "{text}");
         assert!(text.contains("virtual_display_layout = extended_isolated\n"), "{text}");
-        // Enable (count=2): the permanent count stays 1; extra displays are per session.
-        set_virtual_display_mode(&conf, &dir, 2).unwrap();
+        // Enable (count=2): the permanent count stays 1; extra displays are per session,
+        // so the file is unchanged and the host needs no reload.
+        assert!(!set_virtual_display_mode(&conf, &dir, 2).unwrap());
         let text_c2 = std::fs::read_to_string(&conf).unwrap();
         assert!(text_c2.contains("dd_virtual_display_permanent_count = 1\n"), "{text_c2}");
         // Disable (count=0): overwrites mode and count, leaves layout alone.
-        set_virtual_display_mode(&conf, &dir, 0).unwrap();
+        assert!(set_virtual_display_mode(&conf, &dir, 0).unwrap());
         let text2 = std::fs::read_to_string(&conf).unwrap();
         assert!(text2.contains("virtual_display_mode = disabled\n"), "{text2}");
         assert!(text2.contains("dd_virtual_display_permanent_count = 0\n"), "{text2}");
         // Idempotent: no write when nothing changes.
         let mtime = std::fs::metadata(&conf).unwrap().modified().unwrap();
-        set_virtual_display_mode(&conf, &dir, 0).unwrap();
+        assert!(!set_virtual_display_mode(&conf, &dir, 0).unwrap());
         assert_eq!(std::fs::metadata(&conf).unwrap().modified().unwrap(), mtime);
         std::fs::remove_dir_all(&dir).ok();
     }

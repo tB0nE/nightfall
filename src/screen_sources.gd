@@ -1068,6 +1068,10 @@ func _place_dropped_screen(screen: VRScreen, cell: Vector2i) -> void:
 	screen.global_transform = main.grid_cell_transform(cell.x, cell.y, anchor.x, anchor.y)
 	screen.grid_mode = true
 	screen.grid_pos = cell
+	# The controls layer (tab strip, toolbar) is placed from the cylinder centre cached by
+	# update_cylinder_params(), not from the screen's transform: without this it stayed where
+	# the screen was created until the screen was next grabbed.
+	if main.comp.in_use: main.comp.update_cylinder_params()
 
 func _activate_content(screen: VRScreen) -> void:
 	var tab := screen.content_tabs.selected()

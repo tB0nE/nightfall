@@ -30,6 +30,11 @@ use crate::video_dump::VideoDump;
 use crate::video_tap::{TapStats, VideoTap};
 
 const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
+
+/// Whether a client last heard from at `last_ms` still holds its flow open at `now_ms`.
+fn client_still_there(last_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) < UDP_FLOW_IDLE.as_millis() as u64
+}
 /// Multipath: a client with several network paths to this PC (e.g. a Steam
 /// Frame on Wi-Fi plus its dedicated 6 GHz adapter) pings the video and audio
 /// ports from each. Pings carry the session's 16-byte payload (Sunshine's
@@ -332,9 +337,7 @@ impl Proxy {
                 let mut flows_guard = flows.lock().await;
                 match flows_guard.get(&client) {
                     Some((socket, _, owner_ping)) => {
-                        if payload.is_some() {
-                            owner_ping.store(now_ms(), Ordering::Relaxed);
-                        }
+                        owner_ping.store(now_ms(), Ordering::Relaxed);
                         socket.clone()
                     }
                     None => match self.open_udp_flow(ch).await {
@@ -343,8 +346,7 @@ impl Proxy {
                             owner_of_payload.retain(|_, owner| flows_guard.contains_key(owner));
                             owner_of_extra.retain(|_, owner| flows_guard.contains_key(owner));
                             let extras: Extras = Arc::default();
-                            let owner_ping: OwnerPing =
-                                Arc::new(AtomicU64::new(if payload.is_some() { now_ms() } else { 0 }));
+                            let owner_ping: OwnerPing = Arc::new(AtomicU64::new(now_ms()));
                             flows_guard.insert(client, (socket.clone(), extras.clone(), owner_ping.clone()));
                             tokio::spawn(self.clone().relay_udp_replies(
                                 socket.clone(),
@@ -453,6 +455,10 @@ impl Proxy {
                     log::debug!("{} flow for {client} failed: {err}", ch.name);
                     break;
                 }
+                // Quiet from the host, but the client still pings: keep the flow. The
+                // host sends no audio while the PC is silent and keeps sending to this
+                // socket's port afterwards, so closing it here muted the rest of the stream.
+                Err(_) if client_still_there(owner_ping.load(Ordering::Relaxed), now_ms()) => {}
                 Err(_) => break, // idle
             }
         }
@@ -706,6 +712,16 @@ fn rewrite_server_ports(line: &str, map: &PortMap) -> String {
 mod tests {
     use super::*;
 
+    /// A silent PC sends no audio; the client's pings keep the audio flow (and the port
+    /// the host sends to) alive until it really goes away.
+    #[test]
+    fn a_pinging_client_keeps_a_quiet_flow() {
+        let idle = UDP_FLOW_IDLE.as_millis() as u64;
+        assert!(client_still_there(1_000, 1_000 + idle - 1));
+        assert!(!client_still_there(1_000, 1_000 + idle));
+        assert!(client_still_there(5_000, 4_000), "clock skew between threads is not idleness");
+    }
+
     #[test]
     fn a_restarted_stream_keeps_its_client_streaming() {
         let stats = Stats::default();
@@ -830,6 +846,20 @@ mod tests {
         assert_eq!(&bytes[..n], b"NEW", "reconnected secondary must not receive old-session frames");
     }
 
+    /// A client socket on 127.0.0.2, a second address on the same machine. Linux routes all of
+    /// 127.0.0.0/8 to loopback; macOS only has 127.0.0.1 unless an alias is added
+    /// (`sudo ifconfig lo0 alias 127.0.0.2`), so there the test is skipped.
+    async fn second_loopback() -> Option<UdpSocket> {
+        match UdpSocket::bind("127.0.0.2:0").await {
+            Ok(socket) => Some(socket),
+            Err(error) if cfg!(target_os = "macos") && error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                eprintln!("skipped: 127.0.0.2 isn't configured (sudo ifconfig lo0 alias 127.0.0.2)");
+                None
+            }
+            Err(error) => panic!("bind 127.0.0.2: {error}"),
+        }
+    }
+
     #[tokio::test]
     async fn multipath_owner_token_change_revokes_old_secondary() {
         let map = PortMap::new(39989, 1000).unwrap();
@@ -840,7 +870,7 @@ mod tests {
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         // Distinct loopback IPs let the test check depth/mic authorization too.
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 31).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 31).await;
@@ -866,7 +896,7 @@ mod tests {
         let stats = Arc::new(Stats::default());
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 51).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 51).await;

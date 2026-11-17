@@ -1,0 +1,3 @@
+# Build with the same Ubuntu/glibc baseline as the regular Linux client.
+FROM nightfall-linux-builder:latest
+RUN apt-get update && apt-get install -y g++-aarch64-linux-gnu binutils-aarch64-linux-gnu && rm -rf /var/lib/apt/lists/*

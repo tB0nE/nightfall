@@ -47,6 +47,31 @@ Quest validation remains; working Monado/xrizer remains available.
 > Apollo, Vibepollo or Vibeshine. NVIDIA keeps NVDEC; AMD uses D3D11VA and
 > ncnn Vulkan for EdgePad.
 
+## Windows build after the November upstream merge (2026-11-16)
+
+Vibepollo `master` after the November upstream merge needs three things on
+Windows that the Linux side doesn't exercise:
+
+- **.NET SDK.** The build compiles upstream's Playnite plugin; pass
+  `-DSUNSHINE_DOTNET_EXECUTABLE=<dotnet.exe>` to CMake (a per-user SDK from
+  `dotnet-install.ps1` is enough).
+- **The 32-bit Vulkan HDR layer.** The driver package's `install.ps1` now
+  validates `vulkan-layer\VkLayer_sunshine_hdr_x86.dll`, which isn't in git.
+  Build it from the pinned libvirtualdisplay with an x86 toolchain, as
+  Vibepollo's `refresh_driver_package.ps1` does:
+
+  ```
+  cmake -S meteor/target/windows-vibepollo-src/packaging/windows/virtual_display_driver/vulkan_layer_x86 ^
+        -B meteor/target/windows-vulkan-layer-x86 -G "Visual Studio 17 2022" -A Win32 ^
+        -DLIBVIRTUALDISPLAY_DIR=meteor/target/windows-vibepollo-src/third-party/libvirtualdisplay
+  cmake --build meteor/target/windows-vulkan-layer-x86 --config Release --target check_vulkan_layer_export
+  ```
+
+  `stage_windows_runtime.ps1` adds it to the staged driver package.
+- **MinGW-specific build fixes** (Vibepollo `windows-build-fix`): Meteor's
+  virtual display sizing used locals the merge folded into `recovery_params`,
+  and an `inline thread_local` of non-trivial type doesn't link with MinGW.
+
 ## Windows compatibility update (2026-10-29)
 
 November 4 direction change: user requested switching away from Moss to

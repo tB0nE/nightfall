@@ -4,7 +4,7 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
 #include <memory>
 class MidasDepthEngine;
 #endif
@@ -58,7 +58,7 @@ private:
     int requested_backend_ = DEPTH_BACKEND_AUTO;
     int effective_backend_ = DEPTH_BACKEND_CPU;
     String backend_status_;
-#ifdef NIGHTFALL_PLATFORM_LINUX
+#ifdef NIGHTFALL_HAS_LOCAL_DEPTH
     // Native (JNI-free) depth engine - see midas_depth_engine.h.
     // Lazily constructed/initialized on first use (submit_depth_frame() or
     // set_depth_model()) rather than in the constructor, so a DepthBridge
