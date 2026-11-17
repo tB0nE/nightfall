@@ -41,7 +41,7 @@ static func get_tab_buttons() -> Array:
 		_tab_button(&"_tab_btn_control", "Control", 2, "Configure pointers, hand tracking, and controller mapping."),
 		_tab_button(&"_tab_btn_ai3d", "AI 3D", 3, "Configure local AI stereoscopic depth conversion."),
 		_tab_button(&"_tab_btn_picture", "Picture", 4, "Adjust the streamed image."),
-		_tab_button(&"_tab_btn_monitors", "Screens", 5, "Choose screen content: PC or browser.", true, OS.get_name() != "Android", 1.0 if OS.get_name() == "Android" else 0.3),
+		_tab_button(&"_tab_btn_monitors", "Screens", 5, "Choose screen content: PC or browser.", true, not SettingsPlatformPolicy.multi_screen_available(), 1.0 if SettingsPlatformPolicy.multi_screen_available() else 0.3),
 		# Settings has no tab button: the gear in the top bar opens it.
 		_tab_button(&"_tab_btn_settings", "Settings", 6, "Configure language, diagnostics, and connection options.", false, true),
 	]
