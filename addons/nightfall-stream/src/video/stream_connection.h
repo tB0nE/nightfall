@@ -67,7 +67,8 @@ public:
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;
-    // {active, main, second}: packets read on each network path (multipath).
+    // {active, paused, main, second}: packets read on each network path
+    // (multipath); paused = the second path fell behind and rests for a while.
     Dictionary get_multipath_packets() const;
     Dictionary take_performance_stats();
     bool is_display_ready() const;

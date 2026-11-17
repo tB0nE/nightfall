@@ -37,6 +37,27 @@ same packet.
   owns the flow; the order doesn't matter.
 - Nothing changes in the host (Sunshine and its forks).
 
+## Safety: a weak second path must never hurt the main one
+
+Found on a Steam Frame two rooms away from the PC: the adapter link at
+-76 dBm turned a smooth Wi-Fi stream into ~13 fps.
+
+- **Only with Meteor.** Meteor's `/meteor` reply advertises
+  `"multipath": {"protocol": 1}`; the client opens the second path only when
+  the stream goes through such a Meteor (`LiSetMultipathRemote()` per
+  stream). A plain host sends the stream to whichever path pinged last.
+- **Meteor never waits for an extra path.** Copies go out with
+  `try_send_to` and are skipped while more than a quarter of the listener's
+  send buffer is still unsent (`SIOCOUTQ`); all paths share that socket, so
+  a slow path would otherwise hold up the main path's packets and the
+  reads from the host.
+- **The client rests a path that falls behind.** It counts packets per path;
+  when the second delivers under half of the main path's for two 2 s
+  windows, it stops pinging over it (Meteor stops copying 3 s later) and
+  tries again after 30 s, doubling up to 4 min while it keeps failing.
+- The status bar shows `2 paths <main>k/<second>k pkt/s`,
+  `2nd path paused (too slow)` or `1 path (host can't use 2)`.
+
 ## Results (Steam Frame, Sunshine behind Meteor, 3440x1440 HEVC)
 
 | | Dropped frames/min |

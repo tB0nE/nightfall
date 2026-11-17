@@ -1,5 +1,5 @@
 diff --git a/src/AudioStream.c b/src/AudioStream.c
-index 0910682..bcc18a7 100644
+index 0910682..aa12dc3 100644
 --- a/src/AudioStream.c
 +++ b/src/AudioStream.c
 @@ -1,7 +1,7 @@
@@ -11,11 +11,28 @@ index 0910682..bcc18a7 100644
  static SOCKET rtpSocket2 = INVALID_SOCKET;
  static struct sockaddr_storage rtpRemote2;
  
+@@ -58,14 +58,14 @@ static void AudioPingThreadProc(void* context) {
+             AudioPingPayload.sequenceNumber = BE32(pingCount);
+ 
+             sendto(rtpSocket, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+-            if (rtpSocket2 != INVALID_SOCKET) {
++            if (rtpSocket2 != INVALID_SOCKET && multipathSecondPathActive(false)) {
+                 ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(AudioPortNumber);
+                 sendto(rtpSocket2, (char*)&AudioPingPayload, sizeof(AudioPingPayload), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
+             }
+         }
+         else {
+             sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+-            if (rtpSocket2 != INVALID_SOCKET) {
++            if (rtpSocket2 != INVALID_SOCKET && multipathSecondPathActive(false)) {
+                 ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(AudioPortNumber);
+                 sendto(rtpSocket2, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
+             }
 diff --git a/src/Limelight.h b/src/Limelight.h
-index 11b8142..e99cfe6 100644
+index 11b8142..3ea231c 100644
 --- a/src/Limelight.h
 +++ b/src/Limelight.h
-@@ -856,6 +856,15 @@ int LiFindExternalAddressIP4(const char* stunServer, unsigned short stunPort, un
+@@ -856,6 +856,16 @@ int LiFindExternalAddressIP4(const char* stunServer, unsigned short stunPort, un
  
  // Returns the number of queued video frames ready for delivery. Only relevant
  // if CAPABILITY_DIRECT_SUBMIT is not set for the video renderer.
@@ -25,23 +42,107 @@ index 11b8142..e99cfe6 100644
 +// stream to whichever path pinged last. Also resets the packet counters.
 +void LiSetMultipathRemote(const char* address);
 +// Video and audio packets read on the main and the second path since the last
-+// LiSetMultipathRemote(), duplicates included.
-+void LiGetMultipathPackets(uint64_t* mainPath, uint64_t* secondPath);
++// LiSetMultipathRemote(), duplicates included, and whether the second path is
++// paused for delivering far less than the main one (it is retried later).
++void LiGetMultipathPackets(uint64_t* mainPath, uint64_t* secondPath, bool* paused);
 +
  int LiGetPendingVideoFrames(void);
  
  // Returns the number of queued audio frames ready for delivery. Only relevant
 diff --git a/src/PlatformSockets.c b/src/PlatformSockets.c
-index 3d5597c..514078f 100644
+index 3d5597c..aa4db44 100644
 --- a/src/PlatformSockets.c
 +++ b/src/PlatformSockets.c
-@@ -287,19 +287,38 @@ static void setSocketQos(SOCKET s, int socketQosType) {
+@@ -287,19 +287,123 @@ static void setSocketQos(SOCKET s, int socketQosType) {
  #endif
  }
  
 +// Set by the client before each LiStartConnection(); empty = one path only.
 +static char MultipathRemote[64];
 +static volatile uint64_t MultipathPackets[2];
++
++// Second-path health. Each copy costs airtime and host send capacity, so a
++// path that delivers far less than the main one (a weak Wi-Fi link) can slow
++// the main path down. When it falls behind, its keep-alive pings stop: the
++// host (Nightfall Meteor) stops sending copies to it within a few seconds.
++// It is tried again later, waiting longer after each failure.
++#define MULTIPATH_WINDOW_MS 2000
++#define MULTIPATH_MIN_MAIN_PACKETS 200   // per window: only judge a busy stream
++#define MULTIPATH_BAD_WINDOWS 2          // in a row before pausing
++#define MULTIPATH_PAUSE_MIN_MS 30000
++#define MULTIPATH_PAUSE_MAX_MS 240000
++static volatile int MultipathPaused;
++static uint64_t MultipathWindowStart;
++static uint64_t MultipathWindowMain, MultipathWindowSecond;
++static int MultipathBadWindows;
++static int MultipathSkipWindows;         // after (re)starting: copies resume first
++static uint64_t MultipathPausedUntil;
++static uint64_t MultipathPauseMs;
++
++static void resetMultipathHealth(void) {
++    MultipathPaused = 0;
++    MultipathWindowStart = 0;
++    MultipathBadWindows = 0;
++    MultipathSkipWindows = 1;
++    MultipathPausedUntil = 0;
++    MultipathPauseMs = MULTIPATH_PAUSE_MIN_MS;
++}
++
++bool multipathSecondPathActive(bool evaluate) {
++    uint64_t now, mainPackets, secondPackets, dm, ds;
++
++    if (!evaluate) {
++        return !MultipathPaused;
++    }
++    now = PltGetMillis();
++    mainPackets = MultipathPackets[0];
++    secondPackets = MultipathPackets[1];
++    if (MultipathPaused) {
++        if (now < MultipathPausedUntil) {
++            return false;
++        }
++        Limelog("Multipath: trying the second path again\n");
++        MultipathPaused = 0;
++        MultipathSkipWindows = 1;
++        MultipathWindowStart = 0;
++    }
++    if (MultipathWindowStart == 0) {
++        MultipathWindowStart = now;
++        MultipathWindowMain = mainPackets;
++        MultipathWindowSecond = secondPackets;
++        return true;
++    }
++    if (now - MultipathWindowStart < MULTIPATH_WINDOW_MS) {
++        return true;
++    }
++    dm = mainPackets - MultipathWindowMain;
++    ds = secondPackets - MultipathWindowSecond;
++    MultipathWindowStart = now;
++    MultipathWindowMain = mainPackets;
++    MultipathWindowSecond = secondPackets;
++    if (MultipathSkipWindows > 0) {
++        MultipathSkipWindows--;
++        return true;
++    }
++    if (dm < MULTIPATH_MIN_MAIN_PACKETS) {
++        return true;
++    }
++    if (ds * 2 >= dm) {
++        MultipathBadWindows = 0;
++        MultipathPauseMs = MULTIPATH_PAUSE_MIN_MS;
++        return true;
++    }
++    if (++MultipathBadWindows < MULTIPATH_BAD_WINDOWS) {
++        return true;
++    }
++    Limelog("Multipath: second path delivered %u%% of the main path's packets; pausing it for %us\n",
++            (unsigned)(ds * 100 / dm), (unsigned)(MultipathPauseMs / 1000));
++    MultipathPaused = 1;
++    MultipathBadWindows = 0;
++    MultipathPausedUntil = now + MultipathPauseMs;
++    MultipathPauseMs = MultipathPauseMs * 2 > MULTIPATH_PAUSE_MAX_MS ? MULTIPATH_PAUSE_MAX_MS : MultipathPauseMs * 2;
++    return false;
++}
 +
 +void LiSetMultipathRemote(const char* address) {
 +    if (address == NULL) {
@@ -51,11 +152,13 @@ index 3d5597c..514078f 100644
 +    MultipathRemote[sizeof(MultipathRemote) - 1] = 0;
 +    MultipathPackets[0] = 0;
 +    MultipathPackets[1] = 0;
++    resetMultipathHealth();
 +}
 +
-+void LiGetMultipathPackets(uint64_t* mainPath, uint64_t* secondPath) {
++void LiGetMultipathPackets(uint64_t* mainPath, uint64_t* secondPath, bool* paused) {
 +    *mainPath = MultipathPackets[0];
 +    *secondPath = MultipathPackets[1];
++    *paused = MultipathPaused != 0;
 +}
 +
  SOCKET bindSecondaryUdpSocket(unsigned short port, int bufferSize, int socketQosType, struct sockaddr_storage* remoteOut) {
@@ -77,7 +180,7 @@ index 3d5597c..514078f 100644
          return INVALID_SOCKET;
      }
      s = bindUdpSocket(AF_INET, NULL, 0, bufferSize, socketQosType);
-@@ -315,7 +334,11 @@ int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool use
+@@ -315,7 +419,11 @@ int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool use
      int err, i;
  
      if (s2 == INVALID_SOCKET) {
@@ -90,7 +193,7 @@ index 3d5597c..514078f 100644
      }
      pfd[0].fd = s;
      pfd[0].events = POLLIN;
-@@ -335,6 +358,9 @@ int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool use
+@@ -335,6 +443,9 @@ int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool use
          if (p->revents & (POLLIN | POLLERR)) {
              err = (int)recvfrom(p->fd, buffer, size, MSG_DONTWAIT, NULL, NULL);
              if (err >= 0) {
@@ -101,10 +204,10 @@ index 3d5597c..514078f 100644
              }
              // ICMP errors from an early ping, or nothing left: try the other path.
 diff --git a/src/PlatformSockets.h b/src/PlatformSockets.h
-index 22c46cd..eefadef 100644
+index 22c46cd..0777619 100644
 --- a/src/PlatformSockets.h
 +++ b/src/PlatformSockets.h
-@@ -128,8 +128,8 @@ int enableNoDelay(SOCKET s);
+@@ -128,9 +128,12 @@ int enableNoDelay(SOCKET s);
  int setSocketNonBlocking(SOCKET s, bool enabled);
  int recvUdpSocket(SOCKET s, char* buffer, int size, bool useSelect);
  // Multipath (Nightfall): a second UDP path to the same host, e.g. a Steam Frame's
@@ -113,10 +216,14 @@ index 22c46cd..eefadef 100644
 +// dedicated 6 GHz adapter next to Wi-Fi. LiSetMultipathRemote() names the host's
 +// IPv4 address on that path; returns INVALID_SOCKET when none is set.
  SOCKET bindSecondaryUdpSocket(unsigned short port, int bufferSize, int socketQosType, struct sockaddr_storage* remoteOut);
++// Whether to keep pinging over the second path. The video ping thread passes
++// evaluate=true and judges the path's health; others just follow.
++bool multipathSecondPathActive(bool evaluate);
  // Like recvUdpSocket(), reading whichever of s and s2 has a packet (s2 may be INVALID_SOCKET).
  int recvUdpSocketMultipath(SOCKET s, SOCKET s2, char* buffer, int size, bool useSelect);
+ void shutdownTcpSocket(SOCKET s);
 diff --git a/src/VideoStream.c b/src/VideoStream.c
-index 774fd97..67eaaee 100644
+index 774fd97..b35342d 100644
 --- a/src/VideoStream.c
 +++ b/src/VideoStream.c
 @@ -8,7 +8,7 @@
@@ -128,3 +235,20 @@ index 774fd97..67eaaee 100644
  static SOCKET rtpSocket2 = INVALID_SOCKET;
  static struct sockaddr_storage rtpRemote2;
  static SOCKET firstFrameSocket = INVALID_SOCKET;
+@@ -75,14 +75,14 @@ static void VideoPingThreadProc(void* context) {
+             VideoPingPayload.sequenceNumber = BE32(pingCount);
+ 
+             sendto(rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+-            if (rtpSocket2 != INVALID_SOCKET) {
++            if (rtpSocket2 != INVALID_SOCKET && multipathSecondPathActive(true)) {
+                 ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(VideoPortNumber);
+                 sendto(rtpSocket2, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
+             }
+         }
+         else {
+             sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+-            if (rtpSocket2 != INVALID_SOCKET) {
++            if (rtpSocket2 != INVALID_SOCKET && multipathSecondPathActive(true)) {
+                 ((struct sockaddr_in*)&rtpRemote2)->sin_port = htons(VideoPortNumber);
+                 sendto(rtpSocket2, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&rtpRemote2, sizeof(struct sockaddr_in));
+             }

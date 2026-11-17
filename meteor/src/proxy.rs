@@ -45,6 +45,39 @@ fn client_still_there(last_ms: u64, now_ms: u64) -> bool {
 const MULTIPATH_PING_LEN: usize = 20;
 /// A path that hasn't pinged for this long stops receiving copies.
 const MULTIPATH_IDLE: Duration = Duration::from_secs(3);
+/// Copies to extra paths are skipped while more than this share of the
+/// listener's send buffer is still waiting for the network. All paths share
+/// the socket, so a slow path (a weak Wi-Fi link) would otherwise fill the
+/// buffer and make the main path's packets, and reading the host's next
+/// ones, wait behind its copies.
+const MULTIPATH_MAX_UNSENT_DIVISOR: usize = 4;
+/// How often skipped copies are logged.
+const MULTIPATH_SKIP_LOG: Duration = Duration::from_secs(10);
+
+/// Bytes this socket has handed to the kernel that the network hasn't sent
+/// yet (Linux), or None where that can't be read.
+#[cfg(target_os = "linux")]
+fn unsent_bytes(socket: &UdpSocket) -> Option<usize> {
+    use std::os::fd::AsRawFd;
+    let mut queued: libc::c_int = 0;
+    // SIOCOUTQ (== TIOCOUTQ): bytes in the socket's send queue.
+    let result = unsafe { libc::ioctl(socket.as_raw_fd(), libc::TIOCOUTQ, &mut queued) };
+    (result == 0).then_some(queued.max(0) as usize)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unsent_bytes(_socket: &UdpSocket) -> Option<usize> {
+    None
+}
+
+/// True when a copy for an extra path may go out now without the main path's
+/// packets having to wait behind it.
+fn extra_copy_fits(listener: &UdpSocket, send_buffer: usize) -> bool {
+    match unsent_bytes(listener) {
+        Some(unsent) => unsent <= send_buffer / MULTIPATH_MAX_UNSENT_DIVISOR,
+        None => true,
+    }
+}
 
 /// Other addresses of a flow's client (multipath) and when each last pinged.
 type Extras = Arc<std::sync::Mutex<HashMap<SocketAddr, std::time::Instant>>>;
@@ -405,6 +438,9 @@ impl Proxy {
             None
         };
         let mut buf = vec![0u8; 65536];
+        let send_buffer = socket2::SockRef::from(listener.as_ref()).send_buffer_size().unwrap_or(212_992);
+        let mut skipped: u64 = 0;
+        let mut skip_logged = std::time::Instant::now();
         loop {
             match tokio::time::timeout(UDP_FLOW_IDLE, upstream.recv(&mut buf)).await {
                 Ok(Ok(len)) => {
@@ -442,8 +478,17 @@ impl Proxy {
                             extras.keys().copied().collect()
                         }
                     };
+                    // Never wait for an extra path: a copy that doesn't fit now
+                    // is dropped (the client still has the main path's).
                     for other in others {
-                        let _ = listener.send_to(&buf[..len], other).await;
+                        if !extra_copy_fits(&listener, send_buffer) || listener.try_send_to(&buf[..len], other).is_err() {
+                            skipped += 1;
+                        }
+                    }
+                    if skipped > 0 && skip_logged.elapsed() >= MULTIPATH_SKIP_LOG {
+                        log::info!("{} multipath: {skipped} copies to slow extra paths of {client} skipped", ch.name);
+                        skipped = 0;
+                        skip_logged = std::time::Instant::now();
                     }
                     if let Some(tap) = &tap {
                         tap.push(&buf[..len]);
@@ -528,10 +573,14 @@ async fn bind_tcp(port: u16) -> io::Result<TcpListener> {
 }
 
 async fn bind_udp(port: u16) -> io::Result<UdpSocket> {
-    match crate::net::udp_socket(port).await {
-        Ok(socket) => Ok(socket),
-        Err(_) => UdpSocket::bind(("0.0.0.0", port)).await,
-    }
+    let socket = match crate::net::udp_socket(port).await {
+        Ok(socket) => socket,
+        Err(_) => UdpSocket::bind(("0.0.0.0", port)).await?,
+    };
+    // Room for bursts of video frames to every path; the kernel caps it at
+    // net.core.wmem_max.
+    let _ = socket2::SockRef::from(&socket).set_send_buffer_size(4 << 20);
+    Ok(socket)
 }
 
 async fn copy_counted<R, W>(reader: &mut R, writer: &mut W, counter: &AtomicU64) -> io::Result<u64>
@@ -710,6 +759,17 @@ fn rewrite_server_ports(line: &str, map: &PortMap) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn extra_copies_fit_on_an_idle_socket() {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(super::unsent_bytes(&socket), Some(0));
+        assert!(super::extra_copy_fits(&socket, 212_992));
+        // A send buffer too small for anything to fit behind it.
+        #[cfg(target_os = "linux")]
+        assert!(super::extra_copy_fits(&socket, 0), "nothing queued, so even a zero budget fits");
+    }
+
     use super::*;
 
     /// A silent PC sends no audio; the client's pings keep the audio flow (and the port
