@@ -68,7 +68,8 @@ public:
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;
     // {active, paused, main, second}: packets read on each network path
-    // (multipath); paused = the second path fell behind and rests for a while.
+    // (multipath); paused = "main"/"second" while that path rests for falling
+    // behind the other, else "".
     Dictionary get_multipath_packets() const;
     Dictionary take_performance_stats();
     bool is_display_ready() const;

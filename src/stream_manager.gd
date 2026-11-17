@@ -1222,6 +1222,9 @@ func _multipath_remote() -> String:
 	_multipath_last = {}
 	if remote.is_empty():
 		return ""
+	if not main.settings.multipath_enabled:
+		main._log("[MULTIPATH] Second path to %s off in settings" % remote)
+		return ""
 	if MeteorClient.multipath_supported(_meteor):
 		_multipath_note = "2 paths"
 		main._log("[MULTIPATH] Second path to %s (Meteor copies the stream to both)" % remote)
@@ -1249,8 +1252,11 @@ func _multipath_status_text() -> String:
 				maxf(0.0, (int(packets.main) - int(_multipath_last.main)) / dt),
 				maxf(0.0, (int(packets.second) - int(_multipath_last.second)) / dt))
 	_multipath_last = {"t": now, "main": int(packets.main), "second": int(packets.second)}
-	if packets.get("paused", false):
-		return " \u2022 2nd path paused (too slow)"
+	match str(packets.get("paused", "")):
+		"main":
+			return " \u2022 main path paused (too slow) %.1fk pkt/s" % [_multipath_rates.y / 1000.0]
+		"second":
+			return " \u2022 2nd path paused (too slow) %.1fk pkt/s" % [_multipath_rates.x / 1000.0]
 	return " \u2022 2 paths %.1fk/%.1fk pkt/s" % [_multipath_rates.x / 1000.0, _multipath_rates.y / 1000.0]
 
 # Identifies the inference machine as well as its speed. Meteor pauses local

@@ -2132,12 +2132,12 @@ int StreamConnection::get_last_frame_latency_us() const {
 Dictionary StreamConnection::get_multipath_packets() const {
     Dictionary d;
     uint64_t main_path = 0, second_path = 0;
-    bool paused = false;
+    int paused = -1;
     if (is_streaming_.load()) {
         LiGetMultipathPackets(&main_path, &second_path, &paused);
     }
     d["active"] = !multipath_remote_.empty();
-    d["paused"] = paused;
+    d["paused"] = paused == 0 ? "main" : (paused == 1 ? "second" : "");
     d["main"] = (int64_t)main_path;
     d["second"] = (int64_t)second_path;
     return d;

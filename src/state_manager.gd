@@ -200,6 +200,8 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 			main.ui_controller.update_option_btn(main._ui_microphone_btn, "On" if main.settings.microphone_enabled else "Off")
 		if main._ui_usb_link_btn:
 			main.ui_controller.update_option_btn(main._ui_usb_link_btn, "On" if main.settings.usb_link_enabled else "Off")
+		if main._ui_multipath_btn:
+			main.ui_controller.update_option_btn(main._ui_multipath_btn, "Auto" if main.settings.multipath_enabled else "Off")
 		var idle_idx = main.settings_controller.idle_values.find(main.settings.idle_timeout_min)
 		if idle_idx < 0: idle_idx = 0
 		main.ui_controller.update_option_btn(main._ui_idle_btn, main.settings_controller.idle_labels[idle_idx])

@@ -1552,6 +1552,13 @@ func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
 
+# Multipath (second network) is chosen at launch, so a live stream restarts.
+func toggle_multipath():
+	main.settings.multipath_enabled = not main.settings.multipath_enabled
+	_save_setting(main._ui_multipath_btn, "Auto" if main.settings.multipath_enabled else "Off")
+	if main.is_streaming:
+		_schedule_stream_restart()
+
 # HDR is negotiated at launch (10-bit codec + hdrMode), so a live stream
 # restarts to pick it up, the same as a codec change.
 func toggle_hdr():

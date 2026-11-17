@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "앱 선택",
 	"Previous": "이전",
-	"Next": "다음"
+	"Next": "다음",
+	"Multipath": "멀티패스",
+	"Use a second network via Meteor; a slow one is paused.": "Meteor로 두 번째 네트워크 사용. 느린 쪽은 일시 중지."
 }

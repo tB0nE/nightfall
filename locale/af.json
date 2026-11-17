@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Kies app",
 	"Previous": "Vorige",
-	"Next": "Volgende"
+	"Next": "Volgende",
+	"Multipath": "Meerpad",
+	"Use a second network via Meteor; a slow one is paused.": "Gebruik 'n tweede netwerk via Meteor; 'n stadige word gestop."
 }

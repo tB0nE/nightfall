@@ -46,17 +46,25 @@ Found on a Steam Frame two rooms away from the PC: the adapter link at
   `"multipath": {"protocol": 1}`; the client opens the second path only when
   the stream goes through such a Meteor (`LiSetMultipathRemote()` per
   stream). A plain host sends the stream to whichever path pinged last.
-- **Meteor never waits for an extra path.** Copies go out with
-  `try_send_to` and are skipped while more than a quarter of the listener's
-  send buffer is still unsent (`SIOCOUTQ`); all paths share that socket, so
-  a slow path would otherwise hold up the main path's packets and the
-  reads from the host.
-- **The client rests a path that falls behind.** It counts packets per path;
-  when the second delivers under half of the main path's for two 2 s
-  windows, it stops pinging over it (Meteor stops copying 3 s later) and
-  tries again after 30 s, doubling up to 4 min while it keeps failing.
+- **Meteor never waits for a path, and every path is equal.** Which path
+  owns a flow is just whichever pinged first, so the slow one can be the
+  owner. On Linux each path of a multipath client gets its own socket on the
+  listener's port (`SO_REUSEPORT`, connected to that address; the kernel
+  hands it that address's packets), so each path's send queue is its own:
+  a copy is dropped when its path has more than a quarter of its send
+  buffer unsent (`SIOCOUTQ`), and nothing ever waits. Elsewhere the
+  listener is shared (owner waited for, extras skipped on a backlog).
+- **The client rests whichever path falls behind**, main or second, never
+  both: when one delivers under half of the other's packets for two 2 s
+  windows, its pings stop (Meteor stops sending to it 3 s later) and it is
+  tried again after 30 s, doubling up to 4 min while it keeps failing.
+  When the flow's owning path rests, Meteor forwards the other path's pings
+  to the host so it doesn't end the session.
+- **A setting**: Stream tab > Multipath (Auto / Off), shown where a second
+  network is configured.
 - The status bar shows `2 paths <main>k/<second>k pkt/s`,
-  `2nd path paused (too slow)` or `1 path (host can't use 2)`.
+  `main path paused (too slow)`, `2nd path paused (too slow)` or
+  `1 path (host can't use 2)`.
 
 ## Results (Steam Frame, Sunshine behind Meteor, 3440x1440 HEVC)
 

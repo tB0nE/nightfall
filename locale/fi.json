@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Valitse sovellus",
 	"Previous": "Edellinen",
-	"Next": "Seuraava"
+	"Next": "Seuraava",
+	"Multipath": "Monipolku",
+	"Use a second network via Meteor; a slow one is paused.": "Käytä toista verkkoa Meteorin kautta; hidas tauotetaan."
 }
