@@ -146,6 +146,14 @@ static func xr_info(info: Dictionary) -> Dictionary:
 ## Meteor's microphone offer ({port, formats, encryption, key, opus}), or {} when
 ## it has no microphone device, or none in a format and encryption this
 ## client sends.
+## True when this Meteor copies every stream packet to each network path a
+## client pings from (multipath). A plain host sends the stream to whichever
+## path pinged last, so the client must only use a second path when this is
+## true.
+static func multipath_supported(info: Dictionary) -> bool:
+	var multipath = info.get("multipath", {})
+	return multipath is Dictionary and int(multipath.get("protocol", 0)) >= 1
+
 static func mic_info(info: Dictionary) -> Dictionary:
 	var mic = info.get("mic", {})
 	if not mic is Dictionary or int(mic.get("port", 0)) <= 0:

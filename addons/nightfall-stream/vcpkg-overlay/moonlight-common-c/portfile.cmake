@@ -25,6 +25,7 @@ vcpkg_apply_patches(
         0002-fix-clang-multiversioning-headers.patch
         0003-add-pyrowave-codec.patch
         0004-multipath-second-path.patch
+        0005-multipath-host-gate.patch
 )
 
 set(BUILD_SHARED_LIBS OFF)  # 强制构建静态库
