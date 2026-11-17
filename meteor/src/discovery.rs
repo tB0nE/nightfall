@@ -229,7 +229,10 @@ const MAX_VIRTUAL: u8 = 64;
 /// The virtual display driver's session displays.
 #[cfg(windows)]
 const MAX_VIRTUAL: u8 = 8;
-#[cfg(not(any(target_os = "linux", windows)))]
+/// The bundled host's CGVirtualDisplays (Vibepollo's platf::macos::max_virtual_outputs).
+#[cfg(target_os = "macos")]
+const MAX_VIRTUAL: u8 = 8;
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 const MAX_VIRTUAL: u8 = 4;
 
 async fn handle_virtual(body: &[u8]) -> (u16, serde_json::Value) {
