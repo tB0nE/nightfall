@@ -39,6 +39,8 @@ as outstanding.
 
 ## Technical guides
 
+- [Controls, browser input and clipboard sharing](guides/controls.md)
+
 - [Screen crop, colour key and placement](guides/screen-display-options.md)
 - [Meteor managed-host releases](guides/meteor-host-releases.md)
 

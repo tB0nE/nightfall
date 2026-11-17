@@ -4,11 +4,12 @@
 
 # Nightfall
 
-**VR-native game and desktop streaming for Meta Quest.**
+**An open-source VR streaming suite for Meta Quest.**
 
 Stream your PC desktop and games to screens you place anywhere in VR, in
 stereoscopic 3D, beside your real room with passthrough, and play PC VR games
-through Nightfall Meteor.
+through Nightfall Meteor. Development focuses on Linux, with Meteor also
+available for Windows and macOS.
 
 [![Stars](https://img.shields.io/github/stars/tB0nE/nightfall?style=for-the-badge&color=7c73ff&labelColor=1a1a2e)](https://github.com/tB0nE/nightfall/stargazers)
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge&color=4c5265&labelColor=1a1a2e)](LICENSE)
@@ -20,18 +21,35 @@ through Nightfall Meteor.
 
 ---
 
+## Current preview
+
+[**v0.9.1-preview.2**](https://github.com/tB0nE/nightfall/releases/tag/v0.9.1-preview.2)
+includes unified screen tabs, expanded display controls and an experimental
+Steam Frame client. The feature list below describes the current preview;
+use [the latest stable release](https://github.com/tB0nE/nightfall/releases/latest)
+if you prefer the stable version. Install matching Nightfall and Meteor versions.
+
 ## Features
 
 - **PCVR** - launch PC VR games from the headset through Nightfall Meteor
   (SteamVR on Windows, Monado/xrizer on Linux) and return to your desktop when
   you finish. The wristwatch keeps your desktop within reach during a VR
   session.
-- **Multiple screens** - bring your PC's monitors into VR, add up to four
-  virtual monitors that exist only in the headset, and open browser screens
-  beside them: up to four screens in all. Each screen can be placed, curved and
-  resized on its own.
-- **Browser and Web Apps** - open web pages and web apps on their own screens,
-  with no PC needed.
+- **Screens and tabs** - combine physical monitors, virtual monitors and
+  browsers across up to four visible screens. Drag tabs between screens or out
+  into a screen of their own. Each screen can be placed, curved and resized;
+  desktop tabs can have their own resolution, subject to the codec's combined
+  resolution budget.
+- **Browser and Web Apps** - open web pages and web apps without a PC, with
+  tabs, bookmarks, history and optional ad blocking. Streaming-service support
+  depends on the service's browser and DRM requirements.
+- **Crop and colour-key passthrough** - crop the primary screen manually or
+  detect black bars automatically. Remove a chosen background colour so your
+  real room shows through, with optional host wallpaper changes via Meteor.
+  See [screen display options](docs/guides/screen-display-options.md).
+- **Text clipboard sharing** - explicitly copy and paste between browser and
+  desktop tabs using the virtual keyboard or keyboard shortcuts. See the
+  [clipboard instructions and limitations](docs/guides/controls.md#clipboard).
 - **AI stereoscopic 3D** - real-time depth conversion turns ordinary 2D games
   into stereoscopic 3D. On Quest, widescreen EdgePad models run on the GPU
   (or on the CPU, to leave the GPU to the stream). The models are
@@ -65,6 +83,9 @@ through Nightfall Meteor.
   welcome screen and a Settings page behind the gear.
 - **Ambient lighting** - a lightweight halo around the screen with Off,
   Static, Slow, and Live modes. Static mode includes selectable colours.
+- **Experimental Steam Frame client** - a native Linux ARM64 preview using
+  Meteor for AI depth. This package has no local depth inference or Android
+  browser. See [setup and limitations](docs/guides/steam-frame.md).
 - **GameStream compatibility** - connects to Sunshine, Apollo, Vibepollo,
   Polaris, and other compatible hosts, with or without Meteor.
 
@@ -91,11 +112,23 @@ visible while you work.
 - Meteor PCVR on Intel GPUs
 - Nightfall Meteor: wider GPU and desktop testing, and a signed Windows installer
 - Environments: a cinema room and your own rooms, without affecting performance
+- Steam Frame hardware testing and broader client support
+- Refine screen management, layout persistence and browser text selection
 - Improve hand tracking
 
 ## What runs where
 
-Nightfall runs on the Quest; Nightfall Meteor is the optional companion on the PC.
+Nightfall runs on Quest, with an experimental Steam Frame package available.
+Meteor is the optional PC companion.
+
+**Without Meteor:** connect to a compatible GameStream host for desktop/game
+streaming. On Quest, the standalone browser and on-headset AI 3D also work
+without Meteor.
+
+**With Meteor:** add PCVR, managed multi-monitor streaming, host-generated depth
+maps and microphone passthrough. Meteor can use its built-in host or work with
+an existing compatible host; available display-management features depend on
+that host.
 
 | Meteor feature | Linux | Windows | macOS (Apple silicon) |
 |---|---|---|---|
@@ -156,8 +189,10 @@ network, without Meteor:
    address, then press **Connect**
 4. On the first connection, enter Nightfall's PIN in the host's web interface
 
-You can run Meteor in front of one of these hosts too, for AI depth and the
-microphone; its built-in host is only needed for virtual monitors and PCVR.
+You can also run Meteor alongside an existing host for its additional features.
+The built-in Meteor-Vibepollo host is recommended for integrated pairing and
+virtual-display management; regular GameStream streaming remains independent
+of Meteor.
 
 ### Support logs
 
@@ -169,75 +204,21 @@ addresses may be included.
 
 ## Controls
 
-| Input | Action |
-|---|---|
-| **Trigger** | Left-click / interact |
-| **Grip** | Right-click |
-| **Right thumbstick Y** | Scroll |
-| **B button** | Toggle menu |
-| **A button** | Toggle keyboard |
-| **Right thumbstick click** | Cycle SBS mode (Off → Stretch → Crop) |
-| **Both thumbstick clicks** | Toggle controller mapper on/off |
-| **Grab bars** | Drag to reposition a screen, the menu, or the keyboard. A screen's grab bar appears when you point at the screen |
-| **Corner handles** | Point at the grab bar or a corner to show them; drag to resize the screen (locked aspect ratio) |
-| **Grab bar buttons** | Microphone, controller mapping, keyboard, SBS, AI 3D, menu |
-
-### Controller Modes
-
-Toggle controller mapping with **both thumbstick clicks** or the **Mapping**
-button in the Control tab. The **Device Mode** setting cycles through three
-layouts:
-
-- **PAD-HAND** - the original gamepad layout, with face-button roles divided
-  between the left and right controllers.
-- **PAD-ABXY** - follows the physical A/B/X/Y labels; alternate mode changes
-  that hand's pair into D-pad directions.
-- **KBM** - keeps pointer control active and maps controller inputs to keyboard
-  and mouse actions.
-
-For the PAD modes:
+Default Quest shortcuts (right primary controller):
 
 | Input | Action |
 |---|---|
-| **Thumbsticks** | Xbox left/right sticks |
-| **Triggers** | Left/right triggers |
-| **Grips** | Left/right bumpers |
-| **Face buttons** | Xbox face buttons or D-pad, depending on layout and alternate mode |
-| **Menu buttons** | Start / Back |
+| Trigger | Left-click / interact |
+| Grip | Right-click; drag to scroll instead when Grip Scroll is enabled |
+| Right thumbstick Y | Scroll |
+| B | Toggle menu |
+| A | Toggle keyboard |
+| Right thumbstick click | Toggle SBS off/on using the last selected Stretch or Crop mode |
+| Both thumbstick clicks | Toggle controller mapping |
+| Grab bar / corner handles | Move / resize the screen |
 
-**Alternate Mode** controls how the secondary face-button mapping is engaged:
-Head, Tilt, or None. **Primary Hand** can be Right, Left, or Auto.
-
-For the default KBM profile:
-
-| Input | Action |
-|---|---|
-| **Left thumbstick** | WASD movement |
-| **Left trigger** | Shift |
-| **Left grip** | Ctrl |
-| **A** | Space |
-| **B** | R |
-| **X** | E |
-| **Y** | F |
-| **Left menu** | Esc |
-| **Right menu** | Tab |
-| **Right thumbstick Y** | Scroll |
-
-The Control tab also provides Circle, Pointer or Hidden cursors, Off/Low/High/One
-Euro cursor stabilization, Standard/Chord double-click behavior, and optional
-hand tracking.
-
-### Keyboard Trackpad
-
-The keyboard includes an integrated trackpad on the right side. Point at the trackpad area and **click trigger** to activate. While active:
-
-| Input | Action |
-|---|---|
-| **Move controller** | Relative mouse movement |
-| **Trigger** | Left-click |
-| **Grip** | Right-click |
-| **Thumbstick Y** | Scroll |
-| **Right thumbstick click** | Exit trackpad |
+The [controls guide](docs/guides/controls.md) covers gamepad layouts, alternate
+mappings, clipboard sharing, browser input, the keyboard and PCVR controls.
 
 ## Building
 
@@ -280,6 +261,13 @@ Donations help keep the coffee flowing and the commits coming.
 
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub_Sponsors-Support-7c73ff?style=for-the-badge&logo=github&labelColor=1a1a2e)](https://github.com/sponsors/tB0nE)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-7c73ff?style=for-the-badge&logo=kofi&labelColor=1a1a2e)](https://ko-fi.com/tb0ne)
+
+## AI-assisted development
+
+I use AI coding tools to help with code, documentation and research. Like other
+software, these contributions can contain mistakes. Reproducible bug reports
+and community reviews help improve Nightfall; please include a diagnostic log
+when reporting a problem.
 
 ## License
 
