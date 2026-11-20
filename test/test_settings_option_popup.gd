@@ -30,6 +30,11 @@ func run():
 		func(_v): observed.preview += 1,
 		func(_v): observed.commit += 1,
 		func(): observed.cancel += 1, "Auto", Callable())
+	var labels := func():
+		var found := []
+		for button in popup.find_children("*", "Button", true, false): found.append(button.text)
+		return found
+	assert(labels.call().has("Done") and not labels.call().has("Apply"), "A live slider's button is Done")
 	popup._slider.value = 55
 	popup._slider.value = 60
 	assert(observed.preview == 2)
@@ -60,6 +65,9 @@ func run():
 	ui._settings_popup = popup
 	popup.open_slider("Test", 100, 0, 200, 5, "%", Callable(), Callable(),
 		func(): observed.cancel += 1, "Reset", Callable())
+	var deferred_labels := []
+	for button in popup.find_children("*", "Button", true, false): deferred_labels.append(button.text)
+	assert(deferred_labels.has("Apply"), "A slider applied only on commit keeps Apply")
 	assert(ui.settings_popup_open())
 	ui.close_settings_popup()
 	assert(not ui.settings_popup_open())

@@ -33,7 +33,17 @@ var _virtual_kind := "tab"
 var _virtual_size := Vector2i(2560,1440)
 var _virtual_field := 0
 var _virtual_digits := ""
-const VIRTUAL_PRESETS := [Vector2i.ZERO,Vector2i(1920,1080),Vector2i(2560,1440),Vector2i(3840,2160),Vector2i(2560,1080),Vector2i(1920,1440)]
+## Virtual monitor sizes by aspect ratio, after "Default" (match the host).
+const VIRTUAL_RATIOS := [
+	["16:9", [Vector2i(1920,1080),Vector2i(2560,1440),Vector2i(3840,2160),Vector2i(5120,2880),Vector2i(7680,4320)]],
+	["21:9", [Vector2i(2560,1080),Vector2i(3440,1440),Vector2i(5120,2160)]],
+	["4:3", [Vector2i(1440,1080),Vector2i(1600,1200),Vector2i(2880,2160)]],
+]
+var _virtual_ratio := 0
+## Vertical Orientation: every listed size and ratio turned on its side.
+var _virtual_vertical := false
+## Whether the physical monitor list adds a "screen" or a "tab".
+var _physical_kind := "screen"
 
 func _make_background() -> Panel:
 	var panel := Panel.new()
@@ -161,7 +171,15 @@ func invoke(action: StringName) -> void:
 		main.screen_sources.select_monitor_tab(_screen)
 		popup = ""
 	elif command == "tab:physical":
-		main.screen_sources.add_monitor_tab(_screen, false)
+		_physical_kind = "tab"
+		popup = "physical_list"
+	elif command.begins_with("physical:"):
+		var id := StringName(command.trim_prefix("physical:"))
+		if _physical_kind == "tab": main.screen_sources.add_monitor_tab(_screen, false, Vector2i.ZERO, id)
+		else:
+			var title := String(id)
+			for choice in _physical_choices(): if choice.id == id: title = choice.label
+			main.screen_sources.begin_screen_placement({"kind": &"physical", "id": id, "title": title})
 		popup = ""
 	elif command == "tab:virtual":
 		_virtual_kind = "tab"
@@ -177,9 +195,20 @@ func invoke(action: StringName) -> void:
 			_virtual_kind = "edit"
 			popup = "virtual_resolution"
 		else: popup = "tab_resolution"
-	elif command.begins_with("virtual:preset:"):
-		var index := int(command.trim_prefix("virtual:preset:"))
-		if index >= 0 and index < VIRTUAL_PRESETS.size(): _apply_virtual_size(VIRTUAL_PRESETS[index])
+	elif command == "virtual:default":
+		# A vertical Default has to name its size; the host's own is landscape.
+		_apply_virtual_size(_oriented(_host_size()) if _virtual_vertical else Vector2i.ZERO)
+	elif command == "virtual:vertical":
+		_virtual_vertical = not _virtual_vertical
+	elif command.begins_with("virtual:ratio:"):
+		var index := int(command.trim_prefix("virtual:ratio:"))
+		if index >= 0 and index < VIRTUAL_RATIOS.size():
+			_virtual_ratio = index
+			popup = "virtual_ratio"
+	elif command.begins_with("virtual:size:"):
+		var index := int(command.trim_prefix("virtual:size:"))
+		var sizes: Array = VIRTUAL_RATIOS[_virtual_ratio][1]
+		if index >= 0 and index < sizes.size(): _apply_virtual_size(_oriented(sizes[index]))
 	elif command == "virtual:custom":
 		_virtual_size = Vector2i(2560,1440)
 		var tab := _screen.content_tabs.selected()
@@ -211,14 +240,14 @@ func invoke(action: StringName) -> void:
 	elif command == "screen:new":
 		popup = "screen_types"
 	elif command == "screen:browser":
-		main.screen_sources.add_browser_screen()
+		main.screen_sources.begin_screen_placement({"kind": &"browser", "title": "Browser"})
 		popup = ""
 	elif command == "screen:virtual":
 		_virtual_kind = "screen"
 		popup = "virtual_resolution"
 	elif command == "screen:physical":
-		main.screen_sources.add_monitor_screen(false)
-		popup = ""
+		_physical_kind = "screen"
+		popup = "physical_list"
 	elif command == "stream:new":
 		main.screen_sources.add_stream_screen()
 		popup = ""
@@ -245,9 +274,35 @@ func _select_page(id: Variant) -> void:
 
 func _apply_virtual_size(size: Vector2i) -> void:
 	if _virtual_kind == "edit": main.screen_sources.set_monitor_tab_resolution(_screen,size)
-	elif _virtual_kind == "screen": main.screen_sources.add_monitor_screen(true,size)
+	elif _virtual_kind == "screen":
+		var shown := _host_size() if size == Vector2i.ZERO else size
+		var title := "Virtual %d × %d" % [shown.x, shown.y]
+		main.screen_sources.begin_screen_placement({"kind": &"virtual", "size": size, "title": title})
 	else: main.screen_sources.add_monitor_tab(_screen,true,size)
 	popup = ""
+
+## A listed size, turned vertical when Vertical Orientation is on.
+func _oriented(size: Vector2i) -> Vector2i:
+	return Vector2i(size.y, size.x) if _virtual_vertical else size
+
+func _ratio_label(index: int) -> String:
+	var ratio: String = VIRTUAL_RATIOS[index][0]
+	if _virtual_vertical: ratio = "%s:%s" % [ratio.get_slice(":", 1), ratio.get_slice(":", 0)]
+	return ratio
+
+func _host_size() -> Vector2i:
+	if main.screen_sources.has_method("host_monitor_size"): return main.screen_sources.host_monitor_size()
+	return Vector2i(1920, 1080)
+
+func _physical_choices() -> Array:
+	if not main.screen_sources.has_method("physical_choices"): return []
+	return main.screen_sources.physical_choices(_screen if _physical_kind == "tab" else null)
+
+func _virtual_size_enabled(size: Vector2i) -> bool:
+	var supported: bool = main.layout.virtual_modes_supported
+	if not supported and size != Vector2i.ZERO: return false
+	if _virtual_kind == "edit" or not main.screen_sources.has_method("monitor_size_available"): return true
+	return main.screen_sources.monitor_size_available(true, size)
 
 func _resolution_choices() -> Array:
 	return browser.RESOLUTIONS if browser.active else main.resolutions
@@ -365,15 +420,6 @@ func _rebuild() -> void:
 	var tab_physical: bool = main.screen_sources.has_method("can_add_monitor_tab") and main.screen_sources.can_add_monitor_tab(_screen, false)
 	var tab_virtual: bool = main.screen_sources.has_method("can_add_monitor_tab") and main.screen_sources.can_add_monitor_tab(_screen, true)
 	var add_screen: bool = main.screen_sources.can_add_browser_screen() or main.screen_sources.can_add_stream_screen() or add_physical or add_virtual
-	if popup == "packing_confirmation": hover_bottom = 0.17
-	elif popup == "sources": hover_bottom = 0.17 if edit_resolution else 0.126
-	elif popup == "settings": hover_bottom = 0.17
-	elif popup == "tab_types": hover_bottom = 0.126 if main.is_streaming else 0.082
-	elif popup == "screen_types": hover_bottom = 0.17 if offer_stream else 0.126
-	elif popup == "virtual_resolution": hover_bottom = 0.27
-	elif popup == "virtual_custom": hover_bottom = 0.23
-	elif popup == "tab_resolution": hover_bottom = (_resolution_choices().size() + 1) * 0.036 + 0.025
-	elif popup == "tabs": hover_bottom = maxf(0.0, pages.size() * 0.036 + 0.025)
 	if not pages.is_empty():
 		var visible := visible_pages(pages, selected)
 		var rects := page_rects(visible, selected, pages.size() > MAX_VISIBLE)
@@ -410,31 +456,48 @@ func _rebuild() -> void:
 		_add(&"packing:yes", "Switch to HEVC and add", Rect2(0.01, 0.03, 0.47, 0.04))
 		_add(&"packing:no", "Keep current setup", Rect2(0.01, 0.074, 0.47, 0.04))
 	elif popup == "sources":
-		_add(&"tab:new", "Add tab", Rect2(0.19, -0.014, 0.29, 0.04), false, can_browser or tab_physical or tab_virtual or not main.is_streaming)
-		_add(&"screen:new", "Add screen", Rect2(0.19, 0.03, 0.29, 0.04), false, add_screen)
-		var row_y := 0.074
-		_add(&"screen:primary", "Make primary", Rect2(0.19, row_y, 0.29, 0.04), _screen == main.primary_screen, can_primary)
-		if edit_resolution:
-			_add(&"tab:resolution", "Tab resolution", Rect2(0.19, row_y + 0.044, 0.29, 0.04))
+		var row := 0
+		for entry in [[&"screen:new", "Add Screen", add_screen, true],
+				[&"tab:new", "Add Tab", can_browser or tab_physical or tab_virtual or not main.is_streaming, true],
+				[&"tab:resolution", "Modify Screen", true, edit_resolution],
+				[&"screen:primary", "Make Primary", can_primary, _screen != main.primary_screen]]:
+			if not entry[3]: continue
+			_add(entry[0], entry[1], Rect2(0.19, -0.014 + row * 0.044, 0.29, 0.04), false, entry[2])
+			row += 1
 	elif popup == "tab_types":
 		_add(&"tab:browser", "Browser", Rect2(0.19, -0.014, 0.29, 0.04), false, can_browser)
 		if main.is_streaming:
-			_add(&"tab:physical", "Physical screen", Rect2(0.19, 0.03, 0.29, 0.04), false, tab_physical)
-			_add(&"tab:virtual", "Virtual screen", Rect2(0.19, 0.074, 0.29, 0.04), false, tab_virtual)
+			_add(&"tab:virtual", "Virtual Monitor", Rect2(0.19, 0.03, 0.29, 0.04), false, tab_virtual)
+			_add(&"tab:physical", "Physical Monitor", Rect2(0.19, 0.074, 0.29, 0.04), false, tab_physical)
 		else:
 			_add(&"tab:start_stream", "Start stream", Rect2(0.19, 0.03, 0.29, 0.04))
 	elif popup == "screen_types":
 		_add(&"screen:browser", "Browser", Rect2(0.19, -0.014, 0.29, 0.04), false, main.screen_sources.can_add_browser_screen())
-		_add(&"screen:physical", "Physical monitor", Rect2(0.19, 0.03, 0.29, 0.04), false, add_physical)
-		_add(&"screen:virtual", "Virtual monitor", Rect2(0.19, 0.074, 0.29, 0.04), false, add_virtual)
+		_add(&"screen:virtual", "Virtual Monitor", Rect2(0.19, 0.03, 0.29, 0.04), false, add_virtual)
+		_add(&"screen:physical", "Physical Monitor", Rect2(0.19, 0.074, 0.29, 0.04), false, add_physical)
 		if offer_stream:
 			_add(&"stream:new", "Desktop connection", Rect2(0.19, 0.118, 0.29, 0.04), false, main.screen_sources.can_add_stream_screen())
+	elif popup == "physical_list":
+		var choices := _physical_choices()
+		for i in choices.size():
+			_add(StringName("physical:%s" % String(choices[i].id)), choices[i].label, Rect2(0.19, -0.014 + i * 0.036, 0.29, 0.033), false, choices[i].enabled)
+		if choices.is_empty():
+			_add(&"physical:none", "No other monitors", Rect2(0.19, -0.014, 0.29, 0.033), false, false)
 	elif popup == "virtual_resolution":
 		var supported: bool = main.layout.virtual_modes_supported
-		for i in VIRTUAL_PRESETS.size():
-			var size: Vector2i = VIRTUAL_PRESETS[i]
-			_add(StringName("virtual:preset:%d"%i), "Match host monitor" if size == Vector2i.ZERO else "%d × %d"%[size.x,size.y], Rect2(0.19,-0.014+i*0.036,0.29,0.033),false,(supported or size == Vector2i.ZERO) and (_virtual_kind == "edit" or (main.screen_sources.monitor_size_available(true,size) if main.screen_sources.has_method("monitor_size_available") else true)))
-		_add(&"virtual:custom","Custom resolution",Rect2(0.19,0.202,0.29,0.033),false,supported)
+		var default_size := _oriented(_host_size())
+		_add(&"virtual:default", "Default (%d × %d)" % [default_size.x, default_size.y], Rect2(0.19, -0.014, 0.29, 0.033), false,
+			_virtual_size_enabled(default_size if _virtual_vertical else Vector2i.ZERO))
+		for i in VIRTUAL_RATIOS.size():
+			_add(StringName("virtual:ratio:%d" % i), "%s  ›" % _ratio_label(i), Rect2(0.19, 0.022 + i * 0.036, 0.29, 0.033), false, supported)
+		var below := 0.022 + VIRTUAL_RATIOS.size() * 0.036
+		_add(&"virtual:vertical", "Vertical Orientation: %s" % ("On" if _virtual_vertical else "Off"), Rect2(0.19, below, 0.29, 0.033), _virtual_vertical, supported)
+		_add(&"virtual:custom", "Custom resolution", Rect2(0.19, below + 0.036, 0.29, 0.033), false, supported)
+	elif popup == "virtual_ratio":
+		var sizes: Array = VIRTUAL_RATIOS[_virtual_ratio][1]
+		for i in sizes.size():
+			var size: Vector2i = _oriented(sizes[i])
+			_add(StringName("virtual:size:%d" % i), "%d × %d" % [size.x, size.y], Rect2(0.19, -0.014 + i * 0.036, 0.29, 0.033), false, _virtual_size_enabled(size))
 	elif popup == "virtual_custom":
 		_add(&"virtual:field:0","W: %d"%_virtual_size.x,Rect2(0.19,-0.014,0.14,0.036),_virtual_field == 0)
 		_add(&"virtual:field:1","H: %d"%_virtual_size.y,Rect2(0.34,-0.014,0.14,0.036),_virtual_field == 1)
@@ -460,6 +523,10 @@ func _rebuild() -> void:
 			var page: Dictionary = pages[i]
 			_add(StringName("list:%s" % str(page.id)), str(page.get("title", "Browser")),
 				Rect2(0.03, -0.014 + i * 0.036, 0.4, 0.033), str(page.id) == str(selected))
+	# The backdrop covers the open dropdown's rows.
+	if popup != "":
+		for item in _items:
+			if item.rect.position.y > -0.02: hover_bottom = maxf(hover_bottom, item.rect.end.y + 0.012)
 	_add(&"hover", "", Rect2(-0.5, -0.132, 1.0, hover_bottom + 0.132))
 	for item in _reuse.values(): _discard(item)
 	_reuse.clear()
@@ -501,7 +568,7 @@ func update(screen: VRScreen, surface_size: Vector2, margin: float, revealed: bo
 		browser.get("render_size"), _screen.content_tabs.selected().resolution if _screen.content_tabs.selected() != null else Vector2i.ZERO,
 		main.get("stream_manager").get("capacity_revision") if main.get("stream_manager") != null else 0,
 		main.screen_sources.get("dragged_tab_id"), main.screen_sources.get("dragged_tab_source"),
-		main.screens.size(), main.primary_screen, popup, _virtual_kind, _virtual_size, _virtual_field, _virtual_digits,
+		main.screens.size(), main.primary_screen, popup, _host_size(), _virtual_vertical, _virtual_kind, _virtual_ratio, _physical_kind, _physical_choices(), _virtual_size, _virtual_field, _virtual_digits,
 		main.screen_sources.can_open_browser(), main.screen_sources.can_add_browser_screen(),
 		main.screen_sources.can_offer_stream_screen(), main.screen_sources.can_add_stream_screen(),
 		main.screen_sources.can_add_monitor_screen(false) if main.screen_sources.has_method("can_add_monitor_screen") else false,

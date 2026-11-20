@@ -17,6 +17,7 @@ NIGHTFALL_ENGINE_PATCH_NAMES=(
   godot-4.7-projectionless-lifecycle.patch
   godot-4.7-compositor-filter.patch
   godot-4.7-gles3-render-target-override.patch
+  godot-4.7-equirect-bands.patch
 )
 
 # A source-tree stamp alone cannot prove that a cached binary was rebuilt.

@@ -74,6 +74,7 @@ tests=(
 	"test/test_welcome_screen.gd"
 	"test/test_session_lifecycle.gd"
 	"test/test_monitor_grid.gd"
+	"test/test_screen_placement_grid.gd"
 	"test/test_screen_registry.gd"
 	"test/test_screen_shortcut_bar.gd"
 	"test/test_virtual_keyboard.gd"

@@ -5,7 +5,7 @@ var _browser_right_click := false
 
 var main: Node3D
 var pointer_on_ui: bool = false
-var _tab_ray_exclusion: CollisionObject3D
+var _tab_ray_exclusions: Array[CollisionObject3D] = []
 var _tab_priority_ray: RayCast3D
 
 var _active_hand: String = "right"
@@ -42,6 +42,16 @@ var _browser_press_owner: RefCounted
 var _last_pointer_screen: VRScreen
 var _last_hand_input_state: String = ""
 var _tab_drag = preload("res://src/tab_drag_state.gd").new()
+var _tab_preview: TabDragPreview
+var _tab_drag_title := ""
+var _tab_drag_point := Vector3.ZERO
+
+## The dragged tab's label while a tab is being dragged, else "".
+func tab_drag_title() -> String:
+	return _tab_drag_title
+
+func tab_drag_point() -> Vector3:
+	return _tab_drag_point
 var _drag_scroll := ControllerDragScroll.new()
 var _drag_scroll_screen: VRScreen
 var _drag_scroll_browser: RefCounted
@@ -99,6 +109,8 @@ func populate_ui_buttons(buttons: Array):
 	_ui_button_states = buttons
 
 func cancel_transient_interactions(reason: String = "") -> void:
+	_hide_tab_preview()
+	if main.get("placement_grid") != null: main.placement_grid.finish()
 	var ui = main.get("ui_controller")
 	if ui != null and ui.has_method("close_settings_popup"):
 		ui.close_settings_popup()
@@ -469,6 +481,28 @@ func handle_pointer_interaction():
 	var shortcut_target = PointerTarget.resolve(active_raycast.get_collider()) if active_raycast.is_colliding() else {"role": &"", "screen": null, "action": &""}
 	if main.screen_sources:
 		main.screen_sources.cancel_browser_pointers_except(shortcut_target.screen if shortcut_target.role == &"screen" else null)
+	if main.screen_sources and main.screen_sources.placement_active() and not _tab_drag.active:
+		# Placing a screen from the + Add menu: its outline follows the
+		# pointer; the trigger places it, grip cancels.
+		pointer_on_ui = true
+		var from: Vector3 = active_raycast.global_position
+		var aim: Vector3 = (active_raycast.to_global(active_raycast.target_position) - from).normalized()
+		var at: Vector3 = active_raycast.get_collision_point() if active_raycast.is_colliding() else from + aim * 2.0
+		main.was_clicking = raw_clicking
+		if grip_pressed_edge:
+			main.screen_sources.cancel_screen_placement()
+			_hide_tab_preview()
+		elif trigger_pressed_edge:
+			_hide_tab_preview()
+			main.screen_sources.commit_screen_placement(at, from)
+		else:
+			if _tab_preview == null: _tab_preview = TabDragPreview.new(main)
+			_tab_drag_title = str(main.screen_sources.placement.get("title", "Screen"))
+			_tab_drag_point = at
+			_tab_preview.update(_tab_drag_title, at, main.screen_sources.placement_preview(at, from))
+		return
+	elif _tab_drag_title != "" and not _tab_drag.active:
+		_hide_tab_preview()
 	if _tab_drag.active:
 		pointer_on_ui = true
 		var origin: Vector3 = active_raycast.global_position
@@ -482,7 +516,10 @@ func handle_pointer_interaction():
 		if _tab_drag.dragging:
 			main.screen_sources.dragged_tab_source = source
 			main.screen_sources.dragged_tab_id = tab_id
+			if event == &"":
+				_update_tab_preview(source, tab_id, point, origin, shortcut_target)
 		if event != &"":
+			_hide_tab_preview()
 			main.screen_sources.dragged_tab_source = null
 			main.screen_sources.dragged_tab_id = &""
 			_screen_shortcut_press_active = false
@@ -492,7 +529,7 @@ func handle_pointer_interaction():
 			if event == &"click" and is_instance_valid(source): main.screen_sources.menu_for_screen(source).invoke(command)
 			elif event == &"drop" and (not active_raycast.is_colliding() or shortcut_target.role in [&"", &"screen", &"screen_tab"]):
 				var destination: VRScreen = shortcut_target.screen if shortcut_target.role in [&"screen", &"screen_tab"] else null
-				main.screen_sources.move_content_tab(source,tab_id,destination,point)
+				main.screen_sources.move_content_tab(source,tab_id,destination,point,origin)
 		return
 	if main.screen_sources.get("moving_tab") == true:
 		pointer_on_ui = true
@@ -618,9 +655,11 @@ func handle_pointer_interaction():
 			main.right_click_cooldown = 0.5
 
 	for s in main.screens:
-		s.grab_bar.visible = main.screen_shortcuts == null or s == main.screen_shortcuts.pointed_screen \
-			or s == main.screen_shortcuts.revealed_screen
-		var controls_revealed: bool = main.screen_shortcuts != null \
+		s.sync_controls_lock()
+		var locked: bool = s.controls_locked()
+		s.grab_bar.visible = not locked and (main.screen_shortcuts == null or s == main.screen_shortcuts.pointed_screen \
+			or s == main.screen_shortcuts.revealed_screen)
+		var controls_revealed: bool = not locked and main.screen_shortcuts != null \
 			and main.screen_shortcuts.controls_are_revealed(s)
 		for ch in s.corner_handles:
 			ch.visible = controls_revealed
@@ -1059,29 +1098,55 @@ func process_pointer_frame(delta: float):
 			main.screen_shortcuts.refresh_visuals(screen)
 
 func _prioritize_tab_overlay() -> void:
-	# Composition video can use a different curvature from its physics mesh.
-	# Resolve overlays explicitly rather than relying on millimetre offsets.
-	if is_instance_valid(_tab_priority_ray) and is_instance_valid(_tab_ray_exclusion):
-		_tab_priority_ray.remove_exception(_tab_ray_exclusion)
-	_tab_ray_exclusion = null
+	# Controls are composited above video even when another screen's physics
+	# surface is slightly nearer. Match that ordering for raised-screen bars.
+	if is_instance_valid(_tab_priority_ray):
+		for collider in _tab_ray_exclusions:
+			if is_instance_valid(collider): _tab_priority_ray.remove_exception(collider)
+	_tab_ray_exclusions.clear()
 	_tab_priority_ray = get_active_raycast()
 	var ray := _tab_priority_ray
 	if not ray or not ray.is_inside_tree(): return
 	ray.force_raycast_update()
 	if not ray.is_colliding(): return
-	var collider = ray.get_collider()
-	var target := PointerTarget.resolve(collider)
-	if target.role != &"screen": return
-	var query := PhysicsRayQueryParameters3D.create(ray.global_position,
-		ray.to_global(ray.target_position), ray.collision_mask, [collider.get_rid()])
-	query.collide_with_areas = ray.collide_with_areas
-	query.collide_with_bodies = ray.collide_with_bodies
-	var hit := ray.get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty(): return
-	var overlay := PointerTarget.resolve(hit.collider)
-	if overlay.role != &"screen_tab" or overlay.screen != target.screen: return
-	_tab_ray_exclusion = collider
-	ray.add_exception(collider)
+	var target := PointerTarget.resolve(ray.get_collider())
+	if target.role != &"screen" and not (target.role == &"screen_tab" and target.action == &"hover"): return
+	var first_point := ray.get_collision_point()
+	var skipped: Array[CollisionObject3D] = []
+	var hover_fallback: Array[CollisionObject3D] = []
+	var excluded: Array[RID] = []
+	var collider: CollisionObject3D = ray.get_collider()
+	for attempt in range(8):
+		skipped.append(collider)
+		excluded.append(collider.get_rid())
+		var query := PhysicsRayQueryParameters3D.create(ray.global_position,
+			ray.to_global(ray.target_position), ray.collision_mask, excluded)
+		query.collide_with_areas = ray.collide_with_areas
+		query.collide_with_bodies = ray.collide_with_bodies
+		var hit := ray.get_world_3d().direct_space_state.intersect_ray(query)
+		if hit.is_empty():
+			if not hover_fallback.is_empty(): _use_overlay_exclusions(ray, hover_fallback)
+			return
+		var overlay := PointerTarget.resolve(hit.collider)
+		var screen_control: bool = overlay.role in [&"grab_bar", &"corner"] and overlay.screen != null
+		if screen_control:
+			if first_point.distance_to(hit.position) > 0.5: return
+			if overlay.screen.global_basis.z.dot(ray.global_position - overlay.screen.global_position) <= 0: return
+		var own_tab: bool = overlay.role == &"screen_tab" and overlay.screen == target.screen
+		if screen_control or (own_tab and overlay.action != &"hover"):
+			_use_overlay_exclusions(ray, skipped)
+			return
+		if own_tab and overlay.action == &"hover" and hover_fallback.is_empty():
+			hover_fallback.assign(skipped)
+		# Skip only video and non-actionable tab-hover backgrounds. Menus,
+		# buttons and other actual interaction targets keep their priority.
+		if overlay.role != &"screen" and not (overlay.role == &"screen_tab" and overlay.action == &"hover"): return
+		collider = hit.collider
+	if not hover_fallback.is_empty(): _use_overlay_exclusions(ray, hover_fallback)
+
+func _use_overlay_exclusions(ray: RayCast3D, colliders: Array[CollisionObject3D]) -> void:
+	_tab_ray_exclusions.assign(colliders)
+	for collider in colliders: ray.add_exception(collider)
 	ray.force_raycast_update()
 
 func _reveal_contextual_screen_controls() -> void:
@@ -1302,7 +1367,11 @@ func handle_grab():
 	if main.grabbed_node is VRScreen:
 		main.comp.update_cylinder_params()
 
-	if main.is_xr_active and main.grab_start_hand_basis != Basis():
+	# On a cylinder or sphere grid the surface sets a secondary's angle; only the
+	# primary (and other panels) tilt with the hand. The Original layout tilts all.
+	var on_surface_grid: bool = main.placement_grid != null and ScreenPlacementGrid.single_surface(main.placement_grid.shape())
+	var secondary: bool = main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen
+	if main.is_xr_active and main.grab_start_hand_basis != Basis() and not (secondary and on_surface_grid):
 		var hand_fwd = -active_raycast.global_transform.basis.z
 		var hand_pitch = atan2(-hand_fwd.y, Vector2(hand_fwd.x, hand_fwd.z).length())
 		var start_fwd = -main.grab_start_hand_basis.z
@@ -1315,17 +1384,17 @@ func handle_grab():
 			euler.x = 0.0
 		main.grabbed_node.rotation = euler
 
+
 	if main.grabbed_node == main.primary_screen and not main.grab_group_start_transforms.is_empty():
 		var group_delta = main.grabbed_node.global_transform * main.grab_start_primary_transform.affine_inverse()
 		for other in main.grab_group_start_transforms:
 			other.global_transform = group_delta * main.grab_group_start_transforms[other]
 
-	# Primary is exempt by construction - it's always free-mode (moving it
-	# rigidly drags every grid-consistent secondary along via the group-move
-	# block above, which is what "primary moves the whole grid" reduces to).
-	# Secondaries snap live, every frame, to the nearest valid grid cell to
-	# wherever they're currently being dragged - not just once on release.
-	if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen and main.settings.grid_mode_enabled and main.grabbed_node.grid_mode:
+	if main.grabbed_node is VRScreen:
+		main.placement_grid.drag(main.grabbed_node, main.get_process_delta_time())
+	# Original layout: secondaries snap live, every frame, to the nearest free
+	# grid slot (the primary always moves freely and carries the rest along).
+	if secondary and not on_surface_grid and main.settings.grid_mode_enabled and main.grabbed_node.grid_mode:
 		_apply_live_grid_snap(main.grabbed_node)
 
 	if main.grabbed_node is VRScreen:
@@ -1334,10 +1403,9 @@ func handle_grab():
 
 	var still_clicking = _is_now_clicking()
 	if not still_clicking:
-		# Commit grid_mode/grid_pos on release: a screen dragged with Grid Mode
-		# on ends up grid_mode=true at wherever it last snapped to; dragged with
-		# Grid Mode off, it becomes grid_mode=false (free) and is left alone by
-		# the grid system until it's grabbed again with Grid Mode on.
+		main.placement_grid.finish()
+		if main.grabbed_node == main.primary_screen:
+			main.placement_grid.primary_released()
 		if main.grabbed_node is VRScreen and main.grabbed_node != main.primary_screen:
 			main.grabbed_node.grid_mode = main.settings.grid_mode_enabled
 			if main.settings.grid_mode_enabled and main.grab_snap_candidate.x >= 0:
@@ -1357,11 +1425,23 @@ func handle_grab():
 		main.grab_group_start_transforms.clear()
 		main.state_manager.save_state()
 
-# Snaps s (a grabbed, non-primary, grid-mode screen) to the nearest free grid
-# cell relative to primary's CURRENT (possibly itself mid-drag, for a rigid
-# primary-group-move) transform - called every frame during a drag, not just
-# on release, per spec ("snap to the nearest valid position according to
-# where I am pointing the controller" while dragging).
+## A dragged tab: its label follows the pointer, and over empty space an
+## outline shows where the screen will appear when it is dropped.
+func _update_tab_preview(source: VRScreen, tab_id: StringName, point: Vector3, from: Vector3, target: Dictionary) -> void:
+	if _tab_preview == null: _tab_preview = TabDragPreview.new(main)
+	var placement := {}
+	if target.role == &"":
+		placement = main.screen_sources.drop_preview(source, tab_id, point, from)
+	_tab_drag_title = main.screen_sources.content_tab_title(source, tab_id)
+	_tab_drag_point = point
+	# The label rides on the cursor layer (main._update_cursor_layer()); the
+	# preview draws it itself only where composition layers are not in use.
+	_tab_preview.update(_tab_drag_title, point, placement)
+
+func _hide_tab_preview() -> void:
+	_tab_drag_title = ""
+	if _tab_preview != null: _tab_preview.hide()
+
 func _apply_live_grid_snap(s: VRScreen):
 	var primary: VRScreen = main.primary_screen
 	if not primary:
@@ -1383,12 +1463,14 @@ func handle_corner_resize():
 	var active_raycast = get_active_raycast()
 	var ray_origin = active_raycast.global_position
 	var ray_dir = -active_raycast.global_transform.basis.z
-	var tile_aspect = float(s.monitor.frame_rect.size.x) / float(s.monitor.frame_rect.size.y) if s.monitor and s.monitor.frame_rect.size.y > 0 else 16.0 / 9.0
+	var tile_aspect: float = s.mesh_size.x / maxf(s.mesh_size.y, 0.01)
 
 	if not _corner_resize_started:
 		s.begin_corner_resize()
 		_corner_resize_started = true
 	s.apply_corner_resize(ray_origin, ray_dir, main.grabbed_corner_idx, tile_aspect)
+	if main.settings.grid_mode_enabled:
+		main.placement_grid.show_guide(main.placement_grid.to_grid(main.placement_grid.anchor().affine_inverse() * s.global_position), s)
 
 	main.comp.update_layer_size()
 
@@ -1400,6 +1482,7 @@ func handle_corner_resize():
 		main.grabbed_corner_screen = null
 		_corner_resize_started = false
 		s.end_corner_resize()
+		main.placement_grid.finish()
 		main.state_manager.save_state()
 
 

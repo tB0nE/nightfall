@@ -1,0 +1,24 @@
+--- a/modules/openxr/scene/openxr_composition_layer_equirect.cpp
++++ b/modules/openxr/scene/openxr_composition_layer_equirect.cpp
+@@ -162,7 +162,9 @@
+ }
+ 
+ void OpenXRCompositionLayerEquirect::set_upper_vertical_angle(float p_angle) {
+-	ERR_FAIL_COND(p_angle <= 0 || p_angle > (Math::PI / 2.0));
++	// Nightfall: bands may sit entirely above or below the equator (OpenXR allows
++	// both angles in [-pi/2, pi/2]); only the band's height must stay positive.
++	ERR_FAIL_COND(p_angle < -(Math::PI / 2.0) || p_angle > (Math::PI / 2.0));
+ 	upper_vertical_angle = p_angle;
+ 	if (composition_layer_extension) {
+ 		composition_layer_extension->composition_layer_set_equirect_upper_vertical_angle(composition_layer, p_angle);
+@@ -175,7 +177,9 @@
+ }
+ 
+ void OpenXRCompositionLayerEquirect::set_lower_vertical_angle(float p_angle) {
+-	ERR_FAIL_COND(p_angle <= 0 || p_angle > (Math::PI / 2.0));
++	// Nightfall: bands may sit entirely above or below the equator (OpenXR allows
++	// both angles in [-pi/2, pi/2]); only the band's height must stay positive.
++	ERR_FAIL_COND(p_angle < -(Math::PI / 2.0) || p_angle > (Math::PI / 2.0));
+ 	lower_vertical_angle = p_angle;
+ 	if (composition_layer_extension) {
+ 		composition_layer_extension->composition_layer_set_equirect_lower_vertical_angle(composition_layer, -p_angle);

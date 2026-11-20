@@ -302,7 +302,7 @@ func build_welcome_screen(parent: Node):
 	screen.add_child(title)
 
 	var subtitle = Label.new()
-	subtitle.text = "Moonlight Streaming for Quest"
+	subtitle.text = "VR Desktop Streaming"
 	subtitle.add_theme_font_size_override("font_size", 24)
 	subtitle.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

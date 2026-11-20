@@ -26,6 +26,8 @@ void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("has_stale_eye_layer"), &NightfallXrRenderer::has_stale_eye_layer);
 	ClassDB::bind_method(D_METHOD("consume_pending_resize_failure"), &NightfallXrRenderer::consume_pending_resize_failure);
 	ClassDB::bind_method(D_METHOD("supports_cylinder"), &NightfallXrRenderer::supports_cylinder);
+	ClassDB::bind_method(D_METHOD("supports_equirect"), &NightfallXrRenderer::supports_equirect);
+	ClassDB::bind_method(D_METHOD("set_sphere_band", "upper", "lower"), &NightfallXrRenderer::set_sphere_band);
 	ClassDB::bind_method(D_METHOD("supports_compositor_sharpening"), &NightfallXrRenderer::supports_compositor_sharpening);
 	ClassDB::bind_method(D_METHOD("set_geometry", "transform", "width", "height", "curvature", "radius", "central_angle", "sort_order", "bezel_enabled"), &NightfallXrRenderer::set_geometry);
 	ClassDB::bind_method(D_METHOD("set_compositor_sharpening", "mode"), &NightfallXrRenderer::set_compositor_sharpening);
@@ -259,6 +261,8 @@ bool NightfallXrRenderer::has_rendered_frame() const { return false; }
 bool NightfallXrRenderer::has_stale_eye_layer() const { return false; }
 bool NightfallXrRenderer::consume_pending_resize_failure() { return false; }
 bool NightfallXrRenderer::supports_cylinder() const { return false; }
+bool NightfallXrRenderer::supports_equirect() const { return false; }
+void NightfallXrRenderer::set_sphere_band(float, float) {}
 bool NightfallXrRenderer::supports_compositor_sharpening() const { return false; }
 void NightfallXrRenderer::set_geometry(const Transform3D &, float, float, int, float, float, int, bool) {}
 void NightfallXrRenderer::set_compositor_sharpening(int) {}
