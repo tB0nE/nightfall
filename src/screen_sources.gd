@@ -76,7 +76,7 @@ func can_add_monitor_tab(screen: VRScreen, virtual: bool = false) -> bool:
 		if monitor.capturable and not monitor.hint.get("virtual", false) and monitor_tab_owner(monitor.id) == null: return monitor_size_available(false, Vector2i.ZERO, screen)
 	return false
 
-func add_monitor_tab(screen: VRScreen, virtual: bool = false, size: Vector2i = Vector2i.ZERO) -> bool:
+func add_monitor_tab(screen: VRScreen, virtual: bool = false, size: Vector2i = Vector2i.ZERO, monitor_id: StringName = &"") -> bool:
 	if not can_add_monitor_tab(screen, virtual) or not valid_virtual_size(size): return false
 	if size != Vector2i.ZERO and (not virtual or not main.layout.virtual_modes_supported): return false
 	var id: StringName
@@ -90,10 +90,12 @@ func add_monitor_tab(screen: VRScreen, virtual: bool = false, size: Vector2i = V
 		title = "Virtual %d" % (virtual_count + 1)
 	else:
 		for monitor in main.layout.monitors:
-			if monitor.capturable and not monitor.hint.get("virtual", false) and monitor_tab_owner(monitor.id) == null:
+			if monitor.capturable and not monitor.hint.get("virtual", false) and monitor_tab_owner(monitor.id) == null \
+					and (monitor_id == &"" or monitor.id == monitor_id):
 				id = monitor.id
 				title = monitor.label if not monitor.label.is_empty() else String(id)
 				break
+		if id == &"": return false
 	if not await _admit_monitor_addition(virtual, size, id, screen): return false
 	var provider = browser_for_screen(screen)
 	if provider != null and provider.active:
@@ -391,7 +393,7 @@ func can_add_monitor_screen(virtual: bool = false) -> bool:
 		return main.settings.host.virtual_display_installed and virtual_count < main.settings.host.virtual_display_max_count and monitor_size_available(true, Vector2i(320,240) if main.layout.virtual_modes_supported else Vector2i.ZERO)
 	return physical < controller._real_monitor_count() and monitor_size_available(false)
 
-func add_monitor_screen(virtual: bool = false, size: Vector2i = Vector2i.ZERO) -> bool:
+func add_monitor_screen(virtual: bool = false, size: Vector2i = Vector2i.ZERO, monitor_id: StringName = &"") -> bool:
 	if not can_add_monitor_screen(virtual): return false
 	if not valid_virtual_size(size) or (size != Vector2i.ZERO and (not virtual or not main.layout.virtual_modes_supported)): return false
 	if not await _admit_monitor_addition(virtual, size, &"", main.primary_screen): return false
@@ -407,7 +409,15 @@ func add_monitor_screen(virtual: bool = false, size: Vector2i = Vector2i.ZERO) -
 		virtual_sizes.resize(main._staged_virtual_count + 1)
 		virtual_sizes[main._staged_virtual_count] = size
 		controller.stage_virtual_count(main._staged_virtual_count + 1)
-	else: controller.stage_monitor_count(main._staged_physical_count + 1)
+	else:
+		controller.stage_monitor_count(main._staged_physical_count + 1)
+		if monitor_id != &"":
+			# That monitor, beside the ones already shown.
+			var physical: Array[StringName] = []
+			for monitor in main.layout.enabled_monitors():
+				if not monitor.hint.get("virtual", false): physical.append(monitor.id)
+			if not physical.has(monitor_id): physical.append(monitor_id)
+			controller._monitor_selection_override = physical
 	controller.apply_staged_monitor_config(true)
 	_adding_monitor = false
 	changed.emit()
@@ -882,6 +892,7 @@ func add_browser_screen() -> bool:
 			screen.grid_mode = main.primary_screen.grid_mode
 			screen.global_transform = main.grid_cell_transform(cell.x, cell.y,
 				main.primary_screen.grid_pos.x, main.primary_screen.grid_pos.y)
+			if main.get("placement_grid") != null: main.placement_grid.adhere(screen)
 		else:
 			# add_screen already placed it beside/above its neighbours. Keep
 			# that free placement instead of recording an invalid grid cell.
@@ -1062,12 +1073,51 @@ func _drop_cell(point: Vector3, exclude: VRScreen = null) -> Vector2i:
 	if anchor == Vector2i(-1,-1): anchor = Vector2i(3,1)
 	return main.nearest_free_grid_cell(point, occupied, anchor.x, anchor.y)
 
-func _place_dropped_screen(screen: VRScreen, cell: Vector2i) -> void:
+## Where a screen dropped at `point` goes: {"centre": surface coordinates}
+## on a cylinder or sphere grid (the pointer ray from `from` laid on the
+## surface's fine lattice), {"cell": slot} on the Original grid; empty if none.
+func _drop_spot(point: Vector3, from: Vector3, size: Vector2, exclude: VRScreen = null) -> Dictionary:
+	var grid = main.get("placement_grid")
+	if grid != null and ScreenPlacementGrid.single_surface(grid.shape()):
+		if from == Vector3.INF:
+			from = main.xr_camera.global_position if is_instance_valid(main.xr_camera) else Vector3.ZERO
+		var centre = grid.drop_centre(from, point, size, exclude)
+		return {} if centre == null else {"centre": centre}
+	var cell := _drop_cell(point, exclude)
+	return {} if cell == Vector2i(-1, -1) else {"cell": cell}
+
+## Where dropping this tab at `point` (in empty space) would put its screen,
+## as ScreenPlacementController.preview(); empty if it can't be dropped there.
+func drop_preview(source: VRScreen, id: StringName, point: Vector3, from: Vector3 = Vector3.INF) -> Dictionary:
+	if main.primary_screen == null or not can_move_content_tab(source, id, null): return {}
+	var single := source.content_tabs.tabs.size() == 1
+	var model: VRScreen = source if single else main.primary_screen
+	var spot := _drop_spot(point, from, model.mesh_size, source if single else null)
+	if spot.is_empty(): return {}
+	if spot.has("centre"): return main.placement_grid.surface_preview(spot.centre, model.mesh_size)
 	var anchor: Vector2i = main.primary_screen.grid_pos
-	if anchor == Vector2i(-1,-1): anchor = Vector2i(3,1)
-	screen.global_transform = main.grid_cell_transform(cell.x, cell.y, anchor.x, anchor.y)
-	screen.grid_mode = true
-	screen.grid_pos = cell
+	if anchor == Vector2i(-1, -1): anchor = Vector2i(3, 1)
+	return main.placement_grid.preview(main.grid_cell_transform(spot.cell.x, spot.cell.y, anchor.x, anchor.y), model.mesh_size, model.curvature)
+
+## The label of a content tab, as its tab strip shows it.
+func content_tab_title(source: VRScreen, id: StringName) -> String:
+	var tab := source.content_tabs.find_tab(id) if is_instance_valid(source) else null
+	if tab == null: return ""
+	if not tab.title.is_empty(): return tab.title
+	return "Desktop" if tab.kind == ScreenContentTab.STREAM else "Browser"
+
+func _place_dropped_screen(screen: VRScreen, spot: Dictionary) -> void:
+	if spot.has("centre"):
+		main.placement_grid.place_dropped(screen, spot.centre)
+		screen.grid_mode = true
+	else:
+		var cell: Vector2i = spot.cell
+		var anchor: Vector2i = main.primary_screen.grid_pos
+		if anchor == Vector2i(-1,-1): anchor = Vector2i(3,1)
+		screen.global_transform = main.grid_cell_transform(cell.x, cell.y, anchor.x, anchor.y)
+		if main.get("placement_grid") != null: main.placement_grid.adhere(screen)
+		screen.grid_mode = true
+		screen.grid_pos = cell
 	# The controls layer (tab strip, toolbar) is placed from the cylinder centre cached by
 	# update_cylinder_params(), not from the screen's transform: without this it stayed where
 	# the screen was created until the screen was next grabbed.
@@ -1086,16 +1136,17 @@ func _retire_transferred_screen(screen: VRScreen) -> void:
 	_menus.erase(screen.get_instance_id())
 	main.remove_screen(screen.monitor_id, screen)
 
-func move_content_tab(source: VRScreen, id: StringName, destination: VRScreen, point: Vector3) -> bool:
+func move_content_tab(source: VRScreen, id: StringName, destination: VRScreen, point: Vector3, from: Vector3 = Vector3.INF) -> bool:
 	if destination == source: return false
 	if not can_move_content_tab(source,id,destination): return false
-	var cell := Vector2i(-1,-1)
+	var spot := {}
 	var created := destination == null
 	if created:
-		cell = _drop_cell(point,source if source.content_tabs.tabs.size() == 1 else null)
-		if cell == Vector2i(-1,-1): return false
-		if source.content_tabs.tabs.size() == 1:
-			_place_dropped_screen(source,cell)
+		var single := source.content_tabs.tabs.size() == 1
+		spot = _drop_spot(point, from, (source if single else main.primary_screen).mesh_size, source if single else null)
+		if spot.is_empty(): return false
+		if single:
+			_place_dropped_screen(source,spot)
 			main.state_manager.save_state()
 			return true
 	moving_tab = true
@@ -1122,7 +1173,7 @@ func move_content_tab(source: VRScreen, id: StringName, destination: VRScreen, p
 		return false
 	if created:
 		destination = main.add_screen(StringName("detached:%d" % Time.get_ticks_msec()))
-		if destination != null: _place_dropped_screen(destination,cell)
+		if destination != null: _place_dropped_screen(destination,spot)
 	if not is_instance_valid(destination) or not main.screens.has(destination):
 		switching_tab = false
 		moving_tab = false
@@ -1217,3 +1268,121 @@ func move_content_tab(source: VRScreen, id: StringName, destination: VRScreen, p
 	main.state_manager.save_state()
 	changed.emit()
 	return true
+
+
+# ---------------------------------------------------------------------------
+# Adding a screen from the + Add menu: the yellow outline follows the pointer
+# at the new screen's size (the primary's height, the new screen's aspect),
+# and a click places it there. Monitors only appear once the host session
+# restarts, so their spot is kept until their screen arrives.
+# ---------------------------------------------------------------------------
+
+## The screen being placed: {"kind": &"browser"|&"virtual"|&"physical",
+## "size": Vector2i pixels (virtual: ZERO matches the host), "id": monitor id
+## (physical), "title"}. Empty when nothing is being placed.
+var placement := {}
+var _pending_placements: Array = []
+
+## The physical monitors that can be added as a screen (screen == null) or
+## as a tab of `screen`: [{"id", "label", "enabled"}], by desktop position.
+func physical_choices(screen: VRScreen = null) -> Array:
+	var result: Array = []
+	if main.layout == null: return result
+	var shown := {}
+	for monitor in main.layout.enabled_monitors(): shown[monitor.id] = true
+	var monitors: Array = main.layout.monitors.duplicate()
+	monitors.sort_custom(func(a, b): return a.desktop_rect.position.x < b.desktop_rect.position.x)
+	for monitor in monitors:
+		if not monitor.capturable or monitor.hint.get("virtual", false): continue
+		if monitor_tab_owner(monitor.id) != null: continue
+		if screen == null and shown.has(monitor.id): continue
+		var enabled: bool = can_add_monitor_tab(screen, false) if screen != null else can_add_monitor_screen(false)
+		result.append({"id": monitor.id, "label": monitor_tab_title(monitor), "enabled": enabled})
+	return result
+
+func placement_active() -> bool:
+	return not placement.is_empty()
+
+func begin_screen_placement(request: Dictionary) -> void:
+	placement = request.duplicate()
+	if main.get("xr_interaction") != null: main.xr_interaction.cancel_transient_interactions("screen placement")
+	changed.emit()
+
+func cancel_screen_placement() -> void:
+	placement = {}
+	changed.emit()
+
+## The new screen's pixel aspect.
+func _placement_pixels(request: Dictionary) -> Vector2i:
+	var pixels: Vector2i = request.get("size", Vector2i.ZERO)
+	match request.get("kind", &""):
+		&"browser":
+			pixels = preload("res://src/browser_prototype.gd").RESOLUTIONS[clampi(main.settings.browser_resolution, 0, 1)]
+		&"physical":
+			for monitor in main.layout.monitors:
+				if monitor.id == request.get("id", &""): pixels = monitor.desktop_rect.size
+	if pixels.x <= 0 or pixels.y <= 0: pixels = host_monitor_size()
+	return pixels
+
+## The size a "Default" virtual monitor gets: the host's primary monitor.
+func host_monitor_size() -> Vector2i:
+	var host = main.layout.get_primary() if main.layout != null else null
+	return host.frame_rect.size if host != null and host.frame_rect.size.x > 0 and host.frame_rect.size.y > 0 else Vector2i(1920, 1080)
+
+## The new screen's size in metres: the primary's height at its aspect.
+func placement_size(request: Dictionary = placement) -> Vector2:
+	var pixels := _placement_pixels(request)
+	var height: float = main.primary_screen.mesh_size.y if main.primary_screen != null else 1.26
+	return Vector2(height * pixels.x / float(pixels.y), height)
+
+## The outline for placing the screen at the pointer, as drop_preview().
+func placement_preview(point: Vector3, from: Vector3) -> Dictionary:
+	if placement.is_empty() or main.primary_screen == null: return {}
+	var size := placement_size()
+	var spot := _drop_spot(point, from, size)
+	if spot.is_empty(): return {}
+	if spot.has("centre"): return main.placement_grid.surface_preview(spot.centre, size)
+	var anchor: Vector2i = main.primary_screen.grid_pos
+	if anchor == Vector2i(-1, -1): anchor = Vector2i(3, 1)
+	return main.placement_grid.preview(main.grid_cell_transform(spot.cell.x, spot.cell.y, anchor.x, anchor.y), size, main.primary_screen.curvature)
+
+## Place the screen at the pointer: a browser now, a monitor when it arrives.
+func commit_screen_placement(point: Vector3, from: Vector3) -> bool:
+	if placement.is_empty() or main.primary_screen == null: return false
+	var request := placement
+	var size := placement_size(request)
+	var spot := _drop_spot(point, from, size)
+	if spot.is_empty(): return false
+	placement = {}
+	var entry := {"kind": request.kind, "id": request.get("id", &""), "spot": spot,
+		"size": size, "pixels": _placement_pixels(request)}
+	match request.kind:
+		&"browser":
+			var before: Array = main.screens.duplicate()
+			if not add_browser_screen(): return false
+			for screen in main.screens:
+				if not before.has(screen): _place_new_screen(screen, entry)
+		&"virtual":
+			_pending_placements.append(entry)
+			if not await add_monitor_screen(true, request.get("size", Vector2i.ZERO)): _pending_placements.erase(entry)
+		&"physical":
+			_pending_placements.append(entry)
+			if not await add_monitor_screen(false, Vector2i.ZERO, request.get("id", &"")): _pending_placements.erase(entry)
+	changed.emit()
+	return true
+
+## A monitor screen just appeared: put it where its placement was clicked.
+func claim_pending_placement(screen: VRScreen, monitor) -> void:
+	var virtual: bool = monitor.hint.get("virtual", false)
+	for entry in _pending_placements:
+		if (virtual and entry.kind == &"virtual") or (not virtual and entry.kind == &"physical" and entry.id == monitor.id):
+			_pending_placements.erase(entry)
+			_place_new_screen(screen, entry)
+			return
+
+func _place_new_screen(screen: VRScreen, entry: Dictionary) -> void:
+	var pixels: Vector2i = entry.pixels
+	screen.mesh_size = entry.size
+	screen.resize_to_aspect(pixels.x, pixels.y)
+	_place_dropped_screen(screen, entry.spot)
+	main.state_manager.save_state()

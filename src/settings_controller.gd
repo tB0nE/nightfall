@@ -2355,6 +2355,7 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# positioning the new one "next to" a screen that's about to disappear.
 	var old_primary_being_replaced: VRScreen = main.primary_screen if (main.primary_screen and not wanted_ids.has(main.primary_screen.monitor_id)) else null
 	var new_primary: VRScreen = null
+	var created: Array = [] # [screen, monitor] made by this layout.
 	# add_screen() positions each new VRScreen relative to whichever screens
 	# already exist, purely by insertion order (grows left/right of primary).
 	# The manifest's monitor array order is the host's own RandR enumeration
@@ -2385,7 +2386,6 @@ func apply_screen_layout(new_layout: ScreenLayout):
 				main.remove_screen(old_primary_being_replaced.monitor_id)
 				old_primary_being_replaced = null
 				break
-	var created: Array = []
 	for m in ordered_monitors:
 		var existing: VRScreen = null
 		for s in main.screens:
@@ -2405,9 +2405,8 @@ func apply_screen_layout(new_layout: ScreenLayout):
 		var s = existing if existing else main.add_screen(m.id, m.desktop_rect.position.x, m.is_primary)
 		if s == null:
 			continue
-		if existing == null and not m.is_primary:
-			created.append(s)
 		s.apply_monitor(m, new_layout.frame_size)
+		if existing == null and not m.is_primary: created.append([s, m])
 		if m.is_primary:
 			new_primary = s
 	if old_primary_being_replaced and new_primary and new_primary != old_primary_being_replaced and not main.screen_sources.is_browser_screen(old_primary_being_replaced):
@@ -2448,14 +2447,16 @@ func apply_screen_layout(new_layout: ScreenLayout):
 	# resize_screen_to_aspect() now calls update_cylinder_params() itself
 	# (2026-08-20) - no need to pair it here anymore.
 	main.screen_manager.resize_screen_to_aspect(new_layout.frame_size.x, new_layout.frame_size.y)
-	# Screens made again (after the welcome screen, a reconnect or a count change) go back to
-	# where they were last time on this host; anything new keeps add_screen()'s placement.
-	if main.get("state_manager") != null:
-		for s in created:
-			if is_instance_valid(s) and s in main.screens:
-				main.state_manager.restore_placement(s)
-		if main.comp:
-			main.comp.update_cylinder_params()
+	# A monitor added from a screen's + Add menu goes where it was placed.
+	if main.screen_sources.has_method("claim_pending_placement"):
+		for pair in created:
+			if is_instance_valid(pair[0]) and main.screens.has(pair[0]): main.screen_sources.claim_pending_placement(pair[0], pair[1])
+	# Newly created screens use default positions for now. Reusing a closed
+	# monitor ID must not resurrect an inaccessible manually placed screen.
+	# Existing screen nodes keep their placement; explicit host-state loading
+	# remains responsible for restoring a saved workspace.
+	if main.comp and main.comp.available:
+		main.comp.update_cylinder_params()
 	if main.comp and main.comp.in_use and main.is_streaming:
 		main.comp.invalidate_yuv_cache()
 		main.comp.bind_yuv_textures()
@@ -2668,6 +2669,7 @@ func _place_secondaries_default(secondaries: Array):
 	primary.grid_mode = true
 	var occupied: Array = [primary.grid_pos]
 	for s in secondaries:
+		if s.has_meta(&"placement_grid_owned"): continue
 		var cand = main.nearest_free_grid_cell(s.global_position, occupied, primary.grid_pos.x, primary.grid_pos.y)
 		if cand.x < 0:
 			continue
@@ -2675,6 +2677,7 @@ func _place_secondaries_default(secondaries: Array):
 		s.grid_mode = true
 		s.grid_pos = cand
 		s.global_transform = main.grid_cell_transform(cand.x, cand.y, primary.grid_pos.x, primary.grid_pos.y)
+		if main.get("placement_grid") != null: main.placement_grid.adhere(s)
 
 # Applies the selected preset's per-screen grid/free position onto the
 # VRScreens apply_screen_layout() just created/kept, in ordinal order. Falls
@@ -2707,6 +2710,7 @@ func _apply_preset_positions_to_screens():
 				continue
 			if is_grid:
 				s.global_transform = main.grid_cell_transform(s.grid_pos.x, s.grid_pos.y, primary.grid_pos.x, primary.grid_pos.y)
+				if main.get("placement_grid") != null: main.placement_grid.adhere(s)
 			else:
 				var fp: Array = data.get("free_pos", [s.position.x, s.position.y, s.position.z])
 				var fr: Array = data.get("free_rot", [s.rotation.x, s.rotation.y, s.rotation.z])
@@ -2744,6 +2748,7 @@ func reflow_grid_screens():
 		if s == primary or not s.grid_mode or s.grid_pos == Vector2i(-1, -1):
 			continue
 		s.global_transform = main.grid_cell_transform(s.grid_pos.x, s.grid_pos.y, primary.grid_pos.x, primary.grid_pos.y)
+		if main.get("placement_grid") != null: main.placement_grid.adhere(s)
 
 # The only place that actually calls apply_screen_layout() from the new
 # Monitors tab. Cycling the Monitors/Virtual dropdowns or picking a preset
@@ -2994,9 +2999,18 @@ func remove_selected_preset():
 
 func toggle_grid_mode():
 	main.settings.grid_mode_enabled = not main.settings.grid_mode_enabled
+	main.placement_grid.reshape()
 	main.state_manager.save_state()
 	if main._ui_grid_mode_btn:
 		main.ui_controller.update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
+
+func toggle_screen_lock() -> void:
+	main.settings.secondary_screens_locked = not main.settings.secondary_screens_locked
+	if main.screen_shortcuts:
+		main.screen_shortcuts.revealed_screen = null
+	main.state_manager.save_state()
+	if main.ui_controller and main.ui_controller._lock_btn:
+		main.ui_controller.update_option_btn(main.ui_controller._lock_btn, "On" if main.settings.secondary_screens_locked else "Off")
 
 func cycle_screen_crop() -> void:
 	main.screen_image_options.cycle_crop()

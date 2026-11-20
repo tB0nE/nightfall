@@ -47,6 +47,8 @@ class Owner extends Node3D:
 		return screen
 class Sources extends ScreenSources:
 	var positions := 0
+	var placed: Array = []
+	func _place_new_screen(screen, entry): placed.append([screen, entry])
 	func _wait_for_primary_drain(): pass
 	func browser_for_screen(_screen): return null
 	func _bind_monitor_geometry(_screen): pass
@@ -60,10 +62,10 @@ class Sources extends ScreenSources:
 		main.primary_screen = screen
 		return true
 	func _drop_cell(_point, _exclude = null): return Vector2i(0,1)
-	func _place_dropped_screen(screen, cell):
+	func _place_dropped_screen(screen, spot):
 		positions += 1
 		screen.grid_mode = true
-		screen.grid_pos = cell
+		screen.grid_pos = spot.cell
 
 func _init(): call_deferred("run")
 func run():
@@ -113,11 +115,41 @@ func run():
 	# refreshed as it moves, not on its next grab.
 	var placer := ScreenSources.new(owner,"Android")
 	var updates := owner.comp.updates
-	placer._place_dropped_screen(detached,Vector2i(1,0))
+	placer._place_dropped_screen(detached,{"cell": Vector2i(1,0)})
 	assert(detached.transform.origin == Vector3(1,0,-2) and detached.grid_pos == Vector2i(1,0))
 	assert(owner.comp.updates == updates + 1, "Placing a dropped screen must refresh its layer geometry")
 	while owner.screens.size() < 4: owner.add_screen(&"unused")
 	assert(not sources.can_move_content_tab(target,target.content_tabs.selected_id), "A fifth visible screen is forbidden")
+	# + Add > screen: the outline is the primary's height at the new screen's aspect.
+	owner.primary_screen = target
+	owner.primary_screen.mesh_size = Vector2(2.24, 1.26)
+	var wide: Vector2 = sources.placement_size({"kind": &"virtual", "size": Vector2i(2560, 1080)})
+	assert(is_equal_approx(wide.y, 1.26) and is_equal_approx(wide.x, 1.26 * 2560.0 / 1080.0))
+	var square: Vector2 = sources.placement_size({"kind": &"virtual", "size": Vector2i(1600, 1200)})
+	assert(is_equal_approx(square.y, 1.26) and is_equal_approx(square.x, 1.68))
+	var host_sized: Vector2 = sources.placement_size({"kind": &"virtual", "size": Vector2i.ZERO})
+	assert(is_equal_approx(host_sized.x / host_sized.y, 2560.0 / 1440.0), "Default matches the host monitor")
+	sources.begin_screen_placement({"kind": &"physical", "id": &"DP-2", "title": "Right"})
+	assert(sources.placement_active())
+	sources.cancel_screen_placement()
+	assert(not sources.placement_active())
+	# A monitor arriving after the host restart takes the spot clicked for it.
+	var wanted := {"kind": &"physical", "id": &"DP-2", "spot": {"cell": Vector2i(1, 0)}, "size": wide, "pixels": Vector2i(2560, 1080)}
+	var virtual_entry := {"kind": &"virtual", "id": &"", "spot": {"cell": Vector2i(2, 0)}, "size": square, "pixels": Vector2i(1600, 1200)}
+	sources._pending_placements = [wanted, virtual_entry]
+	var other := ScreenLayout.MonitorSpec.new()
+	other.id = &"DP-3"
+	sources.claim_pending_placement(target, other)
+	assert(sources.placed.is_empty(), "Another physical monitor keeps the default spot")
+	var arriving := ScreenLayout.MonitorSpec.new()
+	arriving.id = &"DP-2"
+	sources.claim_pending_placement(target, arriving)
+	assert(sources.placed.size() == 1 and sources.placed[0][1] == wanted)
+	var virtual_monitor := ScreenLayout.MonitorSpec.new()
+	virtual_monitor.id = &"v1"
+	virtual_monitor.hint = {"virtual": true}
+	sources.claim_pending_placement(target, virtual_monitor)
+	assert(sources.placed.size() == 2 and sources.placed[1][1] == virtual_entry and sources._pending_placements.is_empty())
 	for screen in owner.screens: screen.free()
 	owner.free()
 	print("All tab drag gesture, monitor transfer and detachment tests passed")

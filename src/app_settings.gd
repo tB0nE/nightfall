@@ -80,6 +80,14 @@ var passthrough_fade_pct: int = DEFAULT_PASSTHROUGH_FADE_PCT
 var tracking_mode: int = DEFAULT_TRACKING_MODE
 var codec_preference: int = DEFAULT_CODEC_PREFERENCE
 var grid_mode_enabled: bool = DEFAULT_GRID_MODE_ENABLED
+var placement_grid_shape: int = 1
+var placement_grid_spacing: float = 0.1
+## Cylinder/sphere grids: 0 centres the surface on the viewer, 100 bends it
+## tightest (ScreenPlacementController.curve_factor()).
+var placement_grid_curve: int = 0
+## Lock Screens: secondary screens hide their grab bar, shortcuts and corners
+## (and stop catching the pointer there), so only the primary moves the layout.
+var secondary_screens_locked: bool = false
 var performance_overlay_enabled: bool = DEFAULT_PERFORMANCE_OVERLAY_ENABLED
 var ai_3d_gpu_priority: int = DEFAULT_AI_3D_GPU_PRIORITY
 var auto_reconnect_enabled: bool = DEFAULT_AUTO_RECONNECT_ENABLED
@@ -130,6 +138,10 @@ func reset_general() -> void:
 	extended_bitrate_limits = false
 	codec_preference = DEFAULT_CODEC_PREFERENCE
 	grid_mode_enabled = DEFAULT_GRID_MODE_ENABLED
+	placement_grid_shape = 1
+	placement_grid_spacing = 0.1
+	placement_grid_curve = 0
+	secondary_screens_locked = false
 	performance_overlay_enabled = DEFAULT_PERFORMANCE_OVERLAY_ENABLED
 	ai_3d_gpu_priority = DEFAULT_AI_3D_GPU_PRIORITY
 	auto_reconnect_enabled = DEFAULT_AUTO_RECONNECT_ENABLED

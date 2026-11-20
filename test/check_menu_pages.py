@@ -34,8 +34,7 @@ with tempfile.TemporaryDirectory(prefix='nf-menu-pages-') as td:
   assert all(r['rects_and_toolbar'][:2] == reports[0]['rects_and_toolbar'][:2] for r in reports[:4]), reports
   assert all(r['rects_and_toolbar'][2:] == [True,True] for r in reports), reports
   assert ev('_ui_disconnect_btn.visible and _ui_disconnect_btn.disabled'), 'PCVR keeps a disabled Disconnect when no desktop stream exists'
-  assert ev('ui_controller._browser_count_btn.disabled'), 'Browser count is read-only'
-  assert ev('ui_controller._browser_count_btn.size == _ui_res_btn.size'), 'Screens uses standard option dimensions'
+  assert ev('ui_controller._lock_btn.size == _ui_res_btn.size'), 'Screens uses standard option dimensions'
   ev('ui_controller.set("_vr_library_open", true)')
   ev('ui_controller.switch_tab(7)')
   cards=[{'key':f'steam:{i}','name':f'Test VR app {i}','source':'Steam','vr':True,'ready':True} for i in range(12)]

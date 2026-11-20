@@ -123,7 +123,7 @@ toolchain once from the project root:
 tools/build_support/bootstrap_native_xr.sh
 ```
 
-The bootstrap clones immutable Godot and godot-cpp commits, applies all five
+The bootstrap clones immutable Godot and godot-cpp commits, applies all six
 patches in order, builds a patched editor, generates matching OpenXR-aware C++
 bindings, and builds both Android runtime variants. The output persists in the
 ignored `.build-cache/native-xr/` directory instead of `/tmp`, so a reboot or
@@ -179,6 +179,10 @@ commit:
 - `godot-4.7-projectionless.patch`
 - `godot-4.7-projectionless-lifecycle.patch`
 - `godot-4.7-compositor-filter.patch`
+- `godot-4.7-gles3-render-target-override.patch`
+- `godot-4.7-equirect-bands.patch`: lets an equirect layer's band sit wholly
+  above or below the sphere's equator, as OpenXR allows. Sphere grid screens
+  need it.
 
 `build.sh` refuses to package an APK if the expected patched runtime is absent;
 it no longer silently falls back to a stock runtime. An externally managed

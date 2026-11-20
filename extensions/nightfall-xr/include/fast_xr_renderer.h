@@ -78,6 +78,8 @@ public:
 	bool is_started() const;
 	bool has_rendered_frame() const;
 	bool supports_cylinder() const;
+	bool supports_equirect() const;
+	static constexpr int SPHERE_CURVATURE = 3;
 	bool supports_compositor_sharpening() const;
 	// True when one eye's composition layer hasn't actually been re-queried
 	// by Godot for several consecutive frames while the other eye keeps
@@ -96,6 +98,8 @@ public:
 	// 0=None, 1=normal sharpening, 2=quality sharpening. This is applied by
 	// the OpenXR runtime after composition, with no video-shader sampling cost.
 	void set_compositor_sharpening(int p_mode);
+	// Curvature 3 (sphere grid): latitude band, radians, of the primary layer.
+	void set_sphere_band(float p_upper, float p_lower);
 	// Optional AI-depth synchronization. A bounded three-texture ring retains
 	// the current and two preceding decoder frames only while this is enabled.
 	void set_depth_sync(bool p_enabled, int p_delay_frames);
@@ -401,6 +405,7 @@ private:
 
 	bool srgb_write_control = false;
 	bool cylinder_supported = false;
+	bool equirect_supported = false;
 	bool compositor_sharpening_supported = false;
 	bool ever_rendered = false;
 	bool registered_as_layer_provider = false;
@@ -481,6 +486,7 @@ private:
 	int pending_curvature = 0;
 	float pending_radius = 4.0f;
 	float pending_central_angle = 0.75f;
+	float pending_upper = 0.0f, pending_lower = 0.0f;
 	int pending_sort_order = 1;
 	bool pending_bezel_enabled = true;
 	int pending_compositor_sharpening = 0;
@@ -517,6 +523,10 @@ private:
 	// the returned pointer back out after this call returns.
 	XrCompositionLayerQuad quad_layers[2]{};
 	XrCompositionLayerCylinderKHR cylinder_layers[2]{};
+	XrCompositionLayerEquirect2KHR equirect_layers[2]{};
+	void fill_sphere_band(XrCompositionLayerEquirect2KHR *p_band, const void *p_next, XrEyeVisibility p_eye,
+			const XrSwapchainSubImage &p_sub_image, XrSpace p_space, const XrPosef &p_pose, float p_radius,
+			float p_horizontal, float p_upper, float p_lower, float p_grow_y);
 	XrCompositionLayerSettingsFB compositor_settings[2]{};
 
 	// Resolved via get_openxr_api()->get_instance_proc_addr(), matching how
@@ -568,10 +578,12 @@ private:
 		float width = 1.0f, height = 1.0f;
 		int curvature = 0;
 		float radius = 1.0f, central_angle = 0.5f;
+		float upper = 0.0f, lower = 0.0f;
 		int sort_order = 1;
 		bool rendered = false;
 		XrCompositionLayerQuad quad{};
 		XrCompositionLayerCylinderKHR cylinder{};
+		XrCompositionLayerEquirect2KHR equirect{};
 		XrCompositionLayerSettingsFB settings{};
 	};
 	std::mutex secondary_mutex;

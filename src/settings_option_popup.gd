@@ -88,7 +88,8 @@ func open_slider(title: String, value: float, minimum: float, maximum: float,
 	box.add_child(actions)
 	if not reset_label.is_empty() and reset.is_valid():
 		_add_action(actions, reset_label, func(): _finish(reset))
-	_add_action(actions, "Apply", func(): _finish(func(): commit.call(_slider.value)))
+	# A slider that previews applies as it moves: its button only closes it.
+	_add_action(actions, "Done" if preview.is_valid() else "Apply", func(): _finish(func(): commit.call(_slider.value)))
 	show()
 	move_to_front()
 	_place_panel.call_deferred(panel)

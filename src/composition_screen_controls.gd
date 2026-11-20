@@ -55,11 +55,11 @@ func update(screens: Array, active: bool, grab_bars_enabled: bool,
 			continue
 		if _scene_root and _scene_root.comp:
 			_scene_root.comp.refresh_browser_screen(screen)
-		var pointed: bool = screen == revealed_screen or screen == pointed_screen
+		var pointed: bool = (screen == revealed_screen or screen == pointed_screen) and not screen.controls_locked()
 		_update_corners(
 			screen,
 			active and ((pointed and (corners_enabled or grab_bars_enabled)) or screen == browser_screen),
-			screen == revealed_screen and corners_enabled,
+			screen == revealed_screen and corners_enabled and pointed,
 			grab_bars_enabled and pointed,
 			screen == browser_screen)
 
@@ -108,7 +108,7 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 		_set_layer_active(layer, false)
 		return
 	var corner_size := screen.mesh_size.x * CORNER_SIZE_RATIO
-	var grab_margin := -screen.grab_bar.position.y - screen.mesh_size.y * 0.5 \
+	var grab_margin := -screen.grab_bar_arc_y() - screen.mesh_size.y * 0.5 \
 		+ screen.mesh_size.x * ScreenShortcutBar.STRIP_HEIGHT_RATIO * 0.5
 	var margin := maxf(corner_size, grab_margin)
 	if menu: margin = maxf(margin, screen.mesh_size.x * ScreenTabStrip.TOP_MARGIN_RATIO)
@@ -119,6 +119,15 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 	layer.set_aspect_ratio(surface_size.x / surface_size.y)
 	layer.global_position = screen._comp_cyl_center
 	layer.global_rotation = screen.global_rotation
+	# On the sphere grid the controls are a band of the same sphere, so they warp with the screen.
+	var band_frame := Transform3D.IDENTITY
+	var band_half := 0.0
+	if screen.on_sphere():
+		band_frame = ScreenPlacementGrid.sphere_frame(screen.global_transform, screen.surface_lat, screen.sphere_r())
+		band_half = surface_size.y * 0.5 * screen.lat_scale()
+	SphereLayers.sync(layer, screen.on_sphere(), band_frame, screen.sphere_r() + 0.003,
+		surface_size.x / maxf(screen.placement_radius, 0.001), screen.band_mid() + band_half,
+		screen.band_mid() - band_half, 998)
 	var viewport := screen.comp_corner_viewport
 	var viewport_height := maxi(1, roundi(CORNER_ATLAS_WIDTH * surface_size.y / surface_size.x))
 	var wanted_size := Vector2i(CORNER_ATLAS_WIDTH, viewport_height)
@@ -126,7 +135,7 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 		viewport.size = wanted_size
 	var strip := viewport.get_node_or_null("ShortcutStrip") as Control
 	if strip:
-		var rect := grab_strip_rect(screen.mesh_size, screen.grab_bar.position.y, surface_size, margin)
+		var rect := grab_strip_rect(screen.mesh_size, screen.grab_bar_arc_y(), surface_size, margin)
 		strip.position = rect.position
 		strip.scale = rect.size / Vector2(ScreenShortcutBar.COMP_VIEWPORT_SIZE)
 		strip.visible = grab_visible
@@ -143,6 +152,8 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 		rect.visible = artwork_visible
 	if menu:
 		menu.update(screen, surface_size, margin, browser_visible)
+	if _scene_root and _scene_root.get("placement_grid") != null:
+		_scene_root.placement_grid.update_composition_guide(screen, surface_size)
 	_set_layer_active(layer, active)
 
 func _make_viewport(viewport_name: String, viewport_size: Vector2i) -> SubViewport:
@@ -172,7 +183,7 @@ func _set_layer_active(layer: Node3D, active: bool) -> void:
 		return
 	if layer.visible != active:
 		layer.visible = active
-	var viewport = layer.get_layer_viewport()
+	var viewport = SphereLayers.viewport_of(layer) if layer is OpenXRCompositionLayer else layer.get_layer_viewport()
 	if viewport:
 		var wanted := SubViewport.UPDATE_ALWAYS if active else SubViewport.UPDATE_DISABLED
 		if viewport.render_target_update_mode != wanted:
