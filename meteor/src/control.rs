@@ -4,7 +4,7 @@
 //! here rather than through files.
 //!
 //! A Unix socket that only this user can open (mode 0600, in the user's
-//! runtime folder), never the network: nothing on the LAN can change
+//! runtime folder; on macOS the per-user temporary folder), never the network: nothing on the LAN can change
 //! settings. One JSON request per connection, one JSON answer.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -20,7 +20,10 @@ static PATH: OnceLock<PathBuf> = OnceLock::new();
 
 /// The socket of the Meteor for this host port.
 pub fn socket_path(base: u16) -> PathBuf {
-    let folder = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(crate::config::data_dir);
+    // macOS has no XDG_RUNTIME_DIR. $TMPDIR is per user (0700), and short enough for a
+    // socket path (104 bytes there), which Application Support may not be.
+    let runtime = if cfg!(target_os = "macos") { "TMPDIR" } else { "XDG_RUNTIME_DIR" };
+    let folder = std::env::var_os(runtime).map(PathBuf::from).unwrap_or_else(crate::config::data_dir);
     folder.join(format!("nightfall-meteor-{base}.sock"))
 }
 

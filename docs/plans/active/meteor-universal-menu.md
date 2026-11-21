@@ -64,5 +64,18 @@ PC ↔ both only mutes or unmutes.
   layout read over D-Bus, audio click saved and announced, depth window and
   Setup screenshots, Quit.
 - Android native library rebuilt for `set_muted`.
+- macOS (2026-11-21, `codex/meteor-universal-menu-macos`): `tray_macos.rs`
+  draws the shared menu with NSMenu (Choice: a submenu of ticked options and
+  its note; Options: ticked items inline). The menu leaves out what the Mac
+  doesn't have: PCVR (no XR runtime; the control connection serves only the
+  host background), Host cursor size, and Set as default input. The host's
+  input line reports Screen Recording and Accessibility, with "Allow in
+  Setup…". The control socket lives in `$TMPDIR` (no XDG_RUNTIME_DIR; a socket
+  path must fit 104 bytes). The depth window uses egui's bundled fonts. Setup
+  (setup_window_macos.rs) gains the Vulkan model installs and the Support row;
+  the app bundle now ships RELEASE.md in Contents/share/doc/nightfall-meteor.
+  Checked on an M1: menu read through Accessibility, audio choice clicked,
+  saved and announced, depth window and Setup opened from the menu, the
+  control socket answers (mode 0600). Rust tests (190 on macOS) pass.
 - Next: headset test of the audio choice; then Windows (shared menu drawn
-  with Win32, egui Setup window, named pipe) and macOS.
+  with Win32, egui Setup window, named pipe).

@@ -58,6 +58,9 @@ if [[ -n "$VULKAN_PROCESSING" ]]; then
 else
   echo "warning: no libmeteor_vda_vulkan.dylib; depth processing will use the CPU" >&2
 fi
+# Release information & licenses (Setup › Support), where Linux keeps it beside bin/.
+mkdir -p "$APP/Contents/share/doc/nightfall-meteor"
+cp "$METEOR/RELEASE.md" "$APP/Contents/share/doc/nightfall-meteor/RELEASE.md"
 for notice in "$METEOR/target/ncnn/ncnn-LICENSE.txt" "$METEOR/target/ffmpeg/FFmpeg-COPYING.LGPLv2.1"; do
   [[ -f "$notice" ]] && cp "$notice" "$APP/Contents/lib/"
 done

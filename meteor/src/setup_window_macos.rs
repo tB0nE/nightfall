@@ -1,13 +1,14 @@
 //! The Setup window (macOS): the permissions streaming needs, the microphone's BlackHole driver
 //! and Start at login in one place, with Install All, as on Linux (setup_window.rs).
 //!
-//! Its own process (`nightfall-meteor --setup`): AppKit's menu bar already holds Meteor's main
+//! Its own process (`nightfall-meteor --setup [control socket]`): AppKit's menu bar already holds Meteor's main
 //! thread, which a window toolkit also wants. The menu opens it; Meteor opens it by itself when
 //! a permission is missing or on the first run, and restarts when it exits with RESTART_CODE.
 //!
 //! macOS reports a new Screen Recording grant only to processes started after it, so the
 //! window checks permissions in a fresh `--setup-check` process every couple of seconds.
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,7 +41,13 @@ pub fn open() {
     }
     tokio::spawn(async {
         let status = tokio::task::spawn_blocking(|| {
-            Command::new(std::env::current_exe()?).arg("--setup").stdin(Stdio::null()).status()
+            let mut command = Command::new(std::env::current_exe()?);
+            command.arg("--setup");
+            // Model downloads run in Meteor, so its menu sees them too.
+            if let Some(socket) = crate::control::path() {
+                command.arg(socket);
+            }
+            command.stdin(Stdio::null()).status()
         })
         .await;
         OPEN.store(false, Ordering::Relaxed);
@@ -93,6 +100,8 @@ enum Row {
     Login,
     /// Status only: host depth ships with Meteor.app.
     Depth,
+    /// Depth models Meteor downloads (control.rs).
+    Models,
 }
 
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -126,8 +135,33 @@ fn install_all_rows(status: &Status) -> Vec<Row> {
     rows
 }
 
+/// Depth models Meteor can download for this Mac's GPU, from the running Meteor.
+#[derive(Clone, Debug, Default)]
+struct ModelStatus {
+    /// (id, name, bytes)
+    offers: Vec<(String, String, u64)>,
+    /// (done, total) bytes while Meteor downloads a model.
+    downloading: Option<(u64, u64)>,
+    error: Option<String>,
+}
+
+fn model_status(value: &serde_json::Value) -> ModelStatus {
+    let download = &value["download"];
+    ModelStatus {
+        offers: value["vulkan_offers"].as_array().into_iter().flatten()
+            .filter_map(|offer| Some((offer["id"].as_str()?.to_string(), offer["label"].as_str()?.to_string(), offer["bytes"].as_u64()?)))
+            .collect(),
+        downloading: download["running"].as_bool().unwrap_or(false)
+            .then(|| (download["done"].as_u64().unwrap_or(0), download["total"].as_u64().unwrap_or(0))),
+        error: download["error"].as_str().map(str::to_string),
+    }
+}
+
 #[derive(Default)]
 struct Shared {
+    /// The running Meteor's control socket (control.rs); None when Setup runs without one.
+    socket: Option<PathBuf>,
+    models: Mutex<ModelStatus>,
     status: Mutex<Status>,
     working: Mutex<Option<(Row, String)>>,
     errors: Mutex<Vec<(Row, String)>>,
@@ -157,6 +191,25 @@ impl Shared {
             self.restart.store(true, Ordering::Relaxed);
         }
         *status = next;
+    }
+
+    fn refresh_models(&self) {
+        let Some(socket) = &self.socket else { return };
+        if let Ok(value) = crate::control::send(socket, &crate::control::Request::Depth) {
+            *self.models.lock().unwrap() = model_status(&value);
+        }
+    }
+
+    /// Asks Meteor to download a model, or cancel the download.
+    fn depth_request(&self, request: crate::control::Request) {
+        let result = match &self.socket {
+            Some(socket) => crate::control::send(socket, &request).map(|_| ()).map_err(|error| error.to_string()),
+            None => Err("Open Setup from Meteor's menu to install models".to_string()),
+        };
+        if let Err(error) = result {
+            self.errors.lock().unwrap().push((Row::Models, error));
+        }
+        self.refresh_models();
     }
 
     fn begin(&self, row: Row, text: &str) {
@@ -206,7 +259,7 @@ impl Shared {
                 open_url(permissions::SYSTEM_AUDIO_PANE);
                 self.finish(row, Ok(()));
             }
-            Row::Depth => {}
+            Row::Depth | Row::Models => {}
         }
     }
 
@@ -400,6 +453,52 @@ impl eframe::App for Window {
             let depth = if status.depth_included { "Included" } else { "Not in this build" };
             self.row(ui, Row::Depth, "Host depth", "3D depth computed on this Mac's GPU", depth, true, |_| {});
 
+            // Other depth models, downloaded by Meteor itself.
+            let models = self.shared.models.lock().unwrap().clone();
+            for (id, name, bytes) in &models.offers {
+                let state = format!("{:.1} GB download", *bytes as f64 / 1e9);
+                self.row(ui, Row::Models, name, "Depth model on this Mac's GPU", &state, busy || models.downloading.is_some(), |ui| {
+                    if ui.button("Install").clicked() {
+                        let id = id.clone();
+                        self.spawn(move |shared| shared.depth_request(crate::control::Request::DownloadVulkanVda(id)));
+                    }
+                });
+            }
+            if let Some((done, total)) = models.downloading {
+                ui.horizontal(|ui| {
+                    ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).show_percentage()
+                        .text(format!("Downloading a depth model: {} of {} MB", done / 1_000_000, total / 1_000_000))
+                        .desired_width(ui.available_width() - 80.0));
+                    if ui.small_button("Cancel").clicked() {
+                        self.spawn(|shared| shared.depth_request(crate::control::Request::CancelDownload));
+                    }
+                });
+            } else if let Some(error) = &models.error {
+                ui.colored_label(egui::Color32::from_rgb(220, 90, 70), format!("Last model download failed: {error}"));
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Support:");
+                if ui.button("Release information & licenses").clicked() {
+                    // Meteor.app/Contents/share/doc, as share/doc beside bin/ on Linux.
+                    if let Some(contents) = std::env::current_exe().ok().and_then(|e| e.parent().and_then(std::path::Path::parent).map(PathBuf::from)) {
+                        crate::menu::open(&contents.join("share/doc/nightfall-meteor/RELEASE.md").to_string_lossy());
+                    }
+                }
+                if ui.button("Open log").clicked() {
+                    crate::menu::open(&crate::logfile::path().to_string_lossy());
+                }
+                if ui.button("Open settings file").clicked() {
+                    crate::open_config_file();
+                }
+                if ui.button("Open models folder").clicked() {
+                    let models = crate::config::load().models_dir.unwrap_or_else(crate::config::default_models_dir);
+                    let _ = std::fs::create_dir_all(&models);
+                    crate::menu::open(&models.to_string_lossy());
+                }
+            });
+
             ui.add_space(6.0);
             if self.shared.restart.load(Ordering::Relaxed) {
                 ui.label("Meteor restarts when you close this window. Open streams will disconnect.");
@@ -413,10 +512,10 @@ impl eframe::App for Window {
     }
 }
 
-/// `--setup`: shows the window. Returns the process's exit code.
-pub fn run() -> i32 {
+/// `--setup [control socket]`: shows the window. Returns the process's exit code.
+pub fn run(socket: Option<PathBuf>) -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(Shared { socket, ..Shared::default() });
     let poll = shared.clone();
     std::thread::spawn(move || loop {
         if poll.working.lock().unwrap().is_none() {
@@ -424,12 +523,18 @@ pub fn run() -> i32 {
         }
         std::thread::sleep(Duration::from_secs(2));
     });
+    // Downloads started from here run in Meteor: follow their progress.
+    let models = shared.clone();
+    std::thread::spawn(move || loop {
+        models.refresh_models();
+        std::thread::sleep(Duration::from_millis(1500));
+    });
     // The Nightfall mark, white on transparent.
     let rgba = crate::icon::nightfall_alpha(128).into_iter().flat_map(|a| [255, 255, 255, a]).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Nightfall Meteor Setup")
-            .with_inner_size([620.0, 470.0])
+            .with_inner_size([660.0, 540.0])
             .with_min_inner_size([520.0, 400.0])
             .with_active(true)
             .with_icon(egui::IconData { rgba, width: 128, height: 128 }),
@@ -444,6 +549,30 @@ pub fn run() -> i32 {
             1
         }
     }
+}
+
+/// None: egui's bundled fonts (eframe's default_fonts on macOS) read like the system's.
+pub(crate) fn system_font() -> Option<Vec<u8>> {
+    None
+}
+
+pub(crate) fn fonts_from(font: Vec<u8>) -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert("system".to_owned(), Arc::new(egui::FontData::from_owned(font)));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().insert(0, "system".to_owned());
+    }
+    fonts
+}
+
+pub(crate) fn save_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), Box<dyn std::error::Error>> {
+    let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut encoder = png::Encoder::new(file, image.size[0] as u32, image.size[1] as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let bytes: Vec<u8> = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+    encoder.write_header()?.write_image_data(&bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]
