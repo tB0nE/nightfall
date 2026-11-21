@@ -527,6 +527,7 @@ var _ui_3d_priority_btn: Button
 var _ui_3d_mode_btn: Button
 var _ui_3d_type_btn: Button
 var _ui_3d_hz_cap_btn: Button
+var _ui_eye_res_btn: Button
 var _ui_3d_separation_btn: Button
 var _ui_3d_convergence_btn: Button
 var _ui_3d_cursor_position_btn: Button
@@ -1570,6 +1571,8 @@ func _ready():
 	_init_stream_backend()
 	if DevBridge.wanted():
 		add_child(DevBridge.new(self))
+	if EyeResolution.wanted():
+		add_child(EyeResolution.new(self))
 
 	var interface = XRServer.find_interface("OpenXR")
 	if not interface or not interface.is_initialized():
@@ -2211,7 +2214,15 @@ func _init_xr(interface):
 	_xr_render_width = int(render_size.x)
 	_log("[XR] OpenXR render target: %dx%d" % [render_size.x, render_size.y])
 	_log("[XR] Blend modes: %s" % str(interface.get_supported_environment_blend_modes()))
-	if OS.get_name() == "Android" and RenderingServer.get_current_rendering_method() == "gl_compatibility" and interface.has_method("set_submit_projection_layer"):
+	# Projectionless mode needs the patched engine (patches/godot-4.7-projectionless*.patch),
+	# which adds set_submit_projection_layer(). Linux (e.g. a Steam Frame) runs it on the
+	# Vulkan renderer too: the screens, menus and pointers are composition layers there
+	# as well, and skipping the eye buffers frees GPU time. --nf-projection keeps them.
+	# Linux arm64 only (standalone headsets): desktop Linux keeps its eye buffers, which
+	# some 3D content and the xr check's eye pictures rely on.
+	var projectionless_platform: bool = (OS.get_name() == "Android" and RenderingServer.get_current_rendering_method() == "gl_compatibility") \
+		or (OS.get_name() == "Linux" and Engine.get_architecture_name() == "arm64" and not "--nf-projection" in OS.get_cmdline_user_args())
+	if projectionless_platform and interface.has_method("set_submit_projection_layer"):
 		interface.set_submit_projection_layer(false)
 		_log("[XR] Projectionless mode enabled; submitting composition layers only")
 

@@ -261,5 +261,7 @@
 	"Previous": "Vorige",
 	"Next": "Volgende",
 	"Multipath": "Meerpad",
-	"Use a second network via Meteor; a slow one is paused.": "Gebruik 'n tweede netwerk via Meteor; 'n stadige word gestop."
+	"Use a second network via Meteor; a slow one is paused.": "Gebruik 'n tweede netwerk via Meteor; 'n stadige word gestop.",
+	"Screen Res": "Skermres.",
+	"Match screen sharpness to the headset to save GPU time.": "Pas skermskerpte by die headset aan om GPU-tyd te spaar."
 }

@@ -47,7 +47,7 @@ static func get_tab_buttons() -> Array:
 	]
 
 static func get_tabs() -> Array:
-	return [
+	var tabs: Array = [
 	{
 		"id": &"display",
 		"node_name": &"TabDisplay",
@@ -228,7 +228,18 @@ static func get_tabs() -> Array:
 			},
 		],
 	},
-]
+	]
+	# Linux only (EyeResolution): one control, Full or Auto 1-6 (strength), in
+	# Settings > Display (the main tabs' fixed-size rows are full).
+	if EyeResolution.wanted():
+		for tab in tabs:
+			if tab["id"] != &"settings":
+				continue
+			for row in tab["rows"]:
+				if row.get("title", "") == "Display" and row["options"].size() < 4:
+					row["options"].append(_option(&"_ui_eye_res_btn", "Screen Res", "Full",
+						"Match screen sharpness to the headset to save GPU time.", TARGET_SETTINGS, &"cycle_eye_resolution"))
+	return tabs
 
 static func _option(
 	field: StringName,

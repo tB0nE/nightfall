@@ -261,5 +261,7 @@
 	"Previous": "Forrige",
 	"Next": "Næste",
 	"Multipath": "Flere stier",
-	"Use a second network via Meteor; a slow one is paused.": "Brug et ekstra netværk via Meteor; et langsomt sættes på pause."
+	"Use a second network via Meteor; a slow one is paused.": "Brug et ekstra netværk via Meteor; et langsomt sættes på pause.",
+	"Screen Res": "Skærmopløsning",
+	"Match screen sharpness to the headset to save GPU time.": "Tilpas skærmens skarphed til headsettet for at spare GPU-tid."
 }

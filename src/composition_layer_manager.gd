@@ -1111,8 +1111,9 @@ func connect_welcome_texture():
 const BEZEL_PX := 8
 
 func _update_bezel_for(s: VRScreen):
-	var base_w = s.comp_base_size.x
-	var base_h = s.comp_base_size.y
+	var render_size := s.comp_render_size()
+	var base_w = render_size.x
+	var base_h = render_size.y
 	var triplet = [
 		{"bezel": s.comp_bezel_rect, "yuv": s.comp_yuv_rect, "vp": s.comp_viewport, "cyl": s.comp_cylinder},
 		{"bezel": s.comp_bezel_rect_left, "yuv": s.comp_yuv_rect_left, "vp": s.comp_viewport_left, "cyl": s.comp_cylinder_left},
@@ -1191,9 +1192,10 @@ func _update_cylinder_params_for(s: VRScreen):
 	# keeps the picture's own angle (_comp_cyl_central_angle) for hit tests.
 	var layer_angle = central_angle
 	var layer_aspect = aspect
-	if s.comp_base_size.x > 0 and s.comp_base_size.y > 0:
-		var pad_x = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.x)
-		var pad_y = 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.y)
+	var render_size := s.comp_render_size()
+	if render_size.x > 0 and render_size.y > 0:
+		var pad_x = 1.0 + float(BEZEL_PX * 2) / float(render_size.x)
+		var pad_y = 1.0 + float(BEZEL_PX * 2) / float(render_size.y)
 		layer_angle = central_angle * pad_x
 		layer_aspect = (s.mesh_size.x * pad_x) / (s.mesh_size.y * pad_y)
 	# The pointer hits the screen's own curved mesh. A screen moved since that

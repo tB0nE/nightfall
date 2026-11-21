@@ -113,7 +113,7 @@ func _update_corners(screen: VRScreen, active: bool, artwork_visible: bool, grab
 	var margin := maxf(corner_size, grab_margin)
 	if menu: margin = maxf(margin, screen.mesh_size.x * ScreenTabStrip.TOP_MARGIN_RATIO)
 	var surface_size := screen.mesh_size + Vector2(corner_size * 2.0, margin * 2.0)
-	var radius := maxf(screen._comp_cyl_radius, 0.001) + 0.003
+	var radius := maxf(screen._comp_cyl_radius - 0.003, 0.001)
 	layer.set_radius(radius)
 	layer.set_central_angle(surface_size.x / radius)
 	layer.set_aspect_ratio(surface_size.x / surface_size.y)

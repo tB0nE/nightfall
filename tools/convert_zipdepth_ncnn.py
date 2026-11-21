@@ -56,12 +56,18 @@ def export_midas(size: int, repo: Path, weights: Path, target: Path) -> None:
 
     # Some environments have a CPU-only/mismatched TorchVision build. MiDaS
     # does not use NMS, but TorchVision registers its fake implementation at
-    # import time and expects the operator to exist.
+    # import time and expects the operator to exist. Only stand in for the
+    # operator when TorchVision can't provide it: defining it first collides
+    # with a matching TorchVision build (which timm, used by MiDaS, imports).
+    library = None
     try:
-        library = torch.library.Library("torchvision", "DEF")
-        library.define("nms(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor")
-    except RuntimeError:
-        library = None
+        import torchvision  # noqa: F401
+    except (ImportError, RuntimeError):
+        try:
+            library = torch.library.Library("torchvision", "DEF")
+            library.define("nms(Tensor boxes, Tensor scores, float iou_threshold) -> Tensor")
+        except RuntimeError:
+            library = None
 
     core = torch.hub.load(str(repo), "MiDaS_small", source="local", pretrained=False)
     core.load_state_dict(torch.load(weights, map_location="cpu"))

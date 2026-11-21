@@ -297,6 +297,7 @@ func update_stereo_shader():
 	if main._ui_3d_gpu_api_btn:
 		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
+	update_eye_resolution_btn_state()
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
 	update_option_btn(main._ui_3d_separation_btn, main.settings_controller.get_ai_3d_separation_label())
@@ -2665,3 +2666,7 @@ func open_placement_grid_popup(spacing: bool) -> void:
 		main.state_manager.save_state()
 		update_monitor_tab())
 	refresh_ui_buttons()
+
+func update_eye_resolution_btn_state() -> void:
+	if main._ui_eye_res_btn:
+		update_option_btn(main._ui_eye_res_btn, main.settings_controller.get_eye_resolution_label())

@@ -261,5 +261,7 @@
 	"Previous": "Precedente",
 	"Next": "Successiva",
 	"Multipath": "Multipercorso",
-	"Use a second network via Meteor; a slow one is paused.": "Usa una seconda rete via Meteor; una lenta va in pausa."
+	"Use a second network via Meteor; a slow one is paused.": "Usa una seconda rete via Meteor; una lenta va in pausa.",
+	"Screen Res": "Ris. schermo",
+	"Match screen sharpness to the headset to save GPU time.": "Adatta la nitidezza dello schermo al visore per risparmiare GPU."
 }

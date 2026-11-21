@@ -88,8 +88,9 @@ func show_embedded(screen: VRScreen, screens: Array, hit_point: Vector3,
 			_hide_embedded_pair(other.comp_stream_cursor_right, other.comp_stream_cursor_circle_right)
 	var uv := screen.hit_point_to_uv(hit_point)
 	var bezel_px := 8 if bezel_enabled else 0
-	var base_width := screen.comp_base_size.x
-	var base_height := screen.comp_base_size.y
+	var render_size := screen.comp_render_size()
+	var base_width := render_size.x
+	var base_height := render_size.y
 	var cursor_px := maxi(1, int(48.0 * base_height / 1080.0))
 	var cx := bezel_px + uv.x * base_width
 	var cy := bezel_px + uv.y * base_height

@@ -88,6 +88,50 @@ on-device depth models (they are not in the repository); AI 3D then needs Meteor
 - Headset screenshots: OpenVR `IVRScreenshots::TakeStereoScreenshot` from any
   background OpenVR app captures the composited view, layers included.
 
+## Local AI 3D performance
+
+The Frame's GPU (Adreno 750, Mesa Turnip) draws Nightfall's frames, runs the
+SteamVR compositor and runs on-device depth. What was measured on it (90 Hz,
+2560x1080 at 90 fps, EdgePad-512, GPU work read from `drm-cycles-gpu` in
+`/proc/<pid>/fdinfo`, depth from `[DEPTH-PERF]`, video from `[STATS]`):
+
+| Setup | EdgePad-512 maps/s | Notes |
+| --- | --- | --- |
+| Forward+ (with async capture and low priority) | ~11-15 | |
+| `--rendering-method mobile` | ~15-16 | Nightfall's own GPU work -58% against Forward+ |
+| + projectionless (patched engine) | ~17-21 | A/B in one session: 15-16 -> 17-21; Nightfall's GPU work -22% |
+
+- **Async capture** (`texture_get_data_async`): `get_image()` on the depth
+  viewport stalled the renderer ~8 ms (256x256) / ~17 ms (384x384) per capture;
+  now ~1 ms of CPU work, no stall.
+- **Low-priority ncnn queue**: with ZipDepth-384 the headset ran 73-82 fps and
+  showed 67-69 video fps at 90 Hz, even at a 12 Hz cap; at low priority 90 fps
+  and 88-89 video fps, lost/late frames 8.4 -> 1.3 per minute. Depth then gets
+  the GPU's spare time (~15 maps/s for ZipDepth-384 at 90 Hz).
+
+- **Renderer**: on this GPU the Mobile renderer costs well under half of
+  Forward+ for the same picture. Start the app with `--rendering-method mobile`
+  on the Frame (or give Linux arm64 a project-setting override).
+- **Projectionless** needs the patched engine (`patches/godot-4.7-projectionless*.patch`)
+  built as a Linux arm64 template; Godot's buildroot aarch64 SDK cross-builds it on
+  an x86 PC in a few minutes. Without the patch nothing changes.
+- **Where the rest goes**: the two eye composition viewports are about half of
+  Nightfall's remaining GPU work, and their cost scales with pixel count, not
+  with the warp's Newton steps (2 vs 0: no measurable change) or the bezel fill.
+  Godot already renders them straight into the layer swapchains on Vulkan, so a
+  native Vulkan renderer like the Android GLES one would mostly save fixed
+  per-pass overhead (~1 map/s here). Fewer pixels or frames are the real
+  levers: Settings > Display > Screen Res (Auto renders each screen at the size
+  it covers in the headset; Auto 2 looked identical to Full, stronger steps
+  save more on small or distant screens but soften text), or 72 Hz: EdgePad-512 measured ~20 maps/s at 72 Hz
+  with Forward+, before the Mobile renderer and projectionless.
+- **Model costs** on the Frame's GPU at normal priority: ZipDepth-256 ~11 ms,
+  ZipDepth-384 ~16-19 ms per map. With the low priority they take longer in
+  wall time (EdgePad-512 ~37-56 ms) but don't delay frames.
+- **SteamVR layer order**: the screen-controls cylinder 3 mm *behind* the screen
+  cylinder (radius + 3 mm) was hidden whenever the screen was pulled closer,
+  despite its higher sort order; in front (radius - 3 mm) it is always shown.
+
 ## Not done yet
 
 - Frame hardware acceptance of the cross-built archive and packaging.
@@ -97,3 +141,8 @@ on-device depth models (they are not in the repository); AI 3D then needs Meteor
 - Hand/controller ownership via `XR_EXT_hand_tracking_data_source` instead of the
   SteamVR check.
 - Only advertise codecs the hardware decodes (AV1 would fall back to software).
+- AI 3D tab -> GPU Priority on Linux: the ncnn queue priority is fixed when its
+  Vulkan device is created (low, the Android "Stream" default); switching it at
+  run time needs the ncnn GPU instance re-created.
+- A model that never produces depth (e.g. a CPU `.tflite` that isn't installed)
+  still reports `status='ok'` with 0 updates/s.

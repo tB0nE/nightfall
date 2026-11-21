@@ -86,10 +86,13 @@ public:
     float get_last_age_ms() const { return last_depth_age_ms_.load(); }
     int get_last_skipped_frames() const { return last_skipped_frames_.load(); }
 
-    // Native output resolution (square) of whichever model is currently
-    // active - depth_estimator.gd sizes its capture viewport off this via
-    // DepthBridge::get_depth_model_size(), same as Android.
+    // Native input/output resolution of whichever model is currently active -
+    // depth_estimator.gd sizes its capture viewport off this via
+    // DepthBridge::get_depth_model_width()/height(), same as Android.
+    // get_model_size() is the width (all models but EdgePad-512 are square).
     int get_model_size() const;
+    int get_model_width() const;
+    int get_model_height() const;
 
 private:
     enum class InputLayout {
@@ -123,7 +126,8 @@ private:
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
     struct VulkanDepthModel {
         std::string name;
-        int size = 0;
+        int size = 0;   // width
+        int height = 0;
         int index = 0;
         std::string stem;
         bool input_nhwc = false;
@@ -141,7 +145,8 @@ private:
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
     void register_vulkan_model(VulkanDepthModel &model, const char *stem,
                                const char *name, int size, int index,
-                               bool input_nhwc = false, float percentile_clip = 0.02f);
+                               bool input_nhwc = false, float percentile_clip = 0.02f,
+                               int height = 0);
     bool load_vulkan_model(VulkanDepthModel &model);
     std::vector<float> run_vulkan_inference(VulkanDepthModel &model, const uint8_t *rgba,
                                             int width, int height);
@@ -155,7 +160,7 @@ private:
     // Android never sets it either - the warp shader's own joint-bilateral
     // upsample already does edge-aware smoothing).
     void robust_range(const std::vector<float> &v, float percentile_clip, float *lo_out, float *hi_out) const;
-    std::vector<uint8_t> post_process(const std::vector<float> &raw, int size, float percentile_clip);
+    std::vector<uint8_t> post_process(const std::vector<float> &raw, float percentile_clip);
     DepthModel *model_for_index(int model_index);
 
     void worker_loop();
@@ -173,6 +178,8 @@ private:
     VulkanDepthModel model_midas_256_vulkan_;
     VulkanDepthModel model_midas_192_vulkan_;
     VulkanDepthModel model_da_252_vulkan_;
+    VulkanDepthModel model_edgepad_512_;
+    VulkanDepthModel model_edgepad_256_;
     std::atomic<VulkanDepthModel *> active_vulkan_model_{nullptr};
     bool vulkan_available_ = false;
 #endif

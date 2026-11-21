@@ -261,5 +261,7 @@
 	"Previous": "上一頁",
 	"Next": "下一頁",
 	"Multipath": "多路徑",
-	"Use a second network via Meteor; a slow one is paused.": "透過 Meteor 使用第二個網路；較慢的會暫停。"
+	"Use a second network via Meteor; a slow one is paused.": "透過 Meteor 使用第二個網路；較慢的會暫停。",
+	"Screen Res": "螢幕解析度",
+	"Match screen sharpness to the headset to save GPU time.": "讓螢幕清晰度符合頭戴裝置，以節省 GPU 時間。"
 }

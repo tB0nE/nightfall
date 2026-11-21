@@ -261,5 +261,7 @@
 	"Previous": "이전",
 	"Next": "다음",
 	"Multipath": "멀티패스",
-	"Use a second network via Meteor; a slow one is paused.": "Meteor로 두 번째 네트워크 사용. 느린 쪽은 일시 중지."
+	"Use a second network via Meteor; a slow one is paused.": "Meteor로 두 번째 네트워크 사용. 느린 쪽은 일시 중지.",
+	"Screen Res": "화면 해상도",
+	"Match screen sharpness to the headset to save GPU time.": "화면 선명도를 헤드셋에 맞춰 GPU 시간을 절약합니다."
 }

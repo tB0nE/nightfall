@@ -261,5 +261,7 @@
 	"Previous": "Назад",
 	"Next": "Далее",
 	"Multipath": "Многопутевой",
-	"Use a second network via Meteor; a slow one is paused.": "Вторая сеть через Meteor; медленная приостанавливается."
+	"Use a second network via Meteor; a slow one is paused.": "Вторая сеть через Meteor; медленная приостанавливается.",
+	"Screen Res": "Разреш. экрана",
+	"Match screen sharpness to the headset to save GPU time.": "Подгоняет чёткость экрана под шлем, экономя время GPU."
 }

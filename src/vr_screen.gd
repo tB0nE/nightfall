@@ -218,6 +218,16 @@ var comp_corner_viewport: SubViewport = null
 var comp_corner_rects: Array = []
 var comp_layer: Node3D = null
 var comp_base_size: Vector2i = Vector2i(1920, 1080)
+# Fraction of comp_base_size the composition viewports are rendered at
+# (EyeResolution lowers it while the screen covers fewer headset pixels).
+var comp_render_scale: float = 1.0
+
+## The size the composition viewports render the picture at (without bezel).
+func comp_render_size() -> Vector2i:
+	if comp_render_scale >= 0.999:
+		return comp_base_size
+	return Vector2i(maxi(1, roundi(comp_base_size.x * comp_render_scale)),
+		maxi(1, roundi(comp_base_size.y * comp_render_scale)))
 var _original_mat: Material = null
 
 var _comp_cyl_center := Vector3.ZERO
