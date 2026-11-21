@@ -63,6 +63,10 @@ var _async_capture_supported: bool = false
 var _async_capture_checked: bool = false
 var _async_capture_pending: bool = false
 var _async_capture_failed: bool = false
+# A readback that never comes back (its viewport freed, a lost device) must not
+# stop on-device depth for good: give up on it after this long.
+const ASYNC_CAPTURE_TIMEOUT_MSEC := 1000
+var _async_capture_requested_msec: int = 0
 var _direct_stream_source_bound: bool = false
 var _native_renderer_active: bool = false
 # Nightfall Meteor host depth (see settings_controller.meteor_depth_selected()).
@@ -629,6 +633,9 @@ func process(delta: float):
 				_set_native_capture_crop(capture_source)
 				capture_source.request_native_depth_capture(model_input_width, model_input_height)
 			elif _async_depth_capture_available():
+				if _async_capture_pending and Time.get_ticks_msec() - _async_capture_requested_msec > ASYNC_CAPTURE_TIMEOUT_MSEC:
+					main._log("[DEPTH] Async capture got no answer in %d ms; requesting again" % ASYNC_CAPTURE_TIMEOUT_MSEC)
+					_async_capture_pending = false
 				if not _async_capture_pending:
 					_request_async_depth_capture()
 			else:
@@ -872,6 +879,7 @@ func _request_async_depth_capture() -> void:
 		_disable_async_depth_capture("viewport has no RenderingDevice texture")
 		return
 	_async_capture_pending = true
+	_async_capture_requested_msec = Time.get_ticks_msec()
 	var width := model_input_width
 	var height := model_input_height
 	var callback := _on_async_depth_capture_render_thread.bind(width, height)

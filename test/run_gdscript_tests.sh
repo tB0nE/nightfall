@@ -65,6 +65,7 @@ tests=(
 	"test/test_depth_welcome_restore.gd"
 	"test/test_app_settings.gd"
 	"test/test_ai3d_defaults.gd"
+	"test/test_linux_depth_models.gd"
 	"test/test_menu_schema.gd"
 	"test/test_localization.gd"
 	"test/test_licences.gd"

@@ -159,8 +159,9 @@ var ai_3d_models: Array = [
 	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true},
-	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true},
+	# Linux: only when Meteor's ncnn export is in depth_models/ (linux_file).
+	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux_file": "edgepad-512x288-vulkan"},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux_file": "edgepad-256-vulkan"},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	# Retired slot: retain persisted indices; never selectable or bundled.
 	{"label": "EdgePad-320 (retired)", "java_index": 28, "gpu": true, "android": false, "linux": false},
@@ -444,11 +445,23 @@ func set_ai_3d_mode(value: int):
 func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
 	var result: Array = []
 	for i in range(ai_3d_models.size()):
-		if OS.get_name() == "Linux" and not ai_3d_models[i].get("linux", true):
+		if OS.get_name() == "Linux" and not linux_model_available(ai_3d_models[i]):
 			continue
 		if ai_3d_models[i].gpu == want_gpu:
 			result.append(i)
 	return result
+
+## Whether a model can run in this Linux build: not Android-only, and its model
+## file is installed when it names one (depth_models/ beside the executable).
+static func linux_model_available(model: Dictionary, models_dir: String = "") -> bool:
+	if not model.get("linux", true):
+		return false
+	var file := str(model.get("linux_file", ""))
+	if file.is_empty():
+		return true
+	if models_dir.is_empty():
+		models_dir = OS.get_executable_path().get_base_dir().path_join("depth_models")
+	return FileAccess.file_exists(models_dir.path_join(file + ".param")) and FileAccess.file_exists(models_dir.path_join(file + ".bin"))
 
 # AI 3D tab's "Type" control (2026-08-28) - filters which ai_3d_models
 # entries Model can cycle through (GPU: MiDaS-256-GPU/MiDaS-192-GPU; CPU:

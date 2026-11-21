@@ -2198,8 +2198,10 @@ func _init_xr(interface):
 	# which adds set_submit_projection_layer(). Linux (e.g. a Steam Frame) runs it on the
 	# Vulkan renderer too: the screens, menus and pointers are composition layers there
 	# as well, and skipping the eye buffers frees GPU time. --nf-projection keeps them.
+	# Linux arm64 only (standalone headsets): desktop Linux keeps its eye buffers, which
+	# some 3D content and the xr check's eye pictures rely on.
 	var projectionless_platform: bool = (OS.get_name() == "Android" and RenderingServer.get_current_rendering_method() == "gl_compatibility") \
-		or (OS.get_name() == "Linux" and not "--nf-projection" in OS.get_cmdline_user_args())
+		or (OS.get_name() == "Linux" and Engine.get_architecture_name() == "arm64" and not "--nf-projection" in OS.get_cmdline_user_args())
 	if projectionless_platform and interface.has_method("set_submit_projection_layer"):
 		interface.set_submit_projection_layer(false)
 		_log("[XR] Projectionless mode enabled; submitting composition layers only")

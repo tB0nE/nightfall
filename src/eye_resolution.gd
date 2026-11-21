@@ -65,6 +65,10 @@ func _process(delta: float) -> void:
 	var pixels_per_tangent := _pixels_per_tangent()
 	if pixels_per_tangent <= 0.0:
 		return
+	# Forget screens that have been closed.
+	for s in _pending.keys():
+		if not is_instance_valid(s) or not main.screens.has(s):
+			_pending.erase(s)
 	var changed := false
 	for s in main.screens:
 		if main.screen_sources.is_browser_screen(s) or s.comp_base_size.x <= 0:
