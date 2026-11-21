@@ -310,5 +310,7 @@ void AudioRenderer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_latency_ms"), &AudioRenderer::get_latency_ms);
     ClassDB::bind_method(D_METHOD("get_backend_name"), &AudioRenderer::get_backend_name);
     ClassDB::bind_method(D_METHOD("set_volume_boost_db", "db"), &AudioRenderer::set_volume_boost_db);
+    ClassDB::bind_method(D_METHOD("set_muted", "muted"), &AudioRenderer::set_muted);
+    ClassDB::bind_method(D_METHOD("is_muted"), &AudioRenderer::is_muted);
     ClassDB::bind_method(D_METHOD("get_volume_boost_db"), &AudioRenderer::get_volume_boost_db);
 }

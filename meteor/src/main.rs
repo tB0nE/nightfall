@@ -6,15 +6,20 @@
 //! Sunshine. For now Meteor only forwards the traffic; the goal is to have
 //! it compute depth maps on the host GPU and send them alongside the video.
 
+mod audio;
 mod config;
 mod host_background;
 #[cfg(target_os = "linux")]
 mod host_cursor;
 #[cfg(target_os = "linux")]
 mod legacy_host_cursor;
+#[cfg(target_os = "linux")]
+mod control;
 mod crypto;
 mod depth;
 mod depth_server;
+#[cfg(target_os = "linux")]
+mod depth_window;
 #[cfg(target_os = "linux")]
 mod desktop;
 #[cfg(windows)]
@@ -38,6 +43,8 @@ mod host;
 use host::view as host_view;
 mod icon;
 mod logfile;
+#[cfg(target_os = "linux")]
+mod menu;
 mod mic;
 mod net;
 mod ncnn;
@@ -108,9 +115,21 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|arg| arg == "--setup") {
+        std::process::exit(setup_window::run(args.get(2).map(std::path::PathBuf::from)));
+    }
+    #[cfg(target_os = "macos")]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run());
+    }
+    #[cfg(target_os = "linux")]
+    if args.get(1).is_some_and(|arg| arg == "--depth-settings") {
+        let Some(socket) = args.get(2) else {
+            eprintln!("--depth-settings needs Meteor's control socket");
+            std::process::exit(2);
+        };
+        std::process::exit(depth_window::run(std::path::PathBuf::from(socket)));
     }
     #[cfg(target_os = "macos")]
     if args.get(1).is_some_and(|arg| arg == "--setup-check") {
@@ -256,6 +275,7 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    audio::init(config.audio_output);
     #[cfg(target_os = "linux")]
     if flag("--download-host") {
         let Some(release)=host::RELEASE.as_ref() else {
@@ -596,7 +616,9 @@ async fn main() {
         });
     }
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view, cursor }).await {
+    tokio::spawn(control::serve(status.map.sunshine_base, depth.clone()));
+    #[cfg(target_os = "linux")]
+    if !no_tray && !tray::run(tray::MeteorTray(menu::Sources { status, stats, depth, mic, xr_trust, host: host_view, cursor })).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",

@@ -29,7 +29,13 @@ pub fn open() {
     }
     tokio::spawn(async {
         let status = tokio::task::spawn_blocking(|| {
-            Command::new(std::env::current_exe()?).arg("--setup").stdin(Stdio::null()).status()
+            let mut command = Command::new(std::env::current_exe()?);
+            command.arg("--setup");
+            // Model downloads run in Meteor, so its menu sees them too.
+            if let Some(socket) = crate::control::path() {
+                command.arg(socket);
+            }
+            command.stdin(Stdio::null()).status()
         })
         .await;
         OPEN.store(false, Ordering::Relaxed);
@@ -46,20 +52,28 @@ pub fn open() {
     });
 }
 
-/// `--setup`: shows the window. Returns the process's exit code.
-pub fn run() -> i32 {
+/// `--setup [control socket]`: shows the window. Returns the exit code.
+pub fn run(socket: Option<PathBuf>) -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
-    let shared = Arc::new(Shared::default());
+    let shared = Arc::new(Shared { socket, ..Shared::default() });
     let runtime = tokio::runtime::Handle::current();
     let refresh = shared.clone();
     std::thread::spawn(move || refresh.refresh(true));
+    let models = shared.clone();
+    // Downloads started from here run in Meteor: follow their progress.
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_millis(1500));
+            models.refresh_models();
+        }
+    });
     let icon = crate::icon::nightfall_icon(128);
     let rgba = icon.data.chunks_exact(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Nightfall Meteor Setup")
             .with_app_id("nightfall-meteor-setup")
-            .with_inner_size([620.0, 440.0])
+            .with_inner_size([660.0, 520.0])
             .with_min_inner_size([520.0, 360.0])
             .with_icon(egui::IconData { rgba, width: 128, height: 128 }),
         ..Default::default()
@@ -84,7 +98,7 @@ pub fn run() -> i32 {
 }
 
 /// A sans-serif font from the system, as the desktop's own apps would pick it.
-fn system_font() -> Option<Vec<u8>> {
+pub(crate) fn system_font() -> Option<Vec<u8>> {
     let asked = Command::new("fc-match")
         .args(["-f", "%{file}", "sans:style=Regular:fontformat=TrueType"])
         .env_remove("LD_LIBRARY_PATH")
@@ -101,7 +115,7 @@ fn system_font() -> Option<Vec<u8>> {
     asked.into_iter().chain(COMMON.iter().map(PathBuf::from)).find_map(|path| std::fs::read(path).ok())
 }
 
-fn fonts_from(font: Vec<u8>) -> egui::FontDefinitions {
+pub(crate) fn fonts_from(font: Vec<u8>) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::empty();
     fonts.font_data.insert("system".to_owned(), Arc::new(egui::FontData::from_owned(font)));
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -116,6 +130,7 @@ enum Row {
     Host,
     Steam,
     Vda,
+    Models,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -151,6 +166,30 @@ struct Status {
     steam: Option<SteamStatus>,
     /// None: this GPU can't use TensorRT, so VDA isn't offered here.
     vda: Option<VdaStatus>,
+    /// From the running Meteor; empty when Setup runs without one.
+    models: ModelStatus,
+}
+
+/// Depth models Meteor can download for this PC's GPUs.
+#[derive(Clone, Debug, Default)]
+struct ModelStatus {
+    /// (id, name, bytes)
+    offers: Vec<(String, String, u64)>,
+    /// (done, total) bytes while Meteor downloads a model.
+    downloading: Option<(u64, u64)>,
+    error: Option<String>,
+}
+
+fn model_status(value: &serde_json::Value) -> ModelStatus {
+    let download = &value["download"];
+    ModelStatus {
+        offers: value["vulkan_offers"].as_array().into_iter().flatten()
+            .filter_map(|offer| Some((offer["id"].as_str()?.to_string(), offer["label"].as_str()?.to_string(), offer["bytes"].as_u64()?)))
+            .collect(),
+        downloading: download["running"].as_bool().unwrap_or(false)
+            .then(|| (download["done"].as_u64().unwrap_or(0), download["total"].as_u64().unwrap_or(0))),
+        error: download["error"].as_str().map(str::to_string),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +213,8 @@ struct SteamStatus {
 
 #[derive(Default)]
 struct Shared {
+    /// The running Meteor's control socket (control.rs).
+    socket: Option<PathBuf>,
     status: Mutex<Status>,
     /// The row being worked on and what it's doing.
     working: Mutex<Option<(Row, String)>>,
@@ -218,8 +259,29 @@ impl Shared {
             other_host: !host::other_hosts(None).is_empty(),
             steam,
             vda: crate::download::plan(&models).ok().map(|plan| VdaStatus { ready: plan.is_empty(), bytes: plan.bytes() }),
+            models: self.status.lock().unwrap().models.clone(),
         };
         *self.status.lock().unwrap() = status;
+        self.refresh_models();
+    }
+
+    fn refresh_models(&self) {
+        let Some(socket) = &self.socket else { return };
+        if let Ok(value) = crate::control::send(socket, &crate::control::Request::Depth) {
+            self.status.lock().unwrap().models = model_status(&value);
+        }
+    }
+
+    /// Asks Meteor to download or remove a model.
+    fn depth_request(&self, row: Row, request: crate::control::Request) {
+        let result = match &self.socket {
+            Some(socket) => crate::control::send(socket, &request).map(|_| ()).map_err(|error| error.to_string()),
+            None => Err("Open Setup from Meteor's menu to install models".to_string()),
+        };
+        if let Err(error) = result {
+            self.errors.lock().unwrap().push((row, error));
+        }
+        self.refresh(false);
     }
 
     fn begin(&self, row: Row, text: &str) {
@@ -331,6 +393,7 @@ impl Shared {
                 Row::Host => self.use_host(Choice::Bundled),
                 Row::Steam => self.steam_options("launch_options"),
                 Row::Vda => self.install_vda(),
+                Row::Models => {}
             }
         }
     }
@@ -498,7 +561,7 @@ impl Window {
     }
 }
 
-fn save_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn save_png(path: &std::path::Path, image: &egui::ColorImage) -> Result<(), Box<dyn std::error::Error>> {
     let file = std::io::BufWriter::new(std::fs::File::create(path)?);
     let mut encoder = png::Encoder::new(file, image.size[0] as u32, image.size[1] as u32);
     encoder.set_color(png::ColorType::Rgba);
@@ -625,9 +688,58 @@ impl eframe::App for Window {
                 self.row(ui, Row::Vda, "VDA depth (NVIDIA TensorRT)", "Steadier, more detailed 3D. Takes about 3 minutes to prepare, once", &vda_state, busy, |ui| {
                     if !vda.ready && ui.button("Install").clicked() {
                         self.spawn(|shared, _| shared.install_vda());
+                    } else if vda.ready && self.shared.socket.is_some() && ui.button("Remove").clicked() {
+                        self.spawn(|shared, _| shared.depth_request(Row::Vda, crate::control::Request::RemoveVda));
                     }
                 });
             }
+
+            // Other depth models, downloaded by Meteor itself.
+            let models = &status.models;
+            for (id, name, bytes) in &models.offers {
+                let state = format!("{} download", gigabytes(*bytes));
+                let downloading = models.downloading.is_some();
+                self.row(ui, Row::Models, name, "Depth model on Vulkan, for this PC's GPU; no TensorRT download", &state, busy || downloading, |ui| {
+                    if ui.button("Install").clicked() {
+                        let id = id.clone();
+                        self.spawn(move |shared, _| shared.depth_request(Row::Models, crate::control::Request::DownloadVulkanVda(id)));
+                    }
+                });
+            }
+            if let Some((done, total)) = models.downloading {
+                ui.horizontal(|ui| {
+                    ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).show_percentage()
+                        .text(format!("Downloading a depth model: {} of {} MB", done / 1_000_000, total / 1_000_000))
+                        .desired_width(ui.available_width() - 80.0));
+                    if ui.small_button("Cancel").clicked() {
+                        self.spawn(|shared, _| shared.depth_request(Row::Models, crate::control::Request::CancelDownload));
+                    }
+                });
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
+            } else if let Some(error) = &models.error {
+                ui.colored_label(egui::Color32::from_rgb(235, 110, 100), format!("Last model download failed: {error}"));
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Support:");
+                if ui.button("Release information & licenses").clicked() {
+                    if let Some(prefix) = std::env::current_exe().ok().and_then(|e| e.parent().and_then(std::path::Path::parent).map(PathBuf::from)) {
+                        crate::menu::open(&prefix.join("share/doc/nightfall-meteor/RELEASE.md").to_string_lossy());
+                    }
+                }
+                if ui.button("Open log").clicked() {
+                    crate::menu::open(&crate::logfile::path().to_string_lossy());
+                }
+                if ui.button("Open settings file").clicked() {
+                    crate::open_config_file();
+                }
+                if ui.button("Open models folder").clicked() {
+                    let models = crate::config::load().models_dir.unwrap_or_else(crate::config::default_models_dir);
+                    let _ = std::fs::create_dir_all(&models);
+                    crate::menu::open(&models.to_string_lossy());
+                }
+            });
 
             ui.add_space(6.0);
             if self.shared.restart.load(Ordering::Relaxed) {

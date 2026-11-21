@@ -1274,6 +1274,7 @@ func _on_stream_started():
 	ui_controller.set_disconnect_visible(true)
 	_log("[STREAM] Connection started!")
 	settings_controller.apply_audio_boost()
+	stream_manager.watch_audio_output()
 	if not comp.in_use:
 		stream_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	welcome_viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED

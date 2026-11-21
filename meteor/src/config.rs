@@ -56,6 +56,8 @@ pub struct Config {
     pub host_env: std::collections::BTreeMap<String, String>,
     /// Optional managed XR service; disabled until explicitly configured.
     pub xr: XrConfig,
+    /// Where a stream's sound plays (see audio.rs).
+    pub audio_output: crate::audio::Output,
 }
 
 impl Default for Config {
@@ -74,6 +76,7 @@ impl Default for Config {
             host_binary: None,
             host_env: Default::default(),
             xr: XrConfig::default(),
+            audio_output: crate::audio::Output::default(),
         }
     }
 }
