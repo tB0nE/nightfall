@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Välj app",
 	"Previous": "Föregående",
-	"Next": "Nästa"
+	"Next": "Nästa",
+	"Multipath": "Flervägs",
+	"Use a second network via Meteor; a slow one is paused.": "Använd ett andra nätverk via Meteor; ett långsamt pausas."
 }

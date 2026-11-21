@@ -251,6 +251,14 @@ func get_network_latency_ms() -> int:
 		return _v2.get_network_latency_ms()
 	return -1
 
+## {active, paused, main, second}: packets read on each network path, or {}.
+## paused: "main" or "second" while that path rests for delivering far less
+## than the other (retried later), else "".
+func get_multipath_packets() -> Dictionary:
+	if _v2 and _v2.has_method("get_multipath_packets"):
+		return _v2.get_multipath_packets()
+	return {}
+
 func take_performance_stats() -> Dictionary:
 	if _v2 and _v2.has_method("take_performance_stats"):
 		return _v2.take_performance_stats()

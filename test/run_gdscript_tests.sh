@@ -84,6 +84,7 @@ tests=(
 	"test/test_native_xr_screens.gd"
 	"test/test_meteor_client.gd"
 	"test/test_meteor_host_pairing.gd"
+	"test/test_meteor_multipath.gd"
 	"test/test_controller_layout.gd"
 	"test/test_hand_aim.gd"
 	"test/test_pointer_input.gd"

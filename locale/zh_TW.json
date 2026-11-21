@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "選擇應用程式",
 	"Previous": "上一頁",
-	"Next": "下一頁"
+	"Next": "下一頁",
+	"Multipath": "多路徑",
+	"Use a second network via Meteor; a slow one is paused.": "透過 Meteor 使用第二個網路；較慢的會暫停。"
 }

@@ -85,6 +85,7 @@ public:
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;
+    Dictionary get_multipath_packets() const;
     Dictionary take_performance_stats();
     bool is_display_ready() const;
     String get_codec_capabilities_info() const;

@@ -39,6 +39,9 @@ const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
 const DEFAULT_HDR_ENABLED := false
+## Multipath: also receive the stream over a second network (NF_MULTIPATH_REMOTE)
+## when Nightfall Meteor offers it.
+const DEFAULT_MULTIPATH_ENABLED := true
 const DEFAULT_MICROPHONE_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
@@ -102,6 +105,7 @@ var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
 ## Ask the host for an HDR10 stream (10-bit, PQ) and tone-map it for the
 ## headset, instead of the host squashing its HDR desktop to SDR.
 var hdr_enabled: bool = DEFAULT_HDR_ENABLED
+var multipath_enabled: bool = DEFAULT_MULTIPATH_ENABLED
 ## Send the headset microphone to Nightfall Meteor (MeteorMicrophone).
 var microphone_enabled: bool = DEFAULT_MICROPHONE_ENABLED
 # Not reset with the other general settings: a settings reset should not
@@ -153,3 +157,4 @@ func reset_general() -> void:
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED
 	hdr_enabled = DEFAULT_HDR_ENABLED
+	multipath_enabled = DEFAULT_MULTIPATH_ENABLED

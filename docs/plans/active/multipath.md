@@ -37,6 +37,35 @@ same packet.
   owns the flow; the order doesn't matter.
 - Nothing changes in the host (Sunshine and its forks).
 
+## Safety: a weak second path must never hurt the main one
+
+Found on a Steam Frame two rooms away from the PC: the adapter link at
+-76 dBm turned a smooth Wi-Fi stream into ~13 fps.
+
+- **Only with Meteor.** Meteor's `/meteor` reply advertises
+  `"multipath": {"protocol": 1}`; the client opens the second path only when
+  the stream goes through such a Meteor (`LiSetMultipathRemote()` per
+  stream). A plain host sends the stream to whichever path pinged last.
+- **Meteor never waits for a path, and every path is equal.** Which path
+  owns a flow is just whichever pinged first, so the slow one can be the
+  owner. On Linux each path of a multipath client gets its own socket on the
+  listener's port (`SO_REUSEPORT`, connected to that address; the kernel
+  hands it that address's packets), so each path's send queue is its own:
+  a copy is dropped when its path has more than a quarter of its send
+  buffer unsent (`SIOCOUTQ`), and nothing ever waits. Elsewhere the
+  listener is shared (owner waited for, extras skipped on a backlog).
+- **The client rests whichever path falls behind**, main or second, never
+  both: when one delivers under half of the other's packets for two 2 s
+  windows, its pings stop (Meteor stops sending to it 3 s later) and it is
+  tried again after 30 s, doubling up to 4 min while it keeps failing.
+  When the flow's owning path rests, Meteor forwards the other path's pings
+  to the host so it doesn't end the session.
+- **A setting**: Stream tab > Multipath (Auto / Off), shown where a second
+  network is configured.
+- The status bar shows `2 paths <main>k/<second>k pkt/s`,
+  `main path paused (too slow)`, `2nd path paused (too slow)` or
+  `1 path (host can't use 2)`.
+
 ## Results (Steam Frame, Sunshine behind Meteor, 3440x1440 HEVC)
 
 | | Dropped frames/min |

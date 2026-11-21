@@ -1256,6 +1256,7 @@ void StreamConnection::_connection_thread_func() {
     // In local capture mode, skip audio entirely - audio is already on the machine
     PAUDIO_RENDERER_CALLBACKS arPtr = local_capture_mode_ ? nullptr : &arCallbacks;
 
+    LiSetMultipathRemote(multipath_remote_.c_str());
     int ret = LiStartConnection(&server_info_, &stream_config_, &clCallbacks, &drCallbacks, arPtr, nullptr, 0, nullptr, 0);
 
     if (ret != 0) {
@@ -1941,6 +1942,9 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
     }
 
     LiInitializeStreamConfiguration(&stream_config_);
+    // Second network path, only when the host (Nightfall Meteor) copies the
+    // stream to both; stream_manager.gd decides. "" = one path.
+    multipath_remote_ = String(stream_config.get("multipath_remote", "")).utf8().get_data();
     stream_config_.width = (int)stream_config.get("width", 1920);
     stream_config_.height = (int)stream_config.get("height", 1080);
     stream_config_.fps = (int)stream_config.get("fps", 60);
@@ -2123,6 +2127,20 @@ int StreamConnection::get_decode_queue_size() const {
 
 int StreamConnection::get_last_frame_latency_us() const {
     return last_frame_latency_us_.load();
+}
+
+Dictionary StreamConnection::get_multipath_packets() const {
+    Dictionary d;
+    uint64_t main_path = 0, second_path = 0;
+    int paused = -1;
+    if (is_streaming_.load()) {
+        LiGetMultipathPackets(&main_path, &second_path, &paused);
+    }
+    d["active"] = !multipath_remote_.empty();
+    d["paused"] = paused == 0 ? "main" : (paused == 1 ? "second" : "");
+    d["main"] = (int64_t)main_path;
+    d["second"] = (int64_t)second_path;
+    return d;
 }
 
 int StreamConnection::get_network_latency_ms() const {

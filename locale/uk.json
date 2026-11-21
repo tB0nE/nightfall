@@ -259,5 +259,7 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Вибрати застосунок",
 	"Previous": "Назад",
-	"Next": "Далі"
+	"Next": "Далі",
+	"Multipath": "Багатошляховий",
+	"Use a second network via Meteor; a slow one is paused.": "Друга мережа через Meteor; повільна призупиняється."
 }
