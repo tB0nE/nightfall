@@ -7,6 +7,16 @@ var secondary_cursor_layer: Node3D = null
 var secondary_cursor_viewport: SubViewport = null
 var _pointer_rect: TextureRect = null
 var _circle_rect: ColorRect = null
+## Tab dragging: the cursor layer also carries a copy of the dragged tab's
+## label just below the pointer dot, so dragging needs no extra layer.
+const DRAG_SIZE := Vector2i(512, 224)
+const DRAG_DOT_PX := 96.0
+## The dot's angular size while dragging (radians, roughly).
+const DRAG_DOT_ANGLE := 0.022
+var _drag_root: Control = null
+var _drag_label: Label = null
+## The cursor target's size before a drag, restored when it ends.
+var _rest_size := Vector2i.ZERO
 
 func setup(scene_root: Node, xr_origin: Node3D) -> void:
 	if cursor_layer:
@@ -28,6 +38,7 @@ func setup(scene_root: Node, xr_origin: Node3D) -> void:
 	_circle_rect = _make_circle("CircleTexture", false)
 	cursor_viewport.add_child(_circle_rect)
 	cursor_layer.set_layer_viewport(cursor_viewport)
+	_build_drag_art()
 
 	secondary_cursor_layer = _make_layer("LeftCompCursorLayer", Vector2(0.035, 0.035))
 	xr_origin.add_child(secondary_cursor_layer)
@@ -155,10 +166,81 @@ func _set_cursor_art(show_pointer: bool) -> void:
 		_pointer_rect.visible = show_pointer
 	if _circle_rect:
 		_circle_rect.visible = not show_pointer
+	if _drag_root:
+		_drag_root.visible = false
+
+func _build_drag_art() -> void:
+	_drag_root = Control.new()
+	_drag_root.name = "TabDragArt"
+	_drag_root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_drag_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_drag_root.visible = false
+	cursor_viewport.add_child(_drag_root)
+	var dot := _make_circle("DragDot", true)
+	dot.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	dot.position = Vector2((DRAG_SIZE.x - DRAG_DOT_PX) * 0.5, 0)
+	dot.size = Vector2(DRAG_DOT_PX, DRAG_DOT_PX)
+	_drag_root.add_child(dot)
+	var panel := PanelContainer.new()
+	panel.name = "DragLabelPanel"
+	panel.position = Vector2(16, DRAG_DOT_PX + 12)
+	panel.size = Vector2(DRAG_SIZE.x - 32, DRAG_SIZE.y - DRAG_DOT_PX - 20)
+	var style := StyleBoxFlat.new()
+	style.bg_color = Color(0.1, 0.1, 0.12, 0.92)
+	style.border_color = Color(1.0, 0.82, 0.1, 0.95)
+	style.set_border_width_all(4)
+	style.set_corner_radius_all(16)
+	style.content_margin_left = 20
+	style.content_margin_right = 20
+	panel.add_theme_stylebox_override("panel", style)
+	_drag_root.add_child(panel)
+	_drag_label = Label.new()
+	_drag_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_drag_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_drag_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_drag_label.clip_text = true
+	_drag_label.add_theme_font_size_override("font_size", 40)
+	_drag_label.add_theme_color_override("font_color", Color.WHITE)
+	panel.add_child(_drag_label)
+
+## The pointer while a tab is dragged: the dot at `point`, the tab's label
+## below it, facing the viewer. Shown even where the ray hits nothing.
+## The cursor target is resized for the drag. Under GLES that rebuilds the
+## layer's swapchain, so it happens only when a drag starts and ends
+## (end_drag()), never per frame.
+func show_drag(point: Vector3, camera_position: Vector3, title: String) -> bool:
+	if not cursor_layer or not _drag_root: return false
+	if _rest_size == Vector2i.ZERO:
+		_rest_size = cursor_viewport.size
+		cursor_viewport.size = DRAG_SIZE
+	if _pointer_rect: _pointer_rect.visible = false
+	if _circle_rect: _circle_rect.visible = false
+	_drag_root.visible = true
+	_drag_label.text = title
+	var to_camera := camera_position - point
+	var distance := maxf(to_camera.length(), 0.3)
+	var metres_per_px := distance * DRAG_DOT_ANGLE / DRAG_DOT_PX
+	cursor_layer.set_quad_size(Vector2(DRAG_SIZE) * metres_per_px)
+	var facing := to_camera.normalized() if to_camera.length() > 0.001 else Vector3.BACK
+	_place_primary(point + facing * 0.002, facing)
+	# The dot sits above the layer's centre; put the dot, not the centre, on the point.
+	var dot_above_centre := (DRAG_SIZE.y * 0.5 - DRAG_DOT_PX * 0.5) * metres_per_px
+	cursor_layer.global_position -= cursor_layer.global_transform.basis.y.normalized() * dot_above_centre
+	cursor_layer.visible = true
+	return true
+
+## The drag is over: the cursor target goes back to its own size and art.
+func end_drag() -> void:
+	if _rest_size == Vector2i.ZERO: return
+	cursor_viewport.size = _rest_size
+	_rest_size = Vector2i.ZERO
+	if _drag_root: _drag_root.visible = false
+	if _circle_rect: _circle_rect.visible = true
 
 func _set_cursor_viewport_size(wanted: Vector2i) -> void:
 	# GLES keeps the original 40x64 target resident; resizing it while active
 	# can rebuild the OpenXR layer's backing swapchain.
+	if _rest_size != Vector2i.ZERO: return # Dragging: show_drag() owns the size.
 	if cursor_viewport and RenderingServer.get_current_rendering_method() != "gl_compatibility":
 		cursor_viewport.size = wanted
 

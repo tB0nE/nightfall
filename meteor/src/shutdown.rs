@@ -50,6 +50,7 @@ mod tests {
             runtime_root: None,
             pairing: None,
             relay_ports: None,
+            offers: true,
         }, shutdown.subscribe()));
         let mut client = TcpStream::connect(address).await.unwrap();
         let mut greeting = [0; 8];

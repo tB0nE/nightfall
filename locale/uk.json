@@ -203,7 +203,7 @@
 	"Full": "Повний",
 	"Up": "Підключено",
 	"Requesting...": "Запит...",
-	"Moonlight Streaming for Quest": "Трансляція Moonlight для Quest",
+	"VR Desktop Streaming": "Трансляція робочого столу у VR",
 	"Connect": "Підключити",
 	"Connecting...": "Підключення...",
 	"Wake PC": "Розбудити ПК",
@@ -260,6 +260,8 @@
 	"Choose App": "Вибрати застосунок",
 	"Previous": "Назад",
 	"Next": "Далі",
+	"Multipath": "Багатошляховий",
+	"Use a second network via Meteor; a slow one is paused.": "Друга мережа через Meteor; повільна призупиняється.",
 	"Screen Res": "Розд. екрана",
 	"Match screen sharpness to the headset to save GPU time.": "Підлаштовує чіткість екрана під шолом, заощаджуючи GPU."
 }

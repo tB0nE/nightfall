@@ -250,7 +250,7 @@ func refresh_browser_screen(s: VRScreen) -> void:
 			cursor.visible = false
 	if available and in_use and s.comp_cylinder:
 		s.comp_layer = s.comp_cylinder
-		s.comp_layer.set_layer_viewport(s.comp_viewport)
+		SphereLayers.bind(s.comp_layer, s.comp_viewport)
 		s.comp_layer.visible = true
 		s.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		if s._original_mat == null:
@@ -1019,6 +1019,20 @@ func _update_ambient_geometry():
 	_ambient_layer.set_aspect_ratio(aspect)
 	_ambient_layer.global_position = s._comp_cyl_center
 	_ambient_layer.global_rotation = s.global_rotation
+	# On a sphere grid the primary is a sphere band: its glow is a larger band
+	# of the same sphere, so it curves with the screen in both directions.
+	var on_sphere: bool = s.on_sphere()
+	var frame := Transform3D.IDENTITY
+	var horizontal := 0.0
+	var upper := 0.0
+	var lower := 0.0
+	if on_sphere:
+		frame = ScreenPlacementGrid.sphere_frame(s.global_transform, s.surface_lat, s.sphere_r())
+		horizontal = expanded_size.x / maxf(s.placement_radius, 0.001)
+		var half: float = s.band_half() * AMBIENT_LAYER_SCALE
+		upper = minf(s.band_mid() + half, PI * 0.5)
+		lower = maxf(s.band_mid() - half, -PI * 0.5)
+	SphereLayers.sync(_ambient_layer, on_sphere, frame, s.sphere_r(), horizontal, upper, lower, maxi(0, screen_sort - 1))
 
 func setup_background_equirect():
 	# Only the environment background needs equirect layers. The UI, cursor,
@@ -1165,6 +1179,8 @@ func _update_cylinder_params_for(s: VRScreen):
 		radius = view_dist * 3.0
 	elif s.curvature == 2:
 		radius = view_dist * 2.0
+	if s.placement_radius > 0.0 and (s.curvature > 0 or s.on_surface()):
+		radius = s.placement_radius
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y
@@ -1185,7 +1201,7 @@ func _update_cylinder_params_for(s: VRScreen):
 	# The pointer hits the screen's own curved mesh. A screen moved since that
 	# mesh was built (e.g. a new primary taking the old one's place) would show
 	# its picture on this cylinder while the laser hits the old curve.
-	if s.curvature > 0 and absf(s.built_radius - radius) > radius * 0.01:
+	if not s.is_flat() and absf(s.built_radius - radius) > radius * 0.01:
 		s.apply_curvature()
 	s._comp_cyl_radius = radius
 	s._comp_cyl_central_angle = central_angle
@@ -1199,8 +1215,30 @@ func _update_cylinder_params_for(s: VRScreen):
 			cyl.set_aspect_ratio(layer_aspect)
 			cyl.global_position = s.global_position - screen_forward * radius
 			cyl.global_rotation = s.global_rotation
+	_sync_sphere_bands(s, sort_order)
 	if s == main.primary_screen:
 		_update_ambient_geometry()
+
+## Sphere grid screens: show each of the screen's layers as a band of the sphere.
+func _sync_sphere_bands(s: VRScreen, sort_order: int) -> void:
+	var on := s.on_sphere()
+	var frame := Transform3D.IDENTITY
+	var r := s.sphere_r()
+	var horizontal := 0.0
+	var upper := 0.0
+	var lower := 0.0
+	if on:
+		frame = ScreenPlacementGrid.sphere_frame(s.global_transform, s.surface_lat, r)
+		var pad := Vector2.ONE
+		if s.comp_base_size.x > 0 and s.comp_base_size.y > 0:
+			pad = Vector2(1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.x), 1.0 + float(BEZEL_PX * 2) / float(s.comp_base_size.y))
+		horizontal = s.mesh_size.x * pad.x / maxf(s.placement_radius, 0.001)
+		var half := s.band_half() * pad.y
+		upper = s.band_mid() + half
+		lower = s.band_mid() - half
+	for cyl in [s.comp_cylinder, s.comp_cylinder_left, s.comp_cylinder_right]:
+		if cyl:
+			SphereLayers.sync(cyl, on, frame, r, horizontal, upper, lower, sort_order)
 
 func update_cylinder_params():
 	for s in main.screens:
@@ -1424,7 +1462,7 @@ func switch_to_comp_layer():
 			continue
 		if scr.comp_cylinder:
 			scr.comp_layer = scr.comp_cylinder
-			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
+			SphereLayers.bind(scr.comp_layer, scr.comp_viewport)
 			scr.comp_layer.visible = true
 		scr.comp_viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 		scr.comp_shader_mat.set_shader_parameter("stereo_mode", 0)
@@ -1459,8 +1497,8 @@ func switch_to_stereo_comp_layer():
 	var stereo = main.settings_controller.get_stereo_mode()
 	s.comp_cylinder_left.visible = true
 	s.comp_cylinder_right.visible = true
-	s.comp_cylinder_left.set_layer_viewport(s.comp_viewport_left)
-	s.comp_cylinder_right.set_layer_viewport(s.comp_viewport_right)
+	SphereLayers.bind(s.comp_cylinder_left, s.comp_viewport_left)
+	SphereLayers.bind(s.comp_cylinder_right, s.comp_viewport_right)
 	s.comp_shader_mat_left.set_shader_parameter("stereo_mode", stereo)
 	s.comp_shader_mat_left.set_shader_parameter("eye_index", 1)
 	s.comp_shader_mat_right.set_shader_parameter("stereo_mode", stereo)
@@ -1475,7 +1513,7 @@ func switch_to_stereo_comp_layer():
 			continue
 		if scr.comp_cylinder:
 			scr.comp_layer = scr.comp_cylinder
-			scr.comp_layer.set_layer_viewport(scr.comp_viewport)
+			SphereLayers.bind(scr.comp_layer, scr.comp_viewport)
 			scr.comp_layer.visible = true
 		# Only the primary draws in 3D. A screen that was primary before keeps
 		# its eye layers, which would otherwise stay drawn over its flat one.

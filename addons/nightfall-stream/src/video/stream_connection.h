@@ -67,6 +67,10 @@ public:
     int get_decode_queue_size() const;
     int get_last_frame_latency_us() const;
     int get_network_latency_ms() const;
+    // {active, paused, main, second}: packets read on each network path
+    // (multipath); paused = "main"/"second" while that path rests for falling
+    // behind the other, else "".
+    Dictionary get_multipath_packets() const;
     Dictionary take_performance_stats();
     bool is_display_ready() const;
 
@@ -188,6 +192,7 @@ private:
     std::string gfe_version_std_;
     SERVER_INFORMATION server_info_{};
     STREAM_CONFIGURATION stream_config_{};
+    std::string multipath_remote_;
 
     int active_video_format_ = 0;
     AVColorSpace current_colorspace_ = AVCOL_SPC_BT709;

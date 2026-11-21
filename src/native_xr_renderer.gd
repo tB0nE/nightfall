@@ -139,7 +139,9 @@ func can_render_current_config() -> bool:
 	var mode := _mode()
 	if mode >= 8 and mode <= 9:
 		return false
-	if main.primary_screen and main.primary_screen.curvature > 0 and not renderer.supports_cylinder():
+	if main.primary_screen and not main.primary_screen.is_flat() and not renderer.supports_cylinder():
+		return false
+	if main.primary_screen and main.primary_screen.on_sphere() and not supports_sphere():
 		return false
 	return true
 
@@ -268,18 +270,36 @@ func refresh() -> void:
 			request_stats_overlay_update()
 		main._log("[NATIVE-XR] Native renderer active; legacy full-resolution passes disabled")
 
-## A screen's layer placement: a cylinder is posed at its centre, a quad at the screen.
+## Sphere grid screens are equirect bands (curvature 3); needs a renderer that has them.
+const SPHERE_CURVATURE := 3
+
+func supports_sphere() -> bool:
+	return renderer != null and renderer.has_method("supports_equirect") and renderer.supports_equirect()
+
+## A screen's layer placement: a cylinder is posed at its centre, a quad at the
+## screen, and a sphere band at the sphere's centre.
 func _layer_geometry(screen: VRScreen) -> Dictionary:
 	var transform: Transform3D = screen.global_transform
-	var radius: float = screen.get_cylinder_radius() if screen.curvature > 0 else 1.0
-	var central_angle: float = screen.mesh_size.x / radius if screen.curvature > 0 else 0.01
-	if screen.curvature > 0:
+	var curved := not screen.is_flat()
+	var radius: float = screen.get_cylinder_radius() if curved else 1.0
+	var central_angle: float = screen.mesh_size.x / radius if curved else 0.01
+	var curvature: int = maxi(screen.curvature, 1) if curved else 0
+	var upper := 0.0
+	var lower := 0.0
+	if screen.on_sphere() and supports_sphere():
+		curvature = SPHERE_CURVATURE
+		radius = screen.sphere_r()
+		transform = ScreenPlacementGrid.sphere_frame(screen.global_transform, screen.surface_lat, radius)
+		upper = screen.band_mid() + screen.band_half()
+		lower = screen.band_mid() - screen.band_half()
+	elif curved:
 		var screen_forward: Vector3 = -screen.global_transform.basis.z
 		transform.origin = screen.global_position - screen_forward * radius
 	var view_dist := maxf((screen.global_position - main.xr_camera.global_position).length(), 0.5)
 	return {
 		"transform": transform, "width": screen.mesh_size.x, "height": screen.mesh_size.y,
-		"curvature": screen.curvature, "radius": radius, "central_angle": central_angle,
+		"curvature": curvature, "radius": radius, "central_angle": central_angle,
+		"upper": upper, "lower": lower,
 		"sort_order": clampi(int((10.0 - view_dist) * 10.0), 1, 100),
 	}
 
@@ -289,6 +309,8 @@ func _sync_geometry() -> void:
 	var g := _layer_geometry(main.primary_screen)
 	renderer.set_geometry(g.transform, g.width, g.height, g.curvature, g.radius, g.central_angle,
 			g.sort_order, main.settings.bezel_enabled)
+	if supports_sphere():
+		renderer.set_sphere_band(g.upper, g.lower)
 	renderer.set_compositor_sharpening(_native_compositor_sharpening())
 	if draws_secondary_screens():
 		_sync_secondary_screens()

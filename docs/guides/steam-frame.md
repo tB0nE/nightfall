@@ -13,6 +13,29 @@ pairing, hardware HEVC/H.264 decoding, screens, menus, controllers.
 | Composition | SteamVR has no `XR_KHR_composition_layer_equirect2`. `setup_background_equirect()` returned early without it and skipped the UI, cursor and ray layers, so the pointer was drawn behind every panel. |
 | Input | SteamVR keeps reporting `XR_EXT_hand_tracking` joints derived from the held controllers, so Nightfall flipped to hand mode and hid the pointer. On SteamVR a tracked controller now owns the pointers. |
 
+## Experimental cross-built preview
+
+The archive produced by `tools/steam_frame/package.sh VERSION` includes a
+release ARM64 client and the Steam launcher. Extract it on the Frame and add
+`launch-from-steam.sh` to Steam. This variant disables local depth inference;
+AI 3D uses Meteor. It does not include the Android WebView browser.
+
+The complete cross-build command is
+`bash tools/steam_frame/build.sh v0.9.1-preview.2`. It needs Docker, the Godot
+4.7 editor/export templates and the ARM64 GodotOpenXRVendors addon.
+
+To run the stages separately on x86_64, first provide the `nightfall-linux-builder` image
+from `Dockerfile.linux-build`, then build `tools/steam_frame/Dockerfile.cross`
+as `nightfall-steam-frame-cross`. Mount `addons/nightfall-stream` read-only at
+`/source` and a persistent `.build-cache/steam-frame-preview` at `/work`, then
+run `tools/steam_frame/build-native.sh` in that container. Copy the script into
+the cache first or mount it separately. `package.sh` uses the ARM64 Godot 4.7
+export template and the installed GodotOpenXRVendors ARM64 library. Its
+`NightfallSteamFrame` preset is separate from the normal Linux preset.
+
+Cross-compilation and package validation do not establish runtime performance
+on real Frame hardware. See the archive README for limitations and controls.
+
 ## Building and running on the Frame
 
 1. Enable Developer Mode on the Frame (Settings -> System) for SSH.
@@ -60,8 +83,8 @@ on-device depth models (they are not in the repository); AI 3D then needs Meteor
   Frame Limit / Refresh Rate Override. That per-app value is what
   `xrEnumerateDisplayRefreshRatesFB` reports, so Nightfall's own choice follows it.
 - The decoder has no AV1 (H.264, HEVC, VP9 only).
-- SteamVR offers `XR_VALVE_frame_controller_interaction`; the action map has no
-  Frame profile yet, so SteamVR maps the generic/Touch bindings.
+- SteamVR offers `XR_VALVE_frame_controller_interaction`; the action map includes
+  its dedicated Frame profile, including View/Menu and physical bumpers.
 - Headset screenshots: OpenVR `IVRScreenshots::TakeStereoScreenshot` from any
   background OpenVR app captures the composited view, layers included.
 
@@ -111,8 +134,8 @@ SteamVR compositor and runs on-device depth. What was measured on it (90 Hz,
 
 ## Not done yet
 
-- A `linux.arm64` export preset and packaging (the app is assembled by hand).
-- A Frame interaction profile in `openxr_action_map.tres`, and `vrpreferences.json`.
+- Frame hardware acceptance of the cross-built archive and packaging.
+- A refresh-rate preference file (`vrpreferences.json`), if a higher default is desired.
 - Many settings use `OS.get_name() == "Android"` to mean "standalone headset"
   (Screens tab, HDR, Save Log, headset depth options); they are hidden on the Frame.
 - Hand/controller ownership via `XR_EXT_hand_tracking_data_source` instead of the

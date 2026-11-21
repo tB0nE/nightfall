@@ -203,7 +203,7 @@
 	"Full": "Volledig",
 	"Up": "Gekoppel",
 	"Requesting...": "Versoek...",
-	"Moonlight Streaming for Quest": "Moonlight-stroming vir Quest",
+	"VR Desktop Streaming": "VR-rekenaarstroming",
 	"Connect": "Koppel",
 	"Connecting...": "Koppel tans...",
 	"Wake PC": "Maak rekenaar wakker",
@@ -260,6 +260,8 @@
 	"Choose App": "Kies app",
 	"Previous": "Vorige",
 	"Next": "Volgende",
+	"Multipath": "Meerpad",
+	"Use a second network via Meteor; a slow one is paused.": "Gebruik 'n tweede netwerk via Meteor; 'n stadige word gestop.",
 	"Screen Res": "Skermres.",
 	"Match screen sharpness to the headset to save GPU time.": "Pas skermskerpte by die headset aan om GPU-tyd te spaar."
 }

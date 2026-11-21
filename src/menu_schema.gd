@@ -41,7 +41,7 @@ static func get_tab_buttons() -> Array:
 		_tab_button(&"_tab_btn_control", "Control", 2, "Configure pointers, hand tracking, and controller mapping."),
 		_tab_button(&"_tab_btn_ai3d", "AI 3D", 3, "Configure local AI stereoscopic depth conversion."),
 		_tab_button(&"_tab_btn_picture", "Picture", 4, "Adjust the streamed image."),
-		_tab_button(&"_tab_btn_monitors", "Screens", 5, "Choose screen content: PC or browser.", true, OS.get_name() != "Android", 1.0 if OS.get_name() == "Android" else 0.3),
+		_tab_button(&"_tab_btn_monitors", "Screens", 5, "Choose screen content: PC or browser.", true, not SettingsPlatformPolicy.multi_screen_available(), 1.0 if SettingsPlatformPolicy.multi_screen_available() else 0.3),
 		# Settings has no tab button: the gear in the top bar opens it.
 		_tab_button(&"_tab_btn_settings", "Settings", 6, "Configure language, diagnostics, and connection options.", false, true),
 	]
@@ -91,7 +91,10 @@ static func get_tabs() -> Array:
 					_option(&"_ui_codec_btn", "Codec", "HEVC", "Choose the video codec. H.264+ enables a higher bitrate range.", TARGET_SETTINGS, &"cycle_codec"),
 					_option(&"_ui_hdr_btn", "HDR", "Off", "Request HDR when the host display uses it; tone-mapped for the headset.", TARGET_SETTINGS, &"toggle_hdr", OS.get_name() == "Android"),
 					_option(&"_ui_audio_boost_btn", "Volume", "Normal", "Boost quiet stream audio. Loud peaks are softly limited to avoid clipping.", TARGET_SETTINGS, &"cycle_audio_boost"),
-					_option(&"_ui_usb_link_btn", "USB Link", "Off", "Stream over a USB-C cable instead of Wi-Fi, once the host is reachable over it.", TARGET_SETTINGS, &"toggle_usb_link", OS.get_name() == "Android"),
+					# One network slot: USB Link exists on Android; Multipath where a
+					# second network is configured (NF_MULTIPATH_REMOTE, Linux headsets).
+					_option(&"_ui_usb_link_btn", "USB Link", "Off", "Stream over a USB-C cable instead of Wi-Fi, once the host is reachable over it.", TARGET_SETTINGS, &"toggle_usb_link", true) if OS.get_name() == "Android"
+						else _option(&"_ui_multipath_btn", "Multipath", "Auto", "Use a second network via Meteor; a slow one is paused.", TARGET_SETTINGS, &"toggle_multipath", not OS.get_environment("NF_MULTIPATH_REMOTE").strip_edges().is_empty()),
 				],
 			},
 		],

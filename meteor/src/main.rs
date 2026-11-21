@@ -444,7 +444,9 @@ async fn main() {
     let mut xr_discovery = None;
     let mut xr_trust = None;
     let mut xr_startup_error = None;
-    let xr_address = dev_xr_address.clone().or_else(|| config.xr.enabled.then(|| config.xr.listen.clone()));
+    // macOS has no XR runtime, but the headset's control connection also carries the host
+    // background (colour-key passthrough), so it always runs there, control only.
+    let xr_address = dev_xr_address.clone().or_else(|| (config.xr.enabled || cfg!(target_os = "macos")).then(|| config.xr.listen.clone()));
     let xr_service = if let Some(address) = xr_address {
         let start = async {
             let address = address.parse::<std::net::SocketAddr>().map_err(std::io::Error::other)?;
@@ -459,6 +461,8 @@ async fn main() {
             let key = key.clone().ok_or_else(|| std::io::Error::other("XR requires Meteor's host key"))?;
             let runtime_root = value("--xr-runtime-root").map(std::path::PathBuf::from)
                 .or_else(|| dev_xr_address.is_none().then(|| config.xr.runtime_root()));
+            #[cfg(target_os = "macos")]
+            let runtime_root: Option<std::path::PathBuf> = { let _ = runtime_root; None };
             let runtime_root = xr_control::validate_runtime_root(runtime_root)?;
             #[cfg(windows)]
             let steam_broker=if let Some(root)=runtime_root.as_ref().filter(|root|root.join("windows-games.json").is_file()) {
@@ -466,11 +470,11 @@ async fn main() {
             }else{None};
             #[cfg(windows)]
             let steamvr_broker=if steam_broker.is_some() {Some(xr_steamvr_windows::start(runtime_root.as_deref())?)}else{None};
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             if dev_xr_address.is_none() && !runtime_root.as_ref().is_some_and(|root| root.join("xr-runtime/manifest.json").is_file()) {
                 return Err(std::io::Error::other("Normal XR startup requires an installed managed runtime"));
             }
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             if dev_xr_address.is_none() {
                 let root = runtime_root.as_ref().unwrap();
                 let check = tokio::time::timeout(std::time::Duration::from_secs(10),
@@ -485,7 +489,7 @@ async fn main() {
             }
             let listener = tokio::net::TcpListener::bind(address).await?;
             let port = listener.local_addr()?.port();
-            let relay_ports = if dev_xr_address.is_none() {
+            let relay_ports = if dev_xr_address.is_none() && !cfg!(target_os = "macos") {
                 let pair = (config.xr.video_port, config.xr.tracking_port);
                 let occupied = firewall::ports(&map, side, true);
                 if pair.0 == 0 || pair.1 == 0 || pair.0 == pair.1 || pair.0 == port || pair.1 == port ||
@@ -510,7 +514,8 @@ async fn main() {
                 Some(service)
             } else {None};
             let service_config=xr_control::ServiceConfig {
-                key, allowed, enable_relay: true, runtime_root, pairing, relay_ports,
+                key, allowed, enable_relay: !cfg!(target_os = "macos"), runtime_root, pairing, relay_ports,
+                offers: !cfg!(target_os = "macos"),
             };
             let cancel=shutdown.subscribe();
             Ok::<_, std::io::Error>((tokio::spawn(async move {
@@ -564,7 +569,8 @@ async fn main() {
         sunshine_host: config.sunshine_host.clone(),
         side,
         host_ports: host_view.supervisor.is_some(),
-        xr_ports: xr_discovery.map(|port| (port, config.xr.video_port, config.xr.tracking_port)),
+        // macOS runs only the control port (no relay).
+        xr_ports: xr_discovery.map(|port| if cfg!(target_os = "macos") { (port, port, port) } else { (port, config.xr.video_port, config.xr.tracking_port) }),
         sunshine_up: AtomicBool::new(false),
         firewall: std::sync::Mutex::new(firewall::Status::Checking),
     });

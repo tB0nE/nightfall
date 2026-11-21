@@ -203,7 +203,7 @@
 	"Full": "Plný",
 	"Up": "Připojeno",
 	"Requesting...": "Žádám...",
-	"Moonlight Streaming for Quest": "Streamování Moonlight pro Quest",
+	"VR Desktop Streaming": "Streamování plochy ve VR",
 	"Connect": "Připojit",
 	"Connecting...": "Připojování...",
 	"Wake PC": "Probudit PC",
@@ -260,6 +260,8 @@
 	"Choose App": "Vybrat aplikaci",
 	"Previous": "Předchozí",
 	"Next": "Další",
+	"Multipath": "Více cest",
+	"Use a second network via Meteor; a slow one is paused.": "Druhá síť přes Meteor; pomalá se pozastaví.",
 	"Screen Res": "Rozlišení obr.",
 	"Match screen sharpness to the headset to save GPU time.": "Přizpůsobí ostrost obrazovky headsetu a šetří čas GPU."
 }

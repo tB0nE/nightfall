@@ -203,7 +203,7 @@
 	"Full": "Täysi",
 	"Up": "Yhdistetty",
 	"Requesting...": "Pyydetään...",
-	"Moonlight Streaming for Quest": "Moonlight-striimaus Questille",
+	"VR Desktop Streaming": "VR-työpöydän striimaus",
 	"Connect": "Yhdistä",
 	"Connecting...": "Yhdistetään...",
 	"Wake PC": "Herätä PC",
@@ -260,6 +260,8 @@
 	"Choose App": "Valitse sovellus",
 	"Previous": "Edellinen",
 	"Next": "Seuraava",
+	"Multipath": "Monipolku",
+	"Use a second network via Meteor; a slow one is paused.": "Käytä toista verkkoa Meteorin kautta; hidas tauotetaan.",
 	"Screen Res": "Näytön tark.",
 	"Match screen sharpness to the headset to save GPU time.": "Sovita näytön terävyys laseihin ja säästä GPU-aikaa."
 }

@@ -759,6 +759,10 @@ bool NightfallXrRenderer::register_provider() {
 		for (uint32_t i = 0; i < ext_count; i++) {
 			if (strcmp(exts[i].extensionName, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME) == 0) {
 				cylinder_supported = true;
+			} else if (strcmp(exts[i].extensionName, XR_KHR_COMPOSITION_LAYER_EQUIRECT2_EXTENSION_NAME) == 0) {
+				// Godot's composition-layer extension requests equirect2 whenever
+				// the runtime offers it, so availability here means enabled.
+				equirect_supported = true;
 			} else if (strcmp(exts[i].extensionName, XR_FB_COMPOSITION_LAYER_SETTINGS_EXTENSION_NAME) == 0) {
 				// The patched Godot composition-layer extension requests this before
 				// instance creation, so availability here also means it was enabled.
@@ -770,8 +774,8 @@ bool NightfallXrRenderer::register_provider() {
 
 	api->register_composition_layer_provider(this);
 	registered_as_layer_provider = true;
-	XR_LOG("nightfall-xr registered as composition layer provider (cylinder=%d compositor_sharpening=%d)",
-			cylinder_supported, compositor_sharpening_supported);
+	XR_LOG("nightfall-xr registered as composition layer provider (cylinder=%d equirect=%d compositor_sharpening=%d)",
+			cylinder_supported, equirect_supported, compositor_sharpening_supported);
 	return true;
 }
 
@@ -1505,8 +1509,38 @@ bool NightfallXrRenderer::supports_cylinder() const {
 	return cylinder_supported;
 }
 
+bool NightfallXrRenderer::supports_equirect() const {
+	return equirect_supported;
+}
+
+void NightfallXrRenderer::set_sphere_band(float p_upper, float p_lower) {
+	pending_upper = p_upper;
+	pending_lower = p_lower;
+}
+
 bool NightfallXrRenderer::supports_compositor_sharpening() const {
 	return compositor_sharpening_supported;
+}
+
+// A latitude/longitude band of a sphere centred at the pose (sphere grid
+// screens). The bezel grows the band about its centre latitude.
+void NightfallXrRenderer::fill_sphere_band(XrCompositionLayerEquirect2KHR *p_band, const void *p_next,
+		XrEyeVisibility p_eye, const XrSwapchainSubImage &p_sub_image, XrSpace p_space, const XrPosef &p_pose,
+		float p_radius, float p_horizontal, float p_upper, float p_lower, float p_grow_y) {
+	memset(p_band, 0, sizeof(*p_band));
+	p_band->type = XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR;
+	p_band->next = p_next;
+	p_band->layerFlags = display_key.a > 0.0 ? XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT : 0;
+	p_band->eyeVisibility = p_eye;
+	p_band->subImage = p_sub_image;
+	p_band->space = p_space;
+	p_band->pose = p_pose;
+	p_band->radius = std::max(0.05f, p_radius);
+	p_band->centralHorizontalAngle = std::min(std::max(p_horizontal, 0.001f), 6.2831853f);
+	const float middle = (p_upper + p_lower) * 0.5f;
+	const float half = std::max((p_upper - p_lower) * 0.5f * p_grow_y, 0.0005f);
+	p_band->upperVerticalAngle = std::min(middle + half, 1.5707963f);
+	p_band->lowerVerticalAngle = std::max(middle - half, -1.5707963f);
 }
 
 void NightfallXrRenderer::set_geometry(const Transform3D &p_transform, float p_width, float p_height,
@@ -2478,6 +2512,16 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 			layer_next = settings;
 		}
 
+		if (pending_curvature == SPHERE_CURVATURE && equirect_supported) {
+			const float grow_x = pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f;
+			const float grow_y = pending_bezel_enabled ? (float)output_height / (float)video_height : 1.0f;
+			XrCompositionLayerEquirect2KHR *band = &equirect_layers[eye];
+			fill_sphere_band(band, layer_next, eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT,
+					sub_image, space, pose, pending_radius, pending_central_angle * grow_x,
+					pending_upper, pending_lower, grow_y);
+			return (uint64_t)(void *)band;
+		}
+
 		if (pending_curvature > 0 && cylinder_supported) {
 			XrCompositionLayerCylinderKHR *cylinder = &cylinder_layers[eye];
 			memset(cylinder, 0, sizeof(*cylinder));
@@ -2567,6 +2611,8 @@ void NightfallXrRenderer::set_secondary_screens(Array p_screens) {
 		screen.curvature = d.get("curvature", 0);
 		screen.radius = std::max(0.01f, (float)d.get("radius", 1.0f));
 		screen.central_angle = std::max(0.001f, (float)d.get("central_angle", 0.5f));
+		screen.upper = d.get("upper", 0.0f);
+		screen.lower = d.get("lower", 0.0f);
 		screen.sort_order = d.get("sort_order", 1);
 		Vector2i pixels = d.get("pixels", Vector2i());
 		PackedFloat32Array crop = d.get("crop", PackedFloat32Array());
@@ -2631,6 +2677,8 @@ bool NightfallXrRenderer::apply_pending_secondaries() {
 				screen.curvature = wanted[i].curvature;
 				screen.radius = wanted[i].radius;
 				screen.central_angle = wanted[i].central_angle;
+				screen.upper = wanted[i].upper;
+				screen.lower = wanted[i].lower;
 				screen.sort_order = wanted[i].sort_order;
 			}
 		}
@@ -2864,6 +2912,11 @@ uint64_t NightfallXrRenderer::secondary_layer(SecondaryScreen &p_screen, XrSpace
 				? XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB
 				: XR_COMPOSITION_LAYER_SETTINGS_NORMAL_SHARPENING_BIT_FB;
 		layer_next = &p_screen.settings;
+	}
+	if (p_screen.curvature == SPHERE_CURVATURE && equirect_supported) {
+		fill_sphere_band(&p_screen.equirect, layer_next, XR_EYE_VISIBILITY_BOTH, sub_image, p_space, pose,
+				p_screen.radius, p_screen.central_angle * grow_x, p_screen.upper, p_screen.lower, grow_y);
+		return (uint64_t)(void *)&p_screen.equirect;
 	}
 	if (p_screen.curvature > 0 && cylinder_supported) {
 		XrCompositionLayerCylinderKHR *cylinder = &p_screen.cylinder;

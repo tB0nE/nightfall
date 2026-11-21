@@ -203,7 +203,7 @@
 	"Full": "フル",
 	"Up": "接続中",
 	"Requesting...": "要求中...",
-	"Moonlight Streaming for Quest": "Quest 向け Moonlight ストリーミング",
+	"VR Desktop Streaming": "VR デスクトップストリーミング",
 	"Connect": "接続",
 	"Connecting...": "接続中...",
 	"Wake PC": "PCを起動",
@@ -260,6 +260,8 @@
 	"Choose App": "アプリを選択",
 	"Previous": "前へ",
 	"Next": "次へ",
+	"Multipath": "マルチパス",
+	"Use a second network via Meteor; a slow one is paused.": "Meteor 経由で2つ目のネットワークを使用。遅い方は休止。",
 	"Screen Res": "画面解像度",
 	"Match screen sharpness to the headset to save GPU time.": "画面の鮮明さをヘッドセットに合わせ、GPUを節約します。"
 }

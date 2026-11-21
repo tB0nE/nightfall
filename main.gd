@@ -308,6 +308,7 @@ var _staged_preset_id: StringName = &""
 var _pending_monitor_apply: bool = false
 
 var stream_manager: StreamManager
+var placement_grid: ScreenPlacementController
 var xr_interaction: XRInteraction
 var input_handler: InputHandler
 var ui_controller: UIController
@@ -508,8 +509,6 @@ var _ui_pt_btn: Button
 var _ui_bg_btn: Button
 var _ui_curve_btn: Button
 var _ui_bezel_btn: Button
-var _ui_monitors_btn: Button
-var _ui_virtual_monitors_btn: Button
 var _ui_apply_preset_btn: Button
 var _ui_save_preset_btn: Button
 var _ui_remove_preset_btn: Button
@@ -547,6 +546,7 @@ var _ui_audio_boost_btn: Button
 var _ui_audio_output_btn: Button
 var _ui_usb_link_btn: Button
 var _ui_hdr_btn: Button
+var _ui_multipath_btn: Button
 var _ui_host_cursor_btn: Button
 var _ui_sharpen_btn: Button
 # Picture tab (2026-08-31) - see ui_controller.gd's build_ui() for layout.
@@ -1024,6 +1024,8 @@ func screen_cursor_mode(screen: VRScreen) -> int:
 	return settings.cursor_mode
 
 func _update_cursor_layer():
+	if not xr_interaction or xr_interaction.tab_drag_title() == "":
+		composition_pointers.end_drag()
 	if not comp.in_use and not pcvr_handover.menu_only:
 		composition_pointers.hide_primary()
 		composition_pointers.hide_all_embedded(screens)
@@ -1036,6 +1038,13 @@ func _update_cursor_layer():
 		composition_pointers.hide_all_embedded(screens)
 		if pointer_cursor: pointer_cursor.visible = false
 		return
+	# Dragging a tab: the cursor carries the tab's label, also over empty space.
+	if xr_interaction and xr_interaction.tab_drag_title() != "":
+		if composition_pointers.show_drag(xr_interaction.tab_drag_point(), xr_camera.global_position, xr_interaction.tab_drag_title()):
+			composition_pointers.hide_all_embedded(screens)
+			if pointer_cursor: pointer_cursor.visible = false
+			if contact_dot: contact_dot.visible = false
+			return
 	var active_raycast = xr_interaction.get_active_raycast() if xr_interaction else (hand_raycast if is_xr_active else mouse_raycast)
 	var on_screen = false
 	# Same rule as the pointer: only during a stream (the welcome screen is drawn
@@ -1638,6 +1647,7 @@ func _init_modules():
 	screen_sources = ScreenSources.new(self)
 	screen_sources.changed.connect(ui_controller.update_screen_sources)
 	screen_manager = ScreenManager.new(self)
+	placement_grid = ScreenPlacementController.new(self)
 	settings_controller = SettingsController.new(self)
 	state_manager = StateManager.new(self)
 	controller_mapper = ControllerMapper.new(self)
@@ -1849,16 +1859,22 @@ func _cell_transform_from_screens(gx: int, gy: int, anchor_gx: int, anchor_gy: i
 
 	return t
 
-# Single-cell convenience wrapper around _cell_transform_from_screens() - fine
-# for the one-off calls (preset apply, default placement); the live-drag hot
-# path below builds one shared cache instead of using this per candidate.
+# Grid slot (gx, gy) relative to the primary's slot. The Original layout uses
+# the slot transforms above; cylinder and sphere grids map slots onto their
+# surface, and the caller's adhere() lays the screen on it.
 func grid_cell_transform(gx: int, gy: int, anchor_gx: int, anchor_gy: int) -> Transform3D:
-	var n = absi((gx - anchor_gx) / MonitorGrid.SPAN)
-	return _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, _grid_screen_transforms(n))
+	if placement_grid == null: placement_grid = ScreenPlacementController.new(self)
+	if not ScreenPlacementGrid.single_surface(placement_grid.shape()):
+		var n = absi((gx - anchor_gx) / MonitorGrid.SPAN)
+		return _cell_transform_from_screens(gx, gy, anchor_gx, anchor_gy, _grid_screen_transforms(n))
+	var step := settings.placement_grid_spacing
+	var horizontal := ceilf((primary_screen.mesh_size.x + SCREEN_GAP) / step) * step
+	var vertical := ceilf((primary_screen.mesh_size.y + SCREEN_GAP) / step) * step
+	var point := Vector3(float(gx - anchor_gx) / MonitorGrid.SPAN * horizontal,
+		-float(gy - anchor_gy) / MonitorGrid.SPAN * vertical, 0)
+	return placement_grid.anchor() * placement_grid.from_grid(point)
 
-# Nearest unoccupied SPANxSPAN cell to raw_pos. Brute-forces all
-# (COLS-SPAN+1)*(ROWS-SPAN+1) = 21 candidate cells against a single shared
-# transform cache - cheap enough to run every frame during a live drag.
+# Nearest unoccupied SPANxSPAN cell to raw_pos (Original layout live snapping).
 # occupied is an Array[Vector2i] of other screens' current grid cells.
 # Returns Vector2i(-1,-1) if every cell is blocked.
 func nearest_free_grid_cell(raw_pos: Vector3, occupied: Array, anchor_gx: int, anchor_gy: int) -> Vector2i:
@@ -2013,6 +2029,7 @@ func remove_screen(monitor_id: StringName, target: VRScreen = null) -> void:
 					retired_controls.append(layer)
 					layer.visible = false
 					layer.set_layer_viewport(null)
+					SphereLayers.release(layer)
 					layer.queue_free()
 			var retired_viewports: Array = []
 			for viewport in [s.comp_grab_bar_viewport, s.comp_corner_viewport]:
@@ -2023,16 +2040,19 @@ func remove_screen(monitor_id: StringName, target: VRScreen = null) -> void:
 				if s.comp_cylinder:
 					s.comp_cylinder.visible = false
 					s.comp_cylinder.set_layer_viewport(null)
+					SphereLayers.release(s.comp_cylinder)
 					xr_origin.remove_child(s.comp_cylinder)
 					s.comp_cylinder.queue_free()
 				if s.comp_cylinder_left:
 					s.comp_cylinder_left.visible = false
 					s.comp_cylinder_left.set_layer_viewport(null)
+					SphereLayers.release(s.comp_cylinder_left)
 					xr_origin.remove_child(s.comp_cylinder_left)
 					s.comp_cylinder_left.queue_free()
 				if s.comp_cylinder_right:
 					s.comp_cylinder_right.visible = false
 					s.comp_cylinder_right.set_layer_viewport(null)
+					SphereLayers.release(s.comp_cylinder_right)
 					xr_origin.remove_child(s.comp_cylinder_right)
 					s.comp_cylinder_right.queue_free()
 				if s.comp_viewport:

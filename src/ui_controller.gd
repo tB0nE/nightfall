@@ -28,8 +28,10 @@ var _vr_library_open := false
 var _pcvr_tabs: HBoxContainer
 var _pcvr_stream_tab: Button
 var _pcvr_apps_tab: Button
-var _browser_count_btn: Button
+var _grid_spacing_btn: Button
+var _grid_curve_btn: Button
 var _layout_btn: Button
+var _lock_btn: Button
 var _settings_popup: SettingsOptionPopup
 var _ambient_gain_btn: Button
 var _layout_popup: PanelContainer
@@ -661,28 +663,24 @@ func update_screen_sources() -> void:
 func update_monitor_tab():
 	if not main._ui_apply_preset_btn:
 		return
-	update_option_btn(main._ui_monitors_btn, "%d" % main._staged_physical_count)
-	update_option_btn(main._ui_virtual_monitors_btn, "%d" % main._staged_virtual_count)
-	update_option_btn(_browser_count_btn, "%d" % main.settings_controller.browser_screen_count())
 	update_option_btn(main._ui_grid_mode_btn, "On" if main.settings.grid_mode_enabled else "Off")
+	update_option_btn(_layout_btn, ScreenPlacementGrid.LABELS[main.settings.placement_grid_shape])
+	update_option_btn(_grid_spacing_btn, "%d cm" % roundi(main.settings.placement_grid_spacing * 100))
+	update_option_btn(_grid_curve_btn, "%d%%" % main.settings.placement_grid_curve)
+	# Only the cylinder and sphere surfaces curve.
+	if _grid_curve_btn: _grid_curve_btn.disabled = not main.settings.grid_mode_enabled \
+		or not ScreenPlacementGrid.single_surface(main.settings.placement_grid_shape)
+	update_option_btn(_lock_btn, "On" if main.settings.secondary_screens_locked else "Off")
 	_refresh_preset_row()
 	var selected = main._staged_preset_id != &""
 	var selected_preset = MonitorPresets.find_preset(String(main._staged_preset_id)) if selected else {}
-	# Multi-monitor capture/selection is Polaris-only (see
-	# SettingsController.detect_polaris_host()) - every other host (Sunshine,
-	# etc.) has no manifest to pick real monitors from, so none of this tab's
-	# controls do anything meaningful for it. Grey the whole tab out rather
-	# than let it look interactive and silently no-op (or restart the stream
-	# for a change that can never actually take effect). Revisit once/if
-	# non-Polaris multi-monitor selection is supported.
+	# Host monitor controls require a manifest. Placement controls also work
+	# for standalone browsers and therefore remain available without a host.
 	var polaris = main.settings.host.is_polaris_host
-	var vdd = main.settings.host.virtual_display_installed
-	if _layout_btn: _layout_btn.disabled = not polaris
-	main._ui_monitors_btn.disabled = not polaris
-	main._ui_virtual_monitors_btn.disabled = not polaris or not vdd
+	if _layout_btn: _layout_btn.disabled = false
 	main._ui_apply_preset_btn.disabled = not polaris
 	main._ui_save_preset_btn.disabled = not polaris
-	main._ui_grid_mode_btn.disabled = not polaris
+	main._ui_grid_mode_btn.disabled = false
 	main._ui_remove_preset_btn.disabled = not polaris or not selected or selected_preset.get("built_in", true)
 	for card in _preset_row.get_children():
 		if card is Button:
@@ -724,17 +722,13 @@ func _on_remove_preset_pressed():
 # which is what lets apply_staged_monitor_config() apply a preset's positions
 # directly without needing to reconcile a mismatch at Apply time.
 func _refresh_preset_row():
+	# Legacy cards remain readable for migration, but placement no longer uses them.
 	if not _preset_row:
 		return
 	for c in _preset_row.get_children():
 		_preset_row.remove_child(c)
 		c.queue_free()
-	var total = main.settings_controller.staged_total()
-	for preset in MonitorPresets.all_presets():
-		if preset.get("screen_count", -1) != total:
-			continue
-		var is_selected = preset.get("id", "") == String(main._staged_preset_id)
-		_preset_row.add_child(_build_preset_card(preset, is_selected))
+
 	refresh_ui_buttons()
 
 # Presets have no display name (per spec, identified purely by their layout
@@ -1586,19 +1580,6 @@ func build_ui():
 	mon_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	legacy_monitors.add_child(mon_row1)
 
-	main._ui_monitors_btn = make_option_btn("Monitors", "1")
-	_set_button_tooltip(main._ui_monitors_btn, "Choose how many physical host monitors are displayed.")
-	mon_row1.add_child(main._ui_monitors_btn)
-	main._ui_virtual_monitors_btn = make_option_btn("Virtual", "0")
-	_set_button_tooltip(main._ui_virtual_monitors_btn, "Choose how many virtual monitors are created.")
-	mon_row1.add_child(main._ui_virtual_monitors_btn)
-	_browser_count_btn = make_option_btn("Browsers", "0")
-	_browser_count_btn.name = "BrowserScreenCount"
-	_browser_count_btn.disabled = true
-	_browser_count_btn.modulate.a = 0.3
-	_set_button_tooltip(_browser_count_btn, "Browser screens count towards the layout. Manage them above each screen.")
-	mon_row1.add_child(_browser_count_btn)
-
 	var mon_gap1 = Control.new()
 	mon_gap1.custom_minimum_size = Vector2(0, 20)
 	mon_gap1.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1613,11 +1594,31 @@ func build_ui():
 	mon_actions_row1.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	legacy_monitors.add_child(mon_actions_row1)
 
-	_layout_btn = make_option_btn("Layout", "Select")
-	_layout_btn.name = "ScreenLayoutPicker"
-	_layout_btn.pressed.connect(func(): _layout_popup.visible = not _layout_popup.visible; refresh_ui_buttons())
-	_set_button_tooltip(_layout_btn, "Choose a layout for all monitor and browser screens.")
-	mon_actions_row1.add_child(_layout_btn)
+	# Screen counts are set from the bars above each screen. Top row: how
+	# screens are arranged. Bottom row: Lock Screen.
+	main._ui_grid_mode_btn = make_option_btn("Grid Mode", "On")
+	_set_button_tooltip(main._ui_grid_mode_btn, "Arrange screens using the monitor grid.")
+	mon_row1.add_child(main._ui_grid_mode_btn)
+	_layout_btn = make_option_btn("Grid Shape", "Cylinder")
+	_layout_btn.name = "ScreenGridShape"
+	_layout_btn.pressed.connect(func(): open_placement_grid_popup(false))
+	_set_button_tooltip(_layout_btn, "Original keeps the classic layout. Cylinder and Sphere lay screens edge to edge on one surface around you.")
+	mon_row1.add_child(_layout_btn)
+	_grid_spacing_btn = make_option_btn("Grid Spacing", "10 cm")
+	_grid_spacing_btn.name = "ScreenGridSpacing"
+	_grid_spacing_btn.pressed.connect(func(): open_placement_grid_popup(true))
+	_set_button_tooltip(_grid_spacing_btn, "Distance between grid points. Slow dragging and resizing snap to these increments.")
+	mon_row1.add_child(_grid_spacing_btn)
+	_grid_curve_btn = make_option_btn("Grid Curve", "0%")
+	_grid_curve_btn.name = "ScreenGridCurve"
+	_grid_curve_btn.pressed.connect(open_grid_curve_slider)
+	_set_button_tooltip(_grid_curve_btn, "How tightly the cylinder or sphere wraps around you. 0% is centred on you; higher bends the screens in more.")
+	mon_row1.add_child(_grid_curve_btn)
+	_lock_btn = make_option_btn("Lock Screen", "Off")
+	_lock_btn.name = "ScreenLock"
+	_set_button_tooltip(_lock_btn, "Hide the grab bars on secondary screens so they can't be moved by accident. The primary still moves the whole layout.")
+	_lock_btn.pressed.connect(func(): main.settings_controller.toggle_screen_lock())
+	mon_actions_row1.add_child(_lock_btn)
 	main._ui_apply_preset_btn = make_action_btn("Apply")
 	_set_button_tooltip(main._ui_apply_preset_btn, "Apply the selected monitor layout.")
 	mon_actions_row1.add_child(main._ui_apply_preset_btn)
@@ -1627,10 +1628,10 @@ func build_ui():
 	main._ui_remove_preset_btn = make_action_btn("Remove")
 	_set_button_tooltip(main._ui_remove_preset_btn, "Delete the selected custom preset.")
 	mon_actions_row1.add_child(main._ui_remove_preset_btn)
-	main._ui_grid_mode_btn = make_option_btn("Grid Mode", "On")
-	_set_button_tooltip(main._ui_grid_mode_btn, "Arrange screens using the monitor grid.")
-	mon_row1.add_child(main._ui_grid_mode_btn)
 	for button in [main._ui_apply_preset_btn, main._ui_save_preset_btn, main._ui_remove_preset_btn]:
+		# Hidden: the bars above each screen apply counts directly. Kept for
+		# the planned named presets.
+		button.hide()
 		button.custom_minimum_size = Vector2(250, 132)
 		button.add_theme_font_size_override("font_size", 26)
 		button.add_theme_stylebox_override("normal", main._btn_style)
@@ -1853,8 +1854,6 @@ func build_ui():
 	if main._ui_3d_process_debug_btn:
 		main._ui_3d_process_debug_btn.pressed.connect(open_setting_choices.bind(&"process_debug"))
 	main._ui_3d_priority_btn.pressed.connect(open_setting_choices.bind(&"priority"))
-	main._ui_monitors_btn.pressed.connect(open_setting_choices.bind(&"monitors"))
-	main._ui_virtual_monitors_btn.pressed.connect(open_setting_choices.bind(&"virtual"))
 	main._ui_apply_preset_btn.button_down.connect(func(): _on_apply_preset_pressed())
 	main._ui_save_preset_btn.button_down.connect(func(): _on_save_preset_pressed())
 	main._ui_remove_preset_btn.button_down.connect(func(): _on_remove_preset_pressed())
@@ -2215,8 +2214,10 @@ func _open_value_slider(setting: StringName) -> void:
 	var spec: Array = specs[setting]
 	var apply := func(value):
 		if main.settings.host == host and main.primary_screen == primary: spec[6].call(int(value))
-	_settings_popup.open_slider(spec[0], int(spec[1].get(spec[2])), spec[3], spec[4], 1, spec[5],
-		Callable(), apply, Callable(), "Default", func(): apply.call(spec[7]), setting in [&"brightness", &"volume"])
+	# These all apply as the slider moves; closing without Done puts the value back.
+	var start := int(spec[1].get(spec[2]))
+	_settings_popup.open_slider(spec[0], start, spec[3], spec[4], 1, spec[5],
+		apply, apply, func(): apply.call(start), "Default", func(): apply.call(spec[7]), setting in [&"brightness", &"volume"])
 	refresh_ui_buttons()
 
 ## Ordinary descriptors share one builder; controllers retain their side effects.
@@ -2275,25 +2276,6 @@ func open_setting_choices(setting: StringName) -> void:
 	var choices: Array = []
 	var setter := Callable()
 	match setting:
-		&"monitors":
-			title = "Monitors"
-			current = main._staged_physical_count
-			var maximum := maxi(1, mini(controller._real_monitor_count(), controller.monitor_screen_capacity()))
-			for value in range(controller.min_physical_count(), maximum + 1): choices.append({"id": value, "label": str(value)})
-			setter = func(value):
-				controller.stage_monitor_count(int(value))
-				update_monitor_tab()
-		&"virtual":
-			title = "Virtual"
-			current = main._staged_virtual_count
-			var maximum := maxi(0, mini(host.virtual_display_max_count, controller.monitor_screen_capacity() - main._staged_physical_count))
-			var minimum := 1 if main._staged_physical_count == 0 else 0
-			for value in range(minimum, maximum + 1): choices.append({"id": value, "label": str(value)})
-			setter = func(value):
-				var limit := mini(host.virtual_display_max_count, controller.monitor_screen_capacity() - main._staged_physical_count)
-				if int(value) > limit: return
-				controller.stage_virtual_count(int(value))
-				update_monitor_tab()
 		&"depth_debug", &"process_debug":
 			var depth_debug := setting == &"depth_debug"
 			title = "3D Debug" if depth_debug else "3D Process"
@@ -2653,6 +2635,37 @@ func set_disconnect_visible(vis: bool):
 		main._ui_disconnect_btn.visible = vis or _current_tab == PCVR_PAGE
 		main._ui_disconnect_btn.disabled = not vis
 
+func open_grid_curve_slider() -> void:
+	clear_tooltip()
+	var start: int = main.settings.placement_grid_curve
+	var apply := func(value): main.placement_grid.set_curve(int(value))
+	var commit := func(value):
+		apply.call(value)
+		main.state_manager.save_state()
+		update_monitor_tab()
+	_settings_popup.open_slider("Grid Curve", start, 0, 100, 1, "%", apply, commit,
+		func(): apply.call(start), "Default", func(): commit.call(0))
+	refresh_ui_buttons()
+
+func open_placement_grid_popup(spacing: bool) -> void:
+	var choices: Array = []
+	if spacing:
+		for step in ScreenPlacementGrid.SPACINGS:
+			choices.append({"id": step, "label": "%d cm" % roundi(step * 100)})
+	else:
+		for index in range(ScreenPlacementGrid.LABELS.size()):
+			choices.append({"id": index, "label": ScreenPlacementGrid.LABELS[index]})
+	var current = main.settings.placement_grid_spacing if spacing else main.settings.placement_grid_shape
+	_settings_popup.open_choices("Grid Spacing" if spacing else "Grid Shape", choices, current, func(value):
+		if spacing: main.settings.placement_grid_spacing = float(value)
+		else: main.settings.placement_grid_shape = int(value)
+		# Changing the shape lays the arrangement onto the new surface where it is;
+		# it never teleports it.
+		if spacing: main.placement_grid.finish()
+		else: main.placement_grid.reshape()
+		main.state_manager.save_state()
+		update_monitor_tab())
+	refresh_ui_buttons()
 
 func update_eye_resolution_btn_state() -> void:
 	if main._ui_eye_res_btn:

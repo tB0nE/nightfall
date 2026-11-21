@@ -203,7 +203,7 @@
 	"Full": "完整",
 	"Up": "已连接",
 	"Requesting...": "请求中...",
-	"Moonlight Streaming for Quest": "适用于 Quest 的 Moonlight 串流",
+	"VR Desktop Streaming": "VR 桌面串流",
 	"Connect": "连接",
 	"Connecting...": "正在连接...",
 	"Wake PC": "唤醒电脑",
@@ -260,6 +260,8 @@
 	"Choose App": "选择应用",
 	"Previous": "上一页",
 	"Next": "下一页",
+	"Multipath": "多路径",
+	"Use a second network via Meteor; a slow one is paused.": "通过 Meteor 使用第二个网络；较慢的会暂停。",
 	"Screen Res": "屏幕分辨率",
 	"Match screen sharpness to the headset to save GPU time.": "让屏幕清晰度匹配头显，以节省 GPU 时间。"
 }

@@ -24,8 +24,12 @@ class FakeSources extends RefCounted:
 	var closed_monitors: Array = []
 	var physical_available := false
 	var monitor_requests: Array = []
-	func add_monitor_tab(_screen, virtual := false, size := Vector2i.ZERO): monitor_requests.append(["tab",virtual,size])
-	func add_monitor_screen(virtual := false, size := Vector2i.ZERO): monitor_requests.append(["screen",virtual,size])
+	var placements: Array = []
+	func add_monitor_tab(_screen, virtual := false, size := Vector2i.ZERO, id := &""): monitor_requests.append(["tab",virtual,size] if id == &"" else ["tab",virtual,size,id])
+	func add_monitor_screen(virtual := false, size := Vector2i.ZERO, _id := &""): monitor_requests.append(["screen",virtual,size])
+	func begin_screen_placement(request: Dictionary): placements.append(request)
+	func host_monitor_size(): return Vector2i(2560, 1440)
+	func physical_choices(screen = null): return [{"id": &"DP-1", "label": "Left monitor", "enabled": true}] if physical_available or screen == null else []
 	func can_add_monitor_tab(_screen, virtual := false): return virtual or physical_available
 	func can_close_monitor_screen(_screen): return close_monitor_allowed
 	func close_monitor_screen(screen): closed_monitors.append(screen)
@@ -37,7 +41,8 @@ class FakeSources extends RefCounted:
 	func monitor_tab(_screen): return null
 	func can_switch_content_tab(_screen): return can_open_browser()
 	func can_edit_browser_tab_resolution(_screen): return edit_browser_resolution
-	func can_add_monitor_screen(_virtual := false): return false
+	var add_monitor_allowed := false
+	func can_add_monitor_screen(_virtual := false): return add_monitor_allowed
 
 class FakeMain extends Node3D:
 	var browser_prototype := FakeBrowser.new()
@@ -140,13 +145,33 @@ func _init():
 	strip.update(owner.primary_screen, surface, margin, true)
 	var source_actions := []
 	for item in strip._items: source_actions.append(String(item.action))
-	assert(source_actions.has("screen:new") and source_actions.has("screen:primary"))
+	assert(source_actions.find("screen:new") >= 0 and source_actions.find("screen:new") < source_actions.find("tab:new"), "Add Screen, then Add Tab")
+	assert(not source_actions.has("screen:primary"), "No Make Primary on the primary")
 	assert(not source_actions.has("stream:new"), "Connection creation belongs in the screen-type menu")
 	strip.invoke(&"screen:new")
 	strip.update(owner.primary_screen, surface, margin, true)
 	var screen_types := []
 	for item in strip._items: screen_types.append(String(item.action))
 	assert(screen_types.has("screen:browser") and screen_types.has("screen:physical") and screen_types.has("screen:virtual") and screen_types.has("stream:new"))
+	# A new screen is placed by clicking where its outline shows.
+	strip.invoke(&"screen:browser")
+	assert(owner.screen_sources.placements[-1].kind == &"browser" and strip.popup == "")
+	owner.screen_sources.add_monitor_allowed = true
+	strip.invoke(&"browser")
+	strip.invoke(&"screen:new")
+	strip.update(owner.primary_screen, surface, margin, true)
+	strip.invoke(&"screen:physical")
+	assert(strip.popup == "physical_list")
+	strip.update(owner.primary_screen, surface, margin, true)
+	var physical_actions := []
+	for item in strip._items: physical_actions.append(String(item.action))
+	assert(physical_actions.has("physical:DP-1"))
+	strip.invoke(&"physical:DP-1")
+	assert(owner.screen_sources.placements[-1] == {"kind": &"physical", "id": &"DP-1", "title": "Left monitor"})
+	owner.screen_sources.add_monitor_allowed = false
+	strip.invoke(&"browser")
+	strip.invoke(&"screen:new")
+	strip.update(owner.primary_screen, surface, margin, true)
 	assert(strip._items[-1].rect.end.y > 0.15, "Hover backdrop must cover the full type menu")
 	owner.screen_sources.offer_stream = false
 	strip._signature = ""
@@ -296,8 +321,46 @@ func _init():
 	strip.invoke(&"tab:virtual")
 	assert(strip.popup == "virtual_resolution")
 	strip.update(owner.primary_screen,surface,margin,true)
-	strip.invoke(&"virtual:preset:2")
+	var ratio_actions := []
+	for item in strip._items: ratio_actions.append(String(item.action))
+	var default_titles := []
+	for item in strip._items:
+		if item.action == &"virtual:default": default_titles.append(item.title)
+	assert(default_titles == ["Default (2560 × 1440)"], "Default says what it creates")
+	assert(ratio_actions.has("virtual:default") and ratio_actions.has("virtual:ratio:0") and ratio_actions.has("virtual:ratio:2") and ratio_actions.has("virtual:custom"))
+	strip.invoke(&"virtual:ratio:1")
+	assert(strip.popup == "virtual_ratio")
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:size:1")
+	assert(owner.screen_sources.monitor_requests[-1] == ["tab",true,Vector2i(3440,1440)])
+	strip.invoke(&"tab:virtual")
+	strip.invoke(&"virtual:ratio:0")
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:size:1")
 	assert(owner.screen_sources.monitor_requests[-1] == ["tab",true,Vector2i(2560,1440)])
+	strip._virtual_kind = "screen"
+	strip.popup = "virtual_ratio"
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:size:0")
+	assert(owner.screen_sources.placements[-1] == {"kind": &"virtual", "size": Vector2i(1920,1080), "title": "Virtual 1920 × 1080"})
+	# Vertical Orientation turns every size on its side, Default included.
+	strip.popup = "virtual_resolution"
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:vertical")
+	strip.update(owner.primary_screen,surface,margin,true)
+	var vertical_titles := {}
+	for item in strip._items: vertical_titles[String(item.action)] = item.title
+	assert(vertical_titles["virtual:default"] == "Default (1440 × 2560)" and vertical_titles["virtual:ratio:1"] == "9:21  ›")
+	assert(vertical_titles["virtual:vertical"] == "Vertical Orientation: On" and vertical_titles.has("virtual:custom"))
+	strip.invoke(&"virtual:ratio:2")
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:size:1")
+	assert(owner.screen_sources.placements[-1].size == Vector2i(1200,1600), "A vertical 4:3 size is 1200 × 1600")
+	strip.popup = "virtual_resolution"
+	strip.update(owner.primary_screen,surface,margin,true)
+	strip.invoke(&"virtual:default")
+	assert(owner.screen_sources.placements[-1].size == Vector2i(1440,2560), "A vertical Default names its size")
+	strip._virtual_vertical = false
 	strip.invoke(&"tab:virtual")
 	strip.invoke(&"virtual:custom")
 	for key in ["1","2","8","0"]: strip.invoke(StringName("virtual:key:"+key))

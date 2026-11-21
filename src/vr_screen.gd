@@ -41,6 +41,78 @@ func bind_independent_browser_texture(texture: Texture2D) -> void:
 # system (preset apply or a grid-mode-on drag); grid_mode false means the
 # screen was last placed freely and the grid system leaves it alone until
 # it's grabbed again with grid mode on.
+var placement_radius: float = 0.0
+## The single grid surface this screen lies on (ScreenPlacementGrid.Shape).
+## FLAT means none: the screen keeps its own curvature setting. On a cylinder or
+## sphere grid the surface, not that setting, gives the screen its shape.
+var surface: int = 0
+## Set by the placement grid (ScreenPlacementGrid, a capsule surface):
+## surface_y: the screen centre's grid height on the surface.
+## surface_on_cap: the screen lies on the sphere part (the whole sphere grid,
+## or the cylinder grid's rows above and below) rather than the cylinder
+## grid's straight middle section.
+## surface_straight: half-height of that straight section (0 on a sphere grid).
+## surface_lat: the latitude of this node's own frame on the sphere.
+## The patch's latitudes follow from these and the current size, so a resized
+## screen keeps its proportions.
+var surface_lat := 0.0
+var surface_y := 0.0
+var surface_straight := 0.0
+var surface_on_cap := false
+
+## Radius of the sphere part. Longitudes still step by arc metres at
+## placement_radius, so columns line up with the straight section.
+func sphere_r() -> float:
+	return ScreenPlacementGrid.sphere_radius(placement_radius, surface_straight)
+
+## Lock Screens is on and this is a secondary: its grab bar, shortcuts and
+## corners are hidden and ignore the pointer, so the screen can be used even
+## where another screen's controls would overlap it.
+func controls_locked() -> bool:
+	return main != null and main.get("settings") != null and main.settings.secondary_screens_locked \
+		and self != main.primary_screen
+
+var _controls_lock_applied := false
+
+## Turn the pointer targets of the screen's controls off or on to match the lock.
+func sync_controls_lock() -> void:
+	var locked := controls_locked()
+	if locked == _controls_lock_applied: return
+	_controls_lock_applied = locked
+	var areas: Array = shortcut_areas.values()
+	var grab_area = grab_bar.get_node_or_null("Area3D")
+	if grab_area: areas.append(grab_area)
+	for handle in corner_handles:
+		var handle_area = handle.get_node_or_null("Area3D")
+		if handle_area: areas.append(handle_area)
+	for area in areas:
+		if not is_instance_valid(area): continue
+		for child in area.get_children():
+			if child is CollisionShape3D: child.set_deferred("disabled", locked)
+
+func on_sphere() -> bool:
+	return on_surface() and surface_on_cap
+
+func _cap_lat(y: float) -> float:
+	return ScreenPlacementGrid.cap_lat(y, ScreenPlacementGrid.side_of(surface_y), placement_radius, surface_straight)
+
+## Middle latitude and half latitude span of a sphere screen's patch.
+func band_mid() -> float:
+	return (_cap_lat(surface_y + mesh_size.y * 0.5) + _cap_lat(surface_y - mesh_size.y * 0.5)) * 0.5
+
+func band_half() -> float:
+	return maxf((_cap_lat(surface_y + mesh_size.y * 0.5) - _cap_lat(surface_y - mesh_size.y * 0.5)) * 0.5, 0.0001)
+
+## Latitude per metre of nominal screen height. Rows away from the middle are
+## Mercator-squashed, so this is less than 1 / radius there.
+func lat_scale() -> float:
+	return band_half() * 2.0 / maxf(mesh_size.y, 0.001)
+
+func on_surface() -> bool:
+	return surface != ScreenPlacementGrid.Shape.ORIGINAL and placement_radius > 0.0
+
+func is_flat() -> bool:
+	return curvature == 0 and not on_surface()
 var grid_mode: bool = true
 var grid_pos: Vector2i = Vector2i(-1, -1)
 
@@ -192,6 +264,7 @@ func setup(p_main: Node3D, p_monitor_id: StringName = &"m0") -> void:
 	monitor_id = p_monitor_id
 
 func get_cylinder_radius() -> float:
+	if placement_radius > 0.0 and (curvature > 0 or on_surface()): return placement_radius
 	if main.comp and main.comp.in_use:
 		var cam_to_screen = global_position - main.xr_camera.global_position
 		# Same clamp as the composition cylinder it has to match.
@@ -246,6 +319,13 @@ func create_corner_handles():
 		add_child(handle)
 		corner_handles.append(handle)
 
+## The grab bar's offset below the screen centre along the screen's surface.
+## Equal to grab_bar.position.y except on a sphere, where the bar follows the curve.
+var grab_bar_surface_y := 0.0
+
+func grab_bar_arc_y() -> float:
+	return grab_bar_surface_y if on_sphere() else grab_bar.position.y
+
 func update_corner_positions():
 	var ms = mesh_size
 	var radius = get_cylinder_radius()
@@ -280,6 +360,9 @@ func update_corner_positions():
 			cx -= corner_size * 0.5
 		handle.position = Vector3(cx, cy, edge_z)
 		handle.rotation.y = -a
+		if on_sphere():
+			handle.position = corner_surface_point(i) + Vector3(signf(offsets[i].x), signf(offsets[i].y), 0) * corner_size * 0.5
+			handle.rotation = Vector3.ZERO
 	# Halved (2026-08-24, was the full grab_bar_off gap) - moves the real
 	# grab_bar (and its Area3D hitbox) closer to the screen edge, not just
 	# its composition-space visual (CompositionScreenControls
@@ -287,6 +370,12 @@ func update_corner_positions():
 	# an earlier attempt that only offset the visual left the hitbox
 	# behind, making it hard to find/grab.
 	grab_bar.position.y = -ms.y / 2.0 - grab_bar_off * 0.5
+	grab_bar.position.z = 0.0
+	grab_bar_surface_y = grab_bar.position.y
+	if on_sphere():
+		# The bar's arc distance below the centre stays the same; it follows the sphere.
+		var bar := ScreenPlacementGrid.sphere_local_point(0.0, band_mid() + grab_bar.position.y * lat_scale(), surface_lat, sphere_r())
+		grab_bar.position = Vector3(0, bar.y, bar.z)
 	if grab_bar.mesh is CylinderMesh:
 		var grab_r = ms.x * 0.0045
 		var grab_h = ms.x * 0.134
@@ -364,7 +453,19 @@ func update_bezel_size():
 	var ms = mesh_size
 	var bezel_pad = 0.04
 	var bezel_size = ms + Vector2(bezel_pad, bezel_pad)
-	if curvature == 0:
+	if on_sphere():
+		var patch := _sphere_patch(bezel_size, 0.005, 32, 16)
+		var arr = []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = patch.verts
+		arr[Mesh.ARRAY_TEX_UV] = patch.uvs
+		arr[Mesh.ARRAY_INDEX] = _grid_indices(32, 16)
+		var sphere_mesh = ArrayMesh.new()
+		sphere_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		bezel_mesh.mesh = sphere_mesh
+		bezel_mesh.position = Vector3.ZERO
+		return
+	if is_flat():
 		var bezel_quad = QuadMesh.new()
 		bezel_quad.size = bezel_size
 		bezel_mesh.mesh = bezel_quad
@@ -413,9 +514,54 @@ func update_bezel_size():
 ## CompositionLayerManager._update_cylinder_params_for()).
 var built_radius := 0.0
 
+## Vertices and UVs of a sphere screen's lat/long patch, in its own frame.
+func _sphere_patch(size: Vector2, depth: float, columns: int, rows: int) -> Dictionary:
+	var radius := placement_radius
+	var verts := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var mid := band_mid()
+	var scale := lat_scale()
+	var sphere := sphere_r()
+	for j in range(columns + 1):
+		for i in range(rows + 1):
+			var t := float(j) / columns
+			var u := float(i) / rows
+			var point := ScreenPlacementGrid.sphere_local_point((t - 0.5) * size.x / radius,
+				mid + (u - 0.5) * size.y * scale, surface_lat, sphere)
+			verts.append(point + (point - Vector3(0, 0, sphere)).normalized() * depth)
+			uvs.append(Vector2(t, 1.0 - u))
+	return {"verts": verts, "uvs": uvs}
+
+static func _grid_indices(columns: int, rows: int) -> PackedInt32Array:
+	var indices := PackedInt32Array()
+	var cols := rows + 1
+	for j in range(columns):
+		for i in range(rows):
+			var idx := j * cols + i
+			indices.append_array([idx, idx + 1, idx + cols, idx + 1, idx + cols + 1, idx + cols])
+	return indices
+
+func _apply_sphere_mesh() -> void:
+	built_radius = placement_radius
+	var patch := _sphere_patch(mesh_size, 0.0, 32, 16)
+	var indices := _grid_indices(32, 16)
+	var arr = []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = patch.verts
+	arr[Mesh.ARRAY_TEX_UV] = patch.uvs
+	arr[Mesh.ARRAY_INDEX] = indices
+	var arr_mesh = ArrayMesh.new()
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	mesh = arr_mesh
+	update_shader_for_mesh()
+	set_collision_curved(patch.verts, indices)
+
 func apply_curvature():
 	var ms = mesh_size
-	if curvature == 0:
+	if on_sphere():
+		_apply_sphere_mesh()
+		return
+	if is_flat():
 		var quad = QuadMesh.new()
 		quad.size = ms
 		mesh = quad
@@ -489,6 +635,14 @@ func set_collision_curved(verts: PackedVector3Array, indices: PackedInt32Array):
 	col_shape.shape = concave
 
 func resize_to_aspect(w: int, h: int):
+	if on_surface() and main != null and main.get("placement_grid") != null:
+		# A new aspect changes the screen's height: it, and on a cylinder grid
+		# every screen when it is the primary, stays at its grid position.
+		main.placement_grid.keep_grid(func(): _resize_to_aspect(w, h))
+		return
+	_resize_to_aspect(w, h)
+
+func _resize_to_aspect(w: int, h: int):
 	var aspect = float(w) / float(h)
 	var new_w = mesh_size.x / maxf(display_crop.z, 0.001)
 	var new_h = new_w / aspect
@@ -496,7 +650,7 @@ func resize_to_aspect(w: int, h: int):
 		new_h = 0.4
 		new_w = new_h * aspect
 	mesh_size = Vector2(new_w * display_crop.z, new_h * display_crop.w)
-	if curvature == 0:
+	if is_flat() and mesh is QuadMesh:
 		mesh.size = mesh_size
 		set_collision_flat()
 	else:
@@ -506,54 +660,83 @@ func resize_to_aspect(w: int, h: int):
 		update_bezel_size()
 
 var _corner_resize_started: bool = false
-var _corner_start_width: float = 0.0
-var _corner_start_hit_x: float = 0.0
+var _corner_start_width := 0.0
+var _corner_start_hit := Vector3.ZERO
+var _corner_start_transform := Transform3D.IDENTITY
+var _corner_pinned_world := Vector3.ZERO
+var _corner_snap := ScreenPlacementGrid.SlowSnap.new()
 
 func begin_corner_resize():
 	_corner_resize_started = false
+	_corner_snap = ScreenPlacementGrid.SlowSnap.new()
+
+func corner_surface_point(index: int) -> Vector3:
+	var x_sign := -1.0 if index in [0, 2] else 1.0
+	var y_sign := 1.0 if index < 2 else -1.0
+	if on_sphere():
+		return ScreenPlacementGrid.sphere_local_point(x_sign * mesh_size.x * 0.5 / placement_radius,
+			band_mid() + y_sign * band_half(), surface_lat, sphere_r())
+	if is_flat():
+		return Vector3(x_sign * mesh_size.x * 0.5, y_sign * mesh_size.y * 0.5, 0)
+	var radius := get_cylinder_radius()
+	var angle := mesh_size.x / radius * 0.5
+	return Vector3(x_sign * sin(angle) * radius, y_sign * mesh_size.y * 0.5, radius * (1.0 - cos(angle)))
 
 func apply_corner_resize(ray_origin: Vector3, ray_dir: Vector3, corner_idx: int, tile_aspect: float) -> void:
-	var plane_normal = -global_transform.basis.z
-	var plane_point = global_position
-	var denom = ray_dir.dot(plane_normal)
-	if absf(denom) < 0.0001:
-		return
-	var t = (plane_point - ray_origin).dot(plane_normal) / denom
-	if t < 0:
-		return
-	var hit_world = ray_origin + ray_dir * t
-	var local_hit = to_local(hit_world)
-
+	if not _corner_resize_started:
+		_corner_start_transform = global_transform
+	var plane_normal := _corner_start_transform.basis.z
+	var denom := ray_dir.dot(plane_normal)
+	if absf(denom) < 0.0001: return
+	var t := (_corner_start_transform.origin - ray_origin).dot(plane_normal) / denom
+	if t < 0: return
+	var hit := _corner_start_transform.affine_inverse() * (ray_origin + ray_dir * t)
 	if not _corner_resize_started:
 		_corner_resize_started = true
 		_corner_start_width = mesh_size.x
-		_corner_start_hit_x = local_hit.x
+		_corner_start_hit = hit
+		_corner_pinned_world = to_global(corner_surface_point(3 - corner_idx))
 		return
+	var aspect := maxf(tile_aspect, 0.01)
+	var x_sign := -1.0 if corner_idx in [0, 2] else 1.0
+	var y_sign := 1.0 if corner_idx < 2 else -1.0
+	var diagonal := Vector2(x_sign, y_sign / aspect)
+	var delta_hit := Vector2(hit.x - _corner_start_hit.x, hit.y - _corner_start_hit.y)
+	var width := _corner_start_width + delta_hit.dot(diagonal) / diagonal.length_squared()
+	if main.get("placement_grid") != null and ScreenPlacementGrid.single_surface(main.placement_grid.shape()):
+		# Quantize distance along the aspect-constrained diagonal, not x/y
+		# independently (which would stretch the content).
+		var diagonal_size := _corner_snap.sample(Vector3(width * diagonal.length(), 0, 0), get_process_delta_time(), main.settings.placement_grid_spacing)
+		width = diagonal_size.x / diagonal.length()
+	set_pinned_size(maxf(width, maxf(0.6, 0.4 * aspect)), aspect, 3 - corner_idx, _corner_pinned_world)
+	set_meta(&"placement_grid_owned", true)
+	grid_pos = Vector2i(-1, -1)
 
-	var sign = -1.0 if corner_idx in [0, 2] else 1.0
-	var new_w: float
-	if curvature == 0:
-		var dx = local_hit.x - _corner_start_hit_x
-		new_w = _corner_start_width + dx * sign * 2.0
-	else:
-		var radius = get_cylinder_radius()
-		var start_a = asin(clampf(_corner_start_hit_x / radius, -1.0, 1.0))
-		var cur_a = asin(clampf(local_hit.x / radius, -1.0, 1.0))
-		var da = cur_a - start_a
-		new_w = _corner_start_width + da * radius * sign * 2.0
-	new_w = maxf(new_w, 0.6)
-	var new_h = new_w / tile_aspect
-	if new_h < 0.4:
-		new_h = 0.4
-		new_w = new_h * tile_aspect
-
-	mesh_size = Vector2(new_w, new_h)
-	if curvature == 0:
+func set_pinned_size(width: float, aspect: float, pinned_corner: int, pinned_world: Vector3) -> void:
+	if on_surface() and main.get("placement_grid") != null:
+		# On a grid surface the pinned corner stays put in surface coordinates.
+		# The primary's height shapes a cylinder grid's middle row, so the
+		# other screens are laid back on the grid as it changes.
+		var resize := func():
+			mesh_size = Vector2(width, width / aspect)
+			main.placement_grid.place_pinned(self, pinned_corner, pinned_world)
+		if self == main.primary_screen: main.placement_grid.keep_grid(resize, false)
+		else: resize.call()
+		update_corner_positions()
+		update_bezel_size()
+		return
+	mesh_size = Vector2(width, width / aspect)
+	# The composition cylinder radius depends on screen distance. Resolve its
+	# small feedback as the centre shifts, so the actual curved corner stays put.
+	for iteration in range(8):
+		var correction := pinned_world - to_global(corner_surface_point(pinned_corner))
+		global_position += correction
+		if correction.length_squared() < 0.0000000001: break
+	if is_flat() and mesh is QuadMesh:
 		mesh.size = mesh_size
 		set_collision_flat()
 	else:
 		apply_curvature()
-
 	update_corner_positions()
 	update_bezel_size()
 
@@ -583,7 +766,10 @@ static func _make_corner_texture(corner: String, size: int = 128, thickness: int
 	return ImageTexture.create_from_image(img)
 
 func get_cylinder_normal_at(hit_point: Vector3) -> Vector3:
-	if curvature == 0 or not comp_layer:
+	if on_sphere():
+		var to_hit := hit_point - to_global(Vector3(0, 0, sphere_r()))
+		return to_hit.normalized() if to_hit.length() > 0.001 else -global_transform.basis.z
+	if is_flat() or not comp_layer:
 		return -global_transform.basis.z
 	var screen_forward = -global_transform.basis.z
 	if _comp_cyl_radius < 0.01:
@@ -604,7 +790,11 @@ func hit_point_to_uv(hit_point: Vector3) -> Vector2:
 	var local_pos = to_local(hit_point)
 	var uv_x = 0.0
 	var uv_y = clampf((ms.y * 0.5 - local_pos.y) / ms.y, 0.0, 1.0)
-	if curvature == 0:
+	if on_sphere():
+		var angles := ScreenPlacementGrid.sphere_angles(local_pos, surface_lat, sphere_r())
+		return Vector2(clampf(angles.x * placement_radius / ms.x + 0.5, 0.0, 1.0),
+			clampf(0.5 - (angles.y - band_mid()) / (2.0 * band_half()), 0.0, 1.0))
+	if is_flat():
 		uv_x = clampf((local_pos.x + ms.x * 0.5) / ms.x, 0.0, 1.0)
 	elif main.comp and main.comp.in_use and _comp_cyl_radius > 0.01 and _comp_cyl_central_angle > 0.001:
 		var cam_pos = main.xr_camera.global_position

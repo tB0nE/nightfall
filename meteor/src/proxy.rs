@@ -30,6 +30,16 @@ use crate::video_dump::VideoDump;
 use crate::video_tap::{TapStats, VideoTap};
 
 const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
+
+/// Whether a client last heard from at `last_ms` still holds its flow open at `now_ms`.
+/// Whether another path of the client (multipath) pinged within UDP_FLOW_IDLE.
+fn any_path_pinging(last_pings: impl IntoIterator<Item = std::time::Instant>) -> bool {
+    last_pings.into_iter().any(|last| last.elapsed() < UDP_FLOW_IDLE)
+}
+
+fn client_still_there(last_ms: u64, now_ms: u64) -> bool {
+    now_ms.saturating_sub(last_ms) < UDP_FLOW_IDLE.as_millis() as u64
+}
 /// Multipath: a client with several network paths to this PC (e.g. a Steam
 /// Frame on Wi-Fi plus its dedicated 6 GHz adapter) pings the video and audio
 /// ports from each. Pings carry the session's 16-byte payload (Sunshine's
@@ -40,6 +50,39 @@ const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
 const MULTIPATH_PING_LEN: usize = 20;
 /// A path that hasn't pinged for this long stops receiving copies.
 const MULTIPATH_IDLE: Duration = Duration::from_secs(3);
+/// Copies to extra paths are skipped while more than this share of the
+/// listener's send buffer is still waiting for the network. All paths share
+/// the socket, so a slow path (a weak Wi-Fi link) would otherwise fill the
+/// buffer and make the main path's packets, and reading the host's next
+/// ones, wait behind its copies.
+const MULTIPATH_MAX_UNSENT_DIVISOR: usize = 4;
+/// How often skipped copies are logged.
+const MULTIPATH_SKIP_LOG: Duration = Duration::from_secs(10);
+
+/// Bytes this socket has handed to the kernel that the network hasn't sent
+/// yet (Linux), or None where that can't be read.
+#[cfg(target_os = "linux")]
+fn unsent_bytes(socket: &UdpSocket) -> Option<usize> {
+    use std::os::fd::AsRawFd;
+    let mut queued: libc::c_int = 0;
+    // SIOCOUTQ (== TIOCOUTQ): bytes in the socket's send queue.
+    let result = unsafe { libc::ioctl(socket.as_raw_fd(), libc::TIOCOUTQ, &mut queued) };
+    (result == 0).then_some(queued.max(0) as usize)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unsent_bytes(_socket: &UdpSocket) -> Option<usize> {
+    None
+}
+
+/// True when a copy for an extra path may go out now without the main path's
+/// packets having to wait behind it.
+fn extra_copy_fits(listener: &UdpSocket, send_buffer: usize) -> bool {
+    match unsent_bytes(listener) {
+        Some(unsent) => unsent <= send_buffer / MULTIPATH_MAX_UNSENT_DIVISOR,
+        None => true,
+    }
+}
 
 /// Other addresses of a flow's client (multipath) and when each last pinged.
 type Extras = Arc<std::sync::Mutex<HashMap<SocketAddr, std::time::Instant>>>;
@@ -47,6 +90,20 @@ type Extras = Arc<std::sync::Mutex<HashMap<SocketAddr, std::time::Instant>>>;
 /// it has extra paths and stops pinging, copies only go to the paths alive.
 type OwnerPing = Arc<AtomicU64>;
 type Flows = Arc<Mutex<HashMap<SocketAddr, (Arc<UdpSocket>, Extras, OwnerPing)>>>;
+/// Multipath (Linux): a socket per path of a multipath client, connected to
+/// that address on the listener's port, with its send buffer size. Each
+/// path's backlog is then its own, so only a slow path's copies are dropped.
+type PathSockets = Arc<std::sync::Mutex<HashMap<SocketAddr, (Arc<UdpSocket>, usize)>>>;
+/// Datagrams from clients, from the listener and from path sockets alike.
+type Inbox = tokio::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>;
+
+/// Sends one packet on `addr`'s path socket without waiting: Some(true) sent,
+/// Some(false) dropped because that path is behind, None = no path socket.
+fn send_on_path(paths: &PathSockets, addr: SocketAddr, packet: &[u8]) -> Option<bool> {
+    let (socket, send_buffer) = paths.lock().unwrap().get(&addr).cloned()?;
+    let fits = unsent_bytes(&socket).is_none_or(|unsent| unsent <= send_buffer / MULTIPATH_MAX_UNSENT_DIVISOR);
+    Some(fits && socket.try_send(packet).is_ok())
+}
 
 /// The session payload of a video/audio ping, or None for anything else.
 fn ping_payload(ch: Channel, packet: &[u8]) -> Option<[u8; 16]> {
@@ -251,17 +308,32 @@ impl Proxy {
         // payload, and which flow an extra path belongs to.
         let mut owner_of_payload: HashMap<[u8; 16], SocketAddr> = HashMap::new();
         let mut owner_of_extra: HashMap<SocketAddr, SocketAddr> = HashMap::new();
+        let paths: PathSockets = Arc::default();
+        let (inbox, mut received) = tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(4096);
+        {
+            let listener = listener.clone();
+            let inbox = inbox.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    match listener.recv_from(&mut buf).await {
+                        Ok((len, from)) => {
+                            if inbox.send((buf[..len].to_vec(), from)).await.is_err() {
+                                break;
+                            }
+                        }
+                        // Windows reports an ICMP port-unreachable from an earlier
+                        // send as a receive error; it isn't fatal.
+                        Err(err) => log::debug!("{} receive failed: {err}", ch.name),
+                    }
+                }
+            });
+        }
         let mut buf = vec![0u8; 65536];
         loop {
-            let (len, client) = match listener.recv_from(&mut buf).await {
-                Ok(received) => received,
-                Err(err) => {
-                    // Windows reports an ICMP port-unreachable from an earlier
-                    // send as a receive error; it isn't fatal.
-                    log::debug!("{} receive failed: {err}", ch.name);
-                    continue;
-                }
-            };
+            let Some((packet, client)) = received.recv().await else { break };
+            let len = packet.len();
+            buf[..len].copy_from_slice(&packet);
             let payload = ping_payload(ch, &buf[..len]);
             {
                 // Only a valid ping for the owner's current session may keep
@@ -270,11 +342,20 @@ impl Proxy {
                 if let Some(owner) = owner_of_extra.get(&client).copied() {
                     let Some(p) = payload else { continue };
                     if owner_of_payload.get(&p) == Some(&owner) {
-                        if let Some((_, extras, _)) = flows_guard.get(&owner) {
+                        if let Some((upstream, extras, owner_ping)) = flows_guard.get(&owner) {
                             let rejoined = extras.lock().unwrap().insert(client, std::time::Instant::now()).is_none();
                             if rejoined && ch.name == "video" {
                                 self.stats.set_streaming(client.ip(), true);
                                 self.stats.link_path(client.ip(), owner.ip());
+                            }
+                            self.ensure_path_socket(&paths, client, &inbox, ch);
+                            self.ensure_path_socket(&paths, owner, &inbox, ch);
+                            // The client may rest the flow's own path (too slow);
+                            // the host still needs pings, or it ends the stream.
+                            if now_ms().saturating_sub(owner_ping.load(Ordering::Relaxed)) > MULTIPATH_IDLE.as_millis() as u64 {
+                                let upstream = upstream.clone();
+                                drop(flows_guard);
+                                let _ = upstream.send(&buf[..len]).await;
                             }
                             continue;
                         }
@@ -321,6 +402,8 @@ impl Proxy {
                                     self.stats.link_path(client.ip(), owner.ip());
                                 }
                                 log::info!("{} multipath: {client} is another path of {owner}", ch.name);
+                                self.ensure_path_socket(&paths, client, &inbox, ch);
+                                self.ensure_path_socket(&paths, owner, &inbox, ch);
                                 continue;
                             }
                             owner_of_payload.remove(&p);
@@ -331,9 +414,10 @@ impl Proxy {
             let upstream = {
                 let mut flows_guard = flows.lock().await;
                 match flows_guard.get(&client) {
-                    Some((socket, _, owner_ping)) => {
-                        if payload.is_some() {
-                            owner_ping.store(now_ms(), Ordering::Relaxed);
+                    Some((socket, extras, owner_ping)) => {
+                        owner_ping.store(now_ms(), Ordering::Relaxed);
+                        if payload.is_some() && !extras.lock().unwrap().is_empty() {
+                            self.ensure_path_socket(&paths, client, &inbox, ch);
                         }
                         socket.clone()
                     }
@@ -343,8 +427,7 @@ impl Proxy {
                             owner_of_payload.retain(|_, owner| flows_guard.contains_key(owner));
                             owner_of_extra.retain(|_, owner| flows_guard.contains_key(owner));
                             let extras: Extras = Arc::default();
-                            let owner_ping: OwnerPing =
-                                Arc::new(AtomicU64::new(if payload.is_some() { now_ms() } else { 0 }));
+                            let owner_ping: OwnerPing = Arc::new(AtomicU64::new(now_ms()));
                             flows_guard.insert(client, (socket.clone(), extras.clone(), owner_ping.clone()));
                             tokio::spawn(self.clone().relay_udp_replies(
                                 socket.clone(),
@@ -353,6 +436,7 @@ impl Proxy {
                                 flows.clone(),
                                 extras,
                                 owner_ping,
+                                paths.clone(),
                                 ch,
                             ));
                             socket
@@ -373,6 +457,47 @@ impl Proxy {
         }
     }
 
+    /// Gives `peer` its own path socket (multipath, Linux), reading from it
+    /// into the inbox until the path goes quiet; then the listener takes it back.
+    #[cfg(target_os = "linux")]
+    fn ensure_path_socket(&self, paths: &PathSockets, peer: SocketAddr, inbox: &Inbox, ch: Channel) {
+        if paths.lock().unwrap().contains_key(&peer) {
+            return;
+        }
+        let socket = match crate::net::udp_path_socket(self.map.meteor(ch), peer) {
+            Ok(socket) => Arc::new(socket),
+            Err(err) => {
+                log::debug!("{} multipath: no path socket for {peer}: {err}", ch.name);
+                return;
+            }
+        };
+        let send_buffer = socket2::SockRef::from(socket.as_ref()).send_buffer_size().unwrap_or(212_992);
+        paths.lock().unwrap().insert(peer, (socket.clone(), send_buffer));
+        let (paths, inbox) = (paths.clone(), inbox.clone());
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 65536];
+            loop {
+                match tokio::time::timeout(UDP_FLOW_IDLE, socket.recv(&mut buf)).await {
+                    Ok(Ok(len)) => {
+                        if inbox.send((buf[..len].to_vec(), peer)).await.is_err() {
+                            break;
+                        }
+                    }
+                    // An ICMP error from an earlier copy; the path may come back.
+                    Ok(Err(err)) if err.kind() == io::ErrorKind::ConnectionRefused => {}
+                    Ok(Err(_)) | Err(_) => break,
+                }
+            }
+            let mut paths = paths.lock().unwrap();
+            if paths.get(&peer).is_some_and(|(s, _)| Arc::ptr_eq(s, &socket)) {
+                paths.remove(&peer);
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn ensure_path_socket(&self, _paths: &PathSockets, _peer: SocketAddr, _inbox: &Inbox, _ch: Channel) {}
+
     async fn open_udp_flow(&self, ch: Channel) -> io::Result<Arc<UdpSocket>> {
         let target = tokio::net::lookup_host(self.upstream(ch))
             .await?
@@ -392,6 +517,7 @@ impl Proxy {
         flows: Flows,
         extras: Extras,
         owner_ping: OwnerPing,
+        paths: PathSockets,
         ch: Channel,
     ) {
         self.stats.udp_flows.fetch_add(1, Ordering::Relaxed);
@@ -403,6 +529,9 @@ impl Proxy {
             None
         };
         let mut buf = vec![0u8; 65536];
+        let send_buffer = socket2::SockRef::from(listener.as_ref()).send_buffer_size().unwrap_or(212_992);
+        let mut skipped: HashMap<SocketAddr, u64> = HashMap::new();
+        let mut skip_logged = std::time::Instant::now();
         loop {
             match tokio::time::timeout(UDP_FLOW_IDLE, upstream.recv(&mut buf)).await {
                 Ok(Ok(len)) => {
@@ -417,8 +546,17 @@ impl Proxy {
                             && now_ms().saturating_sub(last) > MULTIPATH_IDLE.as_millis() as u64
                             && !extras.lock().unwrap().is_empty()
                     };
-                    if !owner_quiet && listener.send_to(&buf[..len], client).await.is_ok() {
-                        self.stats.bytes_to_client.fetch_add(len as u64, Ordering::Relaxed);
+                    if !owner_quiet {
+                        // With path sockets every path is equal: none is waited for.
+                        let sent = match send_on_path(&paths, client, &buf[..len]) {
+                            Some(sent) => sent,
+                            None => listener.send_to(&buf[..len], client).await.is_ok(),
+                        };
+                        if sent {
+                            self.stats.bytes_to_client.fetch_add(len as u64, Ordering::Relaxed);
+                        } else {
+                            *skipped.entry(client).or_default() += 1;
+                        }
                     }
                     // Multipath: the same packet to the client's other paths.
                     let others: Vec<SocketAddr> = {
@@ -440,8 +578,23 @@ impl Proxy {
                             extras.keys().copied().collect()
                         }
                     };
+                    // Never wait for an extra path: a copy that doesn't fit now
+                    // is dropped (the client still has the main path's).
                     for other in others {
-                        let _ = listener.send_to(&buf[..len], other).await;
+                        let sent = match send_on_path(&paths, other, &buf[..len]) {
+                            Some(sent) => sent,
+                            // No path sockets (not Linux): the shared listener's backlog.
+                            None => extra_copy_fits(&listener, send_buffer) && listener.try_send_to(&buf[..len], other).is_ok(),
+                        };
+                        if !sent {
+                            *skipped.entry(other).or_default() += 1;
+                        }
+                    }
+                    if !skipped.is_empty() && skip_logged.elapsed() >= MULTIPATH_SKIP_LOG {
+                        for (path, count) in skipped.drain() {
+                            log::info!("{} multipath: {count} packets to {path} dropped (path too slow)", ch.name);
+                        }
+                        skip_logged = std::time::Instant::now();
                     }
                     if let Some(tap) = &tap {
                         tap.push(&buf[..len]);
@@ -453,6 +606,12 @@ impl Proxy {
                     log::debug!("{} flow for {client} failed: {err}", ch.name);
                     break;
                 }
+                // Quiet from the host, but the client still pings: keep the flow. The
+                // host sends no audio while the PC is silent and keeps sending to this
+                // socket's port afterwards, so closing it here muted the rest of the stream.
+                // Multipath: when the client rests the owner's path, its other paths still ping.
+                Err(_) if client_still_there(owner_ping.load(Ordering::Relaxed), now_ms())
+                    || any_path_pinging(extras.lock().unwrap().values().copied()) => {}
                 Err(_) => break, // idle
             }
         }
@@ -522,10 +681,14 @@ async fn bind_tcp(port: u16) -> io::Result<TcpListener> {
 }
 
 async fn bind_udp(port: u16) -> io::Result<UdpSocket> {
-    match crate::net::udp_socket(port).await {
-        Ok(socket) => Ok(socket),
-        Err(_) => UdpSocket::bind(("0.0.0.0", port)).await,
-    }
+    let socket = match crate::net::udp_socket(port).await {
+        Ok(socket) => socket,
+        Err(_) => UdpSocket::bind(("0.0.0.0", port)).await?,
+    };
+    // Room for bursts of video frames to every path; the kernel caps it at
+    // net.core.wmem_max.
+    let _ = socket2::SockRef::from(&socket).set_send_buffer_size(4 << 20);
+    Ok(socket)
 }
 
 async fn copy_counted<R, W>(reader: &mut R, writer: &mut W, counter: &AtomicU64) -> io::Result<u64>
@@ -704,7 +867,36 @@ fn rewrite_server_ports(line: &str, map: &PortMap) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn extra_copies_fit_on_an_idle_socket() {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        #[cfg(target_os = "linux")]
+        assert_eq!(super::unsent_bytes(&socket), Some(0));
+        assert!(super::extra_copy_fits(&socket, 212_992));
+        // A send buffer too small for anything to fit behind it.
+        #[cfg(target_os = "linux")]
+        assert!(super::extra_copy_fits(&socket, 0), "nothing queued, so even a zero budget fits");
+    }
+
     use super::*;
+
+    /// A silent PC sends no audio; the client's pings keep the audio flow (and the port
+    /// the host sends to) alive until it really goes away.
+    #[test]
+    fn a_pinging_client_keeps_a_quiet_flow() {
+        let idle = UDP_FLOW_IDLE.as_millis() as u64;
+        assert!(client_still_there(1_000, 1_000 + idle - 1));
+        assert!(!client_still_there(1_000, 1_000 + idle));
+        assert!(client_still_there(5_000, 4_000), "clock skew between threads is not idleness");
+        // The owner's path resting (multipath): another path's recent ping keeps the flow.
+        let now = std::time::Instant::now();
+        assert!(any_path_pinging([now]));
+        assert!(!any_path_pinging(std::iter::empty()));
+        if let Some(stale) = now.checked_sub(UDP_FLOW_IDLE + Duration::from_secs(1)) {
+            assert!(!any_path_pinging([stale]));
+            assert!(any_path_pinging([stale, now]));
+        }
+    }
 
     #[test]
     fn a_restarted_stream_keeps_its_client_streaming() {
@@ -830,6 +1022,20 @@ mod tests {
         assert_eq!(&bytes[..n], b"NEW", "reconnected secondary must not receive old-session frames");
     }
 
+    /// A client socket on 127.0.0.2, a second address on the same machine. Linux routes all of
+    /// 127.0.0.0/8 to loopback; macOS only has 127.0.0.1 unless an alias is added
+    /// (`sudo ifconfig lo0 alias 127.0.0.2`), so there the test is skipped.
+    async fn second_loopback() -> Option<UdpSocket> {
+        match UdpSocket::bind("127.0.0.2:0").await {
+            Ok(socket) => Some(socket),
+            Err(error) if cfg!(target_os = "macos") && error.kind() == std::io::ErrorKind::AddrNotAvailable => {
+                eprintln!("skipped: 127.0.0.2 isn't configured (sudo ifconfig lo0 alias 127.0.0.2)");
+                None
+            }
+            Err(error) => panic!("bind 127.0.0.2: {error}"),
+        }
+    }
+
     #[tokio::test]
     async fn multipath_owner_token_change_revokes_old_secondary() {
         let map = PortMap::new(39989, 1000).unwrap();
@@ -840,7 +1046,7 @@ mod tests {
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         // Distinct loopback IPs let the test check depth/mic authorization too.
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 31).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 31).await;
@@ -866,7 +1072,7 @@ mod tests {
         let stats = Arc::new(Stats::default());
         Proxy::new(map, "127.0.0.1".into(), stats.clone(), None, None).start().await.unwrap();
         let owner = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let extra = UdpSocket::bind("127.0.0.2:0").await.unwrap();
+        let Some(extra) = second_loopback().await else { return };
         test_session_ping(&owner, destination, 51).await;
         test_host_ping(&host).await;
         test_session_ping(&extra, destination, 51).await;
@@ -996,6 +1202,32 @@ mod tests {
         assert_eq!(&buf[..n], b"FRAME");
         assert!(tokio::time::timeout(Duration::from_millis(300), first.recv_from(&mut buf)).await.is_err(),
             "the quiet first path no longer gets copies");
+    }
+
+    #[tokio::test]
+    async fn multipath_keeps_the_host_pinged_when_the_owner_path_rests() {
+        let map = PortMap::new(29989, 1000).unwrap();
+        let video = PortMap::channel("video");
+        let sunshine = UdpSocket::bind(("127.0.0.1", map.sunshine(video))).await.unwrap();
+        Proxy::new(map.clone(), "127.0.0.1".into(), Arc::new(Stats::default()), None, None)
+            .start().await.unwrap();
+
+        let ping = [7u8; MULTIPATH_PING_LEN];
+        let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        first.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+        let mut buf = [0u8; 64];
+        tokio::time::timeout(Duration::from_secs(1), sunshine.recv_from(&mut buf)).await.unwrap().unwrap();
+        // The client rests the first path; only the second keeps pinging.
+        for _ in 0..9 {
+            second.send_to(&ping, ("127.0.0.1", map.meteor(video))).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(450)).await;
+        }
+        let mut forwarded = 0;
+        while tokio::time::timeout(Duration::from_millis(50), sunshine.recv_from(&mut buf)).await.is_ok() {
+            forwarded += 1;
+        }
+        assert!(forwarded >= 1, "the second path's pings reach the host once the first path is quiet");
     }
 
     #[tokio::test]

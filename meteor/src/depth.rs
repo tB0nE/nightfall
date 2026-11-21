@@ -588,15 +588,9 @@ impl Depth {
         *self.region_same_client.lock().unwrap_or_else(|e|e.into_inner()) = Some(same_client);
     }
     fn client_region(&self, ip: Option<IpAddr>) -> (Option<[f32;4]>, u64) {
-        if let Some(ip)=ip.map(|ip|ip.to_canonical()) && let Ok(regions)=self.client_regions.lock() {
-            if let Some((sequence,region))=regions.get(&ip) {return (Some(*region),*sequence);}
-            // Multipath: the region may have been chosen from another path of this client.
+        if let Some(ip)=ip && let Ok(regions)=self.client_regions.lock() {
             let same_client=self.region_same_client.lock().ok().and_then(|f|f.clone());
-            if let Some(same_client)=same_client
-                && let Some((_,(sequence,region)))=regions.iter()
-                    .filter(|(other,_)|same_client(**other,ip)).max_by_key(|(_,(sequence,_))|*sequence) {
-                return (Some(*region),*sequence);
-            }
+            if let Some((sequence,region))=region_for(&regions,ip,same_client.as_deref()) {return (Some(region),sequence);}
         }
         (self.capture_region(),0)
     }
@@ -1568,9 +1562,41 @@ impl DepthFeed {
 #[path = "../tools/depth_hardware_benchmark.rs"]
 mod hardware_benchmark;
 
+/// The region for video from `ip`: the one chosen on that address, else (multipath) the
+/// newest one chosen on another path of the same client.
+fn region_for(regions: &BTreeMap<IpAddr, (u64, [f32; 4])>, ip: IpAddr,
+              same_client: Option<&(dyn Fn(IpAddr, IpAddr) -> bool + Send + Sync)>) -> Option<(u64, [f32; 4])> {
+    let ip = ip.to_canonical();
+    if let Some(found) = regions.get(&ip) {
+        return Some(*found);
+    }
+    let same_client = same_client?;
+    regions.iter().filter(|(other, _)| same_client(**other, ip)).map(|(_, found)| *found).max_by_key(|(sequence, _)| *sequence)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_region_chosen_on_another_path_applies_to_its_video() {
+        let wifi: IpAddr = "192.168.1.20".parse().unwrap();
+        let dongle: IpAddr = "10.42.0.20".parse().unwrap();
+        let stranger: IpAddr = "192.168.1.99".parse().unwrap();
+        let mut regions = BTreeMap::new();
+        regions.insert(wifi, (3, [0.0, 0.0, 0.5, 1.0]));
+        let paths = move |a: IpAddr, b: IpAddr| (a == wifi && b == dongle) || (a == dongle && b == wifi);
+        assert_eq!(region_for(&regions, wifi, None), Some((3, [0.0, 0.0, 0.5, 1.0])), "single path: as before");
+        assert_eq!(region_for(&regions, dongle, None), None, "without multipath another address doesn't match");
+        assert_eq!(region_for(&regions, dongle, Some(&paths)), Some((3, [0.0, 0.0, 0.5, 1.0])));
+        assert_eq!(region_for(&regions, stranger, Some(&paths)), None, "another client never gets it");
+        // The newest region of the client wins.
+        regions.insert("192.168.1.21".parse().unwrap(), (5, [0.5, 0.0, 1.0, 1.0]));
+        let wider = move |a: IpAddr, b: IpAddr| paths(a, b) || (b == dongle && a == "192.168.1.21".parse::<IpAddr>().unwrap());
+        assert_eq!(region_for(&regions, dongle, Some(&wider)), Some((5, [0.5, 0.0, 1.0, 1.0])));
+        // An IPv4-mapped address is the same client address.
+        assert_eq!(region_for(&regions, "::ffff:192.168.1.20".parse().unwrap(), None), Some((3, [0.0, 0.0, 0.5, 1.0])));
+    }
 
     #[test]
     fn migraphx_vda_is_labelled_offered_per_gpu_and_overlaps_preparation() {

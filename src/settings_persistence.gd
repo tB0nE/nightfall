@@ -39,6 +39,10 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "extended_bitrate_limits", settings.extended_bitrate_limits)
 	config.set_value("screen", "codec_preference", settings.codec_preference)
 	config.set_value("screen", "grid_mode_enabled", settings.grid_mode_enabled)
+	config.set_value("screen", "placement_grid_shape", settings.placement_grid_shape)
+	config.set_value("screen", "placement_grid_spacing", settings.placement_grid_spacing)
+	config.set_value("screen", "placement_grid_curve", settings.placement_grid_curve)
+	config.set_value("screen", "secondary_screens_locked", settings.secondary_screens_locked)
 	config.set_value("diagnostics", "performance_overlay", settings.performance_overlay_enabled)
 	config.set_value("ai_3d", "gpu_priority_mode", settings.ai_3d_gpu_priority)
 	config.set_value("controller", "hand_tracking_enabled", settings.tracking_mode)
@@ -51,6 +55,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
 	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
 	config.set_value("stream", "hdr_enabled", settings.hdr_enabled)
+	config.set_value("stream", "multipath_enabled", settings.multipath_enabled)
 	config.set_value("general", "language", settings.language)
 
 static func read_app(
@@ -140,6 +145,12 @@ static func read_app(
 		"screen", "grid_mode_enabled", AppSettings.DEFAULT_GRID_MODE_ENABLED)
 	settings.performance_overlay_enabled = config.get_value(
 		"diagnostics", "performance_overlay", AppSettings.DEFAULT_PERFORMANCE_OVERLAY_ENABLED)
+	settings.placement_grid_shape = clampi(int(config.get_value("screen", "placement_grid_shape", 1)), 0, 2)
+	var spacing := float(config.get_value("screen", "placement_grid_spacing", 0.1))
+	settings.placement_grid_spacing = spacing if spacing in [0.05, 0.1, 0.2] else 0.1
+	settings.placement_grid_curve = clampi(int(config.get_value("screen", "placement_grid_curve", 0)), 0, 100)
+	settings.secondary_screens_locked = bool(config.get_value("screen", "secondary_screens_locked", false))
+
 	# "gpu_priority_mode" is 0 Stream / 1 Adaptive / 2 AI 3D. Older saves only have
 	# "gpu_priority" (0 Stream / 1 AI 3D), so map that across when the new key is absent.
 	if config.has_section_key("ai_3d", "gpu_priority_mode"):
@@ -169,6 +180,8 @@ static func read_app(
 		"stream", "usb_link_enabled", AppSettings.DEFAULT_USB_LINK_ENABLED)
 	settings.hdr_enabled = config.get_value(
 		"stream", "hdr_enabled", AppSettings.DEFAULT_HDR_ENABLED)
+	settings.multipath_enabled = config.get_value(
+		"stream", "multipath_enabled", AppSettings.DEFAULT_MULTIPATH_ENABLED) == true
 	settings.language = str(config.get_value("general", "language", AppSettings.DEFAULT_LANGUAGE))
 	return result
 

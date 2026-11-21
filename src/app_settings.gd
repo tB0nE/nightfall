@@ -39,6 +39,9 @@ const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
 const DEFAULT_HDR_ENABLED := false
+## Multipath: also receive the stream over a second network (NF_MULTIPATH_REMOTE)
+## when Nightfall Meteor offers it.
+const DEFAULT_MULTIPATH_ENABLED := true
 const DEFAULT_MICROPHONE_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
@@ -87,6 +90,14 @@ var passthrough_fade_pct: int = DEFAULT_PASSTHROUGH_FADE_PCT
 var tracking_mode: int = DEFAULT_TRACKING_MODE
 var codec_preference: int = DEFAULT_CODEC_PREFERENCE
 var grid_mode_enabled: bool = DEFAULT_GRID_MODE_ENABLED
+var placement_grid_shape: int = 1
+var placement_grid_spacing: float = 0.1
+## Cylinder/sphere grids: 0 centres the surface on the viewer, 100 bends it
+## tightest (ScreenPlacementController.curve_factor()).
+var placement_grid_curve: int = 0
+## Lock Screens: secondary screens hide their grab bar, shortcuts and corners
+## (and stop catching the pointer there), so only the primary moves the layout.
+var secondary_screens_locked: bool = false
 var performance_overlay_enabled: bool = DEFAULT_PERFORMANCE_OVERLAY_ENABLED
 var ai_3d_gpu_priority: int = DEFAULT_AI_3D_GPU_PRIORITY
 var auto_reconnect_enabled: bool = DEFAULT_AUTO_RECONNECT_ENABLED
@@ -101,6 +112,7 @@ var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
 ## Ask the host for an HDR10 stream (10-bit, PQ) and tone-map it for the
 ## headset, instead of the host squashing its HDR desktop to SDR.
 var hdr_enabled: bool = DEFAULT_HDR_ENABLED
+var multipath_enabled: bool = DEFAULT_MULTIPATH_ENABLED
 ## Send the headset microphone to Nightfall Meteor (MeteorMicrophone).
 var microphone_enabled: bool = DEFAULT_MICROPHONE_ENABLED
 # Not reset with the other general settings: a settings reset should not
@@ -137,6 +149,10 @@ func reset_general() -> void:
 	extended_bitrate_limits = false
 	codec_preference = DEFAULT_CODEC_PREFERENCE
 	grid_mode_enabled = DEFAULT_GRID_MODE_ENABLED
+	placement_grid_shape = 1
+	placement_grid_spacing = 0.1
+	placement_grid_curve = 0
+	secondary_screens_locked = false
 	performance_overlay_enabled = DEFAULT_PERFORMANCE_OVERLAY_ENABLED
 	ai_3d_gpu_priority = DEFAULT_AI_3D_GPU_PRIORITY
 	auto_reconnect_enabled = DEFAULT_AUTO_RECONNECT_ENABLED
@@ -148,3 +164,4 @@ func reset_general() -> void:
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED
 	hdr_enabled = DEFAULT_HDR_ENABLED
+	multipath_enabled = DEFAULT_MULTIPATH_ENABLED
