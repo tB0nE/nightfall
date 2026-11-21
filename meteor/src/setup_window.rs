@@ -1,5 +1,7 @@
-//! The Setup window (Linux): the built-in host, PCVR, Steam launch options and
-//! VDA in one place, with Install All for a single click.
+//! The Setup window (Linux and Windows): the built-in host, PCVR, Steam launch
+//! options (Linux) and VDA in one place, with Install All for a single click.
+//! On Windows it also shows what the installer set up — VB-CABLE, the virtual
+//! display driver, the firewall rules — and fixes what's missing.
 //!
 //! It's its own process (`nightfall-meteor --setup`): a window toolkit wants the
 //! main thread, and a window that can't open or crashes leaves Meteor running.
@@ -31,6 +33,7 @@ pub fn open() {
         let status = tokio::task::spawn_blocking(|| {
             let mut command = Command::new(std::env::current_exe()?);
             command.arg("--setup");
+            no_console(&mut command);
             // Model downloads run in Meteor, so its menu sees them too.
             if let Some(socket) = crate::control::path() {
                 command.arg(socket);
@@ -52,6 +55,17 @@ pub fn open() {
     });
 }
 
+/// Windows: start a window process without a console flashing up (debug builds have one).
+pub(crate) fn no_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 /// `--setup [control socket]`: shows the window. Returns the exit code.
 pub fn run(socket: Option<PathBuf>) -> i32 {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
@@ -67,8 +81,7 @@ pub fn run(socket: Option<PathBuf>) -> i32 {
             models.refresh_models();
         }
     });
-    let icon = crate::icon::nightfall_icon(128);
-    let rgba = icon.data.chunks_exact(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+    let rgba = crate::icon::nightfall_rgba(128);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Nightfall Meteor Setup")
@@ -97,7 +110,15 @@ pub fn run(socket: Option<PathBuf>) -> i32 {
     }
 }
 
+/// Segoe UI, the font Windows' own apps use.
+#[cfg(windows)]
+pub(crate) fn system_font() -> Option<Vec<u8>> {
+    let fonts = PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into())).join("Fonts");
+    ["segoeui.ttf", "arial.ttf", "tahoma.ttf"].iter().find_map(|name| std::fs::read(fonts.join(name)).ok())
+}
+
 /// A sans-serif font from the system, as the desktop's own apps would pick it.
+#[cfg(not(windows))]
 pub(crate) fn system_font() -> Option<Vec<u8>> {
     let asked = Command::new("fc-match")
         .args(["-f", "%{file}", "sans:style=Regular:fontformat=TrueType"])
@@ -131,14 +152,22 @@ enum Row {
     Steam,
     Vda,
     Models,
+    #[cfg(windows)]
+    Cable,
+    #[cfg(windows)]
+    Display,
+    #[cfg(windows)]
+    Firewall,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[cfg_attr(windows, allow(dead_code))] // Steam launch options are Linux's
 enum SteamMethod {
     #[default]
     LaunchOptions,
     Automatic,
 }
+#[cfg_attr(windows, allow(dead_code))]
 impl SteamMethod {
     fn selected(automatic: bool) -> Self {
         if automatic {Self::Automatic} else {Self::LaunchOptions}
@@ -168,6 +197,46 @@ struct Status {
     vda: Option<VdaStatus>,
     /// From the running Meteor; empty when Setup runs without one.
     models: ModelStatus,
+    #[cfg(windows)]
+    windows: WindowsStatus,
+}
+
+/// What Windows' installer set up, which Meteor depends on.
+#[cfg(windows)]
+#[derive(Clone, Default, Debug)]
+struct WindowsStatus {
+    /// VB-CABLE, which the headset microphone plays into.
+    cable: bool,
+    /// The virtual display driver, for virtual monitors.
+    display_driver: bool,
+    display_script: bool,
+    /// Why the Quest can't get through, when it can't.
+    firewall: Option<String>,
+}
+
+#[cfg(windows)]
+fn windows_status() -> WindowsStatus {
+    let beside = |name: &str| std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join(name))).is_some_and(|p| p.is_file());
+    WindowsStatus {
+        cable: vb_cable_installed(),
+        display_driver: crate::sunshine_vdd_probe(),
+        display_script: beside("Install-VirtualDisplay.ps1"),
+        firewall: match crate::firewall::check(&[]) {
+            crate::firewall::Status::Windows { reason } => Some(reason),
+            _ => None,
+        },
+    }
+}
+
+/// A VB-CABLE playback device is present.
+#[cfg(windows)]
+fn vb_cable_installed() -> bool {
+    use wasapi::{DeviceEnumerator, Direction};
+    let _ = wasapi::initialize_mta();
+    let Ok(devices) = DeviceEnumerator::new().and_then(|e| e.get_device_collection(&Direction::Render)) else { return false };
+    (&devices).into_iter().filter_map(Result::ok).any(|device| {
+        device.get_friendlyname().is_ok_and(|name| name.to_ascii_lowercase().contains("cable") && name.to_ascii_lowercase().contains("input"))
+    })
 }
 
 /// Depth models Meteor can download for this PC's GPUs.
@@ -225,6 +294,30 @@ struct Shared {
 }
 
 impl Shared {
+    #[cfg(windows)]
+    fn refresh(&self, _with_steam: bool) {
+        let config = crate::config::load();
+        let state = host::load_state();
+        let models = config.models_dir.clone().unwrap_or_else(crate::config::default_models_dir);
+        let root = crate::xr_windows::root();
+        let status = Status {
+            loaded: true,
+            // The installer prepares PCVR (Setup-Meteor.ps1 -EnablePCVR); this only turns it on.
+            pcvr_in_build: root.join("xr-windows.json").is_file() || root.join("steamvr-runtime").is_dir(),
+            pcvr_ready: config.xr.enabled,
+            host_chosen: state.choice == Choice::Bundled,
+            host_available: host::binary(&config).is_some(),
+            other_host: !host::other_hosts(None).is_empty(),
+            steam: None,
+            vda: crate::download::plan(&models).ok().map(|plan| VdaStatus { ready: plan.is_empty(), bytes: plan.bytes() }),
+            models: self.status.lock().unwrap().models.clone(),
+            windows: windows_status(),
+        };
+        *self.status.lock().unwrap() = status;
+        self.refresh_models();
+    }
+
+    #[cfg(not(windows))]
     fn refresh(&self, with_steam: bool) {
         let config = crate::config::load();
         let root = config.xr.runtime_root();
@@ -302,6 +395,52 @@ impl Shared {
         self.errors.lock().unwrap().iter().find(|(r, _)| *r == row).map(|(_, e)| e.clone())
     }
 
+    #[cfg(windows)]
+    fn install_pcvr(&self, _runtime: &tokio::runtime::Handle) {
+        self.begin(Row::Pcvr, "Turning on");
+        let root = crate::xr_windows::root();
+        let result = crate::xr_windows::command(&["--xr-windows-enable".into(), "--root".into(), root.to_string_lossy().into_owned()])
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        if result.is_ok() {
+            self.restart.store(true, Ordering::Relaxed);
+        }
+        self.finish(Row::Pcvr, result);
+    }
+
+    #[cfg(windows)]
+    fn turn_off_pcvr(&self) {
+        self.begin(Row::Pcvr, "Turning off");
+        let result = set_xr_enabled(false).map_err(|error| error.to_string());
+        if result.is_ok() {
+            self.restart.store(true, Ordering::Relaxed);
+        }
+        self.finish(Row::Pcvr, result);
+    }
+
+    /// Runs one of the installer's scripts with administrator approval and waits for it.
+    #[cfg(windows)]
+    fn elevated(&self, row: Row, text: &str, script: &str) {
+        self.begin(row, text);
+        let result = (|| {
+            let path = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("No install folder")?.join(script);
+            if !path.is_file() {
+                return Err(format!("{script} is missing beside Meteor; reinstall Meteor"));
+            }
+            let quoted = path.display().to_string().replace('\'', "''");
+            let command = format!(
+                "$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+                 -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"{quoted}\"'; exit $p.ExitCode"
+            );
+            let mut powershell = Command::new("powershell.exe");
+            no_console(&mut powershell);
+            let status = powershell.args(["-NoProfile", "-Command", &command]).stdin(Stdio::null()).status().map_err(|e| e.to_string())?;
+            if status.success() { Ok(()) } else { Err(format!("{script} didn't finish ({status})")) }
+        })();
+        self.finish(row, result);
+    }
+
+    #[cfg(not(windows))]
     fn install_pcvr(&self, runtime: &tokio::runtime::Handle) {
         self.begin(Row::Pcvr, "Installing");
         let result = runtime
@@ -313,6 +452,7 @@ impl Shared {
         self.finish(Row::Pcvr, result);
     }
 
+    #[cfg(not(windows))]
     fn turn_off_pcvr(&self) {
         self.begin(Row::Pcvr, "Turning off");
         let result = crate::xr_setup::disable(&crate::config::config_path()).map_err(|error| error.to_string());
@@ -340,6 +480,7 @@ impl Shared {
         self.finish(Row::Host, result);
     }
 
+    #[cfg(not(windows))]
     fn steam_options(&self, action: &'static str) {
         let config=crate::config::load();
         let root=config.xr.runtime_root();
@@ -391,9 +532,10 @@ impl Shared {
             match row {
                 Row::Pcvr => self.install_pcvr(runtime),
                 Row::Host => self.use_host(Choice::Bundled),
+                #[cfg(not(windows))]
                 Row::Steam => self.steam_options("launch_options"),
                 Row::Vda => self.install_vda(),
-                Row::Models => {}
+                _ => {}
             }
         }
     }
@@ -409,8 +551,9 @@ fn install_all_rows(status: &Status) -> Vec<Row> {
     if status.host_available && !status.host_chosen && !status.other_host {
         rows.push(Row::Host);
     }
+    // Windows games are added to PCVR by the installer, not by Steam launch options.
     let steam_done = status.steam.as_ref().is_some_and(|s| s.error.is_none() && (s.automatic_configured || (s.total > 0 && s.ready == s.total)));
-    if status.pcvr_in_build && !steam_done {
+    if cfg!(not(windows)) && status.pcvr_in_build && !steam_done {
         rows.push(Row::Steam);
     }
     if status.vda.as_ref().is_some_and(|vda| !vda.ready) {
@@ -419,6 +562,17 @@ fn install_all_rows(status: &Status) -> Vec<Row> {
     rows
 }
 
+/// Turns PCVR on or off in meteor.toml.
+#[cfg(windows)]
+fn set_xr_enabled(on: bool) -> std::io::Result<()> {
+    let path = crate::config::config_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut document: toml_edit::DocumentMut = text.parse().map_err(std::io::Error::other)?;
+    document["xr"]["enabled"] = toml_edit::value(on);
+    std::fs::write(path, document.to_string())
+}
+
+#[cfg(not(windows))]
 fn apply_automatic_setup(root: &std::path::Path, install: bool) -> Result<(),String> {
     let output=Command::new("/usr/bin/python3").arg(root.join("tools/meteor_steam_environment.py"))
         .arg(if install {"install"}else{"remove"}).arg("--root").arg(root)
@@ -430,11 +584,13 @@ fn apply_automatic_setup(root: &std::path::Path, install: bool) -> Result<(),Str
     crate::xr_setup::set_automatic(install).map_err(|error|error.to_string())
 }
 
+#[cfg(not(windows))]
 fn steam_tool(root: &std::path::Path) -> Option<PathBuf> {
     let tool = root.join("tools/meteor_steam_options.py");
     tool.is_file().then_some(tool)
 }
 
+#[cfg(not(windows))]
 fn steam_command(tool: &std::path::Path, action: &str) -> SteamStatus {
     let output = Command::new("/usr/bin/python3").arg(tool).arg(action).stdin(Stdio::null()).output();
     match output {
@@ -481,6 +637,7 @@ struct Window {
     shared: Arc<Shared>,
     runtime: tokio::runtime::Handle,
     frames: u32,
+    #[cfg_attr(windows, allow(dead_code))]
     steam_method: Option<SteamMethod>,
 }
 
@@ -608,6 +765,12 @@ impl eframe::App for Window {
             ui.add_space(8.0);
             ui.separator();
 
+            #[cfg(windows)]
+            if !status.pcvr_in_build && status.loaded {
+                self.row(ui, Row::Pcvr, "PCVR", "Play your Steam VR games in the headset", "Not set up", busy, |ui| {
+                    ui.small("Reinstall Meteor with \"Set up PCVR\" ticked");
+                });
+            }
             if status.pcvr_in_build {
                 self.row(ui, Row::Pcvr, "PCVR", "Play your Steam VR games in the headset", if status.pcvr_ready { "Installed" } else { "Not installed" }, busy, |ui| {
                     if status.pcvr_ready {
@@ -637,6 +800,10 @@ impl eframe::App for Window {
                 }
             });
 
+            #[cfg(windows)]
+            self.windows_rows(ui, &status, busy);
+
+            #[cfg(not(windows))]
             if status.pcvr_in_build {
                 let steam_state = match &status.steam {
                     None => "Needs PCVR".to_string(),
@@ -724,9 +891,7 @@ impl eframe::App for Window {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Support:");
                 if ui.button("Release information & licenses").clicked() {
-                    if let Some(prefix) = std::env::current_exe().ok().and_then(|e| e.parent().and_then(std::path::Path::parent).map(PathBuf::from)) {
-                        crate::menu::open(&prefix.join("share/doc/nightfall-meteor/RELEASE.md").to_string_lossy());
-                    }
+                    open_release_information();
                 }
                 if ui.button("Open log").clicked() {
                     crate::menu::open(&crate::logfile::path().to_string_lossy());
@@ -754,6 +919,49 @@ impl eframe::App for Window {
     }
 }
 
+/// RELEASE.md on Linux; on Windows the folder with the licences and notices.
+fn open_release_information() {
+    let Some(exe) = std::env::current_exe().ok() else { return };
+    #[cfg(windows)]
+    let target = exe.parent().map(|dir| dir.join("share\\doc\\nightfall-meteor"));
+    #[cfg(not(windows))]
+    let target = exe.parent().and_then(std::path::Path::parent).map(|prefix| prefix.join("share/doc/nightfall-meteor/RELEASE.md"));
+    if let Some(target) = target {
+        crate::menu::open(&target.to_string_lossy());
+    }
+}
+
+#[cfg(windows)]
+impl Window {
+    /// What Windows' installer set up: the microphone cable, the virtual display driver, the firewall.
+    fn windows_rows(&self, ui: &mut egui::Ui, status: &Status, busy: bool) {
+        let windows = &status.windows;
+        let cable = if windows.cable { "Installed" } else { "Not installed" };
+        self.row(ui, Row::Cable, "Headset microphone (VB-CABLE)", "Apps record the headset from CABLE Output", cable, busy, |ui| {
+            if !windows.cable && ui.button("Get VB-CABLE").clicked() {
+                crate::desktop::open_web_url("https://vb-audio.com/Cable/index.htm".into());
+            } else if windows.cable && ui.button("Sound settings").clicked() {
+                let _ = Command::new("control.exe").arg("mmsys.cpl,,1").spawn();
+            }
+        });
+        let display = if windows.display_driver { "Installed" } else { "Not installed" };
+        self.row(ui, Row::Display, "Virtual monitors", "Extra screens in VR, made by the virtual display driver", display, busy, |ui| {
+            if !windows.display_driver && windows.display_script && ui.button("Install").on_hover_text("Asks for administrator approval").clicked() {
+                self.spawn(|shared, _| shared.elevated(Row::Display, "Installing the driver", "Install-VirtualDisplay.ps1"));
+            }
+        });
+        let firewall = match &windows.firewall {
+            None => "The Quest can connect".to_string(),
+            Some(reason) => format!("Blocked: {reason}"),
+        };
+        self.row(ui, Row::Firewall, "Windows Firewall", "Lets the Quest find and reach Meteor", &firewall, busy, |ui| {
+            if windows.firewall.is_some() && ui.button("Allow").on_hover_text("Asks for administrator approval").clicked() {
+                self.spawn(|shared, _| shared.elevated(Row::Firewall, "Adding the rules", "Firewall-Meteor.ps1"));
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,6 +976,12 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn install_all_on_windows_has_no_steam_step() {
+        assert_eq!(install_all_rows(&fresh()), [Row::Pcvr, Row::Host, Row::Vda]);
+    }
+
     #[test]
     fn steam_method_defaults_to_original_and_preserves_explicit_experimental_selection() {
         assert_eq!(SteamMethod::default(),SteamMethod::LaunchOptions);
@@ -777,6 +991,7 @@ mod tests {
         assert!(SteamMethod::Automatic.label().contains("Experimental"));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn automatic_steam_setup_does_not_add_per_game_wrappers_again() {
         let mut status=fresh();
@@ -785,6 +1000,7 @@ mod tests {
         assert!(!install_all_rows(&status).contains(&Row::Steam));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn install_all_covers_a_fresh_pc_with_pcvr_before_steam() {
         assert_eq!(install_all_rows(&fresh()), [Row::Pcvr, Row::Host, Row::Steam, Row::Vda]);
@@ -796,6 +1012,7 @@ mod tests {
         assert!(!install_all_rows(&status).contains(&Row::Host));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn install_all_skips_what_this_pc_cant_use_or_already_has() {
         let status = Status {

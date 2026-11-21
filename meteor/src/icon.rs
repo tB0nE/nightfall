@@ -4,6 +4,7 @@
 //! beside the N's diagonal.
 
 /// The sizes offered to the tray, which picks the closest.
+#[cfg_attr(windows, allow(dead_code))]
 pub const SIZES: [i32; 4] = [22, 32, 48, 64];
 
 /// Samples per pixel along each axis, for anti-aliased edges.
@@ -33,6 +34,12 @@ pub fn nightfall_alpha(size: i32) -> Vec<u8> {
         }
     }
     alpha_data
+}
+
+/// The mark as RGBA pixels, for window icons.
+#[cfg(any(target_os = "linux", windows))]
+pub fn nightfall_rgba(size: i32) -> Vec<u8> {
+    nightfall_alpha(size).into_iter().flat_map(|a| [255, 255, 255, a]).collect()
 }
 
 #[cfg(target_os = "linux")]

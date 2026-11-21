@@ -28,7 +28,9 @@ pub fn open() {
     }
     tokio::spawn(async move {
         let status = tokio::task::spawn_blocking(move || {
-            Command::new(std::env::current_exe()?).arg("--depth-settings").arg(socket).stdin(Stdio::null()).status()
+            let mut command = Command::new(std::env::current_exe()?);
+            crate::setup_window::no_console(&mut command);
+            command.arg("--depth-settings").arg(socket).stdin(Stdio::null()).status()
         })
         .await;
         OPEN.store(false, Ordering::Relaxed);
@@ -89,8 +91,7 @@ pub fn run(socket: PathBuf) -> i32 {
             }
         });
     }
-    let icon = crate::icon::nightfall_icon(128);
-    let rgba = icon.data.chunks_exact(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+    let rgba = crate::icon::nightfall_rgba(128);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Depth model configuration")

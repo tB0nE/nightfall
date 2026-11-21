@@ -22,11 +22,14 @@ pub struct Sources {
     pub mic: Option<Arc<Mic>>,
     pub host: Arc<crate::host::view::View>,
     pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
+    /// The Windows host doesn't scale its cursor (only Linux capture reads the file).
+    #[cfg(not(windows))]
     pub cursor: Arc<crate::host_cursor::Control>,
 }
 
 /// One line of the menu.
 #[derive(Debug)]
+#[cfg_attr(windows, allow(dead_code))] // Options: Linux's PCVR encoder list
 pub enum Entry {
     /// Greyed-out text.
     Label(String),
@@ -51,6 +54,7 @@ fn check(title: impl Into<String>, action: Action, checked: bool) -> Entry {
 
 /// Everything the menu can do.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(windows, allow(dead_code))] // the encoder, input and cursor actions are Linux's
 pub enum Action {
     Setup,
     AllowFirewall,
@@ -75,8 +79,28 @@ pub enum Action {
     MicDefaultInput,
     ToggleAutostart,
     Quit,
+    // Windows has these where Linux needs nothing like them.
+    /// Pair-Headset.ps1: enter the headset's PIN by hand.
+    #[cfg(windows)]
+    PairHeadset,
+    #[cfg(windows)]
+    InstallVirtualDisplay,
+    /// host.toml, with the web UI login.
+    #[cfg(windows)]
+    HostLogin,
+    #[cfg(windows)]
+    PcvrBackend(String, crate::xr_windows::Backend),
+    #[cfg(windows)]
+    EnablePcvr,
+    #[cfg(windows)]
+    PcvrFolder,
+    #[cfg(windows)]
+    InstallCable,
+    #[cfg(windows)]
+    TaskbarSettings,
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub const PCVR_ENCODERS: &[(&str, &str)] = &[("auto", "Auto (prefer NVIDIA)"), ("nvenc", "NVIDIA / NVENC"), ("vaapi", "AMD / VA-API (experimental)")];
 
 impl Sources {
@@ -93,6 +117,8 @@ impl Sources {
         out.extend(self.audio_section());
         out.push(Entry::Separator);
         out.push(check("Start with my computer", Action::ToggleAutostart, crate::desktop::autostart_enabled()));
+        #[cfg(windows)]
+        out.push(item("Taskbar icon settings…", Action::TaskbarSettings));
         out.push(item("Quit", Action::Quit));
         out
     }
@@ -139,11 +165,50 @@ impl Sources {
                 out.push(label("ufw is on; Meteor can't check that the Quest gets through"));
                 out.push(item("Open Meteor's ports in ufw", Action::AllowFirewall));
             }
-            Firewall::Checking | Firewall::Open | Firewall::Windows { .. } => {}
+            Firewall::Windows { .. } => {
+                out.push(label("Windows Firewall is blocking the Quest"));
+                out.push(item("Allow the Quest through the firewall…", Action::AllowFirewall));
+            }
+            Firewall::Checking | Firewall::Open => {}
         }
         out
     }
 
+    #[cfg(windows)]
+    fn pcvr_section(&self) -> Vec<Entry> {
+        use crate::xr_windows::Backend;
+        let state = crate::xr_windows::state();
+        let status = match &state.error {
+            Some(error) => format!("PCVR: {} (see the log in Setup)", error.chars().take(100).collect::<String>()),
+            None if state.ready => "PCVR: ready".into(),
+            None => "PCVR: off; turn it on in Setup".into(),
+        };
+        let root = crate::xr_windows::root();
+        let games = crate::xr_windows::games(&root).unwrap_or_default();
+        let mut entries = vec![label("Runtime for each game (applies to its next launch)")];
+        for game in &games {
+            let options: Vec<(String, Action)> = [(Backend::Monado, "Monado / xrizer", game.monado.is_some()), (Backend::Steamvr, "SteamVR", game.steamvr.is_some())]
+                .into_iter()
+                .filter(|(backend, _, available)| *available || game.backend == *backend)
+                .map(|(backend, name, _)| (name.to_string(), Action::PcvrBackend(game.app_id.clone(), backend)))
+                .collect();
+            let selected = options.iter().position(|(_, action)| matches!(action, Action::PcvrBackend(_, b) if *b == game.backend)).unwrap_or(0);
+            entries.push(Entry::Choice { title: game.name.clone(), enabled: state.ready, options, selected, note: None });
+        }
+        if games.is_empty() {
+            entries.push(label("No VR games found yet"));
+        }
+        entries.push(Entry::Separator);
+        if !state.ready {
+            entries.push(Entry::Item { title: "Enable PCVR (restarts Meteor)".into(), action: Action::EnablePcvr, enabled: !games.is_empty(), checked: None });
+        }
+        entries.push(item("Open PCVR profiles folder", Action::PcvrFolder));
+        let mut out = vec![label(status), Entry::Submenu { title: "PCVR".into(), entries }];
+        out.extend(self.xr_approval());
+        out
+    }
+
+    #[cfg(not(windows))]
     fn pcvr_section(&self) -> Vec<Entry> {
         let setup = crate::xr_setup::state();
         let status = match &setup.error {
@@ -167,11 +232,17 @@ impl Sources {
                 ],
             },
         ];
-        if let Some((key, code)) = self.xr_trust.as_ref().and_then(|trust| trust.pending()) {
-            out.push(item(format!("Approve XR headset {code} (compare headset code)"), Action::XrApprove(key)));
-            out.push(item(format!("Reject XR headset {code}"), Action::XrReject(key)));
-        }
+        out.extend(self.xr_approval());
         out
+    }
+
+    /// A headset asking to use PCVR, to approve or reject.
+    fn xr_approval(&self) -> Vec<Entry> {
+        let Some((key, code)) = self.xr_trust.as_ref().and_then(|trust| trust.pending()) else { return Vec::new() };
+        vec![
+            item(format!("Approve XR headset {code} (compare headset code)"), Action::XrApprove(key)),
+            item(format!("Reject XR headset {code}"), Action::XrReject(key)),
+        ]
     }
 
     /// The game streaming host: the one the user installed, or Meteor-
@@ -195,8 +266,11 @@ impl Sources {
             out.push(item("Reject headset pairing", Action::PairReject(pending.id)));
         }
         // Keyboard and controller input, folded into the host's own line.
+        #[allow(unused_mut)]
         let mut input = String::new();
+        #[allow(unused_mut)]
         let mut input_fix = None;
+        #[cfg(target_os = "linux")]
         if host.state.choice == Choice::Bundled {
             use crate::host::input::Status as Input;
             input = match crate::host::input::check() {
@@ -231,17 +305,25 @@ impl Sources {
                     out.push(label(format!("{other_names} is also running; Nightfall lists both")));
                 }
                 out.push(item(if supervisor.wanted() { "Stop the host" } else { "Start the host" }, Action::ToggleHost));
-                out.push(self.cursor_choice());
-                out.push(Entry::Submenu {
-                    title: "Host settings".into(),
-                    entries: vec![
-                        item("Open the host's web page", Action::HostWebPage),
-                        Entry::Item { title: format!("Web UI username: {}", host.state.user), action: Action::HostWebPage, enabled: false, checked: None },
-                        item("Copy web UI password", Action::CopyHostPassword),
-                        item("Open the host's folder (logs, config)", Action::HostFolder),
-                        item("Switch back to my own host (restarts Meteor)", Action::UseHost(Choice::External)),
-                    ],
-                });
+                #[cfg(windows)]
+                out.push(item("Pair a headset by PIN…", Action::PairHeadset));
+                out.extend(self.cursor_choice());
+                #[allow(unused_mut)]
+                let mut settings = vec![
+                    item("Open the host's web page", Action::HostWebPage),
+                    Entry::Item { title: format!("Web UI username: {}", host.state.user), action: Action::HostWebPage, enabled: false, checked: None },
+                    item("Copy web UI password", Action::CopyHostPassword),
+                    item("Open the host's folder (logs, config)", Action::HostFolder),
+                ];
+                #[cfg(windows)]
+                {
+                    settings.push(item("Open the host login (host.toml)", Action::HostLogin));
+                    if virtual_display_script().is_some() {
+                        settings.push(item("Install the virtual display driver (administrator)…", Action::InstallVirtualDisplay));
+                    }
+                }
+                settings.push(item("Switch back to my own host (restarts Meteor)", Action::UseHost(Choice::External)));
+                out.push(Entry::Submenu { title: "Host settings".into(), entries: settings });
             }
             (None, Choice::Bundled) => {
                 out.push(label(format!(
@@ -258,22 +340,28 @@ impl Sources {
             (None, Choice::External) => {
                 let name = if other_names.is_empty() { "Host".to_string() } else { other_names.clone() };
                 out.push(label(if up { format!("{name} on port {base}: running") } else { "No game streaming host found".to_string() }));
-                out.push(self.cursor_choice());
+                out.extend(self.cursor_choice());
                 out.extend(self.bundled_offer(up, &other_names));
             }
         }
         out
     }
 
-    fn cursor_choice(&self) -> Entry {
+    #[cfg(windows)]
+    fn cursor_choice(&self) -> Option<Entry> {
+        None
+    }
+
+    #[cfg(not(windows))]
+    fn cursor_choice(&self) -> Option<Entry> {
         let scale = self.cursor.scale();
-        Entry::Choice {
+        Some(Entry::Choice {
             title: format!("Host cursor size: {}", if scale == 1 { "Unchanged".into() } else { format!("{scale}×") }),
             enabled: self.cursor.available(),
             options: ["Unchanged", "2×", "3×", "4×"].iter().zip(1..).map(|(name, scale)| ((*name).to_string(), Action::CursorScale(scale))).collect(),
             selected: (scale.clamp(1, 4) - 1) as usize,
             note: Some(self.cursor.status()),
-        }
+        })
     }
 
     /// Offers Meteor-Vibepollo for Nightfall: set up when there's no host,
@@ -324,9 +412,11 @@ impl Sources {
     /// Where the sound plays, and the headset microphone.
     fn audio_section(&self) -> Vec<Entry> {
         let output = crate::audio::output();
-        let mic = self.mic.as_ref().map_or_else(|| "off".to_string(), |mic| mic.status());
+        // On Windows the microphone plays into VB-CABLE, which Meteor can't install itself.
+        let missing = if cfg!(windows) { ": install VB-CABLE" } else { " off" };
+        let mic = self.mic.as_ref().map_or_else(|| missing.to_string(), |mic| format!(" {}", mic.status()));
         let mut out = vec![
-            label(format!("Audio: plays on {} · microphone {mic}", output.label().to_lowercase().replace("pc", "PC"))),
+            label(format!("Audio: plays on {} · microphone{mic}", output.label().to_lowercase().replace("pc", "PC"))),
             Entry::Choice {
                 title: format!("Audio plays on: {}", output.label()),
                 enabled: true,
@@ -337,7 +427,13 @@ impl Sources {
         ];
         if let Some(mic) = &self.mic {
             out.push(check("Mute microphone", Action::ToggleMicMute, mic.muted.load(Ordering::Relaxed)));
-            out.push(item("Set as default input", Action::MicDefaultInput));
+            // Windows apps record from CABLE Output; Meteor can't set the default device.
+            let default = if cfg!(windows) { "Choose CABLE Output in Sound settings…" } else { "Set as default input" };
+            out.push(item(default, Action::MicDefaultInput));
+        }
+        #[cfg(windows)]
+        if self.mic.is_none() {
+            out.push(item("Get VB-CABLE (opens its web page)…", Action::InstallCable));
         }
         out
     }
@@ -346,6 +442,10 @@ impl Sources {
         match action {
             Action::Setup => crate::setup_window::open(),
             Action::AllowFirewall => self.status.allow_firewall(),
+            // Windows picks NVENC or AMF itself.
+            #[cfg(windows)]
+            Action::PcvrEncoder(_) => {}
+            #[cfg(not(windows))]
             Action::PcvrEncoder(id) => {
                 let result = crate::xr_setup::select_encoder(id);
                 tokio::spawn(async move {
@@ -377,12 +477,18 @@ impl Sources {
                     pairing.reject(&id);
                 }
             }
+            #[cfg(target_os = "linux")]
             Action::EnableInput => self.host.input.setup(),
+            #[cfg(not(target_os = "linux"))]
+            Action::EnableInput => {}
             Action::ToggleHost => {
                 if let Some(supervisor) = &self.host.supervisor {
                     supervisor.set_wanted(!supervisor.wanted());
                 }
             }
+            #[cfg(windows)]
+            Action::CursorScale(_) => {}
+            #[cfg(not(windows))]
             Action::CursorScale(scale) => {
                 if let Err(error) = self.cursor.select(scale) {
                     log::warn!("Cannot save host cursor size: {error}");
@@ -426,6 +532,9 @@ impl Sources {
                     mic.muted.fetch_xor(true, Ordering::Relaxed);
                 }
             }
+            #[cfg(windows)]
+            Action::MicDefaultInput => run_detached("control.exe", &["mmsys.cpl,,1"]),
+            #[cfg(not(windows))]
             Action::MicDefaultInput => {
                 if let Some(mic) = &self.mic {
                     mic.set_default_input();
@@ -439,7 +548,75 @@ impl Sources {
                 }
             }
             Action::Quit => crate::quit(),
+            #[cfg(windows)]
+            Action::PairHeadset => {
+                if let Some(script) = beside_exe("Pair-Headset.ps1") {
+                    run_detached("powershell.exe", &["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", &script]);
+                }
+            }
+            #[cfg(windows)]
+            Action::InstallVirtualDisplay => {
+                if let Some(script) = virtual_display_script() {
+                    // Start-Process -Verb RunAs asks for administrator approval.
+                    let command = format!("Start-Process powershell.exe -Verb RunAs -ArgumentList \"-NoProfile -ExecutionPolicy Bypass -File '{}'\"", script.replace('\'', "''"));
+                    run_detached("powershell.exe", &["-NoProfile", "-Command", &command]);
+                }
+            }
+            #[cfg(windows)]
+            Action::HostLogin => run_detached("notepad.exe", &[&crate::host::state_path().to_string_lossy()]),
+            #[cfg(windows)]
+            Action::PcvrBackend(id, backend) => {
+                if let Err(error) = crate::xr_windows::select(&crate::xr_windows::root(), &id, backend) {
+                    log::warn!("PCVR backend: {error}");
+                }
+            }
+            #[cfg(windows)]
+            Action::EnablePcvr => {
+                let root = crate::xr_windows::root();
+                match crate::xr_windows::command(&["--xr-windows-enable".into(), "--root".into(), root.to_string_lossy().into_owned()]) {
+                    Ok(_) => crate::restart(),
+                    Err(error) => log::warn!("PCVR setup: {error}"),
+                }
+            }
+            #[cfg(windows)]
+            Action::PcvrFolder => {
+                let root = crate::xr_windows::root();
+                let _ = std::fs::create_dir_all(&root);
+                open(&root.to_string_lossy());
+            }
+            #[cfg(windows)]
+            Action::InstallCable => crate::desktop::open_web_url("https://vb-audio.com/Cable/index.htm".into()),
+            #[cfg(windows)]
+            Action::TaskbarSettings => crate::desktop::open_web_url("ms-settings:taskbar".into()),
         }
+    }
+}
+
+/// A script installed next to nightfall-meteor.exe.
+#[cfg(windows)]
+fn beside_exe(name: &str) -> Option<String> {
+    let path = std::env::current_exe().ok()?.parent()?.join(name);
+    path.is_file().then(|| path.to_string_lossy().into_owned())
+}
+
+#[cfg(windows)]
+fn virtual_display_script() -> Option<String> {
+    beside_exe("Install-VirtualDisplay.ps1")
+}
+
+/// Starts a helper without a console window.
+#[cfg(windows)]
+fn run_detached(program: &str, args: &[&str]) {
+    use std::os::windows::process::CommandExt;
+    let result = std::process::Command::new(program)
+        .args(args)
+        .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Err(error) = result {
+        log::warn!("Can't run {program}: {error}");
     }
 }
 
@@ -489,6 +666,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn the_cursor_choice_ticks_its_scale() {
         let cursor = crate::host_cursor::Control::new(3, None);

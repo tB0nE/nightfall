@@ -13,12 +13,12 @@ mod host_background;
 mod host_cursor;
 #[cfg(target_os = "linux")]
 mod legacy_host_cursor;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod control;
 mod crypto;
 mod depth;
 mod depth_server;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod depth_window;
 #[cfg(target_os = "linux")]
 mod desktop;
@@ -28,7 +28,7 @@ mod desktop;
 #[cfg(target_os = "macos")]
 #[path = "desktop_macos.rs"]
 mod desktop;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod setup_window;
 #[cfg(target_os = "linux")]
 mod xr_setup;
@@ -43,7 +43,7 @@ mod host;
 use host::view as host_view;
 mod icon;
 mod logfile;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod menu;
 mod mic;
 mod net;
@@ -115,7 +115,7 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run(args.get(2).map(std::path::PathBuf::from)));
     }
@@ -123,7 +123,7 @@ async fn main() {
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run());
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     if args.get(1).is_some_and(|arg| arg == "--depth-settings") {
         let Some(socket) = args.get(2) else {
             eprintln!("--depth-settings needs Meteor's control socket");
@@ -642,8 +642,11 @@ async fn main() {
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(windows)]
+        tokio::spawn(control::serve(status.map.sunshine_base, depth.clone()));
+        #[cfg(windows)]
         if !no_tray {
-            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
+            let xr_trust = xr_windows::state().trust.clone();
+            tray_windows::run(menu::Sources { status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(), xr_trust, host: Arc::new(host_view) });
         }
         #[cfg(windows)]
         if let Some(d) = &depth {
@@ -694,7 +697,13 @@ async fn main() {
 fn sunshine_vdd_installed() -> bool {
     use std::sync::OnceLock;
     static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
+    *CACHE.get_or_init(sunshine_vdd_probe)
+}
+
+/// The same check, uncached (Setup asks again after installing the driver).
+#[cfg(windows)]
+fn sunshine_vdd_probe() -> bool {
+    {
         let probe = std::env::current_exe()
             .ok()
             .and_then(|e| e.parent().map(|p| p.join("runtime/host/drivers/sunshine/virtualdisplay_probe.exe")));
@@ -703,7 +712,12 @@ fn sunshine_vdd_installed() -> bool {
             // --check requires admin (ERROR_ACCESS_DENIED without it). Use
             // --diagnose instead: it enumerates control interfaces without
             // opening them, so it works without elevation.
-            let out = std::process::Command::new(&p).arg("--diagnose").output();
+            let mut command = std::process::Command::new(&p);
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            }
+            let out = command.arg("--diagnose").output();
             let Ok(out) = out else { return false; };
             let stdout = String::from_utf8_lossy(&out.stdout);
             // Line is "control_interface_count=1 enumerate_error=0 ..."
@@ -715,7 +729,7 @@ fn sunshine_vdd_installed() -> bool {
                 .and_then(|n| n.parse::<u32>().ok())
                 .is_some_and(|n| n > 0)
         })
-    })
+    }
 }
 
 /// Held for Meteor's whole life (a restart's exec closes it: O_CLOEXEC).
