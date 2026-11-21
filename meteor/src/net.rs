@@ -23,7 +23,9 @@ pub async fn udp_socket(port: u16) -> io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_only_v6(false)?;
     socket.set_reuse_address(true)?;
-    // Lets udp_path_socket() open per-path sockets on the same port.
+    // Lets udp_path_socket() open per-path sockets on the same port. Like
+    // SO_REUSEADDR before it, this doesn't stop another socket of this user
+    // binding the port too; SO_REUSEPORT only changes which one gets packets.
     #[cfg(target_os = "linux")]
     socket.set_reuse_port(true)?;
     socket.bind(&SockAddr::from(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)))?;

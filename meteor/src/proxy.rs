@@ -32,6 +32,11 @@ use crate::video_tap::{TapStats, VideoTap};
 const UDP_FLOW_IDLE: Duration = Duration::from_secs(30);
 
 /// Whether a client last heard from at `last_ms` still holds its flow open at `now_ms`.
+/// Whether another path of the client (multipath) pinged within UDP_FLOW_IDLE.
+fn any_path_pinging(last_pings: impl IntoIterator<Item = std::time::Instant>) -> bool {
+    last_pings.into_iter().any(|last| last.elapsed() < UDP_FLOW_IDLE)
+}
+
 fn client_still_there(last_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(last_ms) < UDP_FLOW_IDLE.as_millis() as u64
 }
@@ -604,7 +609,9 @@ impl Proxy {
                 // Quiet from the host, but the client still pings: keep the flow. The
                 // host sends no audio while the PC is silent and keeps sending to this
                 // socket's port afterwards, so closing it here muted the rest of the stream.
-                Err(_) if client_still_there(owner_ping.load(Ordering::Relaxed), now_ms()) => {}
+                // Multipath: when the client rests the owner's path, its other paths still ping.
+                Err(_) if client_still_there(owner_ping.load(Ordering::Relaxed), now_ms())
+                    || any_path_pinging(extras.lock().unwrap().values().copied()) => {}
                 Err(_) => break, // idle
             }
         }
@@ -881,6 +888,14 @@ mod tests {
         assert!(client_still_there(1_000, 1_000 + idle - 1));
         assert!(!client_still_there(1_000, 1_000 + idle));
         assert!(client_still_there(5_000, 4_000), "clock skew between threads is not idleness");
+        // The owner's path resting (multipath): another path's recent ping keeps the flow.
+        let now = std::time::Instant::now();
+        assert!(any_path_pinging([now]));
+        assert!(!any_path_pinging(std::iter::empty()));
+        if let Some(stale) = now.checked_sub(UDP_FLOW_IDLE + Duration::from_secs(1)) {
+            assert!(!any_path_pinging([stale]));
+            assert!(any_path_pinging([stale, now]));
+        }
     }
 
     #[test]

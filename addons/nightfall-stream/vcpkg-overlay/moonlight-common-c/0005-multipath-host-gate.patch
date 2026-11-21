@@ -39,8 +39,6 @@ index 11b8142..13cc70d 100644
 +++ b/src/Limelight.h
 @@ -856,6 +856,17 @@ int LiFindExternalAddressIP4(const char* stunServer, unsigned short stunPort, un
  
- // Returns the number of queued video frames ready for delivery. Only relevant
- // if CAPABILITY_DIRECT_SUBMIT is not set for the video renderer.
 +// Multipath (Nightfall): the host's IPv4 address on a second network, used for
 +// the next LiStartConnection(); NULL or "" = one path. Only set it when the host
 +// copies every packet to both paths (Nightfall Meteor); a plain host sends the
@@ -52,6 +50,8 @@ index 11b8142..13cc70d 100644
 +// retried later).
 +void LiGetMultipathPackets(uint64_t* mainPath, uint64_t* secondPath, int* pausedPath);
 +
+ // Returns the number of queued video frames ready for delivery. Only relevant
+ // if CAPABILITY_DIRECT_SUBMIT is not set for the video renderer.
  int LiGetPendingVideoFrames(void);
  
  // Returns the number of queued audio frames ready for delivery. Only relevant
