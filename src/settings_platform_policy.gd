@@ -9,6 +9,11 @@ extends RefCounted
 static func ai3d_options_locked(platform_name: String = OS.get_name()) -> bool:
 	return platform_name == "Android"
 
+## The Screens tab (several PC monitors / virtual monitors, tabs). Linux builds run
+## on standalone headsets such as the Steam Frame, where it works as on Quest.
+static func multi_screen_available(platform_name: String = OS.get_name()) -> bool:
+	return platform_name == "Android" or platform_name == "Linux"
+
 static func depth_gpu_priority_available(platform_name: String = OS.get_name()) -> bool:
 	return platform_name == "Android"
 
