@@ -8,15 +8,31 @@ use crate::xr_session::Files;
 #[derive(Clone,Copy,Default,Debug,PartialEq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
 pub enum Backend {#[default] Monado,Steamvr}
-#[derive(Clone,Serialize,Deserialize)]
+#[derive(Clone,Default,Serialize,Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Game {
     pub app_id:String,pub name:String,
     #[serde(default)] pub backend:Backend,
     pub monado:Option<PathBuf>,pub steamvr:Option<PathBuf>,
     #[serde(default)] pub requires_steamvr:bool,
+    /// Where Steam installed it; scanned by xr_detect at registration.
+    #[serde(default,skip_serializing_if="Option::is_none")] pub install_dir:Option<PathBuf>,
+    /// What the scan found (VR APIs, anti-cheat). None: not scanned yet.
+    #[serde(default,skip_serializing_if="Option::is_none")] pub detected:Option<crate::xr_detect::Detection>,
+    /// The user picked `backend` themselves; their choice beats detection.
+    #[serde(default)] pub chosen:bool,
 }
 impl Game {
+    /// Why the game runs where it does, for the tray and the headset.
+    pub fn reason(&self)->String {
+        if self.chosen {return "your choice".into();}
+        self.detected.as_ref().map_or_else(||"not scanned".into(),|d|d.reason())
+    }
+    /// Monado may be offered: a native OpenXR game with no anti-cheat, or one
+    /// the user already moved there.
+    pub fn may_use_monado(&self)->bool {
+        self.backend==Backend::Monado || self.detected.as_ref().is_some_and(|d|d.may_use_monado())
+    }
     fn profile(&self,backend:Backend)->io::Result<&Path> {
         match backend {Backend::Monado=>self.monado.as_deref(),Backend::Steamvr=>self.steamvr.as_deref()}
             .ok_or_else(||io::Error::other("This game has no registered profile for that backend"))
@@ -55,7 +71,7 @@ fn write(path:&Path,bytes:&[u8])->io::Result<()> {
 pub fn select(root:&Path,id:&str,backend:Backend)->io::Result<()> {
     let mut catalog=games(root)?;
     let game=catalog.iter_mut().find(|g|g.app_id==id).ok_or_else(||io::Error::other("Unknown registered VR game"))?;
-    game.backend=backend;game.files()?;
+    game.backend=backend;game.chosen=true;game.files()?;
     write(&root.join("windows-games.json"),&serde_json::to_vec_pretty(&catalog)?)
 }
 struct Launch {root:PathBuf,notice:crate::xr_launch_intent::LaunchNotice,files:Files,completion:Option<std::net::TcpStream>,claimed:bool,expires:Instant}
@@ -178,7 +194,7 @@ pub fn library(root:&Path,action:&str,key:&str,offset:u32)->Value {
         let catalog=games(root)?;
         if action=="list" {
             let apps:Vec<Value>=catalog.iter().skip(offset as usize).take(4).map(|g| {
-                let result=g.files();json!({"key":format!("steam:{}",g.app_id),"name":g.name,"source":"Steam","vr":true,"ready":result.is_ok(),"backend":g.backend,"requires_steamvr":g.backend==Backend::Steamvr && g.requires_steamvr,"error":result.err().map(|e|e.to_string())})
+                let result=g.files();json!({"key":format!("steam:{}",g.app_id),"name":g.name,"source":"Steam","vr":true,"ready":result.is_ok(),"backend":g.backend,"requires_steamvr":g.backend==Backend::Steamvr && g.requires_steamvr,"reason":g.reason(),"error":result.err().map(|e|e.to_string())})
             }).collect();
             return Ok(json!({"action":"list","apps":apps,"offset":offset,"total":catalog.len()}));
         }
@@ -260,8 +276,20 @@ pub fn root()->PathBuf {
     if config.xr.runtime_root.is_none() && imported.join("xr-windows.json").is_file(){imported}else{root}
 }
 
+/// Records where a game is installed and what it is (xr_detect). Setup passes
+/// the folder Steam installed it to; without one, an earlier scan is kept.
+fn detect_into(game:&mut Game,install_dir:Option<&str>)->io::Result<()> {
+    let Some(dir)=install_dir else {return Ok(())};
+    let dir=Path::new(dir);
+    if !dir.is_absolute() || !dir.is_dir() {return Err(io::Error::other("--install-dir must be an existing absolute folder"));}
+    let dir=dir.canonicalize()?;
+    game.detected=Some(crate::xr_detect::scan(&dir));
+    game.install_dir=Some(dir);
+    Ok(())
+}
 pub fn command(args:&[String])->io::Result<String> {
-    let option=|name:&str|->io::Result<&str> {args.iter().position(|a|a==name).and_then(|i|args.get(i+1)).map(String::as_str).ok_or_else(||io::Error::other(format!("Missing {name}")))};
+    let optional=|name:&str|->Option<&str> {args.iter().position(|a|a==name).and_then(|i|args.get(i+1)).map(String::as_str)};
+    let option=|name:&str|->io::Result<&str> {optional(name).ok_or_else(||io::Error::other(format!("Missing {name}")))};
     let root=Path::new(option("--root")?);
     if !root.is_absolute(){return Err(io::Error::other("Use an absolute runtime root"));}
     match args[0].as_str() {
@@ -283,8 +311,9 @@ pub fn command(args:&[String])->io::Result<String> {
             let id=option("--app-id")?;let name=option("--name")?;
             if !valid_id(id) || name.is_empty() || name.chars().count()>96 || name.chars().any(char::is_control){return Err(io::Error::other("Invalid game metadata"));}
             let mut catalog=games(root)?;
-            if let Some(game)=catalog.iter_mut().find(|g|g.app_id==id) {game.requires_steamvr=true;}
-            else {catalog.push(Game {app_id:id.into(),name:name.into(),backend:Backend::Steamvr,monado:None,steamvr:None,requires_steamvr:true});}
+            let index=catalog.iter().position(|g|g.app_id==id).unwrap_or_else(||{catalog.push(Game {app_id:id.into(),name:name.into(),backend:Backend::Steamvr,..Default::default()});catalog.len()-1});
+            catalog[index].requires_steamvr=true;
+            detect_into(&mut catalog[index],optional("--install-dir"))?;
             if catalog.len()>1000{return Err(io::Error::other("At most 1000 games can be registered"));}
             std::fs::create_dir_all(root)?;write(&root.join("windows-games.json"),&serde_json::to_vec_pretty(&catalog)?)?;
             Ok("Game will request SteamVR installation when launched.".into())
@@ -297,8 +326,9 @@ pub fn command(args:&[String])->io::Result<String> {
             if files.steam_launch {return Err(io::Error::other("Catalog profiles launch configured applications directly; steam_launch must be false"));}
             std::fs::create_dir_all(root)?;
             let mut catalog=games(root)?;
-            let index=catalog.iter().position(|g|g.app_id==id).unwrap_or_else(||{catalog.push(Game {app_id:id.clone(),name:String::new(),backend,monado:None,steamvr:None,requires_steamvr:false});catalog.len()-1});
+            let index=catalog.iter().position(|g|g.app_id==id).unwrap_or_else(||{catalog.push(Game {app_id:id.clone(),backend,..Default::default()});catalog.len()-1});
             let game=&mut catalog[index];game.name=option("--name")?.into();
+            detect_into(game,optional("--install-dir"))?;
             if game.name.is_empty() || game.name.chars().count()>96 || game.name.chars().any(char::is_control){return Err(io::Error::other("Invalid game name"));}
             match backend {Backend::Monado=>game.monado=Some(profile),Backend::Steamvr=>game.steamvr=Some(profile)}
             if backend==Backend::Steamvr {game.requires_steamvr=false;}
@@ -425,6 +455,29 @@ pub fn command(args:&[String])->io::Result<String> {
         let game=&games(&root).unwrap()[0];
         assert!(game.backend==Backend::Steamvr && game.monado.is_none() && game.files().is_ok());
         std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn registration_scans_the_install_folder_and_explains_the_runtime(){
+        let base=std::env::temp_dir().join(format!("meteor-detect-catalog-{}",std::process::id()));let _=std::fs::remove_dir_all(&base);
+        let root=base.join("xr");std::fs::create_dir_all(&root).unwrap();
+        let game=base.join("VRChat");std::fs::create_dir_all(game.join("EasyAntiCheat")).unwrap();
+        std::fs::create_dir_all(game.join("VRChat_Data/Plugins/x86_64")).unwrap();std::fs::write(game.join("VRChat_Data/Plugins/x86_64/openvr_api.dll"),b"").unwrap();
+        let args=|dir:&str|->Vec<String> {["--xr-windows-require-steamvr","--root",root.to_str().unwrap(),"--app-id","438100","--name","VRChat","--install-dir",dir].map(String::from).to_vec()};
+        assert!(command(&args("relative/VRChat")).is_err(),"a relative folder is refused");
+        assert!(command(&args(base.join("missing").to_str().unwrap())).is_err(),"a missing folder is refused");
+        command(&args(game.to_str().unwrap())).unwrap();
+        let entry=&games(&root).unwrap()[0];
+        let found=entry.detected.as_ref().unwrap();
+        assert!(found.openvr && found.anticheat.as_deref()==Some("EasyAntiCheat"));
+        assert_eq!(entry.install_dir.as_deref(),Some(game.canonicalize().unwrap().as_path()));
+        assert!(!entry.may_use_monado() && !entry.chosen);
+        assert_eq!(library(&root,"list","",0)["apps"][0]["reason"],"anti-cheat: EasyAntiCheat");
+        // Registering again without a folder keeps the earlier scan.
+        command(&["--xr-windows-require-steamvr","--root",root.to_str().unwrap(),"--app-id","438100","--name","VRChat"].map(String::from)).unwrap();
+        assert!(games(&root).unwrap()[0].detected.is_some());
+        // A catalog written before detection existed still loads.
+        std::fs::write(root.join("windows-games.json"),br#"[{"app_id":"846470","name":"Moss","backend":"steamvr","monado":null,"steamvr":null,"requires_steamvr":true}]"#).unwrap();
+        let old=&games(&root).unwrap()[0];assert!(old.detected.is_none() && old.reason()=="not scanned");
+        std::fs::remove_dir_all(base).unwrap();
     }
     #[test]fn missing_steamvr_is_a_per_game_requirement_not_a_launch(){
         let root=std::env::temp_dir().join(format!("meteor-missing-steamvr-{}",std::process::id()));

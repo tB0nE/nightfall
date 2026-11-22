@@ -102,6 +102,8 @@ mod xr_steam_windows;
 mod xr_steamvr_windows;
 #[cfg(windows)]
 mod xr_windows;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod xr_detect;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};

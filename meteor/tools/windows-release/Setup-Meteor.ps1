@@ -97,7 +97,7 @@ try {
                     if($name.Length -gt 96){$name=$name.Substring(0,96)}
                     if($name -match '[\x00-\x1f]'){continue}
                     if(-not $steamvr) {
-                        InvokeMeteor -Options @('--xr-windows-require-steamvr','--root',$Root,'--app-id',$id,'--name',$name)
+                        InvokeMeteor -Options @('--xr-windows-require-steamvr','--root',$Root,'--app-id',$id,'--name',$name,'--install-dir',$installed)
                         if(-not @($summary.games | Where-Object {$_.id -eq $id}).Count){$summary.games+=@{id=$id;name=$name}}
                         continue
                     }
@@ -106,7 +106,7 @@ try {
                     $config.application=Join-Path $SteamRoot 'steam.exe'
                     $config.arguments=@('steam://launch/'+$id+'/VR');$config.steamvr_launch_via_steam=$true
                     WriteJson (Join-Path $profile 'xr-windows.json') $config
-                    InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$name)
+                    InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$name,'--install-dir',$installed)
                     if(-not @($summary.games | Where-Object {$_.id -eq $id}).Count){$summary.games+=@{id=$id;name=$name}}
                 }
             }

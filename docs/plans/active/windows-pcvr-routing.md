@@ -52,6 +52,41 @@ It's a static scan of local files at Setup and when the library refreshes. It
 never runs the game. Results are cached in the catalog with the reason, so
 the tray can show "Monado: native OpenXR" or "SteamVR: anti-cheat".
 
+### Status (2026-11-22): detection done, routing unchanged
+
+- `meteor/src/xr_detect.rs` scans an install folder: OpenVR from
+  `openvr_api.dll`, OpenXR from `openxr_loader.dll` (Unreal, Unity's OpenXR
+  package and native games ship it), and anti-cheat from EasyAntiCheat or
+  BattlEye folders and files and `start_protected_game.exe`. The scan goes 8
+  folders deep, looks at up to 60,000 entries, and doesn't follow links.
+  Unreal keeps its loaders about five levels down.
+- Setup passes `--install-dir` when it registers each game. The catalog keeps
+  `install_dir`, `detected` and `chosen` (the user picked the runtime). The
+  tray and the headset listing show the reason, e.g. "VRChat: SteamVR
+  (anti-cheat: EasyAntiCheat)". `select()` sets `chosen`.
+- Routing is unchanged: every game still uses SteamVR unless the user picks
+  Monado. `Game::may_use_monado()` is what a later Monado offer will check.
+- On the user's PC: VRChat is anti-cheat. Subnautica, Neverout and
+  Half-Life: Alyx are OpenVR. Moss ships both loaders, as Unreal games do, so
+  it stays on SteamVR. **None is native OpenXR only**, so Monado has no
+  candidates there yet.
+
+**Finding that changes route (a):** for a Steam game, Meteor doesn't know the
+real executable or its arguments. The VR manifest only has
+`steam://launch/ID/VR`, and the removed Moss profile hard-coded both.
+Options, still to choose between:
+- **Find the executable from the install layout:** Unity has `<name>.exe`
+  beside `<name>_Data`; Unreal has `*/Binaries/Win64/*-Win64-Shipping.exe`.
+  Launch it with `SteamAppId` and `XR_RUNTIME_JSON`, as the Moss profile did.
+  Arguments can't be known in general, so a profile is offered as "try
+  Monado" and kept only once it works.
+- **The existing Steam handoff** (`--xr-steam-run ... %command%`), which
+  gives Steam's exact command. It needs a per-game Steam launch option, and
+  the standing rules forbid changing Steam options without the user's
+  explicit consent, so it would be opt-in per game.
+- Steam's binary `appinfo.vdf` lists launch configurations, including VR
+  ones, but the format changes between Steam versions.
+
 ### Making Monado the active runtime for its games
 
 The Windows OpenXR loader reads the active runtime from `HKLM`, which needs

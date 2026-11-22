@@ -200,10 +200,11 @@ impl Sources {
             let selected = options.iter().position(|(_, action)| matches!(action, Action::PcvrBackend(_, b) if *b == game.backend)).unwrap_or(0);
             if options.len() < 2 {
                 let runtime = options.first().map_or("needs SteamVR", |(name, _)| name.as_str());
-                entries.push(label(format!("{}: {runtime}", game.name)));
+                entries.push(label(format!("{}: {runtime} ({})", game.name, game.reason())));
                 continue;
             }
-            entries.push(Entry::Choice { title: game.name.clone(), enabled: state.ready, options, selected, note: None });
+            let note = Some(format!("Detected: {}", game.reason()));
+            entries.push(Entry::Choice { title: game.name.clone(), enabled: state.ready, options, selected, note });
         }
         if games.is_empty() {
             entries.push(label("No VR games found yet"));
