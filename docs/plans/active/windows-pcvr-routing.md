@@ -151,41 +151,35 @@ throughout.
 
 ## C. Games that start SteamVR themselves
 
-When a game launched on the PC starts SteamVR, it runs with the user's
-settings, so other headset drivers can claim the HMD or the controllers.
+**Resolved 2026-11-22: not a Meteor or SteamVR problem.** Retested VaM from
+its .exe, with SteamVR closed beforehand. SteamVR showed the controllers;
+VaM didn't. SteamVR was as before: Meteor's driver held the HMD and both
+controllers, and VaM loaded its own Touch bindings. VaM's own log
+(`%USERPROFILE%\AppData\LocalLow\MeshedVR\VaM\output_log.txt`) showed the
+cause. VaM had started with its working directory at `C:\WINDOWS\system32`:
 
-1. **Confirm the cause first.** Done 2026-11-22 from the 2026-11-21 logs,
-   and it **disproved the driver theory**. In `Steam\logs\vrserver.txt`, the
-   .exe launch (21:25–21:27, app key `system.generated.vam.exe`) and both
-   shortcut launches (`steam.app.2216045649`) look the same:
-   - VaM started SteamVR.
-   - vrlink and lighthouse loaded but claimed nothing.
-   - Meteor's driver became the active HMD and added both controllers about
-     1 s later.
-   - VaM set its action manifest about 17 s in and loaded its own
-     `bindings_oculus_touch.json`.
+    UnauthorizedAccessException: Access to the path "Saves" is denied.
+      at SuperController.Awake ()
+    UnauthorizedAccessException: Access to the path "C:\WINDOWS\system32\Custom" is denied.
+    NullReferenceException ... at SuperController.set_solverIterations
 
-   Meteor's `supervisor.log` and `meteor.log` match too (attach, first
-   encoded frame, launch notice claimed). The .exe run was VaM's first launch
-   after installing, and no headset log covers it. **Next:** launch VaM from
-   its .exe again with the headset log recording. If the controllers work,
-   it was a first-run issue and C.2 isn't needed. If not, compare the
-   headset's input forwarding (NFXI/NFXJ) between the two launches.
-2. **Only if the retest still fails**, choose a fix, least invasive first:
-   - **Restart into Meteor's SteamVR.** If attach mode finds another driver
-     holding the HMD, tell the headset and restart SteamVR under Meteor's
-     private config. The game may need relaunching: the headset offers to do
-     that for library games, and asks the user for the rest.
-   - **A temporary override.** While Meteor's driver is the active headset,
-     have it ask SteamVR to keep other HMD drivers inactive for that run
-     (driver-level `alwaysActivate` with `redirectsDisplay`, as VD's shim
-     does), without editing the user's saved SteamVR settings. This needs a
-     prototype to see what SteamVR allows.
-   - Never rewrite the user's global `steamvr.vrsettings` or driver
-     registrations (standing rule).
-3. **Make the library the easy path.** List non-Steam shortcuts in the headset
-   library, so games like VaM launch through Meteor's SteamVR without
-   alt-tabbing.
+VaM opens `Saves`, `Custom` and `Cache` relative to its working directory.
+Its main controller (`SuperController`), which builds the player and hand
+rig, fails in `Awake`. OpenVR keeps running ("LeftHand connected",
+"RightHand connected"), but nothing uses the hands. A Steam shortcut starts
+the game in its own folder, which is why that worked. Windows starts a
+program in `system32` when it's run as administrator, or from a shortcut
+with an empty "Start in".
+
+For users (issue #92): start VaM from its own folder, from a shortcut whose
+"Start in" is the VaM folder, or as a non-Steam game in Steam. Don't run it
+as administrator.
+
+What's left of C:
+- Listing non-Steam shortcuts in the headset library is still worth doing,
+  as a convenience. Steam's own `StartDir` gives the right working directory.
+- No driver or attach-mode change is needed. The "restart into Meteor's
+  SteamVR" and "temporary override" ideas are dropped.
 
 ## Small items to fold in
 
@@ -223,6 +217,6 @@ notes:
 1. B.4 (microphone fix) and C.1 (find the cause of the lost controllers).
 2. A: detection and catalog fields, plus route (a) for library launches.
 3. B: review and adapt the fork's audio, then the desktop shutdown.
-4. C.2–C.3, depending on what step 1 found.
+4. C: list non-Steam shortcuts in the headset library (optional).
 5. A route (b), once Monado games are proven.
 6. D, F and G, whenever convenient.
