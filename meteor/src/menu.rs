@@ -89,11 +89,9 @@ pub enum Action {
     #[cfg(windows)]
     HostLogin,
     #[cfg(windows)]
-    PcvrBackend(String, crate::xr_windows::Backend),
+    PcvrGames,
     #[cfg(windows)]
     EnablePcvr,
-    #[cfg(windows)]
-    PcvrFolder,
     #[cfg(windows)]
     InstallCable,
     #[cfg(windows)]
@@ -176,44 +174,18 @@ impl Sources {
 
     #[cfg(windows)]
     fn pcvr_section(&self) -> Vec<Entry> {
-        use crate::xr_windows::Backend;
         let state = crate::xr_windows::state();
         let status = match &state.error {
             Some(error) => format!("PCVR: {} (see the log in Setup)", error.chars().take(100).collect::<String>()),
             None if state.ready => "PCVR: ready".into(),
             None => "PCVR: off; turn it on in Setup".into(),
         };
-        let root = crate::xr_windows::root();
-        let games = crate::xr_windows::games(&root).unwrap_or_default();
-        let mut entries = vec![label("Runtime for each game (applies to its next launch)")];
-        for game in &games {
-            if game.requires_steamvr && game.steamvr.is_none() {
-                entries.push(label(format!("{}: needs SteamVR (install it from Steam)", game.name)));
-                continue;
-            }
-            // OpenVR games run through SteamVR; Monado is for a game registered as native OpenXR.
-            let options: Vec<(String, Action)> = [(Backend::Monado, "Monado (OpenXR)", game.monado.is_some()), (Backend::Steamvr, "SteamVR", game.steamvr.is_some())]
-                .into_iter()
-                .filter(|(backend, _, available)| *available || game.backend == *backend)
-                .map(|(backend, name, _)| (name.to_string(), Action::PcvrBackend(game.app_id.clone(), backend)))
-                .collect();
-            let selected = options.iter().position(|(_, action)| matches!(action, Action::PcvrBackend(_, b) if *b == game.backend)).unwrap_or(0);
-            if options.len() < 2 {
-                let runtime = options.first().map_or("needs SteamVR", |(name, _)| name.as_str());
-                entries.push(label(format!("{}: {runtime} ({})", game.name, game.reason())));
-                continue;
-            }
-            let note = Some(format!("Detected: {}", game.reason()));
-            entries.push(Entry::Choice { title: game.name.clone(), enabled: state.ready, options, selected, note });
-        }
-        if games.is_empty() {
-            entries.push(label("No VR games found yet"));
-        }
-        entries.push(Entry::Separator);
+        // One window for the games, which can be any number: a menu can't list them.
+        let games = crate::xr_windows::games(&crate::xr_windows::root()).unwrap_or_default();
+        let mut entries = vec![Entry::Item { title: format!("PCVR games… ({})", games.len()), action: Action::PcvrGames, enabled: true, checked: None }];
         if !state.ready {
             entries.push(Entry::Item { title: "Enable PCVR (restarts Meteor)".into(), action: Action::EnablePcvr, enabled: !games.is_empty(), checked: None });
         }
-        entries.push(item("Open PCVR profiles folder", Action::PcvrFolder));
         let mut out = vec![label(status), Entry::Submenu { title: "PCVR".into(), entries }];
         out.extend(self.xr_approval());
         out
@@ -576,11 +548,7 @@ impl Sources {
             #[cfg(windows)]
             Action::HostLogin => run_detached("notepad.exe", &[&crate::host::state_path().to_string_lossy()]),
             #[cfg(windows)]
-            Action::PcvrBackend(id, backend) => {
-                if let Err(error) = crate::xr_windows::select(&crate::xr_windows::root(), &id, backend) {
-                    log::warn!("PCVR backend: {error}");
-                }
-            }
+            Action::PcvrGames => crate::pcvr_window::open(),
             #[cfg(windows)]
             Action::EnablePcvr => {
                 let root = crate::xr_windows::root();
@@ -588,12 +556,6 @@ impl Sources {
                     Ok(_) => crate::restart(),
                     Err(error) => log::warn!("PCVR setup: {error}"),
                 }
-            }
-            #[cfg(windows)]
-            Action::PcvrFolder => {
-                let root = crate::xr_windows::root();
-                let _ = std::fs::create_dir_all(&root);
-                open(&root.to_string_lossy());
             }
             #[cfg(windows)]
             Action::InstallCable => crate::desktop::open_web_url("https://vb-audio.com/Cable/index.htm".into()),

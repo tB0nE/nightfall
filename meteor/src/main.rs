@@ -102,6 +102,8 @@ mod xr_steam_windows;
 mod xr_steamvr_windows;
 #[cfg(windows)]
 mod xr_windows;
+#[cfg(windows)]
+mod pcvr_window;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod xr_detect;
 
@@ -132,6 +134,10 @@ async fn main() {
             std::process::exit(2);
         };
         std::process::exit(depth_window::run(std::path::PathBuf::from(socket)));
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg| arg == "--pcvr-games") {
+        std::process::exit(pcvr_window::run());
     }
     #[cfg(target_os = "macos")]
     if args.get(1).is_some_and(|arg| arg == "--setup-check") {

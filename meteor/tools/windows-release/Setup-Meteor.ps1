@@ -83,7 +83,9 @@ try {
             $vrManifest=Join-Path $SteamRoot 'config\steamapps.vrmanifest'
             if(Test-Path -LiteralPath $vrManifest) {
                 if((Get-Item $vrManifest).Length -gt 8MB){throw 'Steam VR manifest exceeds 8 MiB'}
-                $apps=(Get-Content $vrManifest -Raw | ConvertFrom-Json).applications
+                # Steam writes UTF-8 without a BOM; Windows PowerShell would read it as ANSI
+                # and garble names such as "STAR WARS™: Squadrons".
+                $apps=(Get-Content $vrManifest -Raw -Encoding UTF8 | ConvertFrom-Json).applications
                 $seen=@{}
                 foreach($app in @($apps | Select-Object -First 1000)) {
                     if($app.app_key -notmatch '^steam\.app\.([1-9][0-9]{0,9})$'){continue}
