@@ -9,6 +9,7 @@ here does not mean its entire original implementation is unfinished.
 | Plan | Current purpose |
 | --- | --- |
 | [Settings popups and drag scrolling](settings-popups-and-drag-scrolling.md) | Shared choice/slider UI and ambient gain implemented in stages; remaining selectors, high-bitrate validation and thumbstick-free scrolling pending. |
+| [Windows PCVR routing](windows-pcvr-routing.md) | Proposed: per-game SteamVR or Monado routing, desktop stream stepping aside during PCVR, attach-mode controllers. Settle before merging fork work. |
 | [Automatic XR discovery](automatic-xr-runtime-discovery.md) | Linux activation/registration and Windows registered-driver acceptance; implementation in progress. |
 | [Virtual-monitor transitions](virtual-monitor-transition-speed.md) | Readiness-based restart and layout-preservation changes; live headset/Windows acceptance pending. |
 | [Repository cleanup](repository-cleanup.md) | Dependency narrowing, renderer ownership and native subsystem splits. |

@@ -1,0 +1,174 @@
+# Windows PCVR: game routing and the desktop stream
+
+Proposed 2026-11-22. Settle this design before merging fork work that touches
+the same code (`xr_session*.rs`, the tray, the catalog, the PCVR handover).
+In particular, Jonathan-Eid/nightfall's desktop shutdown, independent audio
+and USB lanes become inputs to it. See "Fork inputs" below.
+
+## Goal
+
+Every PC VR game starts the same way from the headset or the PC, keeps its
+controllers, and doesn't compete with the desktop stream for Wi-Fi.
+
+- **OpenVR games and anti-cheat games:** SteamVR, with Meteor's driver as the
+  only headset driver.
+- **Plain native OpenXR games:** Meteor's Monado runtime, skipping SteamVR.
+  This is what Virtual Desktop does with VDXR.
+- **The desktop stream** steps aside while a game is in front, and comes
+  back when the desktop or the wrist menu is shown.
+
+VDXR itself is not bundled. Its Oculus SDK licence conflicts with GPL
+distribution (see the licensing decision of 2026-11-22).
+
+## Where we are
+
+| Path | Today |
+|---|---|
+| Headset library → Steam game | `steam://launch/ID/VR` into a Meteor-owned SteamVR with a private config: `forcedDriver: meteor`, `activateMultipleDrivers: false`, and lighthouse, oculus and null disabled (`xr_session_windows.rs`). Works: VRChat, Moss, VaM as a non-Steam shortcut. |
+| Game started on the PC, SteamVR not running | The game starts SteamVR with **the user's own** settings. The driver's `MDS2` bootstrap calls `queue_steamvr()` (attach mode, `external_steamvr`). Other drivers (vrlink, lighthouse) load too. VaM from its .exe lost its controllers this way. |
+| Native OpenXR games | Monado profiles exist, but only for games registered by hand. Monado is never the system's active OpenXR runtime. Only D3D11 has been tested on Windows. |
+| Desktop stream during PCVR | It stays connected while hidden. It carries the game audio, and the client restarts it at a lower rate (`pcvr_desktop_timing_ready()`). In the VaM session it fell from 58 to 30 fps, and host depth writes blocked for up to 750 ms. |
+| Microphone during PCVR | `_enforce_hidden()` pauses the Meteor microphone for the whole session (`pcvr_workspace_handover.gd`). A bug: the microphone must keep working in VR (decided 2026-11-22). |
+
+## A. Which runtime runs a game
+
+### Deciding per game
+
+The catalog records one per game, in order of precedence:
+
+1. **The user's choice**, from the PCVR menu or the tray. It always wins.
+2. **Anti-cheat → SteamVR.** Detected from the install folder
+   (`EasyAntiCheat/`, `BattlEye/`, `start_protected_game.exe`), plus a short
+   known list. Monado's client DLL is unsigned and loads into the game's
+   process. SteamVR's is accepted everywhere.
+3. **OpenVR → SteamVR.** The executable imports `openvr_api.dll`, or ships it.
+4. **Native OpenXR → Monado.** The executable or its bundled DLLs import
+   `openxr_loader.dll`, or a Unity or Unreal OpenXR plugin is present, and
+   there is no OpenVR. If both are present, use SteamVR until the game has
+   been tested on Monado.
+5. **Unknown → SteamVR.** This is the safe default.
+
+It's a static scan of local files at Setup and when the library refreshes. It
+never runs the game. Results are cached in the catalog with the reason, so
+the tray can show "Monado: native OpenXR" or "SteamVR: anti-cheat".
+
+### Making Monado the active runtime for its games
+
+The Windows OpenXR loader reads the active runtime from `HKLM`, which needs
+admin rights. It also honours `XR_RUNTIME_JSON` in the game's environment.
+There are two options:
+
+- **(a) Environment variable only.** Meteor launches the game's executable
+  itself with `XR_RUNTIME_JSON` pointing at Monado, as the old Moss/xrizer
+  profile did. No registry change and no elevation. It doesn't work through
+  `steam://launch`, because Steam starts the process, and games that relaunch
+  themselves through Steam lose the variable.
+- **(b) Swap the system runtime while a session runs.** A small elevated
+  helper, installed by Setup within the one UAC prompt Setup already uses,
+  sets `ActiveRuntime` to Monado when a Monado session starts and restores
+  the previous value afterwards. The helper keeps a crash-safe record of the
+  original value and restores it at Meteor startup if a session didn't end
+  cleanly. This works for Steam-launched games and games started on the PC.
+
+**Decided (2026-11-22):** start with (a) for games Meteor launches, which
+covers the headset library. Add (b) once (a) has proven which games run well
+on Monado. (b) touches a system-wide setting, so it needs the restore path tested
+first. Either way, a game only goes to Monado once it's marked native OpenXR
+and has passed a check on our hardware.
+
+### Monado coverage before routing games to it
+
+- Test D3D12, Vulkan and OpenGL client sessions on Windows. D3D11 is the only
+  one verified so far. Any API that fails stays on SteamVR.
+- Choose a set of native OpenXR games to accept (start with ones the user
+  owns). Record each in `docs/guides/game-compatibility.md`.
+
+## B. The desktop stream during PCVR
+
+The aim is that no desktop video crosses the network while a game is in
+front.
+
+1. **Separate game audio.** Capture the PC's default playback device with
+   WASAPI loopback. No virtual audio driver and no change to the default
+   device. Send it over an authenticated, encrypted Meteor channel and play it
+   on the headset with a small bounded buffer. This is the piece in
+   Jonathan-Eid's fork (`meteor/src/xr_audio.rs`, `test/meteor_windows_audio.h`,
+   `pcvr_meteor_audio.cpp`): review it against this design and take it,
+   rather than writing a second one.
+2. **Stop the desktop stream once the game's audio is flowing.** Keep the XR
+   session, the lease and the selected app. Reconnect when the wrist menu or
+   the desktop is shown, and when VR ends. If the separate audio fails, fall
+   back to today's behaviour.
+3. **Host depth.** Pause it while the desktop stream is stopped, which
+   happens naturally since nothing is being streamed.
+4. **Microphone.** It must keep working during PCVR, because VRChat and other
+   social games need voice. Pausing it in `_enforce_hidden()` was a mistake
+   (confirmed 2026-11-22), so fix it first, independently of B.1–B.3.
+
+Acceptance: VaM through SteamVR on Wi-Fi with no AcquireSync timeouts, the
+desktop stream disconnected while the game is in front, the wrist menu
+bringing the desktop back within a second or two, and audio continuous
+throughout.
+
+## C. Games that start SteamVR themselves
+
+When a game launched on the PC starts SteamVR, it runs with the user's
+settings, so other headset drivers can claim the HMD or the controllers.
+
+1. **Confirm the cause first.** Launch VaM from its .exe and read
+   `vrserver.txt` to see which driver claimed which device.
+2. **Then choose a fix**, least invasive first:
+   - **Restart into Meteor's SteamVR.** If attach mode finds another driver
+     holding the HMD, tell the headset and restart SteamVR under Meteor's
+     private config. The game may need relaunching: the headset offers to do
+     that for library games, and asks the user for the rest.
+   - **A temporary override.** While Meteor's driver is the active headset,
+     have it ask SteamVR to keep other HMD drivers inactive for that run
+     (driver-level `alwaysActivate` with `redirectsDisplay`, as VD's shim
+     does), without editing the user's saved SteamVR settings. This needs a
+     prototype to see what SteamVR allows.
+   - Never rewrite the user's global `steamvr.vrsettings` or driver
+     registrations (standing rule).
+3. **Make the library the easy path.** List non-Steam shortcuts in the headset
+   library, so games like VaM launch through Meteor's SteamVR without
+   alt-tabbing.
+
+## Small items to fold in
+
+- **D.** Vibepollo turns desktop HDR off at stream start because the headset
+  doesn't request HDR (`hdr_state: Disabled` in the display helper log). Leave
+  HDR alone unless the stream needs it: find the right `dd_` key, set it the
+  way `dd_refresh_rate_option` was set, and add a test.
+- **F.** Test tooling: `run_gdscript_tests.sh` should give each test a time
+  limit, because Godot doesn't exit after a failed check, which stalled a run
+  for 29 minutes. Then look at the flaky `test_grip_scroll_routing` and
+  `proxy::tests::multipath_owner_token_change_revokes_old_secondary`.
+- **G.** `build_release_wsl.sh` should run `bootstrap_native_xr.sh
+  --android-release-only` itself when the engine patch set no longer matches
+  the runtime's build stamp, instead of failing the build.
+- **E (investigation only).** On the user's PC, both the PC and the headset
+  see a network stall at :36 past every hour, of up to 1.2 s. It's
+  environmental (a scheduled task, a Wi-Fi scan or the router). B makes PCVR
+  far less sensitive to it, so it's worth noting in the docs for users.
+
+## Fork inputs
+
+Jonathan-Eid/nightfall `main`, as of 2026-11-18, is reviewed in the session
+notes:
+
+| Fork piece | Goes into |
+|---|---|
+| Separate PCVR audio, and stopping the desktop stream | B.1–B.2, reviewed against this design |
+| USB IPv6 XR control and relay lanes, USB firewall policy | Its own merge, after A–C settle `xr_session`/`xr_relay` |
+| Intel QSV encoder (MIT) | Independent; merge any time, with NVIDIA and AMD regression checks |
+| Headset video pacing, wider render field of view, 90 Hz | After B, measured on our own setups |
+| VDXR backend | Not merged (licensing) |
+
+## Order
+
+1. B.4 (microphone fix) and C.1 (find the cause of the lost controllers).
+2. A: detection and catalog fields, plus route (a) for library launches.
+3. B: review and adapt the fork's audio, then the desktop shutdown.
+4. C.2–C.3, depending on what step 1 found.
+5. A route (b), once Monado games are proven.
+6. D, F and G, whenever convenient.
