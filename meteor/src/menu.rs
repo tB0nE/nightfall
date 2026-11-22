@@ -187,12 +187,22 @@ impl Sources {
         let games = crate::xr_windows::games(&root).unwrap_or_default();
         let mut entries = vec![label("Runtime for each game (applies to its next launch)")];
         for game in &games {
-            let options: Vec<(String, Action)> = [(Backend::Monado, "Monado / xrizer", game.monado.is_some()), (Backend::Steamvr, "SteamVR", game.steamvr.is_some())]
+            if game.requires_steamvr && game.steamvr.is_none() {
+                entries.push(label(format!("{}: needs SteamVR (install it from Steam)", game.name)));
+                continue;
+            }
+            // OpenVR games run through SteamVR; Monado is for a game registered as native OpenXR.
+            let options: Vec<(String, Action)> = [(Backend::Monado, "Monado (OpenXR)", game.monado.is_some()), (Backend::Steamvr, "SteamVR", game.steamvr.is_some())]
                 .into_iter()
                 .filter(|(backend, _, available)| *available || game.backend == *backend)
                 .map(|(backend, name, _)| (name.to_string(), Action::PcvrBackend(game.app_id.clone(), backend)))
                 .collect();
             let selected = options.iter().position(|(_, action)| matches!(action, Action::PcvrBackend(_, b) if *b == game.backend)).unwrap_or(0);
+            if options.len() < 2 {
+                let runtime = options.first().map_or("needs SteamVR", |(name, _)| name.as_str());
+                entries.push(label(format!("{}: {runtime}", game.name)));
+                continue;
+            }
             entries.push(Entry::Choice { title: game.name.clone(), enabled: state.ready, options, selected, note: None });
         }
         if games.is_empty() {
@@ -656,6 +666,7 @@ pub fn open(target: &str) {
 mod tests {
     use super::*;
 
+    #[cfg_attr(windows, allow(dead_code))]
     fn titles(entries: &[Entry]) -> Vec<String> {
         entries
             .iter()

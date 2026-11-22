@@ -76,28 +76,9 @@ try {
             $previous=if(Test-Path $rootConfig){Get-Content $rootConfig -Raw | ConvertFrom-Json}else{$null}
             if(-not $previous -or $previous.steamvr_driver){WriteJson $rootConfig $library}
         }
-        # Retain a known native-runtime optimization, not a supported-game list.
-        foreach($game in @(@{id='846470';name='Moss'})) {
-            $installed=FindGame $game.id
-            if(-not $installed){continue}
-            $profile=Join-Path $Root ('profiles\'+$game.id)
-            $config=@{
-                service=(Join-Path $bin 'monado-service.exe');manifest=(Join-Path $runtime 'openxr_monado.json')
-                encoder=(Join-Path $bin 'meteor-windows-nvenc.dll');tracking=(Join-Path $bin 'meteor-windows-tracking.dll')
-                library_dirs=@($bin);steam_app_id=$game.id;steam_launch=$false;pixel_probe=$false;async_delivery=$true;arguments=@()
-            }
-            if($game.id -eq '846470') {
-                $config.application=Join-Path $installed 'Moss\Binaries\Win64\Moss-Win64-Shipping.exe'
-                $config.arguments=@('-vr','-dx11','-hmd=SteamVR')
-                $config.openvr_runtime=Join-Path $runtime 'xrizer'
-                $config.openvr_loader=Join-Path $installed 'Engine\Binaries\ThirdParty\OpenVR\OpenVRv1_5_17\Win64\openvr_api.dll'
-                if(-not (Test-Path $config.openvr_loader)){$config.openvr_loader=Join-Path $installed 'Moss\Engine\Binaries\ThirdParty\OpenVR\OpenVRv1_5_17\Win64\openvr_api.dll'}
-            }
-            if(-not (Test-Path -LiteralPath $config.application -PathType Leaf) -or -not (Test-Path -LiteralPath $config.openvr_loader -PathType Leaf)){continue}
-            WriteJson (Join-Path $profile 'xr-windows.json') $config
-            InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$game.name)
-            $summary.games+=$game
-        }
+        # Every Steam VR game runs through SteamVR and Meteor's driver, as other PC
+        # streamers do. xrizer (OpenVR on Monado) is Linux-only: on Windows it broke
+        # anti-cheat, overlays and bindings that the real SteamVR handles.
         if(Test-Path (Join-Path $SteamRoot 'steam.exe')) {
             $vrManifest=Join-Path $SteamRoot 'config\steamapps.vrmanifest'
             if(Test-Path -LiteralPath $vrManifest) {

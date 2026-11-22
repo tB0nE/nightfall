@@ -208,6 +208,52 @@ pub struct State {pub ready:bool,pub error:Option<String>,pub trust:Option<Arc<c
 static STATE:OnceLock<State>=OnceLock::new();
 pub fn initialize(ready:bool,error:Option<String>,trust:Option<Arc<crate::xr_trust::Trust>>) {let _=STATE.set(State {ready,error,trust});}
 pub fn state()->&'static State {STATE.get_or_init(State::default)}
+/// Windows runs OpenVR games through SteamVR, as other PC streamers do: xrizer
+/// reimplements OpenVR, so anti-cheat, overlays, bindings and some games break.
+/// Moves games registered with an xrizer profile (OpenVR on Monado) to SteamVR,
+/// or to "needs SteamVR" when they have no SteamVR profile. Returns how many moved.
+pub fn retire_xrizer(root:&Path)->io::Result<usize> {
+    let path=root.join("windows-games.json");
+    if !path.exists(){return Ok(0);}
+    let mut catalog=games(root)?;
+    let mut moved=0;
+    for game in &mut catalog {
+        if !game.monado.as_deref().is_some_and(uses_xrizer) {continue;}
+        game.monado=None;
+        if game.backend==Backend::Monado {
+            game.backend=Backend::Steamvr;
+            game.requires_steamvr=game.steamvr.is_none();
+        }
+        moved+=1;
+    }
+    if moved>0 {write(&path,&serde_json::to_vec_pretty(&catalog)?)?;}
+    Ok(moved)
+}
+
+/// What PCVR needs before it's turned on: the runtime, and every game ready on its
+/// backend. Setup runs this right after the installer removed xrizer, before
+/// Meteor has started, so it moves xrizer games to SteamVR first.
+fn check_before_enable(root:&Path)->io::Result<()> {
+    retire_xrizer(root)?;
+    crate::xr_session::load(root)?;
+    let catalog=games(root)?;
+    if catalog.is_empty() {
+        let files=crate::xr_session::load(&root.join("steamvr-runtime"))?;
+        if files.steamvr_driver.is_none(){return Err(io::Error::other("Set up a SteamVR runtime or register a VR game first"));}
+    }
+    for game in &catalog {if game.backend!=Backend::Steamvr || !game.requires_steamvr {game.files()?;}}
+    Ok(())
+}
+
+/// A profile that runs an OpenVR game on Monado through xrizer. Read raw: such a
+/// profile no longer loads once xrizer isn't installed.
+fn uses_xrizer(profile:&Path)->bool {
+    let Ok(bytes)=std::fs::read(profile.join("xr-windows.json")) else {return false};
+    let Ok(value)=serde_json::from_slice::<Value>(&bytes) else {return false};
+    let set=|key:&str|value.get(key).is_some_and(|v|!v.is_null());
+    set("openvr_runtime") && !set("steamvr_driver")
+}
+
 pub fn root()->PathBuf {
     let config=crate::config::load();let root=config.xr.runtime_root();
     let imported=root.join("windows");
@@ -265,13 +311,7 @@ pub fn command(args:&[String])->io::Result<String> {
             Ok("Game registered. Choose its backend in Meteor's PCVR menu.".into())
         },
         "--xr-windows-enable"=>{
-            crate::xr_session::load(root)?;
-            let catalog=games(root)?;
-            if catalog.is_empty() {
-                let files=crate::xr_session::load(&root.join("steamvr-runtime"))?;
-                if files.steamvr_driver.is_none(){return Err(io::Error::other("Set up a SteamVR runtime or register a VR game first"));}
-            }
-            for game in &catalog {if game.backend!=Backend::Steamvr || !game.requires_steamvr {game.files()?;}}
+            check_before_enable(root)?;
             let path=crate::config::config_path();let original=std::fs::read_to_string(&path).or_else(|e|if e.kind()==io::ErrorKind::NotFound {Ok(String::new())}else{Err(e)})?;
             let _:crate::config::Config=toml::from_str(&original).map_err(io::Error::other)?;
             let mut document:toml_edit::DocumentMut=original.parse().map_err(io::Error::other)?;
@@ -338,6 +378,54 @@ pub fn command(args:&[String])->io::Result<String> {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]fn default_backend_is_monado(){assert_eq!(Backend::default(),Backend::Monado);}
+    #[test]fn xrizer_profiles_move_to_steamvr(){
+        let root=std::env::temp_dir().join(format!("meteor-retire-xrizer-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);
+        let profile=|name:&str,json:&str|{let dir=root.join(name);std::fs::create_dir_all(&dir).unwrap();std::fs::write(dir.join("xr-windows.json"),json).unwrap();dir};
+        let xrizer=profile("moss-monado",r#"{"openvr_runtime":"C:\\runtime\\xrizer"}"#);
+        let steamvr=profile("moss-steamvr",r#"{"openvr_runtime":"C:\\SteamVR","steamvr_driver":"C:\\runtime\\steamvr"}"#);
+        let openxr=profile("native-monado",r#"{"openvr_runtime":null}"#);
+        let lonely=profile("lonely-monado",r#"{"openvr_runtime":"C:\\runtime\\xrizer"}"#);
+        let catalog=serde_json::json!([
+            {"app_id":"846470","name":"Moss","backend":"monado","monado":xrizer,"steamvr":steamvr},
+            {"app_id":"1","name":"Native","backend":"monado","monado":openxr,"steamvr":null},
+            {"app_id":"2","name":"Lonely","backend":"monado","monado":lonely,"steamvr":null},
+        ]);
+        std::fs::write(root.join("windows-games.json"),serde_json::to_vec(&catalog).unwrap()).unwrap();
+        assert_eq!(retire_xrizer(&root).unwrap(),2);
+        let games=games(&root).unwrap();
+        assert!(games[0].backend==Backend::Steamvr && games[0].monado.is_none() && games[0].steamvr.is_some() && !games[0].requires_steamvr);
+        assert!(games[1].backend==Backend::Monado && games[1].monado.is_some(), "a native OpenXR profile keeps Monado");
+        assert!(games[2].backend==Backend::Steamvr && games[2].monado.is_none() && games[2].requires_steamvr);
+        assert_eq!(retire_xrizer(&root).unwrap(),0, "already moved");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    /// Setup turns PCVR on right after the installer deleted xrizer: a game still
+    /// registered on an xrizer profile must not stop it.
+    #[test]fn enabling_after_xrizer_was_removed_moves_its_games_to_steamvr(){
+        let root=std::env::temp_dir().join(format!("meteor-enable-no-xrizer-{}",std::process::id()));
+        let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();
+        let runtime=root.join("steamvr");let driver=root.join("driver");
+        for path in [runtime.join("bin/vrclient_x64.dll"),runtime.join("bin/win64/vrstartup.exe"),driver.join("driver.vrdrivermanifest"),driver.join("bin/win64/driver_meteor.dll")] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();std::fs::write(path,b"fixture").unwrap();
+        }
+        let exe=std::env::current_exe().unwrap();
+        let steamvr=json!({"service":exe,"manifest":exe,"encoder":exe,"tracking":exe,"application":exe,"steam_app_id":"438100","steamvr_driver":driver,"openvr_runtime":runtime});
+        std::fs::write(root.join("xr-windows.json"),serde_json::to_vec(&steamvr).unwrap()).unwrap();
+        let steamvr_profile=root.join("profiles/438100/steamvr");std::fs::create_dir_all(&steamvr_profile).unwrap();
+        std::fs::write(steamvr_profile.join("xr-windows.json"),serde_json::to_vec(&steamvr).unwrap()).unwrap();
+        // The old Monado profile names an xrizer folder that no longer exists.
+        let xrizer_profile=root.join("profiles/438100");
+        std::fs::write(xrizer_profile.join("xr-windows.json"),serde_json::to_vec(&json!({"service":exe,"manifest":exe,"encoder":exe,"tracking":exe,
+            "application":exe,"steam_app_id":"438100","openvr_runtime":root.join("runtime/xrizer")})).unwrap()).unwrap();
+        std::fs::write(root.join("windows-games.json"),serde_json::to_vec(&json!([{"app_id":"438100","name":"Moss",
+            "backend":"monado","monado":xrizer_profile,"steamvr":steamvr_profile}])).unwrap()).unwrap();
+        assert!(games(&root).unwrap()[0].files().is_err(), "the xrizer profile no longer loads");
+        check_before_enable(&root).unwrap();
+        let game=&games(&root).unwrap()[0];
+        assert!(game.backend==Backend::Steamvr && game.monado.is_none() && game.files().is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn missing_steamvr_is_a_per_game_requirement_not_a_launch(){
         let root=std::env::temp_dir().join(format!("meteor-missing-steamvr-{}",std::process::id()));
         let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();let root=root.canonicalize().unwrap();

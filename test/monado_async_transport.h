@@ -116,6 +116,17 @@ static bool meteor_async_enqueue(const struct meteor_stereo_encode_v1 *input,
     return true;
 }
 
+// Whether an encoded frame can be queued now without waiting. A producer that
+// checks this before encoding can skip a frame instead of waiting for the
+// network, and never has to drop an encoded interframe.
+static bool meteor_async_has_room(void)
+{
+    meteor_delivery_lock(&meteor_async.mutex);
+    bool room=!meteor_async.failed && !meteor_async.stopping && meteor_async.count<2;
+    meteor_delivery_unlock(&meteor_async.mutex);
+    return room;
+}
+
 static bool meteor_async_finish(void)
 {
     meteor_delivery_lock(&meteor_async.mutex);

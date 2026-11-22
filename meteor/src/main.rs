@@ -600,6 +600,12 @@ async fn main() {
     #[cfg(target_os = "linux")]
     xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
     #[cfg(windows)]
+    match xr_windows::retire_xrizer(&xr_windows::root()) {
+        Ok(0) => {}
+        Ok(moved) => log::info!("PCVR: moved {moved} game(s) from xrizer to SteamVR"),
+        Err(error) => log::warn!("PCVR: can't move games from xrizer to SteamVR: {error}"),
+    }
+    #[cfg(windows)]
     xr_windows::initialize(xr_discovery.is_some(),xr_startup_error,xr_trust);
 
     #[cfg(target_os = "linux")]

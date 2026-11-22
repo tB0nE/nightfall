@@ -30,8 +30,13 @@ int main(void) {
     close(pair[1]); meteor_direct_socket=pair[0]; meteor_direct_epoch=42; meteor_direct_sequence=0;
     struct meteor_stereo_encode_v1 metadata={.frame_id=9,.display_ns=123};
     struct meteor_owned_packet p=packet();
+    assert(meteor_async_has_room());
     assert(meteor_async_enqueue(&metadata,&p,"12345")); assert(!p.bytes && !p.length);
     assert(meteor_async_finish()); int status=0; assert(waitpid(child,&status,0)==child && status==0);
+    assert(meteor_async_has_room()); // finish leaves the queue empty for the next session
+    meteor_async.count=2; assert(!meteor_async_has_room()); // both slots full: skip, don't wait
+    meteor_async.count=0; meteor_async.failed=true; assert(!meteor_async_has_room());
+    meteor_async.failed=false;
 
     // Decoder cold start: worker backpressure must preserve all encoded packets,
     // not abort just because the first acknowledgement takes 150 ms.
