@@ -87,6 +87,26 @@ Options, still to choose between:
 - Steam's binary `appinfo.vdf` lists launch configurations, including VR
   ones, but the format changes between Steam versions.
 
+### Moss on Monado (2026-11-22): crashed in the game
+
+A hand-made Monado profile launched `Moss-Win64-Shipping.exe -vr -dx11
+-hmd=OpenXRHMD` with `XR_RUNTIME_JSON` from the headset library.
+- What worked: Monado started; Moss connected (D3D11, asking for hand
+  tracking and eye gaze); 1,037 frames were encoded and delivered with none
+  failed; tracking reached Monado.
+- What failed: about 16 s in, Moss crashed with
+  `EXCEPTION_ACCESS_VIOLATION reading 0x0` (Unreal 4.27.2, no symbols).
+  Monado logged no error before the disconnect.
+- Moss also tried its Oculus plugin ("Unable to load LibOVRRT DLL"). It
+  ships SteamVR, Oculus and OpenXR paths, and the Steam build is played on
+  SteamVR, so its OpenXR path is likely untested.
+- Not yet run: Moss's OpenXR path through SteamVR's own runtime (`-hmd=OpenXRHMD`
+  as a Steam launch option), which would say whether the crash is Moss's or
+  Monado's.
+
+The profile was removed and Moss is back on SteamVR only. The next
+candidate is DCS World (free, native OpenXR, D3D11).
+
 ### Making Monado the active runtime for its games
 
 The Windows OpenXR loader reads the active runtime from `HKLM`, which needs
