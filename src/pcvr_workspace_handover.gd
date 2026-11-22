@@ -225,7 +225,8 @@ func _enforce_hidden() -> void:
 	# has its own audio transport, retain that host's captured game/system audio.
 	# Never resume a previously paused player or replay stale audio after disconnect.
 	main.audio_player.stream_paused = not main.is_streaming or bool(_saved.get("audio_paused", true))
-	main.meteor_microphone.set_paused(true)
+	# The microphone keeps going while a game is in front: voice chat in VRChat
+	# and other social games goes through it. Leave it as the user had it.
 	main.native_xr_renderer.set_presentation_suspended(not desktop_visible)
 	var interface = _xr_interface()
 	if interface:

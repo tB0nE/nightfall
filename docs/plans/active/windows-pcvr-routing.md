@@ -104,6 +104,10 @@ front.
 4. **Microphone.** It must keep working during PCVR, because VRChat and other
    social games need voice. Pausing it in `_enforce_hidden()` was a mistake
    (confirmed 2026-11-22), so fix it first, independently of B.1–B.3.
+   The microphone also only runs while the desktop stream is connected
+   (`main.is_streaming` in `meteor_microphone.gd`). B.2 must keep it running
+   once the desktop stream stops, because it uses Meteor's own channel, not
+   the desktop stream.
 
 Acceptance: VaM through SteamVR on Wi-Fi with no AcquireSync timeouts, the
 desktop stream disconnected while the game is in front, the wrist menu
@@ -115,9 +119,24 @@ throughout.
 When a game launched on the PC starts SteamVR, it runs with the user's
 settings, so other headset drivers can claim the HMD or the controllers.
 
-1. **Confirm the cause first.** Launch VaM from its .exe and read
-   `vrserver.txt` to see which driver claimed which device.
-2. **Then choose a fix**, least invasive first:
+1. **Confirm the cause first.** Done 2026-11-22 from the 2026-11-21 logs,
+   and it **disproved the driver theory**. In `Steam\logs\vrserver.txt`, the
+   .exe launch (21:25–21:27, app key `system.generated.vam.exe`) and both
+   shortcut launches (`steam.app.2216045649`) look the same:
+   - VaM started SteamVR.
+   - vrlink and lighthouse loaded but claimed nothing.
+   - Meteor's driver became the active HMD and added both controllers about
+     1 s later.
+   - VaM set its action manifest about 17 s in and loaded its own
+     `bindings_oculus_touch.json`.
+
+   Meteor's `supervisor.log` and `meteor.log` match too (attach, first
+   encoded frame, launch notice claimed). The .exe run was VaM's first launch
+   after installing, and no headset log covers it. **Next:** launch VaM from
+   its .exe again with the headset log recording. If the controllers work,
+   it was a first-run issue and C.2 isn't needed. If not, compare the
+   headset's input forwarding (NFXI/NFXJ) between the two launches.
+2. **Only if the retest still fails**, choose a fix, least invasive first:
    - **Restart into Meteor's SteamVR.** If attach mode finds another driver
      holding the HMD, tell the headset and restart SteamVR under Meteor's
      private config. The game may need relaunching: the headset offers to do

@@ -182,7 +182,7 @@ func _run() -> void:
 	var token: int = handover.generation
 	assert(handover.state == Handover.State.DRAINING and handover.blocks_workspace())
 	assert(not owner.visible and owner.native_xr_renderer.presentation_suspended)
-	assert(not owner.audio_player.stream_paused and owner.meteor_microphone._paused)
+	assert(not owner.audio_player.stream_paused and not owner.meteor_microphone._paused, "The microphone keeps working in VR")
 	assert(owner.input_handler.releases == 1 and owner.is_streaming)
 	assert(not handover.interface.enabled)
 	assert(owner.pcvr_test.backend.activations == 0)
