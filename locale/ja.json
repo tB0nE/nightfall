@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "グリップでスクロール。右クリックを置き換えます。マッピングはオフに。",
 	"Ambient Intensity": "環境光の強さ",
 	"Adjust ambient lighting strength.": "環境光の強さを調整します。",
+	"Grid Spacing": "グリッド間隔",
+	"Grid point spacing. Slow drags and resizes snap to it.": "グリッド点の間隔。ゆっくり動かすと吸着します。",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

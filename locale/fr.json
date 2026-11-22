@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Maintenez la prise et bougez. Remplace le clic droit ; mappage désactivé.",
 	"Ambient Intensity": "Intensité ambiante",
 	"Adjust ambient lighting strength.": "Réglez l’intensité de l’éclairage ambiant.",
+	"Grid Spacing": "Espacement de la grille",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Écart de la grille. Les glissements lents s’y alignent.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

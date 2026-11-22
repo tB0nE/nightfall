@@ -30,6 +30,11 @@ var _current_color_transfer_type: int = 0
 # alpha-blended compositor layer. It never changes the main screen layer's
 # opaque blend mode or any of the YUV/HDR/AI-depth shaders.
 const AMBIENT_LAYER_SCALE := 1.30
+## Below every screen (their sort orders are 1-100, from viewing distance, and
+## the native renderer recomputes the primary's every frame), above the
+## passthrough fade (-50). Following the primary's distance instead let the
+## glow draw over the screen when the viewer leaned back.
+const AMBIENT_SORT_ORDER := 0
 const AMBIENT_SAMPLE_SIZE := 32
 const AMBIENT_VIEWPORT_LONG_EDGE := 256
 const AMBIENT_SLOW_INTERVAL_SEC := 0.10
@@ -710,7 +715,7 @@ func _setup_ambient_layer() -> bool:
 
 	_ambient_layer = OpenXRCompositionLayerCylinder.new()
 	_ambient_layer.name = "CompAmbientLayer"
-	_ambient_layer.set_sort_order(0)
+	_ambient_layer.set_sort_order(AMBIENT_SORT_ORDER)
 	_ambient_layer.set_enable_hole_punch(false)
 	_ambient_layer.set_alpha_blend(true)
 	_ambient_layer.visible = false
@@ -1011,9 +1016,7 @@ func _update_ambient_geometry():
 		_ambient_dirty = true
 
 	var radius = maxf(s._comp_cyl_radius, 0.001)
-	var view_dist = maxf((s.global_position - main.xr_camera.global_position).length(), 0.5)
-	var screen_sort = clampi(int((10.0 - view_dist) * 10), 1, 100)
-	_ambient_layer.set_sort_order(maxi(0, screen_sort - 1))
+	_ambient_layer.set_sort_order(AMBIENT_SORT_ORDER)
 	_ambient_layer.set_radius(radius)
 	_ambient_layer.set_central_angle(expanded_size.x / radius)
 	_ambient_layer.set_aspect_ratio(aspect)
@@ -1032,7 +1035,7 @@ func _update_ambient_geometry():
 		var half: float = s.band_half() * AMBIENT_LAYER_SCALE
 		upper = minf(s.band_mid() + half, PI * 0.5)
 		lower = maxf(s.band_mid() - half, -PI * 0.5)
-	SphereLayers.sync(_ambient_layer, on_sphere, frame, s.sphere_r(), horizontal, upper, lower, maxi(0, screen_sort - 1))
+	SphereLayers.sync(_ambient_layer, on_sphere, frame, s.sphere_r(), horizontal, upper, lower, AMBIENT_SORT_ORDER)
 
 func setup_background_equirect():
 	# Only the environment background needs equirect layers. The UI, cursor,
@@ -1178,8 +1181,10 @@ func _update_cylinder_params_for(s: VRScreen):
 		radius = view_dist * 3.0
 	elif s.curvature == 2:
 		radius = view_dist * 2.0
-	if s.placement_radius > 0.0 and (s.curvature > 0 or s.on_surface()):
-		radius = s.placement_radius
+	# On a grid surface, a Curved screen takes the surface's radius and a
+	# Slight Curve panel its own (VRScreen.get_cylinder_radius()); Flat stays flat.
+	if s.placement_radius > 0.0 and s.curvature > 0:
+		radius = s.get_cylinder_radius()
 	var screen_forward = -s.global_transform.basis.z
 	var central_angle = s.mesh_size.x / radius
 	var aspect = s.mesh_size.x / s.mesh_size.y

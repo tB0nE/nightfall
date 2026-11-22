@@ -90,8 +90,41 @@ func sync_controls_lock() -> void:
 		for child in area.get_children():
 			if child is CollisionShape3D: child.set_deferred("disabled", locked)
 
-func on_sphere() -> bool:
+## On a sphere cap of the grid (where it goes; see on_sphere() for its shape).
+func on_cap() -> bool:
 	return on_surface() and surface_on_cap
+
+## Drawn as a patch of the grid sphere: a Curved screen on a cap. Flat and
+## Slight Curve screens keep their own shape there.
+func on_sphere() -> bool:
+	return on_cap() and curvature >= 2
+
+## How far the screen sits in front of its place on the surface (a Flat or
+## Slight Curve panel; see ScreenPlacementGrid.panel_inset()). Set when it is
+## placed, so the surface pose stays consistent until it is placed again.
+var surface_inset := 0.0
+
+## The pose of the screen's place on the grid surface, behind its panel.
+func surface_pose() -> Transform3D:
+	if surface_inset == 0.0: return global_transform
+	return global_transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, -surface_inset))
+
+## The inset for the screen's current size, curvature and place on the surface.
+func panel_inset_now() -> float:
+	if not on_surface(): return 0.0
+	var info := {"on_cap": false}
+	if surface_on_cap: info = {"on_cap": true, "lat": surface_lat, "half": band_half()}
+	return ScreenPlacementGrid.panel_inset(curvature, mesh_size, placement_radius, surface_straight, info)
+
+## A corner of the screen's footprint on the surface, in surface_pose() space.
+func grid_corner_point(index: int) -> Vector3:
+	var x_sign := -1.0 if index in [0, 2] else 1.0
+	var y_sign := 1.0 if index < 2 else -1.0
+	if on_cap():
+		return ScreenPlacementGrid.sphere_local_point(x_sign * mesh_size.x * 0.5 / placement_radius,
+			band_mid() + y_sign * band_half(), surface_lat, sphere_r())
+	var angle := mesh_size.x / maxf(placement_radius, 0.001) * 0.5
+	return Vector3(x_sign * sin(angle) * placement_radius, y_sign * mesh_size.y * 0.5, placement_radius * (1.0 - cos(angle)))
 
 func _cap_lat(y: float) -> float:
 	return ScreenPlacementGrid.cap_lat(y, ScreenPlacementGrid.side_of(surface_y), placement_radius, surface_straight)
@@ -112,7 +145,7 @@ func on_surface() -> bool:
 	return surface != ScreenPlacementGrid.Shape.ORIGINAL and placement_radius > 0.0
 
 func is_flat() -> bool:
-	return curvature == 0 and not on_surface()
+	return curvature == 0
 var grid_mode: bool = true
 var grid_pos: Vector2i = Vector2i(-1, -1)
 
@@ -254,7 +287,8 @@ func setup(p_main: Node3D, p_monitor_id: StringName = &"m0") -> void:
 	monitor_id = p_monitor_id
 
 func get_cylinder_radius() -> float:
-	if placement_radius > 0.0 and (curvature > 0 or on_surface()): return placement_radius
+	if on_surface() and curvature > 0: return ScreenPlacementGrid.panel_radius(curvature, placement_radius)
+	if placement_radius > 0.0 and curvature > 0: return placement_radius
 	if main.comp and main.comp.in_use:
 		var cam_to_screen = global_position - main.xr_camera.global_position
 		# Same clamp as the composition cylinder it has to match.
@@ -685,7 +719,9 @@ func apply_corner_resize(ray_origin: Vector3, ray_dir: Vector3, corner_idx: int,
 		_corner_resize_started = true
 		_corner_start_width = mesh_size.x
 		_corner_start_hit = hit
-		_corner_pinned_world = to_global(corner_surface_point(3 - corner_idx))
+		# On a grid surface the footprint's corner stays put, not the panel's.
+		_corner_pinned_world = surface_pose() * grid_corner_point(3 - corner_idx) if on_surface() \
+			else to_global(corner_surface_point(3 - corner_idx))
 		return
 	var aspect := maxf(tile_aspect, 0.01)
 	var x_sign := -1.0 if corner_idx in [0, 2] else 1.0

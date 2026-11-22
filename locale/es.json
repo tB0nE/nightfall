@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Agarra y mueve para desplazar. Sustituye clic derecho; mapeo desactivado.",
 	"Ambient Intensity": "Intensidad ambiental",
 	"Adjust ambient lighting strength.": "Ajusta la intensidad de la luz ambiental.",
+	"Grid Spacing": "Espaciado de cuadrícula",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Separación de la cuadrícula. Al arrastrar o escalar despacio se ajusta.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

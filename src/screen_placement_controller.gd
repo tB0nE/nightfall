@@ -25,13 +25,17 @@ func _init(owner: Node3D):
 func shape() -> int:
 	return main.settings.placement_grid_shape if main.settings.grid_mode_enabled else ScreenPlacementGrid.Shape.ORIGINAL
 
-## Grid Curve at 100%: the surface's radius as a fraction of the primary's
-## distance. At 0% the surface is centred on the viewer.
+## The surface's radius as a multiple of the primary's distance. Grid Curve
+## 0% matches a "Slightly Curved" screen (VRScreen.get_cylinder_radius());
+## 100% bends tighter than a surface centred on the viewer.
+const LOOSEST_CURVE := 3.0
 const TIGHTEST_CURVE := 0.76
+const MAX_RADIUS := 12.0
 
 ## The surface radius per metre of viewing distance for a Grid Curve percentage.
+## Curvature (1 / radius) changes evenly along the slider.
 static func curve_factor(percent: float) -> float:
-	return lerpf(1.0, TIGHTEST_CURVE, clampf(percent / 100.0, 0.0, 1.0))
+	return 1.0 / lerpf(1.0 / LOOSEST_CURVE, 1.0 / TIGHTEST_CURVE, clampf(percent / 100.0, 0.0, 1.0))
 
 ## Cylinder and sphere grids are one surface around the viewer, sized by the
 ## primary's distance (tighter with Grid Curve).
@@ -47,11 +51,13 @@ func radius() -> float:
 			_radius = primary.placement_radius # Keep the arrangement's own sphere.
 		elif is_instance_valid(main.xr_camera):
 			var distance := primary.global_position.distance_to(main.xr_camera.global_position)
-			_radius = clampf(distance * curve_factor(main.settings.placement_grid_curve), 0.5, 8.0)
+			_radius = clampf(distance * curve_factor(main.settings.placement_grid_curve), 0.5, MAX_RADIUS)
 		else:
 			_radius = 2.0
 		if primary.surface != current:
 			_set_surface(primary, current, _radius, _band_state(0.0, primary.mesh_size.y, _radius, current))
+			# The primary's panel stays where it is; the surface lies behind it.
+			primary.surface_inset = primary.panel_inset_now()
 	else:
 		if primary.on_surface(): _leave_surface(primary)
 		_radius = primary.get_cylinder_radius() if primary.curvature > 0 else (maxf(primary.global_position.distance_to(main.xr_camera.global_position), 1.0) if is_instance_valid(main.xr_camera) else 4.0)
@@ -77,17 +83,18 @@ func anchor() -> Transform3D:
 	var primary: VRScreen = main.primary_screen
 	if not primary.on_surface():
 		return primary.global_transform
-	var basis := primary.global_transform.basis.orthonormalized()
-	if primary.on_sphere():
-		var frame := ScreenPlacementGrid.sphere_frame(primary.global_transform, primary.surface_lat, primary.sphere_r())
+	var pose := primary.surface_pose()
+	var basis := pose.basis.orthonormalized()
+	if primary.on_cap():
+		var frame := ScreenPlacementGrid.sphere_frame(pose, primary.surface_lat, primary.sphere_r())
 		return Transform3D(frame.basis, frame.origin - frame.basis.z * primary.placement_radius)
-	return Transform3D(basis, primary.global_position - basis.y * primary.surface_y)
+	return Transform3D(basis, pose.origin - basis.y * primary.surface_y)
 
 ## Surface coordinates of a screen's centre. A sphere screen's node sits at its
 ## patch's middle latitude, which is not quite its middle grid height.
 func screen_centre(screen: VRScreen) -> Vector3:
-	var centre := to_grid(anchor().affine_inverse() * screen.global_position)
-	if screen.on_sphere():
+	var centre := to_grid(anchor().affine_inverse() * screen.surface_pose().origin)
+	if screen.on_cap():
 		centre.y += screen.surface_y - ScreenPlacementGrid.cap_y(screen.surface_lat,
 			ScreenPlacementGrid.side_of(screen.surface_y), screen.placement_radius, screen.surface_straight)
 	centre.z = 0.0
@@ -99,9 +106,10 @@ func lattice() -> Dictionary:
 	var primary: VRScreen = main.primary_screen
 	var current := shape()
 	var r := radius()
-	var inverse := anchor().affine_inverse() * primary.global_transform
-	var top_right := ScreenPlacementGrid.coordinates(inverse * primary.corner_surface_point(1), current, r, straight())
-	var bottom_left := ScreenPlacementGrid.coordinates(inverse * primary.corner_surface_point(2), current, r, straight())
+	var inverse := anchor().affine_inverse() * primary.surface_pose()
+	var corner := primary.grid_corner_point if primary.on_surface() else primary.corner_surface_point
+	var top_right := ScreenPlacementGrid.coordinates(inverse * corner.call(1), current, r, straight())
+	var bottom_left := ScreenPlacementGrid.coordinates(inverse * corner.call(2), current, r, straight())
 	var nominal: float = main.settings.placement_grid_spacing
 	var span := (top_right - bottom_left).abs()
 	var nx := maxi(1, roundi(span.x / nominal))
@@ -129,6 +137,7 @@ func _set_surface(screen: VRScreen, surface_shape: int, r: float, state: Diction
 	screen.surface_y = state.y
 	screen.surface_straight = state.straight
 	screen.surface_on_cap = state.on_cap
+	if surface_shape == ScreenPlacementGrid.Shape.ORIGINAL: screen.surface_inset = 0.0
 	if changed:
 		screen.apply_curvature()
 
@@ -142,8 +151,10 @@ func _place(screen: VRScreen, centre: Vector3, current: int, r: float, frame := 
 	# The primary is laid in the grid frame it defined before the change.
 	if frame == Transform3D(): frame = anchor()
 	var state := _band_state(centre.y, screen.mesh_size.y, r, current)
-	screen.global_transform = frame * ScreenPlacementGrid.band_transform(centre.x, centre.y, state.info, r, state.straight)
+	var pose := frame * ScreenPlacementGrid.band_transform(centre.x, centre.y, state.info, r, state.straight)
 	_set_surface(screen, current, r, state)
+	screen.surface_inset = screen.panel_inset_now()
+	screen.global_transform = pose * Transform3D(Basis.IDENTITY, Vector3(0, 0, screen.surface_inset))
 
 ## Where a new screen of this size, put at `world` (a grid_cell_transform()),
 ## would appear once laid on the grid: its pose, and the composition layer
@@ -156,16 +167,23 @@ func preview(world: Transform3D, size: Vector2, curvature: int) -> Dictionary:
 			view_distance = maxf(world.origin.distance_to(main.xr_camera.global_position), 0.5)
 		var curve_radius: float = view_distance * ([100.0, 3.0, 2.0][clampi(curvature, 0, 2)])
 		return {"kind": &"cylinder", "screen": world, "size": size, "radius": curve_radius}
-	return surface_preview(to_grid(anchor().affine_inverse() * world.origin), size)
+	return surface_preview(to_grid(anchor().affine_inverse() * world.origin), size, curvature)
 
 ## As preview(), for a screen centred at surface coordinates `centre`.
-func surface_preview(centre: Vector3, size: Vector2) -> Dictionary:
+func surface_preview(centre: Vector3, size: Vector2, curvature := -1) -> Dictionary:
 	var current := shape()
 	var r := radius()
 	var h := straight() if current == ScreenPlacementGrid.Shape.CYLINDER else 0.0
+	if curvature < 0: curvature = main.primary_screen.curvature if main.primary_screen else 2
 	centre.y = ScreenPlacementGrid.clamp_sphere_centre_y(centre.y, size.y * 0.5, r, h)
 	var state := _band_state(centre.y, size.y, r, current)
 	var pose := anchor() * ScreenPlacementGrid.band_transform(centre.x, centre.y, state.info, r, state.straight)
+	if curvature < 2:
+		# A Flat or Slight Curve panel in front of its place (see _place()).
+		var inset := ScreenPlacementGrid.panel_inset(curvature, size, r, state.straight, state.info)
+		var panel_r := ScreenPlacementGrid.panel_radius(curvature, r)
+		return {"kind": &"cylinder", "screen": pose * Transform3D(Basis.IDENTITY, Vector3(0, 0, inset)), "size": size,
+			"radius": r * 100.0 if is_inf(panel_r) else panel_r}
 	if not state.on_cap:
 		return {"kind": &"cylinder", "screen": pose, "size": size, "radius": r}
 	var sphere := ScreenPlacementGrid.sphere_radius(r, state.straight)
@@ -306,9 +324,10 @@ func set_curve(percent: int) -> void:
 	var centres := {}
 	for screen in main.screens:
 		if screen != primary and is_instance_valid(screen) and screen.surface == current: centres[screen] = screen_centre(screen)
-	primary.placement_radius = clampf(primary.placement_radius * curve_factor(main.settings.placement_grid_curve) / curve_factor(old), 0.5, 8.0)
+	primary.placement_radius = clampf(primary.placement_radius * curve_factor(main.settings.placement_grid_curve) / curve_factor(old), 0.5, MAX_RADIUS)
 	_radius_key = []
 	var r := radius()
+	primary.surface_inset = primary.panel_inset_now()
 	primary.apply_curvature()
 	for screen in centres: _place(screen, centres[screen], current, r)
 	if main.comp and main.comp.in_use: main.comp.update_cylinder_params()

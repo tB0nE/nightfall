@@ -138,7 +138,7 @@ func _test_app_persistence_round_trip() -> void:
 	assert(loaded.tracking_mode == 1)
 	assert(not loaded.auto_reconnect_enabled)
 	assert(loaded.quick_start_enabled)
-	assert(loaded.audio_boost_db == 15)
+	assert(loaded.audio_boost_db == 24)
 	assert(loaded.microphone_enabled)
 	assert(loaded.hdr_enabled)
 	assert(loaded.idle_timeout_min == 60)

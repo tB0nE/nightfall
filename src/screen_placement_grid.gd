@@ -119,6 +119,47 @@ static func band_transform(x: float, y: float, info: Dictionary, radius: float, 
 	var basis := Basis(Vector3.UP, -x / radius) * Basis(Vector3.RIGHT, info.lat)
 	return Transform3D(basis, Vector3(0, 0, radius) - basis.z * sphere_radius(radius, straight))
 
+## Flat and Slight Curve screens on a cylinder or sphere grid keep their own
+## shape: the surface only says where they go and which way they face. A
+## Slight Curve panel bends at twice the surface's radius.
+const SLIGHT_PANEL_FACTOR := 2.0
+
+## The radius a screen of this curvature bends at on a surface of this radius
+## (INF: flat). Curved screens take the surface's own shape.
+static func panel_radius(curvature: int, radius: float) -> float:
+	if curvature >= 2: return radius
+	return INF if curvature <= 0 else radius * SLIGHT_PANEL_FACTOR
+
+## How far a panel sits in front of the surface (towards its centre; negative:
+## behind it), so its
+## left and right edges lie on the same rays from the surface's axis as the
+## edges of its footprint: side-by-side panels then meet edge to edge, angled.
+## On the sphere caps a flat rectangle can't match its lat/long patch, so it
+## sits far enough in to fit inside it both ways (leaving small gaps).
+## info: band() for the screen's grid height. 0 for a Curved screen.
+static func panel_inset(curvature: int, size: Vector2, radius: float, straight: float, info: Dictionary) -> float:
+	if curvature >= 2 or radius <= 0.0: return 0.0
+	var surface_r := radius
+	var half_h := size.x * 0.5 / radius
+	var half_v := 0.0
+	if info.get("on_cap", false):
+		surface_r = sphere_radius(radius, straight)
+		var lat: float = info.lat
+		half_h = acos(clampf(sin(lat) * sin(lat) + cos(lat) * cos(lat) * cos(size.x * 0.5 / radius), -1.0, 1.0))
+		half_v = info.half
+	half_h = clampf(half_h, 0.0001, 1.4)
+	var rho := panel_radius(curvature, radius)
+	var edge_x := size.x * 0.5
+	var edge_z := 0.0
+	if not is_inf(rho):
+		edge_x = rho * sin(size.x * 0.5 / rho)
+		edge_z = rho * (1.0 - cos(size.x * 0.5 / rho))
+	var distance := edge_x / tan(half_h) + edge_z
+	if half_v > 0.0:
+		distance = maxf(distance, size.y * 0.5 / tan(clampf(half_v, 0.0001, 1.4)))
+	# Squashed cap rows can put a panel behind the surface; that is fine.
+	return clampf(surface_r - distance, -surface_r * 0.5, surface_r * 0.8)
+
 ## Cylinder and sphere grids are one surface each: screens lie on it rather
 ## than on nested shells, so neighbouring screens meet edge to edge.
 static func single_surface(shape: int) -> bool:

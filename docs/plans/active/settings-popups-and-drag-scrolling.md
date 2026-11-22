@@ -267,7 +267,7 @@ started during its UI verification.
   helpers and host validation were rebuilt for the new 500 Mbps ceiling.
 - All popups omit Cancel and size to their content. Click outside to dismiss;
   sliders retain Apply and Auto/Default where appropriate.
-- Sliders: passthrough fade 0–100%; volume 0–15 dB; separation 50–100%
+- Sliders: passthrough fade 0–100%; volume 0–24 dB; separation 50–100%
   (default 75%); convergence 30–70% (default 50%); brightness −20–20%;
   contrast/gamma 50–150%. Existing defaults are preserved.
 - Default Res lists actual dimensions. User confirmed it applies per monitor,

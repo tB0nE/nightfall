@@ -194,6 +194,7 @@ static func get_tabs() -> Array:
 				"title": "Display",
 				"options": [
 					_option(&"_ui_ambient_gain_btn", "Ambient Intensity", "100%", "Adjust ambient lighting strength.", TARGET_UI, &"open_ambient_gain_popup"),
+					_option(&"_ui_grid_spacing_btn", "Grid Spacing", "10 cm", "Grid point spacing. Slow drags and resizes snap to it.", TARGET_UI, &"open_grid_spacing_popup"),
 					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
 					_option(&"_ui_host_cursor_btn", "Host Cursor", "Off", "Show or hide the host operating system cursor when supported.", TARGET_SETTINGS, &"toggle_host_cursor"),
 				],

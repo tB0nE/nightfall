@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Kavramayı tutup hareket ettir. Sağ tık yerine geçer; eşleme kapalı olmalı.",
 	"Ambient Intensity": "Ortam ışığı yoğunluğu",
 	"Adjust ambient lighting strength.": "Ortam ışığının gücünü ayarlayın.",
+	"Grid Spacing": "Izgara aralığı",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Izgara nokta aralığı. Yavaş sürükleme buna yapışır.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",
