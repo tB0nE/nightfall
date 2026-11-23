@@ -312,6 +312,8 @@ func _sync_geometry() -> void:
 	if supports_sphere():
 		renderer.set_sphere_band(g.upper, g.lower)
 	renderer.set_compositor_sharpening(_native_compositor_sharpening())
+	if renderer.has_method("set_crt_mode"):
+		renderer.set_crt_mode(main.settings.screen_crt_mode)
 	if draws_secondary_screens():
 		_sync_secondary_screens()
 

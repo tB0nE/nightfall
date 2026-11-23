@@ -263,5 +263,8 @@
 	"Multipath": "Multirruta",
 	"Use a second network via Meteor; a slow one is paused.": "Usa una segunda red vía Meteor; una lenta se pausa.",
 	"Screen Res": "Res. pantalla",
-	"Match screen sharpness to the headset to save GPU time.": "Ajusta la nitidez de la pantalla al visor para ahorrar GPU."
+	"Match screen sharpness to the headset to save GPU time.": "Ajusta la nitidez de la pantalla al visor para ahorrar GPU.",
+	"CRT Filter": "Filtro CRT",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Aspecto CRT retro en la pantalla principal. Fino: líneas finas, como un monitor.",
+	"Fine": "Fino"
 }

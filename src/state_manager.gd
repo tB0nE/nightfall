@@ -198,6 +198,7 @@ func sync_ui_to_settings(apply_runtime: bool = true):
 		main.ui_controller.update_option_btn(main._ui_host_background_btn, "On" if main.settings.screen_host_background else "Off")
 		main.ui_controller.update_option_btn(main._ui_key_btn, ScreenImageOptions.KEY_LABELS[main.settings.screen_key_mode])
 		main.ui_controller.update_option_btn(main._ui_key_tolerance_btn, ScreenImageOptions.TOLERANCE_LABELS[main.settings.screen_key_tolerance])
+		main.ui_controller.update_option_btn(main._ui_crt_btn, ScreenImageOptions.CRT_LABELS[main.settings.screen_crt_mode])
 		main.ui_controller.update_option_btn(main._ui_high_refresh_btn, "On" if main.settings.high_refresh_rates else "Off")
 		main.ui_controller.update_option_btn(main._ui_pt_fade_btn, PassthroughFade.label(main.settings.passthrough_fade_pct))
 		if main._ui_quick_start_btn:

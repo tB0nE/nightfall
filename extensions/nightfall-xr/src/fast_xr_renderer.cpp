@@ -14,6 +14,7 @@ NightfallXrRenderer::~NightfallXrRenderer() {
 
 void NightfallXrRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_screen_options", "crop", "key"), &NightfallXrRenderer::set_screen_options);
+	ClassDB::bind_method(D_METHOD("set_crt_mode", "mode"), &NightfallXrRenderer::set_crt_mode);
 	ClassDB::bind_method(D_METHOD("consume_reference_space_changes"), &NightfallXrRenderer::consume_reference_space_changes);
 	ClassDB::bind_method(D_METHOD("set_presentation_suspended", "suspended"), &NightfallXrRenderer::set_presentation_suspended);
 	ClassDB::bind_method(D_METHOD("register_provider"), &NightfallXrRenderer::register_provider);
@@ -280,6 +281,7 @@ float NightfallXrRenderer::get_warp_gpu_ms() { return 0.0f; }
 void NightfallXrRenderer::set_debug_solid_color(bool) {}
 void NightfallXrRenderer::set_primary_crop(PackedFloat32Array) {}
 void NightfallXrRenderer::set_screen_options(PackedFloat32Array, Color) {}
+void NightfallXrRenderer::set_crt_mode(int) {}
 void NightfallXrRenderer::set_secondary_screens(Array) {}
 int NightfallXrRenderer::get_secondary_screen_count() const { return 0; }
 #endif
