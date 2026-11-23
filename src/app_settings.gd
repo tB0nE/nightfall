@@ -56,6 +56,8 @@ var screen_crop_mode: int = 0
 var screen_host_background: bool = false
 var screen_key_mode: int = 0
 var screen_key_tolerance: int = 1
+## CRT look on the main screen: 0 off, 1 normal (TV-sized lines), 2 fine (monitor-sized lines).
+var screen_crt_mode: int = 0
 
 var bezel_enabled: bool = DEFAULT_BEZEL_ENABLED
 var passthrough_enabled: bool = DEFAULT_PASSTHROUGH_ENABLED
@@ -124,6 +126,7 @@ func reset_display() -> void:
 	screen_host_background = false
 	screen_key_mode = 0
 	screen_key_tolerance = 1
+	screen_crt_mode = 0
 	bezel_enabled = DEFAULT_BEZEL_ENABLED
 	passthrough_enabled = DEFAULT_PASSTHROUGH_ENABLED
 	background_mode = DEFAULT_BACKGROUND_MODE

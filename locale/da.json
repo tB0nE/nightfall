@@ -263,5 +263,8 @@
 	"Multipath": "Flere stier",
 	"Use a second network via Meteor; a slow one is paused.": "Brug et ekstra netværk via Meteor; et langsomt sættes på pause.",
 	"Screen Res": "Skærmopløsning",
-	"Match screen sharpness to the headset to save GPU time.": "Tilpas skærmens skarphed til headsettet for at spare GPU-tid."
+	"Match screen sharpness to the headset to save GPU time.": "Tilpas skærmens skarphed til headsettet for at spare GPU-tid.",
+	"CRT Filter": "CRT-filter",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Gammelt CRT-look til hovedskærmen. Fin bruger mindre linjer, som en pc-skærm.",
+	"Fine": "Fin"
 }

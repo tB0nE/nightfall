@@ -263,5 +263,8 @@
 	"Multipath": "Wielościeżkowość",
 	"Use a second network via Meteor; a slow one is paused.": "Druga sieć przez Meteor; wolna jest wstrzymywana.",
 	"Screen Res": "Rozdz. ekranu",
-	"Match screen sharpness to the headset to save GPU time.": "Dopasuj ostrość ekranu do gogli, aby oszczędzać GPU."
+	"Match screen sharpness to the headset to save GPU time.": "Dopasuj ostrość ekranu do gogli, aby oszczędzać GPU.",
+	"CRT Filter": "Filtr CRT",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Wygląd starego CRT na ekranie głównym. Drobny: mniejsze linie, jak monitor PC.",
+	"Fine": "Drobny"
 }

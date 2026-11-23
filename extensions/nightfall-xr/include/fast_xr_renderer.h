@@ -110,6 +110,10 @@ public:
 	// means the whole frame.
 	void set_primary_crop(PackedFloat32Array p_crop);
 	void set_screen_options(PackedFloat32Array p_crop, Color p_key);
+	// CRT look on the primary (scanlines, phosphor mask, vignette): 0 = off,
+	// 1 = normal (TV-sized lines), 2 = fine (monitor-sized lines). SDR only;
+	// HDR streams draw as usual.
+	void set_crt_mode(int p_mode);
 	Array consume_reference_space_changes();
 	static void track_reference_space_event(const void *p_event);
 	static void clear_reference_space_changes();
@@ -305,6 +309,8 @@ private:
 	GLuint delayed_warp_program = 0;
 	GLuint delayed_picture_warp_program = 0;
 	GLuint delayed_hdr_warp_program = 0;
+	GLuint crt_warp_program = 0;
+	GLuint delayed_crt_warp_program = 0;
 	struct WarpUniforms {
 		GLint texmatrix = -1;
 		GLint disparity = -1;
@@ -324,6 +330,7 @@ private:
 		GLint brightness = -1;
 		GLint contrast = -1;
 		GLint gamma = -1;
+		GLint crt = -1;
 	};
 	WarpUniforms warp_uniforms;
 	WarpUniforms picture_warp_uniforms;
@@ -331,6 +338,8 @@ private:
 	WarpUniforms delayed_warp_uniforms;
 	WarpUniforms delayed_picture_warp_uniforms;
 	WarpUniforms delayed_hdr_warp_uniforms;
+	WarpUniforms crt_warp_uniforms;
+	WarpUniforms delayed_crt_warp_uniforms;
 	GLuint hdr_lut_texture = 0;
 	GLuint warp_fbo = 0;
 	bool debug_solid_color = false;
@@ -489,6 +498,12 @@ private:
 	float pending_upper = 0.0f, pending_lower = 0.0f;
 	int pending_sort_order = 1;
 	bool pending_bezel_enabled = true;
+	int pending_crt_mode = 0;
+	// The swapchain reserves room for the bezel on every side, so turning it
+	// on or off never rebuilds it: the video always sits at BEZEL_RESERVE,
+	// and the layer shows the video plus bezel_px() around it.
+	static constexpr int BEZEL_RESERVE = 8;
+	int bezel_px() const { return pending_bezel_enabled ? BEZEL_RESERVE : 0; }
 	int pending_compositor_sharpening = 0;
 
 	// Incremented once per _get_composition_layer_count() call (confirmed

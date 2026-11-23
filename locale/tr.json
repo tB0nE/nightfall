@@ -263,5 +263,8 @@
 	"Multipath": "Çoklu yol",
 	"Use a second network via Meteor; a slow one is paused.": "Meteor ile ikinci bir ağ kullan; yavaş olan duraklatılır.",
 	"Screen Res": "Ekran çöz.",
-	"Match screen sharpness to the headset to save GPU time.": "Ekran netliğini başlığa uydurarak GPU zamanından tasarruf eder."
+	"Match screen sharpness to the headset to save GPU time.": "Ekran netliğini başlığa uydurarak GPU zamanından tasarruf eder.",
+	"CRT Filter": "CRT filtresi",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Ana ekrana eski CRT görünümü. İnce: PC monitörü gibi daha küçük çizgiler.",
+	"Fine": "İnce"
 }

@@ -32,6 +32,7 @@ const CHOICE_ACTIONS := {
 	&"cycle_screen_crop": &"crop",
 	&"cycle_screen_key": &"key",
 	&"cycle_screen_key_tolerance": &"key_tolerance",
+	&"cycle_screen_crt": &"crt",
 }
 
 static func get_tab_buttons() -> Array:
@@ -139,7 +140,7 @@ static func get_tabs() -> Array:
 			{
 				"node_name": &"PictureRow2",
 				"options": [
-					_option(&"_ui_sharpen_btn", "Sharpen", "Off", "Apply native runtime sharpening to the streamed image.", TARGET_SETTINGS, &"cycle_sharpen_mode"),
+					_option(&"_ui_crt_btn", "CRT Filter", "Off", "Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.", TARGET_SETTINGS, &"cycle_screen_crt"),
 					_option(&"_ui_key_btn", "Colour Key", "Off", "Show your room through a solid background colour.", TARGET_SETTINGS, &"cycle_screen_key"),
 					_option(&"_ui_key_tolerance_btn", "Key Tolerance", "Medium", "Remove similar colours and compression fringes.", TARGET_SETTINGS, &"cycle_screen_key_tolerance"),
 					_option(&"_ui_host_background_btn", "Set Host Background", "Off", "Temporarily match the host wallpaper to Colour Key.", TARGET_SETTINGS, &"toggle_host_background"),
@@ -199,6 +200,7 @@ static func get_tabs() -> Array:
 					_option(&"_ui_ambient_gain_btn", "Ambient Intensity", "100%", "Adjust ambient lighting strength.", TARGET_UI, &"open_ambient_gain_popup"),
 					_option(&"_ui_high_refresh_btn", "High Refresh Rates", "Off", "Offer 200 and 207 Hz. They can glitch the headset.", TARGET_SETTINGS, &"toggle_high_refresh_rates"),
 					_option(&"_ui_host_cursor_btn", "Host Cursor", "Off", "Show or hide the host operating system cursor when supported.", TARGET_SETTINGS, &"toggle_host_cursor"),
+					_option(&"_ui_sharpen_btn", "Sharpen", "Off", "Apply native runtime sharpening to the streamed image.", TARGET_SETTINGS, &"cycle_sharpen_mode"),
 				],
 			},
 			{

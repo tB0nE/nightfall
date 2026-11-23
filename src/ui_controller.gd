@@ -2245,6 +2245,7 @@ func _ordinary_choice(setting: StringName) -> Dictionary:
 		&"primary": spec = ["Primary Hand", main.controller_mapper, "primary_hand", range(main.controller_mapper.primary_labels.size()), main.controller_mapper.primary_labels, main.controller_mapper.set_primary_hand]
 		&"crop": spec = ["Crop", main.screen_image_options, "selected_crop_mode", range(ScreenImageOptions.CROP_LABELS.size()), ScreenImageOptions.CROP_LABELS, main.screen_image_options.set_crop]
 		&"key": spec = ["Colour Key", main.settings, "screen_key_mode", range(ScreenImageOptions.KEY_LABELS.size()), ScreenImageOptions.KEY_LABELS, main.screen_image_options.set_key]
+		&"crt": spec = ["CRT Filter", main.settings, "screen_crt_mode", range(ScreenImageOptions.CRT_LABELS.size()), ScreenImageOptions.CRT_LABELS, main.screen_image_options.set_crt]
 		&"key_tolerance": spec = ["Key Tolerance", main.settings, "screen_key_tolerance", range(ScreenImageOptions.TOLERANCE_LABELS.size()), ScreenImageOptions.TOLERANCE_LABELS, main.screen_image_options.set_key_tolerance]
 	if spec.is_empty(): return {}
 	var values: Array = spec[3]

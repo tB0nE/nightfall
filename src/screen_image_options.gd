@@ -7,6 +7,8 @@ const KEY_LABELS := ["Off", "Green", "Blue", "Magenta"]
 const KEY_COLORS := [Color.BLACK, Color(0, 1, 0), Color(0, 0, 1), Color(1, 0, 1)]
 const TOLERANCES := [0.08, 0.16, 0.26]
 const TOLERANCE_LABELS := ["Low", "Medium", "High"]
+## The CRT look is drawn by the native renderer, on the main screen only.
+const CRT_LABELS := ["Off", "Normal", "Fine"]
 
 static func crop_region(size: Vector2i, mode: int) -> Vector4:
 	var result := Vector4(0, 0, 1, 1)
@@ -147,6 +149,16 @@ func set_key(value: int):
 		main.ui_controller.update_option_btn(main._ui_pt_btn, "On")
 	main.ui_controller.update_option_btn(main._ui_key_btn, KEY_LABELS[main.settings.screen_key_mode])
 	process()
+	redraw_native()
+	main.state_manager.save_state()
+
+func cycle_crt() -> void:
+	set_crt((main.settings.screen_crt_mode + 1) % CRT_LABELS.size())
+
+func set_crt(value: int):
+	if value < 0 or value >= CRT_LABELS.size() or value == main.settings.screen_crt_mode: return
+	main.settings.screen_crt_mode = value
+	main.ui_controller.update_option_btn(main._ui_crt_btn, CRT_LABELS[value])
 	redraw_native()
 	main.state_manager.save_state()
 

@@ -3057,6 +3057,9 @@ func cycle_screen_crop() -> void:
 func cycle_screen_key() -> void:
 	main.screen_image_options.cycle_key()
 
+func cycle_screen_crt() -> void:
+	main.screen_image_options.cycle_crt()
+
 func cycle_screen_key_tolerance() -> void:
 	main.screen_image_options.cycle_key_tolerance()
 

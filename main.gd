@@ -6,6 +6,7 @@ var workspace_stability: WorkspaceStability
 var _ui_crop_btn: Button
 var _ui_host_background_btn: Button
 var _ui_key_btn: Button
+var _ui_crt_btn: Button
 var _ui_key_tolerance_btn: Button
 
 var session_lifecycle: SessionLifecycle = SessionLifecycle.new()

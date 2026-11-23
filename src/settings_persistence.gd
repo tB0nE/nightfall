@@ -14,6 +14,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "key_mode", settings.screen_key_mode)
 	config.set_value("screen", "host_background", settings.screen_host_background)
 	config.set_value("screen", "key_tolerance", settings.screen_key_tolerance)
+	config.set_value("screen", "crt_mode", settings.screen_crt_mode)
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
 	config.set_value("browser", "resolution", settings.browser_resolution)
 	config.set_value("screen", "bezel", settings.bezel_enabled)
@@ -67,6 +68,7 @@ static func read_app(
 	settings.screen_host_background = bool(config.get_value("screen", "host_background", false))
 	settings.screen_key_mode = clampi(int(config.get_value("screen", "key_mode", 0)), 0, 3)
 	settings.screen_key_tolerance = clampi(int(config.get_value("screen", "key_tolerance", 1)), 0, 2)
+	settings.screen_crt_mode = clampi(int(config.get_value("screen", "crt_mode", 0)), 0, ScreenImageOptions.CRT_LABELS.size() - 1)
 	settings.bezel_enabled = config.get_value(
 		"screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
 	var browser_resolution = config.get_value("browser", "resolution", AppSettings.DEFAULT_BROWSER_RESOLUTION)
