@@ -21,7 +21,7 @@ release ARM64 client and the Steam launcher. Extract it on the Frame and add
 AI 3D uses Meteor. It does not include the Android WebView browser.
 
 The complete cross-build command is
-`bash tools/steam_frame/build.sh v0.9.1-preview.2`. It needs Docker, the Godot
+`bash tools/steam_frame/build.sh v0.9.1`. It needs Docker, the Godot
 4.7 editor/export templates and the ARM64 GodotOpenXRVendors addon.
 
 To run the stages separately on x86_64, first provide the `nightfall-linux-builder` image
