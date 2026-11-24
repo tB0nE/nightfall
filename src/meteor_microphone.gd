@@ -30,8 +30,24 @@ func _init(owner) -> void:
 static func is_supported() -> bool:
 	return OS.get_name() == "Android"
 
+## Android lists every permission (and logs a stack trace for each one it
+## can't describe) on each OS.get_granted_permissions() call, and process()
+## asks every frame. A grant is kept: revoking a permission kills the app.
+## A refusal is asked again at most every RECHECK_MSEC, since the user can
+## grant it in the headset's Settings while the app runs.
+const RECHECK_MSEC := 2000
+static var _granted := false
+static var _checked_at_msec := -RECHECK_MSEC
+
 static func has_permission() -> bool:
-	return not is_supported() or OS.get_granted_permissions().has(PERMISSION)
+	if not is_supported() or _granted:
+		return true
+	var now := Time.get_ticks_msec()
+	if now - _checked_at_msec < RECHECK_MSEC:
+		return false
+	_checked_at_msec = now
+	_granted = OS.get_granted_permissions().has(PERMISSION)
+	return _granted
 
 ## Asks for RECORD_AUDIO when it's missing. Calls done(granted) once the
 ## user has answered (straight away when it's already granted).
@@ -42,12 +58,14 @@ func request_permission(done: Callable) -> void:
 	var tree: SceneTree = main.get_tree()
 	var on_result := func(permission: String, granted: bool) -> void:
 		if permission == PERMISSION:
+			_granted = granted
 			done.call(granted)
 	tree.on_request_permissions_result.connect(on_result, CONNECT_ONE_SHOT)
 	if OS.request_permission(PERMISSION):
 		# Granted without a dialog: no result signal follows.
 		if tree.on_request_permissions_result.is_connected(on_result):
 			tree.on_request_permissions_result.disconnect(on_result)
+		_granted = true
 		done.call(true)
 
 func is_live() -> bool:

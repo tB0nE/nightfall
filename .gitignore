@@ -114,3 +114,4 @@ Nightfall.AppDir/
 meteor/target/
 meteor/tools/__pycache__/
 extensions/browser-adblock/target/
+addons/godot_meta_toolkit/
