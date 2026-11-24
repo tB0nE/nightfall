@@ -1,10 +1,14 @@
-//! The tray menu, described once for every OS. Each tray (tray.rs on Linux)
-//! only draws these entries and hands a chosen `Action` back to `activate`.
+//! The tray menu, described once for every OS. Each tray (tray.rs on Linux,
+//! tray_macos.rs on macOS) only draws these entries and hands a chosen `Action` back to `activate`.
 //!
 //! Sections, top to bottom: Setup; Meteor's own status; PCVR; the game
 //! streaming host; AI 3D; audio; then Start with my computer and Quit.
 //! Installing things, the log, the settings file and the licences live in
 //! the Setup window; depth model settings in their own window.
+
+// macOS has no PCVR, host cursor size or udev input setup: their entries and actions are
+// built on Linux only.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -22,8 +26,8 @@ pub struct Sources {
     pub mic: Option<Arc<Mic>>,
     pub host: Arc<crate::host::view::View>,
     pub xr_trust: Option<Arc<crate::xr_trust::Trust>>,
-    /// The Windows host doesn't scale its cursor (only Linux capture reads the file).
-    #[cfg(not(windows))]
+    /// Only Linux capture reads the cursor-scale file.
+    #[cfg(target_os = "linux")]
     pub cursor: Arc<crate::host_cursor::Control>,
 }
 
@@ -106,8 +110,12 @@ impl Sources {
         let mut out = vec![item("Setup…", Action::Setup), Entry::Separator];
         out.extend(self.meteor_section());
         out.push(Entry::Separator);
-        out.extend(self.pcvr_section());
-        out.push(Entry::Separator);
+        // macOS runs no XR runtime: PCVR isn't offered there.
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            out.extend(self.pcvr_section());
+            out.push(Entry::Separator);
+        }
         out.extend(self.host_section());
         out.push(Entry::Separator);
         out.extend(self.depth_section());
@@ -191,7 +199,7 @@ impl Sources {
         out
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     fn pcvr_section(&self) -> Vec<Entry> {
         let setup = crate::xr_setup::state();
         let status = match &setup.error {
@@ -249,29 +257,7 @@ impl Sources {
             out.push(item("Reject headset pairing", Action::PairReject(pending.id)));
         }
         // Keyboard and controller input, folded into the host's own line.
-        #[allow(unused_mut)]
-        let mut input = String::new();
-        #[allow(unused_mut)]
-        let mut input_fix = None;
-        #[cfg(target_os = "linux")]
-        if host.state.choice == Choice::Bundled {
-            use crate::host::input::Status as Input;
-            input = match crate::host::input::check() {
-                Input::Ready => " · input ready".into(),
-                Input::Missing => " · no virtual input device".into(),
-                Input::Denied => " · input needs permission".into(),
-                Input::Unavailable(error) => format!(" · input unavailable: {error}"),
-            };
-            if crate::host::input::check() != Input::Ready {
-                let busy = host.input.busy();
-                input_fix = Some(Entry::Item {
-                    title: if busy { "Waiting for input setup…" } else { "Enable virtual input (administrator approval; restarts Meteor)…" }.into(),
-                    action: Action::EnableInput,
-                    enabled: !busy,
-                    checked: None,
-                });
-            }
-        }
+        let (input, input_fix) = if host.state.choice == Choice::Bundled { self.input_status() } else { (String::new(), None) };
         match (&host.supervisor, host.state.choice) {
             (Some(supervisor), _) => {
                 let line = match supervisor.phase() {
@@ -330,12 +316,60 @@ impl Sources {
         out
     }
 
+    /// Linux: the uinput device the host injects input through.
+    #[cfg(target_os = "linux")]
+    fn input_status(&self) -> (String, Option<Entry>) {
+        use crate::host::input::Status as Input;
+        let status = crate::host::input::check();
+        let text = match &status {
+            Input::Ready => " · input ready".into(),
+            Input::Missing => " · no virtual input device".into(),
+            Input::Denied => " · input needs permission".into(),
+            Input::Unavailable(error) => format!(" · input unavailable: {error}"),
+        };
+        let fix = (status != Input::Ready).then(|| {
+            let busy = self.host.input.busy();
+            Entry::Item {
+                title: if busy { "Waiting for input setup…" } else { "Enable virtual input (administrator approval; restarts Meteor)…" }.into(),
+                action: Action::EnableInput,
+                enabled: !busy,
+                checked: None,
+            }
+        });
+        (text, fix)
+    }
+
+    /// macOS: the host captures with Screen Recording and injects input with Accessibility,
+    /// both granted to Meteor.app in Setup.
+    #[cfg(target_os = "macos")]
+    fn input_status(&self) -> (String, Option<Entry>) {
+        use crate::desktop::permissions;
+        let mut missing = Vec::new();
+        if !permissions::screen_recording() {
+            missing.push("Screen Recording");
+        }
+        if !permissions::accessibility() {
+            missing.push("Accessibility");
+        }
+        if missing.is_empty() {
+            return (" · input ready".into(), None);
+        }
+        (format!(" · needs {}", missing.join(" and ")), Some(item("Allow in Setup…", Action::Setup)))
+    }
+
+    /// Windows: the host injects input itself; nothing to report.
     #[cfg(windows)]
+    fn input_status(&self) -> (String, Option<Entry>) {
+        (String::new(), None)
+    }
+
+    /// Host cursor size: Meteor-Vibepollo scales the cursor on Linux captures only.
+    #[cfg(not(target_os = "linux"))]
     fn cursor_choice(&self) -> Option<Entry> {
         None
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     fn cursor_choice(&self) -> Option<Entry> {
         let scale = self.cursor.scale();
         Some(Entry::Choice {
@@ -395,8 +429,15 @@ impl Sources {
     /// Where the sound plays, and the headset microphone.
     fn audio_section(&self) -> Vec<Entry> {
         let output = crate::audio::output();
-        // On Windows the microphone plays into VB-CABLE, which Meteor can't install itself.
-        let missing = if cfg!(windows) { ": install VB-CABLE" } else { " off" };
+        // Windows plays the microphone into VB-CABLE, which Meteor can't install itself;
+        // macOS hands it to other apps through the BlackHole driver, from Setup.
+        let missing = if cfg!(windows) {
+            ": install VB-CABLE"
+        } else if cfg!(target_os = "macos") {
+            " needs BlackHole (install it in Setup)"
+        } else {
+            " off"
+        };
         let mic = self.mic.as_ref().map_or_else(|| missing.to_string(), |mic| format!(" {}", mic.status()));
         let mut out = vec![
             label(format!("Audio: plays on {} · microphone{mic}", output.label().to_lowercase().replace("pc", "PC"))),
@@ -411,8 +452,10 @@ impl Sources {
         if let Some(mic) = &self.mic {
             out.push(check("Mute microphone", Action::ToggleMicMute, mic.muted.load(Ordering::Relaxed)));
             // Windows apps record from CABLE Output; Meteor can't set the default device.
-            let default = if cfg!(windows) { "Choose CABLE Output in Sound settings…" } else { "Set as default input" };
-            out.push(item(default, Action::MicDefaultInput));
+            #[cfg(windows)]
+            out.push(item("Choose CABLE Output in Sound settings…", Action::MicDefaultInput));
+            #[cfg(target_os = "linux")]
+            out.push(item("Set as default input", Action::MicDefaultInput));
         }
         #[cfg(windows)]
         if self.mic.is_none() {
@@ -425,10 +468,10 @@ impl Sources {
         match action {
             Action::Setup => crate::setup_window::open(),
             Action::AllowFirewall => self.status.allow_firewall(),
-            // Windows picks NVENC or AMF itself.
-            #[cfg(windows)]
+            // Windows picks NVENC or AMF itself; macOS has no PCVR.
+            #[cfg(not(target_os = "linux"))]
             Action::PcvrEncoder(_) => {}
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             Action::PcvrEncoder(id) => {
                 let result = crate::xr_setup::select_encoder(id);
                 tokio::spawn(async move {
@@ -463,15 +506,15 @@ impl Sources {
             #[cfg(target_os = "linux")]
             Action::EnableInput => self.host.input.setup(),
             #[cfg(not(target_os = "linux"))]
-            Action::EnableInput => {}
+            Action::EnableInput => crate::setup_window::open(),
             Action::ToggleHost => {
                 if let Some(supervisor) = &self.host.supervisor {
                     supervisor.set_wanted(!supervisor.wanted());
                 }
             }
-            #[cfg(windows)]
+            #[cfg(not(target_os = "linux"))]
             Action::CursorScale(_) => {}
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
             Action::CursorScale(scale) => {
                 if let Err(error) = self.cursor.select(scale) {
                     log::warn!("Cannot save host cursor size: {error}");
@@ -519,6 +562,7 @@ impl Sources {
             Action::MicDefaultInput => run_detached("control.exe", &["mmsys.cpl,,1"]),
             #[cfg(not(windows))]
             Action::MicDefaultInput => {
+                #[cfg(target_os = "linux")]
                 if let Some(mic) = &self.mic {
                     mic.set_default_input();
                 }
@@ -629,7 +673,7 @@ pub fn open(target: &str) {
 mod tests {
     use super::*;
 
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn titles(entries: &[Entry]) -> Vec<String> {
         entries
             .iter()
@@ -640,7 +684,7 @@ mod tests {
             .collect()
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_cursor_choice_ticks_its_scale() {
         let cursor = crate::host_cursor::Control::new(3, None);
