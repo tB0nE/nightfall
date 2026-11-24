@@ -122,8 +122,27 @@ int wmain(int argc,wchar_t **argv) {
             if(compositor->GetLastPoses(poses,vr::k_unMaxTrackedDeviceCount,nullptr,0))throw std::runtime_error("SteamVR direct compositor did not become ready");
             auto ready=environment(L"METEOR_STEAMVR_VIDEO_READY_FILE");FILE *file=nullptr;
             _wfopen_s(&file,ready.c_str(),L"wb");if(!file)throw std::runtime_error("Cannot mark direct compositor readiness");std::fclose(file);
+            // Seated games (Subnautica, sims, cockpits) place the player
+            // relative to SteamVR's seated origin, which our driver's chaperone
+            // puts on the floor, so they rendered a full head height too high.
+            // Set it to the headset once it's tracking, like SteamVR's "Reset
+            // seated position". Once per session: the Quest's tracking origin
+            // is adopted afresh each session, so a saved seated origin goes stale.
+            auto chaperone=static_cast<vr::IVRChaperone *>(api(vr::IVRChaperone_Version,&error));
+            const char *seated_reset=std::getenv("METEOR_STEAMVR_SEATED_RESET");
+            bool seated_done=!chaperone || error || (seated_reset && !std::strcmp(seated_reset,"0"));
             while(!std::filesystem::is_regular_file(prefix+L".ended")) {
                 if(attached_server && WaitForSingleObject(attached_server,0)==WAIT_OBJECT_0)throw std::runtime_error("Attached SteamVR server exited");
+                if(!seated_done) {
+                    vr::TrackedDevicePose_t head[1]{};
+                    system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,head,1);
+                    // A real head height, not the pose before tracking arrives.
+                    if(head[0].bPoseIsValid && head[0].eTrackingResult==vr::TrackingResult_Running_OK
+                            && head[0].mDeviceToAbsoluteTracking.m[1][3]>.3f) {
+                        chaperone->ResetZeroPose(vr::TrackingUniverseSeated);seated_done=true;
+                        std::fprintf(stderr,"METEOR_STEAMVR_SEATED_RESET head_y=%.3f\n",head[0].mDeviceToAbsoluteTracking.m[1][3]);
+                    }
+                }
                 if(std::filesystem::is_regular_file(prefix+L".failed"))throw std::runtime_error("SteamVR direct capture failed; inspect the driver failure marker and vrserver log");
                 Sleep(20);
             }

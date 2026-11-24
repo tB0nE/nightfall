@@ -150,6 +150,32 @@ front.
    Jonathan-Eid's fork (`meteor/src/xr_audio.rs`, `test/meteor_windows_audio.h`,
    `pcvr_meteor_audio.cpp`): review it against this design and take it,
    rather than writing a second one.
+   **Review of the fork's audio (2026-11-23).** About 920 lines across:
+   - `xr_audio.rs`: the `NFAP` PCM header, plus a reader that enforces
+     sequence, rate and length;
+   - `xr_relay.rs`/`xr_control.rs`: an authenticated, encrypted audio lane on
+     the existing video port, with its own channel keys and a fresh
+     challenge; losing audio doesn't end the game;
+   - `test/meteor_windows_audio{,_transport}.h`: WASAPI shared-mode loopback
+     of the default playback device, converted to stereo PCM16 in packets of
+     at most 10 ms;
+   - `pcvr_meteor_audio.cpp`: an AAudio player with a bounded queue, which
+     trims beyond 40 ms and plays silence on underflow;
+   - `pcvr_desktop_stream.gd`: the desktop stop and reconnect.
+
+   The relay and headset halves fit our design as they are. **The capture
+   end doesn't:** it's only wired into the fork's VDXR bridge
+   (`test/ovr-bridge/bridge.cpp`), which runs inside the game's process.
+   The relay takes PCM from a local TCP port (`127.0.0.1:<random>`). On our
+   SteamVR path, something has to feed that port. Options:
+   - **Meteor-steamvr-mirror** (preferred): it already runs once per SteamVR
+     session, outside the game and vrserver. It would include the fork's
+     `meteor_windows_audio.h` unchanged and write packets to the relay's
+     local audio port.
+   - Or capture in Meteor itself (Rust, WASAPI through the `windows` crate),
+     which would also cover Monado sessions without a helper.
+   Bring in the fork's relay, wire and headset code with its tests, plus the
+   capture header. Then add the mirror as producer.
 2. **Stop the desktop stream once the game's audio is flowing.** Keep the XR
    session, the lease and the selected app. Reconnect when the wrist menu or
    the desktop is shown, and when VR ends. If the separate audio fails, fall
@@ -240,3 +266,63 @@ notes:
 4. C: list non-Steam shortcuts in the headset library (optional).
 5. A route (b), once Monado games are proven.
 6. D, F and G, whenever convenient.
+
+## Game tests, 2026-11-22 evening
+
+Every installed game on the user's PC, all through SteamVR:
+
+| Game | Result | Follow-up |
+|---|---|---|
+| VaM | Works from its folder or a Steam shortcut | Start-menu shortcut starts it in `system32` (part C) |
+| VRChat | Works, voice included (microphone fix) | — |
+| Moss | Works on SteamVR | Crashes on Monado (see above) |
+| Half-Life: Alyx | Works; "resolution could be better" | Try PCVR Resolution 120–130% and 120–160 Mbps HEVC |
+| Subnautica | No hands in the base game (gamepad only); seemed too high | SubmersedVR installed with Tobey's BepInEx pack: runs great |
+| Neverout, Telefrag VR | Run, laser ~38° high, Telefrag unusable | Legacy aim (below) |
+| STAR WARS: Squadrons | Runs in VR, no hands | Gamepad or HOTAS by design |
+
+**Legacy aim: tried and removed (2026-11-24).** On a Quest controller,
+`/pose/raw` points about 37° above where you aim (Valve's
+`oculus_quest2_controller` model: `tip` Rx -37.4). Games built for the Vive
+wand aim straight out of it.
+- What was tried: a driver-generated copy of SteamVR's Touch profile whose
+  legacy binding mapped the poses to `/pose/tip`.
+- Why it didn't help:
+  - SteamVR still loaded the Oculus driver's own `legacy_bindings_touch.json`
+    for legacy apps. It seems to pick the legacy binding by controller type,
+    not by our `Prop_InputProfilePath`.
+  - Telefrag sets its own action manifest, and its `oculus_touch.json`
+    binds no poses: it reads the device's raw pose directly, as Unreal 4
+    SteamVR games do.
+- No SteamVR setting covers this; some games have their own "controller
+  angle" option.
+- Proposed for after 0.9.1: a per-game **controller angle** in the PCVR
+  games window, which the driver applies to the poses it reports while that
+  game runs. Other streamers (ALVR) offer similar offsets.
+
+**Seated height: kept.** The driver's chaperone puts the seated origin on
+the floor, so seated games rendered a full head height too high. Once the
+head is tracking (above 0.3 m), the mirror helper now calls
+`IVRChaperone::ResetZeroPose(TrackingUniverseSeated)`, once per session. The
+Quest's origin is adopted afresh each session, so a saved seated origin goes
+stale. `METEOR_STEAMVR_SEATED_RESET=0` opts out. Confirmed in a session log
+(`METEOR_STEAMVR_SEATED_RESET head_y=1.131`). The user noticed no
+difference in the seated games they tried.
+
+**Headset reboot (2026-11-24, once).** About 40 s after exiting Telefrag, as
+the desktop stream, the microphone and host depth resumed (the depth model
+cold-started after a 5.7 s gap), the Quest 3 rebooted fully: the depth
+connection dropped at 22:23:06 and `SYSTEM_BOOT` came at 22:23:32. Host depth
+had run at about 70 steps/s through the whole game (part B). There was no
+headset log at the time. It didn't recur over about 20 minutes and several
+more games, with the log recording.
+
+Still open:
+- `vrwebhelper.exe` crashes about 3 s after Meteor's graceful `WM_CLOSE` to
+  vrmonitor at the end of most sessions (dumps on 11-16, 11-21 and 11-22;
+  SteamVR unchanged since 11-04). Steam shows its crash dialog; nothing else
+  breaks. One option is to leave SteamVR running after a session; that's a
+  behaviour change to decide on.
+- Alyx sharpness: SteamVR renders at Meteor's eye size (2064×2208, the Quest
+  3 panel, with the user's SteamVR at a manual 100%) and the stream is HEVC at
+  80 Mbps. Raising PCVR resolution and bitrate is the first thing to try.
