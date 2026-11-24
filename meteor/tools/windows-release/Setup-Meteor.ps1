@@ -76,33 +76,16 @@ try {
             $previous=if(Test-Path $rootConfig){Get-Content $rootConfig -Raw | ConvertFrom-Json}else{$null}
             if(-not $previous -or $previous.steamvr_driver){WriteJson $rootConfig $library}
         }
-        # Retain a known native-runtime optimization, not a supported-game list.
-        foreach($game in @(@{id='846470';name='Moss'})) {
-            $installed=FindGame $game.id
-            if(-not $installed){continue}
-            $profile=Join-Path $Root ('profiles\'+$game.id)
-            $config=@{
-                service=(Join-Path $bin 'monado-service.exe');manifest=(Join-Path $runtime 'openxr_monado.json')
-                encoder=(Join-Path $bin 'meteor-windows-nvenc.dll');tracking=(Join-Path $bin 'meteor-windows-tracking.dll')
-                library_dirs=@($bin);steam_app_id=$game.id;steam_launch=$false;pixel_probe=$false;async_delivery=$true;arguments=@()
-            }
-            if($game.id -eq '846470') {
-                $config.application=Join-Path $installed 'Moss\Binaries\Win64\Moss-Win64-Shipping.exe'
-                $config.arguments=@('-vr','-dx11','-hmd=SteamVR')
-                $config.openvr_runtime=Join-Path $runtime 'xrizer'
-                $config.openvr_loader=Join-Path $installed 'Engine\Binaries\ThirdParty\OpenVR\OpenVRv1_5_17\Win64\openvr_api.dll'
-                if(-not (Test-Path $config.openvr_loader)){$config.openvr_loader=Join-Path $installed 'Moss\Engine\Binaries\ThirdParty\OpenVR\OpenVRv1_5_17\Win64\openvr_api.dll'}
-            }
-            if(-not (Test-Path -LiteralPath $config.application -PathType Leaf) -or -not (Test-Path -LiteralPath $config.openvr_loader -PathType Leaf)){continue}
-            WriteJson (Join-Path $profile 'xr-windows.json') $config
-            InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$game.name)
-            $summary.games+=$game
-        }
+        # Every Steam VR game runs through SteamVR and Meteor's driver, as other PC
+        # streamers do. xrizer (OpenVR on Monado) is Linux-only: on Windows it broke
+        # anti-cheat, overlays and bindings that the real SteamVR handles.
         if(Test-Path (Join-Path $SteamRoot 'steam.exe')) {
             $vrManifest=Join-Path $SteamRoot 'config\steamapps.vrmanifest'
             if(Test-Path -LiteralPath $vrManifest) {
                 if((Get-Item $vrManifest).Length -gt 8MB){throw 'Steam VR manifest exceeds 8 MiB'}
-                $apps=(Get-Content $vrManifest -Raw | ConvertFrom-Json).applications
+                # Steam writes UTF-8 without a BOM; Windows PowerShell would read it as ANSI
+                # and garble names such as "STAR WARS™: Squadrons".
+                $apps=(Get-Content $vrManifest -Raw -Encoding UTF8 | ConvertFrom-Json).applications
                 $seen=@{}
                 foreach($app in @($apps | Select-Object -First 1000)) {
                     if($app.app_key -notmatch '^steam\.app\.([1-9][0-9]{0,9})$'){continue}
@@ -116,7 +99,7 @@ try {
                     if($name.Length -gt 96){$name=$name.Substring(0,96)}
                     if($name -match '[\x00-\x1f]'){continue}
                     if(-not $steamvr) {
-                        InvokeMeteor -Options @('--xr-windows-require-steamvr','--root',$Root,'--app-id',$id,'--name',$name)
+                        InvokeMeteor -Options @('--xr-windows-require-steamvr','--root',$Root,'--app-id',$id,'--name',$name,'--install-dir',$installed)
                         if(-not @($summary.games | Where-Object {$_.id -eq $id}).Count){$summary.games+=@{id=$id;name=$name}}
                         continue
                     }
@@ -125,7 +108,7 @@ try {
                     $config.application=Join-Path $SteamRoot 'steam.exe'
                     $config.arguments=@('steam://launch/'+$id+'/VR');$config.steamvr_launch_via_steam=$true
                     WriteJson (Join-Path $profile 'xr-windows.json') $config
-                    InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$name)
+                    InvokeMeteor -Options @('--xr-windows-register','--root',$Root,'--profile',$profile,'--name',$name,'--install-dir',$installed)
                     if(-not @($summary.games | Where-Object {$_.id -eq $id}).Count){$summary.games+=@{id=$id;name=$name}}
                 }
             }

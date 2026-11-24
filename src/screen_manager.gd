@@ -109,10 +109,13 @@ func set_curvature(value: int):
 	main.curvature = value
 	var grid = main.get("placement_grid")
 	if grid != null and ScreenPlacementGrid.single_surface(grid.shape()):
-		# Cylinder and sphere grids shape the screens themselves: keep every
-		# screen on the one surface, where it is.
+		# Cylinder and sphere grids say where screens go; Curve says their
+		# shape (Curved follows the surface, Flat and Slight Curve are panels
+		# in front of it). Every screen keeps its place on the surface.
 		grid.keep_grid(func():
 			for s in main.screens: s.curvature = main.curvature)
+		for s in main.screens:
+			if is_instance_valid(s): s.apply_curvature()
 	else:
 		for s in main.screens:
 			s.curvature = main.curvature

@@ -12,6 +12,7 @@ func _init():
 	_test_route_rtsp_url()
 	_test_depth_info()
 	_test_mic_info()
+	_test_audio_output()
 	_test_xr_info()
 	_test_check_key()
 	_test_parse_depth_messages()
@@ -66,6 +67,15 @@ func _test_depth_info() -> void:
 	_check(MeteorClient.depth_info(MeteorClient.parse_info(with_depth.replace('["L8"]', '["F16"]'), 47984)).is_empty(), "unknown format is ignored")
 
 # The shape meteor/src/discovery.rs sends.
+func _test_audio_output() -> void:
+	var with_audio := INFO.substr(0, INFO.length() - 1) + ',"audio":{"output":"pc"}}'
+	_check(MeteorClient.audio_output(MeteorClient.parse_info(with_audio, 47984)) == "pc", "audio output is read")
+	_check(MeteorClient.audio_output(MeteorClient.parse_info(INFO, 47984)) == "", "an older Meteor says nothing")
+	_check(MeteorClient.audio_output(MeteorClient.parse_info(with_audio.replace('"pc"', '"speakers"'), 47984)) == "", "an unknown choice is ignored")
+	_check(MeteorClient.local_audio_play_mode("headset") == 0, "headset: the host mutes the PC")
+	_check(MeteorClient.local_audio_play_mode("pc") == 1 and MeteorClient.local_audio_play_mode("both") == 1, "PC and both keep the PC playing")
+	_check(MeteorClient.local_audio_play_mode("") == 1, "no choice keeps Moonlight's default")
+
 func _test_mic_info() -> void:
 	var with_mic := INFO.substr(0, INFO.length() - 1) + ',"mic":{"port":47902,"formats":["pcm_s16le_48k_mono"],' \
 		+ '"encryption":"x25519-hkdf-sha256-aes256gcm"}}'

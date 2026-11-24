@@ -6,15 +6,18 @@
 //! Sunshine. For now Meteor only forwards the traffic; the goal is to have
 //! it compute depth maps on the host GPU and send them alongside the video.
 
+mod audio;
 mod config;
 mod host_background;
 #[cfg(target_os = "linux")]
 mod host_cursor;
 #[cfg(target_os = "linux")]
 mod legacy_host_cursor;
+mod control;
 mod crypto;
 mod depth;
 mod depth_server;
+mod depth_window;
 #[cfg(target_os = "linux")]
 mod desktop;
 #[cfg(windows)]
@@ -23,7 +26,7 @@ mod desktop;
 #[cfg(target_os = "macos")]
 #[path = "desktop_macos.rs"]
 mod desktop;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod setup_window;
 #[cfg(target_os = "linux")]
 mod xr_setup;
@@ -38,6 +41,7 @@ mod host;
 use host::view as host_view;
 mod icon;
 mod logfile;
+mod menu;
 mod mic;
 mod net;
 mod ncnn;
@@ -95,6 +99,10 @@ mod xr_steam_windows;
 mod xr_steamvr_windows;
 #[cfg(windows)]
 mod xr_windows;
+#[cfg(windows)]
+mod pcvr_window;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod xr_detect;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -108,9 +116,19 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
-        std::process::exit(setup_window::run());
+        std::process::exit(setup_window::run(args.get(2).map(std::path::PathBuf::from)));
+    }
+    if args.get(1).is_some_and(|arg| arg == "--depth-settings") {
+        let Some(socket) = args.get(2) else {
+            eprintln!("--depth-settings needs Meteor's control socket");
+            std::process::exit(2);
+        };
+        std::process::exit(depth_window::run(std::path::PathBuf::from(socket)));
+    }
+    #[cfg(windows)]
+    if args.get(1).is_some_and(|arg| arg == "--pcvr-games") {
+        std::process::exit(pcvr_window::run());
     }
     #[cfg(target_os = "macos")]
     if args.get(1).is_some_and(|arg| arg == "--setup-check") {
@@ -256,6 +274,7 @@ async fn main() {
     let save = value("--save-depth").map(|dir| (std::path::PathBuf::from(dir), save_every));
 
     let config = config::load();
+    audio::init(config.audio_output);
     #[cfg(target_os = "linux")]
     if flag("--download-host") {
         let Some(release)=host::RELEASE.as_ref() else {
@@ -580,6 +599,12 @@ async fn main() {
     #[cfg(target_os = "linux")]
     xr_setup::initialize(xr_discovery.is_some(), xr_startup_error);
     #[cfg(windows)]
+    match xr_windows::retire_xrizer(&xr_windows::root()) {
+        Ok(0) => {}
+        Ok(moved) => log::info!("PCVR: moved {moved} game(s) from xrizer to SteamVR"),
+        Err(error) => log::warn!("PCVR: can't move games from xrizer to SteamVR: {error}"),
+    }
+    #[cfg(windows)]
     xr_windows::initialize(xr_discovery.is_some(),xr_startup_error,xr_trust);
 
     #[cfg(target_os = "linux")]
@@ -595,8 +620,10 @@ async fn main() {
             }
         });
     }
+    #[cfg(unix)]
+    tokio::spawn(control::serve(status.map.sunshine_base, depth.clone()));
     #[cfg(target_os = "linux")]
-    if !no_tray && !tray::run(tray::MeteorTray { status, stats, depth, mic, xr_trust, host: host_view, cursor }).await {
+    if !no_tray && !tray::run(tray::MeteorTray(menu::Sources { status, stats, depth, mic, xr_trust, host: host_view, cursor })).await {
         desktop::notify(
             "Nightfall Meteor is running",
             "There's no tray to show its controls in. On GNOME, the AppIndicator extension adds one.",
@@ -614,14 +641,17 @@ async fn main() {
     }
     #[cfg(target_os = "macos")]
     let menu_bar = (!no_tray).then(|| tray_macos::Tray {
-        status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(),
-        host: Arc::new(host_view), runtime: tokio::runtime::Handle::current(),
+        sources: menu::Sources { status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(), host: Arc::new(host_view), xr_trust },
+        runtime: tokio::runtime::Handle::current(),
     });
     #[cfg(not(target_os = "linux"))]
     {
         #[cfg(windows)]
+        tokio::spawn(control::serve(status.map.sunshine_base, depth.clone()));
+        #[cfg(windows)]
         if !no_tray {
-            tray_windows::run(status.clone(), stats.clone(), mic.clone(), depth.clone(), Arc::new(host_view));
+            let xr_trust = xr_windows::state().trust.clone();
+            tray_windows::run(menu::Sources { status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(), xr_trust, host: Arc::new(host_view) });
         }
         #[cfg(windows)]
         if let Some(d) = &depth {
@@ -672,7 +702,13 @@ async fn main() {
 fn sunshine_vdd_installed() -> bool {
     use std::sync::OnceLock;
     static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
+    *CACHE.get_or_init(sunshine_vdd_probe)
+}
+
+/// The same check, uncached (Setup asks again after installing the driver).
+#[cfg(windows)]
+fn sunshine_vdd_probe() -> bool {
+    {
         let probe = std::env::current_exe()
             .ok()
             .and_then(|e| e.parent().map(|p| p.join("runtime/host/drivers/sunshine/virtualdisplay_probe.exe")));
@@ -681,7 +717,12 @@ fn sunshine_vdd_installed() -> bool {
             // --check requires admin (ERROR_ACCESS_DENIED without it). Use
             // --diagnose instead: it enumerates control interfaces without
             // opening them, so it works without elevation.
-            let out = std::process::Command::new(&p).arg("--diagnose").output();
+            let mut command = std::process::Command::new(&p);
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            }
+            let out = command.arg("--diagnose").output();
             let Ok(out) = out else { return false; };
             let stdout = String::from_utf8_lossy(&out.stdout);
             // Line is "control_interface_count=1 enumerate_error=0 ..."
@@ -693,7 +734,7 @@ fn sunshine_vdd_installed() -> bool {
                 .and_then(|n| n.parse::<u32>().ok())
                 .is_some_and(|n| n > 0)
         })
-    })
+    }
 }
 
 /// Held for Meteor's whole life (a restart's exec closes it: O_CLOEXEC).

@@ -42,6 +42,10 @@ Name: "pcvr"; Description: "Set up PCVR for installed games"
 Name: "vda"; Description: "Download VDA depth model on first launch (requires NVIDIA GPU, ~500 MB downloaded in background)"
 Name: "virtualmonitors"; Description: "Install virtual display driver for virtual monitors in VR (requires admin, ~1 MB)"
 
+[InstallDelete]
+; xrizer shipped until 0.9.1: Windows runs OpenVR games through SteamVR now.
+Type: filesandordirs; Name: "{app}\runtime\xr\xrizer"
+
 [Files]
 Source: "{#Stage}\nightfall-meteor.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\ncnn.dll"; DestDir: "{app}"; Flags: ignoreversion

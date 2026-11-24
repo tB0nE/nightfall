@@ -94,8 +94,8 @@ var codec_preference: int = DEFAULT_CODEC_PREFERENCE
 var grid_mode_enabled: bool = DEFAULT_GRID_MODE_ENABLED
 var placement_grid_shape: int = 1
 var placement_grid_spacing: float = 0.1
-## Cylinder/sphere grids: 0 centres the surface on the viewer, 100 bends it
-## tightest (ScreenPlacementController.curve_factor()).
+## Cylinder/sphere grids: 0 curves like a Slightly Curved screen, 100 bends
+## it tightest (ScreenPlacementController.curve_factor()).
 var placement_grid_curve: int = 0
 ## Lock Screens: secondary screens hide their grab bar, shortcuts and corners
 ## (and stop catching the pointer there), so only the primary moves the layout.

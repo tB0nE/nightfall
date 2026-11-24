@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Håll greppet och flytta för att rulla. Ersätter högerklick; mappning av.",
 	"Ambient Intensity": "Omgivningsljusstyrka",
 	"Adjust ambient lighting strength.": "Justera omgivningsljusets styrka.",
+	"Grid Spacing": "Rutnätsavstånd",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Avstånd mellan rutnätspunkter. Långsam dragning fäster vid dem.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

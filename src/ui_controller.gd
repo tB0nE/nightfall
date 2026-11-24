@@ -1604,15 +1604,10 @@ func build_ui():
 	_layout_btn.pressed.connect(func(): open_placement_grid_popup(false))
 	_set_button_tooltip(_layout_btn, "Original keeps the classic layout. Cylinder and Sphere lay screens edge to edge on one surface around you.")
 	mon_row1.add_child(_layout_btn)
-	_grid_spacing_btn = make_option_btn("Grid Spacing", "10 cm")
-	_grid_spacing_btn.name = "ScreenGridSpacing"
-	_grid_spacing_btn.pressed.connect(func(): open_placement_grid_popup(true))
-	_set_button_tooltip(_grid_spacing_btn, "Distance between grid points. Slow dragging and resizing snap to these increments.")
-	mon_row1.add_child(_grid_spacing_btn)
 	_grid_curve_btn = make_option_btn("Grid Curve", "0%")
 	_grid_curve_btn.name = "ScreenGridCurve"
 	_grid_curve_btn.pressed.connect(open_grid_curve_slider)
-	_set_button_tooltip(_grid_curve_btn, "How tightly the cylinder or sphere wraps around you. 0% is centred on you; higher bends the screens in more.")
+	_set_button_tooltip(_grid_curve_btn, "How tightly the cylinder or sphere wraps around you. 0% curves gently, like a Slightly Curved screen; higher bends the screens in more.")
 	mon_row1.add_child(_grid_curve_btn)
 	_lock_btn = make_option_btn("Lock Screen", "Off")
 	_lock_btn.name = "ScreenLock"
@@ -1981,7 +1976,8 @@ func _build_menu_tab(
 			_set_button_tooltip(button, option["tooltip"])
 			button.visible = option["visible"]
 			button.disabled = option["disabled"]
-			if field != &"_ui_ambient_gain_btn":
+			if field == &"_ui_grid_spacing_btn": value = "%d cm" % roundi(main.settings.placement_grid_spacing * 100)
+			if field not in [&"_ui_ambient_gain_btn", &"_ui_grid_spacing_btn"]:
 				main.set(field, button)
 			row.add_child(button)
 			if scrollable:
@@ -2125,6 +2121,11 @@ func _connect_menu_action(button: Button, option: Dictionary, on_release: bool =
 	if option["field"] == &"_ui_bitrate_btn":
 		button.pressed.connect(open_bitrate_popup)
 		return
+	if option["field"] == &"_ui_grid_spacing_btn":
+		_grid_spacing_btn = button
+		button.name = "ScreenGridSpacing"
+		button.pressed.connect(_on_scroll_friendly_pressed.bind(open_grid_spacing_popup) if on_release else open_grid_spacing_popup)
+		return
 	if option["field"] == &"_ui_ambient_gain_btn":
 		_ambient_gain_btn = button
 		button.pressed.connect(open_ambient_gain_popup)
@@ -2204,7 +2205,7 @@ func _open_value_slider(setting: StringName) -> void:
 	# title, store, property, minimum, maximum, suffix, setter, default
 	var specs := {
 		&"pt_fade": ["PT Fade", main.settings, "passthrough_fade_pct", 0, 100, "%", c.set_passthrough_fade, 0],
-		&"volume": ["Volume", main.settings, "audio_boost_db", 0, 15, " dB", c.set_audio_boost, 0],
+		&"volume": ["Volume", main.settings, "audio_boost_db", 0, 24, " dB", c.set_audio_boost, 0],
 		&"separation": ["Separation", host, "ai_3d_separation_pct", 50, 100, "%", c.set_ai_3d_separation, 75],
 		&"convergence": ["Convergence", host, "ai_3d_convergence_pct", 30, 70, "%", c.set_ai_3d_convergence, 50],
 		&"brightness": ["Brightness", main.settings, "brightness_pct", -20, 20, "%", c.set_brightness, 0],
@@ -2635,6 +2636,9 @@ func set_disconnect_visible(vis: bool):
 	if main._ui_disconnect_btn:
 		main._ui_disconnect_btn.visible = vis or _current_tab == PCVR_PAGE
 		main._ui_disconnect_btn.disabled = not vis
+
+func open_grid_spacing_popup() -> void:
+	open_placement_grid_popup(true)
 
 func open_grid_curve_slider() -> void:
 	clear_tooltip()

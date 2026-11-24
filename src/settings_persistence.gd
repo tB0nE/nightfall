@@ -170,7 +170,7 @@ static func read_app(
 		"stream", "quick_start", AppSettings.DEFAULT_QUICK_START_ENABLED)
 	settings.audio_boost_db = config.get_value(
 		"stream", "audio_boost_db", AppSettings.DEFAULT_AUDIO_BOOST_DB)
-	settings.audio_boost_db = clampi(int(settings.audio_boost_db), 0, 15)
+	settings.audio_boost_db = clampi(int(settings.audio_boost_db), 0, 24)
 	settings.android_audio_output = clampi(int(config.get_value("stream", "android_audio_output", 0)), 0, 1)
 	settings.microphone_enabled = config.get_value(
 		"stream", "microphone", AppSettings.DEFAULT_MICROPHONE_ENABLED) == true

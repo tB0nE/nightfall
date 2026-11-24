@@ -251,6 +251,21 @@ static func depth_info(info: Dictionary) -> Dictionary:
 	return offer
 
 ## Advisory process liveness. Paired host requests still establish actual readiness.
+## Where Meteor says a stream's sound plays: "headset", "pc" or "both". ""
+## when the host doesn't say, which plays on both (Moonlight's own default).
+const AUDIO_OUTPUTS := ["headset", "pc", "both"]
+
+static func audio_output(info: Dictionary) -> String:
+	var audio = info.get("audio", {})
+	var output := str(audio.get("output", "")) if audio is Dictionary else ""
+	return output if output in AUDIO_OUTPUTS else ""
+
+## Moonlight's localAudioPlayMode for that choice: 0 mutes the PC while it
+## streams the sound; 1 keeps the PC playing too. "PC" only also mutes the
+## headset's own playback, so it streams with 1.
+static func local_audio_play_mode(output: String) -> int:
+	return 0 if output == "headset" else 1
+
 static func host_status(owner: Node, host: String, sunshine_https_port: int) -> Dictionary:
 	var request := HTTPRequest.new()
 	request.timeout = 1.0

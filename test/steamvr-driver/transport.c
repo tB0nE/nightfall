@@ -11,3 +11,4 @@ int meteor_steamvr_deliver(uint64_t frame,uint64_t display_ns,uint32_t width,uin
     free(packet.bytes);return ok;
 }
 int meteor_steamvr_finish(void) {return meteor_async_finish();}
+int meteor_steamvr_can_deliver(void) {return meteor_async_has_room();}

@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Утримуйте хват і рухайте. Замість правого кліку; прив’язки вимкнені.",
 	"Ambient Intensity": "Інтенсивність підсвічування",
 	"Adjust ambient lighting strength.": "Налаштуйте інтенсивність підсвічування.",
+	"Grid Spacing": "Крок сітки",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Крок сітки. Повільне перетягування прив’язується до нього.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

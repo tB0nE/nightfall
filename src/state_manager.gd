@@ -43,6 +43,7 @@ func save_host_state():
 			"surface_y": s.surface_y,
 			"surface_straight": s.surface_straight,
 			"surface_on_cap": s.surface_on_cap,
+			"surface_inset": s.surface_inset,
 			"grid_pos": [s.grid_pos.x, s.grid_pos.y],
 		}
 	save.set_value(ip, "screen_placements", JSON.stringify(remembered_placements.values()))
@@ -322,3 +323,10 @@ static func _restore_band(s: VRScreen, entry: Dictionary) -> void:
 	s.surface_straight = maxf(float(entry.get("surface_straight", 0.0)), 0.0)
 	var legacy_y := tan(s.surface_lat) * s.placement_radius if legacy_sphere else 0.0
 	s.surface_y = float(entry.get("surface_y", legacy_y))
+	if entry.has("surface_inset"):
+		s.surface_inset = float(entry.surface_inset)
+	else:
+		# Saved before Flat and Slight Curve screens became panels in front of
+		# the surface: the screen was saved at its place on the surface.
+		s.surface_inset = s.panel_inset_now()
+		if s.surface_inset != 0.0: s.transform = s.transform * Transform3D(Basis.IDENTITY, Vector3(0, 0, s.surface_inset))

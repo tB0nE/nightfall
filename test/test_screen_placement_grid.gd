@@ -156,7 +156,8 @@ func run():
 			var r := controller.radius()
 			var grid := controller.lattice()
 			for corner in range(4):
-				var coordinate := Grid.coordinates(screen.corner_surface_point(corner),shape,r)
+				var corner_point: Vector3 = screen.grid_corner_point(corner) if screen.on_surface() else screen.corner_surface_point(corner)
+				var coordinate := Grid.coordinates(controller.anchor().affine_inverse() * (screen.surface_pose() * corner_point),shape,r)
 				assert(Grid.snap_point(coordinate,grid.steps,grid.offset).distance_to(coordinate) < 0.0001, "All four primary corners must lie on lattice points for every shape/curvature")
 	# Exercise the actual grab path: primary height is unconstrained and
 	# controller pitch still tilts the whole workspace (lying-down use).
@@ -343,7 +344,7 @@ func _test_sphere_patches(owner, controller: ScreenPlacementController) -> void:
 	var kept := controller.screen_centre(screens[0])
 	controller.set_curve(100)
 	var tight := controller.radius()
-	assert(is_equal_approx(tight, loose * ScreenPlacementController.TIGHTEST_CURVE) and is_equal_approx(primary.placement_radius, tight))
+	assert(is_equal_approx(tight, loose * ScreenPlacementController.TIGHTEST_CURVE / ScreenPlacementController.LOOSEST_CURVE) and is_equal_approx(primary.placement_radius, tight))
 	assert(primary.global_transform.origin.is_equal_approx(primary_pose.origin), "The primary stays where it is")
 	assert(controller.screen_centre(screens[0]).distance_to(kept) < 0.001, "Screens keep their grid position: %s vs %s" % [controller.screen_centre(screens[0]), kept])
 	assert(screens[0].placement_radius == tight)
@@ -369,6 +370,28 @@ func _test_sphere_patches(owner, controller: ScreenPlacementController) -> void:
 		for screen in [primary] + screens: screen.curvature = 0)
 	assert(primary.placement_radius == radius_before and screens[0].placement_radius == radius_before)
 	assert(controller.screen_centre(screens[0]).distance_to(side_before) < 0.001)
+	# Flat and Slight Curve screens are panels in front of the surface, angled
+	# so side-by-side panels meet edge to edge on the same ray from its axis.
+	owner.settings.placement_grid_shape = Grid.Shape.CYLINDER
+	controller.reshape()
+	for curve in [0, 1]:
+		controller.keep_grid(func():
+			for screen in [primary] + screens: screen.curvature = curve)
+		var surface_r := controller.radius()
+		var next_to := Vector3(primary.mesh_size.x * 0.5 + screens[0].mesh_size.x * 0.5, 0, 0)
+		controller._place(screens[0], next_to, Grid.Shape.CYLINDER, surface_r)
+		assert(controller.screen_centre(screens[0]).distance_to(next_to) < 0.001, "A panel keeps its place on the grid")
+		assert(screens[0].surface_inset > 0.0 and primary.surface_inset > 0.0, "Panels sit in front of the surface")
+		var inverse := controller.anchor().affine_inverse()
+		var angle := func(local: Vector3) -> float: return atan2(local.x, surface_r - local.z)
+		var primary_edge: Vector3 = inverse * primary.to_global(primary.corner_surface_point(1))
+		var side_edge: Vector3 = inverse * screens[0].to_global(screens[0].corner_surface_point(0))
+		assert(absf(angle.call(primary_edge) - angle.call(side_edge)) < 0.0005, "Curve %d: neighbouring panels meet edge to edge" % curve)
+		assert(absf(angle.call(primary_edge) - primary.mesh_size.x * 0.5 / surface_r) < 0.0005, "A panel spans its footprint's angle")
+		assert(not screens[0].on_sphere() and screens[0].is_flat() == (curve == 0))
+	controller.keep_grid(func():
+		for screen in [primary] + screens: screen.curvature = 2)
+	assert(primary.surface_inset == 0.0, "Curved screens lie on the surface")
 	# Lock Screens: only secondaries lose their controls.
 	owner.settings.secondary_screens_locked = true
 	assert(screens[1].controls_locked() and not primary.controls_locked())

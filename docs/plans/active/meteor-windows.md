@@ -72,6 +72,29 @@ Windows that the Linux side doesn't exercise:
   virtual display sizing used locals the merge folded into `recovery_params`,
   and an `inline thread_local` of non-trivial type doesn't link with MinGW.
 
+## OpenVR games run through SteamVR on Windows (2026-11-21)
+
+This replaces the November 4 direction below (xrizer on both platforms).
+Windows now does what Virtual Desktop does: every OpenVR game runs through
+SteamVR with Meteor's SteamVR driver (direct D3D11 capture, NVENC or AMF).
+xrizer reimplements OpenVR, so anti-cheat (EAC rejected its
+`vrclient_x64.dll`), SteamVR overlays, bindings and some games break, and
+on Windows the real SteamVR is available. Linux keeps xrizer: there's no
+SteamVR driver path there.
+
+- Setup registers every Steam VR game with only its SteamVR profile; the
+  Moss Monado/xrizer profile is gone.
+- On start, Meteor moves catalog entries whose Monado profile is an xrizer
+  one (OpenVR runtime, no SteamVR driver) to SteamVR, or to "needs SteamVR"
+  without a SteamVR profile (`xr_windows::retire_xrizer`).
+- xrizer is no longer staged; the installer deletes `runtime\xr\xrizer`.
+- Monado stays, for games registered as native OpenXR. Next step, like
+  Virtual Desktop's VDXR: make Monado the active OpenXR runtime while
+  streaming, so OpenXR games skip SteamVR. That needs a way to tell native
+  OpenXR games apart and an elevated switch of the system's active runtime.
+- The PCVR menu offers a runtime choice only when a game has both; games
+  with one runtime show it as a line.
+
 ## Windows compatibility update (2026-10-29)
 
 November 4 direction change: user requested switching away from Moss to

@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Držte úchop a pohybujte ovladačem. Nahrazuje pravé kliknutí; mapování vypněte.",
 	"Ambient Intensity": "Intenzita osvětlení",
 	"Adjust ambient lighting strength.": "Upravte intenzitu okolního osvětlení.",
+	"Grid Spacing": "Rozestup mřížky",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Rozestup bodů mřížky. Pomalé tažení a změna velikosti se přichytí.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

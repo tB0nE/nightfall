@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "그립을 누르고 움직여 스크롤합니다. 우클릭을 대체하며 매핑은 꺼야 합니다.",
 	"Ambient Intensity": "주변 조명 강도",
 	"Adjust ambient lighting strength.": "주변 조명의 강도를 조절합니다.",
+	"Grid Spacing": "그리드 간격",
+	"Grid point spacing. Slow drags and resizes snap to it.": "그리드 점 간격. 천천히 끌면 여기에 맞춰집니다.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

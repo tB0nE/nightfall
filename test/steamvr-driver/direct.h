@@ -27,7 +27,7 @@ class DirectCapture:public vr::IVRDriverDirectModeComponent {
     std::vector<Submitted> layers;
     std::unique_ptr<MirrorEncoder> encoder;
     std::mutex mutex;
-    uint64_t frame=0;uint32_t sync_misses=0,dropped_frames=0;
+    uint64_t frame=0;uint32_t sync_misses=0,dropped_frames=0,delivery_skips=0;
     uint64_t timing_count=0,timing_sum[4]{},timing_peak[4]{};
     uint64_t adapter_luid=0;
     bool failed=false,finished=false;
@@ -147,6 +147,11 @@ public:
                 ComPtr<ID3D11Texture2D> texture;check(device->OpenSharedResource(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(sync)),IID_PPV_ARGS(&texture)));
                 check(texture.As(&keyed));synchronization.emplace(sync,keyed);
             } else keyed=it->second;
+            // Never make SteamVR's compositor wait for the network: with both delivery
+            // slots still full, skip this frame before encoding it. An encoded frame
+            // can't be dropped without breaking the decoder's references, and waiting
+            // here stalled the compositor (and ended the session) on a slow link.
+            if(*env("METEOR_XR_DIRECT_PORT") && !meteor_steamvr_can_deliver()) {++dropped_frames;++delivery_skips;return;}
             const int64_t sync_begin=now_ns();
             HRESULT ready=keyed->AcquireSync(0,100);
             if(ready==WAIT_TIMEOUT) {++dropped_frames;if(++sync_misses>30)throw std::runtime_error("SteamVR GPU synchronization repeatedly timed out");return;}
@@ -181,12 +186,12 @@ public:
             for(unsigned i=0;i<4;++i) {timing_sum[i]+=times[i];timing_peak[i]=std::max(timing_peak[i],times[i]);}
             if(frame==1 || frame%120==0) {
                 char log[600];std::snprintf(log,sizeof(log),
-                    "METEOR_STEAMVR_TIMING frame=%llu samples=%llu sync_us=%llu/%llu encode_us=%llu/%llu delivery_us=%llu/%llu present_us=%llu/%llu dropped=%u (mean/peak)",
+                    "METEOR_STEAMVR_TIMING frame=%llu samples=%llu sync_us=%llu/%llu encode_us=%llu/%llu delivery_us=%llu/%llu present_us=%llu/%llu dropped=%u delivery_skips=%u (mean/peak)",
                     static_cast<unsigned long long>(frame),static_cast<unsigned long long>(timing_count),
                     static_cast<unsigned long long>(timing_sum[0]/timing_count),static_cast<unsigned long long>(timing_peak[0]),
                     static_cast<unsigned long long>(timing_sum[1]/timing_count),static_cast<unsigned long long>(timing_peak[1]),
                     static_cast<unsigned long long>(timing_sum[2]/timing_count),static_cast<unsigned long long>(timing_peak[2]),
-                    static_cast<unsigned long long>(timing_sum[3]/timing_count),static_cast<unsigned long long>(timing_peak[3]),dropped_frames);
+                    static_cast<unsigned long long>(timing_sum[3]/timing_count),static_cast<unsigned long long>(timing_peak[3]),dropped_frames,delivery_skips);
                 vr::VRDriverLog()->Log(log);
                 timing_count=0;std::fill(std::begin(timing_sum),std::end(timing_sum),0);std::fill(std::begin(timing_peak),std::end(timing_peak),0);
             }

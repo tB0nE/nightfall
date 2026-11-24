@@ -223,6 +223,9 @@ func start_stream(host_id: int, app_id: int, forced_resolution: Vector2i = Vecto
 	options["packet_size"] = 1024
 	options["streaming_remotely"] = 2
 	options["surroundAudioInfo"] = 0xCA0203
+	# Meteor's tray decides where the sound plays (MeteorClient.audio_output()).
+	_audio_output = MeteorClient.audio_output(_meteor)
+	options["local_audio_play_mode"] = MeteorClient.local_audio_play_mode(_audio_output)
 	if hdr_requested():
 		options["hdr_mode"] = 1
 	main._log("[STREAM] screens requested: %s (layout.source=%s, enabled=%s)" % [
@@ -343,6 +346,36 @@ func _compute_capture_outputs() -> String:
 # Nightfall Meteor's port map when the current launch goes through it (see
 # MeteorClient), else {}.
 var _meteor: Dictionary = {}
+# Where this stream's sound plays, as Meteor said at launch ("" = both).
+var _audio_output := ""
+var _audio_watch := 0
+const AUDIO_POLL_SECONDS := 2.0
+
+## "PC" only: the headset keeps the stream but stays silent.
+func audio_muted() -> bool:
+	return _audio_output == "pc"
+
+## While streaming through Meteor, follows its "Audio plays on" choice: a
+## change that needs the other launch flag restarts the stream, and switching
+## between "PC" and "both" only mutes or unmutes here.
+func watch_audio_output() -> void:
+	_audio_watch += 1
+	var generation := _audio_watch
+	while generation == _audio_watch and main.is_streaming and not _meteor_address.is_empty():
+		await main.get_tree().create_timer(AUDIO_POLL_SECONDS).timeout
+		if generation != _audio_watch or not main.is_streaming: return
+		var status := await host_restart_status()
+		if generation != _audio_watch or not main.is_streaming: return
+		var output := str(status.get("audio_output", ""))
+		if not output in MeteorClient.AUDIO_OUTPUTS or output == _audio_output: continue
+		var previous := _audio_output
+		_audio_output = output
+		main._log("[AUDIO] Meteor: audio plays on %s (was %s)" % [output, previous if not previous.is_empty() else "both"])
+		if MeteorClient.local_audio_play_mode(output) != MeteorClient.local_audio_play_mode(previous):
+			main.settings_controller._schedule_stream_restart()
+			return
+		main.settings_controller.apply_audio_boost()
+
 # Multipath state for the status bar (see _multipath_remote()).
 var _multipath_note := ""
 var _multipath_last: Dictionary = {}

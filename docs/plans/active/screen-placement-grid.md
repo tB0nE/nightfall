@@ -346,3 +346,29 @@ with Save/Remove, until named presets come back.
   grid's middle row is the primary's height) and the Flat/Curved switch,
   which on surface grids no longer zeroes `placement_radius` or snaps
   screens back to Original slots — that was the out-of-sync grid.
+
+### Flat panels on the surface, gentler Grid Curve (2026-11-22)
+
+- Curve now sets each screen's own shape on a cylinder or sphere grid; the
+  grid only says where it goes and which way it faces. Curved follows the
+  surface as before. Flat and Slight Curve (its own radius, twice the
+  surface's, `SLIGHT_PANEL_FACTOR`) are panels moved in towards the surface's
+  centre by `ScreenPlacementGrid.panel_inset()`, just far enough that their
+  left and right edges lie on the rays through their footprint's edges, so
+  side-by-side panels still meet, angled. On the sphere caps a flat
+  rectangle can't match its lat/long patch; it is inset to fit inside it both
+  ways, leaving small wedge gaps.
+- Placement still works on the surface: `VRScreen.surface_pose()` is the
+  place behind the panel (the node pose minus `surface_inset`, which is set
+  when the screen is placed and saved with it), and `grid_corner_point()` is
+  the footprint's corner for the lattice and pinned resizes. `on_cap()` is
+  "on a sphere cap" (placement); `on_sphere()` now means "drawn as a sphere
+  patch" (a Curved screen on a cap).
+- Grid Curve 0% matches a Slight Curve screen: radius 3× the viewing
+  distance (`LOOSEST_CURVE`), down to `TIGHTEST_CURVE` 0.76 at 100%, with
+  curvature (1/radius) changing evenly along the slider.
+- Grid Spacing moved to Advanced Settings → Display.
+- The ambient glow has a fixed sort order (0), below every screen. It used
+  the primary's distance-based order minus one, set only when the screen
+  moved, while the native renderer recomputes the primary's every frame:
+  leaning back dropped the screen below its own glow.

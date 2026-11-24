@@ -45,7 +45,7 @@ use crate::postprocess::{DEPTH_TAU_SECONDS, PostProcessor};
 use crate::stream_info::Codec;
 use crate::vda::{self, VdaModel};
 use crate::vda_vulkan;
-fn is_vda(name:&str)->bool {name==vda::ID || vda_vulkan::is_model(name)}
+pub fn is_vda(name:&str)->bool {name==vda::ID || vda_vulkan::is_model(name)}
 use crate::video_tap::Frame;
 
 /// A loaded depth model.
@@ -150,7 +150,7 @@ pub fn model_label(name: &str) -> String {
 }
 
 /// One menu entry selects a complete inference configuration atomically.
-#[derive(Clone,Debug,PartialEq,Eq)]
+#[derive(Clone,Debug,PartialEq,Eq,serde::Serialize,serde::Deserialize)]
 pub struct DepthChoice {pub model:String,pub gpu:Option<String>,pub cpu:bool}
 #[derive(Clone,Debug)]
 pub struct DepthGroup {pub label:String,pub choices:Vec<DepthChoice>}

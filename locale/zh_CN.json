@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "按住握柄并移动以滚动，替代右键。须关闭控制器映射。",
 	"Ambient Intensity": "环境光强度",
 	"Adjust ambient lighting strength.": "调整环境光强度。",
+	"Grid Spacing": "网格间距",
+	"Grid point spacing. Slow drags and resizes snap to it.": "网格点间距。缓慢拖动时会吸附到网格。",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

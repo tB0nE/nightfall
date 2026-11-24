@@ -194,6 +194,13 @@ static func get_tabs() -> Array:
 				],
 			},
 			{
+				"node_name": &"SettingsScreensRow",
+				"title": "Screens",
+				"options": [
+					_option(&"_ui_grid_spacing_btn", "Grid Spacing", "10 cm", "Grid point spacing. Slow drags and resizes snap to it.", TARGET_UI, &"open_grid_spacing_popup"),
+				],
+			},
+			{
 				"node_name": &"SettingsDisplayRow",
 				"title": "Display",
 				"options": [

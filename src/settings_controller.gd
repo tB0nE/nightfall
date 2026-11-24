@@ -1632,7 +1632,7 @@ func cycle_audio_boost():
 	set_audio_boost(values[(maxi(idx, 0) + 1) % values.size()])
 
 func set_audio_boost(value: int):
-	if value < 0 or value > 15 or value == main.settings.audio_boost_db: return
+	if value < 0 or value > 24 or value == main.settings.audio_boost_db: return
 	main.settings.audio_boost_db = value
 	_save_setting(main._ui_audio_boost_btn, get_audio_boost_label())
 	apply_audio_boost()
@@ -1660,6 +1660,10 @@ func apply_audio_boost():
 	var audio = main.stream_backend._v2.get_audio_renderer()
 	if audio:
 		audio.set_volume_boost_db(float(main.settings.audio_boost_db))
+		# Meteor's "Audio plays on: PC" streams with the PC playing; the
+		# headset stays silent. Older native builds lack set_muted.
+		if audio.has_method("set_muted") and main.stream_manager:
+			audio.set_muted(main.stream_manager.audio_muted())
 		if OS.get_name() == "Android" and audio.has_method("set_android_output"):
 			audio.set_android_output(main.settings.android_audio_output)
 

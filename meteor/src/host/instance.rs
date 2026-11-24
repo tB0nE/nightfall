@@ -51,18 +51,7 @@ impl Instance {
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let mut initial = vec![("sunshine_name", name.to_string()), ("address_family", "both".into())];
         #[cfg(windows)]
-        {
-            initial.push(("system_tray", "false".into()));
-            // Meteor captures the user's connected monitors by default. The
-            // host's Windows 11 default instead creates a virtual display,
-            // which needs driver access a normal desktop process may lack.
-            // An explicit user choice remains untouched by render_config.
-            initial.push(("virtual_display_mode", "disabled".into()));
-            // Preserve the user's desktop resolution. The default "automatic"
-            // resizes the display to match the stream, which breaks 1440p+
-            // desktops when connecting from a 1080p headset.
-            initial.push(("dd_resolution_option", "disabled".into()));
-        }
+        initial.extend(windows_initial_config());
         let text = render_config(&existing, &[("port", self.base.to_string())], &initial);
         if text != existing {
             std::fs::write(&path, text).map_err(fail)?;
@@ -154,6 +143,28 @@ pub fn set_virtual_display_mode(conf_path: &std::path::Path, appdata: &std::path
 
 /// `existing` with `always` keys set to their values, and `initial` keys
 /// added when missing. A header explains who wrote it.
+/// First-run Windows settings for the bundled host. An explicit user choice
+/// remains untouched by render_config.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_initial_config() -> Vec<(&'static str, String)> {
+    vec![
+        ("system_tray", "false".into()),
+        // Meteor captures the user's connected monitors by default. The
+        // host's Windows 11 default instead creates a virtual display,
+        // which needs driver access a normal desktop process may lack.
+        ("virtual_display_mode", "disabled".into()),
+        // Leave the user's monitors as they are. The defaults ("automatic")
+        // switch the streamed display to the stream's resolution and frame
+        // rate: a 1440p desktop dropped to 1080p, and a 240 Hz monitor to the
+        // headset's 72 Hz, which it lacks, so Windows chose 60 Hz. Starting
+        // and ending virtual screens re-applies that, and it was not always
+        // undone. Captures don't need it: the encoder takes frames at the
+        // stream's rate from a faster display.
+        ("dd_resolution_option", "disabled".into()),
+        ("dd_refresh_rate_option", "disabled".into()),
+    ]
+}
+
 pub(crate) fn render_config(existing: &str, always: &[(&str, String)], initial: &[(&str, String)]) -> String {
     let key_of = |line: &str| line.split_once('=').map(|(k, _)| k.trim().to_string());
     let mut lines: Vec<String> = Vec::new();
@@ -228,6 +239,18 @@ mod tests {
         assert_eq!(text, "# mine\nport = 49989\nsunshine_name = Living room\ncapture = kwin\naddress_family = both\n");
         // Nothing changes on the next start.
         assert_eq!(render_config(&text, &[("port", "49989".into())], &[("sunshine_name", "x".into())]), text);
+    }
+
+    #[test]
+    fn windows_leaves_the_monitors_resolution_and_refresh_rate_alone() {
+        let text = render_config("port = 47989\n", &[], &windows_initial_config());
+        assert!(text.contains("dd_resolution_option = disabled\n"), "{text}");
+        assert!(text.contains("dd_refresh_rate_option = disabled\n"), "{text}");
+        // An existing install without the key gets it; a user's own choice stays.
+        let existing = "port = 47989\ndd_resolution_option = disabled\n";
+        assert!(render_config(existing, &[], &windows_initial_config()).contains("dd_refresh_rate_option = disabled\n"));
+        let chosen = "port = 47989\ndd_refresh_rate_option = automatic\n";
+        assert!(render_config(chosen, &[], &windows_initial_config()).contains("dd_refresh_rate_option = automatic\n"));
     }
 
     #[test]

@@ -47,6 +47,7 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         "host_background": {"supported": cfg!(any(target_os = "linux", windows, target_os = "macos")), "protocol": 1},
         "sunshine": sunshine,
         "ports": ports,
+        "audio": {"output": crate::audio::output().id()},
         // The proxy copies every video/audio packet to each network path a
         // client pings from (proxy.rs). Clients only open a second path when
         // this is present: a plain host follows whichever path pinged last.
@@ -211,7 +212,10 @@ fn virtual_body_length(headers: &str) -> io::Result<usize> {
 }
 
 fn host_status(pid: Option<u32>) -> serde_json::Value {
-    json!({"running": pid.is_some(), "instance": pid.map(|p| format!("{}:{p}", std::process::id())).unwrap_or_default()})
+    // Nightfall polls this while streaming, so it also carries the audio
+    // choice: a change made in the tray reaches the headset within seconds.
+    json!({"running": pid.is_some(), "instance": pid.map(|p| format!("{}:{p}", std::process::id())).unwrap_or_default(),
+        "audio_output": crate::audio::output().id()})
 }
 
 #[cfg(test)]
@@ -222,7 +226,7 @@ mod host_status_tests {
         assert_eq!(first["running"], true);
         assert_ne!(first["instance"], super::host_status(Some(102))["instance"]);
         assert_eq!(first, super::host_status(Some(101)));
-        assert_eq!(super::host_status(None), serde_json::json!({"running":false,"instance":""}));
+        assert_eq!(super::host_status(None), serde_json::json!({"running":false,"instance":"","audio_output":crate::audio::output().id()}));
     }
 }
 

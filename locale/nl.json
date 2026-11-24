@@ -8,6 +8,8 @@
 	"Grip-drag to scroll, replacing right-click. Mapping must be off.": "Houd grip vast en beweeg. Vervangt rechtsklik; knoptoewijzing moet uitstaan.",
 	"Ambient Intensity": "Omgevingslichtsterkte",
 	"Adjust ambient lighting strength.": "Pas de sterkte van het omgevingslicht aan.",
+	"Grid Spacing": "Rasterafstand",
+	"Grid point spacing. Slow drags and resizes snap to it.": "Afstand tussen rasterpunten. Langzaam slepen klikt hierop vast.",
 	"Auto-detect black bars on the primary screen.": "Auto-detect black bars on the primary screen.",
 	"Screens": "Screens",
 	"Choose screen content: PC or browser.": "Choose screen content: PC or browser.",

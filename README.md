@@ -21,13 +21,12 @@ available for Windows and macOS.
 
 ---
 
-## Current preview
+## Latest release
 
-[**v0.9.1-preview.2**](https://github.com/tB0nE/nightfall/releases/tag/v0.9.1-preview.2)
-includes unified screen tabs, expanded display controls and an experimental
-Steam Frame client. The feature list below describes the current preview;
-use [the latest stable release](https://github.com/tB0nE/nightfall/releases/latest)
-if you prefer the stable version. Install matching Nightfall and Meteor versions.
+[**v0.9.1**](https://github.com/tB0nE/nightfall/releases/tag/v0.9.1)
+includes unified screen tabs, cylinder and sphere screen grids, expanded
+display controls, PC VR on Windows through SteamVR, and an experimental Steam
+Frame client. Install matching Nightfall and Meteor versions.
 
 ## Features
 
