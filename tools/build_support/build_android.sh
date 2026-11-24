@@ -13,12 +13,19 @@ cd "$SCRIPT_DIR"
 source "$TOOL_DIR/native_xr_versions.sh"
 # shellcheck source=app_version.sh
 source "$TOOL_DIR/app_version.sh"
+# shellcheck source=meta_toolkit.sh
+source "$TOOL_DIR/meta_toolkit.sh"
 
 PRESET="$1"
 OUTPUT="$2"
 USE_STOCK_LITERT="${NIGHTFALL_USE_STOCK_LITERT:-0}"
 INSTALL="${NIGHTFALL_INSTALL:-0}"
 BUILD_KIND="${NIGHTFALL_BUILD_KIND:-debug}"
+STORE="${NIGHTFALL_STORE:-0}"
+if [ "$STORE" = "1" ] && [ "$BUILD_KIND" != "release" ]; then
+  echo "Error: store builds must be release builds" >&2
+  exit 1
+fi
 nightfall_resolve_version "$BUILD_KIND" "$SCRIPT_DIR"
 echo "Version $NIGHTFALL_VERSION_NAME (code $NIGHTFALL_VERSION_CODE)"
 GODOT="${NIGHTFALL_GODOT_EDITOR:?Set NIGHTFALL_GODOT_EDITOR to a Godot 4.7 executable}"
@@ -96,13 +103,32 @@ if ! nightfall_validate_runtime_build "$SCRIPT_DIR" "$PATCHED_GODOT_RUNTIME"; th
   exit 1
 fi
 
+EXTENSION_LIST="$SCRIPT_DIR/.godot/extension_list.cfg"
+STORE_TOOLKIT_DEST="$SCRIPT_DIR/addons/godot_meta_toolkit"
 cleanup() {
   if [ -f "$CONFIG_BACKUP" ]; then
     mv "$CONFIG_BACKUP" "$CONFIG"
     echo "Restored original $CONFIG"
   fi
+  if [ "$STORE" = "1" ]; then
+    rm -rf "$STORE_TOOLKIT_DEST"
+    [ -f "$EXTENSION_LIST.bak" ] && mv "$EXTENSION_LIST.bak" "$EXTENSION_LIST"
+  fi
 }
 trap cleanup EXIT
+
+# Store builds only: the Meta Platform SDK for the entitlement check
+# (src/store_build.gd). Copied in for this export and removed by cleanup().
+if [ "$STORE" = "1" ]; then
+  nightfall_meta_toolkit_fetch "$SCRIPT_DIR"
+  if [ -e "$STORE_TOOLKIT_DEST" ]; then
+    echo "Error: $STORE_TOOLKIT_DEST already exists; store builds copy it in themselves" >&2
+    exit 1
+  fi
+  cp -r "$NIGHTFALL_META_TOOLKIT_ADDON" "$STORE_TOOLKIT_DEST"
+  cp "$EXTENSION_LIST" "$EXTENSION_LIST.bak"
+  echo "res://addons/godot_meta_toolkit/toolkit.gdextension" >> "$EXTENSION_LIST"
+fi
 
 # The presets are patched for this export only (version, and the keystore for
 # release-signed builds); cleanup() restores the committed file.
@@ -116,6 +142,11 @@ sed -i \
 # Android Java plugins may not yet be available during provider registration.
 if [ "$BUILD_KIND" = "dev" ]; then
   sed -i 's/^custom_features=""$/custom_features="nightfall_dev"/' "$CONFIG"
+fi
+# Store builds (docs/plans/active/meta-horizon-store.md) check the Meta
+# entitlement at start-up; see src/store_build.gd.
+if [ "$STORE" = "1" ]; then
+  sed -i 's/^custom_features=""$/custom_features="nightfall_store"/' "$CONFIG"
 fi
 if [ "$PCVR_ALVR" = "ON" ]; then
   # Upstream core acquires a low-latency WifiLock during initialization.
@@ -153,6 +184,15 @@ sed -i '/<application$/a\        android:usesCleartextTraffic="true"' src/main/A
 if ! grep -q 'android:usesCleartextTraffic="true"' src/main/AndroidManifest.xml; then
   echo "Error: failed to enable browser HTTP support in the exported manifest" >&2
   exit 1
+fi
+# Store builds aren't profileable from the shell (adb); sideload builds stay
+# profileable so users can capture traces for bug reports.
+if [ "$STORE" = "1" ]; then
+  sed -i '/<profileable/,/\/>/ s/"true"/"false"/' src/main/AndroidManifest.xml
+  if grep -A3 '<profileable' src/main/AndroidManifest.xml | grep -q '"true"'; then
+    echo "Error: failed to turn off profileable in the store manifest" >&2
+    exit 1
+  fi
 fi
 sed -i '/tools:targetApi="29" \/>/a\
 \
@@ -267,6 +307,9 @@ else
   mkdir -p android/build/libs/release
   cp "$META_VENDOR_AAR" android/build/libs/release/
 fi
+if [ "$STORE" = "1" ]; then
+  cp "$STORE_TOOLKIT_DEST/.bin/android/release/godot_meta_toolkit-release.aar" android/build/libs/release/
+fi
 
 echo "Exporting $PRESET..."
 if [ "$PCVR_ALVR" = "ON" ]; then
@@ -300,6 +343,17 @@ if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libgodotopenxrvendors.so" >/d
 fi
 if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libpyrowave-shared.so" >/dev/null; then
   echo "Error: $OUTPUT is missing the PyroWave shared library" >&2
+  exit 1
+fi
+
+# The Platform SDK is in store builds and only there.
+if [ "$STORE" = "1" ]; then
+  if ! unzip -Z1 "$OUTPUT" | grep -Fx "lib/arm64-v8a/libovrplatformloader.so" >/dev/null; then
+    echo "Error: store build $OUTPUT is missing the Meta Platform SDK" >&2
+    exit 1
+  fi
+elif unzip -Z1 "$OUTPUT" | grep -q "libovrplatformloader.so\|libgodot_meta_toolkit.so"; then
+  echo "Error: $OUTPUT carries the Meta Platform SDK, which belongs only in store builds" >&2
   exit 1
 fi
 

@@ -29,6 +29,7 @@ here does not mean its entire original implementation is unfinished.
 | [macOS](meteor-macos.md) | Live hardened-package acceptance and signed/notarized distribution. |
 | [USB Link](usb-link-streaming.md) | Implemented; cross-host/recovery acceptance remains. |
 | [October user feedback](user-feedback-2026-10.md) | Historical feedback inventory; current open reports are in the work queue. |
+| [Meta Horizon Store](meta-horizon-store.md) | In progress on `feat/meta-store`: paid store build from 0.9.1 (sideload stays free); target SDK 34, store build, entitlement check, listing. |
 
 ## Deferred proposals
 

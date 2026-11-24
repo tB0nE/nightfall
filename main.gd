@@ -1573,6 +1573,8 @@ func _ready():
 	_init_stream_backend()
 	if DevBridge.wanted():
 		add_child(DevBridge.new(self))
+	if StoreBuild.wanted():
+		add_child(StoreBuild.new(self))
 	if EyeResolution.wanted():
 		add_child(EyeResolution.new(self))
 

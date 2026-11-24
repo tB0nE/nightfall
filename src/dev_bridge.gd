@@ -24,11 +24,14 @@ var _clients: Array[StreamPeerTCP] = []
 var _buffers: Dictionary = {}
 var _queue: Array = []
 
-static func enabled(args: PackedStringArray, dev_feature: bool, debug_build: bool) -> bool:
+static func enabled(args: PackedStringArray, dev_feature: bool, debug_build: bool, store_build := false) -> bool:
+	# Never in store builds, whatever the command line says.
+	if store_build:
+		return false
 	return dev_feature or debug_build or "--nf-dev-bridge" in args
 
 static func wanted() -> bool:
-	return enabled(OS.get_cmdline_args() + OS.get_cmdline_user_args(), OS.has_feature("nightfall_dev"), OS.is_debug_build())
+	return enabled(OS.get_cmdline_args() + OS.get_cmdline_user_args(), OS.has_feature("nightfall_dev"), OS.is_debug_build(), OS.has_feature("nightfall_store"))
 
 func _init(owner) -> void:
 	main = owner
