@@ -13,12 +13,10 @@ mod host_background;
 mod host_cursor;
 #[cfg(target_os = "linux")]
 mod legacy_host_cursor;
-#[cfg(any(target_os = "linux", windows))]
 mod control;
 mod crypto;
 mod depth;
 mod depth_server;
-#[cfg(any(target_os = "linux", windows))]
 mod depth_window;
 #[cfg(target_os = "linux")]
 mod desktop;
@@ -43,7 +41,6 @@ mod host;
 use host::view as host_view;
 mod icon;
 mod logfile;
-#[cfg(any(target_os = "linux", windows))]
 mod menu;
 mod mic;
 mod net;
@@ -119,15 +116,9 @@ use crate::status::Status;
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
-    #[cfg(any(target_os = "linux", windows))]
     if args.get(1).is_some_and(|arg| arg == "--setup") {
         std::process::exit(setup_window::run(args.get(2).map(std::path::PathBuf::from)));
     }
-    #[cfg(target_os = "macos")]
-    if args.get(1).is_some_and(|arg| arg == "--setup") {
-        std::process::exit(setup_window::run());
-    }
-    #[cfg(any(target_os = "linux", windows))]
     if args.get(1).is_some_and(|arg| arg == "--depth-settings") {
         let Some(socket) = args.get(2) else {
             eprintln!("--depth-settings needs Meteor's control socket");
@@ -629,7 +620,7 @@ async fn main() {
             }
         });
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     tokio::spawn(control::serve(status.map.sunshine_base, depth.clone()));
     #[cfg(target_os = "linux")]
     if !no_tray && !tray::run(tray::MeteorTray(menu::Sources { status, stats, depth, mic, xr_trust, host: host_view, cursor })).await {
@@ -650,8 +641,8 @@ async fn main() {
     }
     #[cfg(target_os = "macos")]
     let menu_bar = (!no_tray).then(|| tray_macos::Tray {
-        status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(),
-        host: Arc::new(host_view), runtime: tokio::runtime::Handle::current(),
+        sources: menu::Sources { status: status.clone(), stats: stats.clone(), depth: depth.clone(), mic: mic.clone(), host: Arc::new(host_view), xr_trust },
+        runtime: tokio::runtime::Handle::current(),
     });
     #[cfg(not(target_os = "linux"))]
     {

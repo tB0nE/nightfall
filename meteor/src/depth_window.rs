@@ -91,7 +91,11 @@ pub fn run(socket: PathBuf) -> i32 {
             }
         });
     }
+    #[cfg(not(target_os = "macos"))]
     let rgba = crate::icon::nightfall_rgba(128);
+    // macOS: the Nightfall mark, white on transparent, as in Setup.
+    #[cfg(target_os = "macos")]
+    let rgba = crate::icon::nightfall_alpha(128).into_iter().flat_map(|a| [255, 255, 255, a]).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Depth model configuration")
@@ -101,13 +105,17 @@ pub fn run(socket: PathBuf) -> i32 {
             .with_icon(egui::IconData { rgba, width: 128, height: 128 }),
         ..Default::default()
     };
-    let Some(font) = crate::setup_window::system_font() else {
+    // Linux's eframe has no bundled fonts; macOS uses egui's.
+    let font = crate::setup_window::system_font();
+    if cfg!(target_os = "linux") && font.is_none() {
         eprintln!("Can't open the depth settings window: no system font found");
         return 1;
-    };
+    }
     let window = Window { socket, shared, frames: 0 };
     let creator = Box::new(move |context: &eframe::CreationContext<'_>| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
-        context.egui_ctx.set_fonts(crate::setup_window::fonts_from(font));
+        if let Some(font) = font {
+            context.egui_ctx.set_fonts(crate::setup_window::fonts_from(font));
+        }
         Ok(Box::new(window))
     });
     match eframe::run_native("Depth model configuration", options, creator) {
