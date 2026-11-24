@@ -261,5 +261,12 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Vybrat aplikaci",
 	"Previous": "Předchozí",
-	"Next": "Další"
+	"Next": "Další",
+	"Multipath": "Více cest",
+	"Use a second network via Meteor; a slow one is paused.": "Druhá síť přes Meteor; pomalá se pozastaví.",
+	"Screen Res": "Rozlišení obr.",
+	"Match screen sharpness to the headset to save GPU time.": "Přizpůsobí ostrost obrazovky headsetu a šetří čas GPU.",
+	"CRT Filter": "Filtr CRT",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Vzhled starého CRT pro hlavní obrazovku. Jemný má menší řádky jako monitor PC.",
+	"Fine": "Jemný"
 }

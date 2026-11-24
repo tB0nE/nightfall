@@ -39,6 +39,9 @@ const DEFAULT_IDLE_TIMEOUT_MIN := 0
 const DEFAULT_PIPEWIRE_RESTORE_TOKEN := ""
 const DEFAULT_USB_LINK_ENABLED := false
 const DEFAULT_HDR_ENABLED := false
+## Multipath: also receive the stream over a second network (NF_MULTIPATH_REMOTE)
+## when Nightfall Meteor offers it.
+const DEFAULT_MULTIPATH_ENABLED := true
 const DEFAULT_MICROPHONE_ENABLED := false
 # Empty means "follow the OS language" (see Localization.resolve_language()).
 const DEFAULT_LANGUAGE := ""
@@ -53,6 +56,8 @@ var screen_crop_mode: int = 0
 var screen_host_background: bool = false
 var screen_key_mode: int = 0
 var screen_key_tolerance: int = 1
+## CRT look on the main screen: 0 off, 1 normal (TV-sized lines), 2 fine (monitor-sized lines).
+var screen_crt_mode: int = 0
 
 var bezel_enabled: bool = DEFAULT_BEZEL_ENABLED
 var passthrough_enabled: bool = DEFAULT_PASSTHROUGH_ENABLED
@@ -64,6 +69,13 @@ var gamma_pct: int = DEFAULT_GAMMA_PCT
 var ambient_gain: float = 1.0
 var ambient_mode: int = DEFAULT_AMBIENT_MODE
 var ambient_color: int = DEFAULT_AMBIENT_COLOR
+## Screen Res (Settings > Display, Linux only): Auto renders each screen at the
+## sharpness the headset can show (EyeResolution); strength 1-6 sets how far it
+## may go below the stream's resolution. Auto 2 looked identical to Full on a
+## Steam Frame.
+const DEFAULT_EYE_RESOLUTION_STRENGTH := 2
+var eye_resolution_auto: bool = true
+var eye_resolution_strength: int = DEFAULT_EYE_RESOLUTION_STRENGTH
 var browser_resolution: int = DEFAULT_BROWSER_RESOLUTION
 ## Hidden draws no VR pointer on stream screens, for Mouse Follows Pointer,
 ## where the PC's own cursor already shows where you point.
@@ -102,6 +114,7 @@ var usb_link_enabled: bool = DEFAULT_USB_LINK_ENABLED
 ## Ask the host for an HDR10 stream (10-bit, PQ) and tone-map it for the
 ## headset, instead of the host squashing its HDR desktop to SDR.
 var hdr_enabled: bool = DEFAULT_HDR_ENABLED
+var multipath_enabled: bool = DEFAULT_MULTIPATH_ENABLED
 ## Send the headset microphone to Nightfall Meteor (MeteorMicrophone).
 var microphone_enabled: bool = DEFAULT_MICROPHONE_ENABLED
 # Not reset with the other general settings: a settings reset should not
@@ -113,6 +126,7 @@ func reset_display() -> void:
 	screen_host_background = false
 	screen_key_mode = 0
 	screen_key_tolerance = 1
+	screen_crt_mode = 0
 	bezel_enabled = DEFAULT_BEZEL_ENABLED
 	passthrough_enabled = DEFAULT_PASSTHROUGH_ENABLED
 	background_mode = DEFAULT_BACKGROUND_MODE
@@ -153,3 +167,4 @@ func reset_general() -> void:
 	pipewire_restore_token = DEFAULT_PIPEWIRE_RESTORE_TOKEN
 	usb_link_enabled = DEFAULT_USB_LINK_ENABLED
 	hdr_enabled = DEFAULT_HDR_ENABLED
+	multipath_enabled = DEFAULT_MULTIPATH_ENABLED

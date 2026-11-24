@@ -350,12 +350,14 @@ Array MdnsBrowser::_browse_v4(float timeout) {
     }
 
     Array found = _resolve_hosts(records, false);
-    Dictionary seen_ips;
+    // One entry per address and port: Meteor's bundled host can run next to
+    // Sunshine on the same PC (base 49989), and both have to show up.
+    Dictionary seen;
     for (int i = 0; i < found.size(); i++) {
         Dictionary host = found[i];
-        String ip = host["ip"];
-        if (!seen_ips.has(ip)) {
-            seen_ips[ip] = true;
+        String key = String(host["ip"]) + "|" + String::num_int64(int(host["port"]));
+        if (!seen.has(key)) {
+            seen[key] = true;
             results.append(host);
         }
     }
@@ -478,12 +480,13 @@ Array MdnsBrowser::_browse_v6_scoped(const String &iface_name, float timeout) {
     }
 
     Array found = _resolve_hosts(records, true);
-    Dictionary seen_ips;
+    Dictionary seen;
     for (int i = 0; i < found.size(); i++) {
         Dictionary host = found[i];
         String ip = host["ip"];
-        if (seen_ips.has(ip)) continue;
-        seen_ips[ip] = true;
+        String key = ip + "|" + String::num_int64(int(host["port"]));
+        if (seen.has(key)) continue;
+        seen[key] = true;
         // A link-local address is meaningless without its zone; carrying it
         // in the address text lets every downstream consumer (HTTP binding,
         // getaddrinfo in the stream path, saved host records) recover the

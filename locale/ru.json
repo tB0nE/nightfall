@@ -261,5 +261,12 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Выбрать приложение",
 	"Previous": "Назад",
-	"Next": "Далее"
+	"Next": "Далее",
+	"Multipath": "Многопутевой",
+	"Use a second network via Meteor; a slow one is paused.": "Вторая сеть через Meteor; медленная приостанавливается.",
+	"Screen Res": "Разреш. экрана",
+	"Match screen sharpness to the headset to save GPU time.": "Подгоняет чёткость экрана под шлем, экономя время GPU.",
+	"CRT Filter": "CRT-фильтр",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Вид старого ЭЛТ для главного экрана. «Мелкий»: тонкие строки, как у ПК.",
+	"Fine": "Мелкий"
 }

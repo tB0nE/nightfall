@@ -11,7 +11,7 @@ func _init():
 	# Desktop: Logs, Stats, hidden 3D Debug, Cursor Position, hidden Android
 	# Depth Sync, Language, Auto-Reconnect, Idle, Quick Start, Forget Meteor
 	# Keys, Microphone, hidden Android Audio Output, Licences, Grid Spacing.
-	assert(_option_count(&"settings") == 22)
+	assert(_option_count(&"settings") == (23 if EyeResolution.wanted() else 22))  # + Screen Res on Linux
 	assert(_contains(&"settings", &"_ui_extended_bitrate_btn"))
 	assert(MenuSchema.get_tab(&"settings").get("scrollable", false))
 	for row in MenuSchema.get_tab(&"settings")["rows"]:

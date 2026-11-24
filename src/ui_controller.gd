@@ -297,6 +297,7 @@ func update_stereo_shader():
 	if main._ui_3d_gpu_api_btn:
 		update_option_btn(main._ui_3d_gpu_api_btn, main.settings_controller.get_ai_3d_gpu_api_label())
 	update_option_btn(main._ui_3d_hz_cap_btn, "%dhz" % main.settings_controller.get_effective_hz_cap())
+	update_eye_resolution_btn_state()
 	# Separation/Convergence are never Auto-overridden (they stay live under
 	# Auto - see update_3d_btn_state()), so no Auto-aware branching needed.
 	update_option_btn(main._ui_3d_separation_btn, main.settings_controller.get_ai_3d_separation_label())
@@ -2245,6 +2246,7 @@ func _ordinary_choice(setting: StringName) -> Dictionary:
 		&"primary": spec = ["Primary Hand", main.controller_mapper, "primary_hand", range(main.controller_mapper.primary_labels.size()), main.controller_mapper.primary_labels, main.controller_mapper.set_primary_hand]
 		&"crop": spec = ["Crop", main.screen_image_options, "selected_crop_mode", range(ScreenImageOptions.CROP_LABELS.size()), ScreenImageOptions.CROP_LABELS, main.screen_image_options.set_crop]
 		&"key": spec = ["Colour Key", main.settings, "screen_key_mode", range(ScreenImageOptions.KEY_LABELS.size()), ScreenImageOptions.KEY_LABELS, main.screen_image_options.set_key]
+		&"crt": spec = ["CRT Filter", main.settings, "screen_crt_mode", range(ScreenImageOptions.CRT_LABELS.size()), ScreenImageOptions.CRT_LABELS, main.screen_image_options.set_crt]
 		&"key_tolerance": spec = ["Key Tolerance", main.settings, "screen_key_tolerance", range(ScreenImageOptions.TOLERANCE_LABELS.size()), ScreenImageOptions.TOLERANCE_LABELS, main.screen_image_options.set_key_tolerance]
 	if spec.is_empty(): return {}
 	var values: Array = spec[3]
@@ -2669,3 +2671,7 @@ func open_placement_grid_popup(spacing: bool) -> void:
 		main.state_manager.save_state()
 		update_monitor_tab())
 	refresh_ui_buttons()
+
+func update_eye_resolution_btn_state() -> void:
+	if main._ui_eye_res_btn:
+		update_option_btn(main._ui_eye_res_btn, main.settings_controller.get_eye_resolution_label())

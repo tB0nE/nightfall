@@ -1,0 +1,93 @@
+--- a/src/gpu.cpp
++++ b/src/gpu.cpp
+@@ -4176,6 +4176,49 @@
+ 
+     const void* enabledExtensionFeatures = info.queryExtensionFeatures();
+ 
++    // Optional system-wide queue priority (VK_KHR/EXT_global_priority), chosen
++    // with NCNN_VULKAN_QUEUE_PRIORITY=low|medium|high. A low priority lets the
++    // driver schedule, and where the kernel supports it preempt, inference work
++    // behind an application's rendering on the same GPU (e.g. a standalone VR
++    // headset running depth inference next to its compositor).
++    struct
++    {
++        VkStructureType sType;
++        const void* pNext;
++        uint32_t globalPriority;
++    } queueGlobalPriorityCreateInfo = {(VkStructureType)1000174000 /* VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR */, 0, 0};
++    const char* globalPriorityExtension = 0;
++    {
++        const char* env = getenv("NCNN_VULKAN_QUEUE_PRIORITY");
++        uint32_t priority = 0;
++        if (env && strcmp(env, "low") == 0) priority = 128;    // VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR
++        if (env && strcmp(env, "medium") == 0) priority = 256; // VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR
++        if (env && strcmp(env, "high") == 0) priority = 512;   // VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR
++        if (priority)
++        {
++            uint32_t count = 0;
++            vkEnumerateDeviceExtensionProperties(info.physicalDevice(), NULL, &count, NULL);
++            std::vector<VkExtensionProperties> properties(count);
++            vkEnumerateDeviceExtensionProperties(info.physicalDevice(), NULL, &count, properties.data());
++            for (uint32_t i = 0; i < count; i++)
++            {
++                if (strcmp(properties[i].extensionName, "VK_KHR_global_priority") == 0)
++                    globalPriorityExtension = "VK_KHR_global_priority";
++                else if (!globalPriorityExtension && strcmp(properties[i].extensionName, "VK_EXT_global_priority") == 0)
++                    globalPriorityExtension = "VK_EXT_global_priority";
++            }
++            if (globalPriorityExtension)
++            {
++                enabledExtensions.push_back(globalPriorityExtension);
++                queueGlobalPriorityCreateInfo.globalPriority = priority;
++            }
++            else
++            {
++                NCNN_LOGE("NCNN_VULKAN_QUEUE_PRIORITY=%s ignored: no global priority extension", env);
++            }
++        }
++    }
++
+     std::vector<float> compute_queue_priorities(info.compute_queue_count(), 1.f);   // 0.f ~ 1.f
+     std::vector<float> transfer_queue_priorities(info.transfer_queue_count(), 1.f); // 0.f ~ 1.f
+ 
+@@ -4188,6 +4231,8 @@
+     deviceComputeQueueCreateInfo.queueFamilyIndex = info.compute_queue_family_index();
+     deviceComputeQueueCreateInfo.queueCount = info.compute_queue_count();
+     deviceComputeQueueCreateInfo.pQueuePriorities = compute_queue_priorities.data();
++    if (queueGlobalPriorityCreateInfo.globalPriority)
++        deviceComputeQueueCreateInfo.pNext = &queueGlobalPriorityCreateInfo;
+ 
+     VkDeviceQueueCreateInfo deviceTransferQueueCreateInfo;
+     deviceTransferQueueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+@@ -4221,11 +4266,31 @@
+     deviceCreateInfo.pEnabledFeatures = &info.physicalDevicefeatures();
+ 
+     VkResult ret = vkCreateDevice(info.physicalDevice(), &deviceCreateInfo, 0, &d->device);
++    if (ret != VK_SUCCESS && queueGlobalPriorityCreateInfo.globalPriority)
++    {
++        // Higher priorities may need privileges (VK_ERROR_NOT_PERMITTED); fall back to the default.
++        NCNN_LOGE("vkCreateDevice with queue global priority %u failed %d, retrying without", queueGlobalPriorityCreateInfo.globalPriority, ret);
++        for (size_t i = 0; i < enabledExtensions.size(); i++)
++        {
++            if (strcmp(enabledExtensions[i], globalPriorityExtension) == 0)
++            {
++                enabledExtensions.erase(enabledExtensions.begin() + i);
++                break;
++            }
++        }
++        deviceCreateInfo.enabledExtensionCount = enabledExtensions.size();
++        deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
++        deviceQueueCreateInfos[0].pNext = 0;
++        queueGlobalPriorityCreateInfo.globalPriority = 0;
++        ret = vkCreateDevice(info.physicalDevice(), &deviceCreateInfo, 0, &d->device);
++    }
+     if (ret != VK_SUCCESS)
+     {
+         NCNN_LOGE("vkCreateDevice failed %d", ret);
+         return;
+     }
++    if (queueGlobalPriorityCreateInfo.globalPriority)
++        NCNN_LOGE("vulkan compute queue global priority %u (%s)", queueGlobalPriorityCreateInfo.globalPriority, globalPriorityExtension);
+ 
+     init_device_extension();
+ 

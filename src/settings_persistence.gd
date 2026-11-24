@@ -14,6 +14,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "key_mode", settings.screen_key_mode)
 	config.set_value("screen", "host_background", settings.screen_host_background)
 	config.set_value("screen", "key_tolerance", settings.screen_key_tolerance)
+	config.set_value("screen", "crt_mode", settings.screen_crt_mode)
 	config.set_value("meta", "settings_version", AppSettings.APP_STATE_VERSION)
 	config.set_value("browser", "resolution", settings.browser_resolution)
 	config.set_value("screen", "bezel", settings.bezel_enabled)
@@ -26,6 +27,8 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("screen", "ambient_gain", settings.ambient_gain)
 	config.set_value("screen", "ambient_mode", settings.ambient_mode)
 	config.set_value("screen", "ambient_color", settings.ambient_color)
+	config.set_value("screen", "eye_resolution_auto", settings.eye_resolution_auto)
+	config.set_value("screen", "eye_resolution_strength", settings.eye_resolution_strength)
 	config.set_value("screen", "cursor_mode", settings.cursor_mode)
 	config.set_value("screen", "pointer_steady", settings.pointer_steady)
 	config.set_value("screen", "double_click_mode", settings.double_click_mode)
@@ -53,6 +56,7 @@ static func write_app(config: ConfigFile, settings: AppSettings) -> void:
 	config.set_value("local_capture", "restore_token", settings.pipewire_restore_token)
 	config.set_value("stream", "usb_link_enabled", settings.usb_link_enabled)
 	config.set_value("stream", "hdr_enabled", settings.hdr_enabled)
+	config.set_value("stream", "multipath_enabled", settings.multipath_enabled)
 	config.set_value("general", "language", settings.language)
 
 static func read_app(
@@ -64,6 +68,7 @@ static func read_app(
 	settings.screen_host_background = bool(config.get_value("screen", "host_background", false))
 	settings.screen_key_mode = clampi(int(config.get_value("screen", "key_mode", 0)), 0, 3)
 	settings.screen_key_tolerance = clampi(int(config.get_value("screen", "key_tolerance", 1)), 0, 2)
+	settings.screen_crt_mode = clampi(int(config.get_value("screen", "crt_mode", 0)), 0, ScreenImageOptions.CRT_LABELS.size() - 1)
 	settings.bezel_enabled = config.get_value(
 		"screen", "bezel", AppSettings.DEFAULT_BEZEL_ENABLED)
 	var browser_resolution = config.get_value("browser", "resolution", AppSettings.DEFAULT_BROWSER_RESOLUTION)
@@ -113,6 +118,9 @@ static func read_app(
 	settings.grip_scroll_enabled = grip_scroll if grip_scroll is bool else false
 	settings.ambient_mode = clampi(
 		config.get_value("screen", "ambient_mode", AppSettings.DEFAULT_AMBIENT_MODE), 0, 3)
+	settings.eye_resolution_auto = bool(config.get_value("screen", "eye_resolution_auto", true))
+	settings.eye_resolution_strength = clampi(int(config.get_value("screen", "eye_resolution_strength",
+		AppSettings.DEFAULT_EYE_RESOLUTION_STRENGTH)), 1, EyeResolution.STRENGTH_SHARPNESS.size())
 	settings.ambient_color = clampi(
 		config.get_value("screen", "ambient_color", AppSettings.DEFAULT_AMBIENT_COLOR), 0, 5)
 	settings.cursor_mode = config.get_value(
@@ -174,6 +182,8 @@ static func read_app(
 		"stream", "usb_link_enabled", AppSettings.DEFAULT_USB_LINK_ENABLED)
 	settings.hdr_enabled = config.get_value(
 		"stream", "hdr_enabled", AppSettings.DEFAULT_HDR_ENABLED)
+	settings.multipath_enabled = config.get_value(
+		"stream", "multipath_enabled", AppSettings.DEFAULT_MULTIPATH_ENABLED) == true
 	settings.language = str(config.get_value("general", "language", AppSettings.DEFAULT_LANGUAGE))
 	return result
 

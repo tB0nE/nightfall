@@ -261,5 +261,12 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Seleziona app",
 	"Previous": "Precedente",
-	"Next": "Successiva"
+	"Next": "Successiva",
+	"Multipath": "Multipercorso",
+	"Use a second network via Meteor; a slow one is paused.": "Usa una seconda rete via Meteor; una lenta va in pausa.",
+	"Screen Res": "Ris. schermo",
+	"Match screen sharpness to the headset to save GPU time.": "Adatta la nitidezza dello schermo al visore per risparmiare GPU.",
+	"CRT Filter": "Filtro CRT",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Aspetto CRT d'epoca sullo schermo principale. Fine: linee piccole, da monitor PC.",
+	"Fine": "Fine"
 }

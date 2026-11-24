@@ -261,5 +261,12 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "Velg app",
 	"Previous": "Forrige",
-	"Next": "Neste"
+	"Next": "Neste",
+	"Multipath": "Flere baner",
+	"Use a second network via Meteor; a slow one is paused.": "Bruk et ekstra nettverk via Meteor; et tregt settes på pause.",
+	"Screen Res": "Skjermoppløsning",
+	"Match screen sharpness to the headset to save GPU time.": "Tilpass skjermens skarphet til headsettet for å spare GPU-tid.",
+	"CRT Filter": "CRT-filter",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Gammelt CRT-utseende for hovedskjermen. Fin: mindre linjer, som en PC-skjerm.",
+	"Fine": "Fin"
 }

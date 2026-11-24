@@ -84,6 +84,30 @@ static const char *FRAGMENT_SRC =
 		"    return pow(max(c, vec3(0.0)), vec3(1.0 / u_gamma));\n"
 		"}\n"
 		"#endif\n"
+		// CRT look (a separate program, like Picture): u_crt is (scanline
+		// count, picture aspect w/h, darkest point between lines, phosphor
+		// mask strength). Lines and stripes fade out where they would alias
+		// at the headset's resolution.
+		"#ifdef NIGHTFALL_CRT\n"
+		"uniform vec4 u_crt;\n"
+		"vec3 crtShade(vec3 color, vec2 uv) {\n"
+		"    float y = uv.y * u_crt.x;\n"
+		"    float s = sin(3.14159265 * fract(y));\n"
+		"    float luma = dot(color, vec3(0.299, 0.587, 0.114));\n"
+		"    float beam = mix(mix(u_crt.z, 1.0, s * s), 1.0, luma * 0.4);\n"
+		"    float scan = mix(1.0, beam, clamp(2.0 - 3.0 * fwidth(y), 0.0, 1.0));\n"
+		"    float x = uv.x * u_crt.x * u_crt.y * 3.0;\n"
+		"    vec3 mask = vec3(0.82);\n"
+		"    mask[int(mod(floor(x), 3.0))] = 1.12;\n"
+		"    mask = mix(vec3(1.0), mask, u_crt.w * clamp(2.0 - 3.0 * fwidth(x), 0.0, 1.0));\n"
+		"    vec2 v = uv * (1.0 - uv);\n"
+		"    float vignette = pow(clamp(v.x * v.y * 16.0, 0.0, 1.0), 0.15);\n"
+		// Make up the light the lines and mask take away: 1.18 at the normal
+		// settings, less for the fine ones, which darken less.
+		"    float lift = 1.18 * (0.725 / (0.5 + 0.5 * u_crt.z)) * (0.936 / (1.0 - 0.08 * u_crt.w));\n"
+		"    return color * scan * mask * vignette * lift;\n"
+		"}\n"
+		"#endif\n"
 		"out vec4 fragColor;\n"
 		"void main() {\n"
 		"    vec2 displayUV = u_screenCrop.xy + v_plain * u_screenCrop.zw;\n"
@@ -160,6 +184,9 @@ static const char *FRAGMENT_SRC =
 		"    fragColor = vec4(applyPicture(color), 1.0);\n"
 		"#else\n"
 		"    fragColor = texture(u_texture, (u_texmatrix * vec4(tc, 0.0, 1.0)).xy);\n"
+		"#endif\n"
+		"#ifdef NIGHTFALL_CRT\n"
+		"    fragColor.rgb = crtShade(fragColor.rgb, v_plain);\n"
 		"#endif\n"
 		"    if (u_screenKey.a > 0.0) {\n"
 		"        vec3 key = u_screenKey.rgb;\n"
@@ -829,8 +856,8 @@ bool NightfallXrRenderer::start(int p_video_width, int p_video_height) {
 	video_height = p_video_height;
 	// Reserve a tiny fixed border without adding bezel logic to the hot warp
 	// shader. With bezel off, the draw simply covers the reserved pixels too.
-	output_width = video_width + 16;
-	output_height = video_height + 16;
+	output_width = video_width + 2 * BEZEL_RESERVE;
+	output_height = video_height + 2 * BEZEL_RESERVE;
 
 	if (!init_egl() || !init_swapchain() || !init_gl()) {
 		stop_stream();
@@ -995,6 +1022,7 @@ bool NightfallXrRenderer::init_gl() {
 			uniforms.contrast = glGetUniformLocation(program, "u_contrast");
 			uniforms.gamma = glGetUniformLocation(program, "u_gamma");
 		}
+		uniforms.crt = glGetUniformLocation(program, "u_crt");
 	};
 
 	warp_program = link_program(FRAGMENT_SRC);
@@ -1010,6 +1038,13 @@ bool NightfallXrRenderer::init_gl() {
 	}
 	configure_warp_uniforms(picture_warp_program, picture_warp_uniforms, false, true);
 
+	crt_warp_program = link_program(FRAGMENT_SRC, "#define NIGHTFALL_PICTURE 1\n#define NIGHTFALL_CRT 1\n");
+	if (crt_warp_program == 0) {
+		XR_LOGE("Failed to compile native CRT warp program; the CRT filter is unavailable");
+	} else {
+		configure_warp_uniforms(crt_warp_program, crt_warp_uniforms, false, true);
+	}
+
 	hdr_warp_program = link_program(HDR_FRAGMENT_SRC);
 	if (hdr_warp_program == 0) {
 		XR_LOGE("Failed to compile native HDR warp program");
@@ -1023,6 +1058,11 @@ bool NightfallXrRenderer::init_gl() {
 			"#define NIGHTFALL_TEXTURE_2D 1\n#define NIGHTFALL_PICTURE 1\n");
 	delayed_hdr_warp_program = link_program(HDR_FRAGMENT_SRC,
 			"#define NIGHTFALL_TEXTURE_2D 1\n");
+	delayed_crt_warp_program = link_program(FRAGMENT_SRC,
+			"#define NIGHTFALL_TEXTURE_2D 1\n#define NIGHTFALL_PICTURE 1\n#define NIGHTFALL_CRT 1\n");
+	if (delayed_crt_warp_program != 0) {
+		configure_warp_uniforms(delayed_crt_warp_program, delayed_crt_warp_uniforms, false, true);
+	}
 	if (delayed_warp_program == 0 || delayed_picture_warp_program == 0 ||
 			delayed_hdr_warp_program == 0) {
 		XR_LOGE("Failed to compile depth-sync 2D warp programs; depth sync unavailable");
@@ -1362,6 +1402,8 @@ void NightfallXrRenderer::stop_stream() {
 			if (delayed_warp_program) glDeleteProgram(delayed_warp_program);
 			if (delayed_picture_warp_program) glDeleteProgram(delayed_picture_warp_program);
 			if (delayed_hdr_warp_program) glDeleteProgram(delayed_hdr_warp_program);
+			if (crt_warp_program) glDeleteProgram(crt_warp_program);
+			if (delayed_crt_warp_program) glDeleteProgram(delayed_crt_warp_program);
 			if (upsample_program) glDeleteProgram(upsample_program);
 			if (edge_alignment_program) glDeleteProgram(edge_alignment_program);
 			if (edge_alignment_2d_program) glDeleteProgram(edge_alignment_2d_program);
@@ -1398,6 +1440,7 @@ void NightfallXrRenderer::stop_stream() {
 		std::memset(depth_sync_textures, 0, sizeof(depth_sync_textures));
 		warp_program = picture_warp_program = hdr_warp_program = 0;
 		delayed_warp_program = delayed_picture_warp_program = delayed_hdr_warp_program = 0;
+		crt_warp_program = delayed_crt_warp_program = 0;
 		upsample_program = delayed_upsample_program = offset_program = depth_sync_copy_program = overlay_program = 0;
 		edge_alignment_program = edge_alignment_2d_program = contour_cleanup_program = 0;
 		contour_cleanup_texture = refined_depth_texture = 0;
@@ -1912,8 +1955,8 @@ bool NightfallXrRenderer::issue_ambient_sample() {
 		return false;
 	}
 
-	// Exclude the fixed 8px native bezel so it cannot tint the edge sample.
-	const int inset = pending_bezel_enabled ? 8 : 0;
+	// Sample the video alone, so the bezel cannot tint the edge sample.
+	const int inset = BEZEL_RESERVE;
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, warp_fbo);
 	glReadBuffer(GL_COLOR_ATTACHMENT0);
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ambient_sample_fbo);
@@ -2112,7 +2155,12 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 			std::fabs(pending_gamma - 1.0f) > 0.0001f;
 	GLuint active_warp_program;
 	WarpUniforms *uniforms_ptr;
-	if (source_is_2d) {
+	const GLuint crt_program = source_is_2d ? delayed_crt_warp_program : crt_warp_program;
+	const bool use_crt = pending_crt_mode > 0 && !use_hdr && crt_program != 0;
+	if (use_crt) {
+		active_warp_program = crt_program;
+		uniforms_ptr = source_is_2d ? &delayed_crt_warp_uniforms : &crt_warp_uniforms;
+	} else if (source_is_2d) {
 		active_warp_program = use_hdr ? delayed_hdr_warp_program
 				: (use_picture ? delayed_picture_warp_program : delayed_warp_program);
 		uniforms_ptr = use_hdr ? &delayed_hdr_warp_uniforms
@@ -2132,7 +2180,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 				transfer_name, use_hdr ? "HDR" : "SDR");
 		rendered_color_transfer_type = pending_color_transfer_type;
 	}
-	if (pending_bezel_enabled) {
+	if (bezel_px() > 0) {
 		glViewport(0, 0, output_width * 2, output_height);
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT);
@@ -2149,7 +2197,17 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glBindTexture(GL_TEXTURE_2D, hdr_lut_texture);
 		glUniform1i(uniforms.color_transfer, pending_color_transfer_type);
 	}
-	if (use_hdr || use_picture) {
+	if (use_crt) {
+		// Normal: about 240 lines, like a TV. Fine: about 480, shallower and
+		// with a fainter mask, like a PC monitor. Each line is a whole number
+		// of source rows, so lines stay on the picture's own rows.
+		const bool fine = pending_crt_mode == 2;
+		const float rows = std::max(1.0f, (float)video_height * display_crop[3]);
+		const float lines = rows / std::max(1.0f, std::round(rows / (fine ? 480.0f : 240.0f)));
+		const float aspect = (float)video_width * display_crop[2] / rows;
+		glUniform4f(uniforms.crt, lines, aspect, fine ? 0.65f : 0.45f, fine ? 0.5f : 0.8f);
+	}
+	if (use_hdr || use_picture || use_crt) {
 		glUniform1f(uniforms.brightness, pending_brightness);
 		glUniform1f(uniforms.contrast, pending_contrast);
 		glUniform1f(uniforms.gamma, pending_gamma);
@@ -2174,9 +2232,7 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 	// Single draw call per eye into its half of the double-wide swapchain:
 	// this replaces Godot's two full-res eye SubViewports.
 	for (int eye = 0; eye < 2; eye++) {
-		const int inset = pending_bezel_enabled ? 8 : 0;
-		glViewport(eye * output_width + inset, inset,
-				output_width - inset * 2, output_height - inset * 2);
+		glViewport(eye * output_width + BEZEL_RESERVE, BEZEL_RESERVE, video_width, video_height);
 		float disparity = (eye == 0) ? p_separation : -p_separation;
 		glUniform1f(uniforms.disparity, disparity);
 		glUniform1f(uniforms.eye_index, (float)eye);
@@ -2189,21 +2245,22 @@ void NightfallXrRenderer::render_video_frame(uint32_t p_oes_texture_id, uint32_t
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 		const GLint region = glGetUniformLocation(overlay_program, "u_region");
-		const int margin = std::max(1, (int)(output_width * 0.02f));
-		const int stats_w = std::max(1, (int)(output_width * 0.30f));
+		const int margin = std::max(1, (int)(video_width * 0.02f));
+		const int stats_w = std::max(1, (int)(video_width * 0.30f));
 		const int stats_h = std::max(1, (int)(stats_w * 512.0f / 768.0f));
-		const int message_w = std::max(1, (int)(output_width * 0.55f));
+		const int message_w = std::max(1, (int)(video_width * 0.55f));
 		const int message_pixels = overlay_message_height.load(std::memory_order_relaxed);
 		const int message_h = std::max(1, (int)(message_w * (float)message_pixels / 1100.0f));
 		for (int eye = 0; eye < 2; eye++) {
 			// The shared atlas is flipped before upload. Keep stats top-left;
 			// draw its notification strip at the centre of the same eye image.
 			glUniform4f(region, 0.0f, 448.0f / OVERLAY_HEIGHT, 768.0f / OVERLAY_WIDTH, 512.0f / OVERLAY_HEIGHT);
-			glViewport(eye * output_width + margin, output_height - margin - stats_h, stats_w, stats_h);
+			const int left = eye * output_width + BEZEL_RESERVE;
+			glViewport(left + margin, BEZEL_RESERVE + video_height - margin - stats_h, stats_w, stats_h);
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 			if (message_pixels > 0) {
 				glUniform4f(region, 0.0f, (4.0f + (440.0f - message_pixels) * 0.5f) / OVERLAY_HEIGHT, 1.0f, (float)message_pixels / OVERLAY_HEIGHT);
-				glViewport(eye * output_width + (output_width - message_w) / 2, (output_height - message_h) / 2, message_w, message_h);
+				glViewport(left + (video_width - message_w) / 2, BEZEL_RESERVE + (video_height - message_h) / 2, message_w, message_h);
 				glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 			}
 		}
@@ -2409,8 +2466,8 @@ void NightfallXrRenderer::perform_pending_resize_rebuild() {
 	stop_stream();
 	video_width = pending_resize_width;
 	video_height = pending_resize_height;
-	output_width = video_width + 16;
-	output_height = video_height + 16;
+	output_width = video_width + 2 * BEZEL_RESERVE;
+	output_height = video_height + 2 * BEZEL_RESERVE;
 	if (!init_egl() || !init_swapchain() || !init_gl()) {
 		stop_stream();
 		pending_resize_failed = true;
@@ -2482,10 +2539,14 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 
 		XrSwapchainSubImage sub_image{};
 		sub_image.swapchain = swapchain;
-		sub_image.imageRect.offset.x = half * output_width;
-		sub_image.imageRect.offset.y = 0;
-		sub_image.imageRect.extent.width = output_width;
-		sub_image.imageRect.extent.height = output_height;
+		// The video and the bezel around it, out of the reserved border.
+		const int bezel = bezel_px();
+		sub_image.imageRect.offset.x = half * output_width + BEZEL_RESERVE - bezel;
+		sub_image.imageRect.offset.y = BEZEL_RESERVE - bezel;
+		sub_image.imageRect.extent.width = video_width + 2 * bezel;
+		sub_image.imageRect.extent.height = video_height + 2 * bezel;
+		const float bezel_grow_x = (float)(video_width + 2 * bezel) / (float)video_width;
+		const float bezel_grow_y = (float)(video_height + 2 * bezel) / (float)video_height;
 		sub_image.imageArrayIndex = 0;
 
 		Transform3D xf = pending_transform;
@@ -2513,8 +2574,8 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		}
 
 		if (pending_curvature == SPHERE_CURVATURE && equirect_supported) {
-			const float grow_x = pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f;
-			const float grow_y = pending_bezel_enabled ? (float)output_height / (float)video_height : 1.0f;
+			const float grow_x = bezel_grow_x;
+			const float grow_y = bezel_grow_y;
 			XrCompositionLayerEquirect2KHR *band = &equirect_layers[eye];
 			fill_sphere_band(band, layer_next, eye == 0 ? XR_EYE_VISIBILITY_LEFT : XR_EYE_VISIBILITY_RIGHT,
 					sub_image, space, pose, pending_radius, pending_central_angle * grow_x,
@@ -2537,10 +2598,9 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 			// Expand the cylinder arc by the same ratio as the rendered image;
 			// changing only aspectRatio stretches its height but leaves the
 			// curved bezel squeezed into the video's original arc.
-			cylinder->centralAngle = pending_central_angle *
-					(pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f);
-			const float layer_w = pending_width * (pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f);
-			const float layer_h = pending_height * (pending_bezel_enabled ? (float)output_height / (float)video_height : 1.0f);
+			cylinder->centralAngle = pending_central_angle * bezel_grow_x;
+			const float layer_w = pending_width * bezel_grow_x;
+			const float layer_h = pending_height * bezel_grow_y;
 			cylinder->aspectRatio = layer_w / layer_h;
 			return (uint64_t)(void *)cylinder;
 		}
@@ -2554,8 +2614,8 @@ uint64_t NightfallXrRenderer::_get_composition_layer(int32_t p_index) {
 		quad->subImage = sub_image;
 		quad->space = space;
 		quad->pose = pose;
-		quad->size.width = pending_width * (pending_bezel_enabled ? (float)output_width / (float)video_width : 1.0f);
-		quad->size.height = pending_height * (pending_bezel_enabled ? (float)output_height / (float)video_height : 1.0f);
+		quad->size.width = pending_width * bezel_grow_x;
+		quad->size.height = pending_height * bezel_grow_y;
 		return (uint64_t)(void *)quad;
 	}
 
@@ -2995,6 +3055,14 @@ float NightfallXrRenderer::get_warp_gpu_ms() {
 	// the reference, not required for the double-wide-swapchain fps win);
 	// main.gd's existing stats overlay already measures app fps.
 	return 0.0f;
+}
+
+void NightfallXrRenderer::set_crt_mode(int p_mode) {
+	const int mode = p_mode == 2 ? 2 : (p_mode == 1 ? 1 : 0);
+	if (mode != pending_crt_mode) {
+		pending_crt_mode = mode;
+		XR_LOG("Native CRT filter: %s", mode == 2 ? "fine" : (mode == 1 ? "normal" : "off"));
+	}
 }
 
 void NightfallXrRenderer::set_screen_options(PackedFloat32Array p_crop, Color p_key) {

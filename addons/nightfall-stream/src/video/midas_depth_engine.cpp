@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "tensorflow/lite/interpreter.h"
@@ -59,6 +60,11 @@ MidasDepthEngine::~MidasDepthEngine() {
     model_midas_256_vulkan_.net.reset();
     model_midas_192_vulkan_.net.reset();
     model_da_252_vulkan_.net.reset();
+    model_edgepad_512_.net.reset();
+    model_edgepad_256_.net.reset();
+    // Every ncnn::Net must be gone before the GPU instance: a Net destroyed
+    // afterwards (e.g. as a member, after this body) frees its blobs on a
+    // destroyed VkDevice and crashes in vkUnmapMemory at exit.
     if (vulkan_available_) ncnn::destroy_gpu_instance();
 #endif
 }
@@ -66,10 +72,12 @@ MidasDepthEngine::~MidasDepthEngine() {
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
 void MidasDepthEngine::register_vulkan_model(VulkanDepthModel &model, const char *stem,
                                               const char *name, int size, int index,
-                                              bool input_nhwc, float percentile_clip) {
+                                              bool input_nhwc, float percentile_clip,
+                                              int height) {
     model.name = name;
     model.stem = stem;
     model.size = size;
+    model.height = height > 0 ? height : size;
     model.index = index;
     model.input_nhwc = input_nhwc;
     model.percentile_clip = percentile_clip;
@@ -93,7 +101,7 @@ bool MidasDepthEngine::load_vulkan_model(VulkanDepthModel &model) {
         return false;
     }
     model.loaded.store(true);
-    NF_LOG(TAG, "Loaded %s (%dx%d Vulkan, device=%s)", model.name.c_str(), model.size, model.size,
+    NF_LOG(TAG, "Loaded %s (%dx%d Vulkan, device=%s)", model.name.c_str(), model.size, model.height,
            ncnn::get_gpu_device(ncnn::get_default_gpu_index())->info.device_name());
     return true;
 }
@@ -104,6 +112,8 @@ MidasDepthEngine::VulkanDepthModel *MidasDepthEngine::vulkan_model_for_index(int
     if (model_index == 1) return &model_da_252_vulkan_;
     if (model_index == 14) return &model_zipdepth_384_;
     if (model_index == 18) return &model_zipdepth_256_;
+    if (model_index == 25) return &model_edgepad_512_;
+    if (model_index == 26) return &model_edgepad_256_;
     return nullptr;
 }
 
@@ -145,7 +155,7 @@ std::vector<float> MidasDepthEngine::run_vulkan_inference(VulkanDepthModel &mode
         NF_LOGE(TAG, "Vulkan inference failed for %s", model.name.c_str());
         return {};
     }
-    if (output.total() != static_cast<size_t>(model.size * model.size)) {
+    if (output.total() != static_cast<size_t>(model.size * model.height)) {
         NF_LOGE(TAG, "Unexpected Vulkan output for %s (%zu values)",
                 model.name.c_str(), output.total());
         return {};
@@ -226,6 +236,12 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
     bool ok_da_252 = load_model(model_da_252_, model_dir + "/depth-anything-v2-small-252.tflite", "Depth Anything V2-252", 252, 1, InputLayout::FloatNhWC);
 
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    // Run depth inference on a low-priority queue so the GPU schedules (and,
+    // where the kernel supports it, preempts) it behind the frames being drawn.
+    // On a standalone headset such as the Steam Frame, an 11-19 ms inference
+    // otherwise makes the stream's video frames miss their slot. Set
+    // NCNN_VULKAN_QUEUE_PRIORITY=medium to get the driver default back.
+    setenv("NCNN_VULKAN_QUEUE_PRIORITY", "low", 0);
     ncnn::create_gpu_instance();
     vulkan_available_ = ncnn::get_gpu_count() > 0;
     if (vulkan_available_) {
@@ -234,6 +250,11 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
         register_vulkan_model(model_da_252_vulkan_, "depth-anything-v2-252-vulkan", "Depth Anything V2-252", 252, 1, true);
         register_vulkan_model(model_zipdepth_384_, "zipdepth-base-384-vulkan", "ZipDepth-384", 384, 14);
         register_vulkan_model(model_zipdepth_256_, "zipdepth-base-256-vulkan", "ZipDepth-256", 256, 18);
+        // EdgePad: the ncnn exports Nightfall Meteor ships (zipdepth_wide_512x288 /
+        // zipdepth_edgepad_256), under the same Java indices as on Android.
+        register_vulkan_model(model_edgepad_512_, "edgepad-512x288-vulkan", "EdgePad-512", 512, 25,
+                              false, 0.02f, 288);
+        register_vulkan_model(model_edgepad_256_, "edgepad-256-vulkan", "EdgePad-256", 256, 26);
     } else {
         NF_LOGE(TAG, "No Vulkan compute device found; ZipDepth GPU inference unavailable");
     }
@@ -253,7 +274,7 @@ void MidasDepthEngine::initialize(const std::string &model_dir) {
            ok_yolo_320 ? "true" : "false", ok_yolo_384 ? "true" : "false", ok_da_196 ? "true" : "false",
            ok_da_252 ? "true" : "false");
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
-    NF_LOG(TAG, "Vulkan depth library registered for lazy loading (MiDaS-256, MiDaS-192, DA-V2-252, ZipDepth-384, ZipDepth-256)");
+    NF_LOG(TAG, "Vulkan depth library registered for lazy loading (MiDaS-256, MiDaS-192, DA-V2-252, ZipDepth-384, ZipDepth-256, EdgePad-512, EdgePad-256)");
 #endif
 }
 
@@ -281,7 +302,8 @@ void MidasDepthEngine::set_active_model(int model_index) {
 int MidasDepthEngine::get_backend_capabilities(int model_index) const {
 #ifdef NIGHTFALL_HAS_NCNN_VULKAN
     if (vulkan_available_ && (model_index == 1 || model_index == 3 || model_index == 10 ||
-                              model_index == 14 || model_index == 18)) {
+                              model_index == 14 || model_index == 18 || model_index == 25 ||
+                      model_index == 26)) {
         return 2;
     }
 #endif
@@ -349,6 +371,16 @@ int MidasDepthEngine::configure(int model_index, int requested_backend) {
     active_model_index_ = target->index;
     NF_LOG(TAG, "Switched to model %s (CPU)", target->name.c_str());
     return 1;
+}
+
+int MidasDepthEngine::get_model_width() const { return get_model_size(); }
+
+int MidasDepthEngine::get_model_height() const {
+#ifdef NIGHTFALL_HAS_NCNN_VULKAN
+    VulkanDepthModel *vulkan_model = active_vulkan_model_.load();
+    if (vulkan_model) return vulkan_model->height;
+#endif
+    return get_model_size();
 }
 
 int MidasDepthEngine::get_model_size() const {
@@ -442,8 +474,7 @@ void MidasDepthEngine::worker_loop() {
             std::vector<float> raw = run_vulkan_inference(*vulkan_model, rgba.data(), width, height);
             if (!raw.empty()) {
                 const int64_t inference_end_ns = now_ns();
-                std::vector<uint8_t> depth = post_process(raw, vulkan_model->size,
-                                                          vulkan_model->percentile_clip);
+                std::vector<uint8_t> depth = post_process(raw, vulkan_model->percentile_clip);
                 std::lock_guard<std::mutex> lock(result_mutex_);
                 latest_result_ = std::move(depth);
                 has_result_ = true;
@@ -456,7 +487,7 @@ void MidasDepthEngine::worker_loop() {
             std::vector<float> raw = run_inference(*model, rgba.data(), width, height);
             if (!raw.empty()) {
                 const int64_t inference_end_ns = now_ns();
-                std::vector<uint8_t> depth = post_process(raw, model->size, model->percentile_clip);
+                std::vector<uint8_t> depth = post_process(raw, model->percentile_clip);
                 std::lock_guard<std::mutex> lock(result_mutex_);
                 latest_result_ = std::move(depth);
                 has_result_ = true;
@@ -599,9 +630,9 @@ void MidasDepthEngine::robust_range(const std::vector<float> &v, float percentil
     *hi_out = robust_hi;
 }
 
-std::vector<uint8_t> MidasDepthEngine::post_process(const std::vector<float> &raw, int size, float percentile_clip) {
+std::vector<uint8_t> MidasDepthEngine::post_process(const std::vector<float> &raw, float percentile_clip) {
     std::lock_guard<std::mutex> lock(postprocess_mutex_);
-    const int count = size * size;
+    const int count = static_cast<int>(raw.size());
 
     int64_t now = now_ns();
     float dt = last_post_process_time_ns_ == 0

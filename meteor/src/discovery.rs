@@ -48,6 +48,10 @@ pub fn info(map: &PortMap, features: &Features) -> serde_json::Value {
         "sunshine": sunshine,
         "ports": ports,
         "audio": {"output": crate::audio::output().id()},
+        // The proxy copies every video/audio packet to each network path a
+        // client pings from (proxy.rs). Clients only open a second path when
+        // this is present: a plain host follows whichever path pinged last.
+        "multipath": {"protocol": 1},
     });
     // Optional features; older clients ignore keys they don't know. Both
     // side channels are encrypted for Meteor's key.
@@ -549,6 +553,10 @@ mod tests {
         assert_eq!(serving.await.unwrap(), "/meteor/host-status");
     }
 
+    #[test] fn discovery_advertises_multipath() {
+        let map = PortMap::new(47989, 1000).unwrap();
+        assert_eq!(info(&map, &Features::default())["multipath"]["protocol"], 1);
+    }
     #[test] fn virtual_discovery_absent_without_vdd() {
         let map = PortMap::new(47989, 1000).unwrap();
         let features = Features::default();

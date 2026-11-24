@@ -375,6 +375,11 @@ func watch_audio_output() -> void:
 			main.settings_controller._schedule_stream_restart()
 			return
 		main.settings_controller.apply_audio_boost()
+
+# Multipath state for the status bar (see _multipath_remote()).
+var _multipath_note := ""
+var _multipath_last: Dictionary = {}
+var _multipath_rates := Vector2.ZERO
 # Set after a launch through Meteor fails, so the retry goes straight to Sunshine.
 var _meteor_bypass := false
 # The address Meteor answered on, for its depth port.
@@ -697,6 +702,7 @@ func _on_v2_launch_response(response: Dictionary):
 	stream_config["color_range"] = 0
 	stream_config["encryption_flags"] = 0xFFFFFFFF
 	stream_config["client_refresh_rate_x100"] = int(main.display_refresh_rate * 100)
+	stream_config["multipath_remote"] = _multipath_remote()
 
 	var rikey_raw = response.get("rikey_raw", PackedByteArray())
 	var rikeyid = response.get("rikeyid", 0)
@@ -877,7 +883,7 @@ func resize_stream_viewport(w: int, h: int, update_geometry: bool = true):
 		for s in main.screens:
 			if main.screen_sources.is_browser_screen(s): continue
 			s.comp_base_size = stream_size
-			var comp_size = stream_size
+			var comp_size = s.comp_render_size()
 			if main.settings.bezel_enabled and main.comp.in_use:
 				comp_size += Vector2i(16, 16)
 			if s.comp_viewport and s.comp_viewport.size != comp_size:
@@ -1232,12 +1238,59 @@ func update_stats():
 	txt += " \u2022 " + str(int(refresh_hz)) + "Hz \u2022 App:" + str(int(round(main.telemetry.app_fps))) + "fps"
 	if dropped > 0:
 		txt += " \u2022 drop:" + str(dropped)
+	txt += _multipath_status_text()
 	txt += _depth_status_text()
 	if main.controller_mapper and main.controller_mapper.is_active():
 		txt += " \u2022 " + main.controller_mapper.get_mode_label()
 		if main.controller_mapper.is_gamepad_mode() and main.controller_mapper.get_close_to_head():
 			txt += " D-PAD"
 	main._ui_status_label.text = txt
+
+# The host's address on a second network (NF_MULTIPATH_REMOTE), used only
+# while the stream goes through a Meteor that copies it to both paths; a
+# plain host would follow whichever path pinged last.
+func _multipath_remote() -> String:
+	var remote := OS.get_environment("NF_MULTIPATH_REMOTE").strip_edges()
+	_multipath_note = ""
+	_multipath_last = {}
+	if remote.is_empty():
+		return ""
+	if not main.settings.multipath_enabled:
+		main._log("[MULTIPATH] Second path to %s off in settings" % remote)
+		return ""
+	if MeteorClient.multipath_supported(_meteor):
+		_multipath_note = "2 paths"
+		main._log("[MULTIPATH] Second path to %s (Meteor copies the stream to both)" % remote)
+		return remote
+	_multipath_note = "1 path"
+	main._log("[MULTIPATH] Second path to %s not used: %s" % [remote,
+		"the stream doesn't go through Meteor" if _meteor.is_empty() else "this Meteor doesn't support multipath"])
+	return ""
+
+# Status-bar text for multipath: path count and each path's packet rate
+# (duplicates included, so equal rates mean both paths deliver everything).
+func _multipath_status_text() -> String:
+	if _multipath_note.is_empty():
+		return ""
+	if _multipath_note != "2 paths":
+		return " \u2022 1 path (host can't use 2)"
+	var now := Time.get_ticks_msec()
+	var packets: Dictionary = _b().get_multipath_packets()
+	if packets.is_empty() or not packets.get("active", false):
+		return " \u2022 2 paths"
+	if not _multipath_last.is_empty():
+		var dt := (now - int(_multipath_last.t)) / 1000.0
+		if dt > 0.0:
+			_multipath_rates = Vector2(
+				maxf(0.0, (int(packets.main) - int(_multipath_last.main)) / dt),
+				maxf(0.0, (int(packets.second) - int(_multipath_last.second)) / dt))
+	_multipath_last = {"t": now, "main": int(packets.main), "second": int(packets.second)}
+	match str(packets.get("paused", "")):
+		"main":
+			return " \u2022 main path paused (too slow) %.1fk pkt/s" % [_multipath_rates.y / 1000.0]
+		"second":
+			return " \u2022 2nd path paused (too slow) %.1fk pkt/s" % [_multipath_rates.x / 1000.0]
+	return " \u2022 2 paths %.1fk/%.1fk pkt/s" % [_multipath_rates.x / 1000.0, _multipath_rates.y / 1000.0]
 
 # Identifies the inference machine as well as its speed. Meteor pauses local
 # inference while maps are arriving, so reading only the native backend here

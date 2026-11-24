@@ -159,8 +159,9 @@ var ai_3d_models: Array = [
 	{"label": "Fast", "java_index": 22, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Packed-GPU", "java_index": 23, "gpu": true, "android": true, "linux": false},
 	{"label": "ZipDepth-384-Standard-Optimized-GPU", "java_index": 24, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux": false},
-	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux": false},
+	# Linux: only when Meteor's ncnn export is in depth_models/ (linux_file).
+	{"label": "EdgePad-512", "java_index": 25, "gpu": true, "android": true, "linux_file": "edgepad-512x288-vulkan"},
+	{"label": "EdgePad-256", "java_index": 26, "gpu": true, "android": true, "linux_file": "edgepad-256-vulkan"},
 	{"label": "Direct-128", "java_index": 27, "gpu": true, "android": true, "linux": false},
 	# Retired slot: retain persisted indices; never selectable or bundled.
 	{"label": "EdgePad-320 (retired)", "java_index": 28, "gpu": true, "android": false, "linux": false},
@@ -172,6 +173,8 @@ var ai_3d_models: Array = [
 	# Exact square v0.7.11 export. It uses a fresh Java index because index 25
 	# now belongs to the current widescreen EdgePad-512 model.
 	{"label": "EdgePad-384 (Reference)", "java_index": 30, "gpu": true, "android": true, "linux": false},
+	# Linux: ncnn Vulkan slot 18 (zipdepth-base-256-vulkan), ~11 ms vs ~18 ms for ZipDepth-384 on a Steam Frame.
+	{"label": "ZipDepth-256-GPU", "java_index": 18, "gpu": true, "android": false},
 ]
 var ai_3d_debug_labels: Array = ["Off", "DMap-Final", "DMap-Raw", "DMap-Input", "DMap-Warp"]
 var ai_3d_process_debug_labels: Array = ["Off", "Raw", "Spatial", "Guided", "Occlusion", "Full"]
@@ -442,11 +445,23 @@ func set_ai_3d_mode(value: int):
 func _ai_3d_model_indices_for_type(want_gpu: bool) -> Array:
 	var result: Array = []
 	for i in range(ai_3d_models.size()):
-		if OS.get_name() == "Linux" and not ai_3d_models[i].get("linux", true):
+		if OS.get_name() == "Linux" and not linux_model_available(ai_3d_models[i]):
 			continue
 		if ai_3d_models[i].gpu == want_gpu:
 			result.append(i)
 	return result
+
+## Whether a model can run in this Linux build: not Android-only, and its model
+## file is installed when it names one (depth_models/ beside the executable).
+static func linux_model_available(model: Dictionary, models_dir: String = "") -> bool:
+	if not model.get("linux", true):
+		return false
+	var file := str(model.get("linux_file", ""))
+	if file.is_empty():
+		return true
+	if models_dir.is_empty():
+		models_dir = OS.get_executable_path().get_base_dir().path_join("depth_models")
+	return FileAccess.file_exists(models_dir.path_join(file + ".param")) and FileAccess.file_exists(models_dir.path_join(file + ".bin"))
 
 # AI 3D tab's "Type" control (2026-08-28) - filters which ai_3d_models
 # entries Model can cycle through (GPU: MiDaS-256-GPU/MiDaS-192-GPU; CPU:
@@ -477,6 +492,23 @@ func set_ai_3d_type(value: int):
 	_schedule_ai_3d_commit()
 
 # AI 3D tab's "Hz Cap" control (2026-08-28).
+## Screen Res cycles Full -> Auto 1 ... Auto 6 -> Full (Auto N = strength N).
+func cycle_eye_resolution():
+	var steps: int = EyeResolution.STRENGTH_SHARPNESS.size()
+	if not main.settings.eye_resolution_auto:
+		main.settings.eye_resolution_auto = true
+		main.settings.eye_resolution_strength = 1
+	elif main.settings.eye_resolution_strength >= steps:
+		main.settings.eye_resolution_auto = false
+	else:
+		main.settings.eye_resolution_strength += 1
+	_save_setting(main._ui_eye_res_btn, get_eye_resolution_label())
+
+func get_eye_resolution_label() -> String:
+	if not main.settings.eye_resolution_auto:
+		return "Full"
+	return "%s %d" % [Localization.t("Auto"), main.settings.eye_resolution_strength]
+
 func cycle_ai_3d_hz_cap():
 	var idx = AI3D_HZ_CAP_VALUES.find(main.settings.host.ai_3d_hz_cap)
 	set_ai_3d_hz_cap(AI3D_HZ_CAP_VALUES[(maxi(idx, 0) + 1) % AI3D_HZ_CAP_VALUES.size()])
@@ -1551,6 +1583,13 @@ func apply_language():
 func cycle_quick_start():
 	main.settings.quick_start_enabled = not main.settings.quick_start_enabled
 	_save_setting(main._ui_quick_start_btn, "On" if main.settings.quick_start_enabled else "Off")
+
+# Multipath (second network) is chosen at launch, so a live stream restarts.
+func toggle_multipath():
+	main.settings.multipath_enabled = not main.settings.multipath_enabled
+	_save_setting(main._ui_multipath_btn, "Auto" if main.settings.multipath_enabled else "Off")
+	if main.is_streaming:
+		_schedule_stream_restart()
 
 # HDR is negotiated at launch (10-bit codec + hdrMode), so a live stream
 # restarts to pick it up, the same as a codec change.
@@ -3021,6 +3060,9 @@ func cycle_screen_crop() -> void:
 
 func cycle_screen_key() -> void:
 	main.screen_image_options.cycle_key()
+
+func cycle_screen_crt() -> void:
+	main.screen_image_options.cycle_crt()
 
 func cycle_screen_key_tolerance() -> void:
 	main.screen_image_options.cycle_key_tolerance()

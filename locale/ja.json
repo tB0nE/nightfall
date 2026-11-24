@@ -261,5 +261,12 @@
 	"Refresh the installed VR app list.": "Refresh the installed VR app list.",
 	"Choose App": "アプリを選択",
 	"Previous": "前へ",
-	"Next": "次へ"
+	"Next": "次へ",
+	"Multipath": "マルチパス",
+	"Use a second network via Meteor; a slow one is paused.": "Meteor 経由で2つ目のネットワークを使用。遅い方は休止。",
+	"Screen Res": "画面解像度",
+	"Match screen sharpness to the headset to save GPU time.": "画面の鮮明さをヘッドセットに合わせ、GPUを節約します。",
+	"CRT Filter": "CRT フィルター",
+	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "メイン画面をブラウン管風に。「細かい」はPCモニターのような細い走査線です。",
+	"Fine": "細かい"
 }

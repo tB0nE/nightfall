@@ -360,11 +360,15 @@ func _frame_button_flags() -> int:
 
 ## Gyro and accelerometer from the primary controller's tracking, in the
 ## controller's own frame. The aim pose has +X right, +Y up, +Z back: SDL's
-## gamepad axes. Through Sunshine's DualSense emulation the gyro's pitch
-## arrived inverted (aiming up read as down), so only the gyro's X is negated.
-## The accelerometer must not be flipped with it: games fuse the two, and an
-## accelerometer that disagrees with the gyro pulls the aim back after every
-## movement (seen in the TOTK recompilation: up, then slowly back down).
+## gamepad axes, sent as they are. Games fuse gyro and accelerometer, so
+## if the gyro's pitch sign ever disagrees with the accelerometer the aim is
+## both upside down and slowly pulled back after each movement (seen in the
+## TOTK recompilation). On 2026-11-15 that needed the pitch negated; by
+## 2026-11-17 the same setup needed it sent unchanged, cause not found.
+## gyro_invert_pitch negates only the gyro's X (never the accelerometer) and
+## can be switched live (dev bridge) to compare.
+var gyro_invert_pitch := false
+
 func _send_frame_motion() -> void:
 	var hand: XRController3D = main.left_hand if effective_primary_hand() == PrimaryHand.LEFT else main.right_hand
 	if hand == null or _last_delta <= 0.0:
@@ -374,7 +378,7 @@ func _send_frame_motion() -> void:
 		return
 	var to_local: Basis = pose.transform.basis.orthonormalized().transposed()
 	var gyro: Vector3 = to_local * pose.angular_velocity
-	gyro = Vector3(-rad_to_deg(gyro.x), rad_to_deg(gyro.y), rad_to_deg(gyro.z))
+	gyro = Vector3(rad_to_deg(gyro.x) * (-1.0 if gyro_invert_pitch else 1.0), rad_to_deg(gyro.y), rad_to_deg(gyro.z))
 	# Linear acceleration from the velocity's change, smoothed (tracking
 	# velocities are noisy), plus the reaction to gravity an accelerometer reads.
 	var linear: Vector3 = (pose.linear_velocity - _motion_prev_velocity) / _last_delta
