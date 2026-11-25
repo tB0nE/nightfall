@@ -259,6 +259,19 @@ evidence.
   on-device AI depth and pause/resume. USB Link not retested (it carries
   the 2D stream; this stream used Wi-Fi).
 
+- 2026-11-25: 0.9.1 store build in the **Alpha** channel.
+  - The first upload (90100) had the same versionCode as the dev build already
+    on the headset, so the store just opened that copy. Uploads must always
+    have a higher versionCode than anything installed.
+  - The release preset no longer sets `show_as_launcher_app`: it registered
+    Nightfall as a Home launcher (`android.intent.category.HOME`), a store
+    review risk, and the Library entry doesn't need it. Re-uploaded as
+    `--build 1` (90101).
+  - On Quest 3, installed from the store (installer `com.oculus.ocms`):
+    `[STORE] Entitlement check passed` a second after start; the dev bridge
+    isn't listening; 90100 → 90101 updated in place with pairings kept;
+    stream and VRChat microphone work.
+
 ## Sources
 - [Meta Horizon apps must target Android 14 from 1 March](https://developers.meta.com/horizon/blog/meta-quest-apps-android-14-march-1/)
 - [Application manifests for release builds](https://developers.meta.com/horizon/resources/publish-mobile-manifest/)
