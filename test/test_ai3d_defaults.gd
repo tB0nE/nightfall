@@ -19,13 +19,14 @@ func _init():
 	var owner := Fixture.new()
 	var defaults := QuestSettings.new(owner)
 	defaults.enforce_ai3d_platform_lock()
-	# A fresh Quest 3 install has AI 3D off with Auto on the GPU; it must not
-	# read as EdgePad-256-CPU before the user turns AI 3D on.
-	assert(owner.settings.host.ai_3d_speed == 0)
+	# A fresh Quest 3 install has AI 3D on, with Auto on the GPU (not
+	# EdgePad-256-CPU).
+	assert(owner.settings.host.ai_3d_speed != 0)
 	assert(owner.settings.host.ai_3d_model == SettingsController.ANDROID_MODEL_AUTO)
 	assert(defaults.get_depth_backend_index() == SettingsController.AI3D_BACKEND_GPU)
 	assert(defaults.get_depth_model_label() == "Auto")
-	assert(defaults.get_depth_model_index() == 0, "AI 3D stays disabled; selecting GPU must not start inference")
+	owner.settings.host.ai_3d_speed = 0
+	assert(defaults.get_depth_model_index() == 0, "AI 3D switched off; selecting GPU must not start inference")
 	owner.settings.host.ai_3d_backend_pref = SettingsController.AI3D_BACKEND_CPU
 	assert(defaults.get_depth_backend_index() == SettingsController.AI3D_BACKEND_CPU)
 

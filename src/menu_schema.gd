@@ -58,7 +58,7 @@ static func get_tabs() -> Array:
 				"options": [
 					_option(&"_ui_pt_btn", "Passthrough", "On", "Show your physical surroundings behind the screen.", TARGET_SETTINGS, &"toggle_passthrough"),
 					_option(&"_ui_sbs_btn", "SBS", "Off", "Display side-by-side 3D content using Stretch or Crop.", TARGET_UI, &"on_sbs_toggled"),
-					_option(&"_ui_3d_speed_btn", "AI 3D", "Off", "Convert normal video into stereoscopic 3D using local depth inference.", TARGET_UI, &"on_ai_3d_speed_toggled"),
+					_option(&"_ui_3d_speed_btn", "AI 3D", "On", "Convert normal video into stereoscopic 3D using local depth inference.", TARGET_UI, &"on_ai_3d_speed_toggled"),
 					_option(&"_ui_curve_btn", "Curve", "Flat", "Change the physical curvature of the virtual screen.", TARGET_SCREEN, &"cycle_curvature"),
 				],
 			},
@@ -81,9 +81,9 @@ static func get_tabs() -> Array:
 				"node_name": &"StreamRow1",
 				"options": [
 					_option(&"_ui_res_btn", "Default Res", "100%", "Choose the resolution requested from the host.", TARGET_SETTINGS, &"cycle_resolution"),
-					_option(&"_ui_fps_btn", "FPS", "60", "Choose the stream frame rate and matching headset refresh rate.", TARGET_SETTINGS, &"cycle_fps"),
+					_option(&"_ui_fps_btn", "FPS", "72", "Choose the stream frame rate and matching headset refresh rate.", TARGET_SETTINGS, &"cycle_fps"),
 					_option(&"_ui_bitrate_btn", "Bitrate", "Auto", "Control stream bandwidth and image quality.", TARGET_SETTINGS, &"cycle_bitrate"),
-					_option(&"_ui_crop_btn", "Crop", "Off", "Auto-detect black bars on the primary screen.", TARGET_SETTINGS, &"cycle_screen_crop"),
+					_option(&"_ui_crop_btn", "Crop", "Auto", "Auto-detect black bars on the primary screen.", TARGET_SETTINGS, &"cycle_screen_crop"),
 				],
 			},
 			{
@@ -233,6 +233,7 @@ static func get_tabs() -> Array:
 				"title": "About",
 				"options": [
 					_option(&"_ui_licences_btn", "Licences", "", "Show the licences of Nightfall and the software it includes.", TARGET_UI, &"on_licences_pressed"),
+					_option(&"_ui_source_btn", "Source Code", "GitHub", "Free software (GPLv3). Source code: github.com/tB0nE/nightfall", TARGET_UI, &"on_source_pressed"),
 				],
 			},
 		],

@@ -40,7 +40,8 @@ nightfall_version_code() {
 
 # Sets NIGHTFALL_VERSION_NAME and NIGHTFALL_VERSION_CODE. Release builds take
 # their build number from NIGHTFALL_BUILD_NUMBER (default 0); dev and debug
-# builds always use 0.
+# builds use 0, or NIGHTFALL_DEV_BUILD_NUMBER when set: a dev build has to sit
+# above a store build of the same version to install over it in place.
 nightfall_resolve_version() {
   local kind="$1" root="$2" version suffix
   case "$kind" in
@@ -74,6 +75,8 @@ nightfall_resolve_version() {
   local build=0
   if [[ "$kind" == release ]]; then
     build="${NIGHTFALL_BUILD_NUMBER:-0}"
+  else
+    build="${NIGHTFALL_DEV_BUILD_NUMBER:-0}"
   fi
   NIGHTFALL_VERSION_CODE="$(nightfall_version_code "$version" "$build")" || return 1
 }

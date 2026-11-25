@@ -19,6 +19,9 @@ class QuestSettings extends SettingsController:
 func _init():
 	var owner := Fixture.new()
 	owner.browser_prototype = preload("res://src/browser_prototype.gd").new(owner)
+	assert(owner.settings.host.ai_3d_speed == HostSettings.DEFAULT_AI_3D_SPEED)
+	# With AI 3D switched off, the platform lock keeps it off.
+	owner.settings.host.ai_3d_speed = 0
 	var defaults := QuestSettings.new(owner)
 	owner.is_streaming = false
 	defaults.enforce_ai3d_platform_lock()

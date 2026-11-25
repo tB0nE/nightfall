@@ -9,7 +9,11 @@ const HOST_STATE_VERSION := 1
 const MIN_MANUAL_BITRATE_MBPS := 5
 const MAX_MANUAL_BITRATE_MBPS := 1000 # Absolute storage/wire ceiling; codec UI policy is lower by default.
 
-var stream_fps: int = 60
+## New hosts: 72 fps (72 Hz on Quest), and AI 3D on Auto.
+const DEFAULT_STREAM_FPS := 72
+const DEFAULT_AI_3D_SPEED := 1
+
+var stream_fps: int = DEFAULT_STREAM_FPS
 var resolution_scale_pct: int = 100
 var native_resolution: Vector2i = Vector2i(1920, 1080)
 var is_polaris_host: bool = false
@@ -27,7 +31,7 @@ var ai_3d_model: int = 0
 ## Android depth GPU API: 0=OpenCL, 1=OpenGL. Ignored while Model is Auto.
 var ai_3d_gpu_api: int = 0
 ## 0=Off, 1=Auto, 2=Fast, 3=Standard.
-var ai_3d_speed: int = 0
+var ai_3d_speed: int = DEFAULT_AI_3D_SPEED
 ## 0=Off, 1=DMap-Final, 2=DMap-Raw, 3=DMap-Input, 4=DMap-Warp.
 var ai_3d_debug: int = 0
 ## User-facing, session-only view of the final depth map consumed by the warp.

@@ -456,6 +456,14 @@ func _cull_outside(node: Node, view: Rect2) -> void:
 		elif child is Control:
 			_cull_outside(child, view)
 
+## Settings > About > Source Code: where the source is.
+## Advanced Settings hides the status line, so this shows as a toast too.
+func on_source_pressed():
+	var address := AppInfo.source_url().trim_prefix("https://")
+	show_temporary_status(address, 8.0)
+	if main.get("composition_toast"):
+		main.composition_toast.show(address, main.get("xr_camera"), 8.0)
+
 # Licences opens a grid of components beneath it, built on first use; the
 # chosen component's licence shows below the grid, a page at a time.
 func on_licences_pressed():
@@ -1949,6 +1957,8 @@ func _build_menu_tab(
 
 	var scrollable: bool = schema.get("scrollable", false)
 	var content: VBoxContainer = _build_scroll_page(tab) if scrollable else tab
+	if scrollable:
+		content.add_child(_make_app_title())
 	var rows: Array = schema["rows"]
 	for row_index in rows.size():
 		var row_schema: Dictionary = rows[row_index]
@@ -2046,6 +2056,19 @@ func _style_scroll_bar(bar: VScrollBar) -> void:
 		grabber.bg_color = Color(1, 1, 1, state[1])
 		grabber.set_corner_radius_all(7)
 		bar.add_theme_stylebox_override(state[0], grabber)
+
+# The app's name and version at the top of the settings page.
+func _make_app_title() -> Label:
+	var title := Label.new()
+	title.name = "SettingsAppTitle"
+	title.text = AppInfo.title()
+	title.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.custom_minimum_size = Vector2(0, 44)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return title
 
 func _make_section_title(text: String) -> Label:
 	var title := Label.new()

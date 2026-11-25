@@ -578,6 +578,7 @@ var _ui_log_btn: Button
 var _ui_stats_btn: Button
 var _ui_language_btn: Button
 var _ui_licences_btn: Button
+var _ui_source_btn: Button
 var _ui_microphone_btn: Button
 var _ui_forget_meteor_btn: Button
 
@@ -2271,8 +2272,8 @@ func _init_xr(interface):
 	if interface.has_signal("user_presence_changed"):
 		interface.user_presence_changed.connect(_on_user_presence_changed)
 	settings.host.sbs_mode = 0
-	settings.host.ai_3d_speed = 0
-	# Establish the default 60fps -> 120Hz mapping before composition-layer
+	settings.host.ai_3d_speed = HostSettings.DEFAULT_AI_3D_SPEED
+	# Establish the default fps -> refresh mapping before composition-layer
 	# swapchains are created. Delaying this until stream startup makes the
 	# runtime transition every live layer from 72Hz to 120Hz at once, which is
 	# measurably less stable on Quest. StreamManager applies the selected host's

@@ -268,5 +268,13 @@
 	"Match screen sharpness to the headset to save GPU time.": "讓螢幕清晰度符合頭戴裝置，以節省 GPU 時間。",
 	"CRT Filter": "CRT 濾鏡",
 	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "為主螢幕加上老式 CRT 效果。精細使用更細的掃描線，類似電腦螢幕。",
-	"Fine": "精細"
+	"Fine": "精細",
+	"Source Code": "原始碼",
+	"Free software (GPLv3). Source code: github.com/tB0nE/nightfall": "自由軟體 (GPLv3)。原始碼：github.com/tB0nE/nightfall",
+	"Start Browser": "啟動瀏覽器",
+	"Set up your PC": "設定你的電腦",
+	"Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.": "Nightfall 透過 Nightfall Meteor 串流你電腦的螢幕和遊戲，Windows、macOS 和 Linux 版皆免費。",
+	"Download it on your PC from:": "在電腦上從以下網址下載：",
+	"Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.": "已經在用 Sunshine、Apollo 或其他相容 Moonlight 的主機？Nightfall 也能搭配使用。",
+	"Find My PC": "尋找我的電腦"
 }

@@ -268,5 +268,13 @@
 	"Match screen sharpness to the headset to save GPU time.": "화면 선명도를 헤드셋에 맞춰 GPU 시간을 절약합니다.",
 	"CRT Filter": "CRT 필터",
 	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "메인 화면에 옛 CRT 느낌을 줍니다. 미세는 PC 모니터처럼 더 가는 줄을 씁니다.",
-	"Fine": "미세"
+	"Fine": "미세",
+	"Source Code": "소스 코드",
+	"Free software (GPLv3). Source code: github.com/tB0nE/nightfall": "자유 소프트웨어(GPLv3). 소스 코드: github.com/tB0nE/nightfall",
+	"Start Browser": "브라우저 시작",
+	"Set up your PC": "PC 설정",
+	"Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.": "Nightfall은 Nightfall Meteor를 통해 PC의 화면과 게임을 스트리밍합니다. Windows, macOS, Linux용 무료입니다.",
+	"Download it on your PC from:": "PC에서 다음 주소로 다운로드하세요:",
+	"Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.": "이미 Sunshine, Apollo 또는 다른 Moonlight 호환 호스트를 사용 중인가요? Nightfall은 그것과도 작동합니다.",
+	"Find My PC": "내 PC 찾기"
 }
