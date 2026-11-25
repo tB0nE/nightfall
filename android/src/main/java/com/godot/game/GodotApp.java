@@ -49,6 +49,16 @@ public class GodotApp extends GodotActivity {
 		BrowserPrototype.open(browserActivity.get(), surface, texture, width, height);
 	}
 	public static int pollBrowser() { return BrowserPrototype.poll(); }
+	/** The installed versionName (0.9.1, or 0.9.1-preview.2-dev+… for dev builds), for Settings > About. */
+	public static String appVersion() {
+		GodotApp activity = browserActivity.get();
+		if (activity == null) return "";
+		try {
+			return activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName;
+		} catch (Exception e) {
+			return "";
+		}
+	}
 	public static String browserTabs() { return BrowserPrototype.tabs(); }
 	public static void browserTabAction(String action, int id) { BrowserPrototype.tabAction(action, id); }
 	public static void browserNavigationAction(String action) { BrowserPrototype.navigationAction(action); }

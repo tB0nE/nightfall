@@ -268,5 +268,13 @@
 	"Match screen sharpness to the headset to save GPU time.": "画面の鮮明さをヘッドセットに合わせ、GPUを節約します。",
 	"CRT Filter": "CRT フィルター",
 	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "メイン画面をブラウン管風に。「細かい」はPCモニターのような細い走査線です。",
-	"Fine": "細かい"
+	"Fine": "細かい",
+	"Source Code": "ソースコード",
+	"Free software (GPLv3). Source code: github.com/tB0nE/nightfall": "フリーソフトウェア (GPLv3)。ソースコード：github.com/tB0nE/nightfall",
+	"Start Browser": "ブラウザを起動",
+	"Set up your PC": "PCをセットアップ",
+	"Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.": "Nightfall は Nightfall Meteor から PC の画面やゲームをストリーミングします。Windows、macOS、Linux 向けに無料です。",
+	"Download it on your PC from:": "PC で次の場所からダウンロード：",
+	"Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.": "Sunshine、Apollo などの Moonlight 互換ホストをすでにお使いですか？Nightfall はそれでも動作します。",
+	"Find My PC": "PCを探す"
 }

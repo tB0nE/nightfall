@@ -28,4 +28,7 @@ nightfall_resolve_version release .
 [[ "$NIGHTFALL_VERSION_CODE" == 80202 ]]
 nightfall_resolve_version dev .
 [[ "$NIGHTFALL_VERSION_CODE" == "$(nightfall_version_code "${NIGHTFALL_VERSION_NAME%%-dev+*}")" ]]
+NIGHTFALL_DEV_BUILD_NUMBER=5
+nightfall_resolve_version dev .
+[[ "$NIGHTFALL_VERSION_CODE" == "$(nightfall_version_code "${NIGHTFALL_VERSION_NAME%%-dev+*}" 5)" ]]
 echo "App version tests passed"

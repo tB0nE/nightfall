@@ -8,6 +8,8 @@ var _xr_control: RefCounted
 var app_picker: AppPicker
 var server_picker: RefCounted
 var _auto_retry := 0.0
+## The last server, for start-up (main.gd reads it too).
+var last_connection_path := "user://last_connection.cfg"
 var _auto_suppressed := false
 
 func resume_auto_xr() -> void:
@@ -98,6 +100,7 @@ func build_welcome_ui():
 	root.add_child(screens)
 
 	build_welcome_screen(screens)
+	build_setup_screen(screens)
 	build_server_screen(screens)
 	build_ip_screen(screens)
 	build_pin_screen(screens)
@@ -396,6 +399,22 @@ func build_welcome_screen(parent: Node):
 	connect_btn.text = "Connect"
 	buttons.add_child(connect_btn)
 
+	# Nightfall works without a PC too: the browser needs no host.
+	var browser_btn = Button.new()
+	browser_btn.name = "WelcomeBrowser"
+	browser_btn.custom_minimum_size = Vector2(400, 60)
+	browser_btn.add_theme_font_size_override("font_size", 24)
+	browser_btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.8))
+	browser_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	browser_btn.text = "Start Browser"
+	browser_btn.visible = OS.has_feature("android")
+	var browser_gap = Control.new()
+	browser_gap.custom_minimum_size = Vector2(0, 10)
+	browser_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	browser_gap.visible = browser_btn.visible
+	buttons.add_child(browser_gap)
+	buttons.add_child(browser_btn)
+
 	var wol_btn = Button.new()
 	wol_btn.name = "WelcomeWol"
 	wol_btn.custom_minimum_size = Vector2(400, 60)
@@ -451,7 +470,9 @@ func build_welcome_screen(parent: Node):
 	connect_btn.pressed.connect(func():
 		var btn_text = connect_btn.text
 		var current_ip = main.get_node("%IPInput").text
-		if btn_text == "Pair" or btn_text == "Select Server":
+		if btn_text == "Pair":
+			show_welcome_screen("setup")
+		elif btn_text == "Select Server":
 			show_welcome_screen("server")
 		elif btn_text == "Connect" and current_ip.is_empty():
 			show_welcome_screen("server")
@@ -478,10 +499,97 @@ func build_welcome_screen(parent: Node):
 		wol_btn.text = "Wake PC"
 	)
 	change_btn.pressed.connect(func(): show_welcome_screen("server"))
+	browser_btn.pressed.connect(func():
+		if main.screen_sources.can_open_browser():
+			main.screen_sources.choose_source(ScreenContentTab.BROWSER))
 	cover_btn.pressed.connect(func():
 		if not main._available_apps.is_empty():
 			show_welcome_screen("apps"))
 	exit_btn.pressed.connect(func(): main.get_tree().quit())
+
+# Before the first pairing: what Nightfall streams from, and where to get it.
+func build_setup_screen(parent: Node):
+	var screen = VBoxContainer.new()
+	screen.name = "SetupScreen"
+	screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	screen.add_theme_constant_override("separation", 0)
+	screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.visible = false
+	parent.add_child(screen)
+
+	var top_spacer = Control.new()
+	top_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	top_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(top_spacer)
+
+	var heading = Label.new()
+	heading.name = "SetupHeading"
+	heading.text = "Set up your PC"
+	heading.add_theme_font_size_override("font_size", 48)
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	heading.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(heading)
+
+	var gap = Control.new()
+	gap.custom_minimum_size = Vector2(0, 30)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(gap)
+
+	for line in [
+		["Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.", 28, 0.9],
+		["Download it on your PC from:", 28, 0.9],
+		[AppInfo.WEBSITE, 44, 1.0],
+		["Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.", 24, 0.6],
+	]:
+		var label = Label.new()
+		label.text = line[0]
+		label.add_theme_font_size_override("font_size", line[1])
+		label.add_theme_color_override("font_color", Color(0.4, 0.7, 1.0, 1.0) if line[0] == AppInfo.WEBSITE else Color(1, 1, 1, line[2]))
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		label.custom_minimum_size = Vector2(1300, 0)
+		label.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		if line[0] == AppInfo.WEBSITE:
+			label.auto_translate_mode = Node.AUTO_TRANSLATE_MODE_DISABLED
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		screen.add_child(label)
+		var line_gap = Control.new()
+		line_gap.custom_minimum_size = Vector2(0, 20)
+		line_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		screen.add_child(line_gap)
+
+	var button_gap = Control.new()
+	button_gap.custom_minimum_size = Vector2(0, 20)
+	button_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(button_gap)
+
+	var find_btn = Button.new()
+	find_btn.name = "SetupFindPC"
+	find_btn.custom_minimum_size = Vector2(400, 80)
+	find_btn.add_theme_font_size_override("font_size", 32)
+	find_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	find_btn.text = "Find My PC"
+	screen.add_child(find_btn)
+	find_btn.pressed.connect(func(): show_welcome_screen("server"))
+
+	var bottom_spacer = Control.new()
+	bottom_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	bottom_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(bottom_spacer)
+
+	var back_btn = Button.new()
+	back_btn.name = "SetupBack"
+	back_btn.custom_minimum_size = Vector2(300, 60)
+	back_btn.add_theme_font_size_override("font_size", 28)
+	back_btn.text = "Back"
+	back_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	screen.add_child(back_btn)
+	back_btn.pressed.connect(func(): show_welcome_screen("welcome"))
+
+	var bottom_margin = Control.new()
+	bottom_margin.custom_minimum_size = Vector2(0, 40)
+	bottom_margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	screen.add_child(bottom_margin)
 
 func build_server_screen(parent: Node):
 	server_picker.build(parent)
@@ -718,6 +826,8 @@ func show_welcome_screen(name: String):
 		"welcome":
 			root.get_node_or_null("WelcomeScreen").visible = true
 			update_welcome_info()
+		"setup":
+			root.get_node_or_null("SetupScreen").visible = true
 		"server":
 			root.get_node_or_null("ServerScreen").visible = true
 			populate_server_list()
@@ -823,7 +933,7 @@ func save_last_ip(ip: String, server_unique_id: String = ""):
 	# needs this same unique_id, not just the IP, to find the right saved
 	# host record - see main.gd's _init_textures_and_ui()/_try_auto_connect().
 	save.set_value("connection", "server_unique_id", server_unique_id)
-	save.save("user://last_connection.cfg")
+	save.save(last_connection_path)
 
 func browse_mdns():
 	if mdns_browsing: return
@@ -860,15 +970,27 @@ func clear_saved_servers():
 	if _cm:
 		_cm.clear_hosts()
 		main._log("[PAIR] Cleared all saved server pairings")
+	forget_current_server()
 	populate_server_list()
-	var screens = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens")
-	if screens:
-		var ws = screens.get_node_or_null("WelcomeScreen")
-		if ws:
-			var connect_btn = ws.find_child("WelcomeConnect", true, false)
-			if connect_btn:
-				connect_btn.text = "Connect"
-				connect_btn.disabled = false
+	var connect_btn = main.welcome_viewport.find_child("WelcomeConnect", true, false)
+	if connect_btn:
+		connect_btn.disabled = false
+	update_welcome_info()
+
+## The main page's server, app and saved last connection, so it shows Pair.
+func forget_current_server() -> void:
+	main.get_node("%IPInput").text = ""
+	main._last_hostname = ""
+	main.current_host_id = -1
+	main._available_apps = []
+	main._selected_app_idx = 0
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(last_connection_path))
+	var ws = main.welcome_viewport.get_node_or_null("WelcomeRoot/Screens/WelcomeScreen")
+	if ws:
+		var name_label = ws.find_child("WelcomeAppName", true, false)
+		if name_label: name_label.text = ""
+		var cover = ws.find_child("WelcomeAppCoverImage", true, false)
+		if cover: cover.texture = load("res://src/assets/pc_icon.svg")
 
 func start_pair(ip: String):
 	main.get_node("%IPInput").text = ip

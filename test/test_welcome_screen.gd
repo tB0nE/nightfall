@@ -35,6 +35,7 @@ func _init():
 	_test_xr_teardown_policy()
 	_test_active_watch_skips_discovery()
 	_test_merge_mdns_hosts()
+	_test_clear_servers_offers_pair()
 	print("All welcome_screen tests passed")
 	quit()
 
@@ -136,3 +137,55 @@ func _test_pair_address() -> void:
 	assert(WelcomeScreen.pair_address("fe80::1%usb0", 50000) == "[fe80::1%usb0]:50000")
 	assert(WelcomeScreen.pair_address("fe80::1%usb0", 47989) == "fe80::1%usb0")
 	assert(WelcomeScreen.pair_address("192.168.1.20", 0) == "192.168.1.20")
+
+class FakeConfig extends RefCounted:
+	var hosts: Array = [{"id": 0, "localaddress": "10.0.0.13", "hostname": "pc"}]
+	func get_hosts() -> Array: return hosts
+	func clear_hosts() -> void: hosts = []
+
+class FakeBackend extends RefCounted:
+	var config := FakeConfig.new()
+	func get_config_manager(): return config
+
+class HomeOwner extends Node3D:
+	var is_streaming := false
+	var _last_hostname := "pc"
+	var current_host_id := 0
+	var _available_apps: Array = [{"name": "Desktop", "id": 1}]
+	var _selected_app_idx := 0
+	var welcome_viewport := Node.new()
+	var stream_backend := FakeBackend.new()
+	func parse_ip_port(text: String) -> Array: return [text, 47989]
+	func host_matches_address(host: Dictionary, ip: String) -> bool: return host.get("localaddress", "") == ip
+	func _log(_text: String) -> void: pass
+
+class HomeProbe extends WelcomeScreen:
+	func populate_server_list(): pass
+
+func _test_clear_servers_offers_pair() -> void:
+	var owner := HomeOwner.new()
+	var ip := LineEdit.new()
+	ip.name = "IPInput"
+	owner.add_child(ip)
+	ip.owner = owner
+	ip.unique_name_in_owner = true
+	ip.text = "10.0.0.13"
+	var root := Control.new()
+	root.name = "WelcomeRoot"
+	owner.welcome_viewport.add_child(root)
+	var screens := Node.new()
+	screens.name = "Screens"
+	root.add_child(screens)
+	var welcome := HomeProbe.new(owner)
+	welcome.last_connection_path = OS.get_temp_dir().path_join("nightfall-test-last-connection-%d.cfg" % OS.get_process_id())
+	welcome.save_last_ip("10.0.0.13", "abc")
+	welcome.build_welcome_screen(screens)
+	var connect: Button = screens.find_child("WelcomeConnect", true, false)
+	welcome.clear_saved_servers()
+	# Nothing paired and nothing remembered: the main page offers Pair again.
+	assert(connect.text == "Pair")
+	assert(ip.text.is_empty() and owner.current_host_id == -1 and owner._available_apps.is_empty())
+	assert(not FileAccess.file_exists(welcome.last_connection_path))
+	assert(screens.find_child("WelcomeHostName", true, false).text.is_empty())
+	owner.welcome_viewport.free()
+	owner.free()

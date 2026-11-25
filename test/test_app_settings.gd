@@ -30,7 +30,7 @@ func _test_browser_resolution() -> void:
 func _test_display_defaults() -> void:
 	var settings := AppSettings.new()
 	assert(settings.bezel_enabled)
-	assert(not settings.passthrough_enabled)
+	assert(settings.passthrough_enabled)
 	assert(settings.background_mode == 0)
 	assert(settings.sharpen_mode == 0)
 	assert(settings.brightness_pct == 0)
@@ -41,7 +41,8 @@ func _test_display_defaults() -> void:
 
 func _test_host_defaults() -> void:
 	var host := AppSettings.new().host
-	assert(host.stream_fps == 60)
+	assert(host.stream_fps == 72)
+	assert(host.ai_3d_speed == 1)
 	assert(host.resolution_scale_pct == 100)
 	assert(host.native_resolution == Vector2i(1920, 1080))
 	assert(not host.is_polaris_host)
@@ -50,7 +51,6 @@ func _test_host_defaults() -> void:
 	assert(not host.double_h)
 	assert(host.sbs_mode == 0)
 	assert(host.ai_3d_model == 0)
-	assert(host.ai_3d_speed == 0)
 	assert(host.ai_3d_debug == 0)
 	assert(not host.ai_3d_depth_view)
 	assert(host.ai_3d_last_mode == 1)
@@ -321,7 +321,7 @@ func _test_general_defaults_and_reset() -> void:
 func _test_display_reset() -> void:
 	var settings := AppSettings.new()
 	settings.bezel_enabled = false
-	settings.passthrough_enabled = true
+	settings.passthrough_enabled = false
 	settings.background_mode = 3
 	settings.sharpen_mode = 7
 	settings.brightness_pct = 20
@@ -332,7 +332,7 @@ func _test_display_reset() -> void:
 
 	settings.reset_display()
 	assert(settings.bezel_enabled)
-	assert(not settings.passthrough_enabled)
+	assert(settings.passthrough_enabled)
 	assert(settings.background_mode == 0)
 	assert(settings.sharpen_mode == 0)
 	assert(settings.brightness_pct == 0)

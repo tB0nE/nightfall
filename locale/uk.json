@@ -268,5 +268,13 @@
 	"Match screen sharpness to the headset to save GPU time.": "Підлаштовує чіткість екрана під шолом, заощаджуючи GPU.",
 	"CRT Filter": "CRT-фільтр",
 	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Вигляд старого ЕПТ для головного екрана. «Дрібний»: тонші рядки, як у ПК.",
-	"Fine": "Дрібний"
+	"Fine": "Дрібний",
+	"Source Code": "Вихідний код",
+	"Free software (GPLv3). Source code: github.com/tB0nE/nightfall": "Вільне ПЗ (GPLv3). Вихідний код: github.com/tB0nE/nightfall",
+	"Start Browser": "Запустити браузер",
+	"Set up your PC": "Налаштуйте ПК",
+	"Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.": "Nightfall транслює екрани та ігри вашого ПК через Nightfall Meteor, безкоштовно для Windows, macOS і Linux.",
+	"Download it on your PC from:": "Завантажте його на ПК з сайту:",
+	"Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.": "Уже користуєтеся Sunshine, Apollo чи іншим хостом, сумісним із Moonlight? Nightfall працює і з ним.",
+	"Find My PC": "Знайти мій ПК"
 }

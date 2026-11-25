@@ -12,7 +12,9 @@ const APP_STATE_VERSION := 1
 var host: HostSettings = HostSettings.new()
 
 const DEFAULT_BEZEL_ENABLED := true
-const DEFAULT_PASSTHROUGH_ENABLED := false
+const DEFAULT_PASSTHROUGH_ENABLED := true
+## Auto (ScreenImageOptions.AUTO_MODE): trims black bars.
+const DEFAULT_SCREEN_CROP_MODE := 6
 const DEFAULT_BACKGROUND_MODE := 0
 const DEFAULT_SHARPEN_MODE := 0
 const DEFAULT_BRIGHTNESS_PCT := 0
@@ -52,7 +54,7 @@ var extended_bitrate_limits := false:
 		extended_bitrate_limits = value
 		VideoEncodingOptions.extended_limits = value
 var grip_scroll_enabled := false
-var screen_crop_mode: int = 0
+var screen_crop_mode: int = DEFAULT_SCREEN_CROP_MODE
 var screen_host_background: bool = false
 var screen_key_mode: int = 0
 var screen_key_tolerance: int = 1
@@ -122,7 +124,7 @@ var microphone_enabled: bool = DEFAULT_MICROPHONE_ENABLED
 var language: String = DEFAULT_LANGUAGE
 
 func reset_display() -> void:
-	screen_crop_mode = 0
+	screen_crop_mode = DEFAULT_SCREEN_CROP_MODE
 	screen_host_background = false
 	screen_key_mode = 0
 	screen_key_tolerance = 1

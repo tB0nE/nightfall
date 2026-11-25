@@ -268,5 +268,13 @@
 	"Match screen sharpness to the headset to save GPU time.": "Tilpass skjermens skarphet til headsettet for å spare GPU-tid.",
 	"CRT Filter": "CRT-filter",
 	"Old CRT look for the main screen. Fine uses smaller lines, like a PC monitor.": "Gammelt CRT-utseende for hovedskjermen. Fin: mindre linjer, som en PC-skjerm.",
-	"Fine": "Fin"
+	"Fine": "Fin",
+	"Source Code": "Kildekode",
+	"Free software (GPLv3). Source code: github.com/tB0nE/nightfall": "Fri programvare (GPLv3). Kildekode: github.com/tB0nE/nightfall",
+	"Start Browser": "Start nettleser",
+	"Set up your PC": "Sett opp PC-en din",
+	"Nightfall streams your PC's screens and games from Nightfall Meteor, free for Windows, macOS and Linux.": "Nightfall strømmer PC-ens skjermer og spill fra Nightfall Meteor, gratis for Windows, macOS og Linux.",
+	"Download it on your PC from:": "Last det ned på PC-en fra:",
+	"Already use Sunshine, Apollo or another Moonlight-compatible host? Nightfall works with it too.": "Bruker du allerede Sunshine, Apollo eller en annen Moonlight-kompatibel vert? Nightfall fungerer med den også.",
+	"Find My PC": "Finn PC-en min"
 }

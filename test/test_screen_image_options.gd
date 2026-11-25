@@ -24,7 +24,7 @@ func _init():
 	assert(ScreenImageOptions.crop_region(Vector2i.ZERO, 1) == Vector4(0, 0, 1, 1))
 	assert(ScreenImageOptions.crop_region(Vector2i(1920,1080), 0) == Vector4(0, 0, 1, 1))
 	var settings := AppSettings.new()
-	assert(settings.screen_crop_mode == 0 and settings.screen_key_mode == 0 and settings.screen_crt_mode == 0)
+	assert(settings.screen_crop_mode == ScreenImageOptions.AUTO_MODE and settings.screen_key_mode == 0 and settings.screen_crt_mode == 0)
 	settings.screen_crop_mode = 2
 	settings.screen_key_mode = 1
 	settings.screen_key_tolerance = 2
@@ -44,7 +44,7 @@ func _init():
 	SettingsPersistence.read_app(config, loaded, true, [0])
 	assert(loaded.screen_crt_mode == ScreenImageOptions.CRT_LABELS.size() - 1)
 	loaded.reset_display()
-	assert(loaded.screen_crop_mode == 0 and loaded.screen_key_mode == 0 and loaded.screen_key_tolerance == 1)
+	assert(loaded.screen_crop_mode == ScreenImageOptions.AUTO_MODE and loaded.screen_key_mode == 0 and loaded.screen_key_tolerance == 1)
 	# Moving the tracking origin up a floor and rotating it must not move
 	# a room-fixed object, even when XROrigin itself has an application offset.
 	var old_from_new := Transform3D(Basis(Vector3.UP, 1.2), Vector3(3, 2.8, -1))

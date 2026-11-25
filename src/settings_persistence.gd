@@ -64,7 +64,7 @@ static func read_app(
 		settings: AppSettings,
 		passthrough_supported: bool,
 		sharpen_choices: Array) -> Dictionary:
-	settings.screen_crop_mode = clampi(int(config.get_value("screen", "crop_mode", 0)), 0, ScreenImageOptions.CROP_LABELS.size() - 1)
+	settings.screen_crop_mode = clampi(int(config.get_value("screen", "crop_mode", AppSettings.DEFAULT_SCREEN_CROP_MODE)), 0, ScreenImageOptions.CROP_LABELS.size() - 1)
 	settings.screen_host_background = bool(config.get_value("screen", "host_background", false))
 	settings.screen_key_mode = clampi(int(config.get_value("screen", "key_mode", 0)), 0, 3)
 	settings.screen_key_tolerance = clampi(int(config.get_value("screen", "key_tolerance", 1)), 0, 2)
@@ -93,7 +93,7 @@ static func read_app(
 			settings.passthrough_enabled = false
 			settings.background_mode = old
 	else:
-		settings.passthrough_enabled = AppSettings.DEFAULT_PASSTHROUGH_ENABLED
+		settings.passthrough_enabled = AppSettings.DEFAULT_PASSTHROUGH_ENABLED and passthrough_supported
 
 	var max_sharpen_mode: int = sharpen_choices.max() if not sharpen_choices.is_empty() else 0
 	settings.sharpen_mode = clampi(config.get_value(
@@ -230,9 +230,9 @@ static func read_host(
 		resolution_scale_options: Array,
 		resolution_count: int,
 		ai_model_count: int) -> void:
-	host.stream_fps = int(config.get_value(section, "fps", 60))
+	host.stream_fps = int(config.get_value(section, "fps", HostSettings.DEFAULT_STREAM_FPS))
 	if not fps_rates.has(host.stream_fps):
-		host.stream_fps = 60
+		host.stream_fps = HostSettings.DEFAULT_STREAM_FPS
 	host.resolution_scale_pct = config.get_value(section, "resolution_scale_pct", 100)
 	if not resolution_scale_options.has(host.resolution_scale_pct):
 		host.resolution_scale_pct = 100
