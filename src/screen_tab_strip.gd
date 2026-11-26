@@ -433,7 +433,7 @@ func _rebuild() -> void:
 	if not browser_active and main.screen_sources.has_method("can_close_monitor_screen"):
 		can_close = main.screen_sources.can_close_monitor_screen(_screen)
 	_add(&"close", "×", CLOSE_RECT, false, can_close)
-	var can_browser: bool = (browser_active and browser.pages.size() < 8) or (not browser_active and main.screen_sources.can_switch_content_tab(_screen))
+	var can_browser: bool = (browser_active and browser.pages.size() < 8) or (not browser_active and (main.screen_sources.can_add_browser_tab(_screen) if main.screen_sources.has_method("can_add_browser_tab") else main.screen_sources.can_switch_content_tab(_screen)))
 	var can_primary: bool = main.screen_sources != null and main.screen_sources.has_method("can_make_primary") \
 		and main.screen_sources.can_make_primary(_screen)
 	_add(&"browser", "+ Add", Rect2(0.33, -0.116, 0.15, 0.038), false, can_browser or add_screen or edit_resolution or can_primary)
