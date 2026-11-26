@@ -955,11 +955,17 @@ func on_pair_pressed():
 	# user's own, on another port): the one picked in the server list wins,
 	# else the first.
 	var paired_host_id = -1
+	var paired_unique_id := ""
 	for h in _b().get_hosts():
 		if main.host_matches_address(h, ip) and (paired_host_id == -1 or h.id == main.current_host_id):
 			paired_host_id = h.id
+			paired_unique_id = str(h.get("server_unique_id", ""))
 	if paired_host_id != -1:
 		main.current_host_id = paired_host_id
+		# Remember which host this was, not only its address: several saved
+		# hosts can share one (a bundled host next to the user's own), and the
+		# address-only save above made the next start pick the first of them.
+		main.welcome_screen.save_last_ip(raw_text, paired_unique_id)
 		main._ui_status_label.text = "Connecting..."
 		# Used to await host_discovery.query_host_resolution() here, which blindly
 		# sleeps 5s every connect regardless of whether its (single-monitor-only,
