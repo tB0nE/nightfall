@@ -111,6 +111,8 @@ private:
     static void _cb_log_message(const char *format, ...);
 
     void _connection_thread_func();
+    void _stall_watchdog_func();
+    void _stop_stall_watchdog();
     void _decode_thread_func();
     void _clear_packet_queue();
     void _record_rendered_frame(int64_t frame_enqueue_time_us);
@@ -184,6 +186,13 @@ private:
     std::condition_variable queue_cv_;
     std::thread decode_thread_;
     std::thread connection_thread_;
+    // Mid-stream video stall watchdog (moonlight-common-c only watches for the
+    // first frame). See _stall_watchdog_func().
+    std::thread stall_thread_;
+    std::mutex stall_mutex_;
+    std::condition_variable stall_cv_;
+    bool stall_stop_ = false;
+    std::atomic<int64_t> last_decode_unit_ms_{0};
 
     String host_address_;
     std::string host_address_std_;
