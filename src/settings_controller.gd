@@ -24,6 +24,7 @@ var _auto_depth_fallback: bool = false
 var _stereo_sdr_shader: Shader = null
 var _stereo_picture_shader: Shader = null
 var _refresh_request_seq: int = 0
+var _steamvr_refresh_pref_checked := false
 
 var sbs_labels: Array = ["Off", "Stretch", "Crop"]
 # MiDaS-GPU (stereo_mode 5) is REMOVED, not disabled - its underlying
@@ -2047,7 +2048,21 @@ func apply_display_refresh_rate() -> bool:
 		main._log("[REFRESH] Set headset to %.0fHz for %dfps, capped render to %dfps" % [best, main.settings.host.stream_fps, main.settings.host.stream_fps])
 	else:
 		main._log("[REFRESH] %.0fHz unavailable; fell back to reported %.0fHz for %dfps stream, capped render to %dfps" % [target_hz, best, main.settings.host.stream_fps, main.settings.host.stream_fps])
+		if best + 0.6 < target_hz:
+			_check_steamvr_refresh_pref(target_hz)
 	return true
+
+# SteamVR on Linux only offers the per-app stored rate (72 Hz by default) to an
+# app not launched through Steam; store the wanted rate once when none is set.
+func _check_steamvr_refresh_pref(target_hz: float) -> void:
+	if _steamvr_refresh_pref_checked or OS.get_name() != "Linux":
+		return
+	if main.has_method("_xr_runtime_is_steamvr") and not main._xr_runtime_is_steamvr():
+		return
+	_steamvr_refresh_pref_checked = true
+	WorkerThreadPool.add_task(func():
+		var result := SteamVRRefreshPref.ensure(target_hz)
+		main.call_deferred("_log", "[REFRESH] " + result))
 
 func _reported_refresh_fallback(available: Array, target_hz: float) -> float:
 	var best := 0.0
