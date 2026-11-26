@@ -62,6 +62,21 @@ static bool supports_android_hardware_buffer_import(RenderingDevice *rendering_d
 
 StreamConnection *StreamConnection::active_instance_ = nullptr;
 
+
+namespace {
+int64_t _steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// No video for this long: ask the host for a keyframe (a static desktop may
+// legitimately send nothing, but a live host always answers an IDR request).
+constexpr int64_t kStallIdrMs = 2000;
+// Still nothing this long after the request: the video path is dead (e.g. a
+// proxy such as Meteor restarted and the host keeps sending to its old port),
+// so end the session and let auto-reconnect start a fresh one.
+constexpr int64_t kStallReconnectMs = 3000;
+} // namespace
+
 StreamConnection::StreamConnection() {
     decoder_.instantiate();
     uploader_.instantiate();
@@ -931,6 +946,7 @@ void StreamConnection::_cb_decoder_cleanup() {
 int StreamConnection::_cb_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     auto *self = active_instance_;
     if (!self || !self->accepting_decode_units_.load()) return DR_OK;
+    self->last_decode_unit_ms_.store(_steady_ms());
 
     if (++self->session_submit_count_ <= 3) {
         NF_LOG("StreamConnection", "Submit DU #%u: size=%d type=%d frame=%d connection_ready=%d",
@@ -1219,6 +1235,47 @@ int StreamConnection::_resolve_frame_transfer(AVFrame *frame) const {
     return 0;
 }
 
+void StreamConnection::_stall_watchdog_func() {
+    int64_t idr_requested_at = 0;
+    std::unique_lock<std::mutex> lock(stall_mutex_);
+    while (!stall_stop_) {
+        stall_cv_.wait_for(lock, std::chrono::milliseconds(250));
+        if (stall_stop_) break;
+        if (!is_streaming_.load() || stop_requested_.load() || local_capture_mode_) continue;
+        const int64_t last = last_decode_unit_ms_.load();
+        if (last == 0) continue; // before the first frame: moonlight-common-c watches that
+        const int64_t now = _steady_ms();
+        if (idr_requested_at == 0) {
+            if (now - last >= kStallIdrMs) {
+                NF_LOG("StreamConnection", "No video for %lld ms; requesting a keyframe", (long long)(now - last));
+                LiRequestIdrFrame();
+                idr_requested_at = now;
+            }
+        } else if (last > idr_requested_at) {
+            NF_LOG("StreamConnection", "Video resumed %lld ms after the keyframe request", (long long)(last - idr_requested_at));
+            idr_requested_at = 0;
+        } else if (now - idr_requested_at >= kStallReconnectMs) {
+            NF_LOG("StreamConnection", "Video stalled for %lld ms despite a keyframe request; reconnecting", (long long)(now - last));
+            is_streaming_.store(false);
+            queue_cv_.notify_all();
+            call_deferred("emit_signal", "stream_terminated", (int)ML_ERROR_NO_VIDEO_TRAFFIC,
+                          String("No video from the host (stalled)"));
+            break;
+        }
+    }
+}
+
+void StreamConnection::_stop_stall_watchdog() {
+    {
+        std::lock_guard<std::mutex> lock(stall_mutex_);
+        stall_stop_ = true;
+    }
+    stall_cv_.notify_all();
+    if (stall_thread_.joinable() && stall_thread_.get_id() != std::this_thread::get_id()) {
+        stall_thread_.join();
+    }
+}
+
 void StreamConnection::_connection_thread_func() {
     DECODER_RENDERER_CALLBACKS drCallbacks{};
     LiInitializeVideoCallbacks(&drCallbacks);
@@ -1262,6 +1319,16 @@ void StreamConnection::_connection_thread_func() {
         scan_guard_.start({host_address_std_, multipath_remote_});
     }
     int ret = LiStartConnection(&server_info_, &stream_config_, &clCallbacks, &drCallbacks, arPtr, nullptr, 0, nullptr, 0);
+
+    if (ret == 0) {
+        {
+            std::lock_guard<std::mutex> lock(stall_mutex_);
+            stall_stop_ = false;
+        }
+        last_decode_unit_ms_.store(0);
+        if (stall_thread_.joinable()) stall_thread_.join();
+        stall_thread_ = std::thread(&StreamConnection::_stall_watchdog_func, this);
+    }
 
     if (ret != 0) {
         scan_guard_.stop();
@@ -1900,6 +1967,7 @@ void StreamConnection::start(const String &host, const Dictionary &server_info, 
         queue_cv_.notify_all();
         LiInterruptConnection();
         connection_thread_.join();
+        _stop_stall_watchdog();
         LiStopConnection();
     }
 
@@ -2007,6 +2075,7 @@ void StreamConnection::stop() {
     if (connection_thread_.joinable()) {
         connection_thread_.join();
     }
+    _stop_stall_watchdog();
 
     LiStopConnection();
     scan_guard_.stop();
