@@ -85,6 +85,16 @@ on-device depth models (they are not in the repository); AI 3D then needs Meteor
 - The decoder has no AV1 (H.264, HEVC, VP9 only).
 - SteamVR offers `XR_VALVE_frame_controller_interaction`; the action map includes
   its dedicated Frame profile, including View/Menu and physical bumpers.
+- **Wi-Fi scans**: the Frame's home Wi-Fi (`wlan0`) and the hotspot for the PC
+  wireless adapter (`wlanap`) share one radio, so a background scan on either
+  briefly takes it off-channel and the stream stutters for a few seconds. While
+  streaming, Nightfall asks SteamOS's `softapmanager` to keep scans on the
+  channels in use, the same request Steam's own streaming client makes
+  (`streamon\t<interface>` on `/run/softapmanager.streaming.socket`, held open
+  for the whole stream; closing it releases the block). The log shows
+  `[SCAN-GUARD] Wi-Fi scans held ...`; check with
+  `cat /sys/module/cfg80211/parameters/cfg80211_block_scans` (0 = not blocked).
+  Turning Wi-Fi off in SteamOS also takes down the adapter link (same radio).
 - Headset screenshots: OpenVR `IVRScreenshots::TakeStereoScreenshot` from any
   background OpenVR app captures the composited view, layers included.
 

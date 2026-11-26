@@ -1257,9 +1257,14 @@ void StreamConnection::_connection_thread_func() {
     PAUDIO_RENDERER_CALLBACKS arPtr = local_capture_mode_ ? nullptr : &arCallbacks;
 
     LiSetMultipathRemote(multipath_remote_.c_str());
+    // Steam Frame: keep Wi-Fi scans on the stream's channels (no-op elsewhere).
+    if (!local_capture_mode_) {
+        scan_guard_.start({host_address_std_, multipath_remote_});
+    }
     int ret = LiStartConnection(&server_info_, &stream_config_, &clCallbacks, &drCallbacks, arPtr, nullptr, 0, nullptr, 0);
 
     if (ret != 0) {
+        scan_guard_.stop();
         is_streaming_.store(false);
         queue_cv_.notify_all();
         call_deferred("emit_signal", "stream_terminated", ret, get_error_string(ret));
@@ -2004,6 +2009,7 @@ void StreamConnection::stop() {
     }
 
     LiStopConnection();
+    scan_guard_.stop();
 
     if (decode_thread_.joinable()) {
         decode_thread_.join();
