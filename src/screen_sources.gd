@@ -9,6 +9,9 @@ const PRIMARY_BROWSER: StringName = &"browser:primary"
 const MAX_BROWSER_SCREENS := ScreenRegistry.MAX_SCREENS
 var main: Node3D
 var browser_supported: bool
+## PC monitor screens and tabs (no browser needed): Quest and Linux headsets
+## such as the Steam Frame. browser_supported stays Android-only (WebView).
+var monitors_supported: bool
 var _browsers: Dictionary = {}
 var _menus: Dictionary = {}
 var _focus_initialized := false
@@ -68,7 +71,7 @@ func monitor_tab_owner(id: StringName) -> VRScreen:
 	return null
 
 func can_add_monitor_tab(screen: VRScreen, virtual: bool = false) -> bool:
-	if not browser_supported or screen == null or not main.screens.has(screen) or not main.is_streaming: return false
+	if not monitors_supported or screen == null or not main.screens.has(screen) or not main.is_streaming: return false
 	if switching_tab or switching_primary or monitor_change_pending() or main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING: return false
 	if not main.settings.host.is_polaris_host: return false
 	if virtual: return main.settings.host.virtual_display_installed and monitor_size_available(true, Vector2i(320,240) if main.layout.virtual_modes_supported else Vector2i.ZERO)
@@ -229,7 +232,7 @@ func _remaining_browser() -> RefCounted:
 	return null
 
 func can_close_monitor_screen(screen: VRScreen) -> bool:
-	return screen != null and browser_supported and main.screens.has(screen) and main.is_streaming \
+	return screen != null and monitors_supported and main.screens.has(screen) and main.is_streaming \
 		and (main.settings.host.is_polaris_host or main.layout.enabled_monitors().size() == 1) and main.session_lifecycle.phase == SessionLifecycle.Phase.STREAMING \
 		and not switching_tab and not switching_primary and not monitor_change_pending() \
 		and not is_browser_screen(screen) and monitor_tab(screen) != null \
@@ -377,7 +380,7 @@ func adopt_monitor_primary(screen: VRScreen) -> void:
 	main.screen_tab_strip = _menus[screen.get_instance_id()]
 
 func can_add_monitor_screen(virtual: bool = false) -> bool:
-	if not browser_supported or switching_primary or switching_tab or _adding_monitor: return false
+	if not monitors_supported or switching_primary or switching_tab or _adding_monitor: return false
 	if not main.is_streaming or main.session_lifecycle.phase != SessionLifecycle.Phase.STREAMING: return false
 	if main.layout == null or main.browser_prototype.closing or main.screens.size() >= MAX_BROWSER_SCREENS: return false
 	if not main.settings.host.is_polaris_host: return false
@@ -431,12 +434,16 @@ func can_switch_content_tab(screen: VRScreen) -> bool:
 	if screen == null or switching_tab or switching_primary or monitor_change_pending(): return false
 	if screen != main.primary_screen:
 		var provider = browser_for_screen(screen)
-		return browser_supported and main.screens.has(screen) and main.session_lifecycle.phase in [SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION, SessionLifecycle.Phase.FAILED, SessionLifecycle.Phase.STREAMING] and not main.pcvr_test.is_exclusive() and not main.pcvr_handover.blocks_workspace() and (provider == null or not provider.closing)
+		return monitors_supported and main.screens.has(screen) and main.session_lifecycle.phase in [SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION, SessionLifecycle.Phase.FAILED, SessionLifecycle.Phase.STREAMING] and not main.pcvr_test.is_exclusive() and not main.pcvr_handover.blocks_workspace() and (provider == null or not provider.closing)
 	if main.browser_prototype.closing: return false
 	if main.pcvr_test.is_exclusive() or main.pcvr_handover.blocks_workspace(): return false
 	if main.session_lifecycle.phase not in [SessionLifecycle.Phase.BOOT, SessionLifecycle.Phase.SERVER_SELECTION,
 		SessionLifecycle.Phase.FAILED, SessionLifecycle.Phase.STREAMING]: return false
-	return browser_supported
+	return monitors_supported
+
+## A browser tab can go on this screen (tab switching allowed and a browser exists here).
+func can_add_browser_tab(screen: VRScreen) -> bool:
+	return browser_supported and can_switch_content_tab(screen)
 
 func _other_stream_screen(screen: VRScreen) -> bool:
 	for other in main.screens:
@@ -540,7 +547,7 @@ func resize_browser_tab(screen: VRScreen, target: Vector2i) -> bool:
 	return complete
 
 func select_browser_tab(screen: VRScreen, page_id: int = 0, new_page: bool = false) -> bool:
-	if not can_switch_content_tab(screen): return false
+	if not can_add_browser_tab(screen): return false
 	if screen != main.primary_screen:
 		var provider = menu_for_screen(screen).browser
 		if provider.closing: return false
@@ -927,7 +934,9 @@ func remove_browser_screen(screen: VRScreen) -> void:
 
 func _init(owner: Node3D, platform: String = "") -> void:
 	main = owner
-	browser_supported = (OS.get_name() if platform.is_empty() else platform) == "Android"
+	var platform_name := OS.get_name() if platform.is_empty() else platform
+	browser_supported = platform_name == "Android"
+	monitors_supported = SettingsPlatformPolicy.multi_screen_available(platform_name)
 
 func can_open_browser() -> bool:
 	return browser_supported and not switching_primary and not main.browser_prototype.closing and (not main.is_streaming or switching_tab or _other_stream_screen(main.primary_screen)) \
