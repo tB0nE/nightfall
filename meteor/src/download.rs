@@ -136,15 +136,53 @@ const BUILDERS: [(u32, WheelFile); 7] = [
     }),
 ];
 
-// The sm86 signed DLL is verified on the Windows RTX 3090. Add other GPU
-// resources only after pinning the hashes of their signed wheel members.
+// Hashes measured from the signed DLLs in NVIDIA's Windows wheel (the sm86
+// one is also verified on the Windows RTX 3090).
 #[cfg(windows)]
-const BUILDERS: [(u32, WheelFile); 1] = [(86, WheelFile {
-    name: "nvinfer_builder_resource_sm86_10.dll",
-    sha256: "35331ca0164b785b85a9f3d48bb7be1195af9d5ccb760033c0854e133f53b621",
-    size: 176_011_888,
-    compressed: 151_838_572,
-})];
+const BUILDERS: [(u32, WheelFile); 7] = [
+    (75, WheelFile {
+        name: "nvinfer_builder_resource_sm75_10.dll",
+        sha256: "ac67f4219db18e5e24bb2022f746d6b61804cd4278b57f7908734317f0bb05d2",
+        size: 116_075_120,
+        compressed: 93_903_636,
+    }),
+    (80, WheelFile {
+        name: "nvinfer_builder_resource_sm80_10.dll",
+        sha256: "edd5cea62a070fdabe6826aa4e51cbd123e045324758ee54f7254e2d63bd1afd",
+        size: 186_690_160,
+        compressed: 162_348_634,
+    }),
+    (86, WheelFile {
+        name: "nvinfer_builder_resource_sm86_10.dll",
+        sha256: "35331ca0164b785b85a9f3d48bb7be1195af9d5ccb760033c0854e133f53b621",
+        size: 176_011_888,
+        compressed: 151_838_572,
+    }),
+    (89, WheelFile {
+        name: "nvinfer_builder_resource_sm89_10.dll",
+        sha256: "5126cb3feb13ef2f5841fb30085cf304fa0dfacb7645078dd77c7fc8eeb125ad",
+        size: 185_069_168,
+        compressed: 160_627_702,
+    }),
+    (90, WheelFile {
+        name: "nvinfer_builder_resource_sm90_10.dll",
+        sha256: "2fb60ef2998a876027fc4b99366af82d3c23fbfa5d4b5dbc8c82325d8ca66dc3",
+        size: 453_921_904,
+        compressed: 425_282_411,
+    }),
+    (100, WheelFile {
+        name: "nvinfer_builder_resource_sm100_10.dll",
+        sha256: "c88d5abfccc601194b2a32c9e43956eb0c3435ee07114493d862e7c12640c17d",
+        size: 282_830_960,
+        compressed: 255_896_054,
+    }),
+    (120, WheelFile {
+        name: "nvinfer_builder_resource_sm120_10.dll",
+        sha256: "3aa2d721ffa793cd5dc1088f4c1b98c29155aa64ad2fc1d5c12daa03f2a0e023",
+        size: 262_017_136,
+        compressed: 234_987_254,
+    }),
+];
 
 /// The graphs this download fetched, so "Remove VDA" deletes only those.
 const DOWNLOADED_MODELS: &str = "downloaded-models.txt";
@@ -949,6 +987,9 @@ mod tests {
         assert_eq!(builder_for(8, 6).map(|f| f.name), Some("nvinfer_builder_resource_sm86_10.dll"));
         #[cfg(not(windows))]
         assert_eq!(builder_for(8, 6).map(|f| f.name), Some("libnvinfer_builder_resource_sm86.so.10.16.1"));
+        // RTX 50 (Blackwell) on both systems.
+        #[cfg(windows)]
+        assert_eq!(builder_for(12, 0).map(|f| f.name), Some("nvinfer_builder_resource_sm120_10.dll"));
         #[cfg(not(windows))]
         assert_eq!(builder_for(12, 0).map(|f| f.name), Some("libnvinfer_builder_resource_sm120.so.10.16.1"));
         assert!(builder_for(8, 7).is_none());
