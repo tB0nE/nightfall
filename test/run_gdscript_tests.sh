@@ -24,6 +24,7 @@ mkdir -p "$NIGHTFALL_TEST_DATA_ROOT"
 tests=(
 	"test/test_gamepad_alternate_menu.gd"
 	"test/test_sbs_shortcut.gd"
+	"test/test_steamvr_refresh_pref.gd"
 	"test/test_server_picker.gd"
 	"test/test_screen_notifications.gd"
 	"test/test_physical_clipboard_input.gd"

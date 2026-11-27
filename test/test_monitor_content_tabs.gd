@@ -104,6 +104,11 @@ func _run():
 	var sources: Sources = owner.screen_sources
 	assert(not sources.can_add_monitor_screen(false), "Four visible surfaces must prevent another screen")
 	assert(sources.can_add_monitor_tab(owner.primary_screen,false), "The screen limit must not prevent another tab")
+	var linux_sources := Sources.new(owner,"Linux")
+	assert(linux_sources.can_add_monitor_tab(owner.primary_screen,false), "Linux headsets (Steam Frame) must be able to add monitor tabs")
+	assert(linux_sources.can_switch_content_tab(owner.primary_screen), "Linux headsets must be able to switch monitor tabs")
+	assert(not linux_sources.can_add_browser_tab(owner.primary_screen), "Browser tabs stay Android-only")
+	assert(not Sources.new(owner,"Windows").can_add_monitor_tab(owner.primary_screen,false), "Desktop builds have no multi-screen workspace")
 	owner.browser_prototype.active = true
 	owner.depth_estimator.idle = false
 	assert(not await sources.add_monitor_tab(owner.primary_screen,false))

@@ -1599,6 +1599,7 @@ func _ready():
 		return
 
 	_init_xr(interface)
+	_watch_display_refresh_rate(interface)
 	video_presentation.setup_native()
 	pcvr_test.setup()
 	# Composition providers must be registered before the OpenXR session starts.
@@ -2214,6 +2215,28 @@ func _init_stream_backend():
 		v2_node.controller_trigger_rumble.connect(func(controller, left_motor, right_motor):
 			_trigger_haptic(controller, left_motor, right_motor)
 		)
+
+# The runtime can change the display rate after Nightfall chose one (SteamVR's
+# per-app Refresh Rate Override, vrcmd, a system menu). Follow it so the status
+# line and stream timing use the rate the headset really runs at.
+func _watch_display_refresh_rate(interface: XRInterface) -> void:
+	if interface.has_signal("refresh_rate_changed"):
+		interface.refresh_rate_changed.connect(_on_display_refresh_rate_reported)
+	# Not every runtime sends the change event; check now and then as well.
+	var timer := Timer.new()
+	timer.wait_time = 2.0
+	timer.autostart = true
+	timer.timeout.connect(func():
+		if interface.is_initialized():
+			_on_display_refresh_rate_reported(interface.get_display_refresh_rate()))
+	add_child(timer)
+
+func _on_display_refresh_rate_reported(refresh_rate: float) -> void:
+	if refresh_rate <= 0.0 or absf(refresh_rate - display_refresh_rate) < 0.6:
+		return
+	_log("[REFRESH] Headset now runs at %.0fHz (was %.0fHz)" % [refresh_rate, display_refresh_rate])
+	display_refresh_rate = refresh_rate
+
 func _init_xr(interface):
 	var render_size = interface.get_render_target_size()
 	_xr_render_width = int(render_size.x)
